@@ -102,6 +102,11 @@ import {
 } from "./task-claims.mjs";
 import { initPresence, getPresenceState } from "../infra/presence.mjs";
 import { getSharedState } from "../workspace/shared-state-manager.mjs";
+import {
+  createExecutionPipeline as createTaskExecutionPipeline,
+  runExecutionPipeline as runTaskExecutionPipeline,
+  runExecutionPipelineAgent,
+} from "./task-executor-pipeline.mjs";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -3981,38 +3986,18 @@ class TaskExecutor {
       const isFreshEnough =
         ageMs === 0 || ageMs <= INPROGRESS_RECOVERY_MAX_AGE_MS;
 
-      // In workflow-owned mode, calling executeTask() fires task.assigned
-      // which launches a new workflow run. If one already exists (evidenced by
-      // an alive agent thread), that creates two competing runs → owner_mismatch.
-      // trigger.task_assigned workflows don't call action.claim_task, so ownerId
-      // is null and the shared-state guard above cannot protect against this.
-      // • Active thread → workflow is still managing it; leave it alone.
-      // • No active thread but fresh → agent died; reset to todo so
-      //   trigger.task_available re-dispatches cleanly, without double-dispatch.
+      // In workflow-owned mode, executor thread presence is not a reliable
+      // liveness signal because workflow nodes can be actively running before
+      // any executor thread key is observable. Resetting "fresh" in-progress
+      // tasks here causes live runs to churn todo↔inprogress. Keep fresh tasks
+      // in-progress and let stale/unstarted guards above handle true stranding.
       if (this.workflowOwnsTaskLifecycle) {
         if (hasThread) {
           skippedForActiveClaim++;
           continue;
         }
         if (isFreshEnough) {
-          try {
-            await transitionTaskStatus(id, "todo", {
-              source: "task-executor-recovery-workflow-owned",
-            });
-          } catch {
-            /* best effort */
-          }
-          try {
-            transitionInternalTaskStatus(
-              id,
-              "todo",
-              "task-executor-recovery-workflow-owned",
-            );
-          } catch {
-            /* best effort */
-          }
-          this._removeRuntimeSlot(id);
-          resetToTodo++;
+          skippedForActiveClaim++;
           continue;
         }
       }
@@ -5039,6 +5024,30 @@ class TaskExecutor {
   async _pollLoop() {
     // [LEGACY REMOVED] Replaced by workflow node: trigger.task_available + condition.slot_available
     // See workflow-templates/task-lifecycle.mjs
+  }
+
+  createExecutionPipeline(mode = "single", agents = [], options = {}) {
+    return createTaskExecutionPipeline(mode, agents, {
+      ...options,
+      agentRunner:
+        options.agentRunner || this._runExecutionPipelineAgent.bind(this),
+    });
+  }
+
+  async runExecutionPipeline(mode, agents, input, options = {}) {
+    return await runTaskExecutionPipeline(mode, agents, input, {
+      ...options,
+      agentRunner:
+        options.agentRunner || this._runExecutionPipelineAgent.bind(this),
+    });
+  }
+
+  async _runExecutionPipelineAgent(agent, input, context) {
+    return runExecutionPipelineAgent(agent, input, context, {
+      execWithRetry,
+      repoRoot: this.repoRoot || process.cwd(),
+      timeoutMs: this.timeoutMs || 0,
+    });
   }
 
   // ── Task Execution ────────────────────────────────────────────────────────

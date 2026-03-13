@@ -31,10 +31,12 @@ const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 // ── Configuration ────────────────────────────────────────────────────────────
 
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000; // 60 min for agentic tasks (matches Azure stream timeout)
+const MAX_TIMER_DELAY_MS = 2_147_483_647; // Node.js timer clamp (2^31 - 1)
 // MAX_STREAM_RETRIES, isTransientStreamError, streamRetryDelay ← imported from ./stream-resilience.mjs
 const STATE_FILE = resolve(__dirname, "..", "logs", "codex-shell-state.json");
 const SESSIONS_DIR = resolve(__dirname, "..", "logs", "sessions");
 const MAX_PERSISTENT_TURNS = 50;
+const timeoutNormalizationWarningKey = new Set();
 
 // ── Payload safety ────────────────────────────────────────────────────────────
 // The Codex API rejects JSON bodies with malformed or oversized strings.
@@ -52,6 +54,28 @@ function parseBoundedNumber(value, fallback, min, max) {
   const num = Number(value);
   if (!Number.isFinite(num)) return fallback;
   return Math.min(Math.max(Math.trunc(num), min), max);
+}
+
+function parsePositiveTimeoutMs(value, fallback = DEFAULT_TIMEOUT_MS) {
+  const fallbackValue = Number(fallback);
+  if (!Number.isFinite(fallbackValue) || fallbackValue <= 0) {
+    throw new Error("parsePositiveTimeoutMs requires a positive finite fallback");
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallbackValue;
+  return parsed;
+}
+
+function normalizeTimeoutMs(value, { fallback = DEFAULT_TIMEOUT_MS, label = "timeoutMs" } = {}) {
+  const parsed = parsePositiveTimeoutMs(value, fallback);
+  const normalized = Math.min(parsed, MAX_TIMER_DELAY_MS);
+  if (normalized !== parsed && !timeoutNormalizationWarningKey.has(label)) {
+    timeoutNormalizationWarningKey.add(label);
+    console.warn(
+      `[codex-shell] ${label} ${parsed}ms exceeds Node.js timer max; clamped to ${MAX_TIMER_DELAY_MS}ms`,
+    );
+  }
+  return normalized;
 }
 
 function getInternalExecutorStreamConfig() {
@@ -692,6 +716,10 @@ export async function execCodexPrompt(userMessage, options = {}) {
     mode = null,
     cwd = null,
   } = options;
+  const normalizedTimeoutMs = normalizeTimeoutMs(timeoutMs, {
+    fallback: DEFAULT_TIMEOUT_MS,
+    label: "execCodexPrompt.timeoutMs",
+  });
 
   agentSdk = resolveAgentSdkConfig({ reload: true });
   if (agentSdk.primary !== "codex") {
@@ -714,7 +742,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
   activeTurn = true;
 
   try {
-    const streamSafety = resolveCodexStreamSafety(timeoutMs);
+    const streamSafety = resolveCodexStreamSafety(normalizedTimeoutMs);
     const requestedWorkingDirectory = normalizeWorkingDirectory(cwd);
 
     if (!persistent) {
@@ -811,7 +839,10 @@ export async function execCodexPrompt(userMessage, options = {}) {
       // immediately fail.  The total wall-clock budget is still bounded by the
       // outer timeoutMs passed in.
       const controller = abortController || new AbortController();
-      const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
+      const timer = setTimeout(
+        () => controller.abort("timeout"),
+        normalizedTimeoutMs,
+      );
 
       try {
         // Use runStreamed for real-time event streaming
@@ -939,7 +970,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
             const msg =
               reason === "user_stop"
                 ? ":close: Agent stopped by user."
-                : `:clock: Agent timed out after ${timeoutMs / 1000}s`;
+                : `:clock: Agent timed out after ${normalizedTimeoutMs / 1000}s`;
             return { finalResponse: msg, items: [], usage: null };
           }
         }

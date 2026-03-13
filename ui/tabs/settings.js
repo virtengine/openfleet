@@ -718,6 +718,78 @@ function maskValue(val) {
   return "••••••" + s.slice(-4);
 }
 
+const EXECUTOR_SECTION_ORDER = [
+  "Runtime & Pool",
+  "Routing & Planning",
+  "SDK Availability",
+  "Provider Credentials",
+  "Codex Models",
+  "Claude Models",
+  "Gemini Models",
+  "Other",
+];
+
+const EXECUTOR_SECTION_DESCRIPTIONS = {
+  "Runtime & Pool": "Core runtime behavior for the internal executor pool, including parallelism, SDK selection, and timeouts.",
+  "Routing & Planning": "How Bosun distributes tasks, chooses fallback executors, and shapes planning behavior.",
+  "SDK Availability": "Enable or disable SDK families from the runtime picker and task execution pool.",
+  "Provider Credentials": "API credentials used by executor backends.",
+  "Codex Models": "Codex-specific model, profile, and subagent settings.",
+  "Claude Models": "Claude-specific model settings.",
+  "Gemini Models": "Gemini-specific model settings.",
+  "Other": "Additional executor settings.",
+};
+
+function getExecutorSection(def) {
+  const key = String(def?.key || "");
+  if (!key) return "Other";
+  if ([
+    "EXECUTOR_MODE",
+    "INTERNAL_EXECUTOR_PARALLEL",
+    "INTERNAL_EXECUTOR_SDK",
+    "INTERNAL_EXECUTOR_TIMEOUT_MS",
+    "INTERNAL_EXECUTOR_MAX_RETRIES",
+    "INTERNAL_EXECUTOR_POLL_MS",
+    "PRIMARY_AGENT",
+  ].includes(key)) return "Runtime & Pool";
+  if ([
+    "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED",
+    "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
+    "EXECUTORS",
+    "EXECUTOR_DISTRIBUTION",
+    "FAILOVER_STRATEGY",
+    "COMPLEXITY_ROUTING_ENABLED",
+    "PROJECT_REQUIREMENTS_PROFILE",
+  ].includes(key)) return "Routing & Planning";
+  if (key.endsWith("_SDK_DISABLED")) return "SDK Availability";
+  if (key.endsWith("API_KEY")) return "Provider Credentials";
+  if (key.startsWith("CODEX_")) return "Codex Models";
+  if (key.startsWith("CLAUDE_")) return "Claude Models";
+  if (key.startsWith("GEMINI_") || key.startsWith("GOOGLE_")) return "Gemini Models";
+  return "Other";
+}
+
+function groupExecutorSettings(defs = []) {
+  const groups = new Map();
+  for (const def of defs) {
+    const section = getExecutorSection(def);
+    if (!groups.has(section)) groups.set(section, []);
+    groups.get(section).push(def);
+  }
+  return EXECUTOR_SECTION_ORDER
+    .filter((section) => groups.has(section))
+    .map((section) => ({
+      title: section,
+      description: EXECUTOR_SECTION_DESCRIPTIONS[section] || "",
+      defs: groups.get(section),
+    }));
+}
+
+function formatCountdownSeconds(ms) {
+  const remaining = Math.max(0, Number(ms) || 0);
+  return Math.ceil(remaining / 1000);
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  ServerConfigMode — .env management UI
  * ═══════════════════════════════════════════════════════════════ */
@@ -750,8 +822,10 @@ function ServerConfigMode() {
   /* Save flow */
   const [saving, setSaving] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [restartCountdown, setRestartCountdown] = useState(null);
 
   const tooltipTimer = useRef(null);
+  const restartCountdownTimer = useRef(null);
 
   /* ─── Load server settings on mount ─── */
   const fetchSettings = useCallback(async (opts = {}) => {
@@ -801,6 +875,16 @@ function ServerConfigMode() {
 
   useEffect(() => { fetchSettings(); }, [fetchSettings]);
 
+  const clearRestartCountdown = useCallback(() => {
+    if (restartCountdownTimer.current) {
+      clearInterval(restartCountdownTimer.current);
+      restartCountdownTimer.current = null;
+    }
+    setRestartCountdown(null);
+  }, []);
+
+  useEffect(() => () => clearRestartCountdown(), [clearRestartCountdown]);
+
   /* ─── Grouped settings with search + advanced filter ─── */
   const grouped = useMemo(() => getGroupedSettings(showAdvanced), [showAdvanced]);
   const isContextShreddingSetting = useCallback((def) => {
@@ -828,6 +912,15 @@ function ServerConfigMode() {
       return "";
     },
     [edits, serverData],
+  );
+
+  const getReloadDelayMs = useCallback(
+    (changes = null) => {
+      const raw = changes?.ENV_RELOAD_DELAY_MS ?? getValue("ENV_RELOAD_DELAY_MS") ?? "";
+      const parsed = Number.parseInt(String(raw || ""), 10);
+      return Number.isFinite(parsed) ? Math.max(500, parsed) : 5000;
+    },
+    [getValue],
   );
 
   /* ─── Determine if a value matches its default ─── */
@@ -880,6 +973,22 @@ function ServerConfigMode() {
       return def?.restart;
     });
   }, [edits]);
+
+  const restartCountdownSeconds = restartCountdown
+    ? formatCountdownSeconds(restartCountdown.remainingMs)
+    : null;
+
+  useEffect(() => {
+    if (!restartCountdown) return undefined;
+    if (restartCountdown.remainingMs > 0 || !wsConnected.value) return undefined;
+    const timer = setTimeout(() => {
+      setRestartCountdown((current) => {
+        if (!current || current.remainingMs > 0) return current;
+        return null;
+      });
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [restartCountdown, wsConnected.value]);
 
   /* ─── Handlers ─── */
   const handleChange = useCallback(
@@ -959,6 +1068,7 @@ function ServerConfigMode() {
         changes[key] = value;
       }
       const changeKeys = Object.keys(changes);
+      const restartDelayMs = getReloadDelayMs(changes);
       if (changeKeys.length > 0) {
         let res;
         try {
@@ -1017,7 +1127,29 @@ function ServerConfigMode() {
       showToast("Settings saved successfully", "success");
       haptic("medium");
       if (hasRestartSetting && changeKeys.length > 0) {
-        showToast("Settings take effect after auto-reload (~2 seconds)", "info");
+        if (restartCountdownTimer.current) {
+          clearInterval(restartCountdownTimer.current);
+        }
+        setRestartCountdown({
+          remainingMs: restartDelayMs,
+          totalMs: restartDelayMs,
+          keys: changeKeys.filter((key) => {
+            const def = SETTINGS_SCHEMA.find((entry) => entry.key === key);
+            return def?.restart;
+          }),
+        });
+        restartCountdownTimer.current = setInterval(() => {
+          setRestartCountdown((current) => {
+            if (!current) return current;
+            const nextRemaining = Math.max(0, current.remainingMs - 1000);
+            if (nextRemaining <= 0 && restartCountdownTimer.current) {
+              clearInterval(restartCountdownTimer.current);
+              restartCountdownTimer.current = null;
+            }
+            return { ...current, remainingMs: nextRemaining };
+          });
+        }, 1000);
+        showToast(`Restart-sensitive settings saved. Reload countdown started (${formatCountdownSeconds(restartDelayMs)}s).`, "info");
       }
     } catch (err) {
       let parsed = null;
@@ -1035,7 +1167,7 @@ function ServerConfigMode() {
     } finally {
       setSaving(false);
     }
-  }, [edits, hasRestartSetting, serverMeta, fetchSettings]);
+  }, [edits, hasRestartSetting, serverMeta, fetchSettings, getReloadDelayMs]);
 
   const handleCancelSave = useCallback(() => {
     setConfirmOpen(false);
@@ -1341,6 +1473,26 @@ function ServerConfigMode() {
       </div>
     `}
 
+    ${restartCountdown &&
+    html`
+      <div class="settings-banner ${restartCountdownSeconds <= 2 ? "settings-banner-warn" : "settings-banner-info"}">
+        <span>${resolveIcon(":refresh:")}</span>
+        <span class="settings-banner-text">
+          <strong>
+            ${restartCountdownSeconds > 0
+              ? `Reload scheduled in ${restartCountdownSeconds}s`
+              : wsOk
+                ? "Reload window elapsed"
+                : "Reloading now"}
+          </strong>
+          ${restartCountdown.keys?.length
+            ? ` — Applying restart-sensitive changes: ${restartCountdown.keys.slice(0, 3).join(", ")}${restartCountdown.keys.length > 3 ? ` +${restartCountdown.keys.length - 3} more` : ""}.`
+            : " — Applying restart-sensitive configuration updates."}
+          ${!wsOk ? " Connection may drop briefly while Bosun restarts." : " Connection may briefly reset while Bosun reloads."}
+        </span>
+      </div>
+    `}
+
     <!-- Search bar -->
     <div class="settings-search">
       <${SearchInput}
@@ -1469,11 +1621,19 @@ function ServerConfigMode() {
                 </div>
               <//>
             `
-          : html`
-              <${Card}>
-                ${catDefs.map((def) => renderSetting(def))}
-              <//>
-            `}
+          : activeCategory === "executor"
+            ? groupExecutorSettings(catDefs).map((section) => html`
+                <${Card} key=${section.title}>
+                  <div class="card-subtitle mb-sm" style="font-size:13px;font-weight:700">${section.title}</div>
+                  ${section.description && html`<div class="meta-text mb-sm">${section.description}</div>`}
+                  ${section.defs.map((def) => renderSetting(def))}
+                <//>
+              `)
+            : html`
+                <${Card}>
+                  ${catDefs.map((def) => renderSetting(def))}
+                <//>
+              `}
       `;
     })()}
 
@@ -1493,7 +1653,15 @@ function ServerConfigMode() {
     <div class=${`settings-save-bar ${changeCount > 0 ? 'settings-save-bar--dirty' : 'settings-save-bar--clean'}`}>
       <div class="save-bar-info">
         <span class=${`setting-modified-dot ${changeCount === 0 ? 'setting-modified-dot--clean' : ''}`}></span>
-        <span>${changeCount > 0 ? `${changeCount} unsaved change${changeCount !== 1 ? "s" : ""}` : "All changes saved"}</span>
+        <span>
+          ${changeCount > 0
+            ? `${changeCount} unsaved change${changeCount !== 1 ? "s" : ""}`
+            : restartCountdownSeconds != null
+              ? restartCountdownSeconds > 0
+                ? `Reload scheduled in ${restartCountdownSeconds}s`
+                : (wsOk ? "Waiting for runtime reload" : "Restarting now")
+              : "All changes saved"}
+        </span>
       </div>
       <div class="save-bar-actions">
         ${changeCount > 0 && html`
@@ -1537,7 +1705,7 @@ function ServerConfigMode() {
             <div class="settings-banner settings-banner-warn" style="margin-top:8px">
               <span>${resolveIcon(":refresh:")}</span>
               <span class="settings-banner-text">
-                Some changes require a restart. The server will auto-reload (~2 seconds).
+                Some changes require a restart. Bosun will begin reloading after about ${formatCountdownSeconds(getReloadDelayMs(edits))}s, and the countdown will stay visible after save.
               </span>
             </div>
           `}
@@ -1623,9 +1791,6 @@ function AppPreferencesMode() {
   const [notifyErrors, setNotifyErrors] = useState(true);
   const [notifyComplete, setNotifyComplete] = useState(true);
   const [debugMode, setDebugMode] = useState(false);
-  const [defaultMaxParallel, setDefaultMaxParallel] = useState(4);
-  const [defaultSdk, setDefaultSdk] = useState("auto");
-  const [defaultRegion, setDefaultRegion] = useState("auto");
   const [showRawJson, setShowRawJson] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
@@ -1683,16 +1848,13 @@ function AppPreferencesMode() {
   useEffect(() => {
     (async () => {
       try {
-        const [fs, ct, nu, ne, nc, dm, dmp, ds, dr] = await Promise.all([
+        const [fs, ct, nu, ne, nc, dm] = await Promise.all([
           cloudGet("fontSize"),
           cloudGet("colorTheme"),
           cloudGet("notifyUpdates"),
           cloudGet("notifyErrors"),
           cloudGet("notifyComplete"),
           cloudGet("debugMode"),
-          cloudGet("defaultMaxParallel"),
-          cloudGet("defaultSdk"),
-          cloudGet("defaultRegion"),
         ]);
         if (fs) {
           setFontSize(fs);
@@ -1706,9 +1868,6 @@ function AppPreferencesMode() {
         if (ne != null) setNotifyErrors(ne);
         if (nc != null) setNotifyComplete(nc);
         if (dm != null) setDebugMode(dm);
-        if (dmp != null) setDefaultMaxParallel(dmp);
-        if (ds) setDefaultSdk(ds);
-        if (dr) setDefaultRegion(dr);
       } catch (err) {
         console.warn('[AppPrefs] Failed to load preferences:', err);
       } finally {
@@ -1745,31 +1904,6 @@ function AppPreferencesMode() {
     showToast("Theme saved", "success");
   };
 
-  const handleDefaultMaxParallel = (v) => {
-    const val = Math.max(1, Math.min(20, Number(v)));
-    setDefaultMaxParallel(val);
-    cloudSet("defaultMaxParallel", val);
-    console.log('[AppPrefs] Saved: defaultMaxParallel', val);
-    haptic();
-    showToast("Preference saved", "success");
-  };
-
-  const handleDefaultSdk = (v) => {
-    setDefaultSdk(v);
-    cloudSet("defaultSdk", v);
-    console.log('[AppPrefs] Saved: defaultSdk', v);
-    haptic();
-    showToast("Preference saved", "success");
-  };
-
-  const handleDefaultRegion = (v) => {
-    setDefaultRegion(v);
-    cloudSet("defaultRegion", v);
-    console.log('[AppPrefs] Saved: defaultRegion', v);
-    haptic();
-    showToast("Preference saved", "success");
-  };
-
   /* Clear cache */
   const handleClearCache = async () => {
     const ok = await showConfirm("Clear all cached data and preferences?");
@@ -1782,9 +1916,6 @@ function AppPreferencesMode() {
       "notifyErrors",
       "notifyComplete",
       "debugMode",
-      "defaultMaxParallel",
-      "defaultSdk",
-      "defaultRegion",
     ];
     for (const k of keys) cloudRemove(k);
     showToast("Cache cleared — reload to apply", "success");
@@ -1802,9 +1933,6 @@ function AppPreferencesMode() {
       "notifyErrors",
       "notifyComplete",
       "debugMode",
-      "defaultMaxParallel",
-      "defaultSdk",
-      "defaultRegion",
     ];
     for (const k of keys) cloudRemove(k);
     setFontSize("medium");
@@ -1812,9 +1940,6 @@ function AppPreferencesMode() {
     setNotifyErrors(true);
     setNotifyComplete(true);
     setDebugMode(false);
-    setDefaultMaxParallel(4);
-    setDefaultSdk("auto");
-    setDefaultRegion("auto");
     setColorTheme("system");
     document.documentElement.removeAttribute("data-theme");
     document.documentElement.setAttribute(THEME_LOCK_ATTR, "system");
@@ -1979,52 +2104,6 @@ function AppPreferencesMode() {
             <//>
           `}
         />
-      <//>
-    <//>
-
-    <!-- ─── Executor Defaults ─── -->
-    <${Collapsible} title=${iconText(":settings: Executor Defaults")} defaultOpen=${false}>
-      <${Card}>
-        <div class="card-subtitle mb-sm">Default Max Parallel</div>
-        <div class="range-row mb-md">
-          <${Slider}
-            min=${1}
-            max=${20}
-            step=${1}
-            value=${defaultMaxParallel}
-            onChange=${(e, v) => setDefaultMaxParallel(v)}
-            onChangeCommitted=${(e, v) => handleDefaultMaxParallel(v)}
-          />
-          <span class="pill">${defaultMaxParallel}</span>
-        </div>
-
-        <div class="card-subtitle mb-sm">Default SDK</div>
-        <${SegmentedControl}
-          options=${[
-            { value: "codex", label: "Codex" },
-            { value: "copilot", label: "Copilot" },
-            { value: "claude", label: "Claude" },
-            { value: "auto", label: "Auto" },
-          ]}
-          value=${defaultSdk}
-          onChange=${handleDefaultSdk}
-        />
-
-        <div class="card-subtitle mt-md mb-sm">Default Region</div>
-        ${(() => {
-          const regions = configData.value?.regions || ["auto"];
-          const regionOptions = regions.map((r) => ({
-            value: r,
-            label: r.charAt(0).toUpperCase() + r.slice(1),
-          }));
-          return regions.length > 1
-            ? html`<${SegmentedControl}
-                options=${regionOptions}
-                value=${defaultRegion}
-                onChange=${handleDefaultRegion}
-              />`
-            : html`<div class="meta-text">Region: ${regions[0]}</div>`;
-        })()}
       <//>
     <//>
 

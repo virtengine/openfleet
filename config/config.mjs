@@ -26,12 +26,13 @@ import {
 } from "../agent/agent-prompts.mjs";
 import { resolveAgentRepoRoot, resolveRepoLocalBosunDir } from "./repo-root.mjs";
 import { applyAllCompatibility } from "../compat.mjs";
+import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import {
   normalizeExecutorKey,
   getModelsForExecutor,
   MODEL_ALIASES,
 } from "../task/task-complexity.mjs";
-import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
+import { normalizePipelineWorkflows } from "../workflow/pipeline-workflows.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1404,6 +1405,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     process.env.BOSUN_LOAD_REPO_ENV_WITH_EXPLICIT_CONFIG,
     false,
   );
+  const envOverride = reloadEnv || !isEnvEnabled(process.env.BOSUN_ENV_NO_OVERRIDE, false);
   let detectedRepoRoot = "";
   const getFallbackRepoRoot = () => {
     if (normalizedRepoRootOverride) return normalizedRepoRootOverride;
@@ -1412,9 +1414,22 @@ export function loadConfig(argv = process.argv, options = {}) {
   };
 
   // Determine config directory (where bosun stores its config)
-  const configDir =
+  let configDir =
     explicitConfigDirRaw ||
     resolveConfigDir(normalizedRepoRootOverride);
+
+  // If BOSUN_HOME/BOSUN_DIR is declared in the repo-local .env, load that first
+  // and then pivot into the explicit config dir before reading config files.
+  if (!hasExplicitConfigDir) {
+    loadDotEnv(configDir, { override: envOverride });
+    const envConfigDirRaw = process.env.BOSUN_HOME || process.env.BOSUN_DIR || "";
+    if (String(envConfigDirRaw).trim()) {
+      const resolvedEnvConfigDir = resolve(envConfigDirRaw);
+      if (resolvedEnvConfigDir !== resolve(configDir)) {
+        configDir = resolvedEnvConfigDir;
+      }
+    }
+  }
 
   const configFile = loadConfigFile(configDir);
   let configData = configFile.data || {};
@@ -1475,7 +1490,6 @@ export function loadConfig(argv = process.argv, options = {}) {
   // for Bosun-specific configuration, so it should override any stale shell
   // env vars.  Users who want shell vars to take precedence can use profiles
   // or set BOSUN_ENV_NO_OVERRIDE=1.
-  const envOverride = reloadEnv || !isEnvEnabled(process.env.BOSUN_ENV_NO_OVERRIDE, false);
   loadDotEnv(configDir, { override: envOverride });
 
   const shouldLoadRepoEnv =
@@ -2116,6 +2130,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     configData,
     triggerSystemDefaults,
   );
+  const workflows = normalizePipelineWorkflows(configData.workflows || {});
 
   // ── GitHub Reconciler ───────────────────────────────────
   const ghReconcileEnabled = isEnvEnabled(
@@ -2382,6 +2397,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     telegramVerbosity,
 
     triggerSystem,
+    workflows,
 
     // GitHub Reconciler
     githubReconcile: {
@@ -2418,6 +2434,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     workspacesDir,
     activeWorkspace,
     agentRepoRoot,
+    workflows,
 
     // Agent prompts
     agentPrompts,

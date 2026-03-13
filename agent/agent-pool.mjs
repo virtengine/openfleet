@@ -335,6 +335,17 @@ function envFlagEnabled(value) {
   return ["1", "true", "yes", "on", "y"].includes(raw);
 }
 
+function applyNodeWarningSuppressionEnv(runtimeEnv) {
+  const nextEnv = { ...(runtimeEnv || {}) };
+  if (String(process.env.BOSUN_SUPPRESS_NODE_WARNINGS ?? "").trim() === "0") {
+    return nextEnv;
+  }
+  if (!nextEnv.NODE_NO_WARNINGS) {
+    nextEnv.NODE_NO_WARNINGS = "1";
+  }
+  return nextEnv;
+}
+
 const GITHUB_TOKEN_CACHE_TTL_MS = 60_000;
 let cachedGithubSessionToken = null;
 let cachedGithubSessionTokenAt = 0;
@@ -688,23 +699,6 @@ async function withTemporaryEnv(overrides, fn) {
   }
 }
 
-function applyNodeWarningSuppressionEnv(envInput = process.env) {
-  const baseEnv = envInput && typeof envInput === "object"
-    ? { ...envInput }
-    : { ...process.env };
-  if (baseEnv.BOSUN_SUPPRESS_NODE_WARNINGS === "0" || process.env.BOSUN_SUPPRESS_NODE_WARNINGS === "0") {
-    return baseEnv;
-  }
-  const optOut = String(baseEnv.BOSUN_SUPPRESS_NODE_WARNINGS ?? process.env.BOSUN_SUPPRESS_NODE_WARNINGS ?? "")
-    .trim()
-    .toLowerCase();
-  if (optOut === "0" || optOut === "false" || optOut === "off") {
-    return baseEnv;
-  }
-  baseEnv.NODE_NO_WARNINGS = "1";
-  return baseEnv;
-}
-
 /**
  * Build Codex SDK constructor options with Azure auto-detection.
  * When OPENAI_BASE_URL points to Azure, configures the SDK with Azure
@@ -723,7 +717,7 @@ function buildCodexSdkOptions(envInput = process.env) {
           return false;
         }
       })();
-  const env = applyNodeWarningSuppressionEnv({ ...resolvedEnv });
+  const env = { ...resolvedEnv };
   // Always strip OPENAI_BASE_URL — for Azure we use config overrides,
   // for non-Azure the CLI should use its built-in endpoint.
   delete env.OPENAI_BASE_URL;
@@ -902,6 +896,7 @@ function applySdkFailureCooldown(name, error, nowMs = Date.now()) {
 }
 
 const MONITOR_MONITOR_TASK_KEY = "monitor-monitor";
+const MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING = parseBoundedNumber(process.env.DEVMODE_MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING, 5, 1, 1000);
 let monitorMonitorTimeoutBoundsWarningKey = "";
 let monitorMonitorTimeoutAdjustmentKey = "";
 
@@ -1104,6 +1099,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
     onThreadReady = null,
     taskKey: steerKey = null,
     envOverrides = null,
+    systemPrompt = "",
   } = extra;
 
   let reportedThreadId = null;
@@ -1147,9 +1143,8 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
     envOverrides && typeof envOverrides === "object"
       ? { ...process.env, ...envOverrides }
       : process.env;
-  const codexOpts = buildCodexSdkOptions(
-    applyNodeWarningSuppressionEnv(codexRuntimeEnv),
-  );
+  const codexSessionEnv = applyNodeWarningSuppressionEnv(codexRuntimeEnv);
+  const codexOpts = buildCodexSdkOptions(codexSessionEnv);
   const modelOverride = String(extra?.model || "").trim();
   if (modelOverride) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: modelOverride };
@@ -1217,7 +1212,10 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   // ── 4. Stream the turn ───────────────────────────────────────────────────
   try {
     const streamSafety = resolveCodexStreamSafety(timeoutMs);
-    const safePrompt = sanitizeAndBoundPrompt(`${prompt}${TOOL_OUTPUT_GUARDRAIL}`);
+    const anchoredPrompt = String(systemPrompt || "").trim()
+      ? `${String(systemPrompt).trim()}\n\n---\n\n${prompt}`
+      : prompt;
+    const safePrompt = sanitizeAndBoundPrompt(`${anchoredPrompt}${TOOL_OUTPUT_GUARDRAIL}`);
     const turn = await thread.runStreamed(safePrompt, {
       signal: controller.signal,
     });
@@ -1452,11 +1450,12 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
     envOverrides && typeof envOverrides === "object"
       ? { ...process.env, ...envOverrides }
       : process.env;
+  const runtimeSessionEnv = applyNodeWarningSuppressionEnv(runtimeEnv);
   const token =
-    runtimeEnv.COPILOT_CLI_TOKEN ||
-    runtimeEnv.GITHUB_TOKEN ||
-    runtimeEnv.GH_TOKEN ||
-    runtimeEnv.GITHUB_PAT ||
+    runtimeSessionEnv.COPILOT_CLI_TOKEN ||
+    runtimeSessionEnv.GITHUB_TOKEN ||
+    runtimeSessionEnv.GH_TOKEN ||
+    runtimeSessionEnv.GITHUB_PAT ||
     undefined;
 
   // ── 3. Create & start ephemeral client (LOCAL mode) ──────────────────────
@@ -1472,22 +1471,22 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
 
   let client;
   let unsubscribe = null;
+  let stopCopilotFirstEventWatch = null;
   let finalResponse = "";
   const allItems = [];
   const autoApprovePermissions = shouldAutoApproveCopilotPermissions();
   const clientEnv = autoApprovePermissions
     ? {
-        ...runtimeEnv,
-        COPILOT_ALLOW_ALL: runtimeEnv.COPILOT_ALLOW_ALL || "true",
+        ...runtimeSessionEnv,
+        COPILOT_ALLOW_ALL: runtimeSessionEnv.COPILOT_ALLOW_ALL || "true",
       }
-    : runtimeEnv;
-  const safeClientEnv = applyNodeWarningSuppressionEnv(clientEnv);
+    : runtimeSessionEnv;
   try {
     await withSanitizedOpenAiEnv(async () => {
       let clientOpts;
       if (sessionMode === "remote" && cliUrl) {
         // Remote mode: connect to existing server (limited model/tool access)
-        clientOpts = { cliUrl, env: safeClientEnv };
+        clientOpts = { cliUrl, env: clientEnv };
       } else {
         // Local mode (default): stdio for full capability
         // Write temp MCP config if resolved MCP servers are available
@@ -1501,13 +1500,13 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
           }
         }
         const cliLaunch = resolveCopilotCliLaunchConfig({
-          env: runtimeEnv,
+          env: runtimeSessionEnv,
           repoRoot: REPO_ROOT,
           cliArgs: buildPoolCopilotCliArgs(mcpConfigPath),
         });
         clientOpts = {
           cwd,
-          env: safeClientEnv,
+          env: clientEnv,
           cliArgs: cliLaunch.cliArgs,
           useStdio: true,
         };
@@ -1707,7 +1706,50 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
         // Don't let this timer keep the process alive
         if (ht && typeof ht.unref === "function") ht.unref();
       });
-      await Promise.race([sendPromise, copilotHardTimeout]);
+      // Some Copilot SDK builds can stall sendAndWait without yielding any
+      // events. Apply an early watchdog so we can fail over before the full
+      // task timeout elapses.
+      let copilotFirstEventTimeoutMs = null;
+      const firstEventWatch =
+        typeof session.on === "function"
+          ? new Promise((_, reject) => {
+              copilotFirstEventTimeoutMs = getFirstEventTimeoutMs(timeoutMs);
+              if (!Number.isFinite(copilotFirstEventTimeoutMs) || copilotFirstEventTimeoutMs <= 0) {
+                return;
+              }
+              let settled = false;
+              let off = null;
+              const timer = setTimeout(() => {
+                settled = true;
+                if (typeof off === "function") off();
+                reject(new Error("timeout_no_events"));
+              }, clampTimerDelayMs(copilotFirstEventTimeoutMs, "copilot-first-event-timeout"));
+              if (timer && typeof timer.unref === "function") timer.unref();
+              off = session.on((event) => {
+                if (settled) return;
+                if (!event || typeof event !== "object") return;
+                const t = String(event.type || "");
+                if (
+                  t === "assistant.message" ||
+                  t === "assistant.message_delta" ||
+                  t === "session.idle" ||
+                  t === "session.error"
+                ) {
+                  settled = true;
+                  clearTimeout(timer);
+                  if (typeof off === "function") off();
+                }
+              });
+              stopCopilotFirstEventWatch = () => {
+                settled = true;
+                clearTimeout(timer);
+                if (typeof off === "function") off();
+              };
+            })
+          : null;
+      await Promise.race(
+        [sendPromise, copilotHardTimeout, firstEventWatch].filter(Boolean),
+      );
     }
 
     const output =
@@ -1729,6 +1771,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
       err?.name === "AbortError" ||
       errMsg === "timeout" ||
       errMsg === "hard_timeout" ||
+      errMsg === "timeout_no_events" ||
       errMsg === "timeout_waiting_for_idle" ||
       isIdleWaitTimeout;
 
@@ -1750,11 +1793,15 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
     }
 
     if (isTimeout) {
+      const noEventsSuffix =
+        errMsg === "timeout_no_events"
+          ? ` (no events received within ${getFirstEventTimeoutMs(timeoutMs)}ms)`
+          : "";
       return {
         success: false,
         output: "",
         items: allItems,
-        error: `${TAG} copilot timeout after ${timeoutMs}ms${isIdleWaitTimeout ? " waiting for session.idle" : ""}`,
+        error: `${TAG} copilot timeout after ${timeoutMs}ms${isIdleWaitTimeout ? " waiting for session.idle" : noEventsSuffix}`,
         sdk: "copilot",
         threadId: resumeThreadId,
       };
@@ -1786,6 +1833,13 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
       threadId: resumeThreadId,
     };
   } finally {
+    try {
+      if (typeof stopCopilotFirstEventWatch === "function") {
+        stopCopilotFirstEventWatch();
+      }
+    } catch {
+      /* best effort */
+    }
     clearAbortScope();
     if (steerKey) unregisterActiveSession(steerKey);
     try {
@@ -1852,6 +1906,7 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
     model: requestedModel = null,
     taskKey: steerKey = null,
     envOverrides = null,
+    systemPrompt = "",
   } = extra;
 
   // ── 1. Load the SDK ──────────────────────────────────────────────────────
@@ -1876,10 +1931,11 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
     envOverrides && typeof envOverrides === "object"
       ? { ...process.env, ...envOverrides }
       : process.env;
+  const runtimeSessionEnv = applyNodeWarningSuppressionEnv(runtimeEnv);
   const apiKey =
-    runtimeEnv.ANTHROPIC_API_KEY ||
-    runtimeEnv.CLAUDE_API_KEY ||
-    runtimeEnv.CLAUDE_KEY ||
+    runtimeSessionEnv.ANTHROPIC_API_KEY ||
+    runtimeSessionEnv.CLAUDE_API_KEY ||
+    runtimeSessionEnv.CLAUDE_KEY ||
     undefined;
 
   // ── 3. Build message queue ───────────────────────────────────────────────
@@ -1994,7 +2050,10 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
       `# ${extractTaskHeading(prompt)}\n\n${prompt}\n\n---\n` +
       'Do NOT respond with "Ready" or ask what to do. EXECUTE this task.';
 
-    msgQueue.push(makeUserMessage(formattedPrompt));
+    const anchoredPrompt = String(systemPrompt || "").trim()
+      ? `${String(systemPrompt).trim()}\n\n---\n\n${formattedPrompt}`
+      : formattedPrompt;
+    msgQueue.push(makeUserMessage(anchoredPrompt));
 
     // Register active session for mid-execution steering (Claude uses message queue)
     if (steerKey) {
@@ -2019,28 +2078,28 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
       settingSources: ["user", "project"],
       permissionMode:
         claudePermissionMode ||
-        runtimeEnv.CLAUDE_PERMISSION_MODE ||
+        runtimeSessionEnv.CLAUDE_PERMISSION_MODE ||
         "bypassPermissions",
     };
     if (apiKey) options.apiKey = apiKey;
     const explicitAllowedTools = normalizeList(claudeAllowedTools);
     const allowedTools = explicitAllowedTools.length
       ? explicitAllowedTools
-      : normalizeList(runtimeEnv.CLAUDE_ALLOWED_TOOLS);
+      : normalizeList(runtimeSessionEnv.CLAUDE_ALLOWED_TOOLS);
     if (allowedTools.length) {
       options.allowedTools = allowedTools;
     }
 
     const model = String(
       requestedModel ||
-        runtimeEnv.CLAUDE_MODEL ||
-        runtimeEnv.CLAUDE_CODE_MODEL ||
-        runtimeEnv.ANTHROPIC_MODEL ||
+        runtimeSessionEnv.CLAUDE_MODEL ||
+        runtimeSessionEnv.CLAUDE_CODE_MODEL ||
+        runtimeSessionEnv.ANTHROPIC_MODEL ||
         "",
     ).trim();
     if (model) options.model = model;
 
-    const result = await withTemporaryEnv(runtimeEnv, async () =>
+    const result = await withTemporaryEnv(runtimeSessionEnv, async () =>
       queryFn({
         prompt: msgQueue.iterator(),
         options,
@@ -2550,7 +2609,6 @@ const THREAD_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 /** Maximum turns before a thread is considered exhausted and must be replaced */
 const MAX_THREAD_TURNS = 100;
-const MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING = parseBoundedNumber(process.env.DEVMODE_MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING, 5, 1, MAX_THREAD_TURNS);
 
 /** Maximum absolute age for a thread (regardless of lastUsedAt) */
 const THREAD_MAX_ABSOLUTE_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -2587,10 +2645,6 @@ const activeSessions = new Map();
 
 /** Threshold for approaching-exhaustion warning (80% of MAX_THREAD_TURNS). */
 const THREAD_EXHAUSTION_WARNING_THRESHOLD = Math.floor(MAX_THREAD_TURNS * 0.8);
-
-function shouldForceRefreshMonitorMonitorThread(taskKey, turnsRemaining) {
-  return String(taskKey || "").trim() === "monitor-monitor" && turnsRemaining <= MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING;
-}
 
 /**
  * Register an active session so the supervisor can steer it mid-execution.
@@ -2828,9 +2882,8 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
     envOverrides && typeof envOverrides === "object"
       ? { ...process.env, ...envOverrides }
       : process.env;
-  const codexOpts = buildCodexSdkOptions(
-    applyNodeWarningSuppressionEnv(codexRuntimeEnv),
-  );
+  const codexSessionEnv = applyNodeWarningSuppressionEnv(codexRuntimeEnv);
+  const codexOpts = buildCodexSdkOptions(codexSessionEnv);
   const modelOverride = String(extra?.model || "").trim();
   if (modelOverride) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: modelOverride };
@@ -3044,6 +3097,7 @@ export async function launchOrResumeThread(
     restBaseEnv,
     resolvedGithubToken,
   );
+  restExtra.envOverrides = applyNodeWarningSuppressionEnv(restExtra.envOverrides);
   // Pass taskKey through as steer key so SDK launchers can register active sessions
   restExtra.taskKey = taskKey;
   if (restExtra.sdk) {
@@ -3066,30 +3120,32 @@ export async function launchOrResumeThread(
   // Check registry for existing thread
   const existing = threadRegistry.get(taskKey);
   if (existing && existing.alive && existing.threadId) {
-    const turnsRemaining = MAX_THREAD_TURNS - Number(existing.turnCount || 0);
-    if (shouldForceRefreshMonitorMonitorThread(taskKey, turnsRemaining)) {
+    const turnsRemaining = MAX_THREAD_TURNS - existing.turnCount;
+    const shouldForceRefreshMonitorMonitorThread =
+      String(taskKey || "").trim() === MONITOR_MONITOR_TASK_KEY &&
+      turnsRemaining <= MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING;
+    if (shouldForceRefreshMonitorMonitorThread) {
       console.log(
-        `${TAG} proactively refreshing monitor-monitor thread (turnsRemaining=${turnsRemaining}, threshold=${MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING})`,
+        `${TAG} proactively refreshing monitor-monitor thread with ${turnsRemaining} turns remaining (threshold=${MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING})`,
       );
       existing.alive = false;
-      existing.lastError = `monitor_monitor_proactive_refresh:${turnsRemaining}`;
       threadRegistry.set(taskKey, existing);
       saveThreadRegistry().catch(() => {});
     }
-    if (existing.alive && existing.threadId) {
+
     // Approaching-exhaustion warning (non-blocking — still proceeds with resume)
     if (
       existing.turnCount >= THREAD_EXHAUSTION_WARNING_THRESHOLD &&
-      existing.turnCount < MAX_THREAD_TURNS
+      existing.turnCount < MAX_THREAD_TURNS &&
+      existing.alive
     ) {
-      const remaining = MAX_THREAD_TURNS - existing.turnCount;
       console.warn(
-        `${TAG} :alert: thread for task "${taskKey}" approaching exhaustion: ${existing.turnCount}/${MAX_THREAD_TURNS} turns (${remaining} remaining)`,
+        `${TAG} :alert: thread for task "${taskKey}" approaching exhaustion: ${existing.turnCount}/${MAX_THREAD_TURNS} turns (${turnsRemaining} remaining)`,
       );
     }
 
     // Check if thread has exceeded max turns — force fresh start
-    if (existing.turnCount >= MAX_THREAD_TURNS) {
+    if (existing.alive && existing.turnCount >= MAX_THREAD_TURNS) {
       console.warn(
         `${TAG} thread for task "${taskKey}" exceeded ${MAX_THREAD_TURNS} turns (has ${existing.turnCount}) — invalidating and starting fresh`,
       );
@@ -3097,7 +3153,10 @@ export async function launchOrResumeThread(
       threadRegistry.set(taskKey, existing);
       saveThreadRegistry().catch(() => {});
       // Fall through to fresh launch below
-    } else if (Date.now() - existing.createdAt > THREAD_MAX_ABSOLUTE_AGE_MS) {
+    } else if (
+      existing.alive &&
+      Date.now() - existing.createdAt > THREAD_MAX_ABSOLUTE_AGE_MS
+    ) {
       console.warn(
         `${TAG} thread for task "${taskKey}" exceeded absolute age limit — invalidating and starting fresh`,
       );
@@ -3250,7 +3309,6 @@ export async function launchOrResumeThread(
         saveThreadRegistry().catch(() => {});
       }
     } // close else for turn-count / absolute-age guard
-    }
   }
 
   // Fresh launch — pre-register a thread as soon as the SDK exposes one.

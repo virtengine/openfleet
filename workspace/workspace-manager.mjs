@@ -357,12 +357,13 @@ function buildGitPullFailureDetails(err, repoPath, childProcess) {
   const stderr = normalizeSingleLine(err?.stderr || "");
   const stdout = normalizeSingleLine(err?.stdout || "");
   const message = normalizeSingleLine(err?.message || err || "");
+  const preferred = normalizeSingleLine(err?.stderr || err?.stdout || err?.message || "");
   const parts = [];
   if (Number.isFinite(err?.status)) parts.push(`status=${err.status}`);
   if (err?.signal) parts.push(`signal=${err.signal}`);
   if (err?.code) parts.push(`code=${err.code}`);
 
-  let details = stderr || stdout || message || "git pull --rebase failed";
+  let details = preferred || stderr || stdout || message || "git pull --rebase failed";
   if (!details || isGenericGitPullFailure(details)) {
     const fallback = message && !isGenericGitPullFailure(message)
       ? message

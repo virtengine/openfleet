@@ -11,6 +11,20 @@
   "internalExecutor": {
     "mode": "vk"
   },
+  "workflows": {
+    "code-review": {
+      "type": "sequential",
+      "stages": ["implement", "test", "review"]
+    },
+    "parallel-search": {
+      "type": "fanout",
+      "stages": [
+        { "name": "search-codex", "sdk": "codex" },
+        { "name": "search-claude", "sdk": "claude" },
+        { "name": "search-copilot", "sdk": "copilot" }
+      ]
+    }
+  },
   "auth": {
     "copilot": {
       "sources": ["env", "cli"],

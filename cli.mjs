@@ -77,8 +77,9 @@ function showHelp() {
     bosun [options]
 
   COMMANDS
-    audit <command> [options]   Codebase annotation audit workflows (scan/generate/warn/manifest/index/trim/conformity/migrate)
-    --setup                     Launch the web-based setup wizard (default)
+    workflow list              List declarative pipeline workflows
+    workflow run <name>        Run a declarative pipeline workflow
+    --setup                    Launch the web-based setup wizard (default)
     --setup-terminal            Run the legacy terminal setup wizard
     --where                     Show the resolved bosun config directory
     --doctor                    Validate bosun .env/config setup
@@ -159,6 +160,12 @@ function showHelp() {
     task import <file.json>     Bulk import tasks from JSON file
 
     Run 'bosun task --help' for complete task CLI documentation and examples.
+
+  WORKFLOWS
+    workflow list               List built-in and configured workflows
+    workflow run <name>         Run a declarative fresh-context workflow
+
+    Run 'bosun workflow --help' for workflow CLI examples.
 
   VIBE-KANBAN
     --no-vk-spawn               Don't auto-spawn Vibe-Kanban
@@ -919,6 +926,19 @@ function daemonStatus() {
       }
       console.log(`  Run --terminate to stop restart owners, then --daemon to restart.`);
     } else {
+      const existingMonitorOwner = detectExistingMonitorLockOwner();
+      if (existingMonitorOwner) {
+        console.log(
+          `  bosun daemon is not running in daemon mode, but bosun monitor is active (PID ${existingMonitorOwner.pid}).`,
+        );
+        console.log(
+          `  Bosun is running in monitor mode with lock file ${existingMonitorOwner.pidFile}.`,
+        );
+        console.log(
+          `  Use 'bosun --terminate' to stop it, or 'bosun --daemon' only after it is fully stopped.`,
+        );
+        process.exit(0);
+      }
       // Broader scan: portal, monitor, ui-server, etc. (non-daemon bosun processes)
       const allPids = findAllBosunProcessPids();
       if (allPids.length > 0) {
@@ -1322,7 +1342,21 @@ async function main() {
     process.exit(0);
   }
 
-  // Handle 'audit' subcommand before --help so command-specific help works.
+  const workflowFlagIndex = args.indexOf("--workflow");
+  const workflowCommandIndex =
+    args[0] === "workflow"
+      ? 0
+      : args[0]?.startsWith("--")
+        ? args.indexOf("workflow")
+        : -1;
+  if (workflowCommandIndex >= 0 || workflowFlagIndex >= 0) {
+    const { runWorkflowCli } = await import("./workflow/workflow-cli.mjs");
+    const commandStartIndex = workflowCommandIndex >= 0 ? workflowCommandIndex : workflowFlagIndex;
+    const workflowArgs = args.slice(commandStartIndex + 1);
+    await runWorkflowCli(workflowArgs);
+    process.exit(0);
+  }
+
   const auditFlagIndex = args.indexOf("--audit");
   const auditCommandIndex =
     args[0] === "audit"
@@ -1334,8 +1368,8 @@ async function main() {
     const { runAuditCli } = await import("./lib/codebase-audit.mjs");
     const commandStartIndex = auditCommandIndex >= 0 ? auditCommandIndex : auditFlagIndex;
     const auditArgs = args.slice(commandStartIndex + 1);
-    const result = await runAuditCli(auditArgs);
-    process.exit(Number.isInteger(result?.exitCode) ? result.exitCode : 0);
+    await runAuditCli(auditArgs);
+    process.exit(0);
   }
 
   if (args[0] === "node:create" || (args[0] === "node" && args[1] === "create")) {

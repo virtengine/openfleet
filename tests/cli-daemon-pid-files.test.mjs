@@ -100,6 +100,13 @@ describe("cli daemon pid tracking", () => {
     expect(cliSource).toContain("Run --terminate to stop restart owners, then --daemon to restart.");
   });
 
+  it("reports a live monitor lock owner before falling back to broad daemon-status process scans", () => {
+    expect(cliSource).toContain("const existingMonitorOwner = detectExistingMonitorLockOwner();");
+    expect(cliSource).toContain("bosun daemon is not running in daemon mode, but bosun monitor is active");
+    expect(cliSource).toContain("Bosun is running in monitor mode with lock file");
+    expect(cliSource).toContain("Use 'bosun --terminate' to stop it, or 'bosun --daemon' only after it is fully stopped.");
+  });
+
   it("keeps sentinel companion auto-start opt-in to avoid Telegram polling conflicts", () => {
     expect(cliSource).toContain("const sentinelExplicit = args.includes(\"--sentinel\");");
     expect(cliSource).toContain("const sentinelRequested =");

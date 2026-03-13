@@ -973,6 +973,66 @@ describe("action.resolve_executor", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("does not auto-apply low-confidence profile matches", async () => {
+    const nt = getNodeType("action.resolve_executor");
+    const root = mkdtempSync(join(tmpdir(), "wf-resolve-executor-low-confidence-"));
+    const bosunDir = join(root, ".bosun");
+    const profilesDir = join(bosunDir, "profiles");
+    mkdirSync(profilesDir, { recursive: true });
+
+    const now = new Date().toISOString();
+    writeFileSync(join(bosunDir, "library.json"), JSON.stringify({
+      generated: now,
+      entries: [
+        {
+          id: "generic-agent",
+          type: "agent",
+          name: "Generic Agent",
+          description: "Broad profile with weak pattern",
+          filename: "generic-agent.json",
+          tags: ["generic"],
+          scope: "global",
+          workspace: null,
+          meta: {},
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    }, null, 2));
+    writeFileSync(
+      join(profilesDir, "generic-agent.json"),
+      JSON.stringify({
+        id: "generic-agent",
+        name: "Generic Agent",
+        description: "Broad profile",
+        titlePatterns: ["\\bwith\\b"],
+        scopes: ["generic"],
+        tags: ["generic"],
+      }, null, 2),
+    );
+
+    const ctx = makeCtx({
+      repoRoot: root,
+      task: {
+        tags: ["workflow", "automation"],
+      },
+    });
+    const node = makeNode("action.resolve_executor", {
+      taskTitle: "feat(workflow): issue-state continuation loop workflow template",
+      taskDescription: "Design continuation-loop workflow template with maxTurns and stuckDetection",
+      repoRoot: root,
+      defaultSdk: "codex",
+    });
+
+    const result = await nt.execute(node, ctx);
+    expect(result.success).toBe(true);
+    expect(result.tier).not.toBe("profile");
+    expect(ctx.data.agentProfile).toBeUndefined();
+    expect(ctx.data.resolvedAgentProfile).toBeUndefined();
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("honors profile sdk/model preference when defined", async () => {
     const nt = getNodeType("action.resolve_executor");
     const root = mkdtempSync(join(tmpdir(), "wf-resolve-executor-profile-sdk-"));
@@ -1196,7 +1256,14 @@ describe("action.acquire_worktree", () => {
       encoding: "utf8",
     }).trim();
     expect(isGit).toBe("true");
-  });
+
+    const topLevel = gitExec("git rev-parse --show-toplevel", {
+      cwd: second.worktreePath,
+      encoding: "utf8",
+    }).trim().replace(/\\/g, "/");
+    const expectedRoot = String(second.worktreePath).replace(/\\/g, "/");
+    expect(topLevel).toBe(expectedRoot);
+  }, 15000);
 
   it("enables core.longpaths before checkout", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -1275,7 +1342,13 @@ describe("action.build_task_prompt", () => {
     expect(result.prompt.length).toBeGreaterThan(50);
     expect(result.prompt).toContain("Fix the widget");
     expect(result.prompt).toContain("TASK-42");
+    expect(typeof result.systemPrompt).toBe("string");
+    expect(result.systemPrompt.length).toBeGreaterThan(50);
+    expect(result.systemPrompt).not.toContain("TASK-42");
+    expect(result.systemPrompt).not.toContain("Fix the widget");
     expect(ctx.data._taskPrompt).toBe(result.prompt);
+    expect(ctx.data._taskUserPrompt).toBe(result.prompt);
+    expect(ctx.data._taskSystemPrompt).toBe(result.systemPrompt);
   });
 
   it("includes branch and repo info", async () => {
@@ -1302,8 +1375,8 @@ describe("action.build_task_prompt", () => {
       taskDescription: "Desc",
     });
     const result = await nt.execute(node, ctx);
-    // Should have autonomous agent instructions
-    expect(result.prompt).toContain("commit");
+    // Autonomous execution instructions now live in systemPrompt.
+    expect(result.systemPrompt).toContain("commit");
   });
 
   it("renders workspace scope contract from explicit repo metadata", async () => {
@@ -1377,9 +1450,6 @@ describe("action.build_task_prompt", () => {
     expect(result.prompt).toContain("terminalStates: [done]");
     expect(result.prompt).toContain("forbiddenPatterns: [git push --force]");
   });
-});
-
-describe("workflow contract nodes", () => {
   it("reads WORKFLOW.md into workflow context", async () => {
     const projectDir = mkdtempSync(join(tmpdir(), "wf-contract-read-"));
     writeFileSync(join(projectDir, "WORKFLOW.md"), [
@@ -1423,6 +1493,31 @@ describe("workflow contract nodes", () => {
 
     rmSync(projectDir, { recursive: true, force: true });
     clearContractCache(projectDir);
+  });
+
+  it("enforces strict cache anchoring by keeping task-specific markers out of system prompt", async () => {
+    const prev = process.env.BOSUN_CACHE_ANCHOR_MODE;
+    process.env.BOSUN_CACHE_ANCHOR_MODE = "strict";
+    try {
+      const nt = getNodeType("action.build_task_prompt");
+      const ctx = makeCtx({});
+      const node = makeNode("action.build_task_prompt", {
+        taskId: "STRICT-1",
+        taskTitle: "Strict cache prompt",
+        taskDescription: "Validate strict anchoring guard",
+        branch: "feat/strict-anchor",
+        worktreePath: "/tmp/wt-strict",
+      });
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+      expect(result.cacheAnchorMode).toBe("strict");
+      expect(result.systemPrompt).not.toContain("STRICT-1");
+      expect(result.systemPrompt).not.toContain("Strict cache prompt");
+      expect(result.systemPrompt).not.toContain("/tmp/wt-strict");
+    } finally {
+      if (prev === undefined) delete process.env.BOSUN_CACHE_ANCHOR_MODE;
+      else process.env.BOSUN_CACHE_ANCHOR_MODE = prev;
+    }
   });
 });
 
@@ -1604,9 +1699,11 @@ describe("action.push_branch", () => {
     await expect(nt.execute(node, ctx)).rejects.toThrow("worktreePath");
   });
 
-  it("schema has rebaseBeforePush and emptyDiffGuard options", () => {
+  it("schema has push safety options including skipHooks", () => {
     const nt = getNodeType("action.push_branch");
     expect(nt.schema.properties.rebaseBeforePush).toBeDefined();
+    expect(nt.schema.properties.skipHooks).toBeDefined();
+    expect(nt.schema.properties.skipHooks.default).toBe(true);
     expect(nt.schema.properties.emptyDiffGuard).toBeDefined();
     expect(nt.schema.properties.syncMainForModuleBranch).toBeDefined();
   });
@@ -2221,4 +2318,3 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
-

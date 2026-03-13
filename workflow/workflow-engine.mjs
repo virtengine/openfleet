@@ -34,7 +34,6 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync } from "node:fs";
-import { writeFile as writeFileAsync } from "node:fs/promises";
 import { resolve, basename, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -170,17 +169,243 @@ export const WorkflowStatus = Object.freeze({
 // ── Node Type Registry ──────────────────────────────────────────────────────
 
 const _nodeTypeRegistry = new Map();
+const _nodeTypeMetaRegistry = new Map();
+const _normalizedHandlerCache = new WeakMap();
+
+function clonePortDescriptor(port) {
+  if (!port || typeof port !== "object") return null;
+  return {
+    name: String(port.name || "default").trim() || "default",
+    label: String(port.label || port.name || "default").trim() || "default",
+    type: String(port.type || "Any").trim() || "Any",
+    description: String(port.description || "").trim(),
+    color: typeof port.color === "string" && port.color.trim() ? port.color.trim() : null,
+    accepts: Array.isArray(port.accepts)
+      ? Array.from(new Set(port.accepts.map((value) => String(value || "").trim()).filter(Boolean)))
+      : [],
+  };
+}
+
+function normalizePortDescriptor(port, direction, index) {
+  const fallbackName = index === 0 ? "default" : `${direction}-${index + 1}`;
+  if (typeof port === "string") {
+    return {
+      name: fallbackName,
+      label: fallbackName,
+      type: port,
+      description: "",
+      color: null,
+      accepts: [],
+    };
+  }
+
+  if (!port || typeof port !== "object") {
+    return {
+      name: fallbackName,
+      label: fallbackName,
+      type: "Any",
+      description: "",
+      color: null,
+      accepts: [],
+    };
+  }
+
+  return clonePortDescriptor({
+    ...port,
+    name: port.name || fallbackName,
+    label: port.label || port.name || fallbackName,
+    type: port.type || "Any",
+  });
+}
+
+function normalizePortList(ports, direction) {
+  if (!Array.isArray(ports)) return [];
+  return ports
+    .map((port, index) => normalizePortDescriptor(port, direction, index))
+    .filter(Boolean);
+}
+
+function normalizeNodeUi(ui = {}) {
+  const primaryFields = Array.isArray(ui?.primaryFields)
+    ? Array.from(new Set(ui.primaryFields.map((value) => String(value || "").trim()).filter(Boolean)))
+    : [];
+  return {
+    ...ui,
+    primaryFields,
+  };
+}
+
+function normalizeHandlerMetadata(handler) {
+  if (_normalizedHandlerCache.has(handler)) {
+    return _normalizedHandlerCache.get(handler);
+  }
+
+  const inputPorts = normalizePortList(handler?.inputs ?? handler?.ports?.inputs, "input");
+  const outputPorts = normalizePortList(handler?.outputs ?? handler?.ports?.outputs, "output");
+
+  const normalized = {
+    ...handler,
+    ports: {
+      inputs: inputPorts,
+      outputs: outputPorts,
+    },
+    ui: normalizeNodeUi(handler?.ui),
+  };
+  _normalizedHandlerCache.set(handler, normalized);
+  return normalized;
+}
+
+function resolveNodePorts(node) {
+  const handler = node?.type ? _nodeTypeRegistry.get(node.type) : null;
+  const handlerPorts = handler?.ports || {};
+  const inputPorts = normalizePortList(node?.inputPorts, "input");
+  const outputPorts = normalizePortList(node?.outputPorts, "output");
+
+  return {
+    inputs: inputPorts.length > 0 ? inputPorts : normalizePortList(handlerPorts.inputs, "input"),
+    outputs: outputPorts.length > 0 ? outputPorts : normalizePortList(handlerPorts.outputs, "output"),
+  };
+}
+
+function resolvePortByName(ports, requestedName, direction) {
+  if (!Array.isArray(ports) || ports.length === 0) return null;
+  const normalizedName = String(requestedName || "").trim();
+  if (!normalizedName) return ports[0];
+  const matched = ports.find((port) => port.name === normalizedName);
+  if (matched) return matched;
+  return normalizePortDescriptor({
+    name: normalizedName,
+    label: normalizedName,
+    type: "Any",
+  }, direction, 0);
+}
+
+function isWildcardPortType(type) {
+  const normalized = String(type || "").trim();
+  return normalized === "*" || normalized === "Any";
+}
+
+export function isPortConnectionCompatible(sourcePort, targetPort) {
+  if (!sourcePort || !targetPort) {
+    return { compatible: true, reason: null };
+  }
+
+  const sourceType = String(sourcePort.type || "Any").trim() || "Any";
+  const targetType = String(targetPort.type || "Any").trim() || "Any";
+  const accepted = new Set(
+    [targetType, ...(Array.isArray(targetPort.accepts) ? targetPort.accepts : [])]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  );
+
+  if (isWildcardPortType(sourceType) || isWildcardPortType(targetType) || accepted.has("*") || accepted.has("Any")) {
+    return { compatible: true, reason: null };
+  }
+
+  if (sourceType === targetType || accepted.has(sourceType)) {
+    return { compatible: true, reason: null };
+  }
+
+  return {
+    compatible: false,
+    reason: `${sourcePort.label || sourcePort.name} emits ${sourceType}, but ${targetPort.label || targetPort.name} expects ${targetType}`,
+  };
+}
+
+function hydrateWorkflowDefinition(def, { strict = false } = {}) {
+  const normalized = {
+    ...(def || {}),
+    nodes: Array.isArray(def?.nodes) ? def.nodes.map((node) => ({ ...node })) : [],
+    edges: Array.isArray(def?.edges) ? def.edges.map((edge) => ({ ...edge })) : [],
+    metadata: { ...(def?.metadata || {}) },
+  };
+
+  const nodeMap = new Map();
+  normalized.nodes = normalized.nodes.map((node) => {
+    const ports = resolveNodePorts(node);
+    const explicitOutputs = Array.isArray(node?.outputs)
+      ? Array.from(new Set(node.outputs.map((value) => String(value || "").trim()).filter(Boolean)))
+      : undefined;
+    const nextNode = {
+      ...node,
+      inputPorts: ports.inputs.map((port) => clonePortDescriptor(port)),
+      outputPorts: ports.outputs.map((port) => clonePortDescriptor(port)),
+      ...(explicitOutputs !== undefined ? { outputs: explicitOutputs } : {}),
+    };
+    nodeMap.set(nextNode.id, nextNode);
+    return nextNode;
+  });
+
+  const issues = [];
+
+  normalized.edges = normalized.edges.map((edge) => {
+    const sourceNode = nodeMap.get(edge.source);
+    const targetNode = nodeMap.get(edge.target);
+    const sourcePorts = resolveNodePorts(sourceNode);
+    const targetPorts = resolveNodePorts(targetNode);
+    const sourcePort = resolvePortByName(sourcePorts.outputs, edge.sourcePort || "default", "output");
+    const targetPort = resolvePortByName(targetPorts.inputs, edge.targetPort || "default", "input");
+    const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
+
+    if (!compatibility.compatible) {
+      issues.push({
+        edgeId: edge.id || `${edge.source}->${edge.target}`,
+        source: edge.source,
+        target: edge.target,
+        sourcePort: sourcePort?.name || "default",
+        targetPort: targetPort?.name || "default",
+        sourceType: sourcePort?.type || null,
+        targetType: targetPort?.type || null,
+        severity: "error",
+        message: compatibility.reason,
+      });
+    }
+
+    return {
+      ...edge,
+      sourcePort: sourcePort?.name || String(edge.sourcePort || "default").trim() || "default",
+      targetPort: targetPort?.name || String(edge.targetPort || "default").trim() || "default",
+      sourcePortType: sourcePort?.type || null,
+      targetPortType: targetPort?.type || null,
+    };
+  });
+
+  normalized.metadata.validationIssues = issues;
+
+  if (strict && issues.length > 0) {
+    throw new Error(`Workflow port validation failed: ${issues.map((issue) => issue.message).join("; ")}`);
+  }
+
+  return normalized;
+}
 
 /**
  * Register a node type handler.
  * @param {string} type - Node type identifier (e.g., "trigger.task_low", "action.run_agent")
  * @param {object} handler - { execute(node, context, engine), validate?(node), describe?() }
  */
-export function registerNodeType(type, handler) {
+export function registerNodeType(type, handler, options = {}) {
   if (!handler || typeof handler.execute !== "function") {
     throw new Error(`${TAG} Node type "${type}" must have an execute function`);
   }
-  _nodeTypeRegistry.set(type, handler);
+  const normalized = normalizeHandlerMetadata(handler);
+  _nodeTypeRegistry.set(type, normalized);
+  _nodeTypeMetaRegistry.set(type, {
+    source: String(options.source || handler.source || "builtin"),
+    badge: options.badge || handler.badge || null,
+    isCustom: options.isCustom === true || handler.isCustom === true || String(options.source || handler.source || "").toLowerCase() === "custom",
+    filePath: options.filePath || handler.filePath || null,
+    inputs: Array.isArray(options.inputs)
+      ? options.inputs
+      : Array.isArray(handler.inputs)
+        ? handler.inputs
+        : (normalized.ports?.inputs || []).map((port) => port?.name || "default"),
+    outputs: Array.isArray(options.outputs)
+      ? options.outputs
+      : Array.isArray(handler.outputs)
+        ? handler.outputs
+        : (normalized.ports?.outputs || []).map((port) => port?.name || "default"),
+  });
 }
 
 /**
@@ -192,6 +417,15 @@ export function getNodeType(type) {
   return _nodeTypeRegistry.get(type) || null;
 }
 
+export function getNodeTypeMeta(type) {
+  return _nodeTypeMetaRegistry.get(type) || null;
+}
+
+export function unregisterNodeType(type) {
+  _nodeTypeRegistry.delete(type);
+  _nodeTypeMetaRegistry.delete(type);
+}
+
 /**
  * List all registered node types with metadata.
  * @returns {Array<{type: string, category: string, description: string}>}
@@ -200,11 +434,23 @@ export function listNodeTypes() {
   const result = [];
   for (const [type, handler] of _nodeTypeRegistry) {
     const [category] = type.split(".");
+    const metadata = _nodeTypeMetaRegistry.get(type) || {};
     result.push({
       type,
       category,
       description: handler.describe?.() || type,
       schema: handler.schema || null,
+      source: metadata.source || "builtin",
+      badge: metadata.badge || null,
+      isCustom: metadata.isCustom === true,
+      filePath: metadata.filePath || null,
+      inputs: Array.isArray(metadata.inputs) ? [...metadata.inputs] : [],
+      outputs: Array.isArray(metadata.outputs) ? [...metadata.outputs] : [],
+      ports: {
+        inputs: (handler.ports?.inputs || []).map((port) => clonePortDescriptor(port)),
+        outputs: (handler.ports?.outputs || []).map((port) => clonePortDescriptor(port)),
+      },
+      ui: normalizeNodeUi(handler.ui),
     });
   }
   return result;
@@ -689,7 +935,7 @@ export class WorkflowEngine extends EventEmitter {
     for (const file of files) {
       try {
         const raw = readFileSync(resolve(this.workflowDir, file), "utf8");
-        const def = JSON.parse(raw);
+        const def = hydrateWorkflowDefinition(JSON.parse(raw));
         if (def.id) {
           this._workflows.set(def.id, def);
         }
@@ -741,6 +987,7 @@ export class WorkflowEngine extends EventEmitter {
 
   /** Save (create or update) a workflow definition */
   save(def) {
+    def = hydrateWorkflowDefinition(def, { strict: true });
     if (!def.id) def.id = randomUUID();
     if (!def.metadata) def.metadata = {};
     def.metadata.updatedAt = new Date().toISOString();
@@ -1392,14 +1639,25 @@ export class WorkflowEngine extends EventEmitter {
         || n.type === "trigger.task_low",
       );
 
+      const scheduleCtx = new WorkflowContext({
+        ...(def.variables || {}),
+        ...(def.data || {}),
+      });
+
+      const resolvePositiveInterval = (rawValue, fallbackMs) => {
+        const resolved = scheduleCtx.resolve(rawValue);
+        const parsed = Number(resolved);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackMs;
+      };
+
       for (const tNode of triggerNodes) {
         let intervalMs = 3600000;
         if (tNode.type === "trigger.task_available") {
-          intervalMs = Number(tNode.config?.pollIntervalMs) || 30000;
+          intervalMs = resolvePositiveInterval(tNode.config?.pollIntervalMs, 30000);
         } else if (tNode.type === "trigger.task_low") {
-          intervalMs = Number(tNode.config?.pollIntervalMs) || 60000;
+          intervalMs = resolvePositiveInterval(tNode.config?.pollIntervalMs, 60000);
         } else {
-          intervalMs = Number(tNode.config?.intervalMs) || 3600000;
+          intervalMs = resolvePositiveInterval(tNode.config?.intervalMs, 3600000);
         }
 
         // Find the most recent completed run for this workflow
@@ -2592,8 +2850,7 @@ export class WorkflowEngine extends EventEmitter {
 
       // Write initial detail file so we can resume from it
       const detail = this._serializeRunContext(ctx, true);
-      const detailPath = resolve(this.runsDir, `${runId}.json`);
-      writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
+      this._writeRunDetail(runId, detail);
 
       // Also ensure the run appears in the main index (with RUNNING status)
       // so that getRunDetail() can find it even before completion.
@@ -2617,13 +2874,12 @@ export class WorkflowEngine extends EventEmitter {
     const timer = setTimeout(() => {
       this._checkpointTimers.delete(runId);
       try {
+        // If the run has already been finalized/removed, skip writing a
+        // late checkpoint snapshot that could overwrite terminal detail.
+        if (!this._activeRuns.has(runId)) return;
         this._ensureDirs();
         const detail = this._serializeRunContext(ctx, true);
-        const detailPath = resolve(this.runsDir, `${runId}.json`);
-        // Async write — checkpoint is fire-and-forget, no need to block event loop
-        writeFileAsync(detailPath, JSON.stringify(detail, null, 2), "utf8").catch((err) => {
-          console.error(`${TAG} Checkpoint write failed for run ${runId}:`, err.message);
-        });
+        this._writeRunDetail(runId, detail);
       } catch (err) {
         console.error(`${TAG} Checkpoint failed for run ${runId}:`, err.message);
       }
@@ -2984,11 +3240,15 @@ export class WorkflowEngine extends EventEmitter {
       writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
 
       // Save full run detail
-      const detailPath = resolve(this.runsDir, `${runId}.json`);
-      writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
+      this._writeRunDetail(runId, detail);
     } catch (err) {
       console.error(`${TAG} Failed to persist run log:`, err.message);
     }
+  }
+
+  _writeRunDetail(runId, detail) {
+    const detailPath = resolve(this.runsDir, `${runId}.json`);
+    writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
   }
 }
 
@@ -3055,4 +3315,3 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
-
