@@ -18,6 +18,7 @@ import {
 } from "@mui/material";
 
 import {
+  telemetrySummary,
   telemetryErrors,
   telemetryAlerts,
   usageAnalytics,
@@ -80,6 +81,19 @@ function formatSinceDate(isoStr) {
   return d.toLocaleDateString("en-US", {
     month: "short", day: "numeric", year: "numeric",
   });
+}
+
+function formatDurationMs(ms) {
+  const value = Number(ms || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0s";
+  const seconds = Math.floor(value / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = seconds % 60;
+  if (minutes < 60) return remSeconds ? `${minutes}m ${remSeconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return remMinutes ? `${hours}h ${remMinutes}m` : `${hours}h`;
 }
 
 function severityChipColor(sev = "medium") {
@@ -498,6 +512,8 @@ function ShreddingPanel({ period }) {
 export function TelemetryTab() {
   const data = usageAnalytics.value;
   const retryQueue = retryQueueData.value || { count: 0, items: [], stats: {} };
+  const summary = telemetrySummary.value || null;
+  const lifetimeTotals = summary?.lifetimeTotals || null;
   const [period, setPeriod] = useState(30);
   const [trendTab, setTrendTab] = useState("agents");
 
@@ -505,6 +521,7 @@ export function TelemetryTab() {
     loadUsageAnalytics(period).catch(() => {});
     loadShreddingTelemetry(period).catch(() => {});
     loadRetryQueue().catch(() => {});
+    loadTelemetrySummary().catch(() => {});
   }, [period]);
 
   const trend = data?.trend;
@@ -583,6 +600,12 @@ export function TelemetryTab() {
           value=${formatCount(retryQueue?.stats?.peakRetryDepth || 0)} />
         <${AnalyticsStat} icon="⚠" label="Exhausted Tasks"
           value=${formatCount((retryQueue?.stats?.exhaustedTaskIds || []).length)} />
+        <${AnalyticsStat} icon="◈" label="Attempts count"
+          value=${formatCount(lifetimeTotals?.attemptsCount || 0)} />
+        <${AnalyticsStat} icon="#" label="Total tokens across all attempts"
+          value=${formatCount(lifetimeTotals?.tokenCount || 0)} />
+        <${AnalyticsStat} icon="⏱" label="Total runtime across all attempts"
+          value=${formatDurationMs(lifetimeTotals?.durationMs || 0)} />
       <//>
 
       <!-- Activity trend chart -->

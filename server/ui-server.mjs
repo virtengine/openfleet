@@ -50,6 +50,7 @@ import {
   execWithRetry,
   invalidateThread,
 } from "../agent/agent-pool.mjs";
+import { withTaskLifetimeTotals } from "../infra/runtime-accumulator.mjs";
 import { resolveAgentPrompts } from "../agent/agent-prompts.mjs";
 import {
   listActiveWorktrees,
@@ -140,6 +141,12 @@ import {
   addSessionEventListener,
 } from "../infra/session-tracker.mjs";
 import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
+import {
+  addSessionAccumulationListener,
+  getCompletedSessions,
+  getRuntimeStats,
+  getTaskLifetimeTotals,
+} from "../infra/runtime-accumulator.mjs";
 import {
   collectDiffStats,
   getCompactDiffSummary,
@@ -3462,6 +3469,7 @@ const DEFAULT_AUTO_OPEN_COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12h
 const DEFAULT_SESSION_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const wsClients = new Set();
 let sessionListenerAttached = false;
+let sessionAccumulatorListenerAttached = false;
 /** @type {ReturnType<typeof setInterval>|null} */
 let wsHeartbeatTimer = null;
 const WORKFLOW_WS_BATCH_MS = 80;
@@ -7128,6 +7136,20 @@ async function reconcileTaskAfterDispatchAttempt({
   return persistTaskStatusForExecution(adapter, taskId, targetStatus, source);
 }
 
+function enrichTaskLifetimeTotals(task) {
+  if (!task || typeof task !== "object") return task;
+  const taskId = String(task?.id || task?.taskId || "").trim();
+  const lifetimeTotals = taskId ? getTaskLifetimeTotals(taskId) : null;
+  return {
+    ...task,
+    lifetimeTotals,
+    meta: {
+      ...(task.meta || {}),
+      lifetimeTotals,
+    },
+  };
+}
+
 function buildTaskRuntimeSnapshot(task) {
   const runtimeExecutor = uiDeps.getInternalExecutor?.() || null;
   const status = runtimeExecutor?.getStatus?.() || {};
@@ -7146,6 +7168,7 @@ function buildTaskRuntimeSnapshot(task) {
       taskId,
       taskStatus: task?.status || null,
       statusLabel: "Live execution",
+      lifetimeTotals: task?.lifetimeTotals || task?.meta?.lifetimeTotals || null,
       slot: {
         taskId,
         branch: slot?.branch || slot?.branchName || null,
@@ -7169,6 +7192,7 @@ function buildTaskRuntimeSnapshot(task) {
       taskStatus: task?.status || null,
       statusLabel: "Queued for execution",
       reason: "no_free_slots",
+      lifetimeTotals: task?.lifetimeTotals || task?.meta?.lifetimeTotals || null,
     };
   }
   if (normalizedStatus === "inprogress") {
@@ -7179,6 +7203,7 @@ function buildTaskRuntimeSnapshot(task) {
       taskStatus: task?.status || null,
       statusLabel: "No live execution detected",
       reason: "no_active_executor_slot",
+      lifetimeTotals: task?.lifetimeTotals || task?.meta?.lifetimeTotals || null,
     };
   }
   if (normalizedStatus === "inreview") {
@@ -7188,6 +7213,7 @@ function buildTaskRuntimeSnapshot(task) {
       taskId,
       taskStatus: task?.status || null,
       statusLabel: "Awaiting review",
+      lifetimeTotals: task?.lifetimeTotals || task?.meta?.lifetimeTotals || null,
     };
   }
   return {
@@ -7196,17 +7222,19 @@ function buildTaskRuntimeSnapshot(task) {
     taskId,
     taskStatus: task?.status || null,
     statusLabel: "No active execution",
+    lifetimeTotals: task?.lifetimeTotals || task?.meta?.lifetimeTotals || null,
   };
 }
 
 function withTaskRuntimeSnapshot(task) {
   if (!task || typeof task !== "object") return task;
-  const runtimeSnapshot = buildTaskRuntimeSnapshot(task);
+  const withLifetimeTotals = enrichTaskLifetimeTotals(task);
+  const runtimeSnapshot = buildTaskRuntimeSnapshot(withLifetimeTotals);
   return {
-    ...task,
+    ...withLifetimeTotals,
     runtimeSnapshot,
     meta: {
-      ...(task.meta || {}),
+      ...(withLifetimeTotals.meta || {}),
       runtimeSnapshot,
     },
   };
@@ -8040,10 +8068,12 @@ async function collectUiStats() {
     } catch { /* best effort */ }
   }
 
+  const runtimeStats = getRuntimeStats();
+
   return {
     uptimeMs: process.uptime() * 1000,
-    runtimeMs: globalThis.__bosun_runtimeMs || 0,
-    totalCostUsd: globalThis.__bosun_totalCostUsd || 0,
+    runtimeMs: runtimeStats.runtimeMs || 0,
+    totalCostUsd: runtimeStats.totalCostUsd || 0,
     totalSessions: sessionStats.total,
     activeSessions: sessionStats.active,
     completedSessions: sessionStats.completed,
@@ -13581,7 +13611,24 @@ async function handleApi(req, res, url) {
       const logDir = resolveAgentWorkLogDir();
       const metricsPath = resolve(logDir, "agent-metrics.jsonl");
       const metrics = await readJsonlTail(metricsPath, 3000);
-      const summary = summarizeTelemetry(metrics, days);
+      const summary = summarizeTelemetry(metrics, days) || {};
+      const runtimeStats = getRuntimeStats();
+      const completedSessions = getCompletedSessions(10_000);
+      const lifetimeTotals = completedSessions.reduce(
+        (acc, session) => {
+          acc.attemptsCount += 1;
+          acc.tokenCount += Number(session?.tokenCount || 0);
+          acc.inputTokens += Number(session?.inputTokens || 0);
+          acc.outputTokens += Number(session?.outputTokens || 0);
+          return acc;
+        },
+        { attemptsCount: 0, tokenCount: 0, inputTokens: 0, outputTokens: 0 },
+      );
+      summary.runtimeMs = Number(runtimeStats?.runtimeMs || 0);
+      summary.lifetimeTotals = {
+        ...lifetimeTotals,
+        durationMs: summary.runtimeMs,
+      };
       jsonResponse(res, 200, { ok: true, data: summary });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -18162,6 +18209,17 @@ export async function startTelegramUiServer(options = {}) {
       sessionListenerAttached = true;
       addSessionEventListener((payload) => {
         broadcastSessionMessage(payload);
+      });
+    }
+    if (!sessionAccumulatorListenerAttached) {
+      sessionAccumulatorListenerAttached = true;
+      addSessionAccumulationListener((payload) => {
+        broadcastUiEvent(["tasks", "overview", "telemetry", "sessions"], "invalidate", {
+          reason: "session-accumulated",
+          taskId: payload?.taskId || null,
+          totals: payload?.totals || null,
+          type: payload?.type || "session-accumulated",
+        });
       });
     }
 
