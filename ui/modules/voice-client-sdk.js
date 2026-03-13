@@ -629,7 +629,7 @@ async function startAgentsSdkSession(config, options = {}) {
       : {}),
     ...(turnDetection === "semantic_vad"
       ? {
-          eagerness: "medium",
+          eagerness: "low",
           create_response: true,
           interrupt_response: true,
           createResponse: true,

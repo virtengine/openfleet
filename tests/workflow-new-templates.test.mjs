@@ -417,6 +417,31 @@ describe("workflow chaining", () => {
     expect(incomingEdge, "chain-archiver must have an incoming edge").toBeDefined();
   });
 
+  it("Task Finalization Guard does not force todo when PR exists but worktree is missing", () => {
+    const t = getTemplate("template-task-finalization-guard");
+    expect(t).toBeDefined();
+
+    const guardNode = t.nodes.find((n) => n.id === "has-pr-missing-context");
+    expect(guardNode).toBeDefined();
+    expect(guardNode.type).toBe("condition.expression");
+
+    const routeToGuard = t.edges.find(
+      (e) => e.source === "has-worktree" && e.target === "has-pr-missing-context",
+    );
+    expect(routeToGuard).toBeDefined();
+
+    const skipRoute = t.edges.find(
+      (e) => e.source === "has-pr-missing-context" && e.target === "notify-skip-missing-context",
+    );
+    expect(skipRoute).toBeDefined();
+
+    const directTodoFromMissing = t.edges.find(
+      (e) => e.source === "has-worktree" && e.target === "mark-todo-missing",
+    );
+    expect(directTodoFromMissing).toBeUndefined();
+  });
+
+
   it("SDK Conflict Resolver chains to PR Merge Strategy after push", () => {
     const t = getTemplate("template-sdk-conflict-resolver");
     expect(t).toBeDefined();

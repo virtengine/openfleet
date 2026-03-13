@@ -166,6 +166,31 @@ describe("worktree-manager", () => {
       gitEnv();
       expect(process.env).toEqual(before);
     });
+
+    it("strips inherited git plumbing variables", () => {
+      const previous = {
+        GIT_DIR: process.env.GIT_DIR,
+        GIT_WORK_TREE: process.env.GIT_WORK_TREE,
+        GIT_COMMON_DIR: process.env.GIT_COMMON_DIR,
+        GIT_INDEX_FILE: process.env.GIT_INDEX_FILE,
+      };
+      process.env.GIT_DIR = "/tmp/bad-dir";
+      process.env.GIT_WORK_TREE = "/tmp/bad-tree";
+      process.env.GIT_COMMON_DIR = "/tmp/bad-common";
+      process.env.GIT_INDEX_FILE = "/tmp/bad-index";
+      try {
+        const env = gitEnv();
+        expect(env.GIT_DIR).toBeUndefined();
+        expect(env.GIT_WORK_TREE).toBeUndefined();
+        expect(env.GIT_COMMON_DIR).toBeUndefined();
+        expect(env.GIT_INDEX_FILE).toBeUndefined();
+      } finally {
+        for (const [key, value] of Object.entries(previous)) {
+          if (value == null) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+    });
   });
 
   // ────────────────────────────────────────────────────────────────────────

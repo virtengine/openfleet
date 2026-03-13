@@ -1,4 +1,3 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -19,6 +18,10 @@ import {
   recordToolUsage,
   registerCustomTool,
 } from "../agent/agent-custom-tools.mjs";
+
+const __RUN_VITEST_ONLY = Boolean(process.env.VITEST);
+if (__RUN_VITEST_ONLY) {
+const { afterEach, beforeEach, describe, expect, it } = globalThis;
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -743,4 +746,4 @@ describe("getToolsPromptBlock affinity", () => {
     expect(block).not.toContain("not-eager.mjs");
   });
 });
-
+}

@@ -1,12 +1,98 @@
 import { spawnSync } from "node:child_process";
 
+const STRIPPED_GIT_ENV_KEYS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_NAMESPACE",
+  "GIT_PREFIX",
+  "GIT_SUPER_PREFIX",
+];
+
+const BLOCKED_TEST_GIT_IDENTITIES = new Set([
+  "test@example.com",
+  "bosun-tests@example.com",
+  "bot@example.com",
+  "test@test.com",
+]);
+
+const TEST_FIXTURE_SENTINEL_PATHS = new Set([
+  ".github/agents/TaskPlanner.agent.md",
+]);
+
 function runGit(args, cwd, timeout = 15_000) {
   return spawnSync("git", args, {
     cwd,
     encoding: "utf8",
     timeout,
     shell: false,
+    env: sanitizeGitEnv(),
   });
+}
+
+export function sanitizeGitEnv(baseEnv = process.env, extraEnv = {}) {
+  const env = { ...baseEnv };
+  for (const key of STRIPPED_GIT_ENV_KEYS) {
+    delete env[key];
+  }
+  return { ...env, ...extraEnv };
+}
+
+function getGitConfig(cwd, key) {
+  const result = runGit(["config", "--get", key], cwd, 5_000);
+  if (result.status !== 0) return "";
+  return String(result.stdout || "").trim();
+}
+
+function listTrackedFiles(cwd, ref = "HEAD") {
+  const result = runGit(["ls-tree", "-r", "--name-only", ref], cwd, 30_000);
+  if (result.status !== 0) return null;
+  const out = String(result.stdout || "").trim();
+  return out ? out.split("\n").filter(Boolean) : [];
+}
+
+function collectBlockedIdentitySignals(cwd) {
+  const signals = [];
+  const envChecks = [
+    ["GIT_AUTHOR_EMAIL", process.env.GIT_AUTHOR_EMAIL],
+    ["GIT_COMMITTER_EMAIL", process.env.GIT_COMMITTER_EMAIL],
+    ["VE_GIT_AUTHOR_EMAIL", process.env.VE_GIT_AUTHOR_EMAIL],
+  ];
+  for (const [key, value] of envChecks) {
+    const email = String(value || "").trim().toLowerCase();
+    if (BLOCKED_TEST_GIT_IDENTITIES.has(email)) {
+      signals.push(`${key}=${email}`);
+    }
+  }
+
+  const configChecks = [
+    ["git config user.email", getGitConfig(cwd, "user.email")],
+    ["git config author.email", getGitConfig(cwd, "author.email")],
+    ["git config committer.email", getGitConfig(cwd, "committer.email")],
+  ];
+  for (const [label, value] of configChecks) {
+    const email = String(value || "").trim().toLowerCase();
+    if (BLOCKED_TEST_GIT_IDENTITIES.has(email)) {
+      signals.push(`${label}=${email}`);
+    }
+  }
+
+  return signals;
+}
+
+function detectKnownFixtureSignature(cwd) {
+  const trackedFiles = listTrackedFiles(cwd, "HEAD");
+  if (!trackedFiles) return null;
+  const sentinelHits = trackedFiles.filter((file) => TEST_FIXTURE_SENTINEL_PATHS.has(file));
+  if (sentinelHits.length === 0) return null;
+  if (trackedFiles.length > 10) return null;
+  return {
+    trackedFiles: trackedFiles.length,
+    sentinels: sentinelHits,
+  };
 }
 
 function countTrackedFiles(cwd, ref) {
@@ -129,6 +215,18 @@ export function evaluateBranchSafetyForPush(worktreePath, opts = {}) {
   }
 
   const reasons = [];
+  const blockedIdentitySignals = collectBlockedIdentitySignals(worktreePath);
+  if (blockedIdentitySignals.length > 0) {
+    reasons.push(`blocked test git identity detected (${blockedIdentitySignals.join(", ")})`);
+  }
+
+  const fixtureSignature = detectKnownFixtureSignature(worktreePath);
+  if (fixtureSignature) {
+    reasons.push(
+      `HEAD matches known test fixture signature (${fixtureSignature.sentinels.join(", ")} in ${fixtureSignature.trackedFiles} tracked files)`,
+    );
+  }
+
   if (baseFiles >= 500 && headFiles <= Math.max(25, Math.floor(baseFiles * 0.15))) {
     reasons.push(`HEAD tracks only ${headFiles}/${baseFiles} files vs ${remoteRef}`);
   }
@@ -167,4 +265,19 @@ export function evaluateBranchSafetyForPush(worktreePath, opts = {}) {
       deleted: diff.deleted,
     },
   };
+}
+
+/**
+ * Clear any blocked test git identity from a worktree's local config.
+ * Worktrees inherit the parent repo's config, so if a test ever set
+ * user.name/email there it will poison all task commits until cleared.
+ * Call this after acquiring any worktree.
+ */
+export function clearBlockedWorktreeIdentity(worktreePath) {
+  const email = getGitConfig(worktreePath, "user.email").toLowerCase();
+  if (!BLOCKED_TEST_GIT_IDENTITIES.has(email)) return false;
+
+  runGit(["config", "--local", "--unset", "user.email"], worktreePath, 5_000);
+  runGit(["config", "--local", "--unset", "user.name"], worktreePath, 5_000);
+  return true;
 }

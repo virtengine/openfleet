@@ -15,14 +15,16 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, unlink
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSessionInsights } from "../lib/session-insights.mjs";
+import { isTestRuntime } from "./test-runtime.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SESSIONS_DIR = resolve(__dirname, "..", "logs", "sessions");
 
 const TAG = "[session-tracker]";
 
-/** Default: keep last 10 messages per task session. */
-const DEFAULT_MAX_MESSAGES = 10;
+/** Default: keep last 300 messages per task session.
+ *  Previously 10 — far too few for historic session review. */
+const DEFAULT_MAX_MESSAGES = 300;
 
 /** Default: keep a larger history for manual/primary chat sessions. */
 const DEFAULT_CHAT_MAX_MESSAGES = 2000;
@@ -35,6 +37,13 @@ const MAX_MESSAGE_CHARS = 100_000;
 
 /** Maximum total sessions to keep in memory. */
 const MAX_SESSIONS = 100;
+
+function resolveSessionTrackerPersistDir(options = {}) {
+  if (options.persistDir !== undefined) {
+    return options.persistDir;
+  }
+  return isTestRuntime() ? null : SESSIONS_DIR;
+}
 
 function resolveSessionMaxMessages(type, metadata, explicitMax, fallbackMax) {
   if (Number.isFinite(explicitMax)) {
@@ -1524,9 +1533,10 @@ let _instance = null;
  */
 export function getSessionTracker(options) {
   if (!_instance) {
+    const persistDir = resolveSessionTrackerPersistDir(options || {});
     _instance = new SessionTracker({
-      persistDir: SESSIONS_DIR,
       ...options,
+      persistDir,
     });
     console.log(`${TAG} initialized (maxMessages=${_instance.getStats ? DEFAULT_MAX_MESSAGES : "?"})`);
   }

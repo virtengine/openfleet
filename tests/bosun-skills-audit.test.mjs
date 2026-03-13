@@ -73,6 +73,12 @@ describe("codebase-annotation-audit skill", () => {
     expect(skill.content).toContain("Inventory");
   });
 
+  it("loads content from the checked-in markdown file", () => {
+    const skill = BUILTIN_SKILLS.find((s) => s.filename === "skill-codebase-audit.md");
+    const diskContent = readFileSync(resolve("agent", "skills", "skill-codebase-audit.md"), "utf8");
+    expect(skill.content).toBe(diskContent);
+  });
+
   it("contains LEAN philosophy section", () => {
     const skill = BUILTIN_SKILLS.find((s) => s.filename === "skill-codebase-audit.md");
     expect(skill.content).toContain("LEAN");

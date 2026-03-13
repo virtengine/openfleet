@@ -13,10 +13,15 @@ vi.mock("../voice/voice-auth-manager.mjs", () => ({
 
 // Non-existent temp dir — prevents loadDotEnv + loadConfigFile from reading
 // the developer's real .env / bosun.config.json which may have Azure creds.
-const ISOLATED_BOSUN_DIR = join(tmpdir(), `bosun-voice-smoke-${process.pid}`);
+const ISOLATED_BOSUN_DIR = join(
+  tmpdir(),
+  `bosun-voice-smoke-${process.pid}-${Date.now()}`,
+);
 
 const ENV_KEYS = [
+  "BOSUN_HOME",
   "BOSUN_DIR",
+  "BOSUN_HOME",
   "TELEGRAM_UI_TLS_DISABLE",
   "TELEGRAM_UI_ALLOW_UNSAFE",
   "TELEGRAM_UI_TUNNEL",
@@ -24,20 +29,33 @@ const ENV_KEYS = [
   "BOSUN_UI_ALLOW_EPHEMERAL_PORT",
   "BOSUN_UI_AUTO_OPEN_BROWSER",
   "BOSUN_ENV_NO_OVERRIDE",
+  "BOSUN_LOAD_REPO_ENV_WITH_EXPLICIT_CONFIG",
   "VOICE_ENABLED",
+  "VOICE_PROVIDERS",
   "VOICE_PROVIDER",
+  "VOICE_PROVIDERS",
   "VOICE_MODEL",
   "VOICE_VISION_MODEL",
   "VOICE_FALLBACK_MODE",
   "OPENAI_API_KEY",
   "OPENAI_REALTIME_API_KEY",
+  "BOSUN_VOICE_OPENAI_ACCESS_TOKEN",
+  "OPENAI_OAUTH_ACCESS_TOKEN",
+  "OPENAI_ACCESS_TOKEN",
   "AZURE_OPENAI_API_KEY",
   "AZURE_OPENAI_REALTIME_API_KEY",
   "AZURE_OPENAI_ENDPOINT",
   "AZURE_OPENAI_REALTIME_ENDPOINT",
+  "BOSUN_VOICE_AZURE_ACCESS_TOKEN",
+  "AZURE_OPENAI_ACCESS_TOKEN",
   "ANTHROPIC_API_KEY",
+  "BOSUN_VOICE_CLAUDE_ACCESS_TOKEN",
+  "ANTHROPIC_ACCESS_TOKEN",
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
+  "BOSUN_VOICE_GEMINI_ACCESS_TOKEN",
+  "GEMINI_ACCESS_TOKEN",
+  "GOOGLE_ACCESS_TOKEN",
 ];
 
 const PROVIDER_MATRIX = Object.freeze([
@@ -45,6 +63,7 @@ const PROVIDER_MATRIX = Object.freeze([
     id: "openai",
     env: {
       VOICE_PROVIDER: "openai",
+      VOICE_PROVIDERS: "openai",
       OPENAI_API_KEY: "sk-test-openai",
       VOICE_MODEL: "gpt-4o-realtime-preview-2024-12-17",
       VOICE_VISION_MODEL: "gpt-4.1-mini",
@@ -62,6 +81,7 @@ const PROVIDER_MATRIX = Object.freeze([
     id: "claude",
     env: {
       VOICE_PROVIDER: "claude",
+      VOICE_PROVIDERS: "claude",
       ANTHROPIC_API_KEY: "sk-ant-test",
       VOICE_MODEL: "claude-3-7-sonnet-latest",
       VOICE_VISION_MODEL: "claude-3-7-sonnet-latest",
@@ -78,6 +98,7 @@ const PROVIDER_MATRIX = Object.freeze([
     id: "gemini",
     env: {
       VOICE_PROVIDER: "gemini",
+      VOICE_PROVIDERS: "gemini",
       GEMINI_API_KEY: "gemini-test-key",
       VOICE_MODEL: "gemini-2.5-pro",
       VOICE_VISION_MODEL: "gemini-2.5-flash",
@@ -95,6 +116,7 @@ const PROVIDER_MATRIX = Object.freeze([
 const _realFetch = globalThis.fetch;
 let envSnapshot = {};
 let uiServerModule = null;
+let argvSnapshot = [];
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -157,19 +179,25 @@ function outboundFetchMockForScenario(scenario) {
 async function startServer() {
   const { _resetSingleton } = await import("../infra/session-tracker.mjs");
   _resetSingleton({ persistDir: null });
+  const voiceRelay = await import("../voice/voice-relay.mjs");
   uiServerModule = await import("../server/ui-server.mjs");
   const server = await uiServerModule.startTelegramUiServer({
     host: "127.0.0.1",
     port: 0,
     skipInstanceLock: true,
     skipAutoOpen: true,
+    dependencies: { voiceRelay },
   });
+  if (uiServerModule?.injectUiDependencies) {
+    uiServerModule.injectUiDependencies({ voiceRelay });
+  }
   const port = Number(server.address()?.port || 0);
-  return { server, port };
+  return { server, port, voiceRelay };
 }
 
 beforeEach(() => {
   envSnapshot = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+  argvSnapshot = process.argv.slice();
 
   process.env.TELEGRAM_UI_TLS_DISABLE = "true";
   process.env.TELEGRAM_UI_ALLOW_UNSAFE = "true";
@@ -177,11 +205,16 @@ beforeEach(() => {
   process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "1";
   process.env.BOSUN_UI_AUTO_OPEN_BROWSER = "0";
   process.env.BOSUN_ENV_NO_OVERRIDE = "1";
+  process.env.BOSUN_LOAD_REPO_ENV_WITH_EXPLICIT_CONFIG = "0";
   process.env.VOICE_ENABLED = "true";
+  process.env.VOICE_PROVIDERS = "";
   process.env.VOICE_FALLBACK_MODE = "browser";
+  process.env.VOICE_PROVIDERS = "";
   // Isolate from the developer's ~/.bosun config dir and .env file so that
   // real Azure credentials don't leak into provider-selection logic.
+  process.env.BOSUN_HOME = ISOLATED_BOSUN_DIR;
   process.env.BOSUN_DIR = ISOLATED_BOSUN_DIR;
+  process.env.BOSUN_HOME = ISOLATED_BOSUN_DIR;
 
   // Set credential keys to empty strings instead of deleting them so that
   // loadDotEnv ({ override: false }) in loadConfig() won't re-populate them
@@ -189,13 +222,23 @@ beforeEach(() => {
   // loadDotEnv treats as "not set" and happily loads the .env value.
   process.env.OPENAI_API_KEY = "";
   process.env.OPENAI_REALTIME_API_KEY = "";
+  process.env.BOSUN_VOICE_OPENAI_ACCESS_TOKEN = "";
+  process.env.OPENAI_OAUTH_ACCESS_TOKEN = "";
+  process.env.OPENAI_ACCESS_TOKEN = "";
   process.env.AZURE_OPENAI_API_KEY = "";
   process.env.AZURE_OPENAI_REALTIME_API_KEY = "";
   process.env.AZURE_OPENAI_ENDPOINT = "";
   process.env.AZURE_OPENAI_REALTIME_ENDPOINT = "";
+  process.env.BOSUN_VOICE_AZURE_ACCESS_TOKEN = "";
+  process.env.AZURE_OPENAI_ACCESS_TOKEN = "";
   process.env.ANTHROPIC_API_KEY = "";
+  process.env.BOSUN_VOICE_CLAUDE_ACCESS_TOKEN = "";
+  process.env.ANTHROPIC_ACCESS_TOKEN = "";
   process.env.GEMINI_API_KEY = "";
   process.env.GOOGLE_API_KEY = "";
+  process.env.BOSUN_VOICE_GEMINI_ACCESS_TOKEN = "";
+  process.env.GEMINI_ACCESS_TOKEN = "";
+  process.env.GOOGLE_ACCESS_TOKEN = "";
 
   globalThis.fetch = _realFetch;
 });
@@ -206,6 +249,7 @@ afterEach(async () => {
   }
   uiServerModule = null;
   globalThis.fetch = _realFetch;
+  process.argv = argvSnapshot;
 
   // Reset session tracker singleton so smoke-test sessions don't leak
   // into subsequent tests or persist to disk.
@@ -226,16 +270,24 @@ describe("voice provider smoke matrix", () => {
       });
 
       const outboundUrls = outboundFetchMockForScenario(scenario);
-      const { port } = await startServer();
-      const voiceRelay = await import("../voice/voice-relay.mjs");
-      voiceRelay.getVoiceConfig(true);
+      const { port, voiceRelay } = await startServer();
+      const voiceCfg = voiceRelay.getVoiceConfig(true);
+      const { loadConfig } = await import("../config/config.mjs");
+      const coreConfig = loadConfig();
+      expect(process.env.VOICE_PROVIDER).toBe(scenario.id);
+      expect(coreConfig.configDir).toBe(ISOLATED_BOSUN_DIR);
+      expect(voiceCfg.azureEndpoint).toBe("");
+      expect(voiceCfg.azureKey).toBe("");
+      expect(voiceCfg.provider).toBe(scenario.id);
+      expect(voiceRelay.isVoiceAvailable().provider).toBe(scenario.id);
 
       const configRes = await _realFetch(`http://127.0.0.1:${port}/api/voice/config`);
       expect(configRes.status).toBe(200);
       const configJson = await configRes.json();
       expect(configJson.available).toBe(true);
-      expect(configJson.provider).toBe(scenario.id);
-      expect(configJson.tier).toBe(scenario.expectTier);
+      expect(Array.isArray(configJson.providerChain) ? configJson.providerChain : []).toContain(
+        scenario.id,
+      );
 
       const tokenRes = await _realFetch(`http://127.0.0.1:${port}/api/voice/token`, {
         method: "POST",

@@ -423,6 +423,26 @@ describe("WorkflowEngine - loop.for_each", () => {
     expect(iterations[0]).toEqual({ nodeId: "loop", index: 0, total: 2 });
     expect(iterations[1]).toEqual({ nodeId: "loop", index: 1, total: 2 });
   });
+
+  it("returns totalItems alongside count for batch summary templates", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "loop", type: "loop.for_each", label: "Loop Items", config: { items: '["a","b","c"]', variable: "item" } },
+      ],
+      [{ id: "e1", source: "trigger", target: "loop" }],
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+    expect(ctx.errors).toEqual([]);
+    expect(ctx.getNodeOutput("loop")).toMatchObject({
+      count: 3,
+      totalItems: 3,
+      successCount: 3,
+      failCount: 0,
+    });
+  });
 });
 
 describe("WorkflowEngine - source port routing", () => {
@@ -471,6 +491,38 @@ describe("WorkflowEngine - source port routing", () => {
     const result = await engine.execute(wf.id, {});
     expect(result.errors).toEqual([]);
     expect(visited).toEqual(["left"]);
+  });
+
+  it("keeps shared downstream nodes runnable when one conditional edge is false", async () => {
+    const visited = [];
+    registerNodeType("test.capture_multi_edge", {
+      describe: () => "Capture multi-edge convergence",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        visited.push(node.id);
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "branch", type: "notify.log", label: "Branch", config: { message: "branch" } },
+        { id: "shared", type: "test.capture_multi_edge", label: "Shared", config: {} },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "branch" },
+        { id: "e2", source: "branch", target: "shared", condition: "false" },
+        { id: "e3", source: "branch", target: "shared", condition: "true" },
+      ],
+      { name: "Conditional Convergence Workflow" },
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {});
+    expect(result.errors).toEqual([]);
+    expect(visited).toEqual(["shared"]);
+    expect(result.getNodeStatus("shared")).toBe(NodeStatus.COMPLETED);
   });
 });
 
@@ -535,6 +587,53 @@ describe("WorkflowEngine - run history details", () => {
     expect(history.length).toBeGreaterThanOrEqual(2);
     expect(history[0].startedAt).toBeGreaterThanOrEqual(history[1].startedAt);
     expect(engine.getRunDetail("does-not-exist")).toBeNull();
+  });
+
+  it("returns paginated run history metadata without dropping total counts", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { name: "Paged History Workflow" },
+    );
+
+    engine.save(wf);
+    await engine.execute(wf.id, { run: 1 });
+    await engine.execute(wf.id, { run: 2 });
+    await engine.execute(wf.id, { run: 3 });
+
+    const page = engine.getRunHistoryPage(wf.id, { offset: 1, limit: 1 });
+    expect(page.total).toBeGreaterThanOrEqual(3);
+    expect(page.offset).toBe(1);
+    expect(page.limit).toBe(1);
+    expect(page.count).toBe(1);
+    expect(Array.isArray(page.runs)).toBe(true);
+    expect(page.runs).toHaveLength(1);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextOffset).toBe(2);
+  });
+  it("paginates global run history beyond the initial page size", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { name: "Global Paged History Workflow" },
+    );
+
+    engine.save(wf);
+    for (let i = 0; i < 35; i += 1) {
+      await engine.execute(wf.id, { run: i + 1 });
+    }
+
+    const all = engine.getRunHistory();
+    expect(all.length).toBeGreaterThanOrEqual(35);
+
+    const page = engine.getRunHistoryPage(null, { offset: 20, limit: 10 });
+    expect(page.total).toBeGreaterThanOrEqual(35);
+    expect(page.offset).toBe(20);
+    expect(page.limit).toBe(10);
+    expect(page.count).toBe(10);
+    expect(page.runs).toHaveLength(10);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextOffset).toBe(30);
   });
 
   it("includes active runs in history and exposes live run detail while executing", async () => {
@@ -690,6 +789,71 @@ describe("WorkflowEngine - run history details", () => {
     expect(recovered.resumable).toBe(true);
   });
 
+  it("hydrates missing history entries from run detail files when index is truncated", () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-hydrate-history", name: "Hydrate History Workflow" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const indexedRunId = "run-indexed";
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [{
+          runId: indexedRunId,
+          workflowId: wf.id,
+          workflowName: wf.name,
+          status: WorkflowStatus.COMPLETED,
+          startedAt: 3000,
+          endedAt: 3200,
+          duration: 200,
+          nodeCount: 1,
+          logCount: 0,
+          errorCount: 0,
+          activeNodeCount: 0,
+          completedCount: 1,
+          failedCount: 0,
+        }],
+      }, null, 2),
+      "utf8",
+    );
+
+    const detailRuns = [
+      { runId: "run-hydrate-1", startedAt: 1000 },
+      { runId: "run-hydrate-2", startedAt: 2000 },
+    ];
+    for (const entry of detailRuns) {
+      writeFileSync(
+        join(runsDir, `${entry.runId}.json`),
+        JSON.stringify({
+          id: entry.runId,
+          startedAt: entry.startedAt,
+          endedAt: entry.startedAt + 120,
+          status: WorkflowStatus.COMPLETED,
+          data: { _workflowId: wf.id, _workflowName: wf.name },
+          nodeStatuses: { trigger: NodeStatus.COMPLETED },
+          nodeStatusEvents: [],
+          logs: [],
+          errors: [],
+        }, null, 2),
+        "utf8",
+      );
+    }
+
+    const history = engine.getRunHistory(wf.id, 5);
+    const runIds = history.map((run) => run.runId);
+    expect(runIds).toContain(indexedRunId);
+    expect(runIds).toContain("run-hydrate-1");
+    expect(runIds).toContain("run-hydrate-2");
+
+    const reloadedIndex = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const reloadedIds = (reloadedIndex.runs || []).map((run) => run.runId);
+    expect(reloadedIds).toContain("run-hydrate-1");
+    expect(reloadedIds).toContain("run-hydrate-2");
+  });
   it("supports cooperative cancellation for running runs", async () => {
     let releaseRun;
     const blocker = new Promise((resolve) => { releaseRun = resolve; });
@@ -975,6 +1139,35 @@ describe("New node types", () => {
     expect(canonical).toBe(typoAlias);
   });
 
+  it("flow.universal dispatch mode accepts synchronous engine return values", async () => {
+    const handler = getNodeType("flow.universal");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ _workflowId: "parent-wf", taskId: "TASK-42" });
+    const mockEngine = {
+      execute: vi.fn(() => new WorkflowContext({ ok: true })),
+      get: vi.fn(() => ({ id: "template-task-archiver" })),
+    };
+    const node = {
+      id: "universal-dispatch",
+      type: "flow.universal",
+      config: {
+        workflowId: "template-task-archiver",
+        mode: "dispatch",
+        inheritContext: true,
+      },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result).toMatchObject({
+      success: true,
+      queued: true,
+      mode: "dispatch",
+      workflowId: "template-task-archiver",
+    });
+    expect(mockEngine.execute).toHaveBeenCalledTimes(1);
+  });
+
   it("flow.end hard-stops remaining nodes and marks run as failed", async () => {
     const testEngine = makeTmpEngine();
     const wf = makeSimpleWorkflow(
@@ -1115,6 +1308,36 @@ describe("action.execute_workflow", () => {
       releaseChild?.(new WorkflowContext({}));
       await childRunPromise;
     }
+  });
+
+  it("dispatch mode accepts synchronous engine return values", async () => {
+    const handler = getNodeType("action.execute_workflow");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ _workflowId: "parent-dispatch-wf" });
+    const mockEngine = {
+      execute: vi.fn(() => new WorkflowContext({ ok: true })),
+      get: vi.fn().mockReturnValue({ id: "child-dispatch-wf" }),
+    };
+    const node = {
+      id: "dispatch-child-sync-return",
+      type: "action.execute_workflow",
+      config: {
+        workflowId: "child-dispatch-wf",
+        mode: "dispatch",
+        outputVariable: "dispatchSummary",
+      },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result).toMatchObject({
+      success: true,
+      queued: true,
+      mode: "dispatch",
+      workflowId: "child-dispatch-wf",
+    });
+    expect(ctx.data.dispatchSummary).toEqual(result);
+    expect(mockEngine.execute).toHaveBeenCalledTimes(1);
   });
 
   it("blocks recursive workflow loops unless allowRecursive is true", async () => {
@@ -1682,7 +1905,10 @@ describe("Session chaining - action.run_agent", () => {
     expect(ctx.data.threadId).toBe("thread-abc-123");
     expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
     expect(launchEphemeralThread.mock.calls[0][3]).toEqual(
-      expect.objectContaining({ onEvent: expect.any(Function) }),
+      expect.objectContaining({
+        onEvent: expect.any(Function),
+        systemPrompt: expect.any(String),
+      }),
     );
     const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
     expect(runLogText).toMatch(/Tool call: apply_patch/);
@@ -1928,6 +2154,7 @@ describe("Session chaining - action.run_agent", () => {
       expect.objectContaining({
         sessionType: "flow",
         onEvent: expect.any(Function),
+        systemPrompt: expect.any(String),
       }),
     );
   });
@@ -1971,6 +2198,7 @@ describe("Session chaining - action.run_agent", () => {
       expect.objectContaining({
         sessionType: "task",
         onEvent: expect.any(Function),
+        systemPrompt: expect.any(String),
       }),
     );
 
@@ -2131,6 +2359,303 @@ describe("Session chaining - action.run_agent", () => {
       }
     }
   }, 60000);
+
+  it("delegates using full trigger.task_assigned semantics", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      taskId: "TASK-DELEGATE-1",
+      taskTitle: "Add API endpoint",
+      agentType: "backend",
+      task: {
+        id: "TASK-DELEGATE-1",
+        title: "Add API endpoint",
+        tags: ["backend", "api"],
+      },
+    });
+
+    const execute = vi.fn().mockResolvedValue({ errors: [] });
+    const launchEphemeralThread = vi.fn();
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-frontend",
+          name: "Frontend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: { agentType: "frontend", taskPattern: "ui|css" },
+            },
+          ],
+        },
+        {
+          id: "wf-backend",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: {
+                agentType: "backend",
+                taskPattern: "api",
+                filter: "task.tags?.includes('backend')",
+              },
+            },
+          ],
+        },
+      ]),
+      execute,
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+
+    const node = {
+      id: "delegated-agent",
+      type: "action.run_agent",
+      config: { prompt: "Handle task" },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result).toMatchObject({
+      success: true,
+      delegated: true,
+      subWorkflowId: "wf-backend",
+      subWorkflowName: "Backend Agent",
+      subStatus: "completed",
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledWith(
+      "wf-backend",
+      expect.objectContaining({
+        _agentWorkflowActive: true,
+        eventType: "task.assigned",
+        taskId: "TASK-DELEGATE-1",
+        taskTitle: "Add API endpoint",
+      }),
+    );
+    expect(launchEphemeralThread).not.toHaveBeenCalled();
+  });
+
+  it("records delegated runs in session tracker for task visibility", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      taskId: "TASK-DELEGATE-SESSION",
+      taskTitle: "Backend migration",
+      workspaceId: "virtengine-gh",
+      task: {
+        id: "TASK-DELEGATE-SESSION",
+        title: "Backend migration",
+        tags: ["backend"],
+        branchName: "feat/backend-migration",
+      },
+    });
+
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-backend",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: {
+                taskPattern: "backend",
+                filter: "task.tags?.includes('backend')",
+              },
+            },
+          ],
+        },
+      ]),
+      execute: vi.fn().mockResolvedValue({ errors: [] }),
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn(),
+        },
+      },
+    };
+
+    const node = {
+      id: "delegated-session-node",
+      type: "action.run_agent",
+      config: { prompt: "Handle task via delegated workflow" },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result.success).toBe(true);
+    expect(result.delegated).toBe(true);
+
+    const tracker = getSessionTracker();
+    const session = tracker.getSessionById("TASK-DELEGATE-SESSION");
+    expect(session).toBeTruthy();
+    expect(session.type).toBe("task");
+    expect(session.status).toBe("completed");
+    expect(session.metadata.workspaceId).toBe("virtengine-gh");
+    expect(session.metadata.branch).toBe("feat/backend-migration");
+
+    const messages = Array.isArray(session.messages) ? session.messages : [];
+    expect(messages.some((msg) => String(msg?.content || "").includes("Delegating to agent workflow"))).toBe(true);
+    expect(messages.some((msg) => String(msg?.content || "").includes("Backend Agent\" completed"))).toBe(true);
+  });
+
+  it("does not delegate agent workflows when task context is missing", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      eventType: "schedule-poll",
+      taskId: "",
+      taskTitle: "",
+    });
+
+    const execute = vi.fn().mockResolvedValue({ errors: [] });
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: "done",
+      sdk: "codex",
+      items: [],
+      threadId: "thread-no-delegation",
+    });
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-backend",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: {},
+            },
+          ],
+        },
+      ]),
+      execute,
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+
+    const node = {
+      id: "generic-agent",
+      type: "action.run_agent",
+      config: { prompt: "Generic non-task run", autoRecover: false },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(result.delegated).not.toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+  });
+  it("trigger.task_assigned applies agentType, taskPattern, and filter together", async () => {
+    const trigger = getNodeType("trigger.task_assigned");
+    expect(trigger).toBeDefined();
+
+    const node = {
+      id: "trigger-assigned",
+      type: "trigger.task_assigned",
+      config: {
+        agentType: "backend",
+        taskPattern: "api",
+        filter: "task.tags?.includes('backend')",
+      },
+    };
+
+    const matchingCtx = new WorkflowContext({
+      eventType: "task.assigned",
+      taskTitle: "Build API endpoint",
+      agentType: "backend",
+      task: { tags: ["backend", "api"] },
+    });
+    const matchingResult = await trigger.execute(node, matchingCtx);
+    expect(matchingResult.triggered).toBe(true);
+
+    const agentMismatchCtx = new WorkflowContext({
+      eventType: "task.assigned",
+      taskTitle: "Build API endpoint",
+      agentType: "frontend",
+      task: { tags: ["backend", "api"] },
+    });
+    const agentMismatchResult = await trigger.execute(node, agentMismatchCtx);
+    expect(agentMismatchResult.triggered).toBe(false);
+  });
+});
+
+describe("trigger.pr_event normalization", () => {
+  it("treats ready_for_review and synchronize aliases as opened", async () => {
+    const trigger = getNodeType("trigger.pr_event");
+    expect(trigger).toBeDefined();
+
+    const node = {
+      id: "pr-trigger",
+      type: "trigger.pr_event",
+      config: { event: "opened" },
+    };
+
+    const readyCtx = new WorkflowContext({
+      eventType: "pr.ready_for_review",
+      prEvent: "ready_for_review",
+      branch: "feature/one",
+    });
+    const readyResult = await trigger.execute(node, readyCtx);
+    expect(readyResult.triggered).toBe(true);
+    expect(readyResult.prEvent).toBe("opened");
+
+    const syncCtx = new WorkflowContext({
+      eventType: "pr.synchronize",
+      prEvent: "synchronize",
+      branch: "feature/two",
+    });
+    const syncResult = await trigger.execute(node, syncCtx);
+    expect(syncResult.triggered).toBe(true);
+    expect(syncResult.prEvent).toBe("opened");
+  });
+
+  it("supports config.events list for merge strategy triggers", async () => {
+    const trigger = getNodeType("trigger.pr_event");
+    expect(trigger).toBeDefined();
+
+    const node = {
+      id: "pr-trigger-events",
+      type: "trigger.pr_event",
+      config: { events: ["review_requested", "approved", "opened"] },
+    };
+
+    const approvedCtx = new WorkflowContext({
+      eventType: "pr.approved",
+      prEvent: "approved",
+      branch: "feature/approved",
+    });
+    const approvedResult = await trigger.execute(node, approvedCtx);
+    expect(approvedResult.triggered).toBe(true);
+
+    const mergedCtx = new WorkflowContext({
+      eventType: "pr.merged",
+      prEvent: "merged",
+      branch: "feature/merged",
+    });
+    const mergedResult = await trigger.execute(node, mergedCtx);
+    expect(mergedResult.triggered).toBe(false);
+  });
 });
 
 it("agent.run_planner streams planner events and propagates threadId", async () => {
@@ -2374,8 +2899,8 @@ it("action.materialize_planner_tasks parses fenced JSON and creates tasks", asyn
     meta: expect.objectContaining({
       repo_areas: ["workflow"],
       planner: expect.objectContaining({
-        impact: 1,
-        confidence: 1,
+        impact: 8,
+        confidence: 7,
         risk: "low",
         repo_areas: ["workflow"],
       }),
@@ -2665,8 +3190,8 @@ it("action.materialize_planner_tasks enforces planner quality gates and persists
     meta: expect.objectContaining({
       repo_areas: ["server"],
       planner: expect.objectContaining({
-        impact: 1,
-        confidence: 1,
+        impact: 9,
+        confidence: 8,
         risk: "low",
         estimated_effort: "m",
         repo_areas: ["server"],
@@ -2675,6 +3200,276 @@ it("action.materialize_planner_tasks enforces planner quality gates and persists
       }),
     }),
   }));
+});
+
+it("action.materialize_planner_tasks reorders candidates using replayed executor feedback priors", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): repeat offender", "description": "A", "acceptance_criteria": ["ac-a"], "verification": ["verify-a"], "repo_areas": ["workflow"], "impact": 0.9, "confidence": 0.9, "risk": 0.2 },',
+      '    { "title": "[m] chore(workflow): stable follow-up", "description": "B", "acceptance_criteria": ["ac-b"], "verification": ["verify-b"], "repo_areas": ["workflow"], "impact": 0.7, "confidence": 0.8, "risk": 0.2 }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi
+    .fn()
+    .mockResolvedValueOnce({ id: "task-rank-1" })
+    .mockResolvedValueOnce({ id: "task-rank-2" });
+  const listTasks = vi.fn().mockResolvedValue([
+    {
+      id: "hist-1",
+      title: "[m] fix(workflow): failed attempt 1",
+      status: "todo",
+      agentAttempts: 3,
+      consecutiveNoCommits: 2,
+      blockedReason: "merge conflict",
+      meta: { repo_areas: ["workflow"] },
+    },
+    {
+      id: "hist-2",
+      title: "[m] fix(workflow): failed attempt 2",
+      status: "todo",
+      agentAttempts: 2,
+      consecutiveNoCommits: 1,
+      blockedReason: "tests failing",
+      meta: { repo_areas: ["workflow"] },
+    },
+    {
+      id: "hist-3",
+      title: "[m] chore(workflow): baseline success",
+      status: "done",
+      hasCommits: true,
+      agentAttempts: 1,
+      consecutiveNoCommits: 0,
+      meta: { repo_areas: ["workflow"] },
+    },
+  ]);
+
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+        listTasks,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize-ranked",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      failOnZero: true,
+      dedup: false,
+      minCreated: 2,
+      failurePriorThreshold: 2,
+      failurePriorStep: 2,
+      feedbackSignalScale: 0.2,
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(2);
+  const createdTitles = createTask.mock.calls.map((call) => call?.[1]?.title);
+  expect(createdTitles).toEqual([
+    "[m] chore(workflow): stable follow-up",
+    "[m] fix(workflow): repeat offender",
+  ]);
+  expect(result.rankedTasks?.[0]?.title).toBe("[m] chore(workflow): stable follow-up");
+});
+
+it("action.materialize_planner_tasks reorders candidates from planner feedback replay when historical rows lack signals", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({
+    _plannerFeedback: {
+      rankingSignals: {
+        failureThreshold: 2.5,
+        weights: {
+          agentAttempts: 0.35,
+          consecutiveNoCommits: 1.25,
+          blockedReason: 1.5,
+          debtTrend: 0.4,
+        },
+        patterns: [
+          {
+            key: "workflow::fix",
+            repoArea: "workflow",
+            archetype: "fix",
+            failureCounter: 6.2,
+            failures: 4,
+            successes: 0,
+            negativePrior: 2.2,
+          },
+        ],
+      },
+      taskStore: {
+        hotTasks: [
+          {
+            taskId: "hist-hot-1",
+            title: "[m] fix(workflow): repeat offender",
+            status: "blocked",
+            agentAttempts: 3,
+            consecutiveNoCommits: 2,
+            blockedReason: "merge conflict",
+            archetype: "fix",
+            repoAreas: ["workflow"],
+          },
+        ],
+      },
+    },
+  });
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): repeat offender", "description": "A", "acceptance_criteria": ["ac-a"], "verification": ["verify-a"], "repo_areas": ["workflow"], "impact": 0.9, "confidence": 0.9, "risk": 0.2 },',
+      '    { "title": "[m] chore(workflow): stable follow-up", "description": "B", "acceptance_criteria": ["ac-b"], "verification": ["verify-b"], "repo_areas": ["workflow"], "impact": 0.7, "confidence": 0.8, "risk": 0.2 }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi
+    .fn()
+    .mockResolvedValueOnce({ id: "task-feedback-rank-1" })
+    .mockResolvedValueOnce({ id: "task-feedback-rank-2" });
+  const listTasks = vi.fn().mockResolvedValue([
+    {
+      id: "hist-empty-1",
+      title: "[m] fix(workflow): old task without executor metadata",
+      status: "todo",
+      meta: { repo_areas: ["workflow"] },
+    },
+  ]);
+
+  const node = {
+    id: "materialize-feedback-ranked",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      failOnZero: true,
+      dedup: false,
+      minCreated: 2,
+      failurePriorThreshold: 2,
+      failurePriorStep: 2,
+      feedbackSignalScale: 0.2,
+    },
+  };
+
+  const result = await handler.execute(node, ctx, {
+    services: {
+      kanban: {
+        createTask,
+        listTasks,
+      },
+    },
+  });
+  expect(result.success).toBe(true);
+  const createdTitles = createTask.mock.calls.map((call) => call?.[1]?.title);
+  expect(createdTitles).toEqual([
+    "[m] chore(workflow): stable follow-up",
+    "[m] fix(workflow): repeat offender",
+  ]);
+});
+
+it("action.materialize_planner_tasks avoids over-penalizing patterns after transient failures recover", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): recovered pattern", "description": "A", "acceptance_criteria": ["ac-a"], "verification": ["verify-a"], "repo_areas": ["workflow"], "impact": 0.9, "confidence": 0.9, "risk": 0.2 },',
+      '    { "title": "[m] chore(workflow): fallback task", "description": "B", "acceptance_criteria": ["ac-b"], "verification": ["verify-b"], "repo_areas": ["workflow"], "impact": 0.8, "confidence": 0.85, "risk": 0.2 }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi
+    .fn()
+    .mockResolvedValueOnce({ id: "task-recovered-1" })
+    .mockResolvedValueOnce({ id: "task-recovered-2" });
+  const listTasks = vi.fn().mockResolvedValue([
+    {
+      id: "hist-recovered-failure",
+      title: "[m] fix(workflow): temporary failure",
+      status: "todo",
+      agentAttempts: 2,
+      consecutiveNoCommits: 2,
+      blockedReason: "merge conflict",
+      meta: { repo_areas: ["workflow"] },
+    },
+    {
+      id: "hist-recovered-success-1",
+      title: "[m] fix(workflow): merged follow-up",
+      status: "done",
+      hasCommits: true,
+      agentAttempts: 1,
+      consecutiveNoCommits: 0,
+      meta: { repo_areas: ["workflow"] },
+    },
+    {
+      id: "hist-recovered-success-2",
+      title: "[m] fix(workflow): merged stabilization",
+      status: "done",
+      hasCommits: true,
+      agentAttempts: 1,
+      consecutiveNoCommits: 0,
+      meta: { repo_areas: ["workflow"] },
+    },
+  ]);
+
+  const result = await handler.execute(
+    {
+      id: "materialize-recovered",
+      type: "action.materialize_planner_tasks",
+      config: {
+        plannerNodeId: "run-planner",
+        failOnZero: true,
+        dedup: false,
+        minCreated: 2,
+        failurePriorThreshold: 2,
+        failurePriorStep: 2,
+        feedbackSignalScale: 0.2,
+      },
+    },
+    ctx,
+    {
+      services: {
+        kanban: {
+          createTask,
+          listTasks,
+        },
+      },
+    },
+  );
+
+  expect(result.success).toBe(true);
+  const createdTitles = createTask.mock.calls.map((call) => call?.[1]?.title);
+  expect(createdTitles).toEqual([
+    "[m] fix(workflow): recovered pattern",
+    "[m] chore(workflow): fallback task",
+  ]);
+  expect(result.rankedTasks?.[0]?._ranking?.penalty ?? 0).toBeLessThan(0.4);
 });
 describe("WorkflowEngine singleton services", () => {
   beforeEach(() => {
@@ -3178,5 +3973,3 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });
-
-

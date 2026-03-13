@@ -63,3 +63,5 @@ reports/mutation/
 
 # General TMP files
 .tmp-*
+
+.bosun-monitor/backups/*

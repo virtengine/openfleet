@@ -878,6 +878,21 @@ class InternalAdapter {
     if (!updated) {
       throw new Error(`[kanban] internal task not found: ${normalizedId}`);
     }
+    const linkagePatch = {};
+    const branchName =
+      typeof options?.branchName === "string" ? options.branchName.trim() : "";
+    const prUrl = typeof options?.prUrl === "string" ? options.prUrl.trim() : "";
+    const prNumber =
+      options?.prNumber == null || options?.prNumber === ""
+        ? null
+        : Number.parseInt(String(options.prNumber), 10);
+    if (branchName) linkagePatch.branchName = branchName;
+    if (prUrl) linkagePatch.prUrl = prUrl;
+    if (Number.isFinite(prNumber) && prNumber > 0) linkagePatch.prNumber = prNumber;
+    if (Object.keys(linkagePatch).length > 0) {
+      const patched = patchInternalTask(normalizedId, linkagePatch);
+      if (patched) return this._normalizeTask(patched);
+    }
     return this._normalizeTask(updated);
   }
 
@@ -897,6 +912,20 @@ class InternalAdapter {
     if (typeof patch.workspace === "string") updates.workspace = patch.workspace;
     if (typeof patch.repository === "string") updates.repository = patch.repository;
     if (Array.isArray(patch.repositories)) updates.repositories = patch.repositories;
+    if (typeof patch.branchName === "string") {
+      updates.branchName = patch.branchName.trim() || null;
+    }
+    if (typeof patch.prUrl === "string") {
+      updates.prUrl = patch.prUrl.trim() || null;
+    }
+    if (hasOwnField(patch, "prNumber")) {
+      const parsedPrNumber =
+        patch.prNumber == null || patch.prNumber === ""
+          ? null
+          : Number.parseInt(String(patch.prNumber), 10);
+      updates.prNumber =
+        Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null;
+    }
     const assigneeProvided = hasOwnField(patch, "assignee");
     const assigneesProvided = hasOwnField(patch, "assignees");
     const assignee = normalizeTaskStringField(patch.assignee ?? patch.meta?.assignee);

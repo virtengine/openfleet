@@ -28,6 +28,7 @@
 
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import { readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 
 import { TEMPLATE_FIXTURES } from "./sandbox/fixtures.mjs";
 import { createExecSandbox  } from "./sandbox/exec-sandbox.mjs";
@@ -357,6 +358,231 @@ describe("guaranteed: behavioral contracts", () => {
     harness.assertions.noEngineErrors(ctx);
   });
 
+  it("template-weekly-fitness-summary: emits parse-safe summary with mixed telemetry quality", async () => {
+    const harness = createTemplateHarness("template-weekly-fitness-summary", {
+      prs: [],
+      issues: [],
+      checks: [],
+      releases: [],
+    });
+    const fixtures = TEMPLATE_FIXTURES["template-weekly-fitness-summary"] ?? { inputVars: {} };
+
+    const { ctx } = await harness.run({
+      ...fixtures.inputVars,
+      lookbackDays: 7,
+      maxFollowupTasks: 2,
+      createFollowupTasks: true,
+    });
+
+    harness.assertions.noEngineErrors(ctx);
+    const summary = ctx?.data?.fitnessSummary;
+    expect(summary?.schemaVersion).toBe("1.0");
+    expect(summary?.metrics?.throughput).toBeDefined();
+    expect(summary?.metrics?.regression_rate).toBeDefined();
+    expect(summary?.metrics?.merge_success).toBeDefined();
+    expect(summary?.metrics?.reopened_tasks).toBeDefined();
+    expect(summary?.metrics?.debt_growth).toBeDefined();
+    expect(typeof summary?.metrics?.throughput?.confidence).toBe("string");
+    expect(summary?.metrics?.throughput).toHaveProperty("delta");
+    expect(summary?.metrics?.merge_success).toHaveProperty("delta");
+    expect(Array.isArray(summary?.trendAlerts)).toBe(true);
+    expect(summary?.plannerSignals?.schemaVersion).toBe("1.0");
+    expect(summary?.plannerSignals?.trendDeltas).toBeTruthy();
+    expect(summary?.plannerArtifact?.schemaVersion).toBe("1.0");
+    expect(summary?.plannerArtifact?.trendDeltas).toBeTruthy();
+
+    const serialized = ctx?.data?.fitnessSummaryJson;
+    expect(() => JSON.parse(serialized)).not.toThrow();
+
+    const artifact = ctx?.getNodeOutput?.("persist-fitness-summary");
+    expect(artifact?.success).toBe(true);
+
+    harness.cleanup();
+  });
+
+  it("template-weekly-fitness-summary: emits artifact and survives degraded telemetry", async () => {
+    const { harness, fixtures } = setupHarness("template-weekly-fitness-summary");
+    const runInput = { ...fixtures.inputVars, createFollowupTasks: false };
+
+    const { ctx: firstCtx } = await harness.run(runInput);
+    harness.assertions.noEngineErrors(firstCtx);
+
+    const firstWrite = harness.assertions.nodeSucceeded(firstCtx, "persist-fitness-summary");
+    const firstArtifact = JSON.parse(readFileSync(firstWrite.path, "utf8"));
+    expect(firstArtifact?.schemaVersion).toBe("1.0");
+    expect(firstArtifact?.dataQuality?.overallConfidence).toBeTruthy();
+    writeFileSync(firstWrite.path, JSON.stringify({
+      fitnessSummary: {
+        priorWeekTrendDeltas: { throughput: 5.5 },
+        trendDeltas: { throughput: 4.25 },
+        metrics: { throughput: { delta: 3.0 } },
+      },
+    }), "utf8");
+
+    const stableDispatch = _activeDispatch;
+    _activeDispatch = (cmd) => {
+      if (/gh\s+pr\s+list/i.test(String(cmd))) {
+        throw new Error("gh unavailable (degraded fixture)");
+      }
+      return stableDispatch(cmd);
+    };
+
+    const { ctx: secondCtx } = await harness.run(runInput);
+    harness.assertions.noEngineErrors(secondCtx);
+
+    const secondWrite = harness.assertions.nodeSucceeded(secondCtx, "persist-fitness-summary");
+    const secondArtifact = JSON.parse(readFileSync(secondWrite.path, "utf8"));
+    expect(["missing", "degraded", "ok"]).toContain(secondArtifact?.sourceHealth?.prs?.status);
+    expect(secondArtifact?.metrics?.merge_success?.confidence).toBe("low");
+    expect(secondArtifact?.trendDeltas).toHaveProperty("throughput");
+    expect(secondArtifact?.priorWeekTrendDeltas).toHaveProperty("throughput");
+    expect(secondArtifact?.priorWeekTrendDeltas?.throughput).toBe(5.5);
+    expect(secondArtifact?.priorWeekDeltas).toBeTruthy();
+    expect(secondArtifact?.metrics?.throughput).toHaveProperty("delta");
+    expect(secondArtifact?.plannerSignals?.metricStatus).toHaveProperty("throughput");
+    expect(() => JSON.parse(JSON.stringify(secondArtifact?.plannerSignals ?? {}))).not.toThrow();
+
+    try {
+      if (existsSync(firstWrite.path)) rmSync(firstWrite.path, { force: true });
+    } catch {
+      // best-effort cleanup of generated artifacts
+    }
+  });
+
+  it("template-weekly-fitness-summary: mixed degraded + healthy sources produce parse-safe trend deltas", async () => {
+    const { harness, fixtures } = setupHarness("template-weekly-fitness-summary");
+    const runInput = { ...fixtures.inputVars, createFollowupTasks: false };
+
+    const stableDispatch = _activeDispatch;
+    _activeDispatch = (cmd) => {
+      const command = String(cmd || "");
+      if (/^bosun\s+task\s+list\b/i.test(command)) {
+        return "{ malformed-task-json";
+      }
+      if (/task-debt-ledger\.jsonl/i.test(command)) {
+        return "{ malformed-ledger-json";
+      }
+      return stableDispatch(command);
+    };
+
+    const { ctx } = await harness.run(runInput);
+    harness.assertions.noEngineErrors(ctx);
+
+    const write = harness.assertions.nodeSucceeded(ctx, "persist-fitness-summary");
+    const artifact = JSON.parse(readFileSync(write.path, "utf8"));
+
+    expect(artifact?.sourceHealth?.tasks?.status).toBe("degraded");
+    expect(artifact?.sourceHealth?.debt?.status).toBe("degraded");
+    expect(artifact?.sourceHealth?.prs?.status).toBe("ok");
+    expect(artifact?.metrics?.throughput?.value).toBeNull();
+    expect(artifact?.metrics?.throughput?.confidence).toBe("low");
+    expect(artifact?.metrics?.debt_growth?.value).toBeNull();
+    expect(artifact?.metrics?.regression_rate).toHaveProperty("value");
+
+    expect(() => JSON.parse(JSON.stringify(artifact?.trendDeltas ?? {}))).not.toThrow();
+    expect(() => JSON.parse(JSON.stringify(artifact?.priorWeekTrendDeltas ?? {}))).not.toThrow();
+    expect(() => JSON.parse(JSON.stringify(artifact?.plannerSignals ?? {}))).not.toThrow();
+    expect(() => JSON.parse(JSON.stringify(artifact?.plannerArtifact ?? {}))).not.toThrow();
+    expect(artifact?.trendDeltas).toHaveProperty("merge_success");
+    expect(artifact?.priorWeekTrendDeltas).toHaveProperty("merge_success");
+    expect(["low", "medium", "high"]).toContain(artifact?.dataQuality?.overallConfidence);
+    const telemetryAlerts = Array.isArray(artifact?.trendAlerts)
+      ? artifact.trendAlerts.filter((alert) => String(alert?.metric || "").startsWith("telemetry:"))
+      : [];
+    expect(telemetryAlerts.length).toBeGreaterThan(0);
+  });
+
+  it("template-weekly-fitness-summary: partially parsed task telemetry still computes best-effort throughput", async () => {
+    const { harness, fixtures } = setupHarness("template-weekly-fitness-summary");
+    const runInput = { ...fixtures.inputVars, createFollowupTasks: false };
+
+    const stableDispatch = _activeDispatch;
+    _activeDispatch = (cmd) => {
+      const command = String(cmd || "");
+      if (/^bosun\s+task\s+list\b/i.test(command)) {
+        return [
+          "{\"status\":\"done\",\"completedAt\":\"2026-03-08T10:00:00Z\",\"reopenCount\":0}",
+          "{ malformed-task-json",
+        ].join("\n");
+      }
+      return stableDispatch(command);
+    };
+
+    const { ctx } = await harness.run(runInput);
+    harness.assertions.noEngineErrors(ctx);
+
+    const write = harness.assertions.nodeSucceeded(ctx, "persist-fitness-summary");
+    const artifact = JSON.parse(readFileSync(write.path, "utf8"));
+
+    expect(artifact?.sourceHealth?.tasks?.status).toBe("degraded");
+    expect(artifact?.metrics?.throughput?.value).toBe(1);
+    expect(artifact?.metrics?.throughput?.confidence).toBe("low");
+    expect(artifact?.metrics?.reopened_tasks?.value).toBe(0);
+    expect(artifact?.priorWeekDeltas).toHaveProperty("throughput");
+  });
+
+  it("template-weekly-fitness-summary: non-json task telemetry is marked degraded and suppressed from trend alerts", async () => {
+    const { harness, fixtures } = setupHarness("template-weekly-fitness-summary");
+    const runInput = { ...fixtures.inputVars, createFollowupTasks: false };
+
+    const stableDispatch = _activeDispatch;
+    _activeDispatch = (cmd) => {
+      const command = String(cmd || "");
+      if (/^bosun\s+task\s+list\b/i.test(command)) {
+        return "2 task(s):\n[done] TASK-1\n[inprogress] TASK-2";
+      }
+      return stableDispatch(command);
+    };
+
+    const { ctx } = await harness.run(runInput);
+    harness.assertions.noEngineErrors(ctx);
+
+    const write = harness.assertions.nodeSucceeded(ctx, "persist-fitness-summary");
+    const artifact = JSON.parse(readFileSync(write.path, "utf8"));
+
+    expect(artifact?.sourceHealth?.tasks?.status).toBe("degraded");
+    expect(artifact?.metrics?.throughput?.confidence).toBe("low");
+    expect(artifact?.metrics?.throughput?.value).toBeNull();
+    const throughputAlerts = Array.isArray(artifact?.trendAlerts)
+      ? artifact.trendAlerts.filter((alert) => alert?.metric === "throughput")
+      : [];
+    expect(throughputAlerts.length).toBe(0);
+    const telemetryAlerts = Array.isArray(artifact?.trendAlerts)
+      ? artifact.trendAlerts.filter((alert) => alert?.metric === "telemetry:tasks")
+      : [];
+    expect(telemetryAlerts.length).toBeGreaterThan(0);
+  });
+
+  it("template-weekly-fitness-summary: parses wrapped canonical task payloads and preserves planner artifact", async () => {
+    const { harness, fixtures } = setupHarness("template-weekly-fitness-summary");
+    const runInput = { ...fixtures.inputVars, createFollowupTasks: false };
+
+    const stableDispatch = _activeDispatch;
+    _activeDispatch = (cmd) => {
+      const command = String(cmd || "");
+      if (/^bosun\s+task\s+list\b/i.test(command)) {
+        return JSON.stringify({
+          result: {
+            tasks: [
+              { status: "done", completedAt: "2026-03-08T10:00:00Z", reopenCount: 0 },
+            ],
+          },
+        });
+      }
+      return stableDispatch(command);
+    };
+
+    const { ctx } = await harness.run(runInput);
+    harness.assertions.noEngineErrors(ctx);
+
+    const write = harness.assertions.nodeSucceeded(ctx, "persist-fitness-summary");
+    const artifact = JSON.parse(readFileSync(write.path, "utf8"));
+
+    expect(artifact?.sourceHealth?.tasks?.status).toBe("ok");
+    expect(artifact?.metrics?.throughput?.value).toBe(1);
+    expect(artifact?.plannerArtifact?.schemaVersion).toBe("1.0");
+    expect(() => JSON.parse(JSON.stringify(artifact?.plannerArtifact ?? {}))).not.toThrow();
+  });
   // ── CI/CD templates ───────────────────────────────────────────────────
 
   it("template-build-deploy: runs build → deploy pipeline", async () => {

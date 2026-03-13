@@ -1077,6 +1077,26 @@ describe("kanban-adapter internal backend", () => {
     const updated = await adapter.updateTaskStatus(created.id, "inprogress");
     expect(updated.status).toBe("inprogress");
 
+    const updatedWithLinkage = await adapter.updateTaskStatus(created.id, "inreview", {
+      branchName: "feature/internal-linkage",
+      prNumber: 321,
+      prUrl: "https://example.test/pr/321",
+      source: "workflow",
+    });
+    expect(updatedWithLinkage.status).toBe("inreview");
+    expect(updatedWithLinkage.branchName).toBe("feature/internal-linkage");
+    expect(updatedWithLinkage.prNumber).toBe(321);
+    expect(updatedWithLinkage.prUrl).toBe("https://example.test/pr/321");
+
+    const patchedLinkage = await adapter.updateTask(created.id, {
+      branchName: "feature/internal-linkage-v2",
+      prNumber: 654,
+      prUrl: "https://example.test/pr/654",
+    });
+    expect(patchedLinkage.branchName).toBe("feature/internal-linkage-v2");
+    expect(patchedLinkage.prNumber).toBe(654);
+    expect(patchedLinkage.prUrl).toBe("https://example.test/pr/654");
+
     const commented = await adapter.addComment(created.id, "review me");
     expect(commented).toBe(true);
     const fromStore = getTask(created.id);

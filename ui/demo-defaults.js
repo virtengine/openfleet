@@ -79,7 +79,7 @@
           "type": "action.run_command",
           "label": "Fetch, Classify & Label PRs",
           "config": {
-            "command": "node -e \" const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']); function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function collectReposFromConfig(){   const repos=[];   try{     const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--label','bosun-attached','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const readyCandidates=[],conflicts=[],ciFailures=[],pending=[],drafted=[]; let newlyLabeled=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const hasFail=checks.some(c=>FAIL_STATES.has(c.conclusion||c.state||''));   const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(isConflict){     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasFail){     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(checks.length>0&&!hasFixLabel){     if(hasPend) pending.push({n:pr.number,repo});     readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   ciFailures,   pending:pending.length,   drafted:drafted.length,   newlyLabeled,   fixNeeded:conflicts.length+ciFailures.length })); \"",
+            "command": "node -e \" const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']); function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function collectReposFromConfig(){   const repos=[];   try{     const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--label','bosun-attached','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const readyCandidates=[],conflicts=[],ciFailures=[],pending=[],drafted=[]; let newlyLabeled=0,staleLabelCleared=0,ciKicked=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const hasFail=checks.some(c=>FAIL_STATES.has(c.conclusion||c.state||''));   const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(isConflict){     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasFail){     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else {     if(hasFixLabel&&!hasPend){       try{         const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];         if(repo)rmArgs.push('--repo',repo);         execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});         staleLabelCleared++;       }catch(e){process.stderr.write('stale-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     } else if(checks.length>0&&!hasFixLabel){       if(hasPend) pending.push({n:pr.number,repo});       readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});     }     if(checks.length===0&&repo&&pr.headRefName&&!isDraft){       try{execFileSync('gh',['workflow','run','ci.yaml','--repo',repo,'--ref',pr.headRefName],{encoding:'utf8',stdio:['pipe','pipe','pipe']});ciKicked++;}       catch{}     }   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   ciFailures,   pending:pending.length,   drafted:drafted.length,   newlyLabeled,   staleLabelCleared,   ciKicked,   fixNeeded:conflicts.length+ciFailures.length })); \"",
             "continueOnError": false,
             "failOnError": true
           },
@@ -931,9 +931,14 @@
         {
           "id": "trigger",
           "type": "trigger.pr_event",
-          "label": "PR Ready for Review",
+          "label": "PR Ready for Merge Decision",
           "config": {
-            "event": "review_requested"
+            "event": "review_requested",
+            "events": [
+              "review_requested",
+              "approved",
+              "opened"
+            ]
           },
           "position": {
             "x": 400,
@@ -3011,577 +3016,6 @@
       ]
     },
     {
-      "id": "template-backend-agent",
-      "name": "Backend Agent",
-      "description": "Spins up an agent focused on backend/API development with a test-first methodology. Writes tests first, implements the feature, validates with build + lint, then creates a PR.",
-      "category": "agents",
-      "categoryLabel": "Agents",
-      "categoryIcon": ":bot:",
-      "categoryOrder": 2,
-      "tags": [
-        "agent",
-        "backend",
-        "api",
-        "test-first",
-        "tdd"
-      ],
-      "nodeCount": 23,
-      "edgeCount": 22,
-      "recommended": true,
-      "enabled": true,
-      "trigger": "trigger.task_assigned",
-      "variables": {
-        "testFramework": "node --test",
-        "buildCommand": "npm run build",
-        "agentSdk": "auto",
-        "timeoutMs": 3600000,
-        "autoFixTimeoutMs": 1200000
-      },
-      "metadata": {
-        "author": "bosun",
-        "version": 1,
-        "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "1.0.0",
-        "tags": [
-          "agent",
-          "backend",
-          "api",
-          "test-first",
-          "tdd"
-        ],
-        "replaces": {
-          "module": "primary-agent.mjs",
-          "functions": [
-            "runAgentWithTask"
-          ],
-          "calledFrom": [
-            "task-executor.mjs:executeTask"
-          ],
-          "description": "Replaces generic agent task execution with a structured backend workflow. Test-first methodology, build/lint gates, and Bosun-managed PR lifecycle handoff are enforced as distinct workflow stages."
-        }
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.task_assigned",
-          "label": "Task Assigned",
-          "config": {
-            "filter": "task.tags?.some(t => t === 'backend' || t === 'api')"
-          },
-          "position": {
-            "x": 400,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "plan-work",
-          "type": "agent.run_planner",
-          "label": "Plan Implementation",
-          "config": {
-            "prompt": "Analyze the task requirements and create a step-by-step implementation plan. Identify which files need to be modified, what tests need to be written, and any API contracts to maintain.",
-            "outputVariable": "plan"
-          },
-          "position": {
-            "x": 400,
-            "y": 180
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "write-tests",
-          "type": "action.run_agent",
-          "label": "Write Tests First",
-          "config": {
-            "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's existing test framework: {{testFramework}}\nCommit with message \"test: add tests for [feature]\"",
-            "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{timeoutMs}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 330
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "implement",
-          "type": "action.run_agent",
-          "label": "Implement Feature",
-          "config": {
-            "prompt": "# Implement Backend Feature\n\nThe tests have been written. Now implement the feature to make them pass:\n1. Follow existing code conventions\n2. Add proper error handling\n3. Ensure all new tests pass\n4. Do NOT modify the tests — make the code fit the contract\n\nRun `{{testFramework}}` after implementation.\nCommit with message \"feat: implement [feature]\"",
-            "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{timeoutMs}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 490
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "build",
-          "type": "validation.build",
-          "label": "Build Check",
-          "config": {
-            "command": "{{buildCommand}}",
-            "zeroWarnings": true
-          },
-          "position": {
-            "x": 400,
-            "y": 650
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "test-final",
-          "type": "validation.tests",
-          "label": "Final Test Run",
-          "config": {
-            "command": "{{testFramework}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 780
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "lint",
-          "type": "validation.lint",
-          "label": "Lint Check",
-          "config": {
-            "command": "npm run lint 2>/dev/null || echo 'no lint script'"
-          },
-          "position": {
-            "x": 400,
-            "y": 910
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "all-passed",
-          "type": "condition.expression",
-          "label": "All Checks Passed?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('build')?.passed === true && $ctx.getNodeOutput('test-final')?.passed === true && $ctx.getNodeOutput('lint')?.passed === true"
-          },
-          "position": {
-            "x": 400,
-            "y": 1040
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "create-pr",
-          "type": "action.create_pr",
-          "label": "Handoff PR Lifecycle",
-          "config": {
-            "title": "feat: {{taskTitle}}",
-            "body": "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing. Bosun lifecycle handoff ready.",
-            "branch": "feat/{{taskSlug}}",
-            "baseBranch": "main",
-            "failOnError": true,
-            "maxRetries": 3,
-            "retryDelayMs": 15000,
-            "continueOnError": true
-          },
-          "position": {
-            "x": 250,
-            "y": 1170
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "pr-created",
-          "type": "condition.expression",
-          "label": "Handoff Recorded?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('create-pr')?.success === true"
-          },
-          "position": {
-            "x": 250,
-            "y": 1240
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "notify-done",
-          "type": "notify.log",
-          "label": "Task Complete",
-          "config": {
-            "message": "Backend agent completed task — PR lifecycle handoff recorded",
-            "level": "info"
-          },
-          "position": {
-            "x": 180,
-            "y": 1320
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-pr-failed",
-          "type": "notify.telegram",
-          "label": "Escalate Lifecycle Handoff Failure",
-          "config": {
-            "message": ":alert: Backend agent passed validation for {{taskTitle}} but failed to record Bosun PR lifecycle handoff after retries. Manual follow-up required."
-          },
-          "position": {
-            "x": 420,
-            "y": 1320
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "set-validation-summary",
-          "type": "action.set_variable",
-          "label": "Summarize Validation Output",
-          "config": {
-            "key": "validationSummary",
-            "value": "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('build') || {}; const test = $ctx.getNodeOutput('test-final') || {}; const lint = $ctx.getNodeOutput('lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 620,
-            "y": 1090
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "auto-fix",
-          "type": "action.run_agent",
-          "label": "Auto-Fix Validation Failures",
-          "config": {
-            "prompt": "# Fix Backend Validation Failures\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\nCurrent validation outputs:\n{{validationSummary}}\n\nFix the code so build/tests/lint pass.\nDo NOT weaken, remove, or bypass tests.\nKeep the original task scope.\n\nRun build + tests + lint locally before finishing.\nCommit with message \"fix: address backend workflow validation failures\"",
-            "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{autoFixTimeoutMs}}"
-          },
-          "position": {
-            "x": 620,
-            "y": 1170
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "build-retry",
-          "type": "validation.build",
-          "label": "Build Check (Retry)",
-          "config": {
-            "command": "{{buildCommand}}",
-            "zeroWarnings": true
-          },
-          "position": {
-            "x": 620,
-            "y": 1300
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "test-retry",
-          "type": "validation.tests",
-          "label": "Final Test Run (Retry)",
-          "config": {
-            "command": "{{testFramework}}"
-          },
-          "position": {
-            "x": 620,
-            "y": 1430
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "lint-retry",
-          "type": "validation.lint",
-          "label": "Lint Check (Retry)",
-          "config": {
-            "command": "npm run lint 2>/dev/null || echo 'no lint script'"
-          },
-          "position": {
-            "x": 620,
-            "y": 1560
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry-passed",
-          "type": "condition.expression",
-          "label": "Retry Checks Passed?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('build-retry')?.passed === true && $ctx.getNodeOutput('test-retry')?.passed === true && $ctx.getNodeOutput('lint-retry')?.passed === true"
-          },
-          "position": {
-            "x": 620,
-            "y": 1690
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "create-pr-retry",
-          "type": "action.create_pr",
-          "label": "Handoff PR Lifecycle (After Retry)",
-          "config": {
-            "title": "feat: {{taskTitle}}",
-            "body": "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation. Bosun lifecycle handoff ready.",
-            "branch": "feat/{{taskSlug}}",
-            "baseBranch": "main",
-            "failOnError": true,
-            "maxRetries": 3,
-            "retryDelayMs": 15000,
-            "continueOnError": true
-          },
-          "position": {
-            "x": 450,
-            "y": 1820
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "pr-created-retry",
-          "type": "condition.expression",
-          "label": "Handoff Recorded (Retry Path)?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('create-pr-retry')?.success === true"
-          },
-          "position": {
-            "x": 450,
-            "y": 1890
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "notify-done-retry",
-          "type": "notify.log",
-          "label": "Task Complete (After Retry)",
-          "config": {
-            "message": "Backend agent completed task after retry — PR lifecycle handoff recorded",
-            "level": "info"
-          },
-          "position": {
-            "x": 360,
-            "y": 1980
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-fail",
-          "type": "notify.telegram",
-          "label": "Checks Failed",
-          "config": {
-            "message": ":alert: Backend agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed."
-          },
-          "position": {
-            "x": 820,
-            "y": 1820
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-pr-failed-retry",
-          "type": "notify.telegram",
-          "label": "Escalate Lifecycle Failure (Retry Path)",
-          "config": {
-            "message": ":alert: Backend agent remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed after retries. Manual follow-up required."
-          },
-          "position": {
-            "x": 620,
-            "y": 1980
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->plan-work",
-          "source": "trigger",
-          "target": "plan-work",
-          "sourcePort": "default"
-        },
-        {
-          "id": "plan-work->write-tests",
-          "source": "plan-work",
-          "target": "write-tests",
-          "sourcePort": "default"
-        },
-        {
-          "id": "write-tests->implement",
-          "source": "write-tests",
-          "target": "implement",
-          "sourcePort": "default"
-        },
-        {
-          "id": "implement->build",
-          "source": "implement",
-          "target": "build",
-          "sourcePort": "default"
-        },
-        {
-          "id": "build->test-final",
-          "source": "build",
-          "target": "test-final",
-          "sourcePort": "default"
-        },
-        {
-          "id": "test-final->lint",
-          "source": "test-final",
-          "target": "lint",
-          "sourcePort": "default"
-        },
-        {
-          "id": "lint->all-passed",
-          "source": "lint",
-          "target": "all-passed",
-          "sourcePort": "default"
-        },
-        {
-          "id": "all-passed->create-pr",
-          "source": "all-passed",
-          "target": "create-pr",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "all-passed->set-validation-summary",
-          "source": "all-passed",
-          "target": "set-validation-summary",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "set-validation-summary->auto-fix",
-          "source": "set-validation-summary",
-          "target": "auto-fix",
-          "sourcePort": "default"
-        },
-        {
-          "id": "create-pr->pr-created",
-          "source": "create-pr",
-          "target": "pr-created",
-          "sourcePort": "default"
-        },
-        {
-          "id": "pr-created->notify-done",
-          "source": "pr-created",
-          "target": "notify-done",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "pr-created->notify-pr-failed",
-          "source": "pr-created",
-          "target": "notify-pr-failed",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "auto-fix->build-retry",
-          "source": "auto-fix",
-          "target": "build-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "build-retry->test-retry",
-          "source": "build-retry",
-          "target": "test-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "test-retry->lint-retry",
-          "source": "test-retry",
-          "target": "lint-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "lint-retry->retry-passed",
-          "source": "lint-retry",
-          "target": "retry-passed",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry-passed->create-pr-retry",
-          "source": "retry-passed",
-          "target": "create-pr-retry",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "retry-passed->notify-fail",
-          "source": "retry-passed",
-          "target": "notify-fail",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "create-pr-retry->pr-created-retry",
-          "source": "create-pr-retry",
-          "target": "pr-created-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "pr-created-retry->notify-done-retry",
-          "source": "pr-created-retry",
-          "target": "notify-done-retry",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "pr-created-retry->notify-pr-failed-retry",
-          "source": "pr-created-retry",
-          "target": "notify-pr-failed-retry",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        }
-      ]
-    },
-    {
       "id": "template-custom-agent",
       "name": "Custom Agent Profile",
       "description": "Starter template for creating a custom agent profile with configurable validation, notification, and completion gates. Duplicate and customize to match your specific workflow.",
@@ -4590,6 +4024,741 @@
           "source": "meeting-finalize",
           "target": "final-log",
           "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-backend-agent",
+      "name": "Task Completion Agent",
+      "description": "General-purpose task completion agent with a test-first methodology. Writes tests first, implements the feature, validates with build + lint, then creates a PR. Works with any language/framework — commands are auto-detected from your project or fully customizable.",
+      "category": "agents",
+      "categoryLabel": "Agents",
+      "categoryIcon": ":bot:",
+      "categoryOrder": 2,
+      "tags": [
+        "agent",
+        "task-completion",
+        "test-first",
+        "tdd",
+        "multi-language"
+      ],
+      "nodeCount": 29,
+      "edgeCount": 30,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "testCommand": "npm test",
+        "buildCommand": "npm run build",
+        "lintCommand": "",
+        "baseBranch": "main",
+        "protectedBranches": [
+          "main",
+          "master",
+          "develop",
+          "production"
+        ],
+        "agentSdk": "auto",
+        "timeoutMs": 3600000,
+        "autoFixTimeoutMs": 1200000
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 2,
+        "createdAt": "2025-02-25T00:00:00Z",
+        "templateVersion": "2.0.0",
+        "tags": [
+          "agent",
+          "task-completion",
+          "test-first",
+          "tdd",
+          "multi-language"
+        ],
+        "replaces": {
+          "module": "primary-agent.mjs",
+          "functions": [
+            "runAgentWithTask"
+          ],
+          "calledFrom": [
+            "task-executor.mjs:executeTask"
+          ],
+          "description": "Replaces generic agent task execution with a structured workflow. Test-first methodology, build/lint gates, and Bosun-managed PR lifecycle handoff are enforced as distinct workflow stages. Works with any language/framework."
+        }
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {},
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "plan-work",
+          "type": "agent.run_planner",
+          "label": "Plan Implementation",
+          "config": {
+            "prompt": "Analyze the task requirements and create a step-by-step implementation plan. Identify which files need to be modified, what tests need to be written, and any API contracts to maintain.",
+            "outputVariable": "plan"
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "write-tests",
+          "type": "action.run_agent",
+          "label": "Write Tests First",
+          "config": {
+            "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's test command: {{testCommand}}\nCommit with message \"test: add tests for [feature]\"",
+            "sdk": "{{agentSdk}}",
+            "timeoutMs": "{{timeoutMs}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 330
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement",
+          "type": "action.run_agent",
+          "label": "Implement Feature",
+          "config": {
+            "prompt": "# Implement Feature\n\nThe tests have been written. Now implement the feature to make them pass:\n1. Follow existing code conventions\n2. Add proper error handling\n3. Ensure all new tests pass\n4. Do NOT modify the tests — make the code fit the contract\n\nRun `{{testCommand}}` after implementation.\nCommit with message \"feat: implement [feature]\"",
+            "sdk": "{{agentSdk}}",
+            "timeoutMs": "{{timeoutMs}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "build",
+          "type": "validation.build",
+          "label": "Build Check",
+          "config": {
+            "command": "{{buildCommand}}",
+            "zeroWarnings": true
+          },
+          "position": {
+            "x": 400,
+            "y": 650
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "test-final",
+          "type": "validation.tests",
+          "label": "Final Test Run",
+          "config": {
+            "command": "{{testCommand}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 780
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "lint",
+          "type": "validation.lint",
+          "label": "Lint Check",
+          "config": {
+            "command": "{{lintCommand}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 910
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "all-passed",
+          "type": "condition.expression",
+          "label": "All Checks Passed?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('build')?.passed === true && $ctx.getNodeOutput('test-final')?.passed === true && $ctx.getNodeOutput('lint')?.passed === true"
+          },
+          "position": {
+            "x": 400,
+            "y": 1040
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "push-branch",
+          "type": "action.push_branch",
+          "label": "Push Branch",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "rebaseBeforePush": true,
+            "emptyDiffGuard": true,
+            "protectedBranches": "{{protectedBranches}}"
+          },
+          "position": {
+            "x": 250,
+            "y": 1110
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "push-ok",
+          "type": "condition.expression",
+          "label": "Push OK?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('push-branch')?.pushed === true"
+          },
+          "position": {
+            "x": 250,
+            "y": 1175
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "create-pr",
+          "type": "action.create_pr",
+          "label": "Handoff PR Lifecycle",
+          "config": {
+            "title": "feat: {{taskTitle}}",
+            "body": "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing. Bosun lifecycle handoff ready.",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "failOnError": true,
+            "maxRetries": 3,
+            "retryDelayMs": 15000,
+            "continueOnError": true
+          },
+          "position": {
+            "x": 250,
+            "y": 1170
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pr-created",
+          "type": "condition.expression",
+          "label": "Handoff Recorded?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
+          },
+          "position": {
+            "x": 250,
+            "y": 1240
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-inreview",
+          "type": "action.update_task_status",
+          "label": "Set In-Review",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "inreview",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 180,
+            "y": 1320
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-done",
+          "type": "notify.log",
+          "label": "Task Complete",
+          "config": {
+            "message": "Task completion agent finished task — PR lifecycle handoff recorded",
+            "level": "info"
+          },
+          "position": {
+            "x": 180,
+            "y": 1320
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-pr-failed",
+          "type": "notify.telegram",
+          "label": "Escalate Lifecycle Handoff Failure",
+          "config": {
+            "message": ":alert: Task completion agent passed validation for {{taskTitle}} but failed to record Bosun PR lifecycle handoff after retries. Manual follow-up required."
+          },
+          "position": {
+            "x": 420,
+            "y": 1320
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "set-validation-summary",
+          "type": "action.set_variable",
+          "label": "Summarize Validation Output",
+          "config": {
+            "key": "validationSummary",
+            "value": "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('build') || {}; const test = $ctx.getNodeOutput('test-final') || {}; const lint = $ctx.getNodeOutput('lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 620,
+            "y": 1090
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "auto-fix",
+          "type": "action.run_agent",
+          "label": "Auto-Fix Validation Failures",
+          "config": {
+            "prompt": "# Fix Validation Failures\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\nCurrent validation outputs:\n{{validationSummary}}\n\nFix the code so build/tests/lint pass.\nDo NOT weaken, remove, or bypass tests.\nKeep the original task scope.\n\nRun build + tests + lint locally before finishing.\nCommit with message \"fix: address validation failures\"",
+            "sdk": "{{agentSdk}}",
+            "timeoutMs": "{{autoFixTimeoutMs}}"
+          },
+          "position": {
+            "x": 620,
+            "y": 1170
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "build-retry",
+          "type": "validation.build",
+          "label": "Build Check (Retry)",
+          "config": {
+            "command": "{{buildCommand}}",
+            "zeroWarnings": true
+          },
+          "position": {
+            "x": 620,
+            "y": 1300
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "test-retry",
+          "type": "validation.tests",
+          "label": "Final Test Run (Retry)",
+          "config": {
+            "command": "{{testCommand}}"
+          },
+          "position": {
+            "x": 620,
+            "y": 1430
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "lint-retry",
+          "type": "validation.lint",
+          "label": "Lint Check (Retry)",
+          "config": {
+            "command": "{{lintCommand}}"
+          },
+          "position": {
+            "x": 620,
+            "y": 1560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-passed",
+          "type": "condition.expression",
+          "label": "Retry Checks Passed?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('build-retry')?.passed === true && $ctx.getNodeOutput('test-retry')?.passed === true && $ctx.getNodeOutput('lint-retry')?.passed === true"
+          },
+          "position": {
+            "x": 620,
+            "y": 1690
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "push-branch-retry",
+          "type": "action.push_branch",
+          "label": "Push Branch (Retry)",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "rebaseBeforePush": true,
+            "emptyDiffGuard": true,
+            "protectedBranches": "{{protectedBranches}}"
+          },
+          "position": {
+            "x": 450,
+            "y": 1760
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "push-ok-retry",
+          "type": "condition.expression",
+          "label": "Push OK? (Retry)",
+          "config": {
+            "expression": "$ctx.getNodeOutput('push-branch-retry')?.pushed === true"
+          },
+          "position": {
+            "x": 450,
+            "y": 1825
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "create-pr-retry",
+          "type": "action.create_pr",
+          "label": "Handoff PR Lifecycle (After Retry)",
+          "config": {
+            "title": "feat: {{taskTitle}}",
+            "body": "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation. Bosun lifecycle handoff ready.",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "failOnError": true,
+            "maxRetries": 3,
+            "retryDelayMs": 15000,
+            "continueOnError": true
+          },
+          "position": {
+            "x": 450,
+            "y": 1820
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pr-created-retry",
+          "type": "condition.expression",
+          "label": "Handoff Recorded (Retry Path)?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl)"
+          },
+          "position": {
+            "x": 450,
+            "y": 1890
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-inreview-retry",
+          "type": "action.update_task_status",
+          "label": "Set In-Review (Retry)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "inreview",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 360,
+            "y": 1980
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-done-retry",
+          "type": "notify.log",
+          "label": "Task Complete (After Retry)",
+          "config": {
+            "message": "Task completion agent finished task after retry — PR lifecycle handoff recorded",
+            "level": "info"
+          },
+          "position": {
+            "x": 360,
+            "y": 1980
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-fail",
+          "type": "notify.telegram",
+          "label": "Checks Failed",
+          "config": {
+            "message": ":alert: Task completion agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed."
+          },
+          "position": {
+            "x": 820,
+            "y": 1820
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-pr-failed-retry",
+          "type": "notify.telegram",
+          "label": "Escalate Lifecycle Failure (Retry Path)",
+          "config": {
+            "message": ":alert: Task completion agent remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed after retries. Manual follow-up required."
+          },
+          "position": {
+            "x": 620,
+            "y": 1980
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->plan-work",
+          "source": "trigger",
+          "target": "plan-work",
+          "sourcePort": "default"
+        },
+        {
+          "id": "plan-work->write-tests",
+          "source": "plan-work",
+          "target": "write-tests",
+          "sourcePort": "default"
+        },
+        {
+          "id": "write-tests->implement",
+          "source": "write-tests",
+          "target": "implement",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement->build",
+          "source": "implement",
+          "target": "build",
+          "sourcePort": "default"
+        },
+        {
+          "id": "build->test-final",
+          "source": "build",
+          "target": "test-final",
+          "sourcePort": "default"
+        },
+        {
+          "id": "test-final->lint",
+          "source": "test-final",
+          "target": "lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "lint->all-passed",
+          "source": "lint",
+          "target": "all-passed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "all-passed->push-branch",
+          "source": "all-passed",
+          "target": "push-branch",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "all-passed->set-validation-summary",
+          "source": "all-passed",
+          "target": "set-validation-summary",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-validation-summary->auto-fix",
+          "source": "set-validation-summary",
+          "target": "auto-fix",
+          "sourcePort": "default"
+        },
+        {
+          "id": "push-branch->push-ok",
+          "source": "push-branch",
+          "target": "push-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "push-ok->create-pr",
+          "source": "push-ok",
+          "target": "create-pr",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "push-ok->notify-pr-failed",
+          "source": "push-ok",
+          "target": "notify-pr-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "create-pr->pr-created",
+          "source": "create-pr",
+          "target": "pr-created",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created->set-inreview",
+          "source": "pr-created",
+          "target": "set-inreview",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "set-inreview->notify-done",
+          "source": "set-inreview",
+          "target": "notify-done",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created->notify-pr-failed",
+          "source": "pr-created",
+          "target": "notify-pr-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "auto-fix->build-retry",
+          "source": "auto-fix",
+          "target": "build-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "build-retry->test-retry",
+          "source": "build-retry",
+          "target": "test-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "test-retry->lint-retry",
+          "source": "test-retry",
+          "target": "lint-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "lint-retry->retry-passed",
+          "source": "lint-retry",
+          "target": "retry-passed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-passed->push-branch-retry",
+          "source": "retry-passed",
+          "target": "push-branch-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "retry-passed->notify-fail",
+          "source": "retry-passed",
+          "target": "notify-fail",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "push-branch-retry->push-ok-retry",
+          "source": "push-branch-retry",
+          "target": "push-ok-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "push-ok-retry->create-pr-retry",
+          "source": "push-ok-retry",
+          "target": "create-pr-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "push-ok-retry->notify-pr-failed-retry",
+          "source": "push-ok-retry",
+          "target": "notify-pr-failed-retry",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "create-pr-retry->pr-created-retry",
+          "source": "create-pr-retry",
+          "target": "pr-created-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-retry->set-inreview-retry",
+          "source": "pr-created-retry",
+          "target": "set-inreview-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "set-inreview-retry->notify-done-retry",
+          "source": "set-inreview-retry",
+          "target": "notify-done-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-retry->notify-pr-failed-retry",
+          "source": "pr-created-retry",
+          "target": "notify-pr-failed-retry",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         }
       ]
     },
@@ -6722,8 +6891,8 @@
         "debt",
         "throughput"
       ],
-      "nodeCount": 10,
-      "edgeCount": 12,
+      "nodeCount": 15,
+      "edgeCount": 18,
       "recommended": false,
       "enabled": false,
       "trigger": "trigger.schedule",
@@ -6780,7 +6949,9 @@
           "type": "action.bosun_cli",
           "label": "Collect Task Metrics",
           "config": {
-            "command": "task list --format json --since {{lookbackDays}}d",
+            "subcommand": "task list",
+            "args": "--json",
+            "parseJson": true,
             "continueOnError": true
           },
           "position": {
@@ -6796,7 +6967,7 @@
           "type": "action.run_command",
           "label": "Collect PR Metrics",
           "config": {
-            "command": "gh pr list --state all --json number,state,mergedAt,closedAt,title --limit 200",
+            "command": "gh pr list --state all --json number,state,mergedAt,closedAt,createdAt,updatedAt,title,body --limit 200",
             "continueOnError": true
           },
           "position": {
@@ -6824,17 +6995,100 @@
           ]
         },
         {
+          "id": "read-previous-summary",
+          "type": "action.read_file",
+          "label": "Read Prior Summary",
+          "config": {
+            "path": ".bosun/workflow-runs/weekly-fitness-summary.latest.json"
+          },
+          "position": {
+            "x": 960,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "summarize-fitness-metrics",
+          "type": "action.set_variable",
+          "label": "Summarize Fitness Metrics",
+          "config": {
+            "key": "fitnessSummary",
+            "value": "(() => {  try {    const now = Date.now();    const lookbackDays = Math.max(1, Number($data?.lookbackDays || 7));    const windowMs = lookbackDays * 24 * 60 * 60 * 1000;    const currentStart = now - windowMs;    const previousStart = currentStart - windowMs;    const previousEnd = currentStart;    const toNumber = (v, fallback = 0) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };    const toIso = (ms) => new Date(ms).toISOString();    const parseJsonSafe = (raw) => { try { return JSON.parse(String(raw)); } catch { return null; } };    const extractCanonicalItems = (value) => {      if (!value || typeof value !== 'object') return null;      const keys = ['items', 'tasks', 'entries', 'records', 'results', 'data'];      for (const key of keys) {        if (Array.isArray(value[key])) return value[key].filter(Boolean);      }      return null;    };    const parseSource = (raw, depth = 0) => {      if (depth > 3) return { items: [], degraded: true, parsedAny: false, partial: false };      if (Array.isArray(raw)) return { items: raw.filter(Boolean), degraded: false, parsedAny: raw.length > 0, partial: false };      if (raw && typeof raw === 'object') {        const canonical = extractCanonicalItems(raw) ?? extractCanonicalItems(raw.output) ?? extractCanonicalItems(raw.result) ?? extractCanonicalItems(raw.payload);        if (canonical) return { items: canonical, degraded: false, parsedAny: canonical.length > 0, partial: false };        const wrappedCandidates = [raw.output, raw.result, raw.payload, raw.data, raw.stdout, raw.content, raw.text, raw.json];        for (const candidate of wrappedCandidates) {          if (candidate == null) continue;          const parsedCandidate = parseSource(candidate, depth + 1);          if (parsedCandidate.items.length > 0 || parsedCandidate.parsedAny || parsedCandidate.degraded === false) return parsedCandidate;        }        return { items: [], degraded: Object.keys(raw).length > 0, parsedAny: false, partial: false };      }      if (typeof raw !== 'string') return { items: [], degraded: true, parsedAny: false, partial: false };      const trimmed = raw.trim();      if (!trimmed) return { items: [], degraded: false, parsedAny: false, partial: false };      const parsed = parseJsonSafe(trimmed);      if (Array.isArray(parsed)) return { items: parsed.filter(Boolean), degraded: false, parsedAny: true, partial: false };      if (parsed && typeof parsed === 'object') {        const canonical = extractCanonicalItems(parsed) ?? extractCanonicalItems(parsed.output) ?? extractCanonicalItems(parsed.result) ?? extractCanonicalItems(parsed.payload);        if (canonical) return { items: canonical, degraded: false, parsedAny: true, partial: false };      }      const lines = trimmed.split(/\\r?\\n/).filter((line) => line.trim() !== '');      const parsedLines = [];      let failedLines = 0;      for (const line of lines) {        const parsedLine = parseJsonSafe(line);        if (parsedLine == null) { failedLines += 1; continue; }        if (Array.isArray(parsedLine)) parsedLines.push(...parsedLine.filter(Boolean));        else parsedLines.push(parsedLine);      }      if (parsedLines.length > 0) return { items: parsedLines, degraded: failedLines > 0, parsedAny: true, partial: failedLines > 0 };      return { items: [], degraded: true, parsedAny: false, partial: false };    };    const getTs = (item) => {      if (!item || typeof item !== 'object') return null;      const fields = ['completedAt', 'closedAt', 'mergedAt', 'resolvedAt', 'updatedAt', 'createdAt', 'timestamp', 'ts', 'date', 'completed_at', 'closed_at', 'merged_at', 'resolved_at', 'updated_at', 'created_at'];      for (const key of fields) {        const value = item[key];        if (!value) continue;        const ms = Date.parse(String(value));        if (Number.isFinite(ms)) return ms;        if (typeof value === 'number' && Number.isFinite(value)) return value > 1e12 ? value : value * 1000;      }      return null;    };    const normalizeBucket = (items) => {      const stamped = [];      const unstamped = [];      for (const item of items) {        const ts = getTs(item);        if (ts == null) unstamped.push(item); else stamped.push({ item, ts });      }      return { stamped, unstamped };    };    const splitWindows = (items) => {      const { stamped, unstamped } = normalizeBucket(items);      const current = stamped.filter((entry) => entry.ts >= currentStart && entry.ts <= now).map((entry) => entry.item);      const previous = stamped.filter((entry) => entry.ts >= previousStart && entry.ts < previousEnd).map((entry) => entry.item);      const usedFallbackWindow = stamped.length === 0 && unstamped.length > 0;      if (usedFallbackWindow) return { current: unstamped, previous: [], usedFallbackWindow };      return { current, previous, usedFallbackWindow };    };    const metric = (name, value, previous, direction, unit, confidence, status, notes = []) => {      const hasCurrent = typeof value === 'number' && Number.isFinite(value);      const hasPrevious = typeof previous === 'number' && Number.isFinite(previous);      return {        name,        value: hasCurrent ? value : null,        previous: hasPrevious ? previous : null,        delta: hasCurrent && hasPrevious ? Number((value - previous).toFixed(2)) : null,        direction,        unit,        confidence,        status,        notes: notes.filter(Boolean),      };    };    const sourceStatus = (nodeOut, parsedList, parsedMeta = {}) => {      const output = nodeOut?.output;      const hasPayload = (() => {        if (output == null) return false;        if (Array.isArray(output)) return true;        if (typeof output === 'string') return output.trim() !== '';        if (typeof output === 'object') {          const wrapped = [output.stdout, output.content, output.text, output.json, output.output, output.result, output.payload, output.data];          if (wrapped.some((v) => (typeof v === 'string' ? v.trim() !== '' : v != null))) return true;          return Object.keys(output).length > 0;        }        return true;      })();      const success = nodeOut?.success !== false;      if (!hasPayload) return { status: 'missing', confidence: 'low' };      if (!Array.isArray(parsedList)) return { status: 'degraded', confidence: 'low' };      if (parsedMeta?.degraded || parsedMeta?.partial) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };      if (!success) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };      return { status: 'ok', confidence: parsedList.length > 0 ? 'high' : 'medium' };    };    const taskNode = $ctx.getNodeOutput('task-metrics') || {};    const prNode = $ctx.getNodeOutput('pr-metrics') || {};    const debtNode = $ctx.getNodeOutput('debt-metrics') || {};    const prevNode = $ctx.getNodeOutput('read-previous-summary') || {};    const taskParsed = parseSource(taskNode.output);    const prParsed = parseSource(prNode.output);    const debtParsed = parseSource(debtNode.output);    const tasks = taskParsed.items;    const prs = prParsed.items;    const debt = debtParsed.items;    const taskHealth = sourceStatus(taskNode, tasks, taskParsed);    const prHealth = sourceStatus(prNode, prs, prParsed);    const debtHealth = sourceStatus(debtNode, debt, debtParsed);    const taskSplit = splitWindows(tasks);    const prSplit = splitWindows(prs);    const debtSplit = splitWindows(debt);    const doneStatuses = new Set(['done', 'closed', 'completed', 'merged', 'resolved']);    const isDone = (item) => doneStatuses.has(String(item?.status ?? item?.state ?? '').toLowerCase());    const taskTelemetryUnavailable = taskHealth.status === 'missing' || (taskHealth.status === 'degraded' && tasks.length === 0);    const throughputCurrent = taskTelemetryUnavailable ? null : taskSplit.current.filter(isDone).length;    const throughputPrevious = taskTelemetryUnavailable ? null : taskSplit.previous.filter(isDone).length;    const reopenedCount = (items) => items.filter((item) => {      if (!item || typeof item !== 'object') return false;      const reopenCount = toNumber(item.reopenCount ?? item.reopenedCount ?? item.reopen_count ?? item.reopened_count, 0);      if (reopenCount > 0) return true;      if (item.reopened === true) return true;      const status = String(item.status ?? item.state ?? '').toLowerCase();      return status.includes('reopen');    }).length;    const reopenedCurrent = taskTelemetryUnavailable ? null : reopenedCount(taskSplit.current);    const reopenedPrevious = taskTelemetryUnavailable ? null : reopenedCount(taskSplit.previous);    const classifyRegression = (pr) => /revert|regression|rollback|hotfix/i.test(String(pr?.title || '') + ' ' + String(pr?.body || ''));    const regressionCurrentCount = prSplit.current.filter(classifyRegression).length;    const regressionPreviousCount = prSplit.previous.filter(classifyRegression).length;    const regressionCurrentRate = prSplit.current.length > 0 ? Number(((regressionCurrentCount / prSplit.current.length) * 100).toFixed(2)) : null;    const regressionPreviousRate = prSplit.previous.length > 0 ? Number(((regressionPreviousCount / prSplit.previous.length) * 100).toFixed(2)) : null;    const mergedCount = (items) => items.filter((pr) => String(pr?.state || '').toLowerCase() === 'merged' || Boolean(pr?.mergedAt) || Boolean(pr?.merged_at) || pr?.merged === true).length;    const closedCount = (items) => items.filter((pr) => {      const state = String(pr?.state || '').toLowerCase();      return state === 'closed' || state === 'merged' || Boolean(pr?.closedAt) || Boolean(pr?.closed_at) || Boolean(pr?.mergedAt) || Boolean(pr?.merged_at);    }).length;    const mergeClosedCurrent = closedCount(prSplit.current);    const mergeClosedPrevious = closedCount(prSplit.previous);    const mergeSuccessCurrent = mergeClosedCurrent > 0 ? Number(((mergedCount(prSplit.current) / mergeClosedCurrent) * 100).toFixed(2)) : null;    const mergeSuccessPrevious = mergeClosedPrevious > 0 ? Number(((mergedCount(prSplit.previous) / mergeClosedPrevious) * 100).toFixed(2)) : null;    const debtDelta = (entries) => {      let total = 0;      for (const entry of entries) {        if (entry == null) continue;        if (typeof entry === 'number') { total += entry; continue; }        if (typeof entry !== 'object') continue;        if (Number.isFinite(Number(entry.debtDelta))) { total += Number(entry.debtDelta); continue; }        if (Number.isFinite(Number(entry.delta))) { total += Number(entry.delta); continue; }        if (Number.isFinite(Number(entry.netChange))) { total += Number(entry.netChange); continue; }        const amt = Number.isFinite(Number(entry.amount)) ? Number(entry.amount) : 1;        const kind = String(entry.type || entry.event || entry.action || '').toLowerCase();        if (/resolved|burn|paydown|decrease|closed/.test(kind)) total -= amt;        else if (/created|added|increase|opened|new/.test(kind)) total += amt;      }      return Number(total.toFixed(2));    };    const debtCurrent = debtSplit.current.length > 0 ? debtDelta(debtSplit.current) : null;    const debtPrevious = debtSplit.previous.length > 0 ? debtDelta(debtSplit.previous) : null;    const priorRaw = prevNode?.success === true ? (parseSource(prevNode.content).items?.[0] ?? parseJsonSafe(prevNode.content)) : null;    const priorParsed = priorRaw?.fitnessSummary && typeof priorRaw.fitnessSummary === 'object' ? priorRaw.fitnessSummary : (priorRaw && typeof priorRaw === 'object' ? priorRaw : null);    const metricConfidence = (primaryHealth, hasValue, usedFallbackWindow) => {      if (!hasValue) return 'low';      if (primaryHealth.status === 'missing') return 'low';      if (primaryHealth.status === 'degraded') return 'low';      if (usedFallbackWindow) return 'medium';      return primaryHealth.confidence || 'medium';    };    const throughputMetric = metric('throughput', throughputCurrent, throughputPrevious, 'up_is_good', 'tasks', metricConfidence(taskHealth, throughputCurrent != null, taskSplit.usedFallbackWindow), taskHealth.status, [throughputCurrent == null ? 'Task telemetry unavailable for this window.' : '', taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);    const regressionMetric = metric('regression_rate', regressionCurrentRate, regressionPreviousRate, 'down_is_good', 'percent', metricConfidence(prHealth, regressionCurrentRate != null, prSplit.usedFallbackWindow), prHealth.status, [regressionCurrentRate == null ? 'Insufficient PR sample to compute regression rate.' : '', prSplit.usedFallbackWindow ? 'No PR timestamps detected; treated all records as current week.' : '']);    const mergeMetric = metric('merge_success', mergeSuccessCurrent, mergeSuccessPrevious, 'up_is_good', 'percent', metricConfidence(prHealth, mergeSuccessCurrent != null, prSplit.usedFallbackWindow), prHealth.status, [mergeSuccessCurrent == null ? 'No closed or merged PRs in scope.' : '', prSplit.usedFallbackWindow ? 'No PR timestamps detected; treated all records as current week.' : '']);    const reopenedMetric = metric('reopened_tasks', reopenedCurrent, reopenedPrevious, 'down_is_good', 'tasks', metricConfidence(taskHealth, reopenedCurrent != null, taskSplit.usedFallbackWindow), taskHealth.status, [reopenedCurrent == null ? 'Task telemetry unavailable for this window.' : '', taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);    const debtMetric = metric('debt_growth', debtCurrent, debtPrevious, 'down_is_good', 'points', metricConfidence(debtHealth, debtCurrent != null, debtSplit.usedFallbackWindow), debtHealth.status, [debtCurrent == null ? 'No debt ledger events in scope.' : '', debtSplit.usedFallbackWindow ? 'No debt timestamps detected; treated all records as current week.' : '']);    const metrics = { throughput: throughputMetric, regression_rate: regressionMetric, merge_success: mergeMetric, reopened_tasks: reopenedMetric, debt_growth: debtMetric };    const metricKeys = ['throughput', 'regression_rate', 'merge_success', 'reopened_tasks', 'debt_growth'];    const trendDeltas = metricKeys.reduce((acc, key) => { const d = metrics?.[key]?.delta; acc[key] = Number.isFinite(d) ? d : null; return acc; }, {});    const normalizePriorTrendDelta = (metricName) => {      const direct = priorParsed?.priorWeekTrendDeltas?.[metricName];      if (Number.isFinite(Number(direct))) return Number(Number(direct).toFixed(2));      const trend = priorParsed?.trendDeltas?.[metricName];      if (Number.isFinite(Number(trend))) return Number(Number(trend).toFixed(2));      const metricDelta = priorParsed?.metrics?.[metricName]?.delta;      if (Number.isFinite(Number(metricDelta))) return Number(Number(metricDelta).toFixed(2));      return null;    };    const priorWeekTrendDeltas = metricKeys.reduce((acc, key) => { acc[key] = normalizePriorTrendDelta(key); return acc; }, {});    const priorWeekDeltas = priorWeekTrendDeltas;    const priorWeekMetrics = priorParsed?.metrics && typeof priorParsed.metrics === 'object' ? priorParsed.metrics : null;    const alertThresholds = { throughput: 1, regression_rate: 2.5, merge_success: 2.5, reopened_tasks: 1, debt_growth: 1 };    const metricTrendAlerts = Object.entries(metrics).flatMap(([metricName, m]) => {      if (m == null || m.delta == null) return [];      if (String(m.confidence || '').toLowerCase() === 'low') return [];      const delta = Number(m.delta);      const isRegression = (m.direction === 'up_is_good' && delta < 0) || (m.direction === 'down_is_good' && delta > 0);      if (!isRegression) return [];      const absDelta = Math.abs(delta);      const threshold = alertThresholds[metricName] ?? 1;      const severity = absDelta >= threshold * 2 ? 'high' : absDelta >= threshold ? 'medium' : 'low';      return [{ metric: metricName, severity, delta, reason: `${metricName} moved in a negative direction by ${delta} ${m.unit}.` }];    });    const sourceHealth = {      tasks: { ...taskHealth, count: tasks.length },      prs: { ...prHealth, count: prs.length },      debt: { ...debtHealth, count: debt.length },    };    const sourceTelemetryAlerts = Object.entries(sourceHealth).flatMap(([sourceName, health]) => {      if (health?.status === 'ok') return [];      const severity = health?.status === 'missing' ? 'high' : 'medium';      const reason = health?.status === 'missing' ? `${sourceName} telemetry missing; metric interpretation may be limited.` : `${sourceName} telemetry partially parsed; confidence reduced.`;      return [{ metric: `telemetry:${sourceName}`, severity, delta: null, reason }];    });    const trendAlerts = [...metricTrendAlerts, ...sourceTelemetryAlerts];    const confidenceValues = Object.values(metrics).map((m) => m?.confidence || 'low');    const overallConfidence = confidenceValues.every((c) => c === 'high') ? 'high' : confidenceValues.some((c) => c === 'low') ? 'low' : 'medium';    const plannerSignals = {      schemaVersion: '1.0',      overallConfidence,      trendAlertCount: trendAlerts.length,      highSeverityAlertCount: trendAlerts.filter((a) => a?.severity === 'high').length,      sourceStatus: Object.fromEntries(Object.entries(sourceHealth).map(([k, v]) => [k, v?.status || 'missing'])),      metricStatus: Object.fromEntries(metricKeys.map((k) => [k, metrics?.[k]?.status || 'missing'])),      metricConfidence: Object.fromEntries(metricKeys.map((k) => [k, metrics?.[k]?.confidence || 'low'])),      metricValues: Object.fromEntries(metricKeys.map((k) => [k, Number.isFinite(metrics?.[k]?.value) ? Number(metrics[k].value) : null])),      trendDeltas,      priorWeekTrendDeltas,    };    const plannerArtifact = {      schemaVersion: '1.0',      generatedAt: toIso(now),      lookbackDays,      sourceStatus: plannerSignals.sourceStatus,      metricConfidence: plannerSignals.metricConfidence,      metricValues: plannerSignals.metricValues,      trendDeltas,      priorWeekTrendDeltas,      trendAlertCount: plannerSignals.trendAlertCount,      highSeverityAlertCount: plannerSignals.highSeverityAlertCount,      trendAlerts,    };    return {      schemaVersion: '1.0',      generatedAt: toIso(now),      lookbackDays,      window: { currentStart: toIso(currentStart), currentEnd: toIso(now), previousStart: toIso(previousStart), previousEnd: toIso(previousEnd) },      sourceHealth,      metrics,      trendDeltas,      trendAlerts,      priorWeekTrendDeltas,      priorWeekDeltas,      priorWeekMetrics,      plannerSignals,      plannerArtifact,      dataQuality: {        overallConfidence,        missingSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'missing').map(([k]) => k),        degradedSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'degraded').map(([k]) => k),      },    };  } catch (error) {    return {      schemaVersion: '1.0',      generatedAt: new Date().toISOString(),      lookbackDays: Number($data?.lookbackDays || 7),      sourceHealth: {        tasks: { status: 'missing', confidence: 'low', count: 0 },        prs: { status: 'missing', confidence: 'low', count: 0 },        debt: { status: 'missing', confidence: 'low', count: 0 },      },      metrics: {        throughput: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        regression_rate: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        merge_success: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        reopened_tasks: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        debt_growth: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },      },      trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      trendAlerts: [{ metric: 'summary', severity: 'high', delta: null, reason: `Fitness summary fallback engaged: ${error?.message || 'unknown error'}` }],      priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      priorWeekDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      priorWeekMetrics: null,      plannerSignals: {        schemaVersion: '1.0',        overallConfidence: 'low',        trendAlertCount: 1,        highSeverityAlertCount: 1,        sourceStatus: { tasks: 'missing', prs: 'missing', debt: 'missing' },        metricStatus: { throughput: 'missing', regression_rate: 'missing', merge_success: 'missing', reopened_tasks: 'missing', debt_growth: 'missing' },        metricConfidence: { throughput: 'low', regression_rate: 'low', merge_success: 'low', reopened_tasks: 'low', debt_growth: 'low' },        metricValues: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      },      plannerArtifact: {        schemaVersion: '1.0',        generatedAt: new Date().toISOString(),        lookbackDays: Number($data?.lookbackDays || 7),        sourceStatus: { tasks: 'missing', prs: 'missing', debt: 'missing' },        metricConfidence: { throughput: 'low', regression_rate: 'low', merge_success: 'low', reopened_tasks: 'low', debt_growth: 'low' },        metricValues: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        trendAlertCount: 1,        highSeverityAlertCount: 1,        trendAlerts: [{ metric: 'summary', severity: 'high', delta: null, reason: `Fitness summary fallback engaged: ${error?.message || 'unknown error'}` }],      },      dataQuality: { overallConfidence: 'low', missingSources: ['tasks', 'prs', 'debt'], degradedSources: [] },    };  }})()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 360
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "serialize-fitness-summary",
+          "type": "action.set_variable",
+          "label": "Serialize Fitness Summary",
+          "config": {
+            "key": "fitnessSummaryJson",
+            "value": "(() => JSON.stringify($data?.fitnessSummary || {}, null, 2))()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "render-trend-alerts",
+          "type": "action.set_variable",
+          "label": "Render Trend Alerts",
+          "config": {
+            "key": "fitnessTrendAlertsText",
+            "value": "(() => { const alerts = Array.isArray($data?.fitnessSummary?.trendAlerts) ? $data.fitnessSummary.trendAlerts : []; if (!alerts.length) return 'No negative trend alerts this week.'; return alerts.map((a, idx) => `${idx + 1}. ${a.metric} (${a.severity}) - ${a.reason}`).join('\\n'); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 640
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "persist-fitness-summary",
+          "type": "action.write_file",
+          "label": "Persist Fitness Summary Artifact",
+          "config": {
+            "path": ".bosun/workflow-runs/weekly-fitness-summary.latest.json",
+            "content": "{{fitnessSummaryJson}}",
+            "mkdir": true
+          },
+          "position": {
+            "x": 420,
+            "y": 780
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "evaluate-fitness",
           "type": "action.run_agent",
           "label": "Evaluate Fitness",
           "config": {
-            "prompt": "# Weekly Delivery Fitness Evaluation\n\nEvaluate the last {{lookbackDays}} days using these metrics:\n- Throughput\n- Regression rate\n- Merge success\n- Reopened tasks\n- Debt growth\n\n## Task Data\n{{taskMetrics}}\n\n## PR Data\n{{prMetrics}}\n\n## Debt Ledger Data\n{{debtMetrics}}\n\nFocus directive: {{evaluatorFocus}}\n\nReturn sections:\n1) Scorecard (0-100) with one line per metric\n2) Root-cause analysis of the largest drag\n3) Countermeasures ranked by impact/cost\n4) FOLLOW_UP_ACTION lines using format:\nFOLLOW_UP_ACTION: [title] | [description] | [repo_area] | [risk] | [effort]\n\nOnly include FOLLOW_UP_ACTION lines for changes that are worth implementing this week.",
+            "prompt": "# Weekly Delivery Fitness Evaluation\n\nEvaluate the last {{lookbackDays}} days using this machine-readable summary:\n\nMetrics to evaluate:\n- Throughput\n- Regression rate\n- Merge success\n- Reopened tasks\n- Debt growth\n\n## Weekly Fitness JSON\n{{fitnessSummaryJson}}\n\n## Negative Trend Alerts\n{{fitnessTrendAlertsText}}\n\nFocus directive: {{evaluatorFocus}}\n\nRequirements:\n- Respect confidence and status on each metric.\n- If a metric has low confidence or missing telemetry, call that out explicitly and avoid overconfident recommendations.\n- Use prior-week deltas when available.\n- If one telemetry source is unavailable, still provide a stable scorecard and best-effort recommendations.\n\nReturn sections:\n1) Scorecard (0-100) with one line per metric and confidence\n2) Root-cause analysis of the largest drag\n3) Countermeasures ranked by impact/cost\n4) FOLLOW_UP_ACTION lines using format:\nFOLLOW_UP_ACTION: [title] | [description] | [repo_area] | [risk] | [effort]\n\nOnly include FOLLOW_UP_ACTION lines for changes that are worth implementing this week.",
             "sdk": "auto",
             "timeoutMs": 600000
           },
           "position": {
             "x": 420,
-            "y": 360
+            "y": 930
           },
           "outputs": [
             "default"
@@ -6849,7 +7103,7 @@
           },
           "position": {
             "x": 420,
-            "y": 520
+            "y": 1090
           },
           "outputs": [
             "default"
@@ -6860,13 +7114,13 @@
           "type": "action.run_agent",
           "label": "Build Follow-up Tasks JSON",
           "config": {
-            "prompt": "Convert FOLLOW_UP_ACTION lines below into a single JSON object with shape { \"tasks\": [...] }.\n\nSource:\n{{evaluateFitness}}\n\nRules:\n- Generate at most {{maxFollowupTasks}} tasks\n- Include fields: title, description, implementation_steps, acceptance_criteria, verification, priority, tags, base_branch, impact, confidence, risk, estimated_effort, repo_areas, why_now, kill_criteria\n- Keep tasks implementation-ready and avoid duplicates\n- Return only JSON",
+            "prompt": "Convert FOLLOW_UP_ACTION lines below into a single JSON object with shape { \"tasks\": [...] }.\n\nSource:\n{{evaluate-fitness.output}}\n\nStructured context:\n{{fitnessSummaryJson}}\n\nRules:\n- Generate at most {{maxFollowupTasks}} tasks\n- Include fields: title, description, implementation_steps, acceptance_criteria, verification, priority, tags, base_branch, impact, confidence, risk, estimated_effort, repo_areas, why_now, kill_criteria\n- Use trend deltas from the summary artifact to justify urgency and avoid parse errors\n- Keep tasks implementation-ready and avoid duplicates\n- Return only JSON",
             "sdk": "auto",
             "timeoutMs": 300000
           },
           "position": {
             "x": 220,
-            "y": 690
+            "y": 1260
           },
           "outputs": [
             "default"
@@ -6886,7 +7140,7 @@
           },
           "position": {
             "x": 220,
-            "y": 850
+            "y": 1420
           },
           "outputs": [
             "default"
@@ -6897,12 +7151,12 @@
           "type": "notify.telegram",
           "label": "Send Weekly Fitness Summary",
           "config": {
-            "message": ":chart: Weekly fitness evaluation complete. Follow-up tasks created: {{materialize-followups.createdCount}}\n\n{{evaluateFitness}}",
+            "message": ":chart: Weekly fitness evaluation complete. Follow-up tasks created: {{materialize-followups.createdCount}}\\n\\nTrend alerts:\\n{{fitnessTrendAlertsText}}\\n\\n{{evaluate-fitness.output}}",
             "silent": true
           },
           "position": {
             "x": 420,
-            "y": 1010
+            "y": 1580
           },
           "outputs": [
             "default"
@@ -6918,7 +7172,7 @@
           },
           "position": {
             "x": 620,
-            "y": 690
+            "y": 1260
           },
           "outputs": [
             "default"
@@ -6945,20 +7199,56 @@
           "sourcePort": "default"
         },
         {
-          "id": "task-metrics->evaluate-fitness",
+          "id": "trigger->read-previous-summary",
+          "source": "trigger",
+          "target": "read-previous-summary",
+          "sourcePort": "default"
+        },
+        {
+          "id": "task-metrics->summarize-fitness-metrics",
           "source": "task-metrics",
-          "target": "evaluate-fitness",
+          "target": "summarize-fitness-metrics",
           "sourcePort": "default"
         },
         {
-          "id": "pr-metrics->evaluate-fitness",
+          "id": "pr-metrics->summarize-fitness-metrics",
           "source": "pr-metrics",
-          "target": "evaluate-fitness",
+          "target": "summarize-fitness-metrics",
           "sourcePort": "default"
         },
         {
-          "id": "debt-metrics->evaluate-fitness",
+          "id": "debt-metrics->summarize-fitness-metrics",
           "source": "debt-metrics",
+          "target": "summarize-fitness-metrics",
+          "sourcePort": "default"
+        },
+        {
+          "id": "read-previous-summary->summarize-fitness-metrics",
+          "source": "read-previous-summary",
+          "target": "summarize-fitness-metrics",
+          "sourcePort": "default"
+        },
+        {
+          "id": "summarize-fitness-metrics->serialize-fitness-summary",
+          "source": "summarize-fitness-metrics",
+          "target": "serialize-fitness-summary",
+          "sourcePort": "default"
+        },
+        {
+          "id": "serialize-fitness-summary->render-trend-alerts",
+          "source": "serialize-fitness-summary",
+          "target": "render-trend-alerts",
+          "sourcePort": "default"
+        },
+        {
+          "id": "render-trend-alerts->persist-fitness-summary",
+          "source": "render-trend-alerts",
+          "target": "persist-fitness-summary",
+          "sourcePort": "default"
+        },
+        {
+          "id": "persist-fitness-summary->evaluate-fitness",
+          "source": "persist-fitness-summary",
           "target": "evaluate-fitness",
           "sourcePort": "default"
         },
@@ -7031,7 +7321,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "anomaly",
           "watchdog",
@@ -7311,7 +7601,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-24T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "error",
           "recovery",
@@ -7544,7 +7834,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "health",
           "config",
@@ -7756,7 +8046,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "incident",
           "response",
@@ -8081,7 +8371,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-06-01T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "sync",
           "kanban",
@@ -8428,7 +8718,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-06-01T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "archive",
           "cleanup",
@@ -8725,8 +9015,8 @@
         "handoff",
         "reliability"
       ],
-      "nodeCount": 15,
-      "edgeCount": 17,
+      "nodeCount": 17,
+      "edgeCount": 20,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.event",
@@ -8739,7 +9029,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2026-02-26T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "finalization",
           "quality-gate",
@@ -8955,6 +9245,38 @@
           ]
         },
         {
+          "id": "has-pr-missing-context",
+          "type": "condition.expression",
+          "label": "PR Linked Without Worktree?",
+          "config": {
+            "expression": "Boolean($data?.prNumber || $data?.prUrl)"
+          },
+          "position": {
+            "x": 620,
+            "y": 450
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "notify-skip-missing-context",
+          "type": "notify.log",
+          "label": "Skip Missing Context With PR",
+          "config": {
+            "message": "Task {{taskId}} finalization skipped quality gate: missing worktree context but PR linkage exists",
+            "level": "warn"
+          },
+          "position": {
+            "x": 620,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "notify-pass",
           "type": "notify.log",
           "label": "Log Finalization Success",
@@ -9060,10 +9382,24 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "has-worktree->mark-todo-missing",
+          "id": "has-worktree->has-pr-missing-context",
           "source": "has-worktree",
-          "target": "mark-todo-missing",
+          "target": "has-pr-missing-context",
           "sourcePort": "default",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "has-pr-missing-context->notify-skip-missing-context",
+          "source": "has-pr-missing-context",
+          "target": "notify-skip-missing-context",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-pr-missing-context->mark-todo-missing",
+          "source": "has-pr-missing-context",
+          "target": "mark-todo-missing",
+          "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
@@ -9127,6 +9463,12 @@
           "sourcePort": "default"
         },
         {
+          "id": "notify-skip-missing-context->end-success",
+          "source": "notify-skip-missing-context",
+          "target": "end-success",
+          "sourcePort": "default"
+        },
+        {
           "id": "notify-pass->chain-archiver",
           "source": "notify-pass",
           "target": "chain-archiver",
@@ -9187,7 +9529,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2026-03-04T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "orphan",
           "recovery",
@@ -9416,7 +9758,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2026-02-26T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "repair",
           "recovery",
@@ -9806,7 +10148,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2026-02-27T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "task",
           "status",
@@ -10019,7 +10361,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "maintenance",
           "cleanup",
@@ -11515,6 +11857,180 @@
       ]
     },
     {
+      "id": "template-task-backend",
+      "name": "Backend Task Workflow",
+      "description": "Specialised for server-side tasks — APIs, databases, services, middleware. Runs three phases: plan, implement with TDD, and verify with full test suite.",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
+      "categoryIcon": ":settings:",
+      "categoryOrder": 99,
+      "tags": [
+        "backend",
+        "api",
+        "server",
+        "task-type"
+      ],
+      "nodeCount": 5,
+      "edgeCount": 4,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2025-06-01T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "backend",
+          "api",
+          "server",
+          "task-type"
+        ],
+        "resolveMode": "library"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "api|server|backend|database|model|migration|endpoint|middleware|service|graphql|rest|grpc"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "plan",
+          "type": "action.run_agent",
+          "label": "Plan Backend",
+          "config": {
+            "prompt": "## Phase: Backend Planning\n\nAnalyse the task and produce a plan:\n1. Data model / schema changes\n2. API endpoint design (routes, request/response shapes)\n3. Service layer logic\n4. Database queries or migrations\n5. Test plan (unit + integration)\n\nDo NOT write code yet.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-tdd",
+          "type": "action.run_agent",
+          "label": "Implement (TDD)",
+          "config": {
+            "prompt": "## Phase: Test-Driven Implementation\n\n1. Write tests FIRST for the planned changes\n2. Verify tests fail (red)\n3. Implement the backend logic to make tests pass (green)\n4. Refactor for clarity and performance\n5. Run full test suite: {{testCommand}}\n6. Run build: {{buildCommand}}\n7. Run lint: {{lintCommand}}\n\nCommit with descriptive messages.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Verification\n\n1. Run the complete test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Ensure no regressions\n4. Push changes and create/update PR\n5. Include test results summary in PR description",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Backend task completed — API/service implemented and tested."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->plan",
+          "source": "trigger",
+          "target": "plan",
+          "sourcePort": "default"
+        },
+        {
+          "id": "plan->implement-tdd",
+          "source": "plan",
+          "target": "implement-tdd",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-tdd->verify",
+          "source": "implement-tdd",
+          "target": "verify",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify->done",
+          "source": "verify",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
       "id": "template-bosun-tool-pipeline",
       "name": "Bosun Tool Pipeline",
       "description": "Run Bosun built-in or custom tools from a workflow with structured output piping. Discovers available tools, invokes a selected tool, extracts specific data fields, and forwards them to downstream nodes. Combines action.bosun_function and action.bosun_tool for full tool integration.",
@@ -11718,6 +12234,862 @@
       ]
     },
     {
+      "id": "template-task-cicd",
+      "name": "CI/CD Task Workflow",
+      "description": "For pipeline, deployment, infrastructure, and build-system tasks. Plans the change, implements with validation steps, then verifies the pipeline works end-to-end.",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
+      "categoryIcon": ":settings:",
+      "categoryOrder": 99,
+      "tags": [
+        "ci",
+        "cd",
+        "pipeline",
+        "deploy",
+        "infrastructure",
+        "task-type"
+      ],
+      "nodeCount": 5,
+      "edgeCount": 4,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2025-06-01T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "ci",
+          "cd",
+          "pipeline",
+          "deploy",
+          "infrastructure",
+          "task-type"
+        ],
+        "resolveMode": "library"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "ci|cd|pipeline|deploy|infrastructure|docker|kubernetes|k8s|terraform|github.action|build.system|release|devops"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "plan-pipeline",
+          "type": "action.run_agent",
+          "label": "Plan Pipeline Change",
+          "config": {
+            "prompt": "## Phase: CI/CD Planning\n\nAnalyse the pipeline/infrastructure task:\n1. Current CI/CD configuration\n2. What needs to change and why\n3. Impact on existing workflows/pipelines\n4. Rollback strategy\n5. Test plan for verifying the change\n\nDo NOT make changes yet.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-pipeline",
+          "type": "action.run_agent",
+          "label": "Implement Pipeline",
+          "config": {
+            "prompt": "## Phase: Pipeline Implementation\n\n1. Make the CI/CD / infrastructure changes per the plan\n2. Update configuration files (workflows, Dockerfiles, Terraform, etc.)\n3. Add or update pipeline tests where applicable\n4. Run build: {{buildCommand}}\n5. Run lint: {{lintCommand}}\n6. Validate configuration syntax\n\nCommit changes with clear descriptions.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-pipeline",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Pipeline Verification\n\n1. Run full test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify pipeline configuration is valid\n4. Push and create/update PR\n5. Include deployment / rollback instructions in PR description",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "CI/CD task completed — pipeline updated and verified."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->plan-pipeline",
+          "source": "trigger",
+          "target": "plan-pipeline",
+          "sourcePort": "default"
+        },
+        {
+          "id": "plan-pipeline->implement-pipeline",
+          "source": "plan-pipeline",
+          "target": "implement-pipeline",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-pipeline->verify-pipeline",
+          "source": "implement-pipeline",
+          "target": "verify-pipeline",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-pipeline->done",
+          "source": "verify-pipeline",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-code-quality-striker",
+      "name": "Code Quality Striker",
+      "description": "Recurring autonomous refactoring agent that improves codebase structure for long-term agentic development. Runs every 2 hours with a hard 90-minute session cap. Each session MUST produce a passing PR before terminating. Scope is strictly limited to structural quality: module decomposition, deduplication, function splitting. Zero functional changes allowed.",
+      "category": "maintenance",
+      "categoryLabel": "Maintenance",
+      "categoryIcon": ":settings:",
+      "categoryOrder": 99,
+      "tags": [
+        "refactor",
+        "code-quality",
+        "maintenance",
+        "scheduled",
+        "agentic"
+      ],
+      "nodeCount": 12,
+      "edgeCount": 12,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.schedule",
+      "variables": {
+        "sessionTimeoutMs": 5400000,
+        "branch": "chore/code-quality-striker-{{_runId}}",
+        "baseBranch": "main",
+        "sessionLogPath": ".bosun-monitor/code-quality-striker.md",
+        "maxFilesPerSession": 6,
+        "minFileSizeKb": 30,
+        "testCommand": "npm test",
+        "buildCommand": "npm run build",
+        "syntaxCheckCommand": "node --check",
+        "lintCommand": "",
+        "sourceExtensions": ".mjs,.js,.ts,.tsx,.py,.go,.rs,.java,.cs,.rb,.php"
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2026-03-09T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "refactor",
+          "code-quality",
+          "maintenance",
+          "scheduled",
+          "agentic"
+        ],
+        "sessionLog": ".bosun-monitor/code-quality-striker.md"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.schedule",
+          "label": "Every 2 Hours",
+          "config": {
+            "intervalMs": 7200000,
+            "cron": "0 */2 * * *"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-active-pr",
+          "type": "condition.expression",
+          "label": "Active Striker PR?",
+          "config": {
+            "expression": "(() => { try { const r = $ctx.runCommand('git branch -r'); return (r?.output || '').includes('code-quality-striker'); } catch { return false; } })()"
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "skip-already-running",
+          "type": "notify.log",
+          "label": "Skip — PR Already Open",
+          "config": {
+            "message": "Code quality striker skipped: an open quality striker PR already exists. Will retry next cycle.",
+            "level": "info"
+          },
+          "position": {
+            "x": 650,
+            "y": 310
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "scan-candidates",
+          "type": "action.run_command",
+          "label": "Scan Large Files",
+          "config": {
+            "command": "node -e \"const{readdirSync,statSync}=require('fs');const{join,relative}=require('path');const base=process.cwd();const exts=new Set('{{sourceExtensions}}'.split(',').map(e=>e.trim()));function walk(d){const out=[];for(const f of readdirSync(d,{withFileTypes:true})){if(f.name==='node_modules'||f.name==='.cache'||f.name==='.git'||f.name==='worktrees'||f.name==='__pycache__'||f.name==='.venv'||f.name==='target'||f.name==='vendor'||f.name==='dist'||f.name==='build')continue;const p=join(d,f.name);if(f.isDirectory())out.push(...walk(p));else{const ext='.'+f.name.split('.').pop();if(exts.has(ext)){const s=statSync(p);out.push({p,kb:Math.round(s.size/1024)})}}}return out}const files=walk(base).filter(x=>x.kb>={{minFileSizeKb}}).sort((a,b)=>b.kb-a.kb).slice(0,20);console.log(files.map(x=>x.kb+'kb\\t'+relative(base,x.p)).join('\\n'))\"",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 310
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-striker",
+          "type": "action.run_agent",
+          "label": "Code Quality Striker Agent",
+          "config": {
+            "timeoutMs": "{{sessionTimeoutMs}}",
+            "sdk": "auto",
+            "prompt": "# Code Quality Striker\n\nYou are a **structural quality agent**. Your sole mandate is to improve the\ninternal structure of the codebase so that future agentic models can work on\nit more efficiently — smaller files, clearer module boundaries, zero\nduplication, and self-contained functions.\n\n## Session Constraints\n\n- **Hard session cap**: you have at most 90 minutes total. Budget your time.\n- **You MUST open a PR before ending** — a session with no PR is a failed\n  session. If you run out of time mid-refactor, commit what you have, push,\n  and open the PR immediately even if the work is partial, AS LONG AS all\n  tests pass.\n- **Maximum {{maxFilesPerSession}} source files changed** in a single PR.\n  Keep diffs small and reviewable. Better to do one clean split per session\n  than attempt a mega-refactor.\n- You may run multiple sessions and PRs over time. Prefer incremental progress.\n\n## ✅ Allowed Changes (ONLY these)\n\n1. **Module decomposition** — extract a large file into smaller, focused\n   modules. The extracted module must be imported back so the public surface\n   is identical.\n2. **Function splitting** — break functions > ~80 lines into smaller,\n   well-named helpers within the same file or a co-located util module.\n3. **Deduplication** — extract identical or near-identical logic blocks into\n   a shared helper. Must not change call-site behaviour.\n4. **Dead code removal** — remove functions, variables, or imports that are\n   verifiably unreferenced (no callers anywhere in the repo).\n5. **Import cleanup** — remove unused imports, deduplicate import statements,\n   consolidate barrel imports.\n\n## ❌ Forbidden Changes (HARD STOPS — never do these)\n\n- Adding, removing, or changing any exported function signature or return value\n- Changing any HTTP route path, method, or response shape\n- Changing any config key names or default values\n- Adding new features, flags, or options of any kind\n- Changing test assertions or test logic\n- Renaming exported symbols (only rename internal/private symbols)\n- Adding comments, JSDoc, or inline documentation (unless minimal and necessary)\n- Changing error messages visible to users or logs (string literals)\n- Any change to .json, .sh, .md, .yaml, .html, .css, or non-.mjs/.js files\n  (unless you are only touching an import path string that is broken by a move)\n\n## Workflow\n\n### Step 1 — Identify your target\n\nUse the candidate file list provided (sorted by size, largest first):\n\n```\n{{scan-candidates.output}}\n```\n\nPick **1–3 files** for this session. Prioritise:\n- Files > 500 lines used by multiple modules (high parallel-conflict risk)\n- Files with clearly repeated logic blocks\n- Files with functions > 100 lines that have distinct sub-responsibilities\n\nRead each target file in full before making any decision. Do NOT edit\nanything you have not fully read.\n\n### Step 2 — Plan your split in writing\n\nBefore touching the file, write a short plan (to yourself, as a comment in\nyour reasoning — DO NOT add it to the code):\n- What gets extracted and where\n- New file names (follow existing naming conventions in that directory)\n- Which exports stay vs. move\n- Any callers that will need their import paths updated\n\n### Step 3 — Extract and wire up\n\n- Create the new module file(s) under the same directory as the source file.\n- Update the source file to re-export or directly import the extracted piece\n  so every existing call-site continues to work without modification.\n- Update any OTHER files that directly imported from the source file, if and\n  only if you moved an export that those files reference. Use\n  `grep -r 'importedName' --include='*.mjs' --include='*.js'` to find callers.\n- **Do not touch callers unless strictly required by the move.**\n\n### Step 4 — Validate before committing\n\nRun ALL of the following in order. Do not commit if any fail:\n\n```bash\n# 1. Syntax check every file you touched\n{{syntaxCheckCommand}} <file1> <file2> ...\n\n# 2. Lint check (if configured)\n{{lintCommand}}\n\n# 3. Full test suite — must be 0 failures, 0 unexpected skips\n{{testCommand}}\n\n# 4. Build — must pass clean\n{{buildCommand}}\n```\n\nIf tests fail, **revert your change** (`git checkout -- <file>`) and either:\n- Attempt a smaller, safer split of the same file, OR\n- Move to a different target file\n\n**Never push a failing test suite.**\n\n### Step 5 — Commit, push, and open the PR\n\nBranch name: `chore/code-quality-striker-{{_runId}}`\nBase branch: `{{baseBranch}}`\n\nCommit message format:\n```\nrefactor(<module>): split <description>\n\n- extracted <what> into <new-file>\n- <any other bullet points>\n\nNo functional changes. All tests pass.\n```\n\nPR title: `refactor: code quality pass — <one-line summary>`\n\nPR body template:\n```markdown\n## Code Quality Pass\n\n**Session**: code-quality-striker {{_runId}}\n**Scope**: structural refactor only — zero functional changes\n\n### Changes\n- <bullet per extracted module or dedup>\n\n### Validation\n- `{{syntaxCheckCommand}}` passed on all touched files\n- `{{testCommand}}` passed (N tests)\n- `{{buildCommand}}` passed\n\n### Why\n<one sentence: \"X was Y lines with Z responsibilities; split to improve\nparallel edit safety for future agent sessions.\">\n```\n\n### Step 6 — Write session log\n\nAppend a new entry to `{{sessionLogPath}}` using this\nexact format (create the file if it does not exist):\n\n```markdown\n## <ISO timestamp with timezone>\n\n- Scope: <one sentence describing what was refactored>\n- Files changed: <comma-separated list>\n- Strategy: <what split/dedup/cleanup was performed and why>\n- Validation evidence:\n  - `{{syntaxCheckCommand}}` passed on all touched files\n  - `{{testCommand}}` passed (N tests)\n  - `{{buildCommand}}` passed\n- PR: #<number> — `<branch name>`\n```\n\n## Time Budget Warning\n\nIf you have fewer than 15 minutes remaining:\n- Stop new analysis immediately\n- Commit and push whatever passing changes you have\n- Open the PR even if the scope is smaller than planned\n- Write the session log\n- Stop\n\nA small, clean, tested PR is always better than nothing."
+          },
+          "position": {
+            "x": 400,
+            "y": 450
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-tests",
+          "type": "validation.tests",
+          "label": "Verify — Tests",
+          "config": {
+            "command": "{{testCommand}}"
+          },
+          "position": {
+            "x": 200,
+            "y": 610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-build",
+          "type": "validation.build",
+          "label": "Verify — Build",
+          "config": {
+            "command": "{{buildCommand}}",
+            "zeroWarnings": false
+          },
+          "position": {
+            "x": 600,
+            "y": 610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-validation",
+          "type": "condition.expression",
+          "label": "Validation Passed?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('verify-tests')?.success === true && $ctx.getNodeOutput('verify-build')?.success === true"
+          },
+          "position": {
+            "x": 400,
+            "y": 750
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "create-pr",
+          "type": "action.create_pr",
+          "label": "Open Quality PR",
+          "config": {
+            "title": "refactor: code quality pass {{_runId}}",
+            "body": "Automated code-quality session. Structural refactor only — zero functional changes. See `.bosun-monitor/code-quality-striker.md` for session details.",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "labels": [
+              "refactor",
+              "code-quality",
+              "automated"
+            ]
+          },
+          "position": {
+            "x": 200,
+            "y": 890
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-success",
+          "type": "notify.telegram",
+          "label": "Notify PR Opened",
+          "config": {
+            "message": ":check: Code quality striker session complete.\nPR opened: **{{branch}}**\nRun ID: `{{_runId}}`",
+            "silent": true
+          },
+          "position": {
+            "x": 200,
+            "y": 1030
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-failure",
+          "type": "notify.telegram",
+          "label": "Notify — Validation Failed",
+          "config": {
+            "message": ":alert: Code quality striker **validation failed** for run `{{_runId}}`.\n\nThe agent produced changes that broke tests or build. No PR was created.\nCheck `.bosun-monitor/code-quality-striker.md` for details."
+          },
+          "position": {
+            "x": 600,
+            "y": 890
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-failure",
+          "type": "notify.log",
+          "label": "Log Failure",
+          "config": {
+            "message": "Code quality striker run {{_runId}} failed validation — no PR created.",
+            "level": "warn"
+          },
+          "position": {
+            "x": 600,
+            "y": 1030
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->check-active-pr",
+          "source": "trigger",
+          "target": "check-active-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-active-pr->skip-already-running",
+          "source": "check-active-pr",
+          "target": "skip-already-running",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-active-pr->scan-candidates",
+          "source": "check-active-pr",
+          "target": "scan-candidates",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "scan-candidates->run-striker",
+          "source": "scan-candidates",
+          "target": "run-striker",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-striker->verify-tests",
+          "source": "run-striker",
+          "target": "verify-tests",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-striker->verify-build",
+          "source": "run-striker",
+          "target": "verify-build",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-tests->check-validation",
+          "source": "verify-tests",
+          "target": "check-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-build->check-validation",
+          "source": "verify-build",
+          "target": "check-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-validation->create-pr",
+          "source": "check-validation",
+          "target": "create-pr",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-validation->notify-failure",
+          "source": "check-validation",
+          "target": "notify-failure",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "create-pr->notify-success",
+          "source": "create-pr",
+          "target": "notify-success",
+          "sourcePort": "default"
+        },
+        {
+          "id": "notify-failure->log-failure",
+          "source": "notify-failure",
+          "target": "log-failure",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-task-debug",
+      "name": "Debug Task Workflow",
+      "description": "Bug investigation and fix workflow. Starts with reproduction and root-cause analysis, then implements a targeted fix with regression tests.",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
+      "categoryIcon": ":settings:",
+      "categoryOrder": 99,
+      "tags": [
+        "debug",
+        "bug",
+        "fix",
+        "error",
+        "task-type"
+      ],
+      "nodeCount": 5,
+      "edgeCount": 4,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 3,
+        "maxContinues": 4,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2025-06-01T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "debug",
+          "bug",
+          "fix",
+          "error",
+          "task-type"
+        ],
+        "resolveMode": "library"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "bug|fix|error|crash|regression|broken|debug|issue|defect|hotfix|patch"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "reproduce",
+          "type": "action.run_agent",
+          "label": "Reproduce & Analyse",
+          "config": {
+            "prompt": "## Phase: Bug Reproduction & Root Cause Analysis\n\n1. Read the bug report carefully\n2. Find the relevant code area\n3. Reproduce the issue (write a failing test if possible)\n4. Trace the root cause through the codebase\n5. Document: what fails, where, why, and the minimal fix needed\n\nDo NOT fix the bug yet — only diagnose.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "fix-and-test",
+          "type": "action.run_agent",
+          "label": "Fix & Regression Test",
+          "config": {
+            "prompt": "## Phase: Fix Implementation with Regression Tests\n\n1. Write a regression test that demonstrates the bug (must fail before fix)\n2. Apply the minimal, surgical fix\n3. Verify the regression test now passes\n4. Run the full test suite: {{testCommand}}\n5. Run build: {{buildCommand}}\n6. Run lint: {{lintCommand}}\n7. Ensure no other tests broke\n\nCommit fix and test together with a clear commit message.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Final Verification\n\n1. Run complete test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Confirm the original bug is fixed\n4. Confirm no regressions\n5. Push and create/update PR with root cause analysis in description",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Debug task completed — bug fixed with regression test."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->reproduce",
+          "source": "trigger",
+          "target": "reproduce",
+          "sourcePort": "default"
+        },
+        {
+          "id": "reproduce->fix-and-test",
+          "source": "reproduce",
+          "target": "fix-and-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "fix-and-test->verify",
+          "source": "fix-and-test",
+          "target": "verify",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify->done",
+          "source": "verify",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-task-design",
+      "name": "Design Task Workflow",
+      "description": "For design-related tasks — mockups, wireframes, design tokens, component library work. Analyses design requirements, implements the design system changes, and verifies visual output.",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
+      "categoryIcon": ":settings:",
+      "categoryOrder": 99,
+      "tags": [
+        "design",
+        "mockup",
+        "wireframe",
+        "design-system",
+        "task-type"
+      ],
+      "nodeCount": 5,
+      "edgeCount": 4,
+      "recommended": false,
+      "enabled": true,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2025-06-01T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "design",
+          "mockup",
+          "wireframe",
+          "design-system",
+          "task-type"
+        ],
+        "resolveMode": "library"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "design|mockup|wireframe|prototype|design.system|theme|color|typography|icon|illustration|ux"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "analyse-requirements",
+          "type": "action.run_agent",
+          "label": "Analyse Design Req",
+          "config": {
+            "prompt": "## Phase: Design Requirements Analysis\n\n1. Review the design task requirements\n2. Identify affected design tokens, components, or patterns\n3. Check existing design system for reusable pieces\n4. Plan the implementation approach\n5. List affected files and components\n\nDo NOT make changes yet.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-design",
+          "type": "action.run_agent",
+          "label": "Implement Design",
+          "config": {
+            "prompt": "## Phase: Design Implementation\n\n1. Update design tokens (colors, spacing, typography) if needed\n2. Create / update components per the design specification\n3. Ensure consistency with existing design system\n4. Add visual tests or snapshots where applicable\n5. Run build: {{buildCommand}}\n6. Run lint: {{lintCommand}}\n\nCommit changes with descriptive messages.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-design",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Design Verification\n\n1. Run tests: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify visual consistency\n4. Check design token values are correct\n5. Push and create/update PR",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Design task completed — design changes implemented and verified."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->analyse-requirements",
+          "source": "trigger",
+          "target": "analyse-requirements",
+          "sourcePort": "default"
+        },
+        {
+          "id": "analyse-requirements->implement-design",
+          "source": "analyse-requirements",
+          "target": "implement-design",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-design->verify-design",
+          "source": "implement-design",
+          "target": "verify-design",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-design->done",
+          "source": "verify-design",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
       "id": "template-flow-control-suite",
       "name": "Flow Control Suite",
       "description": "Exercises flow-control primitives in a single short workflow: join, while-loop (0 iters), universal dispatch, and meeting finalization.",
@@ -11896,6 +13268,383 @@
         {
           "id": "finalize-meeting->done",
           "source": "finalize-meeting",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-task-frontend",
+      "name": "Frontend Task Workflow",
+      "description": "Specialised for UI tasks — components, pages, styling, accessibility. Runs three phases: design analysis, implement with component tests, and visual verification.",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
+      "categoryIcon": ":settings:",
+      "categoryOrder": 99,
+      "tags": [
+        "frontend",
+        "ui",
+        "css",
+        "component",
+        "task-type"
+      ],
+      "nodeCount": 5,
+      "edgeCount": 4,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2025-06-01T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "frontend",
+          "ui",
+          "css",
+          "component",
+          "task-type"
+        ],
+        "resolveMode": "library"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "frontend|ui|component|page|layout|style|css|responsive|accessibility|a11y|design.system"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "analyse-design",
+          "type": "action.run_agent",
+          "label": "Analyse Design",
+          "config": {
+            "prompt": "## Phase: Design Analysis\n\nAnalyse the UI task requirements:\n1. Component hierarchy and structure\n2. Layout and responsive breakpoints\n3. State management needs\n4. Accessibility requirements (ARIA, keyboard nav)\n5. Styling approach (CSS modules, Tailwind, styled-components)\n6. Component test plan\n\nDo NOT write code yet.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-ui",
+          "type": "action.run_agent",
+          "label": "Implement UI",
+          "config": {
+            "prompt": "## Phase: UI Implementation\n\n1. Create / update components per the design plan\n2. Implement layouts, styling, and responsive design\n3. Add proper accessibility attributes\n4. Write component tests\n5. Run tests: {{testCommand}}\n6. Run build: {{buildCommand}}\n7. Run lint: {{lintCommand}}\n\nCommit with descriptive messages.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-visual",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Visual Verification\n\n1. Run the full test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify components render correctly\n4. Check responsive breakpoints\n5. Verify accessibility (screen reader, keyboard)\n6. Push changes and create/update PR",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Frontend task completed — UI implemented and verified."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->analyse-design",
+          "source": "trigger",
+          "target": "analyse-design",
+          "sourcePort": "default"
+        },
+        {
+          "id": "analyse-design->implement-ui",
+          "source": "analyse-design",
+          "target": "implement-ui",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-ui->verify-visual",
+          "source": "implement-ui",
+          "target": "verify-visual",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-visual->done",
+          "source": "verify-visual",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-task-fullstack",
+      "name": "Fullstack Task Workflow",
+      "description": "Handles tasks that span frontend and backend — API endpoints, database models, and UI components. Runs four agent phases: architecture planning, backend implementation, frontend implementation, and integration testing.",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
+      "categoryIcon": ":settings:",
+      "categoryOrder": 99,
+      "tags": [
+        "fullstack",
+        "task-type"
+      ],
+      "nodeCount": 6,
+      "edgeCount": 5,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2025-06-01T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "fullstack",
+          "task-type"
+        ],
+        "resolveMode": "library"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "full.?stack|end.to.end|api.*ui|server.*client|frontend.*backend|database.*component"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "plan-architecture",
+          "type": "action.run_agent",
+          "label": "Plan Architecture",
+          "config": {
+            "prompt": "## Phase: Architecture Planning\n\nAnalyse the task and produce a concrete plan covering:\n1. Backend changes: API routes, models, services, migrations\n2. Frontend changes: components, pages, state management\n3. Shared types / contracts between layers\n4. Test strategy for each layer\n5. Integration points and data flow\n\nDo NOT write code yet — produce only the plan.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-backend",
+          "type": "action.run_agent",
+          "label": "Implement Backend",
+          "config": {
+            "prompt": "## Phase: Backend Implementation\n\nImplement the server-side / API changes from the architecture plan:\n- Models, schemas, database migrations\n- API routes and controllers\n- Service / business logic\n- Unit tests for backend logic\n- Run tests: {{testCommand}}\n\nCommit backend changes separately.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-frontend",
+          "type": "action.run_agent",
+          "label": "Implement Frontend",
+          "config": {
+            "prompt": "## Phase: Frontend Implementation\n\nImplement the client-side / UI changes:\n- Components, pages, layouts\n- State management and API integration\n- Styling and responsive design\n- Component tests\n- Run build: {{buildCommand}}\n\nCommit frontend changes separately.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "integration-test",
+          "type": "action.run_agent",
+          "label": "Integration Test",
+          "config": {
+            "prompt": "## Phase: Integration Testing\n\nVerify the full stack works end-to-end:\n1. Run the full test suite: {{testCommand}}\n2. Run the build: {{buildCommand}}\n3. Run lint: {{lintCommand}}\n4. Fix any integration issues between frontend and backend\n5. Ensure all tests pass before completing\n\nPush all changes and create/update the PR.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 660
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Fullstack task completed — all layers implemented and tested."
+          },
+          "position": {
+            "x": 400,
+            "y": 820
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->plan-architecture",
+          "source": "trigger",
+          "target": "plan-architecture",
+          "sourcePort": "default"
+        },
+        {
+          "id": "plan-architecture->implement-backend",
+          "source": "plan-architecture",
+          "target": "implement-backend",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-backend->implement-frontend",
+          "source": "implement-backend",
+          "target": "implement-frontend",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-frontend->integration-test",
+          "source": "implement-frontend",
+          "target": "integration-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "integration-test->done",
+          "source": "integration-test",
           "target": "done",
           "sourcePort": "default"
         }
@@ -13809,8 +15558,8 @@
       "id": "template-task-batch-pr",
       "name": "Task Batch → PR",
       "description": "Simplified batch processor that picks todo tasks, runs the agent on each, and creates pull requests for any that produce commits. Ideal for autonomous mode where tasks should flow straight to PRs.",
-      "category": "lifecycle",
-      "categoryLabel": "Lifecycle",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
       "categoryIcon": ":settings:",
       "categoryOrder": 99,
       "tags": [
@@ -13872,7 +15621,7 @@
             "command": "node",
             "args": [
               "-e",
-              "\n        import(\"./kanban-adapter.mjs\")\n          .then(k => k.listTasks(undefined, { status: \"todo\" }))\n          .then(tasks => {\n            const batch = (tasks || []).slice(0, parseInt(process.env.MAX_BATCH || \"5\"));\n            console.log(JSON.stringify(batch.map(t => ({\n              taskId: t.id,\n              taskTitle: t.title || t.id,\n              branch: t.branch || t.metadata?.branch || null,\n            }))));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
+              "\n        import(\"./kanban-adapter.mjs\")\n          .then(k => k.listTasks(undefined, { status: \"todo\" }))\n          .then(tasks => {\n            const filtered = (tasks || []).filter((task) => {\n              const repository = typeof task?.repository === \"string\" ? task.repository.trim() : \"\";\n              const workspace = typeof task?.workspace === \"string\" ? task.workspace.trim() : \"\";\n              return task && task.status === \"todo\" && !task.draft && repository.length > 0 && workspace.length > 0;\n            });\n            const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || \"5\"));\n            console.log(JSON.stringify(batch.map(t => ({\n              taskId: t.id,\n              taskTitle: t.title || t.id,\n              branch: t.branch || t.metadata?.branch || null,\n              repository: t.repository || null,\n              workspace: t.workspace || null,\n            }))));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
             ],
             "env": {
               "MAX_BATCH": "{{maxBatchSize}}"
@@ -14118,8 +15867,8 @@
       "id": "template-task-batch-processor",
       "name": "Task Batch Processor",
       "description": "Monitors the task backlog and dispatches multiple tasks in parallel using the Task Lifecycle sub-workflow. Automatically picks up tasks when backlog drops below threshold, fans out execution across available slots, and reports batch results.",
-      "category": "lifecycle",
-      "categoryLabel": "Lifecycle",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
       "categoryIcon": ":settings:",
       "categoryOrder": 99,
       "tags": [
@@ -14195,7 +15944,7 @@
             "command": "node",
             "args": [
               "-e",
-              "\n        import(\"./kanban-adapter.mjs\")\n          .then(k => k.listTasks(undefined, { status: \"todo\" }))\n          .then(tasks => {\n            const batch = (tasks || []).slice(0, parseInt(process.env.MAX_BATCH || \"10\"));\n            console.log(JSON.stringify(batch.map(t => ({\n              taskId: t.id,\n              taskTitle: t.title || t.id,\n              status: t.status,\n              branch: t.branch || t.metadata?.branch || null,\n              scope: t.scope || t.metadata?.scope || null,\n            }))));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
+              "\n        import(\"./kanban-adapter.mjs\")\n          .then(k => k.listTasks(undefined, { status: \"todo\" }))\n          .then(tasks => {\n            const filtered = (tasks || []).filter((task) => {\n              const repository = typeof task?.repository === \"string\" ? task.repository.trim() : \"\";\n              const workspace = typeof task?.workspace === \"string\" ? task.workspace.trim() : \"\";\n              return task && task.status === \"todo\" && !task.draft && repository.length > 0 && workspace.length > 0;\n            });\n            const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || \"10\"));\n            console.log(JSON.stringify(batch.map(t => ({\n              taskId: t.id,\n              taskTitle: t.title || t.id,\n              status: t.status,\n              branch: t.branch || t.metadata?.branch || null,\n              scope: t.scope || t.metadata?.scope || null,\n              repository: typeof t?.repository === \"string\" ? t.repository.trim() : null,\n              workspace: typeof t?.workspace === \"string\" ? t.workspace.trim() : null,\n            }))));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
             ],
             "env": {
               "MAX_BATCH": "{{maxBatchSize}}"
@@ -14254,7 +16003,7 @@
           "label": "Record Results",
           "config": {
             "key": "batchResult",
-            "value": "{{dispatchResult}}"
+            "value": "{{dispatch-tasks}}"
           },
           "position": {
             "x": 400,
@@ -14325,8 +16074,8 @@
       "id": "template-task-lifecycle",
       "name": "Task Lifecycle",
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
-      "category": "lifecycle",
-      "categoryLabel": "Lifecycle",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
       "categoryIcon": ":settings:",
       "categoryOrder": 99,
       "tags": [
@@ -14336,8 +16085,8 @@
         "workflow-first",
         "core"
       ],
-      "nodeCount": 36,
-      "edgeCount": 39,
+      "nodeCount": 44,
+      "edgeCount": 48,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -14346,7 +16095,7 @@
         "baseBranchLimit": 0,
         "pollIntervalMs": 30000,
         "claimTtlMinutes": 180,
-        "claimRenewIntervalMs": 300000,
+        "claimRenewIntervalMs": 60000,
         "defaultSdk": "auto",
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
@@ -14537,6 +16286,8 @@
             "taskId": "{{taskId}}",
             "taskTitle": "{{taskTitle}}",
             "taskDescription": "{{taskDescription}}",
+            "repoRoot": "{{repoRoot}}",
+            "workspace": "{{workspace}}",
             "defaultSdk": "{{defaultSdk}}"
           },
           "position": {
@@ -14564,6 +16315,38 @@
           ]
         },
         {
+          "id": "read-workflow-contract",
+          "type": "read-workflow-contract",
+          "label": "Read WORKFLOW.md",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "worktreePath": "{{worktreePath}}"
+          },
+          "position": {
+            "x": 200,
+            "y": 1350
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "workflow-contract-validation",
+          "type": "workflow-contract-validation",
+          "label": "Validate WORKFLOW.md",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "worktreePath": "{{worktreePath}}"
+          },
+          "position": {
+            "x": 200,
+            "y": 1480
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "build-prompt",
           "type": "action.build_task_prompt",
           "label": "Build Prompt",
@@ -14582,19 +16365,22 @@
           },
           "position": {
             "x": 200,
-            "y": 1350
+            "y": 1610
           },
           "outputs": [
             "default"
           ]
         },
         {
-          "id": "run-agent",
+          "id": "run-agent-plan",
           "type": "action.run_agent",
-          "label": "Execute Agent",
+          "label": "Agent Plan",
           "config": {
-            "prompt": "{{_taskPrompt}}",
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: planning. Produce a concrete implementation plan and identify required tests. Do not make code changes in this phase.",
             "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
             "cwd": "{{worktreePath}}",
             "timeoutMs": "{{taskTimeoutMs}}",
             "maxRetries": "{{maxRetries}}",
@@ -14603,7 +16389,55 @@
           },
           "position": {
             "x": 200,
-            "y": 1480
+            "y": 1740
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent-tests",
+          "type": "action.run_agent",
+          "label": "Agent Tests",
+          "config": {
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: tests. Write or update tests first for the target behavior, then validate failures/pass criteria before implementation changes.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 200,
+            "y": 1545
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent-implement",
+          "type": "action.run_agent",
+          "label": "Agent Implement",
+          "config": {
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: implementation. Complete implementation after tests exist, run required verification (tests/lint/build), then commit, push, and create/update PR.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 200,
+            "y": 1610
           },
           "outputs": [
             "default"
@@ -14717,7 +16551,7 @@
           "type": "condition.expression",
           "label": "PR Linked?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.success === true && ($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl))"
           },
           "position": {
             "x": 0,
@@ -14812,6 +16646,75 @@
           ]
         },
         {
+          "id": "create-pr-retry",
+          "type": "action.create_pr",
+          "label": "Recover PR Link",
+          "config": {
+            "title": "{{taskTitle}}",
+            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+            "base": "{{baseBranch}}",
+            "branch": "{{branch}}",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 1740
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pr-created-stolen",
+          "type": "condition.expression",
+          "label": "PR Linked After Claim Loss?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('create-pr-retry')?.success === true && ($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl))"
+          },
+          "position": {
+            "x": 400,
+            "y": 1870
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-inreview-stolen",
+          "type": "action.update_task_status",
+          "label": "Set In-Review (Recovered)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "inreview",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 250,
+            "y": 2000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-claim-stolen-recovered",
+          "type": "notify.log",
+          "label": "Log Claim Loss Recovery",
+          "config": {
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — claim lost after PR link recovery, keeping inreview",
+            "level": "warn"
+          },
+          "position": {
+            "x": 250,
+            "y": 2130
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "log-claim-stolen",
           "type": "notify.log",
           "label": "Log Claim Stolen",
@@ -14820,8 +16723,8 @@
             "level": "warn"
           },
           "position": {
-            "x": 400,
-            "y": 1740
+            "x": 550,
+            "y": 2000
           },
           "outputs": [
             "default"
@@ -14837,8 +16740,8 @@
             "taskTitle": "{{taskTitle}}"
           },
           "position": {
-            "x": 400,
-            "y": 1870
+            "x": 550,
+            "y": 2130
           },
           "outputs": [
             "default"
@@ -14854,7 +16757,8 @@
               "log-success",
               "set-todo-push-failed",
               "set-todo-cooldown",
-              "set-todo-stolen"
+              "set-todo-stolen",
+              "log-claim-stolen-recovered"
             ],
             "includeSkipped": true
           },
@@ -15066,20 +16970,44 @@
           "sourcePort": "default"
         },
         {
-          "id": "record-head->build-prompt",
+          "id": "record-head->read-workflow-contract",
           "source": "record-head",
+          "target": "read-workflow-contract",
+          "sourcePort": "default"
+        },
+        {
+          "id": "read-workflow-contract->workflow-contract-validation",
+          "source": "read-workflow-contract",
+          "target": "workflow-contract-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "workflow-contract-validation->build-prompt",
+          "source": "workflow-contract-validation",
           "target": "build-prompt",
           "sourcePort": "default"
         },
         {
-          "id": "build-prompt->run-agent",
+          "id": "build-prompt->run-agent-plan",
           "source": "build-prompt",
-          "target": "run-agent",
+          "target": "run-agent-plan",
           "sourcePort": "default"
         },
         {
-          "id": "run-agent->claim-stolen",
-          "source": "run-agent",
+          "id": "run-agent-plan->run-agent-tests",
+          "source": "run-agent-plan",
+          "target": "run-agent-tests",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-agent-tests->run-agent-implement",
+          "source": "run-agent-tests",
+          "target": "run-agent-implement",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-agent-implement->claim-stolen",
+          "source": "run-agent-implement",
           "target": "claim-stolen",
           "sourcePort": "default"
         },
@@ -15181,11 +17109,43 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->log-claim-stolen",
+          "id": "claim-stolen->create-pr-retry",
           "source": "claim-stolen",
-          "target": "log-claim-stolen",
+          "target": "create-pr-retry",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
+        },
+        {
+          "id": "create-pr-retry->pr-created-stolen",
+          "source": "create-pr-retry",
+          "target": "pr-created-stolen",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-stolen->set-inreview-stolen",
+          "source": "pr-created-stolen",
+          "target": "set-inreview-stolen",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "set-inreview-stolen->log-claim-stolen-recovered",
+          "source": "set-inreview-stolen",
+          "target": "log-claim-stolen-recovered",
+          "sourcePort": "default"
+        },
+        {
+          "id": "log-claim-stolen-recovered->join-outcomes",
+          "source": "log-claim-stolen-recovered",
+          "target": "join-outcomes",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-stolen->log-claim-stolen",
+          "source": "pr-created-stolen",
+          "target": "log-claim-stolen",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         },
         {
           "id": "log-claim-stolen->set-todo-stolen",
@@ -15261,8 +17221,8 @@
       "id": "template-ve-orchestrator-lite",
       "name": "VE Orchestrator Lite",
       "description": "Simplified task lifecycle for lightweight deployments. Same core flow as the full Task Lifecycle (slot → claim → worktree → agent → push → PR) but with fewer failure branches and no anti-thrash.",
-      "category": "lifecycle",
-      "categoryLabel": "Lifecycle",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
       "categoryIcon": ":settings:",
       "categoryOrder": 99,
       "tags": [
@@ -15271,8 +17231,8 @@
         "lite",
         "ve-orchestrator"
       ],
-      "nodeCount": 24,
-      "edgeCount": 25,
+      "nodeCount": 26,
+      "edgeCount": 27,
       "recommended": false,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -15435,6 +17395,11 @@
           "type": "action.resolve_executor",
           "label": "Resolve SDK",
           "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "taskDescription": "{{taskDescription}}",
+            "repoRoot": "{{repoRoot}}",
+            "workspace": "{{workspace}}",
             "defaultSdk": "{{defaultSdk}}"
           },
           "position": {
@@ -15462,6 +17427,38 @@
           ]
         },
         {
+          "id": "read-workflow-contract",
+          "type": "read-workflow-contract",
+          "label": "Read WORKFLOW.md",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "worktreePath": "{{worktreePath}}"
+          },
+          "position": {
+            "x": 300,
+            "y": 1220
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "workflow-contract-validation",
+          "type": "workflow-contract-validation",
+          "label": "Validate WORKFLOW.md",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "worktreePath": "{{worktreePath}}"
+          },
+          "position": {
+            "x": 300,
+            "y": 1350
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "prompt",
           "type": "action.build_task_prompt",
           "label": "Build Prompt",
@@ -15476,7 +17473,7 @@
           },
           "position": {
             "x": 300,
-            "y": 1220
+            "y": 1480
           },
           "outputs": [
             "default"
@@ -15489,6 +17486,9 @@
           "config": {
             "prompt": "{{_taskPrompt}}",
             "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
             "cwd": "{{worktreePath}}",
             "timeoutMs": "{{taskTimeoutMs}}",
             "maxRetries": "{{maxRetries}}",
@@ -15496,7 +17496,7 @@
           },
           "position": {
             "x": 300,
-            "y": 1350
+            "y": 1610
           },
           "outputs": [
             "default"
@@ -15576,7 +17576,7 @@
           "type": "condition.expression",
           "label": "PR Linked?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput('pr')?.success === true && ($ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl))"
           },
           "position": {
             "x": 180,
@@ -15770,8 +17770,20 @@
           "sourcePort": "default"
         },
         {
-          "id": "record-head->prompt",
+          "id": "record-head->read-workflow-contract",
           "source": "record-head",
+          "target": "read-workflow-contract",
+          "sourcePort": "default"
+        },
+        {
+          "id": "read-workflow-contract->workflow-contract-validation",
+          "source": "read-workflow-contract",
+          "target": "workflow-contract-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "workflow-contract-validation->prompt",
+          "source": "workflow-contract-validation",
           "target": "prompt",
           "sourcePort": "default"
         },
@@ -16279,7 +18291,7 @@
           "type": "action.run_command",
           "label": "Fetch, Classify & Label PRs",
           "config": {
-            "command": "node -e \" const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']); function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function collectReposFromConfig(){   const repos=[];   try{     const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--label','bosun-attached','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const readyCandidates=[],conflicts=[],ciFailures=[],pending=[],drafted=[]; let newlyLabeled=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const hasFail=checks.some(c=>FAIL_STATES.has(c.conclusion||c.state||''));   const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(isConflict){     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasFail){     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(checks.length>0&&!hasFixLabel){     if(hasPend) pending.push({n:pr.number,repo});     readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   ciFailures,   pending:pending.length,   drafted:drafted.length,   newlyLabeled,   fixNeeded:conflicts.length+ciFailures.length })); \"",
+            "command": "node -e \" const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']); function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function collectReposFromConfig(){   const repos=[];   try{     const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--label','bosun-attached','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const readyCandidates=[],conflicts=[],ciFailures=[],pending=[],drafted=[]; let newlyLabeled=0,staleLabelCleared=0,ciKicked=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const hasFail=checks.some(c=>FAIL_STATES.has(c.conclusion||c.state||''));   const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(isConflict){     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasFail){     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else {     if(hasFixLabel&&!hasPend){       try{         const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];         if(repo)rmArgs.push('--repo',repo);         execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});         staleLabelCleared++;       }catch(e){process.stderr.write('stale-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     } else if(checks.length>0&&!hasFixLabel){       if(hasPend) pending.push({n:pr.number,repo});       readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});     }     if(checks.length===0&&repo&&pr.headRefName&&!isDraft){       try{execFileSync('gh',['workflow','run','ci.yaml','--repo',repo,'--ref',pr.headRefName],{encoding:'utf8',stdio:['pipe','pipe','pipe']});ciKicked++;}       catch{}     }   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   ciFailures,   pending:pending.length,   drafted:drafted.length,   newlyLabeled,   staleLabelCleared,   ciKicked,   fixNeeded:conflicts.length+ciFailures.length })); \"",
             "continueOnError": false,
             "failOnError": true
           },
@@ -17055,9 +19067,14 @@
         {
           "id": "trigger",
           "type": "trigger.pr_event",
-          "label": "PR Ready for Review",
+          "label": "PR Ready for Merge Decision",
           "config": {
-            "event": "review_requested"
+            "event": "review_requested",
+            "events": [
+              "review_requested",
+              "approved",
+              "opened"
+            ]
           },
           "position": {
             "x": 400,
@@ -19019,555 +21036,6 @@
       }
     },
     {
-      "id": "wf-backend-agent",
-      "name": "Backend Agent",
-      "description": "Spins up an agent focused on backend/API development with a test-first methodology. Writes tests first, implements the feature, validates with build + lint, then creates a PR.",
-      "category": "agents",
-      "enabled": true,
-      "nodeCount": 23,
-      "trigger": "trigger.task_assigned",
-      "variables": {
-        "testFramework": "node --test",
-        "buildCommand": "npm run build",
-        "agentSdk": "auto",
-        "timeoutMs": 3600000,
-        "autoFixTimeoutMs": 1200000
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.task_assigned",
-          "label": "Task Assigned",
-          "config": {
-            "filter": "task.tags?.some(t => t === 'backend' || t === 'api')"
-          },
-          "position": {
-            "x": 400,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "plan-work",
-          "type": "agent.run_planner",
-          "label": "Plan Implementation",
-          "config": {
-            "prompt": "Analyze the task requirements and create a step-by-step implementation plan. Identify which files need to be modified, what tests need to be written, and any API contracts to maintain.",
-            "outputVariable": "plan"
-          },
-          "position": {
-            "x": 400,
-            "y": 180
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "write-tests",
-          "type": "action.run_agent",
-          "label": "Write Tests First",
-          "config": {
-            "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's existing test framework: {{testFramework}}\nCommit with message \"test: add tests for [feature]\"",
-            "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{timeoutMs}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 330
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "implement",
-          "type": "action.run_agent",
-          "label": "Implement Feature",
-          "config": {
-            "prompt": "# Implement Backend Feature\n\nThe tests have been written. Now implement the feature to make them pass:\n1. Follow existing code conventions\n2. Add proper error handling\n3. Ensure all new tests pass\n4. Do NOT modify the tests — make the code fit the contract\n\nRun `{{testFramework}}` after implementation.\nCommit with message \"feat: implement [feature]\"",
-            "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{timeoutMs}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 490
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "build",
-          "type": "validation.build",
-          "label": "Build Check",
-          "config": {
-            "command": "{{buildCommand}}",
-            "zeroWarnings": true
-          },
-          "position": {
-            "x": 400,
-            "y": 650
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "test-final",
-          "type": "validation.tests",
-          "label": "Final Test Run",
-          "config": {
-            "command": "{{testFramework}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 780
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "lint",
-          "type": "validation.lint",
-          "label": "Lint Check",
-          "config": {
-            "command": "npm run lint 2>/dev/null || echo 'no lint script'"
-          },
-          "position": {
-            "x": 400,
-            "y": 910
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "all-passed",
-          "type": "condition.expression",
-          "label": "All Checks Passed?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('build')?.passed === true && $ctx.getNodeOutput('test-final')?.passed === true && $ctx.getNodeOutput('lint')?.passed === true"
-          },
-          "position": {
-            "x": 400,
-            "y": 1040
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "create-pr",
-          "type": "action.create_pr",
-          "label": "Handoff PR Lifecycle",
-          "config": {
-            "title": "feat: {{taskTitle}}",
-            "body": "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing. Bosun lifecycle handoff ready.",
-            "branch": "feat/{{taskSlug}}",
-            "baseBranch": "main",
-            "failOnError": true,
-            "maxRetries": 3,
-            "retryDelayMs": 15000,
-            "continueOnError": true
-          },
-          "position": {
-            "x": 250,
-            "y": 1170
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "pr-created",
-          "type": "condition.expression",
-          "label": "Handoff Recorded?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('create-pr')?.success === true"
-          },
-          "position": {
-            "x": 250,
-            "y": 1240
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "notify-done",
-          "type": "notify.log",
-          "label": "Task Complete",
-          "config": {
-            "message": "Backend agent completed task — PR lifecycle handoff recorded",
-            "level": "info"
-          },
-          "position": {
-            "x": 180,
-            "y": 1320
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-pr-failed",
-          "type": "notify.telegram",
-          "label": "Escalate Lifecycle Handoff Failure",
-          "config": {
-            "message": ":alert: Backend agent passed validation for {{taskTitle}} but failed to record Bosun PR lifecycle handoff after retries. Manual follow-up required."
-          },
-          "position": {
-            "x": 420,
-            "y": 1320
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "set-validation-summary",
-          "type": "action.set_variable",
-          "label": "Summarize Validation Output",
-          "config": {
-            "key": "validationSummary",
-            "value": "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('build') || {}; const test = $ctx.getNodeOutput('test-final') || {}; const lint = $ctx.getNodeOutput('lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 620,
-            "y": 1090
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "auto-fix",
-          "type": "action.run_agent",
-          "label": "Auto-Fix Validation Failures",
-          "config": {
-            "prompt": "# Fix Backend Validation Failures\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\nCurrent validation outputs:\n{{validationSummary}}\n\nFix the code so build/tests/lint pass.\nDo NOT weaken, remove, or bypass tests.\nKeep the original task scope.\n\nRun build + tests + lint locally before finishing.\nCommit with message \"fix: address backend workflow validation failures\"",
-            "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{autoFixTimeoutMs}}"
-          },
-          "position": {
-            "x": 620,
-            "y": 1170
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "build-retry",
-          "type": "validation.build",
-          "label": "Build Check (Retry)",
-          "config": {
-            "command": "{{buildCommand}}",
-            "zeroWarnings": true
-          },
-          "position": {
-            "x": 620,
-            "y": 1300
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "test-retry",
-          "type": "validation.tests",
-          "label": "Final Test Run (Retry)",
-          "config": {
-            "command": "{{testFramework}}"
-          },
-          "position": {
-            "x": 620,
-            "y": 1430
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "lint-retry",
-          "type": "validation.lint",
-          "label": "Lint Check (Retry)",
-          "config": {
-            "command": "npm run lint 2>/dev/null || echo 'no lint script'"
-          },
-          "position": {
-            "x": 620,
-            "y": 1560
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry-passed",
-          "type": "condition.expression",
-          "label": "Retry Checks Passed?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('build-retry')?.passed === true && $ctx.getNodeOutput('test-retry')?.passed === true && $ctx.getNodeOutput('lint-retry')?.passed === true"
-          },
-          "position": {
-            "x": 620,
-            "y": 1690
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "create-pr-retry",
-          "type": "action.create_pr",
-          "label": "Handoff PR Lifecycle (After Retry)",
-          "config": {
-            "title": "feat: {{taskTitle}}",
-            "body": "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation. Bosun lifecycle handoff ready.",
-            "branch": "feat/{{taskSlug}}",
-            "baseBranch": "main",
-            "failOnError": true,
-            "maxRetries": 3,
-            "retryDelayMs": 15000,
-            "continueOnError": true
-          },
-          "position": {
-            "x": 450,
-            "y": 1820
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "pr-created-retry",
-          "type": "condition.expression",
-          "label": "Handoff Recorded (Retry Path)?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('create-pr-retry')?.success === true"
-          },
-          "position": {
-            "x": 450,
-            "y": 1890
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "notify-done-retry",
-          "type": "notify.log",
-          "label": "Task Complete (After Retry)",
-          "config": {
-            "message": "Backend agent completed task after retry — PR lifecycle handoff recorded",
-            "level": "info"
-          },
-          "position": {
-            "x": 360,
-            "y": 1980
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-fail",
-          "type": "notify.telegram",
-          "label": "Checks Failed",
-          "config": {
-            "message": ":alert: Backend agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed."
-          },
-          "position": {
-            "x": 820,
-            "y": 1820
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-pr-failed-retry",
-          "type": "notify.telegram",
-          "label": "Escalate Lifecycle Failure (Retry Path)",
-          "config": {
-            "message": ":alert: Backend agent remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed after retries. Manual follow-up required."
-          },
-          "position": {
-            "x": 620,
-            "y": 1980
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->plan-work",
-          "source": "trigger",
-          "target": "plan-work",
-          "sourcePort": "default"
-        },
-        {
-          "id": "plan-work->write-tests",
-          "source": "plan-work",
-          "target": "write-tests",
-          "sourcePort": "default"
-        },
-        {
-          "id": "write-tests->implement",
-          "source": "write-tests",
-          "target": "implement",
-          "sourcePort": "default"
-        },
-        {
-          "id": "implement->build",
-          "source": "implement",
-          "target": "build",
-          "sourcePort": "default"
-        },
-        {
-          "id": "build->test-final",
-          "source": "build",
-          "target": "test-final",
-          "sourcePort": "default"
-        },
-        {
-          "id": "test-final->lint",
-          "source": "test-final",
-          "target": "lint",
-          "sourcePort": "default"
-        },
-        {
-          "id": "lint->all-passed",
-          "source": "lint",
-          "target": "all-passed",
-          "sourcePort": "default"
-        },
-        {
-          "id": "all-passed->create-pr",
-          "source": "all-passed",
-          "target": "create-pr",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "all-passed->set-validation-summary",
-          "source": "all-passed",
-          "target": "set-validation-summary",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "set-validation-summary->auto-fix",
-          "source": "set-validation-summary",
-          "target": "auto-fix",
-          "sourcePort": "default"
-        },
-        {
-          "id": "create-pr->pr-created",
-          "source": "create-pr",
-          "target": "pr-created",
-          "sourcePort": "default"
-        },
-        {
-          "id": "pr-created->notify-done",
-          "source": "pr-created",
-          "target": "notify-done",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "pr-created->notify-pr-failed",
-          "source": "pr-created",
-          "target": "notify-pr-failed",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "auto-fix->build-retry",
-          "source": "auto-fix",
-          "target": "build-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "build-retry->test-retry",
-          "source": "build-retry",
-          "target": "test-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "test-retry->lint-retry",
-          "source": "test-retry",
-          "target": "lint-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "lint-retry->retry-passed",
-          "source": "lint-retry",
-          "target": "retry-passed",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry-passed->create-pr-retry",
-          "source": "retry-passed",
-          "target": "create-pr-retry",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "retry-passed->notify-fail",
-          "source": "retry-passed",
-          "target": "notify-fail",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "create-pr-retry->pr-created-retry",
-          "source": "create-pr-retry",
-          "target": "pr-created-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "pr-created-retry->notify-done-retry",
-          "source": "pr-created-retry",
-          "target": "notify-done-retry",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "pr-created-retry->notify-pr-failed-retry",
-          "source": "pr-created-retry",
-          "target": "notify-pr-failed-retry",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        }
-      ],
-      "metadata": {
-        "author": "bosun-demo",
-        "createdAt": "2026-03-11T12:00:00.000Z",
-        "updatedAt": "2026-03-11T12:00:00.000Z",
-        "templateState": {
-          "templateId": "template-backend-agent",
-          "templateName": "Backend Agent",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
-          "isCustomized": false,
-          "updateAvailable": false
-        }
-      }
-    },
-    {
       "id": "wf-custom-agent",
       "name": "Custom Agent Profile",
       "description": "Starter template for creating a custom agent profile with configurable validation, notification, and completion gates. Duplicate and customize to match your specific workflow.",
@@ -19729,8 +21197,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-12T12:00:00.000Z",
-        "updatedAt": "2026-03-12T12:00:00.000Z",
+        "createdAt": "2026-03-11T12:00:00.000Z",
+        "updatedAt": "2026-03-11T12:00:00.000Z",
         "templateState": {
           "templateId": "template-custom-agent",
           "templateName": "Custom Agent Profile",
@@ -20149,8 +21617,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-13T12:00:00.000Z",
-        "updatedAt": "2026-03-13T12:00:00.000Z",
+        "createdAt": "2026-03-12T12:00:00.000Z",
+        "updatedAt": "2026-03-12T12:00:00.000Z",
         "templateState": {
           "templateId": "template-frontend-agent",
           "templateName": "Frontend Agent",
@@ -20525,13 +21993,726 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-14T12:00:00.000Z",
-        "updatedAt": "2026-03-14T12:00:00.000Z",
+        "createdAt": "2026-03-13T12:00:00.000Z",
+        "updatedAt": "2026-03-13T12:00:00.000Z",
         "templateState": {
           "templateId": "template-meeting-subworkflow-chain",
           "templateName": "Meeting Orchestrator + Subworkflow Chain",
           "templateVersion": "1.0.0",
           "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-backend-agent",
+      "name": "Task Completion Agent",
+      "description": "General-purpose task completion agent with a test-first methodology. Writes tests first, implements the feature, validates with build + lint, then creates a PR. Works with any language/framework — commands are auto-detected from your project or fully customizable.",
+      "category": "agents",
+      "enabled": true,
+      "nodeCount": 29,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "testCommand": "npm test",
+        "buildCommand": "npm run build",
+        "lintCommand": "",
+        "baseBranch": "main",
+        "protectedBranches": [
+          "main",
+          "master",
+          "develop",
+          "production"
+        ],
+        "agentSdk": "auto",
+        "timeoutMs": 3600000,
+        "autoFixTimeoutMs": 1200000
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {},
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "plan-work",
+          "type": "agent.run_planner",
+          "label": "Plan Implementation",
+          "config": {
+            "prompt": "Analyze the task requirements and create a step-by-step implementation plan. Identify which files need to be modified, what tests need to be written, and any API contracts to maintain.",
+            "outputVariable": "plan"
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "write-tests",
+          "type": "action.run_agent",
+          "label": "Write Tests First",
+          "config": {
+            "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's test command: {{testCommand}}\nCommit with message \"test: add tests for [feature]\"",
+            "sdk": "{{agentSdk}}",
+            "timeoutMs": "{{timeoutMs}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 330
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement",
+          "type": "action.run_agent",
+          "label": "Implement Feature",
+          "config": {
+            "prompt": "# Implement Feature\n\nThe tests have been written. Now implement the feature to make them pass:\n1. Follow existing code conventions\n2. Add proper error handling\n3. Ensure all new tests pass\n4. Do NOT modify the tests — make the code fit the contract\n\nRun `{{testCommand}}` after implementation.\nCommit with message \"feat: implement [feature]\"",
+            "sdk": "{{agentSdk}}",
+            "timeoutMs": "{{timeoutMs}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "build",
+          "type": "validation.build",
+          "label": "Build Check",
+          "config": {
+            "command": "{{buildCommand}}",
+            "zeroWarnings": true
+          },
+          "position": {
+            "x": 400,
+            "y": 650
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "test-final",
+          "type": "validation.tests",
+          "label": "Final Test Run",
+          "config": {
+            "command": "{{testCommand}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 780
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "lint",
+          "type": "validation.lint",
+          "label": "Lint Check",
+          "config": {
+            "command": "{{lintCommand}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 910
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "all-passed",
+          "type": "condition.expression",
+          "label": "All Checks Passed?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('build')?.passed === true && $ctx.getNodeOutput('test-final')?.passed === true && $ctx.getNodeOutput('lint')?.passed === true"
+          },
+          "position": {
+            "x": 400,
+            "y": 1040
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "push-branch",
+          "type": "action.push_branch",
+          "label": "Push Branch",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "rebaseBeforePush": true,
+            "emptyDiffGuard": true,
+            "protectedBranches": "{{protectedBranches}}"
+          },
+          "position": {
+            "x": 250,
+            "y": 1110
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "push-ok",
+          "type": "condition.expression",
+          "label": "Push OK?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('push-branch')?.pushed === true"
+          },
+          "position": {
+            "x": 250,
+            "y": 1175
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "create-pr",
+          "type": "action.create_pr",
+          "label": "Handoff PR Lifecycle",
+          "config": {
+            "title": "feat: {{taskTitle}}",
+            "body": "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing. Bosun lifecycle handoff ready.",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "failOnError": true,
+            "maxRetries": 3,
+            "retryDelayMs": 15000,
+            "continueOnError": true
+          },
+          "position": {
+            "x": 250,
+            "y": 1170
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pr-created",
+          "type": "condition.expression",
+          "label": "Handoff Recorded?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
+          },
+          "position": {
+            "x": 250,
+            "y": 1240
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-inreview",
+          "type": "action.update_task_status",
+          "label": "Set In-Review",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "inreview",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 180,
+            "y": 1320
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-done",
+          "type": "notify.log",
+          "label": "Task Complete",
+          "config": {
+            "message": "Task completion agent finished task — PR lifecycle handoff recorded",
+            "level": "info"
+          },
+          "position": {
+            "x": 180,
+            "y": 1320
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-pr-failed",
+          "type": "notify.telegram",
+          "label": "Escalate Lifecycle Handoff Failure",
+          "config": {
+            "message": ":alert: Task completion agent passed validation for {{taskTitle}} but failed to record Bosun PR lifecycle handoff after retries. Manual follow-up required."
+          },
+          "position": {
+            "x": 420,
+            "y": 1320
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "set-validation-summary",
+          "type": "action.set_variable",
+          "label": "Summarize Validation Output",
+          "config": {
+            "key": "validationSummary",
+            "value": "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('build') || {}; const test = $ctx.getNodeOutput('test-final') || {}; const lint = $ctx.getNodeOutput('lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 620,
+            "y": 1090
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "auto-fix",
+          "type": "action.run_agent",
+          "label": "Auto-Fix Validation Failures",
+          "config": {
+            "prompt": "# Fix Validation Failures\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\nCurrent validation outputs:\n{{validationSummary}}\n\nFix the code so build/tests/lint pass.\nDo NOT weaken, remove, or bypass tests.\nKeep the original task scope.\n\nRun build + tests + lint locally before finishing.\nCommit with message \"fix: address validation failures\"",
+            "sdk": "{{agentSdk}}",
+            "timeoutMs": "{{autoFixTimeoutMs}}"
+          },
+          "position": {
+            "x": 620,
+            "y": 1170
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "build-retry",
+          "type": "validation.build",
+          "label": "Build Check (Retry)",
+          "config": {
+            "command": "{{buildCommand}}",
+            "zeroWarnings": true
+          },
+          "position": {
+            "x": 620,
+            "y": 1300
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "test-retry",
+          "type": "validation.tests",
+          "label": "Final Test Run (Retry)",
+          "config": {
+            "command": "{{testCommand}}"
+          },
+          "position": {
+            "x": 620,
+            "y": 1430
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "lint-retry",
+          "type": "validation.lint",
+          "label": "Lint Check (Retry)",
+          "config": {
+            "command": "{{lintCommand}}"
+          },
+          "position": {
+            "x": 620,
+            "y": 1560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-passed",
+          "type": "condition.expression",
+          "label": "Retry Checks Passed?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('build-retry')?.passed === true && $ctx.getNodeOutput('test-retry')?.passed === true && $ctx.getNodeOutput('lint-retry')?.passed === true"
+          },
+          "position": {
+            "x": 620,
+            "y": 1690
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "push-branch-retry",
+          "type": "action.push_branch",
+          "label": "Push Branch (Retry)",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "rebaseBeforePush": true,
+            "emptyDiffGuard": true,
+            "protectedBranches": "{{protectedBranches}}"
+          },
+          "position": {
+            "x": 450,
+            "y": 1760
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "push-ok-retry",
+          "type": "condition.expression",
+          "label": "Push OK? (Retry)",
+          "config": {
+            "expression": "$ctx.getNodeOutput('push-branch-retry')?.pushed === true"
+          },
+          "position": {
+            "x": 450,
+            "y": 1825
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "create-pr-retry",
+          "type": "action.create_pr",
+          "label": "Handoff PR Lifecycle (After Retry)",
+          "config": {
+            "title": "feat: {{taskTitle}}",
+            "body": "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation. Bosun lifecycle handoff ready.",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "failOnError": true,
+            "maxRetries": 3,
+            "retryDelayMs": 15000,
+            "continueOnError": true
+          },
+          "position": {
+            "x": 450,
+            "y": 1820
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pr-created-retry",
+          "type": "condition.expression",
+          "label": "Handoff Recorded (Retry Path)?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl)"
+          },
+          "position": {
+            "x": 450,
+            "y": 1890
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-inreview-retry",
+          "type": "action.update_task_status",
+          "label": "Set In-Review (Retry)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "inreview",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 360,
+            "y": 1980
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-done-retry",
+          "type": "notify.log",
+          "label": "Task Complete (After Retry)",
+          "config": {
+            "message": "Task completion agent finished task after retry — PR lifecycle handoff recorded",
+            "level": "info"
+          },
+          "position": {
+            "x": 360,
+            "y": 1980
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-fail",
+          "type": "notify.telegram",
+          "label": "Checks Failed",
+          "config": {
+            "message": ":alert: Task completion agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed."
+          },
+          "position": {
+            "x": 820,
+            "y": 1820
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-pr-failed-retry",
+          "type": "notify.telegram",
+          "label": "Escalate Lifecycle Failure (Retry Path)",
+          "config": {
+            "message": ":alert: Task completion agent remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed after retries. Manual follow-up required."
+          },
+          "position": {
+            "x": 620,
+            "y": 1980
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->plan-work",
+          "source": "trigger",
+          "target": "plan-work",
+          "sourcePort": "default"
+        },
+        {
+          "id": "plan-work->write-tests",
+          "source": "plan-work",
+          "target": "write-tests",
+          "sourcePort": "default"
+        },
+        {
+          "id": "write-tests->implement",
+          "source": "write-tests",
+          "target": "implement",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement->build",
+          "source": "implement",
+          "target": "build",
+          "sourcePort": "default"
+        },
+        {
+          "id": "build->test-final",
+          "source": "build",
+          "target": "test-final",
+          "sourcePort": "default"
+        },
+        {
+          "id": "test-final->lint",
+          "source": "test-final",
+          "target": "lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "lint->all-passed",
+          "source": "lint",
+          "target": "all-passed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "all-passed->push-branch",
+          "source": "all-passed",
+          "target": "push-branch",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "all-passed->set-validation-summary",
+          "source": "all-passed",
+          "target": "set-validation-summary",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-validation-summary->auto-fix",
+          "source": "set-validation-summary",
+          "target": "auto-fix",
+          "sourcePort": "default"
+        },
+        {
+          "id": "push-branch->push-ok",
+          "source": "push-branch",
+          "target": "push-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "push-ok->create-pr",
+          "source": "push-ok",
+          "target": "create-pr",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "push-ok->notify-pr-failed",
+          "source": "push-ok",
+          "target": "notify-pr-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "create-pr->pr-created",
+          "source": "create-pr",
+          "target": "pr-created",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created->set-inreview",
+          "source": "pr-created",
+          "target": "set-inreview",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "set-inreview->notify-done",
+          "source": "set-inreview",
+          "target": "notify-done",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created->notify-pr-failed",
+          "source": "pr-created",
+          "target": "notify-pr-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "auto-fix->build-retry",
+          "source": "auto-fix",
+          "target": "build-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "build-retry->test-retry",
+          "source": "build-retry",
+          "target": "test-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "test-retry->lint-retry",
+          "source": "test-retry",
+          "target": "lint-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "lint-retry->retry-passed",
+          "source": "lint-retry",
+          "target": "retry-passed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-passed->push-branch-retry",
+          "source": "retry-passed",
+          "target": "push-branch-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "retry-passed->notify-fail",
+          "source": "retry-passed",
+          "target": "notify-fail",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "push-branch-retry->push-ok-retry",
+          "source": "push-branch-retry",
+          "target": "push-ok-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "push-ok-retry->create-pr-retry",
+          "source": "push-ok-retry",
+          "target": "create-pr-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "push-ok-retry->notify-pr-failed-retry",
+          "source": "push-ok-retry",
+          "target": "notify-pr-failed-retry",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "create-pr-retry->pr-created-retry",
+          "source": "create-pr-retry",
+          "target": "pr-created-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-retry->set-inreview-retry",
+          "source": "pr-created-retry",
+          "target": "set-inreview-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "set-inreview-retry->notify-done-retry",
+          "source": "set-inreview-retry",
+          "target": "notify-done-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-retry->notify-pr-failed-retry",
+          "source": "pr-created-retry",
+          "target": "notify-pr-failed-retry",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-14T12:00:00.000Z",
+        "updatedAt": "2026-03-14T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-backend-agent",
+          "templateName": "Task Completion Agent",
+          "templateVersion": "2.0.0",
+          "installedTemplateVersion": "2.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -22509,7 +24690,7 @@
       "description": "Weekly evaluator workflow that scores delivery fitness using throughput, regression rate, merge success, reopened tasks, and debt growth. Produces follow-up actions and can materialize them as backlog tasks.",
       "category": "planning",
       "enabled": false,
-      "nodeCount": 10,
+      "nodeCount": 15,
       "trigger": "trigger.schedule",
       "variables": {
         "scheduleCron": "0 9 * * 1",
@@ -22540,7 +24721,9 @@
           "type": "action.bosun_cli",
           "label": "Collect Task Metrics",
           "config": {
-            "command": "task list --format json --since {{lookbackDays}}d",
+            "subcommand": "task list",
+            "args": "--json",
+            "parseJson": true,
             "continueOnError": true
           },
           "position": {
@@ -22556,7 +24739,7 @@
           "type": "action.run_command",
           "label": "Collect PR Metrics",
           "config": {
-            "command": "gh pr list --state all --json number,state,mergedAt,closedAt,title --limit 200",
+            "command": "gh pr list --state all --json number,state,mergedAt,closedAt,createdAt,updatedAt,title,body --limit 200",
             "continueOnError": true
           },
           "position": {
@@ -22584,17 +24767,100 @@
           ]
         },
         {
+          "id": "read-previous-summary",
+          "type": "action.read_file",
+          "label": "Read Prior Summary",
+          "config": {
+            "path": ".bosun/workflow-runs/weekly-fitness-summary.latest.json"
+          },
+          "position": {
+            "x": 960,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "summarize-fitness-metrics",
+          "type": "action.set_variable",
+          "label": "Summarize Fitness Metrics",
+          "config": {
+            "key": "fitnessSummary",
+            "value": "(() => {  try {    const now = Date.now();    const lookbackDays = Math.max(1, Number($data?.lookbackDays || 7));    const windowMs = lookbackDays * 24 * 60 * 60 * 1000;    const currentStart = now - windowMs;    const previousStart = currentStart - windowMs;    const previousEnd = currentStart;    const toNumber = (v, fallback = 0) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };    const toIso = (ms) => new Date(ms).toISOString();    const parseJsonSafe = (raw) => { try { return JSON.parse(String(raw)); } catch { return null; } };    const extractCanonicalItems = (value) => {      if (!value || typeof value !== 'object') return null;      const keys = ['items', 'tasks', 'entries', 'records', 'results', 'data'];      for (const key of keys) {        if (Array.isArray(value[key])) return value[key].filter(Boolean);      }      return null;    };    const parseSource = (raw, depth = 0) => {      if (depth > 3) return { items: [], degraded: true, parsedAny: false, partial: false };      if (Array.isArray(raw)) return { items: raw.filter(Boolean), degraded: false, parsedAny: raw.length > 0, partial: false };      if (raw && typeof raw === 'object') {        const canonical = extractCanonicalItems(raw) ?? extractCanonicalItems(raw.output) ?? extractCanonicalItems(raw.result) ?? extractCanonicalItems(raw.payload);        if (canonical) return { items: canonical, degraded: false, parsedAny: canonical.length > 0, partial: false };        const wrappedCandidates = [raw.output, raw.result, raw.payload, raw.data, raw.stdout, raw.content, raw.text, raw.json];        for (const candidate of wrappedCandidates) {          if (candidate == null) continue;          const parsedCandidate = parseSource(candidate, depth + 1);          if (parsedCandidate.items.length > 0 || parsedCandidate.parsedAny || parsedCandidate.degraded === false) return parsedCandidate;        }        return { items: [], degraded: Object.keys(raw).length > 0, parsedAny: false, partial: false };      }      if (typeof raw !== 'string') return { items: [], degraded: true, parsedAny: false, partial: false };      const trimmed = raw.trim();      if (!trimmed) return { items: [], degraded: false, parsedAny: false, partial: false };      const parsed = parseJsonSafe(trimmed);      if (Array.isArray(parsed)) return { items: parsed.filter(Boolean), degraded: false, parsedAny: true, partial: false };      if (parsed && typeof parsed === 'object') {        const canonical = extractCanonicalItems(parsed) ?? extractCanonicalItems(parsed.output) ?? extractCanonicalItems(parsed.result) ?? extractCanonicalItems(parsed.payload);        if (canonical) return { items: canonical, degraded: false, parsedAny: true, partial: false };      }      const lines = trimmed.split(/\\r?\\n/).filter((line) => line.trim() !== '');      const parsedLines = [];      let failedLines = 0;      for (const line of lines) {        const parsedLine = parseJsonSafe(line);        if (parsedLine == null) { failedLines += 1; continue; }        if (Array.isArray(parsedLine)) parsedLines.push(...parsedLine.filter(Boolean));        else parsedLines.push(parsedLine);      }      if (parsedLines.length > 0) return { items: parsedLines, degraded: failedLines > 0, parsedAny: true, partial: failedLines > 0 };      return { items: [], degraded: true, parsedAny: false, partial: false };    };    const getTs = (item) => {      if (!item || typeof item !== 'object') return null;      const fields = ['completedAt', 'closedAt', 'mergedAt', 'resolvedAt', 'updatedAt', 'createdAt', 'timestamp', 'ts', 'date', 'completed_at', 'closed_at', 'merged_at', 'resolved_at', 'updated_at', 'created_at'];      for (const key of fields) {        const value = item[key];        if (!value) continue;        const ms = Date.parse(String(value));        if (Number.isFinite(ms)) return ms;        if (typeof value === 'number' && Number.isFinite(value)) return value > 1e12 ? value : value * 1000;      }      return null;    };    const normalizeBucket = (items) => {      const stamped = [];      const unstamped = [];      for (const item of items) {        const ts = getTs(item);        if (ts == null) unstamped.push(item); else stamped.push({ item, ts });      }      return { stamped, unstamped };    };    const splitWindows = (items) => {      const { stamped, unstamped } = normalizeBucket(items);      const current = stamped.filter((entry) => entry.ts >= currentStart && entry.ts <= now).map((entry) => entry.item);      const previous = stamped.filter((entry) => entry.ts >= previousStart && entry.ts < previousEnd).map((entry) => entry.item);      const usedFallbackWindow = stamped.length === 0 && unstamped.length > 0;      if (usedFallbackWindow) return { current: unstamped, previous: [], usedFallbackWindow };      return { current, previous, usedFallbackWindow };    };    const metric = (name, value, previous, direction, unit, confidence, status, notes = []) => {      const hasCurrent = typeof value === 'number' && Number.isFinite(value);      const hasPrevious = typeof previous === 'number' && Number.isFinite(previous);      return {        name,        value: hasCurrent ? value : null,        previous: hasPrevious ? previous : null,        delta: hasCurrent && hasPrevious ? Number((value - previous).toFixed(2)) : null,        direction,        unit,        confidence,        status,        notes: notes.filter(Boolean),      };    };    const sourceStatus = (nodeOut, parsedList, parsedMeta = {}) => {      const output = nodeOut?.output;      const hasPayload = (() => {        if (output == null) return false;        if (Array.isArray(output)) return true;        if (typeof output === 'string') return output.trim() !== '';        if (typeof output === 'object') {          const wrapped = [output.stdout, output.content, output.text, output.json, output.output, output.result, output.payload, output.data];          if (wrapped.some((v) => (typeof v === 'string' ? v.trim() !== '' : v != null))) return true;          return Object.keys(output).length > 0;        }        return true;      })();      const success = nodeOut?.success !== false;      if (!hasPayload) return { status: 'missing', confidence: 'low' };      if (!Array.isArray(parsedList)) return { status: 'degraded', confidence: 'low' };      if (parsedMeta?.degraded || parsedMeta?.partial) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };      if (!success) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };      return { status: 'ok', confidence: parsedList.length > 0 ? 'high' : 'medium' };    };    const taskNode = $ctx.getNodeOutput('task-metrics') || {};    const prNode = $ctx.getNodeOutput('pr-metrics') || {};    const debtNode = $ctx.getNodeOutput('debt-metrics') || {};    const prevNode = $ctx.getNodeOutput('read-previous-summary') || {};    const taskParsed = parseSource(taskNode.output);    const prParsed = parseSource(prNode.output);    const debtParsed = parseSource(debtNode.output);    const tasks = taskParsed.items;    const prs = prParsed.items;    const debt = debtParsed.items;    const taskHealth = sourceStatus(taskNode, tasks, taskParsed);    const prHealth = sourceStatus(prNode, prs, prParsed);    const debtHealth = sourceStatus(debtNode, debt, debtParsed);    const taskSplit = splitWindows(tasks);    const prSplit = splitWindows(prs);    const debtSplit = splitWindows(debt);    const doneStatuses = new Set(['done', 'closed', 'completed', 'merged', 'resolved']);    const isDone = (item) => doneStatuses.has(String(item?.status ?? item?.state ?? '').toLowerCase());    const taskTelemetryUnavailable = taskHealth.status === 'missing' || (taskHealth.status === 'degraded' && tasks.length === 0);    const throughputCurrent = taskTelemetryUnavailable ? null : taskSplit.current.filter(isDone).length;    const throughputPrevious = taskTelemetryUnavailable ? null : taskSplit.previous.filter(isDone).length;    const reopenedCount = (items) => items.filter((item) => {      if (!item || typeof item !== 'object') return false;      const reopenCount = toNumber(item.reopenCount ?? item.reopenedCount ?? item.reopen_count ?? item.reopened_count, 0);      if (reopenCount > 0) return true;      if (item.reopened === true) return true;      const status = String(item.status ?? item.state ?? '').toLowerCase();      return status.includes('reopen');    }).length;    const reopenedCurrent = taskTelemetryUnavailable ? null : reopenedCount(taskSplit.current);    const reopenedPrevious = taskTelemetryUnavailable ? null : reopenedCount(taskSplit.previous);    const classifyRegression = (pr) => /revert|regression|rollback|hotfix/i.test(String(pr?.title || '') + ' ' + String(pr?.body || ''));    const regressionCurrentCount = prSplit.current.filter(classifyRegression).length;    const regressionPreviousCount = prSplit.previous.filter(classifyRegression).length;    const regressionCurrentRate = prSplit.current.length > 0 ? Number(((regressionCurrentCount / prSplit.current.length) * 100).toFixed(2)) : null;    const regressionPreviousRate = prSplit.previous.length > 0 ? Number(((regressionPreviousCount / prSplit.previous.length) * 100).toFixed(2)) : null;    const mergedCount = (items) => items.filter((pr) => String(pr?.state || '').toLowerCase() === 'merged' || Boolean(pr?.mergedAt) || Boolean(pr?.merged_at) || pr?.merged === true).length;    const closedCount = (items) => items.filter((pr) => {      const state = String(pr?.state || '').toLowerCase();      return state === 'closed' || state === 'merged' || Boolean(pr?.closedAt) || Boolean(pr?.closed_at) || Boolean(pr?.mergedAt) || Boolean(pr?.merged_at);    }).length;    const mergeClosedCurrent = closedCount(prSplit.current);    const mergeClosedPrevious = closedCount(prSplit.previous);    const mergeSuccessCurrent = mergeClosedCurrent > 0 ? Number(((mergedCount(prSplit.current) / mergeClosedCurrent) * 100).toFixed(2)) : null;    const mergeSuccessPrevious = mergeClosedPrevious > 0 ? Number(((mergedCount(prSplit.previous) / mergeClosedPrevious) * 100).toFixed(2)) : null;    const debtDelta = (entries) => {      let total = 0;      for (const entry of entries) {        if (entry == null) continue;        if (typeof entry === 'number') { total += entry; continue; }        if (typeof entry !== 'object') continue;        if (Number.isFinite(Number(entry.debtDelta))) { total += Number(entry.debtDelta); continue; }        if (Number.isFinite(Number(entry.delta))) { total += Number(entry.delta); continue; }        if (Number.isFinite(Number(entry.netChange))) { total += Number(entry.netChange); continue; }        const amt = Number.isFinite(Number(entry.amount)) ? Number(entry.amount) : 1;        const kind = String(entry.type || entry.event || entry.action || '').toLowerCase();        if (/resolved|burn|paydown|decrease|closed/.test(kind)) total -= amt;        else if (/created|added|increase|opened|new/.test(kind)) total += amt;      }      return Number(total.toFixed(2));    };    const debtCurrent = debtSplit.current.length > 0 ? debtDelta(debtSplit.current) : null;    const debtPrevious = debtSplit.previous.length > 0 ? debtDelta(debtSplit.previous) : null;    const priorRaw = prevNode?.success === true ? (parseSource(prevNode.content).items?.[0] ?? parseJsonSafe(prevNode.content)) : null;    const priorParsed = priorRaw?.fitnessSummary && typeof priorRaw.fitnessSummary === 'object' ? priorRaw.fitnessSummary : (priorRaw && typeof priorRaw === 'object' ? priorRaw : null);    const metricConfidence = (primaryHealth, hasValue, usedFallbackWindow) => {      if (!hasValue) return 'low';      if (primaryHealth.status === 'missing') return 'low';      if (primaryHealth.status === 'degraded') return 'low';      if (usedFallbackWindow) return 'medium';      return primaryHealth.confidence || 'medium';    };    const throughputMetric = metric('throughput', throughputCurrent, throughputPrevious, 'up_is_good', 'tasks', metricConfidence(taskHealth, throughputCurrent != null, taskSplit.usedFallbackWindow), taskHealth.status, [throughputCurrent == null ? 'Task telemetry unavailable for this window.' : '', taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);    const regressionMetric = metric('regression_rate', regressionCurrentRate, regressionPreviousRate, 'down_is_good', 'percent', metricConfidence(prHealth, regressionCurrentRate != null, prSplit.usedFallbackWindow), prHealth.status, [regressionCurrentRate == null ? 'Insufficient PR sample to compute regression rate.' : '', prSplit.usedFallbackWindow ? 'No PR timestamps detected; treated all records as current week.' : '']);    const mergeMetric = metric('merge_success', mergeSuccessCurrent, mergeSuccessPrevious, 'up_is_good', 'percent', metricConfidence(prHealth, mergeSuccessCurrent != null, prSplit.usedFallbackWindow), prHealth.status, [mergeSuccessCurrent == null ? 'No closed or merged PRs in scope.' : '', prSplit.usedFallbackWindow ? 'No PR timestamps detected; treated all records as current week.' : '']);    const reopenedMetric = metric('reopened_tasks', reopenedCurrent, reopenedPrevious, 'down_is_good', 'tasks', metricConfidence(taskHealth, reopenedCurrent != null, taskSplit.usedFallbackWindow), taskHealth.status, [reopenedCurrent == null ? 'Task telemetry unavailable for this window.' : '', taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);    const debtMetric = metric('debt_growth', debtCurrent, debtPrevious, 'down_is_good', 'points', metricConfidence(debtHealth, debtCurrent != null, debtSplit.usedFallbackWindow), debtHealth.status, [debtCurrent == null ? 'No debt ledger events in scope.' : '', debtSplit.usedFallbackWindow ? 'No debt timestamps detected; treated all records as current week.' : '']);    const metrics = { throughput: throughputMetric, regression_rate: regressionMetric, merge_success: mergeMetric, reopened_tasks: reopenedMetric, debt_growth: debtMetric };    const metricKeys = ['throughput', 'regression_rate', 'merge_success', 'reopened_tasks', 'debt_growth'];    const trendDeltas = metricKeys.reduce((acc, key) => { const d = metrics?.[key]?.delta; acc[key] = Number.isFinite(d) ? d : null; return acc; }, {});    const normalizePriorTrendDelta = (metricName) => {      const direct = priorParsed?.priorWeekTrendDeltas?.[metricName];      if (Number.isFinite(Number(direct))) return Number(Number(direct).toFixed(2));      const trend = priorParsed?.trendDeltas?.[metricName];      if (Number.isFinite(Number(trend))) return Number(Number(trend).toFixed(2));      const metricDelta = priorParsed?.metrics?.[metricName]?.delta;      if (Number.isFinite(Number(metricDelta))) return Number(Number(metricDelta).toFixed(2));      return null;    };    const priorWeekTrendDeltas = metricKeys.reduce((acc, key) => { acc[key] = normalizePriorTrendDelta(key); return acc; }, {});    const priorWeekDeltas = priorWeekTrendDeltas;    const priorWeekMetrics = priorParsed?.metrics && typeof priorParsed.metrics === 'object' ? priorParsed.metrics : null;    const alertThresholds = { throughput: 1, regression_rate: 2.5, merge_success: 2.5, reopened_tasks: 1, debt_growth: 1 };    const metricTrendAlerts = Object.entries(metrics).flatMap(([metricName, m]) => {      if (m == null || m.delta == null) return [];      if (String(m.confidence || '').toLowerCase() === 'low') return [];      const delta = Number(m.delta);      const isRegression = (m.direction === 'up_is_good' && delta < 0) || (m.direction === 'down_is_good' && delta > 0);      if (!isRegression) return [];      const absDelta = Math.abs(delta);      const threshold = alertThresholds[metricName] ?? 1;      const severity = absDelta >= threshold * 2 ? 'high' : absDelta >= threshold ? 'medium' : 'low';      return [{ metric: metricName, severity, delta, reason: `${metricName} moved in a negative direction by ${delta} ${m.unit}.` }];    });    const sourceHealth = {      tasks: { ...taskHealth, count: tasks.length },      prs: { ...prHealth, count: prs.length },      debt: { ...debtHealth, count: debt.length },    };    const sourceTelemetryAlerts = Object.entries(sourceHealth).flatMap(([sourceName, health]) => {      if (health?.status === 'ok') return [];      const severity = health?.status === 'missing' ? 'high' : 'medium';      const reason = health?.status === 'missing' ? `${sourceName} telemetry missing; metric interpretation may be limited.` : `${sourceName} telemetry partially parsed; confidence reduced.`;      return [{ metric: `telemetry:${sourceName}`, severity, delta: null, reason }];    });    const trendAlerts = [...metricTrendAlerts, ...sourceTelemetryAlerts];    const confidenceValues = Object.values(metrics).map((m) => m?.confidence || 'low');    const overallConfidence = confidenceValues.every((c) => c === 'high') ? 'high' : confidenceValues.some((c) => c === 'low') ? 'low' : 'medium';    const plannerSignals = {      schemaVersion: '1.0',      overallConfidence,      trendAlertCount: trendAlerts.length,      highSeverityAlertCount: trendAlerts.filter((a) => a?.severity === 'high').length,      sourceStatus: Object.fromEntries(Object.entries(sourceHealth).map(([k, v]) => [k, v?.status || 'missing'])),      metricStatus: Object.fromEntries(metricKeys.map((k) => [k, metrics?.[k]?.status || 'missing'])),      metricConfidence: Object.fromEntries(metricKeys.map((k) => [k, metrics?.[k]?.confidence || 'low'])),      metricValues: Object.fromEntries(metricKeys.map((k) => [k, Number.isFinite(metrics?.[k]?.value) ? Number(metrics[k].value) : null])),      trendDeltas,      priorWeekTrendDeltas,    };    const plannerArtifact = {      schemaVersion: '1.0',      generatedAt: toIso(now),      lookbackDays,      sourceStatus: plannerSignals.sourceStatus,      metricConfidence: plannerSignals.metricConfidence,      metricValues: plannerSignals.metricValues,      trendDeltas,      priorWeekTrendDeltas,      trendAlertCount: plannerSignals.trendAlertCount,      highSeverityAlertCount: plannerSignals.highSeverityAlertCount,      trendAlerts,    };    return {      schemaVersion: '1.0',      generatedAt: toIso(now),      lookbackDays,      window: { currentStart: toIso(currentStart), currentEnd: toIso(now), previousStart: toIso(previousStart), previousEnd: toIso(previousEnd) },      sourceHealth,      metrics,      trendDeltas,      trendAlerts,      priorWeekTrendDeltas,      priorWeekDeltas,      priorWeekMetrics,      plannerSignals,      plannerArtifact,      dataQuality: {        overallConfidence,        missingSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'missing').map(([k]) => k),        degradedSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'degraded').map(([k]) => k),      },    };  } catch (error) {    return {      schemaVersion: '1.0',      generatedAt: new Date().toISOString(),      lookbackDays: Number($data?.lookbackDays || 7),      sourceHealth: {        tasks: { status: 'missing', confidence: 'low', count: 0 },        prs: { status: 'missing', confidence: 'low', count: 0 },        debt: { status: 'missing', confidence: 'low', count: 0 },      },      metrics: {        throughput: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        regression_rate: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        merge_success: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        reopened_tasks: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        debt_growth: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },      },      trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      trendAlerts: [{ metric: 'summary', severity: 'high', delta: null, reason: `Fitness summary fallback engaged: ${error?.message || 'unknown error'}` }],      priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      priorWeekDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      priorWeekMetrics: null,      plannerSignals: {        schemaVersion: '1.0',        overallConfidence: 'low',        trendAlertCount: 1,        highSeverityAlertCount: 1,        sourceStatus: { tasks: 'missing', prs: 'missing', debt: 'missing' },        metricStatus: { throughput: 'missing', regression_rate: 'missing', merge_success: 'missing', reopened_tasks: 'missing', debt_growth: 'missing' },        metricConfidence: { throughput: 'low', regression_rate: 'low', merge_success: 'low', reopened_tasks: 'low', debt_growth: 'low' },        metricValues: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },      },      plannerArtifact: {        schemaVersion: '1.0',        generatedAt: new Date().toISOString(),        lookbackDays: Number($data?.lookbackDays || 7),        sourceStatus: { tasks: 'missing', prs: 'missing', debt: 'missing' },        metricConfidence: { throughput: 'low', regression_rate: 'low', merge_success: 'low', reopened_tasks: 'low', debt_growth: 'low' },        metricValues: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null },        trendAlertCount: 1,        highSeverityAlertCount: 1,        trendAlerts: [{ metric: 'summary', severity: 'high', delta: null, reason: `Fitness summary fallback engaged: ${error?.message || 'unknown error'}` }],      },      dataQuality: { overallConfidence: 'low', missingSources: ['tasks', 'prs', 'debt'], degradedSources: [] },    };  }})()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 360
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "serialize-fitness-summary",
+          "type": "action.set_variable",
+          "label": "Serialize Fitness Summary",
+          "config": {
+            "key": "fitnessSummaryJson",
+            "value": "(() => JSON.stringify($data?.fitnessSummary || {}, null, 2))()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "render-trend-alerts",
+          "type": "action.set_variable",
+          "label": "Render Trend Alerts",
+          "config": {
+            "key": "fitnessTrendAlertsText",
+            "value": "(() => { const alerts = Array.isArray($data?.fitnessSummary?.trendAlerts) ? $data.fitnessSummary.trendAlerts : []; if (!alerts.length) return 'No negative trend alerts this week.'; return alerts.map((a, idx) => `${idx + 1}. ${a.metric} (${a.severity}) - ${a.reason}`).join('\\n'); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 640
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "persist-fitness-summary",
+          "type": "action.write_file",
+          "label": "Persist Fitness Summary Artifact",
+          "config": {
+            "path": ".bosun/workflow-runs/weekly-fitness-summary.latest.json",
+            "content": "{{fitnessSummaryJson}}",
+            "mkdir": true
+          },
+          "position": {
+            "x": 420,
+            "y": 780
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "evaluate-fitness",
           "type": "action.run_agent",
           "label": "Evaluate Fitness",
           "config": {
-            "prompt": "# Weekly Delivery Fitness Evaluation\n\nEvaluate the last {{lookbackDays}} days using these metrics:\n- Throughput\n- Regression rate\n- Merge success\n- Reopened tasks\n- Debt growth\n\n## Task Data\n{{taskMetrics}}\n\n## PR Data\n{{prMetrics}}\n\n## Debt Ledger Data\n{{debtMetrics}}\n\nFocus directive: {{evaluatorFocus}}\n\nReturn sections:\n1) Scorecard (0-100) with one line per metric\n2) Root-cause analysis of the largest drag\n3) Countermeasures ranked by impact/cost\n4) FOLLOW_UP_ACTION lines using format:\nFOLLOW_UP_ACTION: [title] | [description] | [repo_area] | [risk] | [effort]\n\nOnly include FOLLOW_UP_ACTION lines for changes that are worth implementing this week.",
+            "prompt": "# Weekly Delivery Fitness Evaluation\n\nEvaluate the last {{lookbackDays}} days using this machine-readable summary:\n\nMetrics to evaluate:\n- Throughput\n- Regression rate\n- Merge success\n- Reopened tasks\n- Debt growth\n\n## Weekly Fitness JSON\n{{fitnessSummaryJson}}\n\n## Negative Trend Alerts\n{{fitnessTrendAlertsText}}\n\nFocus directive: {{evaluatorFocus}}\n\nRequirements:\n- Respect confidence and status on each metric.\n- If a metric has low confidence or missing telemetry, call that out explicitly and avoid overconfident recommendations.\n- Use prior-week deltas when available.\n- If one telemetry source is unavailable, still provide a stable scorecard and best-effort recommendations.\n\nReturn sections:\n1) Scorecard (0-100) with one line per metric and confidence\n2) Root-cause analysis of the largest drag\n3) Countermeasures ranked by impact/cost\n4) FOLLOW_UP_ACTION lines using format:\nFOLLOW_UP_ACTION: [title] | [description] | [repo_area] | [risk] | [effort]\n\nOnly include FOLLOW_UP_ACTION lines for changes that are worth implementing this week.",
             "sdk": "auto",
             "timeoutMs": 600000
           },
           "position": {
             "x": 420,
-            "y": 360
+            "y": 930
           },
           "outputs": [
             "default"
@@ -22609,7 +24875,7 @@
           },
           "position": {
             "x": 420,
-            "y": 520
+            "y": 1090
           },
           "outputs": [
             "default"
@@ -22620,13 +24886,13 @@
           "type": "action.run_agent",
           "label": "Build Follow-up Tasks JSON",
           "config": {
-            "prompt": "Convert FOLLOW_UP_ACTION lines below into a single JSON object with shape { \"tasks\": [...] }.\n\nSource:\n{{evaluateFitness}}\n\nRules:\n- Generate at most {{maxFollowupTasks}} tasks\n- Include fields: title, description, implementation_steps, acceptance_criteria, verification, priority, tags, base_branch, impact, confidence, risk, estimated_effort, repo_areas, why_now, kill_criteria\n- Keep tasks implementation-ready and avoid duplicates\n- Return only JSON",
+            "prompt": "Convert FOLLOW_UP_ACTION lines below into a single JSON object with shape { \"tasks\": [...] }.\n\nSource:\n{{evaluate-fitness.output}}\n\nStructured context:\n{{fitnessSummaryJson}}\n\nRules:\n- Generate at most {{maxFollowupTasks}} tasks\n- Include fields: title, description, implementation_steps, acceptance_criteria, verification, priority, tags, base_branch, impact, confidence, risk, estimated_effort, repo_areas, why_now, kill_criteria\n- Use trend deltas from the summary artifact to justify urgency and avoid parse errors\n- Keep tasks implementation-ready and avoid duplicates\n- Return only JSON",
             "sdk": "auto",
             "timeoutMs": 300000
           },
           "position": {
             "x": 220,
-            "y": 690
+            "y": 1260
           },
           "outputs": [
             "default"
@@ -22646,7 +24912,7 @@
           },
           "position": {
             "x": 220,
-            "y": 850
+            "y": 1420
           },
           "outputs": [
             "default"
@@ -22657,12 +24923,12 @@
           "type": "notify.telegram",
           "label": "Send Weekly Fitness Summary",
           "config": {
-            "message": ":chart: Weekly fitness evaluation complete. Follow-up tasks created: {{materialize-followups.createdCount}}\n\n{{evaluateFitness}}",
+            "message": ":chart: Weekly fitness evaluation complete. Follow-up tasks created: {{materialize-followups.createdCount}}\\n\\nTrend alerts:\\n{{fitnessTrendAlertsText}}\\n\\n{{evaluate-fitness.output}}",
             "silent": true
           },
           "position": {
             "x": 420,
-            "y": 1010
+            "y": 1580
           },
           "outputs": [
             "default"
@@ -22678,7 +24944,7 @@
           },
           "position": {
             "x": 620,
-            "y": 690
+            "y": 1260
           },
           "outputs": [
             "default"
@@ -22705,20 +24971,56 @@
           "sourcePort": "default"
         },
         {
-          "id": "task-metrics->evaluate-fitness",
+          "id": "trigger->read-previous-summary",
+          "source": "trigger",
+          "target": "read-previous-summary",
+          "sourcePort": "default"
+        },
+        {
+          "id": "task-metrics->summarize-fitness-metrics",
           "source": "task-metrics",
-          "target": "evaluate-fitness",
+          "target": "summarize-fitness-metrics",
           "sourcePort": "default"
         },
         {
-          "id": "pr-metrics->evaluate-fitness",
+          "id": "pr-metrics->summarize-fitness-metrics",
           "source": "pr-metrics",
-          "target": "evaluate-fitness",
+          "target": "summarize-fitness-metrics",
           "sourcePort": "default"
         },
         {
-          "id": "debt-metrics->evaluate-fitness",
+          "id": "debt-metrics->summarize-fitness-metrics",
           "source": "debt-metrics",
+          "target": "summarize-fitness-metrics",
+          "sourcePort": "default"
+        },
+        {
+          "id": "read-previous-summary->summarize-fitness-metrics",
+          "source": "read-previous-summary",
+          "target": "summarize-fitness-metrics",
+          "sourcePort": "default"
+        },
+        {
+          "id": "summarize-fitness-metrics->serialize-fitness-summary",
+          "source": "summarize-fitness-metrics",
+          "target": "serialize-fitness-summary",
+          "sourcePort": "default"
+        },
+        {
+          "id": "serialize-fitness-summary->render-trend-alerts",
+          "source": "serialize-fitness-summary",
+          "target": "render-trend-alerts",
+          "sourcePort": "default"
+        },
+        {
+          "id": "render-trend-alerts->persist-fitness-summary",
+          "source": "render-trend-alerts",
+          "target": "persist-fitness-summary",
+          "sourcePort": "default"
+        },
+        {
+          "id": "persist-fitness-summary->evaluate-fitness",
+          "source": "persist-fitness-summary",
           "target": "evaluate-fitness",
           "sourcePort": "default"
         },
@@ -23029,8 +25331,8 @@
         "templateState": {
           "templateId": "template-anomaly-watchdog",
           "templateName": "Anomaly Watchdog",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -23240,8 +25542,8 @@
         "templateState": {
           "templateId": "template-error-recovery",
           "templateName": "Error Recovery",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -23429,8 +25731,8 @@
         "templateState": {
           "templateId": "template-health-check",
           "templateName": "Health Check",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -23727,8 +26029,8 @@
         "templateState": {
           "templateId": "template-incident-response",
           "templateName": "Incident Response",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -24049,8 +26351,8 @@
         "templateState": {
           "templateId": "template-sync-engine",
           "templateName": "Kanban Sync Engine",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -24335,8 +26637,8 @@
         "templateState": {
           "templateId": "template-task-archiver",
           "templateName": "Task Archiver",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -24348,7 +26650,7 @@
       "description": "Shared post-completion quality gate for all agents. Runs pre-push validation in the task worktree, normalizes status transitions, and hands off failures to a dedicated repair workflow.",
       "category": "reliability",
       "enabled": true,
-      "nodeCount": 15,
+      "nodeCount": 17,
       "trigger": "trigger.event",
       "variables": {
         "finalizationTimeoutMs": 3600000,
@@ -24549,6 +26851,38 @@
           ]
         },
         {
+          "id": "has-pr-missing-context",
+          "type": "condition.expression",
+          "label": "PR Linked Without Worktree?",
+          "config": {
+            "expression": "Boolean($data?.prNumber || $data?.prUrl)"
+          },
+          "position": {
+            "x": 620,
+            "y": 450
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "notify-skip-missing-context",
+          "type": "notify.log",
+          "label": "Skip Missing Context With PR",
+          "config": {
+            "message": "Task {{taskId}} finalization skipped quality gate: missing worktree context but PR linkage exists",
+            "level": "warn"
+          },
+          "position": {
+            "x": 620,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "notify-pass",
           "type": "notify.log",
           "label": "Log Finalization Success",
@@ -24654,10 +26988,24 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "has-worktree->mark-todo-missing",
+          "id": "has-worktree->has-pr-missing-context",
           "source": "has-worktree",
-          "target": "mark-todo-missing",
+          "target": "has-pr-missing-context",
           "sourcePort": "default",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "has-pr-missing-context->notify-skip-missing-context",
+          "source": "has-pr-missing-context",
+          "target": "notify-skip-missing-context",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-pr-missing-context->mark-todo-missing",
+          "source": "has-pr-missing-context",
+          "target": "mark-todo-missing",
+          "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
@@ -24721,6 +27069,12 @@
           "sourcePort": "default"
         },
         {
+          "id": "notify-skip-missing-context->end-success",
+          "source": "notify-skip-missing-context",
+          "target": "end-success",
+          "sourcePort": "default"
+        },
+        {
           "id": "notify-pass->chain-archiver",
           "source": "notify-pass",
           "target": "chain-archiver",
@@ -24758,8 +27112,8 @@
         "templateState": {
           "templateId": "template-task-finalization-guard",
           "templateName": "Task Finalization Guard",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -24963,8 +27317,8 @@
         "templateState": {
           "templateId": "template-task-orphan-worktree-recovery",
           "templateName": "Task Orphan Worktree Recovery",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -25338,8 +27692,8 @@
         "templateState": {
           "templateId": "template-task-repair-worktree",
           "templateName": "Task Repair Worktree",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -25525,8 +27879,8 @@
         "templateState": {
           "templateId": "template-task-status-transition-manager",
           "templateName": "Task Status Transition Manager",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -25736,8 +28090,8 @@
         "templateState": {
           "templateId": "template-workspace-hygiene",
           "templateName": "Workspace Hygiene",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -26965,6 +29319,169 @@
       }
     },
     {
+      "id": "wf-task-backend",
+      "name": "Backend Task Workflow",
+      "description": "Specialised for server-side tasks — APIs, databases, services, middleware. Runs three phases: plan, implement with TDD, and verify with full test suite.",
+      "category": "task-execution",
+      "enabled": true,
+      "nodeCount": 5,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "api|server|backend|database|model|migration|endpoint|middleware|service|graphql|rest|grpc"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "plan",
+          "type": "action.run_agent",
+          "label": "Plan Backend",
+          "config": {
+            "prompt": "## Phase: Backend Planning\n\nAnalyse the task and produce a plan:\n1. Data model / schema changes\n2. API endpoint design (routes, request/response shapes)\n3. Service layer logic\n4. Database queries or migrations\n5. Test plan (unit + integration)\n\nDo NOT write code yet.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-tdd",
+          "type": "action.run_agent",
+          "label": "Implement (TDD)",
+          "config": {
+            "prompt": "## Phase: Test-Driven Implementation\n\n1. Write tests FIRST for the planned changes\n2. Verify tests fail (red)\n3. Implement the backend logic to make tests pass (green)\n4. Refactor for clarity and performance\n5. Run full test suite: {{testCommand}}\n6. Run build: {{buildCommand}}\n7. Run lint: {{lintCommand}}\n\nCommit with descriptive messages.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Verification\n\n1. Run the complete test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Ensure no regressions\n4. Push changes and create/update PR\n5. Include test results summary in PR description",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Backend task completed — API/service implemented and tested."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->plan",
+          "source": "trigger",
+          "target": "plan",
+          "sourcePort": "default"
+        },
+        {
+          "id": "plan->implement-tdd",
+          "source": "plan",
+          "target": "implement-tdd",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-tdd->verify",
+          "source": "implement-tdd",
+          "target": "verify",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify->done",
+          "source": "verify",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-task-backend",
+          "templateName": "Backend Task Workflow",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
       "id": "wf-bosun-tool-pipeline",
       "name": "Bosun Tool Pipeline",
       "description": "Run Bosun built-in or custom tools from a workflow with structured output piping. Discovers available tools, invokes a selected tool, extracts specific data fields, and forwards them to downstream nodes. Combines action.bosun_function and action.bosun_tool for full tool integration.",
@@ -27161,6 +29678,808 @@
       }
     },
     {
+      "id": "wf-task-cicd",
+      "name": "CI/CD Task Workflow",
+      "description": "For pipeline, deployment, infrastructure, and build-system tasks. Plans the change, implements with validation steps, then verifies the pipeline works end-to-end.",
+      "category": "task-execution",
+      "enabled": true,
+      "nodeCount": 5,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "ci|cd|pipeline|deploy|infrastructure|docker|kubernetes|k8s|terraform|github.action|build.system|release|devops"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "plan-pipeline",
+          "type": "action.run_agent",
+          "label": "Plan Pipeline Change",
+          "config": {
+            "prompt": "## Phase: CI/CD Planning\n\nAnalyse the pipeline/infrastructure task:\n1. Current CI/CD configuration\n2. What needs to change and why\n3. Impact on existing workflows/pipelines\n4. Rollback strategy\n5. Test plan for verifying the change\n\nDo NOT make changes yet.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-pipeline",
+          "type": "action.run_agent",
+          "label": "Implement Pipeline",
+          "config": {
+            "prompt": "## Phase: Pipeline Implementation\n\n1. Make the CI/CD / infrastructure changes per the plan\n2. Update configuration files (workflows, Dockerfiles, Terraform, etc.)\n3. Add or update pipeline tests where applicable\n4. Run build: {{buildCommand}}\n5. Run lint: {{lintCommand}}\n6. Validate configuration syntax\n\nCommit changes with clear descriptions.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-pipeline",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Pipeline Verification\n\n1. Run full test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify pipeline configuration is valid\n4. Push and create/update PR\n5. Include deployment / rollback instructions in PR description",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "CI/CD task completed — pipeline updated and verified."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->plan-pipeline",
+          "source": "trigger",
+          "target": "plan-pipeline",
+          "sourcePort": "default"
+        },
+        {
+          "id": "plan-pipeline->implement-pipeline",
+          "source": "plan-pipeline",
+          "target": "implement-pipeline",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-pipeline->verify-pipeline",
+          "source": "implement-pipeline",
+          "target": "verify-pipeline",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-pipeline->done",
+          "source": "verify-pipeline",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-task-cicd",
+          "templateName": "CI/CD Task Workflow",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-code-quality-striker",
+      "name": "Code Quality Striker",
+      "description": "Recurring autonomous refactoring agent that improves codebase structure for long-term agentic development. Runs every 2 hours with a hard 90-minute session cap. Each session MUST produce a passing PR before terminating. Scope is strictly limited to structural quality: module decomposition, deduplication, function splitting. Zero functional changes allowed.",
+      "category": "maintenance",
+      "enabled": true,
+      "nodeCount": 12,
+      "trigger": "trigger.schedule",
+      "variables": {
+        "sessionTimeoutMs": 5400000,
+        "branch": "chore/code-quality-striker-{{_runId}}",
+        "baseBranch": "main",
+        "sessionLogPath": ".bosun-monitor/code-quality-striker.md",
+        "maxFilesPerSession": 6,
+        "minFileSizeKb": 30,
+        "testCommand": "npm test",
+        "buildCommand": "npm run build",
+        "syntaxCheckCommand": "node --check",
+        "lintCommand": "",
+        "sourceExtensions": ".mjs,.js,.ts,.tsx,.py,.go,.rs,.java,.cs,.rb,.php"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.schedule",
+          "label": "Every 2 Hours",
+          "config": {
+            "intervalMs": 7200000,
+            "cron": "0 */2 * * *"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-active-pr",
+          "type": "condition.expression",
+          "label": "Active Striker PR?",
+          "config": {
+            "expression": "(() => { try { const r = $ctx.runCommand('git branch -r'); return (r?.output || '').includes('code-quality-striker'); } catch { return false; } })()"
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "skip-already-running",
+          "type": "notify.log",
+          "label": "Skip — PR Already Open",
+          "config": {
+            "message": "Code quality striker skipped: an open quality striker PR already exists. Will retry next cycle.",
+            "level": "info"
+          },
+          "position": {
+            "x": 650,
+            "y": 310
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "scan-candidates",
+          "type": "action.run_command",
+          "label": "Scan Large Files",
+          "config": {
+            "command": "node -e \"const{readdirSync,statSync}=require('fs');const{join,relative}=require('path');const base=process.cwd();const exts=new Set('{{sourceExtensions}}'.split(',').map(e=>e.trim()));function walk(d){const out=[];for(const f of readdirSync(d,{withFileTypes:true})){if(f.name==='node_modules'||f.name==='.cache'||f.name==='.git'||f.name==='worktrees'||f.name==='__pycache__'||f.name==='.venv'||f.name==='target'||f.name==='vendor'||f.name==='dist'||f.name==='build')continue;const p=join(d,f.name);if(f.isDirectory())out.push(...walk(p));else{const ext='.'+f.name.split('.').pop();if(exts.has(ext)){const s=statSync(p);out.push({p,kb:Math.round(s.size/1024)})}}}return out}const files=walk(base).filter(x=>x.kb>={{minFileSizeKb}}).sort((a,b)=>b.kb-a.kb).slice(0,20);console.log(files.map(x=>x.kb+'kb\\t'+relative(base,x.p)).join('\\n'))\"",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 310
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-striker",
+          "type": "action.run_agent",
+          "label": "Code Quality Striker Agent",
+          "config": {
+            "timeoutMs": "{{sessionTimeoutMs}}",
+            "sdk": "auto",
+            "prompt": "# Code Quality Striker\n\nYou are a **structural quality agent**. Your sole mandate is to improve the\ninternal structure of the codebase so that future agentic models can work on\nit more efficiently — smaller files, clearer module boundaries, zero\nduplication, and self-contained functions.\n\n## Session Constraints\n\n- **Hard session cap**: you have at most 90 minutes total. Budget your time.\n- **You MUST open a PR before ending** — a session with no PR is a failed\n  session. If you run out of time mid-refactor, commit what you have, push,\n  and open the PR immediately even if the work is partial, AS LONG AS all\n  tests pass.\n- **Maximum {{maxFilesPerSession}} source files changed** in a single PR.\n  Keep diffs small and reviewable. Better to do one clean split per session\n  than attempt a mega-refactor.\n- You may run multiple sessions and PRs over time. Prefer incremental progress.\n\n## ✅ Allowed Changes (ONLY these)\n\n1. **Module decomposition** — extract a large file into smaller, focused\n   modules. The extracted module must be imported back so the public surface\n   is identical.\n2. **Function splitting** — break functions > ~80 lines into smaller,\n   well-named helpers within the same file or a co-located util module.\n3. **Deduplication** — extract identical or near-identical logic blocks into\n   a shared helper. Must not change call-site behaviour.\n4. **Dead code removal** — remove functions, variables, or imports that are\n   verifiably unreferenced (no callers anywhere in the repo).\n5. **Import cleanup** — remove unused imports, deduplicate import statements,\n   consolidate barrel imports.\n\n## ❌ Forbidden Changes (HARD STOPS — never do these)\n\n- Adding, removing, or changing any exported function signature or return value\n- Changing any HTTP route path, method, or response shape\n- Changing any config key names or default values\n- Adding new features, flags, or options of any kind\n- Changing test assertions or test logic\n- Renaming exported symbols (only rename internal/private symbols)\n- Adding comments, JSDoc, or inline documentation (unless minimal and necessary)\n- Changing error messages visible to users or logs (string literals)\n- Any change to .json, .sh, .md, .yaml, .html, .css, or non-.mjs/.js files\n  (unless you are only touching an import path string that is broken by a move)\n\n## Workflow\n\n### Step 1 — Identify your target\n\nUse the candidate file list provided (sorted by size, largest first):\n\n```\n{{scan-candidates.output}}\n```\n\nPick **1–3 files** for this session. Prioritise:\n- Files > 500 lines used by multiple modules (high parallel-conflict risk)\n- Files with clearly repeated logic blocks\n- Files with functions > 100 lines that have distinct sub-responsibilities\n\nRead each target file in full before making any decision. Do NOT edit\nanything you have not fully read.\n\n### Step 2 — Plan your split in writing\n\nBefore touching the file, write a short plan (to yourself, as a comment in\nyour reasoning — DO NOT add it to the code):\n- What gets extracted and where\n- New file names (follow existing naming conventions in that directory)\n- Which exports stay vs. move\n- Any callers that will need their import paths updated\n\n### Step 3 — Extract and wire up\n\n- Create the new module file(s) under the same directory as the source file.\n- Update the source file to re-export or directly import the extracted piece\n  so every existing call-site continues to work without modification.\n- Update any OTHER files that directly imported from the source file, if and\n  only if you moved an export that those files reference. Use\n  `grep -r 'importedName' --include='*.mjs' --include='*.js'` to find callers.\n- **Do not touch callers unless strictly required by the move.**\n\n### Step 4 — Validate before committing\n\nRun ALL of the following in order. Do not commit if any fail:\n\n```bash\n# 1. Syntax check every file you touched\n{{syntaxCheckCommand}} <file1> <file2> ...\n\n# 2. Lint check (if configured)\n{{lintCommand}}\n\n# 3. Full test suite — must be 0 failures, 0 unexpected skips\n{{testCommand}}\n\n# 4. Build — must pass clean\n{{buildCommand}}\n```\n\nIf tests fail, **revert your change** (`git checkout -- <file>`) and either:\n- Attempt a smaller, safer split of the same file, OR\n- Move to a different target file\n\n**Never push a failing test suite.**\n\n### Step 5 — Commit, push, and open the PR\n\nBranch name: `chore/code-quality-striker-{{_runId}}`\nBase branch: `{{baseBranch}}`\n\nCommit message format:\n```\nrefactor(<module>): split <description>\n\n- extracted <what> into <new-file>\n- <any other bullet points>\n\nNo functional changes. All tests pass.\n```\n\nPR title: `refactor: code quality pass — <one-line summary>`\n\nPR body template:\n```markdown\n## Code Quality Pass\n\n**Session**: code-quality-striker {{_runId}}\n**Scope**: structural refactor only — zero functional changes\n\n### Changes\n- <bullet per extracted module or dedup>\n\n### Validation\n- `{{syntaxCheckCommand}}` passed on all touched files\n- `{{testCommand}}` passed (N tests)\n- `{{buildCommand}}` passed\n\n### Why\n<one sentence: \"X was Y lines with Z responsibilities; split to improve\nparallel edit safety for future agent sessions.\">\n```\n\n### Step 6 — Write session log\n\nAppend a new entry to `{{sessionLogPath}}` using this\nexact format (create the file if it does not exist):\n\n```markdown\n## <ISO timestamp with timezone>\n\n- Scope: <one sentence describing what was refactored>\n- Files changed: <comma-separated list>\n- Strategy: <what split/dedup/cleanup was performed and why>\n- Validation evidence:\n  - `{{syntaxCheckCommand}}` passed on all touched files\n  - `{{testCommand}}` passed (N tests)\n  - `{{buildCommand}}` passed\n- PR: #<number> — `<branch name>`\n```\n\n## Time Budget Warning\n\nIf you have fewer than 15 minutes remaining:\n- Stop new analysis immediately\n- Commit and push whatever passing changes you have\n- Open the PR even if the scope is smaller than planned\n- Write the session log\n- Stop\n\nA small, clean, tested PR is always better than nothing."
+          },
+          "position": {
+            "x": 400,
+            "y": 450
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-tests",
+          "type": "validation.tests",
+          "label": "Verify — Tests",
+          "config": {
+            "command": "{{testCommand}}"
+          },
+          "position": {
+            "x": 200,
+            "y": 610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-build",
+          "type": "validation.build",
+          "label": "Verify — Build",
+          "config": {
+            "command": "{{buildCommand}}",
+            "zeroWarnings": false
+          },
+          "position": {
+            "x": 600,
+            "y": 610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-validation",
+          "type": "condition.expression",
+          "label": "Validation Passed?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('verify-tests')?.success === true && $ctx.getNodeOutput('verify-build')?.success === true"
+          },
+          "position": {
+            "x": 400,
+            "y": 750
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "create-pr",
+          "type": "action.create_pr",
+          "label": "Open Quality PR",
+          "config": {
+            "title": "refactor: code quality pass {{_runId}}",
+            "body": "Automated code-quality session. Structural refactor only — zero functional changes. See `.bosun-monitor/code-quality-striker.md` for session details.",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "labels": [
+              "refactor",
+              "code-quality",
+              "automated"
+            ]
+          },
+          "position": {
+            "x": 200,
+            "y": 890
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-success",
+          "type": "notify.telegram",
+          "label": "Notify PR Opened",
+          "config": {
+            "message": ":check: Code quality striker session complete.\nPR opened: **{{branch}}**\nRun ID: `{{_runId}}`",
+            "silent": true
+          },
+          "position": {
+            "x": 200,
+            "y": 1030
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-failure",
+          "type": "notify.telegram",
+          "label": "Notify — Validation Failed",
+          "config": {
+            "message": ":alert: Code quality striker **validation failed** for run `{{_runId}}`.\n\nThe agent produced changes that broke tests or build. No PR was created.\nCheck `.bosun-monitor/code-quality-striker.md` for details."
+          },
+          "position": {
+            "x": 600,
+            "y": 890
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-failure",
+          "type": "notify.log",
+          "label": "Log Failure",
+          "config": {
+            "message": "Code quality striker run {{_runId}} failed validation — no PR created.",
+            "level": "warn"
+          },
+          "position": {
+            "x": 600,
+            "y": 1030
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->check-active-pr",
+          "source": "trigger",
+          "target": "check-active-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-active-pr->skip-already-running",
+          "source": "check-active-pr",
+          "target": "skip-already-running",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-active-pr->scan-candidates",
+          "source": "check-active-pr",
+          "target": "scan-candidates",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "scan-candidates->run-striker",
+          "source": "scan-candidates",
+          "target": "run-striker",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-striker->verify-tests",
+          "source": "run-striker",
+          "target": "verify-tests",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-striker->verify-build",
+          "source": "run-striker",
+          "target": "verify-build",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-tests->check-validation",
+          "source": "verify-tests",
+          "target": "check-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-build->check-validation",
+          "source": "verify-build",
+          "target": "check-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-validation->create-pr",
+          "source": "check-validation",
+          "target": "create-pr",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-validation->notify-failure",
+          "source": "check-validation",
+          "target": "notify-failure",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "create-pr->notify-success",
+          "source": "create-pr",
+          "target": "notify-success",
+          "sourcePort": "default"
+        },
+        {
+          "id": "notify-failure->log-failure",
+          "source": "notify-failure",
+          "target": "log-failure",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-code-quality-striker",
+          "templateName": "Code Quality Striker",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-task-debug",
+      "name": "Debug Task Workflow",
+      "description": "Bug investigation and fix workflow. Starts with reproduction and root-cause analysis, then implements a targeted fix with regression tests.",
+      "category": "task-execution",
+      "enabled": true,
+      "nodeCount": 5,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 3,
+        "maxContinues": 4,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "bug|fix|error|crash|regression|broken|debug|issue|defect|hotfix|patch"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "reproduce",
+          "type": "action.run_agent",
+          "label": "Reproduce & Analyse",
+          "config": {
+            "prompt": "## Phase: Bug Reproduction & Root Cause Analysis\n\n1. Read the bug report carefully\n2. Find the relevant code area\n3. Reproduce the issue (write a failing test if possible)\n4. Trace the root cause through the codebase\n5. Document: what fails, where, why, and the minimal fix needed\n\nDo NOT fix the bug yet — only diagnose.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "fix-and-test",
+          "type": "action.run_agent",
+          "label": "Fix & Regression Test",
+          "config": {
+            "prompt": "## Phase: Fix Implementation with Regression Tests\n\n1. Write a regression test that demonstrates the bug (must fail before fix)\n2. Apply the minimal, surgical fix\n3. Verify the regression test now passes\n4. Run the full test suite: {{testCommand}}\n5. Run build: {{buildCommand}}\n6. Run lint: {{lintCommand}}\n7. Ensure no other tests broke\n\nCommit fix and test together with a clear commit message.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Final Verification\n\n1. Run complete test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Confirm the original bug is fixed\n4. Confirm no regressions\n5. Push and create/update PR with root cause analysis in description",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Debug task completed — bug fixed with regression test."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->reproduce",
+          "source": "trigger",
+          "target": "reproduce",
+          "sourcePort": "default"
+        },
+        {
+          "id": "reproduce->fix-and-test",
+          "source": "reproduce",
+          "target": "fix-and-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "fix-and-test->verify",
+          "source": "fix-and-test",
+          "target": "verify",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify->done",
+          "source": "verify",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-task-debug",
+          "templateName": "Debug Task Workflow",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-task-design",
+      "name": "Design Task Workflow",
+      "description": "For design-related tasks — mockups, wireframes, design tokens, component library work. Analyses design requirements, implements the design system changes, and verifies visual output.",
+      "category": "task-execution",
+      "enabled": true,
+      "nodeCount": 5,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "design|mockup|wireframe|prototype|design.system|theme|color|typography|icon|illustration|ux"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "analyse-requirements",
+          "type": "action.run_agent",
+          "label": "Analyse Design Req",
+          "config": {
+            "prompt": "## Phase: Design Requirements Analysis\n\n1. Review the design task requirements\n2. Identify affected design tokens, components, or patterns\n3. Check existing design system for reusable pieces\n4. Plan the implementation approach\n5. List affected files and components\n\nDo NOT make changes yet.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-design",
+          "type": "action.run_agent",
+          "label": "Implement Design",
+          "config": {
+            "prompt": "## Phase: Design Implementation\n\n1. Update design tokens (colors, spacing, typography) if needed\n2. Create / update components per the design specification\n3. Ensure consistency with existing design system\n4. Add visual tests or snapshots where applicable\n5. Run build: {{buildCommand}}\n6. Run lint: {{lintCommand}}\n\nCommit changes with descriptive messages.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-design",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Design Verification\n\n1. Run tests: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify visual consistency\n4. Check design token values are correct\n5. Push and create/update PR",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Design task completed — design changes implemented and verified."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->analyse-requirements",
+          "source": "trigger",
+          "target": "analyse-requirements",
+          "sourcePort": "default"
+        },
+        {
+          "id": "analyse-requirements->implement-design",
+          "source": "analyse-requirements",
+          "target": "implement-design",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-design->verify-design",
+          "source": "implement-design",
+          "target": "verify-design",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-design->done",
+          "source": "verify-design",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-task-design",
+          "templateName": "Design Task Workflow",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
       "id": "wf-flow-control-suite",
       "name": "Flow Control Suite",
       "description": "Exercises flow-control primitives in a single short workflow: join, while-loop (0 iters), universal dispatch, and meeting finalization.",
@@ -27329,6 +30648,363 @@
         "templateState": {
           "templateId": "template-flow-control-suite",
           "templateName": "Flow Control Suite",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-task-frontend",
+      "name": "Frontend Task Workflow",
+      "description": "Specialised for UI tasks — components, pages, styling, accessibility. Runs three phases: design analysis, implement with component tests, and visual verification.",
+      "category": "task-execution",
+      "enabled": true,
+      "nodeCount": 5,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "frontend|ui|component|page|layout|style|css|responsive|accessibility|a11y|design.system"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "analyse-design",
+          "type": "action.run_agent",
+          "label": "Analyse Design",
+          "config": {
+            "prompt": "## Phase: Design Analysis\n\nAnalyse the UI task requirements:\n1. Component hierarchy and structure\n2. Layout and responsive breakpoints\n3. State management needs\n4. Accessibility requirements (ARIA, keyboard nav)\n5. Styling approach (CSS modules, Tailwind, styled-components)\n6. Component test plan\n\nDo NOT write code yet.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-ui",
+          "type": "action.run_agent",
+          "label": "Implement UI",
+          "config": {
+            "prompt": "## Phase: UI Implementation\n\n1. Create / update components per the design plan\n2. Implement layouts, styling, and responsive design\n3. Add proper accessibility attributes\n4. Write component tests\n5. Run tests: {{testCommand}}\n6. Run build: {{buildCommand}}\n7. Run lint: {{lintCommand}}\n\nCommit with descriptive messages.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-visual",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Visual Verification\n\n1. Run the full test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify components render correctly\n4. Check responsive breakpoints\n5. Verify accessibility (screen reader, keyboard)\n6. Push changes and create/update PR",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Frontend task completed — UI implemented and verified."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->analyse-design",
+          "source": "trigger",
+          "target": "analyse-design",
+          "sourcePort": "default"
+        },
+        {
+          "id": "analyse-design->implement-ui",
+          "source": "analyse-design",
+          "target": "implement-ui",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-ui->verify-visual",
+          "source": "implement-ui",
+          "target": "verify-visual",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-visual->done",
+          "source": "verify-visual",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-task-frontend",
+          "templateName": "Frontend Task Workflow",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-task-fullstack",
+      "name": "Fullstack Task Workflow",
+      "description": "Handles tasks that span frontend and backend — API endpoints, database models, and UI components. Runs four agent phases: architecture planning, backend implementation, frontend implementation, and integration testing.",
+      "category": "task-execution",
+      "enabled": true,
+      "nodeCount": 6,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "full.?stack|end.to.end|api.*ui|server.*client|frontend.*backend|database.*component"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "plan-architecture",
+          "type": "action.run_agent",
+          "label": "Plan Architecture",
+          "config": {
+            "prompt": "## Phase: Architecture Planning\n\nAnalyse the task and produce a concrete plan covering:\n1. Backend changes: API routes, models, services, migrations\n2. Frontend changes: components, pages, state management\n3. Shared types / contracts between layers\n4. Test strategy for each layer\n5. Integration points and data flow\n\nDo NOT write code yet — produce only the plan.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-backend",
+          "type": "action.run_agent",
+          "label": "Implement Backend",
+          "config": {
+            "prompt": "## Phase: Backend Implementation\n\nImplement the server-side / API changes from the architecture plan:\n- Models, schemas, database migrations\n- API routes and controllers\n- Service / business logic\n- Unit tests for backend logic\n- Run tests: {{testCommand}}\n\nCommit backend changes separately.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-frontend",
+          "type": "action.run_agent",
+          "label": "Implement Frontend",
+          "config": {
+            "prompt": "## Phase: Frontend Implementation\n\nImplement the client-side / UI changes:\n- Components, pages, layouts\n- State management and API integration\n- Styling and responsive design\n- Component tests\n- Run build: {{buildCommand}}\n\nCommit frontend changes separately.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "integration-test",
+          "type": "action.run_agent",
+          "label": "Integration Test",
+          "config": {
+            "prompt": "## Phase: Integration Testing\n\nVerify the full stack works end-to-end:\n1. Run the full test suite: {{testCommand}}\n2. Run the build: {{buildCommand}}\n3. Run lint: {{lintCommand}}\n4. Fix any integration issues between frontend and backend\n5. Ensure all tests pass before completing\n\nPush all changes and create/update the PR.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 660
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Fullstack task completed — all layers implemented and tested."
+          },
+          "position": {
+            "x": 400,
+            "y": 820
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->plan-architecture",
+          "source": "trigger",
+          "target": "plan-architecture",
+          "sourcePort": "default"
+        },
+        {
+          "id": "plan-architecture->implement-backend",
+          "source": "plan-architecture",
+          "target": "implement-backend",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-backend->implement-frontend",
+          "source": "implement-backend",
+          "target": "implement-frontend",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-frontend->integration-test",
+          "source": "implement-frontend",
+          "target": "integration-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "integration-test->done",
+          "source": "integration-test",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-task-fullstack",
+          "templateName": "Fullstack Task Workflow",
           "templateVersion": "1.0.0",
           "installedTemplateVersion": "1.0.0",
           "isCustomized": false,
@@ -29168,7 +32844,7 @@
       "id": "wf-task-batch-pr",
       "name": "Task Batch → PR",
       "description": "Simplified batch processor that picks todo tasks, runs the agent on each, and creates pull requests for any that produce commits. Ideal for autonomous mode where tasks should flow straight to PRs.",
-      "category": "lifecycle",
+      "category": "task-execution",
       "enabled": true,
       "nodeCount": 11,
       "trigger": "trigger.task_available",
@@ -29206,7 +32882,7 @@
             "command": "node",
             "args": [
               "-e",
-              "\n        import(\"./kanban-adapter.mjs\")\n          .then(k => k.listTasks(undefined, { status: \"todo\" }))\n          .then(tasks => {\n            const batch = (tasks || []).slice(0, parseInt(process.env.MAX_BATCH || \"5\"));\n            console.log(JSON.stringify(batch.map(t => ({\n              taskId: t.id,\n              taskTitle: t.title || t.id,\n              branch: t.branch || t.metadata?.branch || null,\n            }))));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
+              "\n        import(\"./kanban-adapter.mjs\")\n          .then(k => k.listTasks(undefined, { status: \"todo\" }))\n          .then(tasks => {\n            const filtered = (tasks || []).filter((task) => {\n              const repository = typeof task?.repository === \"string\" ? task.repository.trim() : \"\";\n              const workspace = typeof task?.workspace === \"string\" ? task.workspace.trim() : \"\";\n              return task && task.status === \"todo\" && !task.draft && repository.length > 0 && workspace.length > 0;\n            });\n            const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || \"5\"));\n            console.log(JSON.stringify(batch.map(t => ({\n              taskId: t.id,\n              taskTitle: t.title || t.id,\n              branch: t.branch || t.metadata?.branch || null,\n              repository: t.repository || null,\n              workspace: t.workspace || null,\n            }))));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
             ],
             "env": {
               "MAX_BATCH": "{{maxBatchSize}}"
@@ -29465,7 +33141,7 @@
       "id": "wf-task-batch-processor",
       "name": "Task Batch Processor",
       "description": "Monitors the task backlog and dispatches multiple tasks in parallel using the Task Lifecycle sub-workflow. Automatically picks up tasks when backlog drops below threshold, fans out execution across available slots, and reports batch results.",
-      "category": "lifecycle",
+      "category": "task-execution",
       "enabled": true,
       "nodeCount": 7,
       "trigger": "trigger.task_available",
@@ -29517,7 +33193,7 @@
             "command": "node",
             "args": [
               "-e",
-              "\n        import(\"./kanban-adapter.mjs\")\n          .then(k => k.listTasks(undefined, { status: \"todo\" }))\n          .then(tasks => {\n            const batch = (tasks || []).slice(0, parseInt(process.env.MAX_BATCH || \"10\"));\n            console.log(JSON.stringify(batch.map(t => ({\n              taskId: t.id,\n              taskTitle: t.title || t.id,\n              status: t.status,\n              branch: t.branch || t.metadata?.branch || null,\n              scope: t.scope || t.metadata?.scope || null,\n            }))));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
+              "\n        import(\"./kanban-adapter.mjs\")\n          .then(k => k.listTasks(undefined, { status: \"todo\" }))\n          .then(tasks => {\n            const filtered = (tasks || []).filter((task) => {\n              const repository = typeof task?.repository === \"string\" ? task.repository.trim() : \"\";\n              const workspace = typeof task?.workspace === \"string\" ? task.workspace.trim() : \"\";\n              return task && task.status === \"todo\" && !task.draft && repository.length > 0 && workspace.length > 0;\n            });\n            const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || \"10\"));\n            console.log(JSON.stringify(batch.map(t => ({\n              taskId: t.id,\n              taskTitle: t.title || t.id,\n              status: t.status,\n              branch: t.branch || t.metadata?.branch || null,\n              scope: t.scope || t.metadata?.scope || null,\n              repository: typeof t?.repository === \"string\" ? t.repository.trim() : null,\n              workspace: typeof t?.workspace === \"string\" ? t.workspace.trim() : null,\n            }))));\n          })\n          .catch(e => { console.error(e.message); process.exit(1); });\n      "
             ],
             "env": {
               "MAX_BATCH": "{{maxBatchSize}}"
@@ -29576,7 +33252,7 @@
           "label": "Record Results",
           "config": {
             "key": "batchResult",
-            "value": "{{dispatchResult}}"
+            "value": "{{dispatch-tasks}}"
           },
           "position": {
             "x": 400,
@@ -29660,16 +33336,16 @@
       "id": "wf-task-lifecycle",
       "name": "Task Lifecycle",
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
-      "category": "lifecycle",
+      "category": "task-execution",
       "enabled": true,
-      "nodeCount": 36,
+      "nodeCount": 44,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
         "baseBranchLimit": 0,
         "pollIntervalMs": 30000,
         "claimTtlMinutes": 180,
-        "claimRenewIntervalMs": 300000,
+        "claimRenewIntervalMs": 60000,
         "defaultSdk": "auto",
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
@@ -29832,6 +33508,8 @@
             "taskId": "{{taskId}}",
             "taskTitle": "{{taskTitle}}",
             "taskDescription": "{{taskDescription}}",
+            "repoRoot": "{{repoRoot}}",
+            "workspace": "{{workspace}}",
             "defaultSdk": "{{defaultSdk}}"
           },
           "position": {
@@ -29859,6 +33537,38 @@
           ]
         },
         {
+          "id": "read-workflow-contract",
+          "type": "read-workflow-contract",
+          "label": "Read WORKFLOW.md",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "worktreePath": "{{worktreePath}}"
+          },
+          "position": {
+            "x": 200,
+            "y": 1350
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "workflow-contract-validation",
+          "type": "workflow-contract-validation",
+          "label": "Validate WORKFLOW.md",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "worktreePath": "{{worktreePath}}"
+          },
+          "position": {
+            "x": 200,
+            "y": 1480
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "build-prompt",
           "type": "action.build_task_prompt",
           "label": "Build Prompt",
@@ -29877,19 +33587,22 @@
           },
           "position": {
             "x": 200,
-            "y": 1350
+            "y": 1610
           },
           "outputs": [
             "default"
           ]
         },
         {
-          "id": "run-agent",
+          "id": "run-agent-plan",
           "type": "action.run_agent",
-          "label": "Execute Agent",
+          "label": "Agent Plan",
           "config": {
-            "prompt": "{{_taskPrompt}}",
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: planning. Produce a concrete implementation plan and identify required tests. Do not make code changes in this phase.",
             "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
             "cwd": "{{worktreePath}}",
             "timeoutMs": "{{taskTimeoutMs}}",
             "maxRetries": "{{maxRetries}}",
@@ -29898,7 +33611,55 @@
           },
           "position": {
             "x": 200,
-            "y": 1480
+            "y": 1740
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent-tests",
+          "type": "action.run_agent",
+          "label": "Agent Tests",
+          "config": {
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: tests. Write or update tests first for the target behavior, then validate failures/pass criteria before implementation changes.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 200,
+            "y": 1545
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent-implement",
+          "type": "action.run_agent",
+          "label": "Agent Implement",
+          "config": {
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: implementation. Complete implementation after tests exist, run required verification (tests/lint/build), then commit, push, and create/update PR.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 200,
+            "y": 1610
           },
           "outputs": [
             "default"
@@ -30012,7 +33773,7 @@
           "type": "condition.expression",
           "label": "PR Linked?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.success === true && ($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl))"
           },
           "position": {
             "x": 0,
@@ -30107,6 +33868,75 @@
           ]
         },
         {
+          "id": "create-pr-retry",
+          "type": "action.create_pr",
+          "label": "Recover PR Link",
+          "config": {
+            "title": "{{taskTitle}}",
+            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+            "base": "{{baseBranch}}",
+            "branch": "{{branch}}",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 1740
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pr-created-stolen",
+          "type": "condition.expression",
+          "label": "PR Linked After Claim Loss?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('create-pr-retry')?.success === true && ($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl))"
+          },
+          "position": {
+            "x": 400,
+            "y": 1870
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-inreview-stolen",
+          "type": "action.update_task_status",
+          "label": "Set In-Review (Recovered)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "inreview",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 250,
+            "y": 2000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-claim-stolen-recovered",
+          "type": "notify.log",
+          "label": "Log Claim Loss Recovery",
+          "config": {
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — claim lost after PR link recovery, keeping inreview",
+            "level": "warn"
+          },
+          "position": {
+            "x": 250,
+            "y": 2130
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "log-claim-stolen",
           "type": "notify.log",
           "label": "Log Claim Stolen",
@@ -30115,8 +33945,8 @@
             "level": "warn"
           },
           "position": {
-            "x": 400,
-            "y": 1740
+            "x": 550,
+            "y": 2000
           },
           "outputs": [
             "default"
@@ -30132,8 +33962,8 @@
             "taskTitle": "{{taskTitle}}"
           },
           "position": {
-            "x": 400,
-            "y": 1870
+            "x": 550,
+            "y": 2130
           },
           "outputs": [
             "default"
@@ -30149,7 +33979,8 @@
               "log-success",
               "set-todo-push-failed",
               "set-todo-cooldown",
-              "set-todo-stolen"
+              "set-todo-stolen",
+              "log-claim-stolen-recovered"
             ],
             "includeSkipped": true
           },
@@ -30361,20 +34192,44 @@
           "sourcePort": "default"
         },
         {
-          "id": "record-head->build-prompt",
+          "id": "record-head->read-workflow-contract",
           "source": "record-head",
+          "target": "read-workflow-contract",
+          "sourcePort": "default"
+        },
+        {
+          "id": "read-workflow-contract->workflow-contract-validation",
+          "source": "read-workflow-contract",
+          "target": "workflow-contract-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "workflow-contract-validation->build-prompt",
+          "source": "workflow-contract-validation",
           "target": "build-prompt",
           "sourcePort": "default"
         },
         {
-          "id": "build-prompt->run-agent",
+          "id": "build-prompt->run-agent-plan",
           "source": "build-prompt",
-          "target": "run-agent",
+          "target": "run-agent-plan",
           "sourcePort": "default"
         },
         {
-          "id": "run-agent->claim-stolen",
-          "source": "run-agent",
+          "id": "run-agent-plan->run-agent-tests",
+          "source": "run-agent-plan",
+          "target": "run-agent-tests",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-agent-tests->run-agent-implement",
+          "source": "run-agent-tests",
+          "target": "run-agent-implement",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-agent-implement->claim-stolen",
+          "source": "run-agent-implement",
           "target": "claim-stolen",
           "sourcePort": "default"
         },
@@ -30476,11 +34331,43 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->log-claim-stolen",
+          "id": "claim-stolen->create-pr-retry",
           "source": "claim-stolen",
-          "target": "log-claim-stolen",
+          "target": "create-pr-retry",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
+        },
+        {
+          "id": "create-pr-retry->pr-created-stolen",
+          "source": "create-pr-retry",
+          "target": "pr-created-stolen",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-stolen->set-inreview-stolen",
+          "source": "pr-created-stolen",
+          "target": "set-inreview-stolen",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "set-inreview-stolen->log-claim-stolen-recovered",
+          "source": "set-inreview-stolen",
+          "target": "log-claim-stolen-recovered",
+          "sourcePort": "default"
+        },
+        {
+          "id": "log-claim-stolen-recovered->join-outcomes",
+          "source": "log-claim-stolen-recovered",
+          "target": "join-outcomes",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-stolen->log-claim-stolen",
+          "source": "pr-created-stolen",
+          "target": "log-claim-stolen",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         },
         {
           "id": "log-claim-stolen->set-todo-stolen",
@@ -30569,9 +34456,9 @@
       "id": "wf-ve-orchestrator-lite",
       "name": "VE Orchestrator Lite",
       "description": "Simplified task lifecycle for lightweight deployments. Same core flow as the full Task Lifecycle (slot → claim → worktree → agent → push → PR) but with fewer failure branches and no anti-thrash.",
-      "category": "lifecycle",
+      "category": "task-execution",
       "enabled": true,
-      "nodeCount": 24,
+      "nodeCount": 26,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 2,
@@ -30709,6 +34596,11 @@
           "type": "action.resolve_executor",
           "label": "Resolve SDK",
           "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "taskDescription": "{{taskDescription}}",
+            "repoRoot": "{{repoRoot}}",
+            "workspace": "{{workspace}}",
             "defaultSdk": "{{defaultSdk}}"
           },
           "position": {
@@ -30736,6 +34628,38 @@
           ]
         },
         {
+          "id": "read-workflow-contract",
+          "type": "read-workflow-contract",
+          "label": "Read WORKFLOW.md",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "worktreePath": "{{worktreePath}}"
+          },
+          "position": {
+            "x": 300,
+            "y": 1220
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "workflow-contract-validation",
+          "type": "workflow-contract-validation",
+          "label": "Validate WORKFLOW.md",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "worktreePath": "{{worktreePath}}"
+          },
+          "position": {
+            "x": 300,
+            "y": 1350
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "prompt",
           "type": "action.build_task_prompt",
           "label": "Build Prompt",
@@ -30750,7 +34674,7 @@
           },
           "position": {
             "x": 300,
-            "y": 1220
+            "y": 1480
           },
           "outputs": [
             "default"
@@ -30763,6 +34687,9 @@
           "config": {
             "prompt": "{{_taskPrompt}}",
             "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
             "cwd": "{{worktreePath}}",
             "timeoutMs": "{{taskTimeoutMs}}",
             "maxRetries": "{{maxRetries}}",
@@ -30770,7 +34697,7 @@
           },
           "position": {
             "x": 300,
-            "y": 1350
+            "y": 1610
           },
           "outputs": [
             "default"
@@ -30850,7 +34777,7 @@
           "type": "condition.expression",
           "label": "PR Linked?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput('pr')?.success === true && ($ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl))"
           },
           "position": {
             "x": 180,
@@ -31044,8 +34971,20 @@
           "sourcePort": "default"
         },
         {
-          "id": "record-head->prompt",
+          "id": "record-head->read-workflow-contract",
           "source": "record-head",
+          "target": "read-workflow-contract",
+          "sourcePort": "default"
+        },
+        {
+          "id": "read-workflow-contract->workflow-contract-validation",
+          "source": "read-workflow-contract",
+          "target": "workflow-contract-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "workflow-contract-validation->prompt",
+          "source": "workflow-contract-validation",
           "target": "prompt",
           "sourcePort": "default"
         },
@@ -33526,9 +37465,16 @@
       "agentType": "voice",
       "voiceAgent": true,
       "voicePersona": "female",
-      "voiceInstructions": "You are Nova, a female voice agent. Be concise, warm, and practical. Use tools for facts and execution. Keep spoken responses short and clear.",
+      "voiceInstructions": "You are Nova, a female voice agent. You are NOT ChatGPT — never identify yourself as ChatGPT or any other AI assistant. Your name is Nova. Be concise, warm, and practical. Use tools for facts and execution. Keep spoken responses short and clear.",
       "enabledTools": null,
-      "enabledMcpServers": []
+      "enabledMcpServers": [],
+      "customModes": [
+        {
+          "id": "voice-command",
+          "description": "Execute voice commands with full tool access",
+          "prefix": "[MODE: voice-command] Execute the user's request using available tools. Always call tools when they can answer the question.\n\n"
+        }
+      ]
     },
     "voice-agent-male": {
       "id": "voice-agent-male",
@@ -33564,7 +37510,7 @@
       "agentType": "voice",
       "voiceAgent": true,
       "voicePersona": "male",
-      "voiceInstructions": "You are Atlas, a male voice agent. Be direct and execution-oriented. Prefer actionable status updates. Use tools proactively for diagnostics.",
+      "voiceInstructions": "You are Atlas, a male voice agent. You are NOT ChatGPT — never identify yourself as ChatGPT or any other AI assistant. Your name is Atlas. Be direct and execution-oriented. Prefer actionable status updates. Use tools proactively for diagnostics.",
       "enabledTools": null,
       "enabledMcpServers": []
     },
@@ -33597,6 +37543,7 @@
       "agentType": "voice",
       "voiceAgent": true,
       "voicePersona": "neutral",
+      "voiceInstructions": "You are Bosun, a voice assistant for the VirtEngine development platform. Be helpful, concise, and professional. Use tools to answer questions and execute tasks.",
       "enabledTools": null,
       "enabledMcpServers": []
     },
@@ -33608,7 +37555,7 @@
     "agent-coordination": "# Skill: Multi-Agent Coordination\n\n## How Bosun Runs Agents in Parallel\n\nBosun uses **git worktrees** to run multiple agents simultaneously without\nconflict. Each agent gets its own isolated directory:\n\n```\n<workspace>/\n  main-repo/          ← original checkout (main branch)\n  .bosun-worktrees/\n    task-001-feature-x/   ← Agent A works here\n    task-002-fix-y/       ← Agent B works here\n```\n\nEach worktree is on its own branch. Agent A's commits never touch Agent B's\ndirectory, and vice-versa.\n\n## Rules for Agents in Worktrees\n\n1. **Never navigate outside your worktree** — use `BOSUN_WORKTREE_PATH` as your root.\n2. **Never modify files in another agent's worktree** — not even to \"help\".\n3. **Never switch branches inside your worktree** — your branch was pre-set.\n4. **Never run `git worktree add/remove`** — bosun manages the worktree lifecycle.\n\n## Merge Order and Base Branches\n\nEach task has a `base_branch` (often a module branch like `origin/auth`).\nYour branch was created from that base — not from `main` directly.\n\nMerge order on completion:\n1. Merge upstream base branch changes into your branch (keeps drift low).\n2. Merge main (catches global changes like dep bumps).\n3. Push and hand off lifecycle targeting the base branch.\n\nThe orchestrator then merges the base branch into main after CI.\n\n## Shared State\n\nBosun uses a **shared state manager** to coordinate claims, heartbeats, and task\nstatuses across agents. All communication goes through HTTP:\n\n```\nhttp://127.0.0.1:<ENDPOINT_PORT>/api/tasks/<TASK_ID>/...\n```\n\nDo not read/write the task store files directly — use the API endpoints.\n\n## File-Level Conflict Avoidance\n\nThe planner intentionally keeps task file overlap low. If you notice your task\nwould require editing the same file as another active task:\n\n1. Check if the other task is still in-progress via `GET /api/tasks?status=inprogress`.\n2. If it is, focus only on non-overlapping changes and note the dependency.\n3. If it isn't, proceed normally — git will handle the merge.\n\n## Detecting & Resolving Conflicts\n\nIf `git merge` reports conflicts:\n```bash\ngit status                         # see conflicting files\ngit diff --diff-filter=U           # see conflict markers\n```\n\nResolution heuristics:\n- **Lockfiles** (`package-lock.json`, `yarn.lock`): `git checkout --theirs <file>`, then `npm ci`\n- **Changelogs / coverage reports**: `git checkout --ours <file>`\n- **Source files**: merge by intent — preserve both changes where both are correct.\n\nAfter merging `git add <resolved>` and `git commit` (no message needed for merge commits).\n",
     "bosun-agent-api": "# Skill: Bosun Agent Status API\n\nBosun exposes a local HTTP API for agents to report progress, errors, and\ncompletion. You MUST use this API when running as a bosun-managed agent.\n\n## Endpoint Base\n\n`http://127.0.0.1:<ENDPOINT_PORT>/api/tasks/<TASK_ID>/`\n\nBoth `ENDPOINT_PORT` and `TASK_ID` are injected into your environment as\n`BOSUN_ENDPOINT_PORT` / `VE_ENDPOINT_PORT` and `BOSUN_TASK_ID` / `VK_TASK_ID`.\n\n## Required Calls\n\n### Startup\n```bash\ncurl -sX POST http://127.0.0.1:$BOSUN_ENDPOINT_PORT/api/tasks/$BOSUN_TASK_ID/heartbeat \\\n  -H \"Content-Type: application/json\" -d '{}'\n```\n\n### Periodic Heartbeat (every ≤ 60 seconds during active work)\nSame as startup.\n\n### Status Update\n```bash\ncurl -sX POST http://127.0.0.1:$BOSUN_ENDPOINT_PORT/api/tasks/$BOSUN_TASK_ID/status \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"status\": \"inprogress\", \"note\": \"Running tests...\"}'\n```\nStatus values: `todo → inprogress → inreview → done`\n\n### Completion (after successful push + PR)\n```bash\ncurl -sX POST http://127.0.0.1:$BOSUN_ENDPOINT_PORT/api/tasks/$BOSUN_TASK_ID/complete \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"hasCommits\": true}'\n```\n\n### Error (fatal failure only — do not retry after posting an error)\n```bash\ncurl -sX POST http://127.0.0.1:$BOSUN_ENDPOINT_PORT/api/tasks/$BOSUN_TASK_ID/error \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"error\": \"Build failed: <details>\"}'\n```\n\n## Environment Variables Available to Agents\n\n| Variable | Alias | Description |\n|----------|-------|-------------|\n| `BOSUN_TASK_ID` | `VK_TASK_ID` | Current task identifier |\n| `BOSUN_TASK_TITLE` | `VK_TASK_TITLE` | Human-readable title |\n| `BOSUN_TASK_DESCRIPTION` | `VK_TASK_DESCRIPTION` | Full task description |\n| `BOSUN_BRANCH_NAME` | `VK_BRANCH_NAME` | Git branch for this task |\n| `BOSUN_WORKTREE_PATH` | `VK_WORKTREE_PATH` | Absolute path to worktree root |\n| `BOSUN_ENDPOINT_PORT` | `VE_ENDPOINT_PORT` | API server port |\n| `BOSUN_SDK` | `VE_SDK` | SDK/executor type (COPILOT/CODEX/CLAUDE_CODE) |\n| `BOSUN_MANAGED` | `VE_MANAGED` | Set to \"1\" when running under bosun |\n",
     "code-quality-anti-patterns": "# Skill: Code Quality Anti-Patterns\n\n## Purpose\nPrevent common coding mistakes that cause crashes, flaky behavior, memory leaks,\nand hard-to-diagnose production failures. Every pattern below has caused real\noutages — treat each as a hard rule, not a suggestion.\n\n---\n\n## 1. Module-Scope vs Function-Scope — Caching & Singletons\n\n**Rule:** Variables that cache module-level state (lazy singletons, loaded\nconfigs, memoized results) MUST be declared at **module scope**, never inside\na function that runs repeatedly.\n\n### Bad — re-initializes on every call\n```js\nexport function handleRequest(req, res) {\n  let _engine;           // ← reset to undefined on EVERY call\n  let _loaded = false;   // ← never stays true across calls\n  if (!_loaded) {\n    _engine = await loadEngine();\n    _loaded = true;\n  }\n  // ...\n}\n```\n\n### Good — persists across calls\n```js\nlet _engine;\nlet _loaded = false;\n\nexport function handleRequest(req, res) {\n  if (!_loaded) {\n    _engine = await loadEngine();\n    _loaded = true;\n  }\n  // ...\n}\n```\n\n**Why:** Placing cache variables inside a function body causes:\n- Repeated expensive initialization (import, parse, connect) on every call\n- Log spam from repeated init messages\n- Potential memory leaks from orphaned resources\n- Race conditions when multiple concurrent calls all see `_loaded === false`\n\n**Checklist:**\n- [ ] Lazy singletons: module scope\n- [ ] Memoization caches: module scope (or a `Map`/`WeakMap` at module scope)\n- [ ] \"loaded\" / \"initialized\" flags: module scope\n- [ ] Config objects read once from disk: module scope\n\n---\n\n## 2. Async Fire-and-Forget — Always Handle Rejections\n\n**Rule:** NEVER use bare `void asyncFn()` or call an async function without\neither `await`-ing or chaining `.catch()`. Unhandled promise rejections crash\nNode.js processes.\n\n### Bad — unhandled rejection → crash\n```js\nvoid dispatchEvent(data);    // if dispatchEvent is async and throws → crash\nasyncCleanup();              // no await, no catch → crash\n```\n\n### Good — always handle the rejection\n```js\nawait dispatchEvent(data);                           // preferred: await it\ndispatchEvent(data).catch(() => {});                  // fire-and-forget OK\ndispatchEvent(data).catch(err => log.warn(err));      // fire-and-forget with logging\n```\n\n**Why:** Since Node.js 15+, unhandled promise rejections terminate the process\nwith exit code 1. A single `void asyncFn()` in a hot path can cause a\ncrash → restart → crash loop that takes down the entire system.\n\n**Checklist:**\n- [ ] Every async call is `await`-ed OR has a `.catch()` handler\n- [ ] No bare `void asyncFn()` patterns\n- [ ] Event dispatch functions wrapped in try/catch at the top level\n- [ ] setInterval/setTimeout callbacks that call async functions use `.catch()`\n\n---\n\n## 3. Error Boundaries & Defensive Coding\n\n**Rule:** Any function called from a hot path (HTTP handlers, event loops,\ntimers) MUST have a top-level try/catch that prevents a single failure from\ncrashing the entire process.\n\n### Bad — one bad event kills the server\n```js\nrouter.post('/webhook', async (req, res) => {\n  const data = parsePayload(req.body);\n  await processAllWebhooks(data);\n  res.json({ ok: true });\n});\n```\n\n### Good — contained failure\n```js\nrouter.post('/webhook', async (req, res) => {\n  try {\n    const data = parsePayload(req.body);\n    await processAllWebhooks(data);\n    res.json({ ok: true });\n  } catch (err) {\n    log.error('webhook handler failed', err);\n    res.status(500).json({ error: 'internal' });\n  }\n});\n```\n\n---\n\n## 4. Testing Anti-Patterns\n\n### Over-Mocking\n**Rule:** Tests should validate real behavior, not just confirm that mocks\nreturn what you told them to return.\n\n- Mock only external boundaries (network, filesystem, clock).\n- Never mock the module under test.\n- If you need > 3 mocks for a single test, the code under test probably needs\n  refactoring, not more mocks.\n- Prefer integration tests with real instances over unit tests with heavy mocking.\n\n### Flaky Tests\n**Rule:** Tests must be deterministic and reproducible.\n\n- No `Math.random()` or `Date.now()` without mocking.\n- No network calls to real servers.\n- No `setTimeout`/`sleep` for synchronization — use proper async patterns.\n- No implicit ordering dependencies between tests.\n- If a test creates global state, clean it up in `afterEach`.\n\n### Assertion Quality\n- Test ONE behavior per test case.\n- Assert on observable outputs, not internal state.\n- Check error cases, not just happy paths.\n- Use descriptive test names: `parseDate_invalidInput_throwsError`\n  not `test parseDate 3`.\n\n---\n\n## 5. Architectural Patterns\n\n### Initialization Guards\nWhen a module has expensive async initialization, use a promise-based\ndeduplication pattern to prevent multiple concurrent initializations:\n\n```js\nlet _initPromise = null;\n\nasync function ensureInit() {\n  if (!_initPromise) {\n    _initPromise = doExpensiveInit(); // called ONCE\n  }\n  return _initPromise;\n}\n```\n\n### Import/Require in Module Scope\nDynamic `import()` calls should be cached at module scope.\nNever put `import()` inside a frequently-called function without caching.\n\n### Guard Clauses for Optional Features\nWhen calling into optional subsystems (plugins, workflow engines, etc.),\nalways check that the subsystem is enabled before invoking:\n\n```js\nif (!config.featureEnabled) return;\nconst engine = await getEngine();\nif (!engine) return;\nawait engine.process(data);\n```\n\n---\n\n## Quick Reference: Red Flags in Code Review\n\n| Pattern | Risk | Fix |\n|---------|------|-----|\n| `let x` inside function body used as cache | Re-init every call | Hoist to module scope |\n| `void asyncFn()` | Unhandled rejection → crash | `await` or `.catch()` |\n| Async callback without try/catch | Uncaught exception → crash | Wrap in try/catch |\n| `import()` inside hot function, no cache | Repeated I/O, log spam | Cache at module scope |\n| Test mocking the module under test | Test proves nothing | Mock only boundaries |\n| `setTimeout`/`sleep` in tests | Flaky | Use async events/mocks |\n| No error case tests | False confidence | Add negative test cases |\n| `git add .` | Stages unrelated files | Stage files individually |\n",
-    "skill-codebase-audit": "# Skill: Codebase Annotation Audit\n\n## Purpose\nSystematically audit and annotate a codebase so that *future* AI agents can\nnavigate it 4× faster, use 20% fewer tokens, and avoid false-positive changes.\nThis skill is **documentation-only** — it MUST NOT fix bugs, refactor code,\nor change program behavior.\n\n## Philosophy — LEAN Annotations\n\nModern AI coding SDKs (Copilot, Codex, Claude Code) already auto-compact\ncontext. Adding a memory/compaction layer on top is wasteful. What *does* help\nis **repo-level documentation** that agents read at the start of a session:\nsummaries, warnings, architectural notes, and module manifests. These cost zero\nruntime tokens and dramatically reduce exploration time.\n\n## Annotation Format\n\nUse structured comment headers that agents are trained to recognize:\n\n\\`\\`\\`\n// CLAUDE:SUMMARY — <module-name>\n// <1–3 sentence summary of purpose, key types, and public API>\n\\`\\`\\`\n\n\\`\\`\\`\n// CLAUDE:WARN — <module-name>\n// <non-obvious pitfall, race condition, or constraint agents MUST know>\n\\`\\`\\`\n\n- Place annotations at the **top of the file**, after imports / shebang.\n- Keep each annotation to ≤ 3 lines.\n- Do NOT annotate trivial files (configs, lockfiles, generated code).\n\n## 6-Phase Audit\n\n### Phase 1 — Inventory\nEnumerate every source file.  For each file record:\n| Field | Value |\n|-------|-------|\n| path | relative from repo root |\n| lang | file extension / language |\n| lines | line count |\n| has_summary | yes / no |\n| has_warn | yes / no |\n| category | core / util / test / config / generated |\n\nOutput: \\`.bosun/audit/inventory.json\\`\n\n### Phase 2 — Summaries\nFor every file where \\`has_summary === false\\` and \\`category !== \"generated\"\\`:\n1. Read the file.\n2. Write a \\`CLAUDE:SUMMARY\\` comment at the top.\n3. Stage the file.\n\n### Phase 3 — Warnings\nFor every file, check for non-obvious constraints:\n- Singleton/caching requirements (must be module-scope)\n- Async fire-and-forget patterns (unhandled rejections)\n- Order-dependent initialization\n- Platform-specific behavior (Windows paths, etc.)\n\nAdd \\`CLAUDE:WARN\\` comments where found.\n\n### Phase 4 — Manifest Audit\nEnsure \\`AGENTS.md\\` (or equivalent) at repo root is accurate:\n- Lists all top-level modules with 1-line descriptions.\n- Documents build / test / lint commands.\n- Documents environment variables.\n- Documents commit conventions.\n- Lists known constraints or gotchas.\n\nIf the file is outdated or missing sections, append corrections.\n\n### Phase 5 — Conformity Check\nRe-scan all annotations and validate:\n- \\`CLAUDE:SUMMARY\\` is present in every non-trivial source file.\n- \\`CLAUDE:WARN\\` exists for files with known pitfalls.\n- No stale annotations reference symbols/functions that no longer exist.\n\nOutput: \\`.bosun/audit/conformity-report.json\\`\n\n### Phase 6 — Regeneration Schedule\nAnnotations rot. Add a \\`.bosun/audit/schedule.json\\` with:\n\\`\\`\\`json\n{\n  \"lastFullAudit\": \"<ISO timestamp>\",\n  \"nextRecommendedAudit\": \"<ISO timestamp + 30 days>\",\n  \"filesAudited\": <count>,\n  \"summariesAdded\": <count>,\n  \"warningsAdded\": <count>,\n  \"conformityScore\": <0-100>\n}\n\\`\\`\\`\n\n## Hard Rules\n\n1. **Do NOT change program behavior.** Only add/update comments and documentation.\n2. **Do NOT refactor, fix bugs, or rename symbols.** Documentation only.\n3. **Do NOT annotate generated files** (lockfiles, build output, .min.js, etc.).\n4. **Keep summaries ≤ 3 lines.** Agents need density, not essays.\n5. **Keep warnings actionable.** \"This is complex\" is useless.\n   \"Must call init() before query() — throws otherwise\" is helpful.\n6. **Stage files individually** — never \\`git add .\\`.\n7. **Commit with** \\`docs(audit): annotate <module>\\` — not feat/fix.\n\n## Success Metrics\n- A/B tested: annotated repos show 4× faster agent navigation.\n- 20% fewer tokens consumed per task.\n- Zero false-positive code changes from confused agents.\n",
+    "skill-codebase-audit": "# Skill: Codebase Annotation Audit\n\n## Purpose\nSystematically audit and annotate a codebase so that *future* AI agents can\nnavigate it 4× faster, use 20% fewer tokens, and avoid false-positive changes.\nThis skill is **documentation-only** — it MUST NOT fix bugs, refactor code,\nor change program behavior.\n\n## Philosophy — LEAN Annotations\n\nModern AI coding SDKs (Copilot, Codex, Claude Code) already auto-compact\ncontext. Adding a memory/compaction layer on top is wasteful. What *does* help\nis **repo-level documentation** that agents read at the start of a session:\nsummaries, warnings, architectural notes, and module manifests. These cost zero\nruntime tokens and dramatically reduce exploration time.\n\n## Annotation Format\n\nUse structured comment headers that agents are trained to recognize:\n\n```\n// CLAUDE:SUMMARY — <module-name>\n// <1–3 sentence summary of purpose, key types, and public API>\n```\n\n```\n// CLAUDE:WARN — <module-name>\n// <non-obvious pitfall, race condition, or constraint agents MUST know>\n```\n\n- Place annotations at the **top of the file**, after imports / shebang.\n- Keep each annotation to ≤ 3 lines.\n- Do NOT annotate trivial files (configs, lockfiles, generated code).\n\n## 6-Phase Audit\n\n### Phase 1 — Inventory\nEnumerate every source file. For each file record:\n| Field | Value |\n|-------|-------|\n| path | relative from repo root |\n| lang | file extension / language |\n| lines | line count |\n| has_summary | yes / no |\n| has_warn | yes / no |\n| category | core / util / test / config / generated |\n\nOutput: `.bosun/audit/inventory.json`\n\n### Phase 2 — Summaries\nFor every file where `has_summary === false` and `category !== \"generated\"`:\n1. Read the file.\n2. Write a `CLAUDE:SUMMARY` comment at the top.\n3. Stage the file.\n\n### Phase 3 — Warnings\nFor every file, check for non-obvious constraints:\n- Singleton/caching requirements (must be module-scope)\n- Async fire-and-forget patterns (unhandled rejections)\n- Order-dependent initialization\n- Platform-specific behavior (Windows paths, etc.)\n\nAdd `CLAUDE:WARN` comments where found.\n\n### Phase 4 — Manifest Audit\nEnsure `AGENTS.md` (or equivalent) at repo root is accurate:\n- Lists all top-level modules with 1-line descriptions.\n- Documents build / test / lint commands.\n- Documents environment variables.\n- Documents commit conventions.\n- Lists known constraints or gotchas.\n\nIf the file is outdated or missing sections, append corrections.\n\n### Phase 5 — Conformity Check\nRe-scan all annotations and validate:\n- `CLAUDE:SUMMARY` is present in every non-trivial source file.\n- `CLAUDE:WARN` exists for files with known pitfalls.\n- No stale annotations reference symbols/functions that no longer exist.\n\nOutput: `.bosun/audit/conformity-report.json`\n\n### Phase 6 — Regeneration Schedule\nAnnotations rot. Add a `.bosun/audit/schedule.json` with:\n```json\n{\n  \"lastFullAudit\": \"<ISO timestamp>\",\n  \"nextRecommendedAudit\": \"<ISO timestamp + 30 days>\",\n  \"filesAudited\": <count>,\n  \"summariesAdded\": <count>,\n  \"warningsAdded\": <count>,\n  \"conformityScore\": <0-100>\n}\n```\n\n## Hard Rules\n\n1. **Do NOT change program behavior.** Only add/update comments and documentation.\n2. **Do NOT refactor, fix bugs, or rename symbols.** Documentation only.\n3. **Do NOT annotate generated files** (lockfiles, build output, `.min.js`, etc.).\n4. **Keep summaries ≤ 3 lines.** Agents need density, not essays.\n5. **Keep warnings actionable.** \"This is complex\" is useless.\n   \"Must call init() before query() — throws otherwise\" is helpful.\n6. **Stage files individually** — never `git add .`.\n7. **Commit with** `docs(audit): annotate <module>` — not `feat`/`fix`.\n\n## Success Metrics\n- A/B tested: annotated repos show 4× faster agent navigation.\n- 20% fewer tokens consumed per task.\n- Zero false-positive code changes from confused agents.\n",
     "custom-tool-creation": "# Skill: Custom Tool Creation & Reuse\n\n## Purpose\nBosun agents can author and persist **executable helper scripts** in\n`.bosun/tools/` that survive beyond a single session. This avoids repeating\nthe same inline logic across tasks and lets the whole agent team benefit from\ntools discovered during previous runs.\n\nInspired by the Live-SWE-agent architecture: agents that can create tools\nsolve more complex tasks and accumulate institutional knowledge over time.\n\n## When to Create a Custom Tool\n\nCreate a custom tool when you find yourself:\n- Writing the same ≥ 10-line utility more than once across tasks\n- Needing a project-specific helper that `npm run *` or built-in tools don't cover\n- Doing complex pattern matching / analysis that would be easier with a dedicated script\n- Building a test generator or codemod that future tasks will need\n\n**Do NOT** create a tool for single-use throwaway logic — keep it inline.\n\n## Tool Storage Layout\n\n```\n<workspace>/\n  .bosun/tools/\n    index.json             ← manifest (id, title, description, tags, category, lang)\n    <tool-id>.mjs          ← Node.js ES module scripts\n    <tool-id>.sh           ← bash scripts\n    <tool-id>.py           ← Python 3 scripts\n\n~/.bosun/tools/            ← global scope (shared across all workspaces)\n```\n\n## Registering a Tool (via Bosun SDK)\n\nImport `registerCustomTool` from `./agent-custom-tools.mjs`:\n\n```js\nimport { registerCustomTool } from \"./agent-custom-tools.mjs\";\n\nawait registerCustomTool(rootDir, {\n  title:       \"Find unused exports\",\n  description: \"Scans src/ for exports that are never imported elsewhere\",\n  category:    \"analysis\",   // one of: analysis|testing|git|build|transform|search|validation|utility\n  lang:        \"mjs\",\n  tags:        [\"unused\", \"exports\", \"dead-code\"],\n  createdBy:   agentId,\n  taskId:      taskId,\n  script: `#!/usr/bin/env node\nimport { readFileSync, readdirSync } from \"node:fs\";\nimport { resolve } from \"node:path\";\n// ... implementation ...\n`,\n});\n```\n\n## Discovering Available Tools\n\nAt task start, the agent system prompt includes a **Custom Tools Library** block\nlisting all tools by category. Always check it before writing repetitive code.\n\nYou can also query directly:\n```js\nimport { listCustomTools, getCustomTool } from \"./agent-custom-tools.mjs\";\n\nconst tools = listCustomTools(rootDir, { category: \"analysis\" });\nconst { entry, script } = getCustomTool(rootDir, \"find-unused-exports\");\n```\n\n## Invoking a Tool\n\n```js\nimport { invokeCustomTool } from \"./agent-custom-tools.mjs\";\n\nconst { stdout, stderr, exitCode } = await invokeCustomTool(\n  rootDir,\n  \"find-unused-exports\",\n  [\"--dir\", \"src\"],\n  { timeout: 15000 }\n);\n```\n\n## Promoting to Global Scope\n\nIf a tool proves valuable across projects, promote it so all workspaces see it:\n\n```js\nimport { promoteToGlobal } from \"./agent-custom-tools.mjs\";\nawait promoteToGlobal(rootDir, \"find-unused-exports\");\n```\n\n## Reflect Checklist (run at end of each task)\n\nBefore marking a task complete, reflect:\n\n1. Did I write any utility code I'd write again?\n   → Extract it into a custom tool.\n2. Did an existing tool help me? (usage stats are tracked automatically)\n3. Is there a workspace tool that deserves global promotion?\n4. Did I discover a pattern the current skill set doesn't cover?\n   → Write a new skill (Markdown knowledge) or tool (executable) as appropriate.\n\n## Tool Categories\n\n| Category    | Use for                                                     |\n|-------------|-------------------------------------------------------------|\n| analysis    | Codebase inspection, metrics, dependency graphs             |\n| testing     | Test generation, assertion helpers, coverage reporters       |\n| git         | Multi-step git operations, branch utilities                 |\n| build       | Compile, bundle, transpile helpers beyond npm scripts       |\n| transform   | Codemods, formatters, data reshaping                        |\n| search      | Grep/ripgrep wrappers, semantic search, ref-tracing         |\n| validation  | Linting, type-checking, schema validation                   |\n| utility     | Miscellaneous helpers not covered by any other category     |\n"
   }
 };

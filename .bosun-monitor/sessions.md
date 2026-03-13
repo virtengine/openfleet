@@ -1,4 +1,4 @@
-﻿# Bosun Monitor Sessions
+# Bosun Monitor Sessions
 
 ## 2026-03-08T20:07:32+11:00
 
@@ -47,10 +47,10 @@
   - Daemon/monitor were running from source (cli.mjs + infra/monitor.mjs) with .bosun config, schedule poll alive.
   - Runtime runs were mostly limited to Task Planner, Agent Session Monitor, and Task trace workflow; core dispatch workflows (Task Lifecycle, Task Batch Processor) were absent.
   - Root causes:
-    1. Source bug: workflow setup profile lookup lowercased IDs but profile map key was camelCase (workflowFirst), causing fallback to alanced.
+    1. Source bug: workflow setup profile lookup lowercased IDs but profile map key was camelCase (workflowFirst), causing fallback to alanced.
     2. Runtime selection state lacked lifecycle templates in installed set.
 - Code fix shipped:
-  - Commit 7ca5be (ix(workflow): honor workflowFirst profile selection) merged via PR #153.
+  - Commit 7ca5be (ix(workflow): honor workflowFirst profile selection) merged via PR #153.
   - Files: workflow/workflow-templates.mjs, ests/workflow-templates.test.mjs.
   - Validation passed: targeted workflow test, full
     pm test,
@@ -92,12 +92,12 @@
 - Root cause:
   - .bosun/bosun.config.json had a UTF-8 BOM prefix (charCode 65279). workspace-manager uses JSON.parse(readFileSync(...)) without BOM stripping, so config parsing failed and workspace list collapsed to empty.
 - Remediation performed:
-  - Rewrote .bosun/bosun.config.json without BOM and verified parse success (irst-char-code 123, json-parse-ok).
-  - Repaired source-local workspace config to include active irtengine-gh workspace and local repo mappings.
+  - Rewrote .bosun/bosun.config.json without BOM and verified parse success (irst-char-code 123, json-parse-ok).
+  - Repaired source-local workspace config to include active irtengine-gh workspace and local repo mappings.
   - Reseeded .bosun/.cache/kanban-state.json from existing runtime store and validated 80 tasks present (draft 36, todo 27, inprogress 9, inreview 6, done 2).
   - Restarted source daemon with explicit local roots (--config-dir .bosun --repo-root ...) and verified monitor/workflow activity resumed.
 - Post-fix evidence:
-  - ode cli.mjs --config-dir .bosun --workspace-list now returns workspace irtengine-gh (active).
+  - ode cli.mjs --config-dir .bosun --workspace-list now returns workspace irtengine-gh (active).
   - .bosun/workflow-runs/index.json continues advancing with Task Lifecycle / Task Batch Processor / Task Batch -> PR runs.
   - Recent merged PRs include #172, #153, #145 during this monitoring window.
 - Notes:
@@ -137,7 +137,7 @@
 - Context: User reported Telegram live digest uncaught exception: pollWorkflowSchedulesOnce is not defined around 23:13/23:15 local.
 - Root cause:
   - pollWorkflowSchedulesOnce was declared inside an earlier if (!isMonitorTestRuntime) block in infra/monitor.mjs.
-  - Startup calls in a later block (oid pollWorkflowSchedulesOnce("startup", ...)) executed out of scope, triggering ReferenceError and recovery loops.
+  - Startup calls in a later block (oid pollWorkflowSchedulesOnce("startup", ...)) executed out of scope, triggering ReferenceError and recovery loops.
 - Fix:
   - Hoisted schedule-poll helper to shared module scope via placeholder + assignment form.
   - Added regression guard in ests/monitor-workflow-startup-guards.test.mjs ensuring helper is defined before startup invocations.
@@ -149,7 +149,7 @@
     pm run build (pass),
     pm run prepush:check (pass, includes full
     pm test).
-  - PR: #173 merged to main at 2026-03-08T12:42:22Z (merge commit 8f2bee69e651b3d3390dde15fc514a8cfe11e89).
+  - PR: #173 merged to main at 2026-03-08T12:42:22Z (merge commit 8f2bee69e651b3d3390dde15fc514a8cfe11e89).
 - Runtime post-merge:
   - Restarted source daemon from repo (
     ode cli.mjs --daemon --config-dir .bosun --repo-root ...).
@@ -232,12 +232,12 @@
 ## 2026-03-09T02:01:45.4518200+11:00
 
 - Incident: review pipeline spammed No diff available for review, blocking autonomous review/merge flow and forcing manual merges.
-- Root cause: gent/review-agent.mjs diff resolver ignored prNumber (only read prUrl/ranchName), while many queue sites provide prNumber only; stale in-review tasks without any review context were repeatedly requeued and hard-rejected.
+- Root cause: gent/review-agent.mjs diff resolver ignored prNumber (only read prUrl/ranchName), while many queue sites provide prNumber only; stale in-review tasks without any review context were repeatedly requeued and hard-rejected.
 - Fix shipped (PR #176, merge commit 9f3f244c604ce00e045c063ad8ef0929d65f4b8a):
   - getPrDiff now supports prNumber/
     epoSlug, attempts gh pr diff with and without --repo, and uses worktreePath as command cwd.
   - Git diff fallback now tries origin/main...branch before main...branch.
-  - queueReview now skips tasks missing all of prUrl, prNumber, and ranchName to prevent false no-diff rejects.
+  - queueReview now skips tasks missing all of prUrl, prNumber, and ranchName to prevent false no-diff rejects.
   - Added regression tests in ests/review-agent.test.mjs (prNumber-only diff retrieval + missing-context skip).
 - Validation:
   - pm test -- tests/review-agent.test.mjs pass.
@@ -267,7 +267,7 @@
 
 ## 2026-03-09T04:07:00+11:00
 
-- Context: Source-start incident where monitor crashed and logs showed AppData watch path (e-orchestrator.ps1 — watching C:/Users/jON/AppData/Roaming instead).
+- Context: Source-start incident where monitor crashed and logs showed AppData watch path (e-orchestrator.ps1 — watching C:/Users/jON/AppData/Roaming instead).
 - Evidence:
   - Global chain was active from npm install path (...node_modules/bosun/telegram/telegram-sentinel.mjs -> ...node_modules/bosun/cli.mjs --daemon-child -> ...node_modules/bosun/infra/monitor.mjs --daemon-child).
   - Scheduled task VirtEngine-CodexMonitor points to global @virtengine/codex-monitor and can relaunch the AppData runtime.
@@ -293,18 +293,18 @@
   - Earlier run d3635fc3-4e00-47f7-8a12-f2465a069795 showed planner produced tasks but failed create with No project ID configured for backend=internal.
 - Recovery actions:
   - Synced active mirror state file from repo-local cache:
-    osun/.bosun/.cache/kanban-state.json -> osun/.bosun/workspaces/virtengine-gh/bosun/.bosun/.cache/kanban-state.json.
-  - Added KANBAN_PROJECT_ID=internal to both osun/.env and osun/.bosun/.env so internal workflow create-task path has deterministic project id.
+    osun/.bosun/.cache/kanban-state.json -> osun/.bosun/workspaces/virtengine-gh/bosun/.bosun/.cache/kanban-state.json.
+  - Added KANBAN_PROJECT_ID=internal to both osun/.env and osun/.bosun/.env so internal workflow create-task path has deterministic project id.
   - Restarted source daemon via
     ode cli.mjs --terminate then
     ode cli.mjs --daemon --no-update-check --no-auto-update --config-dir .bosun --repo-root ..
 - Post-fix verification:
   - Source runtime confirmed (cli.mjs + infra/monitor.mjs from repo with explicit .bosun config-dir).
-  - Monitor loaded 1050 tasks from active mirror store and planner run cff8e55-6b30-4b83-971e-568e4cb58ad8 completed with odoCount=921, riggered=false (no parser/create-task failure).
-  - Review deadlock cleared automatically on startup: 6 stale inreview tasks without PR refs reset to todo (2381010..., 971a5ecd..., 92a229d5..., c4260785..., 2b1e305b..., cc61ad0...).
+  - Monitor loaded 1050 tasks from active mirror store and planner run cff8e55-6b30-4b83-971e-568e4cb58ad8 completed with odoCount=921, riggered=false (no parser/create-task failure).
+  - Review deadlock cleared automatically on startup: 6 stale inreview tasks without PR refs reset to todo (2381010..., 971a5ecd..., 92a229d5..., c4260785..., 2b1e305b..., cc61ad0...).
   - Workflow index is advancing (LastWriteTime moved from 07:06:01 to 07:06:42 local during check window).
 - Residual risk:
-  - monitor log still emitted one ailed to reload config: monitorMonitor is not defined warning during hot reload; runtime continued healthy, but keep watching for repeat.
+  - monitor log still emitted one ailed to reload config: monitorMonitor is not defined warning during hot reload; runtime continued healthy, but keep watching for repeat.
   - Bosun autonomous throughput remains below target this hour (recent window showed only 1 Task Batch -> PR completion and 0 merged PRs via gh pr list --state merged filter).
 
 ## 2026-03-09T08:07:00+11:00
@@ -365,27 +365,27 @@
 - Local code fix authored (not yet committed): cli.mjs now applies early --config-dir/--repo-root env overrides and supports task subcommand routing when global flags precede ask; added ests/cli-task-routing.test.mjs.
 - Validation:
   pm test -- tests/cli-task-routing.test.mjs tests/cli-workspace-config-dir.test.mjs passed.
-- Safety blocker: unexpected concurrent tracked change detected in gent/agent-endpoint.mjs; paused before commit/push pending operator direction.
+- Safety blocker: unexpected concurrent tracked change detected in gent/agent-endpoint.mjs; paused before commit/push pending operator direction.
 
 ## 2026-03-09T14:07:07+11:00 runtime check
 
 - Runtime duration: ~00:20:00.
 - Source daemon health: running from repo source (cli.mjs --daemon-child + infra/monitor.mjs --daemon-child) with explicit --config-dir .bosun --repo-root.
-- Incident found: local git metadata was in bare mode (core.bare=true), causing git status/workspace operations to fail with atal: this operation must be run in a work tree.
-- Operational fix applied: git config --local core.bare false in osun/.
+- Incident found: local git metadata was in bare mode (core.bare=true), causing git status/workspace operations to fail with atal: this operation must be run in a work tree.
+- Operational fix applied: git config --local core.bare false in osun/.
 - Post-fix verification:
   - git rev-parse --is-inside-work-tree now returns rue.
   - git status -sb works again on monitor/bosun-env-stability.
   - ode cli.mjs --config-dir .bosun --repo-root . --workspace-health reports HEALTHY (with expected warnings about local changes/sandbox roots).
   - Workflow scheduler remains active (Task Planner / Task Replenish / Task Batch Processor runs continuing each minute).
-- Throughput status: still below target (task stats remain odo=1455, inprogress=1); one long-running Task Lifecycle run (a6387b1-...) is still in
+- Throughput status: still below target (task stats remain odo=1455, inprogress=1); one long-running Task Lifecycle run (a6387b1-...) is still in
   un-agent and should be watched next run for completion vs timeout.
 - No code changes shipped in this run; no PR/merge action required.
 
 ## 2026-03-09T14:54:05+11:00 incident follow-up
 
 - User-reported symptom confirmed: only 2 done tasks after prolonged runtime while backlog exceeded 1.4k tasks.
-- Root cause found in live monitor logs: Task Lifecycle reused a stale/broken managed worktree path, then ction.detect_new_commits failed with atal: not a git repository .../.git/worktrees/..., causing claim heartbeat owner_mismatch loops and zero durable E2E completions.
+- Root cause found in live monitor logs: Task Lifecycle reused a stale/broken managed worktree path, then ction.detect_new_commits failed with atal: not a git repository .../.git/worktrees/..., causing claim heartbeat owner_mismatch loops and zero durable E2E completions.
 - Code fix shipped on monitor/bosun-env-stability:
   - workflow/workflow-nodes.mjs: validate managed worktree before reuse; if invalid, remove/prune and recreate before lifecycle continues.
   -     ests/workflow-task-lifecycle.test.mjs: regression test for invalid managed-worktree self-heal.
@@ -394,13 +394,178 @@
   - pm run build pass.
   - pm run prepush:check pass (full suite 158 files / 3456 tests).
 - Delivery:
-  - Commit: 3c86c46 (ix(workflow): heal invalid managed worktrees before reuse).
+  - Commit: 3c86c46 (ix(workflow): heal invalid managed worktrees before reuse).
   - Pushed: origin/monitor/bosun-env-stability.
 - Runtime recovery performed:
-  - Reset orphan in-progress guard tasks (604c4ab2..., 4fe18c6...) back to todo.
+  - Reset orphan in-progress guard tasks (604c4ab2..., 4fe18c6...) back to todo.
   - Restarted source daemon with explicit local flags (--config-dir .bosun --repo-root . --no-update-check --no-auto-update).
   - Post-restart monitor shows stale in-progress recovery and fresh dispatch ( odo -> inprogress) with no new recurrence of the old
     ot a git repository .../.git/worktrees/... signature in the new daemon epoch.
 - Remaining risk to monitor next hour:
   - High interrupted-run volume (Detected 446 interrupted run(s) on startup) and repeated stuck_agent: undefined alerts still indicate broader executor/watchdog instability beyond this specific worktree corruption fix.
 - Run duration: ~01:05:00.
+
+## 2026-03-09T22:05:29+11:00 hourly ops run
+
+- Incident: Bosun was running from global install paths (C:\nvm4w\nodejs\node_modules\bosun\cli.mjs + AppData monitor) instead of source osun/cli.mjs, creating split task stores (	ask stats 80 vs 1111) and Telegram poll conflict risk.
+- Evidence:
+  - 
+ode cli.mjs --daemon-status --config-dir .bosun --repo-root . reported "not running in daemon mode, but 2 bosun process(es) are active" before remediation.
+  - Process table showed global CLI/monitor command lines.
+  - AppData monitor logs showed minute-level schedule churn against a single looping task and historical stuck_agent / owner-mismatch noise.
+- Recovery applied:
+  - 
+ode cli.mjs --terminate
+  - 
+ode cli.mjs --daemon --config-dir .bosun --repo-root . --no-update-check --no-auto-update
+- Post-recovery verification:
+  - Only repo-local daemon+monitor remain active (no global node_modules/bosun processes).
+  - Source daemon healthy (PID 71144), scheduler resumed (schedule poll triggered + multiple schedule-run completed).
+  - Recovery path executed (in-progress recovery: resumed 3, reset 2 stale + 2 unstarted).
+  - inreview=0; inprogress=8 (includes 5 guarded-start tasks), requiring next-run watch for automatic drain.
+  - No new post-restart error signatures appended to .bosun/logs/monitor-error.log beyond startup watch-path warning.
+- Throughput snapshot:
+  - Recent merged PRs exist in the last hour (#194, #195, #197, #198), but attribution to fully autonomous Bosun E2E remains mixed and should be revalidated next run from workflow-node evidence.
+- No code edits shipped this run; runtime remediation only.
+
+## 2026-03-10T04:17:58+11:00 workflow delegation review (monitor-only)
+
+- Scope: reviewed in-progress agent patch only (no new code changes) on monitor/bosun-env-stability.
+- Runtime/logging status:
+  - Source daemon active: 
+ode cli.mjs --daemon-status => running PID 59940.
+  - Active monitor sink is .bosun/logs/monitor.log (last write advancing to 2026-03-10 04:13 local).
+  - Repo-root logs/monitor.log is stale and not the active sink for current source runtime.
+- Patch review findings (workflow/workflow-nodes.mjs, workflow-templates/agents.mjs):
+  1. Delegation selection currently evaluates only trigger config.filter and ignores gentType / 	askPattern on 	rigger.task_assigned.
+  2. BACKEND_AGENT_TEMPLATE trigger filter was removed ({}), so backend workflow can match all tasks by default.
+  3. Delegated path in ction.run_agent returns early before session-tracker/runSinglePass wiring, so Sessions view can miss active agent progress/events for delegated flows.
+- Risk: tasks may route to wrong custom agent workflow and appear less traceable in Sessions view despite workflow activity.
+- Next monitor check:
+  - Verify final patch evaluates gentType + 	askPattern + ilter together for delegation matching.
+  - Verify delegated execution still emits session-tracker events and preserves task/session observability.
+  - Confirm task lifecycle continues to PR handoff path (not generic executor-only completion).
+
+## 2026-03-10T05:11:03+11:00 runtime check
+- Runtime duration: ~00:10:00.
+- Initial health snapshot:
+  - Source daemon running from repo CLI (PID 59940), monitor active (PID 1776).
+  - `task stats`: draft 36, todo 1299, inprogress 31, inreview 0, done 2.
+  - In-progress quality was degraded: 26/31 were stale over 60m and all 31 had `agentAttempts=0`.
+  - Repeated `owner_mismatch` claim heartbeat failures for recurring task IDs (`a076ce3a...`, `25c46266...`, `673c5d42...`, `9c98e4e3...`, `ffe1021c...`).
+- Root cause:
+  - Claim state divergence between `.cache/bosun/task-claims.json` and `.cache/bosun/shared-task-states.json` (local claim token/owner pairs did not match shared lease token/owner pairs for active IDs).
+  - Stale in-progress tasks with no attempts remained pinned and continued to trigger heartbeat failures.
+- Ops fix applied (no source-code edits):
+  - Backed up claim files to `.cache/bosun/backups/20260310-050432/`.
+  - Pruned mismatched local claims from `.cache/bosun/task-claims.json`.
+  - Requeued stale no-attempt in-progress tasks (>60m) to `todo` via source CLI (`task update`) — 26 tasks updated.
+  - Pruned stale shared lease entries for affected IDs (`TASK-1`, `a076ce3a...`, `25c46266...`, `673c5d42...`, `9c98e4e3...`, `f2ab8397...`, `ffe1021c...`).
+- Post-fix verification:
+  - `task stats`: draft 36, todo 1325, inprogress 5, inreview 0, done 2.
+  - Remaining in-progress tasks: 5, all fresh (`staleOver60m=0`), none in review.
+  - Observation window 2026-03-09T18:09:43Z..18:11:03Z: no new `owner_mismatch` log lines observed.
+  - Scheduler continued minute cadence and schedule workflows completed.
+- Throughput status:
+  - `gh pr list --state merged --search "merged:>=<last-hour> label:bosun-attached"` returned no merged PRs in the last hour.
+
+## 2026-03-10T06:14:00+11:00 runtime check
+- Incident: source daemon remained alive but autonomous scheduler activity was degraded (no schedule-poll/schedule-run completion lines in observation windows).
+- Evidence: monitor log showed repeated startup/re-init + duplicate-start suppression; recent windows contained `stuck_agent`/SDK timeout history and no Bosun-attributed merged PRs in the last hour.
+- Ops fix (no code changes): reset 5 stale `guarded start task` placeholders from `inprogress` to `todo`.
+- Post-fix state: `task stats` => draft 36, todo 1330, inprogress 0, inreview 0, done 2; no fresh owner_mismatch/stuck_agent lines immediately after cleanup.
+- Remaining blocker: scheduler cadence still absent, so throughput remains stalled; next run should isolate monitor control-loop contention before any planning/backlog actions.
+- Branch sync note: monitor branch currently ahead 15 / behind 3 vs `origin/main`.
+
+### 2026-03-10T06:15:34+11:00 post-push validation
+- Pushed monitor notes and merged `origin/main` into `monitor/bosun-env-stability`; branch is now behind 0 / ahead 17 vs `origin/main` and synced with `origin/monitor/bosun-env-stability`.
+- Runtime remains source-local daemon PID 59940.
+- Scheduler resumed low cadence (`schedule poll triggered 2 workflow run(s)` at 19:14:33Z and 19:15:33Z), but queue throughput is still poor (`inprogress=0`, `done=2`).
+- `owner_mismatch` reappeared for task `df0d7085-...` in the same window, so claim/state instability is still not fully resolved.
+
+## 2026-03-10T07:12:00+11:00 runtime check
+- Runtime duration: ~00:22:00.
+- Required startup checks completed:
+  - Branch: `monitor/bosun-env-stability` (working tree contains pre-existing workflow/template/test/demo edits).
+  - `package.json` version: `0.40.10`.
+  - Source daemon active: `node cli.mjs --daemon-status --config-dir .bosun --repo-root .` => PID 59940.
+  - Active runtime log sink confirmed as `.bosun/logs/monitor.log`.
+- Incident status: still unhealthy.
+  - Scheduler heartbeat is active (`schedule poll triggered ...` every minute), but run completions stopped after `2026-03-09T19:59:03Z`.
+  - `.bosun/workflow-runs/_active-runs.json` remains pinned to two long-running `Bosun PR Watchdog` runs (`07852e00-...`, `5e4bcb0d-...`) stuck in `dispatch-fix`.
+  - `task stats` remains stagnant: draft 36, todo 1330, inprogress 0, inreview 0, done 2.
+  - Throughput check (`gh pr list --state merged --search merged:>=<last-hour>`) returned `[]`.
+- Root cause evidence:
+  - Both stuck PR Watchdog run artifacts show `dispatch-fix` status `running` immediately after `Delegating to agent workflow "Backend Agent"` with no subsequent progress.
+  - Repeated `owner_mismatch` heartbeat warnings for task `df0d7085-...` continue in live logs despite task status being `todo`.
+- Ops fix attempted (no source edits):
+  - Backed up claim files to `.cache/bosun/backups/monitor-20260310-070845/`.
+  - Pruned non-inprogress claims from `.cache/bosun/task-claims.json` (5 entries removed).
+- Post-fix result:
+  - On-disk claim files are now empty, but in-memory `owner_mismatch` warnings still recur (`20:08:35Z`), indicating runtime-held stale claim state and unresolved stuck workflow execution.
+  - No resumed schedule-run completions during observation window through `20:10:35Z`.
+- Branch sync/push:
+  - `monitor/bosun-env-stability...origin/main` = ahead 18 / behind 0.
+  - Pushed current branch (`Everything up-to-date`; hooks passed).
+- Handoff:
+  - Next run should prioritize a code-level fix in `action.run_agent` delegation path (PR Watchdog -> Backend Agent) because stuck delegated runs are starving autonomous workflow completion.
+  - If no safe live cancellation path is available, coordinate a controlled runtime recycle only after confirming policy allows interrupting active source processes.
+- 2026-03-11 02:06 AEDT: Runtime healthy and advancing; fixed split-store drift by syncing all kanban mirrors and moved merged PR #217 task (`92a229d5...`) from `inreview` to `done`; remaining risk is recurring historical `owner_mismatch` / `stuck_agent` signals and low merged-PR throughput.
+- 2026-03-11T05:07:56+11:00: split-store/claim resync done; scheduler active; owner_mismatch still recurring (df0d7085) -> code-path tracing next run.
+
+## 2026-03-11T06:10:00+11:00 hourly run
+- Runtime: ~00:10:00.
+- Startup checks completed in bosun/:
+  - branch monitor/bosun-env-stability; package.json version 0.40.11.
+  - node cli.mjs --daemon-status reported daemon mode off but active source processes (cli.mjs + infra/monitor.mjs), so no restart/start was performed.
+  - command surface and runtime roots verified with node cli.mjs --help and node cli.mjs --where.
+- Runtime health evidence:
+  - .bosun/logs/monitor.log and .bosun/workflow-runs/index.json both advanced during this run.
+  - scheduler cadence remained active at ~1 minute with fresh Task Planner/Replenish/Lifecycle/Batch completions.
+- Incident found: split store plus stale execution occupancy.
+  - workspace mirror had inprogress=15 inreview=2 while repo-local mirror lagged (inprogress=8 inreview=1) at session start.
+  - AppData claim/shared ledgers still held stale owner records for old inprogress tasks, matching prior owner_mismatch symptom family.
+- Ops remediation applied (no source code edits):
+  1. Backed up runtime files to .bosun-monitor/backups/20260311-060718.
+  2. Reset 7 stale inprogress tasks (>60m old, no PR linkage) back to todo via source CLI.
+  3. Pruned corresponding stale AppData claim/shared entries for those 7 task IDs.
+  4. Re-synced repo-local kanban mirror from active workspace mirror.
+- Post-fix validation:
+  - task stats moved from todo=17,inprogress=15,inreview=2 to todo=24,inprogress=8,inreview=2.
+  - claim/shared ledgers dropped from 9 stale entries to 2 active IDs (a076ce3a..., df0d7085...).
+  - no fresh owner_mismatch lines appeared in current monitor-error tail; schedule-runs continued immediately after cleanup.
+- Throughput check:
+  - gh pr list --state merged --search merged:>=<now-1h> repo:virtengine/bosun returned [] (no Bosun merges in last hour).
+- Branch sync:
+  - git merge origin/main reported already up to date; branch not behind origin/main.
+- Remaining risk / next run:
+  1. trace why stale claim ownership persists for the two remaining IDs (a076ce3a, df0d7085) and whether they should still be active.
+  2. verify inreview tasks auto-progress and do not occupy slots indefinitely.
+  3. keep watching for stuck_agent: undefined recurrence in fresh windows.
+
+
+## 2026-03-12T11:08:06+11:00 hourly run
+- Runtime: ~00:25:00.
+- Startup checks:
+  - branch monitor/bosun-env-stability; package 0.40.19.
+  - source daemon healthy (node cli.mjs --daemon-status => PID 67000); no restart (process already active).
+  - runtime roots revalidated via node cli.mjs --where (.bosun config + workspace-mirror workspacesDir).
+- Runtime/log evidence:
+  - active workflow sink remains workspace mirror index .bosun/workspaces/virtengine-gh/bosun/.bosun/workflow-runs/index.json.
+  - 85s freshness probe: monitor log/index both advanced (00:05:36Z -> 00:06:36Z) with continuous schedule poll triggered + schedule-run completed cadence.
+  - last-hour workflow activity present (recent_last_hour=117 runs).
+- Incident findings:
+  - recurring claim heartbeat failure still present in current epoch: owner_mismatch for task 25c46266... at 2026-03-12T00:01:36Z.
+  - orphan inprogress occupancy recurred: ffe1021c... remained inprogress without active run linkage.
+  - throughput target still missed: merged non-monitor PRs in last hour = 0 (gh pr list --state merged --search merged:>=<now-1h> returned []).
+- Ops remediation (no source code changes):
+  1) backed up claim ledgers to .cache/bosun/backups/monitor-20260312-110517/.
+  2) reset orphan task ffe1021c... from inprogress to todo.
+  3) pruned .cache/bosun/task-claims.json + .cache/bosun/shared-task-states.json to live inprogress ids only.
+- Post-fix state:
+  - task stats now draft=42 todo=31 inprogress=1 inreview=0 done=5.
+  - only remaining inprogress task is 25c46266....
+  - scheduler stayed healthy after cleanup; no restart performed.
+- Handoff:
+  1) implement code-level fix in claim-renew/shared-state writer path for owner_mismatch (renewSharedStateHeartbeat/claim renewal flow).
+  2) verify task 25c46266... can complete one lifecycle pass without claim was stolen churn.

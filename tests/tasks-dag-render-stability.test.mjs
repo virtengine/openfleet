@@ -33,5 +33,12 @@ for (const { relPath, source } of files) {
     it("does not contain leaked DagGraphSection prop text", () => {
       expect(source).not.toContain("allowWiring=emptyMessage");
     });
+
+    it("keeps depth normalization and drag wiring hooks in sync", () => {
+      expect(source).toContain("buildDagDepthMap(");
+      expect(source).toContain("buildTopologicalDepthMap(");
+      expect(source).toContain("beginWireDrag(node, event)");
+      expect(source).toContain("onDeleteEdge=${(edge) => handleDeleteDagEdge");
+    });
   });
 }

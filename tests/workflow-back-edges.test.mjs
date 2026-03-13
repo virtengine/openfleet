@@ -717,6 +717,8 @@ describe("action.web_search", () => {
             query: "test query for validation",
             maxResults: 3,
             engine: "fetch",
+            // Ensure deterministic, fast failure in CI/offline environments.
+            apiUrl: "http://127.0.0.1:1/unreachable-search-endpoint",
           },
         },
       ],
@@ -746,6 +748,8 @@ describe("action.web_search", () => {
             query: "{{searchTerm}} proof verification",
             maxResults: 1,
             engine: "fetch",
+            // Avoid external network flakiness while still exercising template resolution.
+            apiUrl: "http://127.0.0.1:1/unreachable-search-endpoint",
           },
         },
       ],

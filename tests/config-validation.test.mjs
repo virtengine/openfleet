@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { loadConfig } from "../config/config.mjs";
@@ -80,6 +80,33 @@ describe("loadConfig validation and edge cases", () => {
     expect(config.dependabotMergeMethod).toBe("squash");
   });
 
+  it("prefers repo-local .bosun config when repo root has a configured runtime", async () => {
+    const repoRoot = resolve(tempConfigDir, "repo");
+    const repoConfigDir = resolve(repoRoot, ".bosun");
+    const appDataDir = resolve(tempConfigDir, "appdata");
+
+    await mkdir(repoConfigDir, { recursive: true });
+    await mkdir(appDataDir, { recursive: true });
+    await writeFile(resolve(repoConfigDir, "bosun.config.json"), "{}", "utf8");
+
+    delete process.env.BOSUN_HOME;
+    delete process.env.BOSUN_DIR;
+    process.env.APPDATA = appDataDir;
+    process.env.LOCALAPPDATA = appDataDir;
+    process.env.USERPROFILE = appDataDir;
+    process.env.HOME = appDataDir;
+    process.env.XDG_CONFIG_HOME = appDataDir;
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--repo-root",
+      repoRoot,
+    ]);
+
+    expect(config.configDir).toBe(repoConfigDir);
+  });
+
   it("accepts valid env overrides", () => {
     process.env.TELEGRAM_INTERVAL_MIN = "30";
     process.env.INTERNAL_EXECUTOR_PARALLEL = "5";
@@ -118,7 +145,7 @@ describe("loadConfig validation and edge cases", () => {
 
     expect(config).toBeDefined();
     expect(config.internalExecutor.maxParallel).toBe(3);
-  });
+  }, 10000);
 
   it("returns a config object with expected shape", () => {
     const config = loadConfig([

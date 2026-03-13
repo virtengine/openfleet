@@ -5,6 +5,17 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+const REPO_LOCAL_BOSUN_MARKERS = [
+  ".env",
+  "bosun.config.json",
+  ".bosun.json",
+  "bosun.json",
+  "workspaces",
+  "logs",
+  "workflow-runs",
+  "library.json",
+];
+
 function getConfigSearchDirs() {
   const dirs = new Set();
   if (process.env.BOSUN_DIR) dirs.add(resolve(process.env.BOSUN_DIR));
@@ -18,6 +29,23 @@ function getConfigSearchDirs() {
 function normalizeConfigRepoPath(repoPath, configDir) {
   if (!repoPath) return null;
   return resolve(isAbsolute(repoPath) ? repoPath : resolve(configDir, repoPath));
+}
+
+export function resolveRepoLocalBosunDir(repoRoot, options = {}) {
+  if (!repoRoot) return null;
+  const root = resolve(repoRoot);
+  const localDir = resolve(root, ".bosun");
+  if (!existsSync(localDir)) return null;
+
+  const markers = Array.isArray(options.markers) && options.markers.length > 0
+    ? options.markers
+    : REPO_LOCAL_BOSUN_MARKERS;
+  const requireMarkers = options.requireMarkers !== false;
+
+  if (!requireMarkers) return localDir;
+  return markers.some((name) => existsSync(resolve(localDir, name)))
+    ? localDir
+    : null;
 }
 
 /**

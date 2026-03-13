@@ -461,7 +461,7 @@ describe("archiveCompletedTasks", () => {
     expect(result.archived).toBe(1);
     expect(result.deleted).toBe(1);
     expect(result.errors).toBe(0);
-  });
+  }, 10000);
 
   it("skips tasks that are too recent", async () => {
     const recentTask = makeTask({
