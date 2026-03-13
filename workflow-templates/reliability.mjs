@@ -92,7 +92,7 @@ export const ERROR_RECOVERY_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2025-02-24T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["error", "recovery", "autofix"],
     requiredTemplates: ["template-task-repair-worktree"],
     replaces: {
@@ -200,7 +200,7 @@ export const ANOMALY_WATCHDOG_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2025-02-25T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["anomaly", "watchdog", "death-loop", "stall", "reliability"],
     replaces: {
       module: "anomaly-detector.mjs",
@@ -289,7 +289,7 @@ export const WORKSPACE_HYGIENE_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2025-02-25T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["maintenance", "cleanup", "worktree", "hygiene"],
     replaces: {
       module: "maintenance.mjs",
@@ -368,7 +368,7 @@ export const HEALTH_CHECK_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2025-02-25T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["health", "config", "doctor", "monitoring"],
     replaces: {
       module: "config-doctor.mjs",
@@ -485,6 +485,14 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
         baseBranch: "{{baseBranch}}",
       },
     }, { x: 620, y: 330 }),
+    node("has-pr-missing-context", "condition.expression", "PR Linked Without Worktree?", {
+      expression: "Boolean($data?.prNumber || $data?.prUrl)",
+    }, { x: 620, y: 450, outputs: ["yes", "no"] }),
+
+    node("notify-skip-missing-context", "notify.log", "Skip Missing Context With PR", {
+      message: "Task {{taskId}} finalization skipped quality gate: missing worktree context but PR linkage exists",
+      level: "warn",
+    }, { x: 620, y: 560 }),
 
     node("notify-pass", "notify.log", "Log Finalization Success", {
       message: "Task {{taskId}} finalization passed — moved to inreview",
@@ -524,7 +532,9 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
   edges: [
     edge("trigger", "has-worktree"),
     edge("has-worktree", "run-finalization", { condition: "$output?.result === true" }),
-    edge("has-worktree", "mark-todo-missing", { condition: "$output?.result !== true" }),
+    edge("has-worktree", "has-pr-missing-context", { condition: "$output?.result !== true" }),
+    edge("has-pr-missing-context", "notify-skip-missing-context", { condition: "$output?.result === true", port: "yes" }),
+    edge("has-pr-missing-context", "mark-todo-missing", { condition: "$output?.result !== true", port: "no" }),
     edge("run-finalization", "checks-passed"),
     edge("checks-passed", "has-pr", { condition: "$output?.result === true" }),
     edge("checks-passed", "mark-todo-failed", { condition: "$output?.result !== true" }),
@@ -534,6 +544,7 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
     edge("create-pr-success", "mark-inreview", { condition: "$output?.result === true", port: "yes" }),
     edge("create-pr-success", "mark-todo-failed", { condition: "$output?.result !== true", port: "no" }),
     edge("mark-inreview", "notify-pass"),
+    edge("notify-skip-missing-context", "end-success"),
     edge("notify-pass", "chain-archiver"),
     edge("chain-archiver", "end-success"),
     edge("mark-todo-failed", "notify-fail"),
@@ -544,7 +555,7 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2026-02-26T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["finalization", "quality-gate", "prepush", "handoff", "reliability"],
     requiredTemplates: ["template-task-archiver"],
     replaces: {
@@ -697,7 +708,7 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2026-02-26T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["repair", "recovery", "worktree", "resilience", "automation"],
     replaces: {
       module: "task-executor.mjs",
@@ -794,7 +805,7 @@ export const TASK_ORPHAN_WORKTREE_RECOVERY_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2026-03-04T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["orphan", "recovery", "worktree", "lifecycle", "reliability"],
     replaces: {
       module: "task-executor.mjs",
@@ -884,7 +895,7 @@ export const TASK_STATUS_TRANSITION_MANAGER_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2026-02-27T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["task", "status", "lifecycle", "workflow-owned"],
     replaces: {
       module: "task-executor.mjs",
@@ -1024,7 +1035,7 @@ Be conservative — prefer safe mitigations over aggressive fixes.`,
     author: "bosun",
     version: 1,
     createdAt: "2025-02-25T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["incident", "response", "detection", "escalation", "reliability"],
     replaces: {
       module: "error-detector.mjs",
@@ -1155,7 +1166,7 @@ export const TASK_ARCHIVER_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2025-06-01T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["archive", "cleanup", "task", "maintenance", "reliability"],
     replaces: {
       module: "task-archiver.mjs",
@@ -1311,7 +1322,7 @@ export const SYNC_ENGINE_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2025-06-01T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["sync", "kanban", "github", "vk", "jira", "bidirectional"],
     replaces: {
       module: "sync-engine.mjs",

@@ -1,8 +1,10 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve, dirname, isAbsolute, relative, join } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
+import { getWorkflowContract } from "../workflow/workflow-contract.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG_FILES = [
@@ -10,6 +12,10 @@ const CONFIG_FILES = [
   ".bosun.json",
   "bosun.json",
 ];
+const WORKFLOW_CONTRACT_NODE_TYPES = Object.freeze({
+  read: new Set(["read-workflow-contract", "action.read_workflow_contract"]),
+  validate: new Set(["workflow-contract-validation", "action.workflow_contract_validation"]),
+});
 
 function parseBool(value) {
   return ["1", "true", "yes", "on"].includes(
@@ -92,6 +98,9 @@ function resolveConfigDir(repoRoot) {
     return packageDir;
   }
 
+  const sandbox = ensureTestRuntimeSandbox();
+  if (sandbox?.configDir) return sandbox.configDir;
+
   const preferWindowsDirs =
     process.platform === "win32" && !isWslInteropRuntime();
   const baseDir =
@@ -164,6 +173,36 @@ function findConfigFile(configDir) {
     }
   }
   return null;
+}
+
+function workflowHasContractNodes(definition) {
+  const nodes = Array.isArray(definition?.nodes) ? definition.nodes : [];
+  let hasRead = false;
+  let hasValidate = false;
+  for (const node of nodes) {
+    const type = String(node?.type || "").trim();
+    if (WORKFLOW_CONTRACT_NODE_TYPES.read.has(type)) hasRead = true;
+    if (WORKFLOW_CONTRACT_NODE_TYPES.validate.has(type)) hasValidate = true;
+  }
+  return hasRead && hasValidate;
+}
+
+function hasEnabledWorkflowContractStep(repoRoot) {
+  const workflowDir = resolve(repoRoot, ".bosun", "workflows");
+  if (!existsSync(workflowDir)) return false;
+
+  for (const file of readdirSync(workflowDir)) {
+    if (!file.endsWith(".json")) continue;
+    try {
+      const definition = JSON.parse(readFileSync(resolve(workflowDir, file), "utf8"));
+      if (definition?.enabled === false) continue;
+      if (workflowHasContractNodes(definition)) return true;
+    } catch {
+      /* ignore malformed workflow files here; other checks can catch them */
+    }
+  }
+
+  return false;
 }
 
 function validateExecutors(raw, issues) {
@@ -671,6 +710,17 @@ export function runConfigDoctor(options = {}) {
     });
   }
 
+  const workflowContract = getWorkflowContract(repoRoot);
+  if (workflowContract.found && !hasEnabledWorkflowContractStep(repoRoot)) {
+    issues.warnings.push({
+      code: "WORKFLOW_CONTRACT_STEP_DISABLED",
+      message:
+        "WORKFLOW.md exists but no enabled workflow includes the read/validate workflow-contract steps.",
+      fix:
+        "Install or update the session-start workflow (for example template-task-lifecycle) so it includes `read-workflow-contract` and `workflow-contract-validation`.",
+    });
+  }
+
   issues.infos.push({
     code: "PATHS",
     message: `Config directory: ${configDir}`,
@@ -987,5 +1037,4 @@ export function formatWorkspaceHealthReport(result) {
 
   return lines.join("\n");
 }
-
 

@@ -1,40 +1,107 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 
-const mockConfigureTaskStore = vi.fn();
-const mockLoadStore = vi.fn();
-const mockGetStats = vi.fn(() => ({
-  draft: 1,
-  todo: 2,
-  inprogress: 1,
-  inreview: 0,
-  done: 3,
-  blocked: 0,
-  total: 7,
-}));
+import {
+  addTask,
+  configureTaskStore,
+  loadStore,
+  waitForStoreWrites,
+} from "../task/task-store.mjs";
 
-const mockReadFileSync = vi.fn();
-const mockExistsSync = vi.fn(() => false);
-const mockStatSync = vi.fn(() => ({ isDirectory: () => false }));
+const tempDirs = [];
 
-vi.mock("../task/task-store.mjs", () => ({
-  configureTaskStore: mockConfigureTaskStore,
-  loadStore: mockLoadStore,
-  getStats: mockGetStats,
-}));
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
-vi.mock("node:fs", () => ({
-  readFileSync: mockReadFileSync,
-  existsSync: mockExistsSync,
-  statSync: mockStatSync,
-}));
+function makeTempStorePath() {
+  const dir = mkdtempSync(resolve(tmpdir(), "bosun-task-cli-"));
+  tempDirs.push(dir);
+  return resolve(dir, "kanban-state.json");
+}
 
-describe("task-cli taskStats repo area lock state", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockExistsSync.mockImplementation(() => false);
+function readStore(storePath) {
+  return JSON.parse(readFileSync(storePath, "utf8"));
+}
+
+function parseJsonPayloadFromStdout(stdout) {
+  const text = String(stdout || "");
+  const jsonStart = text.indexOf("{");
+  if (jsonStart === -1) {
+    throw new Error(`No JSON payload found in stdout: ${text}`);
+  }
+  return JSON.parse(text.slice(jsonStart));
+}
+
+describe("task CLI store persistence", () => {
+  it("persists created tasks before the CLI exits", () => {
+    const storePath = makeTempStorePath();
+    const result = spawnSync(
+      process.execPath,
+      [
+        "cli.mjs",
+        "task",
+        "create",
+        JSON.stringify({
+          title: "Persist created task",
+          status: "todo",
+          draft: false,
+          workspace: "virtengine-gh",
+          repository: "bosun",
+        }),
+      ],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, BOSUN_STORE_PATH: storePath },
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(0);
+    const tasks = Object.values(readStore(storePath).tasks || {});
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.title).toBe("Persist created task");
   });
 
+  it("persists deleted tasks before the CLI exits", async () => {
+    const storePath = makeTempStorePath();
+    configureTaskStore({ storePath });
+    loadStore();
+    const task = addTask({
+      id: randomUUID(),
+      title: "Persist deleted task",
+      status: "todo",
+      draft: false,
+      workspace: "virtengine-gh",
+      repository: "bosun",
+    });
+    await waitForStoreWrites();
+
+    const result = spawnSync(
+      process.execPath,
+      ["cli.mjs", "task", "delete", task.id],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, BOSUN_STORE_PATH: storePath },
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect((readStore(storePath).tasks || {})[task.id]).toBeUndefined();
+  });
+});
+
+describe("task-cli taskStats repo area lock state", () => {
   it("surfaces adaptive repo-area lock state from runtime payload", async () => {
+    const storePath = makeTempStorePath();
+    const runtimeStatePath = resolve(tempDirs[tempDirs.length - 1], "task-executor-runtime.json");
     const now = Date.now();
     const runtimePayload = {
       repoAreaParallelLimit: 3,
@@ -89,21 +156,23 @@ describe("task-cli taskStats repo area lock state", () => {
       },
     };
 
-    mockExistsSync.mockImplementation((filePath) =>
-      String(filePath || "").includes("task-executor-runtime.json"),
+    writeFileSync(runtimeStatePath, JSON.stringify(runtimePayload), "utf8");
+    const result = spawnSync(
+      process.execPath,
+      ["task/task-cli.mjs", "stats", "--json"],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          BOSUN_STORE_PATH: storePath,
+          BOSUN_TASK_EXECUTOR_RUNTIME_FILE: runtimeStatePath,
+        },
+        encoding: "utf8",
+      },
     );
-    mockReadFileSync.mockImplementation((filePath) => {
-      if (String(filePath || "").includes("task-executor-runtime.json")) {
-        return JSON.stringify(runtimePayload);
-      }
-      return "{}";
-    });
 
-    vi.resetModules();
-    const { taskStats } = await import("../task/task-cli.mjs");
-    const stats = await taskStats();
-
-    expect(stats.total).toBe(7);
+    expect(result.status).toBe(0);
+    const stats = parseJsonPayloadFromStdout(result.stdout);
     expect(stats.repoAreaLocks).toEqual(
       expect.objectContaining({
         enabled: true,
@@ -140,14 +209,27 @@ describe("task-cli taskStats repo area lock state", () => {
   });
 
   it("returns null lock state when runtime payload is absent", async () => {
-    mockExistsSync.mockImplementation(() => false);
-    mockReadFileSync.mockReturnValue("{}");
+    const storePath = makeTempStorePath();
+    const missingRuntimeStatePath = resolve(
+      tempDirs[tempDirs.length - 1],
+      "missing-task-executor-runtime.json",
+    );
+    const result = spawnSync(
+      process.execPath,
+      ["task/task-cli.mjs", "stats", "--json"],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          BOSUN_STORE_PATH: storePath,
+          BOSUN_TASK_EXECUTOR_RUNTIME_FILE: missingRuntimeStatePath,
+        },
+        encoding: "utf8",
+      },
+    );
 
-    vi.resetModules();
-    const { taskStats } = await import("../task/task-cli.mjs");
-    const stats = await taskStats();
-
-    expect(stats.total).toBe(7);
+    expect(result.status).toBe(0);
+    const stats = parseJsonPayloadFromStdout(result.stdout);
     expect(stats.repoAreaLocks).toBeNull();
   });
 });

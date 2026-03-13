@@ -25,8 +25,16 @@ import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
 import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../agent/bosun-skills.mjs";
+import { readBenchmarkModeState, taskMatchesBenchmarkMode } from "../bench/benchmark-mode.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
+import {
+  buildWorkflowContractPromptBlock,
+  loadWorkflowContract,
+  validateWorkflowContract,
+} from "./workflow-contract.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
+import { clearBlockedWorktreeIdentity } from "../git/git-safety.mjs";
+import { getGitHubToken, invalidateTokenType } from "../github/github-auth-manager.mjs";
 
 const TAG = "[workflow-nodes]";
 const PORTABLE_WORKTREE_COUNT_COMMAND = "node -e \"const cp=require('node:child_process');const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
@@ -1159,34 +1167,57 @@ registerNodeType("trigger.manual", {
 registerNodeType("trigger.task_low", {
   describe: () =>
     "Fires when backlog task count drops below threshold. Self-queries kanban " +
-    "when todoCount is not pre-populated in context data.",
+    "when todoCount is not pre-populated in context data. Workspace-aware: " +
+    "uses workspace context to scope the kanban query.",
   schema: {
     type: "object",
     properties: {
       threshold: { type: "number", default: 3, description: "Minimum todo count before triggering" },
       status: { type: "string", default: "todo", description: "Task status to count" },
       projectId: { type: "string", description: "Project ID to check (optional)" },
+      countDraftTasks: { type: "boolean", default: false, description: "Also count draft tasks toward threshold" },
     },
   },
   async execute(node, ctx) {
     const threshold = node.config?.threshold ?? 3;
     const status = node.config?.status ?? "todo";
+    const countDrafts = node.config?.countDraftTasks === true;
     let todoCount = ctx.data?.todoCount ?? ctx.data?.backlogCount ?? null;
 
     // Self-query kanban if todoCount not pre-populated
     if (todoCount == null) {
       try {
         const projectId = cfgOrCtx(node, ctx, "projectId") || undefined;
+        const workspaceId = ctx.data?._workspaceId || cfgOrCtx(node, ctx, "workspaceId") || undefined;
         const kanban = ctx.data?._services?.kanban;
         let tasks;
+        const queryOpts = { status };
+        if (workspaceId) queryOpts.workspace = workspaceId;
         if (kanban?.listTasks) {
-          tasks = await kanban.listTasks(projectId, { status });
+          tasks = await kanban.listTasks(projectId, queryOpts);
         } else {
           const ka = await ensureKanbanAdapterMod();
-          tasks = await ka.listTasks(projectId, { status });
+          tasks = await ka.listTasks(projectId, queryOpts);
         }
         todoCount = Array.isArray(tasks) ? tasks.length : 0;
-        ctx.log(node.id, `Self-queried kanban: ${todoCount} task(s) with status "${status}"`);
+
+        // Optionally also count draft tasks
+        if (countDrafts) {
+          let draftTasks;
+          const draftOpts = { status: "draft" };
+          if (workspaceId) draftOpts.workspace = workspaceId;
+          if (kanban?.listTasks) {
+            draftTasks = await kanban.listTasks(projectId, draftOpts);
+          } else {
+            const ka = await ensureKanbanAdapterMod();
+            draftTasks = await ka.listTasks(projectId, draftOpts);
+          }
+          const draftCount = Array.isArray(draftTasks) ? draftTasks.length : 0;
+          todoCount += draftCount;
+          ctx.log(node.id, `Self-queried kanban: ${todoCount} task(s) (todo + ${draftCount} draft) for workspace="${workspaceId || "all"}"`);
+        } else {
+          ctx.log(node.id, `Self-queried kanban: ${todoCount} task(s) with status "${status}" for workspace="${workspaceId || "all"}"`);
+        }
       } catch (err) {
         ctx.log(node.id, `Kanban query failed: ${err?.message || err} — using 0`);
         todoCount = 0;
@@ -2656,7 +2687,12 @@ registerNodeType("action.execute_workflow", {
 
     if (mode === "dispatch") {
       ctx.log(node.id, `Dispatching workflow "${workflowId}"`);
-      const dispatched = engine.execute(workflowId, childInput);
+      let dispatched;
+      try {
+        dispatched = Promise.resolve(engine.execute(workflowId, childInput));
+      } catch (err) {
+        dispatched = Promise.reject(err);
+      }
       dispatched
         .then((childCtx) => {
           const status = childCtx?.errors?.length ? "failed" : "completed";
@@ -3199,7 +3235,7 @@ registerNodeType("action.update_task_status", {
     if (kanban?.updateTaskStatus) {
       const createPrOutput =
         typeof ctx.getNodeOutput === "function"
-          ? ctx.getNodeOutput("create-pr")
+          ? (ctx.getNodeOutput("create-pr") || ctx.getNodeOutput("pr") || ctx.getNodeOutput("create-pr-retry"))
           : null;
 
       const normalizeString = (value) => {
@@ -3242,6 +3278,13 @@ registerNodeType("action.update_task_status", {
 
       await kanban.updateTaskStatus(taskId, status, updateOptions);
 
+      // Anti-thrash: mark task completed with PR to prevent re-scheduling
+      if (status === "inreview" || status === "done") {
+        _completedWithPR.add(taskId);
+        // Clear any no-commit bounce counts — task succeeded
+        _noCommitCounts.delete(taskId);
+        _skipUntil.delete(taskId);
+      }
       // Persist PR linkage/branch metadata so review rehydrate does not reset
       // in-review tasks back to todo due missing references.
       if (
@@ -3430,12 +3473,58 @@ registerNodeType("action.create_pr", {
       BOSUN_ATTACHED_PR_LABEL,
     ]));
     const reviewers = toList(ctx.resolve(node.config?.reviewers || ""));
+
+    // Resolve Bosun's best available GitHub token and inject as GH_TOKEN so that
+    // `gh pr create` uses a user OAuth / App installation token rather than the
+    // ambient GITHUB_TOKEN. GitHub suppresses pull_request CI workflow triggers
+    // for events caused by GITHUB_TOKEN (loop-prevention), so using a real user
+    // token here is what allows CI to fire automatically on the created PR.
+    let ghTokenEnv = {};
+    let resolvedTokenType = null;
+    try {
+      const [ghOwner, ghRepo] = repoSlug ? repoSlug.split("/") : [];
+      const { token, type } = await getGitHubToken({ owner: ghOwner, repo: ghRepo });
+      resolvedTokenType = type;
+      // Only inject when we have a real user/app token, not an env-fallback
+      // (which would be GITHUB_TOKEN itself — injecting it would be redundant).
+      if (type !== "env") {
+        ghTokenEnv = { GH_TOKEN: token };
+      }
+    } catch {
+      // No auth available — fall back to ambient environment
+    }
+
     const execOptions = {
       cwd,
       encoding: "utf8",
       timeout: 60000,
-      env: makeIsolatedGitEnv(),
+      env: makeIsolatedGitEnv(ghTokenEnv),
       stdio: ["pipe", "pipe", "pipe"],
+    };
+
+    /** Re-resolve token after invalidating the current one (401 retry). */
+    const retryWithFallbackToken = async () => {
+      if (!resolvedTokenType) return false;
+      invalidateTokenType(resolvedTokenType);
+      try {
+        const [ghOwner, ghRepo] = repoSlug ? repoSlug.split("/") : [];
+        const { token, type } = await getGitHubToken({
+          owner: ghOwner,
+          repo: ghRepo,
+          skipType: resolvedTokenType,
+        });
+        resolvedTokenType = type;
+        if (type !== "env") {
+          ghTokenEnv = { GH_TOKEN: token };
+        } else {
+          ghTokenEnv = {};
+        }
+        execOptions.env = makeIsolatedGitEnv(ghTokenEnv);
+        ctx.log(node.id, `Retrying with fallback token (type=${type})`);
+        return true;
+      } catch {
+        return false;
+      }
     };
 
     const findExistingPr = () => {
@@ -3500,6 +3589,7 @@ registerNodeType("action.create_pr", {
     if (reviewers.length) args.push("--reviewer", reviewers.join(","));
 
     const cmd = args.join(" ");
+    console.log(`[workflow-nodes] create-pr: branch=${branch || "(empty)"} base=${base} cwd=${cwd} repo=${repoSlug || "(auto)"}`);
     ctx.log(node.id, `Creating PR: ${cmd}`);
 
     if (shouldBypassGhPrCreationForTests()) {
@@ -3546,19 +3636,58 @@ registerNodeType("action.create_pr", {
       };
     } catch (err) {
       const errorMsg = err?.stderr?.toString?.()?.trim() || err?.message || String(err);
+      const is401 = /401|bad credentials|requires authentication/i.test(errorMsg);
+
+      // On 401: invalidate current token and retry once with the next fallback
+      if (is401 && resolvedTokenType) {
+        console.warn(`${TAG} create-pr: 401 from token type="${resolvedTokenType}", attempting fallback`);
+        const retried = await retryWithFallbackToken();
+        if (retried) {
+          try {
+            const retryOutput = execSync(cmd, execOptions);
+            const trimmed = (retryOutput || "").trim();
+            const urlMatch = trimmed.match(/https:\/\/github\.com\/[^\s]+\/pull\/(\d+)/);
+            const prNumber = urlMatch ? parseInt(urlMatch[1], 10) : null;
+            const prUrl = urlMatch ? urlMatch[0] : trimmed;
+            ctx.log(node.id, `PR created (after auth retry): ${prUrl}`);
+            return {
+              success: true,
+              prUrl,
+              prNumber,
+              repoSlug: repoSlug || null,
+              title,
+              base,
+              branch: branch || null,
+              draft,
+              labels,
+              reviewers,
+              output: trimmed,
+            };
+          } catch (retryErr) {
+            const retryMsg = retryErr?.stderr?.toString?.()?.trim() || retryErr?.message || String(retryErr);
+            console.warn(`${TAG} create-pr FAILED (after retry): ${retryMsg.substring(0, 200)}`);
+            ctx.log(node.id, `PR creation failed after auth retry: ${retryMsg}`);
+          }
+        }
+      }
+
+      console.warn(`${TAG} create-pr FAILED: ${errorMsg.substring(0, 200)} (branch=${branch || "(empty)"})`);
       ctx.log(node.id, `PR creation failed: ${errorMsg}`);
       const existingPr = findExistingPr();
       if (existingPr) {
+        console.log(`[workflow-nodes] create-pr: resolved existing PR #${existingPr.prNumber}`);
         ctx.log(node.id, `Resolved existing PR #${existingPr.prNumber}: ${existingPr.prUrl || "(url unavailable)"}`);
         return existingPr;
       }
+      console.warn(`[workflow-nodes] create-pr: no existing PR found for branch=${branch || "(empty)"}, falling back`);
       if (failOnError) {
         return { success: false, error: errorMsg, command: cmd };
       }
-      // Graceful fallback — record handoff for Bosun management
+      // Graceful fallback — record handoff for Bosun management, but mark as failed
+      // so the task-lifecycle pr-created gate routes back to todo for retry.
       ctx.log(node.id, `Falling back to Bosun-managed PR lifecycle handoff`);
       return {
-        success: true,
+        success: false,
         handedOff: true,
         lifecycle: "bosun_managed",
         action: "pr_handoff",
@@ -4015,6 +4144,9 @@ registerNodeType("validation.lint", {
   },
   async execute(node, ctx) {
     const command = ctx.resolve(node.config?.command || "npm run lint");
+    if (!command || !command.trim()) {
+      return { passed: true, output: "no lint configured", skipped: true };
+    }
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     try {
       const output = execSync(command, { cwd, timeout: node.config?.timeoutMs || 120000, encoding: "utf8", stdio: "pipe" });
@@ -4408,6 +4540,101 @@ function parsePlannerJsonFromText(value) {
   return null;
 }
 
+const PLANNER_SCORE_MAX = 10;
+const PLANNER_RISK_LEVELS = ["low", "medium", "high", "critical"];
+const PLANNER_RISK_ORDER = { low: 0, medium: 1, high: 2, critical: 3 };
+const CALIBRATED_MIN_IMPACT_SCORE = 7;
+const CALIBRATED_MAX_RISK_WITHOUT_HUMAN = "medium";
+const PLANNER_SCORE_MODE_RATIO = "ratio";
+const PLANNER_SCORE_MODE_TEN = "ten";
+
+function parsePlannerNumericScore(value) {
+  if (value == null) return null;
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? { numeric: value, scale: null } : null;
+  }
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+
+  const ratioMatch = raw.match(/^(-?\d+(?:\.\d+)?)\s*\/\s*(1|10|100)$/);
+  if (ratioMatch) {
+    const numeric = Number(ratioMatch[1]);
+    const denom = Number(ratioMatch[2]);
+    if (!Number.isFinite(numeric) || !Number.isFinite(denom) || denom <= 0) return null;
+    return { numeric, scale: denom };
+  }
+
+  const percentMatch = raw.match(/^(-?\d+(?:\.\d+)?)\s*%$/);
+  if (percentMatch) {
+    const numeric = Number(percentMatch[1]);
+    if (!Number.isFinite(numeric)) return null;
+    return { numeric, scale: 100 };
+  }
+
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric)) return null;
+  return { numeric, scale: null };
+}
+
+function normalizePlannerScore(value, { preferTenScaleIntegers = false, preserveFractionalTenScale = false } = {}) {
+  const parsed = parsePlannerNumericScore(value);
+  if (!parsed) return null;
+
+  let scaled = parsed.numeric;
+  if (parsed.scale === 1) {
+    scaled = parsed.numeric * PLANNER_SCORE_MAX;
+  } else if (parsed.scale === 100) {
+    scaled = parsed.numeric / 10;
+  } else if (parsed.scale === 10) {
+    scaled = parsed.numeric;
+  } else if (scaled > 10 && scaled <= 100) {
+    scaled = scaled / 10;
+  } else if (scaled > 0 && scaled < 1) {
+    const hasFractionalPart = Math.abs((scaled % 1)) > Number.EPSILON;
+    if (!(preserveFractionalTenScale && hasFractionalPart)) {
+      scaled = scaled * PLANNER_SCORE_MAX;
+    }
+  } else if (scaled === 1) {
+    scaled = preferTenScaleIntegers ? 1 : PLANNER_SCORE_MAX;
+  }
+
+  const clamped = Math.max(0, Math.min(PLANNER_SCORE_MAX, scaled));
+  return Math.round(clamped * 10) / 10;
+}
+
+function inferPlannerTaskScoreMode(task) {
+  if (!task || typeof task !== "object") return PLANNER_SCORE_MODE_RATIO;
+  const candidates = [task.impact, task.confidence, task.risk];
+  for (const candidate of candidates) {
+    const parsed = parsePlannerNumericScore(candidate);
+    if (!parsed) continue;
+    if (parsed.scale === 10) return PLANNER_SCORE_MODE_TEN;
+    if (parsed.scale === 1 || parsed.scale === 100) return PLANNER_SCORE_MODE_RATIO;
+    if (parsed.numeric > 1 && parsed.numeric <= PLANNER_SCORE_MAX) return PLANNER_SCORE_MODE_TEN;
+    if (parsed.numeric > PLANNER_SCORE_MAX && parsed.numeric <= 100) return PLANNER_SCORE_MODE_RATIO;
+  }
+  return PLANNER_SCORE_MODE_RATIO;
+}
+
+function normalizePlannerRiskLevel(value, { preferTenScaleIntegers = false, preserveFractionalTenScale = false } = {}) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (PLANNER_RISK_LEVELS.includes(raw)) return raw;
+
+  if (raw) {
+    if (/\b(critical|catastrophic|severe|blocker|sev[\s-]*0|sev[\s-]*1|data\s+loss|outage|downtime|rce)\b/.test(raw)) return "critical";
+    if (/\b(high|significant|major|risky|dangerous|blast\s+radius|customer[\s-]*impact|security|compliance|incident|breaking\s+change|migration\s+risk)\b/.test(raw)) return "high";
+    if (/\b(medium|moderate)\b/.test(raw)) return "medium";
+    if (/\b(low|minor|trivial|safe)\b/.test(raw)) return "low";
+  }
+
+  const numeric = normalizePlannerScore(value, { preferTenScaleIntegers, preserveFractionalTenScale });
+  if (!Number.isFinite(numeric)) return null;
+  if (numeric >= 9) return "critical";
+  if (numeric >= 7) return "high";
+  if (numeric >= 4) return "medium";
+  return "low";
+}
+
 function normalizePlannerTaskForCreation(task, index) {
   if (!task || typeof task !== "object") return null;
   const title = String(task.title || "").trim();
@@ -4480,9 +4707,12 @@ function normalizePlannerTaskForCreation(task, index) {
   const acceptanceCriteria = normalizeStringList(task.acceptance_criteria);
   const verification = normalizeStringList(task.verification);
   const repoAreas = normalizeRepoAreas(task.repo_areas || task.repoAreas);
-  const impact = normalizeScore(task.impact);
-  const confidence = normalizeScore(task.confidence);
-  const risk = normalizeRiskLevel(task.risk);
+  const impact = normalizePlannerScore(task.impact, { preferTenScaleIntegers });
+  const confidence = normalizePlannerScore(task.confidence, { preferTenScaleIntegers });
+  const risk = normalizePlannerRiskLevel(task.risk, {
+    preferTenScaleIntegers,
+    preserveFractionalTenScale: scoreMode === PLANNER_SCORE_MODE_TEN,
+  });
   const estimatedEffort = String(task.estimated_effort || task.estimatedEffort || "").trim().toLowerCase();
   const whyNow = String(task.why_now || task.whyNow || "").trim();
   const killCriteria = normalizeStringList(task.kill_criteria || task.killCriteria);
@@ -5049,8 +5279,8 @@ registerNodeType("action.materialize_planner_tasks", {
       failOnZero: { type: "boolean", default: true, description: "Fail node when zero tasks are created" },
       minCreated: { type: "number", default: 1, description: "Minimum created tasks required for success" },
       projectId: { type: "string", description: "Optional explicit project ID for list/create operations" },
-      minImpactScore: { type: "number", default: 0, description: "Minimum planner impact score (0-10) required for creation" },
-      maxRiskWithoutHuman: { type: "string", default: "high", description: "Maximum planner risk level allowed for auto-creation" },
+      minImpactScore: { type: "number", default: CALIBRATED_MIN_IMPACT_SCORE, description: "Minimum planner impact score required for creation; accepts 0-1 or 0-10 scales" },
+      maxRiskWithoutHuman: { type: "string", default: CALIBRATED_MAX_RISK_WITHOUT_HUMAN, description: "Maximum planner risk level allowed for auto-creation (low|medium|high|critical)" },
       maxConcurrentRepoAreaTasks: { type: "number", default: 0, description: "Maximum concurrent backlog tasks per repo area (0 disables limit)" },
       failurePriorThreshold: { type: "number", default: 2, description: "Net repeated failures required before applying negative priors" },
       failurePriorStep: { type: "number", default: 1.5, description: "Penalty added per repeated failure beyond threshold" },
@@ -5068,8 +5298,14 @@ registerNodeType("action.materialize_planner_tasks", {
     const dedupEnabled = node.config?.dedup !== false;
     const status = String(ctx.resolve(node.config?.status || "todo")).trim() || "todo";
     const projectId = String(ctx.resolve(node.config?.projectId || "")).trim();
-    const minImpactScore = Number(ctx.resolve(node.config?.minImpactScore ?? 0));
-    const maxRiskWithoutHuman = String(ctx.resolve(node.config?.maxRiskWithoutHuman || "high")).trim().toLowerCase() || "high";
+    const minImpactScore = normalizePlannerScore(
+      ctx.resolve(node.config?.minImpactScore ?? CALIBRATED_MIN_IMPACT_SCORE),
+      { preferTenScaleIntegers: true },
+    );
+    const maxRiskWithoutHuman = normalizePlannerRiskLevel(
+      ctx.resolve(node.config?.maxRiskWithoutHuman ?? CALIBRATED_MAX_RISK_WITHOUT_HUMAN),
+      { preferTenScaleIntegers: true },
+    ) || CALIBRATED_MAX_RISK_WITHOUT_HUMAN;
     const maxConcurrentRepoAreaTasks = Number(ctx.resolve(node.config?.maxConcurrentRepoAreaTasks ?? 0));
     const rankingConfig = {
       failureThreshold: Math.max(1, Number(ctx.resolve(node.config?.failurePriorThreshold ?? 2)) || 2),
@@ -5228,34 +5464,40 @@ registerNodeType("action.materialize_planner_tasks", {
 
     const created = [];
     const skipped = [];
+    const materializationOutcomes = [];
     const createdAreaCounts = new Map();
     for (const task of rankedTasks) {
       const key = task.title.toLowerCase();
       if (dedupEnabled && existingTitleSet.has(key)) {
         skipped.push({ title: task.title, reason: "duplicate_title" });
+        materializationOutcomes.push({ ...baseOutcome, created: false, reason: "duplicate_title" });
         continue;
       }
       if (!Array.isArray(task.acceptanceCriteria) || task.acceptanceCriteria.length === 0) {
         skipped.push({ title: task.title, reason: "missing_acceptance_criteria" });
+        materializationOutcomes.push({ ...baseOutcome, created: false, reason: "missing_acceptance_criteria" });
         continue;
       }
       if (!Array.isArray(task.verification) || task.verification.length === 0) {
         skipped.push({ title: task.title, reason: "missing_verification" });
+        materializationOutcomes.push({ ...baseOutcome, created: false, reason: "missing_verification" });
         continue;
       }
       if (!Array.isArray(task.repoAreas) || task.repoAreas.length === 0) {
         skipped.push({ title: task.title, reason: "missing_repo_areas" });
+        materializationOutcomes.push({ ...baseOutcome, created: false, reason: "missing_repo_areas" });
         continue;
       }
       if (Number.isFinite(minImpactScore) && Number.isFinite(task.impact) && task.impact < minImpactScore) {
         skipped.push({ title: task.title, reason: "below_min_impact", impact: task.impact, minImpactScore });
+        materializationOutcomes.push({ ...baseOutcome, created: false, reason: "below_min_impact" });
         continue;
       }
-      const riskOrder = { low: 0, medium: 1, high: 2, critical: 3 };
-      const taskRiskOrder = riskOrder[String(task.risk || "").toLowerCase()];
-      const maxRiskOrder = riskOrder[String(maxRiskWithoutHuman || "").toLowerCase()];
+      const taskRiskOrder = PLANNER_RISK_ORDER[String(task.risk || "").toLowerCase()];
+      const maxRiskOrder = PLANNER_RISK_ORDER[String(maxRiskWithoutHuman || "").toLowerCase()];
       if (Number.isFinite(taskRiskOrder) && Number.isFinite(maxRiskOrder) && taskRiskOrder > maxRiskOrder) {
         skipped.push({ title: task.title, reason: "risk_above_threshold", risk: task.risk, maxRiskWithoutHuman });
+        materializationOutcomes.push({ ...baseOutcome, created: false, reason: "risk_above_threshold" });
         continue;
       }
       if (Number.isFinite(maxConcurrentRepoAreaTasks) && maxConcurrentRepoAreaTasks > 0) {
@@ -5278,6 +5520,7 @@ registerNodeType("action.materialize_planner_tasks", {
             repoAreas: saturatedAreas,
             maxConcurrentRepoAreaTasks,
           });
+          materializationOutcomes.push({ ...baseOutcome, created: false, reason: "repo_area_saturated" });
           continue;
         }
       }
@@ -5340,6 +5583,7 @@ registerNodeType("action.materialize_planner_tasks", {
         id: createdTask?.id || null,
         title: task.title,
       });
+      materializationOutcomes.push({ ...baseOutcome, created: true, reason: null });
       for (const area of task.repoAreas) {
         const areaKey = normalizePlannerAreaKey(area);
         if (!areaKey) continue;
@@ -5350,9 +5594,10 @@ registerNodeType("action.materialize_planner_tasks", {
 
     const createdCount = created.length;
     const skippedCount = skipped.length;
+    const skipReasonHistogram = buildPlannerSkipReasonHistogram(skipped);
     ctx.log(
       node.id,
-      `Planner materialization parsed=${parsedTasks.length} created=${createdCount} skipped=${skippedCount}`,
+      `Planner materialization parsed=${parsedTasks.length} created=${createdCount} skipped=${skippedCount} histogram=${JSON.stringify(skipReasonHistogram)}`,
     );
 
     if (failOnZero && createdCount < Math.max(1, minCreated)) {
@@ -5366,6 +5611,8 @@ registerNodeType("action.materialize_planner_tasks", {
       parsedCount: parsedTasks.length,
       createdCount,
       skippedCount,
+      skipReasonHistogram,
+      materializationOutcomes,
       created,
       skipped,
       tasks: parsedTasks,
@@ -5842,7 +6089,12 @@ const UNIVERSAL_FLOW_NODE = {
 
     if (mode === "dispatch") {
       ctx.log(node.id, `Dispatching universal workflow \"${workflowId}\"`);
-      const dispatched = engine.execute(workflowId, childInput);
+      let dispatched;
+      try {
+        dispatched = Promise.resolve(engine.execute(workflowId, childInput));
+      } catch (err) {
+        dispatched = Promise.reject(err);
+      }
       dispatched
         .then((childCtx) => {
           const status = childCtx?.errors?.length ? "failed" : "completed";
@@ -5971,6 +6223,7 @@ registerNodeType("loop.for_each", {
     return {
       items,
       count: items.length,
+      totalItems: items.length,
       variable: varName,
       results,
       successCount,
@@ -6610,7 +6863,12 @@ registerNodeType("action.invoke_workflow", {
     // ── Dispatch mode ──
     if (mode === "dispatch") {
       ctx.log(node.id, `Dispatching workflow "${workflowId}" (fire-and-forget)`);
-      const promise = engine.execute(workflowId, childInput);
+      let promise;
+      try {
+        promise = Promise.resolve(engine.execute(workflowId, childInput));
+      } catch (err) {
+        promise = Promise.reject(err);
+      }
       promise.catch((err) => {
         ctx.log(node.id, `Dispatched workflow "${workflowId}" failed: ${err.message}`, "error");
       });
@@ -8061,9 +8319,10 @@ let _taskClaimsInitPromise = null;
 let _taskComplexityMod = null;
 let _kanbanAdapterMod = null;
 let _agentPoolMod = null;
+let _libraryManagerMod = null;
+let _configMod = null;
 let _gitSafetyMod = null;
 let _diffStatsMod = null;
-let _libraryManagerMod = null;
 
 async function ensureTaskClaimsMod() {
   if (!_taskClaimsMod) _taskClaimsMod = await import("../task/task-claims.mjs");
@@ -8159,6 +8418,14 @@ async function ensureTaskComplexityMod() {
   if (!_taskComplexityMod) _taskComplexityMod = await import("../task/task-complexity.mjs");
   return _taskComplexityMod;
 }
+async function ensureConfigMod() {
+  if (!_configMod) _configMod = await import("../config/config.mjs");
+  return _configMod;
+}
+async function ensureLibraryManagerMod() {
+  if (!_libraryManagerMod) _libraryManagerMod = await import("../infra/library-manager.mjs");
+  return _libraryManagerMod;
+}
 async function ensureKanbanAdapterMod() {
   if (!_kanbanAdapterMod) _kanbanAdapterMod = await import("../kanban/kanban-adapter.mjs");
   return _kanbanAdapterMod;
@@ -8175,9 +8442,93 @@ async function ensureDiffStatsMod() {
   if (!_diffStatsMod) _diffStatsMod = await import("../git/diff-stats.mjs");
   return _diffStatsMod;
 }
-async function ensureLibraryManagerMod() {
-  if (!_libraryManagerMod) _libraryManagerMod = await import("../infra/library-manager.mjs");
-  return _libraryManagerMod;
+function normalizeWorkflowSdkKey(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw || raw === "auto") return "";
+  if (raw.includes("copilot")) return "copilot";
+  if (raw.includes("codex") || raw.includes("gpt")) return "codex";
+  if (raw.includes("claude")) return "claude";
+  if (raw.includes("gemini")) return "gemini";
+  if (raw.includes("opencode")) return "opencode";
+  return raw;
+}
+function sdkToComplexityExecutorType(sdk) {
+  if (sdk === "copilot") return "COPILOT";
+  if (sdk === "codex") return "CODEX";
+  return "";
+}
+function buildWorkflowBaseExecutorProfile(sdk, defaults = {}) {
+  const executor = sdkToComplexityExecutorType(sdk);
+  if (!executor) return null;
+  return {
+    name: defaults.name || sdk,
+    executor,
+    variant: defaults.variant || "DEFAULT",
+    role: defaults.role || "primary",
+    weight: Number.isFinite(Number(defaults.weight)) ? Number(defaults.weight) : 100,
+    enabled: defaults.enabled !== false,
+    codexProfile: defaults.codexProfile || "",
+  };
+}
+function resolveWorkflowExecutorPreference(config, defaultSdk) {
+  const defaultSdkKey = normalizeWorkflowSdkKey(defaultSdk);
+  if (defaultSdkKey) {
+    return {
+      sdk: defaultSdkKey,
+      model: "",
+      baseProfile: buildWorkflowBaseExecutorProfile(defaultSdkKey, {
+        name: `default-${defaultSdkKey}`,
+      }),
+    };
+  }
+
+  const configuredExecutors = Array.isArray(config?.executorConfig?.executors)
+    ? config.executorConfig.executors.filter((entry) => entry?.enabled !== false)
+    : [];
+  const primaryExecutor = configuredExecutors[0] || null;
+  if (primaryExecutor?.executor) {
+    const configuredSdk = normalizeWorkflowSdkKey(primaryExecutor.executor);
+    if (configuredSdk) {
+      return {
+        sdk: configuredSdk,
+        model: Array.isArray(primaryExecutor.models)
+          ? String(primaryExecutor.models[0] || "").trim()
+          : "",
+        baseProfile: buildWorkflowBaseExecutorProfile(configuredSdk, {
+          name: primaryExecutor.name || configuredSdk,
+          variant: primaryExecutor.variant || "DEFAULT",
+          role: primaryExecutor.role || "primary",
+          weight: primaryExecutor.weight,
+          enabled: primaryExecutor.enabled !== false,
+          codexProfile: primaryExecutor.codexProfile || "",
+        }),
+      };
+    }
+  }
+
+  const internalSdk = normalizeWorkflowSdkKey(config?.internalExecutor?.sdk);
+  if (internalSdk) {
+    return {
+      sdk: internalSdk,
+      model: "",
+      baseProfile: buildWorkflowBaseExecutorProfile(internalSdk, {
+        name: `internal-${internalSdk}`,
+      }),
+    };
+  }
+
+  const primaryAgentSdk = normalizeWorkflowSdkKey(config?.primaryAgent);
+  if (primaryAgentSdk) {
+    return {
+      sdk: primaryAgentSdk,
+      model: "",
+      baseProfile: buildWorkflowBaseExecutorProfile(primaryAgentSdk, {
+        name: `primary-${primaryAgentSdk}`,
+      }),
+    };
+  }
+
+  return null;
 }
 let _taskStoreMod = null;
 async function ensureTaskStoreMod() {
@@ -8216,16 +8567,6 @@ function cfgOrCtx(node, ctx, key, defaultVal = "") {
   const ctxVal = ctx.data?.[key];
   if (ctxVal != null && ctxVal !== "") return String(ctxVal);
   return defaultVal;
-}
-
-function normalizeSdkForWorkflow(value, fallback = "auto") {
-  const raw = String(value || "").trim().toLowerCase();
-  if (!raw) return fallback;
-  if (raw === "auto") return "auto";
-  if (raw === "codex" || raw === "openai") return "codex";
-  if (raw === "copilot" || raw === "github_copilot" || raw === "github-copilot") return "copilot";
-  if (raw === "claude" || raw === "claude_code" || raw === "claude-code") return "claude";
-  return fallback;
 }
 
 function getWorkflowRuntimeState(ctx) {
@@ -8375,6 +8716,7 @@ registerNodeType("trigger.task_available", {
       listRetries: { type: "number", default: 3, description: "Retries for listTasks calls" },
       listRetryDelayMs: { type: "number", default: 2000, description: "Base delay between retries" },
       repoAreaParallelLimit: { type: "number", default: 0, description: "Per-repo-area active task cap (0 disables limit)" },
+      respectBenchmarkMode: { type: "boolean", default: true, description: "Honor repo-local benchmark mode task filtering" },
       enforceStartGuards: { type: "boolean", default: true, description: "Filter out tasks blocked by dependency/sprint DAG start guards" },
       sprintOrderMode: { type: "string", enum: ["parallel", "sequential"], description: "Optional global sprint-order override when evaluating guards" },
       strictStartGuardMissingTask: { type: "boolean", default: false, description: "When true, task_not_found from start guards blocks dispatch and emits audit events" },
@@ -8388,6 +8730,7 @@ registerNodeType("trigger.task_available", {
     const listRetries = node.config?.listRetries ?? 3;
     const listRetryDelayMs = node.config?.listRetryDelayMs ?? 2000;
     const repoAreaParallelLimit = Number(node.config?.repoAreaParallelLimit ?? 0);
+    const respectBenchmarkMode = node.config?.respectBenchmarkMode !== false;
     const enforceStartGuards = node.config?.enforceStartGuards !== false;
     const sprintOrderMode = String(node.config?.sprintOrderMode || "").trim().toLowerCase();
     const strictStartGuardMissingTask =
@@ -8470,6 +8813,40 @@ registerNodeType("trigger.task_available", {
 
     if (tasks.length === 0) {
       return { triggered: false, reason: "all_filtered", taskCount: 0 };
+    }
+
+    let benchmarkMode = null;
+    if (respectBenchmarkMode && tasks.length > 0) {
+      try {
+        const benchmarkRepoRoot =
+          cfgOrCtx(node, ctx, "repoRoot")
+          || cfgOrCtx(node, ctx, "workspace")
+          || process.cwd();
+        benchmarkMode = readBenchmarkModeState(benchmarkRepoRoot);
+        if (benchmarkMode.enabled) {
+          const beforeCount = tasks.length;
+          tasks = tasks.filter((task) =>
+            taskMatchesBenchmarkMode(task, benchmarkMode, { repoRoot: benchmarkRepoRoot }),
+          );
+          const filteredCount = beforeCount - tasks.length;
+          if (filteredCount > 0) {
+            ctx.log(
+              node.id,
+              `Benchmark mode filtered ${filteredCount} competing task(s) for ${benchmarkMode.providerId || "benchmark"} focus`,
+            );
+          }
+          if (tasks.length === 0) {
+            return {
+              triggered: false,
+              reason: "benchmark_mode_filtered",
+              taskCount: 0,
+              benchmarkMode,
+            };
+          }
+        }
+      } catch (err) {
+        ctx.log(node.id, `Benchmark mode filter warning: ${err?.message || err}`);
+      }
     }
 
     // DAG / sprint-order guard: only dispatch tasks that can legally start.
@@ -8565,6 +8942,7 @@ registerNodeType("trigger.task_available", {
             taskCount: 0,
             blocked,
             auditEvents,
+            benchmarkMode,
           };
         }
       }
@@ -8632,6 +9010,7 @@ registerNodeType("trigger.task_available", {
           availableSlots: remaining,
           repoAreaParallelLimit,
           auditEvents: startGuardAuditEvents,
+          benchmarkMode,
         };
       }
     }
@@ -8695,6 +9074,7 @@ registerNodeType("trigger.task_available", {
       availableSlots: remaining,
       selectedTaskId: primaryTask ? pickTaskString(primaryTask.id, primaryTask.task_id) : "",
       auditEvents: startGuardAuditEvents,
+      benchmarkMode,
     };
   },
 });
@@ -8839,7 +9219,7 @@ registerNodeType("action.claim_task", {
       taskId: { type: "string", description: "Task ID to claim" },
       taskTitle: { type: "string", description: "Task title" },
       ttlMinutes: { type: "number", default: 180, description: "Claim TTL in minutes" },
-      renewIntervalMs: { type: "number", default: 300000, description: "Renewal interval (5 min default)" },
+      renewIntervalMs: { type: "number", default: 60000, description: "Renewal interval (1 min default)" },
       instanceId: { type: "string", description: "Orchestrator instance ID (auto-gen if omitted)" },
       branch: { type: "string", description: "Branch for claim metadata" },
       sdk: { type: "string", description: "SDK for claim metadata" },
@@ -8851,7 +9231,7 @@ registerNodeType("action.claim_task", {
     const taskId = cfgOrCtx(node, ctx, "taskId");
     const taskTitle = cfgOrCtx(node, ctx, "taskTitle");
     const ttlMinutes = node.config?.ttlMinutes ?? 180;
-    const renewIntervalMs = node.config?.renewIntervalMs ?? 300000;
+    const renewIntervalMs = node.config?.renewIntervalMs ?? 60000;
     const instanceId = cfgOrCtx(node, ctx, "instanceId") || ctx.data?._agentInstanceId || `wf-${randomUUID().slice(0, 8)}`;
     const branch = cfgOrCtx(node, ctx, "branch");
     const sdk = cfgOrCtx(node, ctx, "resolvedSdk", cfgOrCtx(node, ctx, "sdk"));
@@ -8903,11 +9283,25 @@ registerNodeType("action.claim_task", {
       if (renewIntervalMs > 0 && renewClaimFn) {
         const renewTimer = setInterval(async () => {
           try {
-            await renewClaimFn({ taskId, claimToken: token, instanceId, ttlMinutes });
+            const renewalResult = await renewClaimFn({ taskId, claimToken: token, instanceId, ttlMinutes });
+            if (renewalResult && renewalResult.success === false) {
+              const resultError = String(renewalResult.error || "claim_renew_failed");
+              const fatalResult = ["claimed_by_different_instance", "claim_token_mismatch",
+                "task_not_claimed", "owner_mismatch", "attempt_token_mismatch"].some((e) => resultError.includes(e));
+              if (fatalResult) {
+                ctx.log(node.id, `Claim renewal fatal: ${resultError} — aborting task`);
+                clearInterval(renewTimer);
+                runtimeState.claimRenewTimer = null;
+                ctx.data._claimRenewTimer = null;
+                ctx.data._claimStolen = true;
+              } else {
+                ctx.log(node.id, `Claim renewal warning: ${resultError}`);
+              }
+            }
           } catch (renewErr) {
             const msg = renewErr?.message || String(renewErr);
             const fatal = ["claimed_by_different_instance", "claim_token_mismatch",
-              "task_not_claimed", "owner_mismatch"].some((e) => msg.includes(e));
+              "task_not_claimed", "owner_mismatch", "attempt_token_mismatch"].some((e) => msg.includes(e));
             if (fatal) {
               ctx.log(node.id, `Claim renewal fatal: ${msg} — aborting task`);
               clearInterval(renewTimer);
@@ -9026,128 +9420,138 @@ registerNodeType("action.resolve_executor", {
     const defaultSdk = cfgOrCtx(node, ctx, "defaultSdk", "auto");
     const sdkOverride = cfgOrCtx(node, ctx, "sdkOverride");
     const modelOverride = cfgOrCtx(node, ctx, "modelOverride");
-    const taskId = cfgOrCtx(node, ctx, "taskId");
-    const taskTitle = cfgOrCtx(node, ctx, "taskTitle");
-    const taskDescription = cfgOrCtx(node, ctx, "taskDescription");
-    const task = ctx.data?.task || {};
-    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || cfgOrCtx(node, ctx, "workspace") || process.cwd();
+    const repoRoot = cfgOrCtx(node, ctx, "repoRoot")
+      || cfgOrCtx(node, ctx, "workspace")
+      || process.cwd();
+    const task = {
+      id: cfgOrCtx(node, ctx, "taskId"),
+      title: cfgOrCtx(node, ctx, "taskTitle"),
+      description: cfgOrCtx(node, ctx, "taskDescription"),
+      tags: Array.isArray(ctx.data?.task?.tags) ? ctx.data.task.tags : [],
+    };
+    let profileDecision = null;
+    let configuredExecutorPreference = null;
 
     // Check env var overrides (mirrors TaskExecutor behavior)
     const envModel =
       process.env.COPILOT_MODEL || process.env.CLAUDE_MODEL || process.env.CODEX_MODEL || "";
-    let profileSdk = "";
-    let profileModel = "";
-    let resolvedProfile = null;
-
-    // Library resolver for profile/skill/tool selection.
-    try {
-      const library = await ensureLibraryManagerMod();
-      const criteria = {
-        title: taskTitle || task.title || "",
-        description: taskDescription || task.description || "",
-        agentType:
-          ctx.data?.agentType
-          || task.agentType
-          || task.assignedAgentType
-          || "",
-        tags: Array.isArray(task.tags) ? task.tags : [],
-        changedFiles: Array.isArray(task.changedFiles) ? task.changedFiles : [],
-      };
-      const planResult =
-        typeof library.resolveLibraryPlan === "function"
-          ? library.resolveLibraryPlan(repoRoot, criteria, { topN: 5, skillTopN: 6 })
-          : null;
-      const best = planResult?.best || null;
-      const plan = planResult?.plan || null;
-      if (best) {
-        const profileId = String(plan?.agentProfileId || best.id || "").trim();
-        if (profileId) ctx.data.agentProfile = profileId;
-        const selectedSkills = Array.isArray(plan?.selectedSkills) ? plan.selectedSkills : [];
-        const skillIds = Array.isArray(plan?.skillIds)
-          ? plan.skillIds
-          : selectedSkills.map((entry) => String(entry?.id || "").trim()).filter(Boolean);
-        const skillFiles = selectedSkills.map((entry) => String(entry?.filename || "").trim()).filter(Boolean);
-        const reasons = Array.isArray(plan?.reasons) ? plan.reasons : Array.isArray(best?.reasons) ? best.reasons : [];
-
-        resolvedProfile = {
-          id: profileId || String(best.id || "").trim(),
-          name: String(plan?.agentName || best?.name || "").trim(),
-          agentType: String(best?.agentType || "").trim(),
-          score: Number(best?.score || 0),
-          confidence: Number(best?.confidence || 0),
-          autoApply: Boolean(planResult?.auto?.shouldAutoApply),
-          reasons,
-          skillIds,
-          selectedSkills,
-          builtinToolIds: Array.isArray(plan?.builtinToolIds) ? plan.builtinToolIds : [],
-          recommendedToolIds: Array.isArray(plan?.recommendedToolIds) ? plan.recommendedToolIds : [],
-          enabledMcpServers: Array.isArray(plan?.enabledMcpServers) ? plan.enabledMcpServers : [],
-        };
-        ctx.data.resolvedAgentProfile = resolvedProfile;
-        ctx.data.resolvedSkillIds = skillIds;
-        ctx.data.resolvedSkillFiles = skillFiles;
-        ctx.data.resolvedBuiltinToolIds = resolvedProfile.builtinToolIds;
-        ctx.data.resolvedRecommendedToolIds = resolvedProfile.recommendedToolIds;
-        ctx.data.resolvedEnabledMcpServers = resolvedProfile.enabledMcpServers;
-
-        profileSdk = normalizeSdkForWorkflow(best?.profile?.sdk, "");
-        profileModel = String(best?.profile?.model || "").trim();
-        ctx.log(
-          node.id,
-          `Library match: profile=${resolvedProfile.id || "(none)"} score=${resolvedProfile.score} confidence=${resolvedProfile.confidence.toFixed(2)}`,
-        );
-      }
-    } catch (err) {
-      ctx.log(node.id, `Library resolver unavailable: ${err?.message || err}`);
-    }
 
     // Manual override takes precedence
     if (sdkOverride && sdkOverride !== "auto") {
-      const sdk = normalizeSdkForWorkflow(sdkOverride, sdkOverride);
-      const model = modelOverride || envModel || profileModel || "";
-      ctx.data.resolvedSdk = sdk;
+      const model = modelOverride || envModel || "";
+      ctx.data.resolvedSdk = sdkOverride;
       ctx.data.resolvedModel = model;
-      ctx.log(node.id, `Executor override: sdk=${sdk}, model=${model}`);
-      return { success: true, sdk, model, tier: "override", profile: resolvedProfile };
+      ctx.log(node.id, `Executor override: sdk=${sdkOverride}, model=${model}`);
+      return { success: true, sdk: sdkOverride, model, tier: "override", profile: null };
     }
 
-    // Profile preference takes precedence when explicitly set in library profile.
-    if (profileSdk) {
-      const model = modelOverride || envModel || profileModel || "";
-      ctx.data.resolvedSdk = profileSdk;
-      ctx.data.resolvedModel = model;
-      ctx.log(node.id, `Executor profile preference: sdk=${profileSdk}, model=${model}`);
-      return {
-        success: true,
-        sdk: profileSdk,
-        model,
-        tier: "profile",
-        profile: resolvedProfile,
-      };
+    try {
+      const library = await ensureLibraryManagerMod();
+      const match = library.matchAgentProfiles?.(
+        repoRoot,
+        {
+          title: task.title,
+          description: task.description,
+          tags: task.tags,
+          repoRoot,
+        },
+        { topN: 1 },
+      );
+      const profile = match?.best?.profile || null;
+      const profileId = String(match?.best?.id || "").trim();
+      if (profileId && profile) {
+        profileDecision = { id: profileId, profile };
+        ctx.data.agentProfile = profileId;
+        ctx.data.resolvedAgentProfile = {
+          id: profileId,
+          name: match?.best?.name || profile?.name || profileId,
+          ...profile,
+        };
+        const skillIds = Array.isArray(profile.skills)
+          ? profile.skills.map((value) => String(value || "").trim()).filter(Boolean)
+          : [];
+        ctx.data.resolvedSkillIds = skillIds;
+      }
+    } catch (err) {
+      ctx.log(node.id, `Library profile resolution failed: ${err.message}`);
+    }
+
+    if (!profileDecision?.profile) {
+      try {
+        const configMod = await ensureConfigMod();
+        configuredExecutorPreference = resolveWorkflowExecutorPreference(
+          configMod.loadConfig?.(process.argv, { reloadEnv: false }) || null,
+          defaultSdk,
+        );
+      } catch (err) {
+        ctx.log(node.id, `Executor config resolution failed: ${err.message}`);
+      }
     }
 
     // Complexity-based routing
     try {
       const complexity = await ensureTaskComplexityMod();
-      const complexityTask = {
-        id: taskId,
-        title: taskTitle,
-        description: taskDescription,
-      };
-
       if (complexity.resolveExecutorForTask && complexity.executorToSdk) {
-        const resolved = complexity.resolveExecutorForTask(complexityTask);
-        const sdk = complexity.executorToSdk(resolved.executor);
-        const model = modelOverride || envModel || profileModel || resolved.model || "";
+        const baseProfile = profileDecision?.profile
+          ? {
+              name: profileDecision.id,
+              executor: profileDecision.profile.sdk || "CODEX",
+              model: profileDecision.profile.model || "",
+              variant: "DEFAULT",
+              role: "primary",
+              weight: 100,
+              enabled: true,
+            }
+          : configuredExecutorPreference?.baseProfile || undefined;
+        if (!baseProfile && configuredExecutorPreference?.sdk) {
+          const configuredModel =
+            modelOverride || envModel || configuredExecutorPreference.model || "";
+          ctx.data.resolvedSdk = configuredExecutorPreference.sdk;
+          ctx.data.resolvedModel = configuredModel;
+          ctx.log(
+            node.id,
+            `Executor configured: sdk=${configuredExecutorPreference.sdk}, model=${configuredModel}`,
+          );
+          return {
+            success: true,
+            sdk: configuredExecutorPreference.sdk,
+            model: configuredModel,
+            tier: "configured",
+            profile: null,
+            complexity: null,
+          };
+        }
+        const resolved = complexity.resolveExecutorForTask(task, baseProfile);
+        let sdk = complexity.executorToSdk(resolved.executor);
+        const profileSdkRaw = String(profileDecision?.profile?.sdk || "").trim().toLowerCase();
+        const profileModelRaw = String(profileDecision?.profile?.model || "").trim().toLowerCase();
+        if (profileSdkRaw) {
+          if (profileSdkRaw.includes("claude")) sdk = "claude";
+          else if (profileSdkRaw.includes("copilot")) sdk = "copilot";
+          else if (profileSdkRaw.includes("codex")) sdk = "codex";
+        } else if (profileModelRaw) {
+          if (profileModelRaw.includes("claude")) sdk = "claude";
+          else if (profileModelRaw.includes("gpt") || profileModelRaw.includes("codex")) sdk = "codex";
+        } else if (configuredExecutorPreference?.sdk) {
+          sdk = configuredExecutorPreference.sdk;
+        }
+        const model =
+          modelOverride ||
+          envModel ||
+          profileDecision?.profile?.model ||
+          configuredExecutorPreference?.model ||
+          resolved.model ||
+          "";
+        const tier = profileDecision?.profile ? "profile" : (resolved.tier || "default");
         ctx.data.resolvedSdk = sdk;
         ctx.data.resolvedModel = model;
-        ctx.log(node.id, `Executor: sdk=${sdk}, model=${model}, tier=${resolved.tier || "default"}`);
+        ctx.log(node.id, `Executor: sdk=${sdk}, model=${model}, tier=${tier}`);
         return {
           success: true,
           sdk,
           model,
-          tier: resolved.tier || "default",
-          profile: resolvedProfile || resolved.name || null,
+          tier,
+          profile: profileDecision?.id || resolved.name || null,
           complexity: resolved.complexity || null,
         };
       }
@@ -9156,8 +9560,8 @@ registerNodeType("action.resolve_executor", {
     }
 
     // Fallback
-    let sdk = defaultSdk;
-    if (sdk === "auto") {
+    let sdk = configuredExecutorPreference?.sdk || defaultSdk;
+    if (!sdk || sdk === "auto") {
       try {
         const pool = await ensureAgentPoolMod();
         sdk = pool.getPoolSdkName?.() || "codex";
@@ -9165,11 +9569,17 @@ registerNodeType("action.resolve_executor", {
         sdk = "codex";
       }
     }
-    const model = modelOverride || envModel || "";
-    ctx.data.resolvedSdk = normalizeSdkForWorkflow(sdk, sdk);
+    const model =
+      modelOverride ||
+      envModel ||
+      profileDecision?.profile?.model ||
+      configuredExecutorPreference?.model ||
+      "";
+    ctx.data.resolvedSdk = sdk;
     ctx.data.resolvedModel = model;
-    ctx.log(node.id, `Executor fallback: sdk=${ctx.data.resolvedSdk}`);
-    return { success: true, sdk: ctx.data.resolvedSdk, model, tier: "default", profile: resolvedProfile };
+    const fallbackTier = profileDecision?.profile ? "profile" : "default";
+    ctx.log(node.id, `Executor fallback: sdk=${sdk}`);
+    return { success: true, sdk, model, tier: fallbackTier, profile: profileDecision?.id || null };
   },
 });
 
@@ -9272,6 +9682,8 @@ registerNodeType("action.acquire_worktree", {
         ctx.data._worktreeCreated = false;
         ctx.data._worktreeManaged = true;
         ctx.log(node.id, `Reusing worktree: ${worktreePath}`);
+        const cleared1 = clearBlockedWorktreeIdentity(worktreePath);
+        if (cleared1) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${worktreePath}`);
         return { success: true, worktreePath, created: false, reused: true, branch, baseBranch };
       }
 
@@ -9311,6 +9723,8 @@ registerNodeType("action.acquire_worktree", {
             ctx.data._worktreeCreated = false;
             ctx.data._worktreeManaged = true;
             ctx.log(node.id, `Reusing existing branch worktree: ${existingBranchWorktree}`);
+            const cleared2 = clearBlockedWorktreeIdentity(existingBranchWorktree);
+            if (cleared2) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${existingBranchWorktree}`);
             return {
               success: true,
               worktreePath: existingBranchWorktree,
@@ -9328,6 +9742,8 @@ registerNodeType("action.acquire_worktree", {
         }
       }
       fixGitConfigCorruption(repoRoot);
+      const cleared3 = clearBlockedWorktreeIdentity(worktreePath);
+      if (cleared3) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${worktreePath}`);
 
       ctx.data.worktreePath = worktreePath;
       ctx.data._worktreeCreated = true;
@@ -9402,6 +9818,155 @@ registerNodeType("action.release_worktree", {
     }
   },
 });
+
+const readWorkflowContractHandler = {
+  describe: () =>
+    "Read a project WORKFLOW.md runtime contract and stage it for session-start prompt injection.",
+  schema: {
+    type: "object",
+    properties: {
+      projectRoot: { type: "string", description: "Project root containing WORKFLOW.md" },
+      repoRoot: { type: "string", description: "Fallback project root" },
+      worktreePath: { type: "string", description: "Active project worktree path" },
+      outputVariable: { type: "string", description: "Optional ctx.data key for the loaded contract" },
+      logPreviewChars: {
+        type: "number",
+        default: 1200,
+        description: "Maximum contract characters to include in the workflow log",
+      },
+    },
+  },
+  async execute(node, ctx) {
+    const projectRoot = cfgOrCtx(node, ctx, "projectRoot")
+      || cfgOrCtx(node, ctx, "worktreePath")
+      || cfgOrCtx(node, ctx, "repoRoot")
+      || process.cwd();
+    const outputVariable = cfgOrCtx(node, ctx, "outputVariable") || "_workflowContract";
+    const logPreviewChars = Number(cfgOrCtx(node, ctx, "logPreviewChars") || 1200);
+    const contract = loadWorkflowContract(projectRoot, { useCache: false });
+
+    ctx.data._workflowContractProjectRoot = projectRoot;
+    ctx.data._workflowContractPath = contract.path || "";
+    ctx.data._workflowContract = contract;
+
+    if (outputVariable) {
+      ctx.data[outputVariable] = contract;
+    }
+
+    if (!contract.exists) {
+      ctx.data._workflowContractPromptBlock = "";
+      ctx.log(node.id, "No WORKFLOW.md detected at " + contract.path);
+      return {
+        success: true,
+        found: false,
+        skipped: true,
+        projectRoot,
+        path: contract.path,
+      };
+    }
+
+    const promptBlock = buildWorkflowContractPromptBlock(contract);
+    ctx.data._workflowContractPromptBlock = promptBlock;
+    const preview = promptBlock.length > logPreviewChars
+      ? promptBlock.slice(0, logPreviewChars) + "…"
+      : promptBlock;
+    ctx.log(node.id, "Injected WORKFLOW.md contract into session context:\n" + preview);
+
+    return {
+      success: true,
+      found: true,
+      skipped: false,
+      projectRoot,
+      path: contract.path,
+      contract,
+      promptBlock,
+    };
+  },
+};
+
+registerNodeType("read-workflow-contract", readWorkflowContractHandler);
+registerNodeType("action.read_workflow_contract", readWorkflowContractHandler);
+
+const workflowContractValidationHandler = {
+  describe: () =>
+    "Validate required WORKFLOW.md contract fields before session work begins.",
+  schema: {
+    type: "object",
+    properties: {
+      projectRoot: { type: "string", description: "Project root containing WORKFLOW.md" },
+      contractVariable: {
+        type: "string",
+        description: "ctx.data key containing a previously loaded contract object",
+      },
+      failOnInvalid: {
+        type: "boolean",
+        default: true,
+        description: "Throw when required WORKFLOW.md fields are missing",
+      },
+    },
+  },
+  async execute(node, ctx) {
+    const projectRoot = cfgOrCtx(node, ctx, "projectRoot")
+      || cfgOrCtx(node, ctx, "worktreePath")
+      || cfgOrCtx(node, ctx, "repoRoot")
+      || ctx.data?._workflowContractProjectRoot
+      || process.cwd();
+    const contractVariable = cfgOrCtx(node, ctx, "contractVariable") || "_workflowContract";
+    const failOnInvalid = node.config?.failOnInvalid !== false;
+    const loadedContract =
+      ctx.data?.[contractVariable] && typeof ctx.data[contractVariable] === "object"
+        ? ctx.data[contractVariable]
+        : loadWorkflowContract(projectRoot, { useCache: false });
+    const validation = validateWorkflowContract(loadedContract);
+
+    ctx.data._workflowContractValidation = validation;
+
+    if (!loadedContract.exists) {
+      ctx.log(node.id, "No WORKFLOW.md found — skipping contract validation");
+      return {
+        success: true,
+        skipped: true,
+        found: false,
+        valid: true,
+        contract: loadedContract,
+        errors: [],
+      };
+    }
+
+    if (!validation.valid) {
+      const detail = validation.errors.map((entry) => entry.message).join(" ");
+      const message = "WORKFLOW.md contract validation failed for " + loadedContract.path + ". " + detail;
+      ctx.log(node.id, message, "error");
+      if (failOnInvalid) {
+        throw new Error(message);
+      }
+      return {
+        success: false,
+        skipped: false,
+        found: true,
+        valid: false,
+        contract: loadedContract,
+        errors: validation.errors,
+      };
+    }
+
+    ctx.log(
+      node.id,
+      "Validated WORKFLOW.md contract: terminalStates=[" + validation.contract.terminalStates.join(", ") + "], forbiddenPatterns=" + validation.contract.forbiddenPatterns.length,
+    );
+    return {
+      success: true,
+      skipped: false,
+      found: true,
+      valid: true,
+      contract: validation.contract,
+      errors: [],
+    };
+  },
+};
+
+registerNodeType("workflow-contract-validation", workflowContractValidationHandler);
+registerNodeType("action.workflow_contract_validation", workflowContractValidationHandler);
 
 // ── action.build_task_prompt ────────────────────────────────────────────────
 
@@ -9524,10 +10089,7 @@ registerNodeType("action.build_task_prompt", {
     const primaryRepository = pickFirstString(repository, repoSlug);
     const allowedRepositories = normalizeStringArray(repositories, primaryRepository);
     const matchedSkills = findRelevantSkills(repoRoot, taskTitle, taskDescription || "", {});
-    const matchedSkillFiles = matchedSkills.map((skill) => skill.filename);
-    const resolvedSkillFiles = normalizeStringArray(ctx.data?.resolvedSkillFiles || []);
-    const activeSkillFiles = normalizeStringArray(matchedSkillFiles, resolvedSkillFiles);
-    const resolvedSkillIds = normalizeStringArray(ctx.data?.resolvedSkillIds || []);
+    const activeSkillFiles = matchedSkills.map((skill) => skill.filename);
 
     if (customTemplate) {
       ctx.data._taskPrompt = customTemplate;
@@ -9593,6 +10155,27 @@ registerNodeType("action.build_task_prompt", {
     parts.push("4. In completion notes, list every repository you touched and why.");
     parts.push("");
 
+    let workflowContractPromptBlock = String(ctx.data?._workflowContractPromptBlock || "").trim();
+    if (!workflowContractPromptBlock) {
+      const workflowContract = ctx.data?._workflowContract;
+      if (workflowContract?.raw && workflowContract?.found) {
+        const sourcePath = workflowContract.path || "WORKFLOW.md";
+        workflowContractPromptBlock = [
+          "## WORKFLOW.md Contract",
+          `- **Source:** ${sourcePath}`,
+          "- **Behavior:** Treat this file as a project-specific runtime contract.",
+          "",
+          String(workflowContract.raw).trim(),
+        ].join("\n").trim();
+      } else if (workflowContract?.exists && workflowContract?.content) {
+        workflowContractPromptBlock = buildWorkflowContractPromptBlock(workflowContract);
+      }
+    }
+    if (workflowContractPromptBlock) {
+      parts.push(workflowContractPromptBlock);
+      parts.push("");
+    }
+
     // AGENTS.md + copilot-instructions.md
     if (includeAgentsMd) {
       const searchDirs = [worktreePath || repoRoot, repoRoot].filter(Boolean);
@@ -9640,13 +10223,36 @@ registerNodeType("action.build_task_prompt", {
       parts.push(relevantSkillsBlock);
       parts.push("");
     }
-    if (resolvedSkillIds.length > 0) {
-      parts.push("## Library-Resolved Skills");
-      parts.push("Auto-selected by the library resolver for this task:");
-      for (const skillId of resolvedSkillIds) {
-        parts.push(`- ${skillId}`);
+
+    // Inject library-resolved skills from agent.select_profile.
+    // These are skills assigned to the matched agent profile or scored by
+    // the library resolver's buildSkillSelection — distinct from the
+    // filesystem-based .bosun/skills/ resolved above.
+    const librarySkillIds = Array.isArray(ctx.data?.resolvedSkillIds) ? ctx.data.resolvedSkillIds : [];
+    if (librarySkillIds.length > 0) {
+      try {
+        const library = await ensureLibraryManagerMod();
+        const libraryRoot = repoRoot || process.cwd();
+        const fsSkillNames = new Set(matchedSkills.map((s) => String(s.filename || "").replace(/\.md$/i, "").toLowerCase()));
+        const librarySkillParts = [];
+        for (const skillId of librarySkillIds) {
+          if (fsSkillNames.has(skillId.toLowerCase())) continue;
+          const entry = library.getEntry?.(libraryRoot, skillId);
+          if (!entry) continue;
+          const content = library.getEntryContent?.(libraryRoot, entry);
+          if (!content || (typeof content === "string" && !content.trim())) continue;
+          const body = typeof content === "string" ? content.trim() : JSON.stringify(content, null, 2);
+          librarySkillParts.push(`### Skill: ${entry.name || skillId} (\`${skillId}\`)`);
+          librarySkillParts.push(body);
+          librarySkillParts.push("");
+        }
+        if (librarySkillParts.length > 0) {
+          parts.push("## Library Skills");
+          parts.push(...librarySkillParts);
+        }
+      } catch (err) {
+        ctx.log(node.id, `Library skill injection failed (non-fatal): ${err.message}`);
       }
-      parts.push("");
     }
 
     parts.push("## Tool Discovery");
@@ -9788,6 +10394,21 @@ registerNodeType("action.detect_new_commits", {
     // Use hasNewCommits OR hasUnpushed — covers resumed worktrees
     const hasCommits = hasNewCommits || hasUnpushed;
 
+    // ── Anti-thrash: record no-commit bounces with exponential cooldown ──
+    const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "";
+    if (!hasCommits && taskId) {
+      const count = (_noCommitCounts.get(taskId) || 0) + 1;
+      _noCommitCounts.set(taskId, count);
+      const cooldown = Math.min(
+        NO_COMMIT_BASE_COOLDOWN_MS * Math.pow(2, count - 1),
+        NO_COMMIT_MAX_COOLDOWN_MS,
+      );
+      _skipUntil.set(taskId, Date.now() + cooldown);
+      console.warn(
+        `[workflow-nodes] anti-thrash: task ${taskId.substring(0, 8)} no-commit bounce #${count} — cooldown ${Math.round(cooldown / 60000)}min`,
+      );
+    }
+
     ctx.data._hasNewCommits = hasCommits;
     ctx.data._postExecHead = postExecHead;
     ctx.data._commitCount = commitCount;
@@ -9859,12 +10480,47 @@ registerNodeType("action.push_branch", {
       return { success: false, error: `Protected branch: ${cleanBranch}`, pushed: false };
     }
 
+    // ── Fetch (always, independent of rebase) ──
+    // Must succeed before push so --force-with-lease has fresh remote tracking refs.
+    try {
+      execSync(`git fetch ${remote} --no-tags`, {
+        cwd: worktreePath, timeout: 30000, stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (fetchErr) {
+      ctx.log(node.id, `Fetch failed (will push anyway): ${fetchErr.message?.slice(0, 200)}`);
+    }
+
     // ── Rebase-before-push ──
     if (rebaseBeforePush) {
+      // Step 1: if the remote already has commits on this branch (previous run / partial push),
+      // rebase local onto origin/${cleanBranch} first so we incorporate those commits and
+      // the subsequent push is a clean fast-forward instead of a diverged force-push.
+      const remoteTrackingRef = `${remote}/${cleanBranch}`;
       try {
-        execSync(`git fetch ${remote} --no-tags`, {
-          cwd: worktreePath, timeout: 30000, stdio: ["ignore", "pipe", "pipe"],
+        execSync(`git rev-parse --verify ${remoteTrackingRef}`, {
+          cwd: worktreePath, timeout: 5000, stdio: ["ignore", "pipe", "pipe"],
         });
+        // Remote branch exists — check if it diverges from local
+        const behindCount = execSync(
+          `git rev-list --count HEAD..${remoteTrackingRef}`,
+          { cwd: worktreePath, encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"] }
+        ).trim();
+        if (parseInt(behindCount, 10) > 0) {
+          try {
+            execSync(`git rebase ${remoteTrackingRef}`, {
+              cwd: worktreePath, encoding: "utf8", timeout: 60000,
+              stdio: ["ignore", "pipe", "pipe"],
+            });
+            ctx.log(node.id, `Synced local with ${remoteTrackingRef} (was ${behindCount} behind)`);
+          } catch (syncErr) {
+            try { execSync("git rebase --abort", { cwd: worktreePath, timeout: 10000, stdio: ["ignore", "pipe", "pipe"] }); } catch { /* ok */ }
+            ctx.log(node.id, `Sync with ${remoteTrackingRef} conflicted, skipping: ${syncErr.message?.slice(0, 200)}`);
+          }
+        }
+      } catch { /* remote branch doesn't exist yet — normal for first push */ }
+
+      // Step 2: rebase onto base branch (e.g. origin/main)
+      try {
         execSync(`git rebase ${baseBranch}`, {
           cwd: worktreePath, encoding: "utf8", timeout: 60000,
           stdio: ["ignore", "pipe", "pipe"],
@@ -9877,7 +10533,7 @@ registerNodeType("action.push_branch", {
             cwd: worktreePath, timeout: 10000, stdio: ["ignore", "pipe", "pipe"],
           });
         } catch { /* already aborted */ }
-        ctx.log(node.id, `Rebase conflict, skipping: ${rebaseErr.message?.slice(0, 200)}`);
+        ctx.log(node.id, `Rebase onto ${baseBranch} conflicted, skipping: ${rebaseErr.message?.slice(0, 200)}`);
       }
     }
 

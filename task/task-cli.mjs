@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 /**
  * task-cli.mjs — CLI task management for Bosun
  *
@@ -36,7 +34,7 @@ import { randomUUID } from "node:crypto";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const TAG = "[task-cli]";
-const EXECUTOR_RUNTIME_STATE_FILE = resolve(
+const DEFAULT_EXECUTOR_RUNTIME_STATE_FILE = resolve(
   __dirname,
   "..",
   ".cache",
@@ -48,6 +46,14 @@ const REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS = 8 * 60 * 60 * 1000;
 // ── Store helpers ─────────────────────────────────────────────────────────────
 
 let _storeReady = false;
+let _resolvedStorePath = null;
+
+function normalizeStorePath(pathLike) {
+  const resolvedPath = resolve(String(pathLike || ""));
+  return process.platform === "win32"
+    ? resolvedPath.toLowerCase()
+    : resolvedPath;
+}
 
 function ensureStore() {
   if (_storeReady) return;
@@ -74,13 +80,22 @@ async function initStore() {
   if (!_taskStoreModule) {
     _taskStoreModule = await import("./task-store.mjs");
   }
-  if (!_storeReady) {
-    const storePath = resolveKanbanStorePath();
+  const storePath = resolveKanbanStorePath();
+  const normalizedStorePath = normalizeStorePath(storePath);
+  if (!_storeReady || normalizedStorePath !== _resolvedStorePath) {
+    await flushStoreWrites(_taskStoreModule);
     _taskStoreModule.configureTaskStore({ storePath });
     _taskStoreModule.loadStore();
     _storeReady = true;
+    _resolvedStorePath = normalizedStorePath;
   }
   return _taskStoreModule;
+}
+
+async function flushStoreWrites(store) {
+  if (typeof store?.waitForStoreWrites === "function") {
+    await store.waitForStoreWrites();
+  }
 }
 
 /**
@@ -296,6 +311,7 @@ export async function taskCreate(data) {
   if (!result) {
     throw new Error(`Failed to create task — addTask returned null`);
   }
+  await flushStoreWrites(store);
   return result;
 }
 
@@ -396,6 +412,7 @@ export async function taskUpdate(id, patch) {
   if (updates.status && updates.status !== task.status) {
     store.setTaskStatus(task.id, updates.status, "external");
     delete updates.status;
+    await flushStoreWrites(store);
   }
 
   // Apply remaining updates
@@ -405,6 +422,7 @@ export async function taskUpdate(id, patch) {
     if (!result) {
       throw new Error(`Failed to update task ${task.id}`);
     }
+    await flushStoreWrites(store);
     return result;
   }
 
@@ -422,7 +440,11 @@ export async function taskDelete(id) {
   if (!task) {
     throw new Error(`Task not found: ${id}`);
   }
-  return store.removeTask(task.id);
+  const removed = store.removeTask(task.id);
+  if (removed) {
+    await flushStoreWrites(store);
+  }
+  return removed;
 }
 
 /**
@@ -438,10 +460,17 @@ export async function taskStats() {
   };
 }
 
+function resolveExecutorRuntimeStateFile() {
+  const explicit = String(process.env.BOSUN_TASK_EXECUTOR_RUNTIME_FILE || "").trim();
+  if (explicit) return resolve(explicit);
+  return DEFAULT_EXECUTOR_RUNTIME_STATE_FILE;
+}
+
 function readRepoAreaLocksFromRuntimeState() {
-  if (!existsSync(EXECUTOR_RUNTIME_STATE_FILE)) return null;
+  const runtimeStateFile = resolveExecutorRuntimeStateFile();
+  if (!existsSync(runtimeStateFile)) return null;
   try {
-    const raw = readFileSync(EXECUTOR_RUNTIME_STATE_FILE, "utf8");
+    const raw = readFileSync(runtimeStateFile, "utf8");
     const parsed = JSON.parse(raw);
     const configuredLimit = Math.max(
       0,

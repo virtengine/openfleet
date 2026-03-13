@@ -772,7 +772,7 @@ describe("reconcileTaskStatuses", () => {
     }
   });
 
-  it("returns workflow-replacement marker without mutating tasks", async () => {
+  it("returns workflow reconciliation summary without mutating unrelated tasks", async () => {
     const staleAt = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
     const taskId = "stale-review-no-pr";
     addTask({
@@ -789,7 +789,9 @@ describe("reconcileTaskStatuses", () => {
     const result = await reconcileTaskStatuses("test-stale-inreview");
 
     expect(result?.movedTodo).toBe(0);
-    expect(result?.skippedByWorkflowReplacement).toBe(true);
+    expect(result?.skippedByWorkflowReplacement).toBe(false);
+    expect(result?.checked).toBe(0);
     expect(getTask(taskId)?.status).toBe("inreview");
   });
 });
+

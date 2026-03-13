@@ -746,6 +746,8 @@ const WATCHDOG_GRACE_MS = 10 * 60_000; // 10 minutes — generous buffer, stream
 const INPROGRESS_RECOVERY_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours — agents should be resumable for a full day
 /** Unstarted in-progress tasks older than this are treated as stranded and reset to todo */
 const INPROGRESS_RECOVERY_UNSTARTED_RESET_MS = 20 * 60 * 1000;
+/** Periodic in-progress recovery cadence while executor is running */
+const INPROGRESS_RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
 
 function normalizeSelector(value) {
   return String(value || "")
@@ -820,7 +822,7 @@ const MAX_IDLE_CONTINUES = 5;
 const WATCHDOG_WARMUP_MS = 5 * 60_000; // 5 minutes warmup
 const SHARED_STATE_ENABLED = process.env.SHARED_STATE_ENABLED !== "false";
 const SHARED_STATE_STALE_THRESHOLD_MS =
-  Number(process.env.SHARED_STATE_STALE_THRESHOLD_MS) || 300_000;
+  Number(process.env.SHARED_STATE_STALE_THRESHOLD_MS) || 600_000;
 const NO_COMMIT_STATE_FILE = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "..",
@@ -2400,6 +2402,8 @@ class TaskExecutor {
     this._pauseTimer = null;
     this._pollTimer = null;
     this._pollInProgress = false;
+    this._recoveryTimer = null;
+    this._inProgressRecoveryInFlight = false;
     this._resolvedProjectId = null;
     this._taskClaimsReady = false;
     this._taskClaimsInitPromise = null;
@@ -3382,11 +3386,9 @@ class TaskExecutor {
       }
 
       try {
-        await this._recoverInterruptedInProgressTasks();
-      } catch (err) {
-        console.warn(
-          `${TAG} in-progress recovery warning: ${err?.message || err}`,
-        );
+        await this._runInProgressRecoverySafely("startup");
+      } catch {
+        // _runInProgressRecoverySafely already logs details
       }
     };
 
@@ -3397,6 +3399,14 @@ class TaskExecutor {
       .finally(() => {
         if (!this.workflowOwnsTaskLifecycle) this._runPollLoopSafely();
       });
+
+    if (this._recoveryTimer) {
+      clearInterval(this._recoveryTimer);
+      this._recoveryTimer = null;
+    }
+    this._recoveryTimer = setInterval(() => {
+      void this._runInProgressRecoverySafely("interval");
+    }, INPROGRESS_RECOVERY_INTERVAL_MS);
 
     if (this.workflowOwnsTaskLifecycle) {
       console.log(
@@ -3428,6 +3438,10 @@ class TaskExecutor {
     if (this._pollTimer) {
       clearInterval(this._pollTimer);
       this._pollTimer = null;
+    }
+    if (this._recoveryTimer) {
+      clearInterval(this._recoveryTimer);
+      this._recoveryTimer = null;
     }
 
     // Persist runtime state before waiting so unexpected exits still recover
@@ -3886,9 +3900,12 @@ class TaskExecutor {
           const ownerId = sharedState?.ownerId || null;
           const heartbeat =
             sharedState?.ownerHeartbeat || sharedState?.heartbeat || null;
+          // Any non-stale owner (workflow run or executor instance) should
+          // block recovery re-dispatch. Removing the ownerId !== instanceId
+          // guard ensures workflow-owned tasks (wf-<uuid> owners) are also
+          // protected when action.claim_task IS used.
           if (
             ownerId &&
-            ownerId !== this._instanceId &&
             !isSharedHeartbeatStale(heartbeat, SHARED_STATE_STALE_THRESHOLD_MS)
           ) {
             skippedForActiveClaim++;
@@ -3963,6 +3980,43 @@ class TaskExecutor {
       }
       const isFreshEnough =
         ageMs === 0 || ageMs <= INPROGRESS_RECOVERY_MAX_AGE_MS;
+
+      // In workflow-owned mode, calling executeTask() fires task.assigned
+      // which launches a new workflow run. If one already exists (evidenced by
+      // an alive agent thread), that creates two competing runs → owner_mismatch.
+      // trigger.task_assigned workflows don't call action.claim_task, so ownerId
+      // is null and the shared-state guard above cannot protect against this.
+      // • Active thread → workflow is still managing it; leave it alone.
+      // • No active thread but fresh → agent died; reset to todo so
+      //   trigger.task_available re-dispatches cleanly, without double-dispatch.
+      if (this.workflowOwnsTaskLifecycle) {
+        if (hasThread) {
+          skippedForActiveClaim++;
+          continue;
+        }
+        if (isFreshEnough) {
+          try {
+            await transitionTaskStatus(id, "todo", {
+              source: "task-executor-recovery-workflow-owned",
+            });
+          } catch {
+            /* best effort */
+          }
+          try {
+            transitionInternalTaskStatus(
+              id,
+              "todo",
+              "task-executor-recovery-workflow-owned",
+            );
+          } catch {
+            /* best effort */
+          }
+          this._removeRuntimeSlot(id);
+          resetToTodo++;
+          continue;
+        }
+      }
+
       if (hasThread || isFreshEnough) {
         if (!internalTask) {
           try {
@@ -4962,6 +5016,21 @@ class TaskExecutor {
     });
   }
 
+  async _runInProgressRecoverySafely(trigger = "interval") {
+    if (!this._running) return;
+    if (this._inProgressRecoveryInFlight) return;
+    this._inProgressRecoveryInFlight = true;
+    try {
+      await this._recoverInterruptedInProgressTasks();
+    } catch (err) {
+      console.warn(
+        `${TAG} in-progress recovery warning (${trigger}): ${err?.message || err}`,
+      );
+    } finally {
+      this._inProgressRecoveryInFlight = false;
+    }
+  }
+
   /**
    * Check kanban for todo tasks and dispatch execution.
    * Guarded against overlapping polls and slot saturation.
@@ -5057,6 +5126,76 @@ class TaskExecutor {
    * @returns {Promise<void>}
    */
   async executeTask(task, options = {}) {
+    const taskId = String(task?.id || task?.task_id || "").trim();
+    if (!taskId) {
+      return { skipped: true, reason: "missing_task_id" };
+    }
+
+    // When workflow automation owns lifecycle execution, emit a synthetic
+    // "started" slot so monitor/ui hooks can dispatch trigger.task_assigned.
+    if (this.workflowOwnsTaskLifecycle) {
+      const now = Date.now();
+      const taskTitle = String(task?.title || task?.task_title || taskId).trim() || taskId;
+      const resolvedSdk = String(
+        options?.sdk ||
+          options?.executor ||
+          task?.sdk ||
+          task?.executor ||
+          this.sdk ||
+          "auto",
+      ).trim() || "auto";
+      const resolvedModel = String(
+        options?.model ||
+          task?.model ||
+          task?.modelName ||
+          "",
+      ).trim();
+      const branch = String(
+        task?.branch ||
+          task?.branchName ||
+          task?.meta?.branch ||
+          task?.meta?.branch_name ||
+          "",
+      ).trim() || `task/${taskId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "work"}`;
+      const worktreePath = String(
+        task?.worktreePath ||
+          task?.meta?.worktreePath ||
+          task?.meta?.worktree_path ||
+          "",
+      ).trim() || null;
+
+      const slot = {
+        taskId,
+        taskTitle,
+        branch,
+        worktreePath,
+        sdk: resolvedSdk,
+        model: resolvedModel || null,
+        attempt: 1,
+        startedAt: now,
+        status: "running",
+        agentInstanceId: null,
+      };
+
+      if (typeof this.onTaskStarted === "function") {
+        try {
+          await this.onTaskStarted(task, slot);
+        } catch (err) {
+          console.warn(`${TAG} onTaskStarted hook failed for "${taskTitle}": ${err?.message || err}`);
+        }
+      }
+
+      return {
+        queued: false,
+        started: true,
+        dispatched: true,
+        mode: "workflow-owned",
+        taskId,
+        sdk: resolvedSdk,
+        model: resolvedModel || null,
+      };
+    }
+
     // [LEGACY REMOVED] Replaced by workflow node: TASK_LIFECYCLE_TEMPLATE (all nodes)
     // See workflow-templates/task-lifecycle.mjs
     return { skipped: true, reason: "legacy_removed" };
@@ -5514,3 +5653,4 @@ export function isExecutorDisabled() {
 
 export { TaskExecutor };
 export default TaskExecutor;
+

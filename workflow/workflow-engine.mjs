@@ -38,6 +38,26 @@ import { writeFile as writeFileAsync } from "node:fs/promises";
 import { resolve, basename, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import {
+  ensureTestRuntimeSandbox,
+  resolvePathForTestRuntime,
+} from "../infra/test-runtime.mjs";
+
+// Lazy-loaded workspace manager for workspace-aware scheduling
+let _workspaceManagerMod = null;
+async function ensureWorkspaceManager() {
+  if (_workspaceManagerMod) return _workspaceManagerMod;
+  try {
+    _workspaceManagerMod = await import("../workspace/workspace-manager.mjs");
+  } catch {
+    _workspaceManagerMod = null;
+  }
+  return _workspaceManagerMod;
+}
+function ensureWorkspaceManagerSync() {
+  if (_workspaceManagerMod) return _workspaceManagerMod;
+  return null;
+}
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -223,6 +243,7 @@ export function listNodeTypes() {
  * @property {string} [description] - What this workflow does
  * @property {string} [category] - Grouping category
  * @property {boolean} [enabled] - Whether this workflow is active
+ * @property {boolean} [core] - Core workflows cannot be disabled or deleted
  * @property {string} [trigger] - Primary trigger type
  * @property {WorkflowNode[]} nodes - All nodes in the workflow
  * @property {WorkflowEdge[]} edges - Connections between nodes
@@ -393,8 +414,20 @@ export class WorkflowEngine extends EventEmitter {
    */
   constructor(opts = {}) {
     super();
-    this.workflowDir = opts.workflowDir || resolve(process.cwd(), ".bosun", WORKFLOW_DIR_NAME);
-    this.runsDir = opts.runsDir || resolve(process.cwd(), ".bosun", WORKFLOW_RUNS_DIR);
+    const sandbox = ensureTestRuntimeSandbox();
+    const defaultWorkflowDir = resolve(process.cwd(), ".bosun", WORKFLOW_DIR_NAME);
+    const defaultRunsDir = resolve(process.cwd(), ".bosun", WORKFLOW_RUNS_DIR);
+    this.workflowDir = resolvePathForTestRuntime(
+      opts.workflowDir || defaultWorkflowDir,
+      defaultWorkflowDir,
+      sandbox?.workflowDir,
+    );
+    this.runsDir = resolvePathForTestRuntime(
+      opts.runsDir || defaultRunsDir,
+      defaultRunsDir,
+      sandbox?.runsDir,
+    );
+    this._configDir = opts.configDir || process.cwd();
     this.detectInterruptedRuns = opts.detectInterruptedRuns !== false;
     this.services = opts.services || {};
     this._workflows = new Map();
@@ -421,6 +454,9 @@ export class WorkflowEngine extends EventEmitter {
     this._runQueue = [];             // FIFO queue of { resolve, reject, args }
     this._runIndexCache = null;      // cached run index (invalidated on writes)
     this._runIndexCacheMtime = 0;    // mtime of the cached index file
+
+    // Lazy-load workspace manager for schedule evaluation
+    void ensureWorkspaceManager().catch(() => {});
   }
 
 
@@ -689,6 +725,7 @@ export class WorkflowEngine extends EventEmitter {
       description: w.description,
       category: w.category,
       enabled: w.enabled !== false,
+      core: w.core === true,
       trigger: w.trigger,
       nodeCount: w.nodes?.length || 0,
       edgeCount: w.edges?.length || 0,
@@ -711,6 +748,16 @@ export class WorkflowEngine extends EventEmitter {
       def.metadata.createdAt = def.metadata.updatedAt;
     }
     def.metadata.version = (def.metadata.version || 0) + 1;
+
+    // Prevent disabling core workflows
+    const existing = this._workflows.get(def.id);
+    if (existing?.core === true && def.enabled === false) {
+      def.enabled = true;
+    }
+    // Preserve core flag — cannot be removed via save
+    if (existing?.core === true) {
+      def.core = true;
+    }
 
     this._ensureDirs();
     this._workflows.set(def.id, def);
@@ -760,6 +807,10 @@ export class WorkflowEngine extends EventEmitter {
 
   /** Delete a workflow */
   delete(id) {
+    const existing = this._workflows.get(id);
+    if (existing?.core === true) {
+      throw new Error(`Cannot delete core workflow "${existing.name || id}"`);
+    }
     this._workflows.delete(id);
     const filePath = resolve(this.workflowDir, `${id}.json`);
     try {
@@ -1289,17 +1340,44 @@ export class WorkflowEngine extends EventEmitter {
    * Unlike evaluateTriggers() (event-driven), this is polling-based and should
    * be called periodically (e.g. every 60s) by the monitor.
    *
-   * Returns an array of { workflowId, triggeredBy } for workflows whose
-   * polling interval has elapsed since their last completed run.
+   * Returns an array of { workflowId, triggeredBy, workspaceId } for workflows
+   * whose polling interval has elapsed since their last completed run.
+   *
+   * @param {{ configDir?: string }} [opts] Options for workspace-aware evaluation.
    */
-  evaluateScheduleTriggers() {
+  evaluateScheduleTriggers(opts = {}) {
     if (!this._loaded) this.load();
 
     const triggered = [];
     const runIndex = this._readRunIndex();
 
+    // Load workspace state for filtering
+    const wsMgr = ensureWorkspaceManagerSync();
+    const configDir = opts?.configDir || this._configDir || process.cwd();
+    let workspaceSummary = null;
+    if (wsMgr?.getWorkspaceStateSummary) {
+      try {
+        workspaceSummary = wsMgr.getWorkspaceStateSummary(configDir);
+      } catch { /* workspace manager not available — skip workspace filtering */ }
+    }
+
     for (const [id, def] of this._workflows) {
       if (def.enabled === false) continue;
+
+      // ── Workspace gate ──────────────────────────────────────────────
+      const wfWorkspaceId = def.workspaceId || def.workspace || null;
+      if (wfWorkspaceId && workspaceSummary) {
+        const ws = workspaceSummary.find((w) => w.id === wfWorkspaceId);
+        if (ws && !ws.isActive) {
+          continue; // workspace paused or disabled — skip
+        }
+        if (ws && wsMgr?.isWorkflowAllowedForWorkspace) {
+          const fullWs = wsMgr.getWorkspace(configDir, wfWorkspaceId);
+          if (fullWs && !wsMgr.isWorkflowAllowedForWorkspace(fullWs, id)) {
+            continue; // workflow blacklisted or not in whitelist for this workspace
+          }
+        }
+      }
 
       // Skip workflows that are already running
       const alreadyRunning = Array.from(this._activeRuns.values()).some(
@@ -1334,7 +1412,7 @@ export class WorkflowEngine extends EventEmitter {
 
         const elapsed = Date.now() - lastRunAt;
         if (elapsed >= intervalMs) {
-          triggered.push({ workflowId: id, triggeredBy: tNode.id });
+          triggered.push({ workflowId: id, triggeredBy: tNode.id, workspaceId: wfWorkspaceId });
 
           // For scheduled_once, only fire if never run before
           if (tNode.type === "trigger.scheduled_once" && lastRunAt > 0) {
@@ -1354,9 +1432,10 @@ export class WorkflowEngine extends EventEmitter {
   }
 
   /** Get historical run logs */
-  getRunHistory(workflowId, limit = 20) {
+  getRunHistory(workflowId, limit = null) {
     const normalizedLimit = Number(limit);
-    const targetCount = Number.isFinite(normalizedLimit) && normalizedLimit > 0
+    const hasLimit = Number.isFinite(normalizedLimit) && normalizedLimit > 0;
+    const targetCount = hasLimit
       ? Math.min(MAX_PERSISTED_RUNS, Math.max(Math.floor(normalizedLimit), 200))
       : MAX_PERSISTED_RUNS;
     const persisted = this._hydrateRunIndexFromDetails(targetCount)
@@ -1368,10 +1447,34 @@ export class WorkflowEngine extends EventEmitter {
     let runs = [...active, ...persisted.filter((run) => !activeRunIds.has(run.runId))];
     if (workflowId) runs = runs.filter((r) => r.workflowId === workflowId);
     runs.sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
-    if (Number.isFinite(normalizedLimit) && normalizedLimit > 0) {
-      return runs.slice(0, normalizedLimit);
+    if (hasLimit) {
+      return runs.slice(0, Math.floor(normalizedLimit));
     }
     return runs;
+  }
+
+  getRunHistoryPage(workflowId, options = {}) {
+    const rawOffset = Number(options?.offset);
+    const rawLimit = Number(options?.limit);
+    const offset = Number.isFinite(rawOffset) && rawOffset > 0
+      ? Math.max(0, Math.floor(rawOffset))
+      : 0;
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(MAX_PERSISTED_RUNS, Math.max(1, Math.floor(rawLimit)))
+      : 20;
+    const allRuns = this.getRunHistory(workflowId);
+    const total = allRuns.length;
+    const runs = allRuns.slice(offset, offset + limit);
+    const nextOffset = offset + runs.length;
+    return {
+      runs,
+      total,
+      offset,
+      limit,
+      count: runs.length,
+      hasMore: nextOffset < total,
+      nextOffset: nextOffset < total ? nextOffset : null,
+    };
   }
 
   _hydrateRunIndexFromDetails(targetCount = MAX_PERSISTED_RUNS) {
@@ -1623,6 +1726,42 @@ export class WorkflowEngine extends EventEmitter {
     const executed = new Set();
     const queue = [...entryNodes.map((n) => n.id)];
     const nodeMap = new Map((def.nodes || []).map((n) => [n.id, n]));
+    const workflowId = ctx?.data?._workflowId || null;
+    const workflowName = ctx?.data?._workflowName || null;
+    const emitNodeEvent = (type, node, payload = {}) => {
+      this.emit(type, {
+        runId: ctx.id,
+        workflowId,
+        workflowName,
+        nodeId: node?.id || payload?.nodeId || null,
+        nodeType: node?.type || payload?.nodeType || null,
+        nodeLabel: node?.label || payload?.nodeLabel || null,
+        ...payload,
+      });
+    };
+    const emitEdgeFlow = (edge, payload = {}) => {
+      if (!edge) return;
+      this.emit("edge:flow", {
+        runId: ctx.id,
+        workflowId,
+        workflowName,
+        edgeId: edge.id || `${edge.source}->${edge.target}`,
+        source: edge.source,
+        target: edge.target,
+        sourcePort: String(edge.sourcePort || "default").trim() || "default",
+        backEdge: edge.backEdge === true,
+        ...payload,
+      });
+    };
+    const markNodeSkipped = (nodeId, reason = "skipped", payload = {}) => {
+      const node = nodeMap.get(nodeId) || null;
+      ctx.setNodeStatus(nodeId, NodeStatus.SKIPPED);
+      emitNodeEvent("node:skip", node, {
+        status: NodeStatus.SKIPPED,
+        reason,
+        ...payload,
+      });
+    };
 
     // ── Resume support (retry from_failed) ──────────────────────────────
     // If nodes are already marked COMPLETED in the context (pre-seeded by
@@ -1636,8 +1775,10 @@ export class WorkflowEngine extends EventEmitter {
 
     // Track in-degree for proper scheduling (exclude back-edges)
     const inDegree = new Map();
+    const incomingSatisfiedCount = new Map();
     for (const node of def.nodes || []) {
       inDegree.set(node.id, 0);
+      incomingSatisfiedCount.set(node.id, 0);
     }
     for (const edge of def.edges || []) {
       if (!edge.backEdge) {
@@ -1683,7 +1824,7 @@ export class WorkflowEngine extends EventEmitter {
         ctx.data._workflowTerminalAt = Date.now();
         for (const [nid] of nodeMap) {
           if (!executed.has(nid)) {
-            ctx.setNodeStatus(nid, NodeStatus.SKIPPED);
+            markNodeSkipped(nid, "run-cancelled");
             executed.add(nid);
           }
         }
@@ -1705,18 +1846,22 @@ export class WorkflowEngine extends EventEmitter {
 
           const activeInfo = this._activeRuns.get(ctx.id);
           if (activeInfo?.cancelRequested) {
-            ctx.setNodeStatus(nodeId, NodeStatus.SKIPPED);
+            markNodeSkipped(nodeId, "run-cancelled");
             executed.add(nodeId);
             return { nodeId, result: null, skipped: true };
           }
 
           ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
-          this.emit("node:start", { nodeId, type: node.type, label: node.label });
+          const isTriggerNode = node.type?.startsWith("trigger.");
+          if (!isTriggerNode) {
+            console.log(`${TAG} node:start ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
+          }
+          emitNodeEvent("node:start", node, { status: NodeStatus.RUNNING });
           await this._emitTaskTraceEvent("workflow.node.start", {
             ctx,
             runId: ctx.id,
-            workflowId: ctx.data?._workflowId || null,
-            workflowName: ctx.data?._workflowName || null,
+            workflowId,
+            workflowName,
             node,
             status: NodeStatus.RUNNING,
           });
@@ -1746,7 +1891,7 @@ export class WorkflowEngine extends EventEmitter {
                 ctx.incrementRetry(nodeId);
                 const backoffMs = Math.min(baseRetryDelay * Math.pow(2, attempt - 1), 30000);
                 ctx.log(nodeId, `Retry ${attempt}/${maxRetries} after ${backoffMs}ms`, "warn");
-                this.emit("node:retry", { nodeId, attempt, maxRetries, backoffMs });
+                emitNodeEvent("node:retry", node, { attempt, maxRetries, backoffMs });
                 await new Promise((r) => setTimeout(r, backoffMs));
                 ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
               }
@@ -1754,12 +1899,25 @@ export class WorkflowEngine extends EventEmitter {
               ctx.setNodeOutput(nodeId, result);
               ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
               executed.add(nodeId);
-              this.emit("node:complete", { nodeId, type: node.type });
+              // Quiet mode for trigger nodes: only log when they actually fire
+              if (isTriggerNode) {
+                if (result?.triggered === true) {
+                  console.log(`${TAG} trigger:fired ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
+                }
+                // triggered: false → silent (reduces noise from non-firing polls)
+              } else {
+                const resultSuffix = node.type?.startsWith("condition.") ? ` result=${JSON.stringify(result?.result ?? result)}` : "";
+                console.log(`${TAG} node:complete ${nodeId} (${node.type}) [${node.label || ""}]${resultSuffix}`);
+              }
+              emitNodeEvent("node:complete", node, {
+                status: NodeStatus.COMPLETED,
+                output: result,
+              });
               await this._emitTaskTraceEvent("workflow.node.complete", {
                 ctx,
                 runId: ctx.id,
-                workflowId: ctx.data?._workflowId || null,
-                workflowName: ctx.data?._workflowName || null,
+                workflowId,
+                workflowName,
                 node,
                 result,
                 status: NodeStatus.COMPLETED,
@@ -1781,12 +1939,17 @@ export class WorkflowEngine extends EventEmitter {
           ctx.error(nodeId, lastErr);
           ctx.setNodeStatus(nodeId, NodeStatus.FAILED);
           executed.add(nodeId);
-          this.emit("node:error", { nodeId, error: lastErr.message, retries: ctx.getRetryCount(nodeId) });
+          console.warn(`${TAG} node:FAILED ${nodeId} (${node.type}) [${node.label || ""}]: ${lastErr?.message || lastErr}`);
+          emitNodeEvent("node:error", node, {
+            status: NodeStatus.FAILED,
+            error: lastErr.message,
+            retries: ctx.getRetryCount(nodeId),
+          });
           await this._emitTaskTraceEvent("workflow.node.error", {
             ctx,
             runId: ctx.id,
-            workflowId: ctx.data?._workflowId || null,
-            workflowName: ctx.data?._workflowName || null,
+            workflowId,
+            workflowName,
             node,
             status: NodeStatus.FAILED,
             error: lastErr?.message || String(lastErr),
@@ -1810,7 +1973,7 @@ export class WorkflowEngine extends EventEmitter {
           // If any node fails hard, mark remaining as skipped
           for (const [nid] of nodeMap) {
             if (!executed.has(nid)) {
-              ctx.setNodeStatus(nid, NodeStatus.SKIPPED);
+              markNodeSkipped(nid, "upstream-failed");
             }
           }
           return;
@@ -1824,7 +1987,7 @@ export class WorkflowEngine extends EventEmitter {
         ctx.data._workflowTerminalAt = Date.now();
         for (const [nid] of nodeMap) {
           if (!executed.has(nid)) {
-            ctx.setNodeStatus(nid, NodeStatus.SKIPPED);
+            markNodeSkipped(nid, "run-cancelled");
             executed.add(nid);
           }
         }
@@ -1854,7 +2017,7 @@ export class WorkflowEngine extends EventEmitter {
 
         for (const [nid] of nodeMap) {
           if (!executed.has(nid)) {
-            ctx.setNodeStatus(nid, NodeStatus.SKIPPED);
+            markNodeSkipped(nid, "workflow-ended");
             executed.add(nid);
           }
         }
@@ -1882,7 +2045,7 @@ export class WorkflowEngine extends EventEmitter {
             const newDegree = (inDegree.get(edge.target) || 1) - 1;
             inDegree.set(edge.target, newDegree);
             if (newDegree <= 0 && !executed.has(edge.target)) {
-              ctx.setNodeStatus(edge.target, NodeStatus.SKIPPED);
+              markNodeSkipped(edge.target, "trigger-not-fired", { sourceNodeId: nodeId });
               executed.add(edge.target);
             }
           }
@@ -1947,9 +2110,39 @@ export class WorkflowEngine extends EventEmitter {
           }
         }
 
+        const consumeEdgeDependency = (targetNodeId, matched, skipInfo = null) => {
+          const nextDegree = (inDegree.get(targetNodeId) || 1) - 1;
+          inDegree.set(targetNodeId, nextDegree);
+          if (matched) {
+            incomingSatisfiedCount.set(
+              targetNodeId,
+              (incomingSatisfiedCount.get(targetNodeId) || 0) + 1,
+            );
+          }
+          if (nextDegree <= 0 && !executed.has(targetNodeId)) {
+            if ((incomingSatisfiedCount.get(targetNodeId) || 0) > 0) {
+              ready.add(targetNodeId);
+            } else {
+              markNodeSkipped(targetNodeId, skipInfo?.reason || "skipped", skipInfo?.payload || {});
+              executed.add(targetNodeId);
+              const skippedNode = nodeMap.get(targetNodeId);
+              console.log(`${TAG} node:SKIPPED ${targetNodeId} (${skippedNode?.type || "?"}) [${skippedNode?.label || ""}] — no satisfied edges`);
+            }
+          }
+        };
+
         for (const edge of edges) {
           const edgePort = String(edge?.sourcePort || "default").trim() || "default";
           if (selectedPort && edgePort !== selectedPort) {
+            if (!edge.backEdge) {
+              consumeEdgeDependency(edge.target, false, {
+                reason: "edge-port-mismatch",
+                payload: {
+                  sourceNodeId: nodeId,
+                  edgeId: edge.id || `${edge.source}->${edge.target}`,
+                },
+              });
+            }
             continue;
           }
 
@@ -1960,8 +2153,13 @@ export class WorkflowEngine extends EventEmitter {
               if (!condResult) {
                 // For back-edges, a false condition simply means "don't loop"
                 if (!edge.backEdge) {
-                  ctx.setNodeStatus(edge.target, NodeStatus.SKIPPED);
-                  executed.add(edge.target);
+                  consumeEdgeDependency(edge.target, false, {
+                    reason: "edge-condition-false",
+                    payload: {
+                      sourceNodeId: nodeId,
+                      edgeId: edge.id || `${edge.source}->${edge.target}`,
+                    },
+                  });
                 }
                 continue;
               }
@@ -1985,6 +2183,11 @@ export class WorkflowEngine extends EventEmitter {
             }
 
             backEdgeIterations.set(edgeKey, iterCount);
+            emitEdgeFlow(edge, {
+              reason: "back-edge",
+              iteration: iterCount,
+              maxIterations: maxIter,
+            });
             this.emit("loop:back_edge", {
               edgeId: edgeKey,
               source: edge.source,
@@ -2002,6 +2205,7 @@ export class WorkflowEngine extends EventEmitter {
             for (const nid of subgraph) {
               executed.delete(nid);
               ctx.setNodeStatus(nid, NodeStatus.PENDING);
+              incomingSatisfiedCount.set(nid, 0);
               // Restore in-degree for nodes in the subgraph so they schedule
               // correctly on this new iteration.
               let deg = 0;
@@ -2026,11 +2230,10 @@ export class WorkflowEngine extends EventEmitter {
           }
 
           // Decrement in-degree (forward edges only)
-          const newDegree = (inDegree.get(edge.target) || 1) - 1;
-          inDegree.set(edge.target, newDegree);
-          if (newDegree <= 0 && !executed.has(edge.target)) {
-            ready.add(edge.target);
-          }
+          emitEdgeFlow(edge, {
+            reason: selectedPort ? "selected-port" : "forward",
+          });
+          consumeEdgeDependency(edge.target, true);
         }
       }
     }
@@ -2630,7 +2833,59 @@ export class WorkflowEngine extends EventEmitter {
 
       console.log(`${TAG} Resuming ${runs.length} interrupted run(s)...`);
 
+      // ── Deduplicate by taskId: keep only the most recent run per task ────
+      // After N crash/restart cycles, N run entries accumulate for the same
+      // taskId. Resuming all of them causes competing workflow runs that race
+      // to claim the task → "claim was stolen" errors on every restart.
+      // Solution: pre-scan detail files, keep latest startedAt per taskId,
+      // and mark older duplicates as not-resumable before we even try them.
+      const runDetailCache = new Map(); // runId → parsed detail
+      const latestByTaskId = new Map(); // taskId → run entry (highest startedAt)
+
       for (const run of runs) {
+        const dp = resolve(this.runsDir, `${run.runId}.json`);
+        if (!existsSync(dp)) continue;
+        try {
+          const d = JSON.parse(readFileSync(dp, "utf8"));
+          runDetailCache.set(run.runId, d);
+          const tid = d.data?.taskId || d.inputData?.taskId;
+          if (!tid) continue;
+          const prev = latestByTaskId.get(tid);
+          if (!prev || (run.startedAt || 0) >= (prev.startedAt || 0)) {
+            latestByTaskId.set(tid, run);
+          }
+        } catch {
+          /* unreadable detail — handled in the main loop below */
+        }
+      }
+
+      // Mark older duplicate runs as not-resumable before entering the loop
+      let dedupedCount = 0;
+      for (const run of runs) {
+        const d = runDetailCache.get(run.runId);
+        const tid = d?.data?.taskId || d?.inputData?.taskId;
+        if (!tid) continue;
+        const latest = latestByTaskId.get(tid);
+        if (latest && latest.runId !== run.runId) {
+          this._markRunUnresumable(run.runId, "duplicate_task_run");
+          dedupedCount++;
+        }
+      }
+      if (dedupedCount > 0) {
+        console.log(
+          `${TAG} Skipped ${dedupedCount} duplicate interrupted run(s) (kept latest per taskId)`,
+        );
+      }
+
+      for (const run of runs) {
+        // Skip runs that were marked as duplicates above
+        const _runDetail = runDetailCache.get(run.runId);
+        const _tid = _runDetail?.data?.taskId || _runDetail?.inputData?.taskId;
+        if (_tid) {
+          const latest = latestByTaskId.get(_tid);
+          if (latest && latest.runId !== run.runId) continue;
+        }
+
         try {
           // Check if the workflow definition still exists
           const def = this.get(run.workflowId);
@@ -2648,7 +2903,8 @@ export class WorkflowEngine extends EventEmitter {
             continue;
           }
 
-          const detail = JSON.parse(readFileSync(detailPath, "utf8"));
+          // Reuse cached detail if available (already parsed above)
+          const detail = runDetailCache.get(run.runId) ?? JSON.parse(readFileSync(detailPath, "utf8"));
           const nodeStatuses = detail.nodeStatuses || {};
           const hasCompletedNodes = Object.values(nodeStatuses).some(
             (s) => s === NodeStatus.COMPLETED,
@@ -2799,6 +3055,4 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
-
-
 

@@ -21,6 +21,7 @@ import {
 } from "@mui/material";
 import {
   sessionMessages,
+  sessionMessagesSessionId,
   loadSessionMessages,
   loadSessions,
   sessionsData,
@@ -477,7 +478,24 @@ const ChatBubble = memo(function ChatBubble({
         : html`
             ${label ? html`<${Chip} label=${label} size="small" color=${isError ? "error" : "info"} variant="outlined" sx=${{ mb: 0.5, height: 20, fontSize: '0.6875rem' }} />` : null}
             ${showContextCompressionLabel
-              ? html`<${Chip} label="CONTEXT SUMMARIZED" size="small" color="warning" variant="outlined" sx=${{ mb: 0.5, mr: 0.5, height: 20, fontSize: '0.6875rem' }} />`
+              ? html`
+                  <${Box} sx=${{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 0.5, mb: 0.5 }}>
+                    <${Chip} label="⚡ CONTEXT SHREDDED" size="small" color="warning" variant="filled"
+                      sx=${{ height: 22, fontSize: '0.6875rem', fontWeight: 700 }} />
+                    ${contextCompression?.total
+                      ? html`<${Chip} label=${`${contextCompression.total} items compressed`}
+                          size="small" variant="outlined" color="warning"
+                          sx=${{ height: 20, fontSize: '0.625rem' }} />`
+                      : null}
+                    ${contextCompression?.counts
+                      ? Object.entries(contextCompression.counts)
+                          .filter(([, v]) => v > 0)
+                          .map(([k, v]) => html`
+                            <${Chip} label=${`${k}: ${v}`} size="small" variant="outlined"
+                              sx=${{ height: 18, fontSize: '0.5625rem', opacity: 0.8 }} />
+                          `)
+                      : null}
+                  </${Box}>`
               : null}
             ${showModelResponseLabel
               ? html`<${Chip} label="MODEL RESPONSE" size="small" color="primary" variant="outlined" sx=${{ mb: 0.5, height: 20, fontSize: '0.6875rem' }} />`
@@ -708,7 +726,9 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
 
   let messages = [];
   try {
-    messages = sessionMessages.value || [];
+    const boundSessionId = String(sessionMessagesSessionId.value || "");
+    const currentSessionId = String(sessionId || "");
+    messages = boundSessionId === currentSessionId ? (sessionMessages.value || []) : [];
   } catch (err) {
     console.warn("[ChatView] Failed to read sessionMessages:", err);
   }
@@ -1141,7 +1161,8 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     }
 
     const editedAt = new Date().toISOString();
-    sessionMessages.value = (sessionMessages.value || []).map((msg) =>
+    sessionMessagesSessionId.value = String(sessionId || "");
+    sessionMessages.value = ((sessionMessages.value || [])).map((msg) =>
       msg === editingMsgRef
         ? { ...msg, content: next, edited: true, editedAt }
         : msg,
@@ -1184,6 +1205,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       attachments: pendingAttachments,
       timestamp: new Date().toISOString(),
     };
+    sessionMessagesSessionId.value = String(sessionId || "");
     sessionMessages.value = [...(sessionMessages.value || []), optimistic];
     setInput("");
     setPendingAttachments([]);

@@ -36,6 +36,7 @@ describe("cli daemon pid tracking", () => {
       'const { loadConfig } = await import("./config/config.mjs");',
     );
     expect(cliSource).toContain('String(config?.cacheDir || "").trim() || null');
+    expect(cliSource).toContain('getWorkspaceScopedCacheDirCandidate(runtimeRepoRoot)');
     expect(cliSource).toContain(
       '...getPidFileCandidates("bosun-daemon.pid", configuredCacheDirs).map(',
     );
@@ -58,8 +59,10 @@ describe("cli daemon pid tracking", () => {
 
   it("shuts down restart-capable processes before monitor pids during terminate", () => {
     expect(cliSource).toContain('const ancestorPids = findWindowsManagedAncestorPids([');
+    expect(cliSource).toContain('const sentinelGhostPids = findGhostSentinelPids();');
     expect(cliSource).toContain('const restartOwnerPids = Array.from(');
-    expect(cliSource).toContain('new Set([...ancestorPids, ...sentinelPids, ...daemonPids, ...ghosts])');
+    expect(cliSource).toContain('...sentinelGhostPids,');
+    expect(cliSource).toContain('...ghosts,');
     expect(cliSource).toContain('for (const pid of restartOwnerPids) {');
     expect(cliSource).toContain('const remainingPids = allPids.filter((pid) => !restartOwnerPids.includes(pid));');
   });
@@ -88,6 +91,13 @@ describe("cli daemon pid tracking", () => {
     expect(cliSource).toContain("if (process.platform === \"win32\")");
     expect(cliSource).toContain("Get-CimInstance Win32_Process");
     expect(cliSource).toContain("--daemon-child");
+  });
+
+  it("detects ghost sentinel restart owners and points daemon-status at terminate", () => {
+    expect(cliSource).toContain("function findGhostSentinelPids() {");
+    expect(cliSource).toContain("telegram-sentinel\\\\.mjs");
+    expect(cliSource).toContain("Ghost sentinel restart owner(s) detected");
+    expect(cliSource).toContain("Run --terminate to stop restart owners, then --daemon to restart.");
   });
 
   it("keeps sentinel companion auto-start opt-in to avoid Telegram polling conflicts", () => {

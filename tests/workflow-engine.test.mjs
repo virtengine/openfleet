@@ -423,6 +423,26 @@ describe("WorkflowEngine - loop.for_each", () => {
     expect(iterations[0]).toEqual({ nodeId: "loop", index: 0, total: 2 });
     expect(iterations[1]).toEqual({ nodeId: "loop", index: 1, total: 2 });
   });
+
+  it("returns totalItems alongside count for batch summary templates", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "loop", type: "loop.for_each", label: "Loop Items", config: { items: '["a","b","c"]', variable: "item" } },
+      ],
+      [{ id: "e1", source: "trigger", target: "loop" }],
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+    expect(ctx.errors).toEqual([]);
+    expect(ctx.getNodeOutput("loop")).toMatchObject({
+      count: 3,
+      totalItems: 3,
+      successCount: 3,
+      failCount: 0,
+    });
+  });
 });
 
 describe("WorkflowEngine - source port routing", () => {
@@ -471,6 +491,38 @@ describe("WorkflowEngine - source port routing", () => {
     const result = await engine.execute(wf.id, {});
     expect(result.errors).toEqual([]);
     expect(visited).toEqual(["left"]);
+  });
+
+  it("keeps shared downstream nodes runnable when one conditional edge is false", async () => {
+    const visited = [];
+    registerNodeType("test.capture_multi_edge", {
+      describe: () => "Capture multi-edge convergence",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        visited.push(node.id);
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "branch", type: "notify.log", label: "Branch", config: { message: "branch" } },
+        { id: "shared", type: "test.capture_multi_edge", label: "Shared", config: {} },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "branch" },
+        { id: "e2", source: "branch", target: "shared", condition: "false" },
+        { id: "e3", source: "branch", target: "shared", condition: "true" },
+      ],
+      { name: "Conditional Convergence Workflow" },
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {});
+    expect(result.errors).toEqual([]);
+    expect(visited).toEqual(["shared"]);
+    expect(result.getNodeStatus("shared")).toBe(NodeStatus.COMPLETED);
   });
 });
 
@@ -535,6 +587,53 @@ describe("WorkflowEngine - run history details", () => {
     expect(history.length).toBeGreaterThanOrEqual(2);
     expect(history[0].startedAt).toBeGreaterThanOrEqual(history[1].startedAt);
     expect(engine.getRunDetail("does-not-exist")).toBeNull();
+  });
+
+  it("returns paginated run history metadata without dropping total counts", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { name: "Paged History Workflow" },
+    );
+
+    engine.save(wf);
+    await engine.execute(wf.id, { run: 1 });
+    await engine.execute(wf.id, { run: 2 });
+    await engine.execute(wf.id, { run: 3 });
+
+    const page = engine.getRunHistoryPage(wf.id, { offset: 1, limit: 1 });
+    expect(page.total).toBeGreaterThanOrEqual(3);
+    expect(page.offset).toBe(1);
+    expect(page.limit).toBe(1);
+    expect(page.count).toBe(1);
+    expect(Array.isArray(page.runs)).toBe(true);
+    expect(page.runs).toHaveLength(1);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextOffset).toBe(2);
+  });
+  it("paginates global run history beyond the initial page size", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { name: "Global Paged History Workflow" },
+    );
+
+    engine.save(wf);
+    for (let i = 0; i < 35; i += 1) {
+      await engine.execute(wf.id, { run: i + 1 });
+    }
+
+    const all = engine.getRunHistory();
+    expect(all.length).toBeGreaterThanOrEqual(35);
+
+    const page = engine.getRunHistoryPage(null, { offset: 20, limit: 10 });
+    expect(page.total).toBeGreaterThanOrEqual(35);
+    expect(page.offset).toBe(20);
+    expect(page.limit).toBe(10);
+    expect(page.count).toBe(10);
+    expect(page.runs).toHaveLength(10);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextOffset).toBe(30);
   });
 
   it("includes active runs in history and exposes live run detail while executing", async () => {
@@ -1040,6 +1139,35 @@ describe("New node types", () => {
     expect(canonical).toBe(typoAlias);
   });
 
+  it("flow.universal dispatch mode accepts synchronous engine return values", async () => {
+    const handler = getNodeType("flow.universal");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ _workflowId: "parent-wf", taskId: "TASK-42" });
+    const mockEngine = {
+      execute: vi.fn(() => new WorkflowContext({ ok: true })),
+      get: vi.fn(() => ({ id: "template-task-archiver" })),
+    };
+    const node = {
+      id: "universal-dispatch",
+      type: "flow.universal",
+      config: {
+        workflowId: "template-task-archiver",
+        mode: "dispatch",
+        inheritContext: true,
+      },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result).toMatchObject({
+      success: true,
+      queued: true,
+      mode: "dispatch",
+      workflowId: "template-task-archiver",
+    });
+    expect(mockEngine.execute).toHaveBeenCalledTimes(1);
+  });
+
   it("flow.end hard-stops remaining nodes and marks run as failed", async () => {
     const testEngine = makeTmpEngine();
     const wf = makeSimpleWorkflow(
@@ -1180,6 +1308,36 @@ describe("action.execute_workflow", () => {
       releaseChild?.(new WorkflowContext({}));
       await childRunPromise;
     }
+  });
+
+  it("dispatch mode accepts synchronous engine return values", async () => {
+    const handler = getNodeType("action.execute_workflow");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ _workflowId: "parent-dispatch-wf" });
+    const mockEngine = {
+      execute: vi.fn(() => new WorkflowContext({ ok: true })),
+      get: vi.fn().mockReturnValue({ id: "child-dispatch-wf" }),
+    };
+    const node = {
+      id: "dispatch-child-sync-return",
+      type: "action.execute_workflow",
+      config: {
+        workflowId: "child-dispatch-wf",
+        mode: "dispatch",
+        outputVariable: "dispatchSummary",
+      },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result).toMatchObject({
+      success: true,
+      queued: true,
+      mode: "dispatch",
+      workflowId: "child-dispatch-wf",
+    });
+    expect(ctx.data.dispatchSummary).toEqual(result);
+    expect(mockEngine.execute).toHaveBeenCalledTimes(1);
   });
 
   it("blocks recursive workflow loops unless allowRecursive is true", async () => {
@@ -2736,8 +2894,8 @@ it("action.materialize_planner_tasks parses fenced JSON and creates tasks", asyn
     meta: expect.objectContaining({
       repo_areas: ["workflow"],
       planner: expect.objectContaining({
-        impact: 1,
-        confidence: 1,
+        impact: 8,
+        confidence: 7,
         risk: "low",
         repo_areas: ["workflow"],
       }),
@@ -3027,8 +3185,8 @@ it("action.materialize_planner_tasks enforces planner quality gates and persists
     meta: expect.objectContaining({
       repo_areas: ["server"],
       planner: expect.objectContaining({
-        impact: 1,
-        confidence: 1,
+        impact: 9,
+        confidence: 8,
         risk: "low",
         estimated_effort: "m",
         repo_areas: ["server"],
