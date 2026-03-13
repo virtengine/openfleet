@@ -1343,6 +1343,21 @@ async function main() {
     process.exit(0);
   }
 
+  const auditFlagIndex = args.indexOf("--audit");
+  const auditCommandIndex =
+    args[0] === "audit"
+      ? 0
+      : args[0]?.startsWith("--")
+        ? args.indexOf("audit")
+        : -1;
+  if (auditCommandIndex >= 0 || auditFlagIndex >= 0) {
+    const { runAuditCli } = await import("./lib/codebase-audit.mjs");
+    const commandStartIndex = auditCommandIndex >= 0 ? auditCommandIndex : auditFlagIndex;
+    const auditArgs = args.slice(commandStartIndex + 1);
+    await runAuditCli(auditArgs);
+    process.exit(0);
+  }
+
   // Handle --help
   if (args.includes("--help") || args.includes("-h")) {
     showHelp();
