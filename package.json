@@ -320,6 +320,7 @@
     "workflow-templates/task-execution.mjs",
     "workflow-templates/task-lifecycle.mjs",
     "workflow-templates/issue-continuation.mjs",
+    "workflow-templates/continuation-loop.mjs",
     "workflow-templates/code-quality.mjs",
     "workflow-templates/bosun-native.mjs",
     "bosun-tui.mjs",
@@ -372,4 +373,3 @@
     "gaxios": "7.1.4"
   }
 }
-
