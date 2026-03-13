@@ -249,9 +249,15 @@ let _traceTtsFirstAudioMarked = false;
 
 const RECONNECT_AT_MS = 28 * 60 * 1000; // 28 minutes
 const MAX_RECONNECT_ATTEMPTS = 3;
-const AUTO_BARGE_IN_COOLDOWN_MS = 700;
+const AUTO_BARGE_IN_COOLDOWN_MS = 1200;
 const AUTO_BARGE_IN_MIC_LEVEL_THRESHOLD = 0.08;
 const AUTO_BARGE_IN_FADE_MS = 220;
+// Minimum speech duration (ms) before an interrupt is allowed — filters keyboard/click noise
+let _speechStartedAt = 0;
+const MIN_SPEECH_DURATION_FOR_INTERRUPT_MS = 400;
+// Delayed response clear — keep response visible in center after turn ends
+let _responseClearTimer = null;
+const RESPONSE_DISPLAY_HOLD_MS = 8000;
 // User transcript is always enabled — transcription is surfaced from the API's
 // input_audio_transcription feature (primary) or browser SpeechRecognition (backup).
 const ENABLE_USER_TRANSCRIPT = true;
@@ -557,7 +563,7 @@ async function _processResponsesAudioTurn(text) {
   _traceEndTurn("turn_end", {
     reason: "responses-audio.turn_completed",
   });
-  voiceResponse.value = "";
+  _scheduleResponseClear();
   voiceState.value = "listening";
 }
 
@@ -725,6 +731,26 @@ function _markAssistantToolResponseObserved() {
   _clearToolCompletionAckTimer();
 }
 
+// ── Response display hold ──────────────────────────────────────────────────
+// Keep assistant response visible in center for RESPONSE_DISPLAY_HOLD_MS
+// after the turn ends, instead of clearing immediately.
+
+function _scheduleResponseClear() {
+  if (_responseClearTimer) clearTimeout(_responseClearTimer);
+  _responseClearTimer = setTimeout(() => {
+    _responseClearTimer = null;
+    voiceResponse.value = "";
+  }, RESPONSE_DISPLAY_HOLD_MS);
+}
+
+function _clearResponseForNewTurn() {
+  if (_responseClearTimer) {
+    clearTimeout(_responseClearTimer);
+    _responseClearTimer = null;
+  }
+  voiceResponse.value = "";
+}
+
 // ── Event System ────────────────────────────────────────────────────────────
 
 export function onVoiceEvent(event, handler) {
@@ -804,18 +830,18 @@ function sendSessionUpdate(tokenData = {}) {
     type: turnDetection,
     ...(turnDetection === "server_vad"
       ? {
-          threshold: 0.7,
-          prefix_padding_ms: 400,
-          silence_duration_ms: 1200,
+          threshold: 0.82,
+          prefix_padding_ms: 500,
+          silence_duration_ms: 1600,
           create_response: true,
-          interrupt_response: true,
+          interrupt_response: false,
         }
       : {}),
     ...(turnDetection === "semantic_vad"
       ? {
           eagerness: "low",
           create_response: true,
-          interrupt_response: true,
+          interrupt_response: false,
         }
       : {}),
   };
@@ -1427,6 +1453,8 @@ export function stopVoiceSession() {
   voiceSessionId.value = null;
   voiceBoundSessionId.value = null;
   voiceDuration.value = 0;
+  _speechStartedAt = 0;
+  if (_responseClearTimer) { clearTimeout(_responseClearTimer); _responseClearTimer = null; }
   _webrtcUnavailableForProvider = false;
   _lastTokenData = null;
   _callContext = {
@@ -1451,13 +1479,22 @@ function handleServerEvent(event) {
       break;
 
     case "input_audio_buffer.speech_started":
+      _speechStartedAt = Date.now();
       _traceBeginTurn("turn_start", { reason: type });
-      triggerAutoBargeIn("speech-started");
+      // Clear lingering response so center shows user's new transcript
+      _clearResponseForNewTurn();
+      // Don't interrupt immediately — wait for MIN_SPEECH_DURATION_FOR_INTERRUPT_MS
+      setTimeout(() => {
+        if (_speechStartedAt > 0 && (Date.now() - _speechStartedAt) >= MIN_SPEECH_DURATION_FOR_INTERRUPT_MS) {
+          triggerAutoBargeIn("speech-started-confirmed");
+        }
+      }, MIN_SPEECH_DURATION_FOR_INTERRUPT_MS);
       voiceState.value = "listening";
       emit("speech-started", {});
       break;
 
     case "input_audio_buffer.speech_stopped":
+      _speechStartedAt = 0;
       voiceState.value = "thinking";
       scheduleManualResponseCreate("speech-stopped");
       emit("speech-stopped", {});
@@ -1542,7 +1579,7 @@ function handleServerEvent(event) {
         "response.audio_transcript.done",
       );
       _traceEndTurn("turn_end", { reason: type });
-      voiceResponse.value = "";
+      _scheduleResponseClear();
       break;
 
     case "response.text.done":
@@ -1554,7 +1591,7 @@ function handleServerEvent(event) {
         "response.text.done",
       );
       _traceEndTurn("turn_end", { reason: type });
-      voiceResponse.value = "";
+      _scheduleResponseClear();
       break;
 
     case "response.output_text.done":
@@ -1566,7 +1603,7 @@ function handleServerEvent(event) {
         "response.output_text.done",
       );
       _traceEndTurn("turn_end", { reason: type });
-      voiceResponse.value = "";
+      _scheduleResponseClear();
       break;
 
     case "response.audio.delta":
@@ -1618,7 +1655,7 @@ function handleServerEvent(event) {
           voiceResponse.value,
           "response.done.fallback",
         );
-        voiceResponse.value = "";
+        _scheduleResponseClear();
       }
       if (voiceState.value !== "listening") {
         voiceState.value = "connected";
@@ -1774,6 +1811,13 @@ function fadeElementVolumeTo(el, targetVolume, durationMs) {
 
 function triggerAutoBargeIn(reason = "speech-started") {
   const now = Date.now();
+  // Only interrupt if speech has been ongoing long enough to be real speech
+  if (_speechStartedAt > 0) {
+    const speechDuration = now - _speechStartedAt;
+    if (speechDuration < MIN_SPEECH_DURATION_FOR_INTERRUPT_MS) {
+      return false;
+    }
+  }
   const audioActive = isAssistantPlaybackActive();
   if (!shouldAutoBargeIn({
     muted: isVoiceMicMuted.value,
