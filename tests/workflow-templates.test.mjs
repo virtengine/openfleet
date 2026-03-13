@@ -969,8 +969,9 @@ describe("github template CLI compatibility", () => {
     expect(syncNode?.config?.env?.BOSUN_FETCH_PR_STATE)
       .toBe("{{$ctx.getNodeOutput('fetch-pr-state')?.output || '{}'}}");
     expect(syncCommand).toContain("reviewStatus");
-    expect(syncCommand).toContain("changes_requested_pending_fix");
-    expect(syncCommand).toContain("local_progress_state");
+    expect(syncCommand).toContain("changes_requested_pending_fix");    expect(syncCommand).toContain("local_progress_state");
+    expect(syncCommand).toContain("parseJsonObject(raw)");
+    expect(syncCommand).toContain("const task=parseJsonObject(raw)");
     expect(syncCommand).toContain("current==='todo'||current==='inprogress'");
   });
 });
