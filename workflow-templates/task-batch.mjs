@@ -51,7 +51,7 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
     // ── Trigger: Tasks available for processing ──────────────────────────
     node("trigger", "trigger.task_available", "Tasks Available?", {
       maxParallel: "{{maxConcurrent}}",
-      pollIntervalMs: 60000,
+      pollIntervalMs: 15000,
       status: "{{pollStatus}}",
     }, { x: 400, y: 50 }),
 
@@ -91,7 +91,7 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
 
     // ── Fan-out: dispatch each task to the lifecycle workflow ─────────────
     node("dispatch-tasks", "loop.for_each", "Dispatch Tasks", {
-      items: "{{queryResult}}",
+      items: "{{query-tasks.output}}",
       itemVariable: "currentTask",
       indexVariable: "taskIndex",
       maxConcurrent: "{{maxConcurrent}}",
@@ -113,7 +113,7 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
     // ── Notify on completion ─────────────────────────────────────────────
     node("notify-complete", "notify.telegram", "Batch Summary", {
       channel: "{{notifyChannel}}",
-      message: "Task batch completed: {{batchResult.successCount}}/{{batchResult.totalItems}} succeeded",
+      message: "Task batch completed: {{dispatch-tasks.successCount}}/{{dispatch-tasks.totalItems}} succeeded ({{dispatch-tasks.failCount}} failed)",
     }, { x: 400, y: 700 }),
   ],
   edges: [
@@ -162,7 +162,7 @@ export const TASK_BATCH_PR_TEMPLATE = {
     // ── Trigger ──────────────────────────────────────────────────────────
     node("trigger", "trigger.task_available", "Tasks Available?", {
       maxParallel: "{{maxConcurrent}}",
-      pollIntervalMs: 60000,
+      pollIntervalMs: 15000,
       status: "{{pollStatus}}",
     }, { x: 400, y: 50 }),
 
@@ -195,7 +195,7 @@ export const TASK_BATCH_PR_TEMPLATE = {
 
     // ── Fan-out: per-task agent + PR ─────────────────────────────────────
     node("for-each-task", "loop.for_each", "Process Each Task", {
-      items: "{{queryResult}}",
+      items: "{{query-tasks.output}}",
       itemVariable: "task",
       indexVariable: "idx",
       maxConcurrent: "{{maxConcurrent}}",
@@ -241,11 +241,25 @@ export const TASK_BATCH_PR_TEMPLATE = {
       status: "inreview",
     }, { x: 400, y: 1090 }),
 
+    node("handoff-pr-progressor", "action.execute_workflow", "Dispatch PR Progressor", {
+      workflowId: "template-bosun-pr-progressor",
+      mode: "dispatch",
+      input: {
+        taskId: "{{task.taskId}}",
+        taskTitle: "{{task.taskTitle}}",
+        branch: "{{task.branch}}",
+        baseBranch: "{{defaultBaseBranch}}",
+        prNumber: "{{$ctx.getNodeOutput('create-pr')?.prNumber ?? null}}",
+        prUrl: "{{$ctx.getNodeOutput('create-pr')?.prUrl || ''}}",
+        repo: "{{$ctx.getNodeOutput('create-pr')?.repoSlug || $data?.repo || $data?.repoSlug || $data?.repository || ''}}",
+      },
+    }, { x: 400, y: 1160 }),
+
     node("join-batch-outcomes", "flow.join", "Join Batch Outcomes", {
       mode: "all",
-      sourceNodeIds: ["detect-commits", "set-inreview"],
+      sourceNodeIds: ["detect-commits", "handoff-pr-progressor"],
       includeSkipped: true,
-    }, { x: 400, y: 1160 }),
+    }, { x: 400, y: 1230 }),
 
     // ── Batch complete notification ──────────────────────────────────────
     node("notify", "notify.telegram", "Batch Complete", {
@@ -263,7 +277,8 @@ export const TASK_BATCH_PR_TEMPLATE = {
     edge("push-branch", "create-pr"),
     edge("create-pr", "set-inreview"),
     edge("detect-commits", "join-batch-outcomes", { condition: "result.hasNewCommits !== true" }),
-    edge("set-inreview", "join-batch-outcomes"),
+    edge("set-inreview", "handoff-pr-progressor"),
+    edge("handoff-pr-progressor", "join-batch-outcomes"),
     edge("join-batch-outcomes", "notify"),
   ],
   metadata: {
@@ -272,5 +287,6 @@ export const TASK_BATCH_PR_TEMPLATE = {
     createdAt: "2026-03-15T00:00:00Z",
     templateVersion: "1.0.0",
     tags: ["task", "batch", "pr", "agent", "autonomous"],
+    requiredTemplates: ["template-bosun-pr-progressor"],
   },
 };

@@ -30,12 +30,27 @@ function logWarn(message) {
 }
 
 function sanitizeNodeName(name = "") {
-  return String(name || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .replace(/-{2,}/g, "-");
+  const raw = String(name || "").trim().toLowerCase();
+  let normalized = "";
+  let lastWasDash = false;
+  for (const ch of raw) {
+    const isSafe =
+      (ch >= "a" && ch <= "z") ||
+      (ch >= "0" && ch <= "9") ||
+      ch === "." ||
+      ch === "_" ||
+      ch === "-";
+    const out = isSafe ? ch : "-";
+    if (out === "-") {
+      if (lastWasDash || normalized.length === 0) continue;
+      lastWasDash = true;
+      normalized += "-";
+      continue;
+    }
+    lastWasDash = false;
+    normalized += out;
+  }
+  return normalized.endsWith("-") ? normalized.slice(0, -1) : normalized;
 }
 
 function toTypeName(name = "") {
@@ -232,6 +247,4 @@ export function scaffoldCustomNodeFile(name, options = {}) {
   writeFileSync(filePath, contents, "utf8");
   return { filePath, type, customDir, repoRoot };
 }
-
-
 

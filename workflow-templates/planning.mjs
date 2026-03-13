@@ -31,6 +31,7 @@ export const TASK_PLANNER_TEMPLATE = {
     minTodoCount: 3,
     taskCount: 5,
     dedupHours: 24,
+    failureCooldownMinutes: 30,
     prompt: "",
     plannerContext:
       "Focus on high-value implementation work. Avoid duplicating existing tasks.",
@@ -42,7 +43,15 @@ export const TASK_PLANNER_TEMPLATE = {
     }, { x: 400, y: 50 }),
 
     node("check-dedup", "condition.expression", "Dedup Window", {
-      expression: "(Date.now() - ($data?._lastPlannerRun || 0)) > (($data?.dedupHours || 24) * 3600000)",
+      expression:
+        "(() => {" +
+        " const now = Date.now();" +
+        " const lastSuccessAt = Number($data?._lastPlannerRun || 0);" +
+        " const lastFailureAt = Number($data?._lastPlannerFailureAt || 0);" +
+        " const successWindowMs = Number($data?.dedupHours || 24) * 3600000;" +
+        " const failureWindowMs = Number($data?.failureCooldownMinutes || 30) * 60000;" +
+        " return (now - lastSuccessAt) > successWindowMs && (now - lastFailureAt) > failureWindowMs;" +
+        "})()",
     }, { x: 400, y: 180 }),
 
     node("log-start", "notify.log", "Log Planner Start", {
@@ -94,6 +103,14 @@ export const TASK_PLANNER_TEMPLATE = {
       message: "Task planner failed to materialize tasks from planner output",
       level: "warn",
     }, { x: 600, y: 830 }),
+
+    // Cooldown on failure: stamp _lastPlannerRun so the dedup window
+    // prevents immediate retry without blocking normal planning for a full day.
+    node("set-timestamp-fail", "action.set_variable", "Cooldown After Failure", {
+      key: "_lastPlannerFailureAt",
+      value: "Date.now()",
+      isExpression: true,
+    }, { x: 600, y: 960 }),
   ],
   edges: [
     edge("trigger", "check-dedup"),
@@ -105,6 +122,7 @@ export const TASK_PLANNER_TEMPLATE = {
     edge("check-result", "set-timestamp", { condition: "$output?.result === true" }),
     edge("check-result", "notify-fail", { condition: "$output?.result !== true" }),
     edge("set-timestamp", "notify-done"),
+    edge("notify-fail", "set-timestamp-fail"),
   ],
   metadata: {
     author: "bosun",

@@ -1321,7 +1321,7 @@ describe("task-executor", () => {
       loadConfig.mockReturnValue({});
       const opts = loadExecutorOptionsFromConfig();
       expect(opts.mode).toBe("internal");
-      expect(opts.maxParallel).toBe(3);
+      expect(opts.maxParallel).toBe(5);
       expect(opts.sdk).toBe("auto");
       expect(opts.maxRetries).toBe(2);
     });
@@ -1413,7 +1413,7 @@ describe("task-executor", () => {
 
       const opts = loadExecutorOptionsFromConfig();
       expect(opts.mode).toBe("internal");
-      expect(opts.maxParallel).toBe(3);
+      expect(opts.maxParallel).toBe(5);
     });
   });
 

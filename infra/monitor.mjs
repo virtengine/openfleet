@@ -499,7 +499,7 @@ async function ensureWorkflowAutomationEngine() {
 
   workflowAutomationInitPromise = (async () => {
     try {
-      const [{ getWorkflowEngine }, { createTask }, wfNodes, workflowTemplates] = await Promise.all([
+      const [{ getWorkflowEngine }, { createTask, getTask }, wfNodes, workflowTemplates] = await Promise.all([
         import("../workflow/workflow-engine.mjs"),
         import("../kanban/kanban-adapter.mjs"),
         import("../workflow/workflow-nodes.mjs"),
@@ -532,6 +532,8 @@ async function ensureWorkflowAutomationEngine() {
           ),
         listTasks: async (projectId, filters = {}) =>
           listKanbanTasks(String(projectId || ""), filters || {}),
+        getTask: async (taskId) =>
+          getTask(String(taskId || "").trim()),
       };
 
       const agentPoolService = {
@@ -613,15 +615,47 @@ async function ensureWorkflowAutomationEngine() {
         config?.workflowDefaults && typeof config.workflowDefaults === "object"
           ? config.workflowDefaults.templates || []
           : [];
+      const typedWorkflowTemplateConfig =
+        typeof workflowTemplates?.resolveWorkflowTemplateConfig === "function"
+          ? workflowTemplates.resolveWorkflowTemplateConfig(config?.workflows || [])
+          : { templateIds: [], overridesById: {} };
+
       const requestedTemplateIds = new Set(
         typeof workflowTemplates?.resolveWorkflowTemplateIds === "function"
           ? workflowTemplates.resolveWorkflowTemplateIds({
               profileId: configuredWorkflowProfile,
               templateIds: configuredWorkflowTemplates,
+              workflows: config?.workflows || [],
             })
           : [],
       );
-      const staleWorkflowTemplateIds = ["template-task-batch-pr"];
+      for (const templateId of typedWorkflowTemplateConfig.templateIds || []) {
+        const overrides = typedWorkflowTemplateConfig.overridesById?.[templateId] || {};
+        let installed = (engine.list?.() || []).find(
+          (wf) => String(wf?.metadata?.installedFrom || "").trim() === templateId,
+        );
+
+        if (!installed && typeof workflowTemplates?.installTemplate === "function") {
+          installed = workflowTemplates.installTemplate(templateId, engine, overrides);
+        }
+
+        if (!installed) continue;
+        const def = engine.get?.(installed.id);
+        if (!def) continue;
+
+        def.enabled = true;
+        def.variables = {
+          ...(def.variables || {}),
+          ...overrides,
+        };
+        def.metadata = {
+          ...(def.metadata || {}),
+          configuredFrom: "workflows.config",
+        };
+        engine.save(def);
+      }
+
+      const staleWorkflowTemplateIds = ["template-task-batch-pr", "template-continuation-loop"];
       if (typeof workflowTemplates?.reconcileInstalledTemplates === "function") {
         const reconcile = workflowTemplates.reconcileInstalledTemplates(engine, {
           autoUpdateUnmodified: true,
@@ -647,7 +681,7 @@ async function ensureWorkflowAutomationEngine() {
         def.metadata = {
           ...(def.metadata || {}),
           autoDisabledReason:
-            "disabled on startup because the template is no longer requested by workflowDefaults",
+            "disabled on startup because the template is no longer requested by workflowDefaults/workflows config",
         };
         engine.save(def);
         console.log(
@@ -13825,7 +13859,6 @@ async function startWatcher(force = false) {
     stopWatcher();
   }
   let targetPath = watchPath;
-  let missingWatchPath = false;
   try {
     const stats = await (await import("node:fs/promises")).stat(watchPath);
     if (stats.isFile()) {
@@ -13833,21 +13866,15 @@ async function startWatcher(force = false) {
       targetPath = watchPath.split(/[\\/]/).slice(0, -1).join("/") || ".";
     }
   } catch {
-    // The configured path may not exist yet (common for stale ORCHESTRATOR_SCRIPT paths).
-    // Fall back to watching its parent directory if present; otherwise watch repoRoot.
-    missingWatchPath = true;
-    const candidateFile = watchPath.split(/[\\/]/).pop() || null;
-    const candidateDir = watchPath.split(/[\\/]/).slice(0, -1).join("/") || ".";
-    if (existsSync(candidateDir)) {
-      targetPath = candidateDir;
-      watchFileName = candidateFile;
-    } else if (existsSync(repoRoot)) {
-      targetPath = repoRoot;
-      watchFileName = null;
-    } else {
-      targetPath = process.cwd();
-      watchFileName = null;
-    }
+    // The configured path does not exist.  Previous behaviour fell back to
+    // watching the parent directory, which could be extremely broad (e.g. the
+    // entire AppData/Roaming tree) and trigger spurious restarts.  Disable the
+    // watcher entirely instead — the auto-update loop handles updates in
+    // npm/prod mode, and in dev mode the source-dir watcher covers restarts.
+    console.warn(
+      `[monitor] watcher disabled — configured watch path does not exist: ${watchPath}`,
+    );
+    return;
   }
 
   if (!existsSync(targetPath)) {
@@ -13855,11 +13882,6 @@ async function startWatcher(force = false) {
       `[monitor] watcher disabled — target path does not exist: ${targetPath}`,
     );
     return;
-  }
-  if (missingWatchPath) {
-    console.warn(
-      `[monitor] watch path not found: ${watchPath} — watching ${targetPath} instead`,
-    );
   }
 
   try {

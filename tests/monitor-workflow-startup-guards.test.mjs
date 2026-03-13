@@ -32,8 +32,10 @@ describe("monitor workflow startup guards", () => {
 
   it("auto-disables stale task-batch-pr workflows when workflowDefaults no longer request them", () => {
     expect(monitorSource).toContain('import("../workflow/workflow-templates.mjs")');
-    expect(monitorSource).toContain('const staleWorkflowTemplateIds = ["template-task-batch-pr"]');
+    expect(monitorSource).toContain('const staleWorkflowTemplateIds = ["template-task-batch-pr", "template-continuation-loop"]');
     expect(monitorSource).toContain("workflowTemplates.resolveWorkflowTemplateIds({");
+    expect(monitorSource).toContain('resolveWorkflowTemplateConfig(config?.workflows || [])');
+    expect(monitorSource).toContain('template-continuation-loop');
     expect(monitorSource).toContain("requestedTemplateIds.has(installedFrom)");
     expect(monitorSource).toContain("auto-disabled stale workflow");
   });

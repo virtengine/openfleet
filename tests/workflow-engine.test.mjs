@@ -1445,6 +1445,174 @@ describe("action.execute_workflow", () => {
   });
 });
 
+describe("action.inline_workflow and executeDefinition", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("executeDefinition runs an ephemeral workflow without saving it", async () => {
+    const inlineDefinition = {
+      name: "Ephemeral Inline Workflow",
+      trigger: "trigger.workflow_call",
+      nodes: [
+        {
+          id: "trigger",
+          type: "trigger.workflow_call",
+          label: "Start",
+          config: { inputs: { message: { type: "string", required: false } } },
+        },
+        {
+          id: "set-reply",
+          type: "action.set_variable",
+          label: "Set Reply",
+          config: { key: "reply", value: "{{message}}" },
+        },
+        {
+          id: "finish",
+          type: "flow.end",
+          label: "Finish",
+          config: {
+            status: "completed",
+            output: {
+              reply: "{{reply}}",
+            },
+          },
+        },
+      ],
+      edges: [
+        { id: "e1", source: "trigger", target: "set-reply" },
+        { id: "e2", source: "set-reply", target: "finish" },
+      ],
+    };
+
+    const ctx = await engine.executeDefinition(inlineDefinition, { message: "hello" }, {
+      inlineWorkflowId: "inline:ephemeral-test",
+    });
+
+    expect(ctx.errors).toEqual([]);
+    expect(ctx.data.reply).toBe("hello");
+    expect(engine.get("inline:ephemeral-test")).toBeNull();
+    const detail = engine.getRunDetail(ctx.id);
+    expect(detail?.workflowId).toBe("inline:ephemeral-test");
+  });
+
+  it("sync mode executes embedded workflows and unwraps flow.end output", async () => {
+    const parentWorkflow = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start Parent", config: {} },
+        {
+          id: "inline-child",
+          type: "action.inline_workflow",
+          label: "Inline Child",
+          config: {
+            mode: "sync",
+            inheritContext: true,
+            includeKeys: ["sharedValue"],
+            input: { payload: "{{payload}}" },
+            outputVariable: "inlineSummary",
+            workflow: {
+              trigger: "trigger.workflow_call",
+              nodes: [
+                {
+                  id: "trigger",
+                  type: "trigger.workflow_call",
+                  label: "Start Child",
+                  config: { inputs: { payload: { type: "string", required: false } } },
+                },
+                {
+                  id: "finish",
+                  type: "flow.end",
+                  label: "Finish Child",
+                  config: {
+                    status: "completed",
+                    output: {
+                      echoed: "{{payload}}",
+                      shared: "{{sharedValue}}",
+                    },
+                  },
+                },
+              ],
+              edges: [{ id: "e1", source: "trigger", target: "finish" }],
+            },
+          },
+        },
+      ],
+      [{ id: "e1", source: "trigger", target: "inline-child" }],
+      { id: "parent-inline-sync", name: "Parent Inline Sync" },
+    );
+
+    engine.save(parentWorkflow);
+
+    const parentCtx = await engine.execute(parentWorkflow.id, {
+      payload: "payload-value",
+      sharedValue: "inherit-me",
+      ignoredValue: "do-not-inherit",
+    });
+
+    expect(parentCtx.errors).toEqual([]);
+    const output = parentCtx.getNodeOutput("inline-child");
+    expect(output).toMatchObject({
+      success: true,
+      dispatched: false,
+      mode: "sync",
+      status: "completed",
+      echoed: "payload-value",
+      shared: "inherit-me",
+    });
+    expect(typeof output.runId).toBe("string");
+    expect(parentCtx.data.inlineSummary).toEqual(output);
+
+    const childDetail = engine.getRunDetail(output.runId);
+    expect(childDetail?.detail?.data?.payload).toBe("payload-value");
+    expect(childDetail?.detail?.data?.sharedValue).toBe("inherit-me");
+    expect(childDetail?.detail?.data?.ignoredValue).toBeUndefined();
+  });
+
+  it("dispatch mode queues embedded workflows without waiting for completion", async () => {
+    const handler = getNodeType("action.inline_workflow");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ _workflowId: "parent-inline-dispatch" });
+    let releaseChild;
+    const childRunPromise = new Promise((resolve) => {
+      releaseChild = resolve;
+    });
+    const mockEngine = {
+      executeDefinition: vi.fn().mockReturnValue(childRunPromise),
+    };
+    const node = {
+      id: "dispatch-inline-child",
+      type: "action.inline_workflow",
+      config: {
+        mode: "dispatch",
+        outputVariable: "inlineDispatchSummary",
+        workflow: {
+          id: "inline-child-dispatch",
+          trigger: "trigger.workflow_call",
+          nodes: [{ id: "trigger", type: "trigger.workflow_call", label: "Start", config: {} }],
+          edges: [],
+        },
+      },
+    };
+
+    try {
+      const result = await handler.execute(node, ctx, mockEngine);
+      expect(result).toMatchObject({
+        success: true,
+        dispatched: true,
+        mode: "dispatch",
+        workflowId: "inline-child-dispatch",
+      });
+      expect(ctx.data.inlineDispatchSummary).toEqual(result);
+      expect(mockEngine.executeDefinition).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseChild?.(new WorkflowContext({}));
+      await childRunPromise;
+    }
+  });
+});
+
 // ── Session Chaining Tests ──────────────────────────────────────────────────
 
 describe("meeting workflow nodes", () => {
