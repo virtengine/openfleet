@@ -4700,6 +4700,8 @@ function normalizePlannerTaskForCreation(task, index) {
     if (title.toLowerCase().includes("refactor")) return "refactor";
     return "general";
   };
+  const scoreMode = inferPlannerTaskScoreMode(task);
+  const preferTenScaleIntegers = scoreMode === PLANNER_SCORE_MODE_TEN;
 
   const lines = [];
   const description = String(task.description || "").trim();
@@ -5267,6 +5269,15 @@ function rankPlannerTaskCandidates(tasks, priorState, rankingConfig) {
   return scored;
 }
 
+function buildPlannerSkipReasonHistogram(skipped = []) {
+  const histogram = {};
+  for (const entry of skipped) {
+    const reason = String(entry?.reason || "unknown");
+    histogram[reason] = (histogram[reason] || 0) + 1;
+  }
+  return histogram;
+}
+
 registerNodeType("action.materialize_planner_tasks", {
   describe: () => "Parse planner JSON output and create backlog tasks in Kanban",
   schema: {
@@ -5467,6 +5478,12 @@ registerNodeType("action.materialize_planner_tasks", {
     const materializationOutcomes = [];
     const createdAreaCounts = new Map();
     for (const task of rankedTasks) {
+      const baseOutcome = {
+        title: task.title,
+        impact: task.impact,
+        confidence: task.confidence,
+        risk: task.risk,
+      };
       const key = task.title.toLowerCase();
       if (dedupEnabled && existingTitleSet.has(key)) {
         skipped.push({ title: task.title, reason: "duplicate_title" });
