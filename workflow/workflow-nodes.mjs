@@ -9642,8 +9642,57 @@ function isValidGitWorktreePath(worktreePath) {
   }
 }
 
+function resolveGitDirForWorktree(worktreePath) {
+  if (!worktreePath || !existsSync(worktreePath)) return "";
+  try {
+    const topLevel = execGitArgsSync(["rev-parse", "--show-toplevel"], {
+      cwd: worktreePath,
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    const normalize = (value) =>
+      resolve(String(value || ""))
+        .replace(/\\/g, "/")
+        .replace(/\/+$/, "")
+        .toLowerCase();
+    if (normalize(topLevel) !== normalize(worktreePath)) return "";
+    const gitDir = execGitArgsSync(["rev-parse", "--git-dir"], {
+      cwd: worktreePath,
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    if (!gitDir) return "";
+    return resolve(worktreePath, gitDir);
+  } catch {
+    return "";
+  }
+}
+
+function hasUnresolvedGitOperation(worktreePath) {
+  if (!worktreePath || !existsSync(worktreePath)) return false;
+  try {
+    const gitDir = resolveGitDirForWorktree(worktreePath);
+    if (!gitDir || !existsSync(gitDir)) return true;
+    for (const marker of ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"]) {
+      if (existsSync(resolve(gitDir, marker))) return true;
+    }
+    const unmerged = execGitArgsSync(["diff", "--name-only", "--diff-filter=U"], {
+      cwd: worktreePath,
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    return Boolean(unmerged);
+  } catch {
+    return true;
+  }
+}
+
 function cleanupBrokenManagedWorktree(repoRoot, worktreePath) {
   if (!worktreePath) return;
+  const linkedGitDir = resolveGitDirForWorktree(worktreePath);
   try {
     execGitArgsSync(["worktree", "remove", String(worktreePath), "--force"], {
       cwd: repoRoot,
@@ -9656,6 +9705,13 @@ function cleanupBrokenManagedWorktree(repoRoot, worktreePath) {
   }
   try {
     rmSync(worktreePath, { recursive: true, force: true });
+  } catch {
+    /* best-effort */
+  }
+  try {
+    if (linkedGitDir && existsSync(linkedGitDir)) {
+      rmSync(linkedGitDir, { recursive: true, force: true });
+    }
   } catch {
     /* best-effort */
   }
@@ -10676,6 +10732,9 @@ registerBuiltinNodeType("action.acquire_worktree", {
         if (!isValidGitWorktreePath(worktreePath)) {
           ctx.log(node.id, `Managed worktree is invalid, recreating: ${worktreePath}`);
           cleanupBrokenManagedWorktree(repoRoot, worktreePath);
+        } else if (hasUnresolvedGitOperation(worktreePath)) {
+          ctx.log(node.id, `Managed worktree has unresolved git state, recreating: ${worktreePath}`);
+          cleanupBrokenManagedWorktree(repoRoot, worktreePath);
         }
       }
 
@@ -10691,14 +10750,20 @@ registerBuiltinNodeType("action.acquire_worktree", {
           } catch {
             /* rebase failures are non-fatal for reuse */
           }
+          if (existsSync(worktreePath) && hasUnresolvedGitOperation(worktreePath)) {
+            ctx.log(node.id, `Managed worktree refresh left unresolved git state, recreating: ${worktreePath}`);
+            cleanupBrokenManagedWorktree(repoRoot, worktreePath);
+          }
         }
-        ctx.data.worktreePath = worktreePath;
-        ctx.data._worktreeCreated = false;
-        ctx.data._worktreeManaged = true;
-        ctx.log(node.id, `Reusing worktree: ${worktreePath}`);
-        const cleared1 = clearBlockedWorktreeIdentity(worktreePath);
-        if (cleared1) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${worktreePath}`);
-        return { success: true, worktreePath, created: false, reused: true, branch, baseBranch };
+        if (existsSync(worktreePath)) {
+          ctx.data.worktreePath = worktreePath;
+          ctx.data._worktreeCreated = false;
+          ctx.data._worktreeManaged = true;
+          ctx.log(node.id, `Reusing worktree: ${worktreePath}`);
+          const cleared1 = clearBlockedWorktreeIdentity(worktreePath);
+          if (cleared1) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${worktreePath}`);
+          return { success: true, worktreePath, created: false, reused: true, branch, baseBranch };
+        }
       }
 
       // Create fresh worktree

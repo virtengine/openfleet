@@ -13,7 +13,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import { getNodeType } from "../workflow/workflow-nodes.mjs";
@@ -1265,6 +1265,60 @@ describe("action.acquire_worktree", () => {
     expect(topLevel).toBe(expectedRoot);
   }, 15000);
 
+  it("recreates managed worktrees left in unresolved rebase state before reuse", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const branch = "task/recreate-unresolved-rebase";
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "recreate-rebase-1",
+      branch,
+      baseBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const firstCtx = makeCtx({});
+    const first = await nt.execute(node, firstCtx);
+    expect(first.success).toBe(true);
+    expect(first.created).toBe(true);
+
+    const firstGitDir = resolve(
+      first.worktreePath,
+      execGit("git rev-parse --git-dir", {
+        cwd: first.worktreePath,
+        encoding: "utf8",
+      }).trim(),
+    );
+    mkdirSync(join(firstGitDir, "rebase-merge"), { recursive: true });
+    writeFileSync(join(firstGitDir, "rebase-merge", "head-name"), `refs/heads/${branch}\n`);
+
+    const secondCtx = makeCtx({});
+    const second = await nt.execute(node, secondCtx);
+    expect(second.success).toBe(true);
+    expect(typeof second.worktreePath).toBe("string");
+    expect(second.worktreePath.length).toBeGreaterThan(0);
+
+    const secondGitDir = resolve(
+      second.worktreePath,
+      execGit("git rev-parse --git-dir", {
+        cwd: second.worktreePath,
+        encoding: "utf8",
+      }).trim(),
+    );
+    expect(existsSync(join(secondGitDir, "rebase-merge"))).toBe(false);
+    const isGit = execGit("git rev-parse --is-inside-work-tree", {
+      cwd: second.worktreePath,
+      encoding: "utf8",
+    }).trim();
+    expect(isGit).toBe("true");
+    const topLevel = execGit("git rev-parse --show-toplevel", {
+      cwd: second.worktreePath,
+      encoding: "utf8",
+    }).trim().replace(/\\/g, "/");
+    const expectedRoot = String(second.worktreePath).replace(/\\/g, "/");
+    expect(topLevel).toBe(expectedRoot);
+  }, 15000);
+
   it("enables core.longpaths before checkout", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const ctx = makeCtx({});
@@ -2332,4 +2386,3 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
-
