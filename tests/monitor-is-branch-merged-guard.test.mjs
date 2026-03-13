@@ -37,9 +37,9 @@ describe("monitor branch-merged guard", () => {
     );
   });
 
-  it("removes legacy merged-task reconciliation in favor of workflows", () => {
-    expect(source).toContain(
-      "legacy task-status reconciliation path removed — use workflows",
-    );
+  it("runs workflow review reconciliation for merged inreview PRs", () => {
+    expect(source).toContain("async function checkMergedPRsAndUpdateTasks()");
+    expect(source).toContain("workflow-review-merge-reconcile");
+    expect(source).toContain("review reconcile: PR #");
   });
 });

@@ -953,6 +953,7 @@ describe("task-executor", () => {
       expect(ex._running).toBe(true);
       // workflowOwnsTaskLifecycle defaults to true — no poll timer
       expect(ex._pollTimer).toBeNull();
+      expect(ex._recoveryTimer).not.toBeNull();
       ex._running = false;
     });
 
@@ -961,8 +962,10 @@ describe("task-executor", () => {
       ex.start();
       expect(ex._running).toBe(true);
       expect(ex._pollTimer).not.toBeNull();
+      expect(ex._recoveryTimer).not.toBeNull();
       ex._running = false;
       clearInterval(ex._pollTimer);
+      clearInterval(ex._recoveryTimer);
     });
 
     it("start() waits for thread registry load before in-progress recovery", async () => {
@@ -989,6 +992,7 @@ describe("task-executor", () => {
 
       ex._running = false;
       clearInterval(ex._pollTimer);
+      clearInterval(ex._recoveryTimer);
     });
 
     it("stop() sets _running to false and clears poll timer", async () => {
@@ -1002,6 +1006,7 @@ describe("task-executor", () => {
 
       expect(ex._running).toBe(false);
       expect(ex._pollTimer).toBeNull();
+      expect(ex._recoveryTimer).toBeNull();
     });
 
     it("stop() waits for active slots gracefully", async () => {
@@ -1031,7 +1036,7 @@ describe("task-executor", () => {
 
   describe("in-progress recovery", () => {
     it("resumes fresh in-progress tasks on startup recovery", async () => {
-      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: false });
       ex._running = true;
       const executeSpy = vi
         .spyOn(ex, "executeTask")
@@ -1056,7 +1061,7 @@ describe("task-executor", () => {
     });
 
     it("moves stale in-progress tasks back to todo when no resumable thread exists", async () => {
-      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: false });
       ex._running = true;
       const executeSpy = vi
         .spyOn(ex, "executeTask")
@@ -1084,7 +1089,7 @@ describe("task-executor", () => {
     });
 
     it("resets unstarted in-progress tasks beyond slot capacity so backlog can flow", async () => {
-      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 1 });
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 1, workflowOwnsTaskLifecycle: false });
       ex._running = true;
       const executeSpy = vi
         .spyOn(ex, "executeTask")
@@ -1164,7 +1169,7 @@ describe("task-executor", () => {
     });
 
     it("still resumes in-progress tasks when no-commit count is below block threshold", async () => {
-      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: false });
       ex._running = true;
       ex._noCommitCounts.set("resume-2", 2);
       const executeSpy = vi
@@ -1568,9 +1573,32 @@ describe("task-executor", () => {
   // Legacy stubs — verify gutted methods return expected no-op values
   // ────────────────────────────────────────────────────────────────────────
 
-  describe("legacy method stubs", () => {
-    it("executeTask returns legacy_removed stub", async () => {
-      const ex = new TaskExecutor();
+describe("legacy method stubs", () => {
+    it("executeTask dispatches workflow-owned lifecycle via onTaskStarted hook", async () => {
+      const onTaskStarted = vi.fn();
+      const ex = new TaskExecutor({ onTaskStarted, workflowOwnsTaskLifecycle: true });
+      const result = await ex.executeTask({ id: "test-1", title: "Test" });
+      expect(result).toMatchObject({
+        queued: false,
+        started: true,
+        dispatched: true,
+        mode: "workflow-owned",
+        taskId: "test-1",
+      });
+      expect(onTaskStarted).toHaveBeenCalledTimes(1);
+      const [taskArg, slotArg] = onTaskStarted.mock.calls[0];
+      expect(taskArg).toMatchObject({ id: "test-1", title: "Test" });
+      expect(slotArg).toMatchObject({
+        taskId: "test-1",
+        taskTitle: "Test",
+        sdk: "auto",
+        status: "running",
+        attempt: 1,
+      });
+    });
+
+    it("executeTask returns legacy_removed stub when workflow lifecycle ownership is disabled", async () => {
+      const ex = new TaskExecutor({ workflowOwnsTaskLifecycle: false });
       const result = await ex.executeTask({ id: "test-1", title: "Test" });
       expect(result).toEqual({ skipped: true, reason: "legacy_removed" });
     });
@@ -1613,3 +1641,4 @@ describe("task-executor", () => {
   // [LEGACY TESTS REMOVED] — All execution pipeline tests have been replaced
   // by comprehensive workflow node tests in tests/workflow-task-lifecycle.test.mjs
 });
+

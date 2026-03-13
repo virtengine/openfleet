@@ -40,6 +40,8 @@
  */
 
 import { resolve, dirname } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../config/config.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "../config/repo-root.mjs";
@@ -51,6 +53,7 @@ import {
   streamRetryDelay,
   MAX_STREAM_RETRIES,
 } from "../infra/stream-resilience.mjs";
+import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import { compressAllItems, estimateSavings, estimateContextUsagePct, recordShreddingEvent } from "../workspace/context-cache.mjs";
 import { resolveContextShreddingOptions } from "../config/context-shredding-config.mjs";
 
@@ -566,16 +569,28 @@ function hasSdkPrerequisites(name, runtimeEnv = process.env) {
   }
 
   if (name === "codex") {
-    // Codex needs an OpenAI API key (or Azure key, or profile-specific key)
+    // Codex needs an OpenAI API key (or Azure key, or profile-specific key),
+    // OR a valid ~/.codex/config.toml where an env_key reference is satisfied.
     const hasKey =
       runtimeEnv.OPENAI_API_KEY ||
       runtimeEnv.AZURE_OPENAI_API_KEY ||
       runtimeEnv.CODEX_MODEL_PROFILE_XL_API_KEY ||
       runtimeEnv.CODEX_MODEL_PROFILE_M_API_KEY;
-    if (!hasKey) {
-      return { ok: false, reason: "no API key (OPENAI_API_KEY / AZURE_OPENAI_API_KEY)" };
+    if (hasKey) return { ok: true, reason: null };
+    // Check ~/.codex/config.toml — Codex CLI SDK reads auth env_key refs from there
+    try {
+      const configToml = resolve(homedir(), ".codex", "config.toml");
+      if (existsSync(configToml)) {
+        const tomlText = readFileSync(configToml, "utf8");
+        // Extract all env_key = "VAR_NAME" entries and check if any are set
+        for (const match of tomlText.matchAll(/env_key\s*=\s*"([^"]+)"/g)) {
+          if (runtimeEnv[match[1]]) return { ok: true, reason: null };
+        }
+      }
+    } catch {
+      // best effort — fall through to failure
     }
-    return { ok: true, reason: null };
+    return { ok: false, reason: "no API key (OPENAI_API_KEY / AZURE_OPENAI_API_KEY) and no satisfied env_key in ~/.codex/config.toml" };
   }
   if (name === "copilot") {
     // Copilot auth can come from multiple sources (OAuth manager, gh auth,
@@ -2344,16 +2359,8 @@ export async function launchEphemeralThread(
       missingPrereqSdks.push({ name, reason: prereq.reason });
       if (name === primaryName) {
         console.warn(
-          `${TAG} primary SDK "${name}" missing prerequisites: ${prereq.reason}; not attempting fallback`,
+          `${TAG} primary SDK "${name}" missing prerequisites: ${prereq.reason}; trying fallback chain`,
         );
-        return {
-          success: false,
-          output: "",
-          items: [],
-          error: `${TAG} ${name} unavailable: ${prereq.reason}`,
-          sdk: primaryName,
-          threadId: null,
-        };
       } else {
         console.log(`${TAG} skipping fallback SDK "${name}": ${prereq.reason}`);
       }
@@ -2535,7 +2542,10 @@ export async function execPooledPrompt(userMessage, options = {}) {
 /** @type {Map<string, ThreadRecord>} In-memory registry keyed by taskKey */
 const threadRegistry = new Map();
 
-const THREAD_REGISTRY_FILE = resolve(__dirname, "..", "logs", "thread-registry.json");
+const testSandbox = ensureTestRuntimeSandbox();
+const THREAD_REGISTRY_FILE = testSandbox?.cacheDir
+  ? resolve(testSandbox.cacheDir, "thread-registry.json")
+  : resolve(__dirname, "..", "logs", "thread-registry.json");
 const THREAD_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 /** Maximum turns before a thread is considered exhausted and must be replaced */
@@ -2726,7 +2736,7 @@ async function loadThreadRegistry() {
 async function saveThreadRegistry() {
   try {
     const { writeFile, mkdir } = await import("node:fs/promises");
-    await mkdir(resolve(__dirname, "..", "logs"), { recursive: true });
+    await mkdir(dirname(THREAD_REGISTRY_FILE), { recursive: true });
     const obj = Object.fromEntries(threadRegistry);
     await writeFile(THREAD_REGISTRY_FILE, JSON.stringify(obj, null, 2), "utf8");
   } catch {

@@ -70,10 +70,11 @@ ADJACENCY_MAP=(
   "workspace/|workspace-*|shared-state*|worktree-*|sync-engine*"
   "infra/|monitor-*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*"
   "agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*"
+  "bench/|bench-swebench*|benchmark-*|task-*"
   "config/|config-*|bosun-skills*|codex-config*"
   "telegram/|telegram-*|whatsapp-*"
   "voice/|voice-*|mic-*|native-call*"
-  "ui/|ui-*|static-relative*|mui-theme*|tab-swipe*|session-theme*|session-history*|demo-*|fleet-tab*"
+  "ui/|ui-*|workflow-canvas-utils*|static-relative*|mui-theme*|tab-swipe*|session-theme*|session-history*|demo-*|fleet-tab*"
   "site/|ui-*|static-relative*|demo-*"
   "server/|ui-server*|setup-web*|tunnel-*|ui-realtime*|presence*"
   "github/|github-*|hook-profiles*"
@@ -317,4 +318,3 @@ echo "[hooks] running ${#FINAL_TEST_LIST[@]}/${TOTAL_TESTS} targeted tests…"
 node node_modules/vitest/vitest.mjs run --config vitest.config.mjs "${FINAL_TEST_LIST[@]}"
 
 echo "[hooks] pre-push checks passed ✓"
-

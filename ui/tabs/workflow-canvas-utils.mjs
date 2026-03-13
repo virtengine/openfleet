@@ -64,6 +64,9 @@ export function parseGraphSnapshot(snapshot) {
   }
 }
 
+export const HISTORY_LIMIT = 50;
+export const HISTORY_COMMIT_DEBOUNCE_MS = 220;
+
 export function createHistoryState(nodes = [], edges = []) {
   return {
     past: [],
@@ -183,4 +186,34 @@ export function searchNodeTypes(types = [], query = "", limit = 30) {
 
   ranked.sort((left, right) => right.score - left.score || left.type.localeCompare(right.type));
   return ranked.slice(0, Math.max(1, limit));
+}
+
+export function buildNodeStatusesFromRunDetail(run) {
+  const detail = run?.detail || {};
+  const statuses = { ...(detail?.nodeStatuses || {}) };
+  const statusEvents = Array.isArray(detail?.nodeStatusEvents) ? detail.nodeStatusEvents : [];
+  const logs = Array.isArray(detail?.logs) ? detail.logs : [];
+
+  for (const event of statusEvents) {
+    const nodeId = String(event?.nodeId || "").trim();
+    const status = String(event?.status || "").trim();
+    if (!nodeId || !status) continue;
+    statuses[nodeId] = status;
+  }
+
+  // Backfill older runs that only recorded nodeId in logs.
+  if (Object.keys(statuses).length === 0) {
+    const fallbackStatus = run?.status === "failed"
+      ? "failed"
+      : run?.status === "completed"
+        ? "completed"
+        : "running";
+    for (const entry of logs) {
+      const nodeId = String(entry?.nodeId || "").trim();
+      if (!nodeId || statuses[nodeId]) continue;
+      statuses[nodeId] = fallbackStatus;
+    }
+  }
+
+  return statuses;
 }

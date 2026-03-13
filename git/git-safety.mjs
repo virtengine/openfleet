@@ -15,6 +15,8 @@ const STRIPPED_GIT_ENV_KEYS = [
 const BLOCKED_TEST_GIT_IDENTITIES = new Set([
   "test@example.com",
   "bosun-tests@example.com",
+  "bot@example.com",
+  "test@test.com",
 ]);
 
 const TEST_FIXTURE_SENTINEL_PATHS = new Set([
@@ -263,4 +265,19 @@ export function evaluateBranchSafetyForPush(worktreePath, opts = {}) {
       deleted: diff.deleted,
     },
   };
+}
+
+/**
+ * Clear any blocked test git identity from a worktree's local config.
+ * Worktrees inherit the parent repo's config, so if a test ever set
+ * user.name/email there it will poison all task commits until cleared.
+ * Call this after acquiring any worktree.
+ */
+export function clearBlockedWorktreeIdentity(worktreePath) {
+  const email = getGitConfig(worktreePath, "user.email").toLowerCase();
+  if (!BLOCKED_TEST_GIT_IDENTITIES.has(email)) return false;
+
+  runGit(["config", "--local", "--unset", "user.email"], worktreePath, 5_000);
+  runGit(["config", "--local", "--unset", "user.name"], worktreePath, 5_000);
+  return true;
 }

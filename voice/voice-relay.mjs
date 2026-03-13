@@ -324,6 +324,7 @@ function sanitizeVoiceCallContext(context = {}) {
   const rawEnabledMcpServers = Array.isArray(context?.enabledMcpServers)
     ? context.enabledMcpServers.map((s) => String(s || "").trim()).filter(Boolean)
     : [];
+  const rawVoiceAgentSkillsContent = String(context?.voiceAgentSkillsContent || "").trim();
 
   return {
     sessionId: rawSessionId || null,
@@ -335,6 +336,7 @@ function sanitizeVoiceCallContext(context = {}) {
     voiceAgentInstructions: rawVoiceAgentInstructions || null,
     voiceToolCapabilityPrompt: rawVoiceToolCapabilityPrompt || null,
     voiceAgentSkills: rawVoiceAgentSkills,
+    voiceAgentSkillsContent: rawVoiceAgentSkillsContent || null,
     enabledMcpServers: rawEnabledMcpServers,
   };
 }
@@ -410,6 +412,14 @@ async function buildSessionScopedInstructions(baseInstructions, callContext = {}
     }
   }
 
+  // ── Prepend voice agent identity as primary instructions ─────────────
+  // voiceInstructions defines who the agent IS (e.g. "You are Nova").
+  // It must come BEFORE the base instructions so the model adopts the
+  // persona rather than falling back to its default identity.
+  if (context.voiceAgentInstructions) {
+    baseInstructions = `${context.voiceAgentInstructions}\n\n${baseInstructions}`;
+  }
+
   const suffix = [
     "",
     "## Bosun Voice Call Context",
@@ -420,16 +430,15 @@ async function buildSessionScopedInstructions(baseInstructions, callContext = {}
     context.voiceAgentName
       ? `Active voice agent name: ${context.voiceAgentName}.`
       : "",
-    context.voiceAgentInstructions
-      ? `Voice agent instruction emphasis: ${context.voiceAgentInstructions}`
-      : "",
     context.voiceToolCapabilityPrompt || "",
     context.enabledMcpServers?.length
       ? `Enabled MCP servers for this session: ${context.enabledMcpServers.join(", ")}.`
       : "",
-    context.voiceAgentSkills?.length
-      ? `Voice agent skills: ${context.voiceAgentSkills.join(", ")}.`
-      : "",
+    context.voiceAgentSkillsContent
+      ? `## Voice Agent Skills\n${context.voiceAgentSkillsContent}`
+      : context.voiceAgentSkills?.length
+        ? `Voice agent skills: ${context.voiceAgentSkills.join(", ")}.`
+        : "",
     context.executor
       ? `Preferred executor for delegated work: ${context.executor}.`
       : "Preferred executor for delegated work: use configured default.",
@@ -948,6 +957,7 @@ export function getVoiceConfig(forceReload = false) {
         );
 
   const instructions = voice.instructions || `You are Bosun, a helpful voice assistant for the VirtEngine development platform.
+You are NOT ChatGPT — never identify yourself as ChatGPT or any other AI assistant. Your name is Bosun.
 You help developers manage tasks, steer coding agents, monitor builds, and navigate the workspace.
 Be concise and conversational. When users ask about code or tasks, use the available tools.
 For complex operations like writing code or creating PRs, delegate to the appropriate agent.
@@ -1226,14 +1236,14 @@ async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext
     turn_detection: {
       type: cfg.turnDetection,
       ...(cfg.turnDetection === "server_vad" ? {
-        threshold: 0.7,
-        prefix_padding_ms: 400,
-        silence_duration_ms: 1200,
+        threshold: 0.55,
+        prefix_padding_ms: 500,
+        silence_duration_ms: 1800,
         create_response: true,
         interrupt_response: true,
       } : {}),
       ...(cfg.turnDetection === "semantic_vad" ? {
-        eagerness: "medium",
+        eagerness: "low",
         create_response: true,
         interrupt_response: true,
       } : {}),
@@ -1314,8 +1324,6 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
   }
 
   const sessionConfig = {
-    // GA protocol (gpt-realtime-1.5 etc.) requires type: "realtime" in the POST body.
-    // Preview protocol does not support this field — omit it to avoid 400s.
     ...(isAzureGaProtocol(deployment) ? { type: "realtime" } : {}),
     model: deployment,
     voice: voiceId,
@@ -1327,14 +1335,14 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
     turn_detection: {
       type: cfg.turnDetection,
       ...(cfg.turnDetection === "server_vad" ? {
-        threshold: 0.7,
-        prefix_padding_ms: 400,
-        silence_duration_ms: 1200,
+        threshold: 0.55,
+        prefix_padding_ms: 500,
+        silence_duration_ms: 1800,
         create_response: true,
         interrupt_response: true,
       } : {}),
       ...(cfg.turnDetection === "semantic_vad" ? {
-        eagerness: "medium",
+        eagerness: "low",
         create_response: true,
         interrupt_response: true,
       } : {}),

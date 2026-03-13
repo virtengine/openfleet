@@ -979,6 +979,8 @@ describe("workflow-templates E2E execution", () => {
         "action.claim_task",
         "action.resolve_executor",
         "action.acquire_worktree",
+        "read-workflow-contract",
+        "workflow-contract-validation",
         "action.build_task_prompt",
       ];
       for (const type of requiredTypes) {
@@ -1289,4 +1291,3 @@ describe("workflow-templates E2E execution", () => {
     });
   });
 });
-
