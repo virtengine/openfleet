@@ -13,6 +13,7 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { resolve, dirname } from "node:path";
+import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { buildSessionInsights } from "../lib/session-insights.mjs";
 import { isTestRuntime } from "./test-runtime.mjs";
@@ -42,6 +43,10 @@ const TERMINAL_SESSION_STATUSES = new Set(["completed", "failed", "idle", "archi
 
 function isTerminalSessionStatus(status) {
   return TERMINAL_SESSION_STATUSES.has(String(status || "").trim().toLowerCase());
+}
+
+function randomToken(length = 8) {
+  return randomBytes(Math.ceil(length / 2)).toString("hex").slice(0, length);
 }
 
 function resolveSessionTrackerPersistDir(options = {}) {
@@ -188,7 +193,7 @@ export class SessionTracker {
       taskId,
       taskTitle,
       id: taskId,
-      sessionKey: `${taskId}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`,
+      sessionKey: `${taskId}:${Date.now()}:${randomToken(8)}`,
       type: "task",
       maxMessages: this.#maxMessages,
       startedAt: Date.now(),
@@ -263,7 +268,7 @@ export class SessionTracker {
     // Direct message format (role/content)
     if (event && event.role && event.content !== undefined) {
       const msg = {
-        id: event.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: event.id || `msg-${Date.now()}-${randomToken(6)}`,
         type: event.type || undefined,
         role: event.role,
         content: String(event.content).slice(0, MAX_MESSAGE_CHARS),
@@ -537,7 +542,7 @@ export class SessionTracker {
       taskTitle: metadata.title || id,
       sessionKey:
         String(sessionKey || "").trim() ||
-        `${taskId || id}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`,
+        `${taskId || id}:${Date.now()}:${randomToken(8)}`,
       type,
       status: "active",
       createdAt: now,
@@ -694,7 +699,7 @@ export class SessionTracker {
       return { ok: false, error: "Only user messages can be edited" };
     }
 
-    target.id = target.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    target.id = target.id || `msg-${Date.now()}-${randomToken(6)}`;
     target.content = nextContent.slice(0, MAX_MESSAGE_CHARS);
     target.edited = true;
     target.editedAt = new Date().toISOString();
@@ -814,7 +819,7 @@ export class SessionTracker {
     const type = event._sessionType || "task";
     this.createSession({
       id: taskId,
-      sessionKey: `${taskId}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`,
+      sessionKey: `${taskId}:${Date.now()}:${randomToken(8)}`,
       type,
       taskId,
       metadata: { autoCreated: true },
