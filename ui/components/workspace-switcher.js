@@ -470,7 +470,7 @@ function ExecutorConfigPanel({ ws }) {
 
       <${Collapse} in=${expanded}>
         <${Stack} spacing=${1.5} sx=${{ pt: 1, pb: 0.5, px: 0.5 }}>
-          <!-- Max concurrent executors -->
+
           <${Box}>
             <${Typography} variant="caption" color="text.secondary" sx=${{ mb: 0.5, display: "block" }}>
               Max Concurrent Executors: ${maxConcurrent}
@@ -492,7 +492,7 @@ function ExecutorConfigPanel({ ws }) {
             />
           <//>
 
-          <!-- Pool mode -->
+
           <${Stack} direction="row" spacing=${1} alignItems="center">
             <${Typography} variant="caption" color="text.secondary">Pool:<//>
             <${ToggleButtonGroup}
@@ -515,7 +515,7 @@ function ExecutorConfigPanel({ ws }) {
             <//>
           <//>
 
-          <!-- Weight (only for shared pool) -->
+
           ${pool === "shared" && html`
             <${Box}>
               <${Typography} variant="caption" color="text.secondary" sx=${{ mb: 0.5, display: "block" }}>
@@ -533,7 +533,7 @@ function ExecutorConfigPanel({ ws }) {
             <//>
           `}
 
-          <!-- Save button -->
+
           ${hasChanges && html`
             <${Button}
               size="small"
@@ -630,12 +630,12 @@ function WorkspaceCard({ ws }) {
           <//>
         <//>
 
-        <!-- State toggle row -->
+
         <${Box} sx=${{ mt: 1.5, mb: 0.5 }}>
           <${WorkspaceStateToggle} ws=${ws} />
         <//>
 
-        <!-- Executor config -->
+
         <${ExecutorConfigPanel} ws=${ws} />
       <//>
 
@@ -780,7 +780,7 @@ export function WorkspaceManager({ open, onClose }) {
 
   return html`
     <${Modal} title="Manage Workspaces" open=${open} onClose=${onClose}>
-      <!-- State summary bar -->
+
       ${wsList.length > 0 && html`
         <${Stack} direction="row" spacing=${1.5} sx=${{ mb: 2 }} alignItems="center">
           ${Object.entries(STATE_CONFIG).map(([key, cfg]) => html`

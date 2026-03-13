@@ -2554,6 +2554,70 @@ describe("ui-server mini app", () => {
     }
   });
 
+  it("merges bounded system log tails across monitor, error, and daemon logs", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const logDir = join(process.cwd(), "logs");
+    mkdirSync(logDir, { recursive: true });
+    const logNames = ["monitor.log", "monitor-error.log", "daemon.log"];
+    const backup = new Map(
+      logNames.map((name) => {
+        const filePath = join(logDir, name);
+        return [name, existsSync(filePath) ? readFileSync(filePath, "utf8") : null];
+      }),
+    );
+
+    const fixtures = {
+      "daemon.log": [
+        "2026-03-04T04:08:15.429Z [INFO] [daemon] bootstrap",
+        "2026-03-04T04:08:15.442Z [INFO] [daemon] heartbeat",
+      ].join("\n") + "\n",
+      "monitor.log": [
+        "2026-03-04T04:08:15.430Z [INFO] [kanban] using jira backend",
+        "2026-03-04T04:08:15.434Z [INFO] [task-store] no store file found",
+      ].join("\n") + "\n",
+      "monitor-error.log": [
+        "2026-03-04T04:08:15.431Z [WARN] [kanban] switched to jira backend",
+        "2026-03-04T04:08:15.440Z [ERROR] [task-store] removed task",
+      ].join("\n") + "\n",
+    };
+
+    try {
+      for (const [name, content] of Object.entries(fixtures)) {
+        writeFileSync(join(logDir, name), content, "utf8");
+      }
+
+      const payload = await fetch(`http://127.0.0.1:${port}/api/logs?lines=6`).then((r) => r.json());
+
+      expect(payload.ok).toBe(true);
+      expect(payload.data?.files).toEqual(["monitor.log", "monitor-error.log", "daemon.log"]);
+      expect(payload.data?.lines).toEqual([
+        "2026-03-04T04:08:15.429Z [INFO] [daemon] bootstrap",
+        "2026-03-04T04:08:15.430Z [INFO] [kanban] using jira backend",
+        "2026-03-04T04:08:15.431Z [WARN] [kanban] switched to jira backend",
+        "2026-03-04T04:08:15.434Z [INFO] [task-store] no store file found",
+        "2026-03-04T04:08:15.440Z [ERROR] [task-store] removed task",
+        "2026-03-04T04:08:15.442Z [INFO] [daemon] heartbeat",
+      ]);
+      expect(payload.data?.truncated).toBe(false);
+    } finally {
+      for (const [name, content] of backup.entries()) {
+        const filePath = join(logDir, name);
+        if (content == null) rmSync(filePath, { force: true });
+        else writeFileSync(filePath, content, "utf8");
+      }
+    }
+  });
+
   it("falls back to session workspaceDir for diff view", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
