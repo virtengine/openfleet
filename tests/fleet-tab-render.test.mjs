@@ -21,6 +21,14 @@ const sourceFiles = [
   source: readFileSync(resolve(process.cwd(), relPath), "utf8"),
 }));
 
+const sessionListSourceFiles = [
+  "ui/components/session-list.js",
+  "site/ui/components/session-list.js",
+].map((relPath) => ({
+  relPath,
+  source: readFileSync(resolve(process.cwd(), relPath), "utf8"),
+}));
+
 for (const { relPath, source } of sourceFiles) {
   describe(`FleetSessionsPanel render stability (${relPath})`, () => {
     it("treats detached sessions as active based on status, not history-only placement", () => {
@@ -96,6 +104,20 @@ for (const { relPath, source } of sourceFiles) {
       expect(statCardChunk).not.toMatch(/key=\$\{i\}/);
       // Should use a content-derived key (helper or inline expression)
       expect(statCardChunk).toMatch(/key=\$\{(?:fleetThreadKey\(|t\.taskKey)/);
+    });
+  });
+}
+
+for (const { relPath, source } of sessionListSourceFiles) {
+  describe(`SessionList stale-data UI parity (${relPath})`, () => {
+    it("renders explicit stale-state banner text", () => {
+      expect(source).toContain("Session list is showing stale data.");
+      expect(source).toContain("Last successful refresh:");
+    });
+
+    it("renders bounded retry status text for countdown and exhaustion", () => {
+      expect(source).toContain("Automatic retries stopped after ${loadMeta.maxAttempts} attempts.");
+      expect(source).toContain("Retry ${retryAttemptDisplay}/${loadMeta.maxAttempts} in ${retrySeconds}s.");
     });
   });
 }
@@ -213,4 +235,3 @@ describe("fleet entry building logic", () => {
     }
   });
 });
-
