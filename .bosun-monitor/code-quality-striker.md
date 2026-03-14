@@ -12,3 +12,14 @@ Format:
 - **PR**: link to the created PR
 
 ---
+## 2026-03-14T18:48:37+11:00
+
+- Scope: Refactored shell/codex-config.mjs to split Codex config orchestration into focused internal helpers.
+- Files changed: shell/codex-config.mjs, .bosun-monitor/code-quality-striker.md
+- Strategy: Split the large ensureCodexConfig flow into self-contained helper phases and deduplicated common MCP server definitions so config generation and insertion share one source of truth.
+- Validation evidence:
+  - `node --check shell/codex-config.mjs` passed on all touched files
+  - `npm test` passed (3784 tests)
+  - `pnpm build` passed
+- PR: #266 — `chore/code-quality-striker-20260314183350`
+
