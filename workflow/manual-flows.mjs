@@ -845,17 +845,25 @@ export function createRun(templateId, formValues, rootDir) {
   const template = getFlowTemplate(templateId, rootDir);
   if (!template) throw new Error(`Template not found: ${templateId}`);
 
-  // Validate required fields
+  validateRequiredManualFlowFields(template, formValues);
+  const resolved = resolveManualFlowValues(template, formValues);
+  const run = createManualFlowRunRecord(templateId, template.name, resolved);
+
+  writeRunToDisk(run, rootDir);
+  return run;
+}
+
+function validateRequiredManualFlowFields(template, formValues) {
   for (const field of template.fields) {
-    if (field.required) {
-      const val = formValues[field.id];
-      if (val === undefined || val === null || val === "") {
-        throw new Error(`Required field missing: ${field.label} (${field.id})`);
-      }
+    if (!field.required) continue;
+    const value = formValues[field.id];
+    if (value === undefined || value === null || value === "") {
+      throw new Error(`Required field missing: ${field.label} (${field.id})`);
     }
   }
+}
 
-  // Apply defaults for missing optional fields
+function resolveManualFlowValues(template, formValues) {
   const resolved = {};
   for (const field of template.fields) {
     if (formValues[field.id] !== undefined && formValues[field.id] !== null) {
@@ -864,21 +872,21 @@ export function createRun(templateId, formValues, rootDir) {
       resolved[field.id] = field.defaultValue;
     }
   }
+  return resolved;
+}
 
-  const run = {
+function createManualFlowRunRecord(templateId, templateName, formValues) {
+  return {
     id: `mfr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     templateId,
-    templateName: template.name,
-    formValues: resolved,
+    templateName,
+    formValues,
     status: "pending",
     startedAt: new Date().toISOString(),
     completedAt: null,
     result: null,
     error: null,
   };
-
-  writeRunToDisk(run, rootDir);
-  return run;
 }
 
 /**
@@ -1125,28 +1133,11 @@ async function executeContextIndexFull(formValues, rootDir, _context = {}) {
 }
 
 async function executeResearchAgent(formValues, rootDir, context = {}) {
-  const problem = String(formValues?.problem || "").trim();
-  if (!problem) {
-    throw new Error("Research problem is required.");
-  }
-
-  const domain = String(formValues?.domain || "computer-science").trim() || "computer-science";
-  const maxIterationsRaw = Number(formValues?.maxIterations);
-  const maxIterations = Number.isFinite(maxIterationsRaw)
-    ? Math.min(50, Math.max(1, Math.floor(maxIterationsRaw)))
-    : 10;
-  const searchLiterature = formValues?.searchLiterature !== false;
-  const executionMode = String(formValues?.executionMode || "workflow").trim().toLowerCase();
+  const researchConfig = resolveResearchAgentConfig(formValues);
+  const { problem, domain, maxIterations, searchLiterature, executionMode } = researchConfig;
 
   if (executionMode === "task") {
-    const taskDescription =
-      `Run iterative research for the following problem:\n\n` +
-      `${problem}\n\n` +
-      `Domain: ${domain}\n` +
-      `Max iterations: ${maxIterations}\n` +
-      `Search literature first: ${searchLiterature}\n\n` +
-      `Use a generate -> verify -> revise loop. If verification identifies critical flaws, ` +
-      `regenerate from a fundamentally different approach.`;
+    const taskDescription = buildResearchTaskDescription(researchConfig);
     if (context.taskManager && typeof context.taskManager.createTask === "function") {
       const task = await context.taskManager.createTask({
         title: `research: iterative agent (${domain})`,
@@ -1163,27 +1154,18 @@ async function executeResearchAgent(formValues, rootDir, context = {}) {
         searchLiterature,
       };
     }
-    return {
-      mode: "instructions",
-      problem,
-      domain,
-      maxIterations,
-      searchLiterature,
-      instructions: "Task manager unavailable. Create a high-priority research task using the provided configuration.",
-    };
+    return buildResearchInstructionsResult(
+      researchConfig,
+      "Task manager unavailable. Create a high-priority research task using the provided configuration.",
+    );
   }
 
   const engine = context.engine;
   if (!engine || typeof engine.execute !== "function") {
-    return {
-      mode: "instructions",
-      problem,
-      domain,
-      maxIterations,
-      searchLiterature,
-      instructions:
-        "Workflow execution mode requires an active workflow engine. Retry from the Workflows launcher or switch to Task mode.",
-    };
+    return buildResearchInstructionsResult(
+      researchConfig,
+      "Workflow execution mode requires an active workflow engine. Retry from the Workflows launcher or switch to Task mode.",
+    );
   }
 
   const { installTemplate } = await import("./workflow-templates.mjs");
@@ -1192,14 +1174,7 @@ async function executeResearchAgent(formValues, rootDir, context = {}) {
     installTemplate(templateId, engine);
   }
 
-  const input = {
-    problem,
-    domain,
-    maxIterations,
-    searchLiterature,
-    _previousFeedback: "",
-    triggerSource: "manual",
-  };
+  const input = buildResearchWorkflowInput(researchConfig);
 
   Promise.resolve()
     .then(() => engine.execute(templateId, input, { force: true, triggerSource: "manual" }))
@@ -1219,30 +1194,70 @@ async function executeResearchAgent(formValues, rootDir, context = {}) {
   };
 }
 
+function resolveResearchAgentConfig(formValues) {
+  const problem = String(formValues?.problem || "").trim();
+  if (!problem) {
+    throw new Error("Research problem is required.");
+  }
+
+  const domain = String(formValues?.domain || "computer-science").trim() || "computer-science";
+  const maxIterationsRaw = Number(formValues?.maxIterations);
+  const maxIterations = Number.isFinite(maxIterationsRaw)
+    ? Math.min(50, Math.max(1, Math.floor(maxIterationsRaw)))
+    : 10;
+
+  return {
+    problem,
+    domain,
+    maxIterations,
+    searchLiterature: formValues?.searchLiterature !== false,
+    executionMode: String(formValues?.executionMode || "workflow").trim().toLowerCase(),
+  };
+}
+
+function buildResearchTaskDescription({ problem, domain, maxIterations, searchLiterature }) {
+  return (
+    `Run iterative research for the following problem:\n\n` +
+    `${problem}\n\n` +
+    `Domain: ${domain}\n` +
+    `Max iterations: ${maxIterations}\n` +
+    `Search literature first: ${searchLiterature}\n\n` +
+    `Use a generate -> verify -> revise loop. If verification identifies critical flaws, ` +
+    `regenerate from a fundamentally different approach.`
+  );
+}
+
+function buildResearchInstructionsResult({ problem, domain, maxIterations, searchLiterature }, instructions) {
+  return {
+    mode: "instructions",
+    problem,
+    domain,
+    maxIterations,
+    searchLiterature,
+    instructions,
+  };
+}
+
+function buildResearchWorkflowInput({ problem, domain, maxIterations, searchLiterature }) {
+  return {
+    problem,
+    domain,
+    maxIterations,
+    searchLiterature,
+    _previousFeedback: "",
+    triggerSource: "manual",
+  };
+}
+
 /** Executor for user-created custom templates. */
 async function executeCustomFlow(template, formValues, rootDir, context) {
-  const templateValues = {
-    ...(formValues || {}),
-    templateName: template?.name || "",
-    templateId: template?.id || "",
-    category: template?.category || "custom",
-  };
-
-  const action = template?.action && typeof template.action === "object"
-    ? template.action
-    : { kind: "task" };
+  const templateValues = buildCustomFlowTemplateValues(template, formValues);
+  const action = resolveCustomFlowAction(template);
   const actionKind = String(action?.kind || "task").trim().toLowerCase();
 
   if (context.taskManager && typeof context.taskManager.createTask === "function") {
-    const taskAction = actionKind === "task" && action?.task && typeof action.task === "object"
-      ? action.task
-      : {};
-    const taskTitleTemplate = String(taskAction?.title || "").trim();
-    const taskDescriptionTemplate = String(taskAction?.description || "").trim();
-    const taskPriority = String(taskAction?.priority || "medium").trim() || "medium";
-    const taskLabels = Array.isArray(taskAction?.labels)
-      ? taskAction.labels.map((label) => String(label || "").trim()).filter(Boolean)
-      : [];
+    const { taskTitleTemplate, taskDescriptionTemplate, taskPriority, taskLabels } =
+      resolveCustomFlowTaskConfig(actionKind, action);
 
     const renderedTitle = renderTemplateString(taskTitleTemplate, templateValues);
     const renderedDescription = renderTemplateString(taskDescriptionTemplate, templateValues);
@@ -1280,6 +1295,36 @@ async function executeCustomFlow(template, formValues, rootDir, context) {
     formValues,
     action: actionKind,
     instructions: `Create a task to execute the "${template.name}" flow with the submitted form values.`,
+  };
+}
+
+function buildCustomFlowTemplateValues(template, formValues) {
+  return {
+    ...(formValues || {}),
+    templateName: template?.name || "",
+    templateId: template?.id || "",
+    category: template?.category || "custom",
+  };
+}
+
+function resolveCustomFlowAction(template) {
+  return template?.action && typeof template.action === "object"
+    ? template.action
+    : { kind: "task" };
+}
+
+function resolveCustomFlowTaskConfig(actionKind, action) {
+  const taskAction = actionKind === "task" && action?.task && typeof action.task === "object"
+    ? action.task
+    : {};
+
+  return {
+    taskTitleTemplate: String(taskAction?.title || "").trim(),
+    taskDescriptionTemplate: String(taskAction?.description || "").trim(),
+    taskPriority: String(taskAction?.priority || "medium").trim() || "medium",
+    taskLabels: Array.isArray(taskAction?.labels)
+      ? taskAction.labels.map((label) => String(label || "").trim()).filter(Boolean)
+      : [],
   };
 }
 
