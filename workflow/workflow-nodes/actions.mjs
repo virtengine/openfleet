@@ -17,7 +17,7 @@
  *   schema → object                             — JSON Schema for node config
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, statSync } from "node:fs";
 import {
   buildPlannerSkipReasonHistogram,
   CALIBRATED_MAX_RISK_WITHOUT_HUMAN,
@@ -49,6 +49,7 @@ import { getAgentToolConfig, getEffectiveTools } from "../../agent/agent-tool-co
 import { getToolsPromptBlock } from "../../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../../agent/bosun-skills.mjs";
 import { getSessionTracker } from "../../infra/session-tracker.mjs";
+import { normalizeBaseBranch } from "../../git/git-safety.mjs";
 import { fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
 
 import {
@@ -100,6 +101,15 @@ import {
   summarizePathListingBlock,
   trimLogText,
 } from "./definitions.mjs";
+
+function escapeHtmlText(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
 registerNodeType("action.run_agent", {
   describe: () => "Run a bosun agent with a prompt to perform work",
@@ -1401,7 +1411,12 @@ registerNodeType("action.create_pr", {
   async execute(node, ctx) {
     const title = ctx.resolve(node.config?.title || "");
     const body = ctx.resolve(node.config?.body || "");
-    const base = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
+    const baseInput = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
+    let base = String(baseInput || "main").trim() || "main";
+    try {
+      base = normalizeBaseBranch(base).branch;
+    } catch {
+    }
     const branch = ctx.resolve(node.config?.branch || "");
     const repoSlug = ctx.resolve(node.config?.repoSlug || ctx.data?.repoSlug || "");
     const draft = node.config?.draft === true;
@@ -4166,6 +4181,118 @@ registerNodeType("action.resolve_executor", {
 
 // ── action.acquire_worktree ─────────────────────────────────────────────────
 
+function resolveWorktreeGitDir(worktreePath) {
+  const gitMetadataPath = resolve(worktreePath, ".git");
+  if (!existsSync(gitMetadataPath)) return "";
+  try {
+    if (statSync(gitMetadataPath).isDirectory()) return gitMetadataPath;
+  } catch {
+    return "";
+  }
+  try {
+    const raw = readFileSync(gitMetadataPath, "utf8").trim();
+    const match = raw.match(/^gitdir:\s*(.+)$/im);
+    if (!match?.[1]) return "";
+    return resolve(dirname(gitMetadataPath), match[1].trim());
+  } catch {
+    return "";
+  }
+}
+
+function inspectManagedWorktreeState(worktreePath) {
+  const issues = [];
+  const conflictFiles = [];
+  const gitMetadataPath = resolve(worktreePath, ".git");
+  if (!existsSync(gitMetadataPath)) {
+    issues.push("missing_git_metadata");
+    return { invalid: true, issues, conflictFiles, gitDir: "" };
+  }
+
+  const gitDir = resolveWorktreeGitDir(worktreePath);
+  if (!gitDir || !existsSync(gitDir)) {
+    issues.push("missing_gitdir");
+  } else {
+    for (const marker of ["rebase-merge", "rebase-apply", "MERGE_HEAD"]) {
+      if (existsSync(resolve(gitDir, marker))) issues.push(marker);
+    }
+  }
+
+  try {
+    const unresolvedOutput = execSync("git diff --name-only --diff-filter=U", {
+      cwd: worktreePath,
+      encoding: "utf8",
+      timeout: 10000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    if (unresolvedOutput) {
+      conflictFiles.push(...unresolvedOutput.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean));
+    }
+  } catch {
+    issues.push("git_diff_failed");
+  }
+
+  if (conflictFiles.length > 0) issues.push("unmerged_index");
+
+  return {
+    invalid: issues.length > 0,
+    issues,
+    conflictFiles,
+    gitDir,
+  };
+}
+
+function clearWorktreeGitState(gitDir) {
+  if (!gitDir) return;
+  for (const marker of ["rebase-merge", "rebase-apply", "MERGE_HEAD"]) {
+    try {
+      rmSync(resolve(gitDir, marker), { recursive: true, force: true });
+    } catch {
+      // Best-effort.
+    }
+  }
+}
+
+function resetManagedWorktree(repoRoot, worktreePath, gitDir = "") {
+  clearWorktreeGitState(gitDir);
+  try {
+    execSync(`git worktree remove "${worktreePath}" --force`, {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 30000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    // Best-effort. Fall back to deleting the directory if git metadata is already broken.
+  }
+  try {
+    rmSync(worktreePath, { recursive: true, force: true });
+  } catch {
+    // Best-effort.
+  }
+  const managedGitDirRoot = resolve(repoRoot, ".git", "worktrees");
+  const normalizedGitDir = gitDir ? resolve(String(gitDir)) : "";
+  if (
+    normalizedGitDir &&
+    normalizedGitDir.toLowerCase().startsWith(managedGitDirRoot.toLowerCase())
+  ) {
+    try {
+      rmSync(normalizedGitDir, { recursive: true, force: true });
+    } catch {
+      // Best-effort.
+    }
+  }
+  try {
+    execSync("git worktree prune", {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 15000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    // Best-effort.
+  }
+}
+
 registerNodeType("action.acquire_worktree", {
   describe: () =>
     "Create or checkout a git worktree for isolated task execution. " +
@@ -4241,6 +4368,23 @@ registerNodeType("action.acquire_worktree", {
         return "";
       };
 
+      const invalidateBrokenReusableWorktree = (candidatePath, phaseLabel) => {
+        const state = inspectManagedWorktreeState(candidatePath);
+        if (!state.invalid) return false;
+        const details = [
+          state.issues.join(", "),
+          state.conflictFiles.length > 0 ? `conflicts=${state.conflictFiles.join(",")}` : "",
+        ].filter(Boolean).join(" ");
+        if (!isManagedBosunWorktree(candidatePath, repoRoot)) {
+          throw new Error(
+            `Attached worktree for ${branch} is in unresolved git state (${details || "unknown"})`,
+          );
+        }
+        ctx.log(node.id, `Discarding broken managed worktree (${phaseLabel}): ${candidatePath} ${details}`.trim());
+        resetManagedWorktree(repoRoot, candidatePath, state.gitDir);
+        return true;
+      };
+
       // Ensure base branch ref is fresh
       const baseBranchShort = baseBranch.replace(/^origin\//, "");
       try {
@@ -4272,21 +4416,27 @@ registerNodeType("action.acquire_worktree", {
 
       if (existsSync(worktreePath)) {
         // Reuse existing worktree — pull latest base if possible
-        try {
-          execSync(`git pull --rebase origin ${baseBranchShort}`, {
-            cwd: worktreePath, encoding: "utf8",
-            timeout: fetchTimeout,
-            stdio: ["ignore", "pipe", "pipe"],
-          });
-        } catch {
-          /* rebase failures are non-fatal for reuse */
+        let recreatedManagedWorktree = invalidateBrokenReusableWorktree(worktreePath, "pre-reuse");
+        if (!recreatedManagedWorktree && existsSync(worktreePath)) {
+          try {
+            execSync(`git pull --rebase origin ${baseBranchShort}`, {
+              cwd: worktreePath, encoding: "utf8",
+              timeout: fetchTimeout,
+              stdio: ["ignore", "pipe", "pipe"],
+            });
+          } catch {
+            /* rebase failures are non-fatal only if the worktree remains reusable */
+          }
+          recreatedManagedWorktree = invalidateBrokenReusableWorktree(worktreePath, "post-pull");
         }
-        ctx.data.worktreePath = worktreePath;
-        ctx.data.baseBranch = baseBranch;
-        ctx.data._worktreeCreated = false;
-        ctx.data._worktreeManaged = true;
-        ctx.log(node.id, `Reusing worktree: ${worktreePath}`);
-        return { success: true, worktreePath, created: false, reused: true, branch, baseBranch };
+        if (!recreatedManagedWorktree && existsSync(worktreePath)) {
+          ctx.data.worktreePath = worktreePath;
+          ctx.data.baseBranch = baseBranch;
+          ctx.data._worktreeCreated = false;
+          ctx.data._worktreeManaged = true;
+          ctx.log(node.id, `Reusing worktree: ${worktreePath}`);
+          return { success: true, worktreePath, created: false, reused: true, branch, baseBranch };
+        }
       }
 
       // Create fresh worktree
@@ -4300,36 +4450,49 @@ registerNodeType("action.acquire_worktree", {
           throw new Error(`Worktree creation failed: ${formatExecSyncError(createErr)}`);
         }
         const attachedPath = findAttachedWorktreeForBranch();
+        let recreatedAttachedWorktree = false;
         if (attachedPath && existsSync(attachedPath)) {
-          ctx.data.worktreePath = attachedPath;
-          ctx.data.baseBranch = baseBranch;
-          ctx.data._worktreeCreated = false;
-          ctx.data._worktreeManaged = true;
-          ctx.log(node.id, `Reusing existing branch worktree: ${attachedPath}`);
-          return {
-            success: true,
-            worktreePath: attachedPath,
-            created: false,
-            reused: true,
-            reusedExistingBranch: true,
-            branch,
-            baseBranch,
-          };
+          if (invalidateBrokenReusableWorktree(attachedPath, "attached-branch")) {
+            fixGitConfigCorruption(repoRoot);
+            execSync(
+              `git worktree add "${worktreePath}" -b "${branch}" "${baseBranch}" 2>&1`,
+              { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
+            );
+            recreatedAttachedWorktree = true;
+          } else {
+            ctx.data.worktreePath = attachedPath;
+            ctx.data.baseBranch = baseBranch;
+            ctx.data._worktreeCreated = false;
+            ctx.data._worktreeManaged = true;
+            ctx.log(node.id, `Reusing existing branch worktree: ${attachedPath}`);
+            return {
+              success: true,
+              worktreePath: attachedPath,
+              created: false,
+              reused: true,
+              reusedExistingBranch: true,
+              branch,
+              baseBranch,
+            };
+          }
         }
-        // Branch already exists — attach worktree to existing branch.
-        try {
-          execSync(
-            `git worktree add "${worktreePath}" "${branch}" 2>&1`,
-            { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
-          );
-        } catch (reuseErr) {
-          throw new Error(
-            `Worktree creation failed: ${formatExecSyncError(createErr)}; ` +
-            `reuse failed: ${formatExecSyncError(reuseErr)}`,
-          );
+        if (!recreatedAttachedWorktree) {
+          // Branch already exists — attach worktree to existing branch.
+          try {
+            execSync(
+              `git worktree add "${worktreePath}" "${branch}" 2>&1`,
+              { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
+            );
+          } catch (reuseErr) {
+            throw new Error(
+              `Worktree creation failed: ${formatExecSyncError(createErr)}; ` +
+              `reuse failed: ${formatExecSyncError(reuseErr)}`,
+            );
+          }
         }
       }
       fixGitConfigCorruption(repoRoot);
+      clearWorktreeGitState(resolveWorktreeGitDir(worktreePath));
 
       ctx.data.worktreePath = worktreePath;
       ctx.data.baseBranch = baseBranch;
@@ -5091,12 +5254,13 @@ registerNodeType("action.web_search", {
               signal: AbortSignal.timeout(10000),
             });
             const html = await pageResp.text();
-            // Simple text extraction — drop tags and neutralize residual angle brackets.
+            // Preserve fetched content as escaped plain text to avoid rendering untrusted markup.
             results[i].content = html
-              .replace(/<[^>]+>/g, " ")
-              .replace(/[<>]/g, " ")
+              .replace(/[\u0000-\u001F\u007F]/g, " ")
               .replace(/\s+/g, " ")
-              .trim()
+              .trim();
+            results[i].content = escapeHtmlText(results[i].content)
+              .replace(/\s+/g, " ")
               .slice(0, 5000);
           } catch { /* best-effort */ }
         }

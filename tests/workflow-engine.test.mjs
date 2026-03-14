@@ -277,6 +277,38 @@ describe("WorkflowEngine - retry logic", () => {
     expect(reached).toEqual(["branch"]);
   });
 
+  it("propagates skipped branch dependencies so converging false-path nodes can still run", async () => {
+    const reached = [];
+    registerNodeType("test.record_path", {
+      describe: () => "Records execution order",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        reached.push(node.id);
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "skipped-branch", type: "test.record_path", label: "Skipped Branch", config: {} },
+        { id: "converge", type: "test.record_path", label: "Converge", config: {} },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "skipped-branch", condition: "false" },
+        { id: "e2", source: "trigger", target: "converge", condition: "true" },
+        { id: "e3", source: "skipped-branch", target: "converge" },
+      ],
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+
+    expect(ctx.errors).toEqual([]);
+    expect(ctx.getNodeStatus("skipped-branch")).toBe("skipped");
+    expect(reached).toEqual(["converge"]);
+  });
+
   it("retries then succeeds on second attempt", async () => {
     let callCount = 0;
     registerNodeType("test.flaky_second_try", {
@@ -1281,6 +1313,61 @@ describe("action.execute_workflow", () => {
     expect(childDetail.detail?.data?.sharedValue).toBe("inherit-me");
     expect(childDetail.detail?.data?.ignoredValue).toBeUndefined();
     expect(childDetail.detail?.data?._workflowStack).toEqual([parentWorkflow.id, childWorkflow.id]);
+  });
+
+  it("sync mode resolves installed template aliases via metadata.installedFrom", async () => {
+    const childWorkflow = makeSimpleWorkflow(
+      [
+        { id: "child-trigger", type: "trigger.manual", label: "Start Child", config: {} },
+      ],
+      [],
+      { id: "child-installed-uuid", name: "Installed Template Child" },
+    );
+    childWorkflow.metadata = {
+      ...(childWorkflow.metadata || {}),
+      installedFrom: "template-installed-child",
+    };
+
+    const parentWorkflow = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start Parent", config: {} },
+        {
+          id: "invoke-child",
+          type: "action.execute_workflow",
+          label: "Invoke Installed Child",
+          config: {
+            workflowId: "template-installed-child",
+            outputVariable: "childSummary",
+          },
+        },
+      ],
+      [{ id: "e1", source: "trigger", target: "invoke-child" }],
+      { id: "parent-template-alias", name: "Parent Template Alias Workflow" },
+    );
+
+    engine.save(childWorkflow);
+    engine.save(parentWorkflow);
+
+    expect(engine.get("template-installed-child")?.id).toBe(childWorkflow.id);
+
+    const parentCtx = await engine.execute(parentWorkflow.id, {});
+
+    expect(parentCtx.errors).toEqual([]);
+    const output = parentCtx.getNodeOutput("invoke-child");
+    expect(output).toMatchObject({
+      success: true,
+      queued: false,
+      mode: "sync",
+      workflowId: "template-installed-child",
+      status: "completed",
+      errorCount: 0,
+    });
+    expect(parentCtx.data.childSummary).toEqual(output);
+
+    const childDetail = engine.getRunDetail(output.runId);
+    expect(childDetail).toBeTruthy();
+    expect(childDetail.workflowId).toBe("template-installed-child");
+    expect(engine.get(childDetail.workflowId)?.id).toBe(childWorkflow.id);
   });
 
   it("dispatch mode queues child workflow without waiting for completion", async () => {

@@ -659,7 +659,11 @@ async function ensureWorkflowAutomationEngine() {
       if (typeof workflowTemplates?.reconcileInstalledTemplates === "function") {
         const reconcile = workflowTemplates.reconcileInstalledTemplates(engine, {
           autoUpdateUnmodified: true,
-          forceUpdateTemplateIds: ["template-task-lifecycle", "template-task-finalization-guard"],
+          forceUpdateTemplateIds: [
+            "template-task-lifecycle",
+            "template-task-finalization-guard",
+            "template-agent-session-monitor",
+          ],
         });
         if (Number(reconcile?.autoUpdated || 0) > 0) {
           console.log(

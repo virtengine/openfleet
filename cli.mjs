@@ -107,7 +107,7 @@ function showHelp() {
   ORCHESTRATOR
     --script <path>             Path to the orchestrator script
     --args "<args>"             Arguments passed to the script (default: "-MaxParallel 6")
-    --restart-delay <ms>        Delay before restart (default: 10000)
+    --restart-delay <ms>        Delay before restart (default: 180000)
     --max-restarts <n>          Max restarts, 0 = unlimited (default: 0)
 
   LOGGING

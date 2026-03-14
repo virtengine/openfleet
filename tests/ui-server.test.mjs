@@ -2956,5 +2956,13 @@ describe("ui-server mini app", () => {
     }
   }, 30000);
 
-});
+  it("routes default-chat workflow Telegram notifications through the live digest helper", () => {
+    const source = readFileSync(join(process.cwd(), "server", "ui-server.mjs"), "utf8");
 
+    expect(source).toContain("async function sendWorkflowTelegramMessage");
+    expect(source).toContain('const digest = await getWorkflowTelegramDigest()');
+    expect(source).toContain('await digest.notify(message, 4, {');
+    expect(source).toContain('category: "workflow"');
+  });
+
+});

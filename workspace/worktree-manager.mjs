@@ -21,6 +21,7 @@ import {
   rmSync,
   statSync,
   readdirSync,
+  symlinkSync,
 } from "node:fs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -125,6 +126,26 @@ function sanitizeBranchName(branch) {
   while (safe.startsWith(".")) safe = safe.slice(1);
   while (safe.endsWith(".")) safe = safe.slice(0, -1);
   return safe.slice(0, 60); // Windows MAX_PATH is 260, worktree base path ~60, leaves ~140 for this + git overhead
+}
+
+function ensureWorktreeNodeModules(repoRoot, worktreePath) {
+  const repoNodeModulesPath = resolve(repoRoot, "node_modules");
+  const worktreeNodeModulesPath = resolve(worktreePath, "node_modules");
+  if (!existsSync(repoNodeModulesPath) || existsSync(worktreeNodeModulesPath)) {
+    return;
+  }
+
+  try {
+    symlinkSync(
+      repoNodeModulesPath,
+      worktreeNodeModulesPath,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+  } catch (error) {
+    console.warn(
+      `${TAG} failed to link node_modules into worktree ${worktreePath}: ${error?.message || error}`,
+    );
+  }
 }
 
 /**
@@ -408,6 +429,7 @@ class WorktreeManager {
           record.lastUsedAt = Date.now();
         }
       }
+      ensureWorktreeNodeModules(this.repoRoot, existingPath);
       await this.saveRegistry();
       return { path: existingPath, created: false, existing: true };
     }
@@ -547,6 +569,7 @@ class WorktreeManager {
     // Some git versions on Windows set core.bare=true on the main repo
     // when adding worktrees, which conflicts with core.worktree and breaks git.
     fixGitConfigCorruption(this.repoRoot);
+    ensureWorktreeNodeModules(this.repoRoot, worktreePath);
 
     // 3. Register the new worktree
     /** @type {WorktreeRecord} */

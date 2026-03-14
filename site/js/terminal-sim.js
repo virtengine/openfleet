@@ -161,7 +161,7 @@
       `  ${C.bold('ORCHESTRATOR')}`,
       `    ${C.cyan('--script')} <path>             Path to the orchestrator script`,
       `    ${C.cyan('--args')} "<args>"             Arguments passed to the script ${C.dim('(default: "-MaxParallel 6")')}`,
-      `    ${C.cyan('--restart-delay')} <ms>        Delay before restart ${C.dim('(default: 10000)')}`,
+      `    ${C.cyan('--restart-delay')} <ms>        Delay before restart ${C.dim('(default: 180000)')}`,
       `    ${C.cyan('--max-restarts')} <n>          Max restarts, 0 = unlimited ${C.dim('(default: 0)')}`,
       '',
       `  ${C.bold('LOGGING')}`,

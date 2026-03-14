@@ -1019,7 +1019,7 @@ function App() {
   const [sentinelRepairAgentEnabled, setSentinelRepairAgentEnabled] = useState(false);
   const [sentinelRepairTimeoutMin, setSentinelRepairTimeoutMin] = useState(15);
   // Daemon restart policy
-  const [daemonRestartDelayMs, setDaemonRestartDelayMs] = useState(10000);
+  const [daemonRestartDelayMs, setDaemonRestartDelayMs] = useState(180000);
   const [daemonMaxRestarts, setDaemonMaxRestarts] = useState(0);
   const [daemonMaxInstantRestarts, setDaemonMaxInstantRestarts] = useState(3);
   const [daemonInstantCrashWindowMs, setDaemonInstantCrashWindowMs] = useState(15000);
@@ -2023,7 +2023,7 @@ function App() {
       if (env.SENTINEL_REPAIR_AGENT_ENABLED) { setSentinelRepairAgentEnabled(env.SENTINEL_REPAIR_AGENT_ENABLED === "true"); envLoaded = true; }
       if (env.SENTINEL_REPAIR_TIMEOUT_MIN) { setSentinelRepairTimeoutMin(Number(env.SENTINEL_REPAIR_TIMEOUT_MIN) || 15); envLoaded = true; }
       // Daemon restart policy
-      if (env.RESTART_DELAY_MS) { setDaemonRestartDelayMs(Number(env.RESTART_DELAY_MS) || 10000); envLoaded = true; }
+      if (env.RESTART_DELAY_MS) { setDaemonRestartDelayMs(Number(env.RESTART_DELAY_MS) || 180000); envLoaded = true; }
       if (env.MAX_RESTARTS) { setDaemonMaxRestarts(Number(env.MAX_RESTARTS) || 0); envLoaded = true; }
       if (env.BOSUN_DAEMON_MAX_INSTANT_RESTARTS) { setDaemonMaxInstantRestarts(Number(env.BOSUN_DAEMON_MAX_INSTANT_RESTARTS) || 3); envLoaded = true; }
       if (env.BOSUN_DAEMON_INSTANT_CRASH_WINDOW_MS) { setDaemonInstantCrashWindowMs(Number(env.BOSUN_DAEMON_INSTANT_CRASH_WINDOW_MS) || 15000); envLoaded = true; }
@@ -4845,8 +4845,8 @@ function App() {
           <div class="form-group">
             <label>Restart Delay (ms)</label>
             <input type="number" value=${daemonRestartDelayMs} min="0"
-              oninput=${(e) => setDaemonRestartDelayMs(Number(e.target.value) || 10000)} />
-            <div class="hint">Delay before restarting after a crash. Default: 10 000 ms.</div>
+              oninput=${(e) => setDaemonRestartDelayMs(Number(e.target.value) || 180000)} />
+            <div class="hint">Delay before restarting after a crash. Default: 180 000 ms (180 s).</div>
           </div>
           <div class="form-group">
             <label>Max Restarts (0 = unlimited)</label>
@@ -5093,5 +5093,4 @@ render(html`<${App} />`, document.getElementById("app"));
 </body>
 <script defer src="https://cloud.umami.is/script.js" data-website-id="24c5d605-7f25-4be5-875e-25c8f3cb4059"></script>
 </html>
-
 

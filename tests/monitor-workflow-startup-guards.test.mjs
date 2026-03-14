@@ -40,6 +40,11 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain("auto-disabled stale workflow");
   });
 
+  it("forces agent session monitor template reconciliation on startup", () => {
+    expect(monitorSource).toContain('forceUpdateTemplateIds: [');
+    expect(monitorSource).toContain('"template-agent-session-monitor"');
+  });
+
   it("stores workflow definitions and runs under the selected repoRoot", () => {
     expect(monitorSource).toContain('workflowDir: resolve(repoRoot, ".bosun", "workflows")');
     expect(monitorSource).toContain('runsDir: resolve(repoRoot, ".bosun", "workflow-runs")');
@@ -231,6 +236,13 @@ describe("workflow-engine interrupted run deduplication", () => {
 
   it("reads taskId from detail.data.taskId or detail.inputData.taskId", () => {
     expect(engineSource).toContain("d.data?.taskId || d.inputData?.taskId");
+  });
+
+  it("bounds orphan interrupted-run scans so archived run details do not stall startup", () => {
+    expect(engineSource).toContain("WORKFLOW_INTERRUPTED_ORPHAN_SCAN_MAX_FILES");
+    expect(engineSource).toContain("WORKFLOW_INTERRUPTED_ORPHAN_SCAN_WINDOW_MS");
+    expect(engineSource).toContain("Orphan interrupted-run scan limited");
+    expect(engineSource).toContain("this._getInterruptedOrphanRunCandidates()");
   });
 });
 

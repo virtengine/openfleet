@@ -77,6 +77,23 @@ describe("SessionTracker.getProgressStatus", () => {
     expect(status.recommendation).toBe("nudge");
   });
 
+  it("does not treat turn_context noise as real activity", () => {
+    tracker.startSession("task-1", "Test");
+    const session = tracker.getSession("task-1");
+    session.lastActivityAt = Date.now() - 150;
+
+    tracker.recordEvent("task-1", { type: "turn_context" });
+    tracker.recordEvent("task-1", {
+      type: "event_msg",
+      payload: { type: "token_count" },
+    });
+
+    const status = tracker.getProgressStatus("task-1");
+    expect(status.totalEvents).toBe(0);
+    expect(status.status).toBe("idle");
+    expect(status.recommendation).toBe("nudge");
+  });
+
   it("detects hasEdits from tool calls", () => {
     tracker.startSession("task-1", "Test");
     tracker.recordEvent("task-1", {

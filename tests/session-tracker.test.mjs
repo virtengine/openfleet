@@ -196,6 +196,23 @@ describe("session-tracker", () => {
       expect(messages[0].content).toContain("Done. Changes are applied.");
     });
 
+    it("ignores low-signal stream noise for activity tracking", () => {
+      tracker.startSession("task-1", "Test");
+      const session = tracker.getSession("task-1");
+      const before = session.lastActivityAt;
+
+      tracker.recordEvent("task-1", { type: "turn_context" });
+      tracker.recordEvent("task-1", {
+        type: "event_msg",
+        payload: { type: "token_count" },
+      });
+
+      const messages = tracker.getLastMessages("task-1");
+      expect(messages).toHaveLength(0);
+      expect(session.totalEvents).toBe(0);
+      expect(session.lastActivityAt).toBe(before);
+    });
+
     it("records Copilot message events", () => {
       tracker.startSession("task-1", "Test");
       tracker.recordEvent("task-1", {
@@ -268,9 +285,9 @@ describe("session-tracker", () => {
       const messages = tracker.getLastMessages("task-1");
       expect(messages).toHaveLength(0);
 
-      // But totalEvents is still incremented
+      // Low-signal events should not keep the session alive
       const session = tracker.getSession("task-1");
-      expect(session.totalEvents).toBe(1);
+      expect(session.totalEvents).toBe(0);
     });
   });
 

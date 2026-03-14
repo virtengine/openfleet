@@ -431,19 +431,29 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       taskId: "{{taskId}}",
     }, { x: 600, y: 1090 }),
 
+    node("wt-failure-blocking", "condition.expression", "Non-Retryable WT Failure?", {
+      expression: "$ctx.getNodeOutput('acquire-worktree')?.retryable === false",
+    }, { x: 600, y: 1220, outputs: ["yes", "no"] }),
+
+    node("set-blocked-wt-failed", "action.update_task_status", "Set Blocked (WT Fail)", {
+      taskId: "{{taskId}}",
+      status: "blocked",
+      taskTitle: "{{taskTitle}}",
+    }, { x: 470, y: 1350 }),
+
     node("set-todo-wt-failed", "action.update_task_status", "Set Todo (WT Fail)", {
       taskId: "{{taskId}}",
       status: "todo",
       taskTitle: "{{taskTitle}}",
-    }, { x: 600, y: 1220 }),
+    }, { x: 730, y: 1350 }),
 
     node("release-slot-wt-failed", "action.release_slot", "Release Slot (WT Fail)", {
       taskId: "{{taskId}}",
-    }, { x: 600, y: 1350 }),
+    }, { x: 600, y: 1480 }),
 
     node("notify-wt-failed", "notify.telegram", "Notify WT Failed", {
-      message: "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}})",
-    }, { x: 600, y: 1480 }),
+      message: "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{$ctx.getNodeOutput('acquire-worktree')?.retryable === false ? ' — task blocked' : ''}}",
+    }, { x: 600, y: 1610 }),
   ],
   edges: [
     // Main flow
@@ -515,7 +525,10 @@ export const TASK_LIFECYCLE_TEMPLATE = {
 
     // Worktree failed path
     edge("worktree-ok", "release-claim-wt-failed", { condition: "$output?.result !== true", port: "no" }),
-    edge("release-claim-wt-failed", "set-todo-wt-failed"),
+    edge("release-claim-wt-failed", "wt-failure-blocking"),
+    edge("wt-failure-blocking", "set-blocked-wt-failed", { condition: "$output?.result === true", port: "yes" }),
+    edge("wt-failure-blocking", "set-todo-wt-failed", { condition: "$output?.result !== true", port: "no" }),
+    edge("set-blocked-wt-failed", "release-slot-wt-failed"),
     edge("set-todo-wt-failed", "release-slot-wt-failed"),
     edge("release-slot-wt-failed", "notify-wt-failed"),
   ],
@@ -800,5 +813,4 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     },
   },
 };
-
 

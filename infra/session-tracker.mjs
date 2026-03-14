@@ -240,16 +240,18 @@ export class SessionTracker {
       if (!session) return;
     }
 
-    session.totalEvents++;
-    session.lastActivityAt = Date.now();
-    session.lastActiveAt = new Date().toISOString();
-
     const maxMessages =
       session.maxMessages === null || session.maxMessages === undefined
         ? this.#maxMessages
         : session.maxMessages;
+    const markActivity = () => {
+      session.totalEvents++;
+      session.lastActivityAt = Date.now();
+      session.lastActiveAt = new Date().toISOString();
+    };
 
     if (typeof event === "string" && event.trim()) {
+      markActivity();
       const msg = {
         type: "system",
         content: event.trim().slice(0, MAX_MESSAGE_CHARS),
@@ -267,8 +269,9 @@ export class SessionTracker {
 
     // Direct message format (role/content)
     if (event && event.role && event.content !== undefined) {
+      markActivity();
       const msg = {
-      id: event.id || `msg-${Date.now()}-${randomToken(6)}`,
+        id: event.id || `msg-${Date.now()}-${randomToken(6)}`,
         type: event.type || undefined,
         role: event.role,
         content: String(event.content).slice(0, MAX_MESSAGE_CHARS),
@@ -299,10 +302,10 @@ export class SessionTracker {
 
     const msg = this.#normalizeEvent(event);
     if (!msg) {
-      this.#markDirty(taskId);
-      return; // Skip uninteresting events — still update timestamp
+      return; // Ignore low-signal events that should not mask idle/stalled sessions
     }
 
+    markActivity();
     // Push to ring buffer (keep only last N)
     session.messages.push(msg);
     if (Number.isFinite(maxMessages) && maxMessages > 0) {

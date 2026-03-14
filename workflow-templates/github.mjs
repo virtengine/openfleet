@@ -1488,11 +1488,10 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
       },
     }, { x: 600, y: 700 }),
 
-    node("notify", "notify.telegram", "Watchdog Report", {
+    node("notify", "notify.log", "Watchdog Report", {
       message:
-        ":bug: Bosun PR Watchdog cycle complete — " +
-        "fix-dispatched: {{fixNeeded}} | candidates-reviewed: {{readyCandidates}}",
-      silent: true,
+        "Bosun PR Watchdog cycle complete — see live digest/status board for streaming updates",
+      level: "info",
     }, { x: 400, y: 900 }),
 
     node("no-prs", "notify.log", "No Bosun PRs Open", {
@@ -1991,5 +1990,4 @@ export const SDK_CONFLICT_RESOLVER_TEMPLATE = {
     },
   },
 };
-
 
