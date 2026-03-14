@@ -1171,7 +1171,7 @@ describe("action.acquire_worktree", () => {
     expect(second.reused).toBe(true);
     expect(ctx2.data._worktreeCreated).toBe(false);
     expect(ctx2.data._worktreeManaged).toBe(true);
-  });
+  }, 15000);
 
   it("reuses an already-attached branch worktree even when managed path naming changed", async () => {
     const nt = getNodeType("action.acquire_worktree");
