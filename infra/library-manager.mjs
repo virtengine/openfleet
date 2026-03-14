@@ -1557,9 +1557,9 @@ export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
 
   const best = candidates[0] || null;
   const runnerUp = candidates[1] || null;
-  const minScore = parseMatchEnvNumber("BOSUN_AGENT_MATCH_AUTO_MIN_SCORE", 10);
-  const minConfidence = parseMatchEnvNumber("BOSUN_AGENT_MATCH_AUTO_MIN_CONFIDENCE", 0.45);
-  const minDelta = parseMatchEnvNumber("BOSUN_AGENT_MATCH_AUTO_MIN_DELTA", 2);
+  const minScore = parseMatchEnvNumber("BOSUN_AGENT_MATCH_AUTO_MIN_SCORE", 12);
+  const minConfidence = parseMatchEnvNumber("BOSUN_AGENT_MATCH_AUTO_MIN_CONFIDENCE", 0.72);
+  const minDelta = parseMatchEnvNumber("BOSUN_AGENT_MATCH_AUTO_MIN_DELTA", 3);
   const shouldAutoApply = Boolean(
     best
       && Number(best.score || 0) >= minScore
