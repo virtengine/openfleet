@@ -973,6 +973,86 @@ describe("action.resolve_executor", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("selects dynamically scored library skills even when the profile has no static skill list", async () => {
+    const nt = getNodeType("action.resolve_executor");
+    const root = mkdtempSync(join(tmpdir(), "wf-resolve-executor-dynamic-skills-"));
+    const bosunDir = join(root, ".bosun");
+    const profilesDir = join(bosunDir, "profiles");
+    const skillsDir = join(bosunDir, "skills");
+    mkdirSync(profilesDir, { recursive: true });
+    mkdirSync(skillsDir, { recursive: true });
+
+    const now = new Date().toISOString();
+    writeFileSync(join(bosunDir, "library.json"), JSON.stringify({
+      generated: now,
+      entries: [
+        {
+          id: "backend-agent",
+          type: "agent",
+          name: "Backend Agent",
+          description: "Backend profile",
+          filename: "backend-agent.json",
+          tags: ["backend", "api", "webhook"],
+          scope: "global",
+          workspace: null,
+          meta: {},
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: "webhook-test-guidance",
+          type: "skill",
+          name: "Webhook Test Guidance",
+          description: "Testing guidance for webhook handlers and delivery retries",
+          filename: "webhook-test-guidance.md",
+          tags: ["webhook", "tests", "api"],
+          scope: "global",
+          workspace: null,
+          meta: {},
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    }, null, 2));
+    writeFileSync(
+      join(profilesDir, "backend-agent.json"),
+      JSON.stringify({
+        id: "backend-agent",
+        name: "Backend Agent",
+        description: "Backend specialist",
+        titlePatterns: [String.raw`\bwebhook\b`, String.raw`\bapi\b`],
+        scopes: ["api", "backend"],
+        tags: ["backend", "api", "webhook"],
+        skills: [],
+      }, null, 2),
+    );
+    writeFileSync(
+      join(skillsDir, "webhook-test-guidance.md"),
+      "# Skill\nFocus on webhook tests, retry semantics, and API failure cases.",
+    );
+
+    const ctx = makeCtx({
+      repoRoot: root,
+      task: {
+        tags: ["backend", "api", "tests"],
+      },
+    });
+    const node = makeNode("action.resolve_executor", {
+      taskTitle: "feat(api): add webhook delivery tests",
+      taskDescription: "Implement webhook retry behavior and update API tests for failure handling.",
+      repoRoot: root,
+      defaultSdk: "auto",
+    });
+
+    const result = await nt.execute(node, ctx);
+    expect(result.success).toBe(true);
+    expect(ctx.data.agentProfile).toBe("backend-agent");
+    expect(Array.isArray(ctx.data.resolvedSkillIds)).toBe(true);
+    expect(ctx.data.resolvedSkillIds).toContain("webhook-test-guidance");
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("does not auto-apply low-confidence profile matches", async () => {
     const nt = getNodeType("action.resolve_executor");
     const root = mkdtempSync(join(tmpdir(), "wf-resolve-executor-low-confidence-"));

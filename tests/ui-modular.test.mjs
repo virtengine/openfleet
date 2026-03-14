@@ -5,6 +5,7 @@ import {
   parseGraphSnapshot,
   pushHistorySnapshot,
   redoHistory,
+  resolveNodeOutputPreview,
   searchNodeTypes,
   undoHistory,
 } from "../ui/tabs/workflow-canvas-utils.mjs";
@@ -13,9 +14,18 @@ import {
   validateSetting as validateAppSetting,
 } from "../ui/modules/settings-schema.js";
 import {
+  isPlaceholderTaskDescription,
+  sanitizeTaskText,
+} from "../ui/modules/state.js";
+import {
   SETTINGS_SCHEMA as siteSettingsSchema,
   validateSetting as validateSiteSetting,
 } from "../site/ui/modules/settings-schema.js";
+import {
+  extractSelectableLibraryTasks,
+  isSelectableLibraryTask,
+} from "../ui/tabs/library.js";
+import { buildTaskDescriptionFallback } from "../ui/tabs/tasks.js";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -274,6 +284,72 @@ describe("workflow canvas helpers", () => {
       "node-a": "failed",
       "node-b": "failed",
     });
+  });
+
+  it("derives node output previews from stored run data", () => {
+    const preview = resolveNodeOutputPreview("action.run_agent", null, {
+      summary: "Generated implementation plan",
+      narrative: "Updated tests and finished validation.",
+      usage: { total_tokens: 4821 },
+    });
+
+    expect(preview.lines).toEqual([
+      "Generated implementation plan",
+      "Updated tests and finished validation.",
+    ]);
+    expect(preview.tokenCount).toBe(4821);
+  });
+
+  it("prefers live node output preview payloads when present", () => {
+    const preview = resolveNodeOutputPreview("action.run_agent", {
+      lines: ["Preview summary", "Second line"],
+      tokenCount: 128,
+    }, {
+      summary: "Fallback output",
+      usage: { total_tokens: 999 },
+    });
+
+    expect(preview.lines).toEqual(["Preview summary", "Second line"]);
+    expect(preview.tokenCount).toBe(128);
+  });
+});
+
+describe("library task selection helpers", () => {
+  it("accepts backlog and draft tasks from api data payloads", () => {
+    const result = extractSelectableLibraryTasks({
+      ok: true,
+      data: [
+        { id: "1", title: "Draft task", status: "draft" },
+        { id: "2", title: "Backlog task", status: "todo" },
+        { id: "3", title: "In progress task", status: "inprogress" },
+        { id: "4", title: "Blocked task", status: "blocked" },
+      ],
+    });
+
+    expect(result.map((task) => task.id)).toEqual(["1", "2"]);
+  });
+
+  it("treats legacy backlog labels as selectable and excludes active work", () => {
+    expect(isSelectableLibraryTask({ status: "backlog" })).toBe(true);
+    expect(isSelectableLibraryTask({ status: "planned" })).toBe(true);
+    expect(isSelectableLibraryTask({ status: "open" })).toBe(true);
+    expect(isSelectableLibraryTask({ status: "new" })).toBe(true);
+    expect(isSelectableLibraryTask({ status: "in-progress" })).toBe(false);
+    expect(isSelectableLibraryTask({ status: "blocked" })).toBe(false);
+  });
+});
+
+describe("task description fallbacks", () => {
+  it("treats scrubbed internal errors as missing descriptions", () => {
+    expect(isPlaceholderTaskDescription("Internal server error")).toBe(true);
+    expect(buildTaskDescriptionFallback("Queue retry fix", "Internal server error")).toContain("Queue retry fix");
+  });
+
+  it("preserves real descriptions while still sanitizing punctuation noise", () => {
+    const raw = "Fix worker loop… and validate retries";
+    expect(sanitizeTaskText(raw)).toContain("Fix worker loop");
+    expect(isPlaceholderTaskDescription(raw)).toBe(false);
+    expect(buildTaskDescriptionFallback("Worker fix", raw)).toContain("Fix worker loop");
   });
 });
 

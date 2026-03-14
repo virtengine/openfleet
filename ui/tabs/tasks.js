@@ -39,6 +39,7 @@ import {
   setPendingChange,
   clearPendingChange,
   sanitizeTaskText,
+  isPlaceholderTaskDescription,
 } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
 import {
@@ -975,14 +976,27 @@ async function fetchFirstAvailableDagPath(paths = []) {
   return null;
 }
 
-function buildTaskDescriptionFallback(rawTitle, rawDescription) {
+export function buildTaskDescriptionFallback(rawTitle, rawDescription) {
   const title = sanitizeTaskText(rawTitle || "");
   const description = sanitizeTaskText(rawDescription || "");
+  if (isPlaceholderTaskDescription(description)) {
+    if (!title) {
+      return "No description provided yet. Add scope, key files, and acceptance checks before dispatch.";
+    }
+    return `Implementation notes for "${title}". Include scope, key files, risks, and acceptance checks before dispatch.`;
+  }
   if (description) return description;
   if (!title) {
     return "No description provided yet. Add scope, key files, and acceptance checks before dispatch.";
   }
   return `Implementation notes for "${title}". Include scope, key files, risks, and acceptance checks before dispatch.`;
+}
+
+function buildTaskDetailPath(taskId, options = {}) {
+  const params = new URLSearchParams({ taskId: String(taskId || "") });
+  if (options.includeDag === false) params.set("includeDag", "0");
+  if (options.includeWorkflowRuns === false) params.set("includeWorkflowRuns", "0");
+  return `/api/tasks/detail?${params.toString()}`;
 }
 
 
@@ -1889,7 +1903,13 @@ export function TaskProgressModal({ task, onClose }) {
     let cancelled = false;
     const poll = async () => {
       try {
-        const taskRes = await apiFetch(`/api/tasks/detail?taskId=${task.id}`, { _silent: true });
+        const taskRes = await apiFetch(
+          buildTaskDetailPath(task.id, {
+            includeDag: false,
+            includeWorkflowRuns: false,
+          }),
+          { _silent: true },
+        );
         if (!cancelled && taskRes?.data) setLiveTask(taskRes.data);
 
         const healthRes = await apiFetch(`/api/supervisor/task/${task.id}`, { _silent: true });
@@ -2087,7 +2107,13 @@ export function TaskReviewModal({ task, onClose, onStart }) {
     let cancelled = false;
     const load = async () => {
       try {
-        const taskRes = await apiFetch(`/api/tasks/detail?taskId=${task.id}`, { _silent: true });
+        const taskRes = await apiFetch(
+          buildTaskDetailPath(task.id, {
+            includeDag: false,
+            includeWorkflowRuns: false,
+          }),
+          { _silent: true },
+        );
         if (!cancelled && taskRes?.data) setLiveTask(taskRes.data);
 
         const healthRes = await apiFetch(`/api/supervisor/task/${task.id}`, { _silent: true });
@@ -2307,7 +2333,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
 }
 
 /* ─── TaskDetailModal ─── */
-export function TaskDetailModal({ task, onClose, onStart, presentation = "modal", taskCatalog = [], epicCatalog = [] }) {
+export function TaskDetailModal({ task, onClose, onStart, presentation = "modal", taskCatalog = [], epicCatalog = [], isHydrating = false }) {
   const [title, setTitle] = useState(sanitizeTaskText(task?.title || ""));
   const [description, setDescription] = useState(buildTaskDescriptionFallback(task?.title, task?.description));
   const [baseBranch, setBaseBranch] = useState(getTaskBaseBranch(task));
@@ -2434,7 +2460,10 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       .finally(() => { setExecutionPlanLoading(false); setDryRunLoading(false); });
   }, [task?.id]);
 
-  useEffect(() => { fetchExecutionPlan("resolve"); }, [task?.id]);
+  useEffect(() => {
+    if (activeTab !== "execution") return;
+    fetchExecutionPlan("resolve");
+  }, [activeTab, fetchExecutionPlan]);
 
   const toggleNodeExpand = useCallback((stageIdx, nodeId) => {
     setExpandedNodes((prev) => ({ ...prev, [`${stageIdx}-${nodeId}`]: !prev[`${stageIdx}-${nodeId}`] }));
@@ -3139,6 +3168,12 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       <div class="task-detail-title-area" style="display:flex;gap:12px;align-items:flex-start;">
         <div style="flex:1;min-width:0;">
           <input class="task-detail-title-input" value=${title} onInput=${(e) => setTitle(e.target.value)} placeholder="Task title" />
+          ${isHydrating && html`
+            <div class="meta-text" style=${{ marginTop: "6px", display: "flex", alignItems: "center", gap: "6px" }}>
+              <${CircularProgress} size=${12} thickness=${5} />
+              <span>Refreshing task details…</span>
+            </div>
+          `}
         </div>
         <div style="display:flex;gap:6px;align-items:center;padding-top:6px;flex-shrink:0;">
           <button class="task-status-btn" data-status=${status}>
@@ -4720,6 +4755,7 @@ export function TasksTab() {
   const [showCreate, setShowCreate] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
   const [detailTask, setDetailTask] = useState(null);
+  const [detailTaskHydrating, setDetailTaskHydrating] = useState(false);
   const [startTarget, setStartTarget] = useState(null);
   const [startAnyOpen, setStartAnyOpen] = useState(false);
   const [batchMode, setBatchMode] = useState(false);
@@ -4744,6 +4780,7 @@ export function TasksTab() {
   const [dagEpicDependencies, setDagEpicDependencies] = useState([]);
   const [dagFocusMode, setDagFocusMode] = useState("all");
   const [showCreateSprint, setShowCreateSprint] = useState(false);
+  const detailRequestIdRef = useRef(0);
   const [editingSprint, setEditingSprint] = useState(null);
   const [createSeed, setCreateSeed] = useState(null);
   const [dagInteractionMode, setDagInteractionMode] = useState("open");
@@ -5499,11 +5536,16 @@ export function TasksTab() {
   const openDetail = async (taskId) => {
     haptic();
     const local = tasks.find((t) => t.id === taskId);
+    const requestId = ++detailRequestIdRef.current;
+    setDetailTask(local || { id: taskId, title: taskId, status: "todo", description: "" });
+    setDetailTaskHydrating(true);
     const result = await apiFetch(
-      `/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
+      buildTaskDetailPath(taskId, { includeDag: false }),
       { _silent: true },
     ).catch(() => ({ data: local }));
-    setDetailTask(result.data || local);
+    if (detailRequestIdRef.current !== requestId) return;
+    setDetailTask((prev) => ({ ...(prev || {}), ...(result.data || local || {}) }));
+    setDetailTaskHydrating(false);
   };
 
   /* ── Batch operations ── */
@@ -6414,14 +6456,23 @@ export function TasksTab() {
     html`
       <${TaskProgressModal}
         task=${detailTask}
-        onClose=${() => setDetailTask(null)}
+        onClose=${() => {
+          detailRequestIdRef.current += 1;
+          setDetailTask(null);
+          setDetailTaskHydrating(false);
+        }}
       />
     `}
     ${detailTask && (isDag || !isActiveStatus(detailTask.status) || !hasLiveExecutionEvidence(detailTask)) &&
     html`
       <${TaskDetailModal}
         task=${detailTask}
-        onClose=${() => setDetailTask(null)}
+        isHydrating=${detailTaskHydrating}
+        onClose=${() => {
+          detailRequestIdRef.current += 1;
+          setDetailTask(null);
+          setDetailTaskHydrating(false);
+        }}
         onStart=${(task) => openStartModal(task)}
         presentation=${isDag ? "side-sheet" : "modal"}
         taskCatalog=${dagTaskCatalog}
@@ -7022,13 +7073,6 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     <//>
   `;
 }
-
-
-
-
-
-
-
 
 
 
