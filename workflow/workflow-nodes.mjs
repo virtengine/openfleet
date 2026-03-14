@@ -24,6 +24,12 @@ import {
   registerNodeType,
   unregisterNodeType,
 } from "./workflow-engine.mjs";
+import {
+  _completedWithPR,
+  _noCommitCounts,
+  _skipUntil,
+  MAX_NO_COMMIT_ATTEMPTS,
+} from "./workflow-nodes/transforms.mjs";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
@@ -4213,7 +4219,7 @@ registerBuiltinNodeType("action.create_pr", {
       autoMergeMethod: {
         type: "string",
         enum: ["merge", "squash", "rebase"],
-        default: "squash",
+        default: "merge",
         description: "Merge method used with gh pr merge --auto",
       },
       mergeMethod: {
@@ -4246,11 +4252,11 @@ registerBuiltinNodeType("action.create_pr", {
       false,
     );
     const autoMergeMethodRaw = String(
-      ctx.resolve(node.config?.autoMergeMethod || node.config?.mergeMethod || "squash"),
+      ctx.resolve(node.config?.autoMergeMethod || node.config?.mergeMethod || process.env.BOSUN_MERGE_METHOD || "merge"),
     ).trim().toLowerCase();
     const autoMergeMethod = ["merge", "squash", "rebase"].includes(autoMergeMethodRaw)
       ? autoMergeMethodRaw
-      : "squash";
+      : (process.env.BOSUN_MERGE_METHOD || "merge");
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
 
     // Normalize labels/reviewers to arrays
@@ -9815,13 +9821,9 @@ function cleanupBrokenManagedWorktree(repoRoot, worktreePath) {
 }
 
 /**
- * Anti-thrash state — module-scope to survive across workflow runs.
- * Mirrors TaskExecutor._noCommitCounts / _skipUntil / _completedWithPR.
+ * Anti-thrash state — imported from transforms.mjs (single source of truth).
+ * Shared between monolithic workflow-nodes.mjs and modular triggers.mjs.
  */
-const _noCommitCounts = new Map();
-const _skipUntil = new Map();
-const _completedWithPR = new Set();
-const MAX_NO_COMMIT_ATTEMPTS = 3;
 const NO_COMMIT_BASE_COOLDOWN_MS = 15 * 60 * 1000; // 15 min
 const NO_COMMIT_MAX_COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2 hours
 const STRICT_START_GUARD_MISSING_TASK = /^(1|true|yes|on)$/i.test(
@@ -11872,6 +11874,21 @@ registerBuiltinNodeType("action.push_branch", {
         /* best-effort — still try to push */
       }
     }
+
+    // ── Hard zero-diff guard (always active) ──
+    try {
+      const headSha = execSync("git rev-parse HEAD", {
+        cwd: worktreePath, encoding: "utf8", timeout: 5_000, stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+      const mainSha = execSync("git rev-parse origin/main", {
+        cwd: worktreePath, encoding: "utf8", timeout: 5_000, stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+      if (headSha && mainSha && headSha === mainSha) {
+        ctx.log(node.id, "HEAD is identical to origin/main — aborting push to prevent PR wipe");
+        ctx.data._pushSkipped = true;
+        return { success: false, error: "HEAD matches origin/main — refusing push", pushed: false };
+      }
+    } catch { /* best-effort */ }
 
     // ── Push ──
     const pushFlags = [];
