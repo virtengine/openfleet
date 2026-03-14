@@ -211,6 +211,7 @@
     "infra/library-manager.mjs",
     "infra/maintenance.mjs",
     "workflow/manual-flows.mjs",
+    "workflow/manual-flow-audit.mjs",
     "workflow/pipeline-workflows.mjs",
     "workflow/workflow-cli.mjs",
     "workflow/mcp-discovery-proxy.mjs",

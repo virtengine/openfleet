@@ -18,3 +18,14 @@
   - `npm test` passed (3825 tests)
   - `pnpm build` passed
 - PR: #282 — `chore/code-quality-striker-20260314-template-state-clean`
+
+## 2026-03-14T08:45:30-05:00
+
+- Scope: Split the manual flow audit executor and inventory helpers out of `workflow/manual-flows.mjs` into a co-located module with no API changes.
+- Files changed: workflow/manual-flows.mjs, workflow/manual-flow-audit.mjs, [object Object]
+- Strategy: Extracted the codebase annotation audit path into `workflow/manual-flow-audit.mjs` so template/run orchestration stays in `workflow/manual-flows.mjs` while audit execution logic remains self-contained for safer future edits.
+- Validation evidence:
+  - `[object Object]` passed on all touched files
+  - `npm test` passed (3828 tests)
+  - `pnpm build` passed
+- PR: #PENDING — `chore/code-quality-striker-20260314-manual-flow-audit`
