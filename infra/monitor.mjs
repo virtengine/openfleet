@@ -14779,6 +14779,17 @@ async function syncDivergedWorktrees() {
         continue;
       }
 
+      // Safety: refuse to push if HEAD now equals origin/main (would wipe PR changes)
+      try {
+        const headSha = execSync("git rev-parse HEAD", { cwd: wtPath, encoding: "utf8", timeout: 5_000, stdio: ["pipe", "pipe", "pipe"] }).trim();
+        const mainSha = execSync("git rev-parse origin/main", { cwd: wtPath, encoding: "utf8", timeout: 5_000, stdio: ["pipe", "pipe", "pipe"] }).trim();
+        if (headSha === mainSha) {
+          console.warn(`[monitor:worktree-sync] ${branch} HEAD matches origin/main after rebase — aborting push to prevent PR wipe`);
+          failed++;
+          continue;
+        }
+      } catch { /* best-effort check */ }
+
       // Push with --force-with-lease (safe: we just fetched fresh remote refs)
       try {
         execSync(`git push --force-with-lease --set-upstream origin HEAD`, {

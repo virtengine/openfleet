@@ -11873,6 +11873,21 @@ registerBuiltinNodeType("action.push_branch", {
       }
     }
 
+    // ── Hard zero-diff guard (always active) ──
+    try {
+      const headSha = execSync("git rev-parse HEAD", {
+        cwd: worktreePath, encoding: "utf8", timeout: 5_000, stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+      const mainSha = execSync("git rev-parse origin/main", {
+        cwd: worktreePath, encoding: "utf8", timeout: 5_000, stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+      if (headSha && mainSha && headSha === mainSha) {
+        ctx.log(node.id, "HEAD is identical to origin/main — aborting push to prevent PR wipe");
+        ctx.data._pushSkipped = true;
+        return { success: false, error: "HEAD matches origin/main — refusing push", pushed: false };
+      }
+    } catch { /* best-effort */ }
+
     // ── Push ──
     const pushFlags = [];
     if (forceWithLease) pushFlags.push("--force-with-lease");
