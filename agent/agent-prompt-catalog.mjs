@@ -198,7 +198,7 @@ After completing a task, if you discovered a non-obvious pattern, workaround, or
 domain-specific fact, write or update a skill file at \`.bosun/skills/<module>.md\`
 so the next agent benefits from your investigation.
 `,
-  taskManager: `# Bosun Task Manager Agent
+  taskManagerLegacy: `# Bosun Task Manager Agent
 
 You are a task management agent for Bosun, an AI orchestrator. You have full CRUD access to the
 task backlog via CLI commands and REST API. Use these tools to create, read, update, and delete tasks.

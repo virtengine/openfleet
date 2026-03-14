@@ -1586,7 +1586,7 @@ function ProfileMatcher() {
   useEffect(() => {
     setTaskListLoading(true);
     const wsParam = typeof window !== "undefined" && window.__bosunWorkspaceId ? `&workspace=${encodeURIComponent(window.__bosunWorkspaceId)}` : "";
-    fetch(`/api/tasks?pageSize=100${wsParam}`)
+    fetch(`/api/tasks?pageSize=100&status=library${wsParam}`)
       .then((r) => r.json())
       .then((data) => {
         setTaskList(extractSelectableLibraryTasks(data));
