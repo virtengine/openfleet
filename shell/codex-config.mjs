@@ -891,33 +891,60 @@ export function hasMicrosoftDocsMcp(toml) {
  * Build MCP server blocks for context7 and microsoft-docs.
  * These are universally useful for documentation lookups.
  */
-export function buildCommonMcpBlocks() {
+const COMMON_MCP_SERVER_DEFS = [
+  {
+    name: "context7",
+    headerComment: "# ── Common MCP servers (added by bosun) ──",
+    lines: [
+      "[mcp_servers.context7]",
+      "startup_timeout_sec = 120",
+      'command = "npx"',
+      'args = ["-y", "@upstash/context7-mcp"]',
+    ],
+    isPresent: hasContext7Mcp,
+  },
+  {
+    name: "sequential-thinking",
+    lines: [
+      "[mcp_servers.sequential-thinking]",
+      "startup_timeout_sec = 120",
+      'command = "npx"',
+      'args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]',
+    ],
+    isPresent: (toml) => hasNamedMcpServer(toml, "sequential-thinking"),
+  },
+  {
+    name: "playwright",
+    lines: [
+      "[mcp_servers.playwright]",
+      "startup_timeout_sec = 120",
+      'command = "npx"',
+      'args = ["-y", "@playwright/mcp@latest"]',
+    ],
+    isPresent: (toml) => hasNamedMcpServer(toml, "playwright"),
+  },
+  {
+    name: "microsoft-docs",
+    lines: [
+      "[mcp_servers.microsoft-docs]",
+      'url = "https://learn.microsoft.com/api/mcp"',
+      'tools = ["microsoft_docs_search", "microsoft_code_sample_search"]',
+    ],
+    isPresent: hasMicrosoftDocsMcp,
+  },
+];
+
+function buildCommonMcpBlock(definition) {
   return [
     "",
-    "# ── Common MCP servers (added by bosun) ──",
-    "[mcp_servers.context7]",
-    "startup_timeout_sec = 120",
-    'command = "npx"',
-    'args = ["-y", "@upstash/context7-mcp"]',
-    "",
-    "[mcp_servers.sequential-thinking]",
-    "startup_timeout_sec = 120",
-    'command = "npx"',
-    'args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]',
-    "",
-    "[mcp_servers.playwright]",
-    "startup_timeout_sec = 120",
-    'command = "npx"',
-    'args = ["-y", "@playwright/mcp@latest"]',
-    "",
-    "[mcp_servers.microsoft-docs]",
-    'url = "https://learn.microsoft.com/api/mcp"',
-    // microsoft_docs_fetch description alone is ~2KB and breaks the Azure
-    // Responses API JSON parser when combined with other MCP tool schemas.
-    // Keep only the two search tools which are sufficient for most use cases.
-    'tools = ["microsoft_docs_search", "microsoft_code_sample_search"]',
+    ...(definition.headerComment ? [definition.headerComment] : []),
+    ...definition.lines,
     "",
   ].join("\n");
+}
+
+export function buildCommonMcpBlocks() {
+  return COMMON_MCP_SERVER_DEFS.map(buildCommonMcpBlock).join("");
 }
 
 function hasNamedMcpServer(toml, name) {
@@ -1327,6 +1354,187 @@ export function ensureRetrySettings(toml, providerName) {
  * @param {object}  [opts.env]     Environment overrides (defaults to process.env)
  * @param {string}  [opts.primarySdk]  Primary agent SDK: "codex", "copilot", or "claude"
  */
+function resolveSandboxWorkspaceOptions(env) {
+  const repoRoot =
+    env.BOSUN_AGENT_REPO_ROOT ||
+    env.REPO_ROOT ||
+    env.BOSUN_HOME ||
+    process.cwd();
+  const additionalRoots = env.BOSUN_WORKSPACES_DIR
+    ? [env.BOSUN_WORKSPACES_DIR]
+    : [];
+  return {
+    repoRoot,
+    additionalRoots,
+    writableRoots: env.CODEX_SANDBOX_WRITABLE_ROOTS,
+  };
+}
+
+function applySandboxDefaults(toml, env, result) {
+  const sandboxModeResult = ensureTopLevelSandboxMode(
+    toml,
+    env.CODEX_SANDBOX_MODE,
+  );
+  let nextToml = sandboxModeResult.toml;
+  if (sandboxModeResult.changed) {
+    result.sandboxAdded = true;
+  }
+
+  const sandboxOptions = resolveSandboxWorkspaceOptions(env);
+  const sandboxWorkspaceResult = ensureSandboxWorkspaceWrite(nextToml, sandboxOptions);
+  nextToml = sandboxWorkspaceResult.toml;
+  result.sandboxWorkspaceAdded = sandboxWorkspaceResult.added;
+  result.sandboxWorkspaceUpdated =
+    sandboxWorkspaceResult.changed && !sandboxWorkspaceResult.added;
+  result.sandboxWorkspaceRootsAdded = sandboxWorkspaceResult.rootsAdded;
+
+  const pruneResult = pruneStaleSandboxRoots(nextToml);
+  nextToml = pruneResult.toml;
+  result.sandboxStaleRootsRemoved = pruneResult.removed;
+
+  if (!hasShellEnvPolicy(nextToml)) {
+    nextToml += buildShellEnvPolicy(env.CODEX_SHELL_ENV_POLICY || "all");
+    result.shellEnvAdded = true;
+  }
+
+  return { toml: nextToml, ...sandboxOptions };
+}
+
+function normalizePrimarySdkName(primarySdk, env) {
+  const rawPrimary = String(primarySdk || env.PRIMARY_AGENT || "codex")
+    .trim()
+    .toLowerCase();
+  if (rawPrimary === "copilot" || rawPrimary.includes("copilot")) return "copilot";
+  if (rawPrimary === "claude" || rawPrimary.includes("claude")) return "claude";
+  if (rawPrimary === "codex" || rawPrimary.includes("codex")) return "codex";
+  return "codex";
+}
+
+function applyAgentSdkDefaults(toml, env, primarySdk, result) {
+  let nextToml = toml;
+  const normalizedPrimary = normalizePrimarySdkName(primarySdk, env);
+  if (!hasAgentSdkConfig(nextToml)) {
+    nextToml += buildAgentSdkBlock({ primary: normalizedPrimary });
+    result.agentSdkAdded = true;
+  }
+
+  const maxThreads = resolveAgentMaxThreads(env);
+  if (maxThreads.explicit && !maxThreads.value) {
+    result.agentMaxThreadsSkipped = String(maxThreads.raw);
+    return nextToml;
+  }
+
+  const maxThreadsResult = ensureAgentMaxThreads(nextToml, {
+    maxThreads: maxThreads.value,
+    overwrite: maxThreads.explicit,
+  });
+  nextToml = maxThreadsResult.toml;
+  if (maxThreadsResult.changed && !maxThreadsResult.skipped) {
+    result.agentMaxThreads = {
+      from: maxThreadsResult.existing,
+      to: maxThreadsResult.applied,
+      explicit: maxThreads.explicit,
+    };
+  } else if (maxThreadsResult.skipped && maxThreads.explicit) {
+    result.agentMaxThreadsSkipped = String(maxThreads.raw);
+  }
+
+  return nextToml;
+}
+
+function applyVibeKanbanDefaults(toml, { manageVkMcp, skipVk, vkBaseUrl }, result) {
+  let nextToml = toml;
+  const shouldManageGlobalVkMcp = Boolean(manageVkMcp) && !skipVk;
+  if (!shouldManageGlobalVkMcp) {
+    if (hasVibeKanbanMcp(nextToml)) {
+      nextToml = removeVibeKanbanMcp(nextToml);
+      result.vkRemoved = true;
+    }
+    return nextToml;
+  }
+
+  if (!hasVibeKanbanMcp(nextToml)) {
+    nextToml += buildVibeKanbanBlock({ vkBaseUrl });
+    result.vkAdded = true;
+    return nextToml;
+  }
+
+  const vkEnvValues = {
+    VK_BASE_URL: vkBaseUrl,
+    VK_ENDPOINT_URL: vkBaseUrl,
+  };
+  const beforeVkEnv = nextToml;
+  if (!hasVibeKanbanEnv(nextToml)) {
+    nextToml =
+      nextToml.trimEnd() +
+      "\n\n[mcp_servers.vibe_kanban.env]\n" +
+      'VK_BASE_URL = "' + vkBaseUrl + '"\n' +
+      'VK_ENDPOINT_URL = "' + vkBaseUrl + '"\n';
+  } else {
+    nextToml = updateVibeKanbanEnv(nextToml, vkEnvValues);
+  }
+  if (nextToml !== beforeVkEnv) {
+    result.vkEnvUpdated = true;
+  }
+  return nextToml;
+}
+
+function ensureCommonMcpDefaults(toml, result) {
+  let nextToml = toml;
+  for (const definition of COMMON_MCP_SERVER_DEFS) {
+    if (!definition.isPresent(nextToml)) {
+      nextToml += buildCommonMcpBlock(definition);
+      result.commonMcpAdded = true;
+    }
+  }
+
+  for (const serverName of ["context7", "sequential-thinking", "playwright"]) {
+    const timeoutResult = ensureMcpStartupTimeout(nextToml, serverName, 120);
+    nextToml = timeoutResult.toml;
+  }
+
+  return nextToml;
+}
+
+function applyModelProviderDefaults(toml, env, result) {
+  let nextToml = toml;
+  const providerResult = ensureModelProviderSectionsFromEnv(nextToml, env);
+  nextToml = providerResult.toml;
+  result.profileProvidersAdded = providerResult.added;
+
+  const timeoutAudit = auditStreamTimeouts(nextToml);
+  for (const item of timeoutAudit) {
+    if (!item.needsUpdate) continue;
+    nextToml = setStreamTimeout(nextToml, item.provider, RECOMMENDED_STREAM_IDLE_TIMEOUT_MS);
+    result.timeoutsFixed.push({
+      provider: item.provider,
+      from: item.currentValue,
+      to: RECOMMENDED_STREAM_IDLE_TIMEOUT_MS,
+    });
+  }
+
+  for (const provider of auditStreamTimeouts(nextToml).map((item) => item.provider)) {
+    const beforeRetry = nextToml;
+    nextToml = ensureRetrySettings(nextToml, provider);
+    if (nextToml !== beforeRetry) {
+      result.retriesAdded.push(provider);
+    }
+  }
+
+  return nextToml;
+}
+
+function applyTrustedProjectDefaults(repoRoot, additionalRoots, dryRun, result) {
+  const trustPaths = [repoRoot, ...additionalRoots]
+    .map((p) => String(p || "").trim())
+    .filter(Boolean)
+    .filter((p) => isAbsolute(p));
+  if (trustPaths.length > 0) {
+    const trustResult = ensureTrustedProjects(trustPaths, { dryRun });
+    result.trustedProjectsAdded = trustResult.added;
+  }
+}
+
 export function ensureCodexConfig({
   vkBaseUrl = "http://127.0.0.1:54089",
   skipVk = true,
@@ -1367,192 +1575,22 @@ export function ensureCodexConfig({
     toml = "";
   }
 
-  const sandboxModeResult = ensureTopLevelSandboxMode(
-    toml,
-    env.CODEX_SANDBOX_MODE,
-  );
-  toml = sandboxModeResult.toml;
-  if (sandboxModeResult.changed) {
-    result.sandboxAdded = true;
-  }
+  const sandboxState = applySandboxDefaults(toml, env, result);
+  toml = sandboxState.toml;
 
-  const repoRoot =
-    env.BOSUN_AGENT_REPO_ROOT ||
-    env.REPO_ROOT ||
-    env.BOSUN_HOME ||
-    process.cwd();
-  const additionalRoots = env.BOSUN_WORKSPACES_DIR
-    ? [env.BOSUN_WORKSPACES_DIR]
-    : [];
-  const sandboxWorkspaceResult = ensureSandboxWorkspaceWrite(toml, {
-    repoRoot,
-    additionalRoots,
-    writableRoots: env.CODEX_SANDBOX_WRITABLE_ROOTS,
-  });
-  toml = sandboxWorkspaceResult.toml;
-  result.sandboxWorkspaceAdded = sandboxWorkspaceResult.added;
-  result.sandboxWorkspaceUpdated =
-    sandboxWorkspaceResult.changed && !sandboxWorkspaceResult.added;
-  result.sandboxWorkspaceRootsAdded = sandboxWorkspaceResult.rootsAdded;
-
-  const pruneResult = pruneStaleSandboxRoots(toml);
-  toml = pruneResult.toml;
-  result.sandboxStaleRootsRemoved = pruneResult.removed;
-
-  if (!hasShellEnvPolicy(toml)) {
-    toml += buildShellEnvPolicy(env.CODEX_SHELL_ENV_POLICY || "all");
-    result.shellEnvAdded = true;
-  }
-
-  const rawPrimary = String(primarySdk || env.PRIMARY_AGENT || "codex")
-    .trim()
-    .toLowerCase();
-  const normalizedPrimary =
-    rawPrimary === "copilot" || rawPrimary.includes("copilot")
-      ? "copilot"
-      : rawPrimary === "claude" || rawPrimary.includes("claude")
-        ? "claude"
-        : rawPrimary === "codex" || rawPrimary.includes("codex")
-          ? "codex"
-          : "codex";
-  if (!hasAgentSdkConfig(toml)) {
-    toml += buildAgentSdkBlock({ primary: normalizedPrimary });
-    result.agentSdkAdded = true;
-  }
-
-  const maxThreads = resolveAgentMaxThreads(env);
-  if (maxThreads.explicit && !maxThreads.value) {
-    result.agentMaxThreadsSkipped = String(maxThreads.raw);
-  } else {
-    const maxThreadsResult = ensureAgentMaxThreads(toml, {
-      maxThreads: maxThreads.value,
-      overwrite: maxThreads.explicit,
-    });
-    toml = maxThreadsResult.toml;
-    if (maxThreadsResult.changed && !maxThreadsResult.skipped) {
-      result.agentMaxThreads = {
-        from: maxThreadsResult.existing,
-        to: maxThreadsResult.applied,
-        explicit: maxThreads.explicit,
-      };
-    } else if (maxThreadsResult.skipped && maxThreads.explicit) {
-      result.agentMaxThreadsSkipped = String(maxThreads.raw);
-    }
-  }
+  toml = applyAgentSdkDefaults(toml, env, primarySdk, result);
 
   const featureResult = ensureFeatureFlags(toml, env);
   result.featuresAdded = featureResult.added;
   toml = featureResult.toml;
 
-  const shouldManageGlobalVkMcp = Boolean(manageVkMcp) && !skipVk;
-  if (!shouldManageGlobalVkMcp) {
-    if (hasVibeKanbanMcp(toml)) {
-      toml = removeVibeKanbanMcp(toml);
-      result.vkRemoved = true;
-    }
-  } else if (!hasVibeKanbanMcp(toml)) {
-    toml += buildVibeKanbanBlock({ vkBaseUrl });
-    result.vkAdded = true;
-  } else {
-    const vkEnvValues = {
-      VK_BASE_URL: vkBaseUrl,
-      VK_ENDPOINT_URL: vkBaseUrl,
-    };
-    const beforeVkEnv = toml;
-    if (!hasVibeKanbanEnv(toml)) {
-      toml =
-        toml.trimEnd() +
-        "\n\n[mcp_servers.vibe_kanban.env]\n" +
-        `VK_BASE_URL = "${vkBaseUrl}"\n` +
-        `VK_ENDPOINT_URL = "${vkBaseUrl}"\n`;
-    } else {
-      toml = updateVibeKanbanEnv(toml, vkEnvValues);
-    }
-    if (toml !== beforeVkEnv) {
-      result.vkEnvUpdated = true;
-    }
-  }
-
-  const commonMcpBlocks = [
-    {
-      present: hasContext7Mcp(toml),
-      block: [
-        "",
-        "# ── Common MCP servers (added by bosun) ──",
-        "[mcp_servers.context7]",
-        "startup_timeout_sec = 120",
-        'command = "npx"',
-        'args = ["-y", "@upstash/context7-mcp"]',
-        "",
-      ].join("\n"),
-    },
-    {
-      present: hasNamedMcpServer(toml, "sequential-thinking"),
-      block: [
-        "",
-        "[mcp_servers.sequential-thinking]",
-        "startup_timeout_sec = 120",
-        'command = "npx"',
-        'args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]',
-        "",
-      ].join("\n"),
-    },
-    {
-      present: hasNamedMcpServer(toml, "playwright"),
-      block: [
-        "",
-        "[mcp_servers.playwright]",
-        "startup_timeout_sec = 120",
-        'command = "npx"',
-        'args = ["-y", "@playwright/mcp@latest"]',
-        "",
-      ].join("\n"),
-    },
-    {
-      present: hasMicrosoftDocsMcp(toml),
-      block: [
-        "",
-        "[mcp_servers.microsoft-docs]",
-        'url = "https://learn.microsoft.com/api/mcp"',
-        'tools = ["microsoft_docs_search", "microsoft_code_sample_search"]',
-        "",
-      ].join("\n"),
-    },
-  ];
-  for (const item of commonMcpBlocks) {
-    if (item.present) continue;
-    toml += item.block;
-    result.commonMcpAdded = true;
-  }
-
-  for (const serverName of ["context7", "sequential-thinking", "playwright"]) {
-    const timeoutResult = ensureMcpStartupTimeout(toml, serverName, 120);
-    toml = timeoutResult.toml;
-  }
-
-  const providerResult = ensureModelProviderSectionsFromEnv(toml, env);
-  toml = providerResult.toml;
-  result.profileProvidersAdded = providerResult.added;
-
-  const timeoutAudit = auditStreamTimeouts(toml);
-  for (const item of timeoutAudit) {
-    if (!item.needsUpdate) continue;
-    toml = setStreamTimeout(toml, item.provider, RECOMMENDED_STREAM_IDLE_TIMEOUT_MS);
-    result.timeoutsFixed.push({
-      provider: item.provider,
-      from: item.currentValue,
-      to: RECOMMENDED_STREAM_IDLE_TIMEOUT_MS,
-    });
-  }
-
-  const providers = auditStreamTimeouts(toml).map((item) => item.provider);
-  for (const provider of providers) {
-    const beforeRetry = toml;
-    toml = ensureRetrySettings(toml, provider);
-    if (toml !== beforeRetry) {
-      result.retriesAdded.push(provider);
-    }
-  }
+  toml = applyVibeKanbanDefaults(
+    toml,
+    { manageVkMcp, skipVk, vkBaseUrl },
+    result,
+  );
+  toml = ensureCommonMcpDefaults(toml, result);
+  toml = applyModelProviderDefaults(toml, env, result);
 
   const changed = toml !== originalToml;
   result.noChanges = !result.created && !changed;
@@ -1561,17 +1599,12 @@ export function ensureCodexConfig({
     writeCodexConfig(toml);
   }
 
-  // Keep project-level .codex/config.toml files active by trusting the
-  // current execution roots in the global user config. Without this, Codex CLI
-  // warns that project config is disabled and ignores repo-scoped settings.
-  const trustPaths = [repoRoot, ...additionalRoots]
-    .map((p) => String(p || "").trim())
-    .filter(Boolean)
-    .filter((p) => isAbsolute(p));
-  if (trustPaths.length > 0) {
-    const trustResult = ensureTrustedProjects(trustPaths, { dryRun });
-    result.trustedProjectsAdded = trustResult.added;
-  }
+  applyTrustedProjectDefaults(
+    sandboxState.repoRoot,
+    sandboxState.additionalRoots,
+    dryRun,
+    result,
+  );
 
   return result;
 }
@@ -1866,3 +1899,4 @@ function parseBoolEnv(value) {
   if (["0", "false", "no", "off", "n"].includes(raw)) return false;
   return true;
 }
+
