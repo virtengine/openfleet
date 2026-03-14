@@ -1126,6 +1126,11 @@ let agentChatId = null; // latest chat where an agent is running
 const stickyMenuState = new Map();
 const stickyMenuTimers = new Map();
 const STICKY_MENU_BUMP_MS = 600;
+const callbackActionDeduper = new Map();
+const CALLBACK_ACTION_DEDUPE_MS = Math.max(
+  150,
+  Number(process.env.TELEGRAM_CALLBACK_ACTION_DEDUPE_MS || "1200") || 1200,
+);
 
 // ── Queues ──────────────────────────────────────────────────────────────────
 
@@ -1383,6 +1388,18 @@ function setStickyMenuState(chatId, patch) {
   stickyMenuState.set(chatId, { ...current, ...patch });
 }
 
+function logTelegramStructured(event, payload = {}) {
+  try {
+    console.log(`[telegram-bot] ${JSON.stringify({
+      event,
+      at: new Date().toISOString(),
+      ...payload,
+    })}`);
+  } catch {
+    console.log(`[telegram-bot] ${event}`);
+  }
+}
+
 function clearStickyMenuTimer(chatId) {
   const timer = stickyMenuTimers.get(chatId);
   if (timer) {
@@ -1394,6 +1411,94 @@ function clearStickyMenuTimer(chatId) {
 function isStickyMenuInteractive(chatId) {
   if (!chatId) return false;
   return stickyMenuState.get(chatId)?.mode === "interactive";
+}
+
+function isMenuCallbackData(data) {
+  if (typeof data !== "string") return false;
+  return data.startsWith("ui:") || data.startsWith("cb:");
+}
+
+function shouldRecoverStickyFromCallback(query) {
+  const data = String(query?.data || "");
+  if (!isMenuCallbackData(data)) return false;
+  const messageId = query?.message?.message_id;
+  const chatId = String(query?.message?.chat?.id || "");
+  if (!chatId || !messageId) return false;
+  const current = stickyMenuState.get(chatId);
+  if (current?.enabled && current?.messageId) return false;
+  return true;
+}
+
+function recoverStickyMenuContextFromCallback(query, reason = "callback") {
+  if (!shouldRecoverStickyFromCallback(query)) return false;
+  const chatId = String(query.message.chat.id || "");
+  const messageId = query.message.message_id;
+  const data = String(query.data || "");
+  const prev = stickyMenuState.get(chatId) || {};
+  const screenId = prev.screenId || "home";
+  const params = prev.params || {};
+  const mode = data === "cb:dismiss" || data === "ui:cancel"
+    ? "interactive"
+    : "menu";
+  setStickyMenuState(chatId, {
+    enabled: true,
+    messageId,
+    screenId,
+    params,
+    mode,
+    restoreScreenId: prev.restoreScreenId || screenId,
+    restoreParams: prev.restoreParams || params,
+  });
+  logTelegramStructured("sticky_menu.context_recovered", {
+    reason,
+    chatId,
+    messageId,
+    mode,
+    data,
+  });
+  return true;
+}
+
+function pruneCallbackActionDeduper(now = Date.now()) {
+  for (const [key, entry] of callbackActionDeduper.entries()) {
+    if (!entry || now - entry.atMs > CALLBACK_ACTION_DEDUPE_MS) {
+      callbackActionDeduper.delete(key);
+    }
+  }
+}
+
+function dedupeMenuCallbackAction({
+  chatId,
+  fromId,
+  messageId,
+  data,
+  callbackId,
+}) {
+  if (!isMenuCallbackData(data)) return { duplicate: false };
+  const now = Date.now();
+  pruneCallbackActionDeduper(now);
+  const key = [
+    String(chatId || ""),
+    String(fromId || ""),
+    String(messageId || ""),
+    String(data || ""),
+  ].join("|");
+  const prev = callbackActionDeduper.get(key);
+  callbackActionDeduper.set(key, {
+    atMs: now,
+    callbackId: String(callbackId || ""),
+  });
+  if (!prev) return { duplicate: false };
+  if (String(prev.callbackId || "") === String(callbackId || "")) {
+    return { duplicate: false };
+  }
+  const ageMs = now - prev.atMs;
+  if (ageMs > CALLBACK_ACTION_DEDUPE_MS) return { duplicate: false };
+  return {
+    duplicate: true,
+    key,
+    ageMs,
+  };
 }
 
 function getStickyMenuRestoreTarget(chatId) {
@@ -2607,10 +2712,32 @@ async function handleCallbackQuery(query) {
   const fromId = String(query.from?.id || "");
   const data = query.data || "";
   const callbackId = query.id;
+  const messageId = query.message?.message_id || null;
 
   // Security: only accept from configured chat/user allow-list
   if (!isAuthorizedTelegramActor(chatId, fromId)) {
     await answerCallbackQuery(callbackId, "Unauthorized", true);
+    return;
+  }
+
+  recoverStickyMenuContextFromCallback(query, "reconnect");
+
+  const dedupe = dedupeMenuCallbackAction({
+    chatId,
+    fromId,
+    messageId,
+    data,
+    callbackId,
+  });
+  if (dedupe.duplicate) {
+    logTelegramStructured("sticky_menu.callback_deduped", {
+      chatId,
+      fromId,
+      messageId,
+      data,
+      ageMs: dedupe.ageMs,
+    });
+    await answerCallbackQuery(callbackId, "Already processing...");
     return;
   }
 
