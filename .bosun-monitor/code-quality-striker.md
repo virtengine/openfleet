@@ -33,3 +33,13 @@ Format:
   - npm test passed (3784 tests)
   - npm run build passed
 - PR: #265 — chore/code-quality-striker-20260314184045
+## 2026-03-14T21:11:00+11:00
+
+- Scope: Split workflow port hydration logic in workflow/workflow-engine.mjs into smaller private helpers.
+- Files changed: workflow/workflow-engine.mjs, .bosun-monitor/code-quality-striker.md
+- Strategy: Extracted node output normalization, port validation issue construction, and edge hydration into focused internal helpers so the main hydration function has one orchestration responsibility.
+- Validation evidence:
+  - `node --experimental-vm-modules --no-warnings=ExperimentalWarning tools/syntax-check.mjs workflow/workflow-engine.mjs` passed on all touched files
+  - `npm test` passed (3817 tests)
+  - `pnpm build` passed
+- PR: #273 — `chore/code-quality-striker-20260314-workflow-ports`
