@@ -29,3 +29,14 @@
   - `npm test` passed (3828 tests)
   - `pnpm build` passed
 - PR: #PENDING — `chore/code-quality-striker-20260314-manual-flow-audit`
+
+## 2026-03-14T08:59:15-05:00
+
+- Scope: Split manual flow run creation, research dispatch prep, and custom action parsing inside `workflow/manual-flows.mjs` into focused internal helpers with no API changes.
+- Files changed: workflow/manual-flows.mjs, [object Object]
+- Strategy: Performed a same-file helper split so run validation/defaulting, research config normalization, and custom template action parsing are self-contained and easier to edit independently without adding new published modules.
+- Validation evidence:
+  - `[object Object]` passed on all touched files
+  - `npm test` passed (3828 tests)
+  - `pnpm build` passed
+- PR: #286 — `chore/code-quality-striker-20260314-manual-flow-audit`
