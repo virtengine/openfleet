@@ -19,6 +19,7 @@ import { formatDate, formatDuration, formatRelative } from "../modules/utils.js"
 import {
   HISTORY_LIMIT,
   HISTORY_COMMIT_DEBOUNCE_MS,
+  buildNodeStatusesFromRunDetail,
   createHistoryState,
   getNodeSearchMetadata,
   parseGraphSnapshot,
@@ -1424,6 +1425,9 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const liveActiveNodes = Object.values(liveNodeStatuses).filter(
     (s) => s === "running" || s === "active" || s === "in_progress",
   ).length;
+  const liveRunDuration = liveRun?.status === "running" && liveRun?.startedAt
+    ? Math.max(0, liveNowTick - Number(liveRun.startedAt))
+    : Number(liveRun?.duration) || 0;
   const workflowSnapshotKey = useMemo(
     () => serializeGraphSnapshot(workflow?.nodes || [], workflow?.edges || []),
     [workflow?.nodes, workflow?.edges],
@@ -4260,6 +4264,30 @@ function getRunStatusBadgeStyles(status) {
   if (normalized === "running") return { bg: "#3b82f630", color: "#60a5fa" };
   if (normalized === "skipped") return { bg: "#94a3b830", color: "#94a3b8" };
   return { bg: "#6b728030", color: "#9ca3af" };
+}
+
+function getCanvasNodeExecutionVisuals(status, isSelected, selectedColor, flashState = "") {
+  if (status === "running") {
+    return { fill: "#10233f", stroke: "#60a5fa", strokeWidth: 2.5, filter: "url(#node-glow)" };
+  }
+  if (status === "fail" || flashState === "fail") {
+    return { fill: "#2a1217", stroke: "#ef4444", strokeWidth: 2.25, filter: "url(#node-shadow)" };
+  }
+  if (status === "success" || flashState === "success") {
+    return { fill: "#0f2a23", stroke: "#10b981", strokeWidth: 2, filter: "url(#node-shadow)" };
+  }
+  if (status === "skipped" || flashState === "skipped") {
+    return { fill: "#1f2430", stroke: "#94a3b8", strokeWidth: 2, filter: "url(#node-shadow)" };
+  }
+  if (status === "waiting" || status === "pending") {
+    return { fill: "#2f2310", stroke: "#f59e0b", strokeWidth: 2, filter: "url(#node-shadow)" };
+  }
+  return {
+    fill: isSelected ? "#1e293b" : "#1a1f2e",
+    stroke: isSelected ? selectedColor : "#2a3040",
+    strokeWidth: isSelected ? 2 : 1,
+    filter: isSelected ? "url(#node-glow)" : "url(#node-shadow)",
+  };
 }
 
 function getNodeStatusRank(status) {

@@ -11013,6 +11013,8 @@ registerBuiltinNodeType("action.release_worktree", {
         } catch { /* best-effort */ }
       }
 
+      fixGitConfigCorruption(repoRoot);
+
       ctx.data._worktreeCreated = false;
       ctx.data._worktreeManaged = false;
       ctx.log(node.id, `Worktree released: ${worktreePath}`);
