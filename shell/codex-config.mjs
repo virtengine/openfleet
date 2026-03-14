@@ -746,16 +746,12 @@ export function buildSandboxWorkspaceWrite(options = {}) {
   if (desiredRoots.length === 0) {
     return "";
   }
-  return [
-    "",
-    "# ── Workspace-write sandbox defaults (added by bosun) ──",
-    "[sandbox_workspace_write]",
-    `network_access = ${networkAccess}`,
-    `exclude_tmpdir_env_var = ${excludeTmpdirEnvVar}`,
-    `exclude_slash_tmp = ${excludeSlashTmp}`,
-    `writable_roots = ${formatTomlArray(desiredRoots)}`,
-    "",
-  ].join("\n");
+  return buildSandboxWorkspaceWriteBlock({
+    desiredRoots,
+    networkAccess,
+    excludeTmpdirEnvVar,
+    excludeSlashTmp,
+  });
 }
 
 function buildSandboxWorkspaceWriteBlock({
