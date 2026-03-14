@@ -248,4 +248,3 @@ export function scaffoldCustomNodeFile(name, options = {}) {
   return { filePath, type, customDir, repoRoot };
 }
 
-
