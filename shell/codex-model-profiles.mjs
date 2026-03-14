@@ -15,8 +15,15 @@ function normalizeProfileName(value, fallback = DEFAULT_ACTIVE_PROFILE) {
   return raw.replace(/[^a-z0-9_-]/g, "") || fallback;
 }
 
-function profilePrefix(name) {
-  return `CODEX_MODEL_PROFILE_${name.toUpperCase()}_`;
+function profilePrefixes(name) {
+  const normalized = normalizeProfileName(name, "");
+  if (!normalized) return [];
+  const raw = normalized.toUpperCase();
+  const envSafe = raw.replace(/[^A-Z0-9]/g, "_");
+  return [...new Set([
+    `CODEX_MODEL_PROFILE_${raw}_`,
+    `CODEX_MODEL_PROFILE_${envSafe}_`,
+  ])];
 }
 
 function inferGlobalProvider(env) {
@@ -49,7 +56,11 @@ function normalizeProvider(value, fallback) {
 }
 
 function readProfileField(env, profileName, field) {
-  return clean(env[`${profilePrefix(profileName)}${field}`]);
+  for (const prefix of profilePrefixes(profileName)) {
+    const value = clean(env[`${prefix}${field}`]);
+    if (value) return value;
+  }
+  return "";
 }
 
 function profileRecord(env, profileName, globalProvider) {

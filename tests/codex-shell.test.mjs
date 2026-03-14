@@ -228,4 +228,5 @@ describe("codex-shell stream safeguards", () => {
     expect(result.finalResponse).toContain("recovered after thread reset");
     expect(runAttempt).toBe(2);
   });
+
 });

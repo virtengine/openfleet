@@ -79,7 +79,7 @@ ADJACENCY_MAP=(
   "server/|ui-server*|setup-web*|tunnel-*|ui-realtime*|presence*"
   "github/|github-*|hook-profiles*"
   "git/|git-*|branch-*|diff-stats*|conflict-*"
-  "shell/|*-shell*|codex-shell*|gemini-shell*|opencode-shell*|sdk-shell*|continue-detection*"
+  "shell/|*-shell*|codex-shell*|codex-model-profiles*|gemini-shell*|opencode-shell*|sdk-shell*|continue-detection*"
   "lib/|logger*|utils*|library-*|error-detector*|context-*|codebase-audit*"
   # Top-level runtime files that don't live in a subdirectory.
   "cli.mjs|cli-*|smoke*"
