@@ -158,6 +158,7 @@
     "agent/agent-event-bus.mjs",
     "agent/retry-queue.mjs",
     "agent/agent-pool.mjs",
+    "agent/agent-prompt-catalog.mjs",
     "agent/agent-prompts.mjs",
     "agent/agent-sdk.mjs",
     "agent/agent-work-report.mjs",
