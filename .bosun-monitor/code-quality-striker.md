@@ -23,3 +23,13 @@ Format:
   - `pnpm build` passed
 - PR: #266 — `chore/code-quality-striker-20260314183350`
 
+## 2026-03-14T18:47:00.9939849+11:00
+
+- Scope: Split long shell/codex-config.mjs mutation flows into smaller private helpers without changing its public API.
+- Files changed: shell/codex-config.mjs, .bosun-monitor/code-quality-striker.md
+- Strategy: Extracted private helper functions for agent thread migration, sandbox workspace TOML updates, and trusted project bookkeeping so each exported mutation function has a single responsibility.
+- Validation evidence:
+  - node --check passed on all touched files
+  - npm test passed (3784 tests)
+  - npm run build passed
+- PR: #265 — chore/code-quality-striker-20260314184045
