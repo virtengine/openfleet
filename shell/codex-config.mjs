@@ -888,8 +888,9 @@ export function hasMicrosoftDocsMcp(toml) {
 }
 
 /**
- * Build MCP server blocks for context7 and microsoft-docs.
- * These are universally useful for documentation lookups.
+ * Build MCP server blocks for common servers: context7, sequential-thinking,
+ * playwright, and microsoft-docs. These are universally useful for
+ * documentation lookups and related tasks.
  */
 const COMMON_MCP_SERVER_DEFS = [
   {
@@ -928,6 +929,7 @@ const COMMON_MCP_SERVER_DEFS = [
     lines: [
       "[mcp_servers.microsoft-docs]",
       'url = "https://learn.microsoft.com/api/mcp"',
+      '# NOTE: Tool list intentionally limited to avoid Azure Responses API schema-size/parser issues.',
       'tools = ["microsoft_docs_search", "microsoft_code_sample_search"]',
     ],
     isPresent: hasMicrosoftDocsMcp,
