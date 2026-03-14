@@ -12,7 +12,7 @@
  *   bosun task update <task-id> <json-patch>
  *   bosun task update <task-id> --status todo --priority high
  *   bosun task delete <task-id>
- *   bosun task stats [--json]
+ *   bosun task stats [--json] [--debug]
  *   bosun task import <json-file>
  *
  * EXPORTS:
@@ -232,6 +232,12 @@ function getArgValue(args, flag) {
 
 function hasFlag(args, flag) {
   return args.includes(flag);
+}
+
+function isDebugModeEnabled(args = []) {
+  if (hasFlag(args, "--debug")) return true;
+  const envValue = String(process.env.BOSUN_DEBUG || "").trim().toLowerCase();
+  return ["1", "true", "yes", "on"].includes(envValue);
 }
 
 // ── Programmatic API ──────────────────────────────────────────────────────────
@@ -529,6 +535,25 @@ function readRepoAreaLocksFromRuntimeState() {
       parsed?.repoAreaDispatchCycle && typeof parsed.repoAreaDispatchCycle === "object"
         ? parsed.repoAreaDispatchCycle
         : {};
+    const contentionEvents = Array.isArray(parsed?.repoAreaContentionEvents)
+      ? parsed.repoAreaContentionEvents
+          .slice(-60)
+          .map((event) => ({
+            at: event?.at ? String(event.at) : null,
+            taskId: normalizeTaskId(event?.taskId),
+            area: normalizeRepoAreaKey(event?.area),
+            waitMs: Math.max(0, Math.trunc(Number(event?.waitMs || 0))),
+            resolutionReason: normalizeRepoAreaResolutionReason(
+              event?.resolutionReason,
+            ),
+          }))
+          .filter((event) => event.taskId && event.area)
+      : [];
+    const contentionByReason = Object.create(null);
+    for (const event of contentionEvents) {
+      const reason = normalizeRepoAreaResolutionReason(event.resolutionReason);
+      contentionByReason[reason] = (contentionByReason[reason] || 0) + 1;
+    }
     const activeSignals = new Map();
     const activeCounts = new Map();
     for (const [taskId, slot] of Object.entries(runtimeSlots)) {
@@ -696,6 +721,16 @@ function readRepoAreaLocksFromRuntimeState() {
         ),
         waitSamples: areas.reduce((sum, area) => sum + (area.waitSamples || 0), 0),
         waitingTasks: areas.reduce((sum, area) => sum + (area.waitingTasks || 0), 0),
+        contentionEvents: contentionEvents.length,
+      },
+      contention: {
+        events: contentionEvents.length,
+        waitMsTotal: contentionEvents.reduce(
+          (sum, event) => sum + Math.max(0, Number(event?.waitMs || 0)),
+          0,
+        ),
+        byReason: contentionByReason,
+        recent: contentionEvents.slice(-10),
       },
       dispatch: {
         cycles: Math.max(0, Math.trunc(Number(parsed?.repoAreaDispatchCycles || 0))),
@@ -759,6 +794,11 @@ function normalizeTaskId(value) {
 
 function normalizeRepoAreaKey(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function normalizeRepoAreaResolutionReason(value, fallback = "resolved") {
+  const normalized = normalizeRepoAreaKey(value);
+  return normalized || fallback;
 }
 
 function normalizeRepoAreas(input) {
@@ -1408,6 +1448,7 @@ async function cliDelete(args) {
 
 async function cliStats(args) {
   const stats = await taskStats();
+  const debugMode = isDebugModeEnabled(args);
 
   if (hasFlag(args, "--json")) {
     console.log(JSON.stringify(stats, null, 2));
@@ -1422,13 +1463,15 @@ async function cliStats(args) {
   console.log(`    Done:        ${stats.done || 0}`);
   console.log(`    Blocked:     ${stats.blocked || 0}`);
   console.log(`    Total:       ${stats.total || 0}`);
-  if (stats.repoAreaLocks) {
+  if (debugMode && stats.repoAreaLocks) {
     const lockState = stats.repoAreaLocks;
     const totals = lockState.totals || {};
+    const contention = lockState.contention || {};
     console.log(`\n  Repo Area Locks:`);
     console.log(`    Dispatch Cycles:   ${totals.dispatchCycles || lockState.dispatchCycles || 0}`);
     console.log(`    Conflict Events:   ${totals.conflictEvents || lockState.conflictEvents || 0}`);
     console.log(`    Blocked Tracked:   ${lockState.blockedTasksTracked || lockState.dispatch?.blockedTasksTracked || 0}`);
+    console.log(`    Contention Events: ${totals.contentionEvents || contention.events || 0}`);
     const totalWaitSamples = Number(totals.waitSamples || 0);
     const totalWaitMs = Number(totals.waitMsTotal || 0);
     const globalAvgWaitMs =
@@ -1449,6 +1492,14 @@ async function cliStats(args) {
     for (const area of topAreas) {
       console.log(
         `    - ${area.area}: blocked=${area.blockedDispatches || 0}, selected=${area.selectedDispatches || 0}, limit=${area.effectiveLimit || 0}/${area.configuredLimit || lockState.configuredLimit || 0}, avgWaitMs=${Math.round(area.averageWaitMs || 0)}`,
+      );
+    }
+    const recentEvents = Array.isArray(contention.recent)
+      ? contention.recent.slice(-3)
+      : [];
+    for (const event of recentEvents) {
+      console.log(
+        `    - contention: area=${event.area || "unknown"}, waitMs=${Math.max(0, Math.trunc(Number(event.waitMs || 0)))}, reason=${normalizeRepoAreaResolutionReason(event.resolutionReason)}, task=${String(event.taskId || "").slice(0, 8)}`,
       );
     }
   }
@@ -1600,7 +1651,7 @@ function showTaskHelp() {
     get, show   Show task details           bosun task get --help
     update, edit Update task fields         bosun task update --help
     delete, rm  Delete a task              bosun task delete --help
-    stats       Aggregate statistics        bosun task stats --json
+    stats       Aggregate statistics        bosun task stats --json/--debug
     import      Bulk import from JSON file  bosun task import --help
 
   QUICK REFERENCE

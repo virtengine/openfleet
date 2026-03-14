@@ -121,6 +121,7 @@ const NO_COMMIT_MAX_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 const CLAIM_CONFLICT_COMMENT_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 const REPO_AREA_SLOW_MERGE_LATENCY_MS = 4 * 60 * 60 * 1000;
 const REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS = 8 * 60 * 60 * 1000;
+const REPO_AREA_CONTENTION_EVENT_LIMIT = 60;
 const FATAL_CLAIM_RENEW_ERRORS = new Set([
   "task_claimed_by_different_instance",
   "claim_token_mismatch",
@@ -330,6 +331,11 @@ function normalizeRepoAreaTelemetryEntry(raw = {}) {
 
 function createEmptyRepoAreaTelemetryEntry() {
   return normalizeRepoAreaTelemetryEntry();
+}
+
+function normalizeRepoAreaResolutionReason(value, fallback = "resolved") {
+  const normalized = normalizeRepoAreaKey(value);
+  return normalized || fallback;
 }
 
 function averageNumbers(values = []) {
@@ -2530,6 +2536,8 @@ class TaskExecutor {
     this._repoAreaTaskAreas = new Map();
     /** @type {Map<string, number>} */
     this._repoAreaTaskStartedAt = new Map();
+    /** @type {Array<{ at: string, taskId: string, area: string, waitMs: number, resolutionReason: string }>} */
+    this._repoAreaContentionEvents = [];
     this._repoAreaDispatchCycles = 0;
     this._repoAreaConflictCount = 0;
 
@@ -2871,6 +2879,22 @@ class TaskExecutor {
         if (!key || !startedAt) continue;
         this._repoAreaTaskStartedAt.set(key, startedAt);
       }
+      this._repoAreaContentionEvents = Array.isArray(parsed?.repoAreaContentionEvents)
+        ? parsed.repoAreaContentionEvents
+          .slice(-REPO_AREA_CONTENTION_EVENT_LIMIT)
+          .map((event) => ({
+            at: event?.at
+              ? String(event.at)
+              : new Date().toISOString(),
+            taskId: normalizeTaskIdKey(event?.taskId) || "",
+            area: normalizeRepoAreaKey(event?.area) || "",
+            waitMs: Math.max(0, Math.trunc(Number(event?.waitMs || 0))),
+            resolutionReason: normalizeRepoAreaResolutionReason(
+              event?.resolutionReason,
+            ),
+          }))
+          .filter((event) => event.taskId && event.area)
+        : [];
       this._repoAreaDispatchHistory = Array.isArray(parsed?.repoAreaDispatchHistory)
         ? parsed.repoAreaDispatchHistory
           .slice(-20)
@@ -3078,6 +3102,9 @@ class TaskExecutor {
             repoAreaBlockedTasks: Object.fromEntries(this._repoAreaBlockedTasks),
             repoAreaTaskAreas: Object.fromEntries(this._repoAreaTaskAreas),
             repoAreaTaskStartedAt: Object.fromEntries(this._repoAreaTaskStartedAt),
+            repoAreaContentionEvents: this._repoAreaContentionEvents.slice(
+              -REPO_AREA_CONTENTION_EVENT_LIMIT,
+            ),
             repoAreaDispatchHistory: this._repoAreaDispatchHistory.slice(-20),
             repoAreaLockStatus: this._buildRepoAreaLockStatus(),
             slots,
@@ -3226,6 +3253,11 @@ class TaskExecutor {
       }
     }
 
+    this._clearRepoAreaWaitsForTask(
+      typeof taskOrTaskId === "string" ? { id: taskId, repo_areas: areas } : taskOrTaskId,
+      now,
+      "abandoned",
+    );
     this._clearRepoAreaBlockedTask(taskId);
     if (isFailure || isSuccess) {
       this._repoAreaTaskStartedAt.delete(taskId);
@@ -4444,7 +4476,30 @@ class TaskExecutor {
     });
   }
 
-  _finalizeRepoAreaWait(taskId, area, now = Date.now()) {
+  _recordRepoAreaContentionEvent(taskId, area, waitMs, resolutionReason) {
+    const normalizedTaskId = normalizeTaskIdKey(taskId);
+    const normalizedArea = normalizeRepoAreaKey(area);
+    if (!normalizedTaskId || !normalizedArea) return;
+    this._repoAreaContentionEvents.push({
+      at: new Date().toISOString(),
+      taskId: normalizedTaskId,
+      area: normalizedArea,
+      waitMs: Math.max(0, Math.trunc(Number(waitMs || 0))),
+      resolutionReason: normalizeRepoAreaResolutionReason(resolutionReason),
+    });
+    if (this._repoAreaContentionEvents.length > REPO_AREA_CONTENTION_EVENT_LIMIT) {
+      this._repoAreaContentionEvents = this._repoAreaContentionEvents.slice(
+        -REPO_AREA_CONTENTION_EVENT_LIMIT,
+      );
+    }
+  }
+
+  _finalizeRepoAreaWait(
+    taskId,
+    area,
+    now = Date.now(),
+    resolutionReason = "resolved",
+  ) {
     const key = this._makeRepoAreaWaitKey(taskId, area);
     if (!key) return 0;
     const pending = this._repoAreaPendingWaits.get(key);
@@ -4457,6 +4512,12 @@ class TaskExecutor {
       metric.waitSamples += 1;
       metric.maxWaitMs = Math.max(metric.maxWaitMs, durationMs);
     }
+    this._recordRepoAreaContentionEvent(
+      pending.taskId,
+      pending.area,
+      durationMs,
+      resolutionReason,
+    );
     return durationMs;
   }
 
@@ -4471,16 +4532,16 @@ class TaskExecutor {
         !candidateIds.has(pending.taskId) &&
         !this._activeSlots.has(pending.taskId)
       ) {
-        this._finalizeRepoAreaWait(pending.taskId, pending.area, now);
+        this._finalizeRepoAreaWait(pending.taskId, pending.area, now, "dequeued");
       }
     }
   }
 
-  _clearRepoAreaWaitsForTask(task, now = Date.now()) {
-    const taskId = normalizeTaskIdKey(task?.id || task?.task_id);
+  _clearRepoAreaWaitsForTask(task, now = Date.now(), resolutionReason = "resolved") {
+    const taskId = normalizeTaskIdKey(task?.id || task?.task_id || task?.taskId);
     if (!taskId) return;
     for (const area of this._extractTaskRepoAreas(task)) {
-      this._finalizeRepoAreaWait(taskId, area, now);
+      this._finalizeRepoAreaWait(taskId, area, now, resolutionReason);
     }
   }
 
@@ -4678,6 +4739,14 @@ class TaskExecutor {
           lastSelectedAt: metric.lastSelectedAt,
         };
       });
+    const contentionByReason = Object.create(null);
+    for (const event of this._repoAreaContentionEvents) {
+      const reason = normalizeRepoAreaResolutionReason(event?.resolutionReason);
+      contentionByReason[reason] = (contentionByReason[reason] || 0) + 1;
+    }
+    const contentionEvents = this._repoAreaContentionEvents.slice(
+      -REPO_AREA_CONTENTION_EVENT_LIMIT,
+    );
 
     return {
       enabled: Number(this.repoAreaParallelLimit || 0) > 0,
@@ -4700,6 +4769,16 @@ class TaskExecutor {
         waitMsTotal: items.reduce((sum, item) => sum + item.waitMsTotal, 0),
         waitSamples: items.reduce((sum, item) => sum + item.waitSamples, 0),
         waitingTasks: items.reduce((sum, item) => sum + item.waitingTasks, 0),
+        contentionEvents: contentionEvents.length,
+      },
+      contention: {
+        events: contentionEvents.length,
+        waitMsTotal: contentionEvents.reduce(
+          (sum, event) => sum + Math.max(0, Number(event?.waitMs || 0)),
+          0,
+        ),
+        byReason: contentionByReason,
+        recent: contentionEvents.slice(-10),
       },
       dispatch: {
         cycles: Math.max(0, Math.trunc(Number(this._repoAreaDispatchCycles || 0))),
@@ -4863,7 +4942,7 @@ class TaskExecutor {
         }
         this._rememberTaskRepoAreas(task, now);
         this._clearRepoAreaBlockedTask(task?.id || task?.task_id);
-        this._clearRepoAreaWaitsForTask(task, now);
+        this._clearRepoAreaWaitsForTask(task, now, "selected");
         for (const area of areas) {
           repoAreaCounts.set(area, (repoAreaCounts.get(area) || 0) + 1);
           const metric = this._getRepoAreaLockMetric(area);

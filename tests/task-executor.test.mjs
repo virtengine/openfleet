@@ -619,6 +619,64 @@ describe("task-executor", () => {
           }),
         ]),
       );
+      expect(ex.getStatus().repoAreaLocks.contention).toEqual(
+        expect.objectContaining({
+          events: 1,
+          recent: expect.arrayContaining([
+            expect.objectContaining({
+              area: "infra",
+              waitMs: 1500,
+              resolutionReason: "selected",
+              taskId: "t1",
+            }),
+          ]),
+        }),
+      );
+    });
+
+    it("emits contention diagnostics when a waiting task is dequeued", () => {
+      const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 1 });
+      const now = Date.now();
+      ex._activeSlots.set("active-1", {
+        taskId: "active-1",
+        repoAreas: ["infra"],
+        attempt: 1,
+        startedAt: now - 2_000,
+        status: "running",
+      });
+
+      vi.spyOn(Date, "now")
+        .mockReturnValueOnce(now)
+        .mockReturnValueOnce(now + 800)
+        .mockReturnValue(now + 800);
+
+      expect(
+        ex._selectTasksForBaseBranchLimit([{ id: "t1", repo_areas: ["infra"] }], 1),
+      ).toEqual([]);
+
+      ex._activeSlots.clear();
+      const selected = ex._selectTasksForBaseBranchLimit(
+        [{ id: "t2", repo_areas: ["workflow"] }],
+        1,
+      );
+
+      expect(selected.map((task) => task.id)).toEqual(["t2"]);
+      expect(ex.getStatus().repoAreaLocks.contention).toEqual(
+        expect.objectContaining({
+          events: 1,
+          byReason: expect.objectContaining({
+            dequeued: 1,
+          }),
+          recent: expect.arrayContaining([
+            expect.objectContaining({
+              area: "infra",
+              waitMs: 800,
+              resolutionReason: "dequeued",
+              taskId: "t1",
+            }),
+          ]),
+        }),
+      );
     });
 
     it("keeps throughput within budget under sustained lock pressure", () => {
@@ -801,10 +859,13 @@ describe("task-executor", () => {
       expect(
         ex._selectTasksForBaseBranchLimit([{ id: "t1", repo_areas: ["infra"] }], 1),
       ).toEqual([]);
+      ex.noteRepoAreaOutcome({ id: "t1", repo_areas: ["infra"] }, { status: "failed" });
 
-      const runtimeWriteCall = writeFileSync.mock.calls.find(([filePath]) =>
-        String(filePath || "").includes("task-executor-runtime.json"),
-      );
+      const runtimeWriteCall = writeFileSync.mock.calls
+        .filter(([filePath]) =>
+          String(filePath || "").includes("task-executor-runtime.json"),
+        )
+        .at(-1);
       expect(runtimeWriteCall).toBeDefined();
       const runtimePayload = JSON.parse(runtimeWriteCall[1]);
       expect(runtimePayload.repoAreaDispatchCycles).toBe(1);
@@ -833,6 +894,16 @@ describe("task-executor", () => {
           blockedDispatches: 1,
           conflicts: 1,
         }),
+      );
+      expect(runtimePayload.repoAreaContentionEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            area: "infra",
+            waitMs: expect.any(Number),
+            resolutionReason: "abandoned",
+            taskId: "t1",
+          }),
+        ]),
       );
       expect(runtimePayload.repoAreaLockStatus).toEqual(
         expect.objectContaining({
