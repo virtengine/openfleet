@@ -1419,6 +1419,11 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const selectedNodeIdsRef = useRef(selectedNodeIds);
   const liveEventQueueRef = useRef([]);
   const liveEventFlushTimerRef = useRef(null);
+  // Derived live status helpers
+  const hasLiveStatuses = Object.keys(liveNodeStatuses).length > 0;
+  const liveActiveNodes = Object.values(liveNodeStatuses).filter(
+    (s) => s === "running" || s === "active" || s === "in_progress",
+  ).length;
   const workflowSnapshotKey = useMemo(
     () => serializeGraphSnapshot(workflow?.nodes || [], workflow?.edges || []),
     [workflow?.nodes, workflow?.edges],
