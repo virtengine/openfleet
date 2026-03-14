@@ -4486,7 +4486,7 @@ class TaskExecutor {
   }
 
   _clearRepoAreaWaitsForTask(task, now = Date.now(), resolutionReason = "resolved") {
-    const taskId = normalizeTaskIdKey(task?.id || task?.task_id);
+    const taskId = normalizeTaskIdKey(task?.id || task?.task_id || task?.taskId);
     if (!taskId) return;
     for (const area of this._extractTaskRepoAreas(task)) {
       this._finalizeRepoAreaWait(taskId, area, now, resolutionReason);

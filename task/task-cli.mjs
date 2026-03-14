@@ -549,7 +549,7 @@ function readRepoAreaLocksFromRuntimeState() {
           }))
           .filter((event) => event.taskId && event.area)
       : [];
-    const contentionByReason = {};
+    const contentionByReason = Object.create(null);
     for (const event of contentionEvents) {
       const reason = normalizeRepoAreaResolutionReason(event.resolutionReason);
       contentionByReason[reason] = (contentionByReason[reason] || 0) + 1;
@@ -1651,7 +1651,7 @@ function showTaskHelp() {
     get, show   Show task details           bosun task get --help
     update, edit Update task fields         bosun task update --help
     delete, rm  Delete a task              bosun task delete --help
-    stats       Aggregate statistics        bosun task stats --debug
+    stats       Aggregate statistics        bosun task stats --json/--debug
     import      Bulk import from JSON file  bosun task import --help
 
   QUICK REFERENCE
