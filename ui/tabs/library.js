@@ -238,6 +238,34 @@ const LIBRARY_STYLES = `
 }
 `;
 
+function normalizeLibraryTaskStatus(status) {
+  return String(status || "").trim().toLowerCase();
+}
+
+export function isSelectableLibraryTask(task) {
+  const status = normalizeLibraryTaskStatus(task?.status);
+  return (
+    status === "draft" ||
+    status === "todo" ||
+    status === "backlog" ||
+    status === "planned" ||
+    status === "open" ||
+    status === "new" ||
+    status === ""
+  );
+}
+
+export function extractSelectableLibraryTasks(payload) {
+  const tasks = Array.isArray(payload?.tasks)
+    ? payload.tasks
+    : Array.isArray(payload?.data)
+      ? payload.data
+      : Array.isArray(payload)
+        ? payload
+        : [];
+  return tasks.filter(isSelectableLibraryTask).slice(0, 100);
+}
+
 let stylesInjected = false;
 function injectStyles() {
   if (stylesInjected) return;
@@ -1558,11 +1586,10 @@ function ProfileMatcher() {
   useEffect(() => {
     setTaskListLoading(true);
     const wsParam = typeof window !== "undefined" && window.__bosunWorkspaceId ? `&workspace=${encodeURIComponent(window.__bosunWorkspaceId)}` : "";
-    fetch(`/api/tasks?status=todo,backlog,in-progress,blocked${wsParam}`)
+    fetch(`/api/tasks?pageSize=100${wsParam}`)
       .then((r) => r.json())
       .then((data) => {
-        const tasks = Array.isArray(data?.tasks) ? data.tasks : Array.isArray(data) ? data : [];
-        setTaskList(tasks.slice(0, 100));
+        setTaskList(extractSelectableLibraryTasks(data));
       })
       .catch(() => {})
       .finally(() => setTaskListLoading(false));

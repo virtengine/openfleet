@@ -2673,8 +2673,12 @@ describe("ui-server mini app", () => {
     const logDir = join(process.cwd(), ".cache", "agent-work-logs");
     mkdirSync(logDir, { recursive: true });
     const shreddingPath = join(logDir, "shredding-stats.jsonl");
+    const sessionAccumulatorPath = join(process.cwd(), ".cache", "session-accumulator.jsonl");
     const previousStats = existsSync(shreddingPath)
       ? readFileSync(shreddingPath, "utf8")
+      : null;
+    const previousSessions = existsSync(sessionAccumulatorPath)
+      ? readFileSync(sessionAccumulatorPath, "utf8")
       : null;
     const now = new Date();
     const entries = [
@@ -2718,6 +2722,44 @@ describe("ui-server mini app", () => {
       `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
       "utf8",
     );
+    writeFileSync(
+      sessionAccumulatorPath,
+      `${[
+        {
+          type: "completed_session",
+          sessionKey: "task-1:session-1",
+          id: "session-1",
+          taskId: "task-1",
+          taskTitle: "Telemetry task 1",
+          executor: "codex",
+          startedAt: now.getTime() - 120_000,
+          endedAt: now.getTime() - 60_000,
+          durationMs: 60_000,
+          tokenCount: 1000,
+          inputTokens: 700,
+          outputTokens: 300,
+          costUsd: 0.5,
+          recordedAt: new Date(now.getTime() - 60_000).toISOString(),
+        },
+        {
+          type: "completed_session",
+          sessionKey: "task-2:session-2",
+          id: "session-2",
+          taskId: "task-2",
+          taskTitle: "Telemetry task 2",
+          executor: "claude",
+          startedAt: now.getTime() - 90_000,
+          endedAt: now.getTime() - 30_000,
+          durationMs: 60_000,
+          tokenCount: 2000,
+          inputTokens: 1400,
+          outputTokens: 600,
+          costUsd: 1.0,
+          recordedAt: new Date(now.getTime() - 30_000).toISOString(),
+        },
+      ].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      "utf8",
+    );
 
     const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
@@ -2737,12 +2779,127 @@ describe("ui-server mini app", () => {
       expect(Number(payload.data?.liveCompaction?.totalEvents || 0)).toBeGreaterThanOrEqual(2);
       expect(Number(payload.data?.liveCompaction?.totalSavedChars || 0)).toBeGreaterThanOrEqual(10000);
       expect(Number(payload.data?.liveCompaction?.avgSavedPct || 0)).toBeGreaterThanOrEqual(60);
+      expect(Number(payload.data?.totals?.savedTokensEstimated || 0)).toBeGreaterThan(0);
+      expect(Number(payload.data?.liveCompaction?.savedTokensEstimated || 0)).toBeGreaterThan(0);
+      expect(Number(payload.data?.estimation?.blendedCostPerMillionTokensUsd || 0)).toBeGreaterThan(0);
+      expect(Number(payload.data?.totals?.estimatedCostSavedUsd || 0)).toBeGreaterThan(0);
+      expect(Number(payload.data?.dailyOriginal?.[now.toISOString().slice(0, 10)] || 0)).toBeGreaterThan(0);
+      expect(Number(payload.data?.dailyCompressed?.[now.toISOString().slice(0, 10)] || 0)).toBeGreaterThan(0);
+      expect(Number(payload.data?.dailySavedTokensEstimated?.[now.toISOString().slice(0, 10)] || 0)).toBeGreaterThan(0);
       expect(payload.data.topCompactionFamilies.some((entry) => entry.name === "search" && entry.count >= 1)).toBe(true);
       expect(payload.data.topCommandFamilies.some((entry) => entry.name === "git" && entry.count >= 1)).toBe(true);
       expect(payload.data.recentEvents[0]).toHaveProperty("stage");
+      expect(payload.data.recentEvents[0]).toHaveProperty("estimatedSavedTokens");
     } finally {
       if (previousStats == null) rmSync(shreddingPath, { force: true });
       else writeFileSync(shreddingPath, previousStats, "utf8");
+      if (previousSessions == null) rmSync(sessionAccumulatorPath, { force: true });
+      else writeFileSync(sessionAccumulatorPath, previousSessions, "utf8");
+    }
+  });
+
+  it("sources agent-run analytics from completed session history when session-start events are stale", async () => {
+    const logDir = join(process.cwd(), ".cache", "agent-work-logs");
+    mkdirSync(logDir, { recursive: true });
+    const streamPath = join(logDir, "agent-work-stream.jsonl");
+    const sessionAccumulatorPath = join(process.cwd(), ".cache", "session-accumulator.jsonl");
+    const previousStream = existsSync(streamPath)
+      ? readFileSync(streamPath, "utf8")
+      : null;
+    const previousSessions = existsSync(sessionAccumulatorPath)
+      ? readFileSync(sessionAccumulatorPath, "utf8")
+      : null;
+    const now = new Date();
+    writeFileSync(
+      streamPath,
+      `${[
+        {
+          timestamp: new Date(now.getTime() - 45 * 24 * 60 * 60 * 1000).toISOString(),
+          event_type: "session_start",
+          executor: "outdated-executor",
+        },
+        {
+          timestamp: new Date(now.getTime() - 5 * 60 * 1000).toISOString(),
+          event_type: "skill_invoke",
+          data: { skill_name: "critical-path" },
+        },
+        {
+          timestamp: new Date(now.getTime() - 4 * 60 * 1000).toISOString(),
+          event_type: "tool_call",
+          data: { tool_name: "context7.get-library-docs" },
+        },
+      ].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      "utf8",
+    );
+    writeFileSync(
+      sessionAccumulatorPath,
+      `${[
+        {
+          type: "completed_session",
+          sessionKey: "task-a:session-a",
+          id: "session-a",
+          taskId: "task-a",
+          taskTitle: "Recent agent run A",
+          executor: "codex",
+          startedAt: now.getTime() - 8 * 60 * 1000,
+          endedAt: now.getTime() - 7 * 60 * 1000,
+          durationMs: 60_000,
+          tokenCount: 1200,
+          inputTokens: 800,
+          outputTokens: 400,
+          costUsd: 0.6,
+          recordedAt: new Date(now.getTime() - 7 * 60 * 1000).toISOString(),
+        },
+        {
+          type: "completed_session",
+          sessionKey: "task-b:session-b",
+          id: "session-b",
+          taskId: "task-b",
+          taskTitle: "Recent agent run B",
+          executor: "claude",
+          startedAt: now.getTime() - 6 * 60 * 1000,
+          endedAt: now.getTime() - 5 * 60 * 1000,
+          durationMs: 60_000,
+          tokenCount: 1500,
+          inputTokens: 900,
+          outputTokens: 600,
+          costUsd: 0.75,
+          recordedAt: new Date(now.getTime() - 5 * 60 * 1000).toISOString(),
+        },
+      ].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/analytics/usage?days=30`);
+      const payload = await response.json();
+      expect(payload.ok).toBe(true);
+      expect(payload.data?.agentRuns).toBe(2);
+      expect(payload.data?.skillInvocations).toBe(1);
+      expect(payload.data?.mcpToolCalls).toBe(1);
+      expect(payload.data?.diagnostics?.agentRunSource).toBe("completed_sessions");
+      expect(payload.data?.diagnostics?.completedSessions).toBe(2);
+      expect(payload.data?.diagnostics?.sessionStarts).toBe(0);
+      expect(payload.data?.topAgents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "codex", count: 1 }),
+          expect.objectContaining({ name: "claude", count: 1 }),
+        ]),
+      );
+    } finally {
+      if (previousStream == null) rmSync(streamPath, { force: true });
+      else writeFileSync(streamPath, previousStream, "utf8");
+      if (previousSessions == null) rmSync(sessionAccumulatorPath, { force: true });
+      else writeFileSync(sessionAccumulatorPath, previousSessions, "utf8");
     }
   });
 

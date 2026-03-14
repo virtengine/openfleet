@@ -1318,6 +1318,9 @@ async function getWorkflowEngineModule() {
         _wfEngine = await import(new URL("../workflow/workflow-engine.mjs", base).href);
         _wfNodes = await import(new URL("../workflow/workflow-nodes.mjs", base).href);
         _wfTemplates = await import(new URL("../workflow/workflow-templates.mjs", base).href);
+        if (typeof _wfNodes?.ensureWorkflowNodeTypesLoaded === "function") {
+          await _wfNodes.ensureWorkflowNodeTypesLoaded({ repoRoot });
+        }
         if (_wfLoadedBase !== base) {
           console.log(`[workflows] Loaded workflow modules from: ${base}`);
           _wfLoadedBase = base;
@@ -9516,11 +9519,103 @@ async function readJsonlTail(filePath, maxLines = 2000) {
     .filter(Boolean);
 }
 
+function getEntryTimestamp(entry) {
+  const numericCandidates = [
+    entry?.endedAt,
+    entry?.startedAt,
+  ];
+  for (const candidate of numericCandidates) {
+    const parsed = Number(candidate);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+
+  const isoCandidates = [
+    entry?.timestamp,
+    entry?.recordedAt,
+    entry?.updatedAt,
+    entry?.createdAt,
+  ];
+  for (const candidate of isoCandidates) {
+    const parsed = Date.parse(candidate || "");
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Number.NaN;
+}
+
+function getEntryDayKey(entry, fallbackTs = Number.NaN) {
+  const isoCandidates = [
+    entry?.timestamp,
+    entry?.recordedAt,
+    entry?.updatedAt,
+    entry?.createdAt,
+  ];
+  for (const candidate of isoCandidates) {
+    const value = String(candidate || "").trim();
+    if (value.length >= 10) return value.slice(0, 10);
+  }
+  const ts = Number.isFinite(fallbackTs) ? fallbackTs : getEntryTimestamp(entry);
+  if (!Number.isFinite(ts)) return "";
+  return new Date(ts).toISOString().slice(0, 10);
+}
+
 function withinDays(entry, days) {
   if (!days) return true;
-  const ts = Date.parse(entry?.timestamp || "");
+  const ts = getEntryTimestamp(entry);
   if (!Number.isFinite(ts)) return true;
   return ts >= Date.now() - days * 24 * 60 * 60 * 1000;
+}
+
+async function readCompletedSessionEntries(maxLines = 100_000) {
+  const sessionLogPath = resolve(repoRoot, ".cache", "session-accumulator.jsonl");
+  const entries = await readJsonlTail(sessionLogPath, maxLines);
+  return {
+    sessionLogPath,
+    entries: entries.filter((entry) => String(entry?.type || "completed_session") === "completed_session"),
+  };
+}
+
+function roundMetric(value, precision = 6) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return Number(numeric.toFixed(precision));
+}
+
+const SHREDDING_ESTIMATED_CHARS_PER_TOKEN = 4;
+
+function estimateTokensFromChars(chars) {
+  const numeric = Number(chars);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  return Math.max(0, Math.round(numeric / SHREDDING_ESTIMATED_CHARS_PER_TOKEN));
+}
+
+function summarizeObservedSessionCostModel(entries = []) {
+  let totalCostUsd = 0;
+  let totalTokens = 0;
+  let totalInputTokens = 0;
+  let pricedSessions = 0;
+  for (const entry of entries) {
+    const costUsd = numberOrZero(entry?.costUsd);
+    const tokenCount = numberOrZero(entry?.tokenCount);
+    const inputTokens = numberOrZero(entry?.inputTokens);
+    if (costUsd <= 0 || tokenCount <= 0) continue;
+    totalCostUsd += costUsd;
+    totalTokens += tokenCount;
+    totalInputTokens += inputTokens;
+    pricedSessions += 1;
+  }
+  const blendedCostPerToken = totalCostUsd > 0 && totalTokens > 0
+    ? totalCostUsd / totalTokens
+    : null;
+  return {
+    pricedSessions,
+    totalCostUsd: roundMetric(totalCostUsd),
+    totalTokens,
+    totalInputTokens,
+    blendedCostPerToken,
+    blendedCostPerMillionTokensUsd: blendedCostPerToken != null
+      ? roundMetric(blendedCostPerToken * 1_000_000, 4)
+      : null,
+  };
 }
 
 function summarizeTelemetry(metrics, days) {
@@ -9614,7 +9709,10 @@ function isEffectiveShreddingEvent(event) {
 async function buildUsageAnalytics(days) {
   const logDir = resolveAgentWorkLogDir();
   const streamPath = resolve(logDir, "agent-work-stream.jsonl");
-  const events = await readJsonlTail(streamPath, 100_000);
+  const [{ entries: completedSessions }, events] = await Promise.all([
+    readCompletedSessionEntries(100_000),
+    readJsonlTail(streamPath, 100_000),
+  ]);
 
   const cutoff = days ? Date.now() - days * 24 * 60 * 60 * 1000 : 0;
 
@@ -9640,22 +9738,50 @@ async function buildUsageAnalytics(days) {
 
   const allDates = new Set();
 
-  for (const e of events) {
-    const ts = Date.parse(e.timestamp || "");
-    if (!Number.isFinite(ts)) continue;
-    if (cutoff && ts < cutoff) continue;
-    if (ts < oldestTs) oldestTs = ts;
-    if (ts > newestTs) newestTs = ts;
-    const day = (e.timestamp || "").slice(0, 10);
-    if (day) allDates.add(day);
+  const sessionWindow = completedSessions.filter((session) => {
+    const ts = getEntryTimestamp(session);
+    return !cutoff || (Number.isFinite(ts) && ts >= cutoff);
+  });
 
-    if (e.event_type === "session_start") {
-      agentRuns++;
-      const exec = e.executor || "unknown";
+  if (sessionWindow.length > 0) {
+    for (const session of sessionWindow) {
+      const ts = getEntryTimestamp(session);
+      if (!Number.isFinite(ts)) continue;
+      if (ts < oldestTs) oldestTs = ts;
+      if (ts > newestTs) newestTs = ts;
+      const day = getEntryDayKey(session, ts);
+      if (day) allDates.add(day);
+
+      agentRuns += 1;
+      const exec = String(session.executor || session.model || "unknown").trim() || "unknown";
       agents.set(exec, (agents.get(exec) || 0) + 1);
       if (day) {
         (dailyAgents[day] = dailyAgents[day] || {})[exec] =
           (dailyAgents[day][exec] || 0) + 1;
+      }
+    }
+  }
+
+  let streamSessionStarts = 0;
+  for (const e of events) {
+    const ts = getEntryTimestamp(e);
+    if (!Number.isFinite(ts)) continue;
+    if (cutoff && ts < cutoff) continue;
+    if (ts < oldestTs) oldestTs = ts;
+    if (ts > newestTs) newestTs = ts;
+    const day = getEntryDayKey(e, ts);
+    if (day) allDates.add(day);
+
+    if (e.event_type === "session_start") {
+      streamSessionStarts += 1;
+      if (sessionWindow.length === 0) {
+        agentRuns++;
+        const exec = e.executor || "unknown";
+        agents.set(exec, (agents.get(exec) || 0) + 1);
+        if (day) {
+          (dailyAgents[day] = dailyAgents[day] || {})[exec] =
+            (dailyAgents[day][exec] || 0) + 1;
+        }
       }
     } else if (e.event_type === "skill_invoke") {
       skillInvocations++;
@@ -9721,6 +9847,11 @@ async function buildUsageAnalytics(days) {
     topSkills,
     topMcpTools,
     trend,
+    diagnostics: {
+      agentRunSource: sessionWindow.length > 0 ? "completed_sessions" : "session_start_events",
+      completedSessions: sessionWindow.length,
+      sessionStarts: streamSessionStarts,
+    },
   };
 }
 
@@ -10562,6 +10693,10 @@ async function handleApi(req, res, url) {
     try {
       const taskId =
         url.searchParams.get("taskId") || url.searchParams.get("id") || "";
+      const includeDagParam = String(url.searchParams.get("includeDag") || "").trim().toLowerCase();
+      const includeWorkflowRunsParam = String(url.searchParams.get("includeWorkflowRuns") || "").trim().toLowerCase();
+      const includeDag = !["0", "false", "no"].includes(includeDagParam);
+      const includeWorkflowRuns = !["0", "false", "no"].includes(includeWorkflowRunsParam);
       if (!taskId) {
         jsonResponse(res, 400, { ok: false, error: "taskId required" });
         return;
@@ -10571,13 +10706,19 @@ async function handleApi(req, res, url) {
       const enriched = await applySharedStateToTasks(task ? [task] : []);
       let detailTask = enriched[0] || null;
       if (detailTask) {
-        const workflowRuns = await collectWorkflowRunsForTask(detailTask.id, url, 40);
-        const mergedWorkflowRuns = mergeTaskWorkflowRuns(detailTask.workflowRuns, workflowRuns, 80);
+        const workflowRuns = includeWorkflowRuns
+          ? await collectWorkflowRunsForTask(detailTask.id, url, 40)
+          : [];
+        const mergedWorkflowRuns = includeWorkflowRuns
+          ? mergeTaskWorkflowRuns(detailTask.workflowRuns, workflowRuns, 80)
+          : Array.isArray(detailTask.workflowRuns)
+            ? detailTask.workflowRuns
+            : [];
         detailTask.workflowRuns = mergedWorkflowRuns;
 
         const sprintId = resolveTaskSprintId(detailTask);
-        const sprintDag = sprintId ? await getSprintDagData(sprintId) : null;
-        const globalDag = await getGlobalDagData();
+        const sprintDag = includeDag && sprintId ? await getSprintDagData(sprintId) : null;
+        const globalDag = includeDag ? await getGlobalDagData() : null;
 
         detailTask.meta = {
           ...(detailTask.meta || {}),
@@ -13756,7 +13897,10 @@ async function handleApi(req, res, url) {
         resolveAgentWorkLogDir(),
         "shredding-stats.jsonl",
       );
-      const raw = await readJsonlTail(shreddingPath, 10_000);
+      const [{ entries: completedSessions }, raw] = await Promise.all([
+        readCompletedSessionEntries(100_000),
+        readJsonlTail(shreddingPath, 10_000),
+      ]);
       const inWindow = raw.filter((e) => withinDays(e, days));
       let excludedSynthetic = 0;
       let excludedNoop = 0;
@@ -13781,7 +13925,14 @@ async function handleApi(req, res, url) {
       let totalOriginalChars = 0;
       let totalCompressedChars = 0;
       let totalSavedChars = 0;
+      let totalOriginalTokensEstimated = 0;
+      let totalCompressedTokensEstimated = 0;
+      let totalSavedTokensEstimated = 0;
       const dailySaved = {};
+      const dailyOriginal = {};
+      const dailyCompressed = {};
+      const dailySavedTokensEstimated = {};
+      const dailyCostSavedUsd = {};
       const dailyCounts = {};
       const agentCounts = {};
       const stageCounts = {};
@@ -13792,17 +13943,37 @@ async function handleApi(req, res, url) {
       let liveOriginalChars = 0;
       let liveCompressedChars = 0;
       let liveSavedChars = 0;
+      let liveSavedTokensEstimated = 0;
+      const sessionCostModel = summarizeObservedSessionCostModel(
+        completedSessions.filter((entry) => withinDays(entry, days)),
+      );
+      const blendedCostPerToken = sessionCostModel.blendedCostPerToken;
 
       for (const e of events) {
         const originalChars = numberOrZero(e.originalChars);
         const compressedChars = numberOrZero(e.compressedChars);
         const savedChars = numberOrZero(e.savedChars);
+        const originalTokensEstimated = estimateTokensFromChars(originalChars);
+        const compressedTokensEstimated = estimateTokensFromChars(compressedChars);
+        const savedTokensEstimated = estimateTokensFromChars(savedChars);
+        const estimatedCostSavedUsd = blendedCostPerToken != null
+          ? roundMetric(savedTokensEstimated * blendedCostPerToken)
+          : null;
         totalOriginalChars += originalChars;
         totalCompressedChars += compressedChars;
         totalSavedChars += savedChars;
-        const day = (e.timestamp || "").slice(0, 10);
+        totalOriginalTokensEstimated += originalTokensEstimated;
+        totalCompressedTokensEstimated += compressedTokensEstimated;
+        totalSavedTokensEstimated += savedTokensEstimated;
+        const day = getEntryDayKey(e);
         if (day) {
+          dailyOriginal[day] = (dailyOriginal[day] || 0) + originalChars;
+          dailyCompressed[day] = (dailyCompressed[day] || 0) + compressedChars;
           dailySaved[day] = (dailySaved[day] || 0) + savedChars;
+          dailySavedTokensEstimated[day] = (dailySavedTokensEstimated[day] || 0) + savedTokensEstimated;
+          if (estimatedCostSavedUsd != null) {
+            dailyCostSavedUsd[day] = roundMetric((dailyCostSavedUsd[day] || 0) + estimatedCostSavedUsd);
+          }
           dailyCounts[day] = (dailyCounts[day] || 0) + 1;
         }
         const agent = normalizeShreddingAgentType(e.agentType);
@@ -13816,6 +13987,7 @@ async function handleApi(req, res, url) {
           liveOriginalChars += originalChars;
           liveCompressedChars += compressedChars;
           liveSavedChars += savedChars;
+          liveSavedTokensEstimated += savedTokensEstimated;
           const compactionFamily = String(e.compactionFamily || "unknown").trim().toLowerCase() || "unknown";
           const commandFamily = String(e.commandFamily || "unknown").trim().toLowerCase() || "unknown";
           compactionFamilyCounts[compactionFamily] = (compactionFamilyCounts[compactionFamily] || 0) + 1;
@@ -13850,12 +14022,27 @@ async function handleApi(req, res, url) {
         savedPct: numberOrZero(e.savedPct),
         originalChars: numberOrZero(e.originalChars),
         compressedChars: numberOrZero(e.compressedChars),
+        estimatedSavedTokens: estimateTokensFromChars(numberOrZero(e.savedChars)),
+        estimatedCostSavedUsd: blendedCostPerToken != null
+          ? roundMetric(estimateTokensFromChars(numberOrZero(e.savedChars)) * blendedCostPerToken)
+          : null,
         agentType: normalizeShreddingAgentType(e.agentType),
         attemptId: e.attemptId || null,
         stage: String(e.stage || "session_total").trim().toLowerCase() || "session_total",
         compactionFamily: String(e.compactionFamily || "").trim().toLowerCase() || null,
         commandFamily: String(e.commandFamily || "").trim().toLowerCase() || null,
       }));
+      const dailyReductionPct = {};
+      for (const day of Object.keys(dailyOriginal)) {
+        const originalChars = numberOrZero(dailyOriginal[day]);
+        const savedChars = numberOrZero(dailySaved[day]);
+        dailyReductionPct[day] = originalChars > 0
+          ? Math.round((savedChars / originalChars) * 100)
+          : 0;
+      }
+      const totalEstimatedCostSavedUsd = blendedCostPerToken != null
+        ? roundMetric(totalSavedTokensEstimated * blendedCostPerToken)
+        : null;
 
       jsonResponse(res, 200, {
         ok: true,
@@ -13866,17 +14053,35 @@ async function handleApi(req, res, url) {
           totalSavedChars,
           avgSavedPct,
           sortedDates,
+          dailyOriginal,
+          dailyCompressed,
           dailySaved,
+          dailySavedTokensEstimated,
+          dailyCostSavedUsd,
+          dailyReductionPct,
           dailyCounts,
           topAgents,
           stageCounts,
           topCompactionFamilies,
           topCommandFamilies,
+          totals: {
+            originalTokensEstimated: totalOriginalTokensEstimated,
+            compressedTokensEstimated: totalCompressedTokensEstimated,
+            savedTokensEstimated: totalSavedTokensEstimated,
+            estimatedCostSavedUsd: totalEstimatedCostSavedUsd,
+          },
+          estimation: {
+            charsPerToken: SHREDDING_ESTIMATED_CHARS_PER_TOKEN,
+            costModel: blendedCostPerToken != null ? "observed_blended_session_cost" : "unavailable",
+            blendedCostPerMillionTokensUsd: sessionCostModel.blendedCostPerMillionTokensUsd,
+            pricedSessions: sessionCostModel.pricedSessions,
+          },
           liveCompaction: {
             totalEvents: liveTotalEvents,
             totalOriginalChars: liveOriginalChars,
             totalCompressedChars: liveCompressedChars,
             totalSavedChars: liveSavedChars,
+            savedTokensEstimated: liveSavedTokensEstimated,
             avgSavedPct: liveAvgSavedPct,
           },
           recentEvents,
@@ -13887,6 +14092,7 @@ async function handleApi(req, res, url) {
             unknownAttribution,
             includeSynthetic,
             includeNoop,
+            pricedSessions: sessionCostModel.pricedSessions,
           },
         },
       });

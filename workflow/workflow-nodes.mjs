@@ -36,7 +36,7 @@ import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
 import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
-import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../agent/bosun-skills.mjs";
+import { buildRelevantSkillsPromptBlock, emitSkillInvokeEvent, findRelevantSkills } from "../agent/bosun-skills.mjs";
 import { readBenchmarkModeState, taskMatchesBenchmarkMode } from "../bench/benchmark-mode.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
 import {
@@ -10568,8 +10568,26 @@ registerBuiltinNodeType("action.resolve_executor", {
       || ctx.data?.agentProfile
       || "",
     ).trim();
+    const taskText = [task.title, task.description].filter(Boolean).join("\n");
+    const inferredResolutionTags = [];
+    if (/\btest(?:s|ing)?\b/i.test(taskText)) inferredResolutionTags.push("test", "tests");
+    if (/\b(?:ci|cd|pipeline|workflow|github actions?)\b/i.test(taskText)) inferredResolutionTags.push("ci", "cd", "pipeline");
+    if (/\b(?:merge conflict|conflicts|rebase|cherry-pick)\b/i.test(taskText)) inferredResolutionTags.push("conflict", "merge");
+    if (/\b(?:implement|implementation|feature|build|ship)\b/i.test(taskText)) inferredResolutionTags.push("implementation");
+    if (/\b(?:docs?|documentation|readme)\b/i.test(taskText)) inferredResolutionTags.push("docs", "documentation");
+    const resolutionTags = Array.from(new Set([
+      ...task.tags,
+      ...inferredResolutionTags,
+      String(ctx.data?.task?.type || "").trim(),
+      String(ctx.data?.task?.agentType || "").trim(),
+      String(ctx.data?.task?.assignedAgentType || "").trim(),
+      String(ctx.data?.agentType || "").trim(),
+      String(ctx.data?.assignedAgentType || "").trim(),
+    ].map((value) => String(value || "").trim()).filter(Boolean)));
     let profileDecision = null;
     let configuredExecutorPreference = null;
+    ctx.data.resolvedSkillIds = [];
+    ctx.data.resolvedLibraryPlan = null;
 
     // Check env var overrides (mirrors TaskExecutor behavior)
     const envModel =
@@ -10586,25 +10604,30 @@ registerBuiltinNodeType("action.resolve_executor", {
 
     try {
       const library = await ensureLibraryManagerMod();
-      const match = library.matchAgentProfiles?.(
+      const criteria = {
+        title: task.title,
+        description: task.description,
+        tags: resolutionTags,
+        agentType: ctx.data?.task?.agentType || ctx.data?.agentType || "",
         repoRoot,
+        changedFiles: Array.isArray(ctx.data?.changedFiles) ? ctx.data.changedFiles : [],
+      };
+      const planResult = library.resolveLibraryPlan?.(
+        repoRoot,
+        criteria,
         {
-          title: task.title,
-          description: task.description,
-          tags: task.tags,
-          agentType: ctx.data?.task?.agentType || ctx.data?.agentType || "",
-          repoRoot,
+          topN: Math.max(10, requestedAgentProfileId ? 25 : 10),
+          skillTopN: 5,
         },
-        { topN: Math.max(10, requestedAgentProfileId ? 25 : 10) },
       );
-      const candidates = Array.isArray(match?.candidates) ? match.candidates : [];
-      const bestCandidate = match?.best || null;
-      const autoMinScore = Number(match?.auto?.thresholds?.minScore || 12);
+      const candidates = Array.isArray(planResult?.candidates) ? planResult.candidates : [];
+      const bestCandidate = planResult?.best || null;
+      const autoMinScore = Number(planResult?.auto?.thresholds?.minScore || 12);
       const scoreQualified = Number(bestCandidate?.score || 0) >= autoMinScore;
       const matchedCandidate = requestedAgentProfileId
         ? candidates.find((candidate) => String(candidate?.id || "").trim() === requestedAgentProfileId) || null
-        : ((match?.auto?.shouldAutoApply || scoreQualified) ? bestCandidate : null);
-      if (!requestedAgentProfileId && bestCandidate && !match?.auto?.shouldAutoApply) {
+        : ((planResult?.auto?.shouldAutoApply || scoreQualified) ? bestCandidate : null);
+      if (!requestedAgentProfileId && bestCandidate && !planResult?.auto?.shouldAutoApply) {
         ctx.log(
           node.id,
           `Profile match below auto threshold; ignoring candidate ${String(bestCandidate.id || "unknown")}`,
@@ -10623,13 +10646,19 @@ registerBuiltinNodeType("action.resolve_executor", {
         ctx.data.agentProfile = profileId;
         ctx.data.resolvedAgentProfile = {
           id: profileId,
-          name: match?.best?.name || profile?.name || profileId,
+          name: matchedCandidate?.name || profile?.name || profileId,
           ...profile,
         };
-        const skillIds = Array.isArray(profile.skills)
-          ? profile.skills.map((value) => String(value || "").trim()).filter(Boolean)
-          : [];
+        const resolvedPlan = planResult?.plan && planResult.plan.agentProfileId === profileId
+          ? planResult.plan
+          : null;
+        const skillIds = resolvedPlan && Array.isArray(resolvedPlan.skillIds)
+          ? resolvedPlan.skillIds.map((value) => String(value || "").trim()).filter(Boolean)
+          : Array.isArray(profile.skills)
+            ? profile.skills.map((value) => String(value || "").trim()).filter(Boolean)
+            : [];
         ctx.data.resolvedSkillIds = skillIds;
+        ctx.data.resolvedLibraryPlan = resolvedPlan;
       }
     } catch (err) {
       ctx.log(node.id, `Library profile resolution failed: ${err.message}`);
@@ -11540,6 +11569,11 @@ registerBuiltinNodeType("action.build_task_prompt", {
           const content = library.getEntryContent?.(libraryRoot, entry);
           if (!content || (typeof content === "string" && !content.trim())) continue;
           const body = typeof content === "string" ? content.trim() : JSON.stringify(content, null, 2);
+          emitSkillInvokeEvent(skillId, entry.name || skillId, {
+            taskId,
+            executor: ctx.data?.resolvedSdk,
+            source: "library",
+          });
           librarySkillParts.push(`### Skill: ${entry.name || skillId} (\`${skillId}\`)`);
           librarySkillParts.push(body);
           librarySkillParts.push("");

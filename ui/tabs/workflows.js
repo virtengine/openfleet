@@ -25,6 +25,7 @@ import {
   parseGraphSnapshot,
   pushHistorySnapshot,
   redoHistory,
+  resolveNodeOutputPreview,
   searchNodeTypes,
   serializeGraphSnapshot,
   undoHistory,
@@ -86,6 +87,9 @@ const installDialogVars = signal({});
 const installDialogMode = signal("quick");
 const installDialogInstalling = signal(false);
 const installDialogResult = signal(null);
+const workflowsLoading = signal(false);
+const templatesLoading = signal(false);
+const nodeTypesLoading = signal(false);
 
 function resetWorkflowRunsState(scopeWorkflowId = null) {
   workflowRuns.value = [];
@@ -133,29 +137,38 @@ function returnToWorkflowList() {
  * ═══════════════════════════════════════════════════════════════ */
 
 async function loadWorkflows() {
+  workflowsLoading.value = true;
   try {
     const data = await apiFetch("/api/workflows");
     if (data?.workflows) workflows.value = data.workflows;
   } catch (err) {
     console.error("[workflows] Failed to load:", err);
+  } finally {
+    workflowsLoading.value = false;
   }
 }
 
 async function loadTemplates() {
+  templatesLoading.value = true;
   try {
     const data = await apiFetch("/api/workflows/templates");
     if (data?.templates) templates.value = data.templates;
   } catch (err) {
     console.error("[workflows] Failed to load templates:", err);
+  } finally {
+    templatesLoading.value = false;
   }
 }
 
 async function loadNodeTypes() {
+  nodeTypesLoading.value = true;
   try {
     const data = await apiFetch("/api/workflows/node-types");
     if (data?.nodeTypes) nodeTypes.value = data.nodeTypes;
   } catch (err) {
     console.error("[workflows] Failed to load node types:", err);
+  } finally {
+    nodeTypesLoading.value = false;
   }
 }
 
@@ -3942,6 +3955,8 @@ function resolveWorkflowTemplateSource(workflow, templateLookupById, templateLoo
 function WorkflowListView() {
   const wfs = workflows.value || [];
   const tmpls = templates.value || [];
+  const isWorkflowListLoading = workflowsLoading.value;
+  const isTemplateListLoading = templatesLoading.value;
   const installedTemplateIds = new Set();
   wfs.forEach((wf) => {
     if (wf.metadata?.installedFrom) installedTemplateIds.add(wf.metadata.installedFrom);
@@ -4012,7 +4027,15 @@ function WorkflowListView() {
       </div>
 
       <!-- Active Workflows -->
-      ${wfs.length > 0 && html`
+      ${isWorkflowListLoading && html`
+        <div style="text-align: center; padding: 40px 20px; background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; margin-bottom: 24px; border: 1px solid var(--color-border, #2a3040);">
+          <${CircularProgress} size=${28} />
+          <div style="font-size: 16px; font-weight: 600; margin-top: 12px; margin-bottom: 8px;">Loading workflows…</div>
+          <div style="font-size: 13px; color: var(--color-text-secondary, #8b95a5);">Fetching installed workflows and template metadata.</div>
+        </div>
+      `}
+
+      ${!isWorkflowListLoading && wfs.length > 0 && html`
         <div style="margin-bottom: 24px;">
           <h3 style="font-size: 14px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
             Your Workflows (${wfs.length})
@@ -4158,7 +4181,7 @@ function WorkflowListView() {
         </div>
       `}
 
-      ${wfs.length === 0 && html`
+      ${!isWorkflowListLoading && wfs.length === 0 && html`
         <div style="text-align: center; padding: 40px 20px; background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; margin-bottom: 24px; border: 1px solid var(--color-border, #2a3040);">
           <div style="font-size: 36px; margin-bottom: 12px;">
             <span class="icon-inline">${resolveIcon("refresh")}</span>
@@ -4186,15 +4209,21 @@ function WorkflowListView() {
       <!-- Templates (grouped by category, deduped against installed) -->
       <div>
         <h3 style="font-size: 14px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
-          Available Templates (${availableTemplates.length})${tmpls.length !== availableTemplates.length ? html` <span style="font-size: 11px; font-weight: 400; opacity: 0.6;">· ${tmpls.length - availableTemplates.length} installed</span>` : ""}
+          Available Templates (${isTemplateListLoading ? "…" : availableTemplates.length})${!isTemplateListLoading && tmpls.length !== availableTemplates.length ? html` <span style="font-size: 11px; font-weight: 400; opacity: 0.6;">· ${tmpls.length - availableTemplates.length} installed</span>` : ""}
         </h3>
-        ${availableTemplates.length === 0 && html`
+        ${isTemplateListLoading && html`
+          <div style="text-align: center; padding: 24px; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 8px;">
+            <${CircularProgress} size=${18} />
+            <span>Loading templates…</span>
+          </div>
+        `}
+        ${!isTemplateListLoading && availableTemplates.length === 0 && html`
           <div style="text-align: center; padding: 24px; opacity: 0.5; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 6px;">
             <span class="icon-inline">${resolveIcon("star")}</span>
             <span>All templates are installed!</span>
           </div>
         `}
-        ${availableTemplateGroups.map((group) => html`
+        ${!isTemplateListLoading && availableTemplateGroups.map((group) => html`
           <div key=${group.key} style="margin-bottom: 20px;">
             <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--color-border, #2a304060);">
               <span class="icon-inline" style="font-size: 16px;">${resolveIcon(group.icon) || ICONS.dot}</span>
@@ -4267,19 +4296,20 @@ function getRunStatusBadgeStyles(status) {
 }
 
 function getCanvasNodeExecutionVisuals(status, isSelected, selectedColor, flashState = "") {
-  if (status === "running") {
+  const normalized = normalizeLiveNodeStatus(status) || String(status || "").trim().toLowerCase();
+  if (normalized === "running") {
     return { fill: "#10233f", stroke: "#60a5fa", strokeWidth: 2.5, filter: "url(#node-glow)" };
   }
-  if (status === "fail" || flashState === "fail") {
+  if (normalized === "failed" || normalized === "fail" || flashState === "fail") {
     return { fill: "#2a1217", stroke: "#ef4444", strokeWidth: 2.25, filter: "url(#node-shadow)" };
   }
-  if (status === "success" || flashState === "success") {
+  if (normalized === "completed" || normalized === "success" || flashState === "success") {
     return { fill: "#0f2a23", stroke: "#10b981", strokeWidth: 2, filter: "url(#node-shadow)" };
   }
-  if (status === "skipped" || flashState === "skipped") {
+  if (normalized === "skipped" || flashState === "skipped") {
     return { fill: "#1f2430", stroke: "#94a3b8", strokeWidth: 2, filter: "url(#node-shadow)" };
   }
-  if (status === "waiting" || status === "pending") {
+  if (normalized === "waiting" || normalized === "pending") {
     return { fill: "#2f2310", stroke: "#f59e0b", strokeWidth: 2, filter: "url(#node-shadow)" };
   }
   return {

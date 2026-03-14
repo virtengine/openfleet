@@ -35,6 +35,118 @@ function getLabel(type) {
   return String(type || "").split(".").pop()?.replace(/_/g, " ") || String(type || "");
 }
 
+function normalizePreviewLine(text, maxLength = 84) {
+  const compact = String(text || "").replace(/\s+/g, " ").trim();
+  if (!compact) return "";
+  return compact.length > maxLength
+    ? `${compact.slice(0, Math.max(0, maxLength - 1))}…`
+    : compact;
+}
+
+function collectPreviewText(value, lines = [], seen = new Set(), depth = 0) {
+  if (value == null || depth > 2 || lines.length >= 6) return lines;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    const rawLines = String(value)
+      .split(/\r?\n/)
+      .map((line) => normalizePreviewLine(line))
+      .filter(Boolean);
+    for (const line of rawLines) {
+      if (seen.has(line)) continue;
+      seen.add(line);
+      lines.push(line);
+      if (lines.length >= 6) break;
+    }
+    return lines;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value.slice(0, 4)) {
+      collectPreviewText(item, lines, seen, depth + 1);
+      if (lines.length >= 6) break;
+    }
+    return lines;
+  }
+  if (typeof value !== "object") return lines;
+
+  const prioritizedKeys = [
+    "summary",
+    "narrative",
+    "text",
+    "message",
+    "content",
+    "output",
+    "result",
+    "answer",
+    "response",
+    "stdout",
+    "stderr",
+  ];
+  let matched = false;
+  for (const key of prioritizedKeys) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    matched = true;
+    collectPreviewText(value[key], lines, seen, depth + 1);
+    if (lines.length >= 6) return lines;
+  }
+  if (Array.isArray(value.lines)) {
+    matched = true;
+    collectPreviewText(value.lines, lines, seen, depth + 1);
+  }
+  if (value.preview && typeof value.preview === "object") {
+    matched = true;
+    collectPreviewText(value.preview, lines, seen, depth + 1);
+  }
+  if (!matched) {
+    try {
+      const json = JSON.stringify(value);
+      if (json) collectPreviewText(json, lines, seen, depth + 1);
+    } catch {}
+  }
+  return lines;
+}
+
+function extractPreviewTokenCount(value) {
+  if (!value || typeof value !== "object") return null;
+  const candidates = [
+    value.tokenCount,
+    value.totalTokens,
+    value.total_tokens,
+    value.tokens,
+    value.usage?.total_tokens,
+    value.usage?.totalTokens,
+    value.tokenUsage?.totalTokens,
+    value.metrics?.total_tokens,
+    value.metrics?.totalTokens,
+  ];
+  for (const candidate of candidates) {
+    const parsed = Number(candidate);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return Math.max(0, Math.round(parsed));
+    }
+  }
+  const input = Number(
+    value.inputTokens
+    ?? value.input_tokens
+    ?? value.promptTokens
+    ?? value.prompt_tokens
+    ?? value.usage?.prompt_tokens
+    ?? value.usage?.inputTokens
+    ?? value.tokenUsage?.inputTokens,
+  );
+  const output = Number(
+    value.outputTokens
+    ?? value.output_tokens
+    ?? value.completionTokens
+    ?? value.completion_tokens
+    ?? value.usage?.completion_tokens
+    ?? value.usage?.outputTokens
+    ?? value.tokenUsage?.outputTokens,
+  );
+  if (Number.isFinite(input) || Number.isFinite(output)) {
+    return Math.max(0, Math.round((Number.isFinite(input) ? input : 0) + (Number.isFinite(output) ? output : 0)));
+  }
+  return null;
+}
+
 export function createGraphSnapshot(nodes = [], edges = []) {
   return {
     nodes: normalizeGraphValue(nodes),
@@ -216,4 +328,22 @@ export function buildNodeStatusesFromRunDetail(run) {
   }
 
   return statuses;
+}
+
+export function resolveNodeOutputPreview(_nodeType, livePreview = null, rawOutput = null) {
+  const liveLines = Array.isArray(livePreview?.lines)
+    ? livePreview.lines.map((line) => normalizePreviewLine(line)).filter(Boolean)
+    : [];
+  const liveTokenCount = extractPreviewTokenCount(livePreview);
+  if (liveLines.length || liveTokenCount != null) {
+    return {
+      lines: liveLines.slice(0, 3),
+      tokenCount: liveTokenCount,
+    };
+  }
+
+  return {
+    lines: collectPreviewText(rawOutput).slice(0, 3),
+    tokenCount: extractPreviewTokenCount(rawOutput),
+  };
 }
