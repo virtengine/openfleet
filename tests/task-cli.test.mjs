@@ -1,9 +1,22 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+
+const mockExistsSync = vi.hoisted(() => vi.fn());
+const mockReadFileSync = vi.hoisted(() => vi.fn());
+
+vi.mock("node:fs", async () => {
+  const actual = await vi.importActual("node:fs");
+  return {
+    ...actual,
+    existsSync: mockExistsSync,
+    readFileSync: mockReadFileSync,
+  };
+});
+
+const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await vi.importActual("node:fs");
 
 import {
   addTask,
@@ -325,3 +338,4 @@ describe("task-cli taskStats repo area lock state", () => {
     logSpy.mockRestore();
   });
 });
+
