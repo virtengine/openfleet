@@ -70,6 +70,13 @@ describe("modular mini app structure", () => {
 });
 
 describe("workflow canvas helpers", () => {
+  it("keeps workflow node header constants defined at module scope for render-time aliases", () => {
+    const workflowsSource = readFileSync(resolve(process.cwd(), "ui/tabs/workflows.js"), "utf8");
+    expect(workflowsSource).toContain("const WORKFLOW_NODE_HEADER_HEIGHT = 44;");
+    expect(workflowsSource).toContain("const NODE_HEADER = WORKFLOW_NODE_HEADER_HEIGHT;");
+    expect(workflowsSource).toContain("const NODE_HEADER_H = WORKFLOW_NODE_HEADER_HEIGHT;");
+  });
+
   it("finds agent nodes with fuzzy partial matches", () => {
     const results = searchNodeTypes([
       {

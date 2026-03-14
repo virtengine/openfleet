@@ -31,6 +31,13 @@ const sessionListSourceFiles = [
 
 for (const { relPath, source } of sourceFiles) {
   describe(`FleetSessionsPanel render stability (${relPath})`, () => {
+    it("never fabricates session ids for task-only fallback entries", () => {
+      expect(source).toContain("function resolveFleetEntrySessionId(entry)");
+      expect(source).toContain("if (entry?.isTaskFallback || entry?.slot?.synthetic) return \"\";");
+      expect(source).toContain("sessionId: \"\",");
+      expect(source).not.toContain("sessionId: String(task?.id || task?.taskId || \"\").trim(),");
+    });
+
     it("treats detached sessions as active based on status, not history-only placement", () => {
       expect(source).toContain("function isFleetEntryActive(entry)");
       expect(source).not.toContain("if (entry.isHistory) return false;");
