@@ -30,6 +30,7 @@
   - `pnpm build` passed
 - PR: #PENDING — `chore/code-quality-striker-20260314-manual-flow-audit`
 
+<<<<<<< HEAD
 ## 2026-03-14T08:59:15-05:00
 
 - Scope: Split manual flow run creation, research dispatch prep, and custom action parsing inside `workflow/manual-flows.mjs` into focused internal helpers with no API changes.
@@ -40,3 +41,15 @@
   - `npm test` passed (3828 tests)
   - `pnpm build` passed
 - PR: #286 — `chore/code-quality-striker-20260314-manual-flow-audit`
+=======
+## 2026-03-14T19:48:30.928Z
+
+- Scope: Split workspace health checks and report formatting out of `config/config-doctor.mjs` into a focused co-located module with no public API changes.
+- Files changed: config/config-doctor.mjs, config/workspace-health.mjs, [object Object]
+- Strategy: Extracted the workspace health path into `config/workspace-health.mjs` and re-exported the moved functions from `config/config-doctor.mjs` so config validation and workspace diagnostics can evolve independently.
+- Validation evidence:
+  - `[object Object]` passed on all touched files
+  - `npm test` passed (3827 tests)
+  - `pnpm build` passed
+- PR: #284 — `chore/code-quality-striker-20260314-config-workspace-health`
+>>>>>>> 3afcf884 (chore: append striker session log)

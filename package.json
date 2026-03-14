@@ -178,6 +178,7 @@
     "shell/codex-shell.mjs",
     "config/config.mjs",
     "config/config-doctor.mjs",
+    "config/workspace-health.mjs",
     "git/conflict-resolver.mjs",
     "workspace/context-cache.mjs",
     "workspace/context-indexer.mjs",
