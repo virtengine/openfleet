@@ -60,6 +60,23 @@ describe("context-cache", () => {
     return items;
   }
 
+  function makeGitToolItem({
+    toolName = "git log",
+    command = "git log --oneline",
+    lineCount = 600,
+  } = {}) {
+    const lines = [];
+    for (let i = 0; i < lineCount; i++) {
+      lines.push(`commit ${i} ${"abcdef".repeat(5)}`);
+    }
+    return {
+      type: "function_call_output",
+      tool_name: toolName,
+      arguments: { command },
+      output: lines.join("\n"),
+    };
+  }
+
   function makeLargeGitOutput(lines = 1400) {
     return Array.from(
       { length: lines },
@@ -164,11 +181,28 @@ describe("context-cache", () => {
       expect(result[0]._cachedLogId).toBeDefined();
       expect(result[0].aggregated_output.length).toBeLessThan(1000);
       expect(result[0].aggregated_output).toContain("bosun --tool-log");
-      expect(result[0].aggregated_output).toMatch(/git capped: \d+ lines, \d+ chars suppressed/i);
+      expect(result[0].aggregated_output).toMatch(
+        /git log capped: \d+ lines, \d+ chars suppressed/i,
+      );
 
       const retrieved = await contextCache.retrieveToolLog(result[0]._cachedLogId);
       expect(retrieved.found).toBe(true);
       expect(retrieved.entry.item.aggregated_output).toBe(fullOutput);
+    });
+
+    it("skips the git guard when BOSUN_GIT_OUTPUT_MAX_CHARS=0", async () => {
+      process.env.BOSUN_GIT_OUTPUT_MAX_CHARS = "0";
+
+      const fullOutput = makeLargeGitOutput(1200);
+      const items = [{
+        type: "command_execution",
+        command: "git log --oneline",
+        aggregated_output: fullOutput,
+      }];
+
+      const [result] = await contextCache.cacheAndCompressItems(items);
+      expect(result._cachedLogId).toBeUndefined();
+      expect(result.aggregated_output).toBe(fullOutput);
     });
 
     it("immediately caps other high-volume git history outputs", async () => {
@@ -434,6 +468,29 @@ describe("context-cache", () => {
         }
       }
     });
+
+    it("notes the git command name in immediate cap outputs", async () => {
+      const commands = [
+        { command: "git log --oneline", label: "log" },
+        { command: "git shortlog -sn", label: "shortlog" },
+        { command: "git reflog", label: "reflog" },
+        { command: "git diff HEAD~10 HEAD", label: "diff" },
+      ];
+
+      for (const { command, label } of commands) {
+        const [result] = await contextCache.cacheAndCompressItems([{
+          type: "command_execution",
+          command,
+          aggregated_output: makeLargeGitOutput(1500),
+        }]);
+
+        expect(result._cachedLogId).toBeDefined();
+        expect(result.aggregated_output).toContain("bosun --tool-log");
+        expect(result.aggregated_output).toMatch(
+          new RegExp(`git ${label} capped: \\d+ lines, \\d+ chars suppressed`, "i"),
+        );
+      }
+    });
   });
 
   // ── getToolLogDir ──────────────────────────────────────────────────────
@@ -683,6 +740,50 @@ describe("context-cache", () => {
       expect(retrieved.entry.item.aggregated_output).toBe(fullOutput);
     });
 
+    it("caps session-level shortlog/reflog/diff outputs immediately", async () => {
+      const fullOutput = makeLargeGitOutput(1500);
+      const commands = [
+        "git shortlog -sn",
+        "git reflog",
+        "git diff HEAD~10 HEAD",
+      ];
+
+      for (const command of commands) {
+        const [result] = await contextCache.maybeCompressSessionItems([{
+          type: "command_execution",
+          command,
+          aggregated_output: fullOutput,
+        }], { sessionType: "primary" });
+
+        expect(result._cachedLogId).toBeDefined();
+        expect(result.aggregated_output).toContain("bosun --tool-log");
+        expect(result.aggregated_output.length).toBeLessThan(1000);
+      }
+    });
+
+    it("labels session-level immediate caps with the git command name", async () => {
+      const commands = [
+        { command: "git log --oneline", label: "log" },
+        { command: "git shortlog -sn", label: "shortlog" },
+        { command: "git reflog", label: "reflog" },
+        { command: "git diff HEAD~10 HEAD", label: "diff" },
+      ];
+
+      for (const { command, label } of commands) {
+        const [result] = await contextCache.maybeCompressSessionItems([{
+          type: "command_execution",
+          command,
+          aggregated_output: makeLargeGitOutput(1500),
+        }], { sessionType: "primary" });
+
+        expect(result._cachedLogId).toBeDefined();
+        expect(result.aggregated_output).toContain("bosun --tool-log");
+        expect(result.aggregated_output).toMatch(
+          new RegExp(`git ${label} capped: \\d+ lines, \\d+ chars suppressed`, "i"),
+        );
+      }
+    });
+
     it("respects BOSUN_GIT_OUTPUT_MAX_CHARS=0 in session-level compression", async () => {
       process.env.BOSUN_GIT_OUTPUT_MAX_CHARS = "0";
 
@@ -699,6 +800,26 @@ describe("context-cache", () => {
 
       expect(result._cachedLogId).toBeUndefined();
       expect(result.aggregated_output).toBe(fullOutput);
+    });
+
+    it("leaves bounded git commands untouched at the session level", async () => {
+      const fullOutput = makeLargeGitOutput(1500);
+      const commands = [
+        "git status --short",
+        "git show HEAD~1",
+        "git diff --stat HEAD~1",
+      ];
+
+      for (const command of commands) {
+        const [result] = await contextCache.maybeCompressSessionItems([{
+          type: "command_execution",
+          command,
+          aggregated_output: fullOutput,
+        }], { sessionType: "primary" });
+
+        expect(result._cachedLogId).toBeUndefined();
+        expect(result.aggregated_output).toBe(fullOutput);
+      }
     });
   });
   // ── Content-Aware Relevance Scoring ───────────────────────────────────
@@ -889,4 +1010,3 @@ describe("context-cache", () => {
     });
   });
 });
-
