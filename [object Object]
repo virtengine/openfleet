@@ -8,3 +8,13 @@
   - `npm test` passed (3817 tests)
   - `pnpm build` passed
 - PR: #276 — `chore/code-quality-striker-019cec1d843e`
+## 2026-03-15T05:00:20.3874041+11:00
+
+- Scope: Split the workflow template state/update block in `workflow/workflow-templates.mjs` into a focused helper factory without changing the module's public API.
+- Files changed: workflow/workflow-templates.mjs, [object Object]
+- Strategy: Wrapped fingerprinting, template-state hydration, update, and reconciliation logic in a self-contained internal helper so registry data and template lifecycle behavior are more clearly separated for future edits.
+- Validation evidence:
+  - `[object Object]` passed on all touched files
+  - `npm test` passed (3825 tests)
+  - `pnpm build` passed
+- PR: #282 — `chore/code-quality-striker-20260314-template-state-clean`
