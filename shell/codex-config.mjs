@@ -205,6 +205,111 @@ function resolveAgentMaxThreads(envOverrides = process.env) {
  *
  * Also migrates any stale max_threads from [agents] if found.
  */
+function removeStaleAgentsMaxThreads(toml) {
+  let nextToml = toml;
+  let changed = false;
+  const agentsIdx = nextToml.indexOf(AGENTS_HEADER);
+  if (agentsIdx === -1) {
+    return { toml: nextToml, changed };
+  }
+
+  const afterAgentsHeader = agentsIdx + AGENTS_HEADER.length;
+  const nextAgentsSection = nextToml.indexOf("\n[", afterAgentsHeader);
+  const agentsSectionEnd = nextAgentsSection === -1 ? nextToml.length : nextAgentsSection;
+  const agentsSection = nextToml.substring(afterAgentsHeader, agentsSectionEnd);
+  const staleRegex = /^[ \t]*#[^\n]*max.*threads[^\n]*\n?|^[ \t]*max_threads\s*=\s*\d+[^\n]*\n?/gm;
+  if (staleRegex.test(agentsSection)) {
+    const cleaned = agentsSection.replace(staleRegex, "");
+    nextToml = nextToml.substring(0, afterAgentsHeader) + cleaned + nextToml.substring(agentsSectionEnd);
+    changed = true;
+  }
+
+  const updatedAgentsIdx = nextToml.indexOf(AGENTS_HEADER);
+  if (updatedAgentsIdx === -1) {
+    return { toml: nextToml, changed };
+  }
+
+  const afterUpdated = updatedAgentsIdx + AGENTS_HEADER.length;
+  const nextUpdated = nextToml.indexOf("\n[", afterUpdated);
+  const endUpdated = nextUpdated === -1 ? nextToml.length : nextUpdated;
+  const remaining = nextToml.substring(afterUpdated, endUpdated).trim();
+  const onlyCommentsRemain = !remaining || remaining.split(/\r?\n/).every((line) => {
+    const trimmed = String(line || "").trim();
+    return !trimmed || trimmed.startsWith("#");
+  });
+  if (!onlyCommentsRemain) {
+    return { toml: nextToml, changed };
+  }
+
+  const lineStart = nextToml.lastIndexOf("\n", updatedAgentsIdx);
+  const removeFrom = lineStart === -1 ? updatedAgentsIdx : lineStart;
+  return {
+    toml: nextToml.substring(0, removeFrom) + nextToml.substring(endUpdated),
+    changed: true,
+  };
+}
+
+function resolveAgentSdkSectionRange(toml) {
+  const sdkIdx = toml.indexOf(AGENT_SDK_HEADER);
+  if (sdkIdx === -1) return null;
+  const afterSdkHeader = sdkIdx + AGENT_SDK_HEADER.length;
+  const capsIdx = toml.indexOf(AGENT_SDK_CAPS_HEADER, afterSdkHeader);
+  const nextSectionIdx = toml.indexOf("\n[", afterSdkHeader);
+  let sdkSectionEnd;
+  if (capsIdx !== -1 && (nextSectionIdx === -1 || capsIdx <= nextSectionIdx)) {
+    sdkSectionEnd = capsIdx;
+  } else {
+    sdkSectionEnd = nextSectionIdx === -1 ? toml.length : nextSectionIdx;
+  }
+  return { afterSdkHeader, sdkSectionEnd };
+}
+
+function upsertAgentSdkMaxThreads(toml, desired, overwrite) {
+  const sdkRange = resolveAgentSdkSectionRange(toml);
+  if (!sdkRange) {
+    return {
+      toml,
+      changed: true,
+      existing: null,
+      added: true,
+      updated: false,
+    };
+  }
+
+  let sdkSection = toml.substring(sdkRange.afterSdkHeader, sdkRange.sdkSectionEnd);
+  const maxThreadsRegex = /^max_threads\s*=\s*(\d+)/m;
+  const match = sdkSection.match(maxThreadsRegex);
+  if (match) {
+    const existing = parsePositiveInt(match[1]);
+    if (!overwrite || existing === desired) {
+      return {
+        toml,
+        changed: false,
+        existing,
+        added: false,
+        updated: false,
+      };
+    }
+    sdkSection = sdkSection.replace(maxThreadsRegex, `max_threads = ${desired}`);
+    return {
+      toml: toml.substring(0, sdkRange.afterSdkHeader) + sdkSection + toml.substring(sdkRange.sdkSectionEnd),
+      changed: true,
+      existing,
+      added: false,
+      updated: true,
+    };
+  }
+
+  sdkSection = sdkSection.trimEnd() + `\nmax_threads = ${desired}\n`;
+  return {
+    toml: toml.substring(0, sdkRange.afterSdkHeader) + sdkSection + toml.substring(sdkRange.sdkSectionEnd),
+    changed: true,
+    existing: null,
+    added: true,
+    updated: false,
+  };
+}
+
 export function ensureAgentMaxThreads(
   toml,
   { maxThreads, overwrite = false } = {},
@@ -226,88 +331,18 @@ export function ensureAgentMaxThreads(
   }
   result.applied = desired;
 
-  // ── Migration: remove stale max_threads from [agents] section ──
-  const agentsIdx = toml.indexOf(AGENTS_HEADER);
-  if (agentsIdx !== -1) {
-    const afterAgentsHeader = agentsIdx + AGENTS_HEADER.length;
-    const nextAgentsSection = toml.indexOf("\n[", afterAgentsHeader);
-    const agentsSectionEnd = nextAgentsSection === -1 ? toml.length : nextAgentsSection;
-    const agentsSection = toml.substring(afterAgentsHeader, agentsSectionEnd);
-    const staleRegex = /^[ \t]*#[^\n]*max.*threads[^\n]*\n?|^[ \t]*max_threads\s*=\s*\d+[^\n]*\n?/gm;
-    if (staleRegex.test(agentsSection)) {
-      const cleaned = agentsSection.replace(staleRegex, "");
-      toml = toml.substring(0, afterAgentsHeader) + cleaned + toml.substring(agentsSectionEnd);
-      result.changed = true;
-    }
-    // If [agents] section is now empty (only whitespace/comments about agents),
-    // remove the whole section to avoid confusing Codex CLI
-    const updatedAgentsIdx = toml.indexOf(AGENTS_HEADER);
-    if (updatedAgentsIdx !== -1) {
-      const afterUpdated = updatedAgentsIdx + AGENTS_HEADER.length;
-      const nextUpdated = toml.indexOf("\n[", afterUpdated);
-      const endUpdated = nextUpdated === -1 ? toml.length : nextUpdated;
-      const remaining = toml.substring(afterUpdated, endUpdated).trim();
-      // If only whitespace or the bosun comment header remains, remove entire section
-      if (!remaining || remaining.split(/\r?\n/).every((line) => {
-        const trimmed = String(line || "").trim();
-        return !trimmed || trimmed.startsWith("#");
-      })) {
-        // Remove from the line before [agents] header to section end
-        const lineStart = toml.lastIndexOf("\n", updatedAgentsIdx);
-        const removeFrom = lineStart === -1 ? updatedAgentsIdx : lineStart;
-        toml = toml.substring(0, removeFrom) + toml.substring(endUpdated);
-        result.changed = true;
-      }
-    }
-  }
+  const migratedAgents = removeStaleAgentsMaxThreads(toml);
+  toml = migratedAgents.toml;
+  result.changed = migratedAgents.changed;
 
-  // ── Place max_threads under [agent_sdk] ──
-  const sdkIdx = toml.indexOf(AGENT_SDK_HEADER);
-  if (sdkIdx === -1) {
-    // No [agent_sdk] section yet — it will be created by ensureCodexConfig;
-    // the DEFAULT_AGENT_SDK_BLOCK already includes max_threads.
-    result.changed = true;
-    result.added = true;
-    return result;
-  }
-
-  const afterSdkHeader = sdkIdx + AGENT_SDK_HEADER.length;
-  // Find the end of [agent_sdk] — either [agent_sdk.capabilities] or the next section
-  const capsIdx = toml.indexOf(AGENT_SDK_CAPS_HEADER, afterSdkHeader);
-  const nextSectionIdx = toml.indexOf("\n[", afterSdkHeader);
-  // Use the capabilities sub-section boundary or next top-level section
-  let sdkSectionEnd;
-  if (capsIdx !== -1 && (nextSectionIdx === -1 || capsIdx <= nextSectionIdx)) {
-    sdkSectionEnd = capsIdx;
-  } else {
-    sdkSectionEnd = nextSectionIdx === -1 ? toml.length : nextSectionIdx;
-  }
-
-  let sdkSection = toml.substring(afterSdkHeader, sdkSectionEnd);
-
-  const maxThreadsRegex = /^max_threads\s*=\s*(\d+)/m;
-  const match = sdkSection.match(maxThreadsRegex);
-  if (match) {
-    result.existing = parsePositiveInt(match[1]);
-    if (overwrite && result.existing !== desired) {
-      sdkSection = sdkSection.replace(maxThreadsRegex, `max_threads = ${desired}`);
-      result.changed = true;
-      result.updated = true;
-    }
-  } else {
-    // Add max_threads right after [agent_sdk] header, before other keys
-    sdkSection = sdkSection.trimEnd() + `\nmax_threads = ${desired}\n`;
-    result.changed = true;
-    result.added = true;
-  }
-
-  if (result.changed) {
-    result.toml = toml.substring(0, afterSdkHeader) + sdkSection + toml.substring(sdkSectionEnd);
-  }
-
+  const agentSdkUpdate = upsertAgentSdkMaxThreads(toml, desired, overwrite);
+  result.toml = agentSdkUpdate.toml;
+  result.existing = agentSdkUpdate.existing;
+  result.added = agentSdkUpdate.added;
+  result.updated = agentSdkUpdate.updated;
+  result.changed = result.changed || agentSdkUpdate.changed;
   return result;
 }
-
 /**
  * Check whether config has a [features] section.
  */
@@ -723,6 +758,84 @@ export function buildSandboxWorkspaceWrite(options = {}) {
   ].join("\n");
 }
 
+function buildSandboxWorkspaceWriteBlock({
+  desiredRoots,
+  networkAccess,
+  excludeTmpdirEnvVar,
+  excludeSlashTmp,
+}) {
+  return [
+    "",
+    "# ── Workspace-write sandbox defaults (added by bosun) ──",
+    "[sandbox_workspace_write]",
+    `network_access = ${networkAccess}`,
+    `exclude_tmpdir_env_var = ${excludeTmpdirEnvVar}`,
+    `exclude_slash_tmp = ${excludeSlashTmp}`,
+    `writable_roots = ${formatTomlArray(desiredRoots)}`,
+    "",
+  ].join("\n");
+}
+
+function findTomlSection(toml, header) {
+  const headerIdx = toml.indexOf(header);
+  if (headerIdx === -1) return null;
+  const afterHeader = headerIdx + header.length;
+  const nextSection = toml.indexOf("\n[", afterHeader);
+  const sectionEnd = nextSection === -1 ? toml.length : nextSection;
+  return {
+    headerIdx,
+    afterHeader,
+    sectionEnd,
+    section: toml.substring(afterHeader, sectionEnd),
+  };
+}
+
+function ensureSandboxWorkspaceFlags(section, flags) {
+  let nextSection = section;
+  let changed = false;
+  for (const [key, value] of Object.entries(flags)) {
+    const keyRegex = new RegExp(`^${escapeRegex(key)}\\s*=`, "m");
+    if (keyRegex.test(nextSection)) continue;
+    nextSection = nextSection.trimEnd() + `\n${key} = ${value}\n`;
+    changed = true;
+  }
+  return { section: nextSection, changed };
+}
+
+function mergeSandboxWorkspaceRoots(section, desiredRoots, repoRoot) {
+  const rootsRegex = /^writable_roots\s*=\s*(\[[^\]]*\])\s*$/m;
+  const match = section.match(rootsRegex);
+  if (!match) {
+    if (desiredRoots.length === 0) {
+      return { section, changed: false, rootsAdded: [] };
+    }
+    return {
+      section: section.trimEnd() + `\nwritable_roots = ${formatTomlArray(desiredRoots)}\n`,
+      changed: true,
+      rootsAdded: desiredRoots,
+    };
+  }
+
+  const existingRoots = parseTomlArrayLiteral(match[1]);
+  const validExisting = existingRoots.filter((root) => root === "/tmp" || existsSync(root));
+  const merged = normalizeWritableRoots(validExisting, { repoRoot, validateExistence: true });
+  const rootsAdded = [];
+  for (const root of desiredRoots) {
+    if (merged.includes(root)) continue;
+    merged.push(root);
+    rootsAdded.push(root);
+  }
+
+  let changed = existingRoots.some((root) => root !== "/tmp" && !existsSync(root));
+  const formatted = formatTomlArray(merged);
+  if (formatted !== match[1]) {
+    section = section.replace(rootsRegex, `writable_roots = ${formatted}`);
+    changed = true;
+  }
+
+  return { section, changed, rootsAdded };
+}
+
 export function ensureSandboxWorkspaceWrite(toml, options = {}) {
   const {
     writableRoots = [],
@@ -738,124 +851,74 @@ export function ensureSandboxWorkspaceWrite(toml, options = {}) {
     if (desiredRoots.length === 0) {
       return { toml, changed: false, added: false, rootsAdded: [] };
     }
-    const block = [
-      "",
-      "# ── Workspace-write sandbox defaults (added by bosun) ──",
-      "[sandbox_workspace_write]",
-      `network_access = ${networkAccess}`,
-      `exclude_tmpdir_env_var = ${excludeTmpdirEnvVar}`,
-      `exclude_slash_tmp = ${excludeSlashTmp}`,
-      `writable_roots = ${formatTomlArray(desiredRoots)}`,
-      "",
-    ].join("\n");
     return {
-      toml: toml.trimEnd() + "\n" + block,
+      toml: toml.trimEnd() + "\n" + buildSandboxWorkspaceWriteBlock({
+        desiredRoots,
+        networkAccess,
+        excludeTmpdirEnvVar,
+        excludeSlashTmp,
+      }),
       changed: true,
       added: true,
       rootsAdded: desiredRoots,
     };
   }
 
-  const header = "[sandbox_workspace_write]";
-  const headerIdx = toml.indexOf(header);
-  if (headerIdx === -1) {
+  const sectionInfo = findTomlSection(toml, "[sandbox_workspace_write]");
+  if (!sectionInfo) {
     return { toml, changed: false, added: false, rootsAdded: [] };
   }
 
-  const afterHeader = headerIdx + header.length;
-  const nextSection = toml.indexOf("\n[", afterHeader);
-  const sectionEnd = nextSection === -1 ? toml.length : nextSection;
-  let section = toml.substring(afterHeader, sectionEnd);
-  let changed = false;
-  let rootsAdded = [];
-
-  const ensureFlag = (key, value) => {
-    const keyRegex = new RegExp(`^${escapeRegex(key)}\\s*=`, "m");
-    if (!keyRegex.test(section)) {
-      section = section.trimEnd() + `\n${key} = ${value}\n`;
-      changed = true;
-    }
-  };
-
-  ensureFlag("network_access", networkAccess);
-  ensureFlag("exclude_tmpdir_env_var", excludeTmpdirEnvVar);
-  ensureFlag("exclude_slash_tmp", excludeSlashTmp);
-
-  const rootsRegex = /^writable_roots\s*=\s*(\[[^\]]*\])\s*$/m;
-  const match = section.match(rootsRegex);
-  if (match) {
-    const existingRoots = parseTomlArrayLiteral(match[1]);
-    // Filter out stale roots that no longer exist on disk
-    const validExisting = existingRoots.filter((r) => r === "/tmp" || existsSync(r));
-    const merged = normalizeWritableRoots(validExisting, { repoRoot, validateExistence: true });
-    for (const root of desiredRoots) {
-      if (!merged.includes(root)) {
-        merged.push(root);
-        rootsAdded.push(root);
-      }
-    }
-    // Track any roots that were removed due to non-existence
-    const staleRemoved = existingRoots.filter((r) => r !== "/tmp" && !existsSync(r));
-    if (staleRemoved.length > 0) changed = true;
-    const formatted = formatTomlArray(merged);
-    if (formatted !== match[1]) {
-      section = section.replace(rootsRegex, `writable_roots = ${formatted}`);
-      changed = true;
-    }
-  } else if (desiredRoots.length > 0) {
-    section = section.trimEnd() + `\nwritable_roots = ${formatTomlArray(desiredRoots)}\n`;
-    rootsAdded = desiredRoots;
-    changed = true;
-  }
-
-  if (!changed) {
+  const flagsResult = ensureSandboxWorkspaceFlags(sectionInfo.section, {
+    network_access: networkAccess,
+    exclude_tmpdir_env_var: excludeTmpdirEnvVar,
+    exclude_slash_tmp: excludeSlashTmp,
+  });
+  const rootsResult = mergeSandboxWorkspaceRoots(flagsResult.section, desiredRoots, repoRoot);
+  if (!flagsResult.changed && !rootsResult.changed) {
     return { toml, changed: false, added: false, rootsAdded: [] };
   }
-
-  const updatedToml =
-    toml.substring(0, afterHeader) + section + toml.substring(sectionEnd);
 
   return {
-    toml: updatedToml,
+    toml:
+      toml.substring(0, sectionInfo.afterHeader) +
+      rootsResult.section +
+      toml.substring(sectionInfo.sectionEnd),
     changed: true,
     added: false,
-    rootsAdded,
+    rootsAdded: rootsResult.rootsAdded,
   };
 }
 
-/**
- * Prune writable_roots in [sandbox_workspace_write] that no longer exist on disk.
- * Returns the updated TOML and a list of removed paths.
- * @param {string} toml
- * @returns {{ toml: string, changed: boolean, removed: string[] }}
- */
 export function pruneStaleSandboxRoots(toml) {
   if (!hasSandboxWorkspaceWrite(toml)) {
     return { toml, changed: false, removed: [] };
   }
-  const header = "[sandbox_workspace_write]";
-  const headerIdx = toml.indexOf(header);
-  if (headerIdx === -1) return { toml, changed: false, removed: [] };
-  const afterHeader = headerIdx + header.length;
-  const nextSection = toml.indexOf("\n[", afterHeader);
-  const sectionEnd = nextSection === -1 ? toml.length : nextSection;
-  let section = toml.substring(afterHeader, sectionEnd);
+  const sectionInfo = findTomlSection(toml, "[sandbox_workspace_write]");
+  if (!sectionInfo) return { toml, changed: false, removed: [] };
 
   const rootsRegex = /^writable_roots\s*=\s*(\[[^\]]*\])\s*$/m;
-  const match = section.match(rootsRegex);
+  const match = sectionInfo.section.match(rootsRegex);
   if (!match) return { toml, changed: false, removed: [] };
 
   const existing = parseTomlArrayLiteral(match[1]);
-  const valid = existing.filter((r) => r === "/tmp" || existsSync(r));
-  const removed = existing.filter((r) => r !== "/tmp" && !existsSync(r));
+  const valid = existing.filter((root) => root === "/tmp" || existsSync(root));
+  const removed = existing.filter((root) => root !== "/tmp" && !existsSync(root));
   if (removed.length === 0) return { toml, changed: false, removed: [] };
 
-  section = section.replace(rootsRegex, `writable_roots = ${formatTomlArray(valid)}`);
-  const updatedToml =
-    toml.substring(0, afterHeader) + section + toml.substring(sectionEnd);
-  return { toml: updatedToml, changed: true, removed };
+  const nextSection = sectionInfo.section.replace(
+    rootsRegex,
+    `writable_roots = ${formatTomlArray(valid)}`,
+  );
+  return {
+    toml:
+      toml.substring(0, sectionInfo.afterHeader) +
+      nextSection +
+      toml.substring(sectionInfo.sectionEnd),
+    changed: true,
+    removed,
+  };
 }
-
 /**
  * Build the [shell_environment_policy] section.
  * Default: inherit = "all" so .NET, Go, Node etc. env vars are visible.
@@ -1838,58 +1901,66 @@ function parseTomlArrayLiteralEscaped(raw) {
  * @param {{ dryRun?: boolean }} [opts]
  * @returns {{ added: string[], already: string[], path: string }}
  */
+function collectTrustedProjectVariants(paths) {
+  return (paths || [])
+    .flatMap((pathValue) => buildTrustedPathVariants(pathValue))
+    .filter(Boolean);
+}
+
+function mergeTrustedProjectEntries(existing, desired) {
+  const existingNormalized = new Set(
+    existing.map((pathValue) => normalizeTrustedPathForCompare(pathValue)).filter(Boolean),
+  );
+  const added = [];
+  const already = [];
+  for (const pathValue of desired) {
+    const normalized = normalizeTrustedPathForCompare(pathValue);
+    if (!normalized) continue;
+    if (existingNormalized.has(normalized)) {
+      already.push(pathValue);
+      continue;
+    }
+    existing.push(pathValue);
+    existingNormalized.add(normalized);
+    added.push(pathValue);
+  }
+  return { existing, added, already };
+}
+
+function upsertTrustedProjectsLine(toml, newLine, existingMatch) {
+  if (existingMatch) {
+    return toml.replace(/^trusted_projects\s*=\s*\[[^\]]*\]/m, newLine);
+  }
+  const firstSection = toml.search(/^\[/m);
+  if (firstSection === -1) {
+    return `${newLine}\n${toml}`;
+  }
+  return `${toml.slice(0, firstSection)}${newLine}\n\n${toml.slice(firstSection)}`;
+}
+
 export function ensureTrustedProjects(paths, { dryRun = false } = {}) {
   const result = { added: [], already: [], path: CONFIG_PATH };
-  const desired = (paths || [])
-    .flatMap((p) => buildTrustedPathVariants(p))
-    .filter(Boolean);
+  const desired = collectTrustedProjectVariants(paths);
   if (desired.length === 0) return result;
 
   let toml = readCodexConfig() || "";
-
-  // Parse existing trusted_projects (multi-line arrays may span lines)
   const existingMatch = toml.match(/^trusted_projects\s*=\s*(\[[^\]]*\])/m);
   const existing = existingMatch ? parseTomlArrayLiteralEscaped(existingMatch[1]) : [];
-  const existingNormalized = new Set(
-    existing.map((p) => normalizeTrustedPathForCompare(p)).filter(Boolean),
-  );
-
-  let changed = false;
-  for (const p of desired) {
-    const normalized = normalizeTrustedPathForCompare(p);
-    if (!normalized) continue;
-    if (existingNormalized.has(normalized)) {
-      result.already.push(p);
-    } else {
-      existing.push(p);
-      existingNormalized.add(normalized);
-      result.added.push(p);
-      changed = true;
-    }
-  }
-
-  if (!changed) return result;
+  const merged = mergeTrustedProjectEntries(existing, desired);
+  result.added = merged.added;
+  result.already = merged.already;
+  if (result.added.length === 0) return result;
   if (dryRun) return result;
 
-  const newLine = `trusted_projects = ${formatTomlArrayEscaped(existing)}`;
-
-  if (existingMatch) {
-    toml = toml.replace(/^trusted_projects\s*=\s*\[[^\]]*\]/m, newLine);
-  } else {
-    // Insert before the first section header (or at top if no sections)
-    const firstSection = toml.search(/^\[/m);
-    if (firstSection === -1) {
-      toml = `${newLine}\n${toml}`;
-    } else {
-      toml = `${toml.slice(0, firstSection)}${newLine}\n\n${toml.slice(firstSection)}`;
-    }
-  }
-
+  toml = upsertTrustedProjectsLine(
+    toml,
+    `trusted_projects = ${formatTomlArrayEscaped(merged.existing)}`,
+    existingMatch,
+  );
   mkdirSync(CODEX_DIR, { recursive: true });
   writeFileSync(CONFIG_PATH, toml, "utf8");
   return result;
 }
-
 // ── Internal Helpers ─────────────────────────────────────────────────────────
 
 function escapeRegex(str) {
