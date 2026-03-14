@@ -4213,7 +4213,7 @@ registerBuiltinNodeType("action.create_pr", {
       autoMergeMethod: {
         type: "string",
         enum: ["merge", "squash", "rebase"],
-        default: "squash",
+        default: "merge",
         description: "Merge method used with gh pr merge --auto",
       },
       mergeMethod: {
@@ -4246,11 +4246,11 @@ registerBuiltinNodeType("action.create_pr", {
       false,
     );
     const autoMergeMethodRaw = String(
-      ctx.resolve(node.config?.autoMergeMethod || node.config?.mergeMethod || "squash"),
+      ctx.resolve(node.config?.autoMergeMethod || node.config?.mergeMethod || process.env.BOSUN_MERGE_METHOD || "merge"),
     ).trim().toLowerCase();
     const autoMergeMethod = ["merge", "squash", "rebase"].includes(autoMergeMethodRaw)
       ? autoMergeMethodRaw
-      : "squash";
+      : (process.env.BOSUN_MERGE_METHOD || "merge");
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
 
     // Normalize labels/reviewers to arrays

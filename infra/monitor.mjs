@@ -8013,7 +8013,8 @@ async function triggerFlowPostReviewMerge(taskId, context = {}) {
   const autoArgs = ["pr", "merge", String(prNumber)];
   if (resolvedRepoSlug) autoArgs.push("--repo", resolvedRepoSlug);
   autoArgs.push("--body", buildFlowGateMergeBody(taskTitle, id));
-  autoArgs.push("--auto", "--squash");
+  const mergeMethod = process.env.BOSUN_MERGE_METHOD || "merge";
+  autoArgs.push("--auto", `--${mergeMethod}`);
 
   const autoResult = spawnSync("gh", autoArgs, {
     cwd: repoRoot,
@@ -8035,7 +8036,7 @@ async function triggerFlowPostReviewMerge(taskId, context = {}) {
     const directArgs = ["pr", "merge", String(prNumber)];
     if (resolvedRepoSlug) directArgs.push("--repo", resolvedRepoSlug);
     directArgs.push("--body", buildFlowGateMergeBody(taskTitle, id));
-    directArgs.push("--squash");
+    directArgs.push(`--${mergeMethod}`);
     const directResult = spawnSync("gh", directArgs, {
       cwd: repoRoot,
       encoding: "utf8",
