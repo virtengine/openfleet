@@ -1682,18 +1682,7 @@ export function ensureCodexConfig({
   return result;
 }
 
-/**
- * Print a human-friendly summary of what ensureCodexConfig() did.
- * @param {object} result  Return value from ensureCodexConfig()
- * @param {(msg: string) => void} [log]  Logger (default: console.log)
- */
-export function printConfigSummary(result, log = console.log) {
-  if (result.noChanges) {
-    log("  :check: Codex CLI config is already up to date");
-    log(`     ${result.path}`);
-    return;
-  }
-
+function logConfigSummaryHeader(result, log) {
   if (result.created) {
     log("  :edit: Created new Codex CLI config");
   }
@@ -1720,7 +1709,9 @@ export function printConfigSummary(result, log = console.log) {
       : `${result.featuresAdded.length} feature flags`;
     log(`  :check: Added feature flags: ${key}`);
   }
+}
 
+function logSandboxSummary(result, log) {
   if (result.sandboxAdded) {
     log("  :check: Added sandbox permissions (disk-full-write-access)");
   }
@@ -1749,7 +1740,9 @@ export function printConfigSummary(result, log = console.log) {
   if (result.shellEnvAdded) {
     log("  :check: Added shell environment policy (inherit=all)");
   }
+}
 
+function logAgentSdkSummary(result, log) {
   if (result.agentMaxThreads) {
     const fromLabel =
       result.agentMaxThreads.from === null
@@ -1763,7 +1756,9 @@ export function printConfigSummary(result, log = console.log) {
       `  :alert: Skipped agents.max_threads (invalid value: ${result.agentMaxThreadsSkipped})`,
     );
   }
+}
 
+function logProviderSummary(result, log) {
   if (result.commonMcpAdded) {
     log(
       "  :check: Added common MCP servers (context7, sequential-thinking, playwright, microsoft-docs)",
@@ -1788,10 +1783,26 @@ export function printConfigSummary(result, log = console.log) {
   for (const p of result.retriesAdded) {
     log(`  :check: Added retry settings to [${p}]`);
   }
-
-  log(`     Config: ${result.path}`);
 }
 
+/**
+ * Print a human-friendly summary of what ensureCodexConfig() did.
+ * @param {object} result  Return value from ensureCodexConfig()
+ * @param {(msg: string) => void} [log]  Logger (default: console.log)
+ */
+export function printConfigSummary(result, log = console.log) {
+  if (result.noChanges) {
+    log("  :check: Codex CLI config is already up to date");
+    log(`     ${result.path}`);
+    return;
+  }
+
+  logConfigSummaryHeader(result, log);
+  logSandboxSummary(result, log);
+  logAgentSdkSummary(result, log);
+  logProviderSummary(result, log);
+  log(`     Config: ${result.path}`);
+}
 // ── Trusted Projects ─────────────────────────────────────────────────────────
 
 /**
