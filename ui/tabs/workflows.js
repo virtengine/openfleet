@@ -2629,6 +2629,8 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
             const isSelected = selectedEdgeId.value === edge.id;
             const hasCondition = !!edge.condition;
             const edgeColor = sourcePort?.color || (hasCondition ? "#f59e0b" : "#6b7280");
+            const edgePath = curvePath(from.x, from.y, to.x, to.y);
+            const isActiveFlow = liveHighlightEnabled && liveEdgeActivity[edge.id];
             return html`
               <g key=${edge.id} class="wf-edge" onClick=${(e) => { e.stopPropagation(); selectedEdgeId.value = edge.id; }}>
                 <path
@@ -4240,6 +4242,16 @@ function WorkflowListView() {
 /* ═══════════════════════════════════════════════════════════════
  *  Run History View
  * ═══════════════════════════════════════════════════════════════ */
+
+function normalizeLiveNodeStatus(status) {
+  const s = String(status || "").trim().toLowerCase();
+  if (!s) return "";
+  if (s === "success" || s === "done" || s === "complete") return "completed";
+  if (s === "fail" || s === "error" || s === "errored") return "failed";
+  if (s === "in_progress" || s === "active" || s === "executing") return "running";
+  if (s === "idle" || s === "queued") return "pending";
+  return s;
+}
 
 function getRunStatusBadgeStyles(status) {
   const normalized = normalizeLiveNodeStatus(status) || String(status || "").trim().toLowerCase();

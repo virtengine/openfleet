@@ -126,6 +126,18 @@ describe("action.create_pr base-branch resolution logic", () => {
     const result = await nodeType.execute(node, makeCtx());
     expect(result.base).toBe("main");
   });
+
+  it("normalizes remote-qualified base branches before gh PR calls", async () => {
+    const node = makeNode("action.create_pr", {
+      title: "feat: add thing",
+      base: "origin/main",
+      branch: "feat/add-thing",
+      cwd: fastFailCwd,
+    });
+    const nodeType = getNodeType("action.create_pr");
+    const result = await nodeType.execute(node, makeCtx());
+    expect(result.base).toBe("main");
+  });
 });
 
 // -- Node Registration Completeness -------------------------------------------
@@ -398,4 +410,3 @@ describe("WorkflowContext template resolution is not a shell evaluator", () => {
     expect(result).not.toBeNull();
   });
 });
-

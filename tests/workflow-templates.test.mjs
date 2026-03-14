@@ -722,6 +722,53 @@ describe("template API functions", () => {
     }
   });
 
+  it("agent session monitor resolves session tracker from the source repo even from a workspace mirror", () => {
+    const template = getTemplate("template-agent-session-monitor");
+    const listNode = template.nodes.find((n) => n.id === "list-sessions");
+    const healthNode = template.nodes.find((n) => n.id === "check-health");
+    const hasActiveNode = template.nodes.find((n) => n.id === "has-active");
+    const hasIssuesNode = template.nodes.find((n) => n.id === "has-issues");
+    const evaluate = (expression, outputs, data = {}) => {
+      const fn = new Function("$ctx", "$data", `return (${expression});`);
+      return fn({
+        getNodeOutput(nodeId) {
+          return outputs[nodeId] ?? null;
+        },
+      }, data);
+    };
+    const noisyPrefix = "[session-tracker] initialized (maxMessages=300)\n";
+
+    expect(listNode?.config?.command).toContain("session-tracker.mjs");
+    expect(listNode?.config?.command).toContain("pathToFileURL");
+    expect(listNode?.config?.command).toContain(".bosun");
+    expect(listNode?.config?.command).toContain("workspaces");
+    expect(listNode?.config?.command).not.toContain("import('./infra/session-tracker.mjs')");
+    expect(listNode?.config?.command).not.toContain("bosun agent list");
+    expect(healthNode?.config?.command).toContain("session-tracker.mjs");
+    expect(healthNode?.config?.command).toContain("path.resolve(cwd, '..', '..', '..', '..')");
+    expect(healthNode?.config?.command).not.toContain("bosun agent health");
+    expect(hasActiveNode?.config?.expression).toContain("JSON.parse");
+    expect(hasIssuesNode?.config?.expression).toContain("JSON.parse");
+    expect(hasIssuesNode?.config?.expression).toContain("idleMs");
+    expect(
+      evaluate(hasActiveNode?.config?.expression, {
+        "list-sessions": {
+          output: `${noisyPrefix}[{"status":"active","idleMs":42,"tokenPercent":null}]`,
+        },
+      }),
+    ).toBe(true);
+    expect(
+      evaluate(hasIssuesNode?.config?.expression, {
+        "check-health": {
+          output: `${noisyPrefix}[{"status":"idle","idleMs":700000,"tokenPercent":null}]`,
+        },
+      }, {
+        maxIdleMs: 600000,
+        maxTokenPercent: 85,
+      }),
+    ).toBe(true);
+  });
+
   it("installTemplate creates a new workflow with unique ID", () => {
     const result = installTemplate("template-error-recovery", engine);
     expect(result.id).not.toBe("template-error-recovery");
@@ -865,13 +912,19 @@ describe("workflow setup profiles", () => {
     }
   });
 
-  it("wires batch summary notifications to the loop fan-out output", () => {
+  it("alerts Telegram only for failed batch items and logs the routine summary", () => {
     const batchProcessor = getTemplate("template-task-batch-processor");
     const recordNode = batchProcessor?.nodes?.find((node) => node.id === "record-results");
-    const notifyNode = batchProcessor?.nodes?.find((node) => node.id === "notify-complete");
+    const failureGate = batchProcessor?.nodes?.find((node) => node.id === "has-batch-failures");
+    const notifyNode = batchProcessor?.nodes?.find((node) => node.id === "notify-failures");
+    const logNode = batchProcessor?.nodes?.find((node) => node.id === "log-summary");
 
     expect(recordNode?.config?.value).toBe("{{dispatch-tasks}}");
-    expect(notifyNode?.config?.message).toContain("{{dispatch-tasks.successCount}}/{{dispatch-tasks.totalItems}}");
+    expect(failureGate?.config?.expression).toContain("batchResult?.failCount");
+    expect(notifyNode?.type).toBe("notify.telegram");
+    expect(notifyNode?.config?.message).toContain("{{batchResult.failCount}}");
+    expect(logNode?.type).toBe("notify.log");
+    expect(logNode?.config?.message).toContain("{{batchResult.successCount}}/{{batchResult.totalItems}}");
   });
 
   it("exposes built-in setup profiles with template selections", () => {
@@ -1136,6 +1189,7 @@ describe("github template CLI compatibility", () => {
     const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
     const fetchNode = watchdogTemplate.nodes.find((n) => n.id === "fetch-and-classify");
     const reviewNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-review");
+    const notifyNode = watchdogTemplate.nodes.find((n) => n.id === "notify");
     const triggerNode = watchdogTemplate.nodes.find((n) => n.id === "trigger");
 
     expect(fetchNode?.config?.command).toContain("pendingChecks:hasPend");
@@ -1144,6 +1198,9 @@ describe("github template CLI compatibility", () => {
     expect(reviewNode?.config?.command).toContain("reason:'ci_pending'");
     expect(reviewNode?.config?.command).toContain("--json','name,state,bucket'");
     expect(reviewNode?.config?.command).not.toContain("name,state,conclusion");
+    expect(notifyNode?.type).toBe("notify.log");
+    expect(notifyNode?.config?.message).not.toContain("{{fixNeeded}}");
+    expect(notifyNode?.config?.message).not.toContain("{{readyCandidates}}");
     expect(triggerNode?.config?.intervalMs).toBe("{{intervalMs}}");
     expect(triggerNode?.config?.cron).toBeUndefined();
   });

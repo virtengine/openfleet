@@ -1723,7 +1723,7 @@ export function loadConfig(argv = process.argv, options = {}) {
 
   // ── Timing ───────────────────────────────────────────────
   const restartDelayMs = Number(
-    cli["restart-delay"] || process.env.RESTART_DELAY_MS || "10000",
+    cli["restart-delay"] || process.env.RESTART_DELAY_MS || "180000",
   );
   const maxRestarts = Number(
     cli["max-restarts"] || process.env.MAX_RESTARTS || "0",

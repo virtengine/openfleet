@@ -39,7 +39,7 @@ import {
   validateWorkflowContract,
 } from "./workflow-contract.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
-import { clearBlockedWorktreeIdentity } from "../git/git-safety.mjs";
+import { clearBlockedWorktreeIdentity, normalizeBaseBranch } from "../git/git-safety.mjs";
 import { getGitHubToken, invalidateTokenType } from "../github/github-auth-manager.mjs";
 import {
   CUSTOM_NODE_DIR_NAME,
@@ -3936,7 +3936,7 @@ registerBuiltinNodeType("action.update_task_status", {
     type: "object",
     properties: {
       taskId: { type: "string", description: "Task ID (supports {{variables}})" },
-      status: { type: "string", enum: ["todo", "inprogress", "inreview", "done", "archived"] },
+      status: { type: "string", enum: ["todo", "inprogress", "inreview", "done", "blocked", "archived"] },
       taskTitle: { type: "string", description: "Optional task title for downstream event payloads" },
       previousStatus: { type: "string", description: "Optional explicit previous status" },
       workflowEvent: { type: "string", description: "Optional follow-up workflow event to emit after status update" },
@@ -4229,7 +4229,12 @@ registerBuiltinNodeType("action.create_pr", {
   async execute(node, ctx) {
     const title = ctx.resolve(node.config?.title || "");
     const body = ctx.resolve(node.config?.body || "");
-    const base = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
+    const baseInput = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
+    let base = String(baseInput || "main").trim() || "main";
+    try {
+      base = normalizeBaseBranch(base).branch;
+    } catch {
+    }
     const branch = ctx.resolve(node.config?.branch || "");
     const repoSlug = String(
       ctx.resolve(node.config?.repoSlug || ctx.data?.repoSlug || ctx.data?.repository || ""),
@@ -9690,6 +9695,88 @@ function hasUnresolvedGitOperation(worktreePath) {
   }
 }
 
+function hasTrackedGitChanges(worktreePath) {
+  if (!worktreePath || !existsSync(worktreePath)) return false;
+  try {
+    const status = execGitArgsSync(
+      ["status", "--porcelain", "--untracked-files=no"],
+      {
+        cwd: worktreePath,
+        encoding: "utf8",
+        timeout: 5000,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    ).trim();
+    return Boolean(status);
+  } catch {
+    return true;
+  }
+}
+
+function countCommitsBehindBase(worktreePath, baseBranch) {
+  if (!worktreePath || !existsSync(worktreePath) || !baseBranch) return 0;
+  try {
+    const counts = execGitArgsSync(
+      ["rev-list", "--left-right", "--count", `HEAD...${baseBranch}`],
+      {
+        cwd: worktreePath,
+        encoding: "utf8",
+        timeout: 5000,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    ).trim();
+    const match = counts.match(/^(\d+)\s+(\d+)$/);
+    return match ? Number(match[2]) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function refreshManagedWorktreeReuse(
+  nodeId,
+  ctx,
+  repoRoot,
+  worktreePath,
+  baseBranch,
+  baseBranchShort,
+  fetchTimeout,
+) {
+  if (!existsSync(worktreePath) || shouldSkipGitRefreshForTests()) return existsSync(worktreePath);
+  let refreshError = "";
+  try {
+    execSync(`git pull --rebase origin ${baseBranchShort}`, {
+      cwd: worktreePath,
+      encoding: "utf8",
+      timeout: fetchTimeout,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    refreshError = formatExecSyncError(error);
+  }
+  if (!existsSync(worktreePath)) return false;
+  if (hasUnresolvedGitOperation(worktreePath)) {
+    const detail = refreshError ? ` (${refreshError})` : "";
+    ctx.log(
+      nodeId,
+      `Managed worktree refresh left unresolved git state, recreating: ${worktreePath}${detail}`,
+    );
+    cleanupBrokenManagedWorktree(repoRoot, worktreePath);
+    return false;
+  }
+  const reasons = [];
+  if (hasTrackedGitChanges(worktreePath)) reasons.push("tracked changes after refresh");
+  const behindCount = countCommitsBehindBase(worktreePath, baseBranch);
+  if (behindCount > 0) reasons.push(`${behindCount} commit(s) behind ${baseBranch}`);
+  if (reasons.length === 0) return true;
+  if (refreshError) reasons.unshift(`refresh failed: ${refreshError}`);
+  ctx.log(
+    nodeId,
+    `Managed worktree refresh did not yield a clean up-to-date branch, recreating: ${worktreePath} (${reasons.join("; ")})`,
+  );
+  cleanupBrokenManagedWorktree(repoRoot, worktreePath);
+  return false;
+}
+
 function cleanupBrokenManagedWorktree(repoRoot, worktreePath) {
   if (!worktreePath) return;
   const linkedGitDir = resolveGitDirForWorktree(worktreePath);
@@ -10739,22 +10826,15 @@ registerBuiltinNodeType("action.acquire_worktree", {
       }
 
       if (existsSync(worktreePath)) {
-        // Reuse existing worktree — pull latest base if possible
-        if (!shouldSkipGitRefreshForTests()) {
-          try {
-            execSync(`git pull --rebase origin ${baseBranchShort}`, {
-              cwd: worktreePath, encoding: "utf8",
-              timeout: fetchTimeout,
-              stdio: ["ignore", "pipe", "pipe"],
-            });
-          } catch {
-            /* rebase failures are non-fatal for reuse */
-          }
-          if (existsSync(worktreePath) && hasUnresolvedGitOperation(worktreePath)) {
-            ctx.log(node.id, `Managed worktree refresh left unresolved git state, recreating: ${worktreePath}`);
-            cleanupBrokenManagedWorktree(repoRoot, worktreePath);
-          }
-        }
+        refreshManagedWorktreeReuse(
+          node.id,
+          ctx,
+          repoRoot,
+          worktreePath,
+          baseBranch,
+          baseBranchShort,
+          fetchTimeout,
+        );
         if (existsSync(worktreePath)) {
           ctx.data.worktreePath = worktreePath;
           ctx.data._worktreeCreated = false;
@@ -10767,6 +10847,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
       }
 
       // Create fresh worktree
+      let attachedExistingBranch = false;
       try {
         execSync(
           `git worktree add "${worktreePath}" -b "${branch}" "${baseBranch}" 2>&1`,
@@ -10782,21 +10863,39 @@ registerBuiltinNodeType("action.acquire_worktree", {
             `git worktree add "${worktreePath}" "${branch}" 2>&1`,
             { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
           );
+          attachedExistingBranch = true;
         } catch (reuseErr) {
           const existingBranchWorktree = findExistingWorktreePathForBranch(repoRoot, branch);
           if (existingBranchWorktree && existsSync(existingBranchWorktree)) {
-            if (!isValidGitWorktreePath(existingBranchWorktree) &&
-              isManagedBosunWorktree(existingBranchWorktree, repoRoot)
-            ) {
+            const existingWorktreeIsBroken = (
+              !isValidGitWorktreePath(existingBranchWorktree) ||
+              hasUnresolvedGitOperation(existingBranchWorktree)
+            ) && isManagedBosunWorktree(existingBranchWorktree, repoRoot);
+            if (existingWorktreeIsBroken) {
               ctx.log(
                 node.id,
-                `Existing branch worktree is invalid, recreating managed path: ${existingBranchWorktree}`,
+                `Existing branch worktree is invalid or unresolved, recreating managed path: ${existingBranchWorktree}`,
               );
               cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
             }
           }
           if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
-            isValidGitWorktreePath(existingBranchWorktree)
+            isValidGitWorktreePath(existingBranchWorktree) &&
+            !hasUnresolvedGitOperation(existingBranchWorktree)
+          ) {
+            refreshManagedWorktreeReuse(
+              node.id,
+              ctx,
+              repoRoot,
+              existingBranchWorktree,
+              baseBranch,
+              baseBranchShort,
+              fetchTimeout,
+            );
+          }
+          if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
+            isValidGitWorktreePath(existingBranchWorktree) &&
+            !hasUnresolvedGitOperation(existingBranchWorktree)
           ) {
             ctx.data.worktreePath = existingBranchWorktree;
             ctx.data._worktreeCreated = false;
@@ -10820,6 +10919,22 @@ registerBuiltinNodeType("action.acquire_worktree", {
           );
         }
       }
+      if (attachedExistingBranch) {
+        refreshManagedWorktreeReuse(
+          node.id,
+          ctx,
+          repoRoot,
+          worktreePath,
+          baseBranch,
+          baseBranchShort,
+          fetchTimeout,
+        );
+        if (!existsSync(worktreePath)) {
+          throw new Error(
+            `Worktree refresh failed for existing branch ${branch}; managed worktree was removed after stale refresh state`,
+          );
+        }
+      }
       fixGitConfigCorruption(repoRoot);
       const cleared3 = clearBlockedWorktreeIdentity(worktreePath);
       if (cleared3) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${worktreePath}`);
@@ -10830,8 +10945,17 @@ registerBuiltinNodeType("action.acquire_worktree", {
       ctx.log(node.id, `Worktree created: ${worktreePath} (branch: ${branch}, base: ${baseBranch})`);
       return { success: true, worktreePath, created: true, branch, baseBranch };
     } catch (err) {
-      ctx.log(node.id, `Worktree acquisition failed: ${err.message}`);
-      return { success: false, error: err.message, branch, baseBranch };
+      const errorMessage = String(err?.message || err || "worktree_acquisition_failed");
+      const retryable = !/managed worktree was removed after stale refresh state/i.test(errorMessage);
+      ctx.log(node.id, `Worktree acquisition failed: ${errorMessage}`);
+      return {
+        success: false,
+        error: errorMessage,
+        branch,
+        baseBranch,
+        retryable,
+        failureKind: retryable ? "worktree_acquisition_failed" : "branch_refresh_conflict",
+      };
     }
   },
 });

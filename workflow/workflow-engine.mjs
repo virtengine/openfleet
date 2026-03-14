@@ -92,6 +92,16 @@ const MAX_PERSISTED_RUNS = readBoundedEnvInt("WORKFLOW_MAX_PERSISTED_RUNS", 2000
   min: 20,
   max: 20000,
 });
+const MAX_INTERRUPTED_ORPHAN_SCAN_FILES = readBoundedEnvInt(
+  "WORKFLOW_INTERRUPTED_ORPHAN_SCAN_MAX_FILES",
+  200,
+  { min: 0, max: 5000 },
+);
+const INTERRUPTED_ORPHAN_SCAN_WINDOW_MS = readBoundedEnvInt(
+  "WORKFLOW_INTERRUPTED_ORPHAN_SCAN_WINDOW_MS",
+  7 * 24 * 60 * 60 * 1000,
+  { min: 0, max: 90 * 24 * 60 * 60 * 1000 },
+);
 const DEFAULT_RUN_STUCK_THRESHOLD_MS = readBoundedEnvInt(
   "WORKFLOW_RUN_STUCK_THRESHOLD_MS",
   5 * 60 * 1000,
@@ -982,7 +992,16 @@ export class WorkflowEngine extends EventEmitter {
   /** Get a single workflow definition */
   get(id) {
     if (!this._loaded) this.load();
-    return this._workflows.get(id) || null;
+    const workflowId = String(id || "").trim();
+    if (!workflowId) return null;
+    const exact = this._workflows.get(workflowId);
+    if (exact) return exact;
+    for (const workflow of this._workflows.values()) {
+      if (workflow?.metadata?.installedFrom === workflowId) {
+        return workflow;
+      }
+    }
+    return null;
   }
 
   /** Save (create or update) a workflow definition */
@@ -2421,6 +2440,24 @@ export class WorkflowEngine extends EventEmitter {
           }
         }
 
+        const countForwardIncomingEdges = (targetNodeId) =>
+          (def.edges || []).filter((edge) => edge.target === targetNodeId && !edge.backEdge).length;
+
+        const propagateSkippedDependencies = (skippedNodeId) => {
+          if (countForwardIncomingEdges(skippedNodeId) > 1) return;
+          const skippedEdges = adjacency.get(skippedNodeId) || [];
+          for (const skippedEdge of skippedEdges) {
+            if (skippedEdge.backEdge) continue;
+            consumeEdgeDependency(skippedEdge.target, false, {
+              reason: "upstream-skipped",
+              payload: {
+                sourceNodeId: skippedNodeId,
+                edgeId: skippedEdge.id || `${skippedEdge.source}->${skippedEdge.target}`,
+              },
+            });
+          }
+        };
+
         const consumeEdgeDependency = (targetNodeId, matched, skipInfo = null) => {
           const nextDegree = (inDegree.get(targetNodeId) || 1) - 1;
           inDegree.set(targetNodeId, nextDegree);
@@ -2438,6 +2475,7 @@ export class WorkflowEngine extends EventEmitter {
               executed.add(targetNodeId);
               const skippedNode = nodeMap.get(targetNodeId);
               console.log(`${TAG} node:SKIPPED ${targetNodeId} (${skippedNode?.type || "?"}) [${skippedNode?.label || ""}] — no satisfied edges`);
+              propagateSkippedDependencies(targetNodeId);
             }
           }
         };
@@ -2708,6 +2746,51 @@ export class WorkflowEngine extends EventEmitter {
     } catch {
       return [];
     }
+  }
+
+  _getInterruptedOrphanRunCandidates() {
+    if (!existsSync(this.runsDir)) return [];
+    if (MAX_INTERRUPTED_ORPHAN_SCAN_FILES <= 0) return [];
+
+    const cutoffMs = INTERRUPTED_ORPHAN_SCAN_WINDOW_MS > 0
+      ? Date.now() - INTERRUPTED_ORPHAN_SCAN_WINDOW_MS
+      : 0;
+    const candidates = [];
+    let totalCandidates = 0;
+
+    try {
+      for (const file of readdirSync(this.runsDir)) {
+        if (
+          extname(file) !== ".json" ||
+          file === "index.json" ||
+          file === ACTIVE_RUNS_INDEX
+        ) {
+          continue;
+        }
+        const detailPath = resolve(this.runsDir, file);
+        let mtimeMs = 0;
+        try {
+          mtimeMs = statSync(detailPath).mtimeMs || 0;
+        } catch {
+          continue;
+        }
+        if (cutoffMs > 0 && mtimeMs < cutoffMs) continue;
+        totalCandidates += 1;
+        candidates.push({ file, detailPath, mtimeMs });
+      }
+    } catch {
+      return [];
+    }
+
+    candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    if (candidates.length > MAX_INTERRUPTED_ORPHAN_SCAN_FILES) {
+      console.warn(
+        `${TAG} Orphan interrupted-run scan limited to ${MAX_INTERRUPTED_ORPHAN_SCAN_FILES} recent files ` +
+          `(${totalCandidates} candidate files in retention window)`,
+      );
+      candidates.length = MAX_INTERRUPTED_ORPHAN_SCAN_FILES;
+    }
+    return candidates;
   }
 
   _getRunStuckThresholdMs() {
@@ -3074,17 +3157,14 @@ export class WorkflowEngine extends EventEmitter {
       }
 
       // Tertiary source: orphan detail files with no index entry and no end marker.
-      const detailFiles = readdirSync(this.runsDir).filter((file) =>
-        extname(file) === ".json" &&
-        file !== "index.json" &&
-        file !== ACTIVE_RUNS_INDEX,
-      );
-      for (const file of detailFiles) {
-        const runId = basename(file, ".json");
+      // This is bounded to a recent subset so old archived run details cannot
+      // stall startup when workflow-runs contains thousands of historical files.
+      const orphanCandidates = this._getInterruptedOrphanRunCandidates();
+      for (const candidate of orphanCandidates) {
+        const runId = basename(candidate.file, ".json");
         if (!runId || this._activeRuns.has(runId) || runsById.has(runId)) continue;
-        const detailPath = resolve(this.runsDir, file);
         try {
-          const detail = JSON.parse(readFileSync(detailPath, "utf8"));
+          const detail = JSON.parse(readFileSync(candidate.detailPath, "utf8"));
           const hasRunningNode = Object.values(detail?.nodeStatuses || {}).some(
             (status) => status === NodeStatus.RUNNING || status === NodeStatus.WAITING,
           );

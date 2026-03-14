@@ -98,6 +98,7 @@ import {
   initTaskClaims,
   claimTask,
   renewClaim,
+  getClaim,
   releaseTask as releaseTaskClaim,
 } from "./task-claims.mjs";
 import { initPresence, getPresenceState } from "../infra/presence.mjs";
@@ -176,6 +177,24 @@ async function transitionTaskStatus(taskId, status, options = {}) {
 function transitionInternalTaskStatus(taskId, status, source) {
   if (hasExternalTaskStatusTransitionHandler()) return null;
   return setInternalStatus(taskId, status, source);
+}
+
+function isMatchingLocalClaimProcessAlive(ownerId, claim) {
+  if (!ownerId || !claim) return null;
+  const claimInstanceId = String(claim.instance_id || claim.instanceId || "");
+  if (!claimInstanceId || claimInstanceId !== String(ownerId)) return null;
+  const claimHost = String(claim?.metadata?.host || "").trim();
+  if (!claimHost || claimHost.toLowerCase() !== os.hostname().toLowerCase()) {
+    return null;
+  }
+  const claimPid = Number(claim?.metadata?.pid);
+  if (!Number.isFinite(claimPid) || claimPid <= 0) return null;
+  try {
+    process.kill(Math.floor(claimPid), 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function parseNumberEnv(name, fallback) {
@@ -3899,6 +3918,7 @@ class TaskExecutor {
         continue;
       }
 
+      let hasStaleSharedClaim = false;
       if (SHARED_STATE_ENABLED) {
         try {
           const sharedState = await getSharedState(id, this.repoRoot);
@@ -3909,12 +3929,23 @@ class TaskExecutor {
           // block recovery re-dispatch. Removing the ownerId !== instanceId
           // guard ensures workflow-owned tasks (wf-<uuid> owners) are also
           // protected when action.claim_task IS used.
-          if (
-            ownerId &&
-            !isSharedHeartbeatStale(heartbeat, SHARED_STATE_STALE_THRESHOLD_MS)
-          ) {
-            skippedForActiveClaim++;
-            continue;
+          if (ownerId) {
+            const heartbeatIsFresh = !isSharedHeartbeatStale(
+              heartbeat,
+              SHARED_STATE_STALE_THRESHOLD_MS,
+            );
+            if (heartbeatIsFresh) {
+              const claim = await getClaim(id).catch(() => null);
+              const localClaimAlive = isMatchingLocalClaimProcessAlive(
+                ownerId,
+                claim,
+              );
+              if (localClaimAlive !== false) {
+                skippedForActiveClaim++;
+                continue;
+              }
+            }
+            hasStaleSharedClaim = true;
           }
         } catch {
           /* best effort */
@@ -3994,6 +4025,27 @@ class TaskExecutor {
       if (this.workflowOwnsTaskLifecycle) {
         if (hasThread) {
           skippedForActiveClaim++;
+          continue;
+        }
+        if (hasStaleSharedClaim) {
+          try {
+            await transitionTaskStatus(id, "todo", {
+              source: "task-executor-recovery-stale-workflow-claim",
+            });
+          } catch {
+            /* best effort */
+          }
+          try {
+            transitionInternalTaskStatus(
+              id,
+              "todo",
+              "task-executor-recovery-stale-workflow-claim",
+            );
+          } catch {
+            /* best effort */
+          }
+          this._removeRuntimeSlot(id);
+          resetToTodo++;
           continue;
         }
         if (isFreshEnough) {
@@ -5662,4 +5714,3 @@ export function isExecutorDisabled() {
 
 export { TaskExecutor };
 export default TaskExecutor;
-

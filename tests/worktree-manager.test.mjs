@@ -9,14 +9,15 @@ vi.mock("node:child_process", () => ({
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal();
-  return {
-    ...actual,
-    existsSync: vi.fn(() => false),
-    mkdirSync: vi.fn(),
-    writeFileSync: vi.fn(),
-    readFileSync: vi.fn(() => "{}"),
-  };
-});
+    return {
+      ...actual,
+      existsSync: vi.fn(() => false),
+      mkdirSync: vi.fn(),
+      symlinkSync: vi.fn(),
+      writeFileSync: vi.fn(),
+      readFileSync: vi.fn(() => "{}"),
+    };
+  });
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal();
@@ -30,7 +31,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, symlinkSync } from "node:fs";
 
 import {
   WorktreeManager,
@@ -347,6 +348,37 @@ describe("worktree-manager", () => {
       expect(res.path).toBeTruthy();
     });
 
+    it("links repo node_modules into newly created worktrees when available", async () => {
+      mockGitMulti([
+        {
+          match: "--porcelain",
+          result: {
+            stdout: porcelainOutput([
+              { path: REPO_ROOT, branch: "refs/heads/main" },
+            ]),
+          },
+        },
+        { match: "worktree", result: { status: 0 } },
+      ]);
+      existsSync.mockImplementation(
+        (path) => String(path).replace(/\\/g, "/").endsWith(`${REPO_ROOT}/node_modules`),
+      );
+
+      await mgr.acquireWorktree("ve/abc-feat", "task-1", {
+        owner: "monitor",
+      });
+
+      expect(symlinkSync).toHaveBeenCalledTimes(1);
+      const [targetPath, linkPath, linkType] = symlinkSync.mock.calls[0];
+      expect(String(targetPath).replace(/\\/g, "/")).toMatch(
+        /\/fake\/repo\/node_modules$/,
+      );
+      expect(String(linkPath).replace(/\\/g, "/")).toMatch(
+        /\/fake\/repo\/\.cache\/worktrees\/ve-abc-feat\/node_modules$/,
+      );
+      expect(typeof linkType).toBe("string");
+    });
+
     it("returns existing worktree when one exists for branch", async () => {
       const wtPath = `${REPO_ROOT}/.cache/worktrees/ve-abc-feat`;
       spawnSync.mockImplementation((_cmd, args) => {
@@ -370,6 +402,40 @@ describe("worktree-manager", () => {
       expect(res.created).toBe(false);
       expect(res.existing).toBe(true);
       expect(res.path).toBe(wtPath);
+    });
+
+    it("links repo node_modules into reused worktrees when the worktree copy is missing", async () => {
+      const wtPath = `${REPO_ROOT}/.cache/worktrees/ve-abc-feat`;
+      spawnSync.mockImplementation((_cmd, args) => {
+        if (args && args.includes("--porcelain")) {
+          return {
+            status: 0,
+            stdout: porcelainOutput([
+              { path: REPO_ROOT, branch: "refs/heads/main" },
+              { path: wtPath, branch: "refs/heads/ve/abc-feat" },
+            ]),
+            stderr: "",
+          };
+        }
+        return { status: 0, stdout: "", stderr: "" };
+      });
+      existsSync.mockImplementation(
+        (path) => String(path).replace(/\\/g, "/").endsWith(`${REPO_ROOT}/node_modules`),
+      );
+
+      await mgr.acquireWorktree("ve/abc-feat", "task-2", {
+        owner: "monitor",
+      });
+
+      expect(symlinkSync).toHaveBeenCalledTimes(1);
+      const [targetPath, linkPath, linkType] = symlinkSync.mock.calls[0];
+      expect(String(targetPath).replace(/\\/g, "/")).toMatch(
+        /\/fake\/repo\/node_modules$/,
+      );
+      expect(String(linkPath).replace(/\\/g, "/")).toMatch(
+        /\/fake\/repo\/\.cache\/worktrees\/ve-abc-feat\/node_modules$/,
+      );
+      expect(typeof linkType).toBe("string");
     });
 
     it("registers worktree with taskKey", async () => {

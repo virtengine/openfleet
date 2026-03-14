@@ -13,6 +13,63 @@
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
 
+const AGENT_SESSION_MONITOR_COMMAND = [
+  'node -e "',
+  "const fs = require('node:fs');",
+  "const path = require('node:path');",
+  "const { pathToFileURL } = require('node:url');",
+  "const cwd = process.cwd();",
+  "const mirrorMarker = `${path.sep}.bosun${path.sep}workspaces${path.sep}`.toLowerCase();",
+  "let repoRoot = cwd;",
+  "if (cwd.toLowerCase().includes(mirrorMarker)) {",
+  "const sourceRepoRoot = path.resolve(cwd, '..', '..', '..', '..');",
+  "if (fs.existsSync(path.join(sourceRepoRoot, 'infra', 'session-tracker.mjs'))) repoRoot = sourceRepoRoot;",
+  "}",
+  "const trackerModuleUrl = pathToFileURL(path.join(repoRoot, 'infra', 'session-tracker.mjs')).href;",
+  "import(trackerModuleUrl).then(({ getSessionTracker }) => {",
+  "const tracker = getSessionTracker();",
+  "const sessions = tracker.getActiveSessions().map((session) => {",
+  "const progress = tracker.getProgressStatus(session.taskId);",
+  "return {",
+  "id: session.taskId,",
+  "taskId: session.taskId,",
+  "taskTitle: session.taskTitle || null,",
+  "status: progress.status,",
+  "idleMs: progress.idleMs,",
+  "totalEvents: progress.totalEvents,",
+  "elapsedMs: progress.elapsedMs,",
+  "lastEventType: progress.lastEventType,",
+  "recommendation: progress.recommendation,",
+  "tokenPercent: null",
+  "};",
+  "});",
+  "console.log(JSON.stringify(sessions));",
+  "}).catch((err) => { console.error(err?.stack || String(err)); process.exit(1); });",
+  '"',
+].join("");
+
+const buildAgentSessionMonitorParseExpression = (rawExpression) => [
+  "(() => {",
+  `const raw = String(${rawExpression} || '[]');`,
+  "const lines = raw.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean);",
+  "const candidate = lines.length ? lines[lines.length - 1] : '[]';",
+  "try {",
+  "const parsed = JSON.parse(candidate);",
+  "return Array.isArray(parsed) ? parsed : [];",
+  "} catch {",
+  "return [];",
+  "}",
+  "})()",
+].join("");
+
+const AGENT_SESSION_MONITOR_LIST_PARSE_EXPRESSION = buildAgentSessionMonitorParseExpression(
+  "$ctx.getNodeOutput('list-sessions')?.output",
+);
+
+const AGENT_SESSION_MONITOR_HEALTH_PARSE_EXPRESSION = buildAgentSessionMonitorParseExpression(
+  "$ctx.getNodeOutput('check-health')?.output",
+);
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  Frontend Agent with Screenshot Validation
 // ═══════════════════════════════════════════════════════════════════════════
@@ -368,21 +425,21 @@ export const AGENT_SESSION_MONITOR_TEMPLATE = {
     }, { x: 400, y: 50 }),
 
     node("list-sessions", "action.run_command", "List Active Sessions", {
-      command: "bosun agent list --json --active",
+      command: AGENT_SESSION_MONITOR_COMMAND,
       continueOnError: true,
     }, { x: 400, y: 200 }),
 
     node("has-active", "condition.expression", "Any Active?", {
-      expression: "($ctx.getNodeOutput('list-sessions')?.output || '[]') !== '[]' && ($ctx.getNodeOutput('list-sessions')?.output || '').length > 5",
+      expression: `${AGENT_SESSION_MONITOR_LIST_PARSE_EXPRESSION}.length > 0`,
     }, { x: 400, y: 340 }),
 
     node("check-health", "action.run_command", "Check Session Health", {
-      command: "bosun agent health --json",
+      command: AGENT_SESSION_MONITOR_COMMAND,
       continueOnError: true,
     }, { x: 200, y: 490 }),
 
     node("has-issues", "condition.expression", "Any Unhealthy?", {
-      expression: "(() => { const out = String($ctx.getNodeOutput('check-health')?.output || ''); const maxIdleMs = Number($data?.maxIdleMs || 600000); const maxTokenPercent = Number($data?.maxTokenPercent || 85); const idleMatch = out.match(/idle(?:_ms)?\\s*[:=]\\s*(\\d+)/i); const tokenMatch = out.match(/token(?:_usage|_percent)?\\s*[:=]\\s*(\\d+(?:\\.\\d+)?)/i); const idleExceeded = idleMatch ? Number(idleMatch[1]) > maxIdleMs : false; const tokenExceeded = tokenMatch ? Number(tokenMatch[1]) >= maxTokenPercent : false; return out.includes('stalled') || out.includes('timeout') || idleExceeded || tokenExceeded; })()",
+      expression: `(() => { const sessions = ${AGENT_SESSION_MONITOR_HEALTH_PARSE_EXPRESSION}; const maxIdleMs = Number($data?.maxIdleMs || 600000); const maxTokenPercent = Number($data?.maxTokenPercent || 85); return sessions.some((item) => { const status = String(item?.status || '').toLowerCase(); const idleMs = Number(item?.idleMs || 0); const tokenPercent = Number(item?.tokenPercent); return status === 'idle' || status === 'stalled' || status === 'timeout' || idleMs > maxIdleMs || (Number.isFinite(tokenPercent) && tokenPercent >= maxTokenPercent); }); })()`,
     }, { x: 200, y: 640 }),
 
     node("auto-continue", "action.continue_session", "Auto-Continue Stalled", {

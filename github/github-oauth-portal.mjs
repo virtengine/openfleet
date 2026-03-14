@@ -700,6 +700,13 @@ function handleWebhookEvent(eventType, payload) {
       });
       break;
 
+    case "pull_request_review":
+      webhookEvents.emit("github:pull_request_review", { action, payload });
+      if (action === "submitted") {
+        maybeAutoApplySuggestions(payload);
+      }
+      break;
+
     case "pull_request":
       if (action === "opened" || action === "synchronize") {
         webhookEvents.emit("github:pull_request", { action, payload });
@@ -743,6 +750,45 @@ function processBosunCommand(body, payload) {
           payload,
         });
     }
+  }
+}
+
+// ── Auto-apply Copilot review suggestions ─────────────────────────────────────
+
+const AUTO_APPLY_AUTHORS = new Set([
+  "copilot[bot]",
+  "copilot-pull-request-reviewer[bot]",
+  "Copilot",
+  "github-actions[bot]",
+]);
+
+/**
+ * When a review is submitted by an auto-apply author (e.g. copilot[bot]),
+ * automatically batch-apply any code suggestions in the review comments.
+ * Controlled by BOSUN_AUTO_APPLY_SUGGESTIONS env (default: "true").
+ */
+async function maybeAutoApplySuggestions(payload) {
+  if (process.env.BOSUN_AUTO_APPLY_SUGGESTIONS === "false") return;
+  const reviewer = payload?.review?.user?.login;
+  if (!reviewer || !AUTO_APPLY_AUTHORS.has(reviewer)) return;
+
+  const prNumber = payload?.pull_request?.number;
+  const repoFullName = payload?.repository?.full_name;
+  if (!prNumber || !repoFullName) return;
+
+  const [owner, repo] = repoFullName.split("/");
+  console.log(`[webhook] Auto-applying ${reviewer} suggestions on PR #${prNumber}`);
+
+  try {
+    const { applyPrSuggestions } = await import("../tools/apply-pr-suggestions.mjs");
+    const result = await applyPrSuggestions({ owner, repo, prNumber });
+    if (result.commitSha) {
+      console.log(`[webhook] Applied ${result.applied} suggestion(s) → ${result.commitSha.slice(0, 8)}`);
+    } else {
+      console.log(`[webhook] No suggestions to apply: ${result.message}`);
+    }
+  } catch (err) {
+    console.error(`[webhook] Failed to auto-apply suggestions on PR #${prNumber}:`, err.message);
   }
 }
 

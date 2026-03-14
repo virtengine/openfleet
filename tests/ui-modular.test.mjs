@@ -8,6 +8,14 @@ import {
   searchNodeTypes,
   undoHistory,
 } from "../ui/tabs/workflow-canvas-utils.mjs";
+import {
+  SETTINGS_SCHEMA as appSettingsSchema,
+  validateSetting as validateAppSetting,
+} from "../ui/modules/settings-schema.js";
+import {
+  SETTINGS_SCHEMA as siteSettingsSchema,
+  validateSetting as validateSiteSetting,
+} from "../site/ui/modules/settings-schema.js";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -265,6 +273,36 @@ describe("workflow canvas helpers", () => {
     expect(statuses).toEqual({
       "node-a": "failed",
       "node-b": "failed",
+    });
+  });
+});
+
+describe("restart delay settings", () => {
+  it("keeps the crash restart delay default and cap aligned across app and site schemas", () => {
+    const appRestartDelay = appSettingsSchema.find((def) => def.key === "RESTART_DELAY_MS");
+    const siteRestartDelay = siteSettingsSchema.find((def) => def.key === "RESTART_DELAY_MS");
+
+    expect(appRestartDelay).toMatchObject({
+      defaultVal: 180000,
+      min: 1000,
+      max: 1800000,
+    });
+    expect(siteRestartDelay).toEqual(appRestartDelay);
+  });
+
+  it("accepts a 180 second crash restart delay and rejects values above the UI cap", () => {
+    const appRestartDelay = appSettingsSchema.find((def) => def.key === "RESTART_DELAY_MS");
+    const siteRestartDelay = siteSettingsSchema.find((def) => def.key === "RESTART_DELAY_MS");
+
+    expect(validateAppSetting(appRestartDelay, "180000")).toEqual({ valid: true });
+    expect(validateSiteSetting(siteRestartDelay, "180000")).toEqual({ valid: true });
+    expect(validateAppSetting(appRestartDelay, "1800001")).toEqual({
+      valid: false,
+      error: "Maximum: 1800000",
+    });
+    expect(validateSiteSetting(siteRestartDelay, "1800001")).toEqual({
+      valid: false,
+      error: "Maximum: 1800000",
     });
   });
 });

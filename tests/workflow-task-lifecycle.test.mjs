@@ -1284,7 +1284,7 @@ describe("action.acquire_worktree", () => {
 
     const firstGitDir = resolve(
       first.worktreePath,
-      execGit("git rev-parse --git-dir", {
+      gitExec("git rev-parse --git-dir", {
         cwd: first.worktreePath,
         encoding: "utf8",
       }).trim(),
@@ -1300,24 +1300,185 @@ describe("action.acquire_worktree", () => {
 
     const secondGitDir = resolve(
       second.worktreePath,
-      execGit("git rev-parse --git-dir", {
+      gitExec("git rev-parse --git-dir", {
         cwd: second.worktreePath,
         encoding: "utf8",
       }).trim(),
     );
     expect(existsSync(join(secondGitDir, "rebase-merge"))).toBe(false);
-    const isGit = execGit("git rev-parse --is-inside-work-tree", {
+    const isGit = gitExec("git rev-parse --is-inside-work-tree", {
       cwd: second.worktreePath,
       encoding: "utf8",
     }).trim();
     expect(isGit).toBe("true");
-    const topLevel = execGit("git rev-parse --show-toplevel", {
+    const topLevel = gitExec("git rev-parse --show-toplevel", {
       cwd: second.worktreePath,
       encoding: "utf8",
     }).trim().replace(/\\/g, "/");
     const expectedRoot = String(second.worktreePath).replace(/\\/g, "/");
     expect(topLevel).toBe(expectedRoot);
   }, 15000);
+
+  it("recreates dirty managed worktrees and rebases existing task branches onto the latest base", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const branch = "task/recreate-dirty-behind";
+    const remoteDir = mkdtempSync(join(tmpdir(), "wf-acquire-origin-"));
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "recreate-dirty-1",
+      branch,
+      baseBranch: "origin/main",
+      defaultTargetBranch: "origin/main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+    const previousAllowRefresh = process.env.BOSUN_TEST_ALLOW_GIT_REFRESH;
+    process.env.BOSUN_TEST_ALLOW_GIT_REFRESH = "true";
+    try {
+      gitExec("git init --bare", { cwd: remoteDir, stdio: "ignore" });
+      gitExec(`git remote add origin "${remoteDir}"`, {
+        cwd: repoDir,
+        stdio: "ignore",
+      });
+      gitExec("git push -u origin main", { cwd: repoDir, stdio: "ignore" });
+
+      const firstCtx = makeCtx({});
+      const first = await nt.execute(node, firstCtx);
+      expect(first.success).toBe(true);
+      expect(first.created).toBe(true);
+
+      gitExec("git config --local user.email test@test.com", {
+        cwd: first.worktreePath,
+        stdio: "ignore",
+      });
+      gitExec("git config --local user.name Test", {
+        cwd: first.worktreePath,
+        stdio: "ignore",
+      });
+      writeFileSync(join(first.worktreePath, "feature.txt"), "task work\n");
+      gitExec("git add feature.txt", {
+        cwd: first.worktreePath,
+        stdio: "ignore",
+      });
+      gitExec("git commit -m task-work", {
+        cwd: first.worktreePath,
+        stdio: "ignore",
+      });
+      writeFileSync(join(first.worktreePath, "README.md"), "dirty tracked change\n");
+
+      writeFileSync(join(repoDir, "upstream.txt"), "main advanced\n");
+      gitExec("git add upstream.txt", {
+        cwd: repoDir,
+        stdio: "ignore",
+      });
+      gitExec("git commit -m upstream-advance", {
+        cwd: repoDir,
+        stdio: "ignore",
+      });
+      gitExec("git push origin main", { cwd: repoDir, stdio: "ignore" });
+
+      const secondCtx = makeCtx({});
+      const second = await nt.execute(node, secondCtx);
+      expect(second.success).toBe(true);
+
+      const status = gitExec("git status --short", {
+        cwd: second.worktreePath,
+        encoding: "utf8",
+      }).trim();
+      expect(status).toBe("");
+      expect(existsSync(join(second.worktreePath, "feature.txt"))).toBe(true);
+      expect(existsSync(join(second.worktreePath, "upstream.txt"))).toBe(true);
+
+      const counts = gitExec("git rev-list --left-right --count HEAD...origin/main", {
+        cwd: second.worktreePath,
+        encoding: "utf8",
+      }).trim();
+      const match = counts.match(/^(\d+)\s+(\d+)$/);
+      expect(match).not.toBeNull();
+      expect(Number(match[1])).toBeGreaterThan(0);
+      expect(Number(match[2])).toBe(0);
+    } finally {
+      if (previousAllowRefresh === undefined) {
+        delete process.env.BOSUN_TEST_ALLOW_GIT_REFRESH;
+      } else {
+        process.env.BOSUN_TEST_ALLOW_GIT_REFRESH = previousAllowRefresh;
+      }
+      try { rmSync(remoteDir, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  }, 20000);
+
+  it("returns a non-retryable failure when an existing task branch conflicts with the latest base", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const branch = "task/recreate-conflict-behind";
+    const remoteDir = mkdtempSync(join(tmpdir(), "wf-acquire-origin-"));
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "recreate-conflict-1",
+      branch,
+      baseBranch: "origin/main",
+      defaultTargetBranch: "origin/main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+    const previousAllowRefresh = process.env.BOSUN_TEST_ALLOW_GIT_REFRESH;
+    process.env.BOSUN_TEST_ALLOW_GIT_REFRESH = "true";
+    try {
+      gitExec("git init --bare", { cwd: remoteDir, stdio: "ignore" });
+      gitExec(`git remote add origin "${remoteDir}"`, {
+        cwd: repoDir,
+        stdio: "ignore",
+      });
+      gitExec("git push -u origin main", { cwd: repoDir, stdio: "ignore" });
+
+      const firstCtx = makeCtx({});
+      const first = await nt.execute(node, firstCtx);
+      expect(first.success).toBe(true);
+      expect(first.created).toBe(true);
+
+      gitExec("git config --local user.email test@test.com", {
+        cwd: first.worktreePath,
+        stdio: "ignore",
+      });
+      gitExec("git config --local user.name Test", {
+        cwd: first.worktreePath,
+        stdio: "ignore",
+      });
+      writeFileSync(join(first.worktreePath, "README.md"), "task branch change\n");
+      gitExec("git add README.md", {
+        cwd: first.worktreePath,
+        stdio: "ignore",
+      });
+      gitExec("git commit -m task-readme-change", {
+        cwd: first.worktreePath,
+        stdio: "ignore",
+      });
+
+      writeFileSync(join(repoDir, "README.md"), "main branch change\n");
+      gitExec("git add README.md", {
+        cwd: repoDir,
+        stdio: "ignore",
+      });
+      gitExec("git commit -m upstream-readme-change", {
+        cwd: repoDir,
+        stdio: "ignore",
+      });
+      gitExec("git push origin main", { cwd: repoDir, stdio: "ignore" });
+
+      const secondCtx = makeCtx({});
+      const second = await nt.execute(node, secondCtx);
+      expect(second.success).toBe(false);
+      expect(second.retryable).toBe(false);
+      expect(second.failureKind).toBe("branch_refresh_conflict");
+      expect(second.error).toContain("managed worktree was removed after stale refresh state");
+    } finally {
+      if (previousAllowRefresh === undefined) {
+        delete process.env.BOSUN_TEST_ALLOW_GIT_REFRESH;
+      } else {
+        process.env.BOSUN_TEST_ALLOW_GIT_REFRESH = previousAllowRefresh;
+      }
+      try { rmSync(remoteDir, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  }, 20000);
 
   it("enables core.longpaths before checkout", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -2037,6 +2198,33 @@ describe("action.update_task_status", () => {
       }),
     );
   });
+
+  it("allows workflows to set blocked status", async () => {
+    const nt = getNodeType("action.update_task_status");
+    const updateTaskStatus = vi.fn().mockResolvedValue(true);
+    const ctx = makeCtx({
+      taskId: "task-blocked-123",
+      taskTitle: "Blocked task",
+    });
+    const node = makeNode("action.update_task_status", {
+      taskId: "{{taskId}}",
+      status: "blocked",
+      taskTitle: "{{taskTitle}}",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: { updateTaskStatus },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(updateTaskStatus).toHaveBeenCalledWith(
+      "task-blocked-123",
+      "blocked",
+      expect.objectContaining({ source: "workflow" }),
+    );
+  });
 });
 
 describe("template-task-lifecycle", () => {
@@ -2195,7 +2383,10 @@ describe("template-task-lifecycle", () => {
   it("worktree-failed path releases claim and slot", () => {
     const t = getTemplate("template-task-lifecycle");
     expect(t.edges.find((e) => e.source === "worktree-ok" && e.target === "release-claim-wt-failed")).toBeDefined();
-    expect(t.edges.find((e) => e.source === "release-claim-wt-failed" && e.target === "set-todo-wt-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "release-claim-wt-failed" && e.target === "wt-failure-blocking")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "wt-failure-blocking" && e.target === "set-blocked-wt-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "wt-failure-blocking" && e.target === "set-todo-wt-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "set-blocked-wt-failed" && e.target === "release-slot-wt-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-wt-failed" && e.target === "release-slot-wt-failed")).toBeDefined();
   });
 

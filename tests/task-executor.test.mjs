@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import os from "node:os";
 
 // ── Mocks ───────────────────────────────────────────────────────────────────
 
@@ -50,10 +51,15 @@ vi.mock("../workspace/worktree-manager.mjs", () => {
   };
 });
 
+vi.mock("../workspace/shared-state-manager.mjs", () => ({
+  getSharedState: vi.fn(() => Promise.resolve(null)),
+}));
+
 vi.mock("../task/task-claims.mjs", () => ({
   initTaskClaims: vi.fn(() => Promise.resolve()),
   claimTask: vi.fn(() => Promise.resolve({ success: true, token: "claim-1" })),
   renewClaim: vi.fn(() => Promise.resolve({ success: true })),
+  getClaim: vi.fn(() => Promise.resolve(null)),
   releaseTask: vi.fn(() => Promise.resolve({ success: true })),
 }));
 
@@ -121,9 +127,11 @@ import {
   invalidateThread,
 } from "../agent/agent-pool.mjs";
 import { acquireWorktree, releaseWorktree } from "../workspace/worktree-manager.mjs";
+import { getSharedState } from "../workspace/shared-state-manager.mjs";
 import {
   claimTask,
   renewClaim,
+  getClaim,
   releaseTask as releaseTaskClaim,
 } from "../task/task-claims.mjs";
 import { initPresence, getPresenceState } from "../infra/presence.mjs";
@@ -172,6 +180,7 @@ describe("task-executor", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     for (const key of ENV_KEYS) delete process.env[key];
+    getSharedState.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -1167,6 +1176,92 @@ describe("task-executor", () => {
       );
       expect(executeSpy).not.toHaveBeenCalled();
     });
+
+    it("resets workflow-owned tasks whose shared-state claim is stale and no thread is alive", async () => {
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: true });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "wf-stale-claim-1",
+          title: "Workflow-owned stale claim",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+          agentAttempts: 1,
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+      getSharedState.mockResolvedValueOnce({
+        ownerId: "wf-deadbeef",
+        ownerHeartbeat: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+      });
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "wf-stale-claim-1",
+        "todo",
+        expect.objectContaining({
+          source: "task-executor-recovery-stale-workflow-claim",
+        }),
+      );
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
+
+    it("resets workflow-owned tasks when a fresh shared-state claim belongs to a dead local pid", async () => {
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: true });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+      const killSpy = vi
+        .spyOn(process, "kill")
+        .mockImplementation(() => {
+          throw new Error("ESRCH");
+        });
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "wf-dead-pid-1",
+          title: "Workflow-owned dead local claim",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+          agentAttempts: 1,
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+      getSharedState.mockResolvedValueOnce({
+        ownerId: "wf-live-heartbeat",
+        ownerHeartbeat: new Date().toISOString(),
+      });
+      getClaim.mockResolvedValueOnce({
+        instance_id: "wf-live-heartbeat",
+        metadata: {
+          host: os.hostname(),
+          pid: 987654,
+        },
+      });
+      getPresenceState.mockReturnValue({
+        instance_id: "presence-instance-1",
+        coordinator_priority: 100,
+      });
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(killSpy).toHaveBeenCalledWith(987654, 0);
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "wf-dead-pid-1",
+        "todo",
+        expect.objectContaining({
+          source: "task-executor-recovery-stale-workflow-claim",
+        }),
+      );
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
+
     it("does not resume in-progress tasks already blocked for no-commit thrash", async () => {
       const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
       ex._running = true;
@@ -1668,4 +1763,3 @@ describe("legacy method stubs", () => {
   // [LEGACY TESTS REMOVED] — All execution pipeline tests have been replaced
   // by comprehensive workflow node tests in tests/workflow-task-lifecycle.test.mjs
 });
-

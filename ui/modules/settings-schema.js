@@ -248,7 +248,7 @@ export const SETTINGS_SCHEMA = [
   { key: "DEVMODE",                        label: "Dev Mode",                   category: "advanced", type: "boolean", defaultVal: false, description: "Enable development mode with extra logging, self-restart watcher, and debug endpoints." },
   { key: "SELF_RESTART_WATCH_ENABLED",     label: "Self-Restart Watcher",       category: "advanced", type: "boolean", description: "Auto-restart when source files change. Defaults to true in devmode." },
   { key: "MAX_PARALLEL",                   label: "Global Max Parallel",        category: "advanced", type: "number", defaultVal: 6, min: 1, max: 50, description: "Global maximum parallel task slots across all executors." },
-  { key: "RESTART_DELAY_MS",               label: "Restart Delay",              category: "advanced", type: "number", defaultVal: 10000, min: 1000, max: 60000, unit: "ms", description: "Delay before restarting after a crash." },
+  { key: "RESTART_DELAY_MS",               label: "Restart Delay",              category: "advanced", type: "number", defaultVal: 180000, min: 1000, max: 1800000, unit: "ms", description: "Delay before restarting after a crash." },
   { key: "ENV_RELOAD_DELAY_MS",            label: "Settings Reload Delay",      category: "advanced", type: "number", defaultVal: 5000, min: 500, max: 60000, unit: "ms", description: "Quiet period before Bosun reloads runtime config after .env or settings changes. Higher values make restart-sensitive saves less abrupt." },
   { key: "SHARED_STATE_ENABLED",           label: "Shared State",               category: "advanced", type: "boolean", defaultVal: true, description: "Enable distributed task coordination for multi-instance setups." },
   { key: "WORKFLOW_AUTOMATION_ENABLED",    label: "Workflow Automation",        category: "advanced", type: "boolean", defaultVal: true, description: "Enable event-driven workflow auto-triggers from monitor events." },
@@ -358,4 +358,3 @@ export function validateSetting(def, value) {
 export const SENSITIVE_KEYS = new Set(
   SETTINGS_SCHEMA.filter((s) => s.sensitive).map((s) => s.key),
 );
-

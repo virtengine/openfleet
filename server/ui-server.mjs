@@ -1104,6 +1104,73 @@ let _wfInitPromise = null;
 let _wfInitDone = false;
 let _wfLoadedBase = null;
 let _wfTaskTraceHookRegistered = false;
+let _workflowTelegramDigestPromise = null;
+const workflowTelegramDedup = new Map();
+
+async function getWorkflowTelegramDigest() {
+  if (_workflowTelegramDigestPromise) {
+    return _workflowTelegramDigestPromise;
+  }
+  _workflowTelegramDigestPromise = (async () => {
+    try {
+      const mod = await import("../telegram/telegram-bot.mjs");
+      if (typeof mod.restoreLiveDigest === "function") {
+        await mod.restoreLiveDigest().catch(() => {});
+      }
+      return mod;
+    } catch (err) {
+      console.warn("[workflows/telegram] live digest unavailable:", err?.message || err);
+      return null;
+    }
+  })();
+  return _workflowTelegramDigestPromise;
+}
+
+async function sendWorkflowTelegramMessage(chatId, text, options = {}) {
+  const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
+  const defaultChatId = String(process.env.TELEGRAM_CHAT_ID || "").trim();
+  const target = String(chatId || defaultChatId || "").trim();
+  if (!telegramToken || !target) return;
+
+  const message = String(text || "");
+  const dedupKey = `${target}:${message.trim()}`;
+  const now = Date.now();
+  const lastSentAt = workflowTelegramDedup.get(dedupKey) || 0;
+  if (dedupKey && now - lastSentAt < 5 * 60 * 1000) {
+    return;
+  }
+  workflowTelegramDedup.set(dedupKey, now);
+
+  const parseMode = String(options?.parseMode || "").trim();
+  if (!parseMode && defaultChatId && target === defaultChatId) {
+    const digest = await getWorkflowTelegramDigest();
+    if (typeof digest?.notify === "function") {
+      await digest.notify(message, 4, {
+        silent: Boolean(options?.silent),
+        category: "workflow",
+      });
+      return;
+    }
+  }
+
+  try {
+    await fetch(
+      `https://api.telegram.org/bot${telegramToken}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: target,
+          text: message,
+          parse_mode: parseMode || "HTML",
+          disable_notification: Boolean(options?.silent),
+        }),
+      },
+    );
+  } catch (e) {
+    console.warn("[workflows/telegram] sendMessage failed:", e.message);
+  }
+}
 
 /**
  * Test-only: inject a mock workflow engine module and pre-seed the per-workspace
@@ -1276,26 +1343,11 @@ async function getWorkflowEngineModule() {
         const telegramService = telegramToken
           ? {
               async sendMessage(chatId, text, options = {}) {
-                const target = chatId || telegramChatId;
-                if (!target) return;
-                try {
-                  const parseMode = String(options?.parseMode || "").trim() || "HTML";
-                  await fetch(
-                    `https://api.telegram.org/bot${telegramToken}/sendMessage`,
-                    {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        chat_id: target,
-                        text: String(text || ""),
-                        parse_mode: parseMode,
-                        disable_notification: Boolean(options?.silent),
-                      }),
-                    }
-                  );
-                } catch (e) {
-                  console.warn("[workflows/telegram] sendMessage failed:", e.message);
-                }
+                await sendWorkflowTelegramMessage(
+                  chatId || telegramChatId,
+                  text,
+                  options,
+                );
               },
             }
           : null;
