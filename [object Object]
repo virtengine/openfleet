@@ -8,3 +8,48 @@
   - `npm test` passed (3817 tests)
   - `pnpm build` passed
 - PR: #276 — `chore/code-quality-striker-019cec1d843e`
+## 2026-03-15T05:00:20.3874041+11:00
+
+- Scope: Split the workflow template state/update block in `workflow/workflow-templates.mjs` into a focused helper factory without changing the module's public API.
+- Files changed: workflow/workflow-templates.mjs, [object Object]
+- Strategy: Wrapped fingerprinting, template-state hydration, update, and reconciliation logic in a self-contained internal helper so registry data and template lifecycle behavior are more clearly separated for future edits.
+- Validation evidence:
+  - `[object Object]` passed on all touched files
+  - `npm test` passed (3825 tests)
+  - `pnpm build` passed
+- PR: #282 — `chore/code-quality-striker-20260314-template-state-clean`
+
+## 2026-03-14T08:45:30-05:00
+
+- Scope: Split the manual flow audit executor and inventory helpers out of `workflow/manual-flows.mjs` into a co-located module with no API changes.
+- Files changed: workflow/manual-flows.mjs, workflow/manual-flow-audit.mjs, [object Object]
+- Strategy: Extracted the codebase annotation audit path into `workflow/manual-flow-audit.mjs` so template/run orchestration stays in `workflow/manual-flows.mjs` while audit execution logic remains self-contained for safer future edits.
+- Validation evidence:
+  - `[object Object]` passed on all touched files
+  - `npm test` passed (3828 tests)
+  - `pnpm build` passed
+- PR: #PENDING — `chore/code-quality-striker-20260314-manual-flow-audit`
+
+<<<<<<< HEAD
+## 2026-03-14T08:59:15-05:00
+
+- Scope: Split manual flow run creation, research dispatch prep, and custom action parsing inside `workflow/manual-flows.mjs` into focused internal helpers with no API changes.
+- Files changed: workflow/manual-flows.mjs, [object Object]
+- Strategy: Performed a same-file helper split so run validation/defaulting, research config normalization, and custom template action parsing are self-contained and easier to edit independently without adding new published modules.
+- Validation evidence:
+  - `[object Object]` passed on all touched files
+  - `npm test` passed (3828 tests)
+  - `pnpm build` passed
+- PR: #286 — `chore/code-quality-striker-20260314-manual-flow-audit`
+=======
+## 2026-03-14T19:48:30.928Z
+
+- Scope: Split workspace health checks and report formatting out of `config/config-doctor.mjs` into a focused co-located module with no public API changes.
+- Files changed: config/config-doctor.mjs, config/workspace-health.mjs, [object Object]
+- Strategy: Extracted the workspace health path into `config/workspace-health.mjs` and re-exported the moved functions from `config/config-doctor.mjs` so config validation and workspace diagnostics can evolve independently.
+- Validation evidence:
+  - `[object Object]` passed on all touched files
+  - `npm test` passed (3827 tests)
+  - `pnpm build` passed
+- PR: #284 — `chore/code-quality-striker-20260314-config-workspace-health`
+>>>>>>> 3afcf884 (chore: append striker session log)

@@ -57,3 +57,25 @@ Format:
   - `pnpm build` passed
 - PR: #274 — `chore/code-quality-striker-20260314-work-cand-2-695c8a76`
 
+## 2026-03-15T02:42:30+11:00
+
+- Scope: Split the prompt catalog out of `agent/agent-prompts.mjs` so catalog data and prompt resolution logic live in separate modules with the same public API.
+- Files changed: agent/agent-prompts.mjs, agent/agent-prompt-catalog.mjs, .bosun-monitor/code-quality-striker.md
+- Strategy: Extracted prompt definitions and default prompt templates into a co-located catalog module, then re-exported the existing public constants from `agent/agent-prompts.mjs` so callers remain unchanged.
+- Validation evidence:
+  - `node --check` passed on all touched files
+  - `npm test` passed (3825 tests)
+  - `pnpm build` passed
+- PR: #279 — `chore/code-quality-striker-20260314-agent-prompts`
+
+
+## 2026-03-15T08:52:35.4302717+11:00
+
+- Scope: Split the manual flow audit executor out of `workflow/manual-flows.mjs` so audit inventory logic is isolated from template and run orchestration.
+- Files changed: workflow/manual-flows.mjs, workflow/manual-flow-audit.mjs, package.json, .bosun-monitor/code-quality-striker.md
+- Strategy: Extracted the codebase annotation audit executor and its inventory helpers into a co-located workflow module, then updated the package publish list so the new internal import ships with the package.
+- Validation evidence:
+  - `node --check` passed on all touched files
+  - `npm test` passed (3828 tests)
+  - `pnpm build` passed
+- PR: #285 — `chore/code-quality-striker-20260314-manual-flow-audit`
