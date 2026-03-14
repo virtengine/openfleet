@@ -886,6 +886,18 @@ export function ensureSandboxWorkspaceWrite(toml, options = {}) {
   };
 }
 
+/**
+ * Prunes non-existent entries from the `[sandbox_workspace_write]` writable_roots list.
+ *
+ * Looks up the `writable_roots` array in the `[sandbox_workspace_write]` section,
+ * checks each path on disk, and removes any roots that no longer exist. The `/tmp`
+ * root is always preserved, even if it cannot be checked reliably. Returns the
+ * updated TOML (if any change was made), a `changed` flag, and the list of roots
+ * that were removed.
+ *
+ * @param {string} toml - The full Codex TOML configuration contents.
+ * @returns {{ toml: string, changed: boolean, removed: string[] }} Result of pruning.
+ */
 export function pruneStaleSandboxRoots(toml) {
   if (!hasSandboxWorkspaceWrite(toml)) {
     return { toml, changed: false, removed: [] };
