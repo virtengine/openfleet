@@ -43,20 +43,6 @@ Format:
   - `npm test` passed (3817 tests)
   - `pnpm build` passed
 - PR: #273 — `chore/code-quality-striker-20260314-workflow-ports`
-## 2026-03-14T21:15:56+11:00
-
-- Scope: Split workflow port hydration inside workflow/workflow-engine.mjs into focused private helpers without changing the module API.
-- Files changed: workflow/workflow-engine.mjs, .bosun-monitor/code-quality-striker.md
-- Strategy: Extracted node hydration, edge hydration, and validation-issue construction from one larger routine so workflow definition hydration has clearer internal phases and lower local complexity.
-- Validation evidence:
-  - 
-ode --check workflow/workflow-engine.mjs passed on all touched files
-  - 
-pm test passed (3817 tests)
-  - pnpm build passed
-- PR: #273 — chore/code-quality-striker-20260314-workflow-ports
-
-
 ## 2026-03-14T21:17:28.0953316+11:00
 
 - Scope: Split workflow port hydration inside workflow/workflow-engine.mjs into focused private helpers without changing the module API.
@@ -70,3 +56,4 @@ pm test passed (3817 tests)
   - `tests/workflow-task-lifecycle.test.mjs` passed in isolation on this branch and on clean `main`
   - `pnpm build` passed
 - PR: #274 — `chore/code-quality-striker-20260314-work-cand-2-695c8a76`
+

@@ -6871,8 +6871,8 @@ async function checkMergedPRsAndUpdateTasks() {
       );
       try {
         setInternalTaskStatus(taskId, "done", "review-merge-reconcile");
-      } catch {
-        /* best-effort */
+      } catch (internalErr) {
+        console.warn(`[monitor] review reconcile: setInternalTaskStatus failed for ${taskId}: ${internalErr?.message?.slice(0, 200)}`);
       }
       try {
         updateInternalTask(taskId, {
@@ -6883,20 +6883,23 @@ async function checkMergedPRsAndUpdateTasks() {
             resolvedRepoSlug ||
             undefined,
         });
-      } catch {
-        /* best-effort */
+      } catch (metaErr) {
+        console.warn(`[monitor] review reconcile: updateInternalTask failed for ${taskId}: ${metaErr?.message?.slice(0, 200)}`);
       }
       try {
         await updateTaskStatus(taskId, "done", {
           source: "review-merge-reconcile",
+          bypassWorkflowOwnership: true,
           workflowData: {
             prNumber,
             prUrl,
             repository: resolvedRepoSlug || task?.repository || null,
           },
         });
-      } catch {
-        /* best-effort */
+      } catch (reconcileErr) {
+        console.warn(
+          `[monitor] review reconcile: failed to update kanban status for ${taskId}: ${reconcileErr?.message?.slice(0, 200)}`,
+        );
       }
       summary.movedDone += 1;
     }
@@ -8013,7 +8016,8 @@ async function triggerFlowPostReviewMerge(taskId, context = {}) {
   const autoArgs = ["pr", "merge", String(prNumber)];
   if (resolvedRepoSlug) autoArgs.push("--repo", resolvedRepoSlug);
   autoArgs.push("--body", buildFlowGateMergeBody(taskTitle, id));
-  autoArgs.push("--auto", "--squash");
+  const mergeMethod = process.env.BOSUN_MERGE_METHOD || "merge";
+  autoArgs.push("--auto", `--${mergeMethod}`);
 
   const autoResult = spawnSync("gh", autoArgs, {
     cwd: repoRoot,
@@ -8035,7 +8039,7 @@ async function triggerFlowPostReviewMerge(taskId, context = {}) {
     const directArgs = ["pr", "merge", String(prNumber)];
     if (resolvedRepoSlug) directArgs.push("--repo", resolvedRepoSlug);
     directArgs.push("--body", buildFlowGateMergeBody(taskTitle, id));
-    directArgs.push("--squash");
+    directArgs.push(`--${mergeMethod}`);
     const directResult = spawnSync("gh", directArgs, {
       cwd: repoRoot,
       encoding: "utf8",
@@ -14777,6 +14781,17 @@ async function syncDivergedWorktrees() {
         failed++;
         continue;
       }
+
+      // Safety: refuse to push if HEAD now equals origin/main (would wipe PR changes)
+      try {
+        const headSha = execSync("git rev-parse HEAD", { cwd: wtPath, encoding: "utf8", timeout: 5_000, stdio: ["pipe", "pipe", "pipe"] }).trim();
+        const mainSha = execSync("git rev-parse origin/main", { cwd: wtPath, encoding: "utf8", timeout: 5_000, stdio: ["pipe", "pipe", "pipe"] }).trim();
+        if (headSha === mainSha) {
+          console.warn(`[monitor:worktree-sync] ${branch} HEAD matches origin/main after rebase — aborting push to prevent PR wipe`);
+          failed++;
+          continue;
+        }
+      } catch { /* best-effort check */ }
 
       // Push with --force-with-lease (safe: we just fetched fresh remote refs)
       try {

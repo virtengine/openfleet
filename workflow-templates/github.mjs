@@ -102,7 +102,7 @@ Respond with JSON: { "action": "<choice>", "reason": "<why>", "message": "<optio
     }, { x: 400, y: 520, outputs: ["merge", "prompt-agent", "close", "retry", "escalate", "wait-for-ci", "default"] }),
 
     node("do-merge", "action.run_command", "Auto-Merge PR", {
-      command: "gh pr merge {{prNumber}} --auto --squash",
+      command: "gh pr merge {{prNumber}} --auto --merge",
       failOnError: true,
       maxRetries: "{{maxRetries}}",
       retryDelayMs: 30000,
@@ -698,7 +698,7 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
   recommended: true,
   trigger: "trigger.workflow_call",
   variables: {
-    mergeMethod: "squash",
+    mergeMethod: "merge",
     labelNeedsFix: "bosun-needs-fix",
     labelNeedsReview: "bosun-needs-human-review",
     suspiciousDeletionRatio: 3,
@@ -889,7 +889,7 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "const ratio=Number('{{suspiciousDeletionRatio}}')||3;",
         "const minDel=Number('{{minDestructiveDeletions}}')||500;",
         "const labelReview=String('{{labelNeedsReview}}'||'bosun-needs-human-review');",
-        "const method=String('{{mergeMethod}}'||'squash').toLowerCase();",
+        "const method=String('{{mergeMethod}}'||'merge').toLowerCase();",
         "function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
         "if(!repo||!n){console.log(JSON.stringify({mergedCount:0,heldCount:0,skippedCount:1,skipped:[{repo,number:n,reason:'missing_repo_or_pr'}]}));process.exit(0);}",
         "try{",
@@ -1015,7 +1015,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
   recommended: true,
   trigger: "trigger.schedule",
   variables: {
-    mergeMethod:        "squash",                   // squash | merge | rebase
+    mergeMethod:        "merge",                    // merge | squash | rebase
     labelNeedsFix:      "bosun-needs-fix",           // applied to CI failures and conflicts
     labelNeedsReview:   "bosun-needs-human-review",  // applied when review agent flags a suspicious diff
     // auto: active workspace repos from bosun.config.json (fallback current repo)
@@ -1027,6 +1027,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     // If net deletions > additions × ratio AND deletions > minDestructiveDeletions → HOLD
     suspiciousDeletionRatio: 3,    // e.g. deletes 3× more lines than it adds
     minDestructiveDeletions: 500,  // absolute floor — small PRs are fine even if net negative
+    autoApplySuggestions:   true,  // auto-commit review suggestions before merge
   },
   nodes: [
     node("trigger", "trigger.schedule", "Poll Every 90s", {
@@ -1429,7 +1430,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "const ratio=Number('{{suspiciousDeletionRatio}}')||3;",
         "const minDel=Number('{{minDestructiveDeletions}}')||500;",
         "const labelReview=String('{{labelNeedsReview}}'||'bosun-needs-human-review');",
-        "const method=String('{{mergeMethod}}'||'squash').toLowerCase();",
+        "const method=String('{{mergeMethod}}'||'merge').toLowerCase();",
         "const merged=[]; const held=[]; const skipped=[];",
         "function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
         "for(const c of candidates){",
@@ -1464,6 +1465,17 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "    });",
         "    if(hasFailure){skipped.push({repo,number:n,reason:'ci_failed'});continue;}",
         "    if(hasPending){skipped.push({repo,number:n,reason:'ci_pending'});continue;}",
+        "    const doApplySuggestions=String('{{autoApplySuggestions}}'||'true')==='true'&&process.env.BOSUN_AUTO_APPLY_SUGGESTIONS!=='false';",
+        "    if(doApplySuggestions){",
+        "      try{",
+        "        const toolPath=require('path').resolve(process.cwd(),'tools','apply-pr-suggestions.mjs');",
+        "        if(require('fs').existsSync(toolPath)){",
+        "          const sugOut=execFileSync('node',[toolPath,'--owner',repo.split('/')[0],'--repo',repo.split('/')[1],n,'--json'],{encoding:'utf8',timeout:60000,stdio:['pipe','pipe','pipe']});",
+        "          const sugRes=(()=>{try{return JSON.parse(sugOut)}catch{return null}})();",
+        "          if(sugRes?.commitSha) console.error('[watchdog] auto-applied '+sugRes.applied+' suggestion(s) on PR #'+n+' → '+sugRes.commitSha.slice(0,8));",
+        "        }",
+        "      }catch(sugErr){console.error('[watchdog] suggestion auto-apply skipped for PR #'+n+': '+String(sugErr?.message||sugErr).slice(0,120));}",
+        "    }",
         "    const mergeArgs=['pr','merge',n,'--repo',repo,'--delete-branch'];",
         "    if(method==='rebase') mergeArgs.push('--rebase');",
         "    else if(method==='merge') mergeArgs.push('--merge');",

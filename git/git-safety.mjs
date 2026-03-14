@@ -231,6 +231,21 @@ export function evaluateBranchSafetyForPush(worktreePath, opts = {}) {
     reasons.push(`HEAD tracks only ${headFiles}/${baseFiles} files vs ${remoteRef}`);
   }
 
+  // Zero-diff guard: refuse to push if HEAD is identical to base (would wipe PR)
+  try {
+    const headRes = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: worktreePath, encoding: "utf8", timeout: 5_000, stdio: ["pipe", "pipe", "pipe"],
+    });
+    const baseRes = spawnSync("git", ["rev-parse", remoteRef], {
+      cwd: worktreePath, encoding: "utf8", timeout: 5_000, stdio: ["pipe", "pipe", "pipe"],
+    });
+    const headSha = headRes.stdout?.trim();
+    const baseSha = baseRes.stdout?.trim();
+    if (headSha && baseSha && headSha === baseSha) {
+      reasons.push(`HEAD (${headSha.slice(0, 8)}) is identical to ${remoteRef} — push would create zero-diff PR`);
+    }
+  } catch { /* best-effort */ }
+
   const deletedToInserted =
     diff.inserted > 0 ? diff.deleted / diff.inserted : diff.deleted > 0 ? Infinity : 0;
   const manyFilesChanged = diff.files >= Math.max(2_000, Math.floor(baseFiles * 0.5));

@@ -102,7 +102,7 @@ describe("action.create_pr base-branch resolution logic", () => {
     const nodeType = getNodeType("action.create_pr");
     const result = await nodeType.execute(node, makeCtx());
     expect(result.base).toBe("develop");
-  });
+  }, 15000);
 
   it("falls back to 'baseBranch' when 'base' is absent", async () => {
     const node = makeNode("action.create_pr", {

@@ -304,6 +304,8 @@
     "workflow/workflow-engine.mjs",
     "workflow/workflow-migration.mjs",
     "workflow/workflow-nodes.mjs",
+    "workflow/workflow-nodes/transforms.mjs",
+    "workflow/workflow-nodes/definitions.mjs",
     "workflow/workflow-nodes/custom-loader.mjs",
     "workflow/project-detection.mjs",
     "workflow/workflow-templates.mjs",

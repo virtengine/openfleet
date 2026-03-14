@@ -263,9 +263,12 @@ const RECOVERY_PROMPTS = {
   [SITUATION.REBASE_SPIRAL]: () =>
     `You're stuck in a rebase loop. STOP rebasing and try:\n` +
     `1. git rebase --abort\n` +
-    `2. git checkout -B <your-branch> origin/main\n` +
-    `3. Re-apply your changes manually\n` +
-    `4. Commit and push`,
+    `2. git stash (save any local changes)\n` +
+    `3. git fetch origin && git merge origin/main --no-edit\n` +
+    `4. If merge conflicts, resolve them manually\n` +
+    `5. git stash pop (if you stashed changes)\n` +
+    `6. Commit and push\n` +
+    `WARNING: Do NOT use git checkout -B to reset your branch to origin/main — this destroys all PR changes.`,
 
   [SITUATION.THOUGHT_SPINNING]: () =>
     `You've been reasoning without taking action. STOP thinking and START doing:\n` +
