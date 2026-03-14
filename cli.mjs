@@ -1391,6 +1391,39 @@ async function main() {
     process.exit(0);
   }
 
+  if (args[0] === "apply-suggestions") {
+    const { applyPrSuggestions } = await import("./tools/apply-pr-suggestions.mjs");
+    const prNum = parseInt(args[1], 10);
+    if (!prNum) {
+      console.error("Usage: bosun apply-suggestions <pr-number> [--author <login>] [--dry-run]");
+      process.exit(1);
+    }
+    const detected = (() => {
+      try {
+        const url = execSync("git config --get remote.origin.url", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+        const m = url.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
+        return m ? { owner: m[1], repo: m[2] } : { owner: "", repo: "" };
+      } catch { return { owner: "", repo: "" }; }
+    })();
+    const authorIdx = args.indexOf("--author");
+    const author = authorIdx >= 0 ? args[authorIdx + 1] : undefined;
+    const dryRun = args.includes("--dry-run");
+    try {
+      const result = await applyPrSuggestions({
+        owner: detected.owner, repo: detected.repo, prNumber: prNum, dryRun, author,
+      });
+      if (result.commitSha) {
+        console.log(`✅ Applied ${result.applied} suggestion(s) → ${result.commitSha.slice(0, 8)}`);
+      } else {
+        console.log(`ℹ ${result.message || "No suggestions to apply."}`);
+      }
+    } catch (err) {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
   // Handle --help
   if (args.includes("--help") || args.includes("-h")) {
     showHelp();
