@@ -696,11 +696,11 @@
         },
         {
           "id": "notify",
-          "type": "notify.telegram",
+          "type": "notify.log",
           "label": "Watchdog Report",
           "config": {
-            "message": ":bug: Bosun PR Watchdog cycle complete — fix-dispatched: {{fixNeeded}} | candidates-reviewed: {{readyCandidates}}",
-            "silent": true
+            "message": "Bosun PR Watchdog cycle complete — see live digest/status board for streaming updates",
+            "level": "info"
           },
           "position": {
             "x": 400,
@@ -3401,7 +3401,7 @@
           "type": "action.run_command",
           "label": "List Active Sessions",
           "config": {
-            "command": "bosun agent list --json --active",
+            "command": "node -e \"const fs = require('node:fs');const path = require('node:path');const { pathToFileURL } = require('node:url');const cwd = process.cwd();const mirrorMarker = `${path.sep}.bosun${path.sep}workspaces${path.sep}`.toLowerCase();let repoRoot = cwd;if (cwd.toLowerCase().includes(mirrorMarker)) {const sourceRepoRoot = path.resolve(cwd, '..', '..', '..', '..');if (fs.existsSync(path.join(sourceRepoRoot, 'infra', 'session-tracker.mjs'))) repoRoot = sourceRepoRoot;}const trackerModuleUrl = pathToFileURL(path.join(repoRoot, 'infra', 'session-tracker.mjs')).href;import(trackerModuleUrl).then(({ getSessionTracker }) => {const tracker = getSessionTracker();const sessions = tracker.getActiveSessions().map((session) => {const progress = tracker.getProgressStatus(session.taskId);return {id: session.taskId,taskId: session.taskId,taskTitle: session.taskTitle || null,status: progress.status,idleMs: progress.idleMs,totalEvents: progress.totalEvents,elapsedMs: progress.elapsedMs,lastEventType: progress.lastEventType,recommendation: progress.recommendation,tokenPercent: null};});console.log(JSON.stringify(sessions));}).catch((err) => { console.error(err?.stack || String(err)); process.exit(1); });\"",
             "continueOnError": true
           },
           "position": {
@@ -3417,7 +3417,7 @@
           "type": "condition.expression",
           "label": "Any Active?",
           "config": {
-            "expression": "($ctx.getNodeOutput('list-sessions')?.output || '[]') !== '[]' && ($ctx.getNodeOutput('list-sessions')?.output || '').length > 5"
+            "expression": "(() => {const raw = String($ctx.getNodeOutput('list-sessions')?.output || '[]');const lines = raw.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean);const candidate = lines.length ? lines[lines.length - 1] : '[]';try {const parsed = JSON.parse(candidate);return Array.isArray(parsed) ? parsed : [];} catch {return [];}})().length > 0"
           },
           "position": {
             "x": 400,
@@ -3432,7 +3432,7 @@
           "type": "action.run_command",
           "label": "Check Session Health",
           "config": {
-            "command": "bosun agent health --json",
+            "command": "node -e \"const fs = require('node:fs');const path = require('node:path');const { pathToFileURL } = require('node:url');const cwd = process.cwd();const mirrorMarker = `${path.sep}.bosun${path.sep}workspaces${path.sep}`.toLowerCase();let repoRoot = cwd;if (cwd.toLowerCase().includes(mirrorMarker)) {const sourceRepoRoot = path.resolve(cwd, '..', '..', '..', '..');if (fs.existsSync(path.join(sourceRepoRoot, 'infra', 'session-tracker.mjs'))) repoRoot = sourceRepoRoot;}const trackerModuleUrl = pathToFileURL(path.join(repoRoot, 'infra', 'session-tracker.mjs')).href;import(trackerModuleUrl).then(({ getSessionTracker }) => {const tracker = getSessionTracker();const sessions = tracker.getActiveSessions().map((session) => {const progress = tracker.getProgressStatus(session.taskId);return {id: session.taskId,taskId: session.taskId,taskTitle: session.taskTitle || null,status: progress.status,idleMs: progress.idleMs,totalEvents: progress.totalEvents,elapsedMs: progress.elapsedMs,lastEventType: progress.lastEventType,recommendation: progress.recommendation,tokenPercent: null};});console.log(JSON.stringify(sessions));}).catch((err) => { console.error(err?.stack || String(err)); process.exit(1); });\"",
             "continueOnError": true
           },
           "position": {
@@ -3448,7 +3448,7 @@
           "type": "condition.expression",
           "label": "Any Unhealthy?",
           "config": {
-            "expression": "(() => { const out = String($ctx.getNodeOutput('check-health')?.output || ''); const maxIdleMs = Number($data?.maxIdleMs || 600000); const maxTokenPercent = Number($data?.maxTokenPercent || 85); const idleMatch = out.match(/idle(?:_ms)?\\s*[:=]\\s*(\\d+)/i); const tokenMatch = out.match(/token(?:_usage|_percent)?\\s*[:=]\\s*(\\d+(?:\\.\\d+)?)/i); const idleExceeded = idleMatch ? Number(idleMatch[1]) > maxIdleMs : false; const tokenExceeded = tokenMatch ? Number(tokenMatch[1]) >= maxTokenPercent : false; return out.includes('stalled') || out.includes('timeout') || idleExceeded || tokenExceeded; })()"
+            "expression": "(() => { const sessions = (() => {const raw = String($ctx.getNodeOutput('check-health')?.output || '[]');const lines = raw.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean);const candidate = lines.length ? lines[lines.length - 1] : '[]';try {const parsed = JSON.parse(candidate);return Array.isArray(parsed) ? parsed : [];} catch {return [];}})(); const maxIdleMs = Number($data?.maxIdleMs || 600000); const maxTokenPercent = Number($data?.maxTokenPercent || 85); return sessions.some((item) => { const status = String(item?.status || '').toLowerCase(); const idleMs = Number(item?.idleMs || 0); const tokenPercent = Number(item?.tokenPercent); return status === 'idle' || status === 'stalled' || status === 'timeout' || idleMs > maxIdleMs || (Number.isFinite(tokenPercent) && tokenPercent >= maxTokenPercent); }); })()"
           },
           "position": {
             "x": 200,
@@ -17832,8 +17832,7 @@
         "pollStatus": "todo",
         "maxBatchSize": 5,
         "defaultBaseBranch": "main",
-        "draftPR": true,
-        "notifyChannel": "telegram"
+        "draftPR": true
       },
       "metadata": {
         "author": "bosun",
@@ -18058,11 +18057,11 @@
         },
         {
           "id": "notify",
-          "type": "notify.telegram",
+          "type": "notify.log",
           "label": "Batch Complete",
           "config": {
-            "channel": "{{notifyChannel}}",
-            "message": "Task batch PR pipeline complete"
+            "message": "Task batch PR pipeline complete",
+            "level": "info"
           },
           "position": {
             "x": 400,
@@ -18165,8 +18164,8 @@
         "dispatch",
         "lifecycle"
       ],
-      "nodeCount": 7,
-      "edgeCount": 6,
+      "nodeCount": 9,
+      "edgeCount": 8,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -18301,16 +18300,47 @@
           ]
         },
         {
-          "id": "notify-complete",
-          "type": "notify.telegram",
-          "label": "Batch Summary",
+          "id": "has-batch-failures",
+          "type": "condition.expression",
+          "label": "Any Batch Failures?",
           "config": {
-            "channel": "{{notifyChannel}}",
-            "message": "Task batch completed: {{dispatch-tasks.successCount}}/{{dispatch-tasks.totalItems}} succeeded ({{dispatch-tasks.failCount}} failed)"
+            "expression": "Number($data?.batchResult?.failCount || 0) > 0"
           },
           "position": {
             "x": 400,
             "y": 700
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-failures",
+          "type": "notify.telegram",
+          "label": "Batch Failure Alert",
+          "config": {
+            "channel": "{{notifyChannel}}",
+            "message": "Task batch needs attention: {{batchResult.failCount}} failed out of {{batchResult.totalItems}} ({{batchResult.successCount}} succeeded)"
+          },
+          "position": {
+            "x": 220,
+            "y": 830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-summary",
+          "type": "notify.log",
+          "label": "Batch Summary",
+          "config": {
+            "message": "Task batch completed: {{batchResult.successCount}}/{{batchResult.totalItems}} succeeded ({{batchResult.failCount}} failed)",
+            "level": "info"
+          },
+          "position": {
+            "x": 580,
+            "y": 830
           },
           "outputs": [
             "default"
@@ -18350,10 +18380,24 @@
           "sourcePort": "default"
         },
         {
-          "id": "record-results->notify-complete",
+          "id": "record-results->has-batch-failures",
           "source": "record-results",
-          "target": "notify-complete",
+          "target": "has-batch-failures",
           "sourcePort": "default"
+        },
+        {
+          "id": "has-batch-failures->notify-failures",
+          "source": "has-batch-failures",
+          "target": "notify-failures",
+          "sourcePort": "default",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-batch-failures->log-summary",
+          "source": "has-batch-failures",
+          "target": "log-summary",
+          "sourcePort": "default",
+          "condition": "$output?.result !== true"
         }
       ]
     },
@@ -18372,8 +18416,8 @@
         "workflow-first",
         "core"
       ],
-      "nodeCount": 50,
-      "edgeCount": 55,
+      "nodeCount": 52,
+      "edgeCount": 58,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -19280,6 +19324,39 @@
           ]
         },
         {
+          "id": "wt-failure-blocking",
+          "type": "condition.expression",
+          "label": "Non-Retryable WT Failure?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('acquire-worktree')?.retryable === false"
+          },
+          "position": {
+            "x": 600,
+            "y": 1220
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-blocked-wt-failed",
+          "type": "action.update_task_status",
+          "label": "Set Blocked (WT Fail)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "blocked",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 470,
+            "y": 1350
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "set-todo-wt-failed",
           "type": "action.update_task_status",
           "label": "Set Todo (WT Fail)",
@@ -19289,8 +19366,8 @@
             "taskTitle": "{{taskTitle}}"
           },
           "position": {
-            "x": 600,
-            "y": 1220
+            "x": 730,
+            "y": 1350
           },
           "outputs": [
             "default"
@@ -19305,7 +19382,7 @@
           },
           "position": {
             "x": 600,
-            "y": 1350
+            "y": 1480
           },
           "outputs": [
             "default"
@@ -19316,11 +19393,11 @@
           "type": "notify.telegram",
           "label": "Notify WT Failed",
           "config": {
-            "message": "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}})"
+            "message": "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{$ctx.getNodeOutput('acquire-worktree')?.retryable === false ? ' — task blocked' : ''}}"
           },
           "position": {
             "x": 600,
-            "y": 1480
+            "y": 1610
           },
           "outputs": [
             "default"
@@ -19658,9 +19735,29 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "release-claim-wt-failed->set-todo-wt-failed",
+          "id": "release-claim-wt-failed->wt-failure-blocking",
           "source": "release-claim-wt-failed",
+          "target": "wt-failure-blocking",
+          "sourcePort": "default"
+        },
+        {
+          "id": "wt-failure-blocking->set-blocked-wt-failed",
+          "source": "wt-failure-blocking",
+          "target": "set-blocked-wt-failed",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "wt-failure-blocking->set-todo-wt-failed",
+          "source": "wt-failure-blocking",
           "target": "set-todo-wt-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-blocked-wt-failed->release-slot-wt-failed",
+          "source": "set-blocked-wt-failed",
+          "target": "release-slot-wt-failed",
           "sourcePort": "default"
         },
         {
@@ -21356,11 +21453,11 @@
         },
         {
           "id": "notify",
-          "type": "notify.telegram",
+          "type": "notify.log",
           "label": "Watchdog Report",
           "config": {
-            "message": ":bug: Bosun PR Watchdog cycle complete — fix-dispatched: {{fixNeeded}} | candidates-reviewed: {{readyCandidates}}",
-            "silent": true
+            "message": "Bosun PR Watchdog cycle complete — see live digest/status board for streaming updates",
+            "level": "info"
           },
           "position": {
             "x": 400,
@@ -23856,7 +23953,7 @@
           "type": "action.run_command",
           "label": "List Active Sessions",
           "config": {
-            "command": "bosun agent list --json --active",
+            "command": "node -e \"const fs = require('node:fs');const path = require('node:path');const { pathToFileURL } = require('node:url');const cwd = process.cwd();const mirrorMarker = `${path.sep}.bosun${path.sep}workspaces${path.sep}`.toLowerCase();let repoRoot = cwd;if (cwd.toLowerCase().includes(mirrorMarker)) {const sourceRepoRoot = path.resolve(cwd, '..', '..', '..', '..');if (fs.existsSync(path.join(sourceRepoRoot, 'infra', 'session-tracker.mjs'))) repoRoot = sourceRepoRoot;}const trackerModuleUrl = pathToFileURL(path.join(repoRoot, 'infra', 'session-tracker.mjs')).href;import(trackerModuleUrl).then(({ getSessionTracker }) => {const tracker = getSessionTracker();const sessions = tracker.getActiveSessions().map((session) => {const progress = tracker.getProgressStatus(session.taskId);return {id: session.taskId,taskId: session.taskId,taskTitle: session.taskTitle || null,status: progress.status,idleMs: progress.idleMs,totalEvents: progress.totalEvents,elapsedMs: progress.elapsedMs,lastEventType: progress.lastEventType,recommendation: progress.recommendation,tokenPercent: null};});console.log(JSON.stringify(sessions));}).catch((err) => { console.error(err?.stack || String(err)); process.exit(1); });\"",
             "continueOnError": true
           },
           "position": {
@@ -23872,7 +23969,7 @@
           "type": "condition.expression",
           "label": "Any Active?",
           "config": {
-            "expression": "($ctx.getNodeOutput('list-sessions')?.output || '[]') !== '[]' && ($ctx.getNodeOutput('list-sessions')?.output || '').length > 5"
+            "expression": "(() => {const raw = String($ctx.getNodeOutput('list-sessions')?.output || '[]');const lines = raw.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean);const candidate = lines.length ? lines[lines.length - 1] : '[]';try {const parsed = JSON.parse(candidate);return Array.isArray(parsed) ? parsed : [];} catch {return [];}})().length > 0"
           },
           "position": {
             "x": 400,
@@ -23887,7 +23984,7 @@
           "type": "action.run_command",
           "label": "Check Session Health",
           "config": {
-            "command": "bosun agent health --json",
+            "command": "node -e \"const fs = require('node:fs');const path = require('node:path');const { pathToFileURL } = require('node:url');const cwd = process.cwd();const mirrorMarker = `${path.sep}.bosun${path.sep}workspaces${path.sep}`.toLowerCase();let repoRoot = cwd;if (cwd.toLowerCase().includes(mirrorMarker)) {const sourceRepoRoot = path.resolve(cwd, '..', '..', '..', '..');if (fs.existsSync(path.join(sourceRepoRoot, 'infra', 'session-tracker.mjs'))) repoRoot = sourceRepoRoot;}const trackerModuleUrl = pathToFileURL(path.join(repoRoot, 'infra', 'session-tracker.mjs')).href;import(trackerModuleUrl).then(({ getSessionTracker }) => {const tracker = getSessionTracker();const sessions = tracker.getActiveSessions().map((session) => {const progress = tracker.getProgressStatus(session.taskId);return {id: session.taskId,taskId: session.taskId,taskTitle: session.taskTitle || null,status: progress.status,idleMs: progress.idleMs,totalEvents: progress.totalEvents,elapsedMs: progress.elapsedMs,lastEventType: progress.lastEventType,recommendation: progress.recommendation,tokenPercent: null};});console.log(JSON.stringify(sessions));}).catch((err) => { console.error(err?.stack || String(err)); process.exit(1); });\"",
             "continueOnError": true
           },
           "position": {
@@ -23903,7 +24000,7 @@
           "type": "condition.expression",
           "label": "Any Unhealthy?",
           "config": {
-            "expression": "(() => { const out = String($ctx.getNodeOutput('check-health')?.output || ''); const maxIdleMs = Number($data?.maxIdleMs || 600000); const maxTokenPercent = Number($data?.maxTokenPercent || 85); const idleMatch = out.match(/idle(?:_ms)?\\s*[:=]\\s*(\\d+)/i); const tokenMatch = out.match(/token(?:_usage|_percent)?\\s*[:=]\\s*(\\d+(?:\\.\\d+)?)/i); const idleExceeded = idleMatch ? Number(idleMatch[1]) > maxIdleMs : false; const tokenExceeded = tokenMatch ? Number(tokenMatch[1]) >= maxTokenPercent : false; return out.includes('stalled') || out.includes('timeout') || idleExceeded || tokenExceeded; })()"
+            "expression": "(() => { const sessions = (() => {const raw = String($ctx.getNodeOutput('check-health')?.output || '[]');const lines = raw.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean);const candidate = lines.length ? lines[lines.length - 1] : '[]';try {const parsed = JSON.parse(candidate);return Array.isArray(parsed) ? parsed : [];} catch {return [];}})(); const maxIdleMs = Number($data?.maxIdleMs || 600000); const maxTokenPercent = Number($data?.maxTokenPercent || 85); return sessions.some((item) => { const status = String(item?.status || '').toLowerCase(); const idleMs = Number(item?.idleMs || 0); const tokenPercent = Number(item?.tokenPercent); return status === 'idle' || status === 'stalled' || status === 'timeout' || idleMs > maxIdleMs || (Number.isFinite(tokenPercent) && tokenPercent >= maxTokenPercent); }); })()"
           },
           "position": {
             "x": 200,
@@ -37531,8 +37628,7 @@
         "pollStatus": "todo",
         "maxBatchSize": 5,
         "defaultBaseBranch": "main",
-        "draftPR": true,
-        "notifyChannel": "telegram"
+        "draftPR": true
       },
       "nodes": [
         {
@@ -37741,11 +37837,11 @@
         },
         {
           "id": "notify",
-          "type": "notify.telegram",
+          "type": "notify.log",
           "label": "Batch Complete",
           "config": {
-            "channel": "{{notifyChannel}}",
-            "message": "Task batch PR pipeline complete"
+            "message": "Task batch PR pipeline complete",
+            "level": "info"
           },
           "position": {
             "x": 400,
@@ -37852,7 +37948,7 @@
       "description": "Monitors the task backlog and dispatches multiple tasks in parallel using the Task Lifecycle sub-workflow. Automatically picks up tasks when backlog drops below threshold, fans out execution across available slots, and reports batch results.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 7,
+      "nodeCount": 9,
       "trigger": "trigger.task_available",
       "variables": {
         "maxConcurrent": 3,
@@ -37972,16 +38068,47 @@
           ]
         },
         {
-          "id": "notify-complete",
-          "type": "notify.telegram",
-          "label": "Batch Summary",
+          "id": "has-batch-failures",
+          "type": "condition.expression",
+          "label": "Any Batch Failures?",
           "config": {
-            "channel": "{{notifyChannel}}",
-            "message": "Task batch completed: {{dispatch-tasks.successCount}}/{{dispatch-tasks.totalItems}} succeeded ({{dispatch-tasks.failCount}} failed)"
+            "expression": "Number($data?.batchResult?.failCount || 0) > 0"
           },
           "position": {
             "x": 400,
             "y": 700
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-failures",
+          "type": "notify.telegram",
+          "label": "Batch Failure Alert",
+          "config": {
+            "channel": "{{notifyChannel}}",
+            "message": "Task batch needs attention: {{batchResult.failCount}} failed out of {{batchResult.totalItems}} ({{batchResult.successCount}} succeeded)"
+          },
+          "position": {
+            "x": 220,
+            "y": 830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-summary",
+          "type": "notify.log",
+          "label": "Batch Summary",
+          "config": {
+            "message": "Task batch completed: {{batchResult.successCount}}/{{batchResult.totalItems}} succeeded ({{batchResult.failCount}} failed)",
+            "level": "info"
+          },
+          "position": {
+            "x": 580,
+            "y": 830
           },
           "outputs": [
             "default"
@@ -38021,10 +38148,24 @@
           "sourcePort": "default"
         },
         {
-          "id": "record-results->notify-complete",
+          "id": "record-results->has-batch-failures",
           "source": "record-results",
-          "target": "notify-complete",
+          "target": "has-batch-failures",
           "sourcePort": "default"
+        },
+        {
+          "id": "has-batch-failures->notify-failures",
+          "source": "has-batch-failures",
+          "target": "notify-failures",
+          "sourcePort": "default",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-batch-failures->log-summary",
+          "source": "has-batch-failures",
+          "target": "log-summary",
+          "sourcePort": "default",
+          "condition": "$output?.result !== true"
         }
       ],
       "metadata": {
@@ -38047,7 +38188,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 50,
+      "nodeCount": 52,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -38921,6 +39062,39 @@
           ]
         },
         {
+          "id": "wt-failure-blocking",
+          "type": "condition.expression",
+          "label": "Non-Retryable WT Failure?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('acquire-worktree')?.retryable === false"
+          },
+          "position": {
+            "x": 600,
+            "y": 1220
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-blocked-wt-failed",
+          "type": "action.update_task_status",
+          "label": "Set Blocked (WT Fail)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "blocked",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 470,
+            "y": 1350
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "set-todo-wt-failed",
           "type": "action.update_task_status",
           "label": "Set Todo (WT Fail)",
@@ -38930,8 +39104,8 @@
             "taskTitle": "{{taskTitle}}"
           },
           "position": {
-            "x": 600,
-            "y": 1220
+            "x": 730,
+            "y": 1350
           },
           "outputs": [
             "default"
@@ -38946,7 +39120,7 @@
           },
           "position": {
             "x": 600,
-            "y": 1350
+            "y": 1480
           },
           "outputs": [
             "default"
@@ -38957,11 +39131,11 @@
           "type": "notify.telegram",
           "label": "Notify WT Failed",
           "config": {
-            "message": "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}})"
+            "message": "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{$ctx.getNodeOutput('acquire-worktree')?.retryable === false ? ' — task blocked' : ''}}"
           },
           "position": {
             "x": 600,
-            "y": 1480
+            "y": 1610
           },
           "outputs": [
             "default"
@@ -39299,9 +39473,29 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "release-claim-wt-failed->set-todo-wt-failed",
+          "id": "release-claim-wt-failed->wt-failure-blocking",
           "source": "release-claim-wt-failed",
+          "target": "wt-failure-blocking",
+          "sourcePort": "default"
+        },
+        {
+          "id": "wt-failure-blocking->set-blocked-wt-failed",
+          "source": "wt-failure-blocking",
+          "target": "set-blocked-wt-failed",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "wt-failure-blocking->set-todo-wt-failed",
+          "source": "wt-failure-blocking",
           "target": "set-todo-wt-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-blocked-wt-failed->release-slot-wt-failed",
+          "source": "set-blocked-wt-failed",
+          "target": "release-slot-wt-failed",
           "sourcePort": "default"
         },
         {
