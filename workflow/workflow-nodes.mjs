@@ -24,6 +24,12 @@ import {
   registerNodeType,
   unregisterNodeType,
 } from "./workflow-engine.mjs";
+import {
+  _completedWithPR,
+  _noCommitCounts,
+  _skipUntil,
+  MAX_NO_COMMIT_ATTEMPTS,
+} from "./workflow-nodes/transforms.mjs";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
@@ -9815,13 +9821,9 @@ function cleanupBrokenManagedWorktree(repoRoot, worktreePath) {
 }
 
 /**
- * Anti-thrash state — module-scope to survive across workflow runs.
- * Mirrors TaskExecutor._noCommitCounts / _skipUntil / _completedWithPR.
+ * Anti-thrash state — imported from transforms.mjs (single source of truth).
+ * Shared between monolithic workflow-nodes.mjs and modular triggers.mjs.
  */
-const _noCommitCounts = new Map();
-const _skipUntil = new Map();
-const _completedWithPR = new Set();
-const MAX_NO_COMMIT_ATTEMPTS = 3;
 const NO_COMMIT_BASE_COOLDOWN_MS = 15 * 60 * 1000; // 15 min
 const NO_COMMIT_MAX_COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2 hours
 const STRICT_START_GUARD_MISSING_TASK = /^(1|true|yes|on)$/i.test(

@@ -6871,8 +6871,8 @@ async function checkMergedPRsAndUpdateTasks() {
       );
       try {
         setInternalTaskStatus(taskId, "done", "review-merge-reconcile");
-      } catch {
-        /* best-effort */
+      } catch (internalErr) {
+        console.warn(`[monitor] review reconcile: setInternalTaskStatus failed for ${taskId}: ${internalErr?.message?.slice(0, 200)}`);
       }
       try {
         updateInternalTask(taskId, {
@@ -6883,20 +6883,23 @@ async function checkMergedPRsAndUpdateTasks() {
             resolvedRepoSlug ||
             undefined,
         });
-      } catch {
-        /* best-effort */
+      } catch (metaErr) {
+        console.warn(`[monitor] review reconcile: updateInternalTask failed for ${taskId}: ${metaErr?.message?.slice(0, 200)}`);
       }
       try {
         await updateTaskStatus(taskId, "done", {
           source: "review-merge-reconcile",
+          bypassWorkflowOwnership: true,
           workflowData: {
             prNumber,
             prUrl,
             repository: resolvedRepoSlug || task?.repository || null,
           },
         });
-      } catch {
-        /* best-effort */
+      } catch (reconcileErr) {
+        console.warn(
+          `[monitor] review reconcile: failed to update kanban status for ${taskId}: ${reconcileErr?.message?.slice(0, 200)}`,
+        );
       }
       summary.movedDone += 1;
     }
