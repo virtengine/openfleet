@@ -525,6 +525,140 @@ describe("WorkflowEngine - source port routing", () => {
     expect(visited).toEqual(["left"]);
   });
 
+  it("routes boolean condition outputs to yes/no source ports", async () => {
+    const visited = [];
+    registerNodeType("test.capture_condition_port", {
+      describe: () => "Capture boolean branch routing",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        visited.push(node.id);
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "cond",
+          type: "condition.expression",
+          label: "Cond",
+          config: { expression: "true" },
+          outputs: ["yes", "no"],
+        },
+        { id: "yes-node", type: "test.capture_condition_port", label: "Yes", config: {} },
+        { id: "no-node", type: "test.capture_condition_port", label: "No", config: {} },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "cond" },
+        { id: "e2", source: "cond", target: "yes-node", sourcePort: "yes", condition: "$output?.result === true" },
+        { id: "e3", source: "cond", target: "no-node", sourcePort: "no", condition: "$output?.result !== true" },
+      ],
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+
+    expect(ctx.errors).toEqual([]);
+    expect(ctx.getNodeOutput("cond")).toMatchObject({ result: true, matchedPort: "yes", port: "yes" });
+    expect(ctx.getNodeStatus("yes-node")).toBe(NodeStatus.COMPLETED);
+    expect(ctx.getNodeStatus("no-node")).toBe(NodeStatus.SKIPPED);
+    expect(visited).toEqual(["yes-node"]);
+  });
+
+  it("keeps unqualified edges runnable when condition outputs expose yes/no ports", async () => {
+    const visited = [];
+
+    registerNodeType("test.capture_default_after_condition", {
+      describe: () => "Capture unqualified edge routing",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        visited.push(node.id);
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "cond",
+          type: "condition.expression",
+          label: "Cond",
+          config: { expression: "false" },
+          outputs: ["yes", "no"],
+        },
+        { id: "default-node", type: "test.capture_default_after_condition", label: "Default", config: {} },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "cond" },
+        { id: "e2", source: "cond", target: "default-node" },
+      ],
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+
+    expect(ctx.errors).toEqual([]);
+    expect(ctx.getNodeOutput("cond")).toMatchObject({ result: false, matchedPort: "no", port: "no" });
+    expect(ctx.getNodeStatus("default-node")).toBe(NodeStatus.COMPLETED);
+    expect(visited).toEqual(["default-node"]);
+  });
+
+  it("replays only matched conditional edges when retrying from_failed", async () => {
+    const visited = [];
+    let yesAttempts = 0;
+
+    registerNodeType("test.resume_branch_capture", {
+      describe: () => "Capture retry branch routing",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        visited.push(node.id);
+        if (node.id === "yes-node") {
+          yesAttempts += 1;
+          if (yesAttempts === 1) {
+            throw new Error("first attempt fails");
+          }
+        }
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "cond",
+          type: "condition.expression",
+          label: "Cond",
+          config: { expression: "true" },
+          outputs: ["yes", "no"],
+        },
+        { id: "yes-node", type: "test.resume_branch_capture", label: "Yes", config: { maxRetries: 0 } },
+        { id: "no-node", type: "test.resume_branch_capture", label: "No", config: {} },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "cond" },
+        { id: "e2", source: "cond", target: "yes-node", sourcePort: "yes", condition: "$output?.result === true" },
+        { id: "e3", source: "cond", target: "no-node", sourcePort: "no", condition: "$output?.result !== true" },
+      ],
+    );
+
+    engine.save(wf);
+    const firstCtx = await engine.execute(wf.id, {});
+    expect(firstCtx.errors).toHaveLength(1);
+    expect(firstCtx.getNodeOutput("cond")).toMatchObject({ result: true, matchedPort: "yes", port: "yes" });
+    expect(visited).toEqual(["yes-node"]);
+
+    const retry = await engine.retryRun(firstCtx.id, { mode: "from_failed" });
+
+    expect(retry.mode).toBe("from_failed");
+    expect(retry.ctx.errors).toEqual([]);
+    expect(retry.ctx.getNodeStatus("yes-node")).toBe(NodeStatus.COMPLETED);
+    expect(retry.ctx.getNodeStatus("no-node")).toBe(NodeStatus.SKIPPED);
+    expect(visited).toEqual(["yes-node", "yes-node"]);
+  });
+
   it("keeps shared downstream nodes runnable when one conditional edge is false", async () => {
     const visited = [];
     registerNodeType("test.capture_multi_edge", {

@@ -290,6 +290,20 @@ function resolvePortByName(ports, requestedName, direction) {
   }, direction, 0);
 }
 
+function listNodeOutputPortNames(node) {
+  const candidates = [
+    ...(Array.isArray(node?.outputPorts) ? node.outputPorts : []),
+    ...(Array.isArray(node?.outputs) ? node.outputs : []),
+  ];
+  return candidates
+    .map((port) => {
+      if (typeof port === "string") return port.trim();
+      if (port && typeof port === "object") return String(port.name || "").trim();
+      return "";
+    })
+    .filter(Boolean);
+}
+
 function isWildcardPortType(type) {
   const normalized = String(type || "").trim();
   return normalized === "*" || normalized === "Any";
@@ -2119,20 +2133,185 @@ export class WorkflowEngine extends EventEmitter {
     // Back-edge iteration counters: Map<edgeId, number>
     const backEdgeIterations = new Map();
 
-    // ── Adjust in-degree for pre-completed nodes (retry resume) ─────────
-    // When resuming from a failed step, pre-completed source nodes have
-    // already satisfied their downstream edges. Decrement the in-degree for
-    // each target so successors become ready once all live deps are met.
-    for (const nodeId of executed) {
-      const edges = adjacency.get(nodeId) || [];
-      for (const edge of edges) {
-        const deg = (inDegree.get(edge.target) || 1) - 1;
-        inDegree.set(edge.target, Math.max(0, deg));
+    const ready = new Set();
+    const countForwardIncomingEdges = (targetNodeId) =>
+      (def.edges || []).filter((edge) => edge.target === targetNodeId && !edge.backEdge).length;
+
+    const consumeEdgeDependency = (targetNodeId, matched, skipInfo = null) => {
+      const nextDegree = (inDegree.get(targetNodeId) || 1) - 1;
+      inDegree.set(targetNodeId, nextDegree);
+      if (matched) {
+        incomingSatisfiedCount.set(
+          targetNodeId,
+          (incomingSatisfiedCount.get(targetNodeId) || 0) + 1,
+        );
       }
+      if (nextDegree <= 0 && !executed.has(targetNodeId)) {
+        if ((incomingSatisfiedCount.get(targetNodeId) || 0) > 0) {
+          ready.add(targetNodeId);
+        } else {
+          markNodeSkipped(targetNodeId, skipInfo?.reason || "skipped", skipInfo?.payload || {});
+          executed.add(targetNodeId);
+          const skippedNode = nodeMap.get(targetNodeId);
+          console.log(`${TAG} node:SKIPPED ${targetNodeId} (${skippedNode?.type || "?"}) [${skippedNode?.label || ""}] — no satisfied edges`);
+          propagateSkippedDependencies(targetNodeId);
+        }
+      }
+    };
+
+    const propagateSkippedDependencies = (skippedNodeId) => {
+      if (countForwardIncomingEdges(skippedNodeId) > 1) return;
+      const skippedEdges = adjacency.get(skippedNodeId) || [];
+      for (const skippedEdge of skippedEdges) {
+        if (skippedEdge.backEdge) continue;
+        consumeEdgeDependency(skippedEdge.target, false, {
+          reason: "upstream-skipped",
+          payload: {
+            sourceNodeId: skippedNodeId,
+            edgeId: skippedEdge.id || `${skippedEdge.source}->${skippedEdge.target}`,
+          },
+        });
+      }
+    };
+
+    const routeOutgoingEdges = (nodeId, { emitFlowEvents = true, allowBackEdges = true } = {}) => {
+      const node = nodeMap.get(nodeId);
+      const edges = adjacency.get(nodeId) || [];
+      const sourceOutput = ctx.getNodeOutput(nodeId);
+      const triggerBlocked = node?.type?.startsWith("trigger.") && sourceOutput?.triggered === false;
+      const selectedPortRaw =
+        sourceOutput?.matchedPort ??
+        sourceOutput?.port ??
+        null;
+      const selectedPort =
+        typeof selectedPortRaw === "string" && selectedPortRaw.trim()
+          ? selectedPortRaw.trim()
+          : null;
+
+      if (triggerBlocked) {
+        for (const edge of edges) {
+          if (edge.backEdge) continue;
+          const newDegree = (inDegree.get(edge.target) || 1) - 1;
+          inDegree.set(edge.target, newDegree);
+          if (newDegree <= 0 && !executed.has(edge.target)) {
+            markNodeSkipped(edge.target, "trigger-not-fired", { sourceNodeId: nodeId });
+            executed.add(edge.target);
+          }
+        }
+        return;
+      }
+
+      for (const edge of edges) {
+        if (!allowBackEdges && edge.backEdge) {
+          continue;
+        }
+
+        const edgePort = String(edge?.sourcePort || "default").trim() || "default";
+        const hasExplicitSourcePort = edgePort !== "default";
+        if (selectedPort && hasExplicitSourcePort && edgePort !== selectedPort) {
+          if (!edge.backEdge) {
+            consumeEdgeDependency(edge.target, false, {
+              reason: "edge-port-mismatch",
+              payload: {
+                sourceNodeId: nodeId,
+                edgeId: edge.id || `${edge.source}->${edge.target}`,
+              },
+            });
+          }
+          continue;
+        }
+
+        if (edge.condition) {
+          try {
+            const condResult = this._evaluateCondition(edge.condition, ctx, nodeId);
+            if (!condResult) {
+              if (!edge.backEdge) {
+                consumeEdgeDependency(edge.target, false, {
+                  reason: "edge-condition-false",
+                  payload: {
+                    sourceNodeId: nodeId,
+                    edgeId: edge.id || `${edge.source}->${edge.target}`,
+                  },
+                });
+              }
+              continue;
+            }
+          } catch {
+            continue;
+          }
+        }
+
+        if (edge.backEdge) {
+          const edgeKey = edge.id || `${edge.source}->${edge.target}`;
+          const iterCount = (backEdgeIterations.get(edgeKey) || 0) + 1;
+          const maxIter = Number(edge.maxIterations) || MAX_BACK_EDGE_ITERATIONS;
+
+          if (iterCount > maxIter) {
+            ctx.log(nodeId,
+              `Back-edge "${edgeKey}" reached max iterations (${maxIter}) — stopping loop`,
+              "warn");
+            this.emit("loop:exhausted", { edgeId: edgeKey, iterations: maxIter, nodeId });
+            continue;
+          }
+
+          backEdgeIterations.set(edgeKey, iterCount);
+          if (emitFlowEvents) {
+            emitEdgeFlow(edge, {
+              reason: "back-edge",
+              iteration: iterCount,
+              maxIterations: maxIter,
+            });
+          }
+          this.emit("loop:back_edge", {
+            edgeId: edgeKey,
+            source: edge.source,
+            target: edge.target,
+            iteration: iterCount,
+            maxIterations: maxIter,
+          });
+          ctx.log(nodeId,
+            `Back-edge → ${edge.target} (iteration ${iterCount}/${maxIter})`,
+            "info");
+
+          const subgraph = this._collectSubgraph(edge.target, adjacency);
+          for (const nid of subgraph) {
+            executed.delete(nid);
+            ctx.setNodeStatus(nid, NodeStatus.PENDING);
+            incomingSatisfiedCount.set(nid, 0);
+            let deg = 0;
+            for (const e of def.edges || []) {
+              if (e.target === nid && !e.backEdge) deg++;
+            }
+            for (const e of def.edges || []) {
+              if (e.target === nid && !e.backEdge && subgraph.has(e.source)) {
+                deg--;
+              }
+            }
+            if (nid === edge.target) deg = 0;
+            inDegree.set(nid, Math.max(0, deg));
+          }
+          ready.add(edge.target);
+          continue;
+        }
+
+        if (emitFlowEvents) {
+          emitEdgeFlow(edge, {
+            reason: selectedPort ? "selected-port" : "forward",
+          });
+        }
+        consumeEdgeDependency(edge.target, true);
+      }
+    };
+
+    // ── Replay matched edges for pre-completed nodes (retry resume) ─────
+    // Reuse stored outputs instead of satisfying every downstream edge,
+    // otherwise from_failed retries can revive branches that were never
+    // taken in the original run.
+    for (const nodeId of executed) {
+      routeOutgoingEdges(nodeId, { emitFlowEvents: false, allowBackEdges: false });
     }
 
     // Ready set = entry nodes (or nodes with no remaining unsatisfied deps)
-    const ready = new Set();
     for (const nid of queue) {
       if (!executed.has(nid)) {
         ready.add(nid);
@@ -2225,7 +2404,8 @@ export class WorkflowEngine extends EventEmitter {
                 await new Promise((r) => setTimeout(r, backoffMs));
                 ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
               }
-              const result = await this._executeNode(node, ctx, opts);
+              const rawResult = await this._executeNode(node, ctx, opts);
+              const result = this._normalizeNodeResult(node, rawResult);
               ctx.setNodeOutput(nodeId, result);
               ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
               executed.add(nodeId);
@@ -2358,29 +2538,6 @@ export class WorkflowEngine extends EventEmitter {
       for (const nodeId of batch) {
         const node = nodeMap.get(nodeId);
         const edges = adjacency.get(nodeId) || [];
-        const sourceOutput = ctx.getNodeOutput(nodeId);
-        const triggerBlocked = node?.type?.startsWith("trigger.") && sourceOutput?.triggered === false;
-        const selectedPortRaw =
-          sourceOutput?.matchedPort ??
-          sourceOutput?.port ??
-          null;
-        const selectedPort =
-          typeof selectedPortRaw === "string" && selectedPortRaw.trim()
-            ? selectedPortRaw.trim()
-            : null;
-
-        if (triggerBlocked) {
-          for (const edge of edges) {
-            if (edge.backEdge) continue;
-            const newDegree = (inDegree.get(edge.target) || 1) - 1;
-            inDegree.set(edge.target, newDegree);
-            if (newDegree <= 0 && !executed.has(edge.target)) {
-              markNodeSkipped(edge.target, "trigger-not-fired", { sourceNodeId: nodeId });
-              executed.add(edge.target);
-            }
-          }
-          continue;
-        }
 
         // Handle loop.for_each: iterate downstream subgraph per item
         if (node?.type === "loop.for_each" && ctx.getNodeStatus(nodeId) === NodeStatus.COMPLETED) {
@@ -2439,151 +2596,7 @@ export class WorkflowEngine extends EventEmitter {
             continue; // Skip normal edge processing for loop node
           }
         }
-
-        const countForwardIncomingEdges = (targetNodeId) =>
-          (def.edges || []).filter((edge) => edge.target === targetNodeId && !edge.backEdge).length;
-
-        const propagateSkippedDependencies = (skippedNodeId) => {
-          if (countForwardIncomingEdges(skippedNodeId) > 1) return;
-          const skippedEdges = adjacency.get(skippedNodeId) || [];
-          for (const skippedEdge of skippedEdges) {
-            if (skippedEdge.backEdge) continue;
-            consumeEdgeDependency(skippedEdge.target, false, {
-              reason: "upstream-skipped",
-              payload: {
-                sourceNodeId: skippedNodeId,
-                edgeId: skippedEdge.id || `${skippedEdge.source}->${skippedEdge.target}`,
-              },
-            });
-          }
-        };
-
-        const consumeEdgeDependency = (targetNodeId, matched, skipInfo = null) => {
-          const nextDegree = (inDegree.get(targetNodeId) || 1) - 1;
-          inDegree.set(targetNodeId, nextDegree);
-          if (matched) {
-            incomingSatisfiedCount.set(
-              targetNodeId,
-              (incomingSatisfiedCount.get(targetNodeId) || 0) + 1,
-            );
-          }
-          if (nextDegree <= 0 && !executed.has(targetNodeId)) {
-            if ((incomingSatisfiedCount.get(targetNodeId) || 0) > 0) {
-              ready.add(targetNodeId);
-            } else {
-              markNodeSkipped(targetNodeId, skipInfo?.reason || "skipped", skipInfo?.payload || {});
-              executed.add(targetNodeId);
-              const skippedNode = nodeMap.get(targetNodeId);
-              console.log(`${TAG} node:SKIPPED ${targetNodeId} (${skippedNode?.type || "?"}) [${skippedNode?.label || ""}] — no satisfied edges`);
-              propagateSkippedDependencies(targetNodeId);
-            }
-          }
-        };
-
-        for (const edge of edges) {
-          const edgePort = String(edge?.sourcePort || "default").trim() || "default";
-          if (selectedPort && edgePort !== selectedPort) {
-            if (!edge.backEdge) {
-              consumeEdgeDependency(edge.target, false, {
-                reason: "edge-port-mismatch",
-                payload: {
-                  sourceNodeId: nodeId,
-                  edgeId: edge.id || `${edge.source}->${edge.target}`,
-                },
-              });
-            }
-            continue;
-          }
-
-          // Check edge condition
-          if (edge.condition) {
-            try {
-              const condResult = this._evaluateCondition(edge.condition, ctx, nodeId);
-              if (!condResult) {
-                // For back-edges, a false condition simply means "don't loop"
-                if (!edge.backEdge) {
-                  consumeEdgeDependency(edge.target, false, {
-                    reason: "edge-condition-false",
-                    payload: {
-                      sourceNodeId: nodeId,
-                      edgeId: edge.id || `${edge.source}->${edge.target}`,
-                    },
-                  });
-                }
-                continue;
-              }
-            } catch {
-              continue;
-            }
-          }
-
-          // ── Back-edge handling (convergence loops) ──────────────────────
-          if (edge.backEdge) {
-            const edgeKey = edge.id || `${edge.source}->${edge.target}`;
-            const iterCount = (backEdgeIterations.get(edgeKey) || 0) + 1;
-            const maxIter = Number(edge.maxIterations) || MAX_BACK_EDGE_ITERATIONS;
-
-            if (iterCount > maxIter) {
-              ctx.log(nodeId,
-                `Back-edge "${edgeKey}" reached max iterations (${maxIter}) — stopping loop`,
-                "warn");
-              this.emit("loop:exhausted", { edgeId: edgeKey, iterations: maxIter, nodeId });
-              continue; // Don't follow this back-edge
-            }
-
-            backEdgeIterations.set(edgeKey, iterCount);
-            emitEdgeFlow(edge, {
-              reason: "back-edge",
-              iteration: iterCount,
-              maxIterations: maxIter,
-            });
-            this.emit("loop:back_edge", {
-              edgeId: edgeKey,
-              source: edge.source,
-              target: edge.target,
-              iteration: iterCount,
-              maxIterations: maxIter,
-            });
-            ctx.log(nodeId,
-              `Back-edge → ${edge.target} (iteration ${iterCount}/${maxIter})`,
-              "info");
-
-            // Reset the target node and all forward-reachable nodes from it
-            // so the sub-graph can be re-executed.
-            const subgraph = this._collectSubgraph(edge.target, adjacency);
-            for (const nid of subgraph) {
-              executed.delete(nid);
-              ctx.setNodeStatus(nid, NodeStatus.PENDING);
-              incomingSatisfiedCount.set(nid, 0);
-              // Restore in-degree for nodes in the subgraph so they schedule
-              // correctly on this new iteration.
-              let deg = 0;
-              for (const e of def.edges || []) {
-                if (e.target === nid && !e.backEdge) deg++;
-              }
-              // Subtract 1 for each predecessor in the subgraph that will
-              // re-execute (its edge will re-satisfy the in-degree).
-              // But do NOT subtract for the back-edge source — the back-edge
-              // itself is what triggers the target to be ready now.
-              for (const e of def.edges || []) {
-                if (e.target === nid && !e.backEdge && subgraph.has(e.source)) {
-                  deg--;
-                }
-              }
-              // The back-edge target itself has a satisfied edge (the back-edge)
-              if (nid === edge.target) deg = 0;
-              inDegree.set(nid, Math.max(0, deg));
-            }
-            ready.add(edge.target);
-            continue;
-          }
-
-          // Decrement in-degree (forward edges only)
-          emitEdgeFlow(edge, {
-            reason: selectedPort ? "selected-port" : "forward",
-          });
-          consumeEdgeDependency(edge.target, true);
-        }
+        routeOutgoingEdges(nodeId, { emitFlowEvents: true, allowBackEdges: true });
       }
     }
   }
@@ -2735,6 +2748,36 @@ export class WorkflowEngine extends EventEmitter {
     } catch {
       return false;
     }
+  }
+
+  _normalizeNodeResult(node, result) {
+    if (!result || typeof result !== "object" || Array.isArray(result)) {
+      return result;
+    }
+    const existingPort = result.matchedPort ?? result.port ?? null;
+    if (typeof existingPort === "string" && existingPort.trim()) {
+      return result;
+    }
+    if (typeof result.result !== "boolean") {
+      return result;
+    }
+
+    const outputPorts = new Set(listNodeOutputPortNames(node));
+    let matchedPort = null;
+    if (outputPorts.has("yes") && outputPorts.has("no")) {
+      matchedPort = result.result ? "yes" : "no";
+    } else if (outputPorts.has("true") && outputPorts.has("false")) {
+      matchedPort = result.result ? "true" : "false";
+    }
+    if (!matchedPort) {
+      return result;
+    }
+
+    return {
+      ...result,
+      matchedPort,
+      port: matchedPort,
+    };
   }
 
   _readRunIndex() {
