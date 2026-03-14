@@ -1558,6 +1558,39 @@ function ScopeDetector() {
   `;
 }
 
+/* ─ Workflow Step Resolver ─────────────────────────────────── */
+
+async function resolveWorkflowSteps(title, description) {
+  const steps = ["tdd", "implementation", "review"];
+  const results = {};
+  for (const step of steps) {
+    const stepTitle = `${step}: ${title}`;
+    try {
+      const resp = await testProfileMatch({ title: stepTitle, description, topN: 1 });
+      results[step] = resp;
+    } catch {
+      results[step] = { best: null, candidates: [], plan: null };
+    }
+  }
+  return results;
+}
+
+/* ─ Score Breakdown Definitions ────────────────────────────── */
+
+const SIGNAL_DEFS = [
+  { key: "titlePattern", label: "Title Pattern", max: 10, color: "#3b82f6" },
+  { key: "scope", label: "Scope", max: 6, color: "#22c55e" },
+  { key: "tags", label: "Tags", max: 6, color: "#eab308" },
+  { key: "voice", label: "Voice", max: 3, color: "#a855f7" },
+  { key: "paths", label: "Paths", max: 8, color: "#f97316" },
+  { key: "repoCtx", label: "Repo Ctx", max: 6, color: "#14b8a6" },
+  { key: "fileType", label: "File Type", max: 4, color: "#ec4899" },
+  { key: "descMatch", label: "Desc Match", max: 8, color: "#06b6d4" },
+  { key: "taskType", label: "Task Type", max: 5, color: "#6366f1" },
+];
+
+const MAX_SCORE_TOTAL = SIGNAL_DEFS.reduce((sum, s) => sum + s.max, 0);
+
 /* ─ Profile Matcher Panel ─────────────────────────────────── */
 
 function ProfileMatcher() {
@@ -1570,6 +1603,9 @@ function ProfileMatcher() {
   const [importSkills, setImportSkills] = useState(true);
   const [importPrompts, setImportPrompts] = useState(true);
   const [importTools, setImportTools] = useState(true);
+  const [expandedAlts, setExpandedAlts] = useState({});
+  const [workflowSteps, setWorkflowSteps] = useState(null);
+  const [workflowLoading, setWorkflowLoading] = useState(false);
 
   // ── Execution Plan state ──────────────────────────────────────────────
   const [execPlan, setExecPlan] = useState(null);
@@ -1704,27 +1740,140 @@ function ProfileMatcher() {
         <//>
       </div>
 
-      ${/* ── Library Profile Match Results ── */ ""}
+      ${/* ── Library Profile Match Results (Rich Visualization) ── */ ""}
       ${best && html`
-        <div class="library-profile-match" style="margin-top:8px;">
-          <div class="library-profile-match-label">Best match:</div>
-          <div>
-            <span class="library-profile-match-name">${iconText(`${TYPE_ICONS.agent} ${best.name}`)}</span>
-            <span class="library-profile-match-score">score: ${best.score} | confidence: ${Math.round(Number(best.confidence || 0) * 100)}%</span>
+        <div class="library-profile-match" style="margin-top:12px;padding:12px;border:1px solid var(--border,#333);border-radius:10px;background:var(--bg-card,rgba(255,255,255,0.03));">
+          ${/* ── Header with name, score, confidence ── */ ""}
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span style="font-weight:600;font-size:0.95em;">${iconText(`${TYPE_ICONS.agent} ${best.name}`)}</span>
+            <${Chip} size="small" label=${`Score: ${best.score}/${MAX_SCORE_TOTAL}`} color="primary" variant="outlined" />
+            <${Chip} size="small" label=${`${Math.round(Number(best.confidence || 0) * 100)}% confidence`}
+              color=${Number(best.confidence || 0) >= 0.45 ? "success" : "warning"} variant="outlined" />
           </div>
-          <div style="font-size:0.8em;color:var(--text-secondary);margin-top:4px;">auto-trigger: ${auto.shouldAutoApply ? "eligible" : "not eligible"} (${auto.reason || "n/a"})</div>
-          ${best.description && html`
-            <div style="font-size:0.8em;color:var(--text-secondary);margin-top:4px;">${best.description}</div>
+          ${best.description && html`<div style="font-size:0.82em;color:var(--text-secondary);margin-top:6px;">${best.description}</div>`}
+
+          ${/* ── Auto-trigger status ── */ ""}
+          <div style="display:flex;align-items:center;gap:6px;margin-top:8px;padding:6px 10px;border-radius:8px;background:${auto.shouldAutoApply ? "rgba(34,197,94,0.1)" : Number(best.confidence || 0) >= 0.35 ? "rgba(245,158,11,0.1)" : "rgba(239,68,68,0.1)"};">
+            <span style="font-size:1.1em;">${auto.shouldAutoApply ? "✅" : Number(best.confidence || 0) >= 0.35 ? "⚠️" : "❌"}</span>
+            <span style="font-size:0.82em;font-weight:500;color:${auto.shouldAutoApply ? "#22c55e" : Number(best.confidence || 0) >= 0.35 ? "#f59e0b" : "#ef4444"};">
+              Auto-trigger: ${auto.shouldAutoApply ? "Eligible" : "Not eligible"}
+            </span>
+            <span style="font-size:0.75em;color:var(--text-secondary);">(${auto.reason || "n/a"})</span>
+          </div>
+
+          ${/* ── Score Breakdown Bar ── */ ""}
+          <div style="margin-top:10px;">
+            <div style="font-size:0.78em;font-weight:600;color:var(--text-secondary);margin-bottom:4px;">Score Breakdown</div>
+            <div style="display:flex;height:22px;border-radius:6px;overflow:hidden;background:rgba(255,255,255,0.05);border:1px solid var(--border,#333);">
+              ${SIGNAL_DEFS.map((sig) => {
+                const val = Number(best.breakdown?.[sig.key] || 0);
+                const pct = (sig.max / MAX_SCORE_TOTAL) * 100;
+                return html`
+                  <${Tooltip} title=${`${sig.label}: ${val}/${sig.max}`} key=${sig.key}>
+                    <div style="width:${pct}%;height:100%;position:relative;border-right:1px solid rgba(0,0,0,0.2);">
+                      <div style="position:absolute;bottom:0;left:0;right:0;height:${sig.max > 0 ? (val / sig.max) * 100 : 0}%;background:${sig.color};opacity:0.85;transition:height 0.3s;"></div>
+                      <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:0.6em;color:#fff;white-space:nowrap;text-shadow:0 1px 2px rgba(0,0,0,0.6);z-index:1;">${val > 0 ? val : ""}</div>
+                    </div>
+                  <//>
+                `;
+              })}
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;">
+              ${SIGNAL_DEFS.map((sig) => {
+                const val = Number(best.breakdown?.[sig.key] || 0);
+                return html`<span key=${sig.key} style="font-size:0.65em;display:flex;align-items:center;gap:3px;color:var(--text-secondary);">
+                  <span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${sig.color};opacity:${val > 0 ? 1 : 0.3};"></span>
+                  ${sig.label}
+                </span>`;
+              })}
+            </div>
+          </div>
+
+          ${/* ── Detected Task Types ── */ ""}
+          ${result?.context?.detectedTaskTypes?.length > 0 && html`
+            <div style="margin-top:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              <span style="font-size:0.78em;color:var(--text-secondary);font-weight:500;">Detected:</span>
+              ${result.context.detectedTaskTypes.map((t) => html`
+                <${Chip} key=${t} size="small" label=${t} variant="outlined"
+                  style=${{ fontSize: "0.72em", height: "20px" }} />
+              `)}
+            </div>
           `}
-          ${Array.isArray(best.reasons) && best.reasons.length > 0 && html`
-            <div style="font-size:0.78em;color:var(--text-secondary);margin-top:4px;">reasons: ${best.reasons.join(", ")}</div>
-          `}
+
+          ${/* ── Skills Preview ── */ ""}
           ${plan && html`
-            <div style="font-size:0.78em;color:var(--text-secondary);margin-top:6px;">prompt: ${plan.prompt?.name || "none"} | skills: ${(plan.skillIds || []).slice(0, 4).join(", ") || "none"}</div>
-            <div style="font-size:0.78em;color:var(--text-secondary);margin-top:4px;">builtin tools: ${(plan.builtinToolIds || []).slice(0, 6).join(", ") || "none"} | MCP: ${(plan.enabledMcpServers || []).slice(0, 4).join(", ") || "none"}</div>
+            <div style="margin-top:10px;padding:8px 10px;border:1px solid var(--border,#333);border-radius:8px;background:rgba(255,255,255,0.02);">
+              <div style="font-size:0.8em;font-weight:600;margin-bottom:4px;">📚 Skills (${(plan.skillIds || []).length} resolved)</div>
+              ${(plan.skillIds || []).length > 0 ? (plan.skillIds || []).map((s) => html`
+                <div key=${s} style="font-size:0.78em;color:var(--text-secondary);padding:2px 0;">  ✓ ${s} (profile-skill)</div>
+              `) : html`<div style="font-size:0.78em;color:var(--text-secondary);">  No skills resolved</div>`}
+              <div style="font-size:0.78em;color:var(--text-secondary);margin-top:4px;">
+                Prompt: ${plan.prompt?.name || "none"} · Tools: ${(plan.builtinToolIds || []).slice(0, 6).join(", ") || "none"} · MCP: ${(plan.enabledMcpServers || []).slice(0, 4).join(", ") || "none"}
+              </div>
+            </div>
           `}
+
+          ${/* ── Workflow Step Preview ── */ ""}
+          <div style="margin-top:10px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="font-size:0.8em;font-weight:600;">Workflow Steps</span>
+              <${Button} variant="text" size="small" onClick=${async () => {
+                if (!title.trim()) return;
+                setWorkflowLoading(true);
+                try {
+                  const steps = await resolveWorkflowSteps(title.trim(), description.trim());
+                  setWorkflowSteps(steps);
+                } catch { setWorkflowSteps(null); }
+                setWorkflowLoading(false);
+              }} disabled=${workflowLoading || !title.trim()}
+                style=${{ fontSize: "0.72em", minWidth: 0, padding: "2px 8px" }}>
+                ${workflowLoading ? html`<${Spinner} size=${12} />` : "Resolve"}
+              <//>
+            </div>
+            ${workflowSteps && html`
+              <div style="margin-top:4px;padding:8px 10px;border-left:3px solid var(--border,#555);font-size:0.78em;font-family:monospace;">
+                ${Object.entries(workflowSteps).map(([step, stepResult], i, arr) => {
+                  const connector = i === 0 ? "┌" : i === arr.length - 1 ? "└" : "├";
+                  const stepBest = stepResult?.best;
+                  const stepPlan = stepResult?.plan;
+                  const skills = stepPlan?.skillIds?.slice(0, 3)?.join(", ") || "none";
+                  return html`<div key=${step} style="color:var(--text-secondary);padding:1px 0;">
+                    ${connector} <span style="text-transform:capitalize;font-weight:500;color:var(--text-primary);">${step}</span> → ${stepBest?.name || "No match"} + [${skills}]
+                  </div>`;
+                })}
+              </div>
+            `}
+          </div>
+
+          ${/* ── Alternatives as expandable cards ── */ ""}
           ${candidates.length > 1 && html`
-            <div style="font-size:0.78em;color:var(--text-secondary);margin-top:6px;">alternatives: ${candidates.slice(1, 4).map((c) => `${c.name} (${c.score})`).join(" | ")}</div>
+            <div style="margin-top:10px;">
+              <div style="font-size:0.8em;font-weight:600;color:var(--text-secondary);margin-bottom:6px;">Alternatives (${candidates.length - 1})</div>
+              ${candidates.slice(1).map((c, i) => html`
+                <div key=${c.id || i} style="margin-bottom:6px;border:1px solid var(--border,#333);border-radius:8px;overflow:hidden;background:rgba(255,255,255,0.02);">
+                  <div onClick=${() => setExpandedAlts((prev) => ({ ...prev, [i]: !prev[i] }))}
+                    style="display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;user-select:none;">
+                    <span style="font-size:0.82em;font-weight:500;flex:1;">${iconText(`${TYPE_ICONS.agent} ${c.name}`)}</span>
+                    <div style="width:60px;height:6px;border-radius:3px;background:rgba(255,255,255,0.08);overflow:hidden;">
+                      <div style="height:100%;width:${Math.round(Number(c.confidence || 0) * 100)}%;background:#3b82f6;border-radius:3px;"></div>
+                    </div>
+                    <span style="font-size:0.72em;color:var(--text-secondary);min-width:40px;text-align:right;">${c.score}pts</span>
+                    <span style="font-size:0.7em;transform:${expandedAlts[i] ? "rotate(180deg)" : "none"};transition:transform 0.2s;">▼</span>
+                  </div>
+                  ${expandedAlts[i] && html`
+                    <div style="padding:6px 10px 8px;border-top:1px solid var(--border,#333);font-size:0.78em;color:var(--text-secondary);">
+                      <div>Confidence: ${Math.round(Number(c.confidence || 0) * 100)}%</div>
+                      ${c.description && html`<div style="margin-top:2px;">${c.description}</div>`}
+                      ${Array.isArray(c.reasons) && c.reasons.length > 0 && html`
+                        <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px;">
+                          ${c.reasons.map((r) => html`<${Chip} key=${r} size="small" label=${r} variant="outlined" style=${{ fontSize: "0.68em", height: "18px" }} />`)}
+                        </div>
+                      `}
+                    </div>
+                  `}
+                </div>
+              `)}
+            </div>
           `}
         </div>
       `}
@@ -2272,9 +2421,295 @@ function AgentLibraryImporter({ onImported }) {
   `;
 }
 
-/* ═══════════════════════════════════════════════════════════════
- *  Main Library Tab
- * ═══════════════════════════════════════════════════════════════ */
+/* ─ Library Marketplace ───────────────────────────────────── */
+
+const MARKETPLACE_CATEGORIES = [
+  { id: "all", label: "All" },
+  { id: "official", label: "Official" },
+  { id: "community", label: "Community" },
+  { id: "agents", label: "Agents" },
+  { id: "skills", label: "Skills" },
+  { id: "mcp", label: "MCP" },
+];
+
+function getTrustTier(source) {
+  const tier = String(source?.trustTier || "").toLowerCase();
+  if (tier === "official" || tier === "partner") return { label: "Official", color: "#22c55e", icon: "🏢" };
+  if (tier === "community") return { label: "Community", color: "#3b82f6", icon: "👥" };
+  return { label: "Unknown", color: "#6b7280", icon: "❔" };
+}
+
+function LibraryMarketplace({ onImported }) {
+  const [sources, setSources] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [searchText, setSearchText] = useState("");
+  const [activeCategory, setActiveCategory] = useState("all");
+  const [expandedSource, setExpandedSource] = useState(null);
+  const [previewData, setPreviewData] = useState(null);
+  const [previewSourceId, setPreviewSourceId] = useState(null);
+  const [scanning, setScanning] = useState(null);
+  const [importing, setImporting] = useState(null);
+  const [importedSources, setImportedSources] = useState(new Set());
+  const [customUrl, setCustomUrl] = useState("");
+  const [customBranch, setCustomBranch] = useState("main");
+  const [showCustom, setShowCustom] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    fetchLibrarySources()
+      .then((data) => {
+        if (!alive) return;
+        setSources(Array.isArray(data) ? data : []);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+    return () => { alive = false; };
+  }, []);
+
+  const filteredSources = useMemo(() => {
+    let list = [...sources];
+    if (searchText.trim()) {
+      const q = searchText.trim().toLowerCase();
+      list = list.filter((s) => {
+        const haystack = `${s.name || ""} ${s.description || ""} ${(s.focuses || []).join(" ")} ${s.id || ""}`.toLowerCase();
+        return haystack.includes(q);
+      });
+    }
+    if (activeCategory !== "all") {
+      if (activeCategory === "official") {
+        list = list.filter((s) => s.trustTier === "official" || s.trustTier === "partner");
+      } else if (activeCategory === "community") {
+        list = list.filter((s) => s.trustTier === "community" || !s.trustTier);
+      } else if (activeCategory === "agents" || activeCategory === "skills" || activeCategory === "mcp") {
+        list = list.filter((s) => {
+          const focuses = (s.focuses || []).map((f) => f.toLowerCase());
+          return focuses.includes(activeCategory) || String(s.description || "").toLowerCase().includes(activeCategory);
+        });
+      }
+    }
+    return list.sort((a, b) => (Number(b.estimatedPlugins || 0) - Number(a.estimatedPlugins || 0)) || String(a.name || "").localeCompare(String(b.name || "")));
+  }, [sources, searchText, activeCategory]);
+
+  const doPreviewSource = useCallback(async (sourceId) => {
+    setScanning(sourceId);
+    try {
+      const res = await previewLibrarySource({ sourceId });
+      if (!res?.ok) throw new Error(res?.error || "Preview failed");
+      setPreviewData(res?.data);
+      setPreviewSourceId(sourceId);
+    } catch (err) {
+      showToast(`Preview failed: ${parseApiError(err)}`, "error");
+    }
+    setScanning(null);
+  }, []);
+
+  const doImportSource = useCallback(async (sourceId, selectedPaths) => {
+    setImporting(sourceId);
+    try {
+      const payload = {
+        sourceId,
+        importAgents: true,
+        importSkills: true,
+        importPrompts: true,
+        importTools: true,
+        includeEntries: selectedPaths,
+      };
+      const res = await importLibrarySource(payload);
+      if (!res?.ok) throw new Error(res?.error || "Import failed");
+      const count = Number(res?.data?.importedCount || 0);
+      const byType = res?.data?.importedByType || {};
+      const details = [
+        `agents ${Number(byType?.agent || 0)}`,
+        `prompts ${Number(byType?.prompt || 0)}`,
+        `skills ${Number(byType?.skill || 0)}`,
+        `tools ${Number(byType?.mcp || 0)}`,
+      ].join(", ");
+      showToast(`Imported ${count} entries (${details})`, "success");
+      setImportedSources((prev) => new Set([...prev, sourceId]));
+      setPreviewData(null);
+      setPreviewSourceId(null);
+      if (typeof onImported === "function") onImported();
+    } catch (err) {
+      showToast(`Import failed: ${parseApiError(err)}`, "error");
+    }
+    setImporting(null);
+  }, [onImported]);
+
+  const doImportAll = useCallback(async (sourceId) => {
+    setImporting(sourceId);
+    try {
+      const res = await importLibrarySource({
+        sourceId,
+        importAgents: true,
+        importSkills: true,
+        importPrompts: true,
+        importTools: true,
+      });
+      if (!res?.ok) throw new Error(res?.error || "Import failed");
+      const count = Number(res?.data?.importedCount || 0);
+      showToast(`Imported ${count} entries from ${sourceId}`, "success");
+      setImportedSources((prev) => new Set([...prev, sourceId]));
+      if (typeof onImported === "function") onImported();
+    } catch (err) {
+      showToast(`Import failed: ${parseApiError(err)}`, "error");
+    }
+    setImporting(null);
+  }, [onImported]);
+
+  const doCustomImport = useCallback(async () => {
+    if (!customUrl.trim()) return;
+    setScanning("custom");
+    try {
+      const res = await previewLibrarySource({ repoUrl: customUrl.trim(), branch: customBranch.trim() || "main" });
+      if (!res?.ok) throw new Error(res?.error || "Preview failed");
+      setPreviewData(res?.data);
+      setPreviewSourceId("custom");
+    } catch (err) {
+      showToast(`Preview failed: ${parseApiError(err)}`, "error");
+    }
+    setScanning(null);
+  }, [customUrl, customBranch]);
+
+  return html`
+    <div style="margin-top:10px;padding:12px;border:1px solid var(--border,#333);border-radius:10px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+        <div style="font-size:0.95em;font-weight:600;">${iconText(":package: Library Marketplace")}</div>
+        <${Button} variant="text" size="small" onClick=${() => setShowCustom((v) => !v)}
+          style=${{ fontSize: "0.75em", textTransform: "none" }}>
+          ${showCustom ? "Hide Custom URL" : "Custom URL Import"}
+        <//>
+      </div>
+
+      ${/* ── Search Bar ── */ ""}
+      <input type="text" value=${searchText} onInput=${(e) => setSearchText(e.currentTarget.value)}
+        placeholder="Search sources, descriptions, focuses…"
+        style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border,#333);background:var(--bg-input,#0d1117);color:var(--text-primary,#eee);margin-bottom:8px;font-size:0.85em;" />
+
+      ${/* ── Category Filter Pills ── */ ""}
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+        ${MARKETPLACE_CATEGORIES.map((cat) => html`
+          <${Chip} key=${cat.id} label=${cat.label} size="small"
+            variant=${activeCategory === cat.id ? "filled" : "outlined"}
+            color=${activeCategory === cat.id ? "primary" : "default"}
+            onClick=${() => setActiveCategory(cat.id)}
+            style=${{ cursor: "pointer", fontSize: "0.78em" }} />
+        `)}
+      </div>
+
+      ${/* ── Custom URL Import ── */ ""}
+      ${showCustom && html`
+        <div style="margin-bottom:10px;padding:10px;border:1px solid var(--border,#333);border-radius:8px;background:rgba(255,255,255,0.02);">
+          <div style="font-size:0.82em;font-weight:500;margin-bottom:6px;">Custom Repository Import</div>
+          <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end;">
+            <input type="text" value=${customUrl} onInput=${(e) => setCustomUrl(e.currentTarget.value)}
+              placeholder="https://github.com/org/repo.git"
+              style="width:100%;padding:6px 10px;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#0d1117);color:var(--text-primary);font-size:0.82em;" />
+            <input type="text" value=${customBranch} onInput=${(e) => setCustomBranch(e.currentTarget.value)}
+              placeholder="main" style="width:80px;padding:6px 10px;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#0d1117);color:var(--text-primary);font-size:0.82em;" />
+          </div>
+          <div style="margin-top:6px;">
+            <${Button} variant="outlined" size="small" onClick=${doCustomImport} disabled=${scanning === "custom" || !customUrl.trim()}>
+              ${scanning === "custom" ? html`<${Spinner} size=${14} /> Scanning…` : iconText(":mag: Preview")}
+            <//>
+          </div>
+        </div>
+      `}
+
+      ${/* ── Loading State ── */ ""}
+      ${loading && html`
+        <div style="text-align:center;padding:20px;">
+          <${Spinner} size=${24} />
+          <div style="font-size:0.82em;color:var(--text-secondary);margin-top:8px;">Loading marketplace sources…</div>
+        </div>
+      `}
+
+      ${/* ── Source Cards Grid ── */ ""}
+      ${!loading && html`
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;">
+          ${filteredSources.map((source) => {
+            const trust = getTrustTier(source);
+            const trustScore = Number(source?.trust?.score || 0);
+            const est = Number(source.estimatedPlugins || 0);
+            const isImported = importedSources.has(source.id);
+            const isScanning = scanning === source.id;
+            const isImporting = importing === source.id;
+            const isExpanded = expandedSource === source.id;
+            const focuses = (source.focuses || []).slice(0, 4);
+
+            return html`
+              <div key=${source.id} style="border:1px solid var(--border,#333);border-radius:10px;overflow:hidden;background:var(--bg-card,rgba(255,255,255,0.03));transition:border-color 0.2s;${isImported ? "border-color:#22c55e;" : ""}">
+                <div style="padding:10px 12px;">
+                  ${/* ── Card Header ── */ ""}
+                  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px;">
+                    <span style="font-size:1em;">${trust.icon}</span>
+                    <span style="font-size:0.88em;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${source.name}</span>
+                    <span style="font-size:0.68em;padding:2px 8px;border-radius:999px;background:${trust.color}22;color:${trust.color};font-weight:500;">${trust.label}</span>
+                    ${isImported && html`<span style="font-size:0.68em;padding:2px 8px;border-radius:999px;background:rgba(34,197,94,0.15);color:#22c55e;">✓ Imported</span>`}
+                  </div>
+
+                  ${/* ── Stats and description ── */ ""}
+                  <div style="font-size:0.78em;color:var(--text-secondary);margin-bottom:4px;">
+                    ${est > 0 ? `~${est} plugins` : ""}${est > 0 && focuses.length > 0 ? " · " : ""}${focuses.join(", ")}
+                  </div>
+                  ${source.description && html`
+                    <div style="font-size:0.78em;color:var(--text-secondary);margin-bottom:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">${source.description}</div>
+                  `}
+
+                  ${/* ── Trust Score Bar ── */ ""}
+                  <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+                    <span style="font-size:0.72em;color:var(--text-secondary);min-width:55px;">Trust ${trustScore}/100</span>
+                    <div style="flex:1;height:4px;border-radius:2px;background:rgba(255,255,255,0.08);overflow:hidden;">
+                      <div style="height:100%;width:${trustScore}%;border-radius:2px;background:${trustScore >= 70 ? "#22c55e" : trustScore >= 40 ? "#f59e0b" : "#ef4444"};"></div>
+                    </div>
+                  </div>
+
+                  ${/* ── Action Buttons ── */ ""}
+                  <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                    <${Button} variant="outlined" size="small" onClick=${() => doPreviewSource(source.id)} disabled=${isScanning || isImporting || source.enabled === false}
+                      style=${{ fontSize: "0.72em", padding: "3px 10px", textTransform: "none" }}>
+                      ${isScanning ? html`<${Spinner} size=${12} />` : "Preview"}
+                    <//>
+                    <${Button} variant="outlined" size="small" onClick=${() => doImportAll(source.id)} disabled=${isScanning || isImporting || source.enabled === false}
+                      style=${{ fontSize: "0.72em", padding: "3px 10px", textTransform: "none" }}>
+                      ${isImporting ? html`<${Spinner} size=${12} />` : "Import All"}
+                    <//>
+                  </div>
+
+                  ${/* ── Low trust warning ── */ ""}
+                  ${source?.trust?.lowTrust && source.enabled !== false ? html`
+                    <div style="font-size:0.72em;color:#f59e0b;margin-top:6px;padding:3px 6px;border-radius:4px;background:rgba(245,158,11,0.08);">⚠ Low trust — review before use</div>
+                  ` : null}
+                  ${source.enabled === false ? html`
+                    <div style="font-size:0.72em;color:#ef4444;margin-top:6px;padding:3px 6px;border-radius:4px;background:rgba(239,68,68,0.08);">Unavailable</div>
+                  ` : null}
+                </div>
+              </div>
+            `;
+          })}
+        </div>
+        ${filteredSources.length === 0 && html`
+          <div style="text-align:center;padding:20px;color:var(--text-secondary);font-size:0.85em;">
+            No sources match your search.
+          </div>
+        `}
+      `}
+
+      ${/* ── Preview Modal ── */ ""}
+      ${previewData ? html`
+        <${ImportPreviewModal}
+          candidates=${previewData.candidates}
+          source=${previewData.source}
+          duplicates=${previewData.duplicates}
+          intraDuplicates=${previewData.intraDuplicates}
+          onConfirm=${(selected) => doImportSource(previewSourceId, selected)}
+          onClose=${() => { setPreviewData(null); setPreviewSourceId(null); }}
+          loading=${importing != null}
+        />
+      ` : null}
+    </div>
+  `;
+}
 
 export function LibraryTab() {
   injectStyles();
@@ -2428,7 +2863,7 @@ export function LibraryTab() {
       </div>
 
       ${filterType.value !== "mcp" && html`<${ProfileMatcher} />`}
-      ${filterType.value !== "mcp" && html`<${AgentLibraryImporter} onImported=${loadEntries} />`}
+      ${filterType.value !== "mcp" && html`<${LibraryMarketplace} onImported=${loadEntries} />`}
       ${filterType.value !== "mcp" && html`<${ScopeDetector} />`}
 
       ${/* ── MCP Marketplace View ── */
