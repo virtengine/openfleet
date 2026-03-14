@@ -1393,8 +1393,23 @@ export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
     ...(fileSignals ? [...fileSignals.fileDomains, ...fileSignals.fileLanguages] : []),
   ].map((d) => d.toLowerCase()));
 
-  // Max theoretical score: 10 + 6 + 6 + 3 + 8 + 6 + 4 = 43
-  const MAX_THEORETICAL_SCORE = 43;
+  // Max theoretical score: 10 + 6 + 6 + 3 + 8 + 6 + 4 + 8 + 5 = 56
+  const MAX_THEORETICAL_SCORE = 56;
+
+  // Task-type detection (used by Signal 9)
+  const TASK_TYPE_PATTERNS = {
+    tdd: /\b(tdd|test.driven|write.*tests?|spec)\b/i,
+    test: /\b(test|testing|coverage|jest|vitest|pytest|spec)\b/i,
+    review: /\b(review|code.review|pr.review|audit|inspect)\b/i,
+    docs: /\b(doc|documentation|readme|changelog|api.doc)\b/i,
+    implementation: /\b(implement|build|create|develop|feat|feature|add)\b/i,
+    fix: /\b(fix|bug|patch|hotfix|repair|resolve)\b/i,
+    refactor: /\b(refactor|cleanup|reorganize|restructure|simplify)\b/i,
+    devops: /\b(ci|cd|deploy|pipeline|docker|k8s|infra|terraform)\b/i,
+  };
+  const detectedTaskTypes = Object.entries(TASK_TYPE_PATTERNS)
+    .filter(([, re]) => re.test(textBlob))
+    .map(([type]) => type);
 
   const candidates = [];
   for (const entry of profiles) {
@@ -1406,74 +1421,120 @@ export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
 
     let score = 0;
     const reasons = [];
+    const breakdown = {};
 
     // ── Signal 1: titlePattern regex match → +10 (precompiled) ──
     const patterns = toStringArray(profile.titlePatterns);
+    let titlePatternScore = 0;
     for (const pattern of patterns) {
       const re = getCompiledRegex(pattern);
       if (re && re.test(textBlob)) {
-        score += 10;
+        titlePatternScore = 10;
         reasons.push(`pattern:${pattern}`);
         break;
       }
     }
+    score += titlePatternScore;
+    breakdown.titlePattern = titlePatternScore;
 
     // ── Signal 2: conventional-commit scope match → +6 ──
     const scopes = toStringArray(profile.scopes).map((s) => s.toLowerCase());
+    let scopeScore = 0;
     if (taskScope && scopes.includes(taskScope)) {
-      score += 6;
+      scopeScore = 6;
       reasons.push(`scope:${taskScope}`);
     }
+    score += scopeScore;
+    breakdown.scope = scopeScore;
 
     // ── Signal 3: tag overlap → up to +6 ──
     const profileTags = uniqueStrings([...(entry.tags || []), ...toStringArray(profile.tags)]).map((v) => v.toLowerCase());
     const tagHits = criteriaTags.filter((tag) => profileTags.includes(tag));
+    let tagScore = 0;
     if (tagHits.length > 0) {
-      const tagScore = Math.min(6, tagHits.length * 2);
-      score += tagScore;
+      tagScore = Math.min(6, tagHits.length * 2);
       reasons.push(`tags:${tagHits.slice(0, 4).join(",")}`);
     }
+    score += tagScore;
+    breakdown.tags = tagScore;
 
     // ── Signal 4: voice-type hint → +3 ──
+    let voiceScore = 0;
     if (profileType === "voice") {
       const voiceHint = /\bvoice\b|\bcall\b|\brealtime\b/.test(textBlobLower);
       if (voiceHint) {
-        score += 3;
+        voiceScore = 3;
         reasons.push("voice-hint");
       }
     }
+    score += voiceScore;
+    breakdown.voice = voiceScore;
 
     // ── Signal 5: changed-file path match → up to +8 ──
     const scopeHitsFromPaths = scopes.filter((scope) =>
       changedHints.includes(scope) || changedFiles.some((f) => String(f).toLowerCase().includes(`/${scope}/`) || String(f).toLowerCase().includes(`\\${scope}\\`)),
     );
+    let pathScore = 0;
     if (scopeHitsFromPaths.length > 0) {
-      const fileScore = Math.min(8, scopeHitsFromPaths.length * 2);
-      score += fileScore;
+      pathScore = Math.min(8, scopeHitsFromPaths.length * 2);
       reasons.push(`paths:${scopeHitsFromPaths.slice(0, 4).join(",")}`);
     }
+    score += pathScore;
+    breakdown.paths = pathScore;
 
     // ── Signal 6: repo-context domain match → up to +6 ──
+    let domainScore = 0;
     if (contextDomains.size > 0) {
       const profileAllTags = new Set([...profileTags, ...scopes]);
       const domainHits = [...contextDomains].filter((d) => profileAllTags.has(d));
       if (domainHits.length > 0) {
-        const domainScore = Math.min(6, domainHits.length * 2);
-        score += domainScore;
+        domainScore = Math.min(6, domainHits.length * 2);
         reasons.push(`repo-ctx:${domainHits.slice(0, 3).join(",")}`);
       }
     }
+    score += domainScore;
+    breakdown.repoCtx = domainScore;
 
     // ── Signal 7: file-type domain match → up to +4 ──
+    let fileTypeScore = 0;
     if (fileSignals && fileSignals.fileDomains.length > 0) {
       const profileAllTags = new Set([...profileTags, ...scopes]);
       const fileHits = fileSignals.fileDomains.filter((d) => profileAllTags.has(d));
       if (fileHits.length > 0) {
-        const fileTypeScore = Math.min(4, fileHits.length);
-        score += fileTypeScore;
+        fileTypeScore = Math.min(4, fileHits.length);
         reasons.push(`file-type:${fileHits.slice(0, 3).join(",")}`);
       }
     }
+    score += fileTypeScore;
+    breakdown.fileType = fileTypeScore;
+
+    // ── Signal 8: description keyword match → up to +8 ──
+    const profileDesc = String(profile.description || "").toLowerCase();
+    let descScore = 0;
+    if (profileDesc.length > 10) {
+      const descTokens = keywordTokens(profileDesc, { minLength: 4 });
+      const titleTokens = keywordTokens(textBlob, { minLength: 4 });
+      const descHits = descTokens.filter((t) => titleTokens.includes(t));
+      if (descHits.length > 0) {
+        descScore = Math.min(8, descHits.length * 2);
+        reasons.push(`desc:${descHits.slice(0, 4).join(",")}`);
+      }
+    }
+    score += descScore;
+    breakdown.descMatch = descScore;
+
+    // ── Signal 9: task-type hint → +5 ──
+    let taskTypeScore = 0;
+    if (detectedTaskTypes.length > 0) {
+      const profileAllTags = new Set([...profileTags, ...scopes]);
+      const taskTypeHits = detectedTaskTypes.filter((t) => profileAllTags.has(t));
+      if (taskTypeHits.length > 0) {
+        taskTypeScore = 5;
+        reasons.push(`task-type:${taskTypeHits.join(",")}`);
+      }
+    }
+    score += taskTypeScore;
+    breakdown.taskType = taskTypeScore;
 
     if (score <= 0) continue;
 
@@ -1484,6 +1545,7 @@ export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
       score,
       confidence,
       reasons,
+      breakdown,
       matchedScope: taskScope,
     });
   }
@@ -1495,9 +1557,9 @@ export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
 
   const best = candidates[0] || null;
   const runnerUp = candidates[1] || null;
-  const minScore = parseMatchEnvNumber("BOSUN_AGENT_MATCH_AUTO_MIN_SCORE", 12);
-  const minConfidence = parseMatchEnvNumber("BOSUN_AGENT_MATCH_AUTO_MIN_CONFIDENCE", 0.72);
-  const minDelta = parseMatchEnvNumber("BOSUN_AGENT_MATCH_AUTO_MIN_DELTA", 3);
+  const minScore = parseMatchEnvNumber("BOSUN_AGENT_MATCH_AUTO_MIN_SCORE", 10);
+  const minConfidence = parseMatchEnvNumber("BOSUN_AGENT_MATCH_AUTO_MIN_CONFIDENCE", 0.45);
+  const minDelta = parseMatchEnvNumber("BOSUN_AGENT_MATCH_AUTO_MIN_DELTA", 2);
   const shouldAutoApply = Boolean(
     best
       && Number(best.score || 0) >= minScore
@@ -1519,6 +1581,7 @@ export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
       description,
       requestedAgentType,
       taskScope,
+      detectedTaskTypes,
       changedFilesCount: changedFiles.length,
       repoContext: repoCtx || null,
       fileSignals: fileSignals || null,
