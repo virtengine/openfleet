@@ -322,6 +322,116 @@ export function isPortConnectionCompatible(sourcePort, targetPort) {
   };
 }
 
+function getExplicitNodeOutputs(node) {
+  return Array.isArray(node?.outputs)
+    ? Array.from(new Set(node.outputs.map((value) => String(value || "").trim()).filter(Boolean)))
+    : undefined;
+}
+
+function hydrateWorkflowNode(node, nodeMap) {
+  const ports = resolveNodePorts(node);
+  const explicitOutputs = getExplicitNodeOutputs(node);
+  const nextNode = {
+    ...node,
+    inputPorts: ports.inputs.map((port) => clonePortDescriptor(port)),
+    outputPorts: ports.outputs.map((port) => clonePortDescriptor(port)),
+    ...(explicitOutputs !== undefined ? { outputs: explicitOutputs } : {}),
+  };
+  nodeMap.set(nextNode.id, nextNode);
+  return nextNode;
+}
+
+function buildPortValidationIssue(edge, sourcePort, targetPort, compatibility) {
+  return {
+    edgeId: edge.id || `${edge.source}->${edge.target}`,
+    source: edge.source,
+    target: edge.target,
+    sourcePort: sourcePort?.name || "default",
+    targetPort: targetPort?.name || "default",
+    sourceType: sourcePort?.type || null,
+    targetType: targetPort?.type || null,
+    severity: "error",
+    message: compatibility.reason,
+  };
+}
+
+function hydrateWorkflowEdge(edge, nodeMap, issues) {
+  const sourceNode = nodeMap.get(edge.source);
+  const targetNode = nodeMap.get(edge.target);
+  const sourcePorts = resolveNodePorts(sourceNode);
+  const targetPorts = resolveNodePorts(targetNode);
+  const sourcePort = resolvePortByName(sourcePorts.outputs, edge.sourcePort || "default", "output");
+  const targetPort = resolvePortByName(targetPorts.inputs, edge.targetPort || "default", "input");
+  const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
+
+  if (!compatibility.compatible) {
+    issues.push(buildPortValidationIssue(edge, sourcePort, targetPort, compatibility));
+  }
+
+  return {
+    ...edge,
+    sourcePort: sourcePort?.name || String(edge.sourcePort || "default").trim() || "default",
+    targetPort: targetPort?.name || String(edge.targetPort || "default").trim() || "default",
+    sourcePortType: sourcePort?.type || null,
+    targetPortType: targetPort?.type || null,
+  };
+}
+
+function getExplicitNodeOutputs(node) {
+  return Array.isArray(node?.outputs)
+    ? Array.from(new Set(node.outputs.map((value) => String(value || "").trim()).filter(Boolean)))
+    : undefined;
+}
+
+function hydrateWorkflowNode(node, nodeMap) {
+  const ports = resolveNodePorts(node);
+  const explicitOutputs = getExplicitNodeOutputs(node);
+  const hydratedNode = {
+    ...node,
+    inputPorts: ports.inputs.map((port) => clonePortDescriptor(port)),
+    outputPorts: ports.outputs.map((port) => clonePortDescriptor(port)),
+    ...(explicitOutputs !== undefined ? { outputs: explicitOutputs } : {}),
+  };
+  nodeMap.set(hydratedNode.id, hydratedNode);
+  return hydratedNode;
+}
+
+function buildPortValidationIssue(edge, sourcePort, targetPort, compatibility) {
+  return {
+    edgeId: edge.id || `${edge.source}->${edge.target}`,
+    source: edge.source,
+    target: edge.target,
+    sourcePort: sourcePort?.name || "default",
+    targetPort: targetPort?.name || "default",
+    sourceType: sourcePort?.type || null,
+    targetType: targetPort?.type || null,
+    severity: "error",
+    message: compatibility.reason,
+  };
+}
+
+function hydrateWorkflowEdge(edge, nodeMap, issues) {
+  const sourceNode = nodeMap.get(edge.source);
+  const targetNode = nodeMap.get(edge.target);
+  const sourcePorts = resolveNodePorts(sourceNode);
+  const targetPorts = resolveNodePorts(targetNode);
+  const sourcePort = resolvePortByName(sourcePorts.outputs, edge.sourcePort || "default", "output");
+  const targetPort = resolvePortByName(targetPorts.inputs, edge.targetPort || "default", "input");
+  const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
+
+  if (!compatibility.compatible) {
+    issues.push(buildPortValidationIssue(edge, sourcePort, targetPort, compatibility));
+  }
+
+  return {
+    ...edge,
+    sourcePort: sourcePort?.name || String(edge.sourcePort || "default").trim() || "default",
+    targetPort: targetPort?.name || String(edge.targetPort || "default").trim() || "default",
+    sourcePortType: sourcePort?.type || null,
+    targetPortType: targetPort?.type || null,
+  };
+}
+
 function hydrateWorkflowDefinition(def, { strict = false } = {}) {
   const normalized = {
     ...(def || {}),
@@ -331,55 +441,10 @@ function hydrateWorkflowDefinition(def, { strict = false } = {}) {
   };
 
   const nodeMap = new Map();
-  normalized.nodes = normalized.nodes.map((node) => {
-    const ports = resolveNodePorts(node);
-    const explicitOutputs = Array.isArray(node?.outputs)
-      ? Array.from(new Set(node.outputs.map((value) => String(value || "").trim()).filter(Boolean)))
-      : undefined;
-    const nextNode = {
-      ...node,
-      inputPorts: ports.inputs.map((port) => clonePortDescriptor(port)),
-      outputPorts: ports.outputs.map((port) => clonePortDescriptor(port)),
-      ...(explicitOutputs !== undefined ? { outputs: explicitOutputs } : {}),
-    };
-    nodeMap.set(nextNode.id, nextNode);
-    return nextNode;
-  });
+  normalized.nodes = normalized.nodes.map((node) => hydrateWorkflowNode(node, nodeMap));
 
   const issues = [];
-
-  normalized.edges = normalized.edges.map((edge) => {
-    const sourceNode = nodeMap.get(edge.source);
-    const targetNode = nodeMap.get(edge.target);
-    const sourcePorts = resolveNodePorts(sourceNode);
-    const targetPorts = resolveNodePorts(targetNode);
-    const sourcePort = resolvePortByName(sourcePorts.outputs, edge.sourcePort || "default", "output");
-    const targetPort = resolvePortByName(targetPorts.inputs, edge.targetPort || "default", "input");
-    const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
-
-    if (!compatibility.compatible) {
-      issues.push({
-        edgeId: edge.id || `${edge.source}->${edge.target}`,
-        source: edge.source,
-        target: edge.target,
-        sourcePort: sourcePort?.name || "default",
-        targetPort: targetPort?.name || "default",
-        sourceType: sourcePort?.type || null,
-        targetType: targetPort?.type || null,
-        severity: "error",
-        message: compatibility.reason,
-      });
-    }
-
-    return {
-      ...edge,
-      sourcePort: sourcePort?.name || String(edge.sourcePort || "default").trim() || "default",
-      targetPort: targetPort?.name || String(edge.targetPort || "default").trim() || "default",
-      sourcePortType: sourcePort?.type || null,
-      targetPortType: targetPort?.type || null,
-    };
-  });
-
+  normalized.edges = normalized.edges.map((edge) => hydrateWorkflowEdge(edge, nodeMap, issues));
   normalized.metadata.validationIssues = issues;
 
   if (strict && issues.length > 0) {
@@ -388,7 +453,6 @@ function hydrateWorkflowDefinition(def, { strict = false } = {}) {
 
   return normalized;
 }
-
 /**
  * Register a node type handler.
  * @param {string} type - Node type identifier (e.g., "trigger.task_low", "action.run_agent")
