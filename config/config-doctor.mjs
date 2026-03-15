@@ -4,17 +4,13 @@ import { execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import { getWorkflowContract } from "../workflow/workflow-contract.mjs";
+import { CONFIG_FILES } from "./config-file-names.mjs";
 export {
   runWorkspaceHealthCheck,
   formatWorkspaceHealthReport,
 } from "./workspace-health.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const CONFIG_FILES = [
-  "bosun.config.json",
-  ".bosun.json",
-  "bosun.json",
-];
 const WORKFLOW_CONTRACT_NODE_TYPES = Object.freeze({
   read: new Set(["read-workflow-contract", "action.read_workflow_contract"]),
   validate: new Set(["workflow-contract-validation", "action.workflow_contract_validation"]),
