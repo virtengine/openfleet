@@ -79,3 +79,16 @@ Format:
   - `npm test` passed (3828 tests)
   - `pnpm build` passed
 - PR: #285 — `chore/code-quality-striker-20260314-manual-flow-audit`
+
+
+## 2026-03-15T08:37:37.796Z
+
+- Scope: Split the large tool-definition catalog inside `voice/voice-tools.mjs` into named internal category arrays while keeping the exported tool surface unchanged.
+- Files changed: voice/voice-tools.mjs, .bosun-monitor/code-quality-striker.md
+- Strategy: Replaced one monolithic `TOOL_DEFS` array with self-contained per-category arrays and reassembled them into the same exported list so future voice-tool edits stay localized without adding new published files.
+- Validation evidence:
+  - `node --check` passed on all touched files
+  - `npm test -- tests/voice-provider-smoke.test.mjs tests/voice-agents-sdk.test.mjs --maxWorkers=1` passed (38 tests)
+  - `pnpm build` passed
+  - Clean `origin/main` still fails 2 pre-existing `tests/ui-server.test.mjs` assertions unrelated to this refactor
+- PR: #300 — `chore/code-quality-striker-20260315-voice-tools-discovery`
