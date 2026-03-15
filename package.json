@@ -116,7 +116,7 @@
     "test:node": "node --import ./tests/node-test-bootstrap.mjs --test tests/*.node.test.mjs",
     "test:all": "npm run test:vitest && npm run test:node",
     "test:e2e": "node --import ./tests/node-test-bootstrap.mjs --test tests/portal-ui-smoke.node.test.mjs",
-    "test:e2e:all": "node --import ./tests/node-test-bootstrap.mjs --test tests/portal-ui-smoke.node.test.mjs",
+    "test:e2e:all": "npm run test:e2e",
     "test:voice-provider-smoke": "vitest run --config vitest.config.mjs tests/voice-provider-smoke.test.mjs",
     "check:native-call-parity": "vitest run --config vitest.config.mjs tests/voice-provider-smoke.test.mjs tests/native-call-parity-checklist.test.mjs",
     "test:watch": "vitest",
