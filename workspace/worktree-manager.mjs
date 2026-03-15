@@ -17,7 +17,6 @@ import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
-  readFileSync,
   writeFileSync,
   rmSync,
   statSync,
@@ -158,9 +157,29 @@ function freezePlainObject(value) {
   return Object.freeze({ ...(value && typeof value === "object" ? value : {}) });
 }
 
+function withIsolatedEnv(callback) {
+  const originalEnv = { ...process.env };
+  try {
+    return callback();
+  } finally {
+    // Remove any keys that were added during callback execution.
+    for (const key of Object.keys(process.env)) {
+      if (!(key in originalEnv)) {
+        delete process.env[key];
+      }
+    }
+    // Restore original keys and their values, including any that were deleted.
+   for (const [key, value] of Object.entries(originalEnv)) {
+      process.env[key] = value;
+    }
+  }
+}
+
 function readWorktreeBootstrapConfig(repoRoot) {
   try {
-    const config = loadConfig(["node", "bosun", "--repo-root", repoRoot]);
+    const config = withIsolatedEnv(() =>
+      loadConfig(["node", "bosun", "--repo-root", repoRoot]),
+    );
     if (config?.worktreeBootstrap && typeof config.worktreeBootstrap === "object") {
       return config.worktreeBootstrap;
     }
@@ -219,7 +238,7 @@ function resolveDefaultBootstrapCommand(stack, worktreePath) {
   }
 }
 
-function buildBootstrapPlan(worktreePath, policy, detection) {
+function buildBootstrapPlan(worktreePath, policy, detection, repoRoot) {
   const sharedPaths = [];
   const commands = [];
   for (const stack of detection?.stacks || []) {
@@ -233,9 +252,23 @@ function buildBootstrapPlan(worktreePath, policy, detection) {
     const stackCommands = overrideCommands.length > 0
       ? overrideCommands
       : normalizeStringList(resolveDefaultBootstrapCommand(stack, worktreePath));
-    const hasReadySharedPaths =
+    const hasReadySharedPathsInWorktree =
       stackSharedPaths.length > 0 &&
-      stackSharedPaths.every((relativePath) => existsSync(resolve(worktreePath, relativePath)));
+      stackSharedPaths.every((relativePath) =>
+        existsSync(resolve(worktreePath, relativePath)),
+      );
+    let willLinkSharedPathsFromRepoRoot = false;
+    if (!hasReadySharedPathsInWorktree && policy?.linkSharedPaths && repoRoot) {
+      willLinkSharedPathsFromRepoRoot =
+        stackSharedPaths.length > 0 &&
+        stackSharedPaths.every((relativePath) => {
+          const sourcePath = resolve(repoRoot, relativePath);
+          const targetPath = resolve(worktreePath, relativePath);
+          return existsSync(sourcePath) && !existsSync(targetPath);
+        });
+    }
+    const hasReadySharedPaths =
+      hasReadySharedPathsInWorktree || willLinkSharedPathsFromRepoRoot;
     if (hasReadySharedPaths) continue;
     for (const command of stackCommands) {
       if (!commands.includes(command)) commands.push(command);

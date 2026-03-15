@@ -5123,8 +5123,7 @@ function DagGraphSection({
                       fill=${selected ? "var(--accent)" : "var(--bg-canvas, #0f1115)"}
                       stroke="var(--accent)"
                       stroke-width="2"
-                      onPointerDown=${(event) => beginWireDrag(node, event)}
-                                          onPointerDown=${(event) => handleWireNodePointerDown(node, event)}
+                      onPointerDown=${(event) => handleWireNodePointerDown(node, event)}
                     />
                   ` : null}
                   ${Number.isFinite(node.order) && html`<text x=${pos.x + pos.width - 16} y=${pos.y + 22} text-anchor="end" fill="var(--text-muted)" font-size="11">#${node.order}</text>`}

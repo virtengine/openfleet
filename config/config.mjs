@@ -600,7 +600,7 @@ function resolveWorktreeBootstrapConfig(configData = {}) {
   return Object.freeze({
     enabled: isEnvEnabled(
       process.env.WORKTREE_BOOTSTRAP_ENABLED ?? raw.enabled,
-      true,
+      false,
     ),
     linkSharedPaths: isEnvEnabled(
       process.env.WORKTREE_BOOTSTRAP_LINK_SHARED_PATHS ?? raw.linkSharedPaths,
