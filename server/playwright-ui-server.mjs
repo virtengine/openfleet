@@ -18,6 +18,8 @@ const sharedLibRoot = resolve(__dirname, "..", "lib");
 const PORT = Number.parseInt(String(process.env.PLAYWRIGHT_UI_PORT || "4444"), 10) || 4444;
 const ESM_CACHE_DIR = resolve(__dirname, "..", ".cache", "esm-vendor");
 const LOCAL_ESM_PATH_RE = /^\/(?:@|[a-z0-9][a-z0-9._-]*@)/i;
+const SAFE_ESM_PATH_RE = /^\/(?:@|[a-z0-9][a-z0-9._-]*@)[a-z0-9./_@%-]*$/i;
+const SAFE_ESM_SEARCH_RE = /^\?[a-z0-9._~!$&'()*+,;=:@%/-]*$/i;
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -128,9 +130,19 @@ function sanitizeEsmSearchParams(search = "") {
   return serialized ? `?${serialized}` : "";
 }
 
-async function serveEsmPassthrough(res, pathname, search = "") {
+function buildSafeEsmProxyUrl(pathname, search = "") {
+  const normalizedPath = String(pathname || "").trim();
+  if (!SAFE_ESM_PATH_RE.test(normalizedPath)) return null;
   const safeSearch = sanitizeEsmSearchParams(search);
-  const upstreamUrl = `https://esm.sh${pathname}${safeSearch}`;
+  return new URL(`${normalizedPath}${safeSearch}`, "https://esm.sh").toString();
+}
+
+async function serveEsmPassthrough(res, pathname, search = "") {
+  const upstreamUrl = buildSafeEsmProxyUrl(pathname, search);
+  if (!upstreamUrl) {
+    console.error(`[esm-proxy] Rejected nested module request ${pathname}${search}`);
+    return false;
+  }
   try {
     const response = await fetch(upstreamUrl, {
       headers: { "User-Agent": "bosun-playwright-proxy/1.0" },

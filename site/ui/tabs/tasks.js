@@ -5600,49 +5600,6 @@ export function TasksTab() {
     }
   }, [loadDagViews]);
 
-  const handleAutoOrganizeDag = useCallback(async () => {
-    haptic("medium");
-    setDagLoading(true);
-    setDagError("");
-    try {
-      const result = await apiFetch("/api/tasks/dag/organize", {
-        method: "POST",
-        body: JSON.stringify(dagSelectedSprint && dagSelectedSprint !== "all"
-          ? { sprintId: dagSelectedSprint, applyDependencySuggestions: true, syncEpicDependencies: true }
-          : { applyDependencySuggestions: true, syncEpicDependencies: true }),
-      });
-      const suggestions = Array.isArray(result?.suggestions) ? result.suggestions : [];
-      const appliedDependencySuggestionCount = Number(result?.data?.appliedDependencySuggestionCount || 0);
-      const syncedEpicDependencyCount = Number(result?.data?.syncedEpicDependencyCount || 0);
-      const updatedTaskCount = Number(result?.data?.updatedTaskCount || 0);
-      const updatedSprintCount = Number(result?.data?.updatedSprintCount || 0);
-      setDagOrganizeSuggestions(suggestions);
-      setDagOrganizeFeedback(
-        [
-          `Auto-wired ${dagSelectedSprintLabel}.`,
-          updatedSprintCount > 0 ? `${updatedSprintCount} sprint order update${updatedSprintCount === 1 ? "" : "s"}.` : "",
-          updatedTaskCount > 0 ? `${updatedTaskCount} task order update${updatedTaskCount === 1 ? "" : "s"}.` : "",
-          appliedDependencySuggestionCount > 0 ? `${appliedDependencySuggestionCount} dependency edge${appliedDependencySuggestionCount === 1 ? "" : "s"} added.` : "",
-          syncedEpicDependencyCount > 0 ? `${syncedEpicDependencyCount} epic dependency set${syncedEpicDependencyCount === 1 ? "" : "s"} synced.` : "",
-          suggestions.length > 0 ? `${suggestions.length} cleanup suggestion${suggestions.length === 1 ? "" : "s"} still need review.` : "No follow-up cleanup suggestions.",
-        ].filter(Boolean).join(" "),
-      );
-      showToast(
-        appliedDependencySuggestionCount > 0 || syncedEpicDependencyCount > 0
-          ? `Auto-wired DAG · ${appliedDependencySuggestionCount + syncedEpicDependencyCount} dependency update${appliedDependencySuggestionCount + syncedEpicDependencyCount === 1 ? "" : "s"}`
-          : suggestions.length > 0
-            ? `DAG organized · ${suggestions.length} suggestions`
-            : "DAG organized",
-        "success",
-      );
-      await loadDagViews();
-    } catch (error) {
-      setDagError(error?.message || "Failed to organize DAG.");
-    } finally {
-      setDagLoading(false);
-    }
-  }, [dagSelectedSprint, dagSelectedSprintLabel, loadDagViews]);
-
   const handleCreateSprint = useCallback(() => {
     haptic("medium");
     setEditingSprint(null);
