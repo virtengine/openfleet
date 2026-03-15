@@ -74,30 +74,6 @@
   - pnpm build passed
 - PR: #PENDING — chore/code-quality-striker-20260315-library-import-scan-split
 
-## 2026-03-15T13:03:44.919053+11:00
-
-- Scope: Split repository import scanning and importing inside `infra/library-manager.mjs` into focused internal helpers without changing the public API.
-- Files changed: infra/library-manager.mjs, [object Object]
-- Strategy: Extracted shared repository source resolution, clone checkout setup, markdown candidate discovery, MCP discovery, and per-candidate import helpers so scan/import paths reuse the same logic and future edits stay localized.
-- Validation evidence:
-  - `[object Object]` passed on all touched files
-  - `npm test -- tests/library-manager.test.mjs` passed (61 tests)
-  - `pnpm build` passed
-  - `npm test` is blocked by 2 pre-existing failures in `tests/ui-server.test.mjs` that also reproduce on pristine `HEAD`
-- PR: #291 — `chore/code-quality-striker-20260315-library-import-scan-split-2`
-
-## 2026-03-15T14:50:45.3148701+11:00
-
-- Scope: Refactor setup model probing in server/setup-web-server.mjs into focused helpers and add Azure-compatible model-list fallback handling.
-- Files changed: server/setup-web-server.mjs, [object Object]
-- Strategy: Split endpoint detection, endpoint probing, and live-model shaping into self-contained helpers so the setup server can retry Azure-compatible /openai/models before falling back to the static list.
-- Validation evidence:
-  - [object Object] passed on all touched files
-  - npm test -- tests/setup-env-output.test.mjs tests/setup-github-auth-scopes.test.mjs tests/setup-platform-defaults.test.mjs tests/setup-vscode-settings.test.mjs tests/setup-web-server-env.test.mjs tests/setup.test.mjs passed (53 tests)
-  - npm test hit 3 unrelated timeout failures after 3825 passing tests
-  - pnpm build passed
-- PR: #TBD — chore/code-quality-striker-20260315-library-import-split
-
 ## 2026-03-15T16:53:29.1622834+11:00
 
 - Scope: Split Codex config file I/O and trusted-project handling out of `shell/codex-config.mjs` into a focused co-located module with no public API changes.
@@ -109,3 +85,15 @@
   - `npm test` still fails on clean `HEAD` with the pre-existing `template-git-health-pipeline` workflow error
   - `pnpm build` passed
 - PR: #TBD — `chore/code-quality-striker-runid-shell-trusted-projects`
+
+## 2026-03-15T17:00:33.8720744+11:00
+
+- Scope: Split `ensureCodexConfig` orchestration in `shell/codex-config.mjs` into focused internal helpers without changing the public API.
+- Files changed: shell/codex-config.mjs, [object Object]
+- Strategy: Extracted result initialization, config loading, default-application, and persistence into private helpers so the top-level config entry point is shorter and each responsibility is easier to edit in isolation.
+- Validation evidence:
+  - `[object Object]` passed on all touched files
+  - `npm test -- tests/codex-config.test.mjs` passed (10 tests)
+  - `npm test` still fails on clean `HEAD` with the pre-existing `template-git-health-pipeline` workflow error
+  - `pnpm build` passed
+- PR: #294 — `chore/code-quality-striker-shell-config-split`
