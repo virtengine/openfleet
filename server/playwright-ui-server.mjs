@@ -100,7 +100,19 @@ async function serveEsmVendor(res, name) {
 }
 
 async function serveEsmPassthrough(res, pathname, search = "") {
-  const upstreamUrl = `https://esm.sh${pathname}${search}`;
+  // Sanitize query string to avoid forwarding raw user input directly.
+  let safeSearch = "";
+  if (typeof search === "string" && search.length > 0) {
+    // Strip any leading "?" so we can rebuild it consistently.
+    const rawSearch = search.startsWith("?") ? search.slice(1) : search;
+    const params = new URLSearchParams(rawSearch);
+    const rebuilt = params.toString();
+    if (rebuilt) {
+      safeSearch = `?${rebuilt}`;
+    }
+  }
+
+  const upstreamUrl = `https://esm.sh${pathname}${safeSearch}`;
   try {
     const response = await fetch(upstreamUrl, {
       headers: { "User-Agent": "bosun-playwright-proxy/1.0" },
