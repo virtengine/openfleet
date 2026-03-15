@@ -276,6 +276,20 @@ describe("workflow-templates", () => {
     }
   });
 
+  it("template node positions do not overlap within the same workflow", () => {
+    for (const t of WORKFLOW_TEMPLATES) {
+      const seenPositions = new Set();
+      for (const n of t.nodes) {
+        const key = `${n.position.x}:${n.position.y}`;
+        expect(
+          seenPositions.has(key),
+          `${t.id}/${n.id} overlaps another node at ${key}`,
+        ).toBe(false);
+        seenPositions.add(key);
+      }
+    }
+  });
+
   it("every node ID within a template is unique", () => {
     for (const t of WORKFLOW_TEMPLATES) {
       const ids = t.nodes.map((n) => n.id);

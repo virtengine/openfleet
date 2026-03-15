@@ -32,9 +32,10 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { detectProjectStack, getCommandPresets } from "./project-detection.mjs";
+import { normalizeTemplateLayoutInPlace } from "../workflow-templates/_helpers.mjs";
 
 // ── Re-export helpers for external consumers ────────────────────────────────
-export { node, edge, resetLayout } from "../workflow-templates/_helpers.mjs";
+export { node, edge, resetLayout, normalizeTemplateLayoutInPlace } from "../workflow-templates/_helpers.mjs";
 
 // ── Import templates from category modules ──────────────────────────────────
 
@@ -252,7 +253,7 @@ export const TEMPLATE_CATEGORIES = Object.freeze({
   custom:      { label: "Custom",       icon: ":settings:", order: 13 },
 });
 
-export const WORKFLOW_TEMPLATES = Object.freeze([
+const BUILTIN_WORKFLOW_TEMPLATES = [
   // ── GitHub ──
   PR_MERGE_STRATEGY_TEMPLATE,
   PR_TRIAGE_TEMPLATE,
@@ -332,7 +333,13 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   INLINE_WORKFLOW_COMPOSITION_TEMPLATE,
   MCP_TO_BOSUN_BRIDGE_TEMPLATE,
   GIT_HEALTH_PIPELINE_TEMPLATE,
-]);
+];
+
+for (const template of BUILTIN_WORKFLOW_TEMPLATES) {
+  normalizeTemplateLayoutInPlace(template);
+}
+
+export const WORKFLOW_TEMPLATES = Object.freeze(BUILTIN_WORKFLOW_TEMPLATES);
 
 const _TEMPLATE_BY_ID = new Map(
   WORKFLOW_TEMPLATES.map((template) => [template.id, template]),
