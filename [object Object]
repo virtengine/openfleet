@@ -61,7 +61,32 @@
   - `npm test -- tests/cli-workspace-config-dir.test.mjs tests/codex-config.test.mjs tests/config-agent-prompts.test.mjs tests/config-boolean-env.test.mjs tests/config-doctor.test.mjs tests/config-explicit-config-dir-env-isolation.test.mjs tests/config-repo-root-precedence.test.mjs tests/config-scheduler.test.mjs tests/config-validation.test.mjs tests/context-shredding-config.test.mjs tests/ui-defaults-config-routing.test.mjs tests/setup-env-output.test.mjs tests/setup-github-auth-scopes.test.mjs tests/setup-platform-defaults.test.mjs tests/setup-vscode-settings.test.mjs tests/setup-web-server-env.test.mjs tests/setup.test.mjs` passed (161 tests)
   - `npm test` passed (3828 tests)
   - `npm run build` passed
-- PR: #287 — `chore/code-quality-striker-20260314-config-executor-split`## 2026-03-15T14:50:45.3148701+11:00
+- PR: #287 — `chore/code-quality-striker-20260314-config-executor-split`
+
+## 2026-03-15T12:58:58.3142591+11:00
+
+- Scope: Split repository import scanning helpers out of infra/library-manager.mjs and rewire scan logic without changing exports.
+- Files changed: infra/library-manager.mjs, [object Object]
+- Strategy: Extracted shared repository import source resolution, clone setup, markdown candidate collection, and MCP discovery into focused internal helpers so scan behavior is self-contained and easier to evolve independently.
+- Validation evidence:
+  - [object Object] passed on all touched files
+  - npm test passed (3828 tests)
+  - pnpm build passed
+- PR: #PENDING — chore/code-quality-striker-20260315-library-import-scan-split
+
+## 2026-03-15T13:03:44.919053+11:00
+
+- Scope: Split repository import scanning and importing inside `infra/library-manager.mjs` into focused internal helpers without changing the public API.
+- Files changed: infra/library-manager.mjs, [object Object]
+- Strategy: Extracted shared repository source resolution, clone checkout setup, markdown candidate discovery, MCP discovery, and per-candidate import helpers so scan/import paths reuse the same logic and future edits stay localized.
+- Validation evidence:
+  - `[object Object]` passed on all touched files
+  - `npm test -- tests/library-manager.test.mjs` passed (61 tests)
+  - `pnpm build` passed
+  - `npm test` is blocked by 2 pre-existing failures in `tests/ui-server.test.mjs` that also reproduce on pristine `HEAD`
+- PR: #291 — `chore/code-quality-striker-20260315-library-import-scan-split-2`
+
+## 2026-03-15T14:50:45.3148701+11:00
 
 - Scope: Refactor setup model probing in server/setup-web-server.mjs into focused helpers and add Azure-compatible model-list fallback handling.
 - Files changed: server/setup-web-server.mjs, [object Object]
@@ -72,7 +97,6 @@
   - npm test hit 3 unrelated timeout failures after 3825 passing tests
   - pnpm build passed
 - PR: #TBD — chore/code-quality-striker-20260315-library-import-split
-
 
 ## 2026-03-15T16:53:29.1622834+11:00
 
