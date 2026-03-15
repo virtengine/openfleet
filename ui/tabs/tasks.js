@@ -5284,7 +5284,7 @@ export function TasksTab() {
         counts.review += 1;
       } else if (["done", "completed", "closed", "merged", "cancelled"].includes(status)) {
         counts.done += 1;
-      } else if (["error", "blocked", "failed"].includes(status)) {
+      } else if (status === "blocked") {
         counts.blocked += 1;
       } else if (["draft"].includes(status)) {
         counts.draft += 1;
