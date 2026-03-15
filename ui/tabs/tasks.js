@@ -140,6 +140,7 @@ const STATUS_CHIPS = [
   { value: "inprogress", label: "Active" },
   { value: "inreview", label: "Review" },
   { value: "done", label: "Done" },
+  { value: "error", label: "Error" },
   { value: "blocked", label: "Blocked" },
 ];
 
