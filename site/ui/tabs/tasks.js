@@ -44,6 +44,7 @@ import { ICONS } from "../modules/icons.js";
 import {
   cloneValue,
   formatRelative,
+  formatDuration,
   truncate,
   formatBytes,
   debounce,
@@ -51,6 +52,12 @@ import {
   exportAsJSON,
   countChangedFields,
 } from "../modules/utils.js";
+import { navigateTo } from "../modules/router.js";
+import {
+  loadSessions,
+  loadSessionMessages,
+  selectedSessionId,
+} from "../components/session-list.js";
 import {
   Modal,
   SaveDiscardBar,
@@ -65,6 +72,7 @@ import {
 } from "../components/forms.js";
 import { KanbanBoard } from "../components/kanban-board.js";
 import { VoiceMicButton, VoiceMicButtonInline } from "../modules/voice.js";
+import { openWorkflowRunsView } from "./workflows.js";
 import {
   workspaces as managedWorkspaces,
   activeWorkspaceId,
@@ -1063,6 +1071,89 @@ function buildTaskHistoryEntries(task) {
     .slice(0, 40);
 }
 
+function pickTaskWorkflowSessionId(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  for (const value of [
+    entry.sessionId,
+    entry.primarySessionId,
+    entry.threadId,
+    entry.agentSessionId,
+    entry.meta?.sessionId,
+    entry.meta?.threadId,
+  ]) {
+    const normalized = String(value || "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+export function normalizeTaskWorkflowRunEntry(entry) {
+  if (entry == null) return null;
+  if (typeof entry === "string") {
+    const workflowId = String(entry || "").trim();
+    return workflowId
+      ? {
+          workflowId,
+          workflowName: "",
+          workflowLabel: workflowId,
+          runId: "",
+          status: "",
+          outcome: "",
+          result: "",
+          summary: "",
+          timestamp: null,
+          startedAt: null,
+          endedAt: null,
+          duration: null,
+          sessionId: "",
+          primarySessionId: "",
+          hasRunLink: false,
+          hasSessionLink: false,
+          url: "",
+          nodeId: "",
+          meta: {},
+        }
+      : null;
+  }
+  const workflowId = String(entry.workflowId || entry.id || entry.templateId || "").trim();
+  const workflowName = String(entry.workflowName || entry.name || "").trim();
+  const runId = String(entry.runId || entry.executionId || entry.attemptId || "").trim();
+  const status = String(entry.status || "").trim();
+  const outcome = String(entry.outcome || "").trim();
+  const summary = String(entry.summary || entry.message || entry.reason || "").trim();
+  const result = summary || String(entry.result || "").trim();
+  const startedAt = entry.startedAt || entry.createdAt || null;
+  const endedAt = entry.endedAt || entry.completedAt || entry.timestamp || null;
+  const timestamp = endedAt || startedAt || null;
+  const duration = Number.isFinite(Number(entry.duration))
+    ? Number(entry.duration)
+    : (startedAt && endedAt
+        ? Math.max(0, new Date(endedAt).getTime() - new Date(startedAt).getTime())
+        : null);
+  const sessionId = pickTaskWorkflowSessionId(entry);
+  return {
+    workflowId,
+    workflowName,
+    workflowLabel: workflowName || workflowId || "workflow",
+    runId,
+    status,
+    outcome,
+    result,
+    summary,
+    timestamp,
+    startedAt,
+    endedAt,
+    duration,
+    sessionId,
+    primarySessionId: String(entry.primarySessionId || sessionId).trim(),
+    hasRunLink: Boolean(runId),
+    hasSessionLink: Boolean(sessionId),
+    url: String(entry.url || "").trim(),
+    nodeId: String(entry.nodeId || "").trim(),
+    meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
+  };
+}
+
 function buildTaskWorkflowRuns(task) {
   const rows = getTaskCollectionValues(task, [
     "workflowRuns",
@@ -1070,19 +1161,7 @@ function buildTaskWorkflowRuns(task) {
     "workflows",
   ]);
   return rows
-    .map((entry) => {
-      if (entry == null) return null;
-      if (typeof entry === "string") {
-        return { workflowId: entry, runId: "", status: "", result: "", timestamp: null };
-      }
-      return {
-        workflowId: String(entry.workflowId || entry.id || entry.templateId || "").trim(),
-        runId: String(entry.runId || entry.executionId || entry.attemptId || "").trim(),
-        status: String(entry.status || entry.outcome || entry.result || "").trim(),
-        result: String(entry.summary || entry.message || entry.reason || "").trim(),
-        timestamp: entry.timestamp || entry.completedAt || entry.createdAt || null,
-      };
-    })
+    .map((entry) => normalizeTaskWorkflowRunEntry(entry))
     .filter((entry) => entry && (entry.workflowId || entry.runId || entry.status || entry.result))
     .sort((a, b) => {
       const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
@@ -1090,6 +1169,56 @@ function buildTaskWorkflowRuns(task) {
       return tb - ta;
     })
     .slice(0, 30);
+}
+
+export function buildTaskWorkflowRunMetaLine(run) {
+  const parts = [];
+  const label = String(run?.workflowLabel || run?.workflowName || run?.workflowId || "workflow").trim();
+  if (label) parts.push(label);
+  if (run?.runId) parts.push(`run ${run.runId}`);
+  if (run?.timestamp) parts.push(formatRelative(run.timestamp));
+  if (Number.isFinite(Number(run?.duration)) && Number(run.duration) > 0) {
+    parts.push(formatDuration(Number(run.duration)));
+  }
+  return parts.join(" · ");
+}
+
+export function buildTaskWorkflowRunStatusLine(run) {
+  const parts = [];
+  const status = String(run?.status || "").trim();
+  const outcome = String(run?.outcome || "").trim();
+  const summary = String(run?.summary || run?.result || "").trim();
+  if (status) parts.push(status);
+  if (outcome && outcome !== status) parts.push(outcome);
+  if (summary && summary !== status && summary !== outcome) parts.push(summary);
+  return parts.join(" · ") || "No status summary";
+}
+
+export async function openTaskWorkflowRun(run, deps = {}) {
+  const navigate = deps.navigateTo || navigateTo;
+  const openRuns = deps.openWorkflowRunsView || openWorkflowRunsView;
+  const workflowId = String(run?.workflowId || "").trim();
+  const runId = String(run?.runId || "").trim();
+  if (!runId) return false;
+  const navigated = navigate("workflows");
+  if (navigated === false) return false;
+  openRuns(workflowId, runId);
+  return true;
+}
+
+export async function openTaskWorkflowAgentHistory(run, deps = {}) {
+  const navigate = deps.navigateTo || navigateTo;
+  const loadAllSessions = deps.loadSessions || loadSessions;
+  const loadMessages = deps.loadSessionMessages || loadSessionMessages;
+  const selectedStore = deps.selectedSessionId || selectedSessionId;
+  const sessionId = pickTaskWorkflowSessionId(run);
+  if (!sessionId) return false;
+  const navigated = navigate("agents");
+  if (navigated === false) return false;
+  await loadAllSessions({ type: "task", workspace: "all" });
+  selectedStore.value = sessionId;
+  await loadMessages(sessionId, { limit: 50 });
+  return true;
 }
 
 function buildTaskRelatedLinks(task) {
@@ -2436,6 +2565,63 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
 
   useEffect(() => { fetchExecutionPlan("resolve"); }, [task?.id]);
 
+  const handleOpenWorkflowRun = useCallback(async (run) => {
+    try {
+      await openTaskWorkflowRun(run);
+    } catch {
+      showToast("Unable to open workflow run", "error");
+    }
+  }, []);
+  const handleOpenWorkflowAgentHistory = useCallback(async (run) => {
+    try {
+      await openTaskWorkflowAgentHistory(run);
+    } catch {
+      showToast("Unable to open linked agent session", "error");
+    }
+  }, []);
+  const renderWorkflowActivityCard = useCallback((run, key) => {
+    const metaLine = buildTaskWorkflowRunMetaLine(run);
+    const statusLine = buildTaskWorkflowRunStatusLine(run);
+    return html`
+      <div
+        class="task-comment-item task-workflow-run-card"
+        key=${key}
+        data-clickable=${run.hasRunLink ? "true" : "false"}
+        role=${run.hasRunLink ? "button" : undefined}
+        tabIndex=${run.hasRunLink ? 0 : undefined}
+        onClick=${run.hasRunLink ? () => { void handleOpenWorkflowRun(run); } : undefined}
+        onKeyDown=${run.hasRunLink
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                void handleOpenWorkflowRun(run);
+              }
+            }
+          : undefined}
+      >
+        <div class="task-workflow-run-head">
+          <div style="min-width:0;flex:1;">
+            <div class="task-comment-meta">${metaLine || "workflow"}</div>
+            <div class="task-comment-body">${statusLine}</div>
+            ${run.nodeId ? html`<div class="task-comment-meta">Node: ${run.nodeId}</div>` : null}
+          </div>
+          <div class="task-workflow-run-actions" onClick=${(event) => event.stopPropagation()}>
+            ${run.hasRunLink ? html`
+              <${Button} variant="outlined" size="small" onClick=${() => { void handleOpenWorkflowRun(run); }}>
+                Open Run
+              <//>
+            ` : null}
+            ${run.hasSessionLink ? html`
+              <${Button} variant="text" size="small" onClick=${() => { void handleOpenWorkflowAgentHistory(run); }}>
+                Agent History
+              <//>
+            ` : null}
+          </div>
+        </div>
+      </div>
+    `;
+  }, [handleOpenWorkflowRun, handleOpenWorkflowAgentHistory]);
+
   const toggleNodeExpand = useCallback((stageIdx, nodeId) => {
     setExpandedNodes((prev) => ({ ...prev, [`${stageIdx}-${nodeId}`]: !prev[`${stageIdx}-${nodeId}`] }));
   }, []);
@@ -3497,19 +3683,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             <div class="task-section-title">Workflow Activity</div>
             <div class="task-section-body">
               <div class="task-comments-list">
-                ${workflowRuns.map((run, index) => html`
-                  <div class="task-comment-item" key=${`workflow-${index}`}>
-                    <div class="task-comment-meta">
-                      ${run.workflowId || "workflow"}
-                      ${run.runId ? ` · run ${run.runId}` : ""}
-                      ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
-                    </div>
-                    <div class="task-comment-body">${run.status || run.result || "No status summary"}</div>
-                    ${run.result && run.status && run.result !== run.status && html`
-                      <div class="task-comment-body">${run.result}</div>
-                    `}
-                  </div>
-                `)}
+                ${workflowRuns.map((run, index) => renderWorkflowActivityCard(run, `workflow-${index}`))}
               </div>
             </div>
           </div>
@@ -4295,16 +4469,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">Workflow Activity</div>
           <div class="task-comments-list">
-            ${workflowRuns.map((run, index) => html`
-              <div class="task-comment-item" key=${`wf-hist-${index}`}>
-                <div class="task-comment-meta">
-                  ${run.workflowId || "workflow"}
-                  ${run.runId ? ` · run ${run.runId}` : ""}
-                  ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
-                </div>
-                <div class="task-comment-body">${run.status || run.result || "No status summary"}</div>
-              </div>
-            `)}
+            ${workflowRuns.map((run, index) => renderWorkflowActivityCard(run, `wf-hist-${index}`))}
           </div>
         </div>
       `}
@@ -4736,7 +4901,7 @@ function DagGraphSection({
         <div>
           <div style=${{ fontWeight: "700" }}>${title || "Task DAG"}</div>
           ${description ? html`<div class="meta-text">${description}</div>` : null}
-          <div class="meta-text">Drag to pan · wheel to zoom · click node to ${isWireMode ? "wire edges" : "open task"}.</div>
+          <div class="meta-text">Drag to pan · wheel to zoom · ${isWireMode ? "drag from one node to another, or click source then target, to wire edges" : "click node to open task"}.</div>
         </div>
         <div class="task-dag-controls">
           <${Button} size="small" variant="outlined" onClick=${() => setZoom((z) => Math.max(DAG_MIN_ZOOM, z * 0.9))}>-</${Button}>
@@ -4811,7 +4976,10 @@ function DagGraphSection({
                 <g
                   key=${node.id}
                   class=${`dag-node ${selected ? "dag-node-selected" : ""} ${hoverTarget ? "dag-node-hover-target" : ""} ${highlighted ? "dag-node-highlighted" : ""}`}
-                  onPointerDown=${(event) => event.stopPropagation()}
+                  onPointerDown=${(event) => {
+                    event.stopPropagation();
+                    if (isWireMode) handleWireNodePointerDown(node, event);
+                  }}
                   onPointerEnter=${() => {
                     if (!wireDrag || String(node.id) === String(wireDrag.sourceId)) return;
                     wireHoverIdRef.current = String(node.id);
@@ -4822,8 +4990,8 @@ function DagGraphSection({
                     wireHoverIdRef.current = "";
                     setWireHoverId("");
                   }}
-                  onClick=${(event) => handleNodeClick(node, event)}
-                  style=${{ cursor: isWireMode || node.taskId ? "pointer" : "default" }}
+                  onClick=${isWireMode ? undefined : (event) => handleNodeClick(node, event)}
+                  style=${{ cursor: isWireMode ? "crosshair" : node.taskId ? "pointer" : "default" }}
                 >
                   <rect
                     x=${pos.x}
@@ -4853,7 +5021,7 @@ function DagGraphSection({
                       fill=${selected ? "var(--accent)" : "var(--bg-canvas, #0f1115)"}
                       stroke="var(--accent)"
                       stroke-width="2"
-                      onPointerDown=${(event) => beginWireDrag(node, event)}
+                      onPointerDown=${(event) => handleWireNodePointerDown(node, event)}
                     />
                   ` : null}
                   ${Number.isFinite(node.order) && html`<text x=${pos.x + pos.width - 16} y=${pos.y + 22} text-anchor="end" fill="var(--text-muted)" font-size="11">#${node.order}</text>`}
@@ -4895,6 +5063,8 @@ export function TasksTab() {
   const [dagAllTasks, setDagAllTasks] = useState([]);
   const [dagEpicDependencies, setDagEpicDependencies] = useState([]);
   const [dagFocusMode, setDagFocusMode] = useState("all");
+  const [dagOrganizeFeedback, setDagOrganizeFeedback] = useState("");
+  const [dagOrganizeSuggestions, setDagOrganizeSuggestions] = useState([]);
   const [showCreateSprint, setShowCreateSprint] = useState(false);
   const [editingSprint, setEditingSprint] = useState(null);
   const [createSeed, setCreateSeed] = useState(null);
@@ -5006,6 +5176,14 @@ export function TasksTab() {
     { id: "execution", label: "Running & review", count: dagPlanningState.counts.execution },
     { id: "ready", label: "Ready next", count: dagPlanningState.counts.ready },
   ];
+  const dagOrganizeSummary = useMemo(() => {
+    if (dagOrganizeFeedback) return dagOrganizeFeedback;
+    return "Run Auto Wire to rewrite sprint order, add inferred dependencies, and surface any cleanup suggestions that still need review.";
+  }, [dagOrganizeFeedback]);
+  const dagSelectedSprintLabel = useMemo(() => {
+    if (dagSelectedSprint === "all") return "all sprints";
+    return dagSprints.find((entry) => entry.id === dagSelectedSprint)?.label || dagSelectedSprint;
+  }, [dagSelectedSprint, dagSprints]);
 
   const loadMoreKanbanTasks = useCallback(async () => {
     if (!isKanban || kanbanLoadingMore || isSearching) return;
@@ -5207,6 +5385,11 @@ export function TasksTab() {
       else mq.removeListener(handler);
     };
   }, []);
+
+  useEffect(() => {
+    setDagOrganizeFeedback("");
+    setDagOrganizeSuggestions([]);
+  }, [dagSelectedSprint]);
 
   useEffect(() => {
     if (isCompact) {
@@ -5470,24 +5653,89 @@ export function TasksTab() {
       setDagError("Failed to update sprint execution mode.");
     }
   }, [dagSelectedSprint, loadDagViews]);
+
+  const persistSprintTaskOrder = useCallback(async (sprintId, orderedTasks) => {
+    await Promise.all(orderedTasks.map((entry, index) => apiFetch(
+      "/api/tasks/sprints/" + encodeURIComponent(sprintId) + "/tasks",
+      {
+        method: "POST",
+        body: JSON.stringify({ taskId: entry.id, sprintOrder: index + 1 }),
+      },
+    )));
+  }, []);
+
   const handleNudgeSprintTaskOrder = useCallback(async (taskId, delta) => {
     const task = dagTaskCatalog.find((entry) => toText(entry?.id) === toText(taskId));
     const sprintId = toText(getTaskSprintId(task));
     if (!task?.id || !sprintId) return;
-    const currentOrder = Number(getTaskSprintOrder(task) || 1);
-    const nextOrder = Math.max(1, (Number.isFinite(currentOrder) ? currentOrder : 1) + delta);
+    const sprintQueue = dagSprintQueue
+      .filter((entry) => toText(getTaskSprintId(entry)) === sprintId)
+      .sort((left, right) => {
+        const leftOrder = Number(getTaskSprintOrder(left) || Number.MAX_SAFE_INTEGER);
+        const rightOrder = Number(getTaskSprintOrder(right) || Number.MAX_SAFE_INTEGER);
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+        return String(left?.title || left?.id || "").localeCompare(String(right?.title || right?.id || ""));
+      });
+    const currentIndex = sprintQueue.findIndex((entry) => toText(entry?.id) === toText(taskId));
+    const nextIndex = currentIndex + delta;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= sprintQueue.length) return;
+    const reordered = [...sprintQueue];
+    const [movedTask] = reordered.splice(currentIndex, 1);
+    reordered.splice(nextIndex, 0, movedTask);
     try {
-      await apiFetch(
-        "/api/tasks/sprints/" + encodeURIComponent(sprintId) + "/tasks",
-        {
-          method: "POST",
-          body: JSON.stringify({ taskId: task.id, sprintOrder: nextOrder }),
-        },
-      );
-      showToast("Sprint order updated", "success");
+      await persistSprintTaskOrder(sprintId, reordered);
+      showToast("Sprint queue reordered", "success");
       await loadDagViews();
     } catch {
       setDagError("Failed to update sprint task order.");
+    }
+  }, [dagSprintQueue, dagTaskCatalog, loadDagViews, persistSprintTaskOrder]);
+
+  const handleApplyDagSuggestion = useCallback(async (entry) => {
+    const suggestionType = toText(entry?.type);
+    if (suggestionType !== "missing_sequential_dependency") return;
+
+    const dependencyTaskId = toText(entry?.dependencyTaskId);
+    const taskId = toText(entry?.taskId);
+    if (!dependencyTaskId || !taskId || dependencyTaskId === taskId) return;
+
+    haptic("medium");
+    setDagLoading(true);
+    setDagError("");
+    try {
+      const task = dagTaskCatalog.find((candidate) => toText(candidate?.id) === taskId);
+      const existing = normalizeDependencyInput(getTaskDependencyIds(task));
+      if (existing.includes(dependencyTaskId)) {
+        setDagOrganizeSuggestions((current) => current.filter((candidate) => !(
+          toText(candidate?.type) === suggestionType &&
+          toText(candidate?.taskId) === taskId &&
+          toText(candidate?.dependencyTaskId) === dependencyTaskId
+        )));
+        setDagOrganizeFeedback(`Dependency ${dependencyTaskId} -> ${taskId} is already present.`);
+        showToast("Dependency already exists", "info");
+        return;
+      }
+
+      await apiFetch("/api/tasks/dependencies", {
+        method: "PUT",
+        body: JSON.stringify({
+          taskId,
+          dependencies: normalizeDependencyInput([...existing, dependencyTaskId]),
+        }),
+      });
+
+      setDagOrganizeSuggestions((current) => current.filter((candidate) => !(
+        toText(candidate?.type) === suggestionType &&
+        toText(candidate?.taskId) === taskId &&
+        toText(candidate?.dependencyTaskId) === dependencyTaskId
+      )));
+      setDagOrganizeFeedback(`Applied sequential dependency ${dependencyTaskId} -> ${taskId}.`);
+      showToast(`Applied dependency: ${dependencyTaskId} -> ${taskId}`, "success");
+      await loadDagViews();
+    } catch (error) {
+      setDagError(error?.message || "Failed to apply organizer suggestion.");
+    } finally {
+      setDagLoading(false);
     }
   }, [dagTaskCatalog, loadDagViews]);
 
@@ -6266,7 +6514,7 @@ export function TasksTab() {
               </${ToggleButtonGroup}>
             </div>
             <div class="meta-text" style=${{ marginTop: "6px" }}>
-              ${dagInteractionMode === "wire" ? "Click source then target to add edges." : "Click any node to open the Jira-style side panel."}
+              ${dagInteractionMode === "wire" ? "Drag from a source node to a target node to add edges, or click source then target for rapid multi-wiring." : "Click any node to open the Jira-style side panel."}
             </div>
           </div>
           <div class="tasks-filter-section">
@@ -6279,6 +6527,46 @@ export function TasksTab() {
                 <${MenuItem} value="parallel">Mode: parallel</${MenuItem}>
                 <${MenuItem} value="sequential">Mode: sequential</${MenuItem}>
               </${Select}>
+            </div>
+          </div>
+          <div class="tasks-filter-section">
+            <div class="tasks-filter-title">Organizer review</div>
+            <div class="meta-text" style=${{ marginTop: "6px" }}>
+              ${dagOrganizeSummary}
+            </div>
+            ${dagOrganizeSuggestions.length > 0 && html`
+              <div class="meta-text" style=${{ marginTop: "4px" }}>
+                Showing ${Math.min(dagOrganizeSuggestions.length, 6)} of ${dagOrganizeSuggestions.length} suggestion${dagOrganizeSuggestions.length === 1 ? "" : "s"} for ${dagSelectedSprintLabel}.
+              </div>
+            `}
+            <div class="task-dag-sidebar-list" style=${{ marginTop: "8px" }}>
+              ${dagOrganizeSuggestions.slice(0, 6).map((entry) => {
+                const suggestionType = toText(entry?.type, "dependency_update");
+                const suggestionLabel = suggestionType === "missing_sequential_dependency"
+                  ? "Sequential gap"
+                  : suggestionType === "redundant_transitive_dependency"
+                    ? "Redundant edge"
+                    : "Dependency suggestion";
+                const taskId = toText(entry?.taskId);
+                const dependencyTaskId = toText(entry?.dependencyTaskId);
+                return html`
+                  <div class="task-dag-sidebar-card">
+                    <div class="task-dag-sidebar-card-main">
+                      <strong>${suggestionLabel}</strong>
+                      <span class="meta-text">${truncate(toText(entry?.message, "Dependency rewrite suggested."), 120)}</span>
+                      <span class="meta-text">${dependencyTaskId ? `${dependencyTaskId} -> ` : ""}${taskId || "task"}</span>
+                    </div>
+                    <div class="task-dag-sidebar-card-actions">
+                      ${suggestionType === "missing_sequential_dependency" && dependencyTaskId && taskId
+                        ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => handleApplyDagSuggestion(entry)}>apply</button>`
+                        : null}
+                      ${dependencyTaskId ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => openDetail(dependencyTaskId)}>dep</button>` : null}
+                      ${taskId ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => openDetail(taskId)}>task</button>` : null}
+                    </div>
+                  </div>
+                `;
+              })}
+              ${dagOrganizeSuggestions.length === 0 ? html`<div class="meta-text">No pending organizer suggestions for this scope.</div>` : null}
             </div>
           </div>
           <div class="tasks-filter-section">

@@ -170,7 +170,7 @@ export const tasksSearch = signal("");
 export const tasksSort = signal("updated");
 export const tasksTotalPages = signal(1);
 export const tasksTotal = signal(0);
-export const tasksStatusCounts = signal({ draft: 0, backlog: 0, inProgress: 0, inReview: 0, done: 0 });
+export const tasksStatusCounts = signal({ draft: 0, backlog: 0, blocked: 0, inProgress: 0, inReview: 0, done: 0 });
 
 // ── Retry Queue
 export const retryQueueData = signal({ count: 0, items: [] });
@@ -573,6 +573,7 @@ export async function loadTasks(options = {}) {
   tasksStatusCounts.value = {
     draft: Number(res?.statusCounts?.draft || 0),
     backlog: Number(res?.statusCounts?.backlog || 0),
+    blocked: Number(res?.statusCounts?.blocked || 0),
     inProgress: Number(res?.statusCounts?.inProgress || 0),
     inReview: Number(res?.statusCounts?.inReview || 0),
     done: Number(res?.statusCounts?.done || 0),

@@ -49,6 +49,7 @@ const __dirname = dirname(__filename);
  * @property {string}   [completedAt]
  * @property {Object}   [result]     — executor output
  * @property {string}   [error]
+ * @property {Object}   [metadata]
  */
 
 // ── Directories ──────────────────────────────────────────────────────────────
@@ -840,14 +841,14 @@ export function deleteFlowTemplate(templateId, rootDir) {
  * @param {string} rootDir
  * @returns {ManualFlowRun}
  */
-export function createRun(templateId, formValues, rootDir) {
+export function createRun(templateId, formValues, rootDir, opts = {}) {
   ensureDirs(rootDir);
   const template = getFlowTemplate(templateId, rootDir);
   if (!template) throw new Error(`Template not found: ${templateId}`);
 
   validateRequiredManualFlowFields(template, formValues);
   const resolved = resolveManualFlowValues(template, formValues);
-  const run = createManualFlowRunRecord(templateId, template.name, resolved);
+  const run = createManualFlowRunRecord(templateId, template.name, resolved, opts);
 
   writeRunToDisk(run, rootDir);
   return run;
@@ -875,7 +876,34 @@ function resolveManualFlowValues(template, formValues) {
   return resolved;
 }
 
-function createManualFlowRunRecord(templateId, templateName, formValues) {
+function normalizeManualFlowRunMetadata(metadata = {}) {
+  if (!metadata || typeof metadata !== "object") return null;
+  const normalized = {};
+
+  const repository = String(
+    metadata.repository || metadata.targetRepo || metadata.repo || "",
+  ).trim();
+  if (repository) {
+    normalized.repository = repository;
+    normalized.targetRepo = repository;
+  }
+
+  const workspaceId = String(metadata.workspaceId || metadata.workspace || "").trim();
+  if (workspaceId) normalized.workspaceId = workspaceId;
+
+  const workspaceDir = String(metadata.workspaceDir || metadata.rootDir || "").trim();
+  if (workspaceDir) normalized.workspaceDir = workspaceDir;
+
+  const projectId = String(metadata.projectId || metadata.project || "").trim();
+  if (projectId) normalized.projectId = projectId;
+
+  const triggerSource = String(metadata.triggerSource || metadata.source || "").trim();
+  if (triggerSource) normalized.triggerSource = triggerSource;
+
+  return Object.keys(normalized).length > 0 ? normalized : null;
+}
+
+function createManualFlowRunRecord(templateId, templateName, formValues, opts = {}) {
   return {
     id: `mfr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     templateId,
@@ -886,6 +914,7 @@ function createManualFlowRunRecord(templateId, templateName, formValues) {
     completedAt: null,
     result: null,
     error: null,
+    metadata: normalizeManualFlowRunMetadata(opts?.metadata),
   };
 }
 
@@ -1007,7 +1036,9 @@ export function listRuns(rootDir, opts = {}) {
  * @returns {Promise<ManualFlowRun>}
  */
 export async function executeFlow(templateId, formValues, rootDir, context = {}) {
-  const run = createRun(templateId, formValues, rootDir);
+  const run = createRun(templateId, formValues, rootDir, {
+    metadata: context?.runMetadata,
+  });
 
   try {
     startRun(run.id, rootDir);
@@ -1045,7 +1076,7 @@ export async function executeFlow(templateId, formValues, rootDir, context = {})
     return completeRun(run.id, result, rootDir);
   } catch (err) {
     console.warn("[manual-flows] execution failed for " + run.id + ": " + (err?.message || String(err)));
-    return failRun(run.id, "Execution failed", rootDir);
+    return failRun(run.id, err?.message || "Execution failed", rootDir);
   }
 }
 
@@ -1251,7 +1282,13 @@ function buildResearchWorkflowInput({ problem, domain, maxIterations, searchLite
 
 /** Executor for user-created custom templates. */
 async function executeCustomFlow(template, formValues, rootDir, context) {
-  const templateValues = buildCustomFlowTemplateValues(template, formValues);
+  const templateValues = buildCustomFlowTemplateValues(template, formValues, {
+    repository:
+      context?.runMetadata?.repository ||
+      context?.runMetadata?.targetRepo ||
+      "",
+    workspaceId: context?.runMetadata?.workspaceId || "",
+  });
   const action = resolveCustomFlowAction(template);
   const actionKind = String(action?.kind || "task").trim().toLowerCase();
 
@@ -1298,9 +1335,10 @@ async function executeCustomFlow(template, formValues, rootDir, context) {
   };
 }
 
-function buildCustomFlowTemplateValues(template, formValues) {
+function buildCustomFlowTemplateValues(template, formValues, extraValues = {}) {
   return {
     ...(formValues || {}),
+    ...(extraValues || {}),
     templateName: template?.name || "",
     templateId: template?.id || "",
     category: template?.category || "custom",
@@ -1352,4 +1390,3 @@ function writeRunToDisk(run, rootDir) {
   mkdirSync(dir, { recursive: true });
   writeFileSync(resolve(dir, `${run.id}.json`), JSON.stringify(run, null, 2) + "\n", "utf8");
 }
-

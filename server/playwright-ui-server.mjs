@@ -18,6 +18,8 @@ const sharedLibRoot = resolve(__dirname, "..", "lib");
 const PORT = Number.parseInt(String(process.env.PLAYWRIGHT_UI_PORT || "4444"), 10) || 4444;
 const ESM_CACHE_DIR = resolve(__dirname, "..", ".cache", "esm-vendor");
 const LOCAL_ESM_PATH_RE = /^\/(?:@|[a-z0-9][a-z0-9._-]*@)/i;
+const SAFE_ESM_PATH_RE = /^\/(?:@|[a-z0-9][a-z0-9._-]*@)[a-z0-9./_@%-]*$/i;
+const SAFE_ESM_SEARCH_RE = /^\?[a-z0-9._~!$&'()*+,;=:@%/-]*$/i;
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -99,20 +101,48 @@ async function serveEsmVendor(res, name) {
   }
 }
 
-async function serveEsmPassthrough(res, pathname, search = "") {
-  // Sanitize query string to avoid forwarding raw user input directly.
-  let safeSearch = "";
-  if (typeof search === "string" && search.length > 0) {
-    // Strip any leading "?" so we can rebuild it consistently.
-    const rawSearch = search.startsWith("?") ? search.slice(1) : search;
-    const params = new URLSearchParams(rawSearch);
-    const rebuilt = params.toString();
-    if (rebuilt) {
-      safeSearch = `?${rebuilt}`;
+function sanitizeEsmSearchParams(search = "") {
+  if (!search || typeof search !== "string") return "";
+  const original = search.startsWith("?") ? search.slice(1) : search;
+  if (!original) return "";
+
+  const allowedParams = new Set([
+    "target",
+    "dev",
+    "bundle",
+    "external",
+    "deps",
+    "alias",
+    "keep-names",
+    "pin"
+  ]);
+
+  const inputParams = new URLSearchParams(original);
+  const safeParams = new URLSearchParams();
+
+  for (const [key, value] of inputParams.entries()) {
+    if (allowedParams.has(key)) {
+      safeParams.append(key, value);
     }
   }
 
-  const upstreamUrl = `https://esm.sh${pathname}${safeSearch}`;
+  const serialized = safeParams.toString();
+  return serialized ? `?${serialized}` : "";
+}
+
+function buildSafeEsmProxyUrl(pathname, search = "") {
+  const normalizedPath = String(pathname || "").trim();
+  if (!SAFE_ESM_PATH_RE.test(normalizedPath)) return null;
+  const safeSearch = sanitizeEsmSearchParams(search);
+  return new URL(`${normalizedPath}${safeSearch}`, "https://esm.sh").toString();
+}
+
+async function serveEsmPassthrough(res, pathname, search = "") {
+  const upstreamUrl = buildSafeEsmProxyUrl(pathname, search);
+  if (!upstreamUrl) {
+    console.error(`[esm-proxy] Rejected nested module request ${pathname}${search}`);
+    return false;
+  }
   try {
     const response = await fetch(upstreamUrl, {
       headers: { "User-Agent": "bosun-playwright-proxy/1.0" },

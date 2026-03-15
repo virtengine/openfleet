@@ -826,6 +826,12 @@ describe("ui-server mini app", () => {
           enabled: true,
           description: "updated from test",
           minIntervalMinutes: 45,
+          state: {
+            last_success_at: new Date().toISOString(),
+          },
+          stats: {
+            spawnedTotal: 12,
+          },
         },
       }),
     });
@@ -842,8 +848,101 @@ describe("ui-server mini app", () => {
     expect(updatedTemplate?.enabled).toBe(true);
     expect(updatedTemplate?.description).toBe("updated from test");
     expect(updatedTemplate?.minIntervalMinutes).toBe(45);
+    expect(updatedTemplate).not.toHaveProperty("state");
+    expect(updatedTemplate).not.toHaveProperty("stats");
 
     rmSync(tmpDir, { recursive: true, force: true });
+  }, 15000);
+
+  it("exports task state snapshots via mini app API", async () => {
+    const mod = await import("../server/ui-server.mjs");
+    const taskStore = await import("../task/task-store.mjs");
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+
+    taskStore.addTask({
+      id: "task-export-1",
+      title: "Export me",
+      status: "todo",
+      timeline: [{ type: "task.created", source: "test" }],
+      workflowRuns: [{ runId: "run-1", workflowId: "wf-1", status: "completed" }],
+      statusHistory: [{ status: "todo", timestamp: new Date().toISOString(), source: "test" }],
+    });
+    await taskStore.waitForStoreWrites();
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/tasks/export`);
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.data.kind).toBe("bosun-task-state-export");
+    expect(json.data.backend).toBe("internal");
+    expect(Array.isArray(json.data.tasks)).toBe(true);
+    const exported = json.data.tasks.find((task) => task.id === "task-export-1");
+    expect(exported?.title).toBe("Export me");
+    expect(Array.isArray(exported?.timeline)).toBe(true);
+    expect(exported?.timeline?.length).toBeGreaterThan(0);
+    expect(Array.isArray(exported?.workflowRuns)).toBe(true);
+    expect(exported?.workflowRuns?.[0]?.runId).toBe("run-1");
+  }, 15000);
+
+  it("imports task state snapshots with merge semantics via mini app API", async () => {
+    const mod = await import("../server/ui-server.mjs");
+    const taskStore = await import("../task/task-store.mjs");
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+
+    taskStore.addTask({
+      id: "task-import-1",
+      title: "Original title",
+      status: "todo",
+    });
+    await taskStore.waitForStoreWrites();
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/tasks/import`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        mode: "merge",
+        tasks: [
+          {
+            id: "task-import-1",
+            title: "Updated title",
+            status: "inreview",
+            timeline: [{ type: "status.transition", source: "import" }],
+            workflowRuns: [{ runId: "run-import-1", workflowId: "wf-import-1", status: "completed" }],
+            statusHistory: [{ status: "inreview", timestamp: new Date().toISOString(), source: "import" }],
+          },
+          {
+            id: "task-import-2",
+            title: "Imported task",
+            status: "todo",
+          },
+        ],
+      }),
+    });
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.data.summary.created).toBe(1);
+    expect(json.data.summary.updated).toBe(1);
+
+    const updatedTask = taskStore.getTask("task-import-1");
+    const createdTask = taskStore.getTask("task-import-2");
+    expect(updatedTask?.title).toBe("Updated title");
+    expect(updatedTask?.status).toBe("inreview");
+    expect(Array.isArray(updatedTask?.workflowRuns)).toBe(true);
+    expect(updatedTask?.workflowRuns?.[0]?.runId).toBe("run-import-1");
+    expect(createdTask?.title).toBe("Imported task");
   }, 15000);
 
   it("queues /plan commands in background to avoid request timeouts", async () => {
@@ -1664,6 +1763,138 @@ describe("ui-server mini app", () => {
     expect(clearRetryQueueTask).toHaveBeenCalledWith(taskId, "manual-retry-now");
   });
 
+  it("clears blocked task state through /api/tasks/unblock", async () => {
+    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-unblock-"));
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.EXECUTOR_MODE = "internal";
+    process.env.BOSUN_HOME = isolatedDir;
+    process.env.BOSUN_DIR = isolatedDir;
+    process.env.CODEX_MONITOR_HOME = isolatedDir;
+    process.env.CODEX_MONITOR_DIR = isolatedDir;
+
+    const storeDir = join(isolatedDir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+    const taskStore = await import("../task/task-store.mjs");
+    taskStore.configureTaskStore({ storePath });
+    taskStore.loadStore();
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "Blocked UI task",
+        description: "verify unblock route",
+        status: "todo",
+      }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+    const taskId = created.data.id;
+
+    taskStore.updateTask(taskId, {
+      status: "blocked",
+      cooldownUntil: new Date(Date.now() + 60_000).toISOString(),
+      blockedReason: "bootstrap pending",
+      meta: {
+        autoRecovery: {
+          active: true,
+          reason: "worktree_failure",
+          retryAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+        note: "keep-me",
+      },
+    });
+
+    const unblocked = await fetch(`http://127.0.0.1:${port}/api/tasks/unblock`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taskId }),
+    }).then((r) => r.json());
+
+    expect(unblocked.ok).toBe(true);
+    expect(unblocked.data.status).toBe("todo");
+
+    const task = taskStore.getTask(taskId);
+    expect(task.status).toBe("todo");
+    expect(task.cooldownUntil).toBeNull();
+    expect(task.blockedReason).toBeNull();
+    expect(task.meta?.autoRecovery).toBeUndefined();
+    expect(task.meta?.note).toBe("keep-me");
+  });
+
+  it("clears blocked task state when editing a blocked task back to todo", async () => {
+    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-edit-unblock-"));
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.EXECUTOR_MODE = "internal";
+    process.env.BOSUN_HOME = isolatedDir;
+    process.env.BOSUN_DIR = isolatedDir;
+    process.env.CODEX_MONITOR_HOME = isolatedDir;
+    process.env.CODEX_MONITOR_DIR = isolatedDir;
+
+    const storeDir = join(isolatedDir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+    const taskStore = await import("../task/task-store.mjs");
+    taskStore.configureTaskStore({ storePath });
+    taskStore.loadStore();
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    taskStore.addTask({
+      id: "task-edit-unblock",
+      title: "Blocked via edit",
+      description: "verify edit route clears block state",
+      status: "blocked",
+      cooldownUntil: new Date(Date.now() + 60_000).toISOString(),
+      blockedReason: "dependency not ready",
+      meta: {
+        autoRecovery: {
+          active: true,
+          reason: "worktree_failure",
+          retryAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+        note: "preserve-me",
+      },
+    });
+
+    const edited = await fetch(`http://127.0.0.1:${port}/api/tasks/edit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        taskId: "task-edit-unblock",
+        title: "Blocked via edit",
+        description: "verify edit route clears block state",
+        status: "todo",
+      }),
+    }).then((r) => r.json());
+
+    expect(edited.ok).toBe(true);
+    expect(edited.data.status).toBe("todo");
+
+    const task = taskStore.getTask("task-edit-unblock");
+    expect(task.status).toBe("todo");
+    expect(task.cooldownUntil).toBeNull();
+    expect(task.blockedReason).toBeNull();
+    expect(task.meta?.autoRecovery).toBeUndefined();
+    expect(task.meta?.note).toBe("preserve-me");
+  });
+
   it("queues task starts when no executor slots are free and reports truthful runtime state", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-queue-"));
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -1792,6 +2023,119 @@ describe("ui-server mini app", () => {
     expect(detail.data.workflowRuns.some((run) => run.workflowId === workflowId)).toBe(true);
   }, 20000);
 
+  it("preserves stored workflow session links while adding primary session ids from workflow detail", async () => {
+    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-workflow-merge-"));
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_HOME = isolatedDir;
+    process.env.BOSUN_DIR = isolatedDir;
+    process.env.CODEX_MONITOR_HOME = isolatedDir;
+    process.env.CODEX_MONITOR_DIR = isolatedDir;
+
+    const mod = await import("../server/ui-server.mjs");
+    const workflowEngineModule = await import("../workflow/workflow-engine.mjs");
+    const fakeEngine = {
+      getRunHistory: vi.fn(() => [{ runId: "run-merge-1" }]),
+      getRunDetail: vi.fn(() => ({
+        runId: "run-merge-1",
+        workflowId: "wf-merge-1",
+        workflowName: "Merged workflow",
+        status: "completed",
+        startedAt: "2026-03-15T12:00:00.000Z",
+        endedAt: "2026-03-15T12:02:00.000Z",
+        duration: 120000,
+        detail: {
+          data: {
+            taskId: "__task__",
+            sessionId: "derived-session-1",
+          },
+        },
+      })),
+      getTaskTraceEvents: vi.fn(() => [
+        {
+          taskId: "__task__",
+          meta: { sessionId: "trace-session-1" },
+        },
+      ]),
+      registerTaskTraceHook: vi.fn(),
+      load: vi.fn(),
+    };
+    mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, fakeEngine);
+
+    try {
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: "Workflow merge task",
+          description: "preserve stored workflow session link",
+          status: "todo",
+        }),
+      }).then((r) => r.json());
+      expect(created.ok).toBe(true);
+      const taskId = created.data.id;
+
+      fakeEngine.getRunDetail.mockImplementation(() => ({
+        runId: "run-merge-1",
+        workflowId: "wf-merge-1",
+        workflowName: "Merged workflow",
+        status: "completed",
+        startedAt: "2026-03-15T12:00:00.000Z",
+        endedAt: "2026-03-15T12:02:00.000Z",
+        duration: 120000,
+        detail: {
+          data: {
+            taskId,
+            sessionId: "derived-session-1",
+          },
+        },
+      }));
+      fakeEngine.getTaskTraceEvents.mockImplementation(() => [
+        {
+          taskId,
+          meta: { sessionId: "trace-session-1" },
+        },
+      ]);
+
+      const taskStore = await import("../task/task-store.mjs");
+      taskStore.updateTask(taskId, {
+        workflowRuns: [
+          {
+            runId: "run-merge-1",
+            workflowId: "wf-merge-1",
+            status: "linked",
+            summary: "Stored workflow link",
+            meta: { sessionId: "stored-session-1" },
+          },
+        ],
+      });
+      expect(taskStore.getTask(taskId)?.workflowRuns?.[0]?.meta?.sessionId).toBe("stored-session-1");
+
+      const detail = await fetch(
+        `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
+      ).then((r) => r.json());
+
+      expect(detail.ok).toBe(true);
+      const mergedRun = detail.data.workflowRuns.find((run) => run.runId === "run-merge-1");
+      expect(mergedRun).toMatchObject({
+        runId: "run-merge-1",
+        workflowId: "wf-merge-1",
+        sessionId: "stored-session-1",
+        primarySessionId: "derived-session-1",
+      });
+      expect(mergedRun.meta?.sessionId).toBe("stored-session-1");
+    } finally {
+      mod._testInjectWorkflowEngine(workflowEngineModule, null);
+    }
+  });
+
   it("reports epic dependency blockers from start guards", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.EXECUTOR_MODE = "internal";
@@ -1841,6 +2185,60 @@ describe("ui-server mini app", () => {
     expect(blockedJson.canStart.reason).toBe("epic_dependencies_unresolved");
     expect(blockedJson.canStart.raw.blockingEpicIds).toEqual(["EPIC-B"]);
     expect(executeTask).not.toHaveBeenCalled();
+  });
+
+  it("keeps task detail responses JSON-safe when can-start guards return circular raw data", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.EXECUTOR_MODE = "internal";
+
+    const mod = await import("../server/ui-server.mjs");
+    const rawGuard = {
+      canStart: false,
+      reason: "dependency_blocked",
+      blockingTaskIds: ["dep-task-1"],
+      attemptCount: 3n,
+      debug: () => "ignored",
+    };
+    rawGuard.self = rawGuard;
+
+    mod.injectUiDependencies({
+      taskStoreApi: {
+        canStartTask: vi.fn(() => rawGuard),
+      },
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 2, activeSlots: 0, slots: [] }),
+        executeTask: vi.fn(async () => {}),
+        isPaused: () => false,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "guarded detail task", description: "detail guard" }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+
+    const detailResp = await fetch(
+      `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(created.data.id)}`,
+    );
+    const detailJson = await detailResp.json();
+
+    expect(detailResp.status).toBe(200);
+    expect(detailJson.ok).toBe(true);
+    expect(detailJson.data.canStart.canStart).toBe(false);
+    expect(detailJson.data.canStart.raw.blockingTaskIds).toEqual(["dep-task-1"]);
+    expect(detailJson.data.canStart.raw.attemptCount).toBe("3");
+    expect(detailJson.data.canStart.raw.self).toBe("[Circular]");
+    expect("debug" in detailJson.data.canStart.raw).toBe(false);
   });
 
   it("blocks /api/tasks/start when can-start guard fails unless force override is set", async () => {
@@ -1951,6 +2349,65 @@ describe("ui-server mini app", () => {
     expect(update.lifecycle.startDispatch.started).toBe(false);
     expect(update.lifecycle.startDispatch.reason).toBe("start_guard_blocked");
     expect(executeTask).not.toHaveBeenCalled();
+  });
+
+  it("includes blocked diagnostics on /api/tasks/detail and counts blocked tasks on /api/tasks", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    mod.injectUiDependencies({
+      taskStoreApi: {
+        canStartTask: vi.fn(() => ({
+          canStart: false,
+          reason: "dependency_blocked",
+          blockedBy: [{ taskId: "dep-1", reason: "Waiting for dep-1" }],
+          blockingTaskIds: ["dep-1"],
+        })),
+      },
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "blocked detail task",
+        description: "waiting on dependency",
+        status: "blocked",
+        blockedReason: "Dependency dep-1 is unresolved",
+      }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+    const taskId = created.data.id;
+
+    const detailResp = await fetch(
+      `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
+    );
+    const detailJson = await detailResp.json();
+
+    expect(detailResp.status).toBe(200);
+    expect(detailJson.ok).toBe(true);
+    expect(detailJson.data.canStart.canStart).toBe(false);
+    expect(detailJson.data.blockedContext.category).toBe("dependency_blocked");
+    expect(detailJson.data.blockedContext.blockedBy).toEqual([
+      { taskId: "dep-1", reason: "Waiting for dep-1" },
+    ]);
+    expect(detailJson.data.blockedContext.reason).toBe("dependency_blocked");
+    expect(detailJson.data.blockedContext.summary).toContain("Bosun will not dispatch this task");
+
+    const listResp = await fetch(`http://127.0.0.1:${port}/api/tasks`);
+    const listJson = await listResp.json();
+
+    expect(listResp.status).toBe(200);
+    expect(listJson.ok).toBe(true);
+    expect(listJson.statusCounts.blocked).toBeGreaterThanOrEqual(1);
   });
 
   it("wires sprint and dag task-store APIs through ui-server endpoints", async () => {
@@ -2174,6 +2631,7 @@ describe("ui-server mini app", () => {
     taskStore.loadStore();
     taskStore.addTask({ id: "legacy-no-workspace", title: "Legacy task", status: "todo" });
     taskStore.addTask({ id: "active-workspace", title: "Active workspace task", status: "draft", workspace: "virtengine-gh" });
+    taskStore.addTask({ id: "blocked-workspace", title: "Blocked workspace task", status: "blocked", workspace: "virtengine-gh" });
     taskStore.addTask({ id: "other-workspace", title: "Other workspace task", status: "todo", workspace: "other-workspace" });
 
     const mod = await import("../server/ui-server.mjs");
@@ -2191,11 +2649,13 @@ describe("ui-server mini app", () => {
 
       expect(response.status).toBe(200);
       expect(json.ok).toBe(true);
-      expect(json.total).toBe(2);
+      expect(json.total).toBe(3);
       expect(json.statusCounts.backlog).toBe(1);
       expect(json.statusCounts.draft).toBe(1);
+      expect(json.statusCounts.blocked).toBe(1);
       expect(json.data.map((task) => task.id).sort()).toEqual([
         "active-workspace",
+        "blocked-workspace",
         "legacy-no-workspace",
       ]);
     } finally {
@@ -2516,23 +2976,26 @@ describe("ui-server mini app", () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
     const mod = await import("../server/ui-server.mjs");
+    const organizeTaskDag = vi.fn(async () => ({
+      orderedSprintIds: ["sprint-b", "sprint-a"],
+      orderedTaskIdsBySprint: { "sprint-b": ["task-1", "task-2"] },
+      updatedSprintCount: 1,
+      updatedTaskCount: 2,
+      appliedDependencySuggestionCount: 1,
+      syncedEpicDependencyCount: 1,
+      suggestions: [
+        {
+          type: "missing_sequential_dependency",
+          sprintId: "sprint-b",
+          taskId: "task-2",
+          dependencyTaskId: "task-1",
+          message: "Add dependency task-1 -> task-2 to encode sequential sprint order.",
+        },
+      ],
+    }));
     mod.injectUiDependencies({
       taskStoreApi: {
-        organizeTaskDag: vi.fn(async () => ({
-          orderedSprintIds: ["sprint-b", "sprint-a"],
-          orderedTaskIdsBySprint: { "sprint-b": ["task-1", "task-2"] },
-          updatedSprintCount: 1,
-          updatedTaskCount: 2,
-          suggestions: [
-            {
-              type: "missing_sequential_dependency",
-              sprintId: "sprint-b",
-              taskId: "task-2",
-              dependencyTaskId: "task-1",
-              message: "Add dependency task-1 -> task-2 to encode sequential sprint order.",
-            },
-          ],
-        })),
+        organizeTaskDag,
       },
     });
 
@@ -2547,7 +3010,7 @@ describe("ui-server mini app", () => {
     const response = await fetch(`http://127.0.0.1:${port}/api/tasks/dag/organize`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sprintId: "sprint-b" }),
+      body: JSON.stringify({ sprintId: "sprint-b", applyDependencySuggestions: true, syncEpicDependencies: true }),
     });
     const json = await response.json();
 
@@ -2557,6 +3020,13 @@ describe("ui-server mini app", () => {
     expect(Array.isArray(json.suggestions)).toBe(true);
     expect(json.suggestions[0].type).toBe("missing_sequential_dependency");
     expect(json.data.updatedSprintCount).toBe(1);
+    expect(json.data.appliedDependencySuggestionCount).toBe(1);
+    expect(json.data.syncedEpicDependencyCount).toBe(1);
+    expect(organizeTaskDag).toHaveBeenCalledWith({
+      sprintId: "sprint-b",
+      applyDependencySuggestions: true,
+      syncEpicDependencies: true,
+    });
   });
 
   it("focuses agent log tails on session-specific lines", async () => {

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   buildNodeStatusesFromRunDetail,
   createHistoryState,
@@ -25,7 +25,12 @@ import {
   extractSelectableLibraryTasks,
   isSelectableLibraryTask,
 } from "../ui/tabs/library.js";
-import { buildTaskDescriptionFallback } from "../ui/tabs/tasks.js";
+import {
+  buildTaskDescriptionFallback,
+  normalizeTaskWorkflowRunEntry,
+  openTaskWorkflowAgentHistory,
+  openTaskWorkflowRun,
+} from "../ui/tabs/tasks.js";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -357,6 +362,55 @@ describe("task description fallbacks", () => {
     expect(sanitizeTaskText(raw)).toContain("Fix worker loop");
     expect(isPlaceholderTaskDescription(raw)).toBe(false);
     expect(buildTaskDescriptionFallback("Worker fix", raw)).toContain("Fix worker loop");
+  });
+});
+
+describe("task workflow activity helpers", () => {
+  it("opens task-linked workflow runs in the workflows run detail view", async () => {
+    const navigateTo = vi.fn(() => true);
+    const openWorkflowRunsView = vi.fn();
+
+    await expect(openTaskWorkflowRun(
+      { workflowId: "wf-task", runId: "run-task-1" },
+      { navigateTo, openWorkflowRunsView },
+    )).resolves.toBe(true);
+
+    expect(navigateTo).toHaveBeenCalledWith("workflows");
+    expect(openWorkflowRunsView).toHaveBeenCalledWith("wf-task", "run-task-1");
+  });
+
+  it("opens linked historical agent sessions from task workflow activity", async () => {
+    const navigateTo = vi.fn(() => true);
+    const loadSessions = vi.fn(async () => ({ ok: true }));
+    const loadSessionMessages = vi.fn(async () => ({ ok: true }));
+    const selectedSessionId = { value: "" };
+
+    await expect(openTaskWorkflowAgentHistory(
+      { primarySessionId: "session-task-1" },
+      { navigateTo, loadSessions, loadSessionMessages, selectedSessionId },
+    )).resolves.toBe(true);
+
+    expect(navigateTo).toHaveBeenCalledWith("agents");
+    expect(loadSessions).toHaveBeenCalledWith({ type: "task", workspace: "all" });
+    expect(selectedSessionId.value).toBe("session-task-1");
+    expect(loadSessionMessages).toHaveBeenCalledWith("session-task-1", { limit: 50 });
+  });
+
+  it("keeps stored session links ahead of derived primary session ids", () => {
+    const normalized = normalizeTaskWorkflowRunEntry({
+      workflowId: "wf-task",
+      runId: "run-task-2",
+      sessionId: "stored-session",
+      primarySessionId: "derived-session",
+      status: "completed",
+    });
+
+    expect(normalized).toMatchObject({
+      sessionId: "stored-session",
+      primarySessionId: "derived-session",
+      hasRunLink: true,
+      hasSessionLink: true,
+    });
   });
 });
 
