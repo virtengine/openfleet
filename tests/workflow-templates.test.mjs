@@ -925,6 +925,23 @@ describe("template drift + update behavior", () => {
     expect(refreshed.metadata.templateState.isCustomized).toBe(false);
     expect(refreshed.metadata.templateState.updateAvailable).toBe(false);
   });
+
+  it("re-lays out template-backed workflows when addressed by template id alias", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    wf.nodes.forEach((node) => {
+      node.position = { x: 25, y: 25 };
+    });
+    engine.save(wf);
+
+    const result = relayoutInstalledTemplateWorkflows(engine, { workflowId: "template-error-recovery" });
+    const refreshed = engine.get(installed.id);
+    const uniquePositions = new Set(refreshed.nodes.map((node) => `${node.position.x}:${node.position.y}`));
+
+    expect(result.updated).toBe(1);
+    expect(result.updatedWorkflowIds).toEqual([installed.id]);
+    expect(uniquePositions.size).toBe(refreshed.nodes.length);
+  });
 });
 
 describe("workflow setup profiles", () => {

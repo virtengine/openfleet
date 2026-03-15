@@ -616,12 +616,30 @@ function normalizeRelayoutWorkflowIdInput(value) {
   return id ? [id] : [];
 }
 
+function resolveRelayoutWorkflowTargets(engine, requestedIds = []) {
+  const targets = new Set();
+  for (const requestedId of requestedIds) {
+    const normalizedId = String(requestedId || "").trim();
+    if (!normalizedId) continue;
+    const resolved = engine.get(normalizedId);
+    if (resolved?.id) {
+      targets.add(String(resolved.id).trim());
+      continue;
+    }
+    targets.add(normalizedId);
+  }
+  return targets;
+}
+
 export function relayoutInstalledTemplateWorkflows(engine, opts = {}) {
   if (!engine || typeof engine.list !== "function" || typeof engine.get !== "function" || typeof engine.save !== "function") {
     throw new Error("A workflow engine with list/get/save is required");
   }
 
-  const targetWorkflowIds = new Set(normalizeRelayoutWorkflowIdInput(opts.workflowIds || opts.workflowId));
+  const targetWorkflowIds = resolveRelayoutWorkflowTargets(
+    engine,
+    normalizeRelayoutWorkflowIdInput(opts.workflowIds || opts.workflowId),
+  );
   const result = {
     scanned: 0,
     updated: 0,
@@ -1372,7 +1390,6 @@ export function installRecommendedTemplates(engine, overridesById = {}) {
     .map((template) => template.id);
   return installTemplateSet(engine, recommendedIds, overridesById);
 }
-
 
 
 

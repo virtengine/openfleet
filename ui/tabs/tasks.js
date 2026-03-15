@@ -45,6 +45,7 @@ import { ICONS } from "../modules/icons.js";
 import {
   cloneValue,
   formatRelative,
+  formatDuration,
   truncate,
   formatBytes,
   debounce,
@@ -52,6 +53,12 @@ import {
   exportAsJSON,
   countChangedFields,
 } from "../modules/utils.js";
+import { navigateTo } from "../modules/router.js";
+import {
+  loadSessions,
+  loadSessionMessages,
+  selectedSessionId,
+} from "../components/session-list.js";
 import {
   Modal,
   SaveDiscardBar,
@@ -66,6 +73,7 @@ import {
 } from "../components/forms.js";
 import { KanbanBoard } from "../components/kanban-board.js";
 import { VoiceMicButton, VoiceMicButtonInline } from "../modules/voice.js";
+import { openWorkflowRunsView } from "./workflows.js";
 import {
   workspaces as managedWorkspaces,
   activeWorkspaceId,
@@ -1077,6 +1085,89 @@ function buildTaskHistoryEntries(task) {
     .slice(0, 40);
 }
 
+function pickTaskWorkflowSessionId(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  for (const value of [
+    entry.sessionId,
+    entry.primarySessionId,
+    entry.threadId,
+    entry.agentSessionId,
+    entry.meta?.sessionId,
+    entry.meta?.threadId,
+  ]) {
+    const normalized = String(value || "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+export function normalizeTaskWorkflowRunEntry(entry) {
+  if (entry == null) return null;
+  if (typeof entry === "string") {
+    const workflowId = String(entry || "").trim();
+    return workflowId
+      ? {
+          workflowId,
+          workflowName: "",
+          workflowLabel: workflowId,
+          runId: "",
+          status: "",
+          outcome: "",
+          result: "",
+          summary: "",
+          timestamp: null,
+          startedAt: null,
+          endedAt: null,
+          duration: null,
+          sessionId: "",
+          primarySessionId: "",
+          hasRunLink: false,
+          hasSessionLink: false,
+          url: "",
+          nodeId: "",
+          meta: {},
+        }
+      : null;
+  }
+  const workflowId = String(entry.workflowId || entry.id || entry.templateId || "").trim();
+  const workflowName = String(entry.workflowName || entry.name || "").trim();
+  const runId = String(entry.runId || entry.executionId || entry.attemptId || "").trim();
+  const status = String(entry.status || "").trim();
+  const outcome = String(entry.outcome || "").trim();
+  const summary = String(entry.summary || entry.message || entry.reason || "").trim();
+  const result = summary || String(entry.result || "").trim();
+  const startedAt = entry.startedAt || entry.createdAt || null;
+  const endedAt = entry.endedAt || entry.completedAt || entry.timestamp || null;
+  const timestamp = endedAt || startedAt || null;
+  const duration = Number.isFinite(Number(entry.duration))
+    ? Number(entry.duration)
+    : (startedAt && endedAt
+        ? Math.max(0, new Date(endedAt).getTime() - new Date(startedAt).getTime())
+        : null);
+  const sessionId = pickTaskWorkflowSessionId(entry);
+  return {
+    workflowId,
+    workflowName,
+    workflowLabel: workflowName || workflowId || "workflow",
+    runId,
+    status,
+    outcome,
+    result,
+    summary,
+    timestamp,
+    startedAt,
+    endedAt,
+    duration,
+    sessionId,
+    primarySessionId: String(entry.primarySessionId || sessionId).trim(),
+    hasRunLink: Boolean(runId),
+    hasSessionLink: Boolean(sessionId),
+    url: String(entry.url || "").trim(),
+    nodeId: String(entry.nodeId || "").trim(),
+    meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
+  };
+}
+
 function buildTaskWorkflowRuns(task) {
   const rows = getTaskCollectionValues(task, [
     "workflowRuns",
@@ -1084,19 +1175,7 @@ function buildTaskWorkflowRuns(task) {
     "workflows",
   ]);
   return rows
-    .map((entry) => {
-      if (entry == null) return null;
-      if (typeof entry === "string") {
-        return { workflowId: entry, runId: "", status: "", result: "", timestamp: null };
-      }
-      return {
-        workflowId: String(entry.workflowId || entry.id || entry.templateId || "").trim(),
-        runId: String(entry.runId || entry.executionId || entry.attemptId || "").trim(),
-        status: String(entry.status || entry.outcome || entry.result || "").trim(),
-        result: String(entry.summary || entry.message || entry.reason || "").trim(),
-        timestamp: entry.timestamp || entry.completedAt || entry.createdAt || null,
-      };
-    })
+    .map((entry) => normalizeTaskWorkflowRunEntry(entry))
     .filter((entry) => entry && (entry.workflowId || entry.runId || entry.status || entry.result))
     .sort((a, b) => {
       const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
@@ -1104,6 +1183,56 @@ function buildTaskWorkflowRuns(task) {
       return tb - ta;
     })
     .slice(0, 30);
+}
+
+export function buildTaskWorkflowRunMetaLine(run) {
+  const parts = [];
+  const label = String(run?.workflowLabel || run?.workflowName || run?.workflowId || "workflow").trim();
+  if (label) parts.push(label);
+  if (run?.runId) parts.push(`run ${run.runId}`);
+  if (run?.timestamp) parts.push(formatRelative(run.timestamp));
+  if (Number.isFinite(Number(run?.duration)) && Number(run.duration) > 0) {
+    parts.push(formatDuration(Number(run.duration)));
+  }
+  return parts.join(" · ");
+}
+
+export function buildTaskWorkflowRunStatusLine(run) {
+  const parts = [];
+  const status = String(run?.status || "").trim();
+  const outcome = String(run?.outcome || "").trim();
+  const summary = String(run?.summary || run?.result || "").trim();
+  if (status) parts.push(status);
+  if (outcome && outcome !== status) parts.push(outcome);
+  if (summary && summary !== status && summary !== outcome) parts.push(summary);
+  return parts.join(" · ") || "No status summary";
+}
+
+export async function openTaskWorkflowRun(run, deps = {}) {
+  const navigate = deps.navigateTo || navigateTo;
+  const openRuns = deps.openWorkflowRunsView || openWorkflowRunsView;
+  const workflowId = String(run?.workflowId || "").trim();
+  const runId = String(run?.runId || "").trim();
+  if (!runId) return false;
+  const navigated = navigate("workflows");
+  if (navigated === false) return false;
+  openRuns(workflowId, runId);
+  return true;
+}
+
+export async function openTaskWorkflowAgentHistory(run, deps = {}) {
+  const navigate = deps.navigateTo || navigateTo;
+  const loadAllSessions = deps.loadSessions || loadSessions;
+  const loadMessages = deps.loadSessionMessages || loadSessionMessages;
+  const selectedStore = deps.selectedSessionId || selectedSessionId;
+  const sessionId = pickTaskWorkflowSessionId(run);
+  if (!sessionId) return false;
+  const navigated = navigate("agents");
+  if (navigated === false) return false;
+  await loadAllSessions({ type: "task", workspace: "all" });
+  selectedStore.value = sessionId;
+  await loadMessages(sessionId, { limit: 50 });
+  return true;
 }
 
 function buildTaskRelatedLinks(task) {
@@ -2463,7 +2592,6 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.workflowHistory,
     task?.workflows,
   ]);
-
   // ── Execution Plan state ──────────────────────────────────────────────────
   const [executionPlan, setExecutionPlan] = useState(null);
   const [executionPlanLoading, setExecutionPlanLoading] = useState(false);
@@ -2495,6 +2623,63 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     if (activeTab !== "execution") return;
     fetchExecutionPlan("resolve");
   }, [activeTab, fetchExecutionPlan]);
+
+  const handleOpenWorkflowRun = useCallback(async (run) => {
+    try {
+      await openTaskWorkflowRun(run);
+    } catch {
+      showToast("Unable to open workflow run", "error");
+    }
+  }, []);
+  const handleOpenWorkflowAgentHistory = useCallback(async (run) => {
+    try {
+      await openTaskWorkflowAgentHistory(run);
+    } catch {
+      showToast("Unable to open linked agent session", "error");
+    }
+  }, []);
+  const renderWorkflowActivityCard = useCallback((run, key) => {
+    const metaLine = buildTaskWorkflowRunMetaLine(run);
+    const statusLine = buildTaskWorkflowRunStatusLine(run);
+    return html`
+      <div
+        class="task-comment-item task-workflow-run-card"
+        key=${key}
+        data-clickable=${run.hasRunLink ? "true" : "false"}
+        role=${run.hasRunLink ? "button" : undefined}
+        tabIndex=${run.hasRunLink ? 0 : undefined}
+        onClick=${run.hasRunLink ? () => { void handleOpenWorkflowRun(run); } : undefined}
+        onKeyDown=${run.hasRunLink
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                void handleOpenWorkflowRun(run);
+              }
+            }
+          : undefined}
+      >
+        <div class="task-workflow-run-head">
+          <div style="min-width:0;flex:1;">
+            <div class="task-comment-meta">${metaLine || "workflow"}</div>
+            <div class="task-comment-body">${statusLine}</div>
+            ${run.nodeId ? html`<div class="task-comment-meta">Node: ${run.nodeId}</div>` : null}
+          </div>
+          <div class="task-workflow-run-actions" onClick=${(event) => event.stopPropagation()}>
+            ${run.hasRunLink ? html`
+              <${Button} variant="outlined" size="small" onClick=${() => { void handleOpenWorkflowRun(run); }}>
+                Open Run
+              <//>
+            ` : null}
+            ${run.hasSessionLink ? html`
+              <${Button} variant="text" size="small" onClick=${() => { void handleOpenWorkflowAgentHistory(run); }}>
+                Agent History
+              <//>
+            ` : null}
+          </div>
+        </div>
+      </div>
+    `;
+  }, [handleOpenWorkflowRun, handleOpenWorkflowAgentHistory]);
 
   const toggleNodeExpand = useCallback((stageIdx, nodeId) => {
     setExpandedNodes((prev) => ({ ...prev, [`${stageIdx}-${nodeId}`]: !prev[`${stageIdx}-${nodeId}`] }));
@@ -7516,9 +7701,6 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     <//>
   `;
 }
-
-
-
 
 
 

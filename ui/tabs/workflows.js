@@ -160,7 +160,7 @@ function openWorkflowCanvas(workflowId) {
     });
 }
 
-function openWorkflowRunsView(workflowId, runId = null) {
+export function openWorkflowRunsView(workflowId, runId = null) {
   const scopedWorkflowId = String(workflowId || "").trim() || null;
   resetWorkflowRunsState(scopedWorkflowId);
   selectedRunId.value = null;

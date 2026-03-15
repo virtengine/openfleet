@@ -1015,6 +1015,9 @@ class InternalAdapter {
       taskData.parentTaskId ?? taskData.meta?.parentTaskId,
     );
     const dueDate = normalizeTaskStringField(taskData.dueDate ?? taskData.meta?.dueDate);
+    const blockedReason = normalizeTaskStringField(
+      taskData.blockedReason ?? taskData.meta?.blockedReason,
+    );
     const created = addInternalTask({
       id,
       title: taskData.title || "Untitled task",
@@ -1026,6 +1029,7 @@ class InternalAdapter {
       storyPoints,
       parentTaskId,
       dueDate,
+      blockedReason,
       priority: taskData.priority || null,
       tags,
       draft,
@@ -1059,6 +1063,7 @@ class InternalAdapter {
         ...(storyPoints != null ? { storyPoints } : {}),
         ...(parentTaskId ? { parentTaskId } : {}),
         ...(dueDate ? { dueDate } : {}),
+        ...(blockedReason ? { blockedReason } : {}),
         ...(taskData.workspace ? { workspace: taskData.workspace } : {}),
         ...(taskData.repository || taskData.repo
           ? { repository: taskData.repository || taskData.repo }
@@ -6149,3 +6154,4 @@ export async function unmarkTaskIgnored(taskId) {
   );
   return false;
 }
+

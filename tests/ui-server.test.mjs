@@ -826,6 +826,12 @@ describe("ui-server mini app", () => {
           enabled: true,
           description: "updated from test",
           minIntervalMinutes: 45,
+          state: {
+            last_success_at: new Date().toISOString(),
+          },
+          stats: {
+            spawnedTotal: 12,
+          },
         },
       }),
     });
@@ -842,8 +848,101 @@ describe("ui-server mini app", () => {
     expect(updatedTemplate?.enabled).toBe(true);
     expect(updatedTemplate?.description).toBe("updated from test");
     expect(updatedTemplate?.minIntervalMinutes).toBe(45);
+    expect(updatedTemplate).not.toHaveProperty("state");
+    expect(updatedTemplate).not.toHaveProperty("stats");
 
     rmSync(tmpDir, { recursive: true, force: true });
+  }, 15000);
+
+  it("exports task state snapshots via mini app API", async () => {
+    const mod = await import("../server/ui-server.mjs");
+    const taskStore = await import("../task/task-store.mjs");
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+
+    taskStore.addTask({
+      id: "task-export-1",
+      title: "Export me",
+      status: "todo",
+      timeline: [{ type: "task.created", source: "test" }],
+      workflowRuns: [{ runId: "run-1", workflowId: "wf-1", status: "completed" }],
+      statusHistory: [{ status: "todo", timestamp: new Date().toISOString(), source: "test" }],
+    });
+    await taskStore.waitForStoreWrites();
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/tasks/export`);
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.data.kind).toBe("bosun-task-state-export");
+    expect(json.data.backend).toBe("internal");
+    expect(Array.isArray(json.data.tasks)).toBe(true);
+    const exported = json.data.tasks.find((task) => task.id === "task-export-1");
+    expect(exported?.title).toBe("Export me");
+    expect(Array.isArray(exported?.timeline)).toBe(true);
+    expect(exported?.timeline?.length).toBeGreaterThan(0);
+    expect(Array.isArray(exported?.workflowRuns)).toBe(true);
+    expect(exported?.workflowRuns?.[0]?.runId).toBe("run-1");
+  }, 15000);
+
+  it("imports task state snapshots with merge semantics via mini app API", async () => {
+    const mod = await import("../server/ui-server.mjs");
+    const taskStore = await import("../task/task-store.mjs");
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+
+    taskStore.addTask({
+      id: "task-import-1",
+      title: "Original title",
+      status: "todo",
+    });
+    await taskStore.waitForStoreWrites();
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/tasks/import`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        mode: "merge",
+        tasks: [
+          {
+            id: "task-import-1",
+            title: "Updated title",
+            status: "inreview",
+            timeline: [{ type: "status.transition", source: "import" }],
+            workflowRuns: [{ runId: "run-import-1", workflowId: "wf-import-1", status: "completed" }],
+            statusHistory: [{ status: "inreview", timestamp: new Date().toISOString(), source: "import" }],
+          },
+          {
+            id: "task-import-2",
+            title: "Imported task",
+            status: "todo",
+          },
+        ],
+      }),
+    });
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.data.summary.created).toBe(1);
+    expect(json.data.summary.updated).toBe(1);
+
+    const updatedTask = taskStore.getTask("task-import-1");
+    const createdTask = taskStore.getTask("task-import-2");
+    expect(updatedTask?.title).toBe("Updated title");
+    expect(updatedTask?.status).toBe("inreview");
+    expect(Array.isArray(updatedTask?.workflowRuns)).toBe(true);
+    expect(updatedTask?.workflowRuns?.[0]?.runId).toBe("run-import-1");
+    expect(createdTask?.title).toBe("Imported task");
   }, 15000);
 
   it("queues /plan commands in background to avoid request timeouts", async () => {
@@ -1911,6 +2010,60 @@ describe("ui-server mini app", () => {
     expect(executeTask).not.toHaveBeenCalled();
   });
 
+  it("keeps task detail responses JSON-safe when can-start guards return circular raw data", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.EXECUTOR_MODE = "internal";
+
+    const mod = await import("../server/ui-server.mjs");
+    const rawGuard = {
+      canStart: false,
+      reason: "dependency_blocked",
+      blockingTaskIds: ["dep-task-1"],
+      attemptCount: 3n,
+      debug: () => "ignored",
+    };
+    rawGuard.self = rawGuard;
+
+    mod.injectUiDependencies({
+      taskStoreApi: {
+        canStartTask: vi.fn(() => rawGuard),
+      },
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 2, activeSlots: 0, slots: [] }),
+        executeTask: vi.fn(async () => {}),
+        isPaused: () => false,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "guarded detail task", description: "detail guard" }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+
+    const detailResp = await fetch(
+      `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(created.data.id)}`,
+    );
+    const detailJson = await detailResp.json();
+
+    expect(detailResp.status).toBe(200);
+    expect(detailJson.ok).toBe(true);
+    expect(detailJson.data.canStart.canStart).toBe(false);
+    expect(detailJson.data.canStart.raw.blockingTaskIds).toEqual(["dep-task-1"]);
+    expect(detailJson.data.canStart.raw.attemptCount).toBe("3");
+    expect(detailJson.data.canStart.raw.self).toBe("[Circular]");
+    expect("debug" in detailJson.data.canStart.raw).toBe(false);
+  });
+
   it("blocks /api/tasks/start when can-start guard fails unless force override is set", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.EXECUTOR_MODE = "internal";
@@ -2019,6 +2172,65 @@ describe("ui-server mini app", () => {
     expect(update.lifecycle.startDispatch.started).toBe(false);
     expect(update.lifecycle.startDispatch.reason).toBe("start_guard_blocked");
     expect(executeTask).not.toHaveBeenCalled();
+  });
+
+  it("includes blocked diagnostics on /api/tasks/detail and counts blocked tasks on /api/tasks", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    mod.injectUiDependencies({
+      taskStoreApi: {
+        canStartTask: vi.fn(() => ({
+          canStart: false,
+          reason: "dependency_blocked",
+          blockedBy: [{ taskId: "dep-1", reason: "Waiting for dep-1" }],
+          blockingTaskIds: ["dep-1"],
+        })),
+      },
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "blocked detail task",
+        description: "waiting on dependency",
+        status: "blocked",
+        blockedReason: "Dependency dep-1 is unresolved",
+      }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+    const taskId = created.data.id;
+
+    const detailResp = await fetch(
+      `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
+    );
+    const detailJson = await detailResp.json();
+
+    expect(detailResp.status).toBe(200);
+    expect(detailJson.ok).toBe(true);
+    expect(detailJson.data.canStart.canStart).toBe(false);
+    expect(detailJson.data.blockedContext.category).toBe("dependency_blocked");
+    expect(detailJson.data.blockedContext.blockedBy).toEqual([
+      { taskId: "dep-1", reason: "Waiting for dep-1" },
+    ]);
+    expect(detailJson.data.blockedContext.reason).toBe("dependency_blocked");
+    expect(detailJson.data.blockedContext.summary).toContain("Bosun start guards");
+
+    const listResp = await fetch(`http://127.0.0.1:${port}/api/tasks`);
+    const listJson = await listResp.json();
+
+    expect(listResp.status).toBe(200);
+    expect(listJson.ok).toBe(true);
+    expect(listJson.statusCounts.blocked).toBeGreaterThanOrEqual(1);
   });
 
   it("wires sprint and dag task-store APIs through ui-server endpoints", async () => {
@@ -2242,6 +2454,7 @@ describe("ui-server mini app", () => {
     taskStore.loadStore();
     taskStore.addTask({ id: "legacy-no-workspace", title: "Legacy task", status: "todo" });
     taskStore.addTask({ id: "active-workspace", title: "Active workspace task", status: "draft", workspace: "virtengine-gh" });
+    taskStore.addTask({ id: "blocked-workspace", title: "Blocked workspace task", status: "blocked", workspace: "virtengine-gh" });
     taskStore.addTask({ id: "other-workspace", title: "Other workspace task", status: "todo", workspace: "other-workspace" });
 
     const mod = await import("../server/ui-server.mjs");
@@ -2259,11 +2472,13 @@ describe("ui-server mini app", () => {
 
       expect(response.status).toBe(200);
       expect(json.ok).toBe(true);
-      expect(json.total).toBe(2);
+      expect(json.total).toBe(3);
       expect(json.statusCounts.backlog).toBe(1);
       expect(json.statusCounts.draft).toBe(1);
+      expect(json.statusCounts.blocked).toBe(1);
       expect(json.data.map((task) => task.id).sort()).toEqual([
         "active-workspace",
+        "blocked-workspace",
         "legacy-no-workspace",
       ]);
     } finally {
@@ -3248,3 +3463,4 @@ describe("ui-server mini app", () => {
   });
 
 });
+
