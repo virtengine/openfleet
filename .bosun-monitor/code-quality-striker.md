@@ -12,6 +12,7 @@ Format:
 - **PR**: link to the created PR
 
 ---
+
 ## 2026-03-14T18:48:37+11:00
 
 - Scope: Refactored shell/codex-config.mjs to split Codex config orchestration into focused internal helpers.
@@ -33,6 +34,7 @@ Format:
   - npm test passed (3784 tests)
   - npm run build passed
 - PR: #265 — chore/code-quality-striker-20260314184045
+
 ## 2026-03-14T21:11:00+11:00
 
 - Scope: Split workflow port hydration logic in workflow/workflow-engine.mjs into smaller private helpers.
@@ -43,6 +45,7 @@ Format:
   - `npm test` passed (3817 tests)
   - `pnpm build` passed
 - PR: #273 — `chore/code-quality-striker-20260314-workflow-ports`
+
 ## 2026-03-14T21:17:28.0953316+11:00
 
 - Scope: Split workflow port hydration inside workflow/workflow-engine.mjs into focused private helpers without changing the module API.
@@ -68,7 +71,6 @@ Format:
   - `pnpm build` passed
 - PR: #279 — `chore/code-quality-striker-20260314-agent-prompts`
 
-
 ## 2026-03-15T08:52:35.4302717+11:00
 
 - Scope: Split the manual flow audit executor out of `workflow/manual-flows.mjs` so audit inventory logic is isolated from template and run orchestration.
@@ -79,3 +81,13 @@ Format:
   - `npm test` passed (3828 tests)
   - `pnpm build` passed
 - PR: #285 — `chore/code-quality-striker-20260314-manual-flow-audit`
+
+## 2026-03-16T02:31:45Z
+
+- Scope: Resynced generated demo defaults after workflow template changes and stabilized weekly fitness behavioral tests against calendar drift.
+- Files changed: ui/demo-defaults.js, site/ui/demo-defaults.js, tests/workflow-guaranteed.test.mjs, .bosun-monitor/code-quality-striker.md
+- Strategy: Regenerated both committed demo-defaults artifacts from the source-of-truth generator, then replaced hardcoded weekly fitness completion timestamps with runtime-relative values so the 7-day lookback assertions remain deterministic as time advances.
+- Validation evidence:
+  - `node tools/generate-demo-defaults.mjs` passed
+  - `npm test -- tests/demo-defaults-sync.test.mjs tests/workflow-guaranteed.test.mjs` passed (185 tests)
+- PR: not created

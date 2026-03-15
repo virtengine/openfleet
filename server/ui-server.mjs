@@ -1653,11 +1653,7 @@ function mergeTaskWorkflowRuns(baseRuns = [], extraRuns = [], limit = 60) {
       url: incoming.url || current.url || null,
       nodeId: incoming.nodeId || current.nodeId || null,
       source: incoming.source || current.source || "workflow",
-      sessionId:
-        resolveLinkedSessionId(incoming)
-        || resolveLinkedSessionId(current)
-        || resolveSessionId(current)
-        || resolveSessionId(incoming),
+      sessionId: resolveLinkedSessionId(incoming) || resolveLinkedSessionId(current) || null,
       primarySessionId:
         String(incoming.primarySessionId || "").trim()
         || String(current.primarySessionId || "").trim()
@@ -1684,7 +1680,7 @@ function mergeTaskWorkflowRuns(baseRuns = [], extraRuns = [], limit = 60) {
       url: entry.url != null ? String(entry.url) : null,
       nodeId: entry.nodeId != null ? String(entry.nodeId) : null,
       source: entry.source ? String(entry.source) : "workflow",
-      sessionId: resolveSessionId(entry),
+      sessionId: resolveLinkedSessionId(entry),
       primarySessionId:
         String(entry.primarySessionId || "").trim() || resolveSessionId(entry),
       meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
@@ -1773,7 +1769,7 @@ async function collectWorkflowRunsForTask(taskId, reqUrl, limit = 40) {
         startedAt: detail.startedAt || null,
         endedAt: detail.endedAt || null,
         duration: detail.duration || null,
-        sessionId: primarySessionId,
+        sessionId: null,
         primarySessionId,
         source: "workflow",
       });

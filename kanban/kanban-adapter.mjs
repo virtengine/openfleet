@@ -912,6 +912,9 @@ class InternalAdapter {
     if (typeof patch.workspace === "string") updates.workspace = patch.workspace;
     if (typeof patch.repository === "string") updates.repository = patch.repository;
     if (Array.isArray(patch.repositories)) updates.repositories = patch.repositories;
+    if (hasOwnField(patch, "workflowRuns")) updates.workflowRuns = patch.workflowRuns;
+    if (hasOwnField(patch, "workflowHistory")) updates.workflowHistory = patch.workflowHistory;
+    if (hasOwnField(patch, "workflows")) updates.workflows = patch.workflows;
     if (hasOwnField(patch, "cooldownUntil")) {
       updates.cooldownUntil = normalizeTaskStringField(patch.cooldownUntil);
     }

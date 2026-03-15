@@ -2104,9 +2104,8 @@ describe("ui-server mini app", () => {
         },
       ]);
 
-      const { getKanbanAdapter } = await import("../kanban/kanban-adapter.mjs");
-      const adapter = getKanbanAdapter();
-      await adapter.updateTask(taskId, {
+      const taskStore = await import("../task/task-store.mjs");
+      taskStore.updateTask(taskId, {
         workflowRuns: [
           {
             runId: "run-merge-1",
@@ -2117,6 +2116,7 @@ describe("ui-server mini app", () => {
           },
         ],
       });
+      expect(taskStore.getTask(taskId)?.workflowRuns?.[0]?.meta?.sessionId).toBe("stored-session-1");
 
       const detail = await fetch(
         `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
