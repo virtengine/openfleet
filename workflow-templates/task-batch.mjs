@@ -66,7 +66,18 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
     node("query-tasks", "action.run_command", "Query Task Backlog", {
       command: "node",
       args: ["-e", `
-        import("./kanban-adapter.mjs")
+        const fs = require("node:fs");
+        const path = require("node:path");
+        const { pathToFileURL } = require("node:url");
+        const cwd = process.cwd();
+        const mirrorMarker = (path.sep + ".bosun" + path.sep + "workspaces" + path.sep).toLowerCase();
+        let repoRoot = cwd;
+        if (cwd.toLowerCase().includes(mirrorMarker)) {
+          const sourceRepoRoot = path.resolve(cwd, "..", "..", "..", "..");
+          if (fs.existsSync(path.join(sourceRepoRoot, "kanban", "kanban-adapter.mjs"))) repoRoot = sourceRepoRoot;
+        }
+        const kanbanModuleUrl = pathToFileURL(path.join(repoRoot, "kanban", "kanban-adapter.mjs")).href;
+        import(kanbanModuleUrl)
           .then(k => k.listTasks(undefined, { status: "todo" }))
           .then(tasks => {
             const filtered = (tasks || []).filter((task) => {
@@ -181,7 +192,18 @@ export const TASK_BATCH_PR_TEMPLATE = {
     node("query-tasks", "action.run_command", "List Todo Tasks", {
       command: "node",
       args: ["-e", `
-        import("./kanban-adapter.mjs")
+        const fs = require("node:fs");
+        const path = require("node:path");
+        const { pathToFileURL } = require("node:url");
+        const cwd = process.cwd();
+        const mirrorMarker = (path.sep + ".bosun" + path.sep + "workspaces" + path.sep).toLowerCase();
+        let repoRoot = cwd;
+        if (cwd.toLowerCase().includes(mirrorMarker)) {
+          const sourceRepoRoot = path.resolve(cwd, "..", "..", "..", "..");
+          if (fs.existsSync(path.join(sourceRepoRoot, "kanban", "kanban-adapter.mjs"))) repoRoot = sourceRepoRoot;
+        }
+        const kanbanModuleUrl = pathToFileURL(path.join(repoRoot, "kanban", "kanban-adapter.mjs")).href;
+        import(kanbanModuleUrl)
           .then(k => k.listTasks(undefined, { status: "todo" }))
           .then(tasks => {
             const filtered = (tasks || []).filter((task) => {

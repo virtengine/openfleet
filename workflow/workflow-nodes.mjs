@@ -3026,7 +3026,16 @@ registerBuiltinNodeType("action.run_command", {
       try {
         return JSON.parse(trimmed);
       } catch {
-        return trimmed;
+        const lines = String(trimmed)
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean);
+        const candidate = lines.length > 0 ? lines[lines.length - 1] : trimmed;
+        try {
+          return JSON.parse(candidate);
+        } catch {
+          return trimmed;
+        }
       }
     };
     const usedArgv = commandArgs.length > 0;
