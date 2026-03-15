@@ -53,3 +53,14 @@
   - `pnpm build` passed
 - PR: #284 — `chore/code-quality-striker-20260314-config-workspace-health`
 >>>>>>> 3afcf884 (chore: append striker session log)
+
+## 2026-03-15T12:58:58.3142591+11:00
+
+- Scope: Split repository import scanning helpers out of [0minfra/library-manager.mjs[0m and rewire scan logic without changing exports.
+- Files changed: infra/library-manager.mjs, [object Object]
+- Strategy: Extracted shared repository import source resolution, clone setup, markdown candidate collection, and MCP discovery into focused internal helpers so scan behavior is self-contained and easier to evolve independently.
+- Validation evidence:
+  - [0m[object Object][0m passed on all touched files
+  - npm test passed (3828 tests)
+  - pnpm build passed
+- PR: #PENDING — [0mchore/code-quality-striker-20260315-library-import-scan-split[0m

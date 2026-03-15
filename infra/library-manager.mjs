@@ -2649,7 +2649,7 @@ export function syncAutoDiscoveredLibraryEntries(rootDir) {
   };
 }
 
-export function scanRepositoryForImport(options = {}) {
+function resolveRepositoryImportSource(options = {}) {
   const sourceId = String(options?.sourceId || "").trim().toLowerCase();
   const known = WELL_KNOWN_AGENT_SOURCES.find((source) => source.id === sourceId) || null;
   const repoUrl = String(options?.repoUrl || known?.repoUrl || "").trim();
@@ -2662,16 +2662,13 @@ export function scanRepositoryForImport(options = {}) {
   if (!isSafeGitRefName(branch)) {
     throw new Error("Branch name contains invalid characters");
   }
-  const maxEntries = Math.max(
-    1,
-    Math.min(
-      2000,
-      Number.parseInt(String(options?.maxEntries ?? "500"), 10) || 500,
-    ),
-  );
 
+  return { sourceId, known, repoUrl, branch };
+}
+
+function createRepositoryImportCheckoutDir(prefix, repoUrl, branch) {
   const cacheRoot = ensureDir(resolve(getBosunHomeDir(), ".cache", "imports"));
-  const checkoutDir = resolve(cacheRoot, `scan-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
+  const checkoutDir = resolve(cacheRoot, `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
   ensureDir(checkoutDir);
 
   const clone = spawnSync("git", ["clone", "--depth", "1", "--branch", branch, "--", repoUrl, checkoutDir], {
@@ -2680,167 +2677,231 @@ export function scanRepositoryForImport(options = {}) {
     timeout: 120_000,
   });
   const cloneStderr = String(clone.stderr || "").trim();
-  // Treat "clone succeeded, but checkout failed" (long paths on Windows) as OK
   const checkoutWarning = /clone succeeded.*checkout failed/i.test(cloneStderr);
-  if (clone.status !== 0 && !checkoutWarning) {
-    rmSync(checkoutDir, { recursive: true, force: true });
-    if (/repository not found/i.test(cloneStderr)) {
-      throw new Error(`Repository not found: ${repoUrl}`);
-    }
-    if (/could not read from remote/i.test(cloneStderr)) {
-      throw new Error(`Cannot access repository (may be private or require authentication): ${repoUrl}`);
-    }
-    if (/not found in upstream/i.test(cloneStderr) || /remote branch.*not found/i.test(cloneStderr)) {
-      throw new Error(`Branch "${branch}" not found in ${repoUrl}`);
-    }
-    if (clone.signal === "SIGTERM") {
-      throw new Error(`Clone timed out — repository may be too large: ${repoUrl}`);
-    }
-    throw new Error(`Failed to clone repository: ${cloneStderr || "unknown error"}`);
-  }
+  if (clone.status === 0 || checkoutWarning) return checkoutDir;
 
-  try {
-    const files = walkFilesRecursive(checkoutDir);
-    const candidates = files
+  rmSync(checkoutDir, { recursive: true, force: true });
+  if (/repository not found/i.test(cloneStderr)) {
+    throw new Error(`Repository not found: ${repoUrl}`);
+  }
+  if (/could not read from remote/i.test(cloneStderr)) {
+    throw new Error(`Cannot access repository (may be private or require authentication): ${repoUrl}`);
+  }
+  if (/not found in upstream/i.test(cloneStderr) || /remote branch.*not found/i.test(cloneStderr)) {
+    throw new Error(`Branch "${branch}" not found in ${repoUrl}`);
+  }
+  if (clone.signal === "SIGTERM") {
+    throw new Error(`Clone timed out — repository may be too large: ${repoUrl}`);
+  }
+  throw new Error(`Failed to clone repository: ${cloneStderr || "unknown error"}`);
+}
+
+function buildImportedMarkdownCandidate(candidate) {
+  const { raw = "", attrs = {}, body = "", relPath = "", fileName = "", kind = null } = candidate || {};
+  if (!kind) return null;
+
+  const fileStem = basename(fileName, ".md");
+  const relSegments = relPath.split(/[\\/]/).filter(Boolean);
+  const parentSegment = relSegments.length > 1 ? relSegments[relSegments.length - 2] : "";
+  const fallbackNameBase = fileStem.toLowerCase() === "skill" && parentSegment ? parentSegment : fileStem;
+  const fallbackName = fallbackNameBase.replace(/\.agent$/i, "").replace(/\.skill$/i, "").replace(/\.prompt$/i, "");
+  const name = String(getFrontmatterValue(attrs, ["name", "title"]) || fallbackName.replace(/[-_.]+/g, " ")).trim();
+  const description = normalizeImportedDescription(getFrontmatterValue(attrs, ["description", "summary"]), body);
+
+  return {
+    ...candidate,
+    fileStem,
+    name,
+    description,
+  };
+}
+
+function sortImportedMarkdownCandidates(candidates = []) {
+  const rank = { agent: 0, prompt: 1, skill: 2 };
+  return candidates.sort((a, b) => {
+    const aRank = Number(rank[a.kind] ?? 99);
+    const bRank = Number(rank[b.kind] ?? 99);
+    if (aRank !== bRank) return aRank - bRank;
+    return String(a.relPath || "").localeCompare(String(b.relPath || ""));
+  });
+}
+
+function collectRepositoryImportMarkdownCandidates(checkoutDir, options = {}) {
+  const maxEntries = Math.max(
+    1,
+    Math.min(2000, Number.parseInt(String(options?.maxEntries ?? "500"), 10) || 500),
+  );
+
+  const files = walkFilesRecursive(checkoutDir);
+  const candidates = sortImportedMarkdownCandidates(
+    files
       .filter((fullPath) => /\.md$/i.test(fullPath))
       .map((fullPath) => {
         const relPath = fullPath.slice(checkoutDir.length + 1).replace(/\\/g, "/");
         const fileName = basename(fullPath);
+        let raw = "";
         let parsed = { attrs: {}, body: "" };
         try {
-          const raw = readFileSync(fullPath, "utf8");
+          raw = readFileSync(fullPath, "utf8");
           parsed = parseSimpleFrontmatter(raw);
-        } catch { /* skip unreadable */ }
+        } catch {
+          return null;
+        }
         const kind = inferImportedEntryKind(relPath, fileName, parsed.attrs);
-        if (!kind) return null;
-        const fileStem = basename(fileName, ".md");
-        const relSegments = relPath.split(/[\\/]/).filter(Boolean);
-        const parentSegment = relSegments.length > 1 ? relSegments[relSegments.length - 2] : "";
-        const fallbackNameBase = fileStem.toLowerCase() === "skill" && parentSegment ? parentSegment : fileStem;
-        const fallbackName = fallbackNameBase.replace(/\.agent$/i, "").replace(/\.skill$/i, "").replace(/\.prompt$/i, "");
-        const name = String(getFrontmatterValue(parsed.attrs, ["name", "title"]) || fallbackName.replace(/[-_.]+/g, " ")).trim();
-        const description = normalizeImportedDescription(getFrontmatterValue(parsed.attrs, ["description", "summary"]), parsed.body);
-        return { relPath, fileName, kind, name, description, selected: true };
+        return buildImportedMarkdownCandidate({
+          fullPath,
+          relPath,
+          fileName,
+          raw,
+          attrs: parsed.attrs,
+          body: parsed.body,
+          kind,
+          selected: true,
+        });
       })
-      .filter(Boolean)
-      .sort((a, b) => {
-        const rank = { agent: 0, prompt: 1, skill: 2 };
-        const aRank = Number(rank[a.kind] ?? 99);
-        const bRank = Number(rank[b.kind] ?? 99);
-        if (aRank !== bRank) return aRank - bRank;
-        return String(a.relPath || "").localeCompare(String(b.relPath || ""));
-      })
-      .slice(0, maxEntries);
+      .filter(Boolean),
+  ).slice(0, maxEntries);
+
+  return { files, candidates };
+}
+
+function listRepositoryMcpConfigFiles(checkoutDir, { includeLegacy = false } = {}) {
+  const configFiles = [
+    { path: resolve(checkoutDir, ".codex", "config.toml"), format: "toml" },
+    { path: resolve(checkoutDir, ".mcp.json"), format: "json" },
+    { path: resolve(checkoutDir, ".vscode", "mcp.json"), format: "json" },
+  ];
+
+  if (includeLegacy) {
+    configFiles.splice(2, 0, { path: resolve(checkoutDir, "mcp.json"), format: "json" });
+    configFiles.push({ path: resolve(checkoutDir, "claude_desktop_config.json"), format: "json" });
+  }
+
+  return configFiles;
+}
+
+function discoverRepositoryMcpConfigs(checkoutDir, options = {}) {
+  const discovered = [];
+  for (const { path: configPath, format } of listRepositoryMcpConfigFiles(checkoutDir, options)) {
+    if (!existsSync(configPath)) continue;
+    let raw = "";
+    try {
+      raw = readFileSync(configPath, "utf8");
+    } catch {
+      continue;
+    }
+    const relPath = relative(checkoutDir, configPath).replace(/\\/g, "/");
+    const entries = format === "toml"
+      ? parseMcpServersFromToml(raw, relPath)
+      : parseMcpServersFromJson(raw, relPath);
+    discovered.push(...entries.map((entry) => ({ ...entry, relPath, fileName: basename(configPath) })));
+  }
+  return discovered;
+}
+
+function appendRepositoryMcpImportCandidates(candidates, files, checkoutDir, byType) {
+  for (const mcp of discoverRepositoryMcpConfigs(checkoutDir, { includeLegacy: true })) {
+    candidates.push({
+      relPath: `${mcp.relPath}#${mcp.id}`,
+      fileName: mcp.fileName,
+      kind: "mcp",
+      name: mcp.name || mcp.id,
+      description: `${mcp.transport === "stdio" ? "stdio" : "url"} MCP server${mcp.command ? ": " + mcp.command : ""}`,
+      selected: true,
+    });
+    byType.mcp += 1;
+  }
+
+  const mcpSeenIds = new Set(candidates.filter((candidate) => candidate.kind === "mcp").map((candidate) => candidate.name));
+  for (const fullPath of files) {
+    const fileName = basename(fullPath);
+    if (fileName !== "package.json" && fileName !== "pyproject.toml") continue;
+    const relPath = relative(checkoutDir, fullPath).replace(/\\/g, "/");
+    if (relPath === "package.json") continue;
+    let raw = "";
+    try {
+      raw = readFileSync(fullPath, "utf8");
+    } catch {
+      continue;
+    }
+
+    if (fileName === "package.json") {
+      let pkg;
+      try {
+        pkg = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+      if (!pkg || typeof pkg !== "object") continue;
+      const bin = pkg.bin;
+      if (!bin || typeof bin !== "object") continue;
+      const mcpBins = Object.entries(bin).filter(([key]) => /^mcp[-_]?server/i.test(key) || /^mcp-/i.test(key));
+      if (mcpBins.length === 0) continue;
+      for (const [cmd] of mcpBins) {
+        const id = slugifyIdentifier(cmd);
+        if (mcpSeenIds.has(cmd) || mcpSeenIds.has(id)) continue;
+        mcpSeenIds.add(cmd);
+        const name = String(pkg.mcpName || pkg.name || cmd).trim();
+        const description = String(pkg.description || "").trim();
+        candidates.push({
+          relPath: `${relPath}#${cmd}`,
+          fileName,
+          kind: "mcp",
+          name: name.startsWith("@") ? cmd : name,
+          description: description || `stdio MCP server: ${cmd}`,
+          selected: true,
+        });
+        byType.mcp += 1;
+      }
+      continue;
+    }
+
+    const scriptMatch = raw.match(/\[project\.scripts\]([\s\S]*?)(?:\n\[|\n$)/);
+    if (!scriptMatch) continue;
+    const scriptLines = scriptMatch[1].split(/\r?\n/);
+    for (const line of scriptLines) {
+      const kv = line.match(/^\s*(mcp[-_]?server[-_]?\S*)\s*=/i);
+      if (!kv) continue;
+      const cmd = kv[1].trim();
+      if (mcpSeenIds.has(cmd)) continue;
+      mcpSeenIds.add(cmd);
+      const nameMatch = raw.match(/^\s*name\s*=\s*"([^"]+)"/m);
+      const descMatch = raw.match(/^\s*description\s*=\s*"([^"]+)"/m);
+      candidates.push({
+        relPath: `${relPath}#${cmd}`,
+        fileName,
+        kind: "mcp",
+        name: nameMatch ? nameMatch[1] : cmd,
+        description: descMatch ? descMatch[1] : `stdio MCP server: ${cmd}`,
+        selected: true,
+      });
+      byType.mcp += 1;
+    }
+  }
+}
+
+export function scanRepositoryForImport(options = {}) {
+  const { sourceId, known, repoUrl, branch } = resolveRepositoryImportSource(options);
+  const maxEntries = Math.max(
+    1,
+    Math.min(
+      2000,
+      Number.parseInt(String(options?.maxEntries ?? "500"), 10) || 500,
+    ),
+  );
+
+  const checkoutDir = createRepositoryImportCheckoutDir("scan", repoUrl, branch);
+
+  try {
+    const { files, candidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, { maxEntries });
 
     const byType = { agent: 0, prompt: 0, skill: 0, mcp: 0 };
-    for (const c of candidates) byType[c.kind] = (byType[c.kind] || 0) + 1;
-
-    // Scan for MCP server definitions in known config files
-    const mcpConfigPaths = [
-      resolve(checkoutDir, ".codex", "config.toml"),
-      resolve(checkoutDir, ".mcp.json"),
-      resolve(checkoutDir, "mcp.json"),
-      resolve(checkoutDir, ".vscode", "mcp.json"),
-      resolve(checkoutDir, "claude_desktop_config.json"),
-    ];
-    for (const configPath of mcpConfigPaths) {
-      if (!existsSync(configPath)) continue;
-      let raw = "";
-      try { raw = readFileSync(configPath, "utf8"); } catch { continue; }
-      const relPath = relative(checkoutDir, configPath).replace(/\\/g, "/");
-      if (/\.toml$/i.test(configPath)) {
-        const discovered = parseMcpServersFromToml(raw, relPath);
-        for (const mcp of discovered) {
-          candidates.push({
-            relPath: `${relPath}#${mcp.id}`,
-            fileName: basename(configPath),
-            kind: "mcp",
-            name: mcp.name || mcp.id,
-            description: `${mcp.transport === "stdio" ? "stdio" : "url"} MCP server${mcp.command ? ": " + mcp.command : ""}`,
-            selected: true,
-          });
-          byType.mcp += 1;
-        }
-      } else {
-        const discovered = parseMcpServersFromJson(raw, relPath);
-        for (const mcp of discovered) {
-          candidates.push({
-            relPath: `${relPath}#${mcp.id}`,
-            fileName: basename(configPath),
-            kind: "mcp",
-            name: mcp.name || mcp.id,
-            description: `${mcp.transport === "stdio" ? "stdio" : "url"} MCP server${mcp.command ? ": " + mcp.command : ""}`,
-            selected: true,
-          });
-          byType.mcp += 1;
-        }
-      }
+    for (const candidate of candidates) {
+      byType[candidate.kind] = (byType[candidate.kind] || 0) + 1;
     }
 
-    // Discover MCP servers from package.json bin entries and pyproject.toml scripts
-    const mcpSeenIds = new Set(candidates.filter((c) => c.kind === "mcp").map((c) => c.name));
-    for (const fullPath of files) {
-      const fileName = basename(fullPath);
-      if (fileName !== "package.json" && fileName !== "pyproject.toml") continue;
-      const relPath = relative(checkoutDir, fullPath).replace(/\\/g, "/");
-      // Skip root-level package.json (monorepo manifest, not an MCP server)
-      if (relPath === "package.json") continue;
-      let raw = "";
-      try { raw = readFileSync(fullPath, "utf8"); } catch { continue; }
+    appendRepositoryMcpImportCandidates(candidates, files, checkoutDir, byType);
 
-      if (fileName === "package.json") {
-        let pkg;
-        try { pkg = JSON.parse(raw); } catch { continue; }
-        if (!pkg || typeof pkg !== "object") continue;
-        const bin = pkg.bin;
-        if (!bin || typeof bin !== "object") continue;
-        const mcpBins = Object.entries(bin).filter(([k]) => /^mcp[-_]?server/i.test(k) || /^mcp-/i.test(k));
-        if (mcpBins.length === 0) continue;
-        for (const [cmd] of mcpBins) {
-          const id = slugifyIdentifier(cmd);
-          if (mcpSeenIds.has(cmd) || mcpSeenIds.has(id)) continue;
-          mcpSeenIds.add(cmd);
-          const name = String(pkg.mcpName || pkg.name || cmd).trim();
-          const desc = String(pkg.description || "").trim();
-          candidates.push({
-            relPath: `${relPath}#${cmd}`,
-            fileName,
-            kind: "mcp",
-            name: name.startsWith("@") ? cmd : name,
-            description: desc || `stdio MCP server: ${cmd}`,
-            selected: true,
-          });
-          byType.mcp += 1;
-        }
-      } else if (fileName === "pyproject.toml") {
-        // Look for [project.scripts] entries matching mcp-server-*
-        const scriptMatch = raw.match(/\[project\.scripts\]([\s\S]*?)(?:\n\[|\n$)/);
-        if (!scriptMatch) continue;
-        const scriptBlock = scriptMatch[1];
-        const scriptLines = scriptBlock.split(/\r?\n/);
-        for (const line of scriptLines) {
-          const kv = line.match(/^\s*(mcp[-_]?server[-_]?\S*)\s*=/i);
-          if (!kv) continue;
-          const cmd = kv[1].trim();
-          if (mcpSeenIds.has(cmd)) continue;
-          mcpSeenIds.add(cmd);
-          // Try to get project name/description from TOML
-          const nameMatch = raw.match(/^\s*name\s*=\s*"([^"]+)"/m);
-          const descMatch = raw.match(/^\s*description\s*=\s*"([^"]+)"/m);
-          candidates.push({
-            relPath: `${relPath}#${cmd}`,
-            fileName,
-            kind: "mcp",
-            name: nameMatch ? nameMatch[1] : cmd,
-            description: descMatch ? descMatch[1] : `stdio MCP server: ${cmd}`,
-            selected: true,
-          });
-          byType.mcp += 1;
-        }
-      }
-    }
-
-    // Duplicate detection against existing library entries
     const rootDir = options?.rootDir || null;
     let duplicateMap = {};
     let intraDuplicateMap = {};
@@ -2850,13 +2911,12 @@ export function scanRepositoryForImport(options = {}) {
         const extDups = detectImportDuplicates(candidates, existingEntries);
         for (const [relPath, info] of extDups) {
           duplicateMap[relPath] = info;
-          // Auto-deselect exact duplicates
           const cand = candidates.find((c) => c.relPath === relPath);
           if (cand && info.similarity >= 0.95) cand.selected = false;
         }
-      } catch { /* skip if library not accessible */ }
+      } catch {}
     }
-    // Intra-import duplicate detection
+
     const intraDups = detectIntraDuplicates(candidates);
     for (const [relPath, peers] of intraDups) {
       intraDuplicateMap[relPath] = peers;
@@ -2878,19 +2938,189 @@ export function scanRepositoryForImport(options = {}) {
   }
 }
 
-export function importAgentProfilesFromRepository(rootDir, options = {}) {
-  const sourceId = String(options?.sourceId || "").trim().toLowerCase();
-  const known = WELL_KNOWN_AGENT_SOURCES.find((source) => source.id === sourceId) || null;
-  const repoUrl = String(options?.repoUrl || known?.repoUrl || "").trim();
-  if (!repoUrl) throw new Error("Repository URL or source is required");
+function importRepositoryMarkdownCandidate(rootDir, candidate, context) {
+  const { known, repoUrl, branch, sourceId, importAgents, importSkills, importPrompts, takenIds, imported, importedByType } = context;
+  const { attrs, body, relPath, fileStem, kind, name, description, raw } = candidate;
+  const keywords = keywordTokens(`${name} ${description} ${relPath}`, { minLength: 4 }).slice(0, 10);
 
-  const branch = String(options?.branch || known?.defaultBranch || "main").trim() || "main";
-  if (!isSafeGitRepositorySource(repoUrl)) {
-    throw new Error("URL must be a valid http(s), ssh, or git repository address");
+  if (kind === "prompt") {
+    if (!importPrompts) return { needsAgentIndexRefresh: false, needsSkillIndexRefresh: false };
+    const baseId = slugify(`${sourceId || "imported"}-${name}`) || slugify(fileStem) || `imported-prompt-${imported.length + 1}`;
+    const id = ensureUniqueId(baseId, takenIds);
+    const promptContent = String(body || raw || "").trim();
+    if (!promptContent) return { needsAgentIndexRefresh: false, needsSkillIndexRefresh: false };
+    upsertEntry(rootDir, {
+      id,
+      type: "prompt",
+      name,
+      description: description || `Imported prompt from ${known?.name || repoUrl}`,
+      tags: uniqueStrings(["imported", "prompt", sourceId || "external", ...parseJsonishArray(getFrontmatterValue(attrs, ["tags"]))]),
+      meta: {
+        sourceId: sourceId || null,
+        repoUrl,
+        branch,
+        relPath,
+      },
+    }, promptContent);
+    imported.push({ id, name, relPath, type: "prompt", promptId: null });
+    importedByType.prompt += 1;
+    return { needsAgentIndexRefresh: false, needsSkillIndexRefresh: false };
   }
-  if (!isSafeGitRefName(branch)) {
-    throw new Error("Branch name contains invalid characters");
+
+  if (kind === "skill") {
+    if (!importSkills) return { needsAgentIndexRefresh: false, needsSkillIndexRefresh: false };
+    const baseId = slugify(`${sourceId || "imported"}-${name}`) || slugify(fileStem) || `imported-skill-${imported.length + 1}`;
+    const id = ensureUniqueId(baseId, takenIds);
+    const skillContent = String(body || raw || "").trim();
+    if (!skillContent) return { needsAgentIndexRefresh: false, needsSkillIndexRefresh: false };
+    upsertEntry(rootDir, {
+      id,
+      type: "skill",
+      name,
+      description: description || "Imported skill",
+      tags: uniqueStrings(["imported", "skill", sourceId || "external", ...parseJsonishArray(getFrontmatterValue(attrs, ["tags"]))]),
+      meta: {
+        sourceId: sourceId || null,
+        repoUrl,
+        branch,
+        relPath,
+      },
+    }, skillContent, { skipIndexSync: true });
+    imported.push({ id, name, relPath, type: "skill", promptId: null });
+    importedByType.skill += 1;
+    return { needsAgentIndexRefresh: false, needsSkillIndexRefresh: true };
   }
+
+  if (kind !== "agent" || !importAgents) {
+    return { needsAgentIndexRefresh: false, needsSkillIndexRefresh: false };
+  }
+
+  const baseId = slugify(`${sourceId || "imported"}-${name}`) || slugify(fileStem) || `imported-agent-${imported.length + 1}`;
+  const id = ensureUniqueId(baseId, takenIds);
+  const toolHints = parseJsonishArray(getFrontmatterValue(attrs, ["tools", "enabledTools"]));
+  const profileSkillHints = parseJsonishArray(getFrontmatterValue(attrs, ["skills"]));
+  const mcpHints = parseJsonishArray(getFrontmatterValue(attrs, ["enabledMcpServers", "mcpServers", "mcp"]));
+  const titlePatternHints = parseJsonishArray(getFrontmatterValue(attrs, ["titlePatterns", "title_patterns", "patterns"]));
+  const tags = uniqueStrings([
+    "imported",
+    sourceId || "external",
+    ...parseJsonishArray(getFrontmatterValue(attrs, ["tags"])),
+    ...keywords.slice(0, 4),
+  ]);
+  const pathScopes = uniqueStrings(
+    relPath
+      .split(/[\/]/)
+      .slice(0, -1)
+      .map((segment) => slugify(segment))
+      .filter((segment) => segment && segment !== "github" && segment !== "agents"),
+  ).slice(0, 6);
+  const explicitScopes = parseJsonishArray(getFrontmatterValue(attrs, ["scopes", "scope"]));
+  const scopes = uniqueStrings([...explicitScopes, ...pathScopes]).slice(0, 8);
+  const titlePatterns = uniqueStrings([
+    ...titlePatternHints,
+    ...keywordTokens(name, { minLength: 4 }).slice(0, 4).map((token) => `\\b${token.replace(/[.*+?^${}()|[\\]\\]/g, "")}\\b`),
+  ]);
+  const promptId = `${id}-prompt`;
+
+  if (importPrompts && body) {
+    upsertEntry(rootDir, {
+      id: promptId,
+      type: "prompt",
+      name: `${name} Prompt`,
+      description: `Imported prompt from ${known?.name || repoUrl}`,
+      tags: uniqueStrings(["imported", "agent-prompt", sourceId || "external"]),
+      meta: {
+        sourceId: sourceId || null,
+        repoUrl,
+        branch,
+        relPath,
+      },
+    }, body);
+    imported.push({ id: promptId, name: `${name} Prompt`, relPath, type: "prompt", promptId: null });
+    importedByType.prompt += 1;
+  }
+
+  const explicitAgentType = String(getFrontmatterValue(attrs, ["agentType", "agent_type"]) || "").trim().toLowerCase();
+  const profile = {
+    id,
+    name,
+    description,
+    titlePatterns: titlePatterns.length ? titlePatterns : ["\\btask\\b"],
+    scopes,
+    sdk: null,
+    model: null,
+    promptOverride: importPrompts && body ? promptId : null,
+    skills: profileSkillHints,
+    hookProfile: null,
+    env: {},
+    enabledTools: toolHints.length ? toolHints : null,
+    enabledMcpServers: mcpHints,
+    tags,
+    agentType: explicitAgentType || (/voice|audio|realtime/i.test(`${name} ${description}`) ? "voice" : "task"),
+    importMeta: {
+      sourceId: sourceId || null,
+      repoUrl,
+      branch,
+      relPath,
+    },
+  };
+
+  upsertEntry(rootDir, {
+    id,
+    type: "agent",
+    name,
+    description,
+    tags: profile.tags,
+    meta: {
+      sourceId: sourceId || null,
+      repoUrl,
+      branch,
+      relPath,
+    },
+  }, profile, { skipIndexSync: true });
+
+  imported.push({ id, name, relPath, type: "agent", promptId: importPrompts && body ? promptId : null });
+  importedByType.agent += 1;
+  return { needsAgentIndexRefresh: true, needsSkillIndexRefresh: false };
+}
+
+function importRepositoryMcpEntries(rootDir, checkoutDir, context) {
+  const { sourceId, repoUrl, branch, takenIds, imported, importedByType } = context;
+  for (const mcp of discoverRepositoryMcpConfigs(checkoutDir)) {
+    const baseId = slugify(`${sourceId || "imported"}-${mcp.id}`) || slugify(mcp.id) || `imported-mcp-${imported.length + 1}`;
+    const id = ensureUniqueId(baseId, takenIds);
+    const content = {
+      id,
+      name: mcp.name,
+      description: "Imported MCP server definition from " + mcp.relPath,
+      transport: mcp.transport,
+      command: mcp.transport === "stdio" ? mcp.command : undefined,
+      args: mcp.transport === "stdio" ? mcp.args : undefined,
+      url: mcp.transport === "url" ? mcp.url : undefined,
+      env: Object.keys(mcp.env || {}).length ? mcp.env : undefined,
+      source: "imported",
+      tags: ["imported", "mcp", sourceId || "external"],
+    };
+    upsertEntry(rootDir, {
+      id,
+      type: "mcp",
+      name: mcp.name,
+      description: content.description,
+      tags: uniqueStrings(["imported", "mcp", sourceId || "external"]),
+      meta: {
+        sourceId: sourceId || null,
+        repoUrl,
+        branch,
+        relPath: mcp.relPath,
+      },
+    }, content);
+    imported.push({ id, name: mcp.name, relPath: mcp.relPath, type: "mcp", promptId: null });
+    importedByType.mcp += 1;
+  }
+}
+
+export function importAgentProfilesFromRepository(rootDir, options = {}) {
+  const { sourceId, known, repoUrl, branch } = resolveRepositoryImportSource(options);
   const importAgents = options?.importAgents !== false;
   const importSkills = options?.importSkills !== false;
   const importPrompts = options?.importPrompts !== false;
@@ -2905,62 +3135,8 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
     ),
   );
 
-  const cacheRoot = ensureDir(resolve(getBosunHomeDir(), ".cache", "imports"));
-  const checkoutDir = resolve(cacheRoot, `import-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
-  ensureDir(checkoutDir);
-
-  const clone = spawnSync("git", ["clone", "--depth", "1", "--branch", branch, "--", repoUrl, checkoutDir], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: 120_000,
-  });
-  const cloneStderr = String(clone.stderr || "").trim();
-  const checkoutWarning = /clone succeeded.*checkout failed/i.test(cloneStderr);
-  if (clone.status !== 0 && !checkoutWarning) {
-    rmSync(checkoutDir, { recursive: true, force: true });
-    if (/repository not found/i.test(cloneStderr)) {
-      throw new Error(`Repository not found: ${repoUrl}`);
-    }
-    if (/could not read from remote/i.test(cloneStderr)) {
-      throw new Error(`Cannot access repository (may be private or require authentication): ${repoUrl}`);
-    }
-    if (/not found in upstream/i.test(cloneStderr) || /remote branch.*not found/i.test(cloneStderr)) {
-      throw new Error(`Branch "${branch}" not found in ${repoUrl}`);
-    }
-    if (clone.signal === "SIGTERM") {
-      throw new Error(`Clone timed out — repository may be too large: ${repoUrl}`);
-    }
-    throw new Error(`Failed to clone repository: ${cloneStderr || "unknown error"}`);
-  }
-
-  const files = walkFilesRecursive(checkoutDir);
-  const markdownCandidates = files
-    .filter((fullPath) => /\.md$/i.test(fullPath))
-    .map((fullPath) => {
-      const relPath = fullPath.slice(checkoutDir.length + 1).replace(/\\/g, "/");
-      const fileName = basename(fullPath);
-      const raw = readFileSync(fullPath, "utf8");
-      const parsed = parseSimpleFrontmatter(raw);
-      return {
-        fullPath,
-        relPath,
-        fileName,
-        raw,
-        attrs: parsed.attrs,
-        body: parsed.body,
-        kind: inferImportedEntryKind(relPath, fileName, parsed.attrs),
-      };
-    })
-    .filter((entry) => Boolean(entry.kind))
-    .sort((a, b) => {
-      const rank = { agent: 0, prompt: 1, skill: 2 };
-      const aRank = Number(rank[a.kind] ?? 99);
-      const bRank = Number(rank[b.kind] ?? 99);
-      if (aRank !== bRank) return aRank - bRank;
-      return String(a.relPath || "").localeCompare(String(b.relPath || ""));
-    });
-
-  const candidates = markdownCandidates.slice(0, maxProfiles);
+  const checkoutDir = createRepositoryImportCheckoutDir("import", repoUrl, branch);
+  const { candidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, { maxEntries: maxProfiles });
 
   const takenIds = new Set(
     listEntries(rootDir).map((entry) => String(entry?.id || "").trim()).filter(Boolean),
@@ -2972,209 +3148,36 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
 
   try {
     for (const candidate of candidates) {
-      const { attrs, body, relPath, fileName, kind } = candidate;
+      const { relPath } = candidate;
       if (includeEntries && !includeEntries.has(relPath)) continue;
-      const fileStem = basename(fileName, ".md");
-      const relSegments = relPath.split(/[\\/]/).filter(Boolean);
-      const parentSegment = relSegments.length > 1 ? relSegments[relSegments.length - 2] : "";
-      const fallbackNameBase = fileStem.toLowerCase() === "skill" && parentSegment ? parentSegment : fileStem;
-      const fallbackName = fallbackNameBase.replace(/\.agent$/i, "").replace(/\.skill$/i, "").replace(/\.prompt$/i, "");
-      const name = String(getFrontmatterValue(attrs, ["name", "title"]) || fallbackName.replace(/[-_.]+/g, " ")).trim();
-      const description = normalizeImportedDescription(getFrontmatterValue(attrs, ["description", "summary"]), body);
-      const keywords = keywordTokens(`${name} ${description} ${relPath}`, { minLength: 4 }).slice(0, 10);
-
-      if (kind === "prompt") {
-        if (!importPrompts) continue;
-        const baseId = slugify(`${sourceId || "imported"}-${name}`) || slugify(fileStem) || `imported-prompt-${imported.length + 1}`;
-        const id = ensureUniqueId(baseId, takenIds);
-        const promptContent = String(body || candidate.raw || "").trim();
-        if (!promptContent) continue;
-        upsertEntry(rootDir, {
-          id,
-          type: "prompt",
-          name,
-          description: description || `Imported prompt from ${known?.name || repoUrl}`,
-          tags: uniqueStrings(["imported", "prompt", sourceId || "external", ...parseJsonishArray(getFrontmatterValue(attrs, ["tags"]))]),
-          meta: {
-            sourceId: sourceId || null,
-            repoUrl,
-            branch,
-            relPath,
-          },
-        }, promptContent);
-        imported.push({ id, name, relPath, type: "prompt", promptId: null });
-        importedByType.prompt += 1;
-        continue;
-      }
-
-      if (kind === "skill") {
-        if (!importSkills) continue;
-        const baseId = slugify(`${sourceId || "imported"}-${name}`) || slugify(fileStem) || `imported-skill-${imported.length + 1}`;
-        const id = ensureUniqueId(baseId, takenIds);
-        const skillContent = String(body || candidate.raw || "").trim();
-        if (!skillContent) continue;
-        upsertEntry(rootDir, {
-          id,
-          type: "skill",
-          name,
-          description: description || "Imported skill",
-          tags: uniqueStrings(["imported", "skill", sourceId || "external", ...parseJsonishArray(getFrontmatterValue(attrs, ["tags"]))]),
-          meta: {
-            sourceId: sourceId || null,
-            repoUrl,
-            branch,
-            relPath,
-          },
-        }, skillContent, { skipIndexSync: true });
-        imported.push({ id, name, relPath, type: "skill", promptId: null });
-        importedByType.skill += 1;
-        needsSkillIndexRefresh = true;
-        continue;
-      }
-
-      if (kind !== "agent" || !importAgents) continue;
-
-      const baseId = slugify(`${sourceId || "imported"}-${name}`) || slugify(fileStem) || `imported-agent-${imported.length + 1}`;
-      const id = ensureUniqueId(baseId, takenIds);
-      const toolHints = parseJsonishArray(getFrontmatterValue(attrs, ["tools", "enabledTools"]));
-      const profileSkillHints = parseJsonishArray(getFrontmatterValue(attrs, ["skills"]));
-      const mcpHints = parseJsonishArray(getFrontmatterValue(attrs, ["enabledMcpServers", "mcpServers", "mcp"]));
-      const titlePatternHints = parseJsonishArray(getFrontmatterValue(attrs, ["titlePatterns", "title_patterns", "patterns"]));
-      const tags = uniqueStrings([
-        "imported",
-        sourceId || "external",
-        ...parseJsonishArray(getFrontmatterValue(attrs, ["tags"])),
-        ...keywords.slice(0, 4),
-      ]);
-      const pathScopes = uniqueStrings(
-        relPath
-          .split(/[\\/]/)
-          .slice(0, -1)
-          .map((segment) => slugify(segment))
-          .filter((segment) => segment && segment !== "github" && segment !== "agents"),
-      ).slice(0, 6);
-      const explicitScopes = parseJsonishArray(getFrontmatterValue(attrs, ["scopes", "scope"]));
-      const scopes = uniqueStrings([...explicitScopes, ...pathScopes]).slice(0, 8);
-      const titlePatterns = uniqueStrings([
-        ...titlePatternHints,
-        ...keywordTokens(name, { minLength: 4 }).slice(0, 4).map((token) => `\\b${token.replace(/[.*+?^${}()|[\\]\\]/g, "")}\\b`),
-      ]);
-      const promptId = `${id}-prompt`;
-
-      if (importPrompts && body) {
-        upsertEntry(rootDir, {
-          id: promptId,
-          type: "prompt",
-          name: `${name} Prompt`,
-          description: `Imported prompt from ${known?.name || repoUrl}`,
-          tags: uniqueStrings(["imported", "agent-prompt", sourceId || "external"]),
-          meta: {
-            sourceId: sourceId || null,
-            repoUrl,
-            branch,
-            relPath,
-          },
-        }, body);
-        imported.push({ id: promptId, name: `${name} Prompt`, relPath, type: "prompt", promptId: null });
-        importedByType.prompt += 1;
-      }
-
-      const explicitAgentType = String(getFrontmatterValue(attrs, ["agentType", "agent_type"]) || "").trim().toLowerCase();
-      const profile = {
-        id,
-        name,
-        description,
-        titlePatterns: titlePatterns.length ? titlePatterns : ["\\btask\\b"],
-        scopes,
-        sdk: null,
-        model: null,
-        promptOverride: importPrompts && body ? promptId : null,
-        skills: profileSkillHints,
-        hookProfile: null,
-        env: {},
-        enabledTools: toolHints.length ? toolHints : null,
-        enabledMcpServers: mcpHints,
-        tags,
-        agentType: explicitAgentType || (/voice|audio|realtime/i.test(`${name} ${description}`) ? "voice" : "task"),
-        importMeta: {
-          sourceId: sourceId || null,
-          repoUrl,
-          branch,
-          relPath,
-        },
-      };
-
-      upsertEntry(rootDir, {
-        id,
-        type: "agent",
-        name,
-        description,
-        tags: profile.tags,
-        meta: {
-          sourceId: sourceId || null,
-          repoUrl,
-          branch,
-          relPath,
-        },
-      }, profile, { skipIndexSync: true });
-
-      imported.push({ id, name, relPath, type: "agent", promptId: importPrompts && body ? promptId : null });
-      importedByType.agent += 1;
-      needsAgentIndexRefresh = true;
+      const result = importRepositoryMarkdownCandidate(rootDir, candidate, {
+        known,
+        repoUrl,
+        branch,
+        sourceId,
+        importAgents,
+        importSkills,
+        importPrompts,
+        takenIds,
+        imported,
+        importedByType,
+      });
+      needsAgentIndexRefresh = needsAgentIndexRefresh || result.needsAgentIndexRefresh;
+      needsSkillIndexRefresh = needsSkillIndexRefresh || result.needsSkillIndexRefresh;
     }
 
     if (importTools) {
-      const mcpConfigFiles = [
-        { path: resolve(checkoutDir, ".codex", "config.toml"), format: "toml" },
-        { path: resolve(checkoutDir, ".mcp.json"), format: "json" },
-        { path: resolve(checkoutDir, ".vscode", "mcp.json"), format: "json" },
-      ];
-      for (const { path: configPath, format } of mcpConfigFiles) {
-        if (!existsSync(configPath)) continue;
-        let raw = "";
-        try {
-          raw = readFileSync(configPath, "utf8");
-        } catch {
-          continue;
-        }
-        const relPath = relative(checkoutDir, configPath).replace(/\\/g, "/");
-        const discovered = format === "toml"
-          ? parseMcpServersFromToml(raw, relPath)
-          : parseMcpServersFromJson(raw, relPath);
-        for (const mcp of discovered) {
-          const baseId = slugify(`${sourceId || "imported"}-${mcp.id}`) || slugify(mcp.id) || `imported-mcp-${imported.length + 1}`;
-          const id = ensureUniqueId(baseId, takenIds);
-          const content = {
-            id,
-            name: mcp.name,
-            description: "Imported MCP server definition from " + relPath,
-            transport: mcp.transport,
-            command: mcp.transport === "stdio" ? mcp.command : undefined,
-            args: mcp.transport === "stdio" ? mcp.args : undefined,
-            url: mcp.transport === "url" ? mcp.url : undefined,
-            env: Object.keys(mcp.env || {}).length ? mcp.env : undefined,
-            source: "imported",
-            tags: ["imported", "mcp", sourceId || "external"],
-          };
-          upsertEntry(rootDir, {
-            id,
-            type: "mcp",
-            name: mcp.name,
-            description: content.description,
-            tags: uniqueStrings(["imported", "mcp", sourceId || "external"]),
-            meta: {
-              sourceId: sourceId || null,
-              repoUrl,
-              branch,
-              relPath,
-            },
-          }, content);
-          imported.push({ id, name: mcp.name, relPath, type: "mcp", promptId: null });
-          importedByType.mcp += 1;
-        }
-      }
+      importRepositoryMcpEntries(rootDir, checkoutDir, {
+        sourceId,
+        repoUrl,
+        branch,
+        takenIds,
+        imported,
+        importedByType,
+      });
     }
   } finally {
+
     rmSync(checkoutDir, { recursive: true, force: true });
   }
 
