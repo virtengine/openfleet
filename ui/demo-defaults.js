@@ -12770,7 +12770,7 @@
       "trigger": "trigger.schedule",
       "variables": {
         "staleProcessMaxAge": "15m",
-        "worktreeMaxAge": "48h",
+        "worktreeMaxAgeHours": 48,
         "logRetentionDays": 7
       },
       "metadata": {
@@ -12820,7 +12820,7 @@
           "type": "action.run_command",
           "label": "Prune Worktrees",
           "config": {
-            "command": "node -e \"const cp=require('node:child_process');cp.execSync('git worktree prune',{stdio:'ignore'});const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\""
+            "command": "node --input-type=module -e \"import { pruneStaleWorktrees } from './workspace/worktree-manager.mjs'; const maxAgeMs = Number('{{worktreeMaxAgeHours}}') * 60 * 60 * 1000; const result = await pruneStaleWorktrees(process.cwd(), { maxAgeMs }); process.stdout.write(JSON.stringify(result) + '\\\\n');\""
           },
           "position": {
             "x": 150,
@@ -12914,7 +12914,7 @@
           "type": "notify.log",
           "label": "Log Summary",
           "config": {
-            "message": "Workspace hygiene sweep completed (max worktree age target: {{worktreeMaxAge}})",
+            "message": "Workspace hygiene sweep completed (max worktree age target: {{worktreeMaxAgeHours}}h)",
             "level": "info"
           },
           "position": {
@@ -14842,8 +14842,8 @@
         "scheduled",
         "agentic"
       ],
-      "nodeCount": 12,
-      "edgeCount": 12,
+      "nodeCount": 14,
+      "edgeCount": 15,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.schedule",
@@ -14851,6 +14851,7 @@
         "sessionTimeoutMs": 5400000,
         "branch": "chore/code-quality-striker-{{_runId}}",
         "baseBranch": "main",
+        "repoRoot": ".",
         "sessionLogPath": ".bosun-monitor/code-quality-striker.md",
         "maxFilesPerSession": 6,
         "minFileSizeKb": 30,
@@ -14934,6 +14935,25 @@
           "position": {
             "x": 400,
             "y": 310
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "acquire-worktree",
+          "type": "action.acquire_worktree",
+          "label": "Acquire Worktree",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "taskId": "code-quality-{{_runId}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "defaultTargetBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 380
           },
           "outputs": [
             "default"
@@ -15072,6 +15092,23 @@
           "outputs": [
             "default"
           ]
+        },
+        {
+          "id": "release-worktree",
+          "type": "action.release_worktree",
+          "label": "Release Worktree",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "taskId": "code-quality-{{_runId}}",
+            "prune": true
+          },
+          "position": {
+            "x": 400,
+            "y": 1160
+          },
+          "outputs": [
+            "default"
+          ]
         }
       ],
       "edges": [
@@ -15096,8 +15133,14 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "scan-candidates->run-striker",
+          "id": "scan-candidates->acquire-worktree",
           "source": "scan-candidates",
+          "target": "acquire-worktree",
+          "sourcePort": "default"
+        },
+        {
+          "id": "acquire-worktree->run-striker",
+          "source": "acquire-worktree",
           "target": "run-striker",
           "sourcePort": "default"
         },
@@ -15146,9 +15189,21 @@
           "sourcePort": "default"
         },
         {
+          "id": "notify-success->release-worktree",
+          "source": "notify-success",
+          "target": "release-worktree",
+          "sourcePort": "default"
+        },
+        {
           "id": "notify-failure->log-failure",
           "source": "notify-failure",
           "target": "log-failure",
+          "sourcePort": "default"
+        },
+        {
+          "id": "log-failure->release-worktree",
+          "source": "log-failure",
+          "target": "release-worktree",
           "sourcePort": "default"
         }
       ]
@@ -32857,7 +32912,7 @@
       "trigger": "trigger.schedule",
       "variables": {
         "staleProcessMaxAge": "15m",
-        "worktreeMaxAge": "48h",
+        "worktreeMaxAgeHours": 48,
         "logRetentionDays": 7
       },
       "nodes": [
@@ -32882,7 +32937,7 @@
           "type": "action.run_command",
           "label": "Prune Worktrees",
           "config": {
-            "command": "node -e \"const cp=require('node:child_process');cp.execSync('git worktree prune',{stdio:'ignore'});const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\""
+            "command": "node --input-type=module -e \"import { pruneStaleWorktrees } from './workspace/worktree-manager.mjs'; const maxAgeMs = Number('{{worktreeMaxAgeHours}}') * 60 * 60 * 1000; const result = await pruneStaleWorktrees(process.cwd(), { maxAgeMs }); process.stdout.write(JSON.stringify(result) + '\\\\n');\""
           },
           "position": {
             "x": 150,
@@ -32976,7 +33031,7 @@
           "type": "notify.log",
           "label": "Log Summary",
           "config": {
-            "message": "Workspace hygiene sweep completed (max worktree age target: {{worktreeMaxAge}})",
+            "message": "Workspace hygiene sweep completed (max worktree age target: {{worktreeMaxAgeHours}}h)",
             "level": "info"
           },
           "position": {
@@ -34807,12 +34862,13 @@
       "description": "Recurring autonomous refactoring agent that improves codebase structure for long-term agentic development. Runs every 2 hours with a hard 90-minute session cap. Each session MUST produce a passing PR before terminating. Scope is strictly limited to structural quality: module decomposition, deduplication, function splitting. Zero functional changes allowed.",
       "category": "maintenance",
       "enabled": true,
-      "nodeCount": 12,
+      "nodeCount": 14,
       "trigger": "trigger.schedule",
       "variables": {
         "sessionTimeoutMs": 5400000,
         "branch": "chore/code-quality-striker-{{_runId}}",
         "baseBranch": "main",
+        "repoRoot": ".",
         "sessionLogPath": ".bosun-monitor/code-quality-striker.md",
         "maxFilesPerSession": 6,
         "minFileSizeKb": 30,
@@ -34882,6 +34938,25 @@
           "position": {
             "x": 400,
             "y": 310
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "acquire-worktree",
+          "type": "action.acquire_worktree",
+          "label": "Acquire Worktree",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "taskId": "code-quality-{{_runId}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "defaultTargetBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 380
           },
           "outputs": [
             "default"
@@ -35020,6 +35095,23 @@
           "outputs": [
             "default"
           ]
+        },
+        {
+          "id": "release-worktree",
+          "type": "action.release_worktree",
+          "label": "Release Worktree",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "taskId": "code-quality-{{_runId}}",
+            "prune": true
+          },
+          "position": {
+            "x": 400,
+            "y": 1160
+          },
+          "outputs": [
+            "default"
+          ]
         }
       ],
       "edges": [
@@ -35044,8 +35136,14 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "scan-candidates->run-striker",
+          "id": "scan-candidates->acquire-worktree",
           "source": "scan-candidates",
+          "target": "acquire-worktree",
+          "sourcePort": "default"
+        },
+        {
+          "id": "acquire-worktree->run-striker",
+          "source": "acquire-worktree",
           "target": "run-striker",
           "sourcePort": "default"
         },
@@ -35094,9 +35192,21 @@
           "sourcePort": "default"
         },
         {
+          "id": "notify-success->release-worktree",
+          "source": "notify-success",
+          "target": "release-worktree",
+          "sourcePort": "default"
+        },
+        {
           "id": "notify-failure->log-failure",
           "source": "notify-failure",
           "target": "log-failure",
+          "sourcePort": "default"
+        },
+        {
+          "id": "log-failure->release-worktree",
+          "source": "log-failure",
+          "target": "release-worktree",
           "sourcePort": "default"
         }
       ],
