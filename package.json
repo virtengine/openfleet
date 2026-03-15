@@ -213,6 +213,8 @@
     "kanban/kanban-adapter.mjs",
     "lib/logger.mjs",
     "lib/codebase-audit.mjs",
+    "lib/codebase-audit-manifests.mjs",
+    "lib/codebase-audit-warnings.mjs",
     "lib/session-insights.mjs",
     "infra/library-manager.mjs",
     "infra/maintenance.mjs",
