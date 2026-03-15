@@ -194,16 +194,27 @@ describe("codebase audit engine", () => {
 
   it("scans a single file target and keeps root manifests deduplicated", () => {
     const root = createRepo();
-    writeFileSync(resolve(root, "root.mjs"), [
-      "export function rootTask() {",
-      "  return true;",
-      "}",
-      "",
-    ].join("\n"), "utf8");
+    writeFileSync(
+      resolve(root, "root.mjs"),
+      [
+        "export function rootTask() {",
+        "  return true;",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
 
     const fileScan = scanRepository(root, { targetDir: "src/app.mjs", dryRun: true });
     expect(fileScan.files.map((file) => file.path)).toEqual(["src/app.mjs"]);
 
+    // First summary/manifest generation.
+    generateSummaries(root);
+    generateManifests(root);
+
+    // Run another scan and manifest generation to exercise deduplication.
+    const secondScan = scanRepository(root, { dryRun: true });
+    expect(secondScan.files.some((file) => file.path === "root.mjs")).toBe(true);
     generateSummaries(root);
     generateManifests(root);
 
@@ -229,6 +240,10 @@ describe("codebase audit engine", () => {
 
     const conformity = runConformity(root);
     expect(existsSync(resolve(root, ".bosun", "audit", "schedule.json"))).toBe(true);
+    expect(existsSync(trimResult.schedulePath)).toBe(true);
+
+    const trimmedSchedule = JSON.parse(readFileSync(trimResult.schedulePath, "utf8"));
+    expect(trimmedSchedule.filesAudited).toBe(6);
 
     const schedule = JSON.parse(readFileSync(resolve(root, ".bosun", "audit", "schedule.json"), "utf8"));
     expect(schedule.filesAudited).toBe(6);
@@ -273,7 +288,7 @@ describe("codebase audit engine", () => {
     );
     writeFileSync(
       resolve(root, "src", "secret.mjs"),
-      'const token = "sk-1234567890ABCDEFGHIJKLMNOP";\n',
+      'const token = "sk-test-fake-token-not-real-no-access";\n',
       "utf8",
     );
 
