@@ -34,7 +34,7 @@ export const CODE_QUALITY_STRIKER_TEMPLATE = {
   trigger: "trigger.schedule",
   variables: {
     sessionTimeoutMs: 5400000,       // 90 minutes hard cap
-    branch: "chore/code-quality-striker-{{_runId}}",
+    branch: "chore/code-quality-striker",
     baseBranch: "main",
     sessionLogPath: ".bosun-monitor/code-quality-striker.md",
     maxFilesPerSession: 6,           // keep PRs reviewable; prevents mega-diffs
@@ -184,7 +184,7 @@ If tests fail, **revert your change** (\`git checkout -- <file>\`) and either:
 
 ### Step 5 — Commit, push, and open the PR
 
-Branch name: \`chore/code-quality-striker-{{_runId}}\`
+Branch name: \`{{branch}}\`
 Base branch: \`{{baseBranch}}\`
 
 Commit message format:
@@ -203,7 +203,7 @@ PR body template:
 \`\`\`markdown
 ## Code Quality Pass
 
-**Session**: code-quality-striker {{_runId}}
+**Session**: {{branch}}
 **Scope**: structural refactor only — zero functional changes
 
 ### Changes
@@ -266,7 +266,7 @@ A small, clean, tested PR is always better than nothing.`,
 
     // ── 7a. Create PR ──────────────────────────────────────────────────────
     node("create-pr", "action.create_pr", "Open Quality PR", {
-      title: "refactor: code quality pass {{_runId}}",
+      title: "refactor: code quality pass",
       body: "Automated code-quality session. Structural refactor only — zero functional changes. See `.bosun-monitor/code-quality-striker.md` for session details.",
       branch: "{{branch}}",
       baseBranch: "{{baseBranch}}",
@@ -274,17 +274,17 @@ A small, clean, tested PR is always better than nothing.`,
     }, { x: 200, y: 890 }),
 
     node("notify-success", "notify.telegram", "Notify PR Opened", {
-      message: ":check: Code quality striker session complete.\nPR opened: **{{branch}}**\nRun ID: `{{_runId}}`",
+      message: ":check: Code quality striker session complete.\nPR opened: **{{branch}}**",
       silent: true,
     }, { x: 200, y: 1030 }),
 
     // ── 7b. Validation failed — notify and abort ───────────────────────────
     node("notify-failure", "notify.telegram", "Notify — Validation Failed", {
-      message: ":alert: Code quality striker **validation failed** for run `{{_runId}}`.\n\nThe agent produced changes that broke tests or build. No PR was created.\nCheck `.bosun-monitor/code-quality-striker.md` for details.",
+      message: ":alert: Code quality striker **validation failed**.\n\nThe agent produced changes that broke tests or build. No PR was created.\nCheck `.bosun-monitor/code-quality-striker.md` for details.",
     }, { x: 600, y: 890 }),
 
     node("log-failure", "notify.log", "Log Failure", {
-      message: "Code quality striker run {{_runId}} failed validation — no PR created.",
+      message: "Code quality striker validation failed — no PR created.",
       level: "warn",
     }, { x: 600, y: 1030 }),
   ],

@@ -65,7 +65,7 @@ function porcelainOutput(entries) {
 /** Set spawnSync to return a given result for calls whose args contain `needle`. */
 function mockGit(needle, overrides = {}) {
   spawnSync.mockImplementation((cmd, args) => {
-    if (args && args.some((a) => String(a).includes(needle))) {
+    if (Array.isArray(args) && args.some((a) => String(a).includes(needle))) {
       return { status: 0, stdout: "", stderr: "", ...overrides };
     }
     return { status: 0, stdout: "", stderr: "" };
@@ -75,7 +75,7 @@ function mockGit(needle, overrides = {}) {
 function mockGitMulti(handlers) {
   spawnSync.mockImplementation((_cmd, args) => {
     for (const { match, result } of handlers) {
-      if (args && args.some((a) => String(a).includes(match))) {
+      if (Array.isArray(args) && args.some((a) => String(a).includes(match))) {
         return { status: 0, stdout: "", stderr: "", ...result };
       }
     }
@@ -377,6 +377,42 @@ describe("worktree-manager", () => {
         /\/fake\/repo\/\.cache\/worktrees\/ve-abc-feat\/node_modules$/,
       );
       expect(typeof linkType).toBe("string");
+    });
+
+    it("runs configured bootstrap commands for detected ecosystems when shared dependencies are absent", async () => {
+      const previousEnabled = process.env.WORKTREE_BOOTSTRAP_ENABLED;
+      const previousCommand = process.env.WORKTREE_BOOTSTRAP_NODE_COMMAND;
+      process.env.WORKTREE_BOOTSTRAP_ENABLED = "true";
+      process.env.WORKTREE_BOOTSTRAP_NODE_COMMAND = "npm ci";
+      try {
+        mockGitMulti([
+          {
+            match: "--porcelain",
+            result: {
+              stdout: porcelainOutput([
+                { path: REPO_ROOT, branch: "refs/heads/main" },
+              ]),
+            },
+          },
+          { match: "worktree", result: { status: 0 } },
+        ]);
+        existsSync.mockImplementation((path) => {
+          const normalized = String(path).replace(/\\/g, "/");
+          return normalized.endsWith("/package.json") || normalized.endsWith("/ve-bootstrap");
+        });
+
+        await mgr.acquireWorktree("ve/bootstrap", "task-bootstrap", {
+          owner: "monitor",
+        });
+
+        const bootstrapCall = spawnSync.mock.calls.find(([cmd]) => cmd === "npm ci");
+        expect(bootstrapCall).toBeTruthy();
+      } finally {
+        if (previousEnabled === undefined) delete process.env.WORKTREE_BOOTSTRAP_ENABLED;
+        else process.env.WORKTREE_BOOTSTRAP_ENABLED = previousEnabled;
+        if (previousCommand === undefined) delete process.env.WORKTREE_BOOTSTRAP_NODE_COMMAND;
+        else process.env.WORKTREE_BOOTSTRAP_NODE_COMMAND = previousCommand;
+      }
     });
 
     it("returns existing worktree when one exists for branch", async () => {

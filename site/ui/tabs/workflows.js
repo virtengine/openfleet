@@ -110,6 +110,22 @@ function returnToWorkflowList() {
   setRouteParams({}, { replace: true, skipGuard: true });
 }
 
+export function openWorkflowRunsView(workflowId, runId = null) {
+  const scopedWorkflowId = String(workflowId || "").trim() || null;
+  resetWorkflowRunsState(scopedWorkflowId);
+  selectedRunId.value = null;
+  selectedRunDetail.value = null;
+  viewMode.value = "runs";
+  const route = { runsView: true };
+  if (scopedWorkflowId) route.runsWorkflowId = scopedWorkflowId;
+  if (runId) route.runId = runId;
+  setRouteParams(route, { replace: false, skipGuard: true });
+  loadRuns(scopedWorkflowId, { reset: true }).catch(() => {});
+  if (runId) {
+    loadRunDetail(runId).catch(() => {});
+  }
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  API Helpers
  * ═══════════════════════════════════════════════════════════════ */

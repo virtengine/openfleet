@@ -912,6 +912,15 @@ class InternalAdapter {
     if (typeof patch.workspace === "string") updates.workspace = patch.workspace;
     if (typeof patch.repository === "string") updates.repository = patch.repository;
     if (Array.isArray(patch.repositories)) updates.repositories = patch.repositories;
+    if (hasOwnField(patch, "workflowRuns")) updates.workflowRuns = patch.workflowRuns;
+    if (hasOwnField(patch, "workflowHistory")) updates.workflowHistory = patch.workflowHistory;
+    if (hasOwnField(patch, "workflows")) updates.workflows = patch.workflows;
+    if (hasOwnField(patch, "cooldownUntil")) {
+      updates.cooldownUntil = normalizeTaskStringField(patch.cooldownUntil);
+    }
+    if (hasOwnField(patch, "blockedReason")) {
+      updates.blockedReason = normalizeTaskStringField(patch.blockedReason);
+    }
     if (typeof patch.branchName === "string") {
       updates.branchName = patch.branchName.trim() || null;
     }
@@ -950,6 +959,7 @@ class InternalAdapter {
       }
     }
     const current = getInternalTask(normalizedId);
+    const replaceMeta = patch.replaceMeta === true;
     if (baseBranch) {
       updates.baseBranch = baseBranch;
     }
@@ -967,7 +977,7 @@ class InternalAdapter {
     if (hasOwnField(patch, "dueDate") || dueDate) updates.dueDate = dueDate;
     if (patch.meta && typeof patch.meta === "object") {
       updates.meta = {
-        ...(current?.meta || {}),
+        ...(replaceMeta ? {} : (current?.meta || {})),
         ...patch.meta,
         ...((assigneeProvided || assignee || assignees.length > 0)
           ? {
@@ -1015,6 +1025,9 @@ class InternalAdapter {
       taskData.parentTaskId ?? taskData.meta?.parentTaskId,
     );
     const dueDate = normalizeTaskStringField(taskData.dueDate ?? taskData.meta?.dueDate);
+    const blockedReason = normalizeTaskStringField(
+      taskData.blockedReason ?? taskData.meta?.blockedReason,
+    );
     const created = addInternalTask({
       id,
       title: taskData.title || "Untitled task",
@@ -1026,6 +1039,7 @@ class InternalAdapter {
       storyPoints,
       parentTaskId,
       dueDate,
+      blockedReason,
       priority: taskData.priority || null,
       tags,
       draft,
@@ -1059,6 +1073,7 @@ class InternalAdapter {
         ...(storyPoints != null ? { storyPoints } : {}),
         ...(parentTaskId ? { parentTaskId } : {}),
         ...(dueDate ? { dueDate } : {}),
+        ...(blockedReason ? { blockedReason } : {}),
         ...(taskData.workspace ? { workspace: taskData.workspace } : {}),
         ...(taskData.repository || taskData.repo
           ? { repository: taskData.repository || taskData.repo }
@@ -6149,3 +6164,4 @@ export async function unmarkTaskIgnored(taskId) {
   );
   return false;
 }
+

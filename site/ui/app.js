@@ -249,6 +249,8 @@ import {
   apiFetch,
   connectWebSocket,
   disconnectWebSocket,
+  wsLatency,
+  wsReconnectIn,
   wsConnected,
   loadingCount,
 } from "./modules/api.js";
@@ -262,6 +264,7 @@ import {
   initWsInvalidationListener,
   loadNotificationPrefs,
   applyStoredDefaults,
+  dataFreshness,
   hasPendingChanges,
 } from "./modules/state.js";
 import {
@@ -313,20 +316,6 @@ import { SettingsTab } from "./tabs/settings.js";
 import { WorkflowsTab } from "./tabs/workflows.js";
 import { LibraryTab } from "./tabs/library.js";
 import { ManualFlowsTab } from "./tabs/manual-flows.js";
-
-/* ── Placeholder signals for connection quality (may be provided by api.js) ── */
-let wsLatency = signal(null);
-let wsReconnectIn = signal(null);
-let dataFreshness = signal(null);
-try {
-  const apiMod = await import("./modules/api.js");
-  if (apiMod.wsLatency) wsLatency = apiMod.wsLatency;
-  if (apiMod.wsReconnectIn) wsReconnectIn = apiMod.wsReconnectIn;
-} catch { /* use placeholder signals */ }
-try {
-  const stateMod = await import("./modules/state.js");
-  if (stateMod.dataFreshness) dataFreshness = stateMod.dataFreshness;
-} catch { /* use placeholder signals */ }
 
 /* ── Shared components ── */
 

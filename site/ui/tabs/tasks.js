@@ -44,6 +44,7 @@ import { ICONS } from "../modules/icons.js";
 import {
   cloneValue,
   formatRelative,
+  formatDuration,
   truncate,
   formatBytes,
   debounce,
@@ -51,6 +52,12 @@ import {
   exportAsJSON,
   countChangedFields,
 } from "../modules/utils.js";
+import { navigateTo } from "../modules/router.js";
+import {
+  loadSessions,
+  loadSessionMessages,
+  selectedSessionId,
+} from "../components/session-list.js";
 import {
   Modal,
   SaveDiscardBar,
@@ -65,6 +72,7 @@ import {
 } from "../components/forms.js";
 import { KanbanBoard } from "../components/kanban-board.js";
 import { VoiceMicButton, VoiceMicButtonInline } from "../modules/voice.js";
+import { openWorkflowRunsView } from "./workflows.js";
 import {
   workspaces as managedWorkspaces,
   activeWorkspaceId,
@@ -139,7 +147,7 @@ const STATUS_CHIPS = [
   { value: "inprogress", label: "Active" },
   { value: "inreview", label: "Review" },
   { value: "done", label: "Done" },
-  { value: "error", label: "Error" },
+  { value: "blocked", label: "Blocked" },
 ];
 
 const PRIORITY_CHIPS = [
@@ -163,7 +171,7 @@ const SNAPSHOT_STATUS_MAP = {
   Active: "inprogress",
   Review: "inreview",
   Done: "done",
-  Errors: "error",
+  Blocked: "blocked",
 };
 
 const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3, "": 4 };
@@ -1063,6 +1071,89 @@ function buildTaskHistoryEntries(task) {
     .slice(0, 40);
 }
 
+function pickTaskWorkflowSessionId(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  for (const value of [
+    entry.sessionId,
+    entry.primarySessionId,
+    entry.threadId,
+    entry.agentSessionId,
+    entry.meta?.sessionId,
+    entry.meta?.threadId,
+  ]) {
+    const normalized = String(value || "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+export function normalizeTaskWorkflowRunEntry(entry) {
+  if (entry == null) return null;
+  if (typeof entry === "string") {
+    const workflowId = String(entry || "").trim();
+    return workflowId
+      ? {
+          workflowId,
+          workflowName: "",
+          workflowLabel: workflowId,
+          runId: "",
+          status: "",
+          outcome: "",
+          result: "",
+          summary: "",
+          timestamp: null,
+          startedAt: null,
+          endedAt: null,
+          duration: null,
+          sessionId: "",
+          primarySessionId: "",
+          hasRunLink: false,
+          hasSessionLink: false,
+          url: "",
+          nodeId: "",
+          meta: {},
+        }
+      : null;
+  }
+  const workflowId = String(entry.workflowId || entry.id || entry.templateId || "").trim();
+  const workflowName = String(entry.workflowName || entry.name || "").trim();
+  const runId = String(entry.runId || entry.executionId || entry.attemptId || "").trim();
+  const status = String(entry.status || "").trim();
+  const outcome = String(entry.outcome || "").trim();
+  const summary = String(entry.summary || entry.message || entry.reason || "").trim();
+  const result = summary || String(entry.result || "").trim();
+  const startedAt = entry.startedAt || entry.createdAt || null;
+  const endedAt = entry.endedAt || entry.completedAt || entry.timestamp || null;
+  const timestamp = endedAt || startedAt || null;
+  const duration = Number.isFinite(Number(entry.duration))
+    ? Number(entry.duration)
+    : (startedAt && endedAt
+        ? Math.max(0, new Date(endedAt).getTime() - new Date(startedAt).getTime())
+        : null);
+  const sessionId = pickTaskWorkflowSessionId(entry);
+  return {
+    workflowId,
+    workflowName,
+    workflowLabel: workflowName || workflowId || "workflow",
+    runId,
+    status,
+    outcome,
+    result,
+    summary,
+    timestamp,
+    startedAt,
+    endedAt,
+    duration,
+    sessionId,
+    primarySessionId: String(entry.primarySessionId || sessionId).trim(),
+    hasRunLink: Boolean(runId),
+    hasSessionLink: Boolean(sessionId),
+    url: String(entry.url || "").trim(),
+    nodeId: String(entry.nodeId || "").trim(),
+    meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
+  };
+}
+
 function buildTaskWorkflowRuns(task) {
   const rows = getTaskCollectionValues(task, [
     "workflowRuns",
@@ -1070,19 +1161,7 @@ function buildTaskWorkflowRuns(task) {
     "workflows",
   ]);
   return rows
-    .map((entry) => {
-      if (entry == null) return null;
-      if (typeof entry === "string") {
-        return { workflowId: entry, runId: "", status: "", result: "", timestamp: null };
-      }
-      return {
-        workflowId: String(entry.workflowId || entry.id || entry.templateId || "").trim(),
-        runId: String(entry.runId || entry.executionId || entry.attemptId || "").trim(),
-        status: String(entry.status || entry.outcome || entry.result || "").trim(),
-        result: String(entry.summary || entry.message || entry.reason || "").trim(),
-        timestamp: entry.timestamp || entry.completedAt || entry.createdAt || null,
-      };
-    })
+    .map((entry) => normalizeTaskWorkflowRunEntry(entry))
     .filter((entry) => entry && (entry.workflowId || entry.runId || entry.status || entry.result))
     .sort((a, b) => {
       const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
@@ -1090,6 +1169,56 @@ function buildTaskWorkflowRuns(task) {
       return tb - ta;
     })
     .slice(0, 30);
+}
+
+export function buildTaskWorkflowRunMetaLine(run) {
+  const parts = [];
+  const label = String(run?.workflowLabel || run?.workflowName || run?.workflowId || "workflow").trim();
+  if (label) parts.push(label);
+  if (run?.runId) parts.push(`run ${run.runId}`);
+  if (run?.timestamp) parts.push(formatRelative(run.timestamp));
+  if (Number.isFinite(Number(run?.duration)) && Number(run.duration) > 0) {
+    parts.push(formatDuration(Number(run.duration)));
+  }
+  return parts.join(" · ");
+}
+
+export function buildTaskWorkflowRunStatusLine(run) {
+  const parts = [];
+  const status = String(run?.status || "").trim();
+  const outcome = String(run?.outcome || "").trim();
+  const summary = String(run?.summary || run?.result || "").trim();
+  if (status) parts.push(status);
+  if (outcome && outcome !== status) parts.push(outcome);
+  if (summary && summary !== status && summary !== outcome) parts.push(summary);
+  return parts.join(" · ") || "No status summary";
+}
+
+export async function openTaskWorkflowRun(run, deps = {}) {
+  const navigate = deps.navigateTo || navigateTo;
+  const openRuns = deps.openWorkflowRunsView || openWorkflowRunsView;
+  const workflowId = String(run?.workflowId || "").trim();
+  const runId = String(run?.runId || "").trim();
+  if (!runId) return false;
+  const navigated = navigate("workflows");
+  if (navigated === false) return false;
+  openRuns(workflowId, runId);
+  return true;
+}
+
+export async function openTaskWorkflowAgentHistory(run, deps = {}) {
+  const navigate = deps.navigateTo || navigateTo;
+  const loadAllSessions = deps.loadSessions || loadSessions;
+  const loadMessages = deps.loadSessionMessages || loadSessionMessages;
+  const selectedStore = deps.selectedSessionId || selectedSessionId;
+  const sessionId = pickTaskWorkflowSessionId(run);
+  if (!sessionId) return false;
+  const navigated = navigate("agents");
+  if (navigated === false) return false;
+  await loadAllSessions({ type: "task", workspace: "all" });
+  selectedStore.value = sessionId;
+  await loadMessages(sessionId, { limit: 50 });
+  return true;
 }
 
 function buildTaskRelatedLinks(task) {
@@ -2436,6 +2565,63 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
 
   useEffect(() => { fetchExecutionPlan("resolve"); }, [task?.id]);
 
+  const handleOpenWorkflowRun = useCallback(async (run) => {
+    try {
+      await openTaskWorkflowRun(run);
+    } catch {
+      showToast("Unable to open workflow run", "error");
+    }
+  }, []);
+  const handleOpenWorkflowAgentHistory = useCallback(async (run) => {
+    try {
+      await openTaskWorkflowAgentHistory(run);
+    } catch {
+      showToast("Unable to open linked agent session", "error");
+    }
+  }, []);
+  const renderWorkflowActivityCard = useCallback((run, key) => {
+    const metaLine = buildTaskWorkflowRunMetaLine(run);
+    const statusLine = buildTaskWorkflowRunStatusLine(run);
+    return html`
+      <div
+        class="task-comment-item task-workflow-run-card"
+        key=${key}
+        data-clickable=${run.hasRunLink ? "true" : "false"}
+        role=${run.hasRunLink ? "button" : undefined}
+        tabIndex=${run.hasRunLink ? 0 : undefined}
+        onClick=${run.hasRunLink ? () => { void handleOpenWorkflowRun(run); } : undefined}
+        onKeyDown=${run.hasRunLink
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                void handleOpenWorkflowRun(run);
+              }
+            }
+          : undefined}
+      >
+        <div class="task-workflow-run-head">
+          <div style="min-width:0;flex:1;">
+            <div class="task-comment-meta">${metaLine || "workflow"}</div>
+            <div class="task-comment-body">${statusLine}</div>
+            ${run.nodeId ? html`<div class="task-comment-meta">Node: ${run.nodeId}</div>` : null}
+          </div>
+          <div class="task-workflow-run-actions" onClick=${(event) => event.stopPropagation()}>
+            ${run.hasRunLink ? html`
+              <${Button} variant="outlined" size="small" onClick=${() => { void handleOpenWorkflowRun(run); }}>
+                Open Run
+              <//>
+            ` : null}
+            ${run.hasSessionLink ? html`
+              <${Button} variant="text" size="small" onClick=${() => { void handleOpenWorkflowAgentHistory(run); }}>
+                Agent History
+              <//>
+            ` : null}
+          </div>
+        </div>
+      </div>
+    `;
+  }, [handleOpenWorkflowRun, handleOpenWorkflowAgentHistory]);
+
   const toggleNodeExpand = useCallback((stageIdx, nodeId) => {
     setExpandedNodes((prev) => ({ ...prev, [`${stageIdx}-${nodeId}`]: !prev[`${stageIdx}-${nodeId}`] }));
   }, []);
@@ -2457,6 +2643,21 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.assignees,
     task?.meta,
   ]);
+  const canStartInfo = task?.canStart || task?.meta?.canStart || null;
+  const blockedContext = task?.blockedContext || task?.meta?.blockedContext || null;
+  const blockedBy = Array.isArray(blockedContext?.blockedBy)
+    ? blockedContext.blockedBy
+    : Array.isArray(canStartInfo?.blockedBy)
+      ? canStartInfo.blockedBy
+      : [];
+  const blockedEvidence = [
+    ...(Array.isArray(blockedContext?.timelineEvidence)
+      ? blockedContext.timelineEvidence.map((entry) => ({ ...entry, kind: "timeline" }))
+      : []),
+    ...(Array.isArray(blockedContext?.logEvidence)
+      ? blockedContext.logEvidence.map((entry) => ({ ...entry, kind: "log" }))
+      : []),
+  ].slice(0, 6);
 
   const currentDependencyIds = useMemo(() => normalizeDependencyInput(dependenciesInput), [dependenciesInput]);
   const taskCatalogOptions = useMemo(() => (taskCatalog || []).filter((entry) => toText(entry?.id) && toText(entry?.id) !== toText(task?.id)), [taskCatalog, task?.id]);
@@ -3032,6 +3233,21 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     }
   };
 
+  const handleUnblock = async () => {
+    haptic("medium");
+    try {
+      await apiFetch("/api/tasks/unblock", {
+        method: "POST",
+        body: JSON.stringify({ taskId: task.id, status: "todo" }),
+      });
+      showToast("Task moved back to todo", "success");
+      onClose();
+      scheduleRefresh(150);
+    } catch {
+      /* toast */
+    }
+  };
+
   const handleManualToggle = async (next) => {
     if (!task?.id || manualBusy) return;
     if (next) {
@@ -3154,13 +3370,87 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       </div>
 
       ${/* ── Content Body ───────────────────────────────────────────── */ ""}
-      <div style="padding:${fullScreen ? '20px 24px' : '0'};overflow-y:auto;max-height:${fullScreen ? 'calc(100dvh - 140px)' : 'auto'};">
+      <div style="padding:${fullScreen ? '20px 24px' : '0'};">
 
       ${/* ── DETAILS TAB — Two-column Jira layout ─────────────────── */ ""}
-      ${activeTab === "details" && html`<div class="task-detail-columns" style="max-height:${fullScreen ? 'calc(100dvh - 160px)' : '65vh'};overflow:hidden;">
+      ${activeTab === "details" && html`<div class="task-detail-columns">
 
       ${/* ── LEFT: Main Content ── */ ""}
       <div class="task-detail-main">
+
+        ${(task?.status === "blocked" || canStartInfo?.canStart === false) && html`
+          <div class="task-section">
+            <div class="task-section-title">
+              ${task?.status === "blocked" ? "Blocked Diagnostics" : "Start Readiness"}
+              ${blockedContext?.workflowRunCount > 0 && html`<span class="task-tab-count">${blockedContext.workflowRunCount}</span>`}
+            </div>
+            <div class="task-section-body">
+              <div class="task-blocked-banner" data-category=${blockedContext?.category || "guard"}>
+                <div class="task-blocked-banner-title">
+                  ${blockedContext?.headline || "This task cannot start yet."}
+                </div>
+                <div class="task-blocked-banner-copy">
+                  ${blockedContext?.summary || blockedContext?.reason || "Bosun is holding this task until the blocking condition is resolved."}
+                </div>
+                ${blockedContext?.recommendation && html`
+                  <div class="task-blocked-banner-copy">${blockedContext.recommendation}</div>
+                `}
+              </div>
+
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:12px;">
+                ${blockedContext?.workflowRunCount > 0 && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Workflow runs</div>
+                    <div class="task-comment-body">${blockedContext.workflowRunCount.toLocaleString("en-US")}</div>
+                  </div>
+                `}
+                ${blockedContext?.prePrValidationFailureCount > 0 && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Validation loops</div>
+                    <div class="task-comment-body">${blockedContext.prePrValidationFailureCount.toLocaleString("en-US")} pre-PR validation failures</div>
+                  </div>
+                `}
+                ${blockedContext?.worktreeFailureCount > 0 && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Worktree failures</div>
+                    <div class="task-comment-body">${blockedContext.worktreeFailureCount.toLocaleString("en-US")} acquisition failures</div>
+                  </div>
+                `}
+                ${blockedBy.length > 0 && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Blocking tasks</div>
+                    <div class="task-comment-body">${blockedBy.length.toLocaleString("en-US")} unresolved dependencies</div>
+                  </div>
+                `}
+              </div>
+
+              ${blockedBy.length > 0 && html`
+                <div class="task-comments-list" style=${{ marginTop: "12px" }}>
+                  ${blockedBy.map((entry, index) => html`
+                    <div class="task-comment-item" key=${`blocked-by-${index}`}>
+                      <div class="task-comment-meta">${entry.taskId || "dependency"}</div>
+                      <div class="task-comment-body">${entry.reason || "Not ready yet"}</div>
+                    </div>
+                  `)}
+                </div>
+              `}
+
+              ${blockedEvidence.length > 0 && html`
+                <div class="task-comments-list" style=${{ marginTop: "12px" }}>
+                  ${blockedEvidence.map((entry, index) => html`
+                    <div class="task-comment-item" key=${`blocked-evidence-${index}`}>
+                      <div class="task-comment-meta">
+                        ${entry.kind === "log" ? entry.source || "monitor log" : entry.source || "timeline"}
+                        ${entry.timestamp ? ` · ${formatRelative(entry.timestamp)}` : ""}
+                      </div>
+                      <div class="task-comment-body">${entry.message}</div>
+                    </div>
+                  `)}
+                </div>
+              `}
+            </div>
+          </div>
+        `}
 
         ${/* Description */ ""}
         <div class="task-section">
@@ -3392,19 +3682,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             <div class="task-section-title">Workflow Activity</div>
             <div class="task-section-body">
               <div class="task-comments-list">
-                ${workflowRuns.map((run, index) => html`
-                  <div class="task-comment-item" key=${`workflow-${index}`}>
-                    <div class="task-comment-meta">
-                      ${run.workflowId || "workflow"}
-                      ${run.runId ? ` · run ${run.runId}` : ""}
-                      ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
-                    </div>
-                    <div class="task-comment-body">${run.status || run.result || "No status summary"}</div>
-                    ${run.result && run.status && run.result !== run.status && html`
-                      <div class="task-comment-body">${run.result}</div>
-                    `}
-                  </div>
-                `)}
+                ${workflowRuns.map((run, index) => renderWorkflowActivityCard(run, `workflow-${index}`))}
               </div>
             </div>
           </div>
@@ -3430,7 +3708,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
               }}
               fullWidth
             >
-              ${["draft", "todo", "inprogress", "inreview", "done", "cancelled"].map(
+              ${["draft", "todo", "inprogress", "inreview", "blocked", "done", "cancelled"].map(
                 (s) => html`<${MenuItem} value=${s}>${s}</${MenuItem}>`,
               )}
             </${Select}>
@@ -3764,6 +4042,9 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         <div style="display:flex;gap:4px;flex-wrap:wrap;">
           ${(task?.status === "error" || task?.status === "cancelled") && html`
             <${Button} variant="contained" size="small" onClick=${handleRetry}>↻ Retry<//>
+          `}
+          ${task?.status === "blocked" && html`
+            <${Button} variant="contained" size="small" onClick=${handleUnblock}>↺ Move To Todo<//>
           `}
           <${Button}
             variant="outlined" size="small"
@@ -4187,16 +4468,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">Workflow Activity</div>
           <div class="task-comments-list">
-            ${workflowRuns.map((run, index) => html`
-              <div class="task-comment-item" key=${`wf-hist-${index}`}>
-                <div class="task-comment-meta">
-                  ${run.workflowId || "workflow"}
-                  ${run.runId ? ` · run ${run.runId}` : ""}
-                  ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
-                </div>
-                <div class="task-comment-body">${run.status || run.result || "No status summary"}</div>
-              </div>
-            `)}
+            ${workflowRuns.map((run, index) => renderWorkflowActivityCard(run, `wf-hist-${index}`))}
           </div>
         </div>
       `}
@@ -4444,25 +4716,6 @@ function DagGraphSection({
     }
     if (node?.taskId) onOpenTask?.(node.taskId);
   }, [isWireMode, onActivateNode, onCreateEdge, onOpenTask, wireSourceId, nodeById, wiringBusy]);
-
-  const handleEdgeClick = useCallback((edge, event) => {
-    event?.stopPropagation?.();
-    if (!isWireMode || typeof onDeleteEdge !== "function") return;
-    setSelectedEdgeKey((current) => current === edge.key ? "" : edge.key);
-    setWireSourceId("");
-  }, [isWireMode, onDeleteEdge]);
-
-  const handleDeleteSelectedEdge = useCallback(async () => {
-    if (!selectedEdge || typeof onDeleteEdge !== "function") return;
-    setWiringBusy(true);
-    try {
-      await onDeleteEdge(selectedEdge);
-      setSelectedEdgeKey("");
-    } finally {
-      setWiringBusy(false);
-    }
-  }, [onDeleteEdge, selectedEdge]);
-
   const commitWireConnection = useCallback(async (sourceId, targetId) => {
     if (!isWireMode || typeof onCreateEdge !== "function") return;
     if (!sourceId || !targetId || sourceId === targetId || wiringBusy) {
@@ -4486,6 +4739,99 @@ function DagGraphSection({
       setWiringBusy(false);
     }
   }, [isWireMode, nodeById, onCreateEdge, wiringBusy]);
+
+  const handleWireNodePointerDown = useCallback((node, event) => {
+    if (!isWireMode || wiringBusy) return;
+    const sourceId = String(node?.id || "").trim();
+    if (!sourceId) return;
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+
+    if (typeof wireDragCleanupRef.current === "function") {
+      wireDragCleanupRef.current();
+      wireDragCleanupRef.current = null;
+    }
+
+    const dragState = {
+      sourceId,
+      startX: Number(event?.clientX || 0),
+      startY: Number(event?.clientY || 0),
+      dragging: false,
+    };
+
+    const handleMove = (moveEvent) => {
+      const nextX = Number(moveEvent?.clientX || 0);
+      const nextY = Number(moveEvent?.clientY || 0);
+      if (!dragState.dragging) {
+        const deltaX = nextX - dragState.startX;
+        const deltaY = nextY - dragState.startY;
+        if (Math.hypot(deltaX, deltaY) < 6) return;
+        dragState.dragging = true;
+        setWireSourceId(sourceId);
+        setSelectedEdgeKey("");
+        setWireHoverId("");
+        wireHoverIdRef.current = "";
+        setWireDrag({ sourceId, clientX: nextX, clientY: nextY });
+        return;
+      }
+      setWireDrag((current) => current
+        ? { ...current, clientX: nextX, clientY: nextY }
+        : current);
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+      window.removeEventListener("pointercancel", handleCancel);
+    };
+
+    const finishWire = async () => {
+      const targetId = wireHoverIdRef.current;
+      setWireDrag(null);
+      await commitWireConnection(sourceId, targetId);
+    };
+
+    const handleUp = async (upEvent) => {
+      cleanup();
+      wireDragCleanupRef.current = null;
+      if (dragState.dragging) {
+        await finishWire();
+        return;
+      }
+      await handleNodeClick(node, upEvent);
+    };
+
+    const handleCancel = () => {
+      cleanup();
+      wireDragCleanupRef.current = null;
+      setWireDrag(null);
+      setWireHoverId("");
+      wireHoverIdRef.current = "";
+    };
+
+    wireDragCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    window.addEventListener("pointercancel", handleCancel);
+  }, [commitWireConnection, handleNodeClick, isWireMode, wiringBusy]);
+
+  const handleEdgeClick = useCallback((edge, event) => {
+    event?.stopPropagation?.();
+    if (!isWireMode || typeof onDeleteEdge !== "function") return;
+    setSelectedEdgeKey((current) => current === edge.key ? "" : edge.key);
+    setWireSourceId("");
+  }, [isWireMode, onDeleteEdge]);
+
+  const handleDeleteSelectedEdge = useCallback(async () => {
+    if (!selectedEdge || typeof onDeleteEdge !== "function") return;
+    setWiringBusy(true);
+    try {
+      await onDeleteEdge(selectedEdge);
+      setSelectedEdgeKey("");
+    } finally {
+      setWiringBusy(false);
+    }
+  }, [onDeleteEdge, selectedEdge]);
 
   const beginWireDrag = useCallback((node, event) => {
     if (!isWireMode || typeof onCreateEdge !== "function" || wiringBusy) return;
@@ -4554,7 +4900,7 @@ function DagGraphSection({
         <div>
           <div style=${{ fontWeight: "700" }}>${title || "Task DAG"}</div>
           ${description ? html`<div class="meta-text">${description}</div>` : null}
-          <div class="meta-text">Drag to pan · wheel to zoom · click node to ${isWireMode ? "wire edges" : "open task"}.</div>
+          <div class="meta-text">Drag to pan · wheel to zoom · ${isWireMode ? "drag from one node to another, or click source then target, to wire edges" : "click node to open task"}.</div>
         </div>
         <div class="task-dag-controls">
           <${Button} size="small" variant="outlined" onClick=${() => setZoom((z) => Math.max(DAG_MIN_ZOOM, z * 0.9))}>-</${Button}>
@@ -4629,7 +4975,10 @@ function DagGraphSection({
                 <g
                   key=${node.id}
                   class=${`dag-node ${selected ? "dag-node-selected" : ""} ${hoverTarget ? "dag-node-hover-target" : ""} ${highlighted ? "dag-node-highlighted" : ""}`}
-                  onPointerDown=${(event) => event.stopPropagation()}
+                  onPointerDown=${(event) => {
+                    event.stopPropagation();
+                    if (isWireMode) handleWireNodePointerDown(node, event);
+                  }}
                   onPointerEnter=${() => {
                     if (!wireDrag || String(node.id) === String(wireDrag.sourceId)) return;
                     wireHoverIdRef.current = String(node.id);
@@ -4640,8 +4989,8 @@ function DagGraphSection({
                     wireHoverIdRef.current = "";
                     setWireHoverId("");
                   }}
-                  onClick=${(event) => handleNodeClick(node, event)}
-                  style=${{ cursor: isWireMode || node.taskId ? "pointer" : "default" }}
+                  onClick=${isWireMode ? undefined : (event) => handleNodeClick(node, event)}
+                  style=${{ cursor: isWireMode ? "crosshair" : node.taskId ? "pointer" : "default" }}
                 >
                   <rect
                     x=${pos.x}
@@ -4671,7 +5020,7 @@ function DagGraphSection({
                       fill=${selected ? "var(--accent)" : "var(--bg-canvas, #0f1115)"}
                       stroke="var(--accent)"
                       stroke-width="2"
-                      onPointerDown=${(event) => beginWireDrag(node, event)}
+                      onPointerDown=${(event) => handleWireNodePointerDown(node, event)}
                     />
                   ` : null}
                   ${Number.isFinite(node.order) && html`<text x=${pos.x + pos.width - 16} y=${pos.y + 22} text-anchor="end" fill="var(--text-muted)" font-size="11">#${node.order}</text>`}
@@ -4713,6 +5062,8 @@ export function TasksTab() {
   const [dagAllTasks, setDagAllTasks] = useState([]);
   const [dagEpicDependencies, setDagEpicDependencies] = useState([]);
   const [dagFocusMode, setDagFocusMode] = useState("all");
+  const [dagOrganizeFeedback, setDagOrganizeFeedback] = useState("");
+  const [dagOrganizeSuggestions, setDagOrganizeSuggestions] = useState([]);
   const [showCreateSprint, setShowCreateSprint] = useState(false);
   const [editingSprint, setEditingSprint] = useState(null);
   const [createSeed, setCreateSeed] = useState(null);
@@ -4782,7 +5133,7 @@ export function TasksTab() {
   const isList = !isKanban && !isDag;
   const viewModeInitRef = useRef(false);
   const hasMoreKanbanPages = isKanban && page + 1 < totalPages;
-  const boardColumnTotals = tasksStatusCounts?.value || { draft: 0, backlog: 0, inProgress: 0, inReview: 0, done: 0 };
+  const boardColumnTotals = tasksStatusCounts?.value || { draft: 0, backlog: 0, blocked: 0, inProgress: 0, inReview: 0, done: 0 };
   const boardTotalTasks = Number(tasksTotal?.value || 0);
   const dagTaskCatalog = dagAllTasks.length ? dagAllTasks : tasks;
   const dagPlanningState = useMemo(() => buildDagPlanningState({
@@ -4824,6 +5175,14 @@ export function TasksTab() {
     { id: "execution", label: "Running & review", count: dagPlanningState.counts.execution },
     { id: "ready", label: "Ready next", count: dagPlanningState.counts.ready },
   ];
+  const dagOrganizeSummary = useMemo(() => {
+    if (dagOrganizeFeedback) return dagOrganizeFeedback;
+    return "Run Auto Wire to rewrite sprint order, add inferred dependencies, and surface any cleanup suggestions that still need review.";
+  }, [dagOrganizeFeedback]);
+  const dagSelectedSprintLabel = useMemo(() => {
+    if (dagSelectedSprint === "all") return "all sprints";
+    return dagSprints.find((entry) => entry.id === dagSelectedSprint)?.label || dagSelectedSprint;
+  }, [dagSelectedSprint, dagSprints]);
 
   const loadMoreKanbanTasks = useCallback(async () => {
     if (!isKanban || kanbanLoadingMore || isSearching) return;
@@ -5027,6 +5386,11 @@ export function TasksTab() {
   }, []);
 
   useEffect(() => {
+    setDagOrganizeFeedback("");
+    setDagOrganizeSuggestions([]);
+  }, [dagSelectedSprint]);
+
+  useEffect(() => {
     if (isCompact) {
       setFiltersOpen(false);
       setActionsOpen(false);
@@ -5069,7 +5433,7 @@ export function TasksTab() {
       active: 0,
       review: 0,
       done: 0,
-      error: 0,
+      blocked: 0,
       draft: 0,
     };
     for (const task of tasks) {
@@ -5081,7 +5445,7 @@ export function TasksTab() {
       } else if (["done", "completed", "closed", "merged", "cancelled"].includes(status)) {
         counts.done += 1;
       } else if (["error", "blocked", "failed"].includes(status)) {
-        counts.error += 1;
+        counts.blocked += 1;
       } else if (["draft"].includes(status)) {
         counts.draft += 1;
       } else {
@@ -5093,7 +5457,7 @@ export function TasksTab() {
       { label: "Active", value: counts.active, color: "var(--color-inprogress)" },
       { label: "Review", value: counts.review, color: "var(--color-inreview)" },
       { label: "Done", value: counts.done, color: "var(--color-done)" },
-      { label: "Errors", value: counts.error, color: "var(--color-error)" },
+      { label: "Blocked", value: counts.blocked, color: "var(--color-error)" },
     ];
   }, [tasks]);
 
@@ -5288,24 +5652,89 @@ export function TasksTab() {
       setDagError("Failed to update sprint execution mode.");
     }
   }, [dagSelectedSprint, loadDagViews]);
+
+  const persistSprintTaskOrder = useCallback(async (sprintId, orderedTasks) => {
+    await Promise.all(orderedTasks.map((entry, index) => apiFetch(
+      "/api/tasks/sprints/" + encodeURIComponent(sprintId) + "/tasks",
+      {
+        method: "POST",
+        body: JSON.stringify({ taskId: entry.id, sprintOrder: index + 1 }),
+      },
+    )));
+  }, []);
+
   const handleNudgeSprintTaskOrder = useCallback(async (taskId, delta) => {
     const task = dagTaskCatalog.find((entry) => toText(entry?.id) === toText(taskId));
     const sprintId = toText(getTaskSprintId(task));
     if (!task?.id || !sprintId) return;
-    const currentOrder = Number(getTaskSprintOrder(task) || 1);
-    const nextOrder = Math.max(1, (Number.isFinite(currentOrder) ? currentOrder : 1) + delta);
+    const sprintQueue = dagSprintQueue
+      .filter((entry) => toText(getTaskSprintId(entry)) === sprintId)
+      .sort((left, right) => {
+        const leftOrder = Number(getTaskSprintOrder(left) || Number.MAX_SAFE_INTEGER);
+        const rightOrder = Number(getTaskSprintOrder(right) || Number.MAX_SAFE_INTEGER);
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+        return String(left?.title || left?.id || "").localeCompare(String(right?.title || right?.id || ""));
+      });
+    const currentIndex = sprintQueue.findIndex((entry) => toText(entry?.id) === toText(taskId));
+    const nextIndex = currentIndex + delta;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= sprintQueue.length) return;
+    const reordered = [...sprintQueue];
+    const [movedTask] = reordered.splice(currentIndex, 1);
+    reordered.splice(nextIndex, 0, movedTask);
     try {
-      await apiFetch(
-        "/api/tasks/sprints/" + encodeURIComponent(sprintId) + "/tasks",
-        {
-          method: "POST",
-          body: JSON.stringify({ taskId: task.id, sprintOrder: nextOrder }),
-        },
-      );
-      showToast("Sprint order updated", "success");
+      await persistSprintTaskOrder(sprintId, reordered);
+      showToast("Sprint queue reordered", "success");
       await loadDagViews();
     } catch {
       setDagError("Failed to update sprint task order.");
+    }
+  }, [dagSprintQueue, dagTaskCatalog, loadDagViews, persistSprintTaskOrder]);
+
+  const handleApplyDagSuggestion = useCallback(async (entry) => {
+    const suggestionType = toText(entry?.type);
+    if (suggestionType !== "missing_sequential_dependency") return;
+
+    const dependencyTaskId = toText(entry?.dependencyTaskId);
+    const taskId = toText(entry?.taskId);
+    if (!dependencyTaskId || !taskId || dependencyTaskId === taskId) return;
+
+    haptic("medium");
+    setDagLoading(true);
+    setDagError("");
+    try {
+      const task = dagTaskCatalog.find((candidate) => toText(candidate?.id) === taskId);
+      const existing = normalizeDependencyInput(getTaskDependencyIds(task));
+      if (existing.includes(dependencyTaskId)) {
+        setDagOrganizeSuggestions((current) => current.filter((candidate) => !(
+          toText(candidate?.type) === suggestionType &&
+          toText(candidate?.taskId) === taskId &&
+          toText(candidate?.dependencyTaskId) === dependencyTaskId
+        )));
+        setDagOrganizeFeedback(`Dependency ${dependencyTaskId} -> ${taskId} is already present.`);
+        showToast("Dependency already exists", "info");
+        return;
+      }
+
+      await apiFetch("/api/tasks/dependencies", {
+        method: "PUT",
+        body: JSON.stringify({
+          taskId,
+          dependencies: normalizeDependencyInput([...existing, dependencyTaskId]),
+        }),
+      });
+
+      setDagOrganizeSuggestions((current) => current.filter((candidate) => !(
+        toText(candidate?.type) === suggestionType &&
+        toText(candidate?.taskId) === taskId &&
+        toText(candidate?.dependencyTaskId) === dependencyTaskId
+      )));
+      setDagOrganizeFeedback(`Applied sequential dependency ${dependencyTaskId} -> ${taskId}.`);
+      showToast(`Applied dependency: ${dependencyTaskId} -> ${taskId}`, "success");
+      await loadDagViews();
+    } catch (error) {
+      setDagError(error?.message || "Failed to apply organizer suggestion.");
+    } finally {
+      setDagLoading(false);
     }
   }, [dagTaskCatalog, loadDagViews]);
 
@@ -6084,7 +6513,7 @@ export function TasksTab() {
               </${ToggleButtonGroup}>
             </div>
             <div class="meta-text" style=${{ marginTop: "6px" }}>
-              ${dagInteractionMode === "wire" ? "Click source then target to add edges." : "Click any node to open the Jira-style side panel."}
+              ${dagInteractionMode === "wire" ? "Drag from a source node to a target node to add edges, or click source then target for rapid multi-wiring." : "Click any node to open the Jira-style side panel."}
             </div>
           </div>
           <div class="tasks-filter-section">
@@ -6097,6 +6526,46 @@ export function TasksTab() {
                 <${MenuItem} value="parallel">Mode: parallel</${MenuItem}>
                 <${MenuItem} value="sequential">Mode: sequential</${MenuItem}>
               </${Select}>
+            </div>
+          </div>
+          <div class="tasks-filter-section">
+            <div class="tasks-filter-title">Organizer review</div>
+            <div class="meta-text" style=${{ marginTop: "6px" }}>
+              ${dagOrganizeSummary}
+            </div>
+            ${dagOrganizeSuggestions.length > 0 && html`
+              <div class="meta-text" style=${{ marginTop: "4px" }}>
+                Showing ${Math.min(dagOrganizeSuggestions.length, 6)} of ${dagOrganizeSuggestions.length} suggestion${dagOrganizeSuggestions.length === 1 ? "" : "s"} for ${dagSelectedSprintLabel}.
+              </div>
+            `}
+            <div class="task-dag-sidebar-list" style=${{ marginTop: "8px" }}>
+              ${dagOrganizeSuggestions.slice(0, 6).map((entry) => {
+                const suggestionType = toText(entry?.type, "dependency_update");
+                const suggestionLabel = suggestionType === "missing_sequential_dependency"
+                  ? "Sequential gap"
+                  : suggestionType === "redundant_transitive_dependency"
+                    ? "Redundant edge"
+                    : "Dependency suggestion";
+                const taskId = toText(entry?.taskId);
+                const dependencyTaskId = toText(entry?.dependencyTaskId);
+                return html`
+                  <div class="task-dag-sidebar-card">
+                    <div class="task-dag-sidebar-card-main">
+                      <strong>${suggestionLabel}</strong>
+                      <span class="meta-text">${truncate(toText(entry?.message, "Dependency rewrite suggested."), 120)}</span>
+                      <span class="meta-text">${dependencyTaskId ? `${dependencyTaskId} -> ` : ""}${taskId || "task"}</span>
+                    </div>
+                    <div class="task-dag-sidebar-card-actions">
+                      ${suggestionType === "missing_sequential_dependency" && dependencyTaskId && taskId
+                        ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => handleApplyDagSuggestion(entry)}>apply</button>`
+                        : null}
+                      ${dependencyTaskId ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => openDetail(dependencyTaskId)}>dep</button>` : null}
+                      ${taskId ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => openDetail(taskId)}>task</button>` : null}
+                    </div>
+                  </div>
+                `;
+              })}
+              ${dagOrganizeSuggestions.length === 0 ? html`<div class="meta-text">No pending organizer suggestions for this scope.</div>` : null}
             </div>
           </div>
           <div class="tasks-filter-section">
@@ -6992,32 +7461,3 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     <//>
   `;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

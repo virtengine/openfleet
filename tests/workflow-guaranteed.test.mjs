@@ -45,6 +45,12 @@ import {
 let _activeDispatch = (_cmd) => "";
 let _activeExecSandbox = null;
 
+function isoDaysAgo(daysAgo = 0, hour = 10) {
+  const date = new Date(Date.now() - (Number(daysAgo) * 24 * 60 * 60 * 1000));
+  date.setUTCHours(hour, 0, 0, 0);
+  return date.toISOString();
+}
+
 // ── child_process mock ────────────────────────────────────────────────────
 // NOTE: vi.mock is hoisted to the file top by vitest, so the factory closure
 // over `_activeDispatch` captures the variable binding (let), which means
@@ -495,13 +501,14 @@ describe("guaranteed: behavioral contracts", () => {
   it("template-weekly-fitness-summary: partially parsed task telemetry still computes best-effort throughput", async () => {
     const { harness, fixtures } = setupHarness("template-weekly-fitness-summary");
     const runInput = { ...fixtures.inputVars, createFollowupTasks: false };
+    const completedAt = isoDaysAgo(1);
 
     const stableDispatch = _activeDispatch;
     _activeDispatch = (cmd) => {
       const command = String(cmd || "");
       if (/^bosun\s+task\s+list\b/i.test(command)) {
         return [
-          "{\"status\":\"done\",\"completedAt\":\"2026-03-08T10:00:00Z\",\"reopenCount\":0}",
+          JSON.stringify({ status: "done", completedAt, reopenCount: 0 }),
           "{ malformed-task-json",
         ].join("\n");
       }
@@ -556,6 +563,7 @@ describe("guaranteed: behavioral contracts", () => {
   it("template-weekly-fitness-summary: parses wrapped canonical task payloads and preserves planner artifact", async () => {
     const { harness, fixtures } = setupHarness("template-weekly-fitness-summary");
     const runInput = { ...fixtures.inputVars, createFollowupTasks: false };
+    const completedAt = isoDaysAgo(1);
 
     const stableDispatch = _activeDispatch;
     _activeDispatch = (cmd) => {
@@ -564,7 +572,7 @@ describe("guaranteed: behavioral contracts", () => {
         return JSON.stringify({
           result: {
             tasks: [
-              { status: "done", completedAt: "2026-03-08T10:00:00Z", reopenCount: 0 },
+              { status: "done", completedAt, reopenCount: 0 },
             ],
           },
         });

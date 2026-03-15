@@ -764,6 +764,10 @@ function collectDagRewriteSuggestions(taskMap, orderedTaskIds, sprint) {
   return suggestions;
 }
 
+function getTaskEpicId(task) {
+  return String(task?.epicId ?? task?.meta?.epicId ?? "").trim();
+}
+
 function normalizeRecoveredTaskMeta(task, recoveredAt) {
   const currentMeta = task?.meta && typeof task.meta === "object" ? task.meta : {};
   const currentRecovery = currentMeta.autoRecovery && typeof currentMeta.autoRecovery === "object"
@@ -1443,6 +1447,56 @@ export function setTaskStatus(taskId, status, source) {
     TAG,
     `Task ${taskId} status: ${prev} → ${next} (source: ${source})`,
   );
+
+  saveStore();
+  return { ...task };
+}
+
+export function unblockTask(taskId, options = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) {
+    console.warn(TAG, `unblockTask: task ${taskId} not found`);
+    return null;
+  }
+
+  const previousStatus = normalizeTaskStatus(task.status);
+  const nextStatus = normalizeTaskStatus(
+    options.status || options.targetStatus || "todo",
+  );
+  const timestamp = now();
+  task.status = nextStatus;
+  task.cooldownUntil = null;
+  task.blockedReason = null;
+  if (task.meta && typeof task.meta === "object") {
+    const nextMeta = { ...task.meta };
+    delete nextMeta.autoRecovery;
+    task.meta = nextMeta;
+  }
+  task.updatedAt = timestamp;
+  task.lastActivityAt = timestamp;
+  task.syncDirty = options.source !== "external";
+
+  if (previousStatus !== nextStatus) {
+    task.statusHistory.push({
+      status: nextStatus,
+      timestamp,
+      source: options.source || "manual-unblock",
+    });
+    if (task.statusHistory.length > MAX_STATUS_HISTORY) {
+      task.statusHistory = task.statusHistory.slice(-MAX_STATUS_HISTORY);
+    }
+  }
+
+  pushTaskTimeline(task, {
+    type: "task.unblocked",
+    source: options.source || "manual-unblock",
+    fromStatus: previousStatus,
+    toStatus: nextStatus,
+    status: nextStatus,
+    action: "unblock_task",
+    message: `Cleared blocked state and moved task to ${nextStatus}`,
+  });
 
   saveStore();
   return { ...task };
@@ -2260,6 +2314,8 @@ export function recoverAutoBlockedTasks(options = {}) {
 export function organizeTaskDag(options = {}) {
   ensureLoaded();
   const sprintFilter = normalizeSprintId(options.sprintId);
+  const applyDependencySuggestions = options.applyDependencySuggestions !== false;
+  const syncEpicDependencies = options.syncEpicDependencies !== false;
   const sprintMap = ensureSprintsMap();
   const allTasks = Object.values(_store.tasks);
   const taskMap = new Map(allTasks.map((task) => [task.id, task]));
@@ -2270,6 +2326,8 @@ export function organizeTaskDag(options = {}) {
   const suggestions = [];
   const orderedTaskIdsBySprint = {};
   let updatedTaskCount = 0;
+  let appliedDependencySuggestionCount = 0;
+  let syncedEpicDependencyCount = 0;
 
   for (const sprintId of targetSprintIds) {
     const sprint = sprintMap[sprintId];
@@ -2299,7 +2357,24 @@ export function organizeTaskDag(options = {}) {
       (leftId, rightId) => compareTaskDagOrder(taskMap.get(leftId), taskMap.get(rightId)),
     );
     orderedTaskIdsBySprint[sprintId] = orderedTaskIds;
-    suggestions.push(...collectDagRewriteSuggestions(taskMap, orderedTaskIds, sprint));
+    const sprintSuggestions = collectDagRewriteSuggestions(taskMap, orderedTaskIds, sprint);
+    for (const suggestion of sprintSuggestions) {
+      if (applyDependencySuggestions !== true || suggestion?.type !== "missing_sequential_dependency") {
+        suggestions.push(suggestion);
+        continue;
+      }
+      const task = taskMap.get(suggestion.taskId);
+      const dependencyTask = taskMap.get(suggestion.dependencyTaskId);
+      if (!task || !dependencyTask) continue;
+      const currentDependencies = listTaskDependencyIds(task);
+      if (currentDependencies.includes(suggestion.dependencyTaskId)) continue;
+      task.dependencyTaskIds = uniqueStringList([...(task.dependencyTaskIds || []), suggestion.dependencyTaskId]);
+      task.dependsOn = uniqueStringList([...(task.dependsOn || []), suggestion.dependencyTaskId]);
+      dependencyTask.blockedByTaskIds = uniqueStringList([...(dependencyTask.blockedByTaskIds || []), task.id]);
+      markTaskTouched(task, "dag-organize");
+      markTaskTouched(dependencyTask, "dag-organize");
+      appliedDependencySuggestionCount += 1;
+    }
 
     orderedTaskIds.forEach((taskId, index) => {
       const task = taskMap.get(taskId);
@@ -2352,7 +2427,50 @@ export function organizeTaskDag(options = {}) {
     });
   }
 
-  if (updatedTaskCount > 0 || updatedSprintCount > 0) saveStore();
+  if (syncEpicDependencies) {
+    const epicDependencyMap = ensureEpicDependenciesMap();
+    const relevantTasks = sprintFilter
+      ? allTasks.filter((task) => targetSprintIds.includes(normalizeSprintId(task?.sprintId)))
+      : allTasks;
+    const nextDependenciesByEpic = new Map(
+      Object.entries(epicDependencyMap).map(([epicId, dependencyIds]) => [epicId, uniqueStringList(dependencyIds)]),
+    );
+
+    for (const task of relevantTasks) {
+      const taskEpicId = getTaskEpicId(task);
+      if (!taskEpicId) continue;
+      const currentDependencies = nextDependenciesByEpic.get(taskEpicId) || [];
+      let nextDependencies = currentDependencies;
+      for (const dependencyTaskId of listTaskDependencyIds(task)) {
+        const dependencyTask = taskMap.get(dependencyTaskId);
+        const dependencyEpicId = getTaskEpicId(dependencyTask);
+        if (!dependencyEpicId || dependencyEpicId === taskEpicId) continue;
+        if (nextDependencies.includes(dependencyEpicId)) continue;
+        nextDependencies = uniqueStringList([...nextDependencies, dependencyEpicId]);
+      }
+      nextDependenciesByEpic.set(taskEpicId, nextDependencies);
+    }
+
+    for (const [epicId, nextDependencies] of nextDependenciesByEpic.entries()) {
+      const currentDependencies = uniqueStringList(epicDependencyMap[epicId] || []);
+      if (
+        currentDependencies.length === nextDependencies.length &&
+        currentDependencies.every((dependencyId, index) => dependencyId === nextDependencies[index])
+      ) {
+        continue;
+      }
+      if (nextDependencies.length > 0) {
+        epicDependencyMap[epicId] = nextDependencies;
+      } else {
+        delete epicDependencyMap[epicId];
+      }
+      syncedEpicDependencyCount += 1;
+    }
+  }
+
+  if (updatedTaskCount > 0 || updatedSprintCount > 0 || appliedDependencySuggestionCount > 0 || syncedEpicDependencyCount > 0) {
+    saveStore();
+  }
 
   return {
     sprintId: sprintFilter || null,
@@ -2360,6 +2478,8 @@ export function organizeTaskDag(options = {}) {
     orderedTaskIdsBySprint,
     updatedSprintCount,
     updatedTaskCount,
+    appliedDependencySuggestionCount,
+    syncedEpicDependencyCount,
     suggestions,
   };
 }
