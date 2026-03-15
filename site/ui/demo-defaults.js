@@ -18432,7 +18432,7 @@
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
         "prePrValidationEnabled": true,
-        "prePrValidationCommand": "npm run prepush:check",
+        "prePrValidationCommand": "auto",
         "autoMergeOnCreate": false,
         "autoMergeMethod": "squash",
         "maxRetries": 2,
@@ -18836,6 +18836,7 @@
           "label": "Pre-PR Validation",
           "config": {
             "command": "{{prePrValidationCommand}}",
+            "commandType": "qualityGate",
             "cwd": "{{worktreePath}}",
             "failOnError": false
           },
@@ -38231,7 +38232,7 @@
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
         "prePrValidationEnabled": true,
-        "prePrValidationCommand": "npm run prepush:check",
+        "prePrValidationCommand": "auto",
         "autoMergeOnCreate": false,
         "autoMergeMethod": "squash",
         "maxRetries": 2,
@@ -38604,6 +38605,7 @@
           "label": "Pre-PR Validation",
           "config": {
             "command": "{{prePrValidationCommand}}",
+            "commandType": "qualityGate",
             "cwd": "{{worktreePath}}",
             "failOnError": false
           },
