@@ -2714,7 +2714,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
           </span>
         `}
         ${liveHighlightEnabled && hasLiveStatuses && html`
-          <span class="wf-badge" style="font-size: 11px; background: #3b82f630; color: #60a5fa;">
+          <span class="wf-badge" style="font-size: 11px; background: var(--accent-soft, rgba(59,130,246,0.18)); color: var(--accent, #60a5fa);">
             ${liveActiveNodes} active node${liveActiveNodes === 1 ? "" : "s"}
           </span>
         `}
@@ -2724,12 +2724,12 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       </div>
 
       <div style="position: absolute; top: 64px; right: 12px; z-index: 18; width: min(340px, calc(100vw - 24px)); pointer-events: none;">
-        <div style="pointer-events: auto; background: rgba(15, 17, 23, 0.92); border: 1px solid var(--color-border, #2a3040); border-radius: 12px; backdrop-filter: blur(8px); box-shadow: 0 10px 30px rgba(0,0,0,0.28); overflow: hidden;">
+        <div style="pointer-events: auto; background: var(--bg-card, #2b2a27); border: 1px solid var(--color-border, #2a3040); border-radius: 12px; backdrop-filter: blur(8px); box-shadow: var(--shadow-lg, 0 10px 30px rgba(0,0,0,0.28)); overflow: hidden; color: var(--color-text, #e8eaf0);">
           <div style="display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom: 1px solid var(--color-border, #2a3040);">
             <span class="icon-inline">${resolveIcon("chart")}</span>
             <div style="font-size: 12px; font-weight: 700; letter-spacing: 0.02em; flex:1;">Workflow Runs</div>
-            <span class="wf-badge" style="font-size: 10px; background: #1f2937; color: #cbd5e1;">${recentRunsTotal || recentRuns.length} total</span>
-            ${recentRuns.some((run) => run?.status === "running") && html`<span class="wf-badge" style="font-size: 10px; background: #3b82f630; color: #60a5fa;">active</span>`}
+            <span class="wf-badge" style="font-size: 10px; background: var(--bg-secondary, #1f2937); color: var(--text-secondary, #cbd5e1);">${recentRunsTotal || recentRuns.length} total</span>
+            ${recentRuns.some((run) => run?.status === "running") && html`<span class="wf-badge" style="font-size: 10px; background: var(--accent-soft, rgba(59,130,246,0.18)); color: var(--accent, #60a5fa);">active</span>`}
             <${Button} variant="text" size="small" onClick=${() => setRunsPanelOpen((open) => !open)}>${runsPanelOpen ? "Hide" : "Show"}<//>
           </div>
           ${runsPanelOpen && html`
@@ -2748,21 +2748,21 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
                     key=${run.runId}
                     type="button"
                     onClick=${() => openWorkflowRunsView(workflow?.id, run.runId)}
-                    style="text-align:left; width:100%; border:1px solid ${run?.status === 'running' ? '#3b82f680' : 'var(--color-border, #2a3040)'}; border-radius:10px; background:#111827; color:inherit; padding:10px; display:flex; gap:10px; cursor:pointer;"
+                    style="text-align:left; width:100%; border:1px solid ${run?.status === 'running' ? 'var(--accent, #60a5fa)' : 'var(--color-border, #2a3040)'}; border-radius:10px; background:var(--bg-secondary, #111827); color:inherit; padding:10px; display:flex; gap:10px; cursor:pointer; box-shadow: var(--shadow-sm, none);"
                   >
                     <div style="flex:1; min-width:0;">
                       <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
                         <span class="wf-badge" style="background:${styles.bg}; color:${styles.color}; font-size:10px;">${run?.status || 'unknown'}</span>
                         <span style="font-size:11px; color: var(--color-text-secondary, #94a3b8); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${String(run?.runId || '').slice(0, 12) || 'run'}</span>
                       </div>
-                      <div style="font-size:12px; font-weight:600; color:#e5e7eb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${formatRelative(run?.startedAt)}</div>
+                      <div style="font-size:12px; font-weight:600; color:var(--color-text, #e5e7eb); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${formatRelative(run?.startedAt)}</div>
                       <div style="font-size:11px; color: var(--color-text-secondary, #8b95a5); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
                         ${formatDuration(run?.status === 'running' && run?.startedAt ? Math.max(0, liveNowTick - Number(run.startedAt)) : Number(run?.duration) || 0)}
                         ${lastActivityAt ? ` · active ${formatRelative(lastActivityAt)}` : ''}
                         ${run?.errorCount ? ` · ${run.errorCount} error${run.errorCount === 1 ? '' : 's'}` : ''}
                       </div>
                     </div>
-                    <div style="display:flex; align-items:center; color:#94a3b8;">${resolveIcon('arrow-right') || '→'}</div>
+                    <div style="display:flex; align-items:center; color:var(--color-text-secondary, #94a3b8);">${resolveIcon('arrow-right') || '→'}</div>
                   </button>
                 `;
               })}
@@ -4918,8 +4918,8 @@ function RunHistoryView() {
             ? Math.max(0, nowTick - run.startedAt)
             : run.duration;
           const borderColor = run.isStuck
-            ? "#f59e0b80"
-            : (run.status === "running" ? "#3b82f680" : "var(--color-border, #2a3040)");
+            ? "var(--accent-warning, #f59e0b)"
+            : (run.status === "running" ? "var(--accent, #60a5fa)" : "var(--color-border, #2a3040)");
           const triggerLabel = getWorkflowRunTriggerLabel(run);
           return html`
             <${Button}

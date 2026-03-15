@@ -14960,6 +14960,9 @@ async function handleApi(req, res, url) {
           templateName: template.name,
           workflowId,
           variables: { ...template.variables, ...userVars },
+          workspaceId,
+          repository: executeInput.repository || executeInput._targetRepo || null,
+          targetRepo: executeInput._targetRepo || executeInput.repository || null,
           dispatchedAt,
         });
         return;
@@ -14972,6 +14975,9 @@ async function handleApi(req, res, url) {
         templateId,
         templateName: template.name,
         workflowId,
+        workspaceId,
+        repository: executeInput.repository || executeInput._targetRepo || null,
+        targetRepo: executeInput._targetRepo || executeInput.repository || null,
         result,
       });
     } catch (err) {

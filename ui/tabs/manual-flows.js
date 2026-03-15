@@ -1173,8 +1173,8 @@ function TemplateListView() {
           ${editorError && html`<${Alert} severity="error" sx=${{ mb: 2 }}>${editorError}</${Alert}>`}
           <${Alert} severity="info" sx=${{ mb: 2 }}>
             Manual templates define a form plus a single action.
-            `Dispatch Task` creates a Kanban task using the title/description/labels below.
-            `Instructions-only` stores operator guidance but does not launch a node workflow.
+            "Dispatch Task" creates a Kanban task using the title, description, and labels below.
+            "Instructions-only" stores operator guidance but does not launch a node workflow.
           </${Alert}>
 
           <${Stack} spacing=${1.5}>
