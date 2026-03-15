@@ -519,8 +519,8 @@ function isPrivilegedVoiceContext(context = {}) {
 
 // ── Tool Definitions (OpenAI function-calling format) ────────────────────────
 
-const TOOL_DEFS = [
-  // ── Workspace Tools ──
+// ── Workspace Tools ──
+const WORKSPACE_TOOLS_DEFS = [
   {
     type: "function",
     name: "list_tasks",
@@ -587,7 +587,10 @@ const TOOL_DEFS = [
       required: ["taskId", "status"],
     },
   },
-  // ── Agent Tools ──
+];
+
+// ── Agent Tools ──
+const AGENT_TOOLS_DEFS = [
   {
     type: "function",
     name: "delegate_to_agent",
@@ -663,7 +666,10 @@ const TOOL_DEFS = [
       required: ["executor"],
     },
   },
-  // ── Session Tools ──
+];
+
+// ── Session Tools ──
+const SESSION_TOOLS_DEFS = [
   {
     type: "function",
     name: "list_sessions",
@@ -691,7 +697,10 @@ const TOOL_DEFS = [
       required: ["sessionId"],
     },
   },
-  // ── System Tools ──
+];
+
+// ── System Tools ──
+const SYSTEM_TOOLS_DEFS = [
   {
     type: "function",
     name: "get_system_status",
@@ -724,7 +733,10 @@ const TOOL_DEFS = [
       required: ["command"],
     },
   },
-  // ── Git/PR Tools ──
+];
+
+// ── Git/PR Tools ──
+const GIT_PR_TOOLS_DEFS = [
   {
     type: "function",
     name: "get_pr_status",
@@ -736,7 +748,10 @@ const TOOL_DEFS = [
       },
     },
   },
-  // ── Config Tools ──
+];
+
+// ── Config Tools ──
+const CONFIG_TOOLS_DEFS = [
   {
     type: "function",
     name: "get_config",
@@ -778,7 +793,10 @@ const TOOL_DEFS = [
     description: "Get a complete listing of all available Voice tools, slash commands, and dispatch actions for admin reference.",
     parameters: { type: "object", properties: {} },
   },
-  // ── Workspace Navigation ──
+];
+
+// ── Workspace Navigation ──
+const WORKSPACE_NAVIGATION_DEFS = [
   {
     type: "function",
     name: "search_code",
@@ -838,7 +856,10 @@ const TOOL_DEFS = [
       },
     },
   },
-  // ── Monitoring ──
+];
+
+// ── Monitoring ──
+const MONITORING_DEFS = [
   {
     type: "function",
     name: "get_recent_logs",
@@ -862,7 +883,10 @@ const TOOL_DEFS = [
       },
     },
   },
-  // ── Task Management (extended) ──
+];
+
+// ── Task Management (extended) ──
+const TASK_MANAGEMENT_EXTENDED_DEFS = [
   {
     type: "function",
     name: "search_tasks",
@@ -907,7 +931,10 @@ const TOOL_DEFS = [
       required: ["taskId", "body"],
     },
   },
-  // ── Agent Mode ──
+];
+
+// ── Agent Mode ──
+const AGENT_MODE_DEFS = [
   {
     type: "function",
     name: "set_agent_mode",
@@ -924,7 +951,10 @@ const TOOL_DEFS = [
       required: ["mode"],
     },
   },
-  // ── Workflow & Skills ──
+];
+
+// ── Workflow & Skills ──
+const WORKFLOW_AND_SKILLS_DEFS = [
   {
     type: "function",
     name: "list_workflows",
@@ -1146,7 +1176,10 @@ const TOOL_DEFS = [
       },
     },
   },
-  // ── Batch Action ──
+];
+
+// ── Batch Action ──
+const BATCH_ACTION_DEFS = [
   {
     type: "function",
     name: "dispatch_action",
@@ -1163,7 +1196,10 @@ const TOOL_DEFS = [
       required: ["action"],
     },
   },
-  // ── Generic MCP Gateway ──
+];
+
+// ── Generic MCP Gateway ──
+const GENERIC_MCP_GATEWAY_DEFS = [
   {
     type: "function",
     name: "invoke_mcp_tool",
@@ -1187,15 +1223,20 @@ const TOOL_DEFS = [
       required: ["tool"],
     },
   },
-  // ── Context Warm-up ──
+];
+
+// ── Context Warm-up ──
+const CONTEXT_WARM_UP_DEFS = [
   {
     type: "function",
     name: "warm_codebase_context",
     description: "Pre-load codebase context into the agent so subsequent code questions answer instantly. Call this once at the start of a voice session when you know the user will ask project-specific questions.",
     parameters: { type: "object", properties: {} },
   },
+];
 
-  // ── Slash Commands ──
+// ── Slash Commands ──
+const SLASH_COMMANDS_DEFS = [
   {
     type: "function",
     name: "bosun_slash_command",
@@ -1227,8 +1268,10 @@ const TOOL_DEFS = [
       required: ["command"],
     },
   },
+];
 
-  // ── Workspace Shell ──
+// ── Workspace Shell ──
+const WORKSPACE_SHELL_DEFS = [
   {
     type: "function",
     name: "run_workspace_command",
@@ -1251,8 +1294,10 @@ const TOOL_DEFS = [
       required: ["command"],
     },
   },
+];
 
-  // ── Background Session Polling ──
+// ── Background Session Polling ──
+const BACKGROUND_SESSION_POLLING_DEFS = [
   {
     type: "function",
     name: "poll_background_session",
@@ -1275,6 +1320,26 @@ const TOOL_DEFS = [
       required: ["backgroundSessionId"],
     },
   },
+];
+
+const TOOL_DEFS = [
+  ...WORKSPACE_TOOLS_DEFS,
+  ...AGENT_TOOLS_DEFS,
+  ...SESSION_TOOLS_DEFS,
+  ...SYSTEM_TOOLS_DEFS,
+  ...GIT_PR_TOOLS_DEFS,
+  ...CONFIG_TOOLS_DEFS,
+  ...WORKSPACE_NAVIGATION_DEFS,
+  ...MONITORING_DEFS,
+  ...TASK_MANAGEMENT_EXTENDED_DEFS,
+  ...AGENT_MODE_DEFS,
+  ...WORKFLOW_AND_SKILLS_DEFS,
+  ...BATCH_ACTION_DEFS,
+  ...GENERIC_MCP_GATEWAY_DEFS,
+  ...CONTEXT_WARM_UP_DEFS,
+  ...SLASH_COMMANDS_DEFS,
+  ...WORKSPACE_SHELL_DEFS,
+  ...BACKGROUND_SESSION_POLLING_DEFS,
 ];
 
 // ── Tool Execution ──────────────────────────────────────────────────────────
