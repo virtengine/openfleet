@@ -322,6 +322,44 @@ describe("task-store DAG organization", () => {
     expect(task.blockedReason).toBeNull();
     expect(task.meta?.autoRecovery?.active).toBe(false);
   });
+
+  it("clears blocked metadata in one operation when manually unblocked", async () => {
+    const dir = makeTempDir("task-store-manual-unblock-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({
+      id: "blocked-manual-1",
+      title: "Blocked manual task",
+      status: "blocked",
+      cooldownUntil: new Date(Date.now() + 60_000).toISOString(),
+      blockedReason: "Waiting for repo setup",
+      meta: {
+        autoRecovery: {
+          active: true,
+          reason: "worktree_failure",
+          retryAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+        keep: "yes",
+      },
+    });
+
+    const task = ts.unblockTask("blocked-manual-1", {
+      status: "todo",
+      source: "manual-unblock-test",
+    });
+
+    expect(task.status).toBe("todo");
+    expect(task.cooldownUntil).toBeNull();
+    expect(task.blockedReason).toBeNull();
+    expect(task.meta?.autoRecovery).toBeUndefined();
+    expect(task.meta?.keep).toBe("yes");
+  });
 });
 
 

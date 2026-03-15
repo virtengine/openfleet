@@ -7,6 +7,21 @@
   "workflowFirst": false,
   "_comment_worktreeRecoveryCooldown": "Minutes to keep a task blocked after a non-retryable worktree failure before Bosun automatically returns it to todo.",
   "workflowWorktreeRecoveryCooldownMin": 15,
+  "_comment_worktreeBootstrap": "Optional managed-worktree bootstrap policy. Commands are per detected stack and can be overridden per repo.",
+  "worktreeBootstrap": {
+    "enabled": true,
+    "linkSharedPaths": true,
+    "commandTimeoutMs": 600000,
+    "commandsByStack": {
+      "node": ["npm install"],
+      "python": ["poetry install --no-interaction"],
+      "dotnet": ["dotnet restore"]
+    },
+    "sharedPathsByStack": {
+      "node": ["node_modules"],
+      "php": ["vendor"]
+    }
+  },
   "workflows": [
     {
       "type": "continuation-loop",

@@ -1664,6 +1664,74 @@ describe("ui-server mini app", () => {
     expect(clearRetryQueueTask).toHaveBeenCalledWith(taskId, "manual-retry-now");
   });
 
+  it("clears blocked task state through /api/tasks/unblock", async () => {
+    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-unblock-"));
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.EXECUTOR_MODE = "internal";
+    process.env.BOSUN_HOME = isolatedDir;
+    process.env.BOSUN_DIR = isolatedDir;
+    process.env.CODEX_MONITOR_HOME = isolatedDir;
+    process.env.CODEX_MONITOR_DIR = isolatedDir;
+
+    const storeDir = join(isolatedDir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+    const taskStore = await import("../task/task-store.mjs");
+    taskStore.configureTaskStore({ storePath });
+    taskStore.loadStore();
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "Blocked UI task",
+        description: "verify unblock route",
+        status: "todo",
+      }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+    const taskId = created.data.id;
+
+    taskStore.updateTask(taskId, {
+      status: "blocked",
+      cooldownUntil: new Date(Date.now() + 60_000).toISOString(),
+      blockedReason: "bootstrap pending",
+      meta: {
+        autoRecovery: {
+          active: true,
+          reason: "worktree_failure",
+          retryAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+        note: "keep-me",
+      },
+    });
+
+    const unblocked = await fetch(`http://127.0.0.1:${port}/api/tasks/unblock`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taskId }),
+    }).then((r) => r.json());
+
+    expect(unblocked.ok).toBe(true);
+    expect(unblocked.data.status).toBe("todo");
+
+    const task = taskStore.getTask(taskId);
+    expect(task.status).toBe("todo");
+    expect(task.cooldownUntil).toBeNull();
+    expect(task.blockedReason).toBeNull();
+    expect(task.meta?.autoRecovery).toBeUndefined();
+    expect(task.meta?.note).toBe("keep-me");
+  });
+
   it("queues task starts when no executor slots are free and reports truthful runtime state", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-queue-"));
     process.env.TELEGRAM_UI_TUNNEL = "disabled";

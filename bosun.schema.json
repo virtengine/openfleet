@@ -66,6 +66,47 @@
       "default": 15,
       "description": "Minutes to keep a task blocked after a non-retryable worktree acquisition failure before Bosun returns it to todo automatically."
     },
+    "worktreeBootstrap": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Bootstrap policy for managed worktrees, including optional shared dependency links and per-ecosystem install/restore commands.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "linkSharedPaths": {
+          "type": "boolean",
+          "default": true,
+          "description": "Link reusable dependency directories from the repo root into each managed worktree when possible."
+        },
+        "commandTimeoutMs": {
+          "type": "number",
+          "default": 600000,
+          "description": "Maximum time to allow each bootstrap command to run inside a managed worktree."
+        },
+        "commandsByStack": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "array", "items": { "type": "string" } }
+            ]
+          },
+          "description": "Override bootstrap commands by detected ecosystem id such as node, python, go, rust, java, dotnet, ruby, php, or make."
+        },
+        "sharedPathsByStack": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "array", "items": { "type": "string" } }
+            ]
+          },
+          "description": "Override reusable relative paths to link from the repo root into a managed worktree for each detected ecosystem."
+        }
+      }
+    },
     "workflowDefaults": {
       "type": "object",
       "additionalProperties": true,

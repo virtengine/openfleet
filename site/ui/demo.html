@@ -4266,6 +4266,54 @@
           .filter(Boolean);
         return { ok: true, updates };
       }
+      if (route === '/api/workflows/reflow-template-layouts') {
+        const requestedIds = Array.isArray(body?.workflowIds)
+          ? body.workflowIds.map((value) => String(value || '').trim()).filter(Boolean)
+          : (body?.workflowId ? [String(body.workflowId).trim()].filter(Boolean) : []);
+        const targetIds = new Set(requestedIds);
+        const updatedWorkflows = [];
+
+        STATE.workflows = STATE.workflows.map((wf, index) => {
+          const workflowId = String(wf?.id || '').trim();
+          const isTemplateBacked = Boolean(wf?.metadata?.installedFrom);
+          const isTargeted = targetIds.size === 0 || targetIds.has(workflowId);
+          if (!workflowId || !isTemplateBacked || !isTargeted) return wf;
+
+          const next = JSON.parse(JSON.stringify(wf));
+          next.nodes = (next.nodes || []).map((node, nodeIndex) => ({
+            ...node,
+            position: {
+              x: 160 + (nodeIndex % 3) * 280,
+              y: 96 + Math.floor(nodeIndex / 3) * 180,
+            },
+          }));
+          next.metadata = {
+            ...(next.metadata || {}),
+            updatedAt: new Date().toISOString(),
+            templateState: {
+              ...(next.metadata?.templateState || {}),
+              isCustomized: false,
+              updateAvailable: false,
+            },
+          };
+          next.nodeCount = (next.nodes || []).length;
+          updatedWorkflows.push(next);
+          return next;
+        });
+
+        return {
+          ok: true,
+          result: {
+            scanned: targetIds.size > 0 ? targetIds.size : STATE.workflows.length,
+            updated: updatedWorkflows.length,
+            skipped: Math.max(0, (targetIds.size > 0 ? targetIds.size : STATE.workflows.length) - updatedWorkflows.length),
+            updatedWorkflowIds: updatedWorkflows.map((wf) => wf.id),
+            skippedWorkflowIds: [],
+            errors: [],
+          },
+          workflows: updatedWorkflows,
+        };
+      }
       if (route.startsWith('/api/workflows/runs/')) {
         const runId = decodeURIComponent(route.replace('/api/workflows/runs/', '')).trim();
         const run = STATE.workflowRuns.find((item) => item.runId === runId);

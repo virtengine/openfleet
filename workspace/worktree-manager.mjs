@@ -17,6 +17,7 @@ import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
+  readFileSync,
   writeFileSync,
   rmSync,
   statSync,
@@ -24,9 +25,11 @@ import {
   symlinkSync,
 } from "node:fs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadConfig } from "../config/config.mjs";
 import { sanitizeGitEnv } from "../git/git-safety.mjs";
+import { detectProjectStack } from "../workflow/project-detection.mjs";
 
 // ── Path Setup ──────────────────────────────────────────────────────────────
 
@@ -57,6 +60,18 @@ const GIT_ENV = {
   GIT_MERGE_AUTOEDIT: "no",
   GIT_TERMINAL_PROMPT: "0",
 };
+const DEFAULT_WORKTREE_BOOTSTRAP = Object.freeze({
+  enabled: true,
+  linkSharedPaths: true,
+  commandTimeoutMs: 10 * 60 * 1000,
+  commandsByStack: Object.freeze({}),
+  sharedPathsByStack: Object.freeze({}),
+});
+const DEFAULT_SHARED_PATHS_BY_STACK = Object.freeze({
+  node: Object.freeze(["node_modules"]),
+  php: Object.freeze(["vendor"]),
+  ruby: Object.freeze(["vendor/bundle"]),
+});
 
 /**
  * Guard against git config corruption caused by worktree operations.
@@ -128,24 +143,181 @@ function sanitizeBranchName(branch) {
   return safe.slice(0, 60); // Windows MAX_PATH is 260, worktree base path ~60, leaves ~140 for this + git overhead
 }
 
-function ensureWorktreeNodeModules(repoRoot, worktreePath) {
-  const repoNodeModulesPath = resolve(repoRoot, "node_modules");
-  const worktreeNodeModulesPath = resolve(worktreePath, "node_modules");
-  if (!existsSync(repoNodeModulesPath) || existsSync(worktreeNodeModulesPath)) {
-    return;
+function normalizeStringList(value) {
+  const source = Array.isArray(value) ? value : [value];
+  const values = [];
+  for (const entry of source) {
+    const normalized = String(entry || "").trim();
+    if (!normalized || values.includes(normalized)) continue;
+    values.push(normalized);
+  }
+  return values;
+}
+
+function freezePlainObject(value) {
+  return Object.freeze({ ...(value && typeof value === "object" ? value : {}) });
+}
+
+function readWorktreeBootstrapConfig(repoRoot) {
+  try {
+    const config = loadConfig(["node", "bosun", "--repo-root", repoRoot]);
+    if (config?.worktreeBootstrap && typeof config.worktreeBootstrap === "object") {
+      return config.worktreeBootstrap;
+    }
+  } catch (error) {
+    console.warn(
+      `${TAG} failed to load worktree bootstrap config: ${error?.message || error}`,
+    );
+  }
+  return DEFAULT_WORKTREE_BOOTSTRAP;
+}
+
+function resolveWorktreeSharedPaths(policy, stackId) {
+  const override = policy?.sharedPathsByStack?.[stackId];
+  if (Array.isArray(override) && override.length > 0) return override;
+  return DEFAULT_SHARED_PATHS_BY_STACK[stackId] || [];
+}
+
+function resolveDefaultBootstrapCommand(stack, worktreePath) {
+  const packageManager = String(stack?.packageManager || "").trim().toLowerCase();
+  switch (stack?.id) {
+    case "node":
+      if (packageManager === "pnpm") return "pnpm install";
+      if (packageManager === "yarn") return "yarn install";
+      if (packageManager === "bun") return "bun install";
+      return "npm install";
+    case "python":
+      if (packageManager === "poetry") return "poetry install --no-interaction";
+      if (packageManager === "uv") return "uv sync";
+      if (packageManager === "pipenv") return "pipenv install --dev";
+      if (packageManager === "pdm") return "pdm install";
+      return existsSync(resolve(worktreePath, "requirements.txt"))
+        ? "python -m pip install -r requirements.txt"
+        : "python -m pip install -e .";
+    case "go":
+      return "go mod download";
+    case "rust":
+      return "cargo fetch";
+    case "java":
+      if (packageManager === "gradle") {
+        if (process.platform === "win32" && existsSync(resolve(worktreePath, "gradlew.bat"))) {
+          return "gradlew.bat dependencies";
+        }
+        return existsSync(resolve(worktreePath, "gradlew"))
+          ? "./gradlew dependencies"
+          : "gradle dependencies";
+      }
+      return "mvn -q -DskipTests dependency:go-offline";
+    case "dotnet":
+      return "dotnet restore";
+    case "ruby":
+      return "bundle install";
+    case "php":
+      return "composer install";
+    default:
+      return "";
+  }
+}
+
+function buildBootstrapPlan(worktreePath, policy, detection) {
+  const sharedPaths = [];
+  const commands = [];
+  for (const stack of detection?.stacks || []) {
+    const stackSharedPaths = policy?.linkSharedPaths
+      ? resolveWorktreeSharedPaths(policy, stack.id)
+      : [];
+    for (const relativePath of stackSharedPaths) {
+      if (!sharedPaths.includes(relativePath)) sharedPaths.push(relativePath);
+    }
+    const overrideCommands = normalizeStringList(policy?.commandsByStack?.[stack.id]);
+    const stackCommands = overrideCommands.length > 0
+      ? overrideCommands
+      : normalizeStringList(resolveDefaultBootstrapCommand(stack, worktreePath));
+    const hasReadySharedPaths =
+      stackSharedPaths.length > 0 &&
+      stackSharedPaths.every((relativePath) => existsSync(resolve(worktreePath, relativePath)));
+    if (hasReadySharedPaths) continue;
+    for (const command of stackCommands) {
+      if (!commands.includes(command)) commands.push(command);
+    }
+  }
+  return {
+    sharedPaths,
+    commands,
+    stacks: (detection?.stacks || []).map((stack) => stack.id),
+  };
+}
+
+function ensureWorktreeSharedPath(repoRoot, worktreePath, relativePath) {
+  const sourcePath = resolve(repoRoot, relativePath);
+  const targetPath = resolve(worktreePath, relativePath);
+  if (!existsSync(sourcePath) || existsSync(targetPath)) {
+    return false;
   }
 
   try {
+    mkdirSync(dirname(targetPath), { recursive: true });
+    let linkType = process.platform === "win32" ? "junction" : "dir";
+    try {
+      const sourceStats = statSync(sourcePath);
+      linkType = sourceStats.isDirectory()
+        ? process.platform === "win32" ? "junction" : "dir"
+        : "file";
+    } catch {
+      // In tests or partial checkouts the path may be mocked/exist logically without a stat-able inode.
+    }
     symlinkSync(
-      repoNodeModulesPath,
-      worktreeNodeModulesPath,
-      process.platform === "win32" ? "junction" : "dir",
+      sourcePath,
+      targetPath,
+      linkType,
     );
+    return true;
   } catch (error) {
     console.warn(
-      `${TAG} failed to link node_modules into worktree ${worktreePath}: ${error?.message || error}`,
+      `${TAG} failed to link ${relativePath} into worktree ${worktreePath}: ${error?.message || error}`,
     );
+    return false;
   }
+}
+
+function ensureWorktreeSharedPaths(repoRoot, worktreePath, relativePaths = []) {
+  const linkedPaths = [];
+  for (const relativePath of relativePaths) {
+    if (ensureWorktreeSharedPath(repoRoot, worktreePath, relativePath)) {
+      linkedPaths.push(relativePath);
+    }
+  }
+  return linkedPaths;
+}
+
+function executeWorktreeBootstrapCommand(command, worktreePath, timeoutMs) {
+  const result = spawnSync(command, {
+    cwd: worktreePath,
+    encoding: "utf8",
+    timeout: timeoutMs,
+    windowsHide: true,
+    env: process.env,
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: true,
+  });
+  if (result.status === 0) return true;
+  const stderr = String(result.stderr || result.stdout || "").trim();
+  console.warn(
+    `${TAG} bootstrap command failed in ${worktreePath}: ${command}${stderr ? ` :: ${stderr}` : ""}`,
+  );
+  return false;
+}
+
+function buildBootstrapSignature(plan) {
+  return JSON.stringify({
+    stacks: plan.stacks || [],
+    sharedPaths: plan.sharedPaths || [],
+    commands: plan.commands || [],
+  });
+}
+
+function ensureWorktreeNodeModules(repoRoot, worktreePath) {
+  ensureWorktreeSharedPath(repoRoot, worktreePath, "node_modules");
 }
 
 /**
@@ -329,6 +501,7 @@ class WorktreeManager {
     /** @type {Map<string, WorktreeRecord>} keyed by taskKey (or auto-generated key) */
     this.registry = new Map();
     this._loaded = false;
+    this._worktreeBootstrapConfig = null;
   }
 
   // ── Registry Persistence ────────────────────────────────────────────────
@@ -380,6 +553,44 @@ class WorktreeManager {
     }
   }
 
+  getWorktreeBootstrapConfig() {
+    if (!this._worktreeBootstrapConfig) {
+      this._worktreeBootstrapConfig = readWorktreeBootstrapConfig(this.repoRoot);
+    }
+    return this._worktreeBootstrapConfig;
+  }
+
+  bootstrapWorktree(worktreePath, record = null) {
+    const policy = this.getWorktreeBootstrapConfig();
+    if (!policy?.enabled) return;
+    const detection = detectProjectStack(worktreePath);
+    if (!detection?.primary) return;
+
+    const plan = buildBootstrapPlan(worktreePath, policy, detection);
+    ensureWorktreeSharedPaths(this.repoRoot, worktreePath, plan.sharedPaths);
+
+    const signature = buildBootstrapSignature(plan);
+    if (record?.bootstrapState?.signature === signature) {
+      return;
+    }
+
+    let bootstrapSucceeded = true;
+    for (const command of plan.commands) {
+      if (!executeWorktreeBootstrapCommand(command, worktreePath, policy.commandTimeoutMs)) {
+        bootstrapSucceeded = false;
+        break;
+      }
+    }
+    if (!bootstrapSucceeded || !record) return;
+
+    record.bootstrapState = freezePlainObject({
+      signature,
+      completedAt: new Date().toISOString(),
+      stacks: plan.stacks,
+      commands: plan.commands,
+    });
+  }
+
   // ── Core Operations ─────────────────────────────────────────────────────
 
   /**
@@ -399,6 +610,7 @@ class WorktreeManager {
     // 1. Check if a worktree already exists for this branch
     const existingPath = this.findWorktreeForBranch(normalizedBranch);
     if (existingPath) {
+      let recordForBootstrap = null;
       // Update registry with the (possibly new) taskKey
       const existingKey = this._findKeyByPath(existingPath);
       if (existingKey && existingKey !== taskKey) {
@@ -410,10 +622,11 @@ class WorktreeManager {
           record.lastUsedAt = Date.now();
           record.owner = opts.owner ?? record.owner;
           this.registry.set(taskKey, record);
+          recordForBootstrap = record;
         }
       } else if (!existingKey) {
         // Not tracked — register it now
-        this.registry.set(taskKey, {
+        const record = {
           path: existingPath,
           normalizedBranch,
           taskKey,
@@ -421,15 +634,19 @@ class WorktreeManager {
           lastUsedAt: Date.now(),
           status: "active",
           owner: opts.owner ?? "manual",
-        });
+        };
+        this.registry.set(taskKey, record);
+        recordForBootstrap = record;
       } else {
         // Same key — just update timestamp
         const record = this.registry.get(taskKey);
         if (record) {
           record.lastUsedAt = Date.now();
+          recordForBootstrap = record;
         }
       }
       ensureWorktreeNodeModules(this.repoRoot, existingPath);
+      this.bootstrapWorktree(existingPath, recordForBootstrap);
       await this.saveRegistry();
       return { path: existingPath, created: false, existing: true };
     }
@@ -583,6 +800,7 @@ class WorktreeManager {
       owner: opts.owner ?? "manual",
     };
     this.registry.set(taskKey, record);
+    this.bootstrapWorktree(worktreePath, record);
     await this.saveRegistry();
 
     console.log(`${TAG} Created worktree for ${branch} at ${worktreePath}`);

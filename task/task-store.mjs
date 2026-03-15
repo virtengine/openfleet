@@ -1432,6 +1432,56 @@ export function setTaskStatus(taskId, status, source) {
   return { ...task };
 }
 
+export function unblockTask(taskId, options = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) {
+    console.warn(TAG, `unblockTask: task ${taskId} not found`);
+    return null;
+  }
+
+  const previousStatus = normalizeTaskStatus(task.status);
+  const nextStatus = normalizeTaskStatus(
+    options.status || options.targetStatus || "todo",
+  );
+  const timestamp = now();
+  task.status = nextStatus;
+  task.cooldownUntil = null;
+  task.blockedReason = null;
+  if (task.meta && typeof task.meta === "object") {
+    const nextMeta = { ...task.meta };
+    delete nextMeta.autoRecovery;
+    task.meta = nextMeta;
+  }
+  task.updatedAt = timestamp;
+  task.lastActivityAt = timestamp;
+  task.syncDirty = options.source !== "external";
+
+  if (previousStatus !== nextStatus) {
+    task.statusHistory.push({
+      status: nextStatus,
+      timestamp,
+      source: options.source || "manual-unblock",
+    });
+    if (task.statusHistory.length > MAX_STATUS_HISTORY) {
+      task.statusHistory = task.statusHistory.slice(-MAX_STATUS_HISTORY);
+    }
+  }
+
+  pushTaskTimeline(task, {
+    type: "task.unblocked",
+    source: options.source || "manual-unblock",
+    fromStatus: previousStatus,
+    toStatus: nextStatus,
+    status: nextStatus,
+    action: "unblock_task",
+    message: `Cleared blocked state and moved task to ${nextStatus}`,
+  });
+
+  saveStore();
+  return { ...task };
+}
+
 export function validateTaskStatusTransition(currentStatus, nextStatus, options = {}) {
   return validateTaskTransition(currentStatus, nextStatus, options);
 }

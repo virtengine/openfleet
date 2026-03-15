@@ -541,6 +541,82 @@ function toBoundedInt(value, fallback, min, max) {
   return Math.min(max, Math.max(min, rounded));
 }
 
+const WORKTREE_BOOTSTRAP_STACK_IDS = Object.freeze([
+  "node",
+  "python",
+  "go",
+  "rust",
+  "java",
+  "dotnet",
+  "ruby",
+  "php",
+  "make",
+]);
+
+function normalizeStringListConfig(value) {
+  const source = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/\r?\n|,/)
+      : [];
+  const values = [];
+  for (const entry of source) {
+    const normalized = String(entry || "").trim();
+    if (!normalized || values.includes(normalized)) continue;
+    values.push(normalized);
+  }
+  return values;
+}
+
+function freezeNestedStringListMap(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : {};
+  const normalized = {};
+  for (const [rawKey, rawValue] of Object.entries(source)) {
+    const key = String(rawKey || "").trim().toLowerCase();
+    if (!key) continue;
+    const values = normalizeStringListConfig(rawValue);
+    if (values.length === 0) continue;
+    normalized[key] = Object.freeze(values);
+  }
+  return Object.freeze(normalized);
+}
+
+function resolveWorktreeBootstrapConfig(configData = {}) {
+  const raw = configData.worktreeBootstrap && typeof configData.worktreeBootstrap === "object"
+    ? configData.worktreeBootstrap
+    : {};
+  const commandsByStack = {
+    ...freezeNestedStringListMap(raw.commandsByStack),
+  };
+  for (const stackId of WORKTREE_BOOTSTRAP_STACK_IDS) {
+    const envName = `WORKTREE_BOOTSTRAP_${stackId.toUpperCase()}_COMMAND`;
+    const envValues = normalizeStringListConfig(process.env[envName]);
+    if (envValues.length > 0) {
+      commandsByStack[stackId] = Object.freeze(envValues);
+    }
+  }
+  return Object.freeze({
+    enabled: isEnvEnabled(
+      process.env.WORKTREE_BOOTSTRAP_ENABLED ?? raw.enabled,
+      true,
+    ),
+    linkSharedPaths: isEnvEnabled(
+      process.env.WORKTREE_BOOTSTRAP_LINK_SHARED_PATHS ?? raw.linkSharedPaths,
+      true,
+    ),
+    commandTimeoutMs: toBoundedInt(
+      process.env.WORKTREE_BOOTSTRAP_COMMAND_TIMEOUT_MS ?? raw.commandTimeoutMs,
+      10 * 60 * 1000,
+      1000,
+      60 * 60 * 1000,
+    ),
+    commandsByStack: Object.freeze(commandsByStack),
+    sharedPathsByStack: freezeNestedStringListMap(raw.sharedPathsByStack),
+  });
+}
+
 function normalizeStatusList(rawStates) {
   const source = Array.isArray(rawStates)
     ? rawStates
@@ -1728,6 +1804,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     1,
     1440,
   );
+  const worktreeBootstrap = resolveWorktreeBootstrapConfig(configData);
 
   // ── GitHub Reconciler ───────────────────────────────────
   const ghReconcileEnabled = isEnvEnabled(
@@ -2011,6 +2088,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     triggerSystem,
     workflows,
   workflowWorktreeRecoveryCooldownMin,
+    worktreeBootstrap,
 
     // GitHub Reconciler
     githubReconcile: {

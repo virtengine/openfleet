@@ -3080,6 +3080,21 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     }
   };
 
+  const handleUnblock = async () => {
+    haptic("medium");
+    try {
+      await apiFetch("/api/tasks/unblock", {
+        method: "POST",
+        body: JSON.stringify({ taskId: task.id, status: "todo" }),
+      });
+      showToast("Task unblocked", "success");
+      onClose();
+      scheduleRefresh(150);
+    } catch {
+      /* toast */
+    }
+  };
+
   const handleManualToggle = async (next) => {
     if (!task?.id || manualBusy) return;
     if (next) {
@@ -3830,6 +3845,9 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         <div style="display:flex;gap:4px;flex-wrap:wrap;">
           ${(task?.status === "error" || task?.status === "cancelled") && html`
             <${Button} variant="contained" size="small" onClick=${handleRetry}>↻ Retry<//>
+          `}
+          ${task?.status === "blocked" && html`
+            <${Button} variant="contained" size="small" onClick=${handleUnblock}>↺ Unblock<//>
           `}
           <${Button}
             variant="outlined" size="small"

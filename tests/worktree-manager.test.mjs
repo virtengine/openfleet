@@ -379,6 +379,48 @@ describe("worktree-manager", () => {
       expect(typeof linkType).toBe("string");
     });
 
+    it("runs configured bootstrap commands for detected ecosystems when shared dependencies are absent", async () => {
+      const previousEnabled = process.env.WORKTREE_BOOTSTRAP_ENABLED;
+      const previousCommand = process.env.WORKTREE_BOOTSTRAP_NODE_COMMAND;
+      process.env.WORKTREE_BOOTSTRAP_ENABLED = "true";
+      process.env.WORKTREE_BOOTSTRAP_NODE_COMMAND = "npm ci";
+      try {
+        mockGitMulti([
+          {
+            match: "--porcelain",
+            result: {
+              stdout: porcelainOutput([
+                { path: REPO_ROOT, branch: "refs/heads/main" },
+              ]),
+            },
+          },
+          { match: "worktree", result: { status: 0 } },
+        ]);
+        existsSync.mockImplementation((path) => {
+          const normalized = String(path).replace(/\\/g, "/");
+          return normalized.endsWith(`${REPO_ROOT}/package.json`);
+        });
+
+        await mgr.acquireWorktree("ve/bootstrap", "task-bootstrap", {
+          owner: "monitor",
+        });
+
+        const bootstrapCall = spawnSync.mock.calls.find(([cmd]) => cmd === "npm ci");
+        expect(bootstrapCall).toBeTruthy();
+        expect(bootstrapCall[1]).toEqual(
+          expect.objectContaining({
+            cwd: expect.stringMatching(/\/fake\/repo\/\.cache\/worktrees\/ve-bootstrap$/),
+            shell: true,
+          }),
+        );
+      } finally {
+        if (previousEnabled === undefined) delete process.env.WORKTREE_BOOTSTRAP_ENABLED;
+        else process.env.WORKTREE_BOOTSTRAP_ENABLED = previousEnabled;
+        if (previousCommand === undefined) delete process.env.WORKTREE_BOOTSTRAP_NODE_COMMAND;
+        else process.env.WORKTREE_BOOTSTRAP_NODE_COMMAND = previousCommand;
+      }
+    });
+
     it("returns existing worktree when one exists for branch", async () => {
       const wtPath = `${REPO_ROOT}/.cache/worktrees/ve-abc-feat`;
       spawnSync.mockImplementation((_cmd, args) => {

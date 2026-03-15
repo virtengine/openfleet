@@ -15,6 +15,7 @@ import {
   applyWorkflowTemplateState,
   updateWorkflowFromTemplate,
   reconcileInstalledTemplates,
+  relayoutInstalledTemplateWorkflows,
   installTemplate,
   installTemplateSet,
 } from "../workflow/workflow-templates.mjs";
@@ -828,6 +829,19 @@ describe("template drift + update behavior", () => {
     expect(wf.metadata.templateState.updateAvailable).toBe(false);
   });
 
+  it("does not treat node position-only changes as template customization", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    wf.nodes[0].position = {
+      x: Number(wf.nodes?.[0]?.position?.x || 0) + 123,
+      y: Number(wf.nodes?.[0]?.position?.y || 0) + 77,
+    };
+    applyWorkflowTemplateState(wf);
+
+    expect(wf.metadata.templateState.isCustomized).toBe(false);
+    expect(wf.metadata.templateState.updateAvailable).toBe(false);
+  });
+
   it("auto-updates unmodified workflows when template version drift is detected", () => {
     const installed = installTemplate("template-error-recovery", engine);
     const wf = engine.get(installed.id);
@@ -892,6 +906,24 @@ describe("template drift + update behavior", () => {
     expect(copied.name).toContain("(Updated)");
     expect(copied.metadata.templateState.updateAvailable).toBe(false);
     expect(copied.metadata.templateState.isCustomized).toBe(false);
+  });
+
+  it("re-lays out installed template-backed workflows without marking them customized", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    wf.nodes.forEach((node, index) => {
+      node.position = { x: 40, y: 40 + index };
+    });
+    engine.save(wf);
+
+    const result = relayoutInstalledTemplateWorkflows(engine, { workflowId: wf.id });
+    const refreshed = engine.get(wf.id);
+    const uniquePositions = new Set(refreshed.nodes.map((node) => `${node.position.x}:${node.position.y}`));
+
+    expect(result.updated).toBe(1);
+    expect(uniquePositions.size).toBe(refreshed.nodes.length);
+    expect(refreshed.metadata.templateState.isCustomized).toBe(false);
+    expect(refreshed.metadata.templateState.updateAvailable).toBe(false);
   });
 });
 

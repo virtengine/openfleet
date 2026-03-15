@@ -94,6 +94,12 @@ const workflowsLoading = signal(false);
 const templatesLoading = signal(false);
 const nodeTypesLoading = signal(false);
 
+function getWorkflowNameById(workflowId) {
+  const id = String(workflowId || "").trim();
+  if (!id) return "";
+  return (workflows.value || []).find((workflow) => workflow?.id === id)?.name || id;
+}
+
 function resetWorkflowRunsState(scopeWorkflowId = null) {
   workflowRuns.value = [];
   workflowRunsTotal.value = 0;
@@ -133,6 +139,41 @@ function returnToWorkflowList() {
   resetWorkflowRunsState();
   viewMode.value = "list";
   setRouteParams({}, { replace: true, skipGuard: true });
+}
+
+function openWorkflowCanvas(workflowId) {
+  const id = String(workflowId || "").trim();
+  if (!id) return;
+  apiFetch(`/api/workflows/${encodeURIComponent(id)}`)
+    .then((data) => {
+      activeWorkflow.value = data?.workflow || (workflows.value || []).find((workflow) => workflow.id === id) || null;
+      if (activeWorkflow.value) {
+        viewMode.value = "canvas";
+      }
+    })
+    .catch(() => {
+      const existing = (workflows.value || []).find((workflow) => workflow.id === id) || null;
+      if (existing) {
+        activeWorkflow.value = existing;
+        viewMode.value = "canvas";
+      }
+    });
+}
+
+function openWorkflowRunsView(workflowId, runId = null) {
+  const scopedWorkflowId = String(workflowId || "").trim() || null;
+  resetWorkflowRunsState(scopedWorkflowId);
+  selectedRunId.value = null;
+  selectedRunDetail.value = null;
+  viewMode.value = "runs";
+  const route = { runsView: true };
+  if (scopedWorkflowId) route.runsWorkflowId = scopedWorkflowId;
+  if (runId) route.runId = runId;
+  setRouteParams(route, { replace: false, skipGuard: true });
+  loadRuns(scopedWorkflowId, { reset: true }).catch(() => {});
+  if (runId) {
+    loadRunDetail(runId, { workflowId: scopedWorkflowId }).catch(() => {});
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1158,6 +1199,55 @@ async function applyTemplateUpdate(workflowId, mode = "replace", force = false) 
   return null;
 }
 
+async function relayoutTemplateWorkflow(workflowId) {
+  try {
+    const data = await apiFetch(`/api/workflows/${encodeURIComponent(workflowId)}/reflow-layout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workflowId }),
+    });
+    if (data?.workflow) {
+      const refreshed = data.workflow;
+      workflows.value = (workflows.value || []).map((workflow) => (
+        workflow.id === refreshed.id ? refreshed : workflow
+      ));
+      if (activeWorkflow.value?.id === refreshed.id) {
+        activeWorkflow.value = refreshed;
+      }
+      showToast("Workflow layout refreshed", "success");
+      return refreshed;
+    }
+  } catch (err) {
+    showToast(`Failed to refresh workflow layout: ${err.message}`, "error");
+  }
+  return null;
+}
+
+async function relayoutInstalledTemplateWorkflows() {
+  try {
+    const data = await apiFetch("/api/workflows/reflow-template-layouts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const result = data?.result || {};
+    const updated = Number(result.updated || 0);
+    await loadWorkflows();
+    if (activeWorkflow.value?.id) {
+      const updatedActive = (workflows.value || []).find((workflow) => workflow.id === activeWorkflow.value.id);
+      if (updatedActive) activeWorkflow.value = updatedActive;
+    }
+    showToast(
+      updated > 0 ? `Refreshed layout for ${updated} template workflow${updated === 1 ? "" : "s"}` : "No template workflows needed relayout",
+      "success",
+    );
+    return result;
+  } catch (err) {
+    showToast(`Failed to refresh template layouts: ${err.message}`, "error");
+  }
+  return null;
+}
+
 async function loadRuns(workflowId, opts = {}) {
   const append = opts.append === true;
   const hasScopedWorkflowId = workflowId !== undefined;
@@ -1211,15 +1301,21 @@ async function loadRuns(workflowId, opts = {}) {
   }
 }
 
-async function loadRunDetail(runId) {
+async function loadRunDetail(runId, opts = {}) {
   if (!runId) return;
   try {
     const data = await apiFetch(`/api/workflows/runs/${encodeURIComponent(runId)}`);
     if (data?.run) {
+      const scopedWorkflowId = String(opts?.workflowId || workflowRunsScopeId.value || data.run.workflowId || "").trim() || null;
+      if (scopedWorkflowId) {
+        workflowRunsScopeId.value = scopedWorkflowId;
+      }
       selectedRunId.value = runId;
       selectedRunDetail.value = data.run;
       viewMode.value = "runs";
-      setRouteParams({ runsView: true, runId }, { replace: false, skipGuard: true });
+      const route = { runsView: true, runId };
+      if (scopedWorkflowId) route.runsWorkflowId = scopedWorkflowId;
+      setRouteParams(route, { replace: false, skipGuard: true });
     }
   } catch (err) {
     showToast("Failed to load run details", "error");
@@ -1419,6 +1515,10 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const [marquee, setMarquee] = useState(null);
   const [liveHighlightEnabled, setLiveHighlightEnabled] = useState(true);
   const [liveRun, setLiveRun] = useState(null);
+  const [recentRuns, setRecentRuns] = useState([]);
+  const [recentRunsTotal, setRecentRunsTotal] = useState(0);
+  const [recentRunsLoading, setRecentRunsLoading] = useState(false);
+  const [runsPanelOpen, setRunsPanelOpen] = useState(true);
   const [liveNodeStatuses, setLiveNodeStatuses] = useState({});
   const [liveNodeOutputPreviews, setLiveNodeOutputPreviews] = useState({});
   const [liveNodeFlashStates, setLiveNodeFlashStates] = useState({});
@@ -1491,8 +1591,11 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   }, [workflow?.id, workflowSnapshotKey, normalizeNodesForCanvas]);
 
   useEffect(() => {
-    if (!liveHighlightEnabled || !workflow?.id) {
+    if (!workflow?.id) {
       setLiveRun(null);
+      setRecentRuns([]);
+      setRecentRunsTotal(0);
+      setRecentRunsLoading(false);
       setLiveNodeStatuses({});
       setLiveNodeOutputPreviews({});
       setLiveNodeFlashStates({});
@@ -1504,13 +1607,26 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
 
     const pollLiveRun = async () => {
       try {
-        const data = await apiFetch(`/api/workflows/runs?workflowId=${encodeURIComponent(workflow.id)}&limit=10`);
+        setRecentRunsLoading(true);
+        const data = await apiFetch(`/api/workflows/${encodeURIComponent(workflow.id)}/runs?limit=12`);
         if (cancelled) return;
         const runs = Array.isArray(data?.runs) ? data.runs : [];
+        const total = Number(data?.pagination?.total);
+        setRecentRuns(runs);
+        setRecentRunsTotal(Number.isFinite(total) ? total : runs.length);
         const running = runs.find((run) => run?.status === "running");
         const targetRun = running || runs[0] || null;
         if (!targetRun?.runId) {
           setLiveRun(null);
+          setLiveNodeStatuses({});
+          setLiveNodeRunningHints({});
+          setLiveNodeOutputPreviews({});
+          setLiveNodeFlashStates({});
+          setLiveEdgeActivity({});
+          return;
+        }
+        if (!liveHighlightEnabled) {
+          setLiveRun(targetRun);
           setLiveNodeStatuses({});
           setLiveNodeRunningHints({});
           setLiveNodeOutputPreviews({});
@@ -1558,6 +1674,8 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         });
       } catch {
         if (cancelled) return;
+      } finally {
+        if (!cancelled) setRecentRunsLoading(false);
       }
     };
 
@@ -2539,6 +2657,22 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
           <span class="btn-icon">${resolveIcon("play")}</span>
           Run
         <//>
+        <${Button}
+          variant="outlined"
+          size="small"
+          onClick=${() => openWorkflowRunsView(workflow?.id)}
+        >
+          <span class="btn-icon">${resolveIcon("chart")}</span>
+          Runs
+        <//>
+        ${workflow?.metadata?.installedFrom && html`<${Button}
+          variant="outlined"
+          size="small"
+          onClick=${() => relayoutTemplateWorkflow(workflow.id)}
+        >
+          <span class="btn-icon">${resolveIcon("refresh")}</span>
+          Re-layout
+        <//>`}
         ${workflow?.core !== true && html`<${Button}
           variant="outlined"
           size="small"
@@ -2587,6 +2721,54 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         <${Button} variant="text" size="small" onClick=${() => setZoom(1)}>Reset Zoom<//>
         <${Button} variant="text" size="small" onClick=${() => setPan({ x: 0, y: 0 })}>Reset Pan<//>
         <${Button} variant="text" size="small" onClick=${returnToWorkflowList}>← Back to Workflows<//>
+      </div>
+
+      <div style="position: absolute; top: 64px; right: 12px; z-index: 18; width: min(340px, calc(100vw - 24px)); pointer-events: none;">
+        <div style="pointer-events: auto; background: rgba(15, 17, 23, 0.92); border: 1px solid var(--color-border, #2a3040); border-radius: 12px; backdrop-filter: blur(8px); box-shadow: 0 10px 30px rgba(0,0,0,0.28); overflow: hidden;">
+          <div style="display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom: 1px solid var(--color-border, #2a3040);">
+            <span class="icon-inline">${resolveIcon("chart")}</span>
+            <div style="font-size: 12px; font-weight: 700; letter-spacing: 0.02em; flex:1;">Workflow Runs</div>
+            <span class="wf-badge" style="font-size: 10px; background: #1f2937; color: #cbd5e1;">${recentRunsTotal || recentRuns.length} total</span>
+            ${recentRuns.some((run) => run?.status === "running") && html`<span class="wf-badge" style="font-size: 10px; background: #3b82f630; color: #60a5fa;">active</span>`}
+            <${Button} variant="text" size="small" onClick=${() => setRunsPanelOpen((open) => !open)}>${runsPanelOpen ? "Hide" : "Show"}<//>
+          </div>
+          ${runsPanelOpen && html`
+            <div style="padding: 10px 10px 12px; display:flex; flex-direction:column; gap:8px;">
+              <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <${Button} variant="outlined" size="small" onClick=${() => openWorkflowRunsView(workflow?.id)}>View all runs<//>
+                ${liveRun?.runId && html`<${Button} variant="text" size="small" onClick=${() => openWorkflowRunsView(workflow?.id, liveRun.runId)}>Open current run<//>`}
+              </div>
+              ${recentRunsLoading && recentRuns.length === 0 && html`<div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5);">Loading recent runs…</div>`}
+              ${!recentRunsLoading && recentRuns.length === 0 && html`<div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5);">No runs recorded for this workflow yet.</div>`}
+              ${recentRuns.map((run) => {
+                const styles = getRunStatusBadgeStyles(run?.status);
+                const lastActivityAt = getRunActivityAt(run);
+                return html`
+                  <button
+                    key=${run.runId}
+                    type="button"
+                    onClick=${() => openWorkflowRunsView(workflow?.id, run.runId)}
+                    style="text-align:left; width:100%; border:1px solid ${run?.status === 'running' ? '#3b82f680' : 'var(--color-border, #2a3040)'}; border-radius:10px; background:#111827; color:inherit; padding:10px; display:flex; gap:10px; cursor:pointer;"
+                  >
+                    <div style="flex:1; min-width:0;">
+                      <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+                        <span class="wf-badge" style="background:${styles.bg}; color:${styles.color}; font-size:10px;">${run?.status || 'unknown'}</span>
+                        <span style="font-size:11px; color: var(--color-text-secondary, #94a3b8); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${String(run?.runId || '').slice(0, 12) || 'run'}</span>
+                      </div>
+                      <div style="font-size:12px; font-weight:600; color:#e5e7eb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${formatRelative(run?.startedAt)}</div>
+                      <div style="font-size:11px; color: var(--color-text-secondary, #8b95a5); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                        ${formatDuration(run?.status === 'running' && run?.startedAt ? Math.max(0, liveNowTick - Number(run.startedAt)) : Number(run?.duration) || 0)}
+                        ${lastActivityAt ? ` · active ${formatRelative(lastActivityAt)}` : ''}
+                        ${run?.errorCount ? ` · ${run.errorCount} error${run.errorCount === 1 ? '' : 's'}` : ''}
+                      </div>
+                    </div>
+                    <div style="display:flex; align-items:center; color:#94a3b8;">${resolveIcon('arrow-right') || '→'}</div>
+                  </button>
+                `;
+              })}
+            </div>
+          `}
+        </div>
       </div>
 
       <${NodePalette}
@@ -4027,6 +4209,10 @@ function WorkflowListView() {
           <span class="btn-icon">${resolveIcon("chart")}</span>
           Run History
         <//>
+        <${Button} type="button" variant="outlined" size="small" onClick=${() => relayoutInstalledTemplateWorkflows()}>
+          <span class="btn-icon">${resolveIcon("refresh")}</span>
+          Re-layout Installed Templates
+        <//>
       </div>
 
       <!-- Active Workflows -->
@@ -4413,6 +4599,8 @@ function RunHistoryView() {
   const hasMoreRuns = workflowRunsHasMore.value === true;
   const loadingMoreRuns = workflowRunsLoadingMore.value === true;
   const selectedRun = selectedRunDetail.value;
+  const scopedWorkflowId = String(workflowRunsScopeId.value || "").trim();
+  const scopedWorkflowName = scopedWorkflowId ? getWorkflowNameById(scopedWorkflowId) : "";
   const workflowNameMap = new Map((workflows.value || []).map((wf) => [wf.id, wf.name]));
   const [nowTick, setNowTick] = useState(Date.now());
   const hasRunningRuns = runs.some((run) => run?.status === "running");
@@ -4540,6 +4728,7 @@ function RunHistoryView() {
           <${Button} variant="text" size="small" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; }}>
             ← Back to Run History
           <//>
+          ${selectedRun.workflowId && html`<${Button} variant="text" size="small" onClick=${() => openWorkflowCanvas(selectedRun.workflowId)}>Open Workflow<//>`}
           <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run Details</h2>
           <${Button} variant="text" size="small" onClick=${() => loadRunDetail(selectedRun.runId)}>Refresh<//>
         </div>
@@ -4622,7 +4811,8 @@ function RunHistoryView() {
     <div style="padding: 0 4px;">
       <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
         <${Button} variant="text" size="small" onClick=${returnToWorkflowList}>← Back to Workflows<//>
-        <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run History</h2>
+        ${scopedWorkflowId && html`<${Button} variant="text" size="small" onClick=${() => openWorkflowCanvas(scopedWorkflowId)}>Open Workflow<//>`}
+        <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run History${scopedWorkflowName ? ` · ${scopedWorkflowName}` : ""}</h2>
         <${Button}
           variant="text"
           size="small"
@@ -4820,14 +5010,15 @@ export function WorkflowsTab() {
     const route = routeParams.value || {};
     const workflowId = String(route.workflowId || "").trim();
     const runId = String(route.runId || "").trim();
+    const runsWorkflowId = String(route.runsWorkflowId || "").trim();
     const wantsRuns = Boolean(route.runsView) || Boolean(runId);
 
     if (wantsRuns) {
-      resetWorkflowRunsState();
+      resetWorkflowRunsState(runsWorkflowId || null);
       viewMode.value = "runs";
-      loadRuns(null, { reset: true });
+      loadRuns(runsWorkflowId || null, { reset: true });
       if (runId) {
-        loadRunDetail(runId);
+        loadRunDetail(runId, { workflowId: runsWorkflowId || null });
       } else {
         selectedRunId.value = null;
         selectedRunDetail.value = null;
@@ -4872,12 +5063,13 @@ export function WorkflowsTab() {
     }
     if (mode === "runs") {
       if (selectedRunId.value) {
-        setRouteParams(
-          { runsView: true, runId: selectedRunId.value },
-          { replace: true, skipGuard: true },
-        );
+        const route = { runsView: true, runId: selectedRunId.value };
+        if (workflowRunsScopeId.value) route.runsWorkflowId = workflowRunsScopeId.value;
+        setRouteParams(route, { replace: true, skipGuard: true });
       } else {
-        setRouteParams({ runsView: true }, { replace: true, skipGuard: true });
+        const route = { runsView: true };
+        if (workflowRunsScopeId.value) route.runsWorkflowId = workflowRunsScopeId.value;
+        setRouteParams(route, { replace: true, skipGuard: true });
       }
       return;
     }

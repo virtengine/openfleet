@@ -347,6 +347,27 @@ const _TEMPLATE_BY_ID = new Map(
 function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
   const templateStateVersion = 1;
 
+  function toFingerprintNode(node = {}) {
+    if (!node || typeof node !== "object") return node;
+    const next = JSON.parse(JSON.stringify(node));
+    delete next.position;
+    delete next.inputPorts;
+    delete next.outputPorts;
+    delete next.width;
+    delete next.height;
+    return next;
+  }
+
+  function toFingerprintEdge(edgeDef = {}) {
+    if (!edgeDef || typeof edgeDef !== "object") return edgeDef;
+    const next = JSON.parse(JSON.stringify(edgeDef));
+    next.sourcePort = String(next.sourcePort || "default").trim() || "default";
+    next.targetPort = String(next.targetPort || "default").trim() || "default";
+    delete next.sourcePortType;
+    delete next.targetPortType;
+    return next;
+  }
+
   function stableNormalize(value) {
     if (Array.isArray(value)) {
       return value.map((entry) => stableNormalize(entry));
@@ -376,8 +397,8 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
       category: def.category || "custom",
       trigger: def.trigger || "",
       variables: def.variables || {},
-      nodes: def.nodes || [],
-      edges: def.edges || [],
+      nodes: Array.isArray(def.nodes) ? def.nodes.map((node) => toFingerprintNode(node)) : [],
+      edges: Array.isArray(def.edges) ? def.edges.map((edgeDef) => toFingerprintEdge(edgeDef)) : [],
     };
   }
 
@@ -578,6 +599,61 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
 
 function cloneTemplateDefinition(template) {
   return JSON.parse(JSON.stringify(template));
+}
+
+function relayoutWorkflowDefinition(def = {}) {
+  if (!def || typeof def !== "object") return def;
+  normalizeTemplateLayoutInPlace(def);
+  applyWorkflowTemplateState(def);
+  return def;
+}
+
+function normalizeRelayoutWorkflowIdInput(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry || "").trim()).filter(Boolean);
+  }
+  const id = String(value || "").trim();
+  return id ? [id] : [];
+}
+
+export function relayoutInstalledTemplateWorkflows(engine, opts = {}) {
+  if (!engine || typeof engine.list !== "function" || typeof engine.get !== "function" || typeof engine.save !== "function") {
+    throw new Error("A workflow engine with list/get/save is required");
+  }
+
+  const targetWorkflowIds = new Set(normalizeRelayoutWorkflowIdInput(opts.workflowIds || opts.workflowId));
+  const result = {
+    scanned: 0,
+    updated: 0,
+    skipped: 0,
+    updatedWorkflowIds: [],
+    skippedWorkflowIds: [],
+    errors: [],
+  };
+
+  for (const summary of engine.list()) {
+    const workflowId = String(summary?.id || "").trim();
+    if (!workflowId) continue;
+    if (targetWorkflowIds.size > 0 && !targetWorkflowIds.has(workflowId)) continue;
+    result.scanned += 1;
+
+    try {
+      const def = engine.get(workflowId);
+      if (!def?.metadata?.installedFrom) {
+        result.skipped += 1;
+        result.skippedWorkflowIds.push(workflowId);
+        continue;
+      }
+      relayoutWorkflowDefinition(def);
+      engine.save(def);
+      result.updated += 1;
+      result.updatedWorkflowIds.push(workflowId);
+    } catch (err) {
+      result.errors.push({ workflowId, error: err.message });
+    }
+  }
+
+  return result;
 }
 
 export const WORKFLOW_SETUP_PROFILES = Object.freeze({

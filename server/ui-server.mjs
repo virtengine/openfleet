@@ -309,6 +309,16 @@ function addInternalTaskComment(taskId, comment = {}) {
   }
 }
 
+function unblockInternalTask(taskId, options = {}) {
+  const fn = getTaskStoreApiSync()?.unblockTask;
+  if (typeof fn !== "function") return null;
+  try {
+    return fn(taskId, options);
+  } catch {
+    return null;
+  }
+}
+
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolveRepoRoot();
 const uiRootPreferred = resolve(__dirname, "..", "ui");
@@ -14940,6 +14950,31 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/workflows/reflow-template-layouts" && req.method === "POST") {
+    try {
+      const wfCtx = await getWorkflowRequestContext(url);
+      if (!wfCtx.ok) {
+        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+        return;
+      }
+      if (typeof _wfTemplates?.relayoutInstalledTemplateWorkflows !== "function") {
+        jsonResponse(res, 503, { ok: false, error: "Template relayout service unavailable" });
+        return;
+      }
+      const body = await readJsonBody(req).catch(() => ({}));
+      const result = _wfTemplates.relayoutInstalledTemplateWorkflows(wfCtx.engine, {
+        workflowIds: body?.workflowIds || body?.workflowId,
+      });
+      const workflows = result.updatedWorkflowIds
+        .map((workflowId) => wfCtx.engine.get(workflowId))
+        .filter(Boolean);
+      jsonResponse(res, 200, { ok: true, result, workflows });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/workflows/template-updates") {
     try {
       const wfCtx = await getWorkflowRequestContext(url);
@@ -15244,6 +15279,23 @@ async function handleApi(req, res, url) {
 
         const result = await engine.execute(workflowId, executeInput);
         jsonResponse(res, 200, { ok: true, result, mode: "sync" });
+        return;
+      }
+
+      if (action === "reflow-layout" && req.method === "POST") {
+        if (typeof _wfTemplates?.relayoutInstalledTemplateWorkflows !== "function") {
+          jsonResponse(res, 503, { ok: false, error: "Template relayout service unavailable" });
+          return;
+        }
+        const result = _wfTemplates.relayoutInstalledTemplateWorkflows(engine, {
+          workflowId,
+        });
+        const workflow = engine.get(workflowId);
+        if (!workflow) {
+          jsonResponse(res, 404, { ok: false, error: "Workflow not found after relayout" });
+          return;
+        }
+        jsonResponse(res, 200, { ok: true, workflow, result });
         return;
       }
 
@@ -15900,12 +15952,26 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 404, { ok: false, error: "Task not found." });
         return;
       }
-      if (typeof adapter.updateTask === "function") {
-        await adapter.updateTask(taskId, { status: "todo" });
-      } else if (typeof adapter.updateTaskStatus === "function") {
-        await adapter.updateTaskStatus(taskId, "todo");
+      let nextTask = unblockInternalTask(taskId, {
+        status: "todo",
+        source: "manual-retry",
+      });
+      if (!nextTask) {
+        if (typeof adapter.updateTask === "function") {
+          await adapter.updateTask(taskId, {
+            status: "todo",
+            cooldownUntil: null,
+            blockedReason: null,
+            meta: task?.meta && typeof task.meta === "object"
+              ? Object.fromEntries(Object.entries(task.meta).filter(([key]) => key !== "autoRecovery"))
+              : task?.meta,
+          });
+        } else if (typeof adapter.updateTaskStatus === "function") {
+          await adapter.updateTaskStatus(taskId, "todo");
+        }
+        nextTask = await adapter.getTask(taskId);
       }
-      executor.executeTask(task).catch((error) => {
+      executor.executeTask(nextTask || { ...task, status: "todo" }).catch((error) => {
         console.warn(
           `[telegram-ui] failed to retry task ${taskId}: ${error.message}`,
         );
@@ -15923,6 +15989,53 @@ async function handleApi(req, res, url) {
         ["tasks", "overview", "executor", "agents"],
         "invalidate",
         { reason: "task-retried", taskId },
+      );
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/tasks/unblock") {
+    try {
+      const body = await readJsonBody(req);
+      const taskId = body?.taskId || body?.id;
+      const targetStatus = String(body?.status || "todo").trim().toLowerCase() || "todo";
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId is required" });
+        return;
+      }
+      const adapter = getKanbanAdapter();
+      const task = await adapter.getTask(taskId);
+      if (!task) {
+        jsonResponse(res, 404, { ok: false, error: "Task not found." });
+        return;
+      }
+      let updatedTask = unblockInternalTask(taskId, {
+        status: targetStatus,
+        source: "api.tasks.unblock",
+      });
+      if (!updatedTask) {
+        const nextMeta = task?.meta && typeof task.meta === "object"
+          ? Object.fromEntries(Object.entries(task.meta).filter(([key]) => key !== "autoRecovery"))
+          : task?.meta;
+        if (typeof adapter.updateTask === "function") {
+          await adapter.updateTask(taskId, {
+            status: targetStatus,
+            cooldownUntil: null,
+            blockedReason: null,
+            meta: nextMeta,
+          });
+        } else if (typeof adapter.updateTaskStatus === "function") {
+          await adapter.updateTaskStatus(taskId, targetStatus);
+        }
+        updatedTask = await adapter.getTask(taskId);
+      }
+      jsonResponse(res, 200, { ok: true, taskId, data: updatedTask || null });
+      broadcastUiEvent(
+        ["tasks", "overview", "executor", "agents"],
+        "invalidate",
+        { reason: "task-unblocked", taskId },
       );
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
