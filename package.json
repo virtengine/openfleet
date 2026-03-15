@@ -183,8 +183,6 @@
     "config/config-file-names.mjs",
     "config/executor-config.mjs",
     "config/config-doctor.mjs",
-    "config/config-file-names.mjs",
-    "config/executor-config.mjs",
     "config/workspace-health.mjs",
     "git/conflict-resolver.mjs",
     "workspace/context-cache.mjs",
