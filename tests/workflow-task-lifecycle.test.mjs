@@ -23,6 +23,10 @@ import {
   WorkflowContext,
 } from "../workflow/workflow-engine.mjs";
 import {
+  detectProjectStack,
+  resolveAutoCommand,
+} from "../workflow/project-detection.mjs";
+import {
   getTemplate,
   installTemplate,
 } from "../workflow/workflow-templates.mjs";
@@ -90,6 +94,29 @@ function makeTmpEngine() {
   });
   return engine;
 }
+
+describe("project detection quality gates", () => {
+  let repoRoot;
+
+  afterEach(() => {
+    try { rmSync(repoRoot, { recursive: true, force: true }); } catch { /* ok */ }
+    repoRoot = undefined;
+  });
+
+  it("prefers repo hooks for go quality gates instead of node-only defaults", () => {
+    repoRoot = mkdtempSync(join(tmpdir(), "wf-quality-gate-"));
+    mkdirSync(join(repoRoot, ".githooks"), { recursive: true });
+    writeFileSync(join(repoRoot, "go.mod"), "module example.com/virtengine\n\ngo 1.23.0\n");
+    writeFileSync(join(repoRoot, ".githooks", "pre-push"), "#!/usr/bin/env bash\necho ok\n");
+
+    const detected = detectProjectStack(repoRoot);
+
+    expect(detected.primary?.id).toBe("go");
+    expect(detected.commands.qualityGate).toBe("bash .githooks/pre-push");
+    expect(resolveAutoCommand("auto", "qualityGate", repoRoot)).toBe("bash .githooks/pre-push");
+    expect(detected.commands.qualityGate).not.toBe("npm run prepush:check");
+  });
+});
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Node Type Registration Tests
@@ -2552,11 +2579,20 @@ describe("template-task-lifecycle", () => {
     expect(t.variables.claimRenewIntervalMs).toBe(60000);
     expect(t.variables.taskTimeoutMs).toBe(21600000);
     expect(t.variables.prePrValidationEnabled).toBe(true);
-    expect(t.variables.prePrValidationCommand).toBe("npm run prepush:check");
+    expect(t.variables.prePrValidationCommand).toBe("auto");
     expect(t.variables.autoMergeOnCreate).toBe(false);
     expect(t.variables.autoMergeMethod).toBe("squash");
     expect(t.variables.defaultSdk).toBe("auto");
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
+  });
+
+  it("configures pre-PR validation as a repo-aware quality gate", () => {
+    const t = getTemplate("template-task-lifecycle");
+    const validationNode = t.nodes.find((node) => node.id === "pre-pr-validation");
+
+    expect(validationNode?.config.command).toBe("{{prePrValidationCommand}}");
+    expect(validationNode?.config.commandType).toBe("qualityGate");
+    expect(validationNode?.config.cwd).toBe("{{worktreePath}}");
   });
 
   it("replaces task-executor.mjs module", () => {

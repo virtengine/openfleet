@@ -2,7 +2,8 @@
  * project-detection.mjs — Auto-detect project type, build tools, and commands.
  *
  * Scans a directory for manifest files and infers the project's language,
- * package manager, and standard commands (test, build, lint, syntax-check).
+ * package manager, and standard commands (test, build, lint, syntax-check,
+ * quality gate).
  * Handles mono-repos by detecting multiple stacks in a single root.
  */
 
@@ -360,6 +361,58 @@ function markerExists(rootDir, marker) {
   return existsSync(resolve(rootDir, marker));
 }
 
+function buildPackageScriptCommand(packageManager, scriptName) {
+  const pm = String(packageManager || "npm").trim().toLowerCase();
+  if (pm === "yarn") return `yarn ${scriptName}`;
+  if (pm === "pnpm") return `pnpm ${scriptName}`;
+  if (pm === "bun") return `bun run ${scriptName}`;
+  return `npm run ${scriptName}`;
+}
+
+function readMakefile(rootDir) {
+  for (const name of ["Makefile", "makefile", "GNUmakefile"]) {
+    try {
+      return readFileSync(resolve(rootDir, name), "utf8");
+    } catch {}
+  }
+  return "";
+}
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function findMakeTarget(rootDir, targetNames = []) {
+  const makefile = readMakefile(rootDir);
+  if (!makefile) return "";
+  for (const name of targetNames) {
+    const pattern = new RegExp(`^${escapeRegExp(name)}\\s*:`, "m");
+    if (pattern.test(makefile)) return name;
+  }
+  return "";
+}
+
+function detectQualityGateCommand(rootDir, commands = {}, options = {}) {
+  const packageManager = String(options.packageManager || "").trim().toLowerCase();
+  const scripts = readPackageJsonScripts(rootDir);
+  for (const scriptName of ["prepush:check", "prepush-check", "prepush", "pre-push", "verify", "validate", "check"]) {
+    if (typeof scripts[scriptName] === "string" && scripts[scriptName].trim()) {
+      return buildPackageScriptCommand(packageManager, scriptName);
+    }
+  }
+
+  if (existsSync(resolve(rootDir, ".githooks", "pre-push"))) {
+    return "bash .githooks/pre-push";
+  }
+
+  const makeTarget = findMakeTarget(rootDir, ["prepush", "pre-push", "verify", "validate", "check"]);
+  if (makeTarget) {
+    return `make ${makeTarget}`;
+  }
+
+  return commands.test || commands.lint || commands.build || commands.syntaxCheck || "";
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -388,6 +441,7 @@ function markerExists(rootDir, marker) {
  * @property {string} lint          - Lint command
  * @property {string} syntaxCheck   - Syntax/compile check command
  * @property {string} [typeCheck]   - Type-check command
+ * @property {string} [qualityGate] - Pre-push / pre-PR validation command
  * @property {string} [testFramework] - Detected test framework name
  */
 export function detectProjectStack(rootDir) {
@@ -402,6 +456,7 @@ export function detectProjectStack(rootDir) {
 
     const pm = def.detectPackageManager(rootDir);
     const commands = def.detectCommands(rootDir);
+    commands.qualityGate = detectQualityGateCommand(rootDir, commands, { packageManager: pm });
     const frameworks = def.detectFrameworks(rootDir);
     stacks.push({
       id: def.id,
@@ -438,6 +493,7 @@ export function getCommandPresets(detected) {
     build: [],
     lint: [],
     syntaxCheck: [],
+    qualityGate: [],
   };
 
   // If we have a detected stack, put its commands first as "Detected" options
@@ -448,6 +504,7 @@ export function getCommandPresets(detected) {
     if (cmds.build) presets.build.push({ label: `${label}: ${cmds.build}`, value: cmds.build, detected: true });
     if (cmds.lint) presets.lint.push({ label: `${label}: ${cmds.lint}`, value: cmds.lint, detected: true });
     if (cmds.syntaxCheck) presets.syntaxCheck.push({ label: `${label}: ${cmds.syntaxCheck}`, value: cmds.syntaxCheck, detected: true });
+    if (cmds.qualityGate) presets.qualityGate.push({ label: `${label}: ${cmds.qualityGate}`, value: cmds.qualityGate, detected: true });
   }
 
   // Add additional detected stacks (monorepo)
@@ -459,6 +516,7 @@ export function getCommandPresets(detected) {
       if (cmds.build) presets.build.push({ label: `${label}: ${cmds.build}`, value: cmds.build, detected: true });
       if (cmds.lint) presets.lint.push({ label: `${label}: ${cmds.lint}`, value: cmds.lint, detected: true });
       if (cmds.syntaxCheck) presets.syntaxCheck.push({ label: `${label}: ${cmds.syntaxCheck}`, value: cmds.syntaxCheck, detected: true });
+      if (cmds.qualityGate) presets.qualityGate.push({ label: `${label}: ${cmds.qualityGate}`, value: cmds.qualityGate, detected: true });
     }
   }
 
@@ -521,6 +579,13 @@ export function getCommandPresets(detected) {
       { label: "Ruby — ruby -c", value: "ruby -c" },
       { label: "PHP — php -l", value: "php -l" },
     ],
+    qualityGate: [
+      { label: "Node.js — npm run prepush:check", value: "npm run prepush:check" },
+      { label: "Node.js — pnpm prepush:check", value: "pnpm prepush:check" },
+      { label: "Repository hook — bash .githooks/pre-push", value: "bash .githooks/pre-push" },
+      { label: "Go — go test ./...", value: "go test ./..." },
+      { label: "Make — make test", value: "make test" },
+    ],
   };
 
   // Merge: skip any universal presets whose value already appears in detected
@@ -541,7 +606,7 @@ export function getCommandPresets(detected) {
  * If the value isn't "auto", returns it unchanged.
  *
  * @param {string} value - The command value (may be "auto" or an actual command)
- * @param {string} commandType - One of "test", "build", "lint", "syntaxCheck"
+ * @param {string} commandType - One of "test", "build", "lint", "syntaxCheck", "qualityGate"
  * @param {string} rootDir - Project root for detection
  * @returns {string} The resolved command
  */
@@ -552,7 +617,7 @@ export function resolveAutoCommand(value, commandType, rootDir) {
 }
 
 function emptyCommands() {
-  return { test: "", build: "", lint: "", syntaxCheck: "", typeCheck: "" };
+  return { test: "", build: "", lint: "", syntaxCheck: "", typeCheck: "", qualityGate: "" };
 }
 
 // Re-export the stack definitions for introspection

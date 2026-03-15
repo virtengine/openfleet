@@ -44,6 +44,7 @@ import {
   loadWorkflowContract,
   validateWorkflowContract,
 } from "./workflow-contract.mjs";
+import { resolveAutoCommand } from "./project-detection.mjs";
 import { loadConfig } from "../config/config.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity, normalizeBaseBranch } from "../git/git-safety.mjs";
@@ -2988,6 +2989,11 @@ registerBuiltinNodeType("action.run_command", {
       env: { type: "object", description: "Environment variables passed to the command (supports templates)", additionalProperties: true },
       timeoutMs: { type: "number", default: 300000 },
       shell: { type: "string", default: "auto", enum: ["auto", "bash", "pwsh", "cmd"] },
+      commandType: {
+        type: "string",
+        enum: ["test", "build", "lint", "syntaxCheck", "qualityGate"],
+        description: "Optional auto-resolution category when command is set to 'auto'",
+      },
       captureOutput: { type: "boolean", default: true },
       parseJson: { type: "boolean", default: false, description: "Parse JSON output automatically" },
       failOnError: { type: "boolean", default: false, description: "Throw on non-zero exit status (enables workflow retries)" },
@@ -2996,8 +3002,13 @@ registerBuiltinNodeType("action.run_command", {
   },
   async execute(node, ctx) {
     const resolvedCommand = ctx.resolve(node.config?.command || "");
-    const command = normalizeLegacyWorkflowCommand(resolvedCommand);
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const commandType = typeof node.config?.commandType === "string" ? node.config.commandType.trim() : "";
+    const autoCommandRoot = ctx.resolve(ctx.data?.repoRoot || cwd);
+    const autoResolvedCommand = commandType
+      ? resolveAutoCommand(String(resolvedCommand || ""), commandType, autoCommandRoot)
+      : resolvedCommand;
+    const command = normalizeLegacyWorkflowCommand(autoResolvedCommand);
     const resolvedEnvConfig = resolveWorkflowNodeValue(node.config?.env ?? {}, ctx);
     const commandEnv = { ...process.env };
     if (resolvedEnvConfig && typeof resolvedEnvConfig === "object" && !Array.isArray(resolvedEnvConfig)) {
@@ -3040,7 +3051,19 @@ registerBuiltinNodeType("action.run_command", {
     };
     const usedArgv = commandArgs.length > 0;
 
-    if (command !== resolvedCommand) {
+    if (!command.trim()) {
+      const reason =
+        String(resolvedCommand || "").trim().toLowerCase() === "auto" && commandType
+          ? `No ${commandType} command detected for ${autoCommandRoot || cwd}`
+          : "No command configured";
+      ctx.log(node.id, reason);
+      return { success: false, output: "", stderr: "", exitCode: null, error: reason };
+    }
+
+    if (autoResolvedCommand !== resolvedCommand) {
+      ctx.log(node.id, `Resolved auto ${commandType} command: ${autoResolvedCommand}`);
+    }
+    if (command !== autoResolvedCommand) {
       ctx.log(node.id, `Normalized legacy command for portability: ${command}`);
     }
     ctx.log(node.id, `Running: ${usedArgv ? `${command} ${commandArgs.join(" ")}`.trim() : command}`);
