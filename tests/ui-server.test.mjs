@@ -2364,6 +2364,19 @@ describe("ui-server mini app", () => {
           blockingTaskIds: ["dep-1"],
         })),
       },
+      getAgentSupervisor: () => ({
+        getTaskDiagnostics: () => ({
+          taskId,
+          interventionCount: 2,
+          lastIntervention: "continue_signal",
+          lastDecision: { reason: "retry same thread" },
+          apiErrorRecovery: {
+            signature: "upstream timeout while polling",
+            continueAttempts: 2,
+            cooldownUntil: Date.now() + 60_000,
+          },
+        }),
+      }),
     });
 
     const server = await mod.startTelegramUiServer({
@@ -2401,6 +2414,8 @@ describe("ui-server mini app", () => {
     ]);
     expect(detailJson.data.blockedContext.reason).toBe("dependency_blocked");
     expect(detailJson.data.blockedContext.summary).toContain("Bosun will not dispatch this task");
+    expect(detailJson.data.diagnostics.stableCause.code).toBe("api_error_cooldown");
+    expect(detailJson.data.diagnostics.supervisor.apiErrorRecovery.continueAttempts).toBe(2);
 
     const listResp = await fetch(`http://127.0.0.1:${port}/api/tasks`);
     const listJson = await listResp.json();
@@ -2408,6 +2423,58 @@ describe("ui-server mini app", () => {
     expect(listResp.status).toBe(200);
     expect(listJson.ok).toBe(true);
     expect(listJson.statusCounts.blocked).toBeGreaterThanOrEqual(1);
+  });
+
+  it("returns a diagnosticId on task detail failures and logs the raw backend cause", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mod.injectUiDependencies({
+      taskStoreApi: {
+        canStartTask: vi.fn(() => {
+          throw new Error("detail exploded\n    at fake-stack-frame");
+        }),
+      },
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "diagnostic detail task",
+        description: "trigger task detail failure",
+      }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+
+    const detailResp = await fetch(
+      `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(created.data.id)}`,
+    );
+    const detailJson = await detailResp.json();
+
+    expect(detailResp.status).toBe(500);
+    expect(detailJson.ok).toBe(false);
+    expect(detailJson.error).toBe("Internal server error");
+    expect(detailJson.diagnosticId).toMatch(/^req_[a-f0-9]+$/i);
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[ui-server] request failed",
+      expect.objectContaining({
+        diagnosticId: detailJson.diagnosticId,
+        path: "/api/tasks/detail",
+        payload: expect.objectContaining({
+          error: expect.stringContaining("detail exploded"),
+        }),
+      }),
+    );
   });
 
   it("wires sprint and dag task-store APIs through ui-server endpoints", async () => {

@@ -2702,6 +2702,17 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.assignees,
     task?.meta,
   ]);
+  const taskDiagnostics = task?.diagnostics || task?.meta?.diagnostics || null;
+  const stableCause = taskDiagnostics?.stableCause || null;
+  const apiRecovery = taskDiagnostics?.supervisor?.apiErrorRecovery || null;
+  const hasDiagnostics = Boolean(
+    stableCause ||
+    taskDiagnostics?.lastError ||
+    taskDiagnostics?.errorPattern ||
+    taskDiagnostics?.blockedReason ||
+    taskDiagnostics?.cooldownUntil ||
+    apiRecovery,
+  );
   const canStartInfo = task?.canStart || task?.meta?.canStart || null;
   const blockedContext = task?.blockedContext || task?.meta?.blockedContext || null;
   const blockedBy = Array.isArray(blockedContext?.blockedBy)
@@ -3533,6 +3544,59 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                       <div class="task-comment-body">${entry.message}</div>
                     </div>
                   `)}
+                </div>
+              `}
+            </div>
+          </div>
+        `}
+
+        ${hasDiagnostics && html`
+          <div class="task-section">
+            <div class="task-section-title">Diagnostics</div>
+            <div class="task-section-body">
+              ${stableCause && html`
+                <div class="task-blocked-banner" data-category=${stableCause.severity || "diagnostic"}>
+                  <div class="task-blocked-banner-title">${stableCause.title || "Task diagnostics available"}</div>
+                  <div class="task-blocked-banner-copy">${stableCause.summary || "Bosun recorded a stable failure cause for this task."}</div>
+                  ${stableCause.code && html`
+                    <div class="task-blocked-banner-copy">Stable cause: ${stableCause.code}</div>
+                  `}
+                </div>
+              `}
+
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:12px;">
+                ${taskDiagnostics?.errorPattern && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Error pattern</div>
+                    <div class="task-comment-body">${taskDiagnostics.errorPattern}</div>
+                  </div>
+                `}
+                ${taskDiagnostics?.cooldownUntil && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Cooldown until</div>
+                    <div class="task-comment-body">${formatRelative(taskDiagnostics.cooldownUntil)}</div>
+                  </div>
+                `}
+                ${apiRecovery && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Continue attempts</div>
+                    <div class="task-comment-body">${Number(apiRecovery.continueAttempts || 0).toLocaleString("en-US")}</div>
+                  </div>
+                `}
+                ${taskDiagnostics?.blockedReason && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Blocked reason</div>
+                    <div class="task-comment-body">${taskDiagnostics.blockedReason}</div>
+                  </div>
+                `}
+              </div>
+
+              ${taskDiagnostics?.lastError && html`
+                <div class="task-comments-list" style=${{ marginTop: "12px" }}>
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Last backend error</div>
+                    <div class="task-comment-body">${taskDiagnostics.lastError}</div>
+                  </div>
                 </div>
               `}
             </div>

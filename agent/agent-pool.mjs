@@ -2846,6 +2846,10 @@ function isPoisonedCodexResumeError(errorValue) {
   );
 }
 
+function isCodexResumeTimeoutError(errorValue) {
+  return String(errorValue || "").toLowerCase().includes("codex resume timeout");
+}
+
 /**
  * Resume an existing Codex thread and run a follow-up prompt.
  * Uses `codex.resumeThread(threadId)` from @openai/codex-sdk.
@@ -3017,6 +3021,7 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
         : `Thread resume error: ${err.message}`,
       sdk: "codex",
       threadId: null,
+      staleResumeState: isTimeout,
       poisonedResumeState:
         !isTimeout && isPoisonedCodexResumeError(err.message),
     };
@@ -3194,10 +3199,12 @@ export async function launchOrResumeThread(
         // Resume failed — fall through to fresh launch
         if (
           result.poisonedResumeState ||
-          isPoisonedCodexResumeError(result.error)
+          result.staleResumeState ||
+          isPoisonedCodexResumeError(result.error) ||
+          isCodexResumeTimeoutError(result.error)
         ) {
           console.warn(
-            `${TAG} resume failed for task "${taskKey}" with corrupted state: ${result.error}. Dropping cached thread metadata and starting fresh.`,
+            `${TAG} resume failed for task "${taskKey}" with stale or corrupted state: ${result.error}. Dropping cached thread metadata and starting fresh.`,
           );
           threadRegistry.delete(taskKey);
         } else {

@@ -2977,11 +2977,19 @@ registerBuiltinNodeType("action.run_command", {
     type: "object",
     properties: {
       command: { type: "string", description: "Shell command to run" },
+      args: {
+        description: "Optional argv passed to the command without shell interpolation",
+        oneOf: [
+          { type: "array", items: { type: ["string", "number", "boolean"] } },
+          { type: "string" },
+        ],
+      },
       cwd: { type: "string", description: "Working directory" },
       env: { type: "object", description: "Environment variables passed to the command (supports templates)", additionalProperties: true },
       timeoutMs: { type: "number", default: 300000 },
       shell: { type: "string", default: "auto", enum: ["auto", "bash", "pwsh", "cmd"] },
       captureOutput: { type: "boolean", default: true },
+      parseJson: { type: "boolean", default: false, description: "Parse JSON output automatically" },
       failOnError: { type: "boolean", default: false, description: "Throw on non-zero exit status (enables workflow retries)" },
     },
     required: ["command"],
@@ -3005,28 +3013,54 @@ registerBuiltinNodeType("action.run_command", {
     }
 
     const timeout = node.config?.timeoutMs || 300000;
+    const resolvedArgsConfig = resolveWorkflowNodeValue(node.config?.args ?? [], ctx);
+    const commandArgs = Array.isArray(resolvedArgsConfig)
+      ? resolvedArgsConfig.map((value) => String(value))
+      : typeof resolvedArgsConfig === "string" && resolvedArgsConfig.trim()
+        ? [resolvedArgsConfig]
+        : [];
+    const shouldParseJson = node.config?.parseJson === true;
+    const parseOutput = (rawOutput) => {
+      const trimmed = rawOutput?.trim?.() ?? "";
+      if (!shouldParseJson || !trimmed) return trimmed;
+      try {
+        return JSON.parse(trimmed);
+      } catch {
+        return trimmed;
+      }
+    };
+    const usedArgv = commandArgs.length > 0;
 
     if (command !== resolvedCommand) {
       ctx.log(node.id, `Normalized legacy command for portability: ${command}`);
     }
-    ctx.log(node.id, `Running: ${command}`);
+    ctx.log(node.id, `Running: ${usedArgv ? `${command} ${commandArgs.join(" ")}`.trim() : command}`);
     try {
-      const output = execSync(command, {
-        cwd,
-        timeout,
-        encoding: "utf8",
-        maxBuffer: 10 * 1024 * 1024,
-        stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
-        env: commandEnv,
-      });
+      const output = usedArgv
+        ? execFileSync(command, commandArgs, {
+            cwd,
+            timeout,
+            encoding: "utf8",
+            maxBuffer: 10 * 1024 * 1024,
+            stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
+            env: commandEnv,
+          })
+        : execSync(command, {
+            cwd,
+            timeout,
+            encoding: "utf8",
+            maxBuffer: 10 * 1024 * 1024,
+            stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
+            env: commandEnv,
+          });
       ctx.log(node.id, `Command succeeded`);
-      return { success: true, output: output?.trim(), exitCode: 0 };
+      return { success: true, output: parseOutput(output), exitCode: 0 };
     } catch (err) {
       const output = err.stdout?.toString() || "";
       const stderr = err.stderr?.toString() || "";
       const result = {
         success: false,
-        output,
+        output: parseOutput(output),
         stderr,
         exitCode: err.status,
         error: err.message,

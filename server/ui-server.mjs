@@ -7032,13 +7032,58 @@ function extractSafeErrorMessage(payload) {
   return "Internal server error";
 }
 
+function createRequestDiagnosticId() {
+  return `req_${randomBytes(6).toString("hex")}`;
+}
+
+function ensureResponseDiagnosticId(res) {
+  if (!res || typeof res !== "object") return createRequestDiagnosticId();
+  if (!res.__bosunDiagnosticId) {
+    res.__bosunDiagnosticId = createRequestDiagnosticId();
+  }
+  return res.__bosunDiagnosticId;
+}
+
+function describePayloadForErrorLog(payload, depth = 0) {
+  if (payload instanceof Error) {
+    const described = {
+      name: String(payload.name || "Error"),
+      message: String(payload.message || ""),
+    };
+    if (payload.stack) described.stack = String(payload.stack);
+    if (payload.code != null) described.code = String(payload.code);
+    if (depth < 3 && payload.cause) {
+      described.cause = describePayloadForErrorLog(payload.cause, depth + 1);
+    }
+    return described;
+  }
+  return makeJsonSafe(payload, { maxDepth: 6 });
+}
+
+function logJsonFailure(res, statusCode, payload, diagnosticId) {
+  const requestContext = res?.__bosunRequestContext || {};
+  console.error("[ui-server] request failed", {
+    diagnosticId,
+    statusCode,
+    method: requestContext.method || null,
+    path: requestContext.path || null,
+    query: requestContext.query || "",
+    payload: describePayloadForErrorLog(payload),
+  });
+}
+
 function jsonResponse(res, statusCode, payload) {
+  const diagnosticId = statusCode >= 500 ? ensureResponseDiagnosticId(res) : null;
+  if (statusCode >= 500) {
+    logJsonFailure(res, statusCode, payload, diagnosticId);
+  }
   const normalizedPayload = normalizeJsonResponsePayload(payload);
   const safePayload =
     statusCode >= 500
       ? {
           ok: false,
           error: extractSafeErrorMessage(normalizedPayload),
+          diagnosticId,
         }
       : normalizedPayload;
   const body = JSON.stringify(safePayload, null, 2);
@@ -7888,6 +7933,129 @@ function withTaskRuntimeSnapshot(task) {
       runtimeSnapshot,
     },
   };
+}
+
+function normalizeTaskDiagnosticText(value) {
+  const text = String(value || "").trim();
+  return text ? text.replace(/\s+/g, " ") : "";
+}
+
+function buildTaskStableCause(task, supervisorDiagnostics = null) {
+  const lastError = normalizeTaskDiagnosticText(task?.lastError || "");
+  const blockedReason = normalizeTaskDiagnosticText(task?.blockedReason || "");
+  const errorPattern = String(task?.errorPattern || "").trim().toLowerCase();
+  const apiErrorRecovery = supervisorDiagnostics?.apiErrorRecovery || null;
+  const apiSignature = normalizeTaskDiagnosticText(apiErrorRecovery?.signature || "");
+  const lastErrorLower = lastError.toLowerCase();
+  const blockedReasonLower = blockedReason.toLowerCase();
+
+  if (lastErrorLower.includes("codex resume timeout")) {
+    return {
+      code: "codex_resume_timeout",
+      title: "Codex resume timed out",
+      severity: "warning",
+      summary: "Bosun timed out while resuming a cached Codex thread and will start fresh on the next attempt.",
+    };
+  }
+  if (
+    lastErrorLower.includes("invalid_encrypted_content") ||
+    lastErrorLower.includes("state db missing rollout path") ||
+    lastErrorLower.includes("could not be verified") ||
+    lastErrorLower.includes("tool_call_id")
+  ) {
+    return {
+      code: "codex_resume_corrupted_state",
+      title: "Codex resume state is corrupted",
+      severity: "error",
+      summary: "Bosun detected poisoned Codex thread metadata and will discard the cached resume state.",
+    };
+  }
+  if (errorPattern === "rate_limit") {
+    return {
+      code: "agent_rate_limit",
+      title: "Agent is rate limited",
+      severity: "warning",
+      summary: "The assigned agent hit a rate limit and Bosun is waiting before retrying.",
+    };
+  }
+  if (errorPattern === "token_overflow") {
+    return {
+      code: "token_overflow",
+      title: "Context window exhausted",
+      severity: "error",
+      summary: "The current task exceeded the model context budget and needs a smaller prompt or a fresh session.",
+    };
+  }
+  if (errorPattern === "api_error" || apiErrorRecovery) {
+    return {
+      code: Number(apiErrorRecovery?.cooldownUntil || 0) > Date.now()
+        ? "api_error_cooldown"
+        : "api_error_recovery",
+      title: "Transient API failure",
+      severity: "warning",
+      summary: "Bosun detected a backend API failure and is applying the task-level recovery ladder before escalating.",
+    };
+  }
+  if (blockedReason && blockedReasonLower.includes("dependency")) {
+    return {
+      code: "dependency_blocked",
+      title: "Dependency is still blocked",
+      severity: "warning",
+      summary: "Bosun is holding this task until one or more dependencies finish.",
+    };
+  }
+  if (blockedReason) {
+    return {
+      code: "task_blocked",
+      title: "Task is blocked",
+      severity: "warning",
+      summary: "Bosun recorded a blocking condition for this task and will not dispatch it until the condition clears.",
+    };
+  }
+  if (lastError || apiSignature) {
+    return {
+      code: "agent_runtime_error",
+      title: "Agent runtime error",
+      severity: "error",
+      summary: "Bosun recorded an agent-side runtime failure for this task.",
+    };
+  }
+  return null;
+}
+
+function buildTaskDiagnostics(task, supervisorDiagnostics = null) {
+  if (!task || typeof task !== "object") return null;
+  const apiErrorRecovery = supervisorDiagnostics?.apiErrorRecovery
+    ? makeJsonSafe(supervisorDiagnostics.apiErrorRecovery, { maxDepth: 4 })
+    : null;
+  const diagnostics = {
+    stableCause: buildTaskStableCause(task, supervisorDiagnostics),
+    lastError: normalizeTaskDiagnosticText(task?.lastError || "") || null,
+    errorPattern: normalizeTaskDiagnosticText(task?.errorPattern || "") || null,
+    blockedReason: normalizeTaskDiagnosticText(task?.blockedReason || "") || null,
+    cooldownUntil: task?.cooldownUntil || apiErrorRecovery?.cooldownUntil || null,
+    supervisor: supervisorDiagnostics
+      ? {
+          interventionCount: Number(supervisorDiagnostics.interventionCount || 0),
+          lastIntervention: supervisorDiagnostics.lastIntervention || null,
+          lastDecision: supervisorDiagnostics.lastDecision
+            ? makeJsonSafe(supervisorDiagnostics.lastDecision, { maxDepth: 3 })
+            : null,
+          apiErrorRecovery,
+        }
+      : null,
+  };
+  if (
+    !diagnostics.stableCause &&
+    !diagnostics.lastError &&
+    !diagnostics.errorPattern &&
+    !diagnostics.blockedReason &&
+    !diagnostics.cooldownUntil &&
+    !diagnostics.supervisor
+  ) {
+    return null;
+  }
+  return diagnostics;
 }
 
 async function maybeStartTaskFromLifecycleAction({
@@ -11364,6 +11532,12 @@ async function handleApi(req, res, url) {
           reqUrl: url,
           adapter,
         });
+        const supervisor = typeof uiDeps.getAgentSupervisor === "function"
+          ? uiDeps.getAgentSupervisor()
+          : null;
+        const supervisorDiagnostics = typeof supervisor?.getTaskDiagnostics === "function"
+          ? supervisor.getTaskDiagnostics(detailTask.id)
+          : null;
 
         const sprintId = resolveTaskSprintId(detailTask);
         const sprintDag = includeDag && sprintId ? await getSprintDagData(sprintId) : null;
@@ -11373,6 +11547,7 @@ async function handleApi(req, res, url) {
           workflowRuns: mergedWorkflowRuns,
           workspaceDir: workspaceContext?.workspaceDir || repoRoot,
         });
+        const diagnostics = buildTaskDiagnostics(detailTask, supervisorDiagnostics);
 
         detailTask.meta = {
           ...(detailTask.meta || {}),
@@ -11381,6 +11556,7 @@ async function handleApi(req, res, url) {
           timelineCount: Array.isArray(detailTask.timeline) ? detailTask.timeline.length : 0,
           canStart,
           blockedContext,
+          ...(diagnostics ? { diagnostics } : {}),
           ...(sprintId ? { sprintId } : {}),
           ...(sprintDag ? { sprintDag: sprintDag.data } : {}),
           ...(globalDag ? { dagOfDags: globalDag.data } : {}),
@@ -11389,6 +11565,7 @@ async function handleApi(req, res, url) {
         if (globalDag) detailTask.dagOfDags = globalDag.data;
         detailTask.canStart = canStart;
         detailTask.blockedContext = blockedContext;
+        if (diagnostics) detailTask.diagnostics = diagnostics;
         detailTask = withTaskRuntimeSnapshot(detailTask);
       }
       jsonResponse(res, 200, { ok: true, data: detailTask });
@@ -19169,7 +19346,15 @@ export async function startTelegramUiServer(options = {}) {
       req.url || "/",
       `http://${req.headers.host || "localhost"}`,
     );
+    res.__bosunRequestContext = {
+      diagnosticId: ensureResponseDiagnosticId(res),
+      method: String(req?.method || "GET").toUpperCase(),
+      path: url.pathname,
+      query: url.search || "",
+    };
     const webhookPath = getGitHubWebhookPath();
+
+    try {
 
     // Token exchange: ?token=<hex> → set session cookie and redirect to clean URL
     const qToken = url.searchParams.get("token");
@@ -19312,6 +19497,21 @@ export async function startTelegramUiServer(options = {}) {
       }
     }
     await handleStatic(req, res, url);
+    } catch (err) {
+      if (res.headersSent) {
+        console.error("[ui-server] unhandled request failure after headers sent", {
+          diagnosticId: ensureResponseDiagnosticId(res),
+          payload: describePayloadForErrorLog(err),
+        });
+        try {
+          res.destroy?.(err);
+        } catch {
+          /* best effort */
+        }
+        return;
+      }
+      jsonResponse(res, 500, err);
+    }
   };
 
   try {

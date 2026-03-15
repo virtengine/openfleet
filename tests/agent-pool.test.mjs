@@ -1089,6 +1089,60 @@ describe("launchOrResumeThread", () => {
     expect(record.alive).toBe(false);
   });
 
+  it("drops stale codex thread metadata when resume times out", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    setPoolSdk("codex");
+
+    const taskKey = "timeout-resume-task";
+    mockCodexStartThread
+      .mockImplementationOnce(() =>
+        makeCodexMockThread("timeout-thread-id", "first-run"),
+      )
+      .mockImplementationOnce(() => null);
+
+    const first = await launchOrResumeThread(
+      "initial prompt",
+      process.cwd(),
+      5000,
+      {
+        taskKey,
+        sdk: "codex",
+      },
+    );
+
+    expect(first.success).toBe(true);
+    expect(first.threadId).toBe("timeout-thread-id");
+    expect(first.resumed).toBe(false);
+
+    mockCodexResumeThread.mockImplementation(() => ({
+      id: "timeout-thread-id",
+      runStreamed: async () => {
+        const error = new Error("resume aborted");
+        error.name = "AbortError";
+        throw error;
+      },
+    }));
+
+    const second = await launchOrResumeThread(
+      "follow-up prompt",
+      process.cwd(),
+      5000,
+      {
+        taskKey,
+        sdk: "codex",
+      },
+    );
+
+    expect(second.success).toBe(false);
+    expect(second.resumed).toBe(false);
+    expect(second.error).toMatch(/startThread\(\) returned null/i);
+
+    const record = getThreadRecord(taskKey);
+    expect(record).toBeTruthy();
+    expect(record.threadId).toBeNull();
+    expect(record.alive).toBe(false);
+  });
+
   it("invalidateThreadAsync prevents reuse of an existing thread", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
     setPoolSdk("codex");

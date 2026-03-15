@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyNonBlockingSetupEnvDefaults,
   applyTelegramMiniAppSetupEnv,
+  buildModelsProbeRequest,
   handleTelegramChatIdLookup,
   normalizeRepoConfigEntry,
   normalizeTelegramUiPort,
@@ -151,6 +152,36 @@ describe("setup web server telegram defaults", () => {
 });
 
 describe("setup web server non-blocking env defaults", () => {
+  it("builds Azure model probes with the Azure models path and api-key header", () => {
+    const result = buildModelsProbeRequest({
+      apiKey: "azure-secret",
+      baseUrl: "https://example-resource.openai.azure.com/",
+    });
+
+    expect(result).toEqual({
+      endpoint: "https://example-resource.openai.azure.com/openai/models?api-version=2024-10-21",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": "azure-secret",
+      },
+    });
+  });
+
+  it("normalizes OpenAI-compatible v1 paths when building model probes", () => {
+    const result = buildModelsProbeRequest({
+      apiKey: "compat-secret",
+      baseUrl: "https://gateway.example.com/proxy/v1/chat/completions?foo=bar",
+    });
+
+    expect(result).toEqual({
+      endpoint: "https://gateway.example.com/proxy/v1/models",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer compat-secret",
+      },
+    });
+  });
+
   it("backfills safe defaults when setup payload omits values", () => {
     const envMap = {};
     applyNonBlockingSetupEnvDefaults(envMap, {}, {});
