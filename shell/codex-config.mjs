@@ -26,11 +26,17 @@
  * append or patch well-known sections rather than rewriting the whole file.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve, dirname, parse, isAbsolute } from "node:path";
-import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
+import {
+  CONFIG_PATH,
+  ensureTrustedProjects,
+  getConfigPath,
+  readCodexConfig,
+  writeCodexConfig,
+} from "./codex-config-file.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -50,9 +56,6 @@ function getVibeKanbanVersion() {
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
-
-const CODEX_DIR = resolve(homedir(), ".codex");
-const CONFIG_PATH = resolve(CODEX_DIR, "config.toml");
 
 /** Minimum recommended stream idle timeout (ms) for complex agentic tasks. */
 const MIN_STREAM_IDLE_TIMEOUT_MS = 300_000; // 5 minutes
@@ -1074,28 +1077,11 @@ function stripDeprecatedSandboxPermissions(toml) {
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-/**
- * Read the current config.toml (or return empty string if it doesn't exist).
- */
-export function readCodexConfig() {
-  if (!existsSync(CONFIG_PATH)) return "";
-  return readFileSync(CONFIG_PATH, "utf8");
-}
+export { readCodexConfig };
 
-/**
- * Write the config.toml, creating ~/.codex/ if needed.
- */
-export function writeCodexConfig(content) {
-  mkdirSync(CODEX_DIR, { recursive: true });
-  writeFileSync(CONFIG_PATH, content, "utf8");
-}
+export { writeCodexConfig };
 
-/**
- * Get the path to the Codex config file.
- */
-export function getConfigPath() {
-  return CONFIG_PATH;
-}
+export { getConfigPath };
 
 /**
  * Check whether the config already has a [mcp_servers.vibe_kanban] section.
@@ -1811,183 +1797,7 @@ export function printConfigSummary(result, log = console.log) {
   logProviderSummary(result, log);
   log(`     Config: ${result.path}`);
 }
-// ── Trusted Projects ─────────────────────────────────────────────────────────
-
-/**
- * Escape a string for use inside a double-quoted TOML basic string.
- * Handles backslashes (Windows paths) and double-quote characters.
- */
-function tomlEscapeStr(s) {
-  return String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-/**
- * Format an array of strings as a TOML array literal, correctly escaping
- * backslashes so Windows paths are stored faithfully.
- *
- * Example output:  ["C:\\Users\\jon\\bosun", "/home/jon/bosun"]
- */
-function formatTomlArrayEscaped(values) {
-  return `[${values.map((v) => `"${tomlEscapeStr(v)}"`).join(", ")}]`;
-}
-
-function toWindowsNamespacePath(pathValue) {
-  const value = String(pathValue || "").trim();
-  if (!value) return null;
-  if (value.startsWith("\\\\?\\")) return value;
-  const drivePath = toWindowsDrivePath(value);
-  if (drivePath) return `\\\\?\\${drivePath}`;
-  return null;
-}
-
-function toWindowsDrivePath(pathValue) {
-  const raw = String(pathValue || "").trim();
-  if (!raw) return null;
-  let value = raw.replace(/\//g, "\\");
-  if (value.startsWith("\\\\?\\")) value = value.slice(4);
-  if (/^[a-zA-Z]:\\/.test(value)) return value;
-  const wslMatch = raw.match(/^\/mnt\/([a-zA-Z])\/(.+)$/);
-  if (wslMatch) {
-    const drive = wslMatch[1].toUpperCase();
-    const rest = wslMatch[2].replace(/\//g, "\\");
-    return `${drive}:\\${rest}`;
-  }
-  return null;
-}
-
-function normalizeTrustedPathForCompare(pathValue) {
-  const trimTrailingPathSeparators = (value) => {
-    let out = String(value || "");
-    while (out.endsWith("/") || out.endsWith("\\")) out = out.slice(0, -1);
-    return out;
-  };
-  const raw = String(pathValue || "").trim();
-  if (!raw) return "";
-  const windowsDrivePath = toWindowsDrivePath(raw);
-  if (windowsDrivePath) {
-    return trimTrailingPathSeparators(windowsDrivePath).toLowerCase();
-  }
-  if (process.platform === "win32") {
-    let normalized = raw.replace(/\//g, "\\");
-    if (normalized.startsWith("\\\\?\\UNC\\")) {
-      normalized = "\\\\" + normalized.slice(8);
-    } else if (normalized.startsWith("\\\\?\\")) {
-      normalized = normalized.slice(4);
-    }
-    normalized = trimTrailingPathSeparators(normalized);
-    return normalized.toLowerCase();
-  }
-  return trimTrailingPathSeparators(resolve(raw));
-}
-
-function buildTrustedPathVariants(pathValue) {
-  const base = resolve(pathValue);
-  const variants = [base];
-  const namespaced = toWindowsNamespacePath(base);
-  if (namespaced && namespaced !== base) variants.push(namespaced);
-  return variants;
-}
-
-/**
- * Parse a TOML basic-string array literal, unescaping backslash sequences.
- */
-function parseTomlArrayLiteralEscaped(raw) {
-  if (!raw) return [];
-  const inner = raw.trim().replace(/^\[/, "").replace(/\]$/, "");
-  if (!inner.trim()) return [];
-  // Split on commas that are NOT inside quotes
-  const items = [];
-  let buf = "";
-  let inStr = false;
-  for (let i = 0; i < inner.length; i++) {
-    const ch = inner[i];
-    if (ch === "\\" && inStr) { buf += ch + (inner[++i] || ""); continue; }
-    if (ch === '"') { inStr = !inStr; buf += ch; continue; }
-    if (ch === "," && !inStr) { items.push(buf.trim()); buf = ""; continue; }
-    buf += ch;
-  }
-  if (buf.trim()) items.push(buf.trim());
-  return items
-    .map((item) => item.replace(/^"(.*)"$/s, "$1"))              // strip outer quotes
-    .map((item) => item.replace(/\\(["\\])/g, "$1"))             // unescape \" and \\
-    .filter(Boolean);
-}
-
-/**
- * Ensure the given directory paths are listed in the `trusted_projects`
- * top-level key in ~/.codex/config.toml.
- *
- * Codex refuses to load a per-project .codex/config.toml unless the project
- * directory appears in this list — producing warnings like:
- *   ":alert: Project config.toml files are disabled … add <dir> as a trusted project"
- *
- * Paths are stored as-is (forward or back slashes preserved) with proper TOML
- * escaping so Windows paths survive round-trips through the file.
- *
- * @param {string[]} paths   Absolute directories to trust (e.g. [bosunHome])
- * @param {{ dryRun?: boolean }} [opts]
- * @returns {{ added: string[], already: string[], path: string }}
- */
-function collectTrustedProjectVariants(paths) {
-  return (paths || [])
-    .flatMap((pathValue) => buildTrustedPathVariants(pathValue))
-    .filter(Boolean);
-}
-
-function mergeTrustedProjectEntries(existing, desired) {
-  const existingNormalized = new Set(
-    existing.map((pathValue) => normalizeTrustedPathForCompare(pathValue)).filter(Boolean),
-  );
-  const added = [];
-  const already = [];
-  for (const pathValue of desired) {
-    const normalized = normalizeTrustedPathForCompare(pathValue);
-    if (!normalized) continue;
-    if (existingNormalized.has(normalized)) {
-      already.push(pathValue);
-      continue;
-    }
-    existing.push(pathValue);
-    existingNormalized.add(normalized);
-    added.push(pathValue);
-  }
-  return { existing, added, already };
-}
-
-function upsertTrustedProjectsLine(toml, newLine, existingMatch) {
-  if (existingMatch) {
-    return toml.replace(/^trusted_projects\s*=\s*\[[^\]]*\]/m, newLine);
-  }
-  const firstSection = toml.search(/^\[/m);
-  if (firstSection === -1) {
-    return `${newLine}\n${toml}`;
-  }
-  return `${toml.slice(0, firstSection)}${newLine}\n\n${toml.slice(firstSection)}`;
-}
-
-export function ensureTrustedProjects(paths, { dryRun = false } = {}) {
-  const result = { added: [], already: [], path: CONFIG_PATH };
-  const desired = collectTrustedProjectVariants(paths);
-  if (desired.length === 0) return result;
-
-  let toml = readCodexConfig() || "";
-  const existingMatch = toml.match(/^trusted_projects\s*=\s*(\[[^\]]*\])/m);
-  const existing = existingMatch ? parseTomlArrayLiteralEscaped(existingMatch[1]) : [];
-  const merged = mergeTrustedProjectEntries(existing, desired);
-  result.added = merged.added;
-  result.already = merged.already;
-  if (result.added.length === 0) return result;
-  if (dryRun) return result;
-
-  toml = upsertTrustedProjectsLine(
-    toml,
-    `trusted_projects = ${formatTomlArrayEscaped(merged.existing)}`,
-    existingMatch,
-  );
-  mkdirSync(CODEX_DIR, { recursive: true });
-  writeFileSync(CONFIG_PATH, toml, "utf8");
-  return result;
-}
+export { ensureTrustedProjects };
 // ── Internal Helpers ─────────────────────────────────────────────────────────
 
 function escapeRegex(str) {
@@ -1999,4 +1809,5 @@ function parseBoolEnv(value) {
   if (["0", "false", "no", "off", "n"].includes(raw)) return false;
   return true;
 }
+
 
