@@ -140,7 +140,7 @@ const STATUS_CHIPS = [
   { value: "inprogress", label: "Active" },
   { value: "inreview", label: "Review" },
   { value: "done", label: "Done" },
-  { value: "error", label: "Error" },
+  { value: "blocked", label: "Blocked" },
 ];
 
 const PRIORITY_CHIPS = [
@@ -164,7 +164,7 @@ const SNAPSHOT_STATUS_MAP = {
   Active: "inprogress",
   Review: "inreview",
   Done: "done",
-  Errors: "error",
+  Blocked: "blocked",
 };
 
 const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3, "": 4 };
@@ -1617,6 +1617,28 @@ function TriggerTemplateCard({
   `;
 }
 
+function sanitizeTriggerTemplatePayload(template = {}) {
+  if (!template || typeof template !== "object") {
+    return {};
+  }
+  const payload = {};
+  for (const key of [
+    "id",
+    "name",
+    "description",
+    "enabled",
+    "action",
+    "minIntervalMinutes",
+    "trigger",
+    "config",
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(template, key)) {
+      payload[key] = template[key];
+    }
+  }
+  return payload;
+}
+
 function TriggerTemplatesModal({ onClose }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1735,11 +1757,16 @@ function TriggerTemplatesModal({ onClose }) {
   }, []);
 
   const handleToggleTemplate = async (template, nextEnabled) => {
-    await persistUpdate({ template: { ...template, enabled: nextEnabled } });
+    await persistUpdate({
+      template: {
+        ...sanitizeTriggerTemplatePayload(template),
+        enabled: nextEnabled,
+      },
+    });
   };
 
   const handleSaveTemplate = async (template) => {
-    await persistUpdate({ template });
+    await persistUpdate({ template: sanitizeTriggerTemplatePayload(template) });
   };
 
   return html`
@@ -1767,6 +1794,10 @@ function TriggerTemplatesModal({ onClose }) {
               ${enabled ? "enabled" : "disabled"}
             </label>
           </div>
+
+          <${Alert} severity="info" variant="outlined" sx=${{ mt: 1.25 }}>
+            Trigger Templates are reusable automation rules. Each template watches for a trigger condition and can automatically create follow-up task work using the configured action and defaults below.
+          </${Alert}>
 
           <div class="input-row" style="margin-top:10px;">
             <${Select}
@@ -1800,7 +1831,7 @@ function TriggerTemplatesModal({ onClose }) {
         ${!loading && templates.length === 0 && html`
           <${EmptyState}
             message="No trigger templates found"
-            description="Add templates in bosun.config.json under triggerSystem.templates."
+            description="Add templates in bosun.config.json under triggerSystem.templates. These templates define automation rules that can create follow-up task work when their trigger conditions match."
           />
         `}
 
@@ -2486,6 +2517,21 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.assignees,
     task?.meta,
   ]);
+  const canStartInfo = task?.canStart || task?.meta?.canStart || null;
+  const blockedContext = task?.blockedContext || task?.meta?.blockedContext || null;
+  const blockedBy = Array.isArray(blockedContext?.blockedBy)
+    ? blockedContext.blockedBy
+    : Array.isArray(canStartInfo?.blockedBy)
+      ? canStartInfo.blockedBy
+      : [];
+  const blockedEvidence = [
+    ...(Array.isArray(blockedContext?.timelineEvidence)
+      ? blockedContext.timelineEvidence.map((entry) => ({ ...entry, kind: "timeline" }))
+      : []),
+    ...(Array.isArray(blockedContext?.logEvidence)
+      ? blockedContext.logEvidence.map((entry) => ({ ...entry, kind: "log" }))
+      : []),
+  ].slice(0, 6);
   const lifetimeTotals = task?.lifetimeTotals
     || task?.meta?.lifetimeTotals
     || task?.runtimeSnapshot?.lifetimeTotals
@@ -3208,13 +3254,87 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       </div>
 
       ${/* ── Content Body ───────────────────────────────────────────── */ ""}
-      <div style="padding:${fullScreen ? '20px 24px' : '0'};overflow-y:auto;max-height:${fullScreen ? 'calc(100dvh - 140px)' : 'auto'};">
+      <div style="padding:${fullScreen ? '20px 24px' : '0'};">
 
       ${/* ── DETAILS TAB — Two-column Jira layout ─────────────────── */ ""}
-      ${activeTab === "details" && html`<div class="task-detail-columns" style="max-height:${fullScreen ? 'calc(100dvh - 160px)' : '65vh'};overflow:hidden;">
+      ${activeTab === "details" && html`<div class="task-detail-columns">
 
       ${/* ── LEFT: Main Content ── */ ""}
       <div class="task-detail-main">
+
+        ${(task?.status === "blocked" || canStartInfo?.canStart === false) && html`
+          <div class="task-section">
+            <div class="task-section-title">
+              ${task?.status === "blocked" ? "Blocked Diagnostics" : "Start Readiness"}
+              ${blockedContext?.workflowRunCount > 0 && html`<span class="task-tab-count">${blockedContext.workflowRunCount}</span>`}
+            </div>
+            <div class="task-section-body">
+              <div class="task-blocked-banner" data-category=${blockedContext?.category || "guard"}>
+                <div class="task-blocked-banner-title">
+                  ${blockedContext?.headline || "This task cannot start yet."}
+                </div>
+                <div class="task-blocked-banner-copy">
+                  ${blockedContext?.summary || blockedContext?.reason || "Bosun is holding this task until the blocking condition is resolved."}
+                </div>
+                ${blockedContext?.recommendation && html`
+                  <div class="task-blocked-banner-copy">${blockedContext.recommendation}</div>
+                `}
+              </div>
+
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:12px;">
+                ${blockedContext?.workflowRunCount > 0 && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Workflow runs</div>
+                    <div class="task-comment-body">${blockedContext.workflowRunCount.toLocaleString("en-US")}</div>
+                  </div>
+                `}
+                ${blockedContext?.prePrValidationFailureCount > 0 && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Validation loops</div>
+                    <div class="task-comment-body">${blockedContext.prePrValidationFailureCount.toLocaleString("en-US")} pre-PR validation failures</div>
+                  </div>
+                `}
+                ${blockedContext?.worktreeFailureCount > 0 && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Worktree failures</div>
+                    <div class="task-comment-body">${blockedContext.worktreeFailureCount.toLocaleString("en-US")} acquisition failures</div>
+                  </div>
+                `}
+                ${blockedBy.length > 0 && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Blocking tasks</div>
+                    <div class="task-comment-body">${blockedBy.length.toLocaleString("en-US")} unresolved dependencies</div>
+                  </div>
+                `}
+              </div>
+
+              ${blockedBy.length > 0 && html`
+                <div class="task-comments-list" style=${{ marginTop: "12px" }}>
+                  ${blockedBy.map((entry, index) => html`
+                    <div class="task-comment-item" key=${`blocked-by-${index}`}>
+                      <div class="task-comment-meta">${entry.taskId || "dependency"}</div>
+                      <div class="task-comment-body">${entry.reason || "Not ready yet"}</div>
+                    </div>
+                  `)}
+                </div>
+              `}
+
+              ${blockedEvidence.length > 0 && html`
+                <div class="task-comments-list" style=${{ marginTop: "12px" }}>
+                  ${blockedEvidence.map((entry, index) => html`
+                    <div class="task-comment-item" key=${`blocked-evidence-${index}`}>
+                      <div class="task-comment-meta">
+                        ${entry.kind === "log" ? entry.source || "monitor log" : entry.source || "timeline"}
+                        ${entry.timestamp ? ` · ${formatRelative(entry.timestamp)}` : ""}
+                      </div>
+                      <div class="task-comment-body">${entry.message}</div>
+                    </div>
+                  `)}
+                </div>
+              `}
+            </div>
+          </div>
+        `}
 
         ${/* Description */ ""}
         <div class="task-section">
@@ -3484,7 +3604,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
               }}
               fullWidth
             >
-              ${["draft", "todo", "inprogress", "inreview", "done", "cancelled"].map(
+              ${["draft", "todo", "inprogress", "inreview", "blocked", "done", "cancelled"].map(
                 (s) => html`<${MenuItem} value=${s}>${s}</${MenuItem}>`,
               )}
             </${Select}>
@@ -4509,25 +4629,6 @@ function DagGraphSection({
     }
     if (node?.taskId) onOpenTask?.(node.taskId);
   }, [isWireMode, onActivateNode, onCreateEdge, onOpenTask, wireSourceId, nodeById, wiringBusy]);
-
-  const handleEdgeClick = useCallback((edge, event) => {
-    event?.stopPropagation?.();
-    if (!isWireMode || typeof onDeleteEdge !== "function") return;
-    setSelectedEdgeKey((current) => current === edge.key ? "" : edge.key);
-    setWireSourceId("");
-  }, [isWireMode, onDeleteEdge]);
-
-  const handleDeleteSelectedEdge = useCallback(async () => {
-    if (!selectedEdge || typeof onDeleteEdge !== "function") return;
-    setWiringBusy(true);
-    try {
-      await onDeleteEdge(selectedEdge);
-      setSelectedEdgeKey("");
-    } finally {
-      setWiringBusy(false);
-    }
-  }, [onDeleteEdge, selectedEdge]);
-
   const commitWireConnection = useCallback(async (sourceId, targetId) => {
     if (!isWireMode || typeof onCreateEdge !== "function") return;
     if (!sourceId || !targetId || sourceId === targetId || wiringBusy) {
@@ -4551,6 +4652,99 @@ function DagGraphSection({
       setWiringBusy(false);
     }
   }, [isWireMode, nodeById, onCreateEdge, wiringBusy]);
+
+  const handleWireNodePointerDown = useCallback((node, event) => {
+    if (!isWireMode || wiringBusy) return;
+    const sourceId = String(node?.id || "").trim();
+    if (!sourceId) return;
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+
+    if (typeof wireDragCleanupRef.current === "function") {
+      wireDragCleanupRef.current();
+      wireDragCleanupRef.current = null;
+    }
+
+    const dragState = {
+      sourceId,
+      startX: Number(event?.clientX || 0),
+      startY: Number(event?.clientY || 0),
+      dragging: false,
+    };
+
+    const handleMove = (moveEvent) => {
+      const nextX = Number(moveEvent?.clientX || 0);
+      const nextY = Number(moveEvent?.clientY || 0);
+      if (!dragState.dragging) {
+        const deltaX = nextX - dragState.startX;
+        const deltaY = nextY - dragState.startY;
+        if (Math.hypot(deltaX, deltaY) < 6) return;
+        dragState.dragging = true;
+        setWireSourceId(sourceId);
+        setSelectedEdgeKey("");
+        setWireHoverId("");
+        wireHoverIdRef.current = "";
+        setWireDrag({ sourceId, clientX: nextX, clientY: nextY });
+        return;
+      }
+      setWireDrag((current) => current
+        ? { ...current, clientX: nextX, clientY: nextY }
+        : current);
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+      window.removeEventListener("pointercancel", handleCancel);
+    };
+
+    const finishWire = async () => {
+      const targetId = wireHoverIdRef.current;
+      setWireDrag(null);
+      await commitWireConnection(sourceId, targetId);
+    };
+
+    const handleUp = async (upEvent) => {
+      cleanup();
+      wireDragCleanupRef.current = null;
+      if (dragState.dragging) {
+        await finishWire();
+        return;
+      }
+      await handleNodeClick(node, upEvent);
+    };
+
+    const handleCancel = () => {
+      cleanup();
+      wireDragCleanupRef.current = null;
+      setWireDrag(null);
+      setWireHoverId("");
+      wireHoverIdRef.current = "";
+    };
+
+    wireDragCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    window.addEventListener("pointercancel", handleCancel);
+  }, [commitWireConnection, handleNodeClick, isWireMode, wiringBusy]);
+
+  const handleEdgeClick = useCallback((edge, event) => {
+    event?.stopPropagation?.();
+    if (!isWireMode || typeof onDeleteEdge !== "function") return;
+    setSelectedEdgeKey((current) => current === edge.key ? "" : edge.key);
+    setWireSourceId("");
+  }, [isWireMode, onDeleteEdge]);
+
+  const handleDeleteSelectedEdge = useCallback(async () => {
+    if (!selectedEdge || typeof onDeleteEdge !== "function") return;
+    setWiringBusy(true);
+    try {
+      await onDeleteEdge(selectedEdge);
+      setSelectedEdgeKey("");
+    } finally {
+      setWiringBusy(false);
+    }
+  }, [onDeleteEdge, selectedEdge]);
 
   const beginWireDrag = useCallback((node, event) => {
     if (!isWireMode || typeof onCreateEdge !== "function" || wiringBusy) return;
@@ -4754,6 +4948,7 @@ function DagGraphSection({
 export function TasksTab() {
   const [showCreate, setShowCreate] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
+  const importInputRef = useRef(null);
   const [detailTask, setDetailTask] = useState(null);
   const [detailTaskHydrating, setDetailTaskHydrating] = useState(false);
   const [startTarget, setStartTarget] = useState(null);
@@ -4763,6 +4958,7 @@ export function TasksTab() {
   const [isSearching, setIsSearching] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [kanbanLoadingMore, setKanbanLoadingMore] = useState(false);
   const [listSortCol, setListSortCol] = useState("");   // active column sort in list mode
@@ -4851,7 +5047,7 @@ export function TasksTab() {
   const isList = !isKanban && !isDag;
   const viewModeInitRef = useRef(false);
   const hasMoreKanbanPages = isKanban && page + 1 < totalPages;
-  const boardColumnTotals = tasksStatusCounts?.value || { draft: 0, backlog: 0, inProgress: 0, inReview: 0, done: 0 };
+  const boardColumnTotals = tasksStatusCounts?.value || { draft: 0, backlog: 0, blocked: 0, inProgress: 0, inReview: 0, done: 0 };
   const boardTotalTasks = Number(tasksTotal?.value || 0);
   const dagTaskCatalog = dagAllTasks.length ? dagAllTasks : tasks;
   const dagPlanningState = useMemo(() => buildDagPlanningState({
@@ -5151,7 +5347,7 @@ export function TasksTab() {
       active: 0,
       review: 0,
       done: 0,
-      error: 0,
+      blocked: 0,
       draft: 0,
     };
     for (const task of tasks) {
@@ -5163,7 +5359,7 @@ export function TasksTab() {
       } else if (["done", "completed", "closed", "merged", "cancelled"].includes(status)) {
         counts.done += 1;
       } else if (["error", "blocked", "failed"].includes(status)) {
-        counts.error += 1;
+        counts.blocked += 1;
       } else if (["draft"].includes(status)) {
         counts.draft += 1;
       } else {
@@ -5175,7 +5371,7 @@ export function TasksTab() {
       { label: "Active", value: counts.active, color: "var(--color-inprogress)" },
       { label: "Review", value: counts.review, color: "var(--color-inreview)" },
       { label: "Done", value: counts.done, color: "var(--color-done)" },
-      { label: "Errors", value: counts.error, color: "var(--color-error)" },
+      { label: "Blocked", value: counts.blocked, color: "var(--color-error)" },
     ];
   }, [tasks]);
 
@@ -5722,15 +5918,78 @@ export function TasksTab() {
     setActionsOpen(false);
     haptic("medium");
     try {
-      const res = await apiFetch("/api/tasks?limit=1000", { _silent: true });
-      const allTasks = res?.data || res?.tasks || tasks;
+      const res = await apiFetch("/api/tasks/export", { _silent: true });
+      const payload = res?.data || {};
       const date = new Date().toISOString().slice(0, 10);
-      exportAsJSON(allTasks, `tasks-${date}.json`);
-      showToast(`Exported ${allTasks.length} tasks`, "success");
+      exportAsJSON(payload, `tasks-state-${date}.json`);
+      showToast(`Exported ${(payload?.tasks || []).length} tasks`, "success");
     } catch {
       showToast("Export failed", "error");
     }
     setExporting(false);
+  };
+
+  const handleImportTaskStateClick = () => {
+    setActionsOpen(false);
+    haptic("medium");
+    importInputRef.current?.click?.();
+  };
+
+  const handleImportTaskStateFile = async (event) => {
+    const file = event?.target?.files?.[0] || null;
+    if (!file) return;
+    try {
+      const raw = await file.text();
+      const parsed = JSON.parse(raw);
+      const taskList = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.tasks)
+          ? parsed.tasks
+          : Array.isArray(parsed?.backlog)
+            ? parsed.backlog
+            : Array.isArray(parsed?.data?.tasks)
+              ? parsed.data.tasks
+              : null;
+      if (!Array.isArray(taskList)) {
+        throw new Error("JSON must contain an array of tasks");
+      }
+
+      const ok = await showConfirm(
+        `Import ${taskList.length} tasks from ${file.name}? Existing task IDs will be merged and missing tasks will be created.`,
+      );
+      if (!ok) return;
+
+      setImporting(true);
+      const payload = Array.isArray(parsed)
+        ? { tasks: parsed, mode: "merge", source: { filename: file.name } }
+        : {
+            ...parsed,
+            tasks: taskList,
+            mode: "merge",
+            source: {
+              ...(parsed?.source && typeof parsed.source === "object" ? parsed.source : {}),
+              filename: file.name,
+            },
+          };
+      const res = await apiFetch("/api/tasks/import", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      const summary = res?.data?.summary || {};
+      const changedCount = Number(summary.created || 0) + Number(summary.updated || 0);
+      showToast(
+        `Imported ${Number(summary.created || 0)} new and updated ${Number(summary.updated || 0)} task${changedCount === 1 ? "" : "s"}${summary.failed ? ` (${summary.failed} failed)` : ""}`,
+        summary.failed ? "warning" : "success",
+      );
+      scheduleRefresh(150);
+    } catch (err) {
+      showToast(err?.message || "Import failed", "error");
+    } finally {
+      setImporting(false);
+      if (event?.target) {
+        event.target.value = "";
+      }
+    }
   };
 
   /* ── Render ── */
@@ -5862,7 +6121,7 @@ export function TasksTab() {
         onClick=${() => { setActionsOpen(!actionsOpen); haptic(); }}
         aria-haspopup="menu"
         aria-expanded=${actionsOpen}
-        disabled=${exporting}
+        disabled=${exporting || importing}
       >
         ${ICONS.ellipsis}
         <span class="actions-label">Actions</span>
@@ -5880,7 +6139,8 @@ export function TasksTab() {
             ${iconText(":zap: Trigger Templates")}
           <//>
           <${MenuItem} onClick=${handleExportCSV}>${iconText(":chart: Export CSV")}<//>
-          <${MenuItem} onClick=${handleExportJSON}>${iconText(":clipboard: Export JSON")}<//>
+          <${MenuItem} onClick=${handleExportJSON}>${iconText(":clipboard: Export Task State JSON")}<//>
+          <${MenuItem} onClick=${handleImportTaskStateClick}>${iconText(":inbox_tray: Import Task State JSON")}<//>
         </div>
       `}
     </div>
@@ -5888,6 +6148,13 @@ export function TasksTab() {
 
   return html`
     <div class="sticky-search">
+      <input
+        ref=${importInputRef}
+        type="file"
+        accept="application/json,.json"
+        style=${{ display: "none" }}
+        onChange=${handleImportTaskStateFile}
+      />
       <div class="tasks-toolbar">
         <div class="tasks-toolbar-row">
           <div class="sticky-search-main">
@@ -7213,10 +7480,6 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     <//>
   `;
 }
-
-
-
-
 
 
 

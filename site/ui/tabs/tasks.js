@@ -139,7 +139,7 @@ const STATUS_CHIPS = [
   { value: "inprogress", label: "Active" },
   { value: "inreview", label: "Review" },
   { value: "done", label: "Done" },
-  { value: "error", label: "Error" },
+  { value: "blocked", label: "Blocked" },
 ];
 
 const PRIORITY_CHIPS = [
@@ -163,7 +163,7 @@ const SNAPSHOT_STATUS_MAP = {
   Active: "inprogress",
   Review: "inreview",
   Done: "done",
-  Errors: "error",
+  Blocked: "blocked",
 };
 
 const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3, "": 4 };
@@ -2457,6 +2457,21 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.assignees,
     task?.meta,
   ]);
+  const canStartInfo = task?.canStart || task?.meta?.canStart || null;
+  const blockedContext = task?.blockedContext || task?.meta?.blockedContext || null;
+  const blockedBy = Array.isArray(blockedContext?.blockedBy)
+    ? blockedContext.blockedBy
+    : Array.isArray(canStartInfo?.blockedBy)
+      ? canStartInfo.blockedBy
+      : [];
+  const blockedEvidence = [
+    ...(Array.isArray(blockedContext?.timelineEvidence)
+      ? blockedContext.timelineEvidence.map((entry) => ({ ...entry, kind: "timeline" }))
+      : []),
+    ...(Array.isArray(blockedContext?.logEvidence)
+      ? blockedContext.logEvidence.map((entry) => ({ ...entry, kind: "log" }))
+      : []),
+  ].slice(0, 6);
 
   const currentDependencyIds = useMemo(() => normalizeDependencyInput(dependenciesInput), [dependenciesInput]);
   const taskCatalogOptions = useMemo(() => (taskCatalog || []).filter((entry) => toText(entry?.id) && toText(entry?.id) !== toText(task?.id)), [taskCatalog, task?.id]);
@@ -3032,6 +3047,21 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     }
   };
 
+  const handleUnblock = async () => {
+    haptic("medium");
+    try {
+      await apiFetch("/api/tasks/unblock", {
+        method: "POST",
+        body: JSON.stringify({ taskId: task.id, status: "todo" }),
+      });
+      showToast("Task moved back to todo", "success");
+      onClose();
+      scheduleRefresh(150);
+    } catch {
+      /* toast */
+    }
+  };
+
   const handleManualToggle = async (next) => {
     if (!task?.id || manualBusy) return;
     if (next) {
@@ -3154,13 +3184,87 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       </div>
 
       ${/* ── Content Body ───────────────────────────────────────────── */ ""}
-      <div style="padding:${fullScreen ? '20px 24px' : '0'};overflow-y:auto;max-height:${fullScreen ? 'calc(100dvh - 140px)' : 'auto'};">
+      <div style="padding:${fullScreen ? '20px 24px' : '0'};">
 
       ${/* ── DETAILS TAB — Two-column Jira layout ─────────────────── */ ""}
-      ${activeTab === "details" && html`<div class="task-detail-columns" style="max-height:${fullScreen ? 'calc(100dvh - 160px)' : '65vh'};overflow:hidden;">
+      ${activeTab === "details" && html`<div class="task-detail-columns">
 
       ${/* ── LEFT: Main Content ── */ ""}
       <div class="task-detail-main">
+
+        ${(task?.status === "blocked" || canStartInfo?.canStart === false) && html`
+          <div class="task-section">
+            <div class="task-section-title">
+              ${task?.status === "blocked" ? "Blocked Diagnostics" : "Start Readiness"}
+              ${blockedContext?.workflowRunCount > 0 && html`<span class="task-tab-count">${blockedContext.workflowRunCount}</span>`}
+            </div>
+            <div class="task-section-body">
+              <div class="task-blocked-banner" data-category=${blockedContext?.category || "guard"}>
+                <div class="task-blocked-banner-title">
+                  ${blockedContext?.headline || "This task cannot start yet."}
+                </div>
+                <div class="task-blocked-banner-copy">
+                  ${blockedContext?.summary || blockedContext?.reason || "Bosun is holding this task until the blocking condition is resolved."}
+                </div>
+                ${blockedContext?.recommendation && html`
+                  <div class="task-blocked-banner-copy">${blockedContext.recommendation}</div>
+                `}
+              </div>
+
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:12px;">
+                ${blockedContext?.workflowRunCount > 0 && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Workflow runs</div>
+                    <div class="task-comment-body">${blockedContext.workflowRunCount.toLocaleString("en-US")}</div>
+                  </div>
+                `}
+                ${blockedContext?.prePrValidationFailureCount > 0 && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Validation loops</div>
+                    <div class="task-comment-body">${blockedContext.prePrValidationFailureCount.toLocaleString("en-US")} pre-PR validation failures</div>
+                  </div>
+                `}
+                ${blockedContext?.worktreeFailureCount > 0 && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Worktree failures</div>
+                    <div class="task-comment-body">${blockedContext.worktreeFailureCount.toLocaleString("en-US")} acquisition failures</div>
+                  </div>
+                `}
+                ${blockedBy.length > 0 && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Blocking tasks</div>
+                    <div class="task-comment-body">${blockedBy.length.toLocaleString("en-US")} unresolved dependencies</div>
+                  </div>
+                `}
+              </div>
+
+              ${blockedBy.length > 0 && html`
+                <div class="task-comments-list" style=${{ marginTop: "12px" }}>
+                  ${blockedBy.map((entry, index) => html`
+                    <div class="task-comment-item" key=${`blocked-by-${index}`}>
+                      <div class="task-comment-meta">${entry.taskId || "dependency"}</div>
+                      <div class="task-comment-body">${entry.reason || "Not ready yet"}</div>
+                    </div>
+                  `)}
+                </div>
+              `}
+
+              ${blockedEvidence.length > 0 && html`
+                <div class="task-comments-list" style=${{ marginTop: "12px" }}>
+                  ${blockedEvidence.map((entry, index) => html`
+                    <div class="task-comment-item" key=${`blocked-evidence-${index}`}>
+                      <div class="task-comment-meta">
+                        ${entry.kind === "log" ? entry.source || "monitor log" : entry.source || "timeline"}
+                        ${entry.timestamp ? ` · ${formatRelative(entry.timestamp)}` : ""}
+                      </div>
+                      <div class="task-comment-body">${entry.message}</div>
+                    </div>
+                  `)}
+                </div>
+              `}
+            </div>
+          </div>
+        `}
 
         ${/* Description */ ""}
         <div class="task-section">
@@ -3430,7 +3534,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
               }}
               fullWidth
             >
-              ${["draft", "todo", "inprogress", "inreview", "done", "cancelled"].map(
+              ${["draft", "todo", "inprogress", "inreview", "blocked", "done", "cancelled"].map(
                 (s) => html`<${MenuItem} value=${s}>${s}</${MenuItem}>`,
               )}
             </${Select}>
@@ -3764,6 +3868,9 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         <div style="display:flex;gap:4px;flex-wrap:wrap;">
           ${(task?.status === "error" || task?.status === "cancelled") && html`
             <${Button} variant="contained" size="small" onClick=${handleRetry}>↻ Retry<//>
+          `}
+          ${task?.status === "blocked" && html`
+            <${Button} variant="contained" size="small" onClick=${handleUnblock}>↺ Move To Todo<//>
           `}
           <${Button}
             variant="outlined" size="small"
@@ -4444,25 +4551,6 @@ function DagGraphSection({
     }
     if (node?.taskId) onOpenTask?.(node.taskId);
   }, [isWireMode, onActivateNode, onCreateEdge, onOpenTask, wireSourceId, nodeById, wiringBusy]);
-
-  const handleEdgeClick = useCallback((edge, event) => {
-    event?.stopPropagation?.();
-    if (!isWireMode || typeof onDeleteEdge !== "function") return;
-    setSelectedEdgeKey((current) => current === edge.key ? "" : edge.key);
-    setWireSourceId("");
-  }, [isWireMode, onDeleteEdge]);
-
-  const handleDeleteSelectedEdge = useCallback(async () => {
-    if (!selectedEdge || typeof onDeleteEdge !== "function") return;
-    setWiringBusy(true);
-    try {
-      await onDeleteEdge(selectedEdge);
-      setSelectedEdgeKey("");
-    } finally {
-      setWiringBusy(false);
-    }
-  }, [onDeleteEdge, selectedEdge]);
-
   const commitWireConnection = useCallback(async (sourceId, targetId) => {
     if (!isWireMode || typeof onCreateEdge !== "function") return;
     if (!sourceId || !targetId || sourceId === targetId || wiringBusy) {
@@ -4486,6 +4574,99 @@ function DagGraphSection({
       setWiringBusy(false);
     }
   }, [isWireMode, nodeById, onCreateEdge, wiringBusy]);
+
+  const handleWireNodePointerDown = useCallback((node, event) => {
+    if (!isWireMode || wiringBusy) return;
+    const sourceId = String(node?.id || "").trim();
+    if (!sourceId) return;
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+
+    if (typeof wireDragCleanupRef.current === "function") {
+      wireDragCleanupRef.current();
+      wireDragCleanupRef.current = null;
+    }
+
+    const dragState = {
+      sourceId,
+      startX: Number(event?.clientX || 0),
+      startY: Number(event?.clientY || 0),
+      dragging: false,
+    };
+
+    const handleMove = (moveEvent) => {
+      const nextX = Number(moveEvent?.clientX || 0);
+      const nextY = Number(moveEvent?.clientY || 0);
+      if (!dragState.dragging) {
+        const deltaX = nextX - dragState.startX;
+        const deltaY = nextY - dragState.startY;
+        if (Math.hypot(deltaX, deltaY) < 6) return;
+        dragState.dragging = true;
+        setWireSourceId(sourceId);
+        setSelectedEdgeKey("");
+        setWireHoverId("");
+        wireHoverIdRef.current = "";
+        setWireDrag({ sourceId, clientX: nextX, clientY: nextY });
+        return;
+      }
+      setWireDrag((current) => current
+        ? { ...current, clientX: nextX, clientY: nextY }
+        : current);
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+      window.removeEventListener("pointercancel", handleCancel);
+    };
+
+    const finishWire = async () => {
+      const targetId = wireHoverIdRef.current;
+      setWireDrag(null);
+      await commitWireConnection(sourceId, targetId);
+    };
+
+    const handleUp = async (upEvent) => {
+      cleanup();
+      wireDragCleanupRef.current = null;
+      if (dragState.dragging) {
+        await finishWire();
+        return;
+      }
+      await handleNodeClick(node, upEvent);
+    };
+
+    const handleCancel = () => {
+      cleanup();
+      wireDragCleanupRef.current = null;
+      setWireDrag(null);
+      setWireHoverId("");
+      wireHoverIdRef.current = "";
+    };
+
+    wireDragCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    window.addEventListener("pointercancel", handleCancel);
+  }, [commitWireConnection, handleNodeClick, isWireMode, wiringBusy]);
+
+  const handleEdgeClick = useCallback((edge, event) => {
+    event?.stopPropagation?.();
+    if (!isWireMode || typeof onDeleteEdge !== "function") return;
+    setSelectedEdgeKey((current) => current === edge.key ? "" : edge.key);
+    setWireSourceId("");
+  }, [isWireMode, onDeleteEdge]);
+
+  const handleDeleteSelectedEdge = useCallback(async () => {
+    if (!selectedEdge || typeof onDeleteEdge !== "function") return;
+    setWiringBusy(true);
+    try {
+      await onDeleteEdge(selectedEdge);
+      setSelectedEdgeKey("");
+    } finally {
+      setWiringBusy(false);
+    }
+  }, [onDeleteEdge, selectedEdge]);
 
   const beginWireDrag = useCallback((node, event) => {
     if (!isWireMode || typeof onCreateEdge !== "function" || wiringBusy) return;
@@ -4782,7 +4963,7 @@ export function TasksTab() {
   const isList = !isKanban && !isDag;
   const viewModeInitRef = useRef(false);
   const hasMoreKanbanPages = isKanban && page + 1 < totalPages;
-  const boardColumnTotals = tasksStatusCounts?.value || { draft: 0, backlog: 0, inProgress: 0, inReview: 0, done: 0 };
+  const boardColumnTotals = tasksStatusCounts?.value || { draft: 0, backlog: 0, blocked: 0, inProgress: 0, inReview: 0, done: 0 };
   const boardTotalTasks = Number(tasksTotal?.value || 0);
   const dagTaskCatalog = dagAllTasks.length ? dagAllTasks : tasks;
   const dagPlanningState = useMemo(() => buildDagPlanningState({
@@ -5069,7 +5250,7 @@ export function TasksTab() {
       active: 0,
       review: 0,
       done: 0,
-      error: 0,
+      blocked: 0,
       draft: 0,
     };
     for (const task of tasks) {
@@ -5081,7 +5262,7 @@ export function TasksTab() {
       } else if (["done", "completed", "closed", "merged", "cancelled"].includes(status)) {
         counts.done += 1;
       } else if (["error", "blocked", "failed"].includes(status)) {
-        counts.error += 1;
+        counts.blocked += 1;
       } else if (["draft"].includes(status)) {
         counts.draft += 1;
       } else {
@@ -5093,7 +5274,7 @@ export function TasksTab() {
       { label: "Active", value: counts.active, color: "var(--color-inprogress)" },
       { label: "Review", value: counts.review, color: "var(--color-inreview)" },
       { label: "Done", value: counts.done, color: "var(--color-done)" },
-      { label: "Errors", value: counts.error, color: "var(--color-error)" },
+      { label: "Blocked", value: counts.blocked, color: "var(--color-error)" },
     ];
   }, [tasks]);
 
@@ -6992,32 +7173,3 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     <//>
   `;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
