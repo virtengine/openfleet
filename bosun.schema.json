@@ -12,10 +12,7 @@
     },
     "mode": {
       "type": "string",
-      "enum": [
-        "virtengine",
-        "generic"
-      ]
+      "enum": ["virtengine", "generic"]
     },
     "orchestratorScript": {
       "type": "string"
@@ -38,11 +35,7 @@
     },
     "telegramVerbosity": {
       "type": "string",
-      "enum": [
-        "minimal",
-        "summary",
-        "detailed"
-      ],
+      "enum": ["minimal", "summary", "detailed"],
       "description": "Notification verbosity: minimal (critical+error), summary (default), detailed (everything)",
       "default": "summary"
     },
@@ -67,6 +60,11 @@
       "type": "boolean",
       "default": false,
       "description": "Delegate task finalization and recovery to workflow automation instead of the legacy TaskExecutor. Automatically set to true when workflowFirst is enabled."
+    },
+    "workflowWorktreeRecoveryCooldownMin": {
+      "type": "number",
+      "default": 15,
+      "description": "Minutes to keep a task blocked after a non-retryable worktree acquisition failure before Bosun returns it to todo automatically."
     },
     "workflowDefaults": {
       "type": "object",
@@ -118,7 +116,10 @@
             ]
           },
           "stuckThresholdMs": { "type": "number" },
-          "onStuck": { "type": "string", "enum": ["retry", "escalate", "pause"] },
+          "onStuck": {
+            "type": "string",
+            "enum": ["retry", "escalate", "pause"]
+          },
           "continuePrompt": { "type": "string" },
           "retryPrompt": { "type": "string" },
           "sdk": { "type": "string" },
@@ -148,13 +149,7 @@
     },
     "telegramUiTunnel": {
       "type": "string",
-      "enum": [
-        "named",
-        "quick",
-        "auto",
-        "cloudflared",
-        "disabled"
-      ],
+      "enum": ["named", "quick", "auto", "cloudflared", "disabled"],
       "default": "named",
       "description": "Mini App tunnel mode. named is the default permanent hostname mode."
     },
@@ -181,10 +176,7 @@
     },
     "cloudflareUsernameHostnamePolicy": {
       "type": "string",
-      "enum": [
-        "per-user-fixed",
-        "fixed"
-      ],
+      "enum": ["per-user-fixed", "fixed"],
       "default": "per-user-fixed",
       "description": "Policy for deriving named tunnel hostname from workstation identity."
     },
@@ -258,14 +250,7 @@
         },
         "provider": {
           "type": "string",
-          "enum": [
-            "openai",
-            "azure",
-            "claude",
-            "gemini",
-            "fallback",
-            "auto"
-          ],
+          "enum": ["openai", "azure", "claude", "gemini", "fallback", "auto"],
           "default": "auto",
           "description": "Voice provider: openai/azure (Tier 1 realtime), claude/gemini (Tier 2 voice + provider vision), fallback (browser STT/TTS), auto (detect from env)"
         },
@@ -276,13 +261,7 @@
             "anyOf": [
               {
                 "type": "string",
-                "enum": [
-                  "openai",
-                  "azure",
-                  "claude",
-                  "gemini",
-                  "fallback"
-                ]
+                "enum": ["openai", "azure", "claude", "gemini", "fallback"]
               },
               {
                 "type": "object",
@@ -290,13 +269,7 @@
                 "properties": {
                   "provider": {
                     "type": "string",
-                    "enum": [
-                      "openai",
-                      "azure",
-                      "claude",
-                      "gemini",
-                      "fallback"
-                    ]
+                    "enum": ["openai", "azure", "claude", "gemini", "fallback"]
                   },
                   "model": {
                     "type": "string"
@@ -328,9 +301,7 @@
                     "description": "ID of the voice endpoint to use for this provider slot"
                   }
                 },
-                "required": [
-                  "provider"
-                ]
+                "required": ["provider"]
               }
             ]
           }
@@ -406,11 +377,7 @@
         },
         "turnDetection": {
           "type": "string",
-          "enum": [
-            "server_vad",
-            "semantic_vad",
-            "none"
-          ],
+          "enum": ["server_vad", "semantic_vad", "none"],
           "default": "semantic_vad",
           "description": "Turn detection mode for voice activity detection"
         },
@@ -420,10 +387,7 @@
         },
         "fallbackMode": {
           "type": "string",
-          "enum": [
-            "browser",
-            "disabled"
-          ],
+          "enum": ["browser", "disabled"],
           "default": "browser",
           "description": "Fallback when Realtime API unavailable: browser (Web Speech API) or disabled"
         },
@@ -449,9 +413,7 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": [
-              "provider"
-            ],
+            "required": ["provider"],
             "properties": {
               "id": {
                 "type": "string",
@@ -463,12 +425,7 @@
               },
               "provider": {
                 "type": "string",
-                "enum": [
-                  "azure",
-                  "openai",
-                  "claude",
-                  "gemini"
-                ],
+                "enum": ["azure", "openai", "claude", "gemini"],
                 "description": "Provider type"
               },
               "endpoint": {
@@ -495,10 +452,7 @@
               },
               "role": {
                 "type": "string",
-                "enum": [
-                  "primary",
-                  "backup"
-                ],
+                "enum": ["primary", "backup"],
                 "default": "primary"
               },
               "weight": {
@@ -535,19 +489,11 @@
       "properties": {
         "backend": {
           "type": "string",
-          "enum": [
-            "internal",
-            "vk",
-            "github",
-            "jira"
-          ]
+          "enum": ["internal", "vk", "github", "jira"]
         },
         "syncPolicy": {
           "type": "string",
-          "enum": [
-            "internal-primary",
-            "bidirectional"
-          ],
+          "enum": ["internal-primary", "bidirectional"],
           "default": "internal-primary"
         },
         "projectId": {
@@ -564,10 +510,7 @@
               "properties": {
                 "mode": {
                   "type": "string",
-                  "enum": [
-                    "issues",
-                    "kanban"
-                  ],
+                  "enum": ["issues", "kanban"],
                   "default": "issues",
                   "description": "Task source mode: 'issues' for repo issues only, 'kanban' for project board sync"
                 },
@@ -576,10 +519,7 @@
                   "description": "GitHub org/user that owns the project board"
                 },
                 "number": {
-                  "type": [
-                    "string",
-                    "number"
-                  ],
+                  "type": ["string", "number"],
                   "description": "GitHub project number"
                 },
                 "title": {
@@ -770,11 +710,7 @@
     },
     "plannerMode": {
       "type": "string",
-      "enum": [
-        "codex-sdk",
-        "kanban",
-        "disabled"
-      ]
+      "enum": ["codex-sdk", "kanban", "disabled"]
     },
     "triggerSystem": {
       "type": "object",
@@ -805,10 +741,7 @@
               },
               "action": {
                 "type": "string",
-                "enum": [
-                  "task-planner",
-                  "create-task"
-                ]
+                "enum": ["task-planner", "create-task"]
               },
               "minIntervalMinutes": {
                 "type": "number",
@@ -826,31 +759,17 @@
                       "properties": {
                         "kind": {
                           "type": "string",
-                          "enum": [
-                            "metric",
-                            "interval"
-                          ]
+                          "enum": ["metric", "interval"]
                         },
                         "metric": {
                           "type": "string"
                         },
                         "operator": {
                           "type": "string",
-                          "enum": [
-                            "lt",
-                            "lte",
-                            "gt",
-                            "gte",
-                            "eq",
-                            "neq"
-                          ]
+                          "enum": ["lt", "lte", "gt", "gte", "eq", "neq"]
                         },
                         "value": {
-                          "type": [
-                            "number",
-                            "string",
-                            "boolean"
-                          ]
+                          "type": ["number", "string", "boolean"]
                         },
                         "minutes": {
                           "type": "number",
@@ -867,11 +786,7 @@
                 "properties": {
                   "plannerMode": {
                     "type": "string",
-                    "enum": [
-                      "codex-sdk",
-                      "kanban",
-                      "disabled"
-                    ]
+                    "enum": ["codex-sdk", "kanban", "disabled"]
                   },
                   "defaultTaskCount": {
                     "type": "number",
@@ -921,10 +836,7 @@
       "items": {
         "type": "object",
         "additionalProperties": true,
-        "required": [
-          "id",
-          "name"
-        ],
+        "required": ["id", "name"],
         "properties": {
           "id": {
             "type": "string",
@@ -940,9 +852,7 @@
             "items": {
               "type": "object",
               "additionalProperties": true,
-              "required": [
-                "name"
-              ],
+              "required": ["name"],
               "properties": {
                 "name": {
                   "type": "string",
@@ -968,10 +878,7 @@
             }
           },
           "activeRepo": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": ["string", "null"],
             "description": "Currently active repository name within the workspace"
           },
           "createdAt": {
@@ -1027,11 +934,7 @@
       "properties": {
         "mode": {
           "type": "string",
-          "enum": [
-            "vk",
-            "internal",
-            "hybrid"
-          ]
+          "enum": ["vk", "internal", "hybrid"]
         },
         "maxParallel": {
           "type": "number"
@@ -1044,14 +947,7 @@
         },
         "sdk": {
           "type": "string",
-          "enum": [
-            "auto",
-            "codex",
-            "copilot",
-            "claude",
-            "gemini",
-            "opencode"
-          ]
+          "enum": ["auto", "codex", "copilot", "claude", "gemini", "opencode"]
         },
         "taskTimeoutMs": {
           "type": "number"
@@ -1117,11 +1013,7 @@
     },
     "distribution": {
       "type": "string",
-      "enum": [
-        "weighted",
-        "round-robin",
-        "primary-only"
-      ]
+      "enum": ["weighted", "round-robin", "primary-only"]
     },
     "agentPrompts": {
       "type": "object",
@@ -1204,12 +1096,7 @@
               "type": "array",
               "items": {
                 "type": "string",
-                "enum": [
-                  "env",
-                  "cli",
-                  "vscode",
-                  "interactive"
-                ]
+                "enum": ["env", "cli", "vscode", "interactive"]
               },
               "description": "Auth source priority: env (tokens), cli (gh auth), vscode (extension), interactive (prompt)"
             },
@@ -1226,11 +1113,7 @@
               "type": "array",
               "items": {
                 "type": "string",
-                "enum": [
-                  "env",
-                  "cli",
-                  "interactive"
-                ]
+                "enum": ["env", "cli", "interactive"]
               },
               "description": "Auth source priority: env (API key), cli (config file), interactive (prompt)"
             },
@@ -1247,11 +1130,7 @@
               "type": "array",
               "items": {
                 "type": "string",
-                "enum": [
-                  "config",
-                  "env",
-                  "interactive"
-                ]
+                "enum": ["config", "env", "interactive"]
               },
               "description": "Auth source priority: config (config.toml), env (API key), interactive (prompt)"
             },
@@ -1271,11 +1150,7 @@
         "properties": {
           "type": {
             "type": "string",
-            "enum": [
-              "sequential",
-              "fanout",
-              "race"
-            ]
+            "enum": ["sequential", "fanout", "race"]
           },
           "description": {
             "type": "string"
@@ -1429,11 +1304,7 @@
       "properties": {
         "strategy": {
           "type": "string",
-          "enum": [
-            "next-in-line",
-            "weighted-random",
-            "round-robin"
-          ]
+          "enum": ["next-in-line", "weighted-random", "round-robin"]
         },
         "maxRetries": {
           "type": "number"
@@ -1602,22 +1473,13 @@
         },
         "profile": {
           "type": "string",
-          "enum": [
-            "strict",
-            "balanced",
-            "lightweight",
-            "none"
-          ]
+          "enum": ["strict", "balanced", "lightweight", "none"]
         },
         "targets": {
           "type": "array",
           "items": {
             "type": "string",
-            "enum": [
-              "codex",
-              "claude",
-              "copilot"
-            ]
+            "enum": ["codex", "claude", "copilot"]
           }
         },
         "overwriteExisting": {
@@ -1815,11 +1677,7 @@
         },
         "liveToolCompactionMode": {
           "type": "string",
-          "enum": [
-            "off",
-            "auto",
-            "aggressive"
-          ],
+          "enum": ["off", "auto", "aggressive"],
           "default": "auto",
           "description": "off disables live compaction, auto compacts only when pressure or signal justify it, and aggressive favors stronger reduction for noisy command families."
         },

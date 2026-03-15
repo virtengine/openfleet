@@ -1,0 +1,1482 @@
+diff --git a/bosun.config.example.json b/bosun.config.example.json
+index e4d2609a..e36f2852 100644
+--- a/bosun.config.example.json
++++ b/bosun.config.example.json
+@@ -5,6 +5,8 @@
+ 
+   "_comment_workflowFirst": "Set to true to run everything as workflows (task lifecycle, PR management, etc.)",
+   "workflowFirst": false,
++  "_comment_worktreeRecoveryCooldown": "Minutes to keep a task blocked after a non-retryable worktree failure before Bosun automatically returns it to todo.",
++  "workflowWorktreeRecoveryCooldownMin": 15,
+   "workflows": [
+     {
+       "type": "continuation-loop",
+diff --git a/bosun.schema.json b/bosun.schema.json
+index ac6d3378..30179d24 100644
+--- a/bosun.schema.json
++++ b/bosun.schema.json
+@@ -12,10 +12,7 @@
+     },
+     "mode": {
+       "type": "string",
+-      "enum": [
+-        "virtengine",
+-        "generic"
+-      ]
++      "enum": ["virtengine", "generic"]
+     },
+     "orchestratorScript": {
+       "type": "string"
+@@ -38,11 +35,7 @@
+     },
+     "telegramVerbosity": {
+       "type": "string",
+-      "enum": [
+-        "minimal",
+-        "summary",
+-        "detailed"
+-      ],
++      "enum": ["minimal", "summary", "detailed"],
+       "description": "Notification verbosity: minimal (critical+error), summary (default), detailed (everything)",
+       "default": "summary"
+     },
+@@ -68,6 +61,11 @@
+       "default": false,
+       "description": "Delegate task finalization and recovery to workflow automation instead of the legacy TaskExecutor. Automatically set to true when workflowFirst is enabled."
+     },
++    "workflowWorktreeRecoveryCooldownMin": {
++      "type": "number",
++      "default": 15,
++      "description": "Minutes to keep a task blocked after a non-retryable worktree acquisition failure before Bosun returns it to todo automatically."
++    },
+     "workflowDefaults": {
+       "type": "object",
+       "additionalProperties": true,
+@@ -118,7 +116,10 @@
+             ]
+           },
+           "stuckThresholdMs": { "type": "number" },
+-          "onStuck": { "type": "string", "enum": ["retry", "escalate", "pause"] },
++          "onStuck": {
++            "type": "string",
++            "enum": ["retry", "escalate", "pause"]
++          },
+           "continuePrompt": { "type": "string" },
+           "retryPrompt": { "type": "string" },
+           "sdk": { "type": "string" },
+@@ -148,13 +149,7 @@
+     },
+     "telegramUiTunnel": {
+       "type": "string",
+-      "enum": [
+-        "named",
+-        "quick",
+-        "auto",
+-        "cloudflared",
+-        "disabled"
+-      ],
++      "enum": ["named", "quick", "auto", "cloudflared", "disabled"],
+       "default": "named",
+       "description": "Mini App tunnel mode. named is the default permanent hostname mode."
+     },
+@@ -181,10 +176,7 @@
+     },
+     "cloudflareUsernameHostnamePolicy": {
+       "type": "string",
+-      "enum": [
+-        "per-user-fixed",
+-        "fixed"
+-      ],
++      "enum": ["per-user-fixed", "fixed"],
+       "default": "per-user-fixed",
+       "description": "Policy for deriving named tunnel hostname from workstation identity."
+     },
+@@ -258,14 +250,7 @@
+         },
+         "provider": {
+           "type": "string",
+-          "enum": [
+-            "openai",
+-            "azure",
+-            "claude",
+-            "gemini",
+-            "fallback",
+-            "auto"
+-          ],
++          "enum": ["openai", "azure", "claude", "gemini", "fallback", "auto"],
+           "default": "auto",
+           "description": "Voice provider: openai/azure (Tier 1 realtime), claude/gemini (Tier 2 voice + provider vision), fallback (browser STT/TTS), auto (detect from env)"
+         },
+@@ -276,13 +261,7 @@
+             "anyOf": [
+               {
+                 "type": "string",
+-                "enum": [
+-                  "openai",
+-                  "azure",
+-                  "claude",
+-                  "gemini",
+-                  "fallback"
+-                ]
++                "enum": ["openai", "azure", "claude", "gemini", "fallback"]
+               },
+               {
+                 "type": "object",
+@@ -290,13 +269,7 @@
+                 "properties": {
+                   "provider": {
+                     "type": "string",
+-                    "enum": [
+-                      "openai",
+-                      "azure",
+-                      "claude",
+-                      "gemini",
+-                      "fallback"
+-                    ]
++                    "enum": ["openai", "azure", "claude", "gemini", "fallback"]
+                   },
+                   "model": {
+                     "type": "string"
+@@ -328,9 +301,7 @@
+                     "description": "ID of the voice endpoint to use for this provider slot"
+                   }
+                 },
+-                "required": [
+-                  "provider"
+-                ]
++                "required": ["provider"]
+               }
+             ]
+           }
+@@ -406,11 +377,7 @@
+         },
+         "turnDetection": {
+           "type": "string",
+-          "enum": [
+-            "server_vad",
+-            "semantic_vad",
+-            "none"
+-          ],
++          "enum": ["server_vad", "semantic_vad", "none"],
+           "default": "semantic_vad",
+           "description": "Turn detection mode for voice activity detection"
+         },
+@@ -420,10 +387,7 @@
+         },
+         "fallbackMode": {
+           "type": "string",
+-          "enum": [
+-            "browser",
+-            "disabled"
+-          ],
++          "enum": ["browser", "disabled"],
+           "default": "browser",
+           "description": "Fallback when Realtime API unavailable: browser (Web Speech API) or disabled"
+         },
+@@ -449,9 +413,7 @@
+           "items": {
+             "type": "object",
+             "additionalProperties": false,
+-            "required": [
+-              "provider"
+-            ],
++            "required": ["provider"],
+             "properties": {
+               "id": {
+                 "type": "string",
+@@ -463,12 +425,7 @@
+               },
+               "provider": {
+                 "type": "string",
+-                "enum": [
+-                  "azure",
+-                  "openai",
+-                  "claude",
+-                  "gemini"
+-                ],
++                "enum": ["azure", "openai", "claude", "gemini"],
+                 "description": "Provider type"
+               },
+               "endpoint": {
+@@ -495,10 +452,7 @@
+               },
+               "role": {
+                 "type": "string",
+-                "enum": [
+-                  "primary",
+-                  "backup"
+-                ],
++                "enum": ["primary", "backup"],
+                 "default": "primary"
+               },
+               "weight": {
+@@ -535,19 +489,11 @@
+       "properties": {
+         "backend": {
+           "type": "string",
+-          "enum": [
+-            "internal",
+-            "vk",
+-            "github",
+-            "jira"
+-          ]
++          "enum": ["internal", "vk", "github", "jira"]
+         },
+         "syncPolicy": {
+           "type": "string",
+-          "enum": [
+-            "internal-primary",
+-            "bidirectional"
+-          ],
++          "enum": ["internal-primary", "bidirectional"],
+           "default": "internal-primary"
+         },
+         "projectId": {
+@@ -564,10 +510,7 @@
+               "properties": {
+                 "mode": {
+                   "type": "string",
+-                  "enum": [
+-                    "issues",
+-                    "kanban"
+-                  ],
++                  "enum": ["issues", "kanban"],
+                   "default": "issues",
+                   "description": "Task source mode: 'issues' for repo issues only, 'kanban' for project board sync"
+                 },
+@@ -576,10 +519,7 @@
+                   "description": "GitHub org/user that owns the project board"
+                 },
+                 "number": {
+-                  "type": [
+-                    "string",
+-                    "number"
+-                  ],
++                  "type": ["string", "number"],
+                   "description": "GitHub project number"
+                 },
+                 "title": {
+@@ -770,11 +710,7 @@
+     },
+     "plannerMode": {
+       "type": "string",
+-      "enum": [
+-        "codex-sdk",
+-        "kanban",
+-        "disabled"
+-      ]
++      "enum": ["codex-sdk", "kanban", "disabled"]
+     },
+     "triggerSystem": {
+       "type": "object",
+@@ -805,10 +741,7 @@
+               },
+               "action": {
+                 "type": "string",
+-                "enum": [
+-                  "task-planner",
+-                  "create-task"
+-                ]
++                "enum": ["task-planner", "create-task"]
+               },
+               "minIntervalMinutes": {
+                 "type": "number",
+@@ -826,31 +759,17 @@
+                       "properties": {
+                         "kind": {
+                           "type": "string",
+-                          "enum": [
+-                            "metric",
+-                            "interval"
+-                          ]
++                          "enum": ["metric", "interval"]
+                         },
+                         "metric": {
+                           "type": "string"
+                         },
+                         "operator": {
+                           "type": "string",
+-                          "enum": [
+-                            "lt",
+-                            "lte",
+-                            "gt",
+-                            "gte",
+-                            "eq",
+-                            "neq"
+-                          ]
++                          "enum": ["lt", "lte", "gt", "gte", "eq", "neq"]
+                         },
+                         "value": {
+-                          "type": [
+-                            "number",
+-                            "string",
+-                            "boolean"
+-                          ]
++                          "type": ["number", "string", "boolean"]
+                         },
+                         "minutes": {
+                           "type": "number",
+@@ -867,11 +786,7 @@
+                 "properties": {
+                   "plannerMode": {
+                     "type": "string",
+-                    "enum": [
+-                      "codex-sdk",
+-                      "kanban",
+-                      "disabled"
+-                    ]
++                    "enum": ["codex-sdk", "kanban", "disabled"]
+                   },
+                   "defaultTaskCount": {
+                     "type": "number",
+@@ -921,10 +836,7 @@
+       "items": {
+         "type": "object",
+         "additionalProperties": true,
+-        "required": [
+-          "id",
+-          "name"
+-        ],
++        "required": ["id", "name"],
+         "properties": {
+           "id": {
+             "type": "string",
+@@ -940,9 +852,7 @@
+             "items": {
+               "type": "object",
+               "additionalProperties": true,
+-              "required": [
+-                "name"
+-              ],
++              "required": ["name"],
+               "properties": {
+                 "name": {
+                   "type": "string",
+@@ -968,10 +878,7 @@
+             }
+           },
+           "activeRepo": {
+-            "type": [
+-              "string",
+-              "null"
+-            ],
++            "type": ["string", "null"],
+             "description": "Currently active repository name within the workspace"
+           },
+           "createdAt": {
+@@ -1027,11 +934,7 @@
+       "properties": {
+         "mode": {
+           "type": "string",
+-          "enum": [
+-            "vk",
+-            "internal",
+-            "hybrid"
+-          ]
++          "enum": ["vk", "internal", "hybrid"]
+         },
+         "maxParallel": {
+           "type": "number"
+@@ -1044,14 +947,7 @@
+         },
+         "sdk": {
+           "type": "string",
+-          "enum": [
+-            "auto",
+-            "codex",
+-            "copilot",
+-            "claude",
+-            "gemini",
+-            "opencode"
+-          ]
++          "enum": ["auto", "codex", "copilot", "claude", "gemini", "opencode"]
+         },
+         "taskTimeoutMs": {
+           "type": "number"
+@@ -1117,11 +1013,7 @@
+     },
+     "distribution": {
+       "type": "string",
+-      "enum": [
+-        "weighted",
+-        "round-robin",
+-        "primary-only"
+-      ]
++      "enum": ["weighted", "round-robin", "primary-only"]
+     },
+     "agentPrompts": {
+       "type": "object",
+@@ -1204,12 +1096,7 @@
+               "type": "array",
+               "items": {
+                 "type": "string",
+-                "enum": [
+-                  "env",
+-                  "cli",
+-                  "vscode",
+-                  "interactive"
+-                ]
++                "enum": ["env", "cli", "vscode", "interactive"]
+               },
+               "description": "Auth source priority: env (tokens), cli (gh auth), vscode (extension), interactive (prompt)"
+             },
+@@ -1226,11 +1113,7 @@
+               "type": "array",
+               "items": {
+                 "type": "string",
+-                "enum": [
+-                  "env",
+-                  "cli",
+-                  "interactive"
+-                ]
++                "enum": ["env", "cli", "interactive"]
+               },
+               "description": "Auth source priority: env (API key), cli (config file), interactive (prompt)"
+             },
+@@ -1247,11 +1130,7 @@
+               "type": "array",
+               "items": {
+                 "type": "string",
+-                "enum": [
+-                  "config",
+-                  "env",
+-                  "interactive"
+-                ]
++                "enum": ["config", "env", "interactive"]
+               },
+               "description": "Auth source priority: config (config.toml), env (API key), interactive (prompt)"
+             },
+@@ -1271,11 +1150,7 @@
+         "properties": {
+           "type": {
+             "type": "string",
+-            "enum": [
+-              "sequential",
+-              "fanout",
+-              "race"
+-            ]
++            "enum": ["sequential", "fanout", "race"]
+           },
+           "description": {
+             "type": "string"
+@@ -1429,11 +1304,7 @@
+       "properties": {
+         "strategy": {
+           "type": "string",
+-          "enum": [
+-            "next-in-line",
+-            "weighted-random",
+-            "round-robin"
+-          ]
++          "enum": ["next-in-line", "weighted-random", "round-robin"]
+         },
+         "maxRetries": {
+           "type": "number"
+@@ -1602,22 +1473,13 @@
+         },
+         "profile": {
+           "type": "string",
+-          "enum": [
+-            "strict",
+-            "balanced",
+-            "lightweight",
+-            "none"
+-          ]
++          "enum": ["strict", "balanced", "lightweight", "none"]
+         },
+         "targets": {
+           "type": "array",
+           "items": {
+             "type": "string",
+-            "enum": [
+-              "codex",
+-              "claude",
+-              "copilot"
+-            ]
++            "enum": ["codex", "claude", "copilot"]
+           }
+         },
+         "overwriteExisting": {
+@@ -1815,11 +1677,7 @@
+         },
+         "liveToolCompactionMode": {
+           "type": "string",
+-          "enum": [
+-            "off",
+-            "auto",
+-            "aggressive"
+-          ],
++          "enum": ["off", "auto", "aggressive"],
+           "default": "auto",
+           "description": "off disables live compaction, auto compacts only when pressure or signal justify it, and aggressive favors stronger reduction for noisy command families."
+         },
+diff --git a/config/config.mjs b/config/config.mjs
+index 4759479c..3c6b0512 100644
+--- a/config/config.mjs
++++ b/config/config.mjs
+@@ -1721,6 +1721,13 @@ export function loadConfig(argv = process.argv, options = {}) {
+     triggerSystemDefaults,
+   );
+   const workflows = resolveWorkflowConfig(configData);
++  const workflowWorktreeRecoveryCooldownMin = toBoundedInt(
++    process.env.WORKFLOW_WORKTREE_RECOVERY_COOLDOWN_MIN ??
++      configData.workflowWorktreeRecoveryCooldownMin,
++    15,
++    1,
++    1440,
++  );
+ 
+   // ÔöÇÔöÇ GitHub Reconciler ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+   const ghReconcileEnabled = isEnvEnabled(
+@@ -2003,6 +2010,7 @@ export function loadConfig(argv = process.argv, options = {}) {
+ 
+     triggerSystem,
+     workflows,
++  workflowWorktreeRecoveryCooldownMin,
+ 
+     // GitHub Reconciler
+     githubReconcile: {
+diff --git a/server/ui-server.mjs b/server/ui-server.mjs
+index b25f0851..754bdde9 100644
+--- a/server/ui-server.mjs
++++ b/server/ui-server.mjs
+@@ -208,6 +208,7 @@ const TASK_STORE_SPRINT_EXPORTS = Object.freeze({
+ const TASK_STORE_DAG_EXPORTS = Object.freeze({
+   sprint: ["getSprintDag", "getTaskDagForSprint", "buildSprintDag", "buildTaskDag"],
+   global: ["getGlobalDagOfDags", "getDagOfDags", "buildGlobalDagOfDags"],
++  organize: ["organizeTaskDag"],
+ });
+ const TASK_STORE_GET_TASK_EXPORTS = ["getTaskById", "getTask"];
+ const TASK_STORE_COMMENT_EXPORTS = ["getTaskComments", "listTaskComments"];
+@@ -6713,6 +6714,15 @@ async function getGlobalDagData() {
+   };
+ }
+ 
++async function organizeDagData(options = {}) {
++  const organizeResult = await callTaskStoreFunction(TASK_STORE_DAG_EXPORTS.organize, [options]);
++  if (!organizeResult.found) return null;
++  return {
++    source: `task-store.${organizeResult.found}`,
++    data: organizeResult.value,
++  };
++}
++
+ function normalizeTaskComments(comments = []) {
+   if (!Array.isArray(comments)) return [];
+   return comments
+@@ -11681,6 +11691,32 @@ async function handleApi(req, res, url) {
+     }
+     return;
+   }
++
++  if (path === "/api/tasks/dag/organize" && req.method === "POST") {
++    try {
++      const body = await readJsonBody(req);
++      const sprintId = String(body?.sprintId || body?.sprint || "").trim();
++      const organized = await organizeDagData(sprintId ? { sprintId } : {});
++      if (!organized) {
++        jsonResponse(res, 501, { ok: false, error: "DAG organize API is unavailable." });
++        return;
++      }
++      jsonResponse(res, 200, {
++        ok: true,
++        sprintId: sprintId || null,
++        source: organized.source,
++        data: organized.data,
++        suggestions: Array.isArray(organized.data?.suggestions) ? organized.data.suggestions : [],
++      });
++      broadcastUiEvent(["tasks", "overview"], "invalidate", {
++        reason: "dag-organized",
++        sprintId: sprintId || null,
++      });
++    } catch (err) {
++      jsonResponse(res, 500, { ok: false, error: err.message });
++    }
++    return;
++  }
+   if (path === "/api/tasks/attachments/upload" && req.method === "POST") {
+     try {
+       const { fields, files } = await readMultipartForm(req);
+diff --git a/task/task-store.mjs b/task/task-store.mjs
+index 2a43fde0..5a50ca49 100644
+--- a/task/task-store.mjs
++++ b/task/task-store.mjs
+@@ -652,6 +652,118 @@ function compareTaskDagOrder(taskA, taskB) {
+   return String(taskA?.id || "").localeCompare(String(taskB?.id || ""));
+ }
+ 
++function compareSprintDagOrder(sprintA, sprintB) {
++  const orderA = normalizeSprintOrder(sprintA?.order);
++  const orderB = normalizeSprintOrder(sprintB?.order);
++  if (orderA != null && orderB != null && orderA !== orderB) return orderA - orderB;
++  if (orderA != null && orderB == null) return -1;
++  if (orderA == null && orderB != null) return 1;
++  return String(sprintA?.name || sprintA?.id || "").localeCompare(String(sprintB?.name || sprintB?.id || ""));
++}
++
++function topoSortIds(seedIds, incomingMap, outgoingMap, compareEntries) {
++  const remaining = new Map();
++  for (const id of seedIds) remaining.set(id, incomingMap.get(id) || 0);
++  const ordered = [];
++  const ready = [...seedIds].filter((id) => (remaining.get(id) || 0) === 0);
++
++  while (ready.length > 0) {
++    ready.sort(compareEntries);
++    const current = ready.shift();
++    ordered.push(current);
++    for (const nextId of outgoingMap.get(current) || []) {
++      if (!remaining.has(nextId)) continue;
++      const nextCount = (remaining.get(nextId) || 0) - 1;
++      remaining.set(nextId, nextCount);
++      if (nextCount === 0) ready.push(nextId);
++    }
++    remaining.delete(current);
++  }
++
++  if (remaining.size > 0) {
++    ordered.push(...[...remaining.keys()].sort(compareEntries));
++  }
++
++  return ordered;
++}
++
++function hasDependencyPath(taskMap, fromTaskId, targetTaskId, visited = new Set()) {
++  const startId = String(fromTaskId || "").trim();
++  const targetId = String(targetTaskId || "").trim();
++  if (!startId || !targetId) return false;
++  if (startId === targetId) return true;
++  if (visited.has(startId)) return false;
++  visited.add(startId);
++  const task = taskMap.get(startId);
++  if (!task) return false;
++  for (const dependencyId of listTaskDependencyIds(task)) {
++    if (dependencyId === targetId) return true;
++    if (hasDependencyPath(taskMap, dependencyId, targetId, visited)) return true;
++  }
++  return false;
++}
++
++function collectDagRewriteSuggestions(taskMap, orderedTaskIds, sprint) {
++  const suggestions = [];
++  const sprintId = normalizeSprintId(sprint?.id);
++  const sprintMode = resolveSprintOrderMode(sprint?.executionMode || sprint?.taskOrderMode || "parallel");
++
++  if (sprintMode === "sequential") {
++    for (let index = 1; index < orderedTaskIds.length; index += 1) {
++      const previousTaskId = orderedTaskIds[index - 1];
++      const currentTaskId = orderedTaskIds[index];
++      const currentTask = taskMap.get(currentTaskId);
++      if (!currentTask) continue;
++      if (new Set(listTaskDependencyIds(currentTask)).has(previousTaskId)) continue;
++      suggestions.push({
++        type: "missing_sequential_dependency",
++        sprintId,
++        taskId: currentTaskId,
++        dependencyTaskId: previousTaskId,
++        message: `Add dependency ${previousTaskId} -> ${currentTaskId} to encode sequential sprint order.`,
++      });
++    }
++  }
++
++  for (const taskId of orderedTaskIds) {
++    const task = taskMap.get(taskId);
++    if (!task) continue;
++    const directDependencies = listTaskDependencyIds(task);
++    for (const dependencyId of directDependencies) {
++      const redundant = directDependencies.some((otherDependencyId) => {
++        if (otherDependencyId === dependencyId) return false;
++        return hasDependencyPath(taskMap, otherDependencyId, dependencyId, new Set([taskId]));
++      });
++      if (!redundant) continue;
++      suggestions.push({
++        type: "redundant_transitive_dependency",
++        sprintId,
++        taskId,
++        dependencyTaskId: dependencyId,
++        message: `Dependency ${dependencyId} -> ${taskId} is already implied transitively by another dependency.`,
++      });
++    }
++  }
++
++  return suggestions;
++}
++
++function normalizeRecoveredTaskMeta(task, recoveredAt) {
++  const currentMeta = task?.meta && typeof task.meta === "object" ? task.meta : {};
++  const currentRecovery = currentMeta.autoRecovery && typeof currentMeta.autoRecovery === "object"
++    ? currentMeta.autoRecovery
++    : {};
++  return {
++    ...currentMeta,
++    autoRecovery: {
++      ...currentRecovery,
++      active: false,
++      recoveredAt,
++      recoveredStatus: "todo",
++    },
++  };
++}
++
+ function recalcStats() {
+   const stats = {
+     draft: 0,
+@@ -2076,6 +2188,166 @@ export function canTaskStart(taskId, options = {}) {
+   };
+ }
+ 
++export function recoverAutoBlockedTasks(options = {}) {
++  ensureLoaded();
++  const recoveredAtMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
++  const recoveredAt = new Date(recoveredAtMs).toISOString();
++  const recoveredTaskIds = [];
++
++  for (const task of Object.values(_store.tasks)) {
++    if (!task || normalizeTaskStatus(task.status) !== "blocked") continue;
++    const autoRecovery = task.meta?.autoRecovery;
++    if (!autoRecovery || typeof autoRecovery !== "object") continue;
++    if (autoRecovery.active === false) continue;
++    if (String(autoRecovery.reason || "").trim() !== "worktree_failure") continue;
++    const retryAtMs = Date.parse(String(autoRecovery.retryAt || task.cooldownUntil || ""));
++    if (!Number.isFinite(retryAtMs) || retryAtMs > recoveredAtMs) continue;
++
++    const previousStatus = normalizeTaskStatus(task.status);
++    task.status = "todo";
++    task.cooldownUntil = null;
++    task.blockedReason = null;
++    task.meta = normalizeRecoveredTaskMeta(task, recoveredAt);
++    task.updatedAt = recoveredAt;
++    task.lastActivityAt = recoveredAt;
++    task.syncDirty = true;
++    task.statusHistory.push({
++      status: "todo",
++      timestamp: recoveredAt,
++      source: "auto-recovery",
++    });
++    if (task.statusHistory.length > MAX_STATUS_HISTORY) {
++      task.statusHistory = task.statusHistory.slice(-MAX_STATUS_HISTORY);
++    }
++    pushTaskTimeline(task, {
++      type: "status.transition",
++      source: "auto-recovery",
++      fromStatus: previousStatus,
++      toStatus: "todo",
++      status: "todo",
++      action: "recover_blocked_task",
++      message: "Recovered timed blocked task back to todo",
++    });
++    markTaskTouched(task, "auto-recovery");
++    recoveredTaskIds.push(task.id);
++  }
++
++  if (recoveredTaskIds.length > 0) saveStore();
++
++  return {
++    recoveredTaskIds,
++    recoveredCount: recoveredTaskIds.length,
++    recoveredAt,
++  };
++}
++
++export function organizeTaskDag(options = {}) {
++  ensureLoaded();
++  const sprintFilter = normalizeSprintId(options.sprintId);
++  const sprintMap = ensureSprintsMap();
++  const allTasks = Object.values(_store.tasks);
++  const taskMap = new Map(allTasks.map((task) => [task.id, task]));
++  const targetSprintIds = sprintFilter
++    ? (sprintMap[sprintFilter] ? [sprintFilter] : [])
++    : listSprints().map((sprint) => sprint.id);
++
++  const suggestions = [];
++  const orderedTaskIdsBySprint = {};
++  let updatedTaskCount = 0;
++
++  for (const sprintId of targetSprintIds) {
++    const sprint = sprintMap[sprintId];
++    if (!sprint) continue;
++    const sprintTasks = allTasks
++      .filter((task) => normalizeSprintId(task?.sprintId) === sprintId)
++      .sort(compareTaskDagOrder);
++    const incomingCounts = new Map();
++    const outgoingMap = new Map();
++    for (const task of sprintTasks) {
++      incomingCounts.set(task.id, 0);
++      outgoingMap.set(task.id, new Set());
++    }
++    for (const task of sprintTasks) {
++      for (const dependencyId of listTaskDependencyIds(task)) {
++        const dependencyTask = taskMap.get(dependencyId);
++        if (!dependencyTask || normalizeSprintId(dependencyTask.sprintId) !== sprintId) continue;
++        outgoingMap.get(dependencyId).add(task.id);
++        incomingCounts.set(task.id, (incomingCounts.get(task.id) || 0) + 1);
++      }
++    }
++
++    const orderedTaskIds = topoSortIds(
++      sprintTasks.map((task) => task.id),
++      incomingCounts,
++      outgoingMap,
++      (leftId, rightId) => compareTaskDagOrder(taskMap.get(leftId), taskMap.get(rightId)),
++    );
++    orderedTaskIdsBySprint[sprintId] = orderedTaskIds;
++    suggestions.push(...collectDagRewriteSuggestions(taskMap, orderedTaskIds, sprint));
++
++    orderedTaskIds.forEach((taskId, index) => {
++      const task = taskMap.get(taskId);
++      if (!task) return;
++      const nextOrder = index + 1;
++      if (normalizeSprintOrder(task.sprintOrder) === nextOrder) return;
++      task.sprintOrder = nextOrder;
++      markTaskTouched(task, "dag-organize");
++      updatedTaskCount += 1;
++    });
++  }
++
++  const allSprintIds = listSprints().map((sprint) => sprint.id);
++  const sprintIncoming = new Map();
++  const sprintOutgoing = new Map();
++  for (const sprintId of allSprintIds) {
++    sprintIncoming.set(sprintId, 0);
++    sprintOutgoing.set(sprintId, new Set());
++  }
++  for (const task of allTasks) {
++    const taskSprintId = normalizeSprintId(task?.sprintId);
++    if (!taskSprintId) continue;
++    for (const dependencyId of listTaskDependencyIds(task)) {
++      const dependencyTask = taskMap.get(dependencyId);
++      const dependencySprintId = normalizeSprintId(dependencyTask?.sprintId);
++      if (!dependencySprintId || dependencySprintId === taskSprintId) continue;
++      if (!sprintOutgoing.get(dependencySprintId)?.has(taskSprintId)) {
++        sprintOutgoing.get(dependencySprintId).add(taskSprintId);
++        sprintIncoming.set(taskSprintId, (sprintIncoming.get(taskSprintId) || 0) + 1);
++      }
++    }
++  }
++
++  const orderedSprintIds = topoSortIds(
++    allSprintIds,
++    sprintIncoming,
++    sprintOutgoing,
++    (leftId, rightId) => compareSprintDagOrder(sprintMap[leftId], sprintMap[rightId]),
++  );
++  let updatedSprintCount = 0;
++  if (!sprintFilter) {
++    orderedSprintIds.forEach((sprintId, index) => {
++      const sprint = sprintMap[sprintId];
++      if (!sprint) return;
++      const nextOrder = index + 1;
++      if (normalizeSprintOrder(sprint.order) === nextOrder) return;
++      sprint.order = nextOrder;
++      sprint.updatedAt = now();
++      updatedSprintCount += 1;
++    });
++  }
++
++  if (updatedTaskCount > 0 || updatedSprintCount > 0) saveStore();
++
++  return {
++    sprintId: sprintFilter || null,
++    orderedSprintIds,
++    orderedTaskIdsBySprint,
++    updatedSprintCount,
++    updatedTaskCount,
++    suggestions,
++  };
++}
++
+ // ---------------------------------------------------------------------------
+ // Agent tracking
+ // ---------------------------------------------------------------------------
+@@ -2423,4 +2695,4 @@ export function getStaleInReviewTasks(maxAgeMs) {
+     (t) => t.status === "inreview" && t.lastActivityAt < cutoff,
+   );
+ }
+-
++
+diff --git a/tests/task-store.test.mjs b/tests/task-store.test.mjs
+index 12698104..ec063301 100644
+--- a/tests/task-store.test.mjs
++++ b/tests/task-store.test.mjs
+@@ -256,6 +256,74 @@ describe("task-store concurrent save consistency", () => {
+   });
+ });
+ 
++describe("task-store DAG organization", () => {
++  it("reorders sprint orders and emits dependency rewrite suggestions", async () => {
++    const dir = makeTempDir("task-store-dag-organize-");
++    const storeDir = join(dir, ".bosun", ".cache");
++    mkdirSync(storeDir, { recursive: true });
++    const storePath = join(storeDir, "kanban-state.json");
++
++    const ts = await loadTaskStoreModule();
++    ts.configureTaskStore({ storePath });
++    ts.loadStore();
++
++    ts.createSprint({ id: "sprint-a", name: "Sprint A", order: 1, executionMode: "parallel" });
++    ts.createSprint({ id: "sprint-b", name: "Sprint B", order: 2, executionMode: "sequential" });
++    ts.addTask({ id: "dep-task", title: "Dependency task", status: "todo", sprintId: "sprint-b", sprintOrder: 1 });
++    ts.addTask({ id: "target-task", title: "Target task", status: "todo", sprintId: "sprint-a", sprintOrder: 1, dependencyTaskIds: ["dep-task"] });
++    ts.addTask({ id: "seq-a", title: "Seq A", status: "todo", sprintId: "sprint-b", sprintOrder: 2, dependencyTaskIds: [] });
++    ts.addTask({ id: "seq-b", title: "Seq B", status: "todo", sprintId: "sprint-b", sprintOrder: 3, dependencyTaskIds: ["seq-a"] });
++    ts.addTask({ id: "seq-c", title: "Seq C", status: "todo", sprintId: "sprint-b", sprintOrder: 4, dependencyTaskIds: ["seq-a", "seq-b"] });
++    ts.addTask({ id: "seq-d", title: "Seq D", status: "todo", sprintId: "sprint-b", sprintOrder: 5, dependencyTaskIds: [] });
++
++    const result = ts.organizeTaskDag();
++
++    expect(result.orderedSprintIds.slice(0, 2)).toEqual(["sprint-b", "sprint-a"]);
++    expect(result.updatedSprintCount).toBeGreaterThanOrEqual(1);
++    expect(result.orderedTaskIdsBySprint["sprint-b"]).toEqual(["dep-task", "seq-a", "seq-b", "seq-c", "seq-d"]);
++    expect(result.suggestions).toEqual(expect.arrayContaining([
++      expect.objectContaining({ type: "redundant_transitive_dependency", taskId: "seq-c", dependencyTaskId: "seq-a" }),
++      expect.objectContaining({ type: "missing_sequential_dependency", taskId: "seq-d", dependencyTaskId: "seq-c" }),
++    ]));
++  });
++
++  it("recovers timed blocked tasks back to todo", async () => {
++    const dir = makeTempDir("task-store-auto-recovery-");
++    const storeDir = join(dir, ".bosun", ".cache");
++    mkdirSync(storeDir, { recursive: true });
++    const storePath = join(storeDir, "kanban-state.json");
++
++    const ts = await loadTaskStoreModule();
++    ts.configureTaskStore({ storePath });
++    ts.loadStore();
++
++    const retryAt = new Date(Date.now() - 60_000).toISOString();
++    ts.addTask({
++      id: "blocked-auto-1",
++      title: "Blocked auto task",
++      status: "blocked",
++      cooldownUntil: retryAt,
++      blockedReason: "Auto recovery pending",
++      meta: {
++        autoRecovery: {
++          active: true,
++          reason: "worktree_failure",
++          retryAt,
++        },
++      },
++    });
++
++    const recovered = ts.recoverAutoBlockedTasks();
++    const task = ts.getTask("blocked-auto-1");
++
++    expect(recovered.recoveredTaskIds).toEqual(["blocked-auto-1"]);
++    expect(task.status).toBe("todo");
++    expect(task.cooldownUntil).toBeNull();
++    expect(task.blockedReason).toBeNull();
++    expect(task.meta?.autoRecovery?.active).toBe(false);
++  });
++});
++
+ 
+ describe("task-store external change visibility", () => {
+   it("reloads from disk when another process updates the store file", async () => {
+diff --git a/tests/ui-server.test.mjs b/tests/ui-server.test.mjs
+index 8a7634d8..c27ae546 100644
+--- a/tests/ui-server.test.mjs
++++ b/tests/ui-server.test.mjs
+@@ -2512,6 +2512,53 @@ describe("ui-server mini app", () => {
+     expect(Array.isArray(listedByParentTaskId.data)).toBe(true);
+   });
+ 
++  it("organizes task DAGs and returns dependency suggestions", async () => {
++    process.env.TELEGRAM_UI_TUNNEL = "disabled";
++
++    const mod = await import("../server/ui-server.mjs");
++    mod.injectUiDependencies({
++      taskStoreApi: {
++        organizeTaskDag: vi.fn(async () => ({
++          orderedSprintIds: ["sprint-b", "sprint-a"],
++          orderedTaskIdsBySprint: { "sprint-b": ["task-1", "task-2"] },
++          updatedSprintCount: 1,
++          updatedTaskCount: 2,
++          suggestions: [
++            {
++              type: "missing_sequential_dependency",
++              sprintId: "sprint-b",
++              taskId: "task-2",
++              dependencyTaskId: "task-1",
++              message: "Add dependency task-1 -> task-2 to encode sequential sprint order.",
++            },
++          ],
++        })),
++      },
++    });
++
++    const server = await mod.startTelegramUiServer({
++      port: await getFreePort(),
++      host: "127.0.0.1",
++      skipInstanceLock: true,
++      skipAutoOpen: true,
++    });
++    const port = server.address().port;
++
++    const response = await fetch(`http://127.0.0.1:${port}/api/tasks/dag/organize`, {
++      method: "POST",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify({ sprintId: "sprint-b" }),
++    });
++    const json = await response.json();
++
++    expect(response.status).toBe(200);
++    expect(json.ok).toBe(true);
++    expect(json.sprintId).toBe("sprint-b");
++    expect(Array.isArray(json.suggestions)).toBe(true);
++    expect(json.suggestions[0].type).toBe("missing_sequential_dependency");
++    expect(json.data.updatedSprintCount).toBe(1);
++  });
++
+   it("focuses agent log tails on session-specific lines", async () => {
+     process.env.TELEGRAM_UI_TUNNEL = "disabled";
+ 
+diff --git a/tests/workflow-task-lifecycle.test.mjs b/tests/workflow-task-lifecycle.test.mjs
+index 5996d1bc..5466245a 100644
+--- a/tests/workflow-task-lifecycle.test.mjs
++++ b/tests/workflow-task-lifecycle.test.mjs
+@@ -474,6 +474,60 @@ describe("trigger.task_available", () => {
+     expect(result.blocked[0].blockingTaskIds).toEqual(["epic-b-task-1"]);
+   });
+ 
++  it("recovers timed blocked worktree tasks back to todo before polling", async () => {
++    const nt = getNodeType("trigger.task_available");
++    const retryAt = new Date(Date.now() - 60_000).toISOString();
++    let todoTasks = [];
++    const blockedTask = {
++      id: "blocked-worktree-task",
++      title: "Blocked WT task",
++      status: "blocked",
++      cooldownUntil: retryAt,
++      meta: {
++        autoRecovery: {
++          active: true,
++          reason: "worktree_failure",
++          retryAt,
++        },
++      },
++    };
++    const listTasks = vi.fn(async (_projectId, options = {}) => {
++      if (options.status === "blocked") return [blockedTask];
++      return todoTasks;
++    });
++    const updateTask = vi.fn(async (taskId, patch) => {
++      todoTasks = [{
++        ...blockedTask,
++        id: taskId,
++        ...patch,
++      }];
++      return todoTasks[0];
++    });
++    const ctx = makeCtx({ activeSlotCount: 0 });
++    const node = makeNode("trigger.task_available", {
++      maxParallel: 1,
++      status: "todo",
++    });
++
++    const result = await nt.execute(node, ctx, {
++      services: {
++        kanban: {
++          listTasks,
++          updateTask,
++        },
++      },
++    });
++
++    expect(updateTask).toHaveBeenCalledTimes(1);
++    expect(updateTask).toHaveBeenCalledWith("blocked-worktree-task", expect.objectContaining({
++      status: "todo",
++      cooldownUntil: null,
++      blockedReason: null,
++    }));
++    expect(result.triggered).toBe(true);
++    expect(result.selectedTaskId).toBe("blocked-worktree-task");
++  });
++
+   it("bypasses missing-task guard by default and emits audit event", async () => {
+     const nt = getNodeType("trigger.task_available");
+     const listTasks = vi.fn().mockResolvedValue([
+@@ -2466,8 +2520,11 @@ describe("template-task-lifecycle", () => {
+     expect(t.edges.find((e) => e.source === "release-claim-wt-failed" && e.target === "wt-failure-blocking")).toBeDefined();
+     expect(t.edges.find((e) => e.source === "wt-failure-blocking" && e.target === "set-blocked-wt-failed")).toBeDefined();
+     expect(t.edges.find((e) => e.source === "wt-failure-blocking" && e.target === "set-todo-wt-failed")).toBeDefined();
+-    expect(t.edges.find((e) => e.source === "set-blocked-wt-failed" && e.target === "release-slot-wt-failed")).toBeDefined();
++    expect(t.edges.find((e) => e.source === "set-blocked-wt-failed" && e.target === "annotate-blocked-wt-failed")).toBeDefined();
++    expect(t.edges.find((e) => e.source === "annotate-blocked-wt-failed" && e.target === "release-slot-wt-failed")).toBeDefined();
+     expect(t.edges.find((e) => e.source === "set-todo-wt-failed" && e.target === "release-slot-wt-failed")).toBeDefined();
++    const annotate = t.nodes.find((n) => n.id === "annotate-blocked-wt-failed");
++    expect(annotate?.type).toBe("action.bosun_function");
+   });
+ 
+   it("all edges reference valid node IDs", () => {
+diff --git a/ui/tabs/tasks.js b/ui/tabs/tasks.js
+index 040d8f29..b186288f 100644
+--- a/ui/tabs/tasks.js
++++ b/ui/tabs/tasks.js
+@@ -4769,6 +4769,8 @@ export function TasksTab() {
+   const [listSortDir, setListSortDir] = useState("desc"); // "asc" | "desc"
+   const [dagLoading, setDagLoading] = useState(false);
+   const [dagError, setDagError] = useState("");
++  const [dagOrganizeFeedback, setDagOrganizeFeedback] = useState("");
++  const [dagOrganizeSuggestions, setDagOrganizeSuggestions] = useState([]);
+   const [dagSprints, setDagSprints] = useState([]);
+   const [dagSelectedSprint, setDagSelectedSprint] = useState("all");
+   const [dagSprintGraph, setDagSprintGraph] = useState(EMPTY_DAG_GRAPH);
+@@ -4891,6 +4893,14 @@ export function TasksTab() {
+     { id: "execution", label: "Running & review", count: dagPlanningState.counts.execution },
+     { id: "ready", label: "Ready next", count: dagPlanningState.counts.ready },
+   ];
++  const dagOrganizeSummary = useMemo(() => {
++    if (dagOrganizeFeedback) return dagOrganizeFeedback;
++    return "Run Auto Organize to rewrite sprint order and surface dependency cleanup suggestions.";
++  }, [dagOrganizeFeedback]);
++  const dagSelectedSprintLabel = useMemo(() => {
++    if (dagSelectedSprint === "all") return "all sprints";
++    return dagSprints.find((entry) => entry.id === dagSelectedSprint)?.label || dagSelectedSprint;
++  }, [dagSelectedSprint, dagSprints]);
+ 
+   const loadMoreKanbanTasks = useCallback(async () => {
+     if (!isKanban || kanbanLoadingMore || isSearching) return;
+@@ -5093,6 +5103,11 @@ export function TasksTab() {
+     };
+   }, []);
+ 
++  useEffect(() => {
++    setDagOrganizeFeedback("");
++    setDagOrganizeSuggestions([]);
++  }, [dagSelectedSprint]);
++
+   useEffect(() => {
+     if (isCompact) {
+       setFiltersOpen(false);
+@@ -5303,6 +5318,36 @@ export function TasksTab() {
+     }
+   }, [loadDagViews]);
+ 
++  const handleAutoOrganizeDag = useCallback(async () => {
++    haptic("medium");
++    setDagLoading(true);
++    setDagError("");
++    try {
++      const result = await apiFetch("/api/tasks/dag/organize", {
++        method: "POST",
++        body: JSON.stringify(dagSelectedSprint && dagSelectedSprint !== "all"
++          ? { sprintId: dagSelectedSprint }
++          : {}),
++      });
++      const suggestions = Array.isArray(result?.suggestions) ? result.suggestions : [];
++      setDagOrganizeSuggestions(suggestions);
++      setDagOrganizeFeedback(
++        suggestions.length > 0
++          ? `Organized ${dagSelectedSprintLabel}. ${suggestions.length} dependency suggestion${suggestions.length === 1 ? "" : "s"} queued for review.`
++          : "Organized DAG with no dependency rewrite suggestions.",
++      );
++      showToast(
++        suggestions.length > 0 ? `DAG organized ┬À ${suggestions.length} suggestions` : "DAG organized",
++        "success",
++      );
++      await loadDagViews();
++    } catch (error) {
++      setDagError(error?.message || "Failed to organize DAG.");
++    } finally {
++      setDagLoading(false);
++    }
++  }, [dagSelectedSprint, dagSelectedSprintLabel, loadDagViews]);
++
+   const handleCreateSprint = useCallback(() => {
+     haptic("medium");
+     setEditingSprint(null);
+@@ -5413,6 +5458,54 @@ export function TasksTab() {
+     await loadDagViews();
+   }, [loadDagViews]);
+ 
++  const handleApplyDagSuggestion = useCallback(async (entry) => {
++    const suggestionType = toText(entry?.type);
++    if (suggestionType !== "missing_sequential_dependency") return;
++
++    const dependencyTaskId = toText(entry?.dependencyTaskId);
++    const taskId = toText(entry?.taskId);
++    if (!dependencyTaskId || !taskId || dependencyTaskId === taskId) return;
++
++    haptic("medium");
++    setDagLoading(true);
++    setDagError("");
++    try {
++      const task = dagTaskCatalog.find((candidate) => toText(candidate?.id) === taskId);
++      const existing = normalizeDependencyInput(getTaskDependencyIds(task));
++      if (existing.includes(dependencyTaskId)) {
++        setDagOrganizeSuggestions((current) => current.filter((candidate) => !(
++          toText(candidate?.type) === suggestionType &&
++          toText(candidate?.taskId) === taskId &&
++          toText(candidate?.dependencyTaskId) === dependencyTaskId
++        )));
++        setDagOrganizeFeedback(`Dependency ${dependencyTaskId} -> ${taskId} is already present.`);
++        showToast("Dependency already exists", "info");
++        return;
++      }
++
++      await apiFetch("/api/tasks/dependencies", {
++        method: "PUT",
++        body: JSON.stringify({
++          taskId,
++          dependencies: normalizeDependencyInput([...existing, dependencyTaskId]),
++        }),
++      });
++
++      setDagOrganizeSuggestions((current) => current.filter((candidate) => !(
++        toText(candidate?.type) === suggestionType &&
++        toText(candidate?.taskId) === taskId &&
++        toText(candidate?.dependencyTaskId) === dependencyTaskId
++      )));
++      setDagOrganizeFeedback(`Applied sequential dependency ${dependencyTaskId} -> ${taskId}.`);
++      showToast(`Applied dependency: ${dependencyTaskId} -> ${taskId}`, "success");
++      await loadDagViews();
++    } catch (error) {
++      setDagError(error?.message || "Failed to apply organizer suggestion.");
++    } finally {
++      setDagLoading(false);
++    }
++  }, [dagTaskCatalog, loadDagViews]);
++
+   const handleDeleteDagEdge = useCallback(async ({ sourceId, targetId, graphKind }) => {
+     const srcId = toText(sourceId);
+     const dstId = toText(targetId);
+@@ -5976,6 +6069,13 @@ export function TasksTab() {
+                   >
+                     ${dagLoading ? "RefreshingÔÇª" : "Refresh DAG"}
+                   <//>
++                  <${Button}
++                    variant="text" size="small"
++                    onClick=${handleAutoOrganizeDag}
++                    disabled=${dagLoading}
++                  >
++                    Auto Organize
++                  <//>
+                   <${Button}
+                     variant="text" size="small"
+                     onClick=${handleCreateSprint}
+@@ -6171,6 +6271,46 @@ export function TasksTab() {
+               </${Select}>
+             </div>
+           </div>
++          <div class="tasks-filter-section">
++            <div class="tasks-filter-title">Organizer review</div>
++            <div class="meta-text" style=${{ marginTop: "6px" }}>
++              ${dagOrganizeSummary}
++            </div>
++            ${dagOrganizeSuggestions.length > 0 && html`
++              <div class="meta-text" style=${{ marginTop: "4px" }}>
++                Showing ${Math.min(dagOrganizeSuggestions.length, 6)} of ${dagOrganizeSuggestions.length} suggestion${dagOrganizeSuggestions.length === 1 ? "" : "s"} for ${dagSelectedSprintLabel}.
++              </div>
++            `}
++            <div class="task-dag-sidebar-list" style=${{ marginTop: "8px" }}>
++              ${dagOrganizeSuggestions.slice(0, 6).map((entry) => {
++                const suggestionType = toText(entry?.type, "dependency_update");
++                const suggestionLabel = suggestionType === "missing_sequential_dependency"
++                  ? "Sequential gap"
++                  : suggestionType === "redundant_transitive_dependency"
++                    ? "Redundant edge"
++                    : "Dependency suggestion";
++                const taskId = toText(entry?.taskId);
++                const dependencyTaskId = toText(entry?.dependencyTaskId);
++                return html`
++                  <div class="task-dag-sidebar-card">
++                    <div class="task-dag-sidebar-card-main">
++                      <strong>${suggestionLabel}</strong>
++                      <span class="meta-text">${truncate(toText(entry?.message, "Dependency rewrite suggested."), 120)}</span>
++                      <span class="meta-text">${dependencyTaskId ? `${dependencyTaskId} -> ` : ""}${taskId || "task"}</span>
++                    </div>
++                    <div class="task-dag-sidebar-card-actions">
++                      ${suggestionType === "missing_sequential_dependency" && dependencyTaskId && taskId
++                        ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => handleApplyDagSuggestion(entry)}>apply</button>`
++                        : null}
++                      ${dependencyTaskId ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => openDetail(dependencyTaskId)}>dep</button>` : null}
++                      ${taskId ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => openDetail(taskId)}>task</button>` : null}
++                    </div>
++                  </div>
++                `;
++              })}
++              ${dagOrganizeSuggestions.length === 0 ? html`<div class="meta-text">No pending organizer suggestions for this scope.</div>` : null}
++            </div>
++          </div>
+           <div class="tasks-filter-section">
+             <div class="tasks-filter-title">Sprints</div>
+             <div class="task-dag-sidebar-list">
+diff --git a/workflow-templates/task-lifecycle.mjs b/workflow-templates/task-lifecycle.mjs
+index 14bb953a..f370a512 100644
+--- a/workflow-templates/task-lifecycle.mjs
++++ b/workflow-templates/task-lifecycle.mjs
+@@ -440,6 +440,18 @@ export const TASK_LIFECYCLE_TEMPLATE = {
+       status: "blocked",
+       taskTitle: "{{taskTitle}}",
+     }, { x: 470, y: 1350 }),
++    
++    node("annotate-blocked-wt-failed", "action.bosun_function", "Annotate Blocked (WT Fail)", {
++      function: "tasks.update",
++      args: {
++        taskId: "{{taskId}}",
++        fields: {
++          cooldownUntil: "{{acquire-worktree.retryAt}}",
++          blockedReason: "{{acquire-worktree.blockedReason}}",
++          meta: "{{(() => { const current = ($data.taskMeta && typeof $data.taskMeta === 'object') ? $data.taskMeta : {}; const output = $ctx.getNodeOutput('acquire-worktree') || {}; return { ...current, autoRecovery: { active: true, reason: 'worktree_failure', failureKind: output.failureKind || 'branch_refresh_conflict', retryAt: output.retryAt || null, recoveryDelayMs: output.autoRecoverDelayMs || null, error: output.error || '', recordedAt: output.recordedAt || null }, worktreeFailure: { failureKind: output.failureKind || 'branch_refresh_conflict', retryable: output.retryable !== false, retryAt: output.retryAt || null, blockedReason: output.blockedReason || '', error: output.error || '', recordedAt: output.recordedAt || null } }; })()}}",
++        },
++      },
++    }, { x: 470, y: 1480 }),
+ 
+     node("set-todo-wt-failed", "action.update_task_status", "Set Todo (WT Fail)", {
+       taskId: "{{taskId}}",
+@@ -452,8 +464,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
+     }, { x: 600, y: 1480 }),
+ 
+     node("notify-wt-failed", "notify.telegram", "Notify WT Failed", {
+-      message: "ÔÜá´©Å Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{$ctx.getNodeOutput('acquire-worktree')?.retryable === false ? ' ÔÇö task blocked' : ''}}",
+-    }, { x: 600, y: 1610 }),
++      message: "ÔÜá´©Å Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{acquire-worktree.recoveryNote}}",
++    }, { x: 600, y: 1740 }),
+   ],
+   edges: [
+     // Main flow
+@@ -528,7 +540,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
+     edge("release-claim-wt-failed", "wt-failure-blocking"),
+     edge("wt-failure-blocking", "set-blocked-wt-failed", { condition: "$output?.result === true", port: "yes" }),
+     edge("wt-failure-blocking", "set-todo-wt-failed", { condition: "$output?.result !== true", port: "no" }),
+-    edge("set-blocked-wt-failed", "release-slot-wt-failed"),
++    edge("set-blocked-wt-failed", "annotate-blocked-wt-failed"),
++    edge("annotate-blocked-wt-failed", "release-slot-wt-failed"),
+     edge("set-todo-wt-failed", "release-slot-wt-failed"),
+     edge("release-slot-wt-failed", "notify-wt-failed"),
+   ],
+diff --git a/workflow/workflow-nodes.mjs b/workflow/workflow-nodes.mjs
+index fd4f2fea..4ad0595e 100644
+--- a/workflow/workflow-nodes.mjs
++++ b/workflow/workflow-nodes.mjs
+@@ -44,6 +44,7 @@ import {
+   loadWorkflowContract,
+   validateWorkflowContract,
+ } from "./workflow-contract.mjs";
++import { loadConfig } from "../config/config.mjs";
+ import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
+ import { clearBlockedWorktreeIdentity, normalizeBaseBranch } from "../git/git-safety.mjs";
+ import { getGitHubToken, invalidateTokenType } from "../github/github-auth-manager.mjs";
+@@ -61,6 +62,7 @@ let customLoadPromise = null;
+ let customDiscoveryStarted = false;
+ const PORTABLE_WORKTREE_COUNT_COMMAND = "node -e \"const cp=require('node:child_process');const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
+ const PORTABLE_PRUNE_AND_COUNT_WORKTREES_COMMAND = "node -e \"const cp=require('node:child_process');cp.execSync('git worktree prune',{stdio:'ignore'});const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
++const DEFAULT_NON_RETRYABLE_WORKTREE_RECOVERY_MS = 15 * 60 * 1000;
+ const WORKFLOW_AGENT_HEARTBEAT_MS = (() => {
+   const raw = Number(process.env.WORKFLOW_AGENT_HEARTBEAT_MS || 30000);
+   if (!Number.isFinite(raw)) return 30000;
+@@ -73,6 +75,19 @@ const WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT = (() => {
+ })();
+ const BOSUN_ATTACHED_PR_LABEL = "bosun-attached";
+ 
++function getNonRetryableWorktreeRecoveryMs() {
++  try {
++    const config = loadConfig();
++    const minutes = Number(config?.workflowWorktreeRecoveryCooldownMin);
++    if (!Number.isFinite(minutes)) {
++      return DEFAULT_NON_RETRYABLE_WORKTREE_RECOVERY_MS;
++    }
++    return Math.max(1, Math.min(1440, Math.trunc(minutes))) * 60 * 1000;
++  } catch {
++    return DEFAULT_NON_RETRYABLE_WORKTREE_RECOVERY_MS;
++  }
++}
++
+ const HTML_TEXT_BREAK_TAGS = new Set([
+   "address",
+   "article",
+@@ -1340,6 +1355,45 @@ function parseBooleanSetting(value, defaultValue = false) {
+   return defaultValue;
+ }
+ 
++async function recoverTimedBlockedWorkflowTasks({ kanban, ctx, node, projectId }) {
++  if (!kanban || typeof kanban.listTasks !== "function" || typeof kanban.updateTask !== "function") {
++    return { recoveredTaskIds: [], recoveredCount: 0 };
++  }
++
++  const blockedTasks = await kanban.listTasks(projectId, { status: "blocked" });
++  const nowMs = Date.now();
++  const recoveredTaskIds = [];
++  for (const task of Array.isArray(blockedTasks) ? blockedTasks : []) {
++    const autoRecovery = task?.meta?.autoRecovery;
++    if (!autoRecovery || typeof autoRecovery !== "object") continue;
++    if (autoRecovery.active === false) continue;
++    if (String(autoRecovery.reason || "").trim() !== "worktree_failure") continue;
++    const retryAtMs = Date.parse(String(autoRecovery.retryAt || task?.cooldownUntil || ""));
++    if (!Number.isFinite(retryAtMs) || retryAtMs > nowMs) continue;
++    await kanban.updateTask(task.id, {
++      status: "todo",
++      cooldownUntil: null,
++      blockedReason: null,
++      meta: {
++        ...(task?.meta && typeof task.meta === "object" ? task.meta : {}),
++        autoRecovery: {
++          ...autoRecovery,
++          active: false,
++          recoveredAt: new Date(nowMs).toISOString(),
++          recoveredStatus: "todo",
++        },
++      },
++    });
++    recoveredTaskIds.push(task.id);
++  }
++
++  if (recoveredTaskIds.length > 0) {
++    ctx.log(node.id, `Recovered ${recoveredTaskIds.length} blocked task(s): ${recoveredTaskIds.join(", ")}`);
++  }
++
++  return { recoveredTaskIds, recoveredCount: recoveredTaskIds.length };
++}
++
+ function getPathValue(value, pathExpression) {
+   const path = String(pathExpression || "").trim();
+   if (!path) return undefined;
+@@ -9884,6 +9938,13 @@ registerBuiltinNodeType("trigger.task_available", {
+     for (let attempt = 0; attempt <= listRetries; attempt++) {
+       try {
+         const kanban = ctx.data?._services?.kanban || engine?.services?.kanban;
++        if (status === "todo") {
++          try {
++            await recoverTimedBlockedWorkflowTasks({ kanban, ctx, node, projectId });
++          } catch (recoveryErr) {
++            ctx.log(node.id, `Blocked task recovery warning: ${recoveryErr?.message || recoveryErr}`);
++          }
++        }
+         if (kanban?.listTasks) {
+           tasks = await kanban.listTasks(projectId, { status });
+         } else {
+@@ -10197,6 +10258,9 @@ registerBuiltinNodeType("trigger.task_available", {
+       if (baseBranch) ctx.data.baseBranch = baseBranch;
+       const branch = deriveTaskBranch(primaryTask);
+       if (branch) ctx.data.branch = branch;
++      ctx.data.taskMeta = primaryTask?.meta && typeof primaryTask.meta === "object"
++        ? { ...primaryTask.meta }
++        : {};
+     }
+ 
+     ctx.log(node.id, `Found ${toDispatch.length} task(s) ready (${remaining} slot(s) free)`);
+@@ -10978,6 +11042,12 @@ registerBuiltinNodeType("action.acquire_worktree", {
+     } catch (err) {
+       const errorMessage = String(err?.message || err || "worktree_acquisition_failed");
+       const retryable = !/managed worktree was removed after stale refresh state/i.test(errorMessage);
++      const recordedAt = new Date().toISOString();
++      const autoRecoverDelayMs = retryable ? 0 : getNonRetryableWorktreeRecoveryMs();
++      const retryAt = retryable ? null : new Date(Date.now() + autoRecoverDelayMs).toISOString();
++      const blockedReason = retryable
++        ? errorMessage
++        : "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.";
+       ctx.log(node.id, `Worktree acquisition failed: ${errorMessage}`);
+       return {
+         success: false,
+@@ -10986,6 +11056,11 @@ registerBuiltinNodeType("action.acquire_worktree", {
+         baseBranch,
+         retryable,
+         failureKind: retryable ? "worktree_acquisition_failed" : "branch_refresh_conflict",
++        recordedAt,
++        autoRecoverDelayMs,
++        retryAt,
++        blockedReason,
++        recoveryNote: retryable || !retryAt ? "" : ` ÔÇö blocked until ${retryAt}`,
+       };
+     }
+   },
