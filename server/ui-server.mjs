@@ -3083,6 +3083,87 @@ function resolveActiveWorkspaceExecutionContext() {
   };
 }
 
+function resolveDefaultRepositoryForWorkspaceContext(workspaceContext = {}) {
+  const configDir = resolveUiConfigDir();
+  if (!configDir) return "";
+  const listed = listManagedWorkspaces(configDir, { repoRoot });
+  const workspaceId = String(workspaceContext?.workspaceId || "").trim().toLowerCase();
+  const workspace =
+    (workspaceId
+      ? listed.find((entry) => String(entry?.id || "").trim().toLowerCase() === workspaceId)
+      : null) ||
+    getActiveManagedWorkspace(configDir) ||
+    listed[0] ||
+    null;
+  if (!workspace) return "";
+  return String(
+    workspace?.activeRepo ||
+      workspace?.repos?.find((repo) => repo?.primary)?.name ||
+      workspace?.repos?.[0]?.name ||
+      "",
+  ).trim();
+}
+
+async function resolveDefaultKanbanProjectId(adapter, requestedProjectId = "") {
+  const explicitProjectId = String(requestedProjectId || "").trim();
+  if (explicitProjectId) return explicitProjectId;
+  if (!adapter || typeof adapter.listProjects !== "function") return "";
+  try {
+    const projects = await adapter.listProjects();
+    return String(projects?.[0]?.id || projects?.[0]?.project_id || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function createManualFlowTaskManager(workspaceContext = {}, opts = {}) {
+  return {
+    async createTask(spec = {}) {
+      const title = String(spec?.title || "").trim();
+      if (!title) throw new Error("title is required");
+
+      const adapter = getKanbanAdapter();
+      const projectId = await resolveDefaultKanbanProjectId(
+        adapter,
+        opts?.projectId || spec?.projectId || spec?.project || "",
+      );
+      const labels = normalizeTagsInput(spec?.labels || spec?.tags);
+      const workspace = String(
+        spec?.workspace || opts?.workspaceId || workspaceContext?.workspaceId || "",
+      ).trim();
+      const repository = String(
+        spec?.repository ||
+          spec?.meta?.repository ||
+          opts?.repository ||
+          resolveDefaultRepositoryForWorkspaceContext(workspaceContext),
+      ).trim();
+      const repositories = Array.isArray(spec?.repositories)
+        ? spec.repositories.filter((value) => typeof value === "string" && value.trim())
+        : [];
+      const taskPayload = {
+        title,
+        description: String(spec?.description || ""),
+        status: String(spec?.status || "todo").trim() || "todo",
+        priority: spec?.priority || undefined,
+        ...(workspace ? { workspace } : {}),
+        ...(repository ? { repository } : {}),
+        ...(repositories.length ? { repositories } : {}),
+        ...(labels.length ? { labels, tags: labels } : {}),
+        meta: {
+          ...(workspace ? { workspace } : {}),
+          ...(repository ? { repository } : {}),
+          ...(repositories.length ? { repositories } : {}),
+          ...(labels.length ? { tags: labels } : {}),
+          manualFlowTemplateId: String(opts?.templateId || "").trim() || undefined,
+          ...(spec?.meta && typeof spec.meta === "object" ? spec.meta : {}),
+        },
+      };
+      const createdRaw = await adapter.createTask(projectId, taskPayload);
+      return withTaskMetadataTopLevel(createdRaw);
+    },
+  };
+}
+
 function resolveWorkspaceContextById(workspaceId = "") {
   const requestedId = String(workspaceId || "").trim().toLowerCase();
   if (!requestedId) return resolveActiveWorkspaceExecutionContext();
@@ -15420,7 +15501,7 @@ async function handleApi(req, res, url) {
   if (path === "/api/manual-flows/execute" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
-      const { templateId, formValues } = body || {};
+      const { templateId, formValues, executionContext } = body || {};
       if (!templateId) {
         jsonResponse(res, 400, { ok: false, error: "templateId is required" });
         return;
@@ -15428,7 +15509,40 @@ async function handleApi(req, res, url) {
       const mf = await import("../workflow/manual-flows.mjs");
       const ctx = resolveActiveWorkspaceExecutionContext();
       const wfCtx = await getWorkflowRequestContext(url);
-      const flowContext = wfCtx?.ok ? { engine: wfCtx.engine } : {};
+      const repository = String(
+        executionContext?.repository ||
+          executionContext?.targetRepo ||
+          formValues?._targetRepo ||
+          resolveDefaultRepositoryForWorkspaceContext(ctx),
+      ).trim();
+      const workspaceId = String(
+        executionContext?.workspaceId ||
+          executionContext?.workspace ||
+          ctx.workspaceId ||
+          "",
+      ).trim();
+      const projectId = String(
+        executionContext?.projectId ||
+          executionContext?.project ||
+          body?.project ||
+          "",
+      ).trim();
+      const flowContext = {
+        ...(wfCtx?.ok ? { engine: wfCtx.engine } : {}),
+        taskManager: createManualFlowTaskManager(ctx, {
+          repository,
+          workspaceId,
+          projectId,
+          templateId,
+        }),
+        runMetadata: {
+          repository,
+          workspaceId,
+          workspaceDir: ctx.workspaceDir,
+          projectId,
+          triggerSource: "manual-ui",
+        },
+      };
       const run = await mf.executeFlow(templateId, formValues || {}, ctx.workspaceDir, flowContext);
       jsonResponse(res, 200, { ok: true, run });
     } catch (err) {
