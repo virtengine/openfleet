@@ -3244,7 +3244,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       showToast("Task moved back to todo", "success");
       onClose();
       scheduleRefresh(150);
-    } catch (err) {
+    } catch {
       showToast("Failed to move task back to todo", "error");
     }
   };
