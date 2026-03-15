@@ -54,7 +54,14 @@ function validateModuleSyntax(filePath) {
 function validateBrowserModuleSyntax(filePath) {
   const source = readFileSync(filePath, "utf8");
   const mod = new vm.SourceTextModule(source, { identifier: filePath });
-  if (typeof mod.hasTopLevelAwait === "function" && mod.hasTopLevelAwait()) {
+  let hasTLA = false;
+  const tlaProp = mod.hasTopLevelAwait;
+  if (typeof tlaProp === "function") {
+    hasTLA = !!tlaProp.call(mod);
+  } else if (typeof tlaProp === "boolean") {
+    hasTLA = tlaProp;
+  }
+  if (hasTLA) {
     throw new Error(
       "Top-level await is not allowed in browser-served modules because embedded WebViews can fail with 'Unexpected reserved word'.",
     );

@@ -2476,7 +2476,6 @@ describe("ui-server mini app", () => {
       }),
     );
   });
-
   it("wires sprint and dag task-store APIs through ui-server endpoints", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
