@@ -5,6 +5,7 @@
  * Includes WebSocket stub and E2E-test-mode HTML for Playwright E2E tests.
  */
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { resolve, extname, dirname } from "node:path";
@@ -14,8 +15,9 @@ import { WebSocketServer } from "ws";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const uiRoot = resolve(__dirname, "..", "ui");
 const sharedLibRoot = resolve(__dirname, "..", "lib");
-const PORT = 4444;
+const PORT = Number.parseInt(String(process.env.PLAYWRIGHT_UI_PORT || "4444"), 10) || 4444;
 const ESM_CACHE_DIR = resolve(__dirname, "..", ".cache", "esm-vendor");
+const LOCAL_ESM_PATH_RE = /^\/(?:@|[a-z0-9][a-z0-9._-]*@)/i;
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -40,13 +42,15 @@ const ESM_CDN = {
 };
 
 function normalizeEsmBody(body) {
+  body = body.replaceAll('"https://esm.sh/', '"/');
+  body = body.replaceAll("'https://esm.sh/", "'/");
   body = body.replace(
     /(import\s+(?:[^"'`]*?\s+from\s+)?["'])\/(?!\/)/g,
-    "$1https://esm.sh/",
+    "$1/",
   );
   body = body.replace(
     /(export\s+(?:\*|\{[^}]*\})\s+from\s+["'])\/(?!\/)/g,
-    "$1https://esm.sh/",
+    "$1/",
   );
   return body;
 }
@@ -54,9 +58,10 @@ function normalizeEsmBody(body) {
 async function serveEsmVendor(res, name) {
   const cdnUrl = ESM_CDN[name];
   if (!cdnUrl) return false;
+  const cacheKey = createHash("sha1").update(`${cdnUrl}|esm-local-proxy-v2`).digest("hex").slice(0, 12);
+  const cacheFile = resolve(ESM_CACHE_DIR, `${name}.${cacheKey}.js`);
 
   // Try disk cache first
-  const cacheFile = resolve(ESM_CACHE_DIR, name);
   if (existsSync(cacheFile)) {
     try {
       const cached = await readFile(cacheFile, "utf8");
@@ -90,6 +95,30 @@ async function serveEsmVendor(res, name) {
     return true;
   } catch (err) {
     console.error(`[esm-proxy] Failed to fetch ${name}: ${err.message}`);
+    return false;
+  }
+}
+
+async function serveEsmPassthrough(res, pathname, search = "") {
+  const upstreamUrl = `https://esm.sh${pathname}${search}`;
+  try {
+    const response = await fetch(upstreamUrl, {
+      headers: { "User-Agent": "bosun-playwright-proxy/1.0" },
+    });
+    if (!response.ok) {
+      console.error(`[esm-proxy] Failed to fetch nested module ${pathname}: HTTP ${response.status}`);
+      return false;
+    }
+
+    const contentType = response.headers.get("content-type") || "application/javascript; charset=utf-8";
+    const raw = await response.text();
+    const body = contentType.includes("javascript") ? normalizeEsmBody(raw) : raw;
+
+    res.writeHead(200, { "Content-Type": contentType });
+    res.end(body);
+    return true;
+  } catch (err) {
+    console.error(`[esm-proxy] Failed to fetch nested module ${pathname}: ${err.message}`);
     return false;
   }
 }
@@ -281,6 +310,11 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  if (LOCAL_ESM_PATH_RE.test(pathname)) {
+    const served = await serveEsmPassthrough(res, pathname, url.search);
+    if (served) return;
+  }
+
   // Static files
   const servesSharedLib = pathname === "/lib" || pathname.startsWith("/lib/");
   const staticRoot = servesSharedLib ? sharedLibRoot : uiRoot;
@@ -312,8 +346,8 @@ const server = createServer(async (req, res) => {
     const ext = extname(filePath).toLowerCase();
     const contentType = MIME[ext] || "application/octet-stream";
 
-    // For HTML files (index.html or SPA fallback), strip the boot-loader
-    // complexity so that E2E tests get a clean, fast-booting page.
+    // For HTML files, strip third-party embeds that are unrelated to UI boot
+    // while preserving the real production module loader path.
     if ((ext === ".html" || isSpaFallback) && filePath.endsWith("index.html")) {
       let html = data.toString("utf-8");
       html = transformHtmlForE2E(html);
@@ -332,57 +366,17 @@ const server = createServer(async (req, res) => {
 
 /**
  * Transform index.html for E2E testing:
- * 1. Remove es-module-shims polyfill loader (not needed — Chromium supports native import maps)
- * 2. Replace boot-loader script with a direct native import
- * 3. Remove the 12s hardcoded timeout that shows "Failed to load app modules"
- * 4. Block external resources (Telegram SDK, analytics)
+ * 1. Preserve the real production boot path.
+ * 2. Remove unrelated third-party resources that add network flake.
  */
 function transformHtmlForE2E(html) {
-  // 1. Remove es-module-shims loader script
-  html = html.replace(
-    /<script>\s*\(function\(\)\s*\{\s*var shim[\s\S]*?<\/script>/,
-    "<!-- [e2e] esm-shim removed -->"
-  );
-
-  // 2. Remove importmap-shim (not needed without es-module-shims)
-  html = html.replace(
-    /<script type="importmap-shim">[\s\S]*?<\/script>/,
-    "<!-- [e2e] importmap-shim removed -->"
-  );
-
-  // 3. Replace boot-loader script with direct native import
-  html = html.replace(
-    /<script type="module">[\s\S]*?<\/script>/,
-    `<script type="module">
-      console.log("[e2e-boot] script executing");
-      try {
-        console.log("[e2e-boot] starting import");
-        await import("/app.js");
-        console.log("[e2e-boot] import complete, removing boot-loader");
-        const bl = document.getElementById("boot-loader");
-        if (bl) bl.remove();
-        console.log("[e2e-boot] done");
-      } catch (e) {
-        console.error("[e2e-boot] import failed:", e);
-        const s = document.getElementById("boot-status");
-        if (s) s.textContent = "E2E boot error: " + e.message;
-      }
-    </script>`
-  );
-
-  // 4. Remove the 12s timeout fallback script
-  html = html.replace(
-    /<script>\s*\/\/ Signal Telegram[\s\S]*?setTimeout\(function\(\)\s*\{[\s\S]*?<\/script>/,
-    "<!-- [e2e] timeout fallback removed -->"
-  );
-
-  // 5. Remove Telegram SDK script tag
+  // Remove Telegram SDK script tag.
   html = html.replace(
     /<script[^>]*telegram\.org[^>]*><\/script>/,
     "<!-- [e2e] telegram removed -->"
   );
 
-  // 6. Remove analytics (umami)
+  // Remove analytics and external font resources.
   html = html.replace(
     /<script[^>]*umami\.is[^>]*><\/script>/,
     "<!-- [e2e] analytics removed -->"
@@ -390,6 +384,14 @@ function transformHtmlForE2E(html) {
   html = html.replace(
     /<img[^>]*umami\.is[^>]*\/>/,
     "<!-- [e2e] analytics pixel removed -->"
+  );
+  html = html.replace(
+    /<link[^>]*fonts\.googleapis\.com[^>]*>/g,
+    "<!-- [e2e] google fonts removed -->"
+  );
+  html = html.replace(
+    /<link[^>]*fonts\.gstatic\.com[^>]*>/g,
+    "<!-- [e2e] google fonts preconnect removed -->"
   );
 
   return html;

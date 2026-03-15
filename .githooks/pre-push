@@ -74,9 +74,9 @@ ADJACENCY_MAP=(
   "config/|config-*|bosun-skills*|codex-config*"
   "telegram/|telegram-*|whatsapp-*"
   "voice/|voice-*|mic-*|native-call*"
-  "ui/|ui-*|workflow-canvas-utils*|static-relative*|mui-theme*|tab-swipe*|session-theme*|session-history*|demo-*|fleet-tab*"
-  "site/|ui-*|static-relative*|demo-*"
-  "server/|ui-server*|setup-web*|tunnel-*|ui-realtime*|presence*"
+  "ui/|ui-*|workflow-canvas-utils*|static-relative*|mui-theme*|tab-swipe*|session-theme*|session-history*|demo-*|fleet-tab*|portal-ui-smoke*"
+  "site/|ui-*|static-relative*|demo-*|portal-ui-smoke*"
+  "server/|ui-server*|setup-web*|tunnel-*|ui-realtime*|presence*|portal-ui-smoke*"
   "github/|github-*|hook-profiles*"
   "git/|git-*|branch-*|diff-stats*|conflict-*"
   "shell/|*-shell*|codex-shell*|gemini-shell*|opencode-shell*|sdk-shell*|continue-detection*"
@@ -177,7 +177,7 @@ for file in "${!CHANGED_MAP[@]}"; do
       ;;
   esac
   case "$file" in
-    tests/*.test.mjs)
+    tests/*.test.mjs|tests/*.node.test.mjs)
       CHANGED_TESTS+=("$file")
       ;;
   esac
@@ -211,7 +211,7 @@ collect_import_linked_tests() {
   while IFS= read -r test_file; do
     [ -z "$test_file" ] && continue
     TARGET_TESTS["$test_file"]=1
-  done < <(rg -l --glob "*.test.mjs" -e "from.*['\"].*${normalized}" -e "import.*['\"].*${normalized}" -e "require.*['\"].*${normalized}" tests 2>/dev/null || true)
+  done < <(rg -l --glob "*.test.mjs" --glob "*.node.test.mjs" -e "from.*['\"].*${normalized}" -e "import.*['\"].*${normalized}" -e "require.*['\"].*${normalized}" tests 2>/dev/null || true)
 
   # Also search by basename without extension for relative imports.
   local base
@@ -222,7 +222,7 @@ collect_import_linked_tests() {
     while IFS= read -r test_file; do
       [ -z "$test_file" ] && continue
       TARGET_TESTS["$test_file"]=1
-    done < <(rg -l --glob "*.test.mjs" -e "from.*['\"].*/${base}(\\.m?js)?['\"]" tests 2>/dev/null || true)
+    done < <(rg -l --glob "*.test.mjs" --glob "*.node.test.mjs" -e "from.*['\"].*/${base}(\\.m?js)?['\"]" tests 2>/dev/null || true)
   fi
 }
 
@@ -256,7 +256,7 @@ collect_adjacent_tests() {
         while IFS= read -r test_file; do
           [ -z "$test_file" ] && continue
           TARGET_TESTS["$test_file"]=1
-        done < <(find tests -maxdepth 1 -name "${glob}.test.mjs" 2>/dev/null || true)
+        done < <(find tests -maxdepth 1 \( -name "${glob}.test.mjs" -o -name "${glob}.node.test.mjs" \) 2>/dev/null || true)
       done
     fi
   done
