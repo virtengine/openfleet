@@ -4444,6 +4444,80 @@ function DagGraphSection({
     }
     if (node?.taskId) onOpenTask?.(node.taskId);
   }, [isWireMode, onActivateNode, onCreateEdge, onOpenTask, wireSourceId, nodeById, wiringBusy]);
+  const handleWireNodePointerDown = useCallback((node, event) => {
+    if (!isWireMode || wiringBusy) return;
+    const sourceId = String(node?.id || "").trim();
+    if (!sourceId) return;
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+
+    if (typeof wireDragCleanupRef.current === "function") {
+      wireDragCleanupRef.current();
+      wireDragCleanupRef.current = null;
+    }
+
+    const dragState = {
+      sourceId,
+      startX: Number(event?.clientX || 0),
+      startY: Number(event?.clientY || 0),
+      dragging: false,
+    };
+
+    const handleMove = (moveEvent) => {
+      const nextX = Number(moveEvent?.clientX || 0);
+      const nextY = Number(moveEvent?.clientY || 0);
+      if (!dragState.dragging) {
+        const deltaX = nextX - dragState.startX;
+        const deltaY = nextY - dragState.startY;
+        if (Math.hypot(deltaX, deltaY) < 6) return;
+        dragState.dragging = true;
+        setWireSourceId(sourceId);
+        setSelectedEdgeKey("");
+        setWireHoverId("");
+        wireHoverIdRef.current = "";
+        setWireDrag({ sourceId, clientX: nextX, clientY: nextY });
+        return;
+      }
+      setWireDrag((current) => current
+        ? { ...current, clientX: nextX, clientY: nextY }
+        : current);
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+      window.removeEventListener("pointercancel", handleCancel);
+    };
+
+    const finishWire = async () => {
+      const targetId = wireHoverIdRef.current;
+      setWireDrag(null);
+      await commitWireConnection(sourceId, targetId);
+    };
+
+    const handleUp = async (upEvent) => {
+      cleanup();
+      wireDragCleanupRef.current = null;
+      if (dragState.dragging) {
+        await finishWire();
+        return;
+      }
+      await handleNodeClick(node, upEvent);
+    };
+
+    const handleCancel = () => {
+      cleanup();
+      wireDragCleanupRef.current = null;
+      setWireDrag(null);
+      setWireHoverId("");
+      wireHoverIdRef.current = "";
+    };
+
+    wireDragCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    window.addEventListener("pointercancel", handleCancel);
+  }, [commitWireConnection, handleNodeClick, isWireMode, wiringBusy]);
 
   const handleEdgeClick = useCallback((edge, event) => {
     event?.stopPropagation?.();
@@ -4554,7 +4628,7 @@ function DagGraphSection({
         <div>
           <div style=${{ fontWeight: "700" }}>${title || "Task DAG"}</div>
           ${description ? html`<div class="meta-text">${description}</div>` : null}
-          <div class="meta-text">Drag to pan · wheel to zoom · click node to ${isWireMode ? "wire edges" : "open task"}.</div>
+          <div class="meta-text">Drag to pan · wheel to zoom · ${isWireMode ? "drag from one node to another, or click source then target, to wire edges" : "click node to open task"}.</div>
         </div>
         <div class="task-dag-controls">
           <${Button} size="small" variant="outlined" onClick=${() => setZoom((z) => Math.max(DAG_MIN_ZOOM, z * 0.9))}>-</${Button}>
@@ -4629,7 +4703,10 @@ function DagGraphSection({
                 <g
                   key=${node.id}
                   class=${`dag-node ${selected ? "dag-node-selected" : ""} ${hoverTarget ? "dag-node-hover-target" : ""} ${highlighted ? "dag-node-highlighted" : ""}`}
-                  onPointerDown=${(event) => event.stopPropagation()}
+                  onPointerDown=${(event) => {
+                    event.stopPropagation();
+                    if (isWireMode) handleWireNodePointerDown(node, event);
+                  }}
                   onPointerEnter=${() => {
                     if (!wireDrag || String(node.id) === String(wireDrag.sourceId)) return;
                     wireHoverIdRef.current = String(node.id);
@@ -4640,8 +4717,8 @@ function DagGraphSection({
                     wireHoverIdRef.current = "";
                     setWireHoverId("");
                   }}
-                  onClick=${(event) => handleNodeClick(node, event)}
-                  style=${{ cursor: isWireMode || node.taskId ? "pointer" : "default" }}
+                  onClick=${isWireMode ? undefined : (event) => handleNodeClick(node, event)}
+                  style=${{ cursor: isWireMode ? "crosshair" : node.taskId ? "pointer" : "default" }}
                 >
                   <rect
                     x=${pos.x}
@@ -4671,7 +4748,7 @@ function DagGraphSection({
                       fill=${selected ? "var(--accent)" : "var(--bg-canvas, #0f1115)"}
                       stroke="var(--accent)"
                       stroke-width="2"
-                      onPointerDown=${(event) => beginWireDrag(node, event)}
+                      onPointerDown=${(event) => handleWireNodePointerDown(node, event)}
                     />
                   ` : null}
                   ${Number.isFinite(node.order) && html`<text x=${pos.x + pos.width - 16} y=${pos.y + 22} text-anchor="end" fill="var(--text-muted)" font-size="11">#${node.order}</text>`}
@@ -4713,6 +4790,8 @@ export function TasksTab() {
   const [dagAllTasks, setDagAllTasks] = useState([]);
   const [dagEpicDependencies, setDagEpicDependencies] = useState([]);
   const [dagFocusMode, setDagFocusMode] = useState("all");
+  const [dagOrganizeFeedback, setDagOrganizeFeedback] = useState("");
+  const [dagOrganizeSuggestions, setDagOrganizeSuggestions] = useState([]);
   const [showCreateSprint, setShowCreateSprint] = useState(false);
   const [editingSprint, setEditingSprint] = useState(null);
   const [createSeed, setCreateSeed] = useState(null);
@@ -4824,6 +4903,14 @@ export function TasksTab() {
     { id: "execution", label: "Running & review", count: dagPlanningState.counts.execution },
     { id: "ready", label: "Ready next", count: dagPlanningState.counts.ready },
   ];
+  const dagOrganizeSummary = useMemo(() => {
+    if (dagOrganizeFeedback) return dagOrganizeFeedback;
+    return "Run Auto Wire to rewrite sprint order, add inferred dependencies, and surface any cleanup suggestions that still need review.";
+  }, [dagOrganizeFeedback]);
+  const dagSelectedSprintLabel = useMemo(() => {
+    if (dagSelectedSprint === "all") return "all sprints";
+    return dagSprints.find((entry) => entry.id === dagSelectedSprint)?.label || dagSelectedSprint;
+  }, [dagSelectedSprint, dagSprints]);
 
   const loadMoreKanbanTasks = useCallback(async () => {
     if (!isKanban || kanbanLoadingMore || isSearching) return;
@@ -5025,6 +5112,11 @@ export function TasksTab() {
       else mq.removeListener(handler);
     };
   }, []);
+
+  useEffect(() => {
+    setDagOrganizeFeedback("");
+    setDagOrganizeSuggestions([]);
+  }, [dagSelectedSprint]);
 
   useEffect(() => {
     if (isCompact) {
@@ -5236,6 +5328,49 @@ export function TasksTab() {
     }
   }, [loadDagViews]);
 
+  const handleAutoOrganizeDag = useCallback(async () => {
+    haptic("medium");
+    setDagLoading(true);
+    setDagError("");
+    try {
+      const result = await apiFetch("/api/tasks/dag/organize", {
+        method: "POST",
+        body: JSON.stringify(dagSelectedSprint && dagSelectedSprint !== "all"
+          ? { sprintId: dagSelectedSprint, applyDependencySuggestions: true, syncEpicDependencies: true }
+          : { applyDependencySuggestions: true, syncEpicDependencies: true }),
+      });
+      const suggestions = Array.isArray(result?.suggestions) ? result.suggestions : [];
+      const appliedDependencySuggestionCount = Number(result?.data?.appliedDependencySuggestionCount || 0);
+      const syncedEpicDependencyCount = Number(result?.data?.syncedEpicDependencyCount || 0);
+      const updatedTaskCount = Number(result?.data?.updatedTaskCount || 0);
+      const updatedSprintCount = Number(result?.data?.updatedSprintCount || 0);
+      setDagOrganizeSuggestions(suggestions);
+      setDagOrganizeFeedback(
+        [
+          `Auto-wired ${dagSelectedSprintLabel}.`,
+          updatedSprintCount > 0 ? `${updatedSprintCount} sprint order update${updatedSprintCount === 1 ? "" : "s"}.` : "",
+          updatedTaskCount > 0 ? `${updatedTaskCount} task order update${updatedTaskCount === 1 ? "" : "s"}.` : "",
+          appliedDependencySuggestionCount > 0 ? `${appliedDependencySuggestionCount} dependency edge${appliedDependencySuggestionCount === 1 ? "" : "s"} added.` : "",
+          syncedEpicDependencyCount > 0 ? `${syncedEpicDependencyCount} epic dependency set${syncedEpicDependencyCount === 1 ? "" : "s"} synced.` : "",
+          suggestions.length > 0 ? `${suggestions.length} cleanup suggestion${suggestions.length === 1 ? "" : "s"} still need review.` : "No follow-up cleanup suggestions.",
+        ].filter(Boolean).join(" "),
+      );
+      showToast(
+        appliedDependencySuggestionCount > 0 || syncedEpicDependencyCount > 0
+          ? `Auto-wired DAG · ${appliedDependencySuggestionCount + syncedEpicDependencyCount} dependency update${appliedDependencySuggestionCount + syncedEpicDependencyCount === 1 ? "" : "s"}`
+          : suggestions.length > 0
+            ? `DAG organized · ${suggestions.length} suggestions`
+            : "DAG organized",
+        "success",
+      );
+      await loadDagViews();
+    } catch (error) {
+      setDagError(error?.message || "Failed to organize DAG.");
+    } finally {
+      setDagLoading(false);
+    }
+  }, [dagSelectedSprint, dagSelectedSprintLabel, loadDagViews]);
+
   const handleCreateSprint = useCallback(() => {
     haptic("medium");
     setEditingSprint(null);
@@ -5288,24 +5423,89 @@ export function TasksTab() {
       setDagError("Failed to update sprint execution mode.");
     }
   }, [dagSelectedSprint, loadDagViews]);
+
+  const persistSprintTaskOrder = useCallback(async (sprintId, orderedTasks) => {
+    await Promise.all(orderedTasks.map((entry, index) => apiFetch(
+      "/api/tasks/sprints/" + encodeURIComponent(sprintId) + "/tasks",
+      {
+        method: "POST",
+        body: JSON.stringify({ taskId: entry.id, sprintOrder: index + 1 }),
+      },
+    )));
+  }, []);
+
   const handleNudgeSprintTaskOrder = useCallback(async (taskId, delta) => {
     const task = dagTaskCatalog.find((entry) => toText(entry?.id) === toText(taskId));
     const sprintId = toText(getTaskSprintId(task));
     if (!task?.id || !sprintId) return;
-    const currentOrder = Number(getTaskSprintOrder(task) || 1);
-    const nextOrder = Math.max(1, (Number.isFinite(currentOrder) ? currentOrder : 1) + delta);
+    const sprintQueue = dagSprintQueue
+      .filter((entry) => toText(getTaskSprintId(entry)) === sprintId)
+      .sort((left, right) => {
+        const leftOrder = Number(getTaskSprintOrder(left) || Number.MAX_SAFE_INTEGER);
+        const rightOrder = Number(getTaskSprintOrder(right) || Number.MAX_SAFE_INTEGER);
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+        return String(left?.title || left?.id || "").localeCompare(String(right?.title || right?.id || ""));
+      });
+    const currentIndex = sprintQueue.findIndex((entry) => toText(entry?.id) === toText(taskId));
+    const nextIndex = currentIndex + delta;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= sprintQueue.length) return;
+    const reordered = [...sprintQueue];
+    const [movedTask] = reordered.splice(currentIndex, 1);
+    reordered.splice(nextIndex, 0, movedTask);
     try {
-      await apiFetch(
-        "/api/tasks/sprints/" + encodeURIComponent(sprintId) + "/tasks",
-        {
-          method: "POST",
-          body: JSON.stringify({ taskId: task.id, sprintOrder: nextOrder }),
-        },
-      );
-      showToast("Sprint order updated", "success");
+      await persistSprintTaskOrder(sprintId, reordered);
+      showToast("Sprint queue reordered", "success");
       await loadDagViews();
     } catch {
       setDagError("Failed to update sprint task order.");
+    }
+  }, [dagSprintQueue, dagTaskCatalog, loadDagViews, persistSprintTaskOrder]);
+
+  const handleApplyDagSuggestion = useCallback(async (entry) => {
+    const suggestionType = toText(entry?.type);
+    if (suggestionType !== "missing_sequential_dependency") return;
+
+    const dependencyTaskId = toText(entry?.dependencyTaskId);
+    const taskId = toText(entry?.taskId);
+    if (!dependencyTaskId || !taskId || dependencyTaskId === taskId) return;
+
+    haptic("medium");
+    setDagLoading(true);
+    setDagError("");
+    try {
+      const task = dagTaskCatalog.find((candidate) => toText(candidate?.id) === taskId);
+      const existing = normalizeDependencyInput(getTaskDependencyIds(task));
+      if (existing.includes(dependencyTaskId)) {
+        setDagOrganizeSuggestions((current) => current.filter((candidate) => !(
+          toText(candidate?.type) === suggestionType &&
+          toText(candidate?.taskId) === taskId &&
+          toText(candidate?.dependencyTaskId) === dependencyTaskId
+        )));
+        setDagOrganizeFeedback(`Dependency ${dependencyTaskId} -> ${taskId} is already present.`);
+        showToast("Dependency already exists", "info");
+        return;
+      }
+
+      await apiFetch("/api/tasks/dependencies", {
+        method: "PUT",
+        body: JSON.stringify({
+          taskId,
+          dependencies: normalizeDependencyInput([...existing, dependencyTaskId]),
+        }),
+      });
+
+      setDagOrganizeSuggestions((current) => current.filter((candidate) => !(
+        toText(candidate?.type) === suggestionType &&
+        toText(candidate?.taskId) === taskId &&
+        toText(candidate?.dependencyTaskId) === dependencyTaskId
+      )));
+      setDagOrganizeFeedback(`Applied sequential dependency ${dependencyTaskId} -> ${taskId}.`);
+      showToast(`Applied dependency: ${dependencyTaskId} -> ${taskId}`, "success");
+      await loadDagViews();
+    } catch (error) {
+      setDagError(error?.message || "Failed to apply organizer suggestion.");
+    } finally {
+      setDagLoading(false);
     }
   }, [dagTaskCatalog, loadDagViews]);
 
@@ -6084,7 +6284,7 @@ export function TasksTab() {
               </${ToggleButtonGroup}>
             </div>
             <div class="meta-text" style=${{ marginTop: "6px" }}>
-              ${dagInteractionMode === "wire" ? "Click source then target to add edges." : "Click any node to open the Jira-style side panel."}
+              ${dagInteractionMode === "wire" ? "Drag from a source node to a target node to add edges, or click source then target for rapid multi-wiring." : "Click any node to open the Jira-style side panel."}
             </div>
           </div>
           <div class="tasks-filter-section">
@@ -6097,6 +6297,46 @@ export function TasksTab() {
                 <${MenuItem} value="parallel">Mode: parallel</${MenuItem}>
                 <${MenuItem} value="sequential">Mode: sequential</${MenuItem}>
               </${Select}>
+            </div>
+          </div>
+          <div class="tasks-filter-section">
+            <div class="tasks-filter-title">Organizer review</div>
+            <div class="meta-text" style=${{ marginTop: "6px" }}>
+              ${dagOrganizeSummary}
+            </div>
+            ${dagOrganizeSuggestions.length > 0 && html`
+              <div class="meta-text" style=${{ marginTop: "4px" }}>
+                Showing ${Math.min(dagOrganizeSuggestions.length, 6)} of ${dagOrganizeSuggestions.length} suggestion${dagOrganizeSuggestions.length === 1 ? "" : "s"} for ${dagSelectedSprintLabel}.
+              </div>
+            `}
+            <div class="task-dag-sidebar-list" style=${{ marginTop: "8px" }}>
+              ${dagOrganizeSuggestions.slice(0, 6).map((entry) => {
+                const suggestionType = toText(entry?.type, "dependency_update");
+                const suggestionLabel = suggestionType === "missing_sequential_dependency"
+                  ? "Sequential gap"
+                  : suggestionType === "redundant_transitive_dependency"
+                    ? "Redundant edge"
+                    : "Dependency suggestion";
+                const taskId = toText(entry?.taskId);
+                const dependencyTaskId = toText(entry?.dependencyTaskId);
+                return html`
+                  <div class="task-dag-sidebar-card">
+                    <div class="task-dag-sidebar-card-main">
+                      <strong>${suggestionLabel}</strong>
+                      <span class="meta-text">${truncate(toText(entry?.message, "Dependency rewrite suggested."), 120)}</span>
+                      <span class="meta-text">${dependencyTaskId ? `${dependencyTaskId} -> ` : ""}${taskId || "task"}</span>
+                    </div>
+                    <div class="task-dag-sidebar-card-actions">
+                      ${suggestionType === "missing_sequential_dependency" && dependencyTaskId && taskId
+                        ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => handleApplyDagSuggestion(entry)}>apply</button>`
+                        : null}
+                      ${dependencyTaskId ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => openDetail(dependencyTaskId)}>dep</button>` : null}
+                      ${taskId ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => openDetail(taskId)}>task</button>` : null}
+                    </div>
+                  </div>
+                `;
+              })}
+              ${dagOrganizeSuggestions.length === 0 ? html`<div class="meta-text">No pending organizer suggestions for this scope.</div>` : null}
             </div>
           </div>
           <div class="tasks-filter-section">

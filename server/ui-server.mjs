@@ -11787,7 +11787,16 @@ async function handleApi(req, res, url) {
     try {
       const body = await readJsonBody(req);
       const sprintId = String(body?.sprintId || body?.sprint || "").trim();
-      const organized = await organizeDagData(sprintId ? { sprintId } : {});
+      const organizeOptions = {
+        ...(sprintId ? { sprintId } : {}),
+        ...(body?.applyDependencySuggestions != null
+          ? { applyDependencySuggestions: Boolean(body.applyDependencySuggestions) }
+          : {}),
+        ...(body?.syncEpicDependencies != null
+          ? { syncEpicDependencies: Boolean(body.syncEpicDependencies) }
+          : {}),
+      };
+      const organized = await organizeDagData(organizeOptions);
       if (!organized) {
         jsonResponse(res, 501, { ok: false, error: "DAG organize API is unavailable." });
         return;

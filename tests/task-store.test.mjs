@@ -257,7 +257,7 @@ describe("task-store concurrent save consistency", () => {
 });
 
 describe("task-store DAG organization", () => {
-  it("reorders sprint orders and emits dependency rewrite suggestions", async () => {
+  it("reorders sprint orders, auto-applies sequential dependencies, and syncs epic dependencies", async () => {
     const dir = makeTempDir("task-store-dag-organize-");
     const storeDir = join(dir, ".bosun", ".cache");
     mkdirSync(storeDir, { recursive: true });
@@ -269,22 +269,55 @@ describe("task-store DAG organization", () => {
 
     ts.createSprint({ id: "sprint-a", name: "Sprint A", order: 1, executionMode: "parallel" });
     ts.createSprint({ id: "sprint-b", name: "Sprint B", order: 2, executionMode: "sequential" });
-    ts.addTask({ id: "dep-task", title: "Dependency task", status: "todo", sprintId: "sprint-b", sprintOrder: 1 });
-    ts.addTask({ id: "target-task", title: "Target task", status: "todo", sprintId: "sprint-a", sprintOrder: 1, dependencyTaskIds: ["dep-task"] });
+    ts.addTask({ id: "dep-task", title: "Dependency task", status: "todo", sprintId: "sprint-b", sprintOrder: 1, epicId: "epic-seq" });
+    ts.addTask({ id: "target-task", title: "Target task", status: "todo", sprintId: "sprint-a", sprintOrder: 1, dependencyTaskIds: ["dep-task"], epicId: "epic-target" });
     ts.addTask({ id: "seq-a", title: "Seq A", status: "todo", sprintId: "sprint-b", sprintOrder: 2, dependencyTaskIds: [] });
     ts.addTask({ id: "seq-b", title: "Seq B", status: "todo", sprintId: "sprint-b", sprintOrder: 3, dependencyTaskIds: ["seq-a"] });
-    ts.addTask({ id: "seq-c", title: "Seq C", status: "todo", sprintId: "sprint-b", sprintOrder: 4, dependencyTaskIds: ["seq-a", "seq-b"] });
-    ts.addTask({ id: "seq-d", title: "Seq D", status: "todo", sprintId: "sprint-b", sprintOrder: 5, dependencyTaskIds: [] });
+    ts.addTask({ id: "seq-c", title: "Seq C", status: "todo", sprintId: "sprint-b", sprintOrder: 4, dependencyTaskIds: ["seq-a", "seq-b"], epicId: "epic-seq" });
+    ts.addTask({ id: "seq-d", title: "Seq D", status: "todo", sprintId: "sprint-b", sprintOrder: 5, dependencyTaskIds: [], epicId: "epic-seq" });
 
     const result = ts.organizeTaskDag();
 
     expect(result.orderedSprintIds.slice(0, 2)).toEqual(["sprint-b", "sprint-a"]);
     expect(result.updatedSprintCount).toBeGreaterThanOrEqual(1);
     expect(result.orderedTaskIdsBySprint["sprint-b"]).toEqual(["dep-task", "seq-a", "seq-b", "seq-c", "seq-d"]);
+    expect(result.appliedDependencySuggestionCount).toBe(2);
+    expect(result.syncedEpicDependencyCount).toBe(1);
+    expect(ts.getTask("seq-a")?.dependencyTaskIds || []).toContain("dep-task");
+    expect(ts.getTask("seq-d")?.dependencyTaskIds || []).toContain("seq-c");
+    expect(ts.getEpicDependencies()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ epicId: "epic-target", dependencies: expect.arrayContaining(["epic-seq"]) }),
+    ]));
     expect(result.suggestions).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "redundant_transitive_dependency", taskId: "seq-c", dependencyTaskId: "seq-a" }),
+    ]));
+    expect(result.suggestions).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "missing_sequential_dependency", taskId: "seq-d", dependencyTaskId: "seq-c" }),
     ]));
+  });
+
+  it("can keep dependency suggestions in review-only mode", async () => {
+    const dir = makeTempDir("task-store-dag-organize-review-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.createSprint({ id: "sprint-review", name: "Sprint Review", order: 1, executionMode: "sequential" });
+    ts.addTask({ id: "review-a", title: "Review A", status: "todo", sprintId: "sprint-review", sprintOrder: 1, dependencyTaskIds: [] });
+    ts.addTask({ id: "review-b", title: "Review B", status: "todo", sprintId: "sprint-review", sprintOrder: 2, dependencyTaskIds: [] });
+
+    const result = ts.organizeTaskDag({ applyDependencySuggestions: false, syncEpicDependencies: false });
+
+    expect(result.appliedDependencySuggestionCount).toBe(0);
+    expect(result.syncedEpicDependencyCount).toBe(0);
+    expect(result.suggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "missing_sequential_dependency", taskId: "review-b", dependencyTaskId: "review-a" }),
+    ]));
+    expect(ts.getTask("review-b")?.dependencyTaskIds || []).not.toContain("review-a");
   });
 
   it("recovers timed blocked tasks back to todo", async () => {

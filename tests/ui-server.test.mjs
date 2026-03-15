@@ -2584,23 +2584,26 @@ describe("ui-server mini app", () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
     const mod = await import("../server/ui-server.mjs");
+    const organizeTaskDag = vi.fn(async () => ({
+      orderedSprintIds: ["sprint-b", "sprint-a"],
+      orderedTaskIdsBySprint: { "sprint-b": ["task-1", "task-2"] },
+      updatedSprintCount: 1,
+      updatedTaskCount: 2,
+      appliedDependencySuggestionCount: 1,
+      syncedEpicDependencyCount: 1,
+      suggestions: [
+        {
+          type: "missing_sequential_dependency",
+          sprintId: "sprint-b",
+          taskId: "task-2",
+          dependencyTaskId: "task-1",
+          message: "Add dependency task-1 -> task-2 to encode sequential sprint order.",
+        },
+      ],
+    }));
     mod.injectUiDependencies({
       taskStoreApi: {
-        organizeTaskDag: vi.fn(async () => ({
-          orderedSprintIds: ["sprint-b", "sprint-a"],
-          orderedTaskIdsBySprint: { "sprint-b": ["task-1", "task-2"] },
-          updatedSprintCount: 1,
-          updatedTaskCount: 2,
-          suggestions: [
-            {
-              type: "missing_sequential_dependency",
-              sprintId: "sprint-b",
-              taskId: "task-2",
-              dependencyTaskId: "task-1",
-              message: "Add dependency task-1 -> task-2 to encode sequential sprint order.",
-            },
-          ],
-        })),
+        organizeTaskDag,
       },
     });
 
@@ -2615,7 +2618,7 @@ describe("ui-server mini app", () => {
     const response = await fetch(`http://127.0.0.1:${port}/api/tasks/dag/organize`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sprintId: "sprint-b" }),
+      body: JSON.stringify({ sprintId: "sprint-b", applyDependencySuggestions: true, syncEpicDependencies: true }),
     });
     const json = await response.json();
 
@@ -2625,6 +2628,13 @@ describe("ui-server mini app", () => {
     expect(Array.isArray(json.suggestions)).toBe(true);
     expect(json.suggestions[0].type).toBe("missing_sequential_dependency");
     expect(json.data.updatedSprintCount).toBe(1);
+    expect(json.data.appliedDependencySuggestionCount).toBe(1);
+    expect(json.data.syncedEpicDependencyCount).toBe(1);
+    expect(organizeTaskDag).toHaveBeenCalledWith({
+      sprintId: "sprint-b",
+      applyDependencySuggestions: true,
+      syncEpicDependencies: true,
+    });
   });
 
   it("focuses agent log tails on session-specific lines", async () => {

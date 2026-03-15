@@ -4527,6 +4527,80 @@ function DagGraphSection({
     }
     if (node?.taskId) onOpenTask?.(node.taskId);
   }, [isWireMode, onActivateNode, onCreateEdge, onOpenTask, wireSourceId, nodeById, wiringBusy]);
+  const handleWireNodePointerDown = useCallback((node, event) => {
+    if (!isWireMode || wiringBusy) return;
+    const sourceId = String(node?.id || "").trim();
+    if (!sourceId) return;
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+
+    if (typeof wireDragCleanupRef.current === "function") {
+      wireDragCleanupRef.current();
+      wireDragCleanupRef.current = null;
+    }
+
+    const dragState = {
+      sourceId,
+      startX: Number(event?.clientX || 0),
+      startY: Number(event?.clientY || 0),
+      dragging: false,
+    };
+
+    const handleMove = (moveEvent) => {
+      const nextX = Number(moveEvent?.clientX || 0);
+      const nextY = Number(moveEvent?.clientY || 0);
+      if (!dragState.dragging) {
+        const deltaX = nextX - dragState.startX;
+        const deltaY = nextY - dragState.startY;
+        if (Math.hypot(deltaX, deltaY) < 6) return;
+        dragState.dragging = true;
+        setWireSourceId(sourceId);
+        setSelectedEdgeKey("");
+        setWireHoverId("");
+        wireHoverIdRef.current = "";
+        setWireDrag({ sourceId, clientX: nextX, clientY: nextY });
+        return;
+      }
+      setWireDrag((current) => current
+        ? { ...current, clientX: nextX, clientY: nextY }
+        : current);
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+      window.removeEventListener("pointercancel", handleCancel);
+    };
+
+    const finishWire = async () => {
+      const targetId = wireHoverIdRef.current;
+      setWireDrag(null);
+      await commitWireConnection(sourceId, targetId);
+    };
+
+    const handleUp = async (upEvent) => {
+      cleanup();
+      wireDragCleanupRef.current = null;
+      if (dragState.dragging) {
+        await finishWire();
+        return;
+      }
+      await handleNodeClick(node, upEvent);
+    };
+
+    const handleCancel = () => {
+      cleanup();
+      wireDragCleanupRef.current = null;
+      setWireDrag(null);
+      setWireHoverId("");
+      wireHoverIdRef.current = "";
+    };
+
+    wireDragCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    window.addEventListener("pointercancel", handleCancel);
+  }, [commitWireConnection, handleNodeClick, isWireMode, wiringBusy]);
 
   const handleEdgeClick = useCallback((edge, event) => {
     event?.stopPropagation?.();
@@ -4637,7 +4711,7 @@ function DagGraphSection({
         <div>
           <div style=${{ fontWeight: "700" }}>${title || "Task DAG"}</div>
           ${description ? html`<div class="meta-text">${description}</div>` : null}
-          <div class="meta-text">Drag to pan · wheel to zoom · click node to ${isWireMode ? "wire edges" : "open task"}.</div>
+          <div class="meta-text">Drag to pan · wheel to zoom · ${isWireMode ? "drag from one node to another, or click source then target, to wire edges" : "click node to open task"}.</div>
         </div>
         <div class="task-dag-controls">
           <${Button} size="small" variant="outlined" onClick=${() => setZoom((z) => Math.max(DAG_MIN_ZOOM, z * 0.9))}>-</${Button}>
@@ -4713,6 +4787,13 @@ function DagGraphSection({
                   key=${node.id}
                   class=${`dag-node ${selected ? "dag-node-selected" : ""} ${hoverTarget ? "dag-node-hover-target" : ""} ${highlighted ? "dag-node-highlighted" : ""}`}
                   onPointerDown=${(event) => event.stopPropagation()}
+                                    onPointerDown=${(event) => {
+                                      if (isWireMode) {
+                                        handleWireNodePointerDown(node, event);
+                                        return;
+                                      }
+                                      event.stopPropagation();
+                                    }}
                   onPointerEnter=${() => {
                     if (!wireDrag || String(node.id) === String(wireDrag.sourceId)) return;
                     wireHoverIdRef.current = String(node.id);
@@ -4724,7 +4805,8 @@ function DagGraphSection({
                     setWireHoverId("");
                   }}
                   onClick=${(event) => handleNodeClick(node, event)}
-                  style=${{ cursor: isWireMode || node.taskId ? "pointer" : "default" }}
+                  onClick=${isWireMode ? undefined : (event) => handleNodeClick(node, event)}
+                  style=${{ cursor: isWireMode ? "crosshair" : node.taskId ? "pointer" : "default" }}
                 >
                   <rect
                     x=${pos.x}
@@ -4755,6 +4837,7 @@ function DagGraphSection({
                       stroke="var(--accent)"
                       stroke-width="2"
                       onPointerDown=${(event) => beginWireDrag(node, event)}
+                                          onPointerDown=${(event) => handleWireNodePointerDown(node, event)}
                     />
                   ` : null}
                   ${Number.isFinite(node.order) && html`<text x=${pos.x + pos.width - 16} y=${pos.y + 22} text-anchor="end" fill="var(--text-muted)" font-size="11">#${node.order}</text>`}
@@ -4913,7 +4996,7 @@ export function TasksTab() {
   ];
   const dagOrganizeSummary = useMemo(() => {
     if (dagOrganizeFeedback) return dagOrganizeFeedback;
-    return "Run Auto Organize to rewrite sprint order and surface dependency cleanup suggestions.";
+    return "Run Auto Wire to rewrite sprint order, add inferred dependencies, and surface any cleanup suggestions that still need review.";
   }, [dagOrganizeFeedback]);
   const dagSelectedSprintLabel = useMemo(() => {
     if (dagSelectedSprint === "all") return "all sprints";
@@ -5344,18 +5427,31 @@ export function TasksTab() {
       const result = await apiFetch("/api/tasks/dag/organize", {
         method: "POST",
         body: JSON.stringify(dagSelectedSprint && dagSelectedSprint !== "all"
-          ? { sprintId: dagSelectedSprint }
-          : {}),
+          ? { sprintId: dagSelectedSprint, applyDependencySuggestions: true, syncEpicDependencies: true }
+          : { applyDependencySuggestions: true, syncEpicDependencies: true }),
       });
       const suggestions = Array.isArray(result?.suggestions) ? result.suggestions : [];
+      const appliedDependencySuggestionCount = Number(result?.data?.appliedDependencySuggestionCount || 0);
+      const syncedEpicDependencyCount = Number(result?.data?.syncedEpicDependencyCount || 0);
+      const updatedTaskCount = Number(result?.data?.updatedTaskCount || 0);
+      const updatedSprintCount = Number(result?.data?.updatedSprintCount || 0);
       setDagOrganizeSuggestions(suggestions);
       setDagOrganizeFeedback(
-        suggestions.length > 0
-          ? `Organized ${dagSelectedSprintLabel}. ${suggestions.length} dependency suggestion${suggestions.length === 1 ? "" : "s"} queued for review.`
-          : "Organized DAG with no dependency rewrite suggestions.",
+        [
+          `Auto-wired ${dagSelectedSprintLabel}.`,
+          updatedSprintCount > 0 ? `${updatedSprintCount} sprint order update${updatedSprintCount === 1 ? "" : "s"}.` : "",
+          updatedTaskCount > 0 ? `${updatedTaskCount} task order update${updatedTaskCount === 1 ? "" : "s"}.` : "",
+          appliedDependencySuggestionCount > 0 ? `${appliedDependencySuggestionCount} dependency edge${appliedDependencySuggestionCount === 1 ? "" : "s"} added.` : "",
+          syncedEpicDependencyCount > 0 ? `${syncedEpicDependencyCount} epic dependency set${syncedEpicDependencyCount === 1 ? "" : "s"} synced.` : "",
+          suggestions.length > 0 ? `${suggestions.length} cleanup suggestion${suggestions.length === 1 ? "" : "s"} still need review.` : "No follow-up cleanup suggestions.",
+        ].filter(Boolean).join(" "),
       );
       showToast(
-        suggestions.length > 0 ? `DAG organized · ${suggestions.length} suggestions` : "DAG organized",
+        appliedDependencySuggestionCount > 0 || syncedEpicDependencyCount > 0
+          ? `Auto-wired DAG · ${appliedDependencySuggestionCount + syncedEpicDependencyCount} dependency update${appliedDependencySuggestionCount + syncedEpicDependencyCount === 1 ? "" : "s"}`
+          : suggestions.length > 0
+            ? `DAG organized · ${suggestions.length} suggestions`
+            : "DAG organized",
         "success",
       );
       await loadDagViews();
@@ -5418,26 +5514,43 @@ export function TasksTab() {
       setDagError("Failed to update sprint execution mode.");
     }
   }, [dagSelectedSprint, loadDagViews]);
+
+  const persistSprintTaskOrder = useCallback(async (sprintId, orderedTasks) => {
+    await Promise.all(orderedTasks.map((entry, index) => apiFetch(
+      "/api/tasks/sprints/" + encodeURIComponent(sprintId) + "/tasks",
+      {
+        method: "POST",
+        body: JSON.stringify({ taskId: entry.id, sprintOrder: index + 1 }),
+      },
+    )));
+  }, []);
+
   const handleNudgeSprintTaskOrder = useCallback(async (taskId, delta) => {
     const task = dagTaskCatalog.find((entry) => toText(entry?.id) === toText(taskId));
     const sprintId = toText(getTaskSprintId(task));
     if (!task?.id || !sprintId) return;
-    const currentOrder = Number(getTaskSprintOrder(task) || 1);
-    const nextOrder = Math.max(1, (Number.isFinite(currentOrder) ? currentOrder : 1) + delta);
+    const sprintQueue = dagSprintQueue
+      .filter((entry) => toText(getTaskSprintId(entry)) === sprintId)
+      .sort((left, right) => {
+        const leftOrder = Number(getTaskSprintOrder(left) || Number.MAX_SAFE_INTEGER);
+        const rightOrder = Number(getTaskSprintOrder(right) || Number.MAX_SAFE_INTEGER);
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+        return String(left?.title || left?.id || "").localeCompare(String(right?.title || right?.id || ""));
+      });
+    const currentIndex = sprintQueue.findIndex((entry) => toText(entry?.id) === toText(taskId));
+    const nextIndex = currentIndex + delta;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= sprintQueue.length) return;
+    const reordered = [...sprintQueue];
+    const [movedTask] = reordered.splice(currentIndex, 1);
+    reordered.splice(nextIndex, 0, movedTask);
     try {
-      await apiFetch(
-        "/api/tasks/sprints/" + encodeURIComponent(sprintId) + "/tasks",
-        {
-          method: "POST",
-          body: JSON.stringify({ taskId: task.id, sprintOrder: nextOrder }),
-        },
-      );
-      showToast("Sprint order updated", "success");
+      await persistSprintTaskOrder(sprintId, reordered);
+      showToast("Sprint queue reordered", "success");
       await loadDagViews();
     } catch {
       setDagError("Failed to update sprint task order.");
     }
-  }, [dagTaskCatalog, loadDagViews]);
+  }, [dagSprintQueue, dagTaskCatalog, loadDagViews, persistSprintTaskOrder]);
 
   const handleCreateDagEdge = useCallback(async ({ sourceNode, targetNode, graphKind }) => {
     const srcTaskId = toText(sourceNode?.taskId || sourceNode?.id);
@@ -5557,32 +5670,6 @@ export function TasksTab() {
     haptic();
     setDagSelectedSprint(sprintId);
   }, [dagSelectedSprint]);
-
-  const handleToggleFilters = () => {
-    haptic();
-    setFiltersOpen((prev) => {
-      const next = !prev;
-      if (!next) setActionsOpen(false);
-      return next;
-    });
-  };
-
-  /* Keyboard shortcuts (mount/unmount) */
-  useEffect(() => {
-    const onKeyDown = (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
-        e.preventDefault();
-        searchRef.current?.focus?.();
-      }
-      if (e.key === "Escape" && searchRef.current &&
-          document.activeElement === searchRef.current) {
-        handleClearSearch();
-        searchRef.current.blur();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [handleClearSearch]);
 
   const handlePrev = async () => {
     if (tasksPage) tasksPage.value = Math.max(0, page - 1);
@@ -6092,7 +6179,7 @@ export function TasksTab() {
                     onClick=${handleAutoOrganizeDag}
                     disabled=${dagLoading}
                   >
-                    Auto Organize
+                    Auto Wire
                   <//>
                   <${Button}
                     variant="text" size="small"
@@ -6274,7 +6361,7 @@ export function TasksTab() {
               </${ToggleButtonGroup}>
             </div>
             <div class="meta-text" style=${{ marginTop: "6px" }}>
-              ${dagInteractionMode === "wire" ? "Click source then target to add edges." : "Click any node to open the Jira-style side panel."}
+              ${dagInteractionMode === "wire" ? "Drag from a source node to a target node to add edges, or click source then target for rapid multi-wiring." : "Click any node to open the Jira-style side panel."}
             </div>
           </div>
           <div class="tasks-filter-section">
