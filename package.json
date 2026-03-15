@@ -180,6 +180,8 @@
     "shell/codex-model-profiles.mjs",
     "shell/codex-shell.mjs",
     "config/config.mjs",
+    "config/config-file-names.mjs",
+    "config/executor-config.mjs",
     "config/config-doctor.mjs",
     "config/workspace-health.mjs",
     "git/conflict-resolver.mjs",
