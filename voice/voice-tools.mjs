@@ -33,6 +33,31 @@ For code results or lists, summarise the key finding verbally instead of dumping
 `;
 
 /**
+ * Regular expressions for commands that are considered safe to execute
+ * directly in the workspace shell. Shared so they can be maintained and
+ * potentially tested independently of the call site.
+ */
+const SAFE_WORKSPACE_COMMAND_PATTERNS = [
+  /^git\s+(status|log|diff\s|show\s|branch|remote|tag|stash\s+list|ls-files|rev-parse|shortlog|describe)\b/i,
+  /^git\s+diff$/i,
+  /^git\s+log$/i,
+  /^npm\s+(test|run\s+(test|lint|build|check)|ls|audit)\b/i,
+  /^node\s+(--version|-v)$/i,
+  /^npm\s+(--version|-v)$/i,
+  /^ls(\s|$)/i,
+  /^cat\s+/i,
+  /^head\s+/i,
+  /^tail(\s|$)/i,
+  /^wc(\s|$)/i,
+  /^find\s+/i,
+  /^grep(\s|$)/i,
+  /^echo\s+/i,
+  /^pwd$/i,
+  /^which\s+/i,
+  /^type\s+/i,
+];
+
+/**
  * Extract the TTS-ready fragment from an agent response.
  *
  * Priority:
@@ -60,7 +85,7 @@ function formatVoiceToolResult(text) {
     .replace(/\n/g, " ")
     .trim();
 
-  // 3) Truncate to 100 words for spoken clarity
+  // 3) Truncate to a maximum of 100 words for spoken clarity
   const words = stripped.split(/\s+/);
   if (words.length <= 100) return stripped;
   return words.slice(0, 100).join(" ") + "…";
@@ -1529,7 +1554,8 @@ const TOOL_HANDLERS = {
       "Return strict JSON with keys: name, description, enabled, variables, nodes, edges, triggers, metadata. " +
       "Do not include markdown fences.\n\n" +
       `User request:\n${prompt}`;
-    const result = await execPooledPrompt(generationPrompt, {
+    const pool = await getAgentPool();
+    const result = await pool.execPooledPrompt(generationPrompt, {
       sdk: executor,
       mode: "agent",
       sessionId: context?.sessionId || `voice-workflow-generate-${Date.now()}`,
@@ -2163,26 +2189,9 @@ const TOOL_HANDLERS = {
     const rawCmd = String(args.command || "").trim();
     if (!rawCmd) return "{RESPONSE}: command is required.";
 
-    // Only execute obviously read-only commands directly.
-    const SAFE_PATTERNS = [
-      /^git\s+(status|log|diff\s|show\s|branch|remote|tag|stash\s+list|ls-files|rev-parse|shortlog|describe)\b/i,
-      /^git\s+diff$/i,
-      /^git\s+log$/i,
-      /^npm\s+(test|run\s+(test|lint|build|check)|ls|audit)\b/i,
-      /^node\s+(--version|-v)$/i,
-      /^npm\s+(--version|-v)$/i,
-      /^ls(\s|$)/i,
-      /^cat\s+/i,
-      /^head\s+/i,
-      /^tail(\s|$)/i,
-      /^wc(\s|$)/i,
-      /^find\s+/i,
-      /^grep(\s|$)/i,
-      /^echo\s+/i,
-      /^pwd$/i,
-      /^which\s+/i,
-      /^type\s+/i,
-    ];
+    // Only execute obviously read-only commands directly, based on the
+    // shared SAFE_WORKSPACE_COMMAND_PATTERNS defined at module scope.
+    const SAFE_PATTERNS = SAFE_WORKSPACE_COMMAND_PATTERNS;
 
     const isSafe = SAFE_PATTERNS.some((p) => p.test(rawCmd));
     if (!isSafe) {
@@ -2312,3 +2321,5 @@ export { TOOL_DEFS as VOICE_TOOLS };
 export async function warmCodebaseContext(context = {}) {
   await TOOL_HANDLERS.warm_codebase_context({}, context).catch(() => {});
 }
+
+
