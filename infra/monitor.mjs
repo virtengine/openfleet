@@ -724,6 +724,13 @@ async function ensureWorkflowAutomationEngine() {
           );
         }
       }
+
+      // Resume runs paused by a previous monitor shutdown after services are wired.
+      if (typeof engine.resumeInterruptedRuns === "function") {
+        engine.resumeInterruptedRuns().catch((err) => {
+          console.warn(`[workflows] Failed to resume interrupted runs: ${err?.message || err}`);
+        });
+      }
       workflowAutomationInitDone = true;
       return engine;
     } catch (err) {
