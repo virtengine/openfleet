@@ -16700,6 +16700,11 @@ async function handleApi(req, res, url) {
   }
 
   if (path === "/api/tasks/unblock") {
+    if (req.method !== "POST") {
+      res.setHeader("Allow", "POST");
+      jsonResponse(res, 405, { ok: false, error: "Method Not Allowed" });
+      return;
+    }
     try {
       const body = await readJsonBody(req);
       const taskId = body?.taskId || body?.id;
