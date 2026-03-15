@@ -70,23 +70,23 @@ export const TOOL_DEFS = [
   {
     type: "function",
     name: "delegate_to_agent",
-    description: "Execute a CODE MODIFICATION task via a coding agent (codex, copilot, claude, gemini, or opencode). Creates a live session for writing code, modifying files, creating PRs, or running multi-step workflows. Do NOT use this for questions, status checks, or information retrieval — use ask_agent_context or direct tools instead. Only use when the user explicitly asks to write, fix, create, implement, refactor, or deploy code.",
+    description: "Delegate a code modification task to a coding agent.",
     parameters: {
       type: "object",
       properties: {
         message: {
           type: "string",
-          description: "The instruction to send to the agent. Be specific and detailed.",
+          description: "Instruction for the coding agent describing the code modification task. Be specific and detailed. Use only when the user explicitly asks to write, fix, create, implement, refactor, or deploy code; do not use for questions, status checks, or information retrieval.",
         },
         executor: {
           type: "string",
           enum: ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"],
-          description: "Which agent to use. Defaults to the configured primary agent.",
+          description: "Which coding agent implementation to use. If omitted, the configured primary agent is used.",
         },
         mode: {
           type: "string",
           enum: ["ask", "agent", "plan", "code", "architect"],
-          description: "Agent mode: code (make changes), ask (read-only), architect (plan). Default: code",
+          description: "Agent mode: code (make changes), ask (read-only), architect (plan). Default: code.",
         },
         model: {
           type: "string",
@@ -146,7 +146,7 @@ export const TOOL_DEFS = [
   {
     type: "function",
     name: "list_sessions",
-    description: "List active and historical chat/agent sessions with metadata. Returns session summaries (not full transcripts) for fast browsing. Use get_session_history with fullTranscript=true for complete message text.",
+    description: "List active and historical chat/agent sessions with metadata. Returns session summaries (not full transcripts) for fast browsing.",
     parameters: {
       type: "object",
       properties: {
@@ -755,3 +755,4 @@ export const TOOL_DEFS = [
     },
   },
 ];
+
