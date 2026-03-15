@@ -290,6 +290,7 @@
     "voice/voice-agents-sdk.mjs",
     "voice/voice-relay.mjs",
     "voice/voice-tools.mjs",
+    "voice/voice-tool-definitions.mjs",
     "workspace/workspace-manager.mjs",
     "workspace/workspace-monitor.mjs",
     "workspace-reaper.mjs",
