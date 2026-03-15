@@ -9,7 +9,9 @@ import { chromium } from "playwright";
 const repoRoot = process.cwd();
 const serverEntry = resolve(repoRoot, "server", "playwright-ui-server.mjs");
 const routerSource = readFileSync(resolve(repoRoot, "ui", "modules", "router.js"), "utf8");
-const port = 4455;
+const envPort = process.env.PLAYWRIGHT_UI_PORT ? Number(process.env.PLAYWRIGHT_UI_PORT) : undefined;
+const port = Number.isInteger(envPort) && envPort > 0 ? envPort : 4455;
+process.env.PLAYWRIGHT_UI_PORT = String(port);
 const baseUrl = `http://127.0.0.1:${port}`;
 const externalBlockPattern = /(telegram\.org|umami\.is|cloud\.umami|fonts\.googleapis\.com|fonts\.gstatic\.com|cdn\.jsdelivr\.net|unpkg\.com)/;
 
@@ -194,6 +196,10 @@ before(async () => {
   serverProcess.stderr.on("data", (chunk) => {
     stderr += String(chunk);
   });
+  if (serverProcess.stdout) {
+    // Drain stdout to avoid filling the pipe buffer and hanging the test.
+    serverProcess.stdout.resume();
+  }
 
   try {
     await waitForHttpReady(baseUrl);
