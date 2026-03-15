@@ -5972,11 +5972,16 @@ export function TasksTab() {
               filename: file.name,
             },
           };
-      const res = await apiFetch("/api/tasks/import", {
+      const res = await apiFetch("/api/tasks", {
         method: "POST",
         body: JSON.stringify(payload),
       });
-      const summary = res?.data?.summary || {};
+      const summary =
+        res?.data?.summary ||
+        res?.summary ||
+        (Array.isArray(res?.data)
+          ? { created: res.data.length, updated: 0, failed: 0 }
+          : {});
       const changedCount = Number(summary.created || 0) + Number(summary.updated || 0);
       showToast(
         `Imported ${Number(summary.created || 0)} new and updated ${Number(summary.updated || 0)} task${changedCount === 1 ? "" : "s"}${summary.failed ? ` (${summary.failed} failed)` : ""}`,
