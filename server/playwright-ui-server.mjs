@@ -99,8 +99,38 @@ async function serveEsmVendor(res, name) {
   }
 }
 
+function sanitizeEsmSearchParams(search = "") {
+  if (!search || typeof search !== "string") return "";
+  const original = search.startsWith("?") ? search.slice(1) : search;
+  if (!original) return "";
+
+  const allowedParams = new Set([
+    "target",
+    "dev",
+    "bundle",
+    "external",
+    "deps",
+    "alias",
+    "keep-names",
+    "pin"
+  ]);
+
+  const inputParams = new URLSearchParams(original);
+  const safeParams = new URLSearchParams();
+
+  for (const [key, value] of inputParams.entries()) {
+    if (allowedParams.has(key)) {
+      safeParams.append(key, value);
+    }
+  }
+
+  const serialized = safeParams.toString();
+  return serialized ? `?${serialized}` : "";
+}
+
 async function serveEsmPassthrough(res, pathname, search = "") {
-  const upstreamUrl = `https://esm.sh${pathname}${search}`;
+  const safeSearch = sanitizeEsmSearchParams(search);
+  const upstreamUrl = `https://esm.sh${pathname}${safeSearch}`;
   try {
     const response = await fetch(upstreamUrl, {
       headers: { "User-Agent": "bosun-playwright-proxy/1.0" },
