@@ -968,6 +968,8 @@ describe("workflow setup profiles", () => {
     ];
 
     for (const script of queryScripts) {
+      expect(script).toContain("const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();");
+      expect(script).toContain('path.join(repoRoot, "kanban", "kanban-adapter.mjs")');
       expect(script).toContain("const filtered = (tasks || []).filter((task) => {");
       expect(script).toContain('const repository = typeof task?.repository === "string" ? task.repository.trim() : "";');
       expect(script).toContain('const workspace = typeof task?.workspace === "string" ? task.workspace.trim() : "";');

@@ -39,6 +39,61 @@ function trimTrailingSlashes(value) {
   return out;
 }
 
+function isAzureOpenAIHost(value) {
+  try {
+    const parsed = value instanceof URL ? value : new URL(String(value || "").trim());
+    const host = String(parsed.hostname || "").toLowerCase();
+    return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+  } catch {
+    return false;
+  }
+}
+
+function buildModelsProbeRequest({ apiKey = "", baseUrl = "" } = {}) {
+  const trimmedBase = String(baseUrl || "").trim();
+  const fallbackBase = "https://api.openai.com";
+  const headers = { "Content-Type": "application/json" };
+
+  try {
+    const parsed = new URL(trimmedBase || fallbackBase);
+    const pathname = trimTrailingSlashes(parsed.pathname || "");
+    const lowerPath = pathname.toLowerCase();
+    const isAzure = isAzureOpenAIHost(parsed);
+
+    if (apiKey) {
+      if (isAzure) headers["api-key"] = apiKey;
+      else headers.Authorization = `Bearer ${apiKey}`;
+    }
+
+    if (lowerPath.endsWith("/models")) {
+      return { endpoint: parsed.toString(), headers };
+    }
+
+    if (isAzure || lowerPath === "/openai" || lowerPath.startsWith("/openai/")) {
+      parsed.pathname = "/openai/models";
+      if (!parsed.searchParams.has("api-version")) {
+        parsed.searchParams.set("api-version", "2024-10-21");
+      }
+      return { endpoint: parsed.toString(), headers };
+    }
+
+    const v1Match = lowerPath.match(/^(.*\/v1)(?:\/.*)?$/);
+    if (v1Match) {
+      parsed.pathname = `${v1Match[1]}/models`;
+      parsed.search = "";
+      return { endpoint: parsed.toString(), headers };
+    }
+
+    parsed.pathname = `${pathname || ""}/v1/models`;
+    parsed.search = "";
+    return { endpoint: parsed.toString(), headers };
+  } catch {
+    const resolvedBase = trimTrailingSlashes(trimmedBase || fallbackBase);
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+    return { endpoint: `${resolvedBase}/v1/models`, headers };
+  }
+}
+
 
 // ── Vendor file serving (hoisting-safe) ───────────────────────────────────────────
 // Resolution order:
@@ -1750,13 +1805,9 @@ async function handleModelsProbe(body) {
   }
 
   // For OpenAI / compatible endpoints, try GET /v1/models
-  const resolvedBase = trimTrailingSlashes(baseUrl || "https://api.openai.com");
-  const endpoint = `${resolvedBase}/v1/models`;
+  const { endpoint, headers } = buildModelsProbeRequest({ apiKey, baseUrl });
 
   try {
-    const headers = { "Content-Type": "application/json" };
-    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
 
@@ -3008,7 +3059,9 @@ export async function startSetupServer(options = {}) {
 export {
   applyTelegramMiniAppSetupEnv,
   applyNonBlockingSetupEnvDefaults,
+  buildModelsProbeRequest,
   handleTelegramChatIdLookup,
+  isAzureOpenAIHost,
   normalizeWorkflowTemplateOverrides,
   normalizeTelegramUiPort,
   normalizeRepoConfigEntry,

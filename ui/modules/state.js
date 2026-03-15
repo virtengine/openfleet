@@ -102,11 +102,31 @@ function synthesizeTaskDescription(task) {
   return `Implementation notes for "${title}". Include scope, key files, risks, and acceptance checks before dispatch.`;
 }
 
+function normalizeTaskDiagnosticsForUi(diagnostics) {
+  if (!diagnostics || typeof diagnostics !== "object") return diagnostics;
+  const stableCause = diagnostics.stableCause && typeof diagnostics.stableCause === "object"
+    ? {
+        ...diagnostics.stableCause,
+        code: sanitizeTaskText(diagnostics.stableCause.code || ""),
+        title: sanitizeTaskText(diagnostics.stableCause.title || ""),
+        summary: sanitizeTaskText(diagnostics.stableCause.summary || ""),
+      }
+    : diagnostics.stableCause;
+  return {
+    ...diagnostics,
+    stableCause,
+    lastError: sanitizeTaskText(diagnostics.lastError || "") || null,
+    errorPattern: sanitizeTaskText(diagnostics.errorPattern || "") || null,
+    blockedReason: sanitizeTaskText(diagnostics.blockedReason || "") || null,
+  };
+}
+
 function normalizeTaskForUi(task) {
   if (!task || typeof task !== "object") return task;
   const title = sanitizeTaskText(task.title || "");
   const rawDescription = sanitizeTaskText(task.description || "");
   const description = isPlaceholderTaskDescription(rawDescription) ? "" : rawDescription;
+  const diagnostics = normalizeTaskDiagnosticsForUi(task.diagnostics);
   const meta = task.meta && typeof task.meta === "object"
     ? {
         ...task.meta,
@@ -117,12 +137,14 @@ function normalizeTaskForUi(task) {
               ? ""
               : sanitizeTaskText(task.meta.description))
             : task.meta.description,
+        diagnostics: normalizeTaskDiagnosticsForUi(task.meta.diagnostics),
       }
     : task.meta;
   return {
     ...task,
     title,
     description: description || synthesizeTaskDescription({ ...task, title }),
+    diagnostics,
     meta,
   };
 }

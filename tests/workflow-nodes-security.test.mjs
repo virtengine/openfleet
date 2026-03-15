@@ -310,6 +310,32 @@ describe("dangerous shell payload containment", () => {
 });
 
 describe("action.run_command env interpolation", () => {
+  it("supports argv-style commands and explicit JSON parsing", async () => {
+    const nodeType = getNodeType("action.run_command");
+    const node = makeNode("action.run_command", {
+      command: "node",
+      args: ["-e", 'process.stdout.write(JSON.stringify([{ taskId: "t-1" }]))'],
+      parseJson: true,
+    });
+
+    const result = await nodeType.execute(node, makeCtx());
+    expect(result.success).toBe(true);
+    expect(result.output).toEqual([{ taskId: "t-1" }]);
+  });
+
+  it("parses the final JSON line when commands emit prefixed logs", async () => {
+    const nodeType = getNodeType("action.run_command");
+    const node = makeNode("action.run_command", {
+      command: "node",
+      args: ["-e", 'console.log("[kanban] using internal backend"); console.log(JSON.stringify([{ taskId: "t-2" }]));'],
+      parseJson: true,
+    });
+
+    const result = await nodeType.execute(node, makeCtx());
+    expect(result.success).toBe(true);
+    expect(result.output).toEqual([{ taskId: "t-2" }]);
+  });
+
   it("resolves template env values before executing commands", async () => {
     const nodeType = getNodeType("action.run_command");
     const node = makeNode("action.run_command", {
