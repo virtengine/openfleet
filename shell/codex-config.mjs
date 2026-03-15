@@ -1616,15 +1616,8 @@ function applyTrustedProjectDefaults(repoRoot, additionalRoots, dryRun, result) 
   }
 }
 
-export function ensureCodexConfig({
-  vkBaseUrl = "http://127.0.0.1:54089",
-  skipVk = true,
-  manageVkMcp = false,
-  dryRun = false,
-  env = process.env,
-  primarySdk,
-} = {}) {
-  const result = {
+function createEnsureCodexConfigResult() {
+  return {
     path: CONFIG_PATH,
     created: false,
     vkAdded: false,
@@ -1647,46 +1640,71 @@ export function ensureCodexConfig({
     trustedProjectsAdded: [],
     noChanges: true,
   };
+}
 
+function initializeCodexConfigState(result) {
   const configExisted = existsSync(CONFIG_PATH);
   const originalToml = readCodexConfig();
-  let toml = stripDeprecatedSandboxPermissions(originalToml);
   if (!configExisted) {
     result.created = true;
-    toml = "";
+    return { originalToml, toml: "" };
   }
+  return {
+    originalToml,
+    toml: stripDeprecatedSandboxPermissions(originalToml),
+  };
+}
 
+function applyEnsureCodexConfigDefaults(toml, env, primarySdk, vibeKanbanOptions, result) {
   const sandboxState = applySandboxDefaults(toml, env, result);
-  toml = sandboxState.toml;
+  let nextToml = sandboxState.toml;
 
-  toml = applyAgentSdkDefaults(toml, env, primarySdk, result);
+  nextToml = applyAgentSdkDefaults(nextToml, env, primarySdk, result);
 
-  const featureResult = ensureFeatureFlags(toml, env);
+  const featureResult = ensureFeatureFlags(nextToml, env);
   result.featuresAdded = featureResult.added;
-  toml = featureResult.toml;
+  nextToml = featureResult.toml;
 
-  toml = applyVibeKanbanDefaults(
-    toml,
-    { manageVkMcp, skipVk, vkBaseUrl },
-    result,
-  );
-  toml = ensureCommonMcpDefaults(toml, result);
-  toml = applyModelProviderDefaults(toml, env, result);
+  nextToml = applyVibeKanbanDefaults(nextToml, vibeKanbanOptions, result);
+  nextToml = ensureCommonMcpDefaults(nextToml, result);
+  nextToml = applyModelProviderDefaults(nextToml, env, result);
 
+  return { sandboxState, toml: nextToml };
+}
+
+function persistCodexConfigIfChanged(toml, originalToml, dryRun, result) {
   const changed = toml !== originalToml;
   result.noChanges = !result.created && !changed;
-
   if (!dryRun && (result.created || changed)) {
     writeCodexConfig(toml);
   }
+}
 
+export function ensureCodexConfig({
+  vkBaseUrl = "http://127.0.0.1:54089",
+  skipVk = true,
+  manageVkMcp = false,
+  dryRun = false,
+  env = process.env,
+  primarySdk,
+} = {}) {
+  const result = createEnsureCodexConfigResult();
+  const { originalToml, toml: initialToml } = initializeCodexConfigState(result);
+  const { sandboxState, toml } = applyEnsureCodexConfigDefaults(
+    initialToml,
+    env,
+    primarySdk,
+    { manageVkMcp, skipVk, vkBaseUrl },
+    result,
+  );
+
+  persistCodexConfigIfChanged(toml, originalToml, dryRun, result);
   applyTrustedProjectDefaults(
     sandboxState.repoRoot,
     sandboxState.additionalRoots,
     dryRun,
     result,
   );
-
   return result;
 }
 
