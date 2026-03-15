@@ -2,6 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CONFIG_FILES } from "./config-file-names.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -130,7 +131,6 @@ export function resolveRepoRoot(options = {}) {
   }
 
   // Check bosun config for workspace repos
-  const CONFIG_FILES = ["bosun.config.json", ".bosun.json", "bosun.json"];
   const configDirs = [...getConfigSearchDirs(), __dirname];
   let fallbackRepo = null;
   for (const cfgName of CONFIG_FILES) {
@@ -192,7 +192,6 @@ export function resolveAgentRepoRoot(options = {}) {
  * @returns {string|null}
  */
 function _resolveWorkspacePrimaryRepo() {
-  const CONFIG_FILES = ["bosun.config.json", ".bosun.json", "bosun.json"];
   const configDirs = [...getConfigSearchDirs(), __dirname];
   for (const cfgName of CONFIG_FILES) {
     for (const dir of configDirs) {
