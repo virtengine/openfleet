@@ -495,13 +495,14 @@ describe("guaranteed: behavioral contracts", () => {
   it("template-weekly-fitness-summary: partially parsed task telemetry still computes best-effort throughput", async () => {
     const { harness, fixtures } = setupHarness("template-weekly-fitness-summary");
     const runInput = { ...fixtures.inputVars, createFollowupTasks: false };
+    const recentCompletedAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
     const stableDispatch = _activeDispatch;
     _activeDispatch = (cmd) => {
       const command = String(cmd || "");
       if (/^bosun\s+task\s+list\b/i.test(command)) {
         return [
-          "{\"status\":\"done\",\"completedAt\":\"2026-03-08T10:00:00Z\",\"reopenCount\":0}",
+          JSON.stringify({ status: "done", completedAt: recentCompletedAt, reopenCount: 0 }),
           "{ malformed-task-json",
         ].join("\n");
       }
@@ -556,6 +557,7 @@ describe("guaranteed: behavioral contracts", () => {
   it("template-weekly-fitness-summary: parses wrapped canonical task payloads and preserves planner artifact", async () => {
     const { harness, fixtures } = setupHarness("template-weekly-fitness-summary");
     const runInput = { ...fixtures.inputVars, createFollowupTasks: false };
+    const recentCompletedAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
     const stableDispatch = _activeDispatch;
     _activeDispatch = (cmd) => {
@@ -564,7 +566,7 @@ describe("guaranteed: behavioral contracts", () => {
         return JSON.stringify({
           result: {
             tasks: [
-              { status: "done", completedAt: "2026-03-08T10:00:00Z", reopenCount: 0 },
+              { status: "done", completedAt: recentCompletedAt, reopenCount: 0 },
             ],
           },
         });
