@@ -5844,11 +5844,12 @@ export function TasksTab() {
     setActionsOpen(false);
     haptic("medium");
     try {
-      const res = await apiFetch("/api/tasks/export", { _silent: true });
-      const payload = res?.data || {};
+      const res = await apiFetch("/api/tasks?limit=1000", { _silent: true });
+      const allTasks = res?.data || res?.tasks || tasks;
+      const payload = { tasks: allTasks };
       const date = new Date().toISOString().slice(0, 10);
       exportAsJSON(payload, `tasks-state-${date}.json`);
-      showToast(`Exported ${(payload?.tasks || []).length} tasks`, "success");
+      showToast(`Exported ${allTasks.length} tasks`, "success");
     } catch {
       showToast("Export failed", "error");
     }
