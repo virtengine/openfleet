@@ -281,6 +281,19 @@ describe("task-store DAG organization", () => {
     expect(result.orderedSprintIds.slice(0, 2)).toEqual(["sprint-b", "sprint-a"]);
     expect(result.updatedSprintCount).toBeGreaterThanOrEqual(1);
     expect(result.orderedTaskIdsBySprint["sprint-b"]).toEqual(["dep-task", "seq-a", "seq-b", "seq-c", "seq-d"]);
+
+    // Verify that the underlying task sprintOrder values were actually updated
+    // (distinct from result.orderedTaskIdsBySprint which is the return value).
+    const sprintBTasks = [
+      ts.getTask("dep-task"),
+      ts.getTask("seq-a"),
+      ts.getTask("seq-b"),
+      ts.getTask("seq-c"),
+      ts.getTask("seq-d"),
+    ];
+    const sprintBTasksSortedByOrder = [...sprintBTasks].sort((a, b) => (a.sprintOrder ?? 0) - (b.sprintOrder ?? 0));
+    expect(sprintBTasksSortedByOrder.map(t => t.id)).toEqual(["dep-task", "seq-a", "seq-b", "seq-c", "seq-d"]);
+
     expect(result.suggestions).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "redundant_transitive_dependency", taskId: "seq-c", dependencyTaskId: "seq-a" }),
       expect.objectContaining({ type: "missing_sequential_dependency", taskId: "seq-d", dependencyTaskId: "seq-c" }),

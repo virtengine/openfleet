@@ -708,6 +708,22 @@ function collectDagRewriteSuggestions(taskMap, orderedTaskIds, sprint) {
   const sprintId = normalizeSprintId(sprint?.id);
   const sprintMode = resolveSprintOrderMode(sprint?.executionMode || sprint?.taskOrderMode || "parallel");
 
+  // Cache for hasDependencyPath results to avoid repeated expensive traversals.
+  const pathCache = new Map();
+  function memoizedHasDependencyPath(fromTaskId, targetTaskId, initialVisited) {
+    const fromId = String(fromTaskId || "").trim();
+    const toId = String(targetTaskId || "").trim();
+    if (!fromId || !toId) return false;
+    const cacheKey = `${fromId}::${toId}`;
+    if (pathCache.has(cacheKey)) {
+      return pathCache.get(cacheKey);
+    }
+    const visited = initialVisited ? new Set(initialVisited) : new Set();
+    const result = hasDependencyPath(taskMap, fromId, toId, visited);
+    pathCache.set(cacheKey, result);
+    return result;
+  }
+
   if (sprintMode === "sequential") {
     for (let index = 1; index < orderedTaskIds.length; index += 1) {
       const previousTaskId = orderedTaskIds[index - 1];
@@ -732,7 +748,7 @@ function collectDagRewriteSuggestions(taskMap, orderedTaskIds, sprint) {
     for (const dependencyId of directDependencies) {
       const redundant = directDependencies.some((otherDependencyId) => {
         if (otherDependencyId === dependencyId) return false;
-        return hasDependencyPath(taskMap, otherDependencyId, dependencyId, new Set([taskId]));
+        return memoizedHasDependencyPath(otherDependencyId, dependencyId, new Set([taskId]));
       });
       if (!redundant) continue;
       suggestions.push({

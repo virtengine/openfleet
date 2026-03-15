@@ -32,6 +32,31 @@ For code results or lists, summarise the key finding verbally instead of dumping
 `;
 
 /**
+ * Regular expressions for commands that are considered safe to execute
+ * directly in the workspace shell. Shared so they can be maintained and
+ * potentially tested independently of the call site.
+ */
+const SAFE_WORKSPACE_COMMAND_PATTERNS = [
+  /^git\s+(status|log|diff\s|show\s|branch|remote|tag|stash\s+list|ls-files|rev-parse|shortlog|describe)\b/i,
+  /^git\s+diff$/i,
+  /^git\s+log$/i,
+  /^npm\s+(test|run\s+(test|lint|build|check)|ls|audit)\b/i,
+  /^node\s+(--version|-v)$/i,
+  /^npm\s+(--version|-v)$/i,
+  /^ls(\s|$)/i,
+  /^cat\s+/i,
+  /^head\s+/i,
+  /^tail(\s|$)/i,
+  /^wc(\s|$)/i,
+  /^find\s+/i,
+  /^grep(\s|$)/i,
+  /^echo\s+/i,
+  /^pwd$/i,
+  /^which\s+/i,
+  /^type\s+/i,
+];
+
+/**
  * Extract the TTS-ready fragment from an agent response.
  *
  * Priority:
@@ -59,7 +84,7 @@ function formatVoiceToolResult(text) {
     .replace(/\n/g, " ")
     .trim();
 
-  // 3) Truncate to 100 words for spoken clarity
+  // 3) Truncate to a maximum of 100 words for spoken clarity
   const words = stripped.split(/\s+/);
   if (words.length <= 100) return stripped;
   return words.slice(0, 100).join(" ") + "…";
@@ -594,23 +619,23 @@ const AGENT_TOOLS_DEFS = [
   {
     type: "function",
     name: "delegate_to_agent",
-    description: "Execute a CODE MODIFICATION task via a coding agent (codex, copilot, claude, gemini, or opencode). Creates a live session for writing code, modifying files, creating PRs, or running multi-step workflows. Do NOT use this for questions, status checks, or information retrieval — use ask_agent_context or direct tools instead. Only use when the user explicitly asks to write, fix, create, implement, refactor, or deploy code.",
+    description: "Delegate a code modification task to a coding agent.",
     parameters: {
       type: "object",
       properties: {
         message: {
           type: "string",
-          description: "The instruction to send to the agent. Be specific and detailed.",
+          description: "Instruction for the coding agent describing the code modification task. Be specific and detailed. Use only when the user explicitly asks to write, fix, create, implement, refactor, or deploy code; do not use for questions, status checks, or information retrieval.",
         },
         executor: {
           type: "string",
           enum: ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"],
-          description: "Which agent to use. Defaults to the configured primary agent.",
+          description: "Which coding agent implementation to use. If omitted, the configured primary agent is used.",
         },
         mode: {
           type: "string",
           enum: ["ask", "agent", "plan", "code", "architect"],
-          description: "Agent mode: code (make changes), ask (read-only), architect (plan). Default: code",
+          description: "Agent mode: code (make changes), ask (read-only), architect (plan). Default: code.",
         },
         model: {
           type: "string",
@@ -673,7 +698,7 @@ const SESSION_TOOLS_DEFS = [
   {
     type: "function",
     name: "list_sessions",
-    description: "List active and historical chat/agent sessions with metadata. Returns session summaries (not full transcripts) for fast browsing. Use get_session_history with fullTranscript=true for complete message text.",
+    description: "List active and historical chat/agent sessions with metadata. Returns session summaries (not full transcripts) for fast browsing.",
     parameters: {
       type: "object",
       properties: {
@@ -2349,7 +2374,8 @@ const TOOL_HANDLERS = {
       "Return strict JSON with keys: name, description, enabled, variables, nodes, edges, triggers, metadata. " +
       "Do not include markdown fences.\n\n" +
       `User request:\n${prompt}`;
-    const result = await execPooledPrompt(generationPrompt, {
+    const pool = await getAgentPool();
+    const result = await pool.execPooledPrompt(generationPrompt, {
       sdk: executor,
       mode: "agent",
       sessionId: context?.sessionId || `voice-workflow-generate-${Date.now()}`,
@@ -2983,26 +3009,9 @@ const TOOL_HANDLERS = {
     const rawCmd = String(args.command || "").trim();
     if (!rawCmd) return "{RESPONSE}: command is required.";
 
-    // Only execute obviously read-only commands directly.
-    const SAFE_PATTERNS = [
-      /^git\s+(status|log|diff\s|show\s|branch|remote|tag|stash\s+list|ls-files|rev-parse|shortlog|describe)\b/i,
-      /^git\s+diff$/i,
-      /^git\s+log$/i,
-      /^npm\s+(test|run\s+(test|lint|build|check)|ls|audit)\b/i,
-      /^node\s+(--version|-v)$/i,
-      /^npm\s+(--version|-v)$/i,
-      /^ls(\s|$)/i,
-      /^cat\s+/i,
-      /^head\s+/i,
-      /^tail(\s|$)/i,
-      /^wc(\s|$)/i,
-      /^find\s+/i,
-      /^grep(\s|$)/i,
-      /^echo\s+/i,
-      /^pwd$/i,
-      /^which\s+/i,
-      /^type\s+/i,
-    ];
+    // Only execute obviously read-only commands directly, based on the
+    // shared SAFE_WORKSPACE_COMMAND_PATTERNS defined at module scope.
+    const SAFE_PATTERNS = SAFE_WORKSPACE_COMMAND_PATTERNS;
 
     const isSafe = SAFE_PATTERNS.some((p) => p.test(rawCmd));
     if (!isSafe) {
