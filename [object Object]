@@ -53,3 +53,15 @@
   - `pnpm build` passed
 - PR: #284 — `chore/code-quality-striker-20260314-config-workspace-health`
 >>>>>>> 3afcf884 (chore: append striker session log)
+
+## 2026-03-15T13:03:44.919053+11:00
+
+- Scope: Split repository import scanning and importing inside `infra/library-manager.mjs` into focused internal helpers without changing the public API.
+- Files changed: infra/library-manager.mjs, [object Object]
+- Strategy: Extracted shared repository source resolution, clone checkout setup, markdown candidate discovery, MCP discovery, and per-candidate import helpers so scan/import paths reuse the same logic and future edits stay localized.
+- Validation evidence:
+  - `[object Object]` passed on all touched files
+  - `npm test -- tests/library-manager.test.mjs` passed (61 tests)
+  - `pnpm build` passed
+  - `npm test` is blocked by 2 pre-existing failures in `tests/ui-server.test.mjs` that also reproduce on pristine `HEAD`
+- PR: #291 — `chore/code-quality-striker-20260315-library-import-scan-split-2`
