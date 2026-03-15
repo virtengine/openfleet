@@ -12770,7 +12770,7 @@
       "trigger": "trigger.schedule",
       "variables": {
         "staleProcessMaxAge": "15m",
-        "worktreeMaxAgeHours": 48,
+        "worktreeMaxAge": "48h",
         "logRetentionDays": 7
       },
       "metadata": {
@@ -12820,7 +12820,7 @@
           "type": "action.run_command",
           "label": "Prune Worktrees",
           "config": {
-            "command": "node --input-type=module -e \"import { pruneStaleWorktrees } from './workspace/worktree-manager.mjs'; const maxAgeMs = Number('{{worktreeMaxAgeHours}}') * 60 * 60 * 1000; const result = await pruneStaleWorktrees(process.cwd(), { maxAgeMs }); process.stdout.write(JSON.stringify(result) + '\\\\n');\""
+            "command": "node -e \"const cp=require('node:child_process');cp.execSync('git worktree prune',{stdio:'ignore'});const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\""
           },
           "position": {
             "x": 150,
@@ -12914,7 +12914,7 @@
           "type": "notify.log",
           "label": "Log Summary",
           "config": {
-            "message": "Workspace hygiene sweep completed (max worktree age target: {{worktreeMaxAgeHours}}h)",
+            "message": "Workspace hygiene sweep completed (max worktree age target: {{worktreeMaxAge}})",
             "level": "info"
           },
           "position": {
@@ -14842,8 +14842,8 @@
         "scheduled",
         "agentic"
       ],
-      "nodeCount": 14,
-      "edgeCount": 15,
+      "nodeCount": 12,
+      "edgeCount": 12,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.schedule",
@@ -14851,7 +14851,6 @@
         "sessionTimeoutMs": 5400000,
         "branch": "chore/code-quality-striker-{{_runId}}",
         "baseBranch": "main",
-        "repoRoot": ".",
         "sessionLogPath": ".bosun-monitor/code-quality-striker.md",
         "maxFilesPerSession": 6,
         "minFileSizeKb": 30,
@@ -14935,25 +14934,6 @@
           "position": {
             "x": 400,
             "y": 310
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "acquire-worktree",
-          "type": "action.acquire_worktree",
-          "label": "Acquire Worktree",
-          "config": {
-            "repoRoot": "{{repoRoot}}",
-            "taskId": "code-quality-{{_runId}}",
-            "branch": "{{branch}}",
-            "baseBranch": "{{baseBranch}}",
-            "defaultTargetBranch": "{{baseBranch}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 380
           },
           "outputs": [
             "default"
@@ -15092,23 +15072,6 @@
           "outputs": [
             "default"
           ]
-        },
-        {
-          "id": "release-worktree",
-          "type": "action.release_worktree",
-          "label": "Release Worktree",
-          "config": {
-            "repoRoot": "{{repoRoot}}",
-            "taskId": "code-quality-{{_runId}}",
-            "prune": true
-          },
-          "position": {
-            "x": 400,
-            "y": 1160
-          },
-          "outputs": [
-            "default"
-          ]
         }
       ],
       "edges": [
@@ -15133,14 +15096,8 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "scan-candidates->acquire-worktree",
+          "id": "scan-candidates->run-striker",
           "source": "scan-candidates",
-          "target": "acquire-worktree",
-          "sourcePort": "default"
-        },
-        {
-          "id": "acquire-worktree->run-striker",
-          "source": "acquire-worktree",
           "target": "run-striker",
           "sourcePort": "default"
         },
@@ -15189,21 +15146,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "notify-success->release-worktree",
-          "source": "notify-success",
-          "target": "release-worktree",
-          "sourcePort": "default"
-        },
-        {
           "id": "notify-failure->log-failure",
           "source": "notify-failure",
           "target": "log-failure",
-          "sourcePort": "default"
-        },
-        {
-          "id": "log-failure->release-worktree",
-          "source": "log-failure",
-          "target": "release-worktree",
           "sourcePort": "default"
         }
       ]
@@ -18472,8 +18417,8 @@
         "workflow-first",
         "core"
       ],
-      "nodeCount": 53,
-      "edgeCount": 59,
+      "nodeCount": 52,
+      "edgeCount": 58,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -19413,29 +19358,6 @@
           ]
         },
         {
-          "id": "annotate-blocked-wt-failed",
-          "type": "action.bosun_function",
-          "label": "Annotate Blocked (WT Fail)",
-          "config": {
-            "function": "tasks.update",
-            "args": {
-              "taskId": "{{taskId}}",
-              "fields": {
-                "cooldownUntil": "{{acquire-worktree.retryAt}}",
-                "blockedReason": "{{acquire-worktree.blockedReason}}",
-                "meta": "{{(() => { const current = ($data.taskMeta && typeof $data.taskMeta === 'object') ? $data.taskMeta : {}; const output = $ctx.getNodeOutput('acquire-worktree') || {}; return { ...current, autoRecovery: { active: true, reason: 'worktree_failure', failureKind: output.failureKind || 'branch_refresh_conflict', retryAt: output.retryAt || null, recoveryDelayMs: output.autoRecoverDelayMs || null, error: output.error || '', recordedAt: output.recordedAt || null }, worktreeFailure: { failureKind: output.failureKind || 'branch_refresh_conflict', retryable: output.retryable !== false, retryAt: output.retryAt || null, blockedReason: output.blockedReason || '', error: output.error || '', recordedAt: output.recordedAt || null } }; })()}}"
-              }
-            }
-          },
-          "position": {
-            "x": 470,
-            "y": 1480
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "set-todo-wt-failed",
           "type": "action.update_task_status",
           "label": "Set Todo (WT Fail)",
@@ -19472,11 +19394,11 @@
           "type": "notify.telegram",
           "label": "Notify WT Failed",
           "config": {
-            "message": "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{acquire-worktree.recoveryNote}}"
+            "message": "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{$ctx.getNodeOutput('acquire-worktree')?.retryable === false ? ' — task blocked' : ''}}"
           },
           "position": {
             "x": 600,
-            "y": 1740
+            "y": 1610
           },
           "outputs": [
             "default"
@@ -19834,14 +19756,8 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "set-blocked-wt-failed->annotate-blocked-wt-failed",
+          "id": "set-blocked-wt-failed->release-slot-wt-failed",
           "source": "set-blocked-wt-failed",
-          "target": "annotate-blocked-wt-failed",
-          "sourcePort": "default"
-        },
-        {
-          "id": "annotate-blocked-wt-failed->release-slot-wt-failed",
-          "source": "annotate-blocked-wt-failed",
           "target": "release-slot-wt-failed",
           "sourcePort": "default"
         },
@@ -32912,7 +32828,7 @@
       "trigger": "trigger.schedule",
       "variables": {
         "staleProcessMaxAge": "15m",
-        "worktreeMaxAgeHours": 48,
+        "worktreeMaxAge": "48h",
         "logRetentionDays": 7
       },
       "nodes": [
@@ -32937,7 +32853,7 @@
           "type": "action.run_command",
           "label": "Prune Worktrees",
           "config": {
-            "command": "node --input-type=module -e \"import { pruneStaleWorktrees } from './workspace/worktree-manager.mjs'; const maxAgeMs = Number('{{worktreeMaxAgeHours}}') * 60 * 60 * 1000; const result = await pruneStaleWorktrees(process.cwd(), { maxAgeMs }); process.stdout.write(JSON.stringify(result) + '\\\\n');\""
+            "command": "node -e \"const cp=require('node:child_process');cp.execSync('git worktree prune',{stdio:'ignore'});const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\""
           },
           "position": {
             "x": 150,
@@ -33031,7 +32947,7 @@
           "type": "notify.log",
           "label": "Log Summary",
           "config": {
-            "message": "Workspace hygiene sweep completed (max worktree age target: {{worktreeMaxAgeHours}}h)",
+            "message": "Workspace hygiene sweep completed (max worktree age target: {{worktreeMaxAge}})",
             "level": "info"
           },
           "position": {
@@ -34862,13 +34778,12 @@
       "description": "Recurring autonomous refactoring agent that improves codebase structure for long-term agentic development. Runs every 2 hours with a hard 90-minute session cap. Each session MUST produce a passing PR before terminating. Scope is strictly limited to structural quality: module decomposition, deduplication, function splitting. Zero functional changes allowed.",
       "category": "maintenance",
       "enabled": true,
-      "nodeCount": 14,
+      "nodeCount": 12,
       "trigger": "trigger.schedule",
       "variables": {
         "sessionTimeoutMs": 5400000,
         "branch": "chore/code-quality-striker-{{_runId}}",
         "baseBranch": "main",
-        "repoRoot": ".",
         "sessionLogPath": ".bosun-monitor/code-quality-striker.md",
         "maxFilesPerSession": 6,
         "minFileSizeKb": 30,
@@ -34938,25 +34853,6 @@
           "position": {
             "x": 400,
             "y": 310
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "acquire-worktree",
-          "type": "action.acquire_worktree",
-          "label": "Acquire Worktree",
-          "config": {
-            "repoRoot": "{{repoRoot}}",
-            "taskId": "code-quality-{{_runId}}",
-            "branch": "{{branch}}",
-            "baseBranch": "{{baseBranch}}",
-            "defaultTargetBranch": "{{baseBranch}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 380
           },
           "outputs": [
             "default"
@@ -35095,23 +34991,6 @@
           "outputs": [
             "default"
           ]
-        },
-        {
-          "id": "release-worktree",
-          "type": "action.release_worktree",
-          "label": "Release Worktree",
-          "config": {
-            "repoRoot": "{{repoRoot}}",
-            "taskId": "code-quality-{{_runId}}",
-            "prune": true
-          },
-          "position": {
-            "x": 400,
-            "y": 1160
-          },
-          "outputs": [
-            "default"
-          ]
         }
       ],
       "edges": [
@@ -35136,14 +35015,8 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "scan-candidates->acquire-worktree",
+          "id": "scan-candidates->run-striker",
           "source": "scan-candidates",
-          "target": "acquire-worktree",
-          "sourcePort": "default"
-        },
-        {
-          "id": "acquire-worktree->run-striker",
-          "source": "acquire-worktree",
           "target": "run-striker",
           "sourcePort": "default"
         },
@@ -35192,21 +35065,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "notify-success->release-worktree",
-          "source": "notify-success",
-          "target": "release-worktree",
-          "sourcePort": "default"
-        },
-        {
           "id": "notify-failure->log-failure",
           "source": "notify-failure",
           "target": "log-failure",
-          "sourcePort": "default"
-        },
-        {
-          "id": "log-failure->release-worktree",
-          "source": "log-failure",
-          "target": "release-worktree",
           "sourcePort": "default"
         }
       ],
@@ -38329,7 +38190,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 53,
+      "nodeCount": 52,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -39236,29 +39097,6 @@
           ]
         },
         {
-          "id": "annotate-blocked-wt-failed",
-          "type": "action.bosun_function",
-          "label": "Annotate Blocked (WT Fail)",
-          "config": {
-            "function": "tasks.update",
-            "args": {
-              "taskId": "{{taskId}}",
-              "fields": {
-                "cooldownUntil": "{{acquire-worktree.retryAt}}",
-                "blockedReason": "{{acquire-worktree.blockedReason}}",
-                "meta": "{{(() => { const current = ($data.taskMeta && typeof $data.taskMeta === 'object') ? $data.taskMeta : {}; const output = $ctx.getNodeOutput('acquire-worktree') || {}; return { ...current, autoRecovery: { active: true, reason: 'worktree_failure', failureKind: output.failureKind || 'branch_refresh_conflict', retryAt: output.retryAt || null, recoveryDelayMs: output.autoRecoverDelayMs || null, error: output.error || '', recordedAt: output.recordedAt || null }, worktreeFailure: { failureKind: output.failureKind || 'branch_refresh_conflict', retryable: output.retryable !== false, retryAt: output.retryAt || null, blockedReason: output.blockedReason || '', error: output.error || '', recordedAt: output.recordedAt || null } }; })()}}"
-              }
-            }
-          },
-          "position": {
-            "x": 470,
-            "y": 1480
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
           "id": "set-todo-wt-failed",
           "type": "action.update_task_status",
           "label": "Set Todo (WT Fail)",
@@ -39295,11 +39133,11 @@
           "type": "notify.telegram",
           "label": "Notify WT Failed",
           "config": {
-            "message": "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{acquire-worktree.recoveryNote}}"
+            "message": "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{$ctx.getNodeOutput('acquire-worktree')?.retryable === false ? ' — task blocked' : ''}}"
           },
           "position": {
             "x": 600,
-            "y": 1740
+            "y": 1610
           },
           "outputs": [
             "default"
@@ -39657,14 +39495,8 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "set-blocked-wt-failed->annotate-blocked-wt-failed",
+          "id": "set-blocked-wt-failed->release-slot-wt-failed",
           "source": "set-blocked-wt-failed",
-          "target": "annotate-blocked-wt-failed",
-          "sourcePort": "default"
-        },
-        {
-          "id": "annotate-blocked-wt-failed->release-slot-wt-failed",
-          "source": "annotate-blocked-wt-failed",
           "target": "release-slot-wt-failed",
           "sourcePort": "default"
         },
