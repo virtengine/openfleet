@@ -3311,6 +3311,67 @@
         const t = findTask(params.get('taskId'));
         return { data: t || null };
       }
+      if (route === '/api/tasks/export') {
+        return {
+          ok: true,
+          data: {
+            schemaVersion: 1,
+            kind: 'bosun-task-state-export',
+            exportedAt: new Date().toISOString(),
+            backend: 'demo',
+            tasks: Array.isArray(STATE.tasks) ? [...STATE.tasks] : [],
+          },
+        };
+      }
+      if (route === '/api/tasks/import' && method === 'POST') {
+        const importedTasks = Array.isArray(body)
+          ? body
+          : Array.isArray(body?.tasks)
+            ? body.tasks
+            : Array.isArray(body?.backlog)
+              ? body.backlog
+              : Array.isArray(body?.data?.tasks)
+                ? body.data.tasks
+                : [];
+        let created = 0;
+        let updated = 0;
+        const results = [];
+        for (const candidate of importedTasks) {
+          if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+          const id = String(candidate.id || '').trim();
+          const title = String(candidate.title || '').trim();
+          if (!id || !title) {
+            results.push({ id: id || null, status: 'failed', error: 'task.id and task.title are required' });
+            continue;
+          }
+          const existing = findTask(id);
+          if (existing) {
+            Object.assign(existing, candidate, { updated: Date.now() });
+            updated += 1;
+            results.push({ id, status: 'updated' });
+            continue;
+          }
+          const createdTask = { ...candidate, created: candidate.created || Date.now(), updated: Date.now() };
+          STATE.tasks.unshift(createdTask);
+          created += 1;
+          results.push({ id, status: 'created' });
+        }
+        addLog('info', 'tasks', `Imported task state snapshot: ${created} created, ${updated} updated`);
+        return {
+          ok: true,
+          data: {
+            backend: 'demo',
+            mode: String(body?.mode || 'merge'),
+            summary: {
+              total: importedTasks.length,
+              created,
+              updated,
+              failed: results.filter((entry) => entry.status === 'failed').length,
+            },
+            results,
+          },
+        };
+      }
       if (route === '/api/tasks/sprints') {
         if (method === 'GET') {
           const sprints = Array.isArray(STATE.taskSprints) ? STATE.taskSprints : [];
@@ -3633,6 +3694,17 @@
       if (route === '/api/tasks/retry') {
         const t = findTask(body?.taskId);
         if (t) { t.status = 'todo'; t.updated = Date.now(); addLog('info', 'task-executor', `Task retried: ${t.title}`); }
+        return { ok: true, data: t || null };
+      }
+      if (route === '/api/tasks/unblock') {
+        const t = findTask(body?.taskId || body?.id);
+        if (t) {
+          t.status = 'todo';
+          t.blockedReason = null;
+          if (t.meta && typeof t.meta === 'object') t.meta.blockedReason = null;
+          t.updated = Date.now();
+          addLog('info', 'task-executor', `Task unblocked: ${t.title}`);
+        }
         return { ok: true, data: t || null };
       }
       if (route === '/api/tasks/ignore') {
@@ -4265,6 +4337,54 @@
           })
           .filter(Boolean);
         return { ok: true, updates };
+      }
+      if (route === '/api/workflows/reflow-template-layouts') {
+        const requestedIds = Array.isArray(body?.workflowIds)
+          ? body.workflowIds.map((value) => String(value || '').trim()).filter(Boolean)
+          : (body?.workflowId ? [String(body.workflowId).trim()].filter(Boolean) : []);
+        const targetIds = new Set(requestedIds);
+        const updatedWorkflows = [];
+
+        STATE.workflows = STATE.workflows.map((wf, index) => {
+          const workflowId = String(wf?.id || '').trim();
+          const isTemplateBacked = Boolean(wf?.metadata?.installedFrom);
+          const isTargeted = targetIds.size === 0 || targetIds.has(workflowId);
+          if (!workflowId || !isTemplateBacked || !isTargeted) return wf;
+
+          const next = JSON.parse(JSON.stringify(wf));
+          next.nodes = (next.nodes || []).map((node, nodeIndex) => ({
+            ...node,
+            position: {
+              x: 160 + (nodeIndex % 3) * 280,
+              y: 96 + Math.floor(nodeIndex / 3) * 180,
+            },
+          }));
+          next.metadata = {
+            ...(next.metadata || {}),
+            updatedAt: new Date().toISOString(),
+            templateState: {
+              ...(next.metadata?.templateState || {}),
+              isCustomized: false,
+              updateAvailable: false,
+            },
+          };
+          next.nodeCount = (next.nodes || []).length;
+          updatedWorkflows.push(next);
+          return next;
+        });
+
+        return {
+          ok: true,
+          result: {
+            scanned: targetIds.size > 0 ? targetIds.size : STATE.workflows.length,
+            updated: updatedWorkflows.length,
+            skipped: Math.max(0, (targetIds.size > 0 ? targetIds.size : STATE.workflows.length) - updatedWorkflows.length),
+            updatedWorkflowIds: updatedWorkflows.map((wf) => wf.id),
+            skippedWorkflowIds: [],
+            errors: [],
+          },
+          workflows: updatedWorkflows,
+        };
       }
       if (route.startsWith('/api/workflows/runs/')) {
         const runId = decodeURIComponent(route.replace('/api/workflows/runs/', '')).trim();

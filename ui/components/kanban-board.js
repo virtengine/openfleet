@@ -27,6 +27,7 @@ const html = htm.bind(h);
 const COLUMN_MAP = {
   draft: ["draft"],
   backlog: ["backlog", "open", "new", "todo"],
+  blocked: ["blocked", "error", "failed"],
   inProgress: ["in-progress", "inprogress", "working", "active", "assigned"],
   inReview: ["in-review", "inreview", "review", "pr-open", "pr-review"],
   done: ["done", "completed", "closed", "merged", "cancelled"],
@@ -35,6 +36,7 @@ const COLUMN_MAP = {
 const COLUMNS = [
   { id: "draft", title: "Drafts", icon: "\u{1F4DD}", color: "var(--color-warning, #f59e0b)" },
   { id: "backlog", title: "Backlog", icon: "\u{1F4CB}", color: "var(--text-secondary)" },
+  { id: "blocked", title: "Blocked", icon: "\u26D4", color: "var(--color-error, #ef4444)" },
   { id: "inProgress", title: "In Progress", icon: "\u{1F528}", color: "var(--color-inprogress, #3b82f6)" },
   { id: "inReview", title: "In Review", icon: "\u{1F440}", color: "var(--color-inreview, #f59e0b)" },
   { id: "done", title: "Done", icon: "\u2705", color: "var(--color-done, #22c55e)" },
@@ -43,6 +45,7 @@ const COLUMNS = [
 const COLUMN_TO_STATUS = {
   draft: "draft",
   backlog: "todo",
+  blocked: "blocked",
   inProgress: "inprogress",
   inReview: "inreview",
   done: "done",
@@ -188,6 +191,29 @@ function getTaskBaseBranch(task) {
     task.meta?.base_branch ||
     ""
   );
+}
+
+function getTaskBlockedPreview(task) {
+  const direct = String(
+    task?.blockedReason ||
+    task?.meta?.worktreeFailure?.blockedReason ||
+    task?.meta?.blockedContext?.summary ||
+    "",
+  ).trim();
+  if (direct) return direct;
+  const timeline = Array.isArray(task?.timeline) ? task.timeline : [];
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const message = String(
+      timeline[index]?.message ||
+      timeline[index]?.reason ||
+      timeline[index]?.error ||
+      "",
+    ).trim();
+    if (/worktree failed|pre-pr validation failed|blocked/i.test(message)) {
+      return message;
+    }
+  }
+  return "";
 }
 
 /* ─── Derived column data ─── */
@@ -504,6 +530,7 @@ function KanbanCard({ task, onOpen }) {
   const priorityLabel = PRIORITY_LABELS[task.priority] || null;
   const tags = getTaskTags(task);
   const baseBranch = getTaskBaseBranch(task);
+  const blockedPreview = getTaskBlockedPreview(task);
   const repoName = task.repo || task.repository || "";
   const issueNum = task.issueNumber || task.issue_number || (typeof task.id === "string" && /^\d+$/.test(task.id) ? task.id : null);
   const hasAgent = Boolean(
@@ -556,6 +583,11 @@ function KanbanCard({ task, onOpen }) {
         <${Typography} variant="body2" fontWeight=${500}>${truncate(task.title || "(untitled)", 80)}</${Typography}>
         ${task.description && html`
           <${Typography} variant="caption" color="text.secondary" sx=${{ display: 'block', mt: 0.5 }}>${truncate(task.description, 72)}</${Typography}>
+        `}
+        ${String(task?.status || "").toLowerCase() === "blocked" && html`
+          <${Typography} variant="caption" sx=${{ display: 'block', mt: 0.5, color: 'var(--color-error, #ef4444)', fontWeight: 600 }}>
+            ${truncate(blockedPreview || "Blocked task. Open details for diagnostics.", 96)}
+          </${Typography}>
         `}
         ${baseBranch && html`
           <${Typography} variant="caption" color="text.secondary" sx=${{ display: 'block', mt: 0.5 }}>Base: ${truncate(baseBranch, 24)}</${Typography}>
@@ -941,7 +973,6 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
     </${Box}>
   `;
 }
-
 
 
 
