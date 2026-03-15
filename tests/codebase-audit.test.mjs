@@ -13,6 +13,7 @@ import {
   scanRepository,
   trimAuditArtifacts,
 } from "../lib/codebase-audit.mjs";
+import { upsertManagedBlock } from "../lib/codebase-audit-manifests.mjs";
 
 const tempRoots = [];
 
@@ -167,6 +168,27 @@ describe("codebase audit engine", () => {
     generateSummaries(root);
     const content = readFileSync(resolve(root, "src", "marker-literal.mjs"), "utf8");
     expect(content).toMatch(/^\/\/ CLAUDE:SUMMARY/m);
+  });
+
+  it("replaces an existing managed block without regex backtracking", () => {
+    const existing = [
+      "intro",
+      "<!-- bosun-audit:begin -->",
+      "old",
+      "<!-- bosun-audit:end -->",
+      "\t".repeat(4000),
+      "outro",
+    ].join("\n");
+    const block = [
+      "<!-- bosun-audit:begin -->",
+      "new",
+      "<!-- bosun-audit:end -->",
+    ].join("\n");
+
+    const updated = upsertManagedBlock(existing, block);
+    expect(updated).toContain("new");
+    expect(updated).not.toContain("\nold\n");
+    expect(updated).toContain("outro");
   });
 
 
