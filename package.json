@@ -217,6 +217,8 @@
     "lib/codebase-audit-warnings.mjs",
     "lib/session-insights.mjs",
     "infra/library-manager.mjs",
+    "infra/library-manager-utils.mjs",
+    "infra/library-manager-well-known-sources.mjs",
     "infra/maintenance.mjs",
     "workflow/manual-flows.mjs",
     "workflow/manual-flow-audit.mjs",

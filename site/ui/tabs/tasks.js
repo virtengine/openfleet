@@ -3682,19 +3682,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             <div class="task-section-title">Workflow Activity</div>
             <div class="task-section-body">
               <div class="task-comments-list">
-                ${workflowRuns.map((run, index) => html`
-                  <div class="task-comment-item" key=${`workflow-${index}`}>
-                    <div class="task-comment-meta">
-                      ${run.workflowId || "workflow"}
-                      ${run.runId ? ` · run ${run.runId}` : ""}
-                      ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
-                    </div>
-                    <div class="task-comment-body">${run.status || run.result || "No status summary"}</div>
-                    ${run.result && run.status && run.result !== run.status && html`
-                      <div class="task-comment-body">${run.result}</div>
-                    `}
-                  </div>
-                `)}
+                ${workflowRuns.map((run, index) => renderWorkflowActivityCard(run, `workflow-${index}`))}
               </div>
             </div>
           </div>
@@ -4480,16 +4468,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">Workflow Activity</div>
           <div class="task-comments-list">
-            ${workflowRuns.map((run, index) => html`
-              <div class="task-comment-item" key=${`wf-hist-${index}`}>
-                <div class="task-comment-meta">
-                  ${run.workflowId || "workflow"}
-                  ${run.runId ? ` · run ${run.runId}` : ""}
-                  ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
-                </div>
-                <div class="task-comment-body">${run.status || run.result || "No status summary"}</div>
-              </div>
-            `)}
+            ${workflowRuns.map((run, index) => renderWorkflowActivityCard(run, `wf-hist-${index}`))}
           </div>
         </div>
       `}

@@ -3465,7 +3465,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         ${(task?.status === "blocked" || canStartInfo?.canStart === false) && html`
           <div class="task-section">
             <div class="task-section-title">
-              ${task?.status === "blocked" ? "Blocked Diagnostics" : "Start Readiness"}
+              ${task?.status === "blocked" ? "Why Bosun Is Holding This Task" : "Why This Task Cannot Start Yet"}
               ${blockedContext?.workflowRunCount > 0 && html`<span class="task-tab-count">${blockedContext.workflowRunCount}</span>`}
             </div>
             <div class="task-section-body">
@@ -3474,10 +3474,13 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                   ${blockedContext?.headline || "This task cannot start yet."}
                 </div>
                 <div class="task-blocked-banner-copy">
-                  ${blockedContext?.summary || blockedContext?.reason || "Bosun is holding this task until the blocking condition is resolved."}
+                  ${blockedContext?.summary || blockedContext?.reason || "Bosun paused this task because a dependency, workflow guard, or recovery issue is still unresolved."}
                 </div>
                 ${blockedContext?.recommendation && html`
                   <div class="task-blocked-banner-copy">${blockedContext.recommendation}</div>
+                `}
+                ${blockedContext?.reason && blockedContext.reason !== blockedContext.summary && html`
+                  <div class="task-blocked-banner-copy">Recorded reason: ${blockedContext.reason}</div>
                 `}
               </div>
 
@@ -3766,19 +3769,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             <div class="task-section-title">Workflow Activity</div>
             <div class="task-section-body">
               <div class="task-comments-list">
-                ${workflowRuns.map((run, index) => html`
-                  <div class="task-comment-item" key=${`workflow-${index}`}>
-                    <div class="task-comment-meta">
-                      ${run.workflowId || "workflow"}
-                      ${run.runId ? ` · run ${run.runId}` : ""}
-                      ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
-                    </div>
-                    <div class="task-comment-body">${run.status || run.result || "No status summary"}</div>
-                    ${run.result && run.status && run.result !== run.status && html`
-                      <div class="task-comment-body">${run.result}</div>
-                    `}
-                  </div>
-                `)}
+                ${workflowRuns.map((run, index) => renderWorkflowActivityCard(run, `workflow-${index}`))}
               </div>
             </div>
           </div>
@@ -4576,16 +4567,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">Workflow Activity</div>
           <div class="task-comments-list">
-            ${workflowRuns.map((run, index) => html`
-              <div class="task-comment-item" key=${`wf-hist-${index}`}>
-                <div class="task-comment-meta">
-                  ${run.workflowId || "workflow"}
-                  ${run.runId ? ` · run ${run.runId}` : ""}
-                  ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
-                </div>
-                <div class="task-comment-body">${run.status || run.result || "No status summary"}</div>
-              </div>
-            `)}
+            ${workflowRuns.map((run, index) => renderWorkflowActivityCard(run, `wf-hist-${index}`))}
           </div>
         </div>
       `}
@@ -7701,7 +7683,6 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     <//>
   `;
 }
-
 
 
 

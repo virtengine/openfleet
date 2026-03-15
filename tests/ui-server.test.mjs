@@ -1831,6 +1831,70 @@ describe("ui-server mini app", () => {
     expect(task.meta?.note).toBe("keep-me");
   });
 
+  it("clears blocked task state when editing a blocked task back to todo", async () => {
+    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-edit-unblock-"));
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.EXECUTOR_MODE = "internal";
+    process.env.BOSUN_HOME = isolatedDir;
+    process.env.BOSUN_DIR = isolatedDir;
+    process.env.CODEX_MONITOR_HOME = isolatedDir;
+    process.env.CODEX_MONITOR_DIR = isolatedDir;
+
+    const storeDir = join(isolatedDir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+    const taskStore = await import("../task/task-store.mjs");
+    taskStore.configureTaskStore({ storePath });
+    taskStore.loadStore();
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    taskStore.addTask({
+      id: "task-edit-unblock",
+      title: "Blocked via edit",
+      description: "verify edit route clears block state",
+      status: "blocked",
+      cooldownUntil: new Date(Date.now() + 60_000).toISOString(),
+      blockedReason: "dependency not ready",
+      meta: {
+        autoRecovery: {
+          active: true,
+          reason: "worktree_failure",
+          retryAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+        note: "preserve-me",
+      },
+    });
+
+    const edited = await fetch(`http://127.0.0.1:${port}/api/tasks/edit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        taskId: "task-edit-unblock",
+        title: "Blocked via edit",
+        description: "verify edit route clears block state",
+        status: "todo",
+      }),
+    }).then((r) => r.json());
+
+    expect(edited.ok).toBe(true);
+    expect(edited.data.status).toBe("todo");
+
+    const task = taskStore.getTask("task-edit-unblock");
+    expect(task.status).toBe("todo");
+    expect(task.cooldownUntil).toBeNull();
+    expect(task.blockedReason).toBeNull();
+    expect(task.meta?.autoRecovery).toBeUndefined();
+    expect(task.meta?.note).toBe("preserve-me");
+  });
+
   it("queues task starts when no executor slots are free and reports truthful runtime state", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-queue-"));
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -1958,6 +2022,119 @@ describe("ui-server mini app", () => {
     expect(detail.data.workflowRuns.length).toBeGreaterThan(0);
     expect(detail.data.workflowRuns.some((run) => run.workflowId === workflowId)).toBe(true);
   }, 20000);
+
+  it("preserves stored workflow session links while adding primary session ids from workflow detail", async () => {
+    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-workflow-merge-"));
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_HOME = isolatedDir;
+    process.env.BOSUN_DIR = isolatedDir;
+    process.env.CODEX_MONITOR_HOME = isolatedDir;
+    process.env.CODEX_MONITOR_DIR = isolatedDir;
+
+    const mod = await import("../server/ui-server.mjs");
+    const workflowEngineModule = await import("../workflow/workflow-engine.mjs");
+    const fakeEngine = {
+      getRunHistory: vi.fn(() => [{ runId: "run-merge-1" }]),
+      getRunDetail: vi.fn(() => ({
+        runId: "run-merge-1",
+        workflowId: "wf-merge-1",
+        workflowName: "Merged workflow",
+        status: "completed",
+        startedAt: "2026-03-15T12:00:00.000Z",
+        endedAt: "2026-03-15T12:02:00.000Z",
+        duration: 120000,
+        detail: {
+          data: {
+            taskId: "__task__",
+            sessionId: "derived-session-1",
+          },
+        },
+      })),
+      getTaskTraceEvents: vi.fn(() => [
+        {
+          taskId: "__task__",
+          meta: { sessionId: "trace-session-1" },
+        },
+      ]),
+      registerTaskTraceHook: vi.fn(),
+      load: vi.fn(),
+    };
+    mod._testInjectWorkflowEngine({ WorkflowEngine: class MockWorkflowEngine {} }, fakeEngine);
+
+    try {
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: "Workflow merge task",
+          description: "preserve stored workflow session link",
+          status: "todo",
+        }),
+      }).then((r) => r.json());
+      expect(created.ok).toBe(true);
+      const taskId = created.data.id;
+
+      fakeEngine.getRunDetail.mockImplementation(() => ({
+        runId: "run-merge-1",
+        workflowId: "wf-merge-1",
+        workflowName: "Merged workflow",
+        status: "completed",
+        startedAt: "2026-03-15T12:00:00.000Z",
+        endedAt: "2026-03-15T12:02:00.000Z",
+        duration: 120000,
+        detail: {
+          data: {
+            taskId,
+            sessionId: "derived-session-1",
+          },
+        },
+      }));
+      fakeEngine.getTaskTraceEvents.mockImplementation(() => [
+        {
+          taskId,
+          meta: { sessionId: "trace-session-1" },
+        },
+      ]);
+
+      const { getKanbanAdapter } = await import("../kanban/kanban-adapter.mjs");
+      const adapter = getKanbanAdapter();
+      await adapter.updateTask(taskId, {
+        workflowRuns: [
+          {
+            runId: "run-merge-1",
+            workflowId: "wf-merge-1",
+            status: "linked",
+            summary: "Stored workflow link",
+            meta: { sessionId: "stored-session-1" },
+          },
+        ],
+      });
+
+      const detail = await fetch(
+        `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
+      ).then((r) => r.json());
+
+      expect(detail.ok).toBe(true);
+      const mergedRun = detail.data.workflowRuns.find((run) => run.runId === "run-merge-1");
+      expect(mergedRun).toMatchObject({
+        runId: "run-merge-1",
+        workflowId: "wf-merge-1",
+        sessionId: "stored-session-1",
+        primarySessionId: "derived-session-1",
+      });
+      expect(mergedRun.meta?.sessionId).toBe("stored-session-1");
+    } finally {
+      mod._testInjectWorkflowEngine(workflowEngineModule, null);
+    }
+  });
 
   it("reports epic dependency blockers from start guards", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -2223,7 +2400,7 @@ describe("ui-server mini app", () => {
       { taskId: "dep-1", reason: "Waiting for dep-1" },
     ]);
     expect(detailJson.data.blockedContext.reason).toBe("dependency_blocked");
-    expect(detailJson.data.blockedContext.summary).toContain("Bosun start guards");
+    expect(detailJson.data.blockedContext.summary).toContain("Bosun will not dispatch this task");
 
     const listResp = await fetch(`http://127.0.0.1:${port}/api/tasks`);
     const listJson = await listResp.json();
@@ -3463,4 +3640,3 @@ describe("ui-server mini app", () => {
   });
 
 });
-

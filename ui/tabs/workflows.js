@@ -660,7 +660,7 @@ function ExecuteWorkflowDialog() {
       PaperProps=${{ sx: { bgcolor: 'var(--color-bg-secondary, #1a1f2e)', color: 'var(--color-text, #e8eaf0)', borderRadius: '12px' } }}
     >
       <${DialogTitle} sx=${{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        <span style="font-size: 20px">${resolveIcon("play")}</span>
+        <span class="icon-inline">${resolveIcon("play")}</span>
         <span>Execute: ${wf.name}</span>
       <//>
 
@@ -1020,7 +1020,7 @@ function InstallTemplateDialog() {
       PaperProps=${{ sx: { bgcolor: 'var(--color-bg-secondary, #1a1f2e)', color: 'var(--color-text, #e8eaf0)', borderRadius: '12px' } }}
     >
       <${DialogTitle} sx=${{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        <span style="font-size: 20px">${resolveIcon("download")}</span>
+        <span class="icon-inline">${resolveIcon("download")}</span>
         <span>Install: ${template.name}</span>
       <//>
 

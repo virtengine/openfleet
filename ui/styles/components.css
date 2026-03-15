@@ -6333,6 +6333,33 @@ select.input {
   color: var(--text-secondary, #c9d1d9);
 }
 
+.task-workflow-run-card[data-clickable="true"] {
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+.task-workflow-run-card[data-clickable="true"]:hover,
+.task-workflow-run-card[data-clickable="true"]:focus-visible {
+  border-color: var(--accent, #3b82f6);
+  background: rgba(59, 130, 246, 0.08);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.task-workflow-run-head {
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.task-workflow-run-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 /* Priority dot */
 .task-priority-dot {
   display: inline-block;

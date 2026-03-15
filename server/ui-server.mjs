@@ -1608,11 +1608,10 @@ function handleTaskWorkflowTraceEvent(event = {}) {
 function mergeTaskWorkflowRuns(baseRuns = [], extraRuns = [], limit = 60) {
   const merged = [];
   const indexByKey = new Map();
-  const resolveSessionId = (entry) => {
+  const resolveLinkedSessionId = (entry) => {
     const candidates = [
       entry?.sessionId,
       entry?.threadId,
-      entry?.primarySessionId,
       entry?.agentSessionId,
       entry?.meta?.sessionId,
       entry?.meta?.threadId,
@@ -1625,9 +1624,20 @@ function mergeTaskWorkflowRuns(baseRuns = [], extraRuns = [], limit = 60) {
     }
     return null;
   };
+  const resolveSessionId = (entry) => {
+    const directSessionId = resolveLinkedSessionId(entry);
+    if (directSessionId) return directSessionId;
+    const primarySessionId = String(entry?.primarySessionId || "").trim();
+    return primarySessionId || null;
+  };
   const mergeEntries = (current, incoming) => {
     const currentMeta = current?.meta && typeof current.meta === "object" ? current.meta : {};
     const incomingMeta = incoming?.meta && typeof incoming.meta === "object" ? incoming.meta : {};
+    const mergedMeta = { ...currentMeta, ...incomingMeta };
+    const currentMetaSessionId = String(currentMeta.sessionId || "").trim();
+    const currentMetaThreadId = String(currentMeta.threadId || "").trim();
+    if (currentMetaSessionId) mergedMeta.sessionId = currentMetaSessionId;
+    if (currentMetaThreadId) mergedMeta.threadId = currentMetaThreadId;
     return {
       ...current,
       ...incoming,
@@ -1643,13 +1653,17 @@ function mergeTaskWorkflowRuns(baseRuns = [], extraRuns = [], limit = 60) {
       url: incoming.url || current.url || null,
       nodeId: incoming.nodeId || current.nodeId || null,
       source: incoming.source || current.source || "workflow",
-      sessionId: resolveSessionId(incoming) || resolveSessionId(current),
+      sessionId:
+        resolveLinkedSessionId(incoming)
+        || resolveLinkedSessionId(current)
+        || resolveSessionId(current)
+        || resolveSessionId(incoming),
       primarySessionId:
         String(incoming.primarySessionId || "").trim()
         || String(current.primarySessionId || "").trim()
-        || resolveSessionId(incoming)
-        || resolveSessionId(current),
-      meta: { ...currentMeta, ...incomingMeta },
+        || resolveLinkedSessionId(incoming)
+        || resolveLinkedSessionId(current),
+      meta: mergedMeta,
     };
   };
   const push = (entry) => {
@@ -1944,17 +1958,17 @@ function buildTaskBlockedContext(task, options = {}) {
   } else if (isDependencyBlocked) {
     category = "dependency_blocked";
     headline = "This task cannot start because one or more dependencies are not done yet.";
-    summary = "Bosun start guards are preventing execution until the blocking tasks are resolved.";
+    summary = "Bosun will not dispatch this task until every blocking dependency below is resolved.";
     recommendation = "Complete or unblock the listed dependencies, then dispatch this task again.";
   } else if (normalizedStatus === "blocked") {
     category = "blocked";
     headline = "This task is blocked.";
-    summary = explicitReason || "Bosun recorded a blocked state without a persisted blockedReason.";
-    recommendation = "Review the recent workflow evidence below, then move the task back to todo if the underlying issue has been fixed.";
+    summary = explicitReason || "Bosun marked this task as blocked, but the original blocked reason was not persisted.";
+    recommendation = "Review the recent workflow evidence below. After the underlying issue is fixed, move the task back to todo to clear the block and retry it.";
   } else if (canStart?.canStart === false) {
     category = "start_guard_blocked";
     headline = "This task is currently not startable.";
-    summary = sanitizeTaskDiagnosticText(canStart?.reason || "Bosun start guards blocked dispatch.");
+    summary = sanitizeTaskDiagnosticText(canStart?.reason || "Bosun start guards rejected dispatch for this task.");
     recommendation = "Resolve the blocking condition below before dispatching the task.";
   } else {
     return null;
@@ -1977,6 +1991,21 @@ function buildTaskBlockedContext(task, options = {}) {
     timelineEvidence,
     logEvidence: logDiagnostics.entries,
   };
+}
+
+function buildTaskMetaPatch(previousMeta, metadataPatchMeta, options = {}) {
+  const clearBlockedState = options.clearBlockedState === true;
+  const nextMeta = previousMeta && typeof previousMeta === "object"
+    ? { ...previousMeta }
+    : {};
+  if (clearBlockedState) {
+    delete nextMeta.autoRecovery;
+    delete nextMeta.blockedReason;
+  }
+  if (metadataPatchMeta && typeof metadataPatchMeta === "object") {
+    Object.assign(nextMeta, metadataPatchMeta);
+  }
+  return nextMeta;
 }
 
 function maybeBootstrapWorkspaceWorkflowTemplates(engine, workspaceKey, workspaceLabel) {
@@ -12695,6 +12724,11 @@ async function handleApi(req, res, url) {
         ? normalizeBranchInput(body?.baseBranch ?? body?.base_branch)
         : undefined;
       const metadataPatch = buildTaskMetadataPatch(body || {});
+      const requestedStatus = normalizeTaskStatusKey(body?.status);
+      const clearsBlockedState = requestedStatus === "todo";
+      const nextMeta = (Object.keys(metadataPatch.meta).length > 0 || clearsBlockedState)
+        ? buildTaskMetaPatch(previousTask?.meta, metadataPatch.meta, { clearBlockedState: clearsBlockedState })
+        : null;
       const patch = {
         status: body?.status,
         title: body?.title,
@@ -12705,17 +12739,13 @@ async function handleApi(req, res, url) {
         repositories: Array.isArray(body?.repositories) ? body.repositories : undefined,
         ...(tagsProvided ? { tags } : {}),
         ...(draftProvided ? { draft: Boolean(body?.draft) } : {}),
-        ...(blockedReasonProvided ? { blockedReason } : {}),
+        ...(clearsBlockedState
+          ? { cooldownUntil: null, blockedReason: null }
+          : (blockedReasonProvided ? { blockedReason } : {})),
+        ...(clearsBlockedState ? { replaceMeta: true } : {}),
         ...(baseBranchProvided ? { baseBranch } : {}),
         ...metadataPatch.topLevel,
-        ...(Object.keys(metadataPatch.meta).length > 0
-          ? {
-            meta: {
-              ...(previousTask?.meta && typeof previousTask.meta === "object" ? previousTask.meta : {}),
-              ...metadataPatch.meta,
-            },
-          }
-          : {}),
+        ...(nextMeta ? { meta: nextMeta } : {}),
       };
       if (!hasTaskPatchValues(patch) && !baseBranchProvided && !draftProvided && !tagsProvided) {
         jsonResponse(res, 400, {
@@ -12835,6 +12865,11 @@ async function handleApi(req, res, url) {
         ? normalizeBranchInput(body?.baseBranch ?? body?.base_branch)
         : undefined;
       const metadataPatch = buildTaskMetadataPatch(body || {});
+      const requestedStatus = normalizeTaskStatusKey(body?.status);
+      const clearsBlockedState = requestedStatus === "todo";
+      const nextMeta = (Object.keys(metadataPatch.meta).length > 0 || clearsBlockedState)
+        ? buildTaskMetaPatch(previousTask?.meta, metadataPatch.meta, { clearBlockedState: clearsBlockedState })
+        : null;
       const patch = {
         title: body?.title,
         description: body?.description,
@@ -12845,17 +12880,13 @@ async function handleApi(req, res, url) {
         repositories: Array.isArray(body?.repositories) ? body.repositories : undefined,
         ...(tagsProvided ? { tags } : {}),
         ...(draftProvided ? { draft: Boolean(body?.draft) } : {}),
-        ...(blockedReasonProvided ? { blockedReason } : {}),
+        ...(clearsBlockedState
+          ? { cooldownUntil: null, blockedReason: null }
+          : (blockedReasonProvided ? { blockedReason } : {})),
+        ...(clearsBlockedState ? { replaceMeta: true } : {}),
         ...(baseBranchProvided ? { baseBranch } : {}),
         ...metadataPatch.topLevel,
-        ...(Object.keys(metadataPatch.meta).length > 0
-          ? {
-            meta: {
-              ...(previousTask?.meta && typeof previousTask.meta === "object" ? previousTask.meta : {}),
-              ...metadataPatch.meta,
-            },
-          }
-          : {}),
+        ...(nextMeta ? { meta: nextMeta } : {}),
       };
       if (!hasTaskPatchValues(patch) && !baseBranchProvided && !draftProvided && !tagsProvided) {
         jsonResponse(res, 400, {
@@ -19913,4 +19944,3 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
-

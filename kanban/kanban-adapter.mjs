@@ -912,6 +912,12 @@ class InternalAdapter {
     if (typeof patch.workspace === "string") updates.workspace = patch.workspace;
     if (typeof patch.repository === "string") updates.repository = patch.repository;
     if (Array.isArray(patch.repositories)) updates.repositories = patch.repositories;
+    if (hasOwnField(patch, "cooldownUntil")) {
+      updates.cooldownUntil = normalizeTaskStringField(patch.cooldownUntil);
+    }
+    if (hasOwnField(patch, "blockedReason")) {
+      updates.blockedReason = normalizeTaskStringField(patch.blockedReason);
+    }
     if (typeof patch.branchName === "string") {
       updates.branchName = patch.branchName.trim() || null;
     }
@@ -950,6 +956,7 @@ class InternalAdapter {
       }
     }
     const current = getInternalTask(normalizedId);
+    const replaceMeta = patch.replaceMeta === true;
     if (baseBranch) {
       updates.baseBranch = baseBranch;
     }
@@ -967,7 +974,7 @@ class InternalAdapter {
     if (hasOwnField(patch, "dueDate") || dueDate) updates.dueDate = dueDate;
     if (patch.meta && typeof patch.meta === "object") {
       updates.meta = {
-        ...(current?.meta || {}),
+        ...(replaceMeta ? {} : (current?.meta || {})),
         ...patch.meta,
         ...((assigneeProvided || assignee || assignees.length > 0)
           ? {
