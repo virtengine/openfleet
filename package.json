@@ -170,6 +170,7 @@
     "cli.mjs",
     "compat.mjs",
     "shell/codex-config.mjs",
+    "shell/codex-config-file.mjs",
     "bosun.config.example.json",
     "bosun.schema.json",
     "agent/bosun-skills.mjs",
