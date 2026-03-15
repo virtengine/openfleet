@@ -652,6 +652,118 @@ function compareTaskDagOrder(taskA, taskB) {
   return String(taskA?.id || "").localeCompare(String(taskB?.id || ""));
 }
 
+function compareSprintDagOrder(sprintA, sprintB) {
+  const orderA = normalizeSprintOrder(sprintA?.order);
+  const orderB = normalizeSprintOrder(sprintB?.order);
+  if (orderA != null && orderB != null && orderA !== orderB) return orderA - orderB;
+  if (orderA != null && orderB == null) return -1;
+  if (orderA == null && orderB != null) return 1;
+  return String(sprintA?.name || sprintA?.id || "").localeCompare(String(sprintB?.name || sprintB?.id || ""));
+}
+
+function topoSortIds(seedIds, incomingMap, outgoingMap, compareEntries) {
+  const remaining = new Map();
+  for (const id of seedIds) remaining.set(id, incomingMap.get(id) || 0);
+  const ordered = [];
+  const ready = [...seedIds].filter((id) => (remaining.get(id) || 0) === 0);
+
+  while (ready.length > 0) {
+    ready.sort(compareEntries);
+    const current = ready.shift();
+    ordered.push(current);
+    for (const nextId of outgoingMap.get(current) || []) {
+      if (!remaining.has(nextId)) continue;
+      const nextCount = (remaining.get(nextId) || 0) - 1;
+      remaining.set(nextId, nextCount);
+      if (nextCount === 0) ready.push(nextId);
+    }
+    remaining.delete(current);
+  }
+
+  if (remaining.size > 0) {
+    ordered.push(...[...remaining.keys()].sort(compareEntries));
+  }
+
+  return ordered;
+}
+
+function hasDependencyPath(taskMap, fromTaskId, targetTaskId, visited = new Set()) {
+  const startId = String(fromTaskId || "").trim();
+  const targetId = String(targetTaskId || "").trim();
+  if (!startId || !targetId) return false;
+  if (startId === targetId) return true;
+  if (visited.has(startId)) return false;
+  visited.add(startId);
+  const task = taskMap.get(startId);
+  if (!task) return false;
+  for (const dependencyId of listTaskDependencyIds(task)) {
+    if (dependencyId === targetId) return true;
+    if (hasDependencyPath(taskMap, dependencyId, targetId, visited)) return true;
+  }
+  return false;
+}
+
+function collectDagRewriteSuggestions(taskMap, orderedTaskIds, sprint) {
+  const suggestions = [];
+  const sprintId = normalizeSprintId(sprint?.id);
+  const sprintMode = resolveSprintOrderMode(sprint?.executionMode || sprint?.taskOrderMode || "parallel");
+
+  if (sprintMode === "sequential") {
+    for (let index = 1; index < orderedTaskIds.length; index += 1) {
+      const previousTaskId = orderedTaskIds[index - 1];
+      const currentTaskId = orderedTaskIds[index];
+      const currentTask = taskMap.get(currentTaskId);
+      if (!currentTask) continue;
+      if (new Set(listTaskDependencyIds(currentTask)).has(previousTaskId)) continue;
+      suggestions.push({
+        type: "missing_sequential_dependency",
+        sprintId,
+        taskId: currentTaskId,
+        dependencyTaskId: previousTaskId,
+        message: `Add dependency ${previousTaskId} -> ${currentTaskId} to encode sequential sprint order.`,
+      });
+    }
+  }
+
+  for (const taskId of orderedTaskIds) {
+    const task = taskMap.get(taskId);
+    if (!task) continue;
+    const directDependencies = listTaskDependencyIds(task);
+    for (const dependencyId of directDependencies) {
+      const redundant = directDependencies.some((otherDependencyId) => {
+        if (otherDependencyId === dependencyId) return false;
+        return hasDependencyPath(taskMap, otherDependencyId, dependencyId, new Set([taskId]));
+      });
+      if (!redundant) continue;
+      suggestions.push({
+        type: "redundant_transitive_dependency",
+        sprintId,
+        taskId,
+        dependencyTaskId: dependencyId,
+        message: `Dependency ${dependencyId} -> ${taskId} is already implied transitively by another dependency.`,
+      });
+    }
+  }
+
+  return suggestions;
+}
+
+function normalizeRecoveredTaskMeta(task, recoveredAt) {
+  const currentMeta = task?.meta && typeof task.meta === "object" ? task.meta : {};
+  const currentRecovery = currentMeta.autoRecovery && typeof currentMeta.autoRecovery === "object"
+    ? currentMeta.autoRecovery
+    : {};
+  return {
+    ...currentMeta,
+    autoRecovery: {
+      ...currentRecovery,
+      active: false,
+      recoveredAt,
+      recoveredStatus: "todo",
+    },
+  };
+}
+
 function recalcStats() {
   const stats = {
     draft: 0,
@@ -2073,6 +2185,166 @@ export function canTaskStart(taskId, options = {}) {
     blockingSprintIds: [],
     blockingEpicIds: [],
     sprintOrderMode,
+  };
+}
+
+export function recoverAutoBlockedTasks(options = {}) {
+  ensureLoaded();
+  const recoveredAtMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+  const recoveredAt = new Date(recoveredAtMs).toISOString();
+  const recoveredTaskIds = [];
+
+  for (const task of Object.values(_store.tasks)) {
+    if (!task || normalizeTaskStatus(task.status) !== "blocked") continue;
+    const autoRecovery = task.meta?.autoRecovery;
+    if (!autoRecovery || typeof autoRecovery !== "object") continue;
+    if (autoRecovery.active === false) continue;
+    if (String(autoRecovery.reason || "").trim() !== "worktree_failure") continue;
+    const retryAtMs = Date.parse(String(autoRecovery.retryAt || task.cooldownUntil || ""));
+    if (!Number.isFinite(retryAtMs) || retryAtMs > recoveredAtMs) continue;
+
+    const previousStatus = normalizeTaskStatus(task.status);
+    task.status = "todo";
+    task.cooldownUntil = null;
+    task.blockedReason = null;
+    task.meta = normalizeRecoveredTaskMeta(task, recoveredAt);
+    task.updatedAt = recoveredAt;
+    task.lastActivityAt = recoveredAt;
+    task.syncDirty = true;
+    task.statusHistory.push({
+      status: "todo",
+      timestamp: recoveredAt,
+      source: "auto-recovery",
+    });
+    if (task.statusHistory.length > MAX_STATUS_HISTORY) {
+      task.statusHistory = task.statusHistory.slice(-MAX_STATUS_HISTORY);
+    }
+    pushTaskTimeline(task, {
+      type: "status.transition",
+      source: "auto-recovery",
+      fromStatus: previousStatus,
+      toStatus: "todo",
+      status: "todo",
+      action: "recover_blocked_task",
+      message: "Recovered timed blocked task back to todo",
+    });
+    markTaskTouched(task, "auto-recovery");
+    recoveredTaskIds.push(task.id);
+  }
+
+  if (recoveredTaskIds.length > 0) saveStore();
+
+  return {
+    recoveredTaskIds,
+    recoveredCount: recoveredTaskIds.length,
+    recoveredAt,
+  };
+}
+
+export function organizeTaskDag(options = {}) {
+  ensureLoaded();
+  const sprintFilter = normalizeSprintId(options.sprintId);
+  const sprintMap = ensureSprintsMap();
+  const allTasks = Object.values(_store.tasks);
+  const taskMap = new Map(allTasks.map((task) => [task.id, task]));
+  const targetSprintIds = sprintFilter
+    ? (sprintMap[sprintFilter] ? [sprintFilter] : [])
+    : listSprints().map((sprint) => sprint.id);
+
+  const suggestions = [];
+  const orderedTaskIdsBySprint = {};
+  let updatedTaskCount = 0;
+
+  for (const sprintId of targetSprintIds) {
+    const sprint = sprintMap[sprintId];
+    if (!sprint) continue;
+    const sprintTasks = allTasks
+      .filter((task) => normalizeSprintId(task?.sprintId) === sprintId)
+      .sort(compareTaskDagOrder);
+    const incomingCounts = new Map();
+    const outgoingMap = new Map();
+    for (const task of sprintTasks) {
+      incomingCounts.set(task.id, 0);
+      outgoingMap.set(task.id, new Set());
+    }
+    for (const task of sprintTasks) {
+      for (const dependencyId of listTaskDependencyIds(task)) {
+        const dependencyTask = taskMap.get(dependencyId);
+        if (!dependencyTask || normalizeSprintId(dependencyTask.sprintId) !== sprintId) continue;
+        outgoingMap.get(dependencyId).add(task.id);
+        incomingCounts.set(task.id, (incomingCounts.get(task.id) || 0) + 1);
+      }
+    }
+
+    const orderedTaskIds = topoSortIds(
+      sprintTasks.map((task) => task.id),
+      incomingCounts,
+      outgoingMap,
+      (leftId, rightId) => compareTaskDagOrder(taskMap.get(leftId), taskMap.get(rightId)),
+    );
+    orderedTaskIdsBySprint[sprintId] = orderedTaskIds;
+    suggestions.push(...collectDagRewriteSuggestions(taskMap, orderedTaskIds, sprint));
+
+    orderedTaskIds.forEach((taskId, index) => {
+      const task = taskMap.get(taskId);
+      if (!task) return;
+      const nextOrder = index + 1;
+      if (normalizeSprintOrder(task.sprintOrder) === nextOrder) return;
+      task.sprintOrder = nextOrder;
+      markTaskTouched(task, "dag-organize");
+      updatedTaskCount += 1;
+    });
+  }
+
+  const allSprintIds = listSprints().map((sprint) => sprint.id);
+  const sprintIncoming = new Map();
+  const sprintOutgoing = new Map();
+  for (const sprintId of allSprintIds) {
+    sprintIncoming.set(sprintId, 0);
+    sprintOutgoing.set(sprintId, new Set());
+  }
+  for (const task of allTasks) {
+    const taskSprintId = normalizeSprintId(task?.sprintId);
+    if (!taskSprintId) continue;
+    for (const dependencyId of listTaskDependencyIds(task)) {
+      const dependencyTask = taskMap.get(dependencyId);
+      const dependencySprintId = normalizeSprintId(dependencyTask?.sprintId);
+      if (!dependencySprintId || dependencySprintId === taskSprintId) continue;
+      if (!sprintOutgoing.get(dependencySprintId)?.has(taskSprintId)) {
+        sprintOutgoing.get(dependencySprintId).add(taskSprintId);
+        sprintIncoming.set(taskSprintId, (sprintIncoming.get(taskSprintId) || 0) + 1);
+      }
+    }
+  }
+
+  const orderedSprintIds = topoSortIds(
+    allSprintIds,
+    sprintIncoming,
+    sprintOutgoing,
+    (leftId, rightId) => compareSprintDagOrder(sprintMap[leftId], sprintMap[rightId]),
+  );
+  let updatedSprintCount = 0;
+  if (!sprintFilter) {
+    orderedSprintIds.forEach((sprintId, index) => {
+      const sprint = sprintMap[sprintId];
+      if (!sprint) return;
+      const nextOrder = index + 1;
+      if (normalizeSprintOrder(sprint.order) === nextOrder) return;
+      sprint.order = nextOrder;
+      sprint.updatedAt = now();
+      updatedSprintCount += 1;
+    });
+  }
+
+  if (updatedTaskCount > 0 || updatedSprintCount > 0) saveStore();
+
+  return {
+    sprintId: sprintFilter || null,
+    orderedSprintIds,
+    orderedTaskIdsBySprint,
+    updatedSprintCount,
+    updatedTaskCount,
+    suggestions,
   };
 }
 

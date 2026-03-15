@@ -1721,6 +1721,13 @@ export function loadConfig(argv = process.argv, options = {}) {
     triggerSystemDefaults,
   );
   const workflows = resolveWorkflowConfig(configData);
+  const workflowWorktreeRecoveryCooldownMin = toBoundedInt(
+    process.env.WORKFLOW_WORKTREE_RECOVERY_COOLDOWN_MIN ??
+      configData.workflowWorktreeRecoveryCooldownMin,
+    15,
+    1,
+    1440,
+  );
 
   // ── GitHub Reconciler ───────────────────────────────────
   const ghReconcileEnabled = isEnvEnabled(
@@ -2003,6 +2010,7 @@ export function loadConfig(argv = process.argv, options = {}) {
 
     triggerSystem,
     workflows,
+  workflowWorktreeRecoveryCooldownMin,
 
     // GitHub Reconciler
     githubReconcile: {

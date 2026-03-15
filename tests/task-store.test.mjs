@@ -256,6 +256,74 @@ describe("task-store concurrent save consistency", () => {
   });
 });
 
+describe("task-store DAG organization", () => {
+  it("reorders sprint orders and emits dependency rewrite suggestions", async () => {
+    const dir = makeTempDir("task-store-dag-organize-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.createSprint({ id: "sprint-a", name: "Sprint A", order: 1, executionMode: "parallel" });
+    ts.createSprint({ id: "sprint-b", name: "Sprint B", order: 2, executionMode: "sequential" });
+    ts.addTask({ id: "dep-task", title: "Dependency task", status: "todo", sprintId: "sprint-b", sprintOrder: 1 });
+    ts.addTask({ id: "target-task", title: "Target task", status: "todo", sprintId: "sprint-a", sprintOrder: 1, dependencyTaskIds: ["dep-task"] });
+    ts.addTask({ id: "seq-a", title: "Seq A", status: "todo", sprintId: "sprint-b", sprintOrder: 2, dependencyTaskIds: [] });
+    ts.addTask({ id: "seq-b", title: "Seq B", status: "todo", sprintId: "sprint-b", sprintOrder: 3, dependencyTaskIds: ["seq-a"] });
+    ts.addTask({ id: "seq-c", title: "Seq C", status: "todo", sprintId: "sprint-b", sprintOrder: 4, dependencyTaskIds: ["seq-a", "seq-b"] });
+    ts.addTask({ id: "seq-d", title: "Seq D", status: "todo", sprintId: "sprint-b", sprintOrder: 5, dependencyTaskIds: [] });
+
+    const result = ts.organizeTaskDag();
+
+    expect(result.orderedSprintIds.slice(0, 2)).toEqual(["sprint-b", "sprint-a"]);
+    expect(result.updatedSprintCount).toBeGreaterThanOrEqual(1);
+    expect(result.orderedTaskIdsBySprint["sprint-b"]).toEqual(["dep-task", "seq-a", "seq-b", "seq-c", "seq-d"]);
+    expect(result.suggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "redundant_transitive_dependency", taskId: "seq-c", dependencyTaskId: "seq-a" }),
+      expect.objectContaining({ type: "missing_sequential_dependency", taskId: "seq-d", dependencyTaskId: "seq-c" }),
+    ]));
+  });
+
+  it("recovers timed blocked tasks back to todo", async () => {
+    const dir = makeTempDir("task-store-auto-recovery-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    const retryAt = new Date(Date.now() - 60_000).toISOString();
+    ts.addTask({
+      id: "blocked-auto-1",
+      title: "Blocked auto task",
+      status: "blocked",
+      cooldownUntil: retryAt,
+      blockedReason: "Auto recovery pending",
+      meta: {
+        autoRecovery: {
+          active: true,
+          reason: "worktree_failure",
+          retryAt,
+        },
+      },
+    });
+
+    const recovered = ts.recoverAutoBlockedTasks();
+    const task = ts.getTask("blocked-auto-1");
+
+    expect(recovered.recoveredTaskIds).toEqual(["blocked-auto-1"]);
+    expect(task.status).toBe("todo");
+    expect(task.cooldownUntil).toBeNull();
+    expect(task.blockedReason).toBeNull();
+    expect(task.meta?.autoRecovery?.active).toBe(false);
+  });
+});
+
 
 describe("task-store external change visibility", () => {
   it("reloads from disk when another process updates the store file", async () => {

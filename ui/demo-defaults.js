@@ -18417,8 +18417,8 @@
         "workflow-first",
         "core"
       ],
-      "nodeCount": 52,
-      "edgeCount": 58,
+      "nodeCount": 53,
+      "edgeCount": 59,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -19358,6 +19358,29 @@
           ]
         },
         {
+          "id": "annotate-blocked-wt-failed",
+          "type": "action.bosun_function",
+          "label": "Annotate Blocked (WT Fail)",
+          "config": {
+            "function": "tasks.update",
+            "args": {
+              "taskId": "{{taskId}}",
+              "fields": {
+                "cooldownUntil": "{{acquire-worktree.retryAt}}",
+                "blockedReason": "{{acquire-worktree.blockedReason}}",
+                "meta": "{{(() => { const current = ($data.taskMeta && typeof $data.taskMeta === 'object') ? $data.taskMeta : {}; const output = $ctx.getNodeOutput('acquire-worktree') || {}; return { ...current, autoRecovery: { active: true, reason: 'worktree_failure', failureKind: output.failureKind || 'branch_refresh_conflict', retryAt: output.retryAt || null, recoveryDelayMs: output.autoRecoverDelayMs || null, error: output.error || '', recordedAt: output.recordedAt || null }, worktreeFailure: { failureKind: output.failureKind || 'branch_refresh_conflict', retryable: output.retryable !== false, retryAt: output.retryAt || null, blockedReason: output.blockedReason || '', error: output.error || '', recordedAt: output.recordedAt || null } }; })()}}"
+              }
+            }
+          },
+          "position": {
+            "x": 470,
+            "y": 1480
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "set-todo-wt-failed",
           "type": "action.update_task_status",
           "label": "Set Todo (WT Fail)",
@@ -19394,11 +19417,11 @@
           "type": "notify.telegram",
           "label": "Notify WT Failed",
           "config": {
-            "message": "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{$ctx.getNodeOutput('acquire-worktree')?.retryable === false ? ' — task blocked' : ''}}"
+            "message": "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{acquire-worktree.recoveryNote}}"
           },
           "position": {
             "x": 600,
-            "y": 1610
+            "y": 1740
           },
           "outputs": [
             "default"
@@ -19756,8 +19779,14 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "set-blocked-wt-failed->release-slot-wt-failed",
+          "id": "set-blocked-wt-failed->annotate-blocked-wt-failed",
           "source": "set-blocked-wt-failed",
+          "target": "annotate-blocked-wt-failed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "annotate-blocked-wt-failed->release-slot-wt-failed",
+          "source": "annotate-blocked-wt-failed",
           "target": "release-slot-wt-failed",
           "sourcePort": "default"
         },
@@ -38190,7 +38219,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 52,
+      "nodeCount": 53,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -39097,6 +39126,29 @@
           ]
         },
         {
+          "id": "annotate-blocked-wt-failed",
+          "type": "action.bosun_function",
+          "label": "Annotate Blocked (WT Fail)",
+          "config": {
+            "function": "tasks.update",
+            "args": {
+              "taskId": "{{taskId}}",
+              "fields": {
+                "cooldownUntil": "{{acquire-worktree.retryAt}}",
+                "blockedReason": "{{acquire-worktree.blockedReason}}",
+                "meta": "{{(() => { const current = ($data.taskMeta && typeof $data.taskMeta === 'object') ? $data.taskMeta : {}; const output = $ctx.getNodeOutput('acquire-worktree') || {}; return { ...current, autoRecovery: { active: true, reason: 'worktree_failure', failureKind: output.failureKind || 'branch_refresh_conflict', retryAt: output.retryAt || null, recoveryDelayMs: output.autoRecoverDelayMs || null, error: output.error || '', recordedAt: output.recordedAt || null }, worktreeFailure: { failureKind: output.failureKind || 'branch_refresh_conflict', retryable: output.retryable !== false, retryAt: output.retryAt || null, blockedReason: output.blockedReason || '', error: output.error || '', recordedAt: output.recordedAt || null } }; })()}}"
+              }
+            }
+          },
+          "position": {
+            "x": 470,
+            "y": 1480
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "set-todo-wt-failed",
           "type": "action.update_task_status",
           "label": "Set Todo (WT Fail)",
@@ -39133,11 +39185,11 @@
           "type": "notify.telegram",
           "label": "Notify WT Failed",
           "config": {
-            "message": "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{$ctx.getNodeOutput('acquire-worktree')?.retryable === false ? ' — task blocked' : ''}}"
+            "message": "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{acquire-worktree.recoveryNote}}"
           },
           "position": {
             "x": 600,
-            "y": 1610
+            "y": 1740
           },
           "outputs": [
             "default"
@@ -39495,8 +39547,14 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "set-blocked-wt-failed->release-slot-wt-failed",
+          "id": "set-blocked-wt-failed->annotate-blocked-wt-failed",
           "source": "set-blocked-wt-failed",
+          "target": "annotate-blocked-wt-failed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "annotate-blocked-wt-failed->release-slot-wt-failed",
+          "source": "annotate-blocked-wt-failed",
           "target": "release-slot-wt-failed",
           "sourcePort": "default"
         },

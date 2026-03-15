@@ -5,6 +5,8 @@
 
   "_comment_workflowFirst": "Set to true to run everything as workflows (task lifecycle, PR management, etc.)",
   "workflowFirst": false,
+  "_comment_worktreeRecoveryCooldown": "Minutes to keep a task blocked after a non-retryable worktree failure before Bosun automatically returns it to todo.",
+  "workflowWorktreeRecoveryCooldownMin": 15,
   "workflows": [
     {
       "type": "continuation-loop",

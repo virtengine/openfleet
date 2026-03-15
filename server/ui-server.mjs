@@ -208,6 +208,7 @@ const TASK_STORE_SPRINT_EXPORTS = Object.freeze({
 const TASK_STORE_DAG_EXPORTS = Object.freeze({
   sprint: ["getSprintDag", "getTaskDagForSprint", "buildSprintDag", "buildTaskDag"],
   global: ["getGlobalDagOfDags", "getDagOfDags", "buildGlobalDagOfDags"],
+  organize: ["organizeTaskDag"],
 });
 const TASK_STORE_GET_TASK_EXPORTS = ["getTaskById", "getTask"];
 const TASK_STORE_COMMENT_EXPORTS = ["getTaskComments", "listTaskComments"];
@@ -6713,6 +6714,15 @@ async function getGlobalDagData() {
   };
 }
 
+async function organizeDagData(options = {}) {
+  const organizeResult = await callTaskStoreFunction(TASK_STORE_DAG_EXPORTS.organize, [options]);
+  if (!organizeResult.found) return null;
+  return {
+    source: `task-store.${organizeResult.found}`,
+    data: organizeResult.value,
+  };
+}
+
 function normalizeTaskComments(comments = []) {
   if (!Array.isArray(comments)) return [];
   return comments
@@ -11676,6 +11686,32 @@ async function handleApi(req, res, url) {
         return;
       }
       jsonResponse(res, 200, { ok: true, source: globalDag.source, data: globalDag.data });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/tasks/dag/organize" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const sprintId = String(body?.sprintId || body?.sprint || "").trim();
+      const organized = await organizeDagData(sprintId ? { sprintId } : {});
+      if (!organized) {
+        jsonResponse(res, 501, { ok: false, error: "DAG organize API is unavailable." });
+        return;
+      }
+      jsonResponse(res, 200, {
+        ok: true,
+        sprintId: sprintId || null,
+        source: organized.source,
+        data: organized.data,
+        suggestions: Array.isArray(organized.data?.suggestions) ? organized.data.suggestions : [],
+      });
+      broadcastUiEvent(["tasks", "overview"], "invalidate", {
+        reason: "dag-organized",
+        sprintId: sprintId || null,
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

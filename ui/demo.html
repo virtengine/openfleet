@@ -3389,6 +3389,41 @@
           },
         };
       }
+      if (route === '/api/tasks/dag/organize' && method === 'POST') {
+        const sprintId = body?.sprintId || body?.sprint || null;
+        const tasks = Array.isArray(STATE.tasks) ? STATE.tasks : [];
+        const scoped = sprintId
+          ? tasks.filter((task) => String(task.sprintId || '') === String(sprintId))
+          : tasks;
+        const edges = [];
+        for (const task of scoped) {
+          const deps = Array.isArray(task.dependencyTaskIds) ? task.dependencyTaskIds : [];
+          for (const dep of deps) {
+            if (scoped.some((candidate) => candidate.id === dep)) {
+              edges.push({ from: dep, to: task.id });
+            }
+          }
+        }
+        return {
+          ok: true,
+          sprintId,
+          source: 'demo',
+          suggestions: [],
+          data: {
+            sprintId,
+            updatedSprintCount: sprintId ? 1 : 0,
+            nodes: scoped.map((task) => ({
+              id: task.id,
+              title: task.title,
+              status: task.status,
+              sprintId: task.sprintId || null,
+              sprintOrder: task.sprintOrder ?? null,
+            })),
+            edges,
+            suggestions: [],
+          },
+        };
+      }
       if (route === '/api/tasks/dag-of-dags') {
         const sprints = Array.isArray(STATE.taskSprints) ? STATE.taskSprints : [];
         const tasks = Array.isArray(STATE.tasks) ? STATE.tasks : [];

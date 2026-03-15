@@ -4769,6 +4769,8 @@ export function TasksTab() {
   const [listSortDir, setListSortDir] = useState("desc"); // "asc" | "desc"
   const [dagLoading, setDagLoading] = useState(false);
   const [dagError, setDagError] = useState("");
+  const [dagOrganizeFeedback, setDagOrganizeFeedback] = useState("");
+  const [dagOrganizeSuggestions, setDagOrganizeSuggestions] = useState([]);
   const [dagSprints, setDagSprints] = useState([]);
   const [dagSelectedSprint, setDagSelectedSprint] = useState("all");
   const [dagSprintGraph, setDagSprintGraph] = useState(EMPTY_DAG_GRAPH);
@@ -4891,6 +4893,14 @@ export function TasksTab() {
     { id: "execution", label: "Running & review", count: dagPlanningState.counts.execution },
     { id: "ready", label: "Ready next", count: dagPlanningState.counts.ready },
   ];
+  const dagOrganizeSummary = useMemo(() => {
+    if (dagOrganizeFeedback) return dagOrganizeFeedback;
+    return "Run Auto Organize to rewrite sprint order and surface dependency cleanup suggestions.";
+  }, [dagOrganizeFeedback]);
+  const dagSelectedSprintLabel = useMemo(() => {
+    if (dagSelectedSprint === "all") return "all sprints";
+    return dagSprints.find((entry) => entry.id === dagSelectedSprint)?.label || dagSelectedSprint;
+  }, [dagSelectedSprint, dagSprints]);
 
   const loadMoreKanbanTasks = useCallback(async () => {
     if (!isKanban || kanbanLoadingMore || isSearching) return;
@@ -5092,6 +5102,11 @@ export function TasksTab() {
       else mq.removeListener(handler);
     };
   }, []);
+
+  useEffect(() => {
+    setDagOrganizeFeedback("");
+    setDagOrganizeSuggestions([]);
+  }, [dagSelectedSprint]);
 
   useEffect(() => {
     if (isCompact) {
@@ -5303,6 +5318,36 @@ export function TasksTab() {
     }
   }, [loadDagViews]);
 
+  const handleAutoOrganizeDag = useCallback(async () => {
+    haptic("medium");
+    setDagLoading(true);
+    setDagError("");
+    try {
+      const result = await apiFetch("/api/tasks/dag/organize", {
+        method: "POST",
+        body: JSON.stringify(dagSelectedSprint && dagSelectedSprint !== "all"
+          ? { sprintId: dagSelectedSprint }
+          : {}),
+      });
+      const suggestions = Array.isArray(result?.suggestions) ? result.suggestions : [];
+      setDagOrganizeSuggestions(suggestions);
+      setDagOrganizeFeedback(
+        suggestions.length > 0
+          ? `Organized ${dagSelectedSprintLabel}. ${suggestions.length} dependency suggestion${suggestions.length === 1 ? "" : "s"} queued for review.`
+          : "Organized DAG with no dependency rewrite suggestions.",
+      );
+      showToast(
+        suggestions.length > 0 ? `DAG organized · ${suggestions.length} suggestions` : "DAG organized",
+        "success",
+      );
+      await loadDagViews();
+    } catch (error) {
+      setDagError(error?.message || "Failed to organize DAG.");
+    } finally {
+      setDagLoading(false);
+    }
+  }, [dagSelectedSprint, dagSelectedSprintLabel, loadDagViews]);
+
   const handleCreateSprint = useCallback(() => {
     haptic("medium");
     setEditingSprint(null);
@@ -5412,6 +5457,54 @@ export function TasksTab() {
     showToast(`Wired dependency: ${srcTaskId} -> ${dstTaskId}`, "success");
     await loadDagViews();
   }, [loadDagViews]);
+
+  const handleApplyDagSuggestion = useCallback(async (entry) => {
+    const suggestionType = toText(entry?.type);
+    if (suggestionType !== "missing_sequential_dependency") return;
+
+    const dependencyTaskId = toText(entry?.dependencyTaskId);
+    const taskId = toText(entry?.taskId);
+    if (!dependencyTaskId || !taskId || dependencyTaskId === taskId) return;
+
+    haptic("medium");
+    setDagLoading(true);
+    setDagError("");
+    try {
+      const task = dagTaskCatalog.find((candidate) => toText(candidate?.id) === taskId);
+      const existing = normalizeDependencyInput(getTaskDependencyIds(task));
+      if (existing.includes(dependencyTaskId)) {
+        setDagOrganizeSuggestions((current) => current.filter((candidate) => !(
+          toText(candidate?.type) === suggestionType &&
+          toText(candidate?.taskId) === taskId &&
+          toText(candidate?.dependencyTaskId) === dependencyTaskId
+        )));
+        setDagOrganizeFeedback(`Dependency ${dependencyTaskId} -> ${taskId} is already present.`);
+        showToast("Dependency already exists", "info");
+        return;
+      }
+
+      await apiFetch("/api/tasks/dependencies", {
+        method: "PUT",
+        body: JSON.stringify({
+          taskId,
+          dependencies: normalizeDependencyInput([...existing, dependencyTaskId]),
+        }),
+      });
+
+      setDagOrganizeSuggestions((current) => current.filter((candidate) => !(
+        toText(candidate?.type) === suggestionType &&
+        toText(candidate?.taskId) === taskId &&
+        toText(candidate?.dependencyTaskId) === dependencyTaskId
+      )));
+      setDagOrganizeFeedback(`Applied sequential dependency ${dependencyTaskId} -> ${taskId}.`);
+      showToast(`Applied dependency: ${dependencyTaskId} -> ${taskId}`, "success");
+      await loadDagViews();
+    } catch (error) {
+      setDagError(error?.message || "Failed to apply organizer suggestion.");
+    } finally {
+      setDagLoading(false);
+    }
+  }, [dagTaskCatalog, loadDagViews]);
 
   const handleDeleteDagEdge = useCallback(async ({ sourceId, targetId, graphKind }) => {
     const srcId = toText(sourceId);
@@ -5978,6 +6071,13 @@ export function TasksTab() {
                   <//>
                   <${Button}
                     variant="text" size="small"
+                    onClick=${handleAutoOrganizeDag}
+                    disabled=${dagLoading}
+                  >
+                    Auto Organize
+                  <//>
+                  <${Button}
+                    variant="text" size="small"
                     onClick=${handleCreateSprint}
                     disabled=${dagLoading}
                   >
@@ -6169,6 +6269,46 @@ export function TasksTab() {
                 <${MenuItem} value="parallel">Mode: parallel</${MenuItem}>
                 <${MenuItem} value="sequential">Mode: sequential</${MenuItem}>
               </${Select}>
+            </div>
+          </div>
+          <div class="tasks-filter-section">
+            <div class="tasks-filter-title">Organizer review</div>
+            <div class="meta-text" style=${{ marginTop: "6px" }}>
+              ${dagOrganizeSummary}
+            </div>
+            ${dagOrganizeSuggestions.length > 0 && html`
+              <div class="meta-text" style=${{ marginTop: "4px" }}>
+                Showing ${Math.min(dagOrganizeSuggestions.length, 6)} of ${dagOrganizeSuggestions.length} suggestion${dagOrganizeSuggestions.length === 1 ? "" : "s"} for ${dagSelectedSprintLabel}.
+              </div>
+            `}
+            <div class="task-dag-sidebar-list" style=${{ marginTop: "8px" }}>
+              ${dagOrganizeSuggestions.slice(0, 6).map((entry) => {
+                const suggestionType = toText(entry?.type, "dependency_update");
+                const suggestionLabel = suggestionType === "missing_sequential_dependency"
+                  ? "Sequential gap"
+                  : suggestionType === "redundant_transitive_dependency"
+                    ? "Redundant edge"
+                    : "Dependency suggestion";
+                const taskId = toText(entry?.taskId);
+                const dependencyTaskId = toText(entry?.dependencyTaskId);
+                return html`
+                  <div class="task-dag-sidebar-card">
+                    <div class="task-dag-sidebar-card-main">
+                      <strong>${suggestionLabel}</strong>
+                      <span class="meta-text">${truncate(toText(entry?.message, "Dependency rewrite suggested."), 120)}</span>
+                      <span class="meta-text">${dependencyTaskId ? `${dependencyTaskId} -> ` : ""}${taskId || "task"}</span>
+                    </div>
+                    <div class="task-dag-sidebar-card-actions">
+                      ${suggestionType === "missing_sequential_dependency" && dependencyTaskId && taskId
+                        ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => handleApplyDagSuggestion(entry)}>apply</button>`
+                        : null}
+                      ${dependencyTaskId ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => openDetail(dependencyTaskId)}>dep</button>` : null}
+                      ${taskId ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => openDetail(taskId)}>task</button>` : null}
+                    </div>
+                  </div>
+                `;
+              })}
+              ${dagOrganizeSuggestions.length === 0 ? html`<div class="meta-text">No pending organizer suggestions for this scope.</div>` : null}
             </div>
           </div>
           <div class="tasks-filter-section">

@@ -440,6 +440,18 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       status: "blocked",
       taskTitle: "{{taskTitle}}",
     }, { x: 470, y: 1350 }),
+    
+    node("annotate-blocked-wt-failed", "action.bosun_function", "Annotate Blocked (WT Fail)", {
+      function: "tasks.update",
+      args: {
+        taskId: "{{taskId}}",
+        fields: {
+          cooldownUntil: "{{acquire-worktree.retryAt}}",
+          blockedReason: "{{acquire-worktree.blockedReason}}",
+          meta: "{{(() => { const current = ($data.taskMeta && typeof $data.taskMeta === 'object') ? $data.taskMeta : {}; const output = $ctx.getNodeOutput('acquire-worktree') || {}; return { ...current, autoRecovery: { active: true, reason: 'worktree_failure', failureKind: output.failureKind || 'branch_refresh_conflict', retryAt: output.retryAt || null, recoveryDelayMs: output.autoRecoverDelayMs || null, error: output.error || '', recordedAt: output.recordedAt || null }, worktreeFailure: { failureKind: output.failureKind || 'branch_refresh_conflict', retryable: output.retryable !== false, retryAt: output.retryAt || null, blockedReason: output.blockedReason || '', error: output.error || '', recordedAt: output.recordedAt || null } }; })()}}",
+        },
+      },
+    }, { x: 470, y: 1480 }),
 
     node("set-todo-wt-failed", "action.update_task_status", "Set Todo (WT Fail)", {
       taskId: "{{taskId}}",
@@ -452,8 +464,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     }, { x: 600, y: 1480 }),
 
     node("notify-wt-failed", "notify.telegram", "Notify WT Failed", {
-      message: "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{$ctx.getNodeOutput('acquire-worktree')?.retryable === false ? ' — task blocked' : ''}}",
-    }, { x: 600, y: 1610 }),
+      message: "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{acquire-worktree.recoveryNote}}",
+    }, { x: 600, y: 1740 }),
   ],
   edges: [
     // Main flow
@@ -528,7 +540,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("release-claim-wt-failed", "wt-failure-blocking"),
     edge("wt-failure-blocking", "set-blocked-wt-failed", { condition: "$output?.result === true", port: "yes" }),
     edge("wt-failure-blocking", "set-todo-wt-failed", { condition: "$output?.result !== true", port: "no" }),
-    edge("set-blocked-wt-failed", "release-slot-wt-failed"),
+    edge("set-blocked-wt-failed", "annotate-blocked-wt-failed"),
+    edge("annotate-blocked-wt-failed", "release-slot-wt-failed"),
     edge("set-todo-wt-failed", "release-slot-wt-failed"),
     edge("release-slot-wt-failed", "notify-wt-failed"),
   ],

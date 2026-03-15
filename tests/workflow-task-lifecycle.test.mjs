@@ -474,6 +474,60 @@ describe("trigger.task_available", () => {
     expect(result.blocked[0].blockingTaskIds).toEqual(["epic-b-task-1"]);
   });
 
+  it("recovers timed blocked worktree tasks back to todo before polling", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const retryAt = new Date(Date.now() - 60_000).toISOString();
+    let todoTasks = [];
+    const blockedTask = {
+      id: "blocked-worktree-task",
+      title: "Blocked WT task",
+      status: "blocked",
+      cooldownUntil: retryAt,
+      meta: {
+        autoRecovery: {
+          active: true,
+          reason: "worktree_failure",
+          retryAt,
+        },
+      },
+    };
+    const listTasks = vi.fn(async (_projectId, options = {}) => {
+      if (options.status === "blocked") return [blockedTask];
+      return todoTasks;
+    });
+    const updateTask = vi.fn(async (taskId, patch) => {
+      todoTasks = [{
+        ...blockedTask,
+        id: taskId,
+        ...patch,
+      }];
+      return todoTasks[0];
+    });
+    const ctx = makeCtx({ activeSlotCount: 0 });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      status: "todo",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: {
+          listTasks,
+          updateTask,
+        },
+      },
+    });
+
+    expect(updateTask).toHaveBeenCalledTimes(1);
+    expect(updateTask).toHaveBeenCalledWith("blocked-worktree-task", expect.objectContaining({
+      status: "todo",
+      cooldownUntil: null,
+      blockedReason: null,
+    }));
+    expect(result.triggered).toBe(true);
+    expect(result.selectedTaskId).toBe("blocked-worktree-task");
+  });
+
   it("bypasses missing-task guard by default and emits audit event", async () => {
     const nt = getNodeType("trigger.task_available");
     const listTasks = vi.fn().mockResolvedValue([
@@ -2466,8 +2520,11 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "release-claim-wt-failed" && e.target === "wt-failure-blocking")).toBeDefined();
     expect(t.edges.find((e) => e.source === "wt-failure-blocking" && e.target === "set-blocked-wt-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "wt-failure-blocking" && e.target === "set-todo-wt-failed")).toBeDefined();
-    expect(t.edges.find((e) => e.source === "set-blocked-wt-failed" && e.target === "release-slot-wt-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "set-blocked-wt-failed" && e.target === "annotate-blocked-wt-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "annotate-blocked-wt-failed" && e.target === "release-slot-wt-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-wt-failed" && e.target === "release-slot-wt-failed")).toBeDefined();
+    const annotate = t.nodes.find((n) => n.id === "annotate-blocked-wt-failed");
+    expect(annotate?.type).toBe("action.bosun_function");
   });
 
   it("all edges reference valid node IDs", () => {

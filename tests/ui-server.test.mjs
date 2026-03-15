@@ -2512,6 +2512,53 @@ describe("ui-server mini app", () => {
     expect(Array.isArray(listedByParentTaskId.data)).toBe(true);
   });
 
+  it("organizes task DAGs and returns dependency suggestions", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    mod.injectUiDependencies({
+      taskStoreApi: {
+        organizeTaskDag: vi.fn(async () => ({
+          orderedSprintIds: ["sprint-b", "sprint-a"],
+          orderedTaskIdsBySprint: { "sprint-b": ["task-1", "task-2"] },
+          updatedSprintCount: 1,
+          updatedTaskCount: 2,
+          suggestions: [
+            {
+              type: "missing_sequential_dependency",
+              sprintId: "sprint-b",
+              taskId: "task-2",
+              dependencyTaskId: "task-1",
+              message: "Add dependency task-1 -> task-2 to encode sequential sprint order.",
+            },
+          ],
+        })),
+      },
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/tasks/dag/organize`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sprintId: "sprint-b" }),
+    });
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.sprintId).toBe("sprint-b");
+    expect(Array.isArray(json.suggestions)).toBe(true);
+    expect(json.suggestions[0].type).toBe("missing_sequential_dependency");
+    expect(json.data.updatedSprintCount).toBe(1);
+  });
+
   it("focuses agent log tails on session-specific lines", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 

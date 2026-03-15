@@ -44,6 +44,7 @@ import {
   loadWorkflowContract,
   validateWorkflowContract,
 } from "./workflow-contract.mjs";
+import { loadConfig } from "../config/config.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity, normalizeBaseBranch } from "../git/git-safety.mjs";
 import { getGitHubToken, invalidateTokenType } from "../github/github-auth-manager.mjs";
@@ -61,6 +62,7 @@ let customLoadPromise = null;
 let customDiscoveryStarted = false;
 const PORTABLE_WORKTREE_COUNT_COMMAND = "node -e \"const cp=require('node:child_process');const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
 const PORTABLE_PRUNE_AND_COUNT_WORKTREES_COMMAND = "node -e \"const cp=require('node:child_process');cp.execSync('git worktree prune',{stdio:'ignore'});const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
+const DEFAULT_NON_RETRYABLE_WORKTREE_RECOVERY_MS = 15 * 60 * 1000;
 const WORKFLOW_AGENT_HEARTBEAT_MS = (() => {
   const raw = Number(process.env.WORKFLOW_AGENT_HEARTBEAT_MS || 30000);
   if (!Number.isFinite(raw)) return 30000;
@@ -72,6 +74,19 @@ const WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT = (() => {
   return Math.max(20, Math.min(500, Math.trunc(raw)));
 })();
 const BOSUN_ATTACHED_PR_LABEL = "bosun-attached";
+
+function getNonRetryableWorktreeRecoveryMs() {
+  try {
+    const config = loadConfig();
+    const minutes = Number(config?.workflowWorktreeRecoveryCooldownMin);
+    if (!Number.isFinite(minutes)) {
+      return DEFAULT_NON_RETRYABLE_WORKTREE_RECOVERY_MS;
+    }
+    return Math.max(1, Math.min(1440, Math.trunc(minutes))) * 60 * 1000;
+  } catch {
+    return DEFAULT_NON_RETRYABLE_WORKTREE_RECOVERY_MS;
+  }
+}
 
 const HTML_TEXT_BREAK_TAGS = new Set([
   "address",
@@ -1338,6 +1353,45 @@ function parseBooleanSetting(value, defaultValue = false) {
     if (["false", "0", "no", "n", "off"].includes(normalized)) return false;
   }
   return defaultValue;
+}
+
+async function recoverTimedBlockedWorkflowTasks({ kanban, ctx, node, projectId }) {
+  if (!kanban || typeof kanban.listTasks !== "function" || typeof kanban.updateTask !== "function") {
+    return { recoveredTaskIds: [], recoveredCount: 0 };
+  }
+
+  const blockedTasks = await kanban.listTasks(projectId, { status: "blocked" });
+  const nowMs = Date.now();
+  const recoveredTaskIds = [];
+  for (const task of Array.isArray(blockedTasks) ? blockedTasks : []) {
+    const autoRecovery = task?.meta?.autoRecovery;
+    if (!autoRecovery || typeof autoRecovery !== "object") continue;
+    if (autoRecovery.active === false) continue;
+    if (String(autoRecovery.reason || "").trim() !== "worktree_failure") continue;
+    const retryAtMs = Date.parse(String(autoRecovery.retryAt || task?.cooldownUntil || ""));
+    if (!Number.isFinite(retryAtMs) || retryAtMs > nowMs) continue;
+    await kanban.updateTask(task.id, {
+      status: "todo",
+      cooldownUntil: null,
+      blockedReason: null,
+      meta: {
+        ...(task?.meta && typeof task.meta === "object" ? task.meta : {}),
+        autoRecovery: {
+          ...autoRecovery,
+          active: false,
+          recoveredAt: new Date(nowMs).toISOString(),
+          recoveredStatus: "todo",
+        },
+      },
+    });
+    recoveredTaskIds.push(task.id);
+  }
+
+  if (recoveredTaskIds.length > 0) {
+    ctx.log(node.id, `Recovered ${recoveredTaskIds.length} blocked task(s): ${recoveredTaskIds.join(", ")}`);
+  }
+
+  return { recoveredTaskIds, recoveredCount: recoveredTaskIds.length };
 }
 
 function getPathValue(value, pathExpression) {
@@ -9884,6 +9938,13 @@ registerBuiltinNodeType("trigger.task_available", {
     for (let attempt = 0; attempt <= listRetries; attempt++) {
       try {
         const kanban = ctx.data?._services?.kanban || engine?.services?.kanban;
+        if (status === "todo") {
+          try {
+            await recoverTimedBlockedWorkflowTasks({ kanban, ctx, node, projectId });
+          } catch (recoveryErr) {
+            ctx.log(node.id, `Blocked task recovery warning: ${recoveryErr?.message || recoveryErr}`);
+          }
+        }
         if (kanban?.listTasks) {
           tasks = await kanban.listTasks(projectId, { status });
         } else {
@@ -10197,6 +10258,9 @@ registerBuiltinNodeType("trigger.task_available", {
       if (baseBranch) ctx.data.baseBranch = baseBranch;
       const branch = deriveTaskBranch(primaryTask);
       if (branch) ctx.data.branch = branch;
+      ctx.data.taskMeta = primaryTask?.meta && typeof primaryTask.meta === "object"
+        ? { ...primaryTask.meta }
+        : {};
     }
 
     ctx.log(node.id, `Found ${toDispatch.length} task(s) ready (${remaining} slot(s) free)`);
@@ -10978,6 +11042,12 @@ registerBuiltinNodeType("action.acquire_worktree", {
     } catch (err) {
       const errorMessage = String(err?.message || err || "worktree_acquisition_failed");
       const retryable = !/managed worktree was removed after stale refresh state/i.test(errorMessage);
+      const recordedAt = new Date().toISOString();
+      const autoRecoverDelayMs = retryable ? 0 : getNonRetryableWorktreeRecoveryMs();
+      const retryAt = retryable ? null : new Date(Date.now() + autoRecoverDelayMs).toISOString();
+      const blockedReason = retryable
+        ? errorMessage
+        : "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.";
       ctx.log(node.id, `Worktree acquisition failed: ${errorMessage}`);
       return {
         success: false,
@@ -10986,6 +11056,11 @@ registerBuiltinNodeType("action.acquire_worktree", {
         baseBranch,
         retryable,
         failureKind: retryable ? "worktree_acquisition_failed" : "branch_refresh_conflict",
+        recordedAt,
+        autoRecoverDelayMs,
+        retryAt,
+        blockedReason,
+        recoveryNote: retryable || !retryAt ? "" : ` — blocked until ${retryAt}`,
       };
     }
   },
