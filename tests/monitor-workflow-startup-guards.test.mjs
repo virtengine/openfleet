@@ -45,6 +45,17 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain('"template-agent-session-monitor"');
   });
 
+  it("resumes interrupted workflow runs after monitor services are wired", () => {
+    expect(monitorSource).toContain('if (typeof engine.resumeInterruptedRuns === "function") {');
+    expect(monitorSource).toContain('engine.resumeInterruptedRuns().catch((err) => {');
+    expect(monitorSource).toContain('[workflows] Failed to resume interrupted runs:');
+    expect(
+      monitorSource.indexOf("bindWorkflowEngineToAnomalyDetector(engine);"),
+    ).toBeLessThan(
+      monitorSource.indexOf('engine.resumeInterruptedRuns().catch((err) => {'),
+    );
+  });
+
   it("stores workflow definitions and runs under the selected repoRoot", () => {
     expect(monitorSource).toContain('workflowDir: resolve(repoRoot, ".bosun", "workflows")');
     expect(monitorSource).toContain('runsDir: resolve(repoRoot, ".bosun", "workflow-runs")');
