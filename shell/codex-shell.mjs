@@ -78,6 +78,56 @@ function normalizeTimeoutMs(value, { fallback = DEFAULT_TIMEOUT_MS, label = "tim
   return normalized;
 }
 
+function isAzureOpenAIBaseUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    const host = String(parsed.hostname || "").toLowerCase();
+    return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+  } catch {
+    return false;
+  }
+}
+
+function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env) {
+  const { env: resolvedEnv } = resolveCodexProfileRuntime(envInput);
+  const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
+  const isAzure = isAzureOpenAIBaseUrl(baseUrl);
+  const env = { ...resolvedEnv };
+
+  delete env.OPENAI_BASE_URL;
+
+  if (isAzure && env.OPENAI_API_KEY && !env.AZURE_OPENAI_API_KEY) {
+    env.AZURE_OPENAI_API_KEY = env.OPENAI_API_KEY;
+  }
+
+  const providerName = isAzure ? "azure" : "openai";
+  const config = {
+    model_providers: {
+      [providerName]: isAzure
+        ? {
+            name: "Azure OpenAI",
+            base_url: baseUrl,
+            env_key: "AZURE_OPENAI_API_KEY",
+            wire_api: "responses",
+            ...streamProviderOverrides,
+          }
+        : streamProviderOverrides,
+    },
+  };
+
+  if (isAzure && env.CODEX_MODEL) {
+    config.model_provider = "azure";
+    config.model = env.CODEX_MODEL;
+  }
+
+  return {
+    env,
+    config,
+    providerName,
+    streamIdleTimeoutMs: streamProviderOverrides.stream_idle_timeout_ms,
+  };
+}
+
 function getInternalExecutorStreamConfig() {
   try {
     const cfg = loadConfig();
@@ -443,9 +493,6 @@ async function getThread() {
   if (activeThread) return activeThread;
   const threadOptions = buildThreadOptions();
 
-  const { env: resolvedEnv } = resolveCodexProfileRuntime(process.env);
-  Object.assign(process.env, resolvedEnv);
-
   if (!codexInstance) {
     const Cls = await loadCodexSdk();
     if (!Cls) throw new Error("Codex SDK not available");
@@ -454,23 +501,16 @@ async function getThread() {
     // even if config.toml hasn't been patched by codex-config.mjs yet.
     // This is the most reliable path for Azure/Foundry deployments where
     // dropped SSE streams ("response.failed") are the dominant failure mode.
-    const providerName = (() => {
-      try {
-        const parsed = new URL(String(resolvedEnv.OPENAI_BASE_URL || ""));
-        const host = String(parsed.hostname || "").toLowerCase();
-        return host === "openai.azure.com" || host.endsWith(".openai.azure.com")
-          ? "azure"
-          : "openai";
-      } catch {
-        return "openai";
-      }
-    })();
     const STREAM_IDLE_TIMEOUT_MS = 3_600_000; // 60 min — matches Azure max stream lifetime
     const streamProviderOverrides = {
       stream_idle_timeout_ms: STREAM_IDLE_TIMEOUT_MS,
       stream_max_retries: 15,
       request_max_retries: 6,
     };
+    const runtime = buildCodexSdkRuntime(streamProviderOverrides, process.env);
+
+    Object.assign(process.env, runtime.env);
+    delete process.env.OPENAI_BASE_URL;
 
     codexInstance = new Cls({
       config: {
@@ -481,13 +521,11 @@ async function getThread() {
           undo: true,
           steer: true,
         },
-        model_providers: {
-          [providerName]: streamProviderOverrides,
-        },
+        ...runtime.config,
       },
     });
 
-    console.log(`[codex-shell] created Codex instance (provider=${providerName}, stream_idle_timeout=${STREAM_IDLE_TIMEOUT_MS}ms, stream_max_retries=${streamProviderOverrides.stream_max_retries})`);
+    console.log(`[codex-shell] created Codex instance (provider=${runtime.providerName}, stream_idle_timeout=${runtime.streamIdleTimeoutMs}ms, stream_max_retries=${streamProviderOverrides.stream_max_retries})`);
   }
 
   const transport = resolveCodexTransport();

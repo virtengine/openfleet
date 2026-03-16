@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
@@ -119,6 +120,11 @@ async function readTabErrorText(page) {
   return String(text || "").trim();
 }
 
+async function waitForUiSettled(page, extraMs = 250) {
+  await page.waitForLoadState("networkidle", { timeout: 1500 }).catch(() => {});
+  await page.waitForTimeout(extraMs);
+}
+
 async function assertTasksDagViewActivated(page) {
   await page.getByRole("button", { name: /DAG/i }).click();
   await page.waitForTimeout(1000);
@@ -146,7 +152,7 @@ async function verifyRouteLoads(browser, route) {
       waitUntil: "domcontentloaded",
       timeout: 15000,
     });
-    await page.waitForTimeout(2500);
+    await waitForUiSettled(page);
 
     const boot = await readBootResult(page);
     const tabErrorText = await readTabErrorText(page);
@@ -180,6 +186,28 @@ async function waitForHttpReady(url, timeoutMs = 30000) {
   throw lastError || new Error(`Timed out waiting for ${url}`);
 }
 
+async function waitForChildExit(child, timeoutMs = 10000) {
+  if (!child || child.exitCode !== null || child.killed) return;
+  const exitPromise = once(child, "exit").catch(() => {});
+  const timeoutPromise = new Promise((resolve) => setTimeout(resolve, timeoutMs));
+  await Promise.race([exitPromise, timeoutPromise]);
+}
+
+async function forceTerminateChild(child) {
+  if (!child || child.exitCode !== null) return;
+  if (process.platform === "win32") {
+    await new Promise((resolve) => {
+      execFile("taskkill", ["/pid", String(child.pid), "/t", "/f"], () => resolve());
+    });
+    return;
+  }
+  try {
+    child.kill("SIGKILL");
+  } catch {
+    /* best-effort */
+  }
+}
+
 let serverProcess = null;
 
 before(async () => {
@@ -205,7 +233,9 @@ before(async () => {
     await waitForHttpReady(baseUrl);
   } catch (error) {
     serverProcess.kill();
-    await once(serverProcess, "exit").catch(() => {});
+    await waitForChildExit(serverProcess, 3000);
+    await forceTerminateChild(serverProcess);
+    await waitForChildExit(serverProcess, 3000);
     throw new Error(`Failed to start portal test server: ${error.message}\n${stderr}`);
   }
 }, { timeout: 40000 });
@@ -213,7 +243,9 @@ before(async () => {
 after(async () => {
   if (!serverProcess) return;
   serverProcess.kill();
-  await once(serverProcess, "exit").catch(() => {});
+  await waitForChildExit(serverProcess, 3000);
+  await forceTerminateChild(serverProcess);
+  await waitForChildExit(serverProcess, 3000);
 }, { timeout: 10000 });
 
 describe("portal browser smoke harness", () => {
@@ -238,7 +270,7 @@ describe("portal browser smoke harness", () => {
         waitUntil: "domcontentloaded",
         timeout: 15000,
       });
-      await page.waitForTimeout(2500);
+      await waitForUiSettled(page);
 
       const boot = await readBootResult(page);
       assert.equal(boot.bootFailed, false, `Boot loader surfaced an error on /tasks:\n${boot.bootText}`);
