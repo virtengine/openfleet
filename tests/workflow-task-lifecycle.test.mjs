@@ -617,6 +617,58 @@ describe("trigger.task_available", () => {
     expect(result.auditEvents[0].reason).toBe("task_not_found");
     expect(result.auditEvents[0].strict).toBe(true);
   });
+
+  it("filters out todo tasks that still have active persisted claim ownership", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "wf-task-claim-filter-"));
+    const { initTaskClaims, claimTask, releaseTask } = await import("../task/task-claims.mjs");
+    let claimToken = "";
+    try {
+      await initTaskClaims({ repoRoot });
+      const claimResult = await claimTask({
+        taskId: "claimed-task",
+        instanceId: "wf-test-instance",
+      });
+      expect(claimResult.success).toBe(true);
+      claimToken = claimResult.token || "";
+
+      const nt = getNodeType("trigger.task_available");
+      const listTasks = vi.fn().mockResolvedValue([
+        { id: "claimed-task", title: "Already owned", status: "todo" },
+        { id: "ready-task", title: "Ready", status: "todo" },
+      ]);
+      const ctx = makeCtx({
+        activeSlotCount: 0,
+        repoRoot,
+      });
+      const node = makeNode("trigger.task_available", {
+        maxParallel: 1,
+        status: "todo",
+      });
+
+      const result = await nt.execute(node, ctx, {
+        services: {
+          kanban: {
+            listTasks,
+          },
+        },
+      });
+
+      expect(result.triggered).toBe(true);
+      expect(result.taskCount).toBe(1);
+      expect(result.selectedTaskId).toBe("ready-task");
+      expect(result.persistedOwnershipFilteredCount).toBe(1);
+      expect(result.tasks[0].id).toBe("ready-task");
+    } finally {
+      if (claimToken) {
+        await releaseTask({
+          taskId: "claimed-task",
+          claimToken,
+          instanceId: "wf-test-instance",
+        });
+      }
+      try { rmSync(repoRoot, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  });
 });
 
 //  condition.slot_available Tests

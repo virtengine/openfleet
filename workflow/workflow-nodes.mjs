@@ -48,6 +48,7 @@ import { resolveAutoCommand } from "./project-detection.mjs";
 import { loadConfig } from "../config/config.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity, normalizeBaseBranch } from "../git/git-safety.mjs";
+import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../git/git-commit-helpers.mjs";
 import { getGitHubToken, invalidateTokenType } from "../github/github-auth-manager.mjs";
 import {
   CUSTOM_NODE_DIR_NAME,
@@ -2305,7 +2306,9 @@ registerBuiltinNodeType("action.run_agent", {
     const timeoutMs = Number.isFinite(Number(resolvedTimeoutMs))
       ? Math.max(1000, Math.trunc(Number(resolvedTimeoutMs)))
       : 3600000;
-    const includeTaskContext = node.config?.includeTaskContext !== false;
+    const includeTaskContext =
+      node.config?.includeTaskContext !== false &&
+      ctx.data?._taskIncludeContext !== false;
     const configuredSystemPrompt =
       ctx.resolve(node.config?.systemPrompt || "") ||
       ctx.data?._taskSystemPrompt ||
@@ -2316,7 +2319,10 @@ registerBuiltinNodeType("action.run_agent", {
       .filter(Boolean)
       .join("\n\n");
     let finalPrompt = prompt;
-    if (includeTaskContext) {
+    const promptHasTaskContext =
+      ctx.data?._taskPromptIncludesTaskContext === true ||
+      String(finalPrompt || "").includes("## Task Context");
+    if (includeTaskContext && !promptHasTaskContext) {
       const explicitContext =
         ctx.data?.taskContext ||
         ctx.data?.taskContextBlock ||
@@ -8243,10 +8249,34 @@ const BOSUN_FUNCTION_REGISTRY = Object.freeze({
     async invoke(args, ctx) {
       const cwd = args.cwd || ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
       try {
-        const current = execSync("git branch --show-current", { encoding: "utf8", cwd, timeout: 15000, stdio: "pipe" }).trim();
-        const allBranches = execSync("git branch --list --format='%(refname:short)'", { encoding: "utf8", cwd, timeout: 15000, stdio: "pipe" })
-          .trim().split("\n").filter(Boolean);
-        return { current, branches: allBranches, branchCount: allBranches.length };
+        const lines = execFileSync("git", ["for-each-ref", "--format=%(HEAD)|%(refname:short)", "refs/heads"], {
+          encoding: "utf8",
+          cwd,
+          timeout: 4000,
+          stdio: "pipe",
+        })
+          .trim()
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
+        const branches = [];
+        let current = "";
+        for (const line of lines) {
+          const [headMarker, ...rest] = line.split("|");
+          const branchName = rest.join("|").trim();
+          if (!branchName) continue;
+          branches.push(branchName);
+          if (headMarker === "*") current = branchName;
+        }
+        if (!current) {
+          current = execFileSync("git", ["branch", "--show-current"], {
+            encoding: "utf8",
+            cwd,
+            timeout: 2000,
+            stdio: "pipe",
+          }).trim();
+        }
+        return { current, branches, branchCount: branches.length };
       } catch (err) {
         return { current: "", branches: [], branchCount: 0, error: err.message };
       }
@@ -9429,6 +9459,7 @@ registerBuiltinNodeType("transform.mcp_extract", {
 /** Module-scope lazy caches for task lifecycle imports. */
 let _taskClaimsMod = null;
 let _taskClaimsInitPromise = null;
+let _taskClaimsInitRepoRoot = "";
 let _taskComplexityMod = null;
 let _kanbanAdapterMod = null;
 let _agentPoolMod = null;
@@ -9436,10 +9467,26 @@ let _libraryManagerMod = null;
 let _configMod = null;
 let _gitSafetyMod = null;
 let _diffStatsMod = null;
+let _sharedStateManagerMod = null;
+const SHARED_STATE_ACTIVE_STALE_THRESHOLD_MS =
+  Number(process.env.SHARED_STATE_STALE_THRESHOLD_MS) || 300_000;
+const TERMINAL_SHARED_STATE_STATUSES = new Set([
+  "complete",
+  "completed",
+  "failed",
+  "abandoned",
+  "released",
+]);
 
 async function ensureTaskClaimsMod() {
   if (!_taskClaimsMod) _taskClaimsMod = await import("../task/task-claims.mjs");
   return _taskClaimsMod;
+}
+async function ensureSharedStateManagerMod() {
+  if (!_sharedStateManagerMod) {
+    _sharedStateManagerMod = await import("../workspace/shared-state-manager.mjs");
+  }
+  return _sharedStateManagerMod;
 }
 function pickTaskString(...values) {
   for (const value of values) {
@@ -9512,20 +9559,90 @@ function resolveTaskRepositoryRoot(taskRepository, currentRepoRoot) {
   }
   return "";
 }
-async function ensureTaskClaimsInitialized(ctx, claims) {
+function sameResolvedPath(leftPath, rightPath) {
+  const left = resolve(String(leftPath || ""));
+  const right = resolve(String(rightPath || ""));
+  if (process.platform === "win32") {
+    return left.toLowerCase() === right.toLowerCase();
+  }
+  return left === right;
+}
+async function ensureTaskClaimsInitialized(ctx, claims, explicitRepoRoot = "") {
   if (typeof claims?.initTaskClaims !== "function") return;
-  if (!_taskClaimsInitPromise) {
-    const repoRoot = pickTaskString(
-      ctx?.data?.repoRoot,
-      ctx?.data?.workspace,
-      process.cwd(),
-    );
+  const requestedRepoRoot = pickTaskString(
+    explicitRepoRoot,
+    ctx?.data?.repoRoot,
+    ctx?.data?.workspace,
+    process.cwd(),
+  );
+  const repoRoot =
+    resolveTaskRepositoryRoot("", requestedRepoRoot)
+    || requestedRepoRoot
+    || process.cwd();
+  if (!_taskClaimsInitPromise || !sameResolvedPath(_taskClaimsInitRepoRoot, repoRoot)) {
+    _taskClaimsInitRepoRoot = repoRoot;
     _taskClaimsInitPromise = claims.initTaskClaims({ repoRoot }).catch((err) => {
       _taskClaimsInitPromise = null;
+      _taskClaimsInitRepoRoot = "";
       throw err;
     });
   }
   await _taskClaimsInitPromise;
+}
+function isSharedStateOwnershipActive(state, now = Date.now()) {
+  if (!state || typeof state !== "object") return false;
+  const ownerId = pickTaskString(state.ownerId, state.owner_id);
+  if (!ownerId) return false;
+  const attemptStatus = pickTaskString(state.attemptStatus, state.attempt_status).toLowerCase();
+  if (attemptStatus && TERMINAL_SHARED_STATE_STATUSES.has(attemptStatus)) return false;
+  const heartbeatText = pickTaskString(state.ownerHeartbeat, state.owner_heartbeat);
+  const heartbeatMs = Date.parse(heartbeatText);
+  if (!Number.isFinite(heartbeatMs)) return false;
+  if (now - heartbeatMs > SHARED_STATE_ACTIVE_STALE_THRESHOLD_MS) return false;
+  return true;
+}
+async function getPersistedOwnedTaskIds(node, ctx) {
+  const requestedRepoRoot = pickTaskString(
+    cfgOrCtx(node, ctx, "repoRoot"),
+    ctx?.data?.repoRoot,
+    ctx?.data?.workspace,
+    process.cwd(),
+  );
+  const repoRoot =
+    resolveTaskRepositoryRoot("", requestedRepoRoot)
+    || requestedRepoRoot
+    || process.cwd();
+  const activeTaskIds = new Set();
+  try {
+    const claims = await ensureTaskClaimsMod();
+    await ensureTaskClaimsInitialized(ctx, claims, repoRoot);
+    if (typeof claims.listClaims === "function") {
+      const persistedClaims = await claims.listClaims();
+      for (const claim of persistedClaims || []) {
+        const taskId = pickTaskString(claim?.task_id, claim?.taskId);
+        if (taskId) activeTaskIds.add(taskId);
+      }
+    }
+  } catch (err) {
+    ctx?.log?.(node.id, `Persisted claim filter warning: ${err?.message || err}`);
+  }
+  try {
+    const sharedStateManager = await ensureSharedStateManagerMod();
+    if (typeof sharedStateManager.getAllSharedStates === "function") {
+      const sharedStates = await sharedStateManager.getAllSharedStates(repoRoot);
+      const now = Date.now();
+      for (const [rawTaskId, state] of Object.entries(sharedStates || {})) {
+        const taskId = pickTaskString(state?.taskId, state?.task_id, rawTaskId);
+        if (!taskId) continue;
+        if (isSharedStateOwnershipActive(state, now)) {
+          activeTaskIds.add(taskId);
+        }
+      }
+    }
+  } catch (err) {
+    ctx?.log?.(node.id, `Shared state filter warning: ${err?.message || err}`);
+  }
+  return activeTaskIds;
 }
 async function ensureTaskComplexityMod() {
   if (!_taskComplexityMod) _taskComplexityMod = await import("../task/task-complexity.mjs");
@@ -10078,8 +10195,32 @@ registerBuiltinNodeType("trigger.task_available", {
       return true;
     });
 
+    let persistedOwnershipFilteredCount = 0;
+    if (status === "todo" && tasks.length > 0) {
+      const persistedOwnedTaskIds = await getPersistedOwnedTaskIds(node, ctx);
+      if (persistedOwnedTaskIds.size > 0) {
+        const beforeFilterCount = tasks.length;
+        tasks = tasks.filter((task) => {
+          const taskId = pickTaskString(task?.id, task?.task_id);
+          return taskId && !persistedOwnedTaskIds.has(taskId);
+        });
+        persistedOwnershipFilteredCount = beforeFilterCount - tasks.length;
+        if (persistedOwnershipFilteredCount > 0) {
+          ctx.log(
+            node.id,
+            `Persisted ownership filtered ${persistedOwnershipFilteredCount} task(s) with live claims/shared state`,
+          );
+        }
+      }
+    }
+
     if (tasks.length === 0) {
-      return { triggered: false, reason: "all_filtered", taskCount: 0 };
+      return {
+        triggered: false,
+        reason: "all_filtered",
+        taskCount: 0,
+        persistedOwnershipFilteredCount,
+      };
     }
 
     let benchmarkMode = null;
@@ -10343,6 +10484,7 @@ registerBuiltinNodeType("trigger.task_available", {
       taskCount: toDispatch.length,
       availableSlots: remaining,
       selectedTaskId: primaryTask ? pickTaskString(primaryTask.id, primaryTask.task_id) : "",
+      persistedOwnershipFilteredCount,
       auditEvents: startGuardAuditEvents,
       benchmarkMode,
     };
@@ -11428,6 +11570,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
       retryReason: { type: "string", description: "Reason for retry (if retrying)" },
       includeAgentsMd: { type: "boolean", default: true },
       includeComments: { type: "boolean", default: true },
+      includeGitContext: { type: "boolean", default: true },
       includeStatusEndpoint: { type: "boolean", default: true },
       promptTemplate: { type: "string", description: "Custom template (overrides)" },
     },
@@ -11444,7 +11587,10 @@ registerBuiltinNodeType("action.build_task_prompt", {
     const repoSlug = cfgOrCtx(node, ctx, "repoSlug");
     const retryReason = cfgOrCtx(node, ctx, "retryReason");
     const includeAgentsMd = node.config?.includeAgentsMd !== false;
+    const includeComments = node.config?.includeComments !== false;
+    const includeGitContext = node.config?.includeGitContext !== false;
     const includeStatusEndpoint = node.config?.includeStatusEndpoint !== false;
+    ctx.data._taskIncludeContext = includeComments;
     const customTemplate = cfgOrCtx(node, ctx, "promptTemplate");
     const taskPayload =
       ctx.data?.task && typeof ctx.data.task === "object"
@@ -11682,16 +11828,70 @@ registerBuiltinNodeType("action.build_task_prompt", {
           "6. Never ask for user input — you are autonomous.\n" +
           "7. Use all available tools to verify your work.",
       );
-      systemParts.push("");
-      systemParts.push("## Git Attribution");
-      systemParts.push("Add this trailer to all commits:");
-      systemParts.push("Co-authored-by: bosun[bot] <bosun@virtengine.com>");
       return systemParts.join("\n").trim();
+    };
+
+    const assertStableSystemPrompt = (candidate) => {
+      if (!strictCacheAnchoring) return;
+      const dynamicMarkers = [
+        normalizedTaskId,
+        normalizedTaskTitle,
+        normalizedTaskDescription,
+        normalizedRetryReason,
+        normalizedBranch,
+        normalizedBaseBranch,
+        normalizedWorktreePath,
+      ]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+      const leaked = dynamicMarkers.find((marker) => candidate.includes(marker));
+      if (leaked) {
+        throw new Error(
+          `BOSUN_CACHE_ANCHOR_MODE=strict violation: system prompt leaked task-specific marker "${leaked}"`,
+        );
+      }
+    };
+
+    const buildGitContextBlock = async () => {
+      if (!includeGitContext) return "";
+      const root = normalizedWorktreePath || normalizedRepoRoot;
+      if (!root) return "";
+      if (!existsSync(resolve(root, ".git"))) return "";
+
+      try {
+        const diffStatsMod = await ensureDiffStatsMod();
+        const commits =
+          diffStatsMod.getRecentCommits?.(root, 8) || [];
+        let diffSummary =
+          diffStatsMod.getCompactDiffSummary?.(root, {
+            baseBranch: normalizedBaseBranch || "origin/main",
+          }) || "";
+
+        if (diffSummary && diffSummary.length > 2000) {
+          diffSummary = `${diffSummary.slice(0, 2000)}…`;
+        }
+
+        const lines = ["## Git Context"];
+        if (Array.isArray(commits) && commits.length > 0) {
+          lines.push("### Recent Commits");
+          for (const commit of commits) lines.push(`- ${commit}`);
+        }
+        if (diffSummary && diffSummary !== "(no diff stats available)") {
+          lines.push("### Diff Summary");
+          lines.push("```");
+          lines.push(diffSummary);
+          lines.push("```");
+        }
+        return lines.length > 1 ? lines.join("\n") : "";
+      } catch {
+        return "";
+      }
     };
 
     if (customTemplate) {
       const renderedTemplate = renderCustomTemplate(customTemplate);
       const stableSystemPrompt = buildStableSystemPrompt();
+      assertStableSystemPrompt(stableSystemPrompt);
       ctx.data._taskPrompt = renderedTemplate;
       ctx.data._taskUserPrompt = renderedTemplate;
       ctx.data._taskSystemPrompt = stableSystemPrompt;
@@ -11724,6 +11924,21 @@ registerBuiltinNodeType("action.build_task_prompt", {
     if (normalizedTaskDescription) {
       userParts.push("## Description");
       userParts.push(normalizedTaskDescription);
+      userParts.push("");
+    }
+
+    if (includeComments) {
+      const taskContextBlock = buildTaskContextBlock(taskPayload);
+      if (taskContextBlock) {
+        userParts.push(taskContextBlock);
+        userParts.push("");
+        ctx.data._taskPromptIncludesTaskContext = true;
+      }
+    }
+
+    const gitContextBlock = await buildGitContextBlock();
+    if (gitContextBlock) {
+      userParts.push(gitContextBlock);
       userParts.push("");
     }
 
@@ -11881,28 +12096,19 @@ registerBuiltinNodeType("action.build_task_prompt", {
       userParts.push("");
     }
 
+    const coAuthorTrailer = shouldAddBosunCoAuthor({ taskId: normalizedTaskId })
+      ? getBosunCoAuthorTrailer()
+      : "";
+    if (coAuthorTrailer) {
+      userParts.push("## Git Attribution");
+      userParts.push("Add this trailer to all commits:");
+      userParts.push(coAuthorTrailer);
+      userParts.push("");
+    }
+
     const userPrompt = userParts.join("\n").trim();
     const systemPrompt = buildStableSystemPrompt();
-
-    if (strictCacheAnchoring) {
-      const dynamicMarkers = [
-        normalizedTaskId,
-        normalizedTaskTitle,
-        normalizedTaskDescription,
-        normalizedRetryReason,
-        normalizedBranch,
-        normalizedBaseBranch,
-        normalizedWorktreePath,
-      ]
-        .map((value) => String(value || "").trim())
-        .filter(Boolean);
-      const leaked = dynamicMarkers.find((marker) => systemPrompt.includes(marker));
-      if (leaked) {
-        throw new Error(
-          `BOSUN_CACHE_ANCHOR_MODE=strict violation: system prompt leaked task-specific marker "${leaked}"`,
-        );
-      }
-    }
+    assertStableSystemPrompt(systemPrompt);
 
     ctx.data._taskPrompt = userPrompt;
     ctx.data._taskUserPrompt = userPrompt;

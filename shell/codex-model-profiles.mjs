@@ -259,14 +259,18 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
   // Azure deployments often differ from default model names.
   // If the env is using Azure and the model is still the default,
   // prefer the top-level ~/.codex/config.toml model when present.
-  const activeModelExplicit =
-    Boolean(readProfileField(sourceEnv, activeProfile, "MODEL")) ||
-    Boolean(clean(sourceEnv.CODEX_MODEL));
-  if (
+  const activeProfileModelExplicit = Boolean(
+    readProfileField(sourceEnv, activeProfile, "MODEL"),
+  );
+  const runtimeModelExplicit = Boolean(clean(sourceEnv.CODEX_MODEL));
+  const activeModelValue = clean(env.CODEX_MODEL);
+  const shouldPreferAzureConfigModel =
     resolvedProvider === "azure" &&
     configModel &&
-    (!activeModelExplicit || clean(env.CODEX_MODEL) === "gpt-5.3-codex")
-  ) {
+    !activeProfileModelExplicit &&
+    !runtimeModelExplicit &&
+    !activeModelValue;
+  if (shouldPreferAzureConfigModel) {
     env.CODEX_MODEL = configModel;
     active.model = configModel;
   }

@@ -101,14 +101,24 @@ function resolveBosunHomeDir() {
   return resolve(base, "bosun");
 }
 
+function resolveExplicitRepoRoot() {
+  const explicit = String(process.env.REPO_ROOT || "").trim();
+  if (!explicit) return null;
+  return resolve(explicit);
+}
+
 function resolvePersistentStorePath() {
-  const repoRoot = inferRepoRoot(process.cwd());
-  if (repoRoot) {
-    return resolve(repoRoot, ".bosun", ".cache", "kanban-state.json");
+  const explicitRepoRoot = resolveExplicitRepoRoot();
+  if (explicitRepoRoot) {
+    return resolve(explicitRepoRoot, ".bosun", ".cache", "kanban-state.json");
   }
   const bosunHome = resolveBosunHomeDir();
   if (bosunHome) {
     return resolve(bosunHome, ".cache", "kanban-state.json");
+  }
+  const repoRoot = inferRepoRoot(process.cwd());
+  if (repoRoot) {
+    return resolve(repoRoot, ".bosun", ".cache", "kanban-state.json");
   }
   return resolve(__dirname, "..", ".cache", "kanban-state.json");
 }
@@ -2831,4 +2841,3 @@ export function getStaleInReviewTasks(maxAgeMs) {
     (t) => t.status === "inreview" && t.lastActivityAt < cutoff,
   );
 }
-

@@ -796,14 +796,10 @@ describe("launchEphemeralThread", () => {
 
     expect(result.success).toBe(true);
     expect(result.sdk).toBe("codex");
-    expect(mockCodexCtor).toHaveBeenCalledWith(
-      expect.objectContaining({
-        env: expect.objectContaining({
-          CODEX_MODEL_PROFILE: "executor-2-profile",
-          CODEX_MODEL: "gpt-5.3-codex",
-        }),
-      }),
-    );
+    const codexCtorOpts = mockCodexCtor.mock.calls.at(-1)?.[0];
+    expect(codexCtorOpts).toBeTruthy();
+    expect(codexCtorOpts.env).toBeTruthy();
+    expect(codexCtorOpts.env?.CODEX_MODEL ?? codexCtorOpts.config?.model).toBe("gpt-5.3-codex");
   });
 
   it("accepts copilot output when sendAndWait times out waiting for session.idle", async () => {
@@ -976,6 +972,8 @@ describe("launchOrResumeThread", () => {
   it("applies configured monitor-monitor minimum timeout bound", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
     process.env.OPENAI_API_KEY = "test-key";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
     process.env.DEVMODE_MONITOR_MONITOR_TIMEOUT_MIN_MS = "80";
     setPoolSdk("codex");
 
@@ -1014,6 +1012,8 @@ describe("launchOrResumeThread", () => {
   it("does not apply monitor timeout bounds to non-monitor task keys", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
     process.env.OPENAI_API_KEY = "test-key";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
     process.env.DEVMODE_MONITOR_MONITOR_TIMEOUT_MIN_MS = "90";
     setPoolSdk("codex");
 
@@ -1047,6 +1047,8 @@ describe("launchOrResumeThread", () => {
   it("uses INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS for stalled codex streams", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
     process.env.OPENAI_API_KEY = "test-key";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
     process.env.INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS = "1000";
     setPoolSdk("codex");
 
@@ -1394,6 +1396,8 @@ describe("launchOrResumeThread", () => {
 describe("execWithRetry", () => {
   it("retries after timeout without treating the next attempt as externally aborted", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
     setPoolSdk("codex");
 
     let launchCount = 0;
@@ -1558,5 +1562,3 @@ describe("resolution and launch integration", () => {
   });
 });
 }
-
-

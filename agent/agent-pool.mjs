@@ -43,6 +43,7 @@ import { resolve, dirname } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { loadConfig } from "../config/config.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "../config/repo-root.mjs";
 import { resolveCodexProfileRuntime } from "../shell/codex-model-profiles.mjs";
@@ -97,6 +98,23 @@ const HARD_TIMEOUT_BUFFER_MS = 5 * 60_000; // 5 minutes
 
 /** Tag for console logging */
 const TAG = "[agent-pool]";
+const require = createRequire(import.meta.url);
+const MODULE_PRESENCE_CACHE = new Map();
+
+function hasOptionalModule(specifier) {
+  if (MODULE_PRESENCE_CACHE.has(specifier)) {
+    return MODULE_PRESENCE_CACHE.get(specifier);
+  }
+  let ok = false;
+  try {
+    require.resolve(specifier);
+    ok = true;
+  } catch {
+    ok = false;
+  }
+  MODULE_PRESENCE_CACHE.set(specifier, ok);
+  return ok;
+}
 const MAX_PROMPT_BYTES = 180_000;
 const MAX_SET_TIMEOUT_MS = 2_147_483_647; // Node.js setTimeout 32-bit signed max
 let timeoutClampWarningKey = "";
@@ -424,13 +442,20 @@ function injectGitHubSessionEnv(baseEnv, token) {
 
 /**
  * Extract a human-readable task heading from the prompt built by _buildTaskPrompt.
- * The first line is "# TASKID — Task Title"; we return the title portion only.
+ * The first line is "# Task: Task Title" (legacy: "# TASKID — Task Title");
+ * we return the title portion only.
  * Falls back to the raw first line if no em-dash separator is found.
  * @param {string} prompt
  * @returns {string}
  */
 function extractTaskHeading(prompt) {
   const firstLine = String(prompt || "").split(/\r?\n/)[0].replace(/^#+\s*/, "").trim();
+  if (!firstLine) return "Execute Task";
+  const taskMatch = firstLine.match(/^task\s*[:\-\u2014]\s*(.+)$/i);
+  if (taskMatch && taskMatch[1]) {
+    const title = taskMatch[1].trim();
+    return title || "Execute Task";
+  }
   const dashIdx = firstLine.indexOf(" \u2014 ");
   const title = dashIdx !== -1 ? firstLine.slice(dashIdx + 3).trim() : firstLine;
   return title || "Execute Task";
@@ -580,6 +605,9 @@ function hasSdkPrerequisites(name, runtimeEnv = process.env) {
   }
 
   if (name === "codex") {
+    if (!hasOptionalModule("@openai/codex-sdk")) {
+      return { ok: false, reason: "@openai/codex-sdk not installed" };
+    }
     // Codex auth can come from env vars, config env_key mappings, or persisted
     // CLI login state (for example ~/.codex/auth.json). Because login-based
     // auth is valid and hard to validate exhaustively, avoid false negatives.
@@ -619,11 +647,17 @@ function hasSdkPrerequisites(name, runtimeEnv = process.env) {
     return { ok: true, reason: null };
   }
   if (name === "copilot") {
+    if (!hasOptionalModule("@github/copilot-sdk")) {
+      return { ok: false, reason: "@github/copilot-sdk not installed" };
+    }
     // Copilot auth can come from multiple sources (OAuth manager, gh auth,
     // VS Code Copilot login, env tokens). Don't block execution here.
     return { ok: true, reason: null };
   }
   if (name === "claude") {
+    if (!hasOptionalModule("@anthropic-ai/claude-agent-sdk")) {
+      return { ok: false, reason: "@anthropic-ai/claude-agent-sdk not installed" };
+    }
     const hasKey = runtimeEnv.ANTHROPIC_API_KEY;
     if (!hasKey) {
       return { ok: false, reason: "no ANTHROPIC_API_KEY" };
@@ -1173,6 +1207,11 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
       : process.env;
   const codexSessionEnv = applyNodeWarningSuppressionEnv(codexRuntimeEnv);
   const codexOpts = buildCodexSdkOptions(codexSessionEnv);
+  const explicitEnvModel = String(envOverrides?.CODEX_MODEL || "").trim();
+  if (explicitEnvModel) {
+    codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: explicitEnvModel };
+    codexOpts.config = { ...(codexOpts.config || {}), model: explicitEnvModel };
+  }
   const modelOverride = String(extra?.model || "").trim();
   if (modelOverride) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: modelOverride };
@@ -2412,6 +2451,7 @@ export async function launchEphemeralThread(
       ];
 
   let lastAttemptResult = null;
+  let primaryFailureResult = null;
   const triedSdkNames = [];
   const missingPrereqSdks = [];
   const cooledDownSdks = [];
@@ -2469,6 +2509,10 @@ export async function launchEphemeralThread(
 
     if (!shouldFallbackForSdkError(result.error)) {
       return result;
+    }
+
+    if (name === primaryName) {
+      primaryFailureResult = result;
     }
 
     applySdkFailureCooldown(name, result.error);
@@ -2547,6 +2591,12 @@ export async function launchEphemeralThread(
 
   // ── All SDKs exhausted ───────────────────────────────────────────────────
   if (lastAttemptResult) {
+    if (
+      primaryFailureResult &&
+      lastAttemptResult.sdk !== primaryFailureResult.sdk
+    ) {
+      return primaryFailureResult;
+    }
     return lastAttemptResult;
   }
 
@@ -2973,6 +3023,11 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
       : process.env;
   const codexSessionEnv = applyNodeWarningSuppressionEnv(codexRuntimeEnv);
   const codexOpts = buildCodexSdkOptions(codexSessionEnv);
+  const explicitEnvModel = String(envOverrides?.CODEX_MODEL || "").trim();
+  if (explicitEnvModel) {
+    codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: explicitEnvModel };
+    codexOpts.config = { ...(codexOpts.config || {}), model: explicitEnvModel };
+  }
   const modelOverride = String(extra?.model || "").trim();
   if (modelOverride) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: modelOverride };
@@ -3166,6 +3221,7 @@ async function resumeGenericThread(
  * @param {string}  [extra.sessionType] Interaction type used for context-shredding policy lookup.
  * @param {boolean} [extra.forceContextShredding] Force compression regardless of session type defaults.
  * @param {boolean} [extra.skipContextShredding]  Skip compression regardless of policy.
+ * @param {boolean} [extra.pinSdk]     Keep SDK pinned when provided (disables fallback).
  * @param {Function} [extra.onEvent]   Event callback.
  * @param {AbortController} [extra.abortController]
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string, threadId: string|null, resumed: boolean }>}
@@ -3190,8 +3246,8 @@ export async function launchOrResumeThread(
   restExtra.envOverrides = applyNodeWarningSuppressionEnv(restExtra.envOverrides);
   // Pass taskKey through as steer key so SDK launchers can register active sessions
   restExtra.taskKey = taskKey;
-  if (restExtra.sdk) {
-    // Task-bound runs with an explicit SDK should stay pinned to that SDK.
+  if (restExtra.sdk && restExtra.pinSdk === true) {
+    // Task-bound runs with an explicit SDK can optionally stay pinned to that SDK.
     restExtra.disableFallback = true;
   }
   timeoutMs = clampMonitorMonitorTimeout(timeoutMs, taskKey);
@@ -3823,7 +3879,3 @@ export function getActiveThreads() {
   }
   return result;
 }
-
-
-
-
