@@ -91,12 +91,18 @@ async function discoverViaSDK(existingClient = null) {
     // Try to connect to an already-running server
     try {
       const port = Number(process.env.OPENCODE_PORT || "4096");
-      const result = sdk.createOpencodeClient({
-        hostname: "127.0.0.1",
-        port,
-        timeout: 5_000,
-      });
-      client = result;
+      try {
+        client = sdk.createOpencodeClient({
+          baseUrl: `http://127.0.0.1:${port}`,
+          timeout: 5_000,
+        });
+      } catch {
+        client = sdk.createOpencodeClient({
+          hostname: "127.0.0.1",
+          port,
+          timeout: 5_000,
+        });
+      }
     } catch {
       return null;
     }
@@ -481,3 +487,4 @@ export function buildExecutorEntry(providerID, modelFullId, overrides = {}) {
 export function invalidateCache() {
   _providerCache = { data: null, ts: 0 };
 }
+

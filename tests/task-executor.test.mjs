@@ -1527,6 +1527,31 @@ describe("task-executor", () => {
       expect(ex._slotRuntimeState.has("blocked-err-1")).toBe(false);
       expect(executeSpy).not.toHaveBeenCalled();
     });
+
+    it("clears persisted anti-thrash state when manually reset", async () => {
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
+      const saveSpy = vi.spyOn(ex, "_saveNoCommitState").mockImplementation(() => {});
+
+      ex._noCommitCounts.set("throttle-1", 3);
+      ex._skipUntil.set("throttle-1", Date.now() + 60_000);
+      ex._taskCooldowns.set("throttle-1", Date.now());
+      ex._idleContinueCounts.set("throttle-1", 2);
+      ex._repoAreaBlockedTasks.set("throttle-1", {
+        blockedAt: Date.now(),
+        lastObservedWaitMs: 1000,
+        areas: ["ui"],
+      });
+
+      const changed = ex.resetTaskThrottleState("throttle-1");
+
+      expect(changed).toBe(true);
+      expect(ex._noCommitCounts.has("throttle-1")).toBe(false);
+      expect(ex._skipUntil.has("throttle-1")).toBe(false);
+      expect(ex._taskCooldowns.has("throttle-1")).toBe(false);
+      expect(ex._idleContinueCounts.has("throttle-1")).toBe(false);
+      expect(ex._repoAreaBlockedTasks.has("throttle-1")).toBe(false);
+      expect(saveSpy).toHaveBeenCalledTimes(1);
+    });
   });
 
   // ────────────────────────────────────────────────────────────────────────

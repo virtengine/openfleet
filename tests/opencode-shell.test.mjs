@@ -598,3 +598,70 @@ describe("initOpencodeShell()", () => {
     delete process.env.OPENCODE_SDK_DISABLED;
   });
 });
+
+describe("discoverProviders()", () => {
+  afterEach(() => {
+    delete process.env.OPENCODE_PORT;
+    vi.clearAllMocks();
+  });
+
+  it("uses baseUrl when attaching the SDK client", async () => {
+    vi.resetModules();
+    const list = vi.fn().mockResolvedValue({
+      data: {
+        all: [{
+          id: "anthropic",
+          name: "Anthropic",
+          env: ["ANTHROPIC_API_KEY"],
+          models: {
+            "claude-sonnet-4": { id: "claude-sonnet-4", name: "Claude Sonnet 4" },
+          },
+        }],
+        connected: ["anthropic"],
+        default: { anthropic: "claude-sonnet-4" },
+      },
+    });
+    const auth = vi.fn().mockResolvedValue({
+      data: { anthropic: [{ type: "api_key", label: "API key" }] },
+    });
+    mockCreateOpencodeClient.mockReturnValue({ provider: { list, auth } });
+
+    const { discoverProviders } = await import("../shell/opencode-providers.mjs");
+    const snapshot = await discoverProviders({ force: true });
+
+    expect(mockCreateOpencodeClient).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseUrl: "http://127.0.0.1:4096",
+        timeout: 5_000,
+      }),
+    );
+    expect(snapshot.connectedIds).toEqual(["anthropic"]);
+    expect(snapshot.providers[0].models[0].fullId).toBe("anthropic/claude-sonnet-4");
+  });
+
+  it("falls back to hostname/port for older SDK signatures", async () => {
+    vi.resetModules();
+    const list = vi.fn().mockResolvedValue({
+      data: { all: [], connected: [], default: {} },
+    });
+    const auth = vi.fn().mockResolvedValue({ data: {} });
+    mockCreateOpencodeClient
+      .mockImplementationOnce(() => {
+        throw new Error("unsupported option");
+      })
+      .mockReturnValueOnce({ provider: { list, auth } });
+
+    const { discoverProviders } = await import("../shell/opencode-providers.mjs");
+    await discoverProviders({ force: true });
+
+    expect(mockCreateOpencodeClient).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        hostname: "127.0.0.1",
+        port: 4096,
+        timeout: 5_000,
+      }),
+    );
+  });
+});
+

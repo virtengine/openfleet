@@ -4278,6 +4278,34 @@ class TaskExecutor {
     };
   }
 
+  resetTaskThrottleState(taskId, options = {}) {
+    const key = normalizeTaskIdKey(taskId);
+    if (!key) return false;
+
+    let changed = false;
+    if (options.clearNoCommit !== false && this._noCommitCounts.delete(key)) {
+      changed = true;
+    }
+    if (options.clearSkipUntil !== false && this._skipUntil.delete(key)) {
+      changed = true;
+    }
+    if (options.clearCooldowns !== false && this._taskCooldowns.delete(key)) {
+      changed = true;
+    }
+    if (this._idleContinueCounts.delete(key)) {
+      changed = true;
+    }
+    if (this._repoAreaBlockedTasks.has(key)) {
+      this._repoAreaBlockedTasks.delete(key);
+      changed = true;
+    }
+
+    if (changed) {
+      this._saveNoCommitState();
+    }
+    return changed;
+  }
+
   setBacklogReplenishmentConfig(patch = {}) {
     if (!patch || typeof patch !== "object") {
       return this.getBacklogReplenishmentConfig();

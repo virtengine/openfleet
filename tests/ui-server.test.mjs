@@ -1907,11 +1907,13 @@ describe("ui-server mini app", () => {
 
     const mod = await import("../server/ui-server.mjs");
     const executeTask = vi.fn(async () => {});
+    const resetTaskThrottleState = vi.fn(() => true);
     const clearRetryQueueTask = vi.fn();
     mod.injectUiDependencies({
       getInternalExecutor: () => ({
         getStatus: () => ({ maxParallel: 4, activeSlots: 0, slots: [] }),
         executeTask,
+        resetTaskThrottleState,
         isPaused: () => false,
       }),
       getAgentEventBus: () => ({
@@ -1949,6 +1951,7 @@ describe("ui-server mini app", () => {
     expect(retried.taskId).toBe(taskId);
     expect(executeTask).toHaveBeenCalledTimes(1);
     expect(executeTask.mock.calls[0][0]?.id).toBe(taskId);
+    expect(resetTaskThrottleState).toHaveBeenCalledWith(taskId, {});
     expect(clearRetryQueueTask).toHaveBeenCalledWith(taskId, "manual-retry-now");
   });
 
@@ -1969,6 +1972,14 @@ describe("ui-server mini app", () => {
     taskStore.loadStore();
 
     const mod = await import("../server/ui-server.mjs");
+    const resetTaskThrottleState = vi.fn(() => true);
+    mod.injectUiDependencies({
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 4, activeSlots: 0, slots: [] }),
+        resetTaskThrottleState,
+        isPaused: () => false,
+      }),
+    });
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -2018,6 +2029,7 @@ describe("ui-server mini app", () => {
     expect(task.blockedReason).toBeNull();
     expect(task.meta?.autoRecovery).toBeUndefined();
     expect(task.meta?.note).toBe("keep-me");
+    expect(resetTaskThrottleState).toHaveBeenCalledWith(taskId, {});
   });
 
   it("clears blocked task state when editing a blocked task back to todo", async () => {
@@ -2037,6 +2049,14 @@ describe("ui-server mini app", () => {
     taskStore.loadStore();
 
     const mod = await import("../server/ui-server.mjs");
+    const resetTaskThrottleState = vi.fn(() => true);
+    mod.injectUiDependencies({
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 4, activeSlots: 0, slots: [] }),
+        resetTaskThrottleState,
+        isPaused: () => false,
+      }),
+    });
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -2082,6 +2102,7 @@ describe("ui-server mini app", () => {
     expect(task.blockedReason).toBeNull();
     expect(task.meta?.autoRecovery).toBeUndefined();
     expect(task.meta?.note).toBe("preserve-me");
+    expect(resetTaskThrottleState).toHaveBeenCalledWith("task-edit-unblock", {});
   });
 
   it("queues task starts when no executor slots are free and reports truthful runtime state", async () => {

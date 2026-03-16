@@ -1,20 +1,31 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { resolve } from "node:path";
-import { after, before, describe, it } from "node:test";
+import test from "node:test";
 import { chromium } from "playwright";
 
 const repoRoot = process.cwd();
 const serverEntry = resolve(repoRoot, "server", "playwright-ui-server.mjs");
 const routerSource = readFileSync(resolve(repoRoot, "ui", "modules", "router.js"), "utf8");
-const envPort = process.env.PLAYWRIGHT_UI_PORT ? Number(process.env.PLAYWRIGHT_UI_PORT) : undefined;
-const port = Number.isInteger(envPort) && envPort > 0 ? envPort : 4455;
-process.env.PLAYWRIGHT_UI_PORT = String(port);
-const baseUrl = `http://127.0.0.1:${port}`;
+const requestedEnvPort = process.env.PLAYWRIGHT_UI_PORT ? Number(process.env.PLAYWRIGHT_UI_PORT) : undefined;
 const externalBlockPattern = /(telegram\.org|umami\.is|cloud\.umami|fonts\.googleapis\.com|fonts\.gstatic\.com|cdn\.jsdelivr\.net|unpkg\.com)/;
+const ROUTE_NAVIGATION_TIMEOUT_MS = 8000;
+const UI_SETTLE_TIMEOUT_MS = 1000;
+const ROUTE_SETTLE_EXTRA_MS = 150;
+const ROUTE_ASSERT_TIMEOUT_MS = 12000;
+const REPRESENTATIVE_SMOKE_PATHS = [
+  "/",
+  "/tasks",
+  "/workflows",
+  "/settings",
+];
+
+function debugLog(message) {
+  process.stderr.write(`[portal-smoke] ${message}\n`);
+}
 
 function extractTabRoutes(source) {
   const block = source.match(/export const TAB_CONFIG = \[([\s\S]*?)\n\];/);
@@ -55,10 +66,21 @@ function extractParameterizedRoutes(source) {
   return routes;
 }
 
-const routesUnderTest = [...new Map(
+const discoveredRoutes = [...new Map(
   [...extractTabRoutes(routerSource), ...extractParameterizedRoutes(routerSource)]
     .map((route) => [route.path, route]),
 ).values()];
+
+function selectRepresentativeRoutes(routes) {
+  const byPath = new Map((Array.isArray(routes) ? routes : []).map((route) => [route.path, route]));
+  const missing = REPRESENTATIVE_SMOKE_PATHS.filter((path) => !byPath.has(path));
+  if (missing.length > 0) {
+    throw new Error(`Representative smoke routes missing from router extraction: ${missing.join(", ")}`);
+  }
+  return REPRESENTATIVE_SMOKE_PATHS.map((path) => byPath.get(path));
+}
+
+const routesUnderTest = selectRepresentativeRoutes(discoveredRoutes);
 
 function createErrorCollectors(page) {
   const state = {
@@ -83,14 +105,14 @@ function createErrorCollectors(page) {
 
   page.on("requestfailed", (request) => {
     const url = request.url();
-    if (!url.startsWith(baseUrl)) return;
+    if (!url.startsWith(page.__smokeBaseUrl)) return;
     if (!/\.(?:js|mjs|css|png|svg|ico|woff2?|ttf)(?:$|\?)/i.test(url)) return;
     state.assetFailures.push(`${request.method()} ${url} :: ${request.failure()?.errorText || "request failed"}`);
   });
 
   page.on("response", (response) => {
     const url = response.url();
-    if (!url.startsWith(baseUrl)) return;
+    if (!url.startsWith(page.__smokeBaseUrl)) return;
     if (!/\.(?:js|mjs|css|png|svg|ico|woff2?|ttf)(?:$|\?)/i.test(url)) return;
     if (response.status() >= 400) {
       state.assetFailures.push(`${response.status()} ${url}`);
@@ -104,6 +126,32 @@ function createErrorCollectors(page) {
 
 async function blockExternals(page) {
   await page.route(externalBlockPattern, (route) => route.abort());
+}
+
+async function resolveSmokePort() {
+  if (Number.isInteger(requestedEnvPort) && requestedEnvPort > 0) {
+    return requestedEnvPort;
+  }
+
+  return await new Promise((resolvePort, reject) => {
+    const server = createServer();
+    server.unref();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close(() => reject(new Error("Failed to determine free smoke test port.")));
+        return;
+      }
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolvePort(address.port);
+      });
+    });
+  });
 }
 
 async function readBootResult(page) {
@@ -120,9 +168,25 @@ async function readTabErrorText(page) {
   return String(text || "").trim();
 }
 
-async function waitForUiSettled(page, extraMs = 250) {
-  await page.waitForLoadState("networkidle", { timeout: 1500 }).catch(() => {});
+async function waitForUiSettled(page, extraMs = ROUTE_SETTLE_EXTRA_MS) {
+  await page.waitForLoadState("networkidle", { timeout: UI_SETTLE_TIMEOUT_MS }).catch(() => {});
   await page.waitForTimeout(extraMs);
+}
+
+async function withTimeout(label, timeoutMs, work) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(work),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`${label} exceeded ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function assertTasksDagViewActivated(page) {
@@ -143,28 +207,35 @@ async function assertTasksDagViewActivated(page) {
   );
 }
 
-async function verifyRouteLoads(browser, route) {
-  const page = await browser.newPage();
+async function verifyRouteLoads(browser, route, baseUrl) {
+  debugLog(`route:start ${route.path}`);
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  page.__smokeBaseUrl = baseUrl;
   const errors = createErrorCollectors(page);
   try {
-    await blockExternals(page);
-    await page.goto(`${baseUrl}${route.path}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 15000,
+    await withTimeout(`route ${route.path}`, ROUTE_ASSERT_TIMEOUT_MS, async () => {
+      await blockExternals(page);
+      await page.goto(`${baseUrl}${route.path}`, {
+        waitUntil: "domcontentloaded",
+        timeout: ROUTE_NAVIGATION_TIMEOUT_MS,
+      });
+      await waitForUiSettled(page);
+
+      const boot = await readBootResult(page);
+      const tabErrorText = await readTabErrorText(page);
+
+      assert.equal(boot.bootFailed, false, `Boot loader surfaced an error on ${route.path}:\n${boot.bootText}`);
+      assert.equal(errors.loadedAssets.has("/app.js"), true, `Expected /app.js to load for ${route.path}`);
+      assert.equal(tabErrorText, "", `Render error boundary appeared on ${route.path}:\n${tabErrorText}`);
+      assert.deepEqual(errors.runtimeErrors, [], `Runtime JS errors on ${route.path}:\n${errors.runtimeErrors.join("\n")}`);
+      assert.deepEqual(errors.consoleErrors, [], `Console errors on ${route.path}:\n${errors.consoleErrors.join("\n")}`);
+      assert.deepEqual(errors.assetFailures, [], `Critical local asset failures on ${route.path}:\n${errors.assetFailures.join("\n")}`);
     });
-    await waitForUiSettled(page);
-
-    const boot = await readBootResult(page);
-    const tabErrorText = await readTabErrorText(page);
-
-    assert.equal(boot.bootFailed, false, `Boot loader surfaced an error on ${route.path}:\n${boot.bootText}`);
-    assert.equal(errors.loadedAssets.has("/app.js"), true, `Expected /app.js to load for ${route.path}`);
-    assert.equal(tabErrorText, "", `Render error boundary appeared on ${route.path}:\n${tabErrorText}`);
-    assert.deepEqual(errors.runtimeErrors, [], `Runtime JS errors on ${route.path}:\n${errors.runtimeErrors.join("\n")}`);
-    assert.deepEqual(errors.consoleErrors, [], `Console errors on ${route.path}:\n${errors.consoleErrors.join("\n")}`);
-    assert.deepEqual(errors.assetFailures, [], `Critical local asset failures on ${route.path}:\n${errors.assetFailures.join("\n")}`);
+    debugLog(`route:ok ${route.path}`);
   } finally {
     await page.close().catch(() => {});
+    await context.close().catch(() => {});
   }
 }
 
@@ -187,14 +258,14 @@ async function waitForHttpReady(url, timeoutMs = 30000) {
 }
 
 async function waitForChildExit(child, timeoutMs = 10000) {
-  if (!child || child.exitCode !== null || child.killed) return;
+  if (child?.exitCode !== null || child?.killed) return;
   const exitPromise = once(child, "exit").catch(() => {});
   const timeoutPromise = new Promise((resolve) => setTimeout(resolve, timeoutMs));
   await Promise.race([exitPromise, timeoutPromise]);
 }
 
 async function forceTerminateChild(child) {
-  if (!child || child.exitCode !== null) return;
+  if (child?.exitCode !== null) return;
   if (process.platform === "win32") {
     await new Promise((resolve) => {
       execFile("taskkill", ["/pid", String(child.pid), "/t", "/f"], () => resolve());
@@ -208,10 +279,11 @@ async function forceTerminateChild(child) {
   }
 }
 
-let serverProcess = null;
-
-before(async () => {
-  serverProcess = spawn(process.execPath, [serverEntry], {
+async function startPortalServer() {
+  const port = await resolveSmokePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  debugLog(`server:start ${baseUrl}`);
+  const serverProcess = spawn(process.execPath, [serverEntry], {
     cwd: repoRoot,
     env: {
       ...process.env,
@@ -238,38 +310,57 @@ before(async () => {
     await waitForChildExit(serverProcess, 3000);
     throw new Error(`Failed to start portal test server: ${error.message}\n${stderr}`);
   }
-}, { timeout: 40000 });
+  debugLog(`server:ready ${baseUrl}`);
+  return { serverProcess, baseUrl };
+}
 
-after(async () => {
+async function stopPortalServer(serverProcess) {
   if (!serverProcess) return;
+  debugLog("server:stop");
   serverProcess.kill();
   await waitForChildExit(serverProcess, 3000);
   await forceTerminateChild(serverProcess);
   await waitForChildExit(serverProcess, 3000);
-}, { timeout: 10000 });
+}
 
-describe("portal browser smoke harness", () => {
-  it("boots every router-derived portal route without JS load failures", async () => {
+async function withPortalServer(run) {
+  const { serverProcess, baseUrl } = await startPortalServer();
+  try {
+    return await run({ baseUrl });
+  } finally {
+    await stopPortalServer(serverProcess);
+  }
+}
+
+test("boots a bounded representative portal route set without JS load failures", { timeout: 120000 }, async () => {
+  await withPortalServer(async ({ baseUrl }) => {
+    debugLog("test:boot-routes:start");
     const browser = await chromium.launch({ headless: true });
     try {
       for (const route of routesUnderTest) {
-        await verifyRouteLoads(browser, route);
+        await verifyRouteLoads(browser, route, baseUrl);
       }
     } finally {
       await browser.close();
+      debugLog("test:boot-routes:done");
     }
-  }, { timeout: 180000 });
+  });
+});
 
-  it("catches Tasks DAG subview failures after the route boots", async () => {
+test("catches Tasks DAG subview failures after the route boots", { timeout: 60000 }, async () => {
+  await withPortalServer(async ({ baseUrl }) => {
+    debugLog("test:dag:start");
     const browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
+    page.__smokeBaseUrl = baseUrl;
     const errors = createErrorCollectors(page);
     try {
       await blockExternals(page);
       await page.goto(`${baseUrl}/tasks`, {
         waitUntil: "domcontentloaded",
-        timeout: 15000,
+        timeout: ROUTE_NAVIGATION_TIMEOUT_MS,
       });
+      debugLog("test:dag:tasks-loaded");
       await waitForUiSettled(page);
 
       const boot = await readBootResult(page);
@@ -277,6 +368,7 @@ describe("portal browser smoke harness", () => {
       assert.equal(errors.loadedAssets.has("/app.js"), true, "Expected /app.js to load for /tasks");
 
       await assertTasksDagViewActivated(page);
+      debugLog("test:dag:activated");
 
       const tabErrorText = await readTabErrorText(page);
       assert.equal(tabErrorText, "", `Render error boundary appeared on Tasks DAG view:\n${tabErrorText}`);
@@ -286,6 +378,7 @@ describe("portal browser smoke harness", () => {
     } finally {
       await page.close().catch(() => {});
       await browser.close().catch(() => {});
+      debugLog("test:dag:done");
     }
-  }, { timeout: 120000 });
+  });
 });

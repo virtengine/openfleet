@@ -320,6 +320,17 @@ function unblockInternalTask(taskId, options = {}) {
   }
 }
 
+function resetExecutorTaskThrottleState(taskId, options = {}) {
+  const executor = uiDeps.getInternalExecutor?.() || null;
+  const fn = executor?.resetTaskThrottleState;
+  if (typeof fn !== "function") return false;
+  try {
+    return fn.call(executor, taskId, options) === true;
+  } catch {
+    return false;
+  }
+}
+
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolveRepoRoot();
 const uiRootPreferred = resolve(__dirname, "..", "ui");
@@ -12933,7 +12944,14 @@ async function handleApi(req, res, url) {
         : undefined;
       const metadataPatch = buildTaskMetadataPatch(body || {});
       const requestedStatus = normalizeTaskStatusKey(body?.status);
-      const clearsBlockedState = requestedStatus === "todo";
+      const currentLooksBlocked =
+        normalizeTaskStatusKey(previousTask?.status) === "blocked" ||
+        Boolean(previousTask?.blockedReason) ||
+        Boolean(previousTask?.cooldownUntil) ||
+        Boolean(previousTask?.meta?.autoRecovery) ||
+        Boolean(previousTask?.meta?.worktreeFailure?.blockedReason);
+      const clearsBlockedState =
+        currentLooksBlocked && Boolean(requestedStatus) && requestedStatus !== "blocked";
       const nextMeta = (Object.keys(metadataPatch.meta).length > 0 || clearsBlockedState)
         ? buildTaskMetaPatch(previousTask?.meta, metadataPatch.meta, { clearBlockedState: clearsBlockedState })
         : null;
@@ -12967,6 +12985,9 @@ async function handleApi(req, res, url) {
           ? await adapter.updateTask(taskId, patch)
           : await adapter.updateTaskStatus(taskId, patch.status);
       const updated = withTaskMetadataTopLevel(updatedRaw);
+      if (clearsBlockedState) {
+        resetExecutorTaskThrottleState(taskId);
+      }
       const nextStatus = updated?.status || patch.status || null;
       const lifecycleAction = inferLifecycleAction(
         previousTask?.status || null,
@@ -13074,7 +13095,14 @@ async function handleApi(req, res, url) {
         : undefined;
       const metadataPatch = buildTaskMetadataPatch(body || {});
       const requestedStatus = normalizeTaskStatusKey(body?.status);
-      const clearsBlockedState = requestedStatus === "todo";
+      const currentLooksBlocked =
+        normalizeTaskStatusKey(previousTask?.status) === "blocked" ||
+        Boolean(previousTask?.blockedReason) ||
+        Boolean(previousTask?.cooldownUntil) ||
+        Boolean(previousTask?.meta?.autoRecovery) ||
+        Boolean(previousTask?.meta?.worktreeFailure?.blockedReason);
+      const clearsBlockedState =
+        currentLooksBlocked && Boolean(requestedStatus) && requestedStatus !== "blocked";
       const nextMeta = (Object.keys(metadataPatch.meta).length > 0 || clearsBlockedState)
         ? buildTaskMetaPatch(previousTask?.meta, metadataPatch.meta, { clearBlockedState: clearsBlockedState })
         : null;
@@ -13108,6 +13136,9 @@ async function handleApi(req, res, url) {
           ? await adapter.updateTask(taskId, patch)
           : await adapter.updateTaskStatus(taskId, patch.status);
       const updated = withTaskMetadataTopLevel(updatedRaw);
+      if (clearsBlockedState) {
+        resetExecutorTaskThrottleState(taskId);
+      }
       const nextStatus = updated?.status || patch.status || null;
       const lifecycleAction = inferLifecycleAction(
         previousTask?.status || null,
@@ -16869,6 +16900,7 @@ async function handleApi(req, res, url) {
         status: "todo",
         source: "manual-retry",
       });
+      resetExecutorTaskThrottleState(taskId);
       if (!nextTask) {
         if (typeof adapter.updateTask === "function") {
           await adapter.updateTask(taskId, {
@@ -16933,6 +16965,7 @@ async function handleApi(req, res, url) {
         status: targetStatus,
         source: "api.tasks.unblock",
       });
+      resetExecutorTaskThrottleState(taskId);
       if (!updatedTask) {
         const nextMeta = task?.meta && typeof task.meta === "object"
           ? Object.fromEntries(Object.entries(task.meta).filter(([key]) => key !== "autoRecovery"))
