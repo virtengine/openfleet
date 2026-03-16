@@ -1823,6 +1823,36 @@ describe("action.build_task_prompt", () => {
     expect(result.prompt).toContain("- **Allowed Repositories:** (not declared)");
   });
 
+  it("strips unresolved template placeholders from custom prompt templates", async () => {
+    const nt = getNodeType("action.build_task_prompt");
+    const ctx = makeCtx({});
+    const node = makeNode("action.build_task_prompt", {
+      taskId: "T4c",
+      taskTitle: "Custom placeholder cleanup",
+      taskDescription: "{{taskDescription}}",
+      repoSlug: "{{repoSlug}}",
+      workspace: "{{workspace}}",
+      promptTemplate: [
+        "# Task: {{taskTitle}}",
+        "",
+        "Task ID: {{taskId}}",
+        "",
+        "## Description",
+        "{{taskDescription}}",
+        "",
+        "## Environment",
+        "- Repo: {{repoSlug}}",
+        "- Workspace: {{workspace}}",
+      ].join("\n"),
+    });
+    const result = await nt.execute(node, ctx);
+    expect(result.prompt).toContain("# Task: Custom placeholder cleanup");
+    expect(result.prompt).toContain("Task ID: T4c");
+    expect(result.prompt).not.toContain("{{taskDescription}}");
+    expect(result.prompt).not.toContain("{{repoSlug}}");
+    expect(result.prompt).not.toContain("{{workspace}}");
+  });
+
   it("injects WORKFLOW.md content when a contract was loaded earlier in the workflow", async () => {
     const nt = getNodeType("action.build_task_prompt");
     const ctx = makeCtx({
