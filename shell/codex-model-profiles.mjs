@@ -9,6 +9,33 @@ function clean(value) {
   return String(value ?? "").trim();
 }
 
+function isAzureOpenAIBaseUrl(value) {
+  try {
+    const parsed = value instanceof URL ? value : new URL(String(value || ""));
+    const host = String(parsed.hostname || "").toLowerCase();
+    return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+  } catch {
+    return false;
+  }
+}
+
+function normalizeAzureOpenAIBaseUrl(value) {
+  const raw = clean(value);
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    if (!isAzureOpenAIBaseUrl(parsed)) {
+      return raw;
+    }
+    parsed.pathname = "/openai/v1";
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString().replace(/\/+$/, "");
+  } catch {
+    return raw;
+  }
+}
+
 function normalizeProfileName(value, fallback = DEFAULT_ACTIVE_PROFILE) {
   const raw = clean(value).toLowerCase();
   if (!raw) return fallback;
@@ -21,15 +48,7 @@ function profilePrefix(name) {
 
 function inferGlobalProvider(env) {
   const baseUrl = clean(env.OPENAI_BASE_URL).toLowerCase();
-  if ((() => {
-        try {
-          const parsed = new URL(baseUrl);
-          const host = String(parsed.hostname || "").toLowerCase();
-          return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
-        } catch {
-          return false;
-        }
-      })()) return "azure";
+  if (isAzureOpenAIBaseUrl(baseUrl)) return "azure";
   return "openai";
 }
 
@@ -116,12 +135,18 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
   if (active.model) {
     env.CODEX_MODEL = active.model;
   }
-  if (active.baseUrl) {
-    env.OPENAI_BASE_URL = active.baseUrl;
-  }
 
   const profileApiKey = active.apiKey;
   const resolvedProvider = active.provider || globalProvider;
+  const runtimeBaseUrl = clean(active.baseUrl) || clean(env.OPENAI_BASE_URL);
+  if (runtimeBaseUrl) {
+    const normalizedBaseUrl =
+      resolvedProvider === "azure"
+        ? normalizeAzureOpenAIBaseUrl(runtimeBaseUrl)
+        : runtimeBaseUrl;
+    env.OPENAI_BASE_URL = normalizedBaseUrl;
+    active.baseUrl = normalizedBaseUrl;
+  }
 
   // Azure deployments often differ from default model names.
   // If the env is using Azure and the model is still the default,
@@ -175,3 +200,6 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
     provider: resolvedProvider,
   };
 }
+
+
+
