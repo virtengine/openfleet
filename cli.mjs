@@ -79,6 +79,7 @@ function showHelp() {
   COMMANDS
     workflow list              List declarative pipeline workflows
     workflow run <name>        Run a declarative pipeline workflow
+    audit <command>            Run codebase annotation audit tools (scan|generate|warn|manifest|index|trim|conformity|migrate)
     --setup                    Launch the web-based setup wizard (default)
     --setup-terminal            Run the legacy terminal setup wizard
     --where                     Show the resolved bosun config directory
@@ -1368,8 +1369,8 @@ async function main() {
     const { runAuditCli } = await import("./lib/codebase-audit.mjs");
     const commandStartIndex = auditCommandIndex >= 0 ? auditCommandIndex : auditFlagIndex;
     const auditArgs = args.slice(commandStartIndex + 1);
-    await runAuditCli(auditArgs);
-    process.exit(0);
+    const { exitCode } = await runAuditCli(auditArgs);
+    process.exit(exitCode);
   }
 
   if (args[0] === "node:create" || (args[0] === "node" && args[1] === "create")) {

@@ -35,5 +35,7 @@ describe("cli task routing", () => {
     expect(cliSource).toContain("args.indexOf(\"audit\")");
     expect(cliSource).toContain("const auditArgs = args.slice(commandStartIndex + 1)");
     expect(cliSource).toContain("const { runAuditCli } = await import(\"./lib/codebase-audit.mjs\")");
+    expect(cliSource).toContain("const { exitCode } = await runAuditCli(auditArgs)");
+    expect(cliSource).toContain("process.exit(exitCode)");
   });
 });
