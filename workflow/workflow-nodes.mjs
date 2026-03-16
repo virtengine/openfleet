@@ -11502,6 +11502,49 @@ registerBuiltinNodeType("action.build_task_prompt", {
       String(process.env.BOSUN_CACHE_ANCHOR_MODE || "")
         .trim()
         .toLowerCase() === "strict";
+    const customTemplateValues = {
+      taskId: normalizedTaskId,
+      taskTitle: normalizedTaskTitle,
+      taskDescription: normalizedTaskDescription,
+      branch: normalizedBranch,
+      baseBranch: normalizedBaseBranch,
+      worktreePath: normalizedWorktreePath,
+      repoRoot: normalizedRepoRoot,
+      repoSlug: normalizedRepoSlug,
+      workspace,
+      repository: primaryRepository,
+      repositories: allowedRepositories.join(", "),
+      retryReason: normalizedRetryReason,
+    };
+    const renderCustomTemplate = (template) => {
+      const lookup = new Map();
+      const register = (key, value) => {
+        const normalizedKey = String(key || "").trim();
+        if (!normalizedKey) return;
+        const normalizedValue = normalizeString(value);
+        lookup.set(normalizedKey, normalizedValue);
+        lookup.set(normalizedKey.toLowerCase(), normalizedValue);
+        lookup.set(normalizedKey.toUpperCase(), normalizedValue);
+      };
+      for (const [key, value] of Object.entries(customTemplateValues)) {
+        register(key, value);
+        register(key.replace(/([a-z0-9])([A-Z])/g, "$1_$2"), value);
+      }
+      return String(template || "")
+        .replace(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g, (_full, key) => {
+          const lookupKey = String(key || "").trim();
+          if (!lookupKey) return "";
+          if (lookup.has(lookupKey)) return lookup.get(lookupKey);
+          if (lookup.has(lookupKey.toLowerCase())) return lookup.get(lookupKey.toLowerCase());
+          if (lookup.has(lookupKey.toUpperCase())) return lookup.get(lookupKey.toUpperCase());
+          return "";
+        })
+        .split("\n")
+        .map((line) => line.replace(/[ \t]+$/g, ""))
+        .join("\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    };
 
     const buildStableSystemPrompt = () => {
       const systemParts = [];
@@ -11582,15 +11625,16 @@ registerBuiltinNodeType("action.build_task_prompt", {
     };
 
     if (customTemplate) {
+      const renderedTemplate = renderCustomTemplate(customTemplate);
       const stableSystemPrompt = buildStableSystemPrompt();
-      ctx.data._taskPrompt = customTemplate;
-      ctx.data._taskUserPrompt = customTemplate;
+      ctx.data._taskPrompt = renderedTemplate;
+      ctx.data._taskUserPrompt = renderedTemplate;
       ctx.data._taskSystemPrompt = stableSystemPrompt;
-      ctx.log(node.id, `Prompt from custom template (${customTemplate.length} chars)`);
+      ctx.log(node.id, `Prompt from custom template (${renderedTemplate.length} chars)`);
       return {
         success: true,
-        prompt: customTemplate,
-        userPrompt: customTemplate,
+        prompt: renderedTemplate,
+        userPrompt: renderedTemplate,
         systemPrompt: stableSystemPrompt,
         source: "custom",
       };
