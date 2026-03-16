@@ -2460,38 +2460,46 @@ export async function launchEphemeralThread(
     new Set(attemptOrder.filter((name) => SDK_ADAPTERS[name] && !isDisabled(name))),
   );
   const cooledDownSet = new Set(cooledDownSdks.map((entry) => entry.name));
-  const hasRunnableNonPrimaryCandidate = eligibleSdks.some((name) => {
-    if (name === primaryName) return false;
-    if (cooledDownSet.has(name)) return false;
-    return hasSdkPrerequisites(name, sessionEnv).ok;
-  });
+  const missingPrereqSet = new Set(missingPrereqSdks.map((entry) => entry.name));
+  const allEligibleUnavailable =
+    eligibleSdks.length > 0 &&
+    eligibleSdks.every(
+      (name) => cooledDownSet.has(name) || missingPrereqSet.has(name),
+    );
 
-  // If the primary is cooling down and no non-primary SDK can run right now,
-  // force one primary attempt so work is not blocked by cooldown windows.
+  // If every eligible SDK is unavailable (cooldown and/or missing credentials),
+  // force one primary attempt so work is not blocked for the full cooldown window.
   const shouldBypassPrimaryCooldown =
     !ignoreSdkCooldown &&
     !lastAttemptResult &&
     cooledDownSet.has(primaryName) &&
-    !hasRunnableNonPrimaryCandidate;
+    allEligibleUnavailable;
 
   if (shouldBypassPrimaryCooldown) {
     const prereq = hasSdkPrerequisites(primaryName, sessionEnv);
-    if (prereq.ok) {
+    if (!prereq.ok) {
+      // Cooldown means we recently attempted this SDK. Keep one forced retry path
+      // to avoid hard-blocking work on strict prerequisite heuristics.
+      missingPrereqSdks.push({ name: primaryName, reason: prereq.reason });
+      console.warn(
+        `${TAG} all eligible SDKs unavailable; bypassing primary SDK "${primaryName}" prerequisite gate for forced retry (${prereq.reason})`,
+      );
+    } else {
       console.warn(
         `${TAG} no runnable fallback SDK is available (cooldown/prerequisite gate); forcing primary SDK "${primaryName}" retry`,
       );
-      triedSdkNames.push(primaryName);
-      const launcher = await SDK_ADAPTERS[primaryName].load();
-      const forcedResult = await launcher(prompt, cwd, timeoutMs, launchExtra);
-      if (forcedResult.success) {
-        return forcedResult;
-      }
-      lastAttemptResult = forcedResult;
-      if (!shouldFallbackForSdkError(forcedResult.error)) {
-        return forcedResult;
-      }
-      applySdkFailureCooldown(primaryName, forcedResult.error);
     }
+    triedSdkNames.push(primaryName);
+    const launcher = await SDK_ADAPTERS[primaryName].load();
+    const forcedResult = await launcher(prompt, cwd, timeoutMs, launchExtra);
+    if (forcedResult.success) {
+      return forcedResult;
+    }
+    lastAttemptResult = forcedResult;
+    if (!shouldFallbackForSdkError(forcedResult.error)) {
+      return forcedResult;
+    }
+    applySdkFailureCooldown(primaryName, forcedResult.error);
   }
 
   // ── All SDKs exhausted ───────────────────────────────────────────────────
@@ -3772,3 +3780,4 @@ export function getActiveThreads() {
   }
   return result;
 }
+
