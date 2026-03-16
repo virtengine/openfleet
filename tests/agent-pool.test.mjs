@@ -649,6 +649,57 @@ describe("launchEphemeralThread", () => {
     nowSpy.mockRestore();
   });
 
+  it("retries primary SDK during cooldown when non-cooled fallbacks are not runnable", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    delete process.env.ANTHROPIC_API_KEY;
+    process.env.AGENT_POOL_SDK_FAILURE_COOLDOWN_MS = "1000";
+    setPoolSdk("codex");
+
+    const nowSpy = vi.spyOn(Date, "now");
+    nowSpy.mockReturnValue(1_000_000);
+
+    const makeTimeoutThread = (id) => ({
+      id,
+      runStreamed: async (_prompt, { signal } = {}) => {
+        await new Promise((_, reject) => {
+          const abortNow = () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          };
+          if (signal?.aborted) {
+            abortNow();
+            return;
+          }
+          signal?.addEventListener("abort", abortNow, { once: true });
+        });
+      },
+    });
+
+    mockCodexStartThread.mockImplementation(() =>
+      makeTimeoutThread("cooldown-primary-unrunnable-fallback-timeout"),
+    );
+
+    const first = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+      sdk: "codex",
+    });
+    expect(first.success).toBe(false);
+    expect(first.error).toMatch(/codex timeout/i);
+    expect(mockCodexStartThread).toHaveBeenCalledTimes(1);
+
+    const second = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+      sdk: "codex",
+    });
+    expect(second.success).toBe(false);
+    expect(second.error).toMatch(/codex timeout/i);
+    expect(second.error).not.toMatch(/no SDK available/i);
+    expect(mockCodexStartThread).toHaveBeenCalledTimes(2);
+
+    nowSpy.mockRestore();
+  });
+
   it("fails over when copilot startup reports a protocol version mismatch", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
     process.env.__MOCK_COPILOT_AVAILABLE = "1";
