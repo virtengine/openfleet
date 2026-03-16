@@ -2460,21 +2460,25 @@ export async function launchEphemeralThread(
     new Set(attemptOrder.filter((name) => SDK_ADAPTERS[name] && !isDisabled(name))),
   );
   const cooledDownSet = new Set(cooledDownSdks.map((entry) => entry.name));
+  const hasRunnableNonPrimaryCandidate = eligibleSdks.some((name) => {
+    if (name === primaryName) return false;
+    if (cooledDownSet.has(name)) return false;
+    return hasSdkPrerequisites(name, sessionEnv).ok;
+  });
 
-  // If all eligible SDKs are cooling down, force one primary attempt so
-  // work is not blocked for the entire cooldown window.
+  // If the primary is cooling down and no non-primary SDK can run right now,
+  // force one primary attempt so work is not blocked by cooldown windows.
   const shouldBypassPrimaryCooldown =
     !ignoreSdkCooldown &&
     !lastAttemptResult &&
     cooledDownSet.has(primaryName) &&
-    eligibleSdks.length > 0 &&
-    eligibleSdks.every((name) => cooledDownSet.has(name));
+    !hasRunnableNonPrimaryCandidate;
 
   if (shouldBypassPrimaryCooldown) {
     const prereq = hasSdkPrerequisites(primaryName, sessionEnv);
     if (prereq.ok) {
       console.warn(
-        `${TAG} all eligible SDKs are cooling down; forcing primary SDK "${primaryName}" retry`,
+        `${TAG} no runnable fallback SDK is available (cooldown/prerequisite gate); forcing primary SDK "${primaryName}" retry`,
       );
       triedSdkNames.push(primaryName);
       const launcher = await SDK_ADAPTERS[primaryName].load();
