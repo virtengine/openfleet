@@ -88,6 +88,7 @@ export function isPlaceholderTaskDescription(value) {
   if (!text) return false;
   const normalized = text.toLowerCase();
   return (
+    TASK_TEMPLATE_PLACEHOLDER_RE.test(text) ||
     normalized === "internal server error" ||
     normalized === "{\"ok\":false,\"error\":\"internal server error\"}" ||
     normalized === "{\"error\":\"internal server error\"}"
@@ -227,6 +228,7 @@ export async function loadRetryQueue() {
 }
 
 const TASK_IGNORE_LABEL = "codex:ignore";
+const TASK_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
 const TASK_TEXT_REPLACEMENTS = [
   [/\u00D4\u00C7\u00F6/g, "-"],
   [/\u00D4\u00C7\u00A3/g, "\""],
