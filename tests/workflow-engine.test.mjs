@@ -997,6 +997,34 @@ describe("WorkflowEngine - run history details", () => {
     expect(resumedRun?.detail?.data?.prePrValidationCommand).toBe("auto");
   });
 
+  it("refreshes migrated task-lifecycle defaults for fresh task-lifecycle executions", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      {
+        id: "wf-fresh-migrated-default",
+        name: "Fresh Migrated Default",
+        variables: { prePrValidationCommand: "npm run prepush:check" },
+      },
+    );
+    wf.metadata = {
+      ...(wf.metadata || {}),
+      installedFrom: "template-task-lifecycle",
+      templateState: {
+        ...(wf.metadata?.templateState || {}),
+        isCustomized: false,
+      },
+    };
+    engine.save(wf);
+
+    const ctx = await engine.execute(wf.id, {});
+
+    expect(ctx.data.prePrValidationCommand).toBe("auto");
+
+    const persisted = engine.getRunDetail(ctx.id);
+    expect(persisted?.detail?.data?.prePrValidationCommand).toBe("auto");
+  });
+
   it("hydrates missing history entries from run detail files when index is truncated", () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
