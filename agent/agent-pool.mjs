@@ -2468,29 +2468,40 @@ export async function launchEphemeralThread(
     );
 
   // If every eligible SDK is unavailable (cooldown and/or missing credentials),
-  // force one primary attempt so work is not blocked for the full cooldown window.
-  const shouldBypassPrimaryCooldown =
+  // force one cooled-down attempt so work is not blocked for the full cooldown window.
+  const shouldForceCooldownBypassAttempt =
     !ignoreSdkCooldown &&
     !lastAttemptResult &&
-    cooledDownSet.has(primaryName) &&
+    cooledDownSdks.length > 0 &&
     allEligibleUnavailable;
+  const forcedSdkName = shouldForceCooldownBypassAttempt
+    ? cooledDownSet.has(primaryName)
+      ? primaryName
+      : eligibleSdks.find((name) => cooledDownSet.has(name)) || null
+    : null;
 
-  if (shouldBypassPrimaryCooldown) {
-    const prereq = hasSdkPrerequisites(primaryName, sessionEnv);
+  if (forcedSdkName) {
+    const prereq = hasSdkPrerequisites(forcedSdkName, sessionEnv);
     if (!prereq.ok) {
       // Cooldown means we recently attempted this SDK. Keep one forced retry path
       // to avoid hard-blocking work on strict prerequisite heuristics.
-      missingPrereqSdks.push({ name: primaryName, reason: prereq.reason });
+      if (
+        !missingPrereqSdks.some(
+          (entry) => entry.name === forcedSdkName && entry.reason === prereq.reason,
+        )
+      ) {
+        missingPrereqSdks.push({ name: forcedSdkName, reason: prereq.reason });
+      }
       console.warn(
-        `${TAG} all eligible SDKs unavailable; bypassing primary SDK "${primaryName}" prerequisite gate for forced retry (${prereq.reason})`,
+        `${TAG} all eligible SDKs unavailable; bypassing SDK "${forcedSdkName}" prerequisite gate for forced retry (${prereq.reason})`,
       );
     } else {
       console.warn(
-        `${TAG} no runnable fallback SDK is available (cooldown/prerequisite gate); forcing primary SDK "${primaryName}" retry`,
+        `${TAG} no runnable fallback SDK is available (cooldown/prerequisite gate); forcing SDK "${forcedSdkName}" retry`,
       );
     }
-    triedSdkNames.push(primaryName);
-    const launcher = await SDK_ADAPTERS[primaryName].load();
+    triedSdkNames.push(forcedSdkName);
+    const launcher = await SDK_ADAPTERS[forcedSdkName].load();
     const forcedResult = await launcher(prompt, cwd, timeoutMs, launchExtra);
     if (forcedResult.success) {
       return forcedResult;
@@ -2499,7 +2510,7 @@ export async function launchEphemeralThread(
     if (!shouldFallbackForSdkError(forcedResult.error)) {
       return forcedResult;
     }
-    applySdkFailureCooldown(primaryName, forcedResult.error);
+    applySdkFailureCooldown(forcedSdkName, forcedResult.error);
   }
 
   // ── All SDKs exhausted ───────────────────────────────────────────────────
@@ -3780,4 +3791,3 @@ export function getActiveThreads() {
   }
   return result;
 }
-
