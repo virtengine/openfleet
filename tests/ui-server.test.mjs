@@ -3203,6 +3203,8 @@ describe("ui-server mini app", () => {
 
   it("falls back to session workspaceDir for diff view", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const previousRepoRoot = process.env.REPO_ROOT;
+    delete process.env.REPO_ROOT;
 
     const repoDir = mkdtempSync(join(tmpdir(), "bosun-session-diff-"));
     const filePath = join(repoDir, "notes.txt");
@@ -3258,6 +3260,8 @@ describe("ui-server mini app", () => {
       expect(Array.isArray(diffPayload?.diff?.files)).toBe(true);
       expect(hasNotesDiff).toBe(true);
     } finally {
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
       rmSync(repoDir, { recursive: true, force: true });
     }
   });
