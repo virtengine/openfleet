@@ -1261,7 +1261,7 @@ async function loadRuntimeConfig() {
 
 async function loadUiServerModule() {
   if (uiApi) return uiApi;
-  uiApi = await loadBosunModule("ui-server.mjs");
+  uiApi = await loadBosunModule("server/ui-server.mjs");
   return uiApi;
 }
 
