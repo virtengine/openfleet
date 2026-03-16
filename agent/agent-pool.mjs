@@ -2456,6 +2456,49 @@ export async function launchEphemeralThread(
     }
   }
 
+  if (
+    !ignoreSdkCooldown &&
+    !lastAttemptResult &&
+    triedSdkNames.length === 0 &&
+    cooledDownSdks.length > 0
+  ) {
+    for (const name of attemptOrder) {
+      const adapter = SDK_ADAPTERS[name];
+      if (!adapter || isDisabled(name)) continue;
+
+      const cooldownRemainingMs = getSdkCooldownRemainingMs(name);
+      if (cooldownRemainingMs <= 0) continue;
+
+      const prereq = hasSdkPrerequisites(name, sessionEnv);
+      if (!prereq.ok) {
+        if (!missingPrereqSdks.some((entry) => entry.name === name)) {
+          missingPrereqSdks.push({ name, reason: prereq.reason });
+        }
+        continue;
+      }
+
+      const remainingSec = Math.max(1, Math.ceil(cooldownRemainingMs / 1000));
+      console.warn(
+        `${TAG} all eligible SDKs are cooling down; force-retrying "${name}" (${remainingSec}s remaining)`,
+      );
+
+      triedSdkNames.push(name);
+      const launcher = await adapter.load();
+      const result = await launcher(prompt, cwd, timeoutMs, launchExtra);
+      lastAttemptResult = result;
+
+      if (result.success) {
+        return result;
+      }
+
+      if (!shouldFallbackForSdkError(result.error)) {
+        return result;
+      }
+
+      applySdkFailureCooldown(name, result.error);
+    }
+  }
+
   // ── All SDKs exhausted ───────────────────────────────────────────────────
   if (lastAttemptResult) {
     return lastAttemptResult;
