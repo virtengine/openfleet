@@ -2510,10 +2510,15 @@ registerBuiltinNodeType("action.run_agent", {
           ) || "",
         ).trim();
         const sessionId = resolvedSessionId || null;
+        const storedSessionOwnerNodeId = String(ctx.data?._agentSessionNodeId || "").trim() || null;
+        const hasExplicitSessionOverride =
+          options.sessionId != null
+          || node.config?.sessionId != null
+          || (sessionId && !storedSessionOwnerNodeId);
+        const canContinueStoredSession =
+          !!sessionId && (hasExplicitSessionOverride || storedSessionOwnerNodeId === node.id);
         const explicitTaskKey = String(ctx.resolve(node.config?.taskKey || "") || "").trim();
-        const fallbackTaskKey =
-          sessionId ||
-          `${ctx.data?._workflowId || "workflow"}:${ctx.id}:${node.id}`;
+        const fallbackTaskKey = `${ctx.data?._workflowId || "workflow"}:${ctx.id}:${node.id}`;
         const recoveryTaskKey = options.taskKey || explicitTaskKey || fallbackTaskKey;
         const autoRecover = options.autoRecover ?? (node.config?.autoRecover !== false);
         const continueOnSession =
@@ -2613,7 +2618,7 @@ registerBuiltinNodeType("action.run_agent", {
           if (
             autoRecover &&
             continueOnSession &&
-            sessionId &&
+            canContinueStoredSession &&
             typeof agentPool.continueSession === "function"
           ) {
             ctx.log(node.id, `${passLabel} Recovery: continuing existing session ${sessionId}`.trim());
@@ -2707,6 +2712,8 @@ registerBuiltinNodeType("action.run_agent", {
         if (persistSession && threadId) {
           ctx.data.sessionId = threadId;
           ctx.data.threadId = threadId;
+          ctx.data._agentSessionNodeId = node.id;
+          ctx.data._agentSessionTaskKey = recoveryTaskKey;
         }
         const digest = buildAgentExecutionDigest(result, streamLines, maxRetainedEvents);
 

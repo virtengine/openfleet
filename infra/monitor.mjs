@@ -663,6 +663,7 @@ async function ensureWorkflowAutomationEngine() {
             "template-task-lifecycle",
             "template-task-finalization-guard",
             "template-agent-session-monitor",
+            "template-github-kanban-sync",
           ],
         });
         if (Number(reconcile?.autoUpdated || 0) > 0) {
@@ -672,6 +673,15 @@ async function ensureWorkflowAutomationEngine() {
                 ? ` (${reconcile.forceUpdated.length} forced)`
                 : ""),
           );
+        }
+        if (
+          typeof engine.load === "function" &&
+          (Number(reconcile?.autoUpdated || 0) > 0 ||
+            Number(reconcile?.metadataUpdated || 0) > 0 ||
+            (Array.isArray(reconcile?.updatedWorkflowIds) &&
+              reconcile.updatedWorkflowIds.length > 0))
+        ) {
+          engine.load();
         }
       }
       for (const summary of engine.list?.() || []) {

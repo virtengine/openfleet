@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import {
@@ -837,6 +837,164 @@ describe("WorkflowEngine - run history details", () => {
     expect(recovered.workflowId).toBe(wf.id);
     expect(recovered.status).toBe(WorkflowStatus.PAUSED);
     expect(recovered.resumable).toBe(true);
+  });
+
+  it("does not resume an interrupted task run when a newer run already exists for the same task", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-resume-superseded", name: "Resume Superseded Workflow" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const interruptedRunId = "run-interrupted-older";
+    const newerRunId = "run-newer-active";
+    const taskId = "task-shared-1";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: interruptedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: null,
+            resumable: true,
+          },
+          {
+            runId: newerRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.RUNNING,
+            startedAt: 2000,
+            endedAt: null,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${interruptedRunId}.json`),
+      JSON.stringify({
+        id: interruptedRunId,
+        startedAt: 1000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId,
+        },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${newerRunId}.json`),
+      JSON.stringify({
+        id: newerRunId,
+        startedAt: 2000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId,
+        },
+        nodeStatuses: { trigger: NodeStatus.RUNNING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
+
+    await engine.resumeInterruptedRuns();
+
+    expect(retrySpy).not.toHaveBeenCalled();
+
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const interrupted = index.runs.find((entry) => entry.runId === interruptedRunId);
+    expect(interrupted).toBeTruthy();
+    expect(interrupted.resumable).toBe(false);
+    expect(interrupted.resumeResult).toBe("duplicate_task_run");
+  });
+
+  it("refreshes migrated task-lifecycle defaults when retrying an interrupted run", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      {
+        id: "wf-resume-migrated-default",
+        name: "Resume Migrated Default",
+        variables: { prePrValidationCommand: "auto" },
+      },
+    );
+    wf.metadata = {
+      ...(wf.metadata || {}),
+      installedFrom: "template-task-lifecycle",
+    };
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const interruptedRunId = "run-stale-quality-gate";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: interruptedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: null,
+            resumable: true,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${interruptedRunId}.json`),
+      JSON.stringify({
+        id: interruptedRunId,
+        startedAt: 1000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId: "task-shared-1",
+          prePrValidationCommand: "npm run prepush:check",
+        },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const executeDagSpy = vi.spyOn(engine, "_executeDag").mockResolvedValue();
+
+    const { retryRunId } = await engine.retryRun(interruptedRunId, { mode: "from_failed" });
+
+    expect(executeDagSpy).toHaveBeenCalledTimes(1);
+    const resumedCtx = executeDagSpy.mock.calls[0][3];
+    expect(resumedCtx.data.prePrValidationCommand).toBe("auto");
+
+    const resumedRun = engine.getRunDetail(retryRunId);
+    expect(resumedRun?.detail?.data?.prePrValidationCommand).toBe("auto");
   });
 
   it("hydrates missing history entries from run detail files when index is truncated", () => {
@@ -2577,6 +2735,56 @@ describe("Session chaining - action.run_agent", () => {
     expect(execWithRetry).not.toHaveBeenCalled();
   });
 
+  it("skips continuing a stored session from a different run_agent node", async () => {
+    const handler = getNodeType("action.run_agent");
+    const ctx = new WorkflowContext({
+      worktreePath: "/tmp/test",
+      sessionId: "thread-tests-1",
+      _agentSessionNodeId: "run-agent-tests",
+    });
+    const continueSession = vi.fn().mockResolvedValue({
+      success: true,
+      output: "should-not-be-used",
+      threadId: "thread-tests-1",
+      sdk: "copilot",
+    });
+    const execWithRetry = vi.fn().mockResolvedValue({
+      success: true,
+      output: "implemented",
+      threadId: "thread-implement-1",
+      sdk: "copilot",
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn().mockResolvedValue({
+            success: true,
+            output: "fallback",
+            sdk: "copilot",
+            threadId: "thread-fallback",
+          }),
+          continueSession,
+          execWithRetry,
+        },
+      },
+    };
+    const node = {
+      id: "run-agent-implement",
+      type: "action.run_agent",
+      config: { prompt: "Implement work", continueOnSession: true },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(result.threadId).toBe("thread-implement-1");
+    expect(continueSession).not.toHaveBeenCalled();
+    expect(execWithRetry).toHaveBeenCalledTimes(1);
+    expect(execWithRetry.mock.calls[0][1].taskKey).not.toBe("thread-tests-1");
+    expect(execWithRetry.mock.calls[0][1].taskKey).toContain(":run-agent-implement");
+    expect(ctx.data._agentSessionNodeId).toBe("run-agent-implement");
+  });
+
   it("runs multi-candidate selector mode when candidateCount > 1 and restores selected branch", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
@@ -3804,6 +4012,38 @@ describe("WorkflowEngine singleton services", () => {
     expect(second.services.agentPool).toBeDefined();
     expect(second.services.prompts?.planner).toBe("Planner prompt");
   }, 20000);
+
+  it("reinitializes the singleton when explicit workflow directories change", () => {
+    const workflowDirA = join(tmpDir, "singleton-workflows-a");
+    const runsDirA = join(tmpDir, "singleton-runs-a");
+    const configDirA = join(tmpDir, "singleton-config-a");
+    const workflowDirB = join(tmpDir, "singleton-workflows-b");
+    const runsDirB = join(tmpDir, "singleton-runs-b");
+    const configDirB = join(tmpDir, "singleton-config-b");
+
+    const first = getWorkflowEngine({
+      workflowDir: workflowDirA,
+      runsDir: runsDirA,
+      configDir: configDirA,
+      services: {
+        kanban: { createTask: () => ({ id: "1" }) },
+      },
+    });
+    const second = getWorkflowEngine({
+      workflowDir: workflowDirB,
+      runsDir: runsDirB,
+      configDir: configDirB,
+      services: {
+        agentPool: { launchEphemeralThread: async () => ({ success: true, output: "" }) },
+      },
+    });
+
+    expect(second).not.toBe(first);
+    expect(second.workflowDir).toBe(resolve(workflowDirB));
+    expect(second.runsDir).toBe(resolve(runsDirB));
+    expect(second.services.kanban).toBeDefined();
+    expect(second.services.agentPool).toBeDefined();
+  });
 });
 
 // ── Anomaly Detector Integration Tests ──────────────────────────────────────
