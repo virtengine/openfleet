@@ -451,10 +451,17 @@ function injectGitHubSessionEnv(baseEnv, token) {
 function extractTaskHeading(prompt) {
   const firstLine = String(prompt || "").split(/\r?\n/)[0].replace(/^#+\s*/, "").trim();
   if (!firstLine) return "Execute Task";
-  const taskMatch = firstLine.match(/^task\s*[:\-\u2014]\s*(.+)$/i);
-  if (taskMatch && taskMatch[1]) {
-    const title = taskMatch[1].trim();
-    return title || "Execute Task";
+  const lowerLine = firstLine.toLowerCase();
+  if (lowerLine.startsWith("task")) {
+    let index = 4;
+    while (index < firstLine.length && /\s/.test(firstLine[index])) index += 1;
+    const separator = firstLine[index];
+    if (separator === ":" || separator === "-" || separator === "\u2014") {
+      index += 1;
+      while (index < firstLine.length && /\s/.test(firstLine[index])) index += 1;
+      const title = firstLine.slice(index).trim();
+      if (title) return title;
+    }
   }
   const dashIdx = firstLine.indexOf(" \u2014 ");
   const title = dashIdx !== -1 ? firstLine.slice(dashIdx + 3).trim() : firstLine;
