@@ -3239,14 +3239,24 @@ describe("ui-server mini app", () => {
       const sessionId = created.session?.id;
       expect(sessionId).toBeTruthy();
 
-      const diffPayload = await fetch(
-        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/diff?workspace=all`,
-      ).then((r) => r.json());
+      let diffPayload = null;
+      let hasNotesDiff = false;
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        diffPayload = await fetch(
+          `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/diff?workspace=all`,
+        ).then((r) => r.json());
+        hasNotesDiff = Array.isArray(diffPayload?.diff?.files)
+          && diffPayload.diff.files.some((entry) =>
+            String(entry.file || entry.filename || "").includes("notes.txt"),
+          );
+        if (hasNotesDiff) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
 
-      expect(diffPayload.ok).toBe(true);
-      expect(diffPayload.diff?.totalFiles).toBeGreaterThan(0);
-      expect(Array.isArray(diffPayload.diff?.files)).toBe(true);
-      expect(diffPayload.diff.files.some((entry) => String(entry.file || entry.filename || "").includes("notes.txt"))).toBe(true);
+      expect(diffPayload?.ok).toBe(true);
+      expect(diffPayload?.diff?.totalFiles).toBeGreaterThan(0);
+      expect(Array.isArray(diffPayload?.diff?.files)).toBe(true);
+      expect(hasNotesDiff).toBe(true);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
