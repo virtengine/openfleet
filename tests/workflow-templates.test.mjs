@@ -858,6 +858,25 @@ describe("template drift + update behavior", () => {
     expect(refreshed.metadata.templateState.isCustomized).toBe(false);
   });
 
+  it("migrates legacy task-lifecycle pre-PR validation defaults during auto-update", () => {
+    const installed = installTemplate("template-task-lifecycle", engine);
+    const wf = engine.get(installed.id);
+    wf.variables.prePrValidationCommand = "npm run prepush:check";
+    wf.metadata.templateState.installedTemplateFingerprint = "0000-outdated";
+    wf.metadata.templateState.installedTemplateVersion = "0000-outdated";
+    wf.metadata.templateState.isCustomized = false;
+    wf.metadata.templateState.updateAvailable = true;
+    engine.save(wf);
+
+    const result = reconcileInstalledTemplates(engine, { autoUpdateUnmodified: true });
+    expect(result.autoUpdated).toBe(1);
+
+    const refreshed = engine.get(installed.id);
+    expect(refreshed.variables.prePrValidationCommand).toBe("auto");
+    expect(refreshed.metadata.templateState.updateAvailable).toBe(false);
+    expect(refreshed.metadata.templateState.isCustomized).toBe(false);
+  });
+
   it("does not auto-update customized workflows with updates available", () => {
     const installed = installTemplate("template-error-recovery", engine);
     const wf = engine.get(installed.id);
@@ -1357,7 +1376,9 @@ describe("github template CLI compatibility", () => {
     const watchdogFixNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-fix");
     const watchdogSecurityNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-security-fix");
     const watchdogReviewNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-review");
+    const fetchNode = syncTemplate.nodes.find((n) => n.id === "fetch-pr-state");
     const syncNode = syncTemplate.nodes.find((n) => n.id === "sync-programmatic");
+    const fetchCommand = fetchNode?.config?.command || "";
     const syncCommand = syncNode?.config?.command || "";
 
     expect(watchdogFixNode?.config?.env?.BOSUN_FETCH_AND_CLASSIFY)
@@ -1368,11 +1389,26 @@ describe("github template CLI compatibility", () => {
       .toBe("{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}");
     expect(syncNode?.config?.env?.BOSUN_FETCH_PR_STATE)
       .toBe("{{$ctx.getNodeOutput('fetch-pr-state')?.output || '{}'}}");
+    expect(fetchCommand).toContain("function collectReposFromConfig(){");
+    expect(fetchCommand).toContain("const repoTargets=resolveRepoTargets();");
+    expect(fetchCommand).toContain("if(repo){ mergedArgs.push('--repo',repo); openArgs.push('--repo',repo); }");
+    expect(fetchCommand).toContain("reposScanned: repoTargets.length");
+    expect(fetchCommand).toContain("repo:p.__repo||''");
+    expect(syncCommand).toContain("const maxBuffer=25*1024*1024;");
+    expect(syncCommand).toContain("const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':'';");
+    expect(syncCommand).toContain("const taskRunner=cliPath?'cli':(taskCli?'task-cli':'');");
+    expect(syncCommand).toContain("['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']");
     expect(syncCommand).toContain("reviewStatus");
-    expect(syncCommand).toContain("changes_requested_pending_fix");    expect(syncCommand).toContain("local_progress_state");
+    expect(syncCommand).toContain("runTask(['update',id,'--status','inreview'])");
     expect(syncCommand).toContain("parseJsonObject(raw)");
+    expect(syncCommand).toContain(String.raw`const candidate=lines.slice(start).join('\n').trim();`);
+    expect(syncCommand).toContain("token==='['||token==='{'");
     expect(syncCommand).toContain("const task=parseJsonObject(raw)");
-    expect(syncCommand).toContain("current==='todo'||current==='inprogress'");
+    expect(syncCommand).toContain("function listTasks(){");
+    expect(syncCommand).toContain("function resolveTaskId(item){");
+    expect(syncCommand).toContain("const taskBranch=String(task?.branchName||'').trim();");
+    expect(syncCommand).toContain("task_lookup_failed");
+    expect(syncCommand).not.toContain("current==='todo'||current==='inprogress'");
   });
 });
 

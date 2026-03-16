@@ -568,6 +568,8 @@ export async function resumeSession(id) {
 const STATUS_COLOR_MAP = {
   running: "var(--accent)",
   active: "var(--accent)",
+  idle: "var(--color-warning)",
+  stalled: "var(--color-error)",
   paused: "var(--text-hint)",
   completed: "var(--color-done)",
   done: "var(--color-done)",

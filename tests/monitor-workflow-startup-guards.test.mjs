@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 describe("monitor workflow startup guards", () => {
   const monitorSource = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
+  const maintenanceSource = readFileSync(resolve(process.cwd(), "infra/maintenance.mjs"), "utf8");
 
   it("initializes workflow automation before runtime subsystems in non-test mode", () => {
     expect(monitorSource).toContain("if (!isMonitorTestRuntime) {");
@@ -43,6 +44,22 @@ describe("monitor workflow startup guards", () => {
   it("forces agent session monitor template reconciliation on startup", () => {
     expect(monitorSource).toContain('forceUpdateTemplateIds: [');
     expect(monitorSource).toContain('"template-agent-session-monitor"');
+    expect(monitorSource).toContain('"template-github-kanban-sync"');
+    expect(monitorSource).toContain("Number(reconcile?.autoUpdated || 0) > 0");
+    expect(monitorSource).toContain("reconcile.updatedWorkflowIds.length > 0");
+    expect(monitorSource).toContain("typeof engine.load === \"function\"");
+    expect(monitorSource).toContain("engine.load();");
+  });
+
+  it("resumes interrupted workflow runs after monitor services are wired", () => {
+    expect(monitorSource).toContain('if (typeof engine.resumeInterruptedRuns === "function") {');
+    expect(monitorSource).toContain('engine.resumeInterruptedRuns().catch((err) => {');
+    expect(monitorSource).toContain('[workflows] Failed to resume interrupted runs:');
+    expect(
+      monitorSource.indexOf("bindWorkflowEngineToAnomalyDetector(engine);"),
+    ).toBeLessThan(
+      monitorSource.indexOf('engine.resumeInterruptedRuns().catch((err) => {'),
+    );
   });
 
   it("stores workflow definitions and runs under the selected repoRoot", () => {
@@ -115,6 +132,14 @@ describe("monitor workflow startup guards", () => {
       "CLI command mode in source checkout",
     );
   });
+
+  it("repairs core.bare corruption against the bosun repo root", () => {
+    expect(monitorSource).toContain('fixGitConfigCorruption(resolve(__dirname, ".."));');
+    expect(monitorSource).not.toContain('fixGitConfigCorruption(resolve(__dirname, "..", ".."));');
+    expect(maintenanceSource).toContain('const repoRoot = resolve(import.meta.dirname || ".", "..");');
+    expect(maintenanceSource).not.toContain('const repoRoot = resolve(import.meta.dirname || ".", "..", "..");');
+  });
+
   it("uses BOSUN_PROMPT_PLANNER path before workspace-root planner fallback", () => {
     expect(monitorSource).toContain("process.env.BOSUN_PROMPT_PLANNER");
     expect(monitorSource).toContain("BOSUN_PROMPT_PLANNER=");

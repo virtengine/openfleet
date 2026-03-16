@@ -1027,6 +1027,7 @@ const WS_CHANNEL_MAP = {
   infra: ["worktrees", "workspaces", "presence"],
   control: ["executor", "overview"],
   logs: ["*"],
+  marketplace: ["library"],
   telemetry: ["*", "retry-queue"],
   settings: ["overview"],
 };

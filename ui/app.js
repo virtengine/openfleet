@@ -314,7 +314,7 @@ import { LogsTab } from "./tabs/logs.js";
 import { TelemetryTab } from "./tabs/telemetry.js";
 import { SettingsTab } from "./tabs/settings.js";
 import { WorkflowsTab } from "./tabs/workflows.js";
-import { LibraryTab } from "./tabs/library.js";
+import { LibraryTab, LibraryMarketplaceTab } from "./tabs/library.js";
 import { ManualFlowsTab } from "./tabs/manual-flows.js";
 
 /* ── Shared components ── */
@@ -603,6 +603,7 @@ const TAB_COMPONENTS = {
   workflows: WorkflowsTab,
   "manual-flows": ManualFlowsTab,
   library: LibraryTab,
+  marketplace: LibraryMarketplaceTab,
   settings: SettingsTab,
 };
 
@@ -1228,7 +1229,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
  *  Bottom Navigation
  * ═══════════════════════════════════════════════ */
 const PRIMARY_NAV_TABS = ["dashboard", "chat", "tasks", "agents"];
-const MORE_NAV_TABS = ["control", "infra", "logs", "telemetry", "library", "workflows", "manual-flows", "settings"];
+const MORE_NAV_TABS = ["control", "infra", "logs", "telemetry", "library", "marketplace", "workflows", "manual-flows", "settings"];
 
 function getTabsById(ids) {
   return ids

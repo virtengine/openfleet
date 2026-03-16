@@ -361,6 +361,30 @@ describe("session-tracker", () => {
   });
 
   describe("persisted insights", () => {
+    it("derives idle and stalled list statuses for active sessions", () => {
+      vi.useFakeTimers();
+      try {
+        const timedTracker = createSessionTracker({ maxMessages: 10, idleThresholdMs: 1000, persistDir: null });
+        timedTracker.createSession({ id: "chat-idle", type: "primary" });
+        timedTracker.createSession({ id: "chat-stalled", type: "primary" });
+
+        vi.advanceTimersByTime(1500);
+        timedTracker.recordEvent("chat-idle", {
+          type: "assistant",
+          role: "assistant",
+          content: "still working",
+          timestamp: new Date().toISOString(),
+        });
+        vi.advanceTimersByTime(1200);
+
+        const listed = timedTracker.listAllSessions();
+        expect(listed.find((entry) => entry.id === "chat-idle")?.status).toBe("idle");
+        expect(listed.find((entry) => entry.id === "chat-stalled")?.status).toBe("stalled");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("stores inspector insights on sessions and reloads them from disk", () => {
       const persistDir = mkdtempSync(join(tmpdir(), "bosun-session-tracker-"));
       try {

@@ -22,6 +22,7 @@ import {
   validateSetting as validateSiteSetting,
 } from "../site/ui/modules/settings-schema.js";
 import {
+  buildMarketplaceImportPayload,
   extractSelectableLibraryTasks,
   isSelectableLibraryTask,
 } from "../ui/tabs/library.js";
@@ -323,6 +324,33 @@ describe("workflow canvas helpers", () => {
 
     expect(preview.lines).toEqual(["Preview summary", "Second line"]);
     expect(preview.tokenCount).toBe(128);
+  });
+});
+
+describe("library marketplace helpers", () => {
+  it("preserves custom repo metadata when building import payloads", () => {
+    const payload = buildMarketplaceImportPayload(
+      "custom",
+      {
+        source: {
+          id: "custom",
+          repoUrl: "https://github.com/K-Dense-AI/claude-scientific-skills",
+          defaultBranch: "main",
+        },
+      },
+      ["scientific-skills/xlsx/SKILL.md"],
+    );
+
+    expect(payload).toMatchObject({
+      sourceId: "custom",
+      repoUrl: "https://github.com/K-Dense-AI/claude-scientific-skills",
+      branch: "main",
+      includeEntries: ["scientific-skills/xlsx/SKILL.md"],
+      importAgents: true,
+      importSkills: true,
+      importPrompts: true,
+      importTools: true,
+    });
   });
 });
 

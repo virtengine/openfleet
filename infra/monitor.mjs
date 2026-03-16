@@ -663,6 +663,7 @@ async function ensureWorkflowAutomationEngine() {
             "template-task-lifecycle",
             "template-task-finalization-guard",
             "template-agent-session-monitor",
+            "template-github-kanban-sync",
           ],
         });
         if (Number(reconcile?.autoUpdated || 0) > 0) {
@@ -672,6 +673,15 @@ async function ensureWorkflowAutomationEngine() {
                 ? ` (${reconcile.forceUpdated.length} forced)`
                 : ""),
           );
+        }
+        if (
+          typeof engine.load === "function" &&
+          (Number(reconcile?.autoUpdated || 0) > 0 ||
+            Number(reconcile?.metadataUpdated || 0) > 0 ||
+            (Array.isArray(reconcile?.updatedWorkflowIds) &&
+              reconcile.updatedWorkflowIds.length > 0))
+        ) {
+          engine.load();
         }
       }
       for (const summary of engine.list?.() || []) {
@@ -723,6 +733,13 @@ async function ensureWorkflowAutomationEngine() {
             `[workflows] legacy modules paused (replaced by workflows): ${replaced.join(", ")}`,
           );
         }
+      }
+
+      // Resume runs paused by a previous monitor shutdown after services are wired.
+      if (typeof engine.resumeInterruptedRuns === "function") {
+        engine.resumeInterruptedRuns().catch((err) => {
+          console.warn(`[workflows] Failed to resume interrupted runs: ${err?.message || err}`);
+        });
       }
       workflowAutomationInitDone = true;
       return engine;
@@ -1703,8 +1720,8 @@ configureExecutorTaskStatusTransitions();
   }
 }
 
-// Guard against core.bare=true corruption on the main repo at startup
-fixGitConfigCorruption(resolve(__dirname, "..", ".."));
+// Guard against core.bare=true corruption on the Bosun repo at startup.
+fixGitConfigCorruption(resolve(__dirname, ".."));
 
 function canSignalProcess(pid) {
   if (!Number.isFinite(pid) || pid <= 0) return false;
@@ -13267,8 +13284,15 @@ async function startProcess() {
             .catch((err) =>
               console.warn(
                 `[workspace-monitor] failed to start for ${shortId}: ${err.message}`,
-              ),
-            );
+            ),
+          );
+        }
+        if (
+          typeof engine.load === "function" &&
+          ((Array.isArray(reconcile?.updatedWorkflowIds) && reconcile.updatedWorkflowIds.length > 0) ||
+            Number(reconcile?.metadataUpdated || 0) > 0)
+        ) {
+          engine.load();
         }
       }
 

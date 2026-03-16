@@ -454,13 +454,32 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
     return def;
   }
 
-  function makeUpdatedWorkflowFromTemplate(existing, template, mode = "replace") {
+  function applyLegacyTemplateVariableMigrations(existing, template, variables, opts = {}) {
+    if (!variables || typeof variables !== "object") return variables;
+    const assumeUncustomized = opts.assumeUncustomized === true;
+    if (!assumeUncustomized && existing?.metadata?.templateState?.isCustomized === true) {
+      return variables;
+    }
+
+    const templateId = String(template?.id || existing?.metadata?.installedFrom || "").trim();
+    if (templateId === "template-task-lifecycle") {
+      const currentValue = existing?.variables?.prePrValidationCommand;
+      const nextDefault = template?.variables?.prePrValidationCommand;
+      if (currentValue === "npm run prepush:check" && nextDefault === "auto") {
+        variables.prePrValidationCommand = nextDefault;
+      }
+    }
+
+    return variables;
+  }
+
+  function makeUpdatedWorkflowFromTemplate(existing, template, mode = "replace", opts = {}) {
     const templateClone = cloneTemplateDefinition(template);
     const nowIso = new Date().toISOString();
-    const mergedVariables = {
+    const mergedVariables = applyLegacyTemplateVariableMigrations(existing, templateClone, {
       ...(templateClone.variables || {}),
       ...(existing.variables || {}),
-    };
+    }, opts);
     const next = {
       ...templateClone,
       id: mode === "copy" ? randomUUID() : existing.id,
@@ -500,7 +519,9 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
       throw new Error("Workflow has custom changes; pass force=true to replace it");
     }
 
-    const next = makeUpdatedWorkflowFromTemplate(hydrated, template, mode);
+    const next = makeUpdatedWorkflowFromTemplate(hydrated, template, mode, {
+      assumeUncustomized: opts.assumeUncustomized === true,
+    });
     return engine.save(next);
   }
 
@@ -563,8 +584,13 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
 
         const templateId = String(state.templateId || "").trim();
         const shouldForceUpdate = templateId && forceUpdateTemplateIds.has(templateId);
+        const assumeUncustomized = previousState?.isCustomized !== true;
         if (shouldForceUpdate) {
-          const saved = updateWorkflowFromTemplate(engine, def.id, { mode: "replace", force: true });
+          const saved = updateWorkflowFromTemplate(engine, def.id, {
+            mode: "replace",
+            force: true,
+            assumeUncustomized,
+          });
           result.autoUpdated += 1;
           result.updatedWorkflowIds.push(saved.id);
           result.forceUpdated.push(saved.id);
@@ -573,7 +599,11 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
 
         const wasCustomized = previousState?.isCustomized === true;
         if (autoUpdateUnmodified && state.updateAvailable === true && !wasCustomized) {
-          const saved = updateWorkflowFromTemplate(engine, def.id, { mode: "replace", force: true });
+          const saved = updateWorkflowFromTemplate(engine, def.id, {
+            mode: "replace",
+            force: true,
+            assumeUncustomized: true,
+          });
           result.autoUpdated += 1;
           result.updatedWorkflowIds.push(saved.id);
         }
@@ -967,7 +997,7 @@ export function expandTemplateGroups(templateIds) {
  */
 /**
  * Classify a variable key into a command category if it matches.
- * Returns "test" | "build" | "lint" | "syntaxCheck" | null.
+ * Returns "test" | "build" | "lint" | "syntaxCheck" | "qualityGate" | null.
  */
 function classifyCommandVariable(key) {
   const k = String(key || "").toLowerCase();
@@ -975,6 +1005,7 @@ function classifyCommandVariable(key) {
   if (k.includes("buildcommand") || k.includes("build_command")) return "build";
   if (k.includes("lintcommand") || k.includes("lint_command") || k.includes("lintcmd")) return "lint";
   if (k.includes("syntaxcheck") || k.includes("syntax_check") || k.includes("typecheckcommand") || k.includes("type_check")) return "syntaxCheck";
+  if (k.includes("preprvalidationcommand") || k.includes("pre_pr_validation_command") || k.includes("qualitygatecommand") || k.includes("quality_gate_command")) return "qualityGate";
   return null;
 }
 
@@ -1058,6 +1089,7 @@ function inferVariableDescription(key, defaultValue) {
   if (classifyCommandVariable(normalized) === "build") return "Build command for your project. Auto-detected from project files when available.";
   if (classifyCommandVariable(normalized) === "lint") return "Lint/style check command. Auto-detected from project files when available.";
   if (classifyCommandVariable(normalized) === "syntaxCheck") return "Syntax/compile check command. Auto-detected from project files when available.";
+  if (classifyCommandVariable(normalized) === "qualityGate") return "Pre-PR validation command. Auto-detected from project files and repo hooks when available.";
   if (typeof defaultValue === "boolean") return "Toggle this setting on or off.";
   if (typeof defaultValue === "number") return "Numeric workflow setting.";
   return "";
@@ -1390,9 +1422,6 @@ export function installRecommendedTemplates(engine, overridesById = {}) {
     .map((template) => template.id);
   return installTemplateSet(engine, recommendedIds, overridesById);
 }
-
-
-
 
 
 

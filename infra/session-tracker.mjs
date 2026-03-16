@@ -575,18 +575,27 @@ export class SessionTracker {
   listAllSessions() {
     const list = [];
     for (const s of this.#sessions.values()) {
+      const progress = s.status === "active"
+        ? this.getProgressStatus(s.id || s.taskId)
+        : null;
+      const derivedStatus = progress?.status === "ended"
+        ? "completed"
+        : (progress?.status || s.status);
       list.push({
         id: s.id || s.taskId,
         taskId: s.taskId,
         title: s.taskTitle || s.title || null,
         type: s.type || "task",
-        status: s.status,
+        status: derivedStatus,
         workspaceId: String(s?.metadata?.workspaceId || "").trim() || null,
         workspaceDir: String(s?.metadata?.workspaceDir || "").trim() || null,
         branch: String(s?.metadata?.branch || "").trim() || null,
         turnCount: s.turnCount || 0,
         createdAt: s.createdAt || new Date(s.startedAt).toISOString(),
         lastActiveAt: s.lastActiveAt || new Date(s.lastActivityAt).toISOString(),
+        idleMs: progress?.idleMs ?? 0,
+        elapsedMs: progress?.elapsedMs ?? Math.max(0, Date.now() - Number(s.startedAt || Date.now())),
+        recommendation: progress?.recommendation || "none",
         preview: this.#lastMessagePreview(s),
         lastMessage: this.#lastMessagePreview(s),
         insights: s.insights || null,

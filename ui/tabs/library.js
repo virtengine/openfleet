@@ -357,8 +357,14 @@ async function testProfileMatch(criteria = {}) {
   return res?.data || { best: null, candidates: [], plan: null, auto: { shouldAutoApply: false } };
 }
 
-async function fetchLibrarySources() {
-  const res = await apiFetch("/api/library/sources?probe=1");
+async function fetchLibrarySources(options = {}) {
+  const params = new URLSearchParams();
+  if (options?.probe) params.set("probe", "1");
+  if (options?.refresh) params.set("refresh", "1");
+  if (options?.sourceId) params.set("sourceId", String(options.sourceId));
+  const qs = params.toString();
+  const path = qs ? "/api/library/sources?" + qs : "/api/library/sources";
+  const res = await apiFetch(path);
   return res?.data || [];
 }
 
@@ -2432,6 +2438,20 @@ const MARKETPLACE_CATEGORIES = [
   { id: "mcp", label: "MCP" },
 ];
 
+const MARKETPLACE_PROBE_TTL_MS = 5 * 60 * 1000;
+let marketplaceSourcesCache = [];
+let marketplaceSourcesProbedAt = 0;
+
+function normalizeMarketplaceSources(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function setMarketplaceSourcesCache(value, { probed = false } = {}) {
+  marketplaceSourcesCache = normalizeMarketplaceSources(value);
+  if (probed) marketplaceSourcesProbedAt = Date.now();
+  return marketplaceSourcesCache;
+}
+
 function getTrustTier(source) {
   const tier = String(source?.trustTier || "").toLowerCase();
   if (tier === "official" || tier === "partner") return { label: "Official", color: "#22c55e", icon: "🏢" };
@@ -2439,9 +2459,33 @@ function getTrustTier(source) {
   return { label: "Unknown", color: "#6b7280", icon: "❔" };
 }
 
+export function buildMarketplaceImportPayload(sourceId, previewData, selectedPaths) {
+  const source = previewData?.source && typeof previewData.source === "object"
+    ? previewData.source
+    : {};
+  const payload = {
+    importAgents: true,
+    importSkills: true,
+    importPrompts: true,
+    importTools: true,
+    includeEntries: selectedPaths,
+  };
+
+  const normalizedSourceId = String(sourceId || source.id || "").trim();
+  const repoUrl = String(source.repoUrl || previewData?.repoUrl || "").trim();
+  const branch = String(source.defaultBranch || source.branch || previewData?.branch || "").trim();
+
+  if (normalizedSourceId) payload.sourceId = normalizedSourceId;
+  if (repoUrl) payload.repoUrl = repoUrl;
+  if (branch) payload.branch = branch;
+
+  return payload;
+}
+
 function LibraryMarketplace({ onImported }) {
-  const [sources, setSources] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [sources, setSources] = useState(() => normalizeMarketplaceSources(marketplaceSourcesCache));
+  const [loading, setLoading] = useState(() => marketplaceSourcesCache.length === 0);
+  const [refreshing, setRefreshing] = useState(false);
   const [searchText, setSearchText] = useState("");
   const [activeCategory, setActiveCategory] = useState("all");
   const [expandedSource, setExpandedSource] = useState(null);
@@ -2454,18 +2498,65 @@ function LibraryMarketplace({ onImported }) {
   const [customBranch, setCustomBranch] = useState("main");
   const [showCustom, setShowCustom] = useState(false);
 
+  const applySources = useCallback((data, options = {}) => {
+    const next = setMarketplaceSourcesCache(data, options);
+    setSources(next);
+  }, []);
+
+  const refreshSources = useCallback(async ({ probe = true, refresh = false, background = false } = {}) => {
+    if (background) setRefreshing(true);
+    else setLoading(true);
+    try {
+      const data = await fetchLibrarySources({ probe, refresh });
+      applySources(data, { probed: probe });
+    } catch (err) {
+      if (!background) {
+        showToast(`Failed to load marketplace sources: ${parseApiError(err)}`, "error");
+      }
+    } finally {
+      if (background) setRefreshing(false);
+      else setLoading(false);
+    }
+  }, [applySources]);
+
   useEffect(() => {
     let alive = true;
-    setLoading(true);
-    fetchLibrarySources()
-      .then((data) => {
+    const load = async () => {
+      if (!marketplaceSourcesCache.length) {
+        try {
+          const data = await fetchLibrarySources();
+          if (!alive) return;
+          applySources(data);
+        } catch (err) {
+          if (alive) {
+            showToast(`Failed to load marketplace sources: ${parseApiError(err)}`, "error");
+          }
+        } finally {
+          if (alive) setLoading(false);
+        }
+      } else if (alive) {
+        setLoading(false);
+      }
+
+      if (!alive) return;
+      const probeIsFresh = marketplaceSourcesProbedAt > 0 && (Date.now() - marketplaceSourcesProbedAt) < MARKETPLACE_PROBE_TTL_MS;
+      if (probeIsFresh) return;
+
+      setRefreshing(true);
+      try {
+        const data = await fetchLibrarySources({ probe: true });
         if (!alive) return;
-        setSources(Array.isArray(data) ? data : []);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
+        applySources(data, { probed: true });
+      } catch {
+        // best effort background refresh
+      } finally {
+        if (alive) setRefreshing(false);
+      }
+    };
+
+    load();
     return () => { alive = false; };
-  }, []);
+  }, [applySources]);
 
   const filteredSources = useMemo(() => {
     let list = [...sources];
@@ -2507,14 +2598,7 @@ function LibraryMarketplace({ onImported }) {
   const doImportSource = useCallback(async (sourceId, selectedPaths) => {
     setImporting(sourceId);
     try {
-      const payload = {
-        sourceId,
-        importAgents: true,
-        importSkills: true,
-        importPrompts: true,
-        importTools: true,
-        includeEntries: selectedPaths,
-      };
+      const payload = buildMarketplaceImportPayload(sourceId, previewData, selectedPaths);
       const res = await importLibrarySource(payload);
       if (!res?.ok) throw new Error(res?.error || "Import failed");
       const count = Number(res?.data?.importedCount || 0);
@@ -2534,7 +2618,7 @@ function LibraryMarketplace({ onImported }) {
       showToast(`Import failed: ${parseApiError(err)}`, "error");
     }
     setImporting(null);
-  }, [onImported]);
+  }, [onImported, previewData]);
 
   const doImportAll = useCallback(async (sourceId) => {
     setImporting(sourceId);
@@ -2574,11 +2658,28 @@ function LibraryMarketplace({ onImported }) {
   return html`
     <div style="margin-top:10px;padding:12px;border:1px solid var(--border,#333);border-radius:10px;">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
-        <div style="font-size:0.95em;font-weight:600;">${iconText(":package: Library Marketplace")}</div>
-        <${Button} variant="text" size="small" onClick=${() => setShowCustom((v) => !v)}
-          style=${{ fontSize: "0.75em", textTransform: "none" }}>
-          ${showCustom ? "Hide Custom URL" : "Custom URL Import"}
-        <//>
+        <div>
+          <div style="font-size:0.95em;font-weight:600;">${iconText(":package: Library Marketplace")}</div>
+          <div style="font-size:0.76em;color:var(--text-secondary);margin-top:2px;">
+            Fast source metadata loads first; health and branch checks refresh separately.
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+          ${refreshing && !loading ? html`
+            <span style="font-size:0.74em;color:var(--text-secondary);display:inline-flex;align-items:center;gap:5px;">
+              <${Spinner} size=${12} /> Refreshing source health…
+            </span>
+          ` : null}
+          <${Button} variant="text" size="small" onClick=${() => refreshSources({ probe: true, refresh: true, background: true })}
+            disabled=${refreshing || loading}
+            style=${{ fontSize: "0.75em", textTransform: "none" }}>
+            ${refreshing && !loading ? "Refreshing…" : "Refresh Health"}
+          <//>
+          <${Button} variant="text" size="small" onClick=${() => setShowCustom((v) => !v)}
+            style=${{ fontSize: "0.75em", textTransform: "none" }}>
+            ${showCustom ? "Hide Custom URL" : "Custom URL Import"}
+          <//>
+        </div>
       </div>
 
       ${/* ── Search Bar ── */ ""}
@@ -2863,7 +2964,6 @@ export function LibraryTab() {
       </div>
 
       ${filterType.value !== "mcp" && html`<${ProfileMatcher} />`}
-      ${filterType.value !== "mcp" && html`<${LibraryMarketplace} onImported=${loadEntries} />`}
       ${filterType.value !== "mcp" && html`<${ScopeDetector} />`}
 
       ${/* ── MCP Marketplace View ── */
@@ -2903,6 +3003,23 @@ export function LibraryTab() {
           onSaved=${handleSaved}
           onDeleted=${handleDeleted} />
       `}
+    </div>
+  `;
+}
+
+export function LibraryMarketplaceTab() {
+  injectStyles();
+
+  const handleImported = useCallback(() => {
+    refreshTab("library", { background: true, manual: false, force: true });
+  }, []);
+
+  return html`
+    <div class="library-root">
+      <div class="library-header">
+        <h2>${iconText(":package: Marketplace")}</h2>
+      </div>
+      <${LibraryMarketplace} onImported=${handleImported} />
     </div>
   `;
 }

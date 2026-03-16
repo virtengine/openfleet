@@ -66,7 +66,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     defaultTargetBranch: "origin/main",
     taskTimeoutMs: 21600000, // 6 hours
     prePrValidationEnabled: true,
-    prePrValidationCommand: "npm run prepush:check",
+    prePrValidationCommand: "auto",
     autoMergeOnCreate: false,
     autoMergeMethod: "squash",
     maxRetries: 2,
@@ -235,6 +235,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     // ── SUCCESS PATH: Local quality gate before push/PR ──────────────────
     node("pre-pr-validation", "action.run_command", "Pre-PR Validation", {
       command: "{{prePrValidationCommand}}",
+      commandType: "qualityGate",
       cwd: "{{worktreePath}}",
       failOnError: false,
     }, { x: -120, y: 1940 }),
@@ -253,13 +254,13 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     }, { x: -120, y: 2060, outputs: ["yes", "no"] }),
 
     node("log-validation-failed", "notify.log", "Log Validation Failed", {
-      message: "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed, returning to todo",
+      message: "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed, moving to blocked",
       level: "warn",
     }, { x: 300, y: 2000 }),
 
     node("set-todo-validation-failed", "action.update_task_status", "Set Todo (Validation Fail)", {
       taskId: "{{taskId}}",
-      status: "todo",
+      status: "blocked",
       taskTitle: "{{taskTitle}}",
     }, { x: 300, y: 2130 }),
     // ── SUCCESS PATH: Push branch (with rebase + empty-diff guard) ───────
@@ -334,9 +335,9 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     }, { x: 350, y: 2130 }),
 
     // ── PUSH FAILED PATH: Set status → todo ──────────────────────────────
-    node("set-todo-push-failed", "action.update_task_status", "Set Todo (Push Fail)", {
+    node("set-todo-push-failed", "action.update_task_status", "Set Blocked (Push Fail)", {
       taskId: "{{taskId}}",
-      status: "todo",
+      status: "blocked",
       taskTitle: "{{taskTitle}}",
     }, { x: 180, y: 2260 }),
 
@@ -826,4 +827,3 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     },
   },
 };
-

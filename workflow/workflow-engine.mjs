@@ -744,6 +744,20 @@ export class WorkflowEngine extends EventEmitter {
     return normalized || "";
   }
 
+  _applyResumeInputMigrations(def, data = {}) {
+    if (!data || typeof data !== "object") return data;
+    const next = { ...data };
+    const templateId = String(def?.metadata?.installedFrom || "").trim();
+    if (templateId === "template-task-lifecycle") {
+      const currentValue = next.prePrValidationCommand;
+      const nextDefault = def?.variables?.prePrValidationCommand;
+      if (currentValue === "npm run prepush:check" && nextDefault === "auto") {
+        next.prePrValidationCommand = nextDefault;
+      }
+    }
+    return next;
+  }
+
   _resolveTaskTraceContext(ctx, node = null, result = null) {
     const nodeTaskIdCandidate = (() => {
       if (!node?.config || typeof node.config !== "object") return "";
@@ -1347,6 +1361,7 @@ export class WorkflowEngine extends EventEmitter {
     const originalData = { ...(originalRun.detail?.data || {}) };
     delete originalData._workflowId;
     delete originalData._workflowName;
+    const retryData = this._applyResumeInputMigrations(def, originalData);
 
     this.emit("run:retry", {
       originalRunId: runId,
@@ -1356,7 +1371,7 @@ export class WorkflowEngine extends EventEmitter {
     });
 
     if (mode === "from_scratch") {
-      const ctx = await this.execute(workflowId, originalData, {
+      const ctx = await this.execute(workflowId, retryData, {
         ...retryOpts,
         _isRetry: true,
         _originalRunId: runId,
@@ -1373,7 +1388,7 @@ export class WorkflowEngine extends EventEmitter {
     // Build a fresh context but pre-seed completed node outputs.
     const ctx = new WorkflowContext({
       ...def.variables,
-      ...originalData,
+      ...retryData,
       _workflowId: workflowId,
       _workflowName: def.name,
       _retryOf: runId,
@@ -2936,6 +2951,16 @@ export class WorkflowEngine extends EventEmitter {
       normalized.activeNodeCount = 0;
     }
     if (normalized.status !== WorkflowStatus.RUNNING) {
+      normalized.activeNodeCount = 0;
+      if (!Number.isFinite(Number(normalized.endedAt))) {
+        const fallbackEndedAt = Math.max(
+          Number(normalized.interruptedAt) || 0,
+          Number(normalized.lastProgressAt) || 0,
+          Number(normalized.lastLogAt) || 0,
+          Number(normalized.startedAt) || 0,
+        );
+        normalized.endedAt = fallbackEndedAt > 0 ? fallbackEndedAt : null;
+      }
       normalized.isStuck = false;
       normalized.stuckMs = 0;
       return normalized;
@@ -3139,6 +3164,10 @@ export class WorkflowEngine extends EventEmitter {
           summary.status = WorkflowStatus.PAUSED;
           summary.resumable = canResume;
           summary.interruptedAt = now;
+          summary.activeNodeCount = 0;
+          if (!Number.isFinite(Number(summary.endedAt))) {
+            summary.endedAt = now;
+          }
           if (!canResume) summary.resumeResult = "recovery_cap_exceeded";
         }
         if (canResume && !forceResumable) resumableStaleRunsAssigned += 1;
@@ -3220,7 +3249,8 @@ export class WorkflowEngine extends EventEmitter {
     this._resumingRuns = true;
 
     try {
-      const runs = this._readRunIndex().filter(
+      const allRuns = this._readRunIndex();
+      const runs = allRuns.filter(
         (r) => r.status === WorkflowStatus.PAUSED && r.resumable,
       );
 
@@ -3240,7 +3270,7 @@ export class WorkflowEngine extends EventEmitter {
       const runDetailCache = new Map(); // runId → parsed detail
       const latestByTaskId = new Map(); // taskId → run entry (highest startedAt)
 
-      for (const run of runs) {
+      for (const run of allRuns) {
         const dp = resolve(this.runsDir, `${run.runId}.json`);
         if (!existsSync(dp)) continue;
         try {
@@ -3435,7 +3465,34 @@ export function getWorkflowEngine(opts = {}) {
     _defaultEngine = new WorkflowEngine(engineOpts);
     _defaultEngine.load();
   } else if (opts && typeof opts === "object") {
-    if (opts.services && typeof opts.services === "object") {
+    const workflowDir = typeof opts.workflowDir === "string" && opts.workflowDir
+      ? resolve(opts.workflowDir)
+      : null;
+    const runsDir = typeof opts.runsDir === "string" && opts.runsDir
+      ? resolve(opts.runsDir)
+      : null;
+    const configDir = typeof opts.configDir === "string" && opts.configDir
+      ? resolve(opts.configDir)
+      : null;
+    const shouldReinitialize =
+      (workflowDir && workflowDir !== _defaultEngine.workflowDir) ||
+      (runsDir && runsDir !== _defaultEngine.runsDir) ||
+      (configDir && configDir !== resolve(_defaultEngine._configDir || process.cwd()));
+
+    if (shouldReinitialize) {
+      const engineOpts = {
+        ...opts,
+        services: mergeWorkflowServices(_defaultEngine.services, opts.services || {}),
+      };
+      if (
+        engineOpts.detectInterruptedRuns === undefined &&
+        shouldDisableDefaultInterruptedRunDetection(engineOpts)
+      ) {
+        engineOpts.detectInterruptedRuns = false;
+      }
+      _defaultEngine = new WorkflowEngine(engineOpts);
+      _defaultEngine.load();
+    } else if (opts.services && typeof opts.services === "object") {
       _defaultEngine.services = mergeWorkflowServices(
         _defaultEngine.services,
         opts.services,

@@ -1355,7 +1355,7 @@ export async function runMaintenanceSweep(opts = {}) {
 
   // Guard against core.bare=true corruption that accumulates from worktree ops
   try {
-    const repoRoot = resolve(import.meta.dirname || ".", "..", "..");
+    const repoRoot = resolve(import.meta.dirname || ".", "..");
     fixGitConfigCorruption(repoRoot);
   } catch {
     /* best-effort */
@@ -1389,4 +1389,3 @@ export async function runMaintenanceSweep(opts = {}) {
 
   return result;
 }
-
