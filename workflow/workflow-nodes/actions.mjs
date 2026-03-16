@@ -4855,9 +4855,26 @@ registerNodeType("action.build_task_prompt", {
       if (ctxValue != null && ctxValue !== "") return ctxValue;
       return null;
     };
-    const normalizedTaskId = normalizeString(taskId);
-    const normalizedTaskTitle = normalizeString(taskTitle) || "Untitled task";
-    const normalizedTaskDescription = normalizeString(taskDescription);
+    const normalizedTaskId = pickFirstString(
+      resolvePromptValue("taskId"),
+      taskPayload?.id,
+      taskPayload?.taskId,
+      taskMeta?.taskId,
+      taskId,
+    );
+    const normalizedTaskTitle = pickFirstString(
+      resolvePromptValue("taskTitle"),
+      taskPayload?.title,
+      taskMeta?.taskTitle,
+      taskTitle,
+    ) || "Untitled task";
+    const normalizedTaskDescription = pickFirstString(
+      resolvePromptValue("taskDescription"),
+      taskPayload?.description,
+      taskPayload?.body,
+      taskMeta?.taskDescription,
+      taskDescription,
+    );
     const normalizedBranch = normalizeString(branch);
     const normalizedBaseBranch = normalizeString(baseBranch);
     const normalizedWorktreePath = normalizeString(worktreePath);

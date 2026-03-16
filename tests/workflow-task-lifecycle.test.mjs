@@ -1823,6 +1823,28 @@ describe("action.build_task_prompt", () => {
     expect(result.prompt).toContain("- **Allowed Repositories:** (not declared)");
   });
 
+  it("falls back to task payload title/description when config placeholders are unresolved", async () => {
+    const nt = getNodeType("action.build_task_prompt");
+    const ctx = makeCtx({
+      task: {
+        id: "CTX-42",
+        title: "Payload title fallback",
+        description: "Payload description fallback",
+      },
+    });
+    const node = makeNode("action.build_task_prompt", {
+      taskId: "{{taskId}}",
+      taskTitle: "{{taskTitle}}",
+      taskDescription: "{{taskDescription}}",
+    });
+    const result = await nt.execute(node, ctx);
+    expect(result.prompt).toContain("# Task: Payload title fallback");
+    expect(result.prompt).toContain("Task ID: CTX-42");
+    expect(result.prompt).toContain("Payload description fallback");
+    expect(result.prompt).not.toContain("{{taskTitle}}");
+    expect(result.prompt).not.toContain("{{taskDescription}}");
+  });
+
   it("strips unresolved template placeholders from custom prompt templates", async () => {
     const nt = getNodeType("action.build_task_prompt");
     const ctx = makeCtx({});
