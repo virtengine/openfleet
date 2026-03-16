@@ -4798,9 +4798,19 @@ registerNodeType("action.build_task_prompt", {
         ? taskPayload.meta
         : null;
 
+    const TASK_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
+    const TASK_PROMPT_INVALID_VALUES = new Set([
+      "internal server error",
+      "{\"ok\":false,\"error\":\"internal server error\"}",
+      "{\"error\":\"internal server error\"}",
+    ]);
     const normalizeString = (value) => {
       if (value == null) return "";
-      return String(value).trim();
+      const text = String(value).trim();
+      if (!text) return "";
+      if (TASK_TEMPLATE_PLACEHOLDER_RE.test(text)) return "";
+      if (TASK_PROMPT_INVALID_VALUES.has(text.toLowerCase())) return "";
+      return text;
     };
     const pickFirstString = (...values) => {
       for (const value of values) {
@@ -4845,6 +4855,15 @@ registerNodeType("action.build_task_prompt", {
       if (ctxValue != null && ctxValue !== "") return ctxValue;
       return null;
     };
+    const normalizedTaskId = normalizeString(taskId);
+    const normalizedTaskTitle = normalizeString(taskTitle) || "Untitled task";
+    const normalizedTaskDescription = normalizeString(taskDescription);
+    const normalizedBranch = normalizeString(branch);
+    const normalizedBaseBranch = normalizeString(baseBranch);
+    const normalizedWorktreePath = normalizeString(worktreePath);
+    const normalizedRepoRoot = normalizeString(repoRoot) || process.cwd();
+    const normalizedRepoSlug = normalizeString(repoSlug);
+    const normalizedRetryReason = normalizeString(retryReason);
     const workspace = pickFirstString(
       resolvePromptValue("workspace"),
       taskPayload?.workspace,
@@ -4861,9 +4880,14 @@ registerNodeType("action.build_task_prompt", {
       taskPayload?.repositories,
       taskMeta?.repositories,
     );
-    const primaryRepository = pickFirstString(repository, repoSlug);
+    const primaryRepository = pickFirstString(repository, normalizedRepoSlug);
     const allowedRepositories = normalizeStringArray(repositories, primaryRepository);
-    const matchedSkills = findRelevantSkills(repoRoot, taskTitle, taskDescription || "", {});
+    const matchedSkills = findRelevantSkills(
+      normalizedRepoRoot,
+      normalizedTaskTitle,
+      normalizedTaskDescription || "",
+      {},
+    );
     const activeSkillFiles = matchedSkills.map((skill) => skill.filename);
 
     if (customTemplate) {
@@ -4875,33 +4899,33 @@ registerNodeType("action.build_task_prompt", {
     const parts = [];
 
     // Header
-    parts.push(`# Task: ${taskTitle}`);
-    if (taskId) parts.push(`Task ID: ${taskId}`);
+    parts.push(`# Task: ${normalizedTaskTitle}`);
+    if (normalizedTaskId) parts.push(`Task ID: ${normalizedTaskId}`);
     parts.push("");
 
     // Retry context (if applicable)
-    if (retryReason) {
+    if (normalizedRetryReason) {
       parts.push("## Retry Context");
-      parts.push(`Previous attempt failed: ${retryReason}`);
+      parts.push(`Previous attempt failed: ${normalizedRetryReason}`);
       parts.push("Try a different approach this time.");
       parts.push("");
     }
 
     // Description
-    if (taskDescription) {
+    if (normalizedTaskDescription) {
       parts.push("## Description");
-      parts.push(taskDescription);
+      parts.push(normalizedTaskDescription);
       parts.push("");
     }
 
     // Environment context
     parts.push("## Environment");
     const envLines = [];
-    if (worktreePath) envLines.push(`- **Working Directory:** ${worktreePath}`);
-    if (branch) envLines.push(`- **Branch:** ${branch}`);
-    if (baseBranch) envLines.push(`- **Base Branch:** ${baseBranch}`);
-    if (repoSlug) envLines.push(`- **Repository:** ${repoSlug}`);
-    if (repoRoot) envLines.push(`- **Repo Root:** ${repoRoot}`);
+    if (normalizedWorktreePath) envLines.push(`- **Working Directory:** ${normalizedWorktreePath}`);
+    if (normalizedBranch) envLines.push(`- **Branch:** ${normalizedBranch}`);
+    if (normalizedBaseBranch) envLines.push(`- **Base Branch:** ${normalizedBaseBranch}`);
+    if (normalizedRepoSlug) envLines.push(`- **Repository:** ${normalizedRepoSlug}`);
+    if (normalizedRepoRoot) envLines.push(`- **Repo Root:** ${normalizedRepoRoot}`);
     if (envLines.length) parts.push(envLines.join("\n"));
     parts.push("");
 
@@ -4917,11 +4941,11 @@ registerNodeType("action.build_task_prompt", {
     } else {
       parts.push("- **Allowed Repositories:** (not declared)");
     }
-    if (worktreePath) parts.push(`- **Write Scope Root:** ${worktreePath}`);
+    if (normalizedWorktreePath) parts.push(`- **Write Scope Root:** ${normalizedWorktreePath}`);
     parts.push("");
     parts.push("Hard boundaries:");
-    if (worktreePath) {
-      parts.push(`1. Modify files only inside \`${worktreePath}\`.`);
+    if (normalizedWorktreePath) {
+      parts.push(`1. Modify files only inside \`${normalizedWorktreePath}\`.`);
     } else {
       parts.push("1. Modify files only inside the active repository working directory.");
     }
@@ -4932,7 +4956,7 @@ registerNodeType("action.build_task_prompt", {
 
     // AGENTS.md + copilot-instructions.md
     if (includeAgentsMd) {
-      const searchDirs = [worktreePath || repoRoot, repoRoot].filter(Boolean);
+      const searchDirs = [normalizedWorktreePath || normalizedRepoRoot, normalizedRepoRoot].filter(Boolean);
       const docFiles = ["AGENTS.md", ".github/copilot-instructions.md"];
       const loaded = new Set();
       for (const dir of searchDirs) {
@@ -4968,9 +4992,9 @@ registerNodeType("action.build_task_prompt", {
     }
 
     const relevantSkillsBlock = buildRelevantSkillsPromptBlock(
-      repoRoot,
-      taskTitle,
-      taskDescription || "",
+      normalizedRepoRoot,
+      normalizedTaskTitle,
+      normalizedTaskDescription || "",
       {},
     );
     if (relevantSkillsBlock) {
@@ -4990,7 +5014,7 @@ registerNodeType("action.build_task_prompt", {
     );
     parts.push("");
 
-    const eagerToolBlock = getToolsPromptBlock(repoRoot, {
+    const eagerToolBlock = getToolsPromptBlock(normalizedRepoRoot, {
       activeSkills: activeSkillFiles,
       includeBuiltins: true,
       eagerOnly: true,
