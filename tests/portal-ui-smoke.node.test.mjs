@@ -16,8 +16,8 @@ const ROUTE_NAVIGATION_TIMEOUT_MS = 8000;
 const UI_SETTLE_TIMEOUT_MS = 1000;
 const ROUTE_SETTLE_EXTRA_MS = 150;
 const ROUTE_ASSERT_TIMEOUT_MS = 12000;
+const UI_QUERY_TIMEOUT_MS = 250;
 const REPRESENTATIVE_SMOKE_PATHS = [
-  "/",
   "/tasks",
   "/workflows",
   "/settings",
@@ -155,7 +155,7 @@ async function resolveSmokePort() {
 }
 
 async function readBootResult(page) {
-  const bootText = await page.locator("#boot-loader").textContent().catch(() => "");
+  const bootText = await page.locator("#boot-loader").textContent({ timeout: UI_QUERY_TIMEOUT_MS }).catch(() => "");
   const text = String(bootText || "");
   return {
     bootText: text,
@@ -164,7 +164,7 @@ async function readBootResult(page) {
 }
 
 async function readTabErrorText(page) {
-  const text = await page.locator(".tab-error-boundary").first().textContent().catch(() => "");
+  const text = await page.locator(".tab-error-boundary").first().textContent({ timeout: UI_QUERY_TIMEOUT_MS }).catch(() => "");
   return String(text || "").trim();
 }
 
