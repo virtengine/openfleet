@@ -59,7 +59,6 @@ describe("ui-server mini app", () => {
     "CODEX_MONITOR_HOME",
     "CODEX_MONITOR_DIR",
     "BOSUN_DESKTOP_API_KEY",
-    "REPO_ROOT",
     "KANBAN_BACKEND",
     "GITHUB_PROJECT_MODE",
     "GITHUB_PROJECT_WEBHOOK_SECRET",
