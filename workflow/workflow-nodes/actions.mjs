@@ -4799,6 +4799,7 @@ registerNodeType("action.build_task_prompt", {
         : null;
 
     const TASK_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
+    const TASK_TEMPLATE_INLINE_PLACEHOLDER_RE = /\{\{\s*[\w.-]+\s*\}\}/g;
     const TASK_PROMPT_INVALID_VALUES = new Set([
       "internal server error",
       "{\"ok\":false,\"error\":\"internal server error\"}",
@@ -4806,9 +4807,11 @@ registerNodeType("action.build_task_prompt", {
     ]);
     const normalizeString = (value) => {
       if (value == null) return "";
-      const text = String(value).trim();
+      let text = String(value).trim();
       if (!text) return "";
       if (TASK_TEMPLATE_PLACEHOLDER_RE.test(text)) return "";
+      text = text.replace(TASK_TEMPLATE_INLINE_PLACEHOLDER_RE, "").trim();
+      if (!text) return "";
       if (TASK_PROMPT_INVALID_VALUES.has(text.toLowerCase())) return "";
       return text;
     };
