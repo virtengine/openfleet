@@ -11039,10 +11039,11 @@ registerBuiltinNodeType("action.acquire_worktree", {
             cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
           }
         }
-        if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
+        const canReuseExistingBranchWorktree = existingBranchWorktree &&
+          existsSync(existingBranchWorktree) &&
           isValidGitWorktreePath(existingBranchWorktree) &&
-          !hasUnresolvedGitOperation(existingBranchWorktree)
-        ) {
+          !hasUnresolvedGitOperation(existingBranchWorktree);
+        if (canReuseExistingBranchWorktree) {
           refreshManagedWorktreeReuse(
             node.id,
             ctx,
@@ -11052,11 +11053,6 @@ registerBuiltinNodeType("action.acquire_worktree", {
             baseBranchShort,
             fetchTimeout,
           );
-        }
-        if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
-          isValidGitWorktreePath(existingBranchWorktree) &&
-          !hasUnresolvedGitOperation(existingBranchWorktree)
-        ) {
           ctx.data.worktreePath = existingBranchWorktree;
           ctx.data._worktreeCreated = false;
           ctx.data._worktreeManaged = true;
@@ -11095,10 +11091,11 @@ registerBuiltinNodeType("action.acquire_worktree", {
               cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
             }
           }
-          if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
+          const canReuseExistingBranchWorktree = existingBranchWorktree &&
+            existsSync(existingBranchWorktree) &&
             isValidGitWorktreePath(existingBranchWorktree) &&
-            !hasUnresolvedGitOperation(existingBranchWorktree)
-          ) {
+            !hasUnresolvedGitOperation(existingBranchWorktree);
+          if (canReuseExistingBranchWorktree) {
             refreshManagedWorktreeReuse(
               node.id,
               ctx,
@@ -11108,11 +11105,6 @@ registerBuiltinNodeType("action.acquire_worktree", {
               baseBranchShort,
               fetchTimeout,
             );
-          }
-          if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
-            isValidGitWorktreePath(existingBranchWorktree) &&
-            !hasUnresolvedGitOperation(existingBranchWorktree)
-          ) {
             ctx.data.worktreePath = existingBranchWorktree;
             ctx.data._worktreeCreated = false;
             ctx.data._worktreeManaged = true;

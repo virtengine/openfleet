@@ -94,7 +94,7 @@ const MODES = [
   { id: "instant", label: "Instant", icon: "zap", description: "Fast back-and-forth" },
 ];
 
-const VALID_MANUAL_MODES = new Set(MODES.map((mode) => mode.id));
+const VALID_MANUAL_MODES = new Set([...MODES.map((mode) => mode.id), "custom"]);
 
 const AGENT_ICONS = {
   "codex-sdk": "zap",
