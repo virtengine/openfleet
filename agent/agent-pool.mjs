@@ -2471,16 +2471,23 @@ export async function launchEphemeralThread(
     }
   }
 
+  const eligibleSdks = Array.from(
+    new Set(attemptOrder.filter((name) => SDK_ADAPTERS[name] && !isDisabled(name))),
+  );
+  const cooledDownSet = new Set(cooledDownSdks.map((entry) => entry.name));
+
   if (
     !ignoreSdkCooldown &&
     !lastAttemptResult &&
     triedSdkNames.length === 0 &&
-    cooledDownSdks.length > 0
+    eligibleSdks.length > 0 &&
+    eligibleSdks.every((name) => cooledDownSet.has(name))
   ) {
-    for (const name of attemptOrder) {
-      const adapter = SDK_ADAPTERS[name];
-      if (!adapter || isDisabled(name)) continue;
+    const forcedRetryOrder = eligibleSdks.includes(primaryName)
+      ? [primaryName, ...eligibleSdks.filter((name) => name !== primaryName)]
+      : eligibleSdks;
 
+    for (const name of forcedRetryOrder) {
       const cooldownRemainingMs = getSdkCooldownRemainingMs(name);
       if (cooldownRemainingMs <= 0) continue;
 
@@ -2498,7 +2505,7 @@ export async function launchEphemeralThread(
       );
 
       triedSdkNames.push(name);
-      const launcher = await adapter.load();
+      const launcher = await SDK_ADAPTERS[name].load();
       const result = await launcher(prompt, cwd, timeoutMs, launchExtra);
       lastAttemptResult = result;
 
@@ -2511,6 +2518,7 @@ export async function launchEphemeralThread(
       }
 
       applySdkFailureCooldown(name, result.error);
+      break;
     }
   }
 
@@ -2518,10 +2526,6 @@ export async function launchEphemeralThread(
   if (lastAttemptResult) {
     return lastAttemptResult;
   }
-
-  const eligibleSdks = Array.from(
-    new Set(attemptOrder.filter((name) => SDK_ADAPTERS[name] && !isDisabled(name))),
-  );
 
   let errorMsg = `${TAG} no SDK available.`;
   if (triedSdkNames.length > 0) {

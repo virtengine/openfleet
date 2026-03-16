@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 const __RUN_VITEST_ONLY = Boolean(process.env.VITEST);
 let mockCodexStartThread;
 let mockCodexResumeThread;
@@ -6,6 +10,7 @@ let mockCopilotStart;
 let mockCopilotCreateSession;
 let mockCopilotResumeSession;
 let mockClaudeQuery;
+let isolatedHomeDir;
 
 function makeCodexMockThread(
   threadId = "mock-codex-thread",
@@ -182,6 +187,10 @@ vi.mock("../config/config.mjs", () => ({
 // ---------------------------------------------------------------------------
 
 const ENV_KEYS = [
+  "HOME",
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
   "AGENT_POOL_SDK",
   "PRIMARY_AGENT",
   "CODEX_SDK_DISABLED",
@@ -226,6 +235,10 @@ function restoreEnv() {
 }
 
 function clearSdkEnv() {
+  delete process.env.HOME;
+  delete process.env.USERPROFILE;
+  delete process.env.HOMEDRIVE;
+  delete process.env.HOMEPATH;
   delete process.env.AGENT_POOL_SDK;
   delete process.env.PRIMARY_AGENT;
   delete process.env.CODEX_SDK_DISABLED;
@@ -269,6 +282,9 @@ let getPoolSdkName,
 beforeEach(async () => {
   saveEnv();
   clearSdkEnv();
+  isolatedHomeDir = mkdtempSync(join(tmpdir(), "bosun-agent-pool-home-"));
+  process.env.HOME = isolatedHomeDir;
+  process.env.USERPROFILE = isolatedHomeDir;
   vi.resetModules();
 
   // Dynamic import to pick up mocks; then grab exports
@@ -301,6 +317,10 @@ beforeEach(async () => {
 
 afterEach(() => {
   restoreEnv();
+  if (isolatedHomeDir) {
+    rmSync(isolatedHomeDir, { recursive: true, force: true });
+    isolatedHomeDir = undefined;
+  }
   vi.restoreAllMocks();
 });
 
@@ -605,7 +625,6 @@ describe("launchEphemeralThread", () => {
     process.env.CLAUDE_SDK_DISABLED = "1";
     process.env.AGENT_POOL_SDK_FAILURE_COOLDOWN_MS = "600000";
     setPoolSdk("codex");
-
     const makeTimeoutThread = (id) => ({
       id,
       runStreamed: async (_prompt, { signal } = {}) => {
