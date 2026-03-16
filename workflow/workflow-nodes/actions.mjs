@@ -50,6 +50,7 @@ import { getToolsPromptBlock } from "../../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../../agent/bosun-skills.mjs";
 import { getSessionTracker } from "../../infra/session-tracker.mjs";
 import { normalizeBaseBranch } from "../../git/git-safety.mjs";
+import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../../git/git-commit-helpers.mjs";
 import { fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
 
 import {
@@ -5216,10 +5217,15 @@ registerNodeType("action.build_task_prompt", {
     );
     userParts.push("");
 
-    userParts.push("## Git Attribution");
-    userParts.push("Add this trailer to all commits:");
-    userParts.push("Co-authored-by: bosun[bot] <bosun@virtengine.com>");
-    userParts.push("");
+    const coAuthorTrailer = shouldAddBosunCoAuthor({ taskId: normalizedTaskId })
+      ? getBosunCoAuthorTrailer()
+      : "";
+    if (coAuthorTrailer) {
+      userParts.push("## Git Attribution");
+      userParts.push("Add this trailer to all commits:");
+      userParts.push(coAuthorTrailer);
+      userParts.push("");
+    }
 
     const userPrompt = userParts.join("\n").trim();
     const systemPrompt = buildStableSystemPrompt();

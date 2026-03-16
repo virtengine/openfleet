@@ -688,6 +688,23 @@ describe("launchEphemeralThread", () => {
     expect(mockCodexStartThread).toHaveBeenCalledTimes(1);
   });
 
+  it("rescue-attempts a cooled primary SDK before returning no-sdk errors", async () => {
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
+    setPoolSdk("codex");
+    setSdkFailureCooldownForTest("codex", 120000);
+
+    const result = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+      sdk: "codex",
+      disableFallback: true,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.sdk).toBe("codex");
+    expect(result.error).toMatch(/codex/i);
+    expect(result.error).not.toMatch(/no sdk available/i);
+  });
+
   it("fails over when copilot startup reports a protocol version mismatch", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
     process.env.__MOCK_COPILOT_AVAILABLE = "1";

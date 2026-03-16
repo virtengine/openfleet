@@ -1408,7 +1408,12 @@ describe("github template CLI compatibility", () => {
     expect(syncCommand).toContain("function resolveTaskId(item){");
     expect(syncCommand).toContain("const taskBranch=String(task?.branchName||'').trim();");
     expect(syncCommand).toContain("task_lookup_failed");
+    expect(syncCommand).toContain("const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||\'\').trim());");
     expect(syncCommand).not.toContain("current==='todo'||current==='inprogress'");
+
+    const syncAgentNeededNode = syncTemplate.nodes.find((n) => n.id === "sync-agent-needed");
+    expect(syncAgentNeededNode?.config?.expression)
+      .toContain("d.unresolved.some((item)=>String(item?.taskId||\'\').trim())");
   });
 });
 

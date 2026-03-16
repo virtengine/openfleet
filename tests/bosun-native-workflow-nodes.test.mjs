@@ -241,7 +241,7 @@ describe("action.build_task_prompt", () => {
 
     expect(userPromptA).toContain("Task ID: task-abc");
     expect(userPromptA).toContain("## Environment");
-    expect(userPromptA).toContain("Co-authored-by: bosun[bot]");
+    expect(userPromptA).toContain("Co-authored-by: bosun-ve[bot]");
     expect(systemPromptA).toBeTruthy();
     expect(systemPromptA).not.toContain("task-abc");
     expect(systemPromptA).not.toContain("Cache anchor check");

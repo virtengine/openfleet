@@ -1776,7 +1776,8 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "  if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'inreview',reason:'task_lookup_failed'});continue;}",
         "  try{const snap=getTaskSnapshot(id);const current=String(snap?.status||'').trim().toLowerCase();const review=String(snap?.reviewStatus||'').toLowerCase();if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview',fromStatus:current||null,reviewStatus:review||null});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});}",
         "}",
-        "console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:unresolved.length>0}));",
+        "const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim());",
+        "console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:actionableUnresolved.length>0}));",
         "\"",
       ].join(" "),
       continueOnError: true,
@@ -1792,7 +1793,8 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "(()=>{try{" +
         "const raw=$ctx.getNodeOutput('sync-programmatic')?.output||'{}';" +
         "const d=JSON.parse(raw);" +
-        "return d?.needsAgent===true || (Array.isArray(d?.unresolved)&&d.unresolved.length>0);" +
+        "const actionable=Array.isArray(d?.unresolved)?d.unresolved.some((item)=>String(item?.taskId||'').trim()):false;" +
+        "return d?.needsAgent===true || actionable;" +
         "}catch{return true;}})()",
     }, { x: 400, y: 615 }),
 

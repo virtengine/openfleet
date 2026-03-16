@@ -2589,6 +2589,45 @@ export async function launchEphemeralThread(
     }
   }
 
+  // Recovery path: when all SDKs were skipped due cooldown/prereq gates, force
+  // one direct attempt against cooled-down SDKs to surface a concrete error.
+  if (!lastAttemptResult && triedSdkNames.length === 0 && cooledDownSdks.length > 0) {
+    const cooledDownRescueOrder = cooledDownSdks
+      .map((entry) => entry.name)
+      .filter((name, idx, arr) => SDK_ADAPTERS[name] && arr.indexOf(name) === idx)
+      .sort((a, b) => {
+        if (a === primaryName) return -1;
+        if (b === primaryName) return 1;
+        return 0;
+      });
+
+    for (const name of cooledDownRescueOrder) {
+      const remainingMs = getSdkCooldownRemainingMs(name);
+      const remainingSec = Math.max(1, Math.ceil(remainingMs / 1000));
+      console.warn(
+        `${TAG} no runnable SDK remained after gating; rescue-attempting cooled-down SDK "${name}" (${remainingSec}s remaining)`,
+      );
+
+      triedSdkNames.push(name);
+      const launcher = await SDK_ADAPTERS[name].load();
+      const result = await launcher(prompt, cwd, timeoutMs, launchExtra);
+      lastAttemptResult = result;
+
+      if (result.success) {
+        return result;
+      }
+
+      if (!shouldFallbackForSdkError(result.error)) {
+        return result;
+      }
+
+      if (name === primaryName) {
+        primaryFailureResult = result;
+      }
+
+      applySdkFailureCooldown(name, result.error);
+    }
+  }
   // ── All SDKs exhausted ───────────────────────────────────────────────────
   if (lastAttemptResult) {
     if (
@@ -3879,3 +3918,4 @@ export function getActiveThreads() {
   }
   return result;
 }
+
