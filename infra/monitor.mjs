@@ -15152,10 +15152,23 @@ if (isExecutorDisabled()) {
         "[monitor] task-executor lifecycle delegation enabled — finalization/recovery handled by workflow replacement",
       );
     }
+    const workflowRunsDir =
+      config?.configDir &&
+      String(config?.activeWorkspace || process.env.BOSUN_WORKSPACE || "").trim()
+        ? resolve(
+            config.configDir,
+            "workspaces",
+            String(config?.activeWorkspace || process.env.BOSUN_WORKSPACE || "").trim(),
+            String(repoSlug || "").split("/").filter(Boolean).pop() || "bosun",
+            ".bosun",
+            "workflow-runs",
+          )
+        : null;
     const execOpts = {
       ...internalExecutorConfig,
       repoRoot,
       repoSlug,
+      workflowRunsDir,
       agentPrompts,
       workflowOwnsTaskLifecycle: workflowOwnsTaskExecutorLifecycle,
       sendTelegram:
