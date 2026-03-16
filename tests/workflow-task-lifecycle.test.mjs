@@ -1823,6 +1823,25 @@ describe("action.build_task_prompt", () => {
     expect(result.prompt).toContain("- **Allowed Repositories:** (not declared)");
   });
 
+  it("strips embedded template placeholders from prompt field values", async () => {
+    const nt = getNodeType("action.build_task_prompt");
+    const ctx = makeCtx({});
+    const node = makeNode("action.build_task_prompt", {
+      taskId: "T4b-inline",
+      taskTitle: "Placeholder cleanup",
+      taskDescription: "Investigate queue failure {{taskDescription}}",
+      repoSlug: "virtengine/bosun {{repoSlug}}",
+      workspace: "workspace-alpha {{workspace}}",
+    });
+    const result = await nt.execute(node, ctx);
+    expect(result.prompt).toContain("Investigate queue failure");
+    expect(result.prompt).toContain("**Repository:** virtengine/bosun");
+    expect(result.prompt).toContain("**Workspace:** workspace-alpha");
+    expect(result.prompt).not.toContain("{{taskDescription}}");
+    expect(result.prompt).not.toContain("{{repoSlug}}");
+    expect(result.prompt).not.toContain("{{workspace}}");
+  });
+
   it("falls back to task payload title/description when config placeholders are unresolved", async () => {
     const nt = getNodeType("action.build_task_prompt");
     const ctx = makeCtx({
