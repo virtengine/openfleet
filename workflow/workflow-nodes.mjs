@@ -11025,6 +11025,54 @@ registerBuiltinNodeType("action.acquire_worktree", {
         if (!isExistingBranchWorktreeError(createErr)) {
           throw new Error(`Worktree creation failed: ${formatExecSyncError(createErr)}`);
         }
+        const existingBranchWorktree = findExistingWorktreePathForBranch(repoRoot, branch);
+        if (existingBranchWorktree && existsSync(existingBranchWorktree)) {
+          const existingWorktreeIsBroken = (
+            !isValidGitWorktreePath(existingBranchWorktree) ||
+            hasUnresolvedGitOperation(existingBranchWorktree)
+          ) && isManagedBosunWorktree(existingBranchWorktree, repoRoot);
+          if (existingWorktreeIsBroken) {
+            ctx.log(
+              node.id,
+              `Existing branch worktree is invalid or unresolved, recreating managed path: ${existingBranchWorktree}`,
+            );
+            cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
+          }
+        }
+        if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
+          isValidGitWorktreePath(existingBranchWorktree) &&
+          !hasUnresolvedGitOperation(existingBranchWorktree)
+        ) {
+          refreshManagedWorktreeReuse(
+            node.id,
+            ctx,
+            repoRoot,
+            existingBranchWorktree,
+            baseBranch,
+            baseBranchShort,
+            fetchTimeout,
+          );
+        }
+        if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
+          isValidGitWorktreePath(existingBranchWorktree) &&
+          !hasUnresolvedGitOperation(existingBranchWorktree)
+        ) {
+          ctx.data.worktreePath = existingBranchWorktree;
+          ctx.data._worktreeCreated = false;
+          ctx.data._worktreeManaged = true;
+          ctx.log(node.id, `Reusing existing branch worktree: ${existingBranchWorktree}`);
+          const cleared2 = clearBlockedWorktreeIdentity(existingBranchWorktree);
+          if (cleared2) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${existingBranchWorktree}`);
+          return {
+            success: true,
+            worktreePath: existingBranchWorktree,
+            created: false,
+            reused: true,
+            reusedExistingBranch: true,
+            branch,
+            baseBranch,
+          };
+        }
         // Branch already exists — attach worktree to existing branch.
         try {
           execSync(
@@ -11407,9 +11455,19 @@ registerBuiltinNodeType("action.build_task_prompt", {
         ? taskPayload.meta
         : null;
 
+    const TASK_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
+    const TASK_PROMPT_INVALID_VALUES = new Set([
+      "internal server error",
+      "{\"ok\":false,\"error\":\"internal server error\"}",
+      "{\"error\":\"internal server error\"}",
+    ]);
     const normalizeString = (value) => {
       if (value == null) return "";
-      return String(value).trim();
+      const text = String(value).trim();
+      if (!text) return "";
+      if (TASK_TEMPLATE_PLACEHOLDER_RE.test(text)) return "";
+      if (TASK_PROMPT_INVALID_VALUES.has(text.toLowerCase())) return "";
+      return text;
     };
     const pickFirstString = (...values) => {
       for (const value of values) {
@@ -11454,6 +11512,32 @@ registerBuiltinNodeType("action.build_task_prompt", {
       if (ctxValue != null && ctxValue !== "") return ctxValue;
       return null;
     };
+    const normalizedTaskId = pickFirstString(
+      resolvePromptValue("taskId"),
+      taskPayload?.id,
+      taskPayload?.taskId,
+      taskMeta?.taskId,
+      taskId,
+    );
+    const normalizedTaskTitle = pickFirstString(
+      resolvePromptValue("taskTitle"),
+      taskPayload?.title,
+      taskMeta?.taskTitle,
+      taskTitle,
+    ) || "Untitled task";
+    const normalizedTaskDescription = pickFirstString(
+      resolvePromptValue("taskDescription"),
+      taskPayload?.description,
+      taskPayload?.body,
+      taskMeta?.taskDescription,
+      taskDescription,
+    );
+    const normalizedBranch = normalizeString(branch);
+    const normalizedBaseBranch = normalizeString(baseBranch);
+    const normalizedWorktreePath = normalizeString(worktreePath);
+    const normalizedRepoRoot = normalizeString(repoRoot) || process.cwd();
+    const normalizedRepoSlug = normalizeString(repoSlug);
+    const normalizedRetryReason = normalizeString(retryReason);
     const workspace = pickFirstString(
       resolvePromptValue("workspace"),
       taskPayload?.workspace,
@@ -11470,19 +11554,67 @@ registerBuiltinNodeType("action.build_task_prompt", {
       taskPayload?.repositories,
       taskMeta?.repositories,
     );
-    const primaryRepository = pickFirstString(repository, repoSlug);
+    const primaryRepository = pickFirstString(repository, normalizedRepoSlug);
     const allowedRepositories = normalizeStringArray(repositories, primaryRepository);
-    const matchedSkills = findRelevantSkills(repoRoot, taskTitle, taskDescription || "", {});
+    const matchedSkills = findRelevantSkills(
+      normalizedRepoRoot,
+      normalizedTaskTitle,
+      normalizedTaskDescription || "",
+      {},
+    );
     const activeSkillFiles = matchedSkills.map((skill) => skill.filename);
     const strictCacheAnchoring =
       String(process.env.BOSUN_CACHE_ANCHOR_MODE || "")
         .trim()
         .toLowerCase() === "strict";
+    const customTemplateValues = {
+      taskId: normalizedTaskId,
+      taskTitle: normalizedTaskTitle,
+      taskDescription: normalizedTaskDescription,
+      branch: normalizedBranch,
+      baseBranch: normalizedBaseBranch,
+      worktreePath: normalizedWorktreePath,
+      repoRoot: normalizedRepoRoot,
+      repoSlug: normalizedRepoSlug,
+      workspace,
+      repository: primaryRepository,
+      repositories: allowedRepositories.join(", "),
+      retryReason: normalizedRetryReason,
+    };
+    const renderCustomTemplate = (template) => {
+      const lookup = new Map();
+      const register = (key, value) => {
+        const normalizedKey = String(key || "").trim();
+        if (!normalizedKey) return;
+        const normalizedValue = normalizeString(value);
+        lookup.set(normalizedKey, normalizedValue);
+        lookup.set(normalizedKey.toLowerCase(), normalizedValue);
+        lookup.set(normalizedKey.toUpperCase(), normalizedValue);
+      };
+      for (const [key, value] of Object.entries(customTemplateValues)) {
+        register(key, value);
+        register(key.replace(/([a-z0-9])([A-Z])/g, "$1_$2"), value);
+      }
+      return String(template || "")
+        .replace(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g, (_full, key) => {
+          const lookupKey = String(key || "").trim();
+          if (!lookupKey) return "";
+          if (lookup.has(lookupKey)) return lookup.get(lookupKey);
+          if (lookup.has(lookupKey.toLowerCase())) return lookup.get(lookupKey.toLowerCase());
+          if (lookup.has(lookupKey.toUpperCase())) return lookup.get(lookupKey.toUpperCase());
+          return "";
+        })
+        .split("\n")
+        .map((line) => line.replace(/[ \t]+$/g, ""))
+        .join("\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    };
 
     const buildStableSystemPrompt = () => {
       const systemParts = [];
       if (includeAgentsMd) {
-        const searchDirs = [repoRoot].filter(Boolean);
+        const searchDirs = [normalizedRepoRoot].filter(Boolean);
         const docFiles = ["AGENTS.md", ".github/copilot-instructions.md"];
         const loaded = new Set();
         for (const dir of searchDirs) {
@@ -11528,7 +11660,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
       );
       systemParts.push("");
 
-      const eagerToolBlock = getToolsPromptBlock(repoRoot, {
+      const eagerToolBlock = getToolsPromptBlock(normalizedRepoRoot, {
         includeBuiltins: true,
         eagerOnly: true,
         discoveryMode: true,
@@ -11558,15 +11690,16 @@ registerBuiltinNodeType("action.build_task_prompt", {
     };
 
     if (customTemplate) {
+      const renderedTemplate = renderCustomTemplate(customTemplate);
       const stableSystemPrompt = buildStableSystemPrompt();
-      ctx.data._taskPrompt = customTemplate;
-      ctx.data._taskUserPrompt = customTemplate;
+      ctx.data._taskPrompt = renderedTemplate;
+      ctx.data._taskUserPrompt = renderedTemplate;
       ctx.data._taskSystemPrompt = stableSystemPrompt;
-      ctx.log(node.id, `Prompt from custom template (${customTemplate.length} chars)`);
+      ctx.log(node.id, `Prompt from custom template (${renderedTemplate.length} chars)`);
       return {
         success: true,
-        prompt: customTemplate,
-        userPrompt: customTemplate,
+        prompt: renderedTemplate,
+        userPrompt: renderedTemplate,
         systemPrompt: stableSystemPrompt,
         source: "custom",
       };
@@ -11575,33 +11708,33 @@ registerBuiltinNodeType("action.build_task_prompt", {
     const userParts = [];
 
     // Header
-    userParts.push(`# Task: ${taskTitle}`);
-    if (taskId) userParts.push(`Task ID: ${taskId}`);
+    userParts.push(`# Task: ${normalizedTaskTitle}`);
+    if (normalizedTaskId) userParts.push(`Task ID: ${normalizedTaskId}`);
     userParts.push("");
 
     // Retry context (if applicable)
-    if (retryReason) {
+    if (normalizedRetryReason) {
       userParts.push("## Retry Context");
-      userParts.push(`Previous attempt failed: ${retryReason}`);
+      userParts.push(`Previous attempt failed: ${normalizedRetryReason}`);
       userParts.push("Try a different approach this time.");
       userParts.push("");
     }
 
     // Description
-    if (taskDescription) {
+    if (normalizedTaskDescription) {
       userParts.push("## Description");
-      userParts.push(taskDescription);
+      userParts.push(normalizedTaskDescription);
       userParts.push("");
     }
 
     // Environment context
     userParts.push("## Environment");
     const envLines = [];
-    if (worktreePath) envLines.push(`- **Working Directory:** ${worktreePath}`);
-    if (branch) envLines.push(`- **Branch:** ${branch}`);
-    if (baseBranch) envLines.push(`- **Base Branch:** ${baseBranch}`);
-    if (repoSlug) envLines.push(`- **Repository:** ${repoSlug}`);
-    if (repoRoot) envLines.push(`- **Repo Root:** ${repoRoot}`);
+    if (normalizedWorktreePath) envLines.push(`- **Working Directory:** ${normalizedWorktreePath}`);
+    if (normalizedBranch) envLines.push(`- **Branch:** ${normalizedBranch}`);
+    if (normalizedBaseBranch) envLines.push(`- **Base Branch:** ${normalizedBaseBranch}`);
+    if (normalizedRepoSlug) envLines.push(`- **Repository:** ${normalizedRepoSlug}`);
+    if (normalizedRepoRoot) envLines.push(`- **Repo Root:** ${normalizedRepoRoot}`);
     if (envLines.length) userParts.push(envLines.join("\n"));
     userParts.push("");
 
@@ -11617,11 +11750,11 @@ registerBuiltinNodeType("action.build_task_prompt", {
     } else {
       userParts.push("- **Allowed Repositories:** (not declared)");
     }
-    if (worktreePath) userParts.push(`- **Write Scope Root:** ${worktreePath}`);
+    if (normalizedWorktreePath) userParts.push(`- **Write Scope Root:** ${normalizedWorktreePath}`);
     userParts.push("");
     userParts.push("Hard boundaries:");
-    if (worktreePath) {
-      userParts.push(`1. Modify files only inside \`${worktreePath}\`.`);
+    if (normalizedWorktreePath) {
+      userParts.push(`1. Modify files only inside \`${normalizedWorktreePath}\`.`);
     } else {
       userParts.push("1. Modify files only inside the active repository working directory.");
     }
@@ -11653,7 +11786,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
 
     // AGENTS.md + copilot-instructions.md
     if (includeAgentsMd) {
-      const searchDirs = [worktreePath || repoRoot, repoRoot].filter(Boolean);
+      const searchDirs = [normalizedWorktreePath || normalizedRepoRoot, normalizedRepoRoot].filter(Boolean);
       const docFiles = ["AGENTS.md", ".github/copilot-instructions.md"];
       const loaded = new Set();
       for (const dir of searchDirs) {
@@ -11689,9 +11822,9 @@ registerBuiltinNodeType("action.build_task_prompt", {
     }
 
     const relevantSkillsBlock = buildRelevantSkillsPromptBlock(
-      repoRoot,
-      taskTitle,
-      taskDescription || "",
+      normalizedRepoRoot,
+      normalizedTaskTitle,
+      normalizedTaskDescription || "",
       {},
     );
     if (relevantSkillsBlock) {
@@ -11707,7 +11840,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
     if (librarySkillIds.length > 0) {
       try {
         const library = await ensureLibraryManagerMod();
-        const libraryRoot = repoRoot || process.cwd();
+        const libraryRoot = normalizedRepoRoot || process.cwd();
         const fsSkillNames = new Set(matchedSkills.map((s) => String(s.filename || "").replace(/\.md$/i, "").toLowerCase()));
         const librarySkillParts = [];
         for (const skillId of librarySkillIds) {
@@ -11718,7 +11851,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
           if (!content || (typeof content === "string" && !content.trim())) continue;
           const body = typeof content === "string" ? content.trim() : JSON.stringify(content, null, 2);
           emitSkillInvokeEvent(skillId, entry.name || skillId, {
-            taskId,
+            taskId: normalizedTaskId,
             executor: ctx.data?.resolvedSdk,
             source: "library",
           });
@@ -11735,7 +11868,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
       }
     }
     // Skill-driven eager tools belong with task context to preserve cache anchoring.
-    const taskScopedEagerTools = getToolsPromptBlock(repoRoot, {
+    const taskScopedEagerTools = getToolsPromptBlock(normalizedRepoRoot, {
       activeSkills: activeSkillFiles,
       includeBuiltins: true,
       eagerOnly: true,
@@ -11753,13 +11886,13 @@ registerBuiltinNodeType("action.build_task_prompt", {
 
     if (strictCacheAnchoring) {
       const dynamicMarkers = [
-        taskId,
-        taskTitle,
-        taskDescription,
-        retryReason,
-        branch,
-        baseBranch,
-        worktreePath,
+        normalizedTaskId,
+        normalizedTaskTitle,
+        normalizedTaskDescription,
+        normalizedRetryReason,
+        normalizedBranch,
+        normalizedBaseBranch,
+        normalizedWorktreePath,
       ]
         .map((value) => String(value || "").trim())
         .filter(Boolean);

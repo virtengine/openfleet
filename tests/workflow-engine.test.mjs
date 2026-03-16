@@ -999,6 +999,192 @@ describe("WorkflowEngine - run history details", () => {
     expect(resumedRun?.detail?.data?.prePrValidationCommand).toBe("auto");
   });
 
+  it("does not resume an interrupted task run when a newer run already exists for the same task", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-resume-superseded", name: "Resume Superseded Workflow" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const interruptedRunId = "run-interrupted-older";
+    const newerRunId = "run-newer-active";
+    const taskId = "task-shared-1";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: interruptedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: null,
+            resumable: true,
+          },
+          {
+            runId: newerRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.RUNNING,
+            startedAt: 2000,
+            endedAt: null,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${interruptedRunId}.json`),
+      JSON.stringify({
+        id: interruptedRunId,
+        startedAt: 1000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId,
+        },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${newerRunId}.json`),
+      JSON.stringify({
+        id: newerRunId,
+        startedAt: 2000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId,
+        },
+        nodeStatuses: { trigger: NodeStatus.RUNNING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
+
+    await engine.resumeInterruptedRuns();
+
+    expect(retrySpy).not.toHaveBeenCalled();
+
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const interrupted = index.runs.find((entry) => entry.runId === interruptedRunId);
+    expect(interrupted).toBeTruthy();
+    expect(interrupted.resumable).toBe(false);
+    expect(interrupted.resumeResult).toBe("duplicate_task_run");
+  });
+
+  it("refreshes migrated task-lifecycle defaults when retrying an interrupted run", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      {
+        id: "wf-resume-migrated-default",
+        name: "Resume Migrated Default",
+        variables: { prePrValidationCommand: "auto" },
+      },
+    );
+    wf.metadata = {
+      ...(wf.metadata || {}),
+      installedFrom: "template-task-lifecycle",
+    };
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const interruptedRunId = "run-stale-quality-gate";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: interruptedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: null,
+            resumable: true,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${interruptedRunId}.json`),
+      JSON.stringify({
+        id: interruptedRunId,
+        startedAt: 1000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId: "task-shared-1",
+          prePrValidationCommand: "npm run prepush:check",
+        },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const executeDagSpy = vi.spyOn(engine, "_executeDag").mockResolvedValue();
+
+    const { retryRunId } = await engine.retryRun(interruptedRunId, { mode: "from_failed" });
+
+    expect(executeDagSpy).toHaveBeenCalledTimes(1);
+    const resumedCtx = executeDagSpy.mock.calls[0][3];
+    expect(resumedCtx.data.prePrValidationCommand).toBe("auto");
+
+    const resumedRun = engine.getRunDetail(retryRunId);
+    expect(resumedRun?.detail?.data?.prePrValidationCommand).toBe("auto");
+  });
+
+  it("refreshes migrated task-lifecycle defaults for fresh task-lifecycle executions", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      {
+        id: "wf-fresh-migrated-default",
+        name: "Fresh Migrated Default",
+        variables: { prePrValidationCommand: "npm run prepush:check" },
+      },
+    );
+    wf.metadata = {
+      ...(wf.metadata || {}),
+      installedFrom: "template-task-lifecycle",
+      templateState: {
+        ...(wf.metadata?.templateState || {}),
+        isCustomized: false,
+      },
+    };
+    engine.save(wf);
+
+    const ctx = await engine.execute(wf.id, {});
+
+    expect(ctx.data.prePrValidationCommand).toBe("auto");
+
+    const persisted = engine.getRunDetail(ctx.id);
+    expect(persisted?.detail?.data?.prePrValidationCommand).toBe("auto");
+  });
+
   it("hydrates missing history entries from run detail files when index is truncated", () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],

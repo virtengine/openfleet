@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import os from "node:os";
+import { resolve } from "node:path";
 
 // ── Mocks ───────────────────────────────────────────────────────────────────
 
@@ -1220,8 +1221,13 @@ describe("task-executor", () => {
       );
     });
 
-    it("does not reset fresh in-progress tasks in workflow-owned mode when no executor thread exists", async () => {
-      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: true });
+    it("does not reset fresh workflow-owned tasks when an active workflow run exists", async () => {
+      const ex = new TaskExecutor({
+        projectId: "proj-1",
+        maxParallel: 2,
+        workflowOwnsTaskLifecycle: true,
+        workflowRunsDir: "/workflow-runs",
+      });
       ex._running = true;
       const executeSpy = vi
         .spyOn(ex, "executeTask")
@@ -1237,13 +1243,74 @@ describe("task-executor", () => {
         },
       ]);
       getActiveThreads.mockReturnValueOnce([]);
+      existsSync.mockImplementation((targetPath) =>
+        [
+          resolve("/workflow-runs", "_active-runs.json"),
+          resolve("/workflow-runs", "run-1.json"),
+        ].includes(targetPath),
+      );
+      readFileSync.mockImplementation((targetPath) => {
+        if (targetPath === resolve("/workflow-runs", "_active-runs.json")) {
+          return JSON.stringify([{ runId: "run-1" }]);
+        }
+        if (targetPath === resolve("/workflow-runs", "run-1.json")) {
+          return JSON.stringify({ data: { taskId: "wf-owned-1" } });
+        }
+        return "";
+      });
 
       await ex._recoverInterruptedInProgressTasks();
 
       expect(updateTaskStatus).not.toHaveBeenCalledWith(
         "wf-owned-1",
         "todo",
-        expect.objectContaining({ source: "task-executor-recovery-workflow-owned" }),
+        expect.objectContaining({
+          source: "task-executor-recovery-missing-workflow-run",
+        }),
+      );
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
+
+    it("resets fresh workflow-owned tasks when no active workflow run or claim exists", async () => {
+      const ex = new TaskExecutor({
+        projectId: "proj-1",
+        maxParallel: 2,
+        workflowOwnsTaskLifecycle: true,
+        workflowRunsDir: "/workflow-runs",
+      });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "wf-ownerless-1",
+          title: "Workflow-owned ownerless task",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+          agentAttempts: 0,
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+      existsSync.mockImplementation(
+        (targetPath) => targetPath === resolve("/workflow-runs", "_active-runs.json"),
+      );
+      readFileSync.mockImplementation((targetPath) => {
+        if (targetPath === resolve("/workflow-runs", "_active-runs.json")) {
+          return JSON.stringify([]);
+        }
+        return "";
+      });
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "wf-ownerless-1",
+        "todo",
+        expect.objectContaining({
+          source: "task-executor-recovery-missing-workflow-run",
+        }),
       );
       expect(executeSpy).not.toHaveBeenCalled();
     });

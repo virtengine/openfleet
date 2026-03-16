@@ -122,6 +122,7 @@ const CLAIM_CONFLICT_COMMENT_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 const REPO_AREA_SLOW_MERGE_LATENCY_MS = 4 * 60 * 60 * 1000;
 const REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS = 8 * 60 * 60 * 1000;
 const REPO_AREA_CONTENTION_EVENT_LIMIT = 60;
+const WORKFLOW_ACTIVE_RUNS_INDEX = "_active-runs.json";
 const FATAL_CLAIM_RENEW_ERRORS = new Set([
   "task_claimed_by_different_instance",
   "claim_token_mismatch",
@@ -2313,6 +2314,7 @@ class TaskExecutor {
       activeWorkspace: "",
       branchRouting: null,
       defaultTargetBranch: null,
+      workflowRunsDir: null,
       onTaskStarted: null,
       onTaskCompleted: null,
       onTaskFailed: null,
@@ -2356,6 +2358,11 @@ class TaskExecutor {
       merged.branchRouting?.defaultBranch ||
       process.env.VK_TARGET_BRANCH ||
       "origin/main";
+    this.workflowRunsDir =
+      typeof merged.workflowRunsDir === "string" &&
+      String(merged.workflowRunsDir).trim()
+        ? resolve(String(merged.workflowRunsDir))
+        : null;
     this.onTaskStarted = merged.onTaskStarted;
     this.onTaskCompleted = merged.onTaskCompleted;
     this.onTaskFailed = merged.onTaskFailed;
@@ -3919,6 +3926,9 @@ class TaskExecutor {
         .map((entry) => String(entry?.taskKey || "").trim())
         .filter(Boolean),
     );
+    const activeWorkflowTaskIds = this.workflowOwnsTaskLifecycle
+      ? this._readActiveWorkflowTaskIds()
+      : new Set();
 
     const available = Math.max(0, this.maxParallel - this._activeSlots.size);
     if (available === 0) return;
@@ -4048,14 +4058,14 @@ class TaskExecutor {
       }
       const isFreshEnough =
         ageMs === 0 || ageMs <= INPROGRESS_RECOVERY_MAX_AGE_MS;
+      const hasWorkflowRun = activeWorkflowTaskIds.has(id);
 
-      // In workflow-owned mode, executor thread presence is not a reliable
-      // liveness signal because workflow nodes can be actively running before
-      // any executor thread key is observable. Resetting "fresh" in-progress
-      // tasks here causes live runs to churn todo↔inprogress. Keep fresh tasks
-      // in-progress and let stale/unstarted guards above handle true stranding.
+      // In workflow-owned mode, the authoritative liveness signals are the
+      // persisted workflow active-runs index, then any live executor thread,
+      // then the shared-state owner. If none of those exist, the task is
+      // ownerless and must be reset even when still "fresh".
       if (this.workflowOwnsTaskLifecycle) {
-        if (hasThread) {
+        if (hasWorkflowRun || hasThread) {
           skippedForActiveClaim++;
           continue;
         }
@@ -4080,10 +4090,25 @@ class TaskExecutor {
           resetToTodo++;
           continue;
         }
-        if (isFreshEnough) {
-          skippedForActiveClaim++;
-          continue;
+        try {
+          await transitionTaskStatus(id, "todo", {
+            source: "task-executor-recovery-missing-workflow-run",
+          });
+        } catch {
+          /* best effort */
         }
+        try {
+          transitionInternalTaskStatus(
+            id,
+            "todo",
+            "task-executor-recovery-missing-workflow-run",
+          );
+        } catch {
+          /* best effort */
+        }
+        this._removeRuntimeSlot(id);
+        resetToTodo++;
+        continue;
       }
 
       if (hasThread || isFreshEnough) {
@@ -4152,6 +4177,52 @@ class TaskExecutor {
             : ""),
       );
     }
+  }
+
+  _readActiveWorkflowTaskIds() {
+    const taskIds = new Set();
+    if (!this.workflowRunsDir) return taskIds;
+    const activeRunsPath = resolve(this.workflowRunsDir, WORKFLOW_ACTIVE_RUNS_INDEX);
+    if (!existsSync(activeRunsPath)) return taskIds;
+    let activeRuns = [];
+    try {
+      const parsed = JSON.parse(readFileSync(activeRunsPath, "utf8"));
+      activeRuns = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.runs)
+          ? parsed.runs
+          : [];
+    } catch {
+      return taskIds;
+    }
+    for (const entry of activeRuns) {
+      const directTaskId = normalizeTaskIdKey(
+        entry?.taskId || entry?.activeTaskId,
+      );
+      if (directTaskId) {
+        taskIds.add(directTaskId);
+        continue;
+      }
+      const runId = String(entry?.runId || "").trim();
+      if (!runId) continue;
+      const detailPath = resolve(this.workflowRunsDir, `${runId}.json`);
+      if (!existsSync(detailPath)) continue;
+      try {
+        const detail = JSON.parse(readFileSync(detailPath, "utf8"));
+        const detailTaskId = normalizeTaskIdKey(
+          detail?.data?.taskId ||
+            detail?.data?.activeTaskId ||
+            detail?.inputData?.taskId ||
+            detail?.inputData?.activeTaskId,
+        );
+        if (detailTaskId) {
+          taskIds.add(detailTaskId);
+        }
+      } catch {
+        /* best effort */
+      }
+    }
+    return taskIds;
   }
 
   /**

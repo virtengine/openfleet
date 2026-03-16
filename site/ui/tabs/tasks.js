@@ -3226,6 +3226,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   };
 
   const handleUnblock = async () => {
+    if (!task?.id) return;
     haptic("medium");
     try {
       await apiFetch("/api/tasks/unblock", {
@@ -3235,8 +3236,8 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       showToast("Task moved back to todo", "success");
       onClose();
       scheduleRefresh(150);
-    } catch {
-      /* toast */
+        } catch {
+      showToast("Failed to move task back to todo", "error");
     }
   };
 

@@ -3594,7 +3594,6 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             </div>
           </div>
         `}
-
         ${/* Description */ ""}
         <div class="task-section">
           <div class="task-section-title">Description</div>
@@ -7738,7 +7737,6 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     <//>
   `;
 }
-
 
 
 

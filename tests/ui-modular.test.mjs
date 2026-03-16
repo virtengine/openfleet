@@ -385,6 +385,12 @@ describe("task description fallbacks", () => {
     expect(buildTaskDescriptionFallback("Queue retry fix", "Internal server error")).toContain("Queue retry fix");
   });
 
+  it("treats unresolved template placeholders as missing descriptions", () => {
+    expect(isPlaceholderTaskDescription("{{taskDescription}}")).toBe(true);
+    expect(isPlaceholderTaskDescription("{{ repoSlug }}")).toBe(true);
+    expect(buildTaskDescriptionFallback("Queue retry fix", "{{taskDescription}}")).toContain("Queue retry fix");
+  });
+
   it("preserves real descriptions while still sanitizing punctuation noise", () => {
     const raw = "Fix worker loop… and validate retries";
     expect(sanitizeTaskText(raw)).toContain("Fix worker loop");

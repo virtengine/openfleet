@@ -41,6 +41,7 @@ import {
   ensureTestRuntimeSandbox,
   resolvePathForTestRuntime,
 } from "../infra/test-runtime.mjs";
+import { getTemplate } from "./workflow-templates.mjs";
 
 // Lazy-loaded workspace manager for workspace-aware scheduling
 let _workspaceManagerMod = null;
@@ -744,13 +745,27 @@ export class WorkflowEngine extends EventEmitter {
     return normalized || "";
   }
 
+  _resolveTemplateDefaultVariable(def, key) {
+    if (!def || typeof def !== "object") return undefined;
+    if (def?.metadata?.templateState?.isCustomized === true) return undefined;
+    const templateId = String(def?.metadata?.installedFrom || "").trim();
+    if (!templateId) return undefined;
+    const template = getTemplate(templateId);
+    if (!template?.variables || typeof template.variables !== "object") return undefined;
+    return Object.prototype.hasOwnProperty.call(template.variables, key)
+      ? template.variables[key]
+      : undefined;
+  }
+
   _applyResumeInputMigrations(def, data = {}) {
     if (!data || typeof data !== "object") return data;
     const next = { ...data };
     const templateId = String(def?.metadata?.installedFrom || "").trim();
     if (templateId === "template-task-lifecycle") {
       const currentValue = next.prePrValidationCommand;
-      const nextDefault = def?.variables?.prePrValidationCommand;
+      const nextDefault =
+        this._resolveTemplateDefaultVariable(def, "prePrValidationCommand")
+        ?? def?.variables?.prePrValidationCommand;
       if (currentValue === "npm run prepush:check" && nextDefault === "auto") {
         next.prePrValidationCommand = nextDefault;
       }
@@ -1234,10 +1249,13 @@ export class WorkflowEngine extends EventEmitter {
    * @private
    */
   async _executeInner(def, workflowId, inputData, opts) {
-
-    const ctx = new WorkflowContext({
+    const initialData = this._applyResumeInputMigrations(def, {
       ...def.variables,
       ...inputData,
+    });
+
+    const ctx = new WorkflowContext({
+      ...initialData,
       _workflowId: workflowId,
       _workflowName: def.name,
     });
@@ -3269,7 +3287,6 @@ export class WorkflowEngine extends EventEmitter {
       // and mark older duplicates as not-resumable before we even try them.
       const runDetailCache = new Map(); // runId → parsed detail
       const latestByTaskId = new Map(); // taskId → run entry (highest startedAt)
-
       for (const run of allRuns) {
         const dp = resolve(this.runsDir, `${run.runId}.json`);
         if (!existsSync(dp)) continue;

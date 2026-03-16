@@ -11,6 +11,7 @@ import {
   getPromptDefaultUpdateStatus,
   getDefaultPromptWorkspace,
   PROMPT_WORKSPACE_DIR,
+  renderPromptTemplate,
 } from "../agent/agent-prompts.mjs";
 
 describe("agent-prompts workspace", () => {
@@ -201,5 +202,29 @@ describe("agent-prompts workspace", () => {
     const reviewer = await readFile(resolve(workspace, "reviewer.md"), "utf8");
     const reviewerHash = sha256(getDefaultPromptTemplate("reviewer").trimEnd());
     expect(reviewer).toContain(`<!-- bosun default-sha256: ${reviewerHash} -->`);
+  });
+
+  it("strips unresolved template placeholders passed as values", () => {
+    const rendered = renderPromptTemplate(
+      [
+        "# {{TASK_ID}} — {{TASK_TITLE}}",
+        "",
+        "## Description",
+        "{{TASK_DESCRIPTION}}",
+        "",
+        "## Environment",
+        "- Repository: {{REPO_SLUG}}",
+      ].join("\n"),
+      {
+        TASK_ID: "c5d7fea1",
+        TASK_TITLE: "Untitled task",
+        TASK_DESCRIPTION: "{{taskDescription}}",
+        REPO_SLUG: "{{repoSlug}}",
+      },
+    );
+
+    expect(rendered).toContain("# c5d7fea1 — Untitled task");
+    expect(rendered).not.toContain("{{taskDescription}}");
+    expect(rendered).not.toContain("{{repoSlug}}");
   });
 });

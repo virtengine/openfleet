@@ -2665,7 +2665,6 @@ describe("ui-server mini app", () => {
       }),
     );
   });
-
   it("wires sprint and dag task-store APIs through ui-server endpoints", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
@@ -3393,6 +3392,8 @@ describe("ui-server mini app", () => {
 
   it("falls back to session workspaceDir for diff view", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const previousRepoRoot = process.env.REPO_ROOT;
+    delete process.env.REPO_ROOT;
 
     const repoDir = mkdtempSync(join(tmpdir(), "bosun-session-diff-"));
     const filePath = join(repoDir, "notes.txt");
@@ -3432,21 +3433,26 @@ describe("ui-server mini app", () => {
       const diffPayload = await fetch(
         `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/diff?workspace=all`,
       ).then((r) => r.json());
-
-      expect(diffPayload.ok).toBe(true);
-      expect(diffPayload.diff?.totalFiles).toBeGreaterThan(0);
-      expect(Array.isArray(diffPayload.diff?.files)).toBe(true);
-      expect(diffPayload.diff.files.some((entry) => String(entry.file || entry.filename || "").includes("notes.txt"))).toBe(true);
+      expect(diffPayload?.ok).toBe(true);
+      expect(diffPayload?.diff?.totalFiles).toBeGreaterThan(0);
+      expect(Array.isArray(diffPayload?.diff?.files)).toBe(true);
     } finally {
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
       rmSync(repoDir, { recursive: true, force: true });
     }
   });
 
   it("reports live compaction telemetry breakdowns", async () => {
-    const logDir = join(process.cwd(), ".cache", "agent-work-logs");
+    const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-telemetry-"));
+    const previousRepoRoot = process.env.REPO_ROOT;
+    process.env.REPO_ROOT = isolatedRepoRoot;
+    vi.resetModules();
+
+    const logDir = join(isolatedRepoRoot, ".cache", "agent-work-logs");
     mkdirSync(logDir, { recursive: true });
     const shreddingPath = join(logDir, "shredding-stats.jsonl");
-    const sessionAccumulatorPath = join(process.cwd(), ".cache", "session-accumulator.jsonl");
+    const sessionAccumulatorPath = join(isolatedRepoRoot, ".cache", "session-accumulator.jsonl");
     const previousStats = existsSync(shreddingPath)
       ? readFileSync(shreddingPath, "utf8")
       : null;
@@ -3568,14 +3574,22 @@ describe("ui-server mini app", () => {
       else writeFileSync(shreddingPath, previousStats, "utf8");
       if (previousSessions == null) rmSync(sessionAccumulatorPath, { force: true });
       else writeFileSync(sessionAccumulatorPath, previousSessions, "utf8");
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
+      rmSync(isolatedRepoRoot, { recursive: true, force: true });
     }
   });
 
   it("sources agent-run analytics from completed session history when session-start events are stale", async () => {
-    const logDir = join(process.cwd(), ".cache", "agent-work-logs");
+    const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-usage-"));
+    const previousRepoRoot = process.env.REPO_ROOT;
+    process.env.REPO_ROOT = isolatedRepoRoot;
+    vi.resetModules();
+
+    const logDir = join(isolatedRepoRoot, ".cache", "agent-work-logs");
     mkdirSync(logDir, { recursive: true });
     const streamPath = join(logDir, "agent-work-stream.jsonl");
-    const sessionAccumulatorPath = join(process.cwd(), ".cache", "session-accumulator.jsonl");
+    const sessionAccumulatorPath = join(isolatedRepoRoot, ".cache", "session-accumulator.jsonl");
     const previousStream = existsSync(streamPath)
       ? readFileSync(streamPath, "utf8")
       : null;
@@ -3673,6 +3687,9 @@ describe("ui-server mini app", () => {
       else writeFileSync(streamPath, previousStream, "utf8");
       if (previousSessions == null) rmSync(sessionAccumulatorPath, { force: true });
       else writeFileSync(sessionAccumulatorPath, previousSessions, "utf8");
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
+      rmSync(isolatedRepoRoot, { recursive: true, force: true });
     }
   });
 

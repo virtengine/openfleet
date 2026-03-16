@@ -1217,7 +1217,10 @@ export function loadConfig(argv = process.argv, options = {}) {
   {
     const selPath = selectedRepository?.path || "";
     const selHasGit = selPath && existsSync(resolve(selPath, ".git"));
-    repoRoot = (selHasGit ? selPath : null) || getFallbackRepoRoot();
+    repoRoot =
+      explicitRepoRoot ||
+      (selHasGit ? selPath : null) ||
+      getFallbackRepoRoot();
   }
 
   if (

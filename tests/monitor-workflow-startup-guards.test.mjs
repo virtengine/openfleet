@@ -47,7 +47,7 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain('"template-github-kanban-sync"');
     expect(monitorSource).toContain("Number(reconcile?.autoUpdated || 0) > 0");
     expect(monitorSource).toContain("reconcile.updatedWorkflowIds.length > 0");
-    expect(monitorSource).toContain("typeof engine.load === \"function\"");
+    expect(monitorSource).toContain('typeof engine.load === "function"');
     expect(monitorSource).toContain("engine.load();");
   });
 
@@ -206,23 +206,24 @@ describe("monitor workflow startup guards", () => {
 describe("task-executor in-progress recovery owner_mismatch guards", () => {
   const executorSource = readFileSync(resolve(process.cwd(), "task/task-executor.mjs"), "utf8");
 
-  it("skips resumable dispatch in workflow-owned mode when agent thread is alive", () => {
-    // When workflowOwnsTaskLifecycle is true and hasThread is true,
+  it("skips resumable dispatch in workflow-owned mode when an active workflow run or agent thread is alive", () => {
+    // When workflowOwnsTaskLifecycle is true and either the workflow run
+    // already exists or the agent thread is still alive,
     // recovery must NOT add the task to resumable (which calls executeTask()
     // and fires task.assigned, launching a second competing workflow run).
     expect(executorSource).toContain("if (this.workflowOwnsTaskLifecycle) {");
-    expect(executorSource).toContain("if (hasThread) {");
+    expect(executorSource).toContain("if (hasWorkflowRun || hasThread) {");
     // The skip branch must appear BEFORE the resumable.push call
     const wfGuardPos = executorSource.indexOf("if (this.workflowOwnsTaskLifecycle) {");
     const resumablePushPos = executorSource.indexOf("resumable.push({ ...task, id });");
     expect(wfGuardPos).toBeLessThan(resumablePushPos);
   });
 
-  it("keeps fresh workflow-owned task in inprogress when agent thread key is absent", () => {
-    // In workflow-owned mode, thread registry visibility can lag while workflow
-    // nodes are actively running. Fresh tasks must not be force-reset to todo
-    // solely because no executor thread key is visible.
-    expect(executorSource).not.toContain("source: \"task-executor-recovery-workflow-owned\"");
+  it("resets ownerless workflow-owned tasks instead of skipping them on freshness alone", () => {
+    // Fresh inprogress rows are only safe to keep when a workflow run, thread,
+    // or shared-state owner still exists. Otherwise the task is stranded and
+    // should be reset back to todo for clean re-dispatch.
+    expect(executorSource).toContain("source: \"task-executor-recovery-missing-workflow-run\"");
   });
 
   it("uses stale threshold of 600s so recovery interval cannot race heartbeat renewal", () => {

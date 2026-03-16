@@ -82,6 +82,18 @@ export function sanitizeTaskText(value) {
   return text.replace(/\s{2,}/g, " ").trim();
 }
 
+export function isPlaceholderTaskDescription(value) {
+  const text = sanitizeTaskText(value || "");
+  if (!text) return false;
+  const normalized = text.toLowerCase();
+  return (
+    TASK_TEMPLATE_PLACEHOLDER_RE.test(text) ||
+    normalized === "internal server error" ||
+    normalized === "{\"ok\":false,\"error\":\"internal server error\"}" ||
+    normalized === "{\"error\":\"internal server error\"}"
+  );
+}
+
 function synthesizeTaskDescription(task) {
   const title = sanitizeTaskText(task?.title || "");
   if (!title) {
@@ -93,12 +105,18 @@ function synthesizeTaskDescription(task) {
 function normalizeTaskForUi(task) {
   if (!task || typeof task !== "object") return task;
   const title = sanitizeTaskText(task.title || "");
-  const description = sanitizeTaskText(task.description || "");
+  const rawDescription = sanitizeTaskText(task.description || "");
+  const description = isPlaceholderTaskDescription(rawDescription) ? "" : rawDescription;
   const meta = task.meta && typeof task.meta === "object"
     ? {
         ...task.meta,
         title: task.meta.title != null ? sanitizeTaskText(task.meta.title) : task.meta.title,
-        description: task.meta.description != null ? sanitizeTaskText(task.meta.description) : task.meta.description,
+        description:
+          task.meta.description != null
+            ? (isPlaceholderTaskDescription(task.meta.description)
+              ? ""
+              : sanitizeTaskText(task.meta.description))
+            : task.meta.description,
       }
     : task.meta;
   return {
@@ -154,6 +172,7 @@ export const tasksTotalPages = signal(1);
 export const tasksTotal = signal(0);
 export const tasksStatusCounts = signal({ draft: 0, backlog: 0, blocked: 0, inProgress: 0, inReview: 0, done: 0 });
 const TASK_IGNORE_LABEL = "codex:ignore";
+const TASK_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
 const TASK_TEXT_REPLACEMENTS = [
   [/\u00D4\u00C7\u00F6/g, "-"],
   [/\u00D4\u00C7\u00A3/g, "\""],
