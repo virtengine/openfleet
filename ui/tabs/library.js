@@ -457,15 +457,37 @@ const TYPE_LABELS = { prompt: "Prompt", agent: "Agent Profile", skill: "Skill", 
 const TYPE_COLORS = { prompt: "#58a6ff", agent: "#af7bff", skill: "#3fb950", mcp: "#f59e0b" };
 const STORAGE_SCOPE_LABELS = { repo: "Repo", workspace: "Workspace", global: "Global" };
 const STORAGE_SCOPE_COLORS = { repo: "info", workspace: "warning", global: "default" };
-const AGENT_TYPE_OPTIONS = Object.freeze([
-  { value: "voice", label: "Voice" },
-  { value: "task", label: "Task" },
-  { value: "chat", label: "Chat" },
+const AGENT_CATEGORY_OPTIONS = Object.freeze([
+  { value: "task", label: "Task Template" },
+  { value: "interactive", label: "Manual Chat Agent" },
+  { value: "voice", label: "Voice Agent" },
+]);
+const INTERACTIVE_MODE_OPTIONS = Object.freeze([
+  { value: "ask", label: "Ask" },
+  { value: "agent", label: "Agent" },
+  { value: "plan", label: "Plan" },
+  { value: "web", label: "Web" },
+  { value: "instant", label: "Instant" },
+  { value: "custom", label: "Custom" },
 ]);
 
-function normalizeAgentType(rawType) {
-  const value = String(rawType || "").trim().toLowerCase();
-  if (value === "voice" || value === "task" || value === "chat") return value;
+function normalizeAgentCategory(rawCategory) {
+  const value = String(rawCategory || "").trim().toLowerCase();
+  if (value === "voice" || value === "task" || value === "interactive") return value;
+  return "task";
+}
+
+function normalizeInteractiveMode(rawMode, agentCategory = "task") {
+  const value = String(rawMode || "").trim().toLowerCase();
+  if (["ask", "agent", "plan", "web", "instant", "custom"].includes(value)) return value;
+  if (agentCategory === "interactive") return "agent";
+  if (agentCategory === "voice") return "voice";
+  return "";
+}
+
+function deriveAgentTypeFromCategory(agentCategory) {
+  if (agentCategory === "voice") return "voice";
+  if (agentCategory === "interactive") return "chat";
   return "task";
 }
 
@@ -482,9 +504,12 @@ function normalizeStorageScope(rawScope, fallback = "repo") {
   return fallback;
 }
 
-function inferAgentTypeFromEntry(entry, parsedContent) {
-  const explicit = normalizeAgentType(parsedContent?.agentType);
-  if (parsedContent?.agentType) return explicit;
+function inferAgentCategoryFromEntry(entry, parsedContent) {
+  const explicitCategory = normalizeAgentCategory(parsedContent?.agentCategory || entry?.agentCategory);
+  if (parsedContent?.agentCategory || entry?.agentCategory) return explicitCategory;
+  const explicitType = String(parsedContent?.agentType || entry?.agentType || "").trim().toLowerCase();
+  if (explicitType === "chat") return "interactive";
+  if (explicitType === "voice") return "voice";
   if (parsedContent?.voiceAgent === true) return "voice";
   const id = String(entry?.id || "").trim().toLowerCase();
   const tags = Array.isArray(entry?.tags)
@@ -493,6 +518,21 @@ function inferAgentTypeFromEntry(entry, parsedContent) {
   if (id.startsWith("voice-agent")) return "voice";
   if (tags.includes("voice") || tags.includes("audio-agent") || tags.includes("realtime")) return "voice";
   return "task";
+}
+
+function inferInteractiveModeFromEntry(entry, parsedContent) {
+  const category = inferAgentCategoryFromEntry(entry, parsedContent);
+  return normalizeInteractiveMode(parsedContent?.interactiveMode || entry?.interactiveMode, category);
+}
+
+function inferInteractiveLabelFromEntry(entry, parsedContent) {
+  return String(parsedContent?.interactiveLabel || entry?.interactiveLabel || "").trim();
+}
+
+function inferShowInChatDropdown(entry, parsedContent) {
+  const explicit = parsedContent?.showInChatDropdown;
+  if (typeof explicit === "boolean") return explicit;
+  return entry?.showInChatDropdown === true;
 }
 
 const AUDIO_AGENT_TEMPLATES = Object.freeze({
@@ -512,6 +552,8 @@ const AUDIO_AGENT_TEMPLATES = Object.freeze({
       promptOverride: null,
       skills: ["concise-voice-guidance", "conversation-memory"],
       agentType: "voice",
+      agentCategory: "voice",
+      interactiveMode: "voice",
       voiceAgent: true,
       voicePersona: "female",
       voiceInstructions: "You are Nova, a female voice agent. Be concise, warm, and practical. Use tools for facts and execution. Keep spoken responses short and clear.",
@@ -533,6 +575,8 @@ const AUDIO_AGENT_TEMPLATES = Object.freeze({
       promptOverride: null,
       skills: ["ops-diagnostics", "task-execution"],
       agentType: "voice",
+      agentCategory: "voice",
+      interactiveMode: "voice",
       voiceAgent: true,
       voicePersona: "male",
       voiceInstructions: "You are Atlas, a male voice agent. Be direct and execution-oriented. Prefer actionable status updates. Use tools proactively for diagnostics.",
@@ -624,7 +668,10 @@ function LibraryCard({ entry, onSelect }) {
             sx=${{ fontSize: "0.74em" }}
           />
           ${entry.type === "agent" && entry.agentType && html`
-            <${Chip} label=${String(entry.agentType).toUpperCase()} size="small" variant="outlined" sx=${{ fontSize: "0.75em" }} />
+            <${Chip} label=${String(entry.agentCategory || entry.agentType).replace(/(^.|\s+.)/g, (m) => m.toUpperCase())} size="small" variant="outlined" sx=${{ fontSize: "0.75em" }} />
+          `}
+          ${entry.type === "agent" && entry.agentCategory === "interactive" && (entry.interactiveLabel || entry.interactiveMode) && html`
+            <${Chip} label=${entry.interactiveLabel || String(entry.interactiveMode || "").toUpperCase()} size="small" variant="outlined" sx=${{ fontSize: "0.75em" }} />
           `}
           ${(entry.tags || []).slice(0, 5).map((tag) => html`
             <${Chip} key=${tag} label=${tag} size="small" sx=${{ fontSize: "0.75em", bgcolor: "primary.main", color: "#fff", opacity: 0.8 }} />
@@ -650,7 +697,10 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
     tags: normalizeTags(entry?.tags).join(", "),
     scope: entry?.scope || "global",
     storageScope: normalizeStorageScope(entry?.storageScope, "repo"),
-    agentType: inferAgentTypeFromEntry(entry, null),
+    agentCategory: inferAgentCategoryFromEntry(entry, null),
+    interactiveMode: inferInteractiveModeFromEntry(entry, null),
+    interactiveLabel: inferInteractiveLabelFromEntry(entry, null),
+    showInChatDropdown: inferShowInChatDropdown(entry, null),
     content: typeof entry?.content === "string" ? entry.content : "",
   };
   const [form, setForm] = useState(initialFormSnapshot);
@@ -676,7 +726,10 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
       tags: normalizeTags(entry?.tags).join(", "),
       scope: entry?.scope || "global",
       storageScope: normalizeStorageScope(entry?.storageScope, "repo"),
-      agentType: inferAgentTypeFromEntry(entry, null),
+      agentCategory: inferAgentCategoryFromEntry(entry, null),
+      interactiveMode: inferInteractiveModeFromEntry(entry, null),
+      interactiveLabel: inferInteractiveLabelFromEntry(entry, null),
+      showInChatDropdown: inferShowInChatDropdown(entry, null),
       content: "",
     };
     setForm(next);
@@ -700,7 +753,10 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
             ...f,
             content: contentStr,
             storageScope: normalizeStorageScope(detail?.storageScope || f.storageScope, "repo"),
-            agentType: inferAgentTypeFromEntry(detail || entry, parsed),
+            agentCategory: inferAgentCategoryFromEntry(detail || entry, parsed),
+            interactiveMode: inferInteractiveModeFromEntry(detail || entry, parsed),
+            interactiveLabel: inferInteractiveLabelFromEntry(detail || entry, parsed),
+            showInChatDropdown: inferShowInChatDropdown(detail || entry, parsed),
           };
           setBaseline(next);
           return next;
@@ -744,12 +800,27 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
           showToast("Agent profile content must be valid JSON", "error");
           return false;
         }
-        const agentType = normalizeAgentType(form.agentType);
+        const agentCategory = normalizeAgentCategory(form.agentCategory);
+        const agentType = deriveAgentTypeFromCategory(agentCategory);
         content.agentType = agentType;
-        if (agentType === "voice") {
+        content.agentCategory = agentCategory;
+        if (agentCategory === "voice") {
           content.voiceAgent = true;
+          content.interactiveMode = "voice";
+          delete content.showInChatDropdown;
         } else if (content.voiceAgent === true) {
           content.voiceAgent = false;
+        }
+        if (agentCategory === "interactive") {
+          const interactiveMode = normalizeInteractiveMode(form.interactiveMode, agentCategory);
+          content.interactiveMode = interactiveMode || "agent";
+          if (String(form.interactiveLabel || "").trim()) content.interactiveLabel = String(form.interactiveLabel || "").trim();
+          else delete content.interactiveLabel;
+          content.showInChatDropdown = form.showInChatDropdown === true;
+        } else {
+          delete content.interactiveLabel;
+          if (agentCategory !== "voice") delete content.interactiveMode;
+          delete content.showInChatDropdown;
         }
       }
       const res = await saveEntry({
@@ -816,6 +887,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
           promptOverride: null,
           skills: [],
           agentType: "task",
+          agentCategory: "task",
           tags: [],
         }, null, 2)
       : "# Skill Title\n\n## Purpose\nDescribe what this skill teaches agents.\n\n## Instructions\n...";
@@ -864,11 +936,24 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
         <//>
         ${form.type === "agent" && html`
           <${FormControl} fullWidth size="small">
-            <${InputLabel}>Agent Type<//>
-            <${Select} value=${normalizeAgentType(form.agentType)} onChange=${updateField("agentType")} label="Agent Type">
-              ${AGENT_TYPE_OPTIONS.map((opt) => html`<${MenuItem} key=${opt.value} value=${opt.value}>${opt.label}<//>`)}
+            <${InputLabel}>Agent Category<//>
+            <${Select} value=${normalizeAgentCategory(form.agentCategory)} onChange=${updateField("agentCategory")} label="Agent Category">
+              ${AGENT_CATEGORY_OPTIONS.map((opt) => html`<${MenuItem} key=${opt.value} value=${opt.value}>${opt.label}<//>`)}
             <//>
           <//>
+        `}
+        ${form.type === "agent" && normalizeAgentCategory(form.agentCategory) === "interactive" && html`
+          <${FormControl} fullWidth size="small">
+            <${InputLabel}>Manual Agent Type<//>
+            <${Select} value=${normalizeInteractiveMode(form.interactiveMode, form.agentCategory)} onChange=${updateField("interactiveMode")} label="Manual Agent Type">
+              ${INTERACTIVE_MODE_OPTIONS.map((opt) => html`<${MenuItem} key=${opt.value} value=${opt.value}>${opt.label}<//>`)}
+            <//>
+          <//>
+          <${TextField} size="small" fullWidth label="Type Label / Section" value=${form.interactiveLabel} onInput=${updateField("interactiveLabel")} placeholder="Optional custom group label, e.g. Research or Reviewer" />
+          <${FormControlLabel}
+            control=${html`<${Switch} checked=${form.showInChatDropdown === true} onChange=${(e) => setForm((f) => ({ ...f, showInChatDropdown: e.target.checked }))} />`}
+            label="Show in chat dropdown"
+          />
         `}
         <${Box}>
           <${Typography} variant="caption" color="text.secondary" sx=${{ mb: 0.5, display: "block" }}>Content<//>
@@ -879,7 +964,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
         <//>
         <${Typography} variant="caption" color="text.secondary" sx=${{ mt: -1 }}>
           ${form.type === "prompt" ? "Use {{VARIABLE_NAME}} for template variables. Reference in workflows as {{prompt:name}}."
-          : form.type === "agent" ? "JSON format. Referenced in workflows as {{agent:name}}."
+          : form.type === "agent" ? "JSON format. Task templates stay in workflow resolution; interactive profiles can also appear in the chat dropdown."
             : form.type === "mcp" ? "MCP server configuration. Managed via the MCP Servers panel."
             : "Markdown format. Referenced in workflows as {{skill:name}}."}
         <//>
@@ -2924,6 +3009,18 @@ export function LibraryTab() {
     return list;
   }, [entries.value, filterType.value]);
 
+  const groupedAgentSections = useMemo(() => {
+    if (filterType.value !== "agent") return [];
+    const interactive = displayed.filter((entry) => entry.agentCategory === "interactive");
+    const voice = displayed.filter((entry) => entry.agentCategory === "voice");
+    const task = displayed.filter((entry) => !entry.agentCategory || entry.agentCategory === "task");
+    return [
+      { key: "interactive", title: "Manual Chat Agents", items: interactive },
+      { key: "voice", title: "Voice Agents", items: voice },
+      { key: "task", title: "Task Templates", items: task },
+    ].filter((section) => section.items.length > 0);
+  }, [displayed, filterType.value]);
+
   return html`
     <div class="library-root">
       <div class="library-header">
@@ -2989,11 +3086,29 @@ export function LibraryTab() {
       `}
 
       ${filterType.value !== "mcp" && !loading && displayed.length > 0 && html`
-        <div class="library-grid">
-          ${displayed.map((e) => html`
-            <${LibraryCard} key=${e.id} entry=${e} onSelect=${handleSelect} />
-          `)}
-        </div>
+        ${filterType.value === "agent"
+          ? html`
+            ${groupedAgentSections.map((section) => html`
+              <${Box} key=${section.key} sx=${{ display: "flex", flexDirection: "column", gap: 1.25, mb: 2 }}>
+                <${Stack} direction="row" alignItems="center" spacing=${1}>
+                  <${Typography} variant="subtitle2">${section.title}<//>
+                  <${Chip} label=${section.items.length} size="small" variant="outlined" />
+                <//>
+                <div class="library-grid">
+                  ${section.items.map((e) => html`
+                    <${LibraryCard} key=${e.id} entry=${e} onSelect=${handleSelect} />
+                  `)}
+                </div>
+              </${Box}>
+            `)}
+          `
+          : html`
+            <div class="library-grid">
+              ${displayed.map((e) => html`
+                <${LibraryCard} key=${e.id} entry=${e} onSelect=${handleSelect} />
+              `)}
+            </div>
+          `}
       `}
 
       ${editing && html`

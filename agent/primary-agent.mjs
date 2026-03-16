@@ -11,6 +11,7 @@ import { ensureRepoConfigs, printRepoConfigSummary } from "../config/repo-config
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 import { getAgentToolConfig, getEffectiveTools } from "./agent-tool-config.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
+import { getEntry, getEntryContent, resolveAgentProfileLibraryMetadata } from "../infra/library-manager.mjs";
 import { execPooledPrompt } from "./agent-pool.mjs";
 import {
   execCodexPrompt,
@@ -288,6 +289,108 @@ function buildPrimaryToolCapabilityContract(options = {}) {
     "```",
     "When uncertain about tool inputs/outputs, call get_admin_help via executeToolCall first.",
   ].join("\n");
+}
+
+function toStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item || "").trim()).filter(Boolean);
+}
+
+function resolveSelectedAgentProfileContext(rootDir, agentProfileId) {
+  const id = String(agentProfileId || "").trim();
+  if (!id) return null;
+  const entry = getEntry(rootDir, id);
+  if (!entry || entry.type !== "agent") return null;
+  const profile = getEntryContent(rootDir, entry);
+  if (!profile || typeof profile !== "object") return null;
+
+  const metadata = resolveAgentProfileLibraryMetadata(entry, profile);
+  const promptEntry = profile?.promptOverride ? getEntry(rootDir, profile.promptOverride) : null;
+  const promptContent = promptEntry ? getEntryContent(rootDir, promptEntry) : null;
+  const skills = toStringArray(profile?.skills)
+    .map((skillId) => {
+      const skillEntry = getEntry(rootDir, skillId);
+      if (!skillEntry || skillEntry.type !== "skill") return null;
+      return {
+        id: skillEntry.id,
+        name: skillEntry.name || skillEntry.id,
+        content: String(getEntryContent(rootDir, skillEntry) || "").trim(),
+      };
+    })
+    .filter(Boolean);
+
+  return {
+    id: entry.id,
+    name: entry.name || entry.id,
+    description: entry.description || "",
+    profile,
+    metadata,
+    promptOverride: promptEntry
+      ? {
+        id: promptEntry.id,
+        name: promptEntry.name || promptEntry.id,
+        content: typeof promptContent === "string"
+          ? promptContent.trim()
+          : String(promptContent || "").trim(),
+      }
+      : null,
+    skills,
+  };
+}
+
+function buildPrimaryAgentProfileContract(options = {}) {
+  let rootDir = "";
+  try {
+    rootDir = String(options.cwd || resolveRepoRoot() || process.cwd()).trim();
+  } catch {
+    rootDir = String(options.cwd || process.cwd()).trim();
+  }
+  const selected = resolveSelectedAgentProfileContext(rootDir, options.agentProfileId);
+  if (!selected) return { block: "", preferredMode: "", preferredModel: "" };
+
+  const profileInstructions = String(
+    selected.profile?.instructions
+      || selected.profile?.manualInstructions
+      || selected.profile?.voiceInstructions
+      || "",
+  ).trim();
+  const summary = {
+    id: selected.id,
+    name: selected.name,
+    description: selected.description,
+    agentCategory: selected.metadata.agentCategory,
+    interactiveMode: selected.metadata.interactiveMode,
+    interactiveLabel: selected.metadata.interactiveLabel,
+    sdk: String(selected.profile?.sdk || "").trim() || null,
+    model: String(selected.profile?.model || "").trim() || null,
+    showInChatDropdown: selected.metadata.showInChatDropdown,
+    skillIds: selected.skills.map((skill) => skill.id),
+  };
+  const lines = [
+    "## Selected Agent Profile",
+    "Apply this profile consistently unless the user explicitly overrides it.",
+    "```json",
+    JSON.stringify(summary, null, 2),
+    "```",
+  ];
+  if (profileInstructions) {
+    lines.push("## Profile Instructions", profileInstructions);
+  }
+  if (selected.promptOverride?.content) {
+    lines.push(`## Prompt Override: ${selected.promptOverride.name}`, selected.promptOverride.content);
+  }
+  if (selected.skills.length > 0) {
+    lines.push("## Profile Skills");
+    for (const skill of selected.skills) {
+      if (!skill.content) continue;
+      lines.push(`### ${skill.name}`, skill.content);
+    }
+  }
+  return {
+    block: lines.join("\n\n"),
+    preferredMode: String(selected.metadata.interactiveMode || "").trim(),
+    preferredModel: String(selected.profile?.model || "").trim(),
+  };
 }
 
 const ADAPTERS = {
@@ -933,13 +1036,18 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
   if (!initialized) {
     await initPrimaryAgent();
   }
+  const selectedProfile = buildPrimaryAgentProfileContract(options);
   const sessionId =
     (options && options.sessionId ? String(options.sessionId) : "") ||
     `primary-${activeAdapter.name}`;
   const sessionType =
     (options && options.sessionType ? String(options.sessionType) : "") ||
     "primary";
-  const effectiveMode = normalizeAgentMode(options.mode || agentMode, agentMode);
+  const effectiveMode = normalizeAgentMode(
+    options.mode || selectedProfile.preferredMode || agentMode,
+    agentMode,
+  );
+  const effectiveModel = options.model || selectedProfile.preferredModel || undefined;
   const modePolicy = getModeExecPolicy(effectiveMode);
   const timeoutMs = options.timeoutMs || modePolicy?.timeoutMs || PRIMARY_EXEC_TIMEOUT_MS;
   const maxFailoverAttempts = Number.isInteger(options.maxFailoverAttempts)
@@ -955,7 +1063,9 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     ? appendAttachmentsToPrompt(userMessage, attachments).message
     : userMessage;
   const toolContract = buildPrimaryToolCapabilityContract(options);
-  const messageWithToolContract = `${toolContract}\n\n${messageWithAttachments}`;
+  const messageWithToolContract = [selectedProfile.block, toolContract, messageWithAttachments]
+    .filter(Boolean)
+    .join("\n\n");
   const framedMessage = modePrefix ? modePrefix + messageWithToolContract : messageWithToolContract;
 
   // Record user message (original, without mode prefix)
@@ -974,7 +1084,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
       onEvent: options.onEvent,
       abortController: options.abortController,
       cwd: options.cwd,
-      model: options.model,
+      model: effectiveModel,
       sdk: mapAdapterToPoolSdk(activeAdapter.name),
       sessionType,
     });
@@ -1064,7 +1174,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
         }
       }
       const result = await withTimeout(
-        adapter.exec(framedMessage, { ...options, sessionId, abortController: timeoutAbort }),
+        adapter.exec(framedMessage, { ...options, sessionId, model: effectiveModel, abortController: timeoutAbort }),
         timeoutMs,
         `${adapterName}.exec`,
         timeoutAbort,
@@ -1133,7 +1243,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
               }
             }
             const retryResult = await withTimeout(
-              adapter.exec(framedMessage, { ...options, sessionId, abortController: timeoutAbort }),
+              adapter.exec(framedMessage, { ...options, sessionId, model: effectiveModel, abortController: timeoutAbort }),
               timeoutMs,
               `${adapterName}.exec.retry`,
               timeoutAbort,
