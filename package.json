@@ -45,6 +45,7 @@
     "./maintenance": "./infra/maintenance.mjs",
     "./mcp-workflow-adapter": "./workflow/mcp-workflow-adapter.mjs",
     "./telegram-bot": "./telegram/telegram-bot.mjs",
+    "./mcp-server": "./server/bosun-mcp-server.mjs",
     "./ui-server": "./server/ui-server.mjs",
     "./workspace-manager": "./workspace/workspace-manager.mjs",
     "./github-app-auth": "./github/github-app-auth.mjs",
@@ -85,6 +86,7 @@
   },
   "bin": {
     "bosun": "cli.mjs",
+    "bosun-mcp": "server/bosun-mcp-server.mjs",
     "bosun-task": "task/task-cli-bin.mjs",
     "bosun-setup": "setup.mjs",
     "bosun-chat-id": "telegram/get-telegram-chat-id.mjs",
@@ -247,6 +249,7 @@
     "infra/session-tracker.mjs",
     "infra/test-runtime.mjs",
     "setup.mjs",
+    "server/bosun-mcp-server.mjs",
     "server/setup-web-server.mjs",
     "shell/pwsh-runtime.mjs",
     "workspace/shared-knowledge.mjs",

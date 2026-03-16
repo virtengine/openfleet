@@ -254,13 +254,13 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     }, { x: -120, y: 2060, outputs: ["yes", "no"] }),
 
     node("log-validation-failed", "notify.log", "Log Validation Failed", {
-      message: "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed, moving to blocked",
+      message: "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed, returning to todo",
       level: "warn",
     }, { x: 300, y: 2000 }),
 
     node("set-todo-validation-failed", "action.update_task_status", "Set Todo (Validation Fail)", {
       taskId: "{{taskId}}",
-      status: "blocked",
+      status: "todo",
       taskTitle: "{{taskTitle}}",
     }, { x: 300, y: 2130 }),
     // ── SUCCESS PATH: Push branch (with rebase + empty-diff guard) ───────
@@ -335,9 +335,9 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     }, { x: 350, y: 2130 }),
 
     // ── PUSH FAILED PATH: Set status → todo ──────────────────────────────
-    node("set-todo-push-failed", "action.update_task_status", "Set Blocked (Push Fail)", {
+    node("set-todo-push-failed", "action.update_task_status", "Set Todo (Push Fail)", {
       taskId: "{{taskId}}",
-      status: "blocked",
+      status: "todo",
       taskTitle: "{{taskTitle}}",
     }, { x: 180, y: 2260 }),
 

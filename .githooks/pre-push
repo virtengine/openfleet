@@ -76,7 +76,7 @@ ADJACENCY_MAP=(
   "voice/|voice-*|mic-*|native-call*"
   "ui/|ui-*|workflow-canvas-utils*|static-relative*|mui-theme*|tab-swipe*|session-theme*|session-history*|demo-*|fleet-tab*|portal-ui-smoke*"
   "site/|ui-*|static-relative*|demo-*|portal-ui-smoke*"
-  "server/|ui-server*|setup-web*|tunnel-*|ui-realtime*|presence*|portal-ui-smoke*"
+  "server/|ui-server*|setup-web*|bosun-mcp-server*|tunnel-*|ui-realtime*|presence*|portal-ui-smoke*"
   "github/|github-*|hook-profiles*"
   "git/|git-*|branch-*|diff-stats*|conflict-*"
   "shell/|*-shell*|codex-shell*|gemini-shell*|opencode-shell*|sdk-shell*|continue-detection*"
