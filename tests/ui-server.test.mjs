@@ -59,6 +59,7 @@ describe("ui-server mini app", () => {
     "CODEX_MONITOR_HOME",
     "CODEX_MONITOR_DIR",
     "BOSUN_DESKTOP_API_KEY",
+    "REPO_ROOT",
     "KANBAN_BACKEND",
     "GITHUB_PROJECT_MODE",
     "GITHUB_PROJECT_WEBHOOK_SECRET",
@@ -3253,10 +3254,15 @@ describe("ui-server mini app", () => {
   });
 
   it("reports live compaction telemetry breakdowns", async () => {
-    const logDir = join(process.cwd(), ".cache", "agent-work-logs");
+    const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-telemetry-"));
+    const previousRepoRoot = process.env.REPO_ROOT;
+    process.env.REPO_ROOT = isolatedRepoRoot;
+    vi.resetModules();
+
+    const logDir = join(isolatedRepoRoot, ".cache", "agent-work-logs");
     mkdirSync(logDir, { recursive: true });
     const shreddingPath = join(logDir, "shredding-stats.jsonl");
-    const sessionAccumulatorPath = join(process.cwd(), ".cache", "session-accumulator.jsonl");
+    const sessionAccumulatorPath = join(isolatedRepoRoot, ".cache", "session-accumulator.jsonl");
     const previousStats = existsSync(shreddingPath)
       ? readFileSync(shreddingPath, "utf8")
       : null;
@@ -3378,14 +3384,22 @@ describe("ui-server mini app", () => {
       else writeFileSync(shreddingPath, previousStats, "utf8");
       if (previousSessions == null) rmSync(sessionAccumulatorPath, { force: true });
       else writeFileSync(sessionAccumulatorPath, previousSessions, "utf8");
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
+      rmSync(isolatedRepoRoot, { recursive: true, force: true });
     }
   });
 
   it("sources agent-run analytics from completed session history when session-start events are stale", async () => {
-    const logDir = join(process.cwd(), ".cache", "agent-work-logs");
+    const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-usage-"));
+    const previousRepoRoot = process.env.REPO_ROOT;
+    process.env.REPO_ROOT = isolatedRepoRoot;
+    vi.resetModules();
+
+    const logDir = join(isolatedRepoRoot, ".cache", "agent-work-logs");
     mkdirSync(logDir, { recursive: true });
     const streamPath = join(logDir, "agent-work-stream.jsonl");
-    const sessionAccumulatorPath = join(process.cwd(), ".cache", "session-accumulator.jsonl");
+    const sessionAccumulatorPath = join(isolatedRepoRoot, ".cache", "session-accumulator.jsonl");
     const previousStream = existsSync(streamPath)
       ? readFileSync(streamPath, "utf8")
       : null;
@@ -3483,6 +3497,9 @@ describe("ui-server mini app", () => {
       else writeFileSync(streamPath, previousStream, "utf8");
       if (previousSessions == null) rmSync(sessionAccumulatorPath, { force: true });
       else writeFileSync(sessionAccumulatorPath, previousSessions, "utf8");
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
+      rmSync(isolatedRepoRoot, { recursive: true, force: true });
     }
   });
 
