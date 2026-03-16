@@ -77,9 +77,8 @@ function buildModelsProbeRequest({ apiKey = "", baseUrl = "" } = {}) {
 
     if (isAzure || lowerPath === "/openai" || lowerPath.startsWith("/openai/")) {
       parsed.pathname = "/openai/models";
-      if (!parsed.searchParams.has("api-version")) {
-        parsed.searchParams.set("api-version", "2024-10-21");
-      }
+      parsed.search = "";
+      parsed.searchParams.set("api-version", "2024-10-21");
       return { endpoint: parsed.toString(), headers };
     }
 

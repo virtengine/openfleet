@@ -109,10 +109,15 @@ async function discoverViaSDK(existingClient = null) {
   }
 
   try {
+    const directory = process.cwd();
+    const requestOptions = directory
+      ? { query: { directory } }
+      : undefined;
+
     // Fetch provider list + auth methods in parallel
     const [providerRes, authRes] = await Promise.all([
-      client.provider.list().catch(() => null),
-      client.provider.auth().catch(() => null),
+      client.provider.list(requestOptions).catch(() => null),
+      client.provider.auth(requestOptions).catch(() => null),
     ]);
 
     if (!providerRes?.data) return null;

@@ -635,6 +635,8 @@ describe("discoverProviders()", () => {
         timeout: 5_000,
       }),
     );
+    expect(list).toHaveBeenCalledWith({ query: { directory: process.cwd() } });
+    expect(auth).toHaveBeenCalledWith({ query: { directory: process.cwd() } });
     expect(snapshot.connectedIds).toEqual(["anthropic"]);
     expect(snapshot.providers[0].models[0].fullId).toBe("anthropic/claude-sonnet-4");
   });

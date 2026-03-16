@@ -1080,6 +1080,7 @@ export function setPoolSdk(name) {
 export function resetPoolSdkCache() {
   resolvedSdkName = null;
   resolutionLogged = false;
+  sdkFailureCooldownUntil.clear();
 }
 
 /**
@@ -2474,18 +2475,28 @@ export async function launchEphemeralThread(
   const eligibleSdks = Array.from(
     new Set(attemptOrder.filter((name) => SDK_ADAPTERS[name] && !isDisabled(name))),
   );
+  const runnableSdks = eligibleSdks.filter((name) => {
+    const prereq = hasSdkPrerequisites(name, sessionEnv);
+    if (!prereq.ok) {
+      if (!missingPrereqSdks.some((entry) => entry.name === name)) {
+        missingPrereqSdks.push({ name, reason: prereq.reason });
+      }
+      return false;
+    }
+    return true;
+  });
   const cooledDownSet = new Set(cooledDownSdks.map((entry) => entry.name));
 
   if (
     !ignoreSdkCooldown &&
     !lastAttemptResult &&
     triedSdkNames.length === 0 &&
-    eligibleSdks.length > 0 &&
-    eligibleSdks.every((name) => cooledDownSet.has(name))
+    runnableSdks.length > 0 &&
+    runnableSdks.every((name) => cooledDownSet.has(name))
   ) {
-    const forcedRetryOrder = eligibleSdks.includes(primaryName)
-      ? [primaryName, ...eligibleSdks.filter((name) => name !== primaryName)]
-      : eligibleSdks;
+    const forcedRetryOrder = runnableSdks.includes(primaryName)
+      ? [primaryName, ...runnableSdks.filter((name) => name !== primaryName)]
+      : runnableSdks;
 
     for (const name of forcedRetryOrder) {
       const cooldownRemainingMs = getSdkCooldownRemainingMs(name);
@@ -3800,3 +3811,5 @@ export function getActiveThreads() {
   }
   return result;
 }
+
+
