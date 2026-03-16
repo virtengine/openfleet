@@ -2456,14 +2456,44 @@ export async function launchEphemeralThread(
     }
   }
 
+  const eligibleSdks = Array.from(
+    new Set(attemptOrder.filter((name) => SDK_ADAPTERS[name] && !isDisabled(name))),
+  );
+  const cooledDownSet = new Set(cooledDownSdks.map((entry) => entry.name));
+
+  // If all eligible SDKs are cooling down, force one primary attempt so
+  // work is not blocked for the entire cooldown window.
+  const shouldBypassPrimaryCooldown =
+    !ignoreSdkCooldown &&
+    !lastAttemptResult &&
+    cooledDownSet.has(primaryName) &&
+    eligibleSdks.length > 0 &&
+    eligibleSdks.every((name) => cooledDownSet.has(name));
+
+  if (shouldBypassPrimaryCooldown) {
+    const prereq = hasSdkPrerequisites(primaryName, sessionEnv);
+    if (prereq.ok) {
+      console.warn(
+        `${TAG} all eligible SDKs are cooling down; forcing primary SDK "${primaryName}" retry`,
+      );
+      triedSdkNames.push(primaryName);
+      const launcher = await SDK_ADAPTERS[primaryName].load();
+      const forcedResult = await launcher(prompt, cwd, timeoutMs, launchExtra);
+      if (forcedResult.success) {
+        return forcedResult;
+      }
+      lastAttemptResult = forcedResult;
+      if (!shouldFallbackForSdkError(forcedResult.error)) {
+        return forcedResult;
+      }
+      applySdkFailureCooldown(primaryName, forcedResult.error);
+    }
+  }
+
   // ── All SDKs exhausted ───────────────────────────────────────────────────
   if (lastAttemptResult) {
     return lastAttemptResult;
   }
-
-  const eligibleSdks = Array.from(
-    new Set(attemptOrder.filter((name) => SDK_ADAPTERS[name] && !isDisabled(name))),
-  );
 
   let errorMsg = `${TAG} no SDK available.`;
   if (triedSdkNames.length > 0) {
