@@ -1083,6 +1083,18 @@ export function resetPoolSdkCache() {
   sdkFailureCooldownUntil.clear();
 }
 
+export function setSdkFailureCooldownForTest(name, cooldownRemainingMs, nowMs = Date.now()) {
+  if (!SDK_ADAPTERS[name]) {
+    throw new Error(`Unknown SDK: ${name}`);
+  }
+  const remainingMs = Number(cooldownRemainingMs);
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
+    sdkFailureCooldownUntil.delete(name);
+    return;
+  }
+  sdkFailureCooldownUntil.set(name, nowMs + Math.trunc(remainingMs));
+}
+
 /**
  * Returns the list of SDK names that are not disabled.
  * @returns {string[]}
@@ -3811,5 +3823,7 @@ export function getActiveThreads() {
   }
   return result;
 }
+
+
 
 

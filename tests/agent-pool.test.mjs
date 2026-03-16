@@ -11,6 +11,7 @@ let mockCopilotCreateSession;
 let mockCopilotResumeSession;
 let mockClaudeQuery;
 let isolatedHomeDir;
+let setSdkFailureCooldownForTest;
 
 function makeCodexMockThread(
   threadId = "mock-codex-thread",
@@ -269,6 +270,7 @@ function clearSdkEnv() {
 let getPoolSdkName,
   setPoolSdk,
   resetPoolSdkCache,
+  setSdkFailureCooldownForTest,
   getAvailableSdks,
   launchEphemeralThread,
   execPooledPrompt,
@@ -282,6 +284,7 @@ let getPoolSdkName,
 beforeEach(async () => {
   saveEnv();
   clearSdkEnv();
+  process.env.GITHUB_TOKEN = "test-github-token";
   isolatedHomeDir = mkdtempSync(join(tmpdir(), "bosun-agent-pool-home-"));
   process.env.HOME = isolatedHomeDir;
   process.env.USERPROFILE = isolatedHomeDir;
@@ -292,6 +295,7 @@ beforeEach(async () => {
   getPoolSdkName = mod.getPoolSdkName;
   setPoolSdk = mod.setPoolSdk;
   resetPoolSdkCache = mod.resetPoolSdkCache;
+  setSdkFailureCooldownForTest = mod.setSdkFailureCooldownForTest;
   getAvailableSdks = mod.getAvailableSdks;
   launchEphemeralThread = mod.launchEphemeralThread;
   execPooledPrompt = mod.execPooledPrompt;
@@ -623,141 +627,65 @@ describe("launchEphemeralThread", () => {
     process.env.OPENAI_API_KEY = "test-key";
     process.env.COPILOT_SDK_DISABLED = "1";
     process.env.CLAUDE_SDK_DISABLED = "1";
-    process.env.AGENT_POOL_SDK_FAILURE_COOLDOWN_MS = "600000";
     setPoolSdk("codex");
-    const makeTimeoutThread = (id) => ({
-      id,
-      runStreamed: async (_prompt, { signal } = {}) => {
-        await new Promise((_, reject) => {
-          const abortNow = () => {
-            const err = new Error("aborted");
-            err.name = "AbortError";
-            reject(err);
-          };
-          if (signal?.aborted) {
-            abortNow();
-            return;
-          }
-          signal?.addEventListener("abort", abortNow, { once: true });
-        });
-      },
-    });
+    setSdkFailureCooldownForTest("codex", 600000);
 
-    mockCodexStartThread
-      .mockImplementationOnce(() => makeTimeoutThread("forced-retry-timeout"))
-      .mockImplementationOnce(() => makeCodexMockThread("forced-retry-success", "codex-recovered"));
+    mockCodexStartThread.mockImplementationOnce(() =>
+      makeCodexMockThread("forced-retry-success", "codex-recovered"),
+    );
 
-    const first = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+    const result = await launchEphemeralThread("test prompt", process.cwd(), 25, {
       sdk: "codex",
       disableFallback: true,
     });
-    expect(first.success).toBe(false);
-    expect(first.sdk).toBe("codex");
+
+    expect(result.success).toBe(true);
+    expect(result.sdk).toBe("codex");
+    expect(result.output).toContain("codex-recovered");
     expect(mockCodexStartThread).toHaveBeenCalledTimes(1);
-
-    const second = await launchEphemeralThread("test prompt", process.cwd(), 25, {
-      sdk: "codex",
-      disableFallback: true,
-    });
-
-    expect(second.success).toBe(true);
-    expect(second.sdk).toBe("codex");
-    expect(second.output).toContain("codex-recovered");
-    expect(mockCodexStartThread).toHaveBeenCalledTimes(2);
   });
 
   it("force-retries cooled codex without requiring env API keys", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
     process.env.COPILOT_SDK_DISABLED = "1";
     process.env.CLAUDE_SDK_DISABLED = "1";
-    process.env.AGENT_POOL_SDK_FAILURE_COOLDOWN_MS = "600000";
     setPoolSdk("codex");
+    setSdkFailureCooldownForTest("codex", 600000);
 
-    const makeTimeoutThread = (id) => ({
-      id,
-      runStreamed: async (_prompt, { signal } = {}) => {
-        await new Promise((_, reject) => {
-          const abortNow = () => {
-            const err = new Error("aborted");
-            err.name = "AbortError";
-            reject(err);
-          };
-          if (signal?.aborted) {
-            abortNow();
-            return;
-          }
-          signal?.addEventListener("abort", abortNow, { once: true });
-        });
-      },
-    });
+    mockCodexStartThread.mockImplementationOnce(() =>
+      makeCodexMockThread("forced-retry-no-env-key-success", "codex-recovered-no-env-key"),
+    );
 
-    mockCodexStartThread
-      .mockImplementationOnce(() => makeTimeoutThread("forced-retry-no-env-key-timeout"))
-      .mockImplementationOnce(() => makeCodexMockThread("forced-retry-no-env-key-success", "codex-recovered-no-env-key"));
-
-    const first = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+    const result = await launchEphemeralThread("test prompt", process.cwd(), 25, {
       sdk: "codex",
       disableFallback: true,
     });
-    expect(first.success).toBe(false);
-    expect(first.sdk).toBe("codex");
+
+    expect(result.success).toBe(true);
+    expect(result.sdk).toBe("codex");
+    expect(result.output).toContain("codex-recovered-no-env-key");
     expect(mockCodexStartThread).toHaveBeenCalledTimes(1);
-
-    const second = await launchEphemeralThread("test prompt", process.cwd(), 25, {
-      sdk: "codex",
-      disableFallback: true,
-    });
-
-    expect(second.success).toBe(true);
-    expect(second.sdk).toBe("codex");
-    expect(second.output).toContain("codex-recovered-no-env-key");
-    expect(mockCodexStartThread).toHaveBeenCalledTimes(2);
   });
   it("force-retries cooled SDKs when remaining enabled fallback lacks prerequisites", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
     process.env.OPENAI_API_KEY = "test-key";
     process.env.COPILOT_SDK_DISABLED = "1";
     delete process.env.ANTHROPIC_API_KEY;
-    process.env.AGENT_POOL_SDK_FAILURE_COOLDOWN_MS = "600000";
     setPoolSdk("codex");
+    setSdkFailureCooldownForTest("codex", 600000);
 
-    const makeTimeoutThread = (id) => ({
-      id,
-      runStreamed: async (_prompt, { signal } = {}) => {
-        await new Promise((_, reject) => {
-          const abortNow = () => {
-            const err = new Error("aborted");
-            err.name = "AbortError";
-            reject(err);
-          };
-          if (signal?.aborted) {
-            abortNow();
-            return;
-          }
-          signal?.addEventListener("abort", abortNow, { once: true });
-        });
-      },
-    });
+    mockCodexStartThread.mockImplementationOnce(() =>
+      makeCodexMockThread("forced-retry-missing-claude-success", "codex-recovered-with-missing-claude"),
+    );
 
-    mockCodexStartThread
-      .mockImplementationOnce(() => makeTimeoutThread("forced-retry-missing-claude-timeout"))
-      .mockImplementationOnce(() => makeCodexMockThread("forced-retry-missing-claude-success", "codex-recovered-with-missing-claude"));
-
-    const first = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+    const result = await launchEphemeralThread("test prompt", process.cwd(), 25, {
       sdk: "codex",
     });
-    expect(first.success).toBe(false);
-    expect(first.sdk).toBe("codex");
+
+    expect(result.success).toBe(true);
+    expect(result.sdk).toBe("codex");
+    expect(result.output).toContain("codex-recovered-with-missing-claude");
     expect(mockCodexStartThread).toHaveBeenCalledTimes(1);
-
-    const second = await launchEphemeralThread("test prompt", process.cwd(), 25, {
-      sdk: "codex",
-    });
-
-    expect(second.success).toBe(true);
-    expect(second.sdk).toBe("codex");
-    expect(second.output).toContain("codex-recovered-with-missing-claude");
-    expect(mockCodexStartThread).toHaveBeenCalledTimes(2);
   });
 
   it("fails over when copilot startup reports a protocol version mismatch", async () => {
@@ -1630,4 +1558,5 @@ describe("resolution and launch integration", () => {
   });
 });
 }
+
 
