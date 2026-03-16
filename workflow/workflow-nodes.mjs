@@ -11407,9 +11407,19 @@ registerBuiltinNodeType("action.build_task_prompt", {
         ? taskPayload.meta
         : null;
 
+    const TASK_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
+    const TASK_PROMPT_INVALID_VALUES = new Set([
+      "internal server error",
+      "{\"ok\":false,\"error\":\"internal server error\"}",
+      "{\"error\":\"internal server error\"}",
+    ]);
     const normalizeString = (value) => {
       if (value == null) return "";
-      return String(value).trim();
+      const text = String(value).trim();
+      if (!text) return "";
+      if (TASK_TEMPLATE_PLACEHOLDER_RE.test(text)) return "";
+      if (TASK_PROMPT_INVALID_VALUES.has(text.toLowerCase())) return "";
+      return text;
     };
     const pickFirstString = (...values) => {
       for (const value of values) {
@@ -11454,6 +11464,15 @@ registerBuiltinNodeType("action.build_task_prompt", {
       if (ctxValue != null && ctxValue !== "") return ctxValue;
       return null;
     };
+    const normalizedTaskId = normalizeString(taskId);
+    const normalizedTaskTitle = normalizeString(taskTitle) || "Untitled task";
+    const normalizedTaskDescription = normalizeString(taskDescription);
+    const normalizedBranch = normalizeString(branch);
+    const normalizedBaseBranch = normalizeString(baseBranch);
+    const normalizedWorktreePath = normalizeString(worktreePath);
+    const normalizedRepoRoot = normalizeString(repoRoot) || process.cwd();
+    const normalizedRepoSlug = normalizeString(repoSlug);
+    const normalizedRetryReason = normalizeString(retryReason);
     const workspace = pickFirstString(
       resolvePromptValue("workspace"),
       taskPayload?.workspace,
@@ -11470,9 +11489,14 @@ registerBuiltinNodeType("action.build_task_prompt", {
       taskPayload?.repositories,
       taskMeta?.repositories,
     );
-    const primaryRepository = pickFirstString(repository, repoSlug);
+    const primaryRepository = pickFirstString(repository, normalizedRepoSlug);
     const allowedRepositories = normalizeStringArray(repositories, primaryRepository);
-    const matchedSkills = findRelevantSkills(repoRoot, taskTitle, taskDescription || "", {});
+    const matchedSkills = findRelevantSkills(
+      normalizedRepoRoot,
+      normalizedTaskTitle,
+      normalizedTaskDescription || "",
+      {},
+    );
     const activeSkillFiles = matchedSkills.map((skill) => skill.filename);
     const strictCacheAnchoring =
       String(process.env.BOSUN_CACHE_ANCHOR_MODE || "")
@@ -11482,7 +11506,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
     const buildStableSystemPrompt = () => {
       const systemParts = [];
       if (includeAgentsMd) {
-        const searchDirs = [repoRoot].filter(Boolean);
+        const searchDirs = [normalizedRepoRoot].filter(Boolean);
         const docFiles = ["AGENTS.md", ".github/copilot-instructions.md"];
         const loaded = new Set();
         for (const dir of searchDirs) {
@@ -11528,7 +11552,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
       );
       systemParts.push("");
 
-      const eagerToolBlock = getToolsPromptBlock(repoRoot, {
+      const eagerToolBlock = getToolsPromptBlock(normalizedRepoRoot, {
         includeBuiltins: true,
         eagerOnly: true,
         discoveryMode: true,
@@ -11575,33 +11599,33 @@ registerBuiltinNodeType("action.build_task_prompt", {
     const userParts = [];
 
     // Header
-    userParts.push(`# Task: ${taskTitle}`);
-    if (taskId) userParts.push(`Task ID: ${taskId}`);
+    userParts.push(`# Task: ${normalizedTaskTitle}`);
+    if (normalizedTaskId) userParts.push(`Task ID: ${normalizedTaskId}`);
     userParts.push("");
 
     // Retry context (if applicable)
-    if (retryReason) {
+    if (normalizedRetryReason) {
       userParts.push("## Retry Context");
-      userParts.push(`Previous attempt failed: ${retryReason}`);
+      userParts.push(`Previous attempt failed: ${normalizedRetryReason}`);
       userParts.push("Try a different approach this time.");
       userParts.push("");
     }
 
     // Description
-    if (taskDescription) {
+    if (normalizedTaskDescription) {
       userParts.push("## Description");
-      userParts.push(taskDescription);
+      userParts.push(normalizedTaskDescription);
       userParts.push("");
     }
 
     // Environment context
     userParts.push("## Environment");
     const envLines = [];
-    if (worktreePath) envLines.push(`- **Working Directory:** ${worktreePath}`);
-    if (branch) envLines.push(`- **Branch:** ${branch}`);
-    if (baseBranch) envLines.push(`- **Base Branch:** ${baseBranch}`);
-    if (repoSlug) envLines.push(`- **Repository:** ${repoSlug}`);
-    if (repoRoot) envLines.push(`- **Repo Root:** ${repoRoot}`);
+    if (normalizedWorktreePath) envLines.push(`- **Working Directory:** ${normalizedWorktreePath}`);
+    if (normalizedBranch) envLines.push(`- **Branch:** ${normalizedBranch}`);
+    if (normalizedBaseBranch) envLines.push(`- **Base Branch:** ${normalizedBaseBranch}`);
+    if (normalizedRepoSlug) envLines.push(`- **Repository:** ${normalizedRepoSlug}`);
+    if (normalizedRepoRoot) envLines.push(`- **Repo Root:** ${normalizedRepoRoot}`);
     if (envLines.length) userParts.push(envLines.join("\n"));
     userParts.push("");
 
@@ -11617,11 +11641,11 @@ registerBuiltinNodeType("action.build_task_prompt", {
     } else {
       userParts.push("- **Allowed Repositories:** (not declared)");
     }
-    if (worktreePath) userParts.push(`- **Write Scope Root:** ${worktreePath}`);
+    if (normalizedWorktreePath) userParts.push(`- **Write Scope Root:** ${normalizedWorktreePath}`);
     userParts.push("");
     userParts.push("Hard boundaries:");
-    if (worktreePath) {
-      userParts.push(`1. Modify files only inside \`${worktreePath}\`.`);
+    if (normalizedWorktreePath) {
+      userParts.push(`1. Modify files only inside \`${normalizedWorktreePath}\`.`);
     } else {
       userParts.push("1. Modify files only inside the active repository working directory.");
     }
@@ -11653,7 +11677,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
 
     // AGENTS.md + copilot-instructions.md
     if (includeAgentsMd) {
-      const searchDirs = [worktreePath || repoRoot, repoRoot].filter(Boolean);
+      const searchDirs = [normalizedWorktreePath || normalizedRepoRoot, normalizedRepoRoot].filter(Boolean);
       const docFiles = ["AGENTS.md", ".github/copilot-instructions.md"];
       const loaded = new Set();
       for (const dir of searchDirs) {
@@ -11689,9 +11713,9 @@ registerBuiltinNodeType("action.build_task_prompt", {
     }
 
     const relevantSkillsBlock = buildRelevantSkillsPromptBlock(
-      repoRoot,
-      taskTitle,
-      taskDescription || "",
+      normalizedRepoRoot,
+      normalizedTaskTitle,
+      normalizedTaskDescription || "",
       {},
     );
     if (relevantSkillsBlock) {
@@ -11707,7 +11731,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
     if (librarySkillIds.length > 0) {
       try {
         const library = await ensureLibraryManagerMod();
-        const libraryRoot = repoRoot || process.cwd();
+        const libraryRoot = normalizedRepoRoot || process.cwd();
         const fsSkillNames = new Set(matchedSkills.map((s) => String(s.filename || "").replace(/\.md$/i, "").toLowerCase()));
         const librarySkillParts = [];
         for (const skillId of librarySkillIds) {
@@ -11718,7 +11742,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
           if (!content || (typeof content === "string" && !content.trim())) continue;
           const body = typeof content === "string" ? content.trim() : JSON.stringify(content, null, 2);
           emitSkillInvokeEvent(skillId, entry.name || skillId, {
-            taskId,
+            taskId: normalizedTaskId,
             executor: ctx.data?.resolvedSdk,
             source: "library",
           });
@@ -11735,7 +11759,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
       }
     }
     // Skill-driven eager tools belong with task context to preserve cache anchoring.
-    const taskScopedEagerTools = getToolsPromptBlock(repoRoot, {
+    const taskScopedEagerTools = getToolsPromptBlock(normalizedRepoRoot, {
       activeSkills: activeSkillFiles,
       includeBuiltins: true,
       eagerOnly: true,
@@ -11753,13 +11777,13 @@ registerBuiltinNodeType("action.build_task_prompt", {
 
     if (strictCacheAnchoring) {
       const dynamicMarkers = [
-        taskId,
-        taskTitle,
-        taskDescription,
-        retryReason,
-        branch,
-        baseBranch,
-        worktreePath,
+        normalizedTaskId,
+        normalizedTaskTitle,
+        normalizedTaskDescription,
+        normalizedRetryReason,
+        normalizedBranch,
+        normalizedBaseBranch,
+        normalizedWorktreePath,
       ]
         .map((value) => String(value || "").trim())
         .filter(Boolean);

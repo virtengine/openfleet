@@ -1796,6 +1796,33 @@ describe("action.build_task_prompt", () => {
     expect(result.prompt).toContain("org/shared-lib");
   });
 
+  it("strips unresolved template placeholders from prompt fields", async () => {
+    const nt = getNodeType("action.build_task_prompt");
+    const ctx = makeCtx({});
+    const node = makeNode("action.build_task_prompt", {
+      taskId: "T4b",
+      taskTitle: "Placeholder cleanup",
+      taskDescription: "{{taskDescription}}",
+      branch: "{{branch}}",
+      baseBranch: "{{baseBranch}}",
+      repoRoot: "{{repoRoot}}",
+      repoSlug: "{{repoSlug}}",
+      workspace: "{{workspace}}",
+      repository: "{{repository}}",
+      repositories: ["{{repository}}", "{{repositories}}"],
+    });
+    const result = await nt.execute(node, ctx);
+    expect(result.prompt).toContain("# Task: Placeholder cleanup");
+    expect(result.prompt).toContain("Task ID: T4b");
+    expect(result.prompt).not.toContain("{{taskDescription}}");
+    expect(result.prompt).not.toContain("{{repoSlug}}");
+    expect(result.prompt).not.toContain("{{workspace}}");
+    expect(result.prompt).not.toContain("## Description");
+    expect(result.prompt).not.toContain("**Workspace:**");
+    expect(result.prompt).not.toContain("**Primary Repository:**");
+    expect(result.prompt).toContain("- **Allowed Repositories:** (not declared)");
+  });
+
   it("injects WORKFLOW.md content when a contract was loaded earlier in the workflow", async () => {
     const nt = getNodeType("action.build_task_prompt");
     const ctx = makeCtx({
