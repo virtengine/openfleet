@@ -580,15 +580,17 @@ function hasSdkPrerequisites(name, runtimeEnv = process.env) {
   }
 
   if (name === "codex") {
-    // Codex needs an OpenAI API key (or Azure key, or profile-specific key),
-    // OR a valid ~/.codex/config.toml where an env_key reference is satisfied.
+    // Codex auth can come from env vars, config env_key mappings, or persisted
+    // CLI login state (for example ~/.codex/auth.json). Because login-based
+    // auth is valid and hard to validate exhaustively, avoid false negatives.
     const hasKey =
       runtimeEnv.OPENAI_API_KEY ||
       runtimeEnv.AZURE_OPENAI_API_KEY ||
       runtimeEnv.CODEX_MODEL_PROFILE_XL_API_KEY ||
       runtimeEnv.CODEX_MODEL_PROFILE_M_API_KEY;
     if (hasKey) return { ok: true, reason: null };
-    // Check ~/.codex/config.toml — Codex CLI SDK reads auth env_key refs from there
+
+    // Check ~/.codex/config.toml — Codex CLI SDK reads auth env_key refs from there.
     try {
       const configToml = resolve(homedir(), ".codex", "config.toml");
       if (existsSync(configToml)) {
@@ -601,7 +603,20 @@ function hasSdkPrerequisites(name, runtimeEnv = process.env) {
     } catch {
       // best effort — fall through to failure
     }
-    return { ok: false, reason: "no API key (OPENAI_API_KEY / AZURE_OPENAI_API_KEY) and no satisfied env_key in ~/.codex/config.toml" };
+
+    // Login-based auth sessions are sufficient even without env keys.
+    try {
+      const authJson = resolve(homedir(), ".codex", "auth.json");
+      if (existsSync(authJson)) {
+        const authText = readFileSync(authJson, "utf8").trim();
+        if (authText) return { ok: true, reason: null };
+      }
+    } catch {
+      // best effort — fall through to permissive behavior
+    }
+
+    // Do not hard-block Codex when auth source cannot be determined.
+    return { ok: true, reason: null };
   }
   if (name === "copilot") {
     // Copilot auth can come from multiple sources (OAuth manager, gh auth,

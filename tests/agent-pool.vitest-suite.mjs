@@ -634,6 +634,54 @@ describe("launchEphemeralThread", () => {
     expect(mockCodexStartThread).toHaveBeenCalledTimes(2);
   });
 
+  it("force-retries cooled codex without requiring env API keys", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
+    process.env.AGENT_POOL_SDK_FAILURE_COOLDOWN_MS = "600000";
+    setPoolSdk("codex");
+
+    const makeTimeoutThread = (id) => ({
+      id,
+      runStreamed: async (_prompt, { signal } = {}) => {
+        await new Promise((_, reject) => {
+          const abortNow = () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          };
+          if (signal?.aborted) {
+            abortNow();
+            return;
+          }
+          signal?.addEventListener("abort", abortNow, { once: true });
+        });
+      },
+    });
+
+    mockCodexStartThread
+      .mockImplementationOnce(() => makeTimeoutThread("forced-retry-no-env-key-timeout"))
+      .mockImplementationOnce(() => makeCodexMockThread("forced-retry-no-env-key-success", "codex-recovered-no-env-key"));
+
+    const first = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+      sdk: "codex",
+      disableFallback: true,
+    });
+    expect(first.success).toBe(false);
+    expect(first.sdk).toBe("codex");
+    expect(mockCodexStartThread).toHaveBeenCalledTimes(1);
+
+    const second = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+      sdk: "codex",
+      disableFallback: true,
+    });
+
+    expect(second.success).toBe(true);
+    expect(second.sdk).toBe("codex");
+    expect(second.output).toContain("codex-recovered-no-env-key");
+    expect(mockCodexStartThread).toHaveBeenCalledTimes(2);
+  });
+
   it("fails over when copilot startup reports a protocol version mismatch", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
     process.env.__MOCK_COPILOT_AVAILABLE = "1";
