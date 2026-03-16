@@ -858,6 +858,25 @@ describe("template drift + update behavior", () => {
     expect(refreshed.metadata.templateState.isCustomized).toBe(false);
   });
 
+  it("migrates legacy task-lifecycle pre-PR validation defaults during auto-update", () => {
+    const installed = installTemplate("template-task-lifecycle", engine);
+    const wf = engine.get(installed.id);
+    wf.variables.prePrValidationCommand = "npm run prepush:check";
+    wf.metadata.templateState.installedTemplateFingerprint = "0000-outdated";
+    wf.metadata.templateState.installedTemplateVersion = "0000-outdated";
+    wf.metadata.templateState.isCustomized = false;
+    wf.metadata.templateState.updateAvailable = true;
+    engine.save(wf);
+
+    const result = reconcileInstalledTemplates(engine, { autoUpdateUnmodified: true });
+    expect(result.autoUpdated).toBe(1);
+
+    const refreshed = engine.get(installed.id);
+    expect(refreshed.variables.prePrValidationCommand).toBe("auto");
+    expect(refreshed.metadata.templateState.updateAvailable).toBe(false);
+    expect(refreshed.metadata.templateState.isCustomized).toBe(false);
+  });
+
   it("does not auto-update customized workflows with updates available", () => {
     const installed = installTemplate("template-error-recovery", engine);
     const wf = engine.get(installed.id);

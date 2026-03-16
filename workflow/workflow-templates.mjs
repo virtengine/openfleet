@@ -454,13 +454,32 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
     return def;
   }
 
-  function makeUpdatedWorkflowFromTemplate(existing, template, mode = "replace") {
+  function applyLegacyTemplateVariableMigrations(existing, template, variables, opts = {}) {
+    if (!variables || typeof variables !== "object") return variables;
+    const assumeUncustomized = opts.assumeUncustomized === true;
+    if (!assumeUncustomized && existing?.metadata?.templateState?.isCustomized === true) {
+      return variables;
+    }
+
+    const templateId = String(template?.id || existing?.metadata?.installedFrom || "").trim();
+    if (templateId === "template-task-lifecycle") {
+      const currentValue = existing?.variables?.prePrValidationCommand;
+      const nextDefault = template?.variables?.prePrValidationCommand;
+      if (currentValue === "npm run prepush:check" && nextDefault === "auto") {
+        variables.prePrValidationCommand = nextDefault;
+      }
+    }
+
+    return variables;
+  }
+
+  function makeUpdatedWorkflowFromTemplate(existing, template, mode = "replace", opts = {}) {
     const templateClone = cloneTemplateDefinition(template);
     const nowIso = new Date().toISOString();
-    const mergedVariables = {
+    const mergedVariables = applyLegacyTemplateVariableMigrations(existing, templateClone, {
       ...(templateClone.variables || {}),
       ...(existing.variables || {}),
-    };
+    }, opts);
     const next = {
       ...templateClone,
       id: mode === "copy" ? randomUUID() : existing.id,
@@ -500,7 +519,9 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
       throw new Error("Workflow has custom changes; pass force=true to replace it");
     }
 
-    const next = makeUpdatedWorkflowFromTemplate(hydrated, template, mode);
+    const next = makeUpdatedWorkflowFromTemplate(hydrated, template, mode, {
+      assumeUncustomized: opts.assumeUncustomized === true,
+    });
     return engine.save(next);
   }
 
@@ -563,8 +584,13 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
 
         const templateId = String(state.templateId || "").trim();
         const shouldForceUpdate = templateId && forceUpdateTemplateIds.has(templateId);
+        const assumeUncustomized = previousState?.isCustomized !== true;
         if (shouldForceUpdate) {
-          const saved = updateWorkflowFromTemplate(engine, def.id, { mode: "replace", force: true });
+          const saved = updateWorkflowFromTemplate(engine, def.id, {
+            mode: "replace",
+            force: true,
+            assumeUncustomized,
+          });
           result.autoUpdated += 1;
           result.updatedWorkflowIds.push(saved.id);
           result.forceUpdated.push(saved.id);
@@ -573,7 +599,11 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
 
         const wasCustomized = previousState?.isCustomized === true;
         if (autoUpdateUnmodified && state.updateAvailable === true && !wasCustomized) {
-          const saved = updateWorkflowFromTemplate(engine, def.id, { mode: "replace", force: true });
+          const saved = updateWorkflowFromTemplate(engine, def.id, {
+            mode: "replace",
+            force: true,
+            assumeUncustomized: true,
+          });
           result.autoUpdated += 1;
           result.updatedWorkflowIds.push(saved.id);
         }
@@ -1392,7 +1422,6 @@ export function installRecommendedTemplates(engine, overridesById = {}) {
     .map((template) => template.id);
   return installTemplateSet(engine, recommendedIds, overridesById);
 }
-
 
 
 

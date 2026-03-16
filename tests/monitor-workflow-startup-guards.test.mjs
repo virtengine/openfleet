@@ -43,6 +43,11 @@ describe("monitor workflow startup guards", () => {
   it("forces agent session monitor template reconciliation on startup", () => {
     expect(monitorSource).toContain('forceUpdateTemplateIds: [');
     expect(monitorSource).toContain('"template-agent-session-monitor"');
+    expect(monitorSource).toContain('"template-github-kanban-sync"');
+    expect(monitorSource).toContain("Number(reconcile?.autoUpdated || 0) > 0");
+    expect(monitorSource).toContain("reconcile.updatedWorkflowIds.length > 0");
+    expect(monitorSource).toContain('typeof engine.load === "function"');
+    expect(monitorSource).toContain("engine.load();");
   });
 
   it("resumes interrupted workflow runs after monitor services are wired", () => {
