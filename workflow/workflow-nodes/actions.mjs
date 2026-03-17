@@ -4898,7 +4898,7 @@ registerNodeType("action.build_task_prompt", {
       taskPayload?.title,
       taskMeta?.taskTitle,
       taskTitle,
-    ) || "Untitled task";
+    ) || (normalizedTaskId ? `Task ${normalizedTaskId}` : "Untitled task");
     const normalizedTaskDescription = pickFirstString(
       resolvePromptValue("taskDescription"),
       taskPayload?.description,
