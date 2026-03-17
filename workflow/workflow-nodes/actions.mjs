@@ -283,6 +283,7 @@ registerNodeType("action.run_agent", {
       ctx.data?.task?.title ||
         ctx.data?.taskDetail?.title ||
         ctx.data?.taskInfo?.title ||
+        ctx.data?.taskTitle ||
         trackedTaskId ||
         "",
     ).trim();
@@ -5050,23 +5051,13 @@ registerNodeType("action.build_task_prompt", {
       .filter(Boolean);
     ctx.data._taskPromptDynamicMarkers = dynamicMarkers;
 
-    const buildStableSystemPrompt = () => {
-      const systemParts = [];
-      systemParts.push("You are an autonomous software engineering agent inside the Bosun orchestrator.");
-      systemParts.push("Follow the project guidance provided in the user message and execute tasks end-to-end.");
-      systemParts.push("");
-      systemParts.push("## Instructions");
-      systemParts.push(
-        "1. Follow the project instructions in AGENTS.md.\n" +
-          "2. Use the discovery MCP tools for non-eager MCP/custom tools before assuming a capability is unavailable.\n" +
-          "3. Implement the required changes.\n" +
-          "4. Ensure tests pass and build is clean with 0 warnings.\n" +
-          "5. Commit your changes using conventional commits.\n" +
-          "6. Never ask for user input — you are autonomous.\n" +
-          "7. Use all available tools to verify your work.",
-      );
-      return systemParts.join("\n").trim();
-    };
+    const buildStableSystemPrompt = () =>
+      [
+        "# Bosun Agent Persona",
+        "You are an autonomous AI coding agent operating inside Bosun.",
+        "Follow the task details and project instructions provided in the user message.",
+        "Be concise, rigorous, and complete tasks end-to-end with verified results.",
+      ].join("\n");
 
     const assertStableSystemPrompt = (candidate) => {
       if (!strictCacheAnchoring) return;
