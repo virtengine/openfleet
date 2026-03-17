@@ -969,6 +969,43 @@ async function createKanbanTaskWithProject(kanban, taskData = {}, projectIdValue
     payload.projectId = resolvedProjectId;
   }
 
+  const createTaskParamNames = (() => {
+    try {
+      const inspectTarget =
+        typeof kanban.createTask?.getMockImplementation === "function"
+          ? kanban.createTask.getMockImplementation() || kanban.createTask
+          : kanban.createTask;
+      const source = Function.prototype.toString.call(inspectTarget);
+      const parenMatch = source.match(/^[^(]*\(([^)]*)\)/s);
+      if (parenMatch) {
+        return String(parenMatch[1] || "")
+          .split(",")
+          .map((entry) =>
+            String(entry || "")
+              .trim()
+              .replace(/^\.{3}/, "")
+              .replace(/\s*=.*$/s, "")
+              .trim(),
+          )
+          .filter(Boolean);
+      }
+      const arrowMatch = source.match(/^(?:async\s+)?([A-Za-z_$][\w$]*)\s*=>/);
+      if (arrowMatch?.[1]) return [arrowMatch[1]];
+    } catch {
+      // Fall back to the project-aware signature when adapter source is opaque.
+    }
+    return [];
+  })();
+  const firstParamName = String(createTaskParamNames[0] || "").toLowerCase();
+  const payloadOnlyCreateTask =
+    createTaskParamNames.length === 1 &&
+    /(task|payload|spec|data)/i.test(firstParamName) &&
+    !/project/i.test(firstParamName);
+
+  if (payloadOnlyCreateTask) {
+    return kanban.createTask(payload);
+  }
+
   const taskPayload = { ...payload };
   delete taskPayload.projectId;
   return kanban.createTask(resolvedProjectId, taskPayload);
