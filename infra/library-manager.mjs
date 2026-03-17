@@ -200,6 +200,58 @@ const FRAMEWORK_DOMAIN_MAP = Object.freeze({
 
 /** Resource types managed by the library */
 export const RESOURCE_TYPES = Object.freeze(["prompt", "agent", "skill", "mcp", "custom-tool"]);
+export const AGENT_LIBRARY_CATEGORIES = Object.freeze(["task", "interactive", "voice"]);
+export const INTERACTIVE_AGENT_MODES = Object.freeze(["ask", "agent", "plan", "web", "instant", "custom", "voice"]);
+
+export function normalizeAgentProfileType(rawType, options = {}) {
+  const value = String(rawType || "").trim().toLowerCase();
+  if (value === "voice" || value === "task" || value === "chat") return value;
+  if (options?.voiceAgent === true) return "voice";
+  return "task";
+}
+
+export function normalizeAgentLibraryCategory(rawCategory, options = {}) {
+  const value = String(rawCategory || "").trim().toLowerCase();
+  if (AGENT_LIBRARY_CATEGORIES.includes(value)) return value;
+  const profileType = normalizeAgentProfileType(options?.agentType, { voiceAgent: options?.voiceAgent });
+  if (profileType === "voice") return "voice";
+  if (profileType === "chat") return "interactive";
+  return "task";
+}
+
+export function normalizeInteractiveAgentMode(rawMode, options = {}) {
+  const value = String(rawMode || "").trim().toLowerCase();
+  if (INTERACTIVE_AGENT_MODES.includes(value)) return value;
+  if (options?.agentCategory === "voice") return "voice";
+  if (options?.agentCategory === "interactive") return "agent";
+  return "";
+}
+
+export function resolveAgentProfileLibraryMetadata(entry, profile = {}) {
+  const agentType = normalizeAgentProfileType(profile?.agentType, {
+    voiceAgent: profile?.voiceAgent === true,
+  });
+  const agentCategory = normalizeAgentLibraryCategory(profile?.agentCategory, {
+    agentType,
+    voiceAgent: profile?.voiceAgent === true,
+  });
+  const interactiveMode = normalizeInteractiveAgentMode(
+    profile?.interactiveMode || profile?.chatMode,
+    { agentCategory },
+  );
+  const interactiveLabel = String(profile?.interactiveLabel || "").trim();
+  const explicitDropdown = profile?.showInChatDropdown;
+  const showInChatDropdown = agentCategory === "interactive"
+    ? explicitDropdown === true
+    : false;
+  return {
+    agentType,
+    agentCategory,
+    interactiveMode: interactiveMode || null,
+    interactiveLabel: interactiveLabel || null,
+    showInChatDropdown,
+  };
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -497,10 +549,11 @@ function updateSkillEntryIndexCache(rootDir, index, manifestMtimeMs = 0) {
 function buildIndexedAgentProfile(rootDir, entry) {
   const profile = getEntryContent(rootDir, entry);
   if (!profile || typeof profile !== "object") return null;
+  const metadata = resolveAgentProfileLibraryMetadata(entry, profile);
   return {
     ...entry,
     profile,
-    agentType: String(profile?.agentType || "task").trim().toLowerCase() || "task",
+    ...metadata,
     titlePatterns: toStringArray(profile?.titlePatterns),
     scopes: toStringArray(profile?.scopes),
     tags: uniqueStrings([...(entry?.tags || []), ...toStringArray(profile?.tags)]),
@@ -1129,6 +1182,10 @@ export function resolveLibraryPlan(rootDir, criteria = {}, opts = {}) {
  * @property {Object} [env]              - extra env vars for the agent
  * @property {string[]} [enabledTools]   - list of tool IDs enabled for this agent (null = all)
  * @property {string[]} [enabledMcpServers] - list of MCP server IDs enabled for this agent
+ * @property {"task"|"interactive"|"voice"} [agentCategory] - library grouping/category for the profile
+ * @property {"ask"|"agent"|"plan"|"web"|"instant"|"custom"|"voice"} [interactiveMode] - preferred manual interaction mode
+ * @property {string} [interactiveLabel] - custom label shown for manual agent type/grouping
+ * @property {boolean} [showInChatDropdown] - whether this interactive profile is shown in the chat manual-agent dropdown
  */
 
 /**

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, beforeEach } from "vitest";
-import { createSessionTracker, SessionTracker } from "../infra/session-tracker.mjs";
+import { _test, createSessionTracker, SessionTracker } from "../infra/session-tracker.mjs";
 
 describe("session-tracker", () => {
   /** @type {SessionTracker} */
@@ -13,6 +13,20 @@ describe("session-tracker", () => {
   });
 
   describe("startSession / endSession", () => {
+    it("resolves workspace-mirror tracker paths back to the source repo logs directory", () => {
+      const sourceRepo = join(tmpdir(), "bosun-source-repo");
+      const mirrorInfraDir = join(
+        sourceRepo,
+        ".bosun",
+        "workspaces",
+        "virtengine-gh",
+        "bosun",
+        "infra",
+      );
+
+      expect(_test.resolveSessionTrackerSourceRepoRoot(mirrorInfraDir)).toBe(sourceRepo);
+    });
+
     it("creates a new session", () => {
       tracker.startSession("task-1", "Test Task");
       const session = tracker.getSession("task-1");
@@ -361,6 +375,30 @@ describe("session-tracker", () => {
   });
 
   describe("persisted insights", () => {
+    it("derives idle and stalled list statuses for active sessions", () => {
+      vi.useFakeTimers();
+      try {
+        const timedTracker = createSessionTracker({ maxMessages: 10, idleThresholdMs: 1000, persistDir: null });
+        timedTracker.createSession({ id: "chat-idle", type: "primary" });
+        timedTracker.createSession({ id: "chat-stalled", type: "primary" });
+
+        vi.advanceTimersByTime(1500);
+        timedTracker.recordEvent("chat-idle", {
+          type: "assistant",
+          role: "assistant",
+          content: "still working",
+          timestamp: new Date().toISOString(),
+        });
+        vi.advanceTimersByTime(1200);
+
+        const listed = timedTracker.listAllSessions();
+        expect(listed.find((entry) => entry.id === "chat-idle")?.status).toBe("idle");
+        expect(listed.find((entry) => entry.id === "chat-stalled")?.status).toBe("stalled");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("stores inspector insights on sessions and reloads them from disk", () => {
       const persistDir = mkdtempSync(join(tmpdir(), "bosun-session-tracker-"));
       try {

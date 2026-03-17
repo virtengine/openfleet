@@ -1517,6 +1517,195 @@ describe("ui-server mini app", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   }, 15000);
 
+  it("previews and imports custom library repositories through the API", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-library-import-api-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const workspaceRoot = join(tmpDir, "workspaces", "library-ws");
+    const workspaceRepo = join(workspaceRoot, "repo");
+    const sourceRepo = join(tmpDir, "source-repo");
+
+    mkdirSync(join(workspaceRepo, ".git"), { recursive: true });
+    mkdirSync(join(sourceRepo, ".github", "agents"), { recursive: true });
+    mkdirSync(join(sourceRepo, "skills", "triage"), { recursive: true });
+    mkdirSync(join(sourceRepo, "prompts"), { recursive: true });
+    mkdirSync(join(sourceRepo, ".codex"), { recursive: true });
+
+    writeFileSync(
+      join(sourceRepo, ".github", "agents", "TaskPlanner.agent.md"),
+      [
+        "---",
+        "name: Task Planner",
+        "description: 'Plans and routes engineering tasks'",
+        "tools: ['search', 'edit']",
+        "skills: ['triage-skill']",
+        "---",
+        "Use this agent to break down complex tasks.",
+      ].join("\n"),
+      "utf8",
+    );
+    writeFileSync(
+      join(sourceRepo, "skills", "triage", "SKILL.md"),
+      "# Skill: Triage\n\nPrioritize incidents quickly.",
+      "utf8",
+    );
+    writeFileSync(
+      join(sourceRepo, "prompts", "chat.prompt.md"),
+      "# Chat Prompt\n\nAlways ask clarifying questions when ambiguous.",
+      "utf8",
+    );
+    writeFileSync(
+      join(sourceRepo, ".codex", "config.toml"),
+      [
+        "[mcp_servers.github]",
+        'command = "npx"',
+        'args = ["-y", "@anthropic/mcp-github"]',
+      ].join("\n"),
+      "utf8",
+    );
+
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          $schema: "./bosun.schema.json",
+          activeWorkspace: "library-ws",
+          workspaces: [
+            {
+              id: "library-ws",
+              name: "Library Workspace",
+              path: workspaceRoot,
+              activeRepo: "repo",
+              repos: [{ name: "repo", path: workspaceRepo, primary: true }],
+            },
+          ],
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: sourceRepo, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync("git config user.email bosun@example.com", { cwd: sourceRepo, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync("git config user.name Bosun", { cwd: sourceRepo, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync("git add .", { cwd: sourceRepo, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync('git commit -m "init"', { cwd: sourceRepo, stdio: "pipe", env: sanitizedGitEnv() });
+    const branch = execSync("git rev-parse --abbrev-ref HEAD", {
+      cwd: sourceRepo,
+      stdio: "pipe",
+      env: sanitizedGitEnv(),
+      encoding: "utf8",
+    }).trim();
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const previewResponse = await fetch(`http://127.0.0.1:${port}/api/library/preview`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sourceId: "custom",
+          repoUrl: sourceRepo,
+          branch,
+          maxEntries: 20,
+        }),
+      });
+      const previewJson = await previewResponse.json();
+      expect(previewResponse.status).toBe(200);
+      expect(previewJson.ok).toBe(true);
+      expect(previewJson.data.repoUrl).toBe(sourceRepo);
+      expect(previewJson.data.branch).toBe(branch);
+      expect(previewJson.data.totalCandidates).toBeGreaterThanOrEqual(3);
+      expect(previewJson.data.candidatesByType).toEqual(
+        expect.objectContaining({
+          agent: 1,
+          prompt: 1,
+          skill: 1,
+        }),
+      );
+
+      const selectedPaths = previewJson.data.candidates
+        .filter((candidate) => [
+          ".github/agents/TaskPlanner.agent.md",
+          "skills/triage/SKILL.md",
+        ].includes(candidate.relPath))
+        .map((candidate) => candidate.relPath);
+      expect(selectedPaths).toEqual([
+        ".github/agents/TaskPlanner.agent.md",
+        "skills/triage/SKILL.md",
+      ]);
+
+      const importResponse = await fetch(`http://127.0.0.1:${port}/api/library/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sourceId: "custom",
+          repoUrl: sourceRepo,
+          branch,
+          includeEntries: selectedPaths,
+          importAgents: true,
+          importSkills: true,
+          importPrompts: true,
+          importTools: false,
+        }),
+      });
+      const importJson = await importResponse.json();
+      expect(importResponse.status).toBe(200);
+      expect(importJson.ok).toBe(true);
+      expect(importJson.data.storageScope).toBe("repo");
+      expect(importJson.data.importedCount).toBe(3);
+      expect(importJson.data.imported).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "agent",
+            name: "Task Planner",
+            relPath: ".github/agents/TaskPlanner.agent.md",
+          }),
+          expect.objectContaining({
+            type: "skill",
+            name: "triage",
+            relPath: "skills/triage/SKILL.md",
+          }),
+          expect.objectContaining({
+            type: "prompt",
+            name: "Task Planner Prompt",
+            relPath: ".github/agents/TaskPlanner.agent.md",
+          }),
+        ]),
+      );
+
+      const libraryJson = await fetch(`http://127.0.0.1:${port}/api/library?search=Task`).then((r) => r.json());
+      expect(libraryJson.ok).toBe(true);
+      expect(libraryJson.data).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "Task Planner", type: "agent" }),
+          expect.objectContaining({ name: "Task Planner Prompt", type: "prompt" }),
+        ]),
+      );
+
+      const skillLibraryJson = await fetch(`http://127.0.0.1:${port}/api/library?search=Triage`).then((r) => r.json());
+      expect(skillLibraryJson.ok).toBe(true);
+      expect(skillLibraryJson.data).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "triage", type: "skill" }),
+        ]),
+      );
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 20000);
+
   it("exposes typed workflow node ports and inline UI metadata", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     const mod = await import("../server/ui-server.mjs");
@@ -1718,11 +1907,13 @@ describe("ui-server mini app", () => {
 
     const mod = await import("../server/ui-server.mjs");
     const executeTask = vi.fn(async () => {});
+    const resetTaskThrottleState = vi.fn(() => true);
     const clearRetryQueueTask = vi.fn();
     mod.injectUiDependencies({
       getInternalExecutor: () => ({
         getStatus: () => ({ maxParallel: 4, activeSlots: 0, slots: [] }),
         executeTask,
+        resetTaskThrottleState,
         isPaused: () => false,
       }),
       getAgentEventBus: () => ({
@@ -1760,6 +1951,7 @@ describe("ui-server mini app", () => {
     expect(retried.taskId).toBe(taskId);
     expect(executeTask).toHaveBeenCalledTimes(1);
     expect(executeTask.mock.calls[0][0]?.id).toBe(taskId);
+    expect(resetTaskThrottleState).toHaveBeenCalledWith(taskId, {});
     expect(clearRetryQueueTask).toHaveBeenCalledWith(taskId, "manual-retry-now");
   });
 
@@ -1780,6 +1972,14 @@ describe("ui-server mini app", () => {
     taskStore.loadStore();
 
     const mod = await import("../server/ui-server.mjs");
+    const resetTaskThrottleState = vi.fn(() => true);
+    mod.injectUiDependencies({
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 4, activeSlots: 0, slots: [] }),
+        resetTaskThrottleState,
+        isPaused: () => false,
+      }),
+    });
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -1829,6 +2029,7 @@ describe("ui-server mini app", () => {
     expect(task.blockedReason).toBeNull();
     expect(task.meta?.autoRecovery).toBeUndefined();
     expect(task.meta?.note).toBe("keep-me");
+    expect(resetTaskThrottleState).toHaveBeenCalledWith(taskId, {});
   });
 
   it("clears blocked task state when editing a blocked task back to todo", async () => {
@@ -1848,6 +2049,14 @@ describe("ui-server mini app", () => {
     taskStore.loadStore();
 
     const mod = await import("../server/ui-server.mjs");
+    const resetTaskThrottleState = vi.fn(() => true);
+    mod.injectUiDependencies({
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 4, activeSlots: 0, slots: [] }),
+        resetTaskThrottleState,
+        isPaused: () => false,
+      }),
+    });
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -1893,6 +2102,7 @@ describe("ui-server mini app", () => {
     expect(task.blockedReason).toBeNull();
     expect(task.meta?.autoRecovery).toBeUndefined();
     expect(task.meta?.note).toBe("preserve-me");
+    expect(resetTaskThrottleState).toHaveBeenCalledWith("task-edit-unblock", {});
   });
 
   it("queues task starts when no executor slots are free and reports truthful runtime state", async () => {

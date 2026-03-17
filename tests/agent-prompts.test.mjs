@@ -227,14 +227,4 @@ describe("agent-prompts workspace", () => {
     expect(rendered).not.toContain("{{taskDescription}}");
     expect(rendered).not.toContain("{{repoSlug}}");
   });
-
-  it("strips unresolved placeholders that leak through value text", () => {
-    const rendered = renderPromptTemplate(
-      "Description: {{TASK_DESCRIPTION}}",
-      { TASK_DESCRIPTION: "Investigate failure {{taskDescription}}" },
-    );
-
-    expect(rendered).toContain("Description: Investigate failure");
-    expect(rendered).not.toContain("{{taskDescription}}");
-  });
 });

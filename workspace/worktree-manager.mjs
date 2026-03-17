@@ -599,7 +599,7 @@ class WorktreeManager {
     const detection = detectProjectStack(worktreePath);
     if (!detection?.primary) return;
 
-    const plan = buildBootstrapPlan(worktreePath, policy, detection);
+    const plan = buildBootstrapPlan(worktreePath, policy, detection, this.repoRoot);
     ensureWorktreeSharedPaths(this.repoRoot, worktreePath, plan.sharedPaths);
 
     const signature = buildBootstrapSignature(plan);

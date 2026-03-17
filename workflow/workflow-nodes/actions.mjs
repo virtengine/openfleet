@@ -50,6 +50,7 @@ import { getToolsPromptBlock } from "../../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../../agent/bosun-skills.mjs";
 import { getSessionTracker } from "../../infra/session-tracker.mjs";
 import { normalizeBaseBranch } from "../../git/git-safety.mjs";
+import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../../git/git-commit-helpers.mjs";
 import { fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
 
 import {
@@ -2872,10 +2873,34 @@ const BOSUN_FUNCTION_REGISTRY = Object.freeze({
     async invoke(args, ctx) {
       const cwd = args.cwd || ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
       try {
-        const current = execSync("git branch --show-current", { encoding: "utf8", cwd, timeout: 15000, stdio: "pipe" }).trim();
-        const allBranches = execSync("git branch --list --format='%(refname:short)'", { encoding: "utf8", cwd, timeout: 15000, stdio: "pipe" })
-          .trim().split("\n").filter(Boolean);
-        return { current, branches: allBranches, branchCount: allBranches.length };
+        const lines = execFileSync("git", ["for-each-ref", "--format=%(HEAD)|%(refname:short)", "refs/heads"], {
+          encoding: "utf8",
+          cwd,
+          timeout: 4000,
+          stdio: "pipe",
+        })
+          .trim()
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
+        const branches = [];
+        let current = "";
+        for (const line of lines) {
+          const [headMarker, ...rest] = line.split("|");
+          const branchName = rest.join("|").trim();
+          if (!branchName) continue;
+          branches.push(branchName);
+          if (headMarker === "*") current = branchName;
+        }
+        if (!current) {
+          current = execFileSync("git", ["branch", "--show-current"], {
+            encoding: "utf8",
+            cwd,
+            timeout: 2000,
+            stdio: "pipe",
+          }).trim();
+        }
+        return { current, branches, branchCount: branches.length };
       } catch (err) {
         return { current: "", branches: [], branchCount: 0, error: err.message };
       }
@@ -4799,7 +4824,6 @@ registerNodeType("action.build_task_prompt", {
         : null;
 
     const TASK_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
-    const TASK_TEMPLATE_INLINE_PLACEHOLDER_RE = /\{\{\s*[\w.-]+\s*\}\}/g;
     const TASK_PROMPT_INVALID_VALUES = new Set([
       "internal server error",
       "{\"ok\":false,\"error\":\"internal server error\"}",
@@ -4807,11 +4831,9 @@ registerNodeType("action.build_task_prompt", {
     ]);
     const normalizeString = (value) => {
       if (value == null) return "";
-      let text = String(value).trim();
+      const text = String(value).trim();
       if (!text) return "";
       if (TASK_TEMPLATE_PLACEHOLDER_RE.test(text)) return "";
-      text = text.replace(TASK_TEMPLATE_INLINE_PLACEHOLDER_RE, "").trim();
-      if (!text) return "";
       if (TASK_PROMPT_INVALID_VALUES.has(text.toLowerCase())) return "";
       return text;
     };
@@ -4953,70 +4975,158 @@ registerNodeType("action.build_task_prompt", {
         .trim();
     };
 
+    const strictCacheAnchoring =
+      String(process.env.BOSUN_CACHE_ANCHOR_MODE || "")
+        .trim()
+        .toLowerCase() === "strict";
+
+    const buildStableSystemPrompt = () => {
+      const systemParts = [];
+      if (includeAgentsMd) {
+        const searchDirs = [normalizedRepoRoot].filter(Boolean);
+        const docFiles = ["AGENTS.md", ".github/copilot-instructions.md"];
+        const loaded = new Set();
+        for (const dir of searchDirs) {
+          for (const doc of docFiles) {
+            if (loaded.has(doc)) continue;
+            const fullPath = resolve(dir, doc);
+            try {
+              if (!existsSync(fullPath)) continue;
+              const content = readFileSync(fullPath, "utf8").trim();
+              if (!content || content.length <= 10) continue;
+              loaded.add(doc);
+              systemParts.push(`## ${doc}`);
+              systemParts.push(content);
+              systemParts.push("");
+            } catch {
+              // best-effort only
+            }
+          }
+        }
+      }
+
+      if (includeStatusEndpoint) {
+        const port = process.env.AGENT_ENDPOINT_PORT || process.env.BOSUN_AGENT_ENDPOINT_PORT || "";
+        if (port) {
+          systemParts.push("## Agent Status Endpoint");
+          systemParts.push(`POST http://127.0.0.1:${port}/status — Report progress`);
+          systemParts.push(`POST http://127.0.0.1:${port}/heartbeat — Heartbeat ping`);
+          systemParts.push(`POST http://127.0.0.1:${port}/error — Report errors`);
+          systemParts.push(`POST http://127.0.0.1:${port}/complete — Signal completion`);
+          systemParts.push("");
+        }
+      }
+
+      systemParts.push("## Tool Discovery");
+      systemParts.push(
+        "Bosun uses a compact MCP discovery layer for external MCP servers and the custom tool library.",
+      );
+      systemParts.push(
+        "Preferred flow: `search` -> `get_schema` -> `execute`.",
+      );
+      systemParts.push(
+        "Only eager tools are preloaded below to keep context small. Use `call_discovered_tool` only as a direct fallback when orchestration code is unnecessary.",
+      );
+      systemParts.push("");
+
+      const eagerToolBlock = getToolsPromptBlock(normalizedRepoRoot, {
+        includeBuiltins: true,
+        eagerOnly: true,
+        discoveryMode: true,
+        emitReflectHint: true,
+        limit: 12,
+      });
+      if (eagerToolBlock) {
+        systemParts.push(eagerToolBlock);
+        systemParts.push("");
+      }
+
+      systemParts.push("## Instructions");
+      systemParts.push(
+        "1. Follow the project instructions in AGENTS.md.\n" +
+          "2. Use the discovery MCP tools for non-eager MCP/custom tools before assuming a capability is unavailable.\n" +
+          "3. Implement the required changes.\n" +
+          "4. Ensure tests pass and build is clean with 0 warnings.\n" +
+          "5. Commit your changes using conventional commits.\n" +
+          "6. Never ask for user input — you are autonomous.\n" +
+          "7. Use all available tools to verify your work.",
+      );
+      return systemParts.join("\n").trim();
+    };
+
     if (customTemplate) {
       const renderedTemplate = renderCustomTemplate(customTemplate);
+      const stableSystemPrompt = buildStableSystemPrompt();
       ctx.data._taskPrompt = renderedTemplate;
+      ctx.data._taskUserPrompt = renderedTemplate;
+      ctx.data._taskSystemPrompt = stableSystemPrompt;
       ctx.log(node.id, `Prompt from custom template (${renderedTemplate.length} chars)`);
-      return { success: true, prompt: renderedTemplate, source: "custom" };
+      return {
+        success: true,
+        prompt: renderedTemplate,
+        userPrompt: renderedTemplate,
+        systemPrompt: stableSystemPrompt,
+        source: "custom",
+      };
     }
 
-    const parts = [];
+    const userParts = [];
 
     // Header
-    parts.push(`# Task: ${normalizedTaskTitle}`);
-    if (normalizedTaskId) parts.push(`Task ID: ${normalizedTaskId}`);
-    parts.push("");
+    userParts.push(`# Task: ${normalizedTaskTitle}`);
+    if (normalizedTaskId) userParts.push(`Task ID: ${normalizedTaskId}`);
+    userParts.push("");
 
     // Retry context (if applicable)
     if (normalizedRetryReason) {
-      parts.push("## Retry Context");
-      parts.push(`Previous attempt failed: ${normalizedRetryReason}`);
-      parts.push("Try a different approach this time.");
-      parts.push("");
+      userParts.push("## Retry Context");
+      userParts.push(`Previous attempt failed: ${normalizedRetryReason}`);
+      userParts.push("Try a different approach this time.");
+      userParts.push("");
     }
 
     // Description
     if (normalizedTaskDescription) {
-      parts.push("## Description");
-      parts.push(normalizedTaskDescription);
-      parts.push("");
+      userParts.push("## Description");
+      userParts.push(normalizedTaskDescription);
+      userParts.push("");
     }
 
     // Environment context
-    parts.push("## Environment");
+    userParts.push("## Environment");
     const envLines = [];
     if (normalizedWorktreePath) envLines.push(`- **Working Directory:** ${normalizedWorktreePath}`);
     if (normalizedBranch) envLines.push(`- **Branch:** ${normalizedBranch}`);
     if (normalizedBaseBranch) envLines.push(`- **Base Branch:** ${normalizedBaseBranch}`);
     if (normalizedRepoSlug) envLines.push(`- **Repository:** ${normalizedRepoSlug}`);
     if (normalizedRepoRoot) envLines.push(`- **Repo Root:** ${normalizedRepoRoot}`);
-    if (envLines.length) parts.push(envLines.join("\n"));
-    parts.push("");
+    if (envLines.length) userParts.push(envLines.join("\n"));
+    userParts.push("");
 
     // Workspace and repository scope guardrails.
-    parts.push("## Workspace Scope Contract");
-    if (workspace) parts.push(`- **Workspace:** ${workspace}`);
-    if (primaryRepository) parts.push(`- **Primary Repository:** ${primaryRepository}`);
+    userParts.push("## Workspace Scope Contract");
+    if (workspace) userParts.push(`- **Workspace:** ${workspace}`);
+    if (primaryRepository) userParts.push(`- **Primary Repository:** ${primaryRepository}`);
     if (allowedRepositories.length > 0) {
-      parts.push("- **Allowed Repositories:**");
+      userParts.push("- **Allowed Repositories:**");
       for (const allowedRepo of allowedRepositories) {
-        parts.push(`  - ${allowedRepo}`);
+        userParts.push(`  - ${allowedRepo}`);
       }
     } else {
-      parts.push("- **Allowed Repositories:** (not declared)");
+      userParts.push("- **Allowed Repositories:** (not declared)");
     }
-    if (normalizedWorktreePath) parts.push(`- **Write Scope Root:** ${normalizedWorktreePath}`);
-    parts.push("");
-    parts.push("Hard boundaries:");
+    if (normalizedWorktreePath) userParts.push(`- **Write Scope Root:** ${normalizedWorktreePath}`);
+    userParts.push("");
+    userParts.push("Hard boundaries:");
     if (normalizedWorktreePath) {
-      parts.push(`1. Modify files only inside \`${normalizedWorktreePath}\`.`);
+      userParts.push(`1. Modify files only inside \`${normalizedWorktreePath}\`.`);
     } else {
-      parts.push("1. Modify files only inside the active repository working directory.");
+      userParts.push("1. Modify files only inside the active repository working directory.");
     }
-    parts.push("2. Modify code only in the allowed repositories listed above.");
-    parts.push("3. If required work depends on an unlisted repository, stop and report `blocked: cross-repo dependency`.");
-    parts.push("4. In completion notes, list every repository you touched and why.");
-    parts.push("");
+    userParts.push("2. Modify code only in the allowed repositories listed above.");
+    userParts.push("3. If required work depends on an unlisted repository, stop and report `blocked: cross-repo dependency`.");
+    userParts.push("4. In completion notes, list every repository you touched and why.");
+    userParts.push("");
 
     // AGENTS.md + copilot-instructions.md
     if (includeAgentsMd) {
@@ -5032,9 +5142,9 @@ registerNodeType("action.build_task_prompt", {
               const content = readFileSync(fullPath, "utf8").trim();
               if (content && content.length > 10) {
                 loaded.add(doc);
-                parts.push(`## ${doc}`);
-                parts.push(content);
-                parts.push("");
+                userParts.push(`## ${doc}`);
+                userParts.push(content);
+                userParts.push("");
               }
             }
           } catch { /* best-effort */ }
@@ -5046,12 +5156,12 @@ registerNodeType("action.build_task_prompt", {
     if (includeStatusEndpoint) {
       const port = process.env.AGENT_ENDPOINT_PORT || process.env.BOSUN_AGENT_ENDPOINT_PORT || "";
       if (port) {
-        parts.push("## Agent Status Endpoint");
-        parts.push(`POST http://127.0.0.1:${port}/status — Report progress`);
-        parts.push(`POST http://127.0.0.1:${port}/heartbeat — Heartbeat ping`);
-        parts.push(`POST http://127.0.0.1:${port}/error — Report errors`);
-        parts.push(`POST http://127.0.0.1:${port}/complete — Signal completion`);
-        parts.push("");
+        userParts.push("## Agent Status Endpoint");
+        userParts.push(`POST http://127.0.0.1:${port}/status — Report progress`);
+        userParts.push(`POST http://127.0.0.1:${port}/heartbeat — Heartbeat ping`);
+        userParts.push(`POST http://127.0.0.1:${port}/error — Report errors`);
+        userParts.push(`POST http://127.0.0.1:${port}/complete — Signal completion`);
+        userParts.push("");
       }
     }
 
@@ -5062,21 +5172,21 @@ registerNodeType("action.build_task_prompt", {
       {},
     );
     if (relevantSkillsBlock) {
-      parts.push(relevantSkillsBlock);
-      parts.push("");
+      userParts.push(relevantSkillsBlock);
+      userParts.push("");
     }
 
-    parts.push("## Tool Discovery");
-    parts.push(
+    userParts.push("## Tool Discovery");
+    userParts.push(
       "Bosun uses a compact MCP discovery layer for external MCP servers and the custom tool library.",
     );
-    parts.push(
+    userParts.push(
       "Preferred flow: `search` -> `get_schema` -> `execute`.",
     );
-    parts.push(
+    userParts.push(
       "Only eager tools are preloaded below to keep context small. Use `call_discovered_tool` only as a direct fallback when orchestration code is unnecessary.",
     );
-    parts.push("");
+    userParts.push("");
 
     const eagerToolBlock = getToolsPromptBlock(normalizedRepoRoot, {
       activeSkills: activeSkillFiles,
@@ -5087,13 +5197,13 @@ registerNodeType("action.build_task_prompt", {
       limit: 12,
     });
     if (eagerToolBlock) {
-      parts.push(eagerToolBlock);
-      parts.push("");
+      userParts.push(eagerToolBlock);
+      userParts.push("");
     }
 
     // Instructions
-    parts.push("## Instructions");
-    parts.push(
+    userParts.push("## Instructions");
+    userParts.push(
       "1. Read and understand the task description above.\n" +
       "2. Follow the project instructions in AGENTS.md.\n" +
       "3. Respect the Workspace Scope Contract and never cross repository boundaries.\n" +
@@ -5105,17 +5215,58 @@ registerNodeType("action.build_task_prompt", {
       "9. Never ask for user input — you are autonomous.\n" +
       "10. Use all available tools to verify your work.",
     );
-    parts.push("");
+    userParts.push("");
 
-    // Co-author trailer
-    parts.push("## Git Attribution");
-    parts.push("Add this trailer to all commits:");
-    parts.push("Co-authored-by: bosun[bot] <bosun@virtengine.com>");
+    const coAuthorTrailer = shouldAddBosunCoAuthor({ taskId: normalizedTaskId })
+      ? getBosunCoAuthorTrailer()
+      : "";
+    if (coAuthorTrailer) {
+      userParts.push("## Git Attribution");
+      userParts.push("Add this trailer to all commits:");
+      userParts.push(coAuthorTrailer);
+      userParts.push("");
+    }
 
-    const prompt = parts.join("\n");
-    ctx.data._taskPrompt = prompt;
-    ctx.log(node.id, `Prompt built (${prompt.length} chars)`);
-    return { success: true, prompt, source: "generated", length: prompt.length };
+    const userPrompt = userParts.join("\n").trim();
+    const systemPrompt = buildStableSystemPrompt();
+
+    if (strictCacheAnchoring) {
+      const dynamicMarkers = [
+        normalizedTaskId,
+        normalizedTaskTitle,
+        normalizedTaskDescription,
+        normalizedRetryReason,
+        normalizedBranch,
+        normalizedBaseBranch,
+        normalizedWorktreePath,
+      ]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+      const leaked = dynamicMarkers.find((marker) => systemPrompt.includes(marker));
+      if (leaked) {
+        throw new Error(
+          `BOSUN_CACHE_ANCHOR_MODE=strict violation: system prompt leaked task-specific marker "${leaked}"`,
+        );
+      }
+    }
+
+    ctx.data._taskPrompt = userPrompt;
+    ctx.data._taskUserPrompt = userPrompt;
+    ctx.data._taskSystemPrompt = systemPrompt;
+    ctx.log(
+      node.id,
+      `Prompt built (user=${userPrompt.length} chars, system=${systemPrompt.length} chars, strict=${strictCacheAnchoring})`,
+    );
+    return {
+      success: true,
+      prompt: userPrompt,
+      userPrompt,
+      systemPrompt,
+      source: "generated",
+      length: userPrompt.length,
+      systemLength: systemPrompt.length,
+      cacheAnchorMode: strictCacheAnchoring ? "strict" : "default",
+    };
   },
 });
 

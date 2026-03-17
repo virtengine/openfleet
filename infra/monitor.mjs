@@ -1720,8 +1720,8 @@ configureExecutorTaskStatusTransitions();
   }
 }
 
-// Guard against core.bare=true corruption on the main repo at startup
-fixGitConfigCorruption(resolve(__dirname, "..", ".."));
+// Guard against core.bare=true corruption on the Bosun repo at startup.
+fixGitConfigCorruption(resolve(__dirname, ".."));
 
 function canSignalProcess(pid) {
   if (!Number.isFinite(pid) || pid <= 0) return false;
@@ -13284,8 +13284,15 @@ async function startProcess() {
             .catch((err) =>
               console.warn(
                 `[workspace-monitor] failed to start for ${shortId}: ${err.message}`,
-              ),
-            );
+            ),
+          );
+        }
+        if (
+          typeof engine.load === "function" &&
+          ((Array.isArray(reconcile?.updatedWorkflowIds) && reconcile.updatedWorkflowIds.length > 0) ||
+            Number(reconcile?.metadataUpdated || 0) > 0)
+        ) {
+          engine.load();
         }
       }
 

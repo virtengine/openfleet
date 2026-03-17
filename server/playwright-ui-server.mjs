@@ -443,6 +443,30 @@ function transformHtmlForE2E(html) {
 // The UI app connects to /ws for live updates. Without a WS handler the
 // connection fails immediately which can cause render issues.
 const wss = new WebSocketServer({ noServer: true });
+let shuttingDown = false;
+
+function shutdownAndExit(exitCode = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  try {
+    wss.clients.forEach((client) => {
+      try {
+        client.terminate();
+      } catch {
+        /* best-effort */
+      }
+    });
+    wss.close();
+  } catch {
+    /* best-effort */
+  }
+  server.close(() => {
+    process.exit(exitCode);
+  });
+  setTimeout(() => {
+    process.exit(exitCode);
+  }, 2000).unref();
+}
 
 server.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
@@ -467,3 +491,6 @@ server.on("upgrade", (req, socket, head) => {
 server.listen(PORT, () => {
   console.log(`[playwright-ui-server] Serving UI at http://localhost:${PORT}`);
 });
+
+process.on("SIGINT", () => shutdownAndExit(0));
+process.on("SIGTERM", () => shutdownAndExit(0));

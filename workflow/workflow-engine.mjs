@@ -2969,6 +2969,16 @@ export class WorkflowEngine extends EventEmitter {
       normalized.activeNodeCount = 0;
     }
     if (normalized.status !== WorkflowStatus.RUNNING) {
+      normalized.activeNodeCount = 0;
+      if (!Number.isFinite(Number(normalized.endedAt))) {
+        const fallbackEndedAt = Math.max(
+          Number(normalized.interruptedAt) || 0,
+          Number(normalized.lastProgressAt) || 0,
+          Number(normalized.lastLogAt) || 0,
+          Number(normalized.startedAt) || 0,
+        );
+        normalized.endedAt = fallbackEndedAt > 0 ? fallbackEndedAt : null;
+      }
       normalized.isStuck = false;
       normalized.stuckMs = 0;
       return normalized;
@@ -3172,6 +3182,10 @@ export class WorkflowEngine extends EventEmitter {
           summary.status = WorkflowStatus.PAUSED;
           summary.resumable = canResume;
           summary.interruptedAt = now;
+          summary.activeNodeCount = 0;
+          if (!Number.isFinite(Number(summary.endedAt))) {
+            summary.endedAt = now;
+          }
           if (!canResume) summary.resumeResult = "recovery_cap_exceeded";
         }
         if (canResume && !forceResumable) resumableStaleRunsAssigned += 1;
@@ -3253,7 +3267,8 @@ export class WorkflowEngine extends EventEmitter {
     this._resumingRuns = true;
 
     try {
-      const runs = this._readRunIndex().filter(
+      const allRuns = this._readRunIndex();
+      const runs = allRuns.filter(
         (r) => r.status === WorkflowStatus.PAUSED && r.resumable,
       );
 
@@ -3272,9 +3287,6 @@ export class WorkflowEngine extends EventEmitter {
       // and mark older duplicates as not-resumable before we even try them.
       const runDetailCache = new Map(); // runId → parsed detail
       const latestByTaskId = new Map(); // taskId → run entry (highest startedAt)
-
-      const allRuns = this._readRunIndex();
-
       for (const run of allRuns) {
         const dp = resolve(this.runsDir, `${run.runId}.json`);
         if (!existsSync(dp)) continue;

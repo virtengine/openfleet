@@ -80,6 +80,7 @@ import {
   scaffoldAgentProfiles,
   getBosunHomeDir,
   syncAutoDiscoveredLibraryEntries,
+  resolveAgentProfileLibraryMetadata,
 } from "../infra/library-manager.mjs";
 import {
   listCatalog,
@@ -316,6 +317,17 @@ function unblockInternalTask(taskId, options = {}) {
     return fn(taskId, options);
   } catch {
     return null;
+  }
+}
+
+function resetExecutorTaskThrottleState(taskId, options = {}) {
+  const executor = uiDeps.getInternalExecutor?.() || null;
+  const fn = executor?.resetTaskThrottleState;
+  if (typeof fn !== "function") return false;
+  try {
+    return fn.call(executor, taskId, options) === true;
+  } catch {
+    return false;
   }
 }
 
@@ -729,10 +741,44 @@ function isVoiceAgentProfileEntry(entry, profile) {
 }
 
 function resolveAgentProfileType(entry, profile) {
-  const explicit = String(profile?.agentType || "").trim().toLowerCase();
-  if (explicit === "voice" || explicit === "task" || explicit === "chat") return explicit;
-  if (isVoiceAgentProfileEntry(entry, profile)) return "voice";
-  return "task";
+  return resolveAgentProfileLibraryMetadata(entry, profile).agentType;
+}
+
+function resolveAgentProfileLibraryView(entry, profile, storageScope) {
+  const metadata = resolveAgentProfileLibraryMetadata(entry, profile);
+  return {
+    ...entry,
+    storageScope,
+    ...metadata,
+  };
+}
+
+function listManualAgentProfiles(workspaceContext) {
+  const resolved = listLibraryEntriesAcrossRoots(workspaceContext, { type: "agent" });
+  const profiles = [];
+  for (const { entry, rootInfo } of resolved.entries) {
+    const profile = getEntryContent(rootInfo.rootDir, entry);
+    const metadata = resolveAgentProfileLibraryMetadata(entry, profile);
+    if (metadata.agentCategory !== "interactive" || metadata.showInChatDropdown !== true) continue;
+    const sectionLabel = metadata.interactiveLabel
+      || (metadata.interactiveMode ? metadata.interactiveMode.charAt(0).toUpperCase() + metadata.interactiveMode.slice(1) : "Manual");
+    profiles.push({
+      id: entry.id,
+      name: entry.name || entry.id,
+      description: entry.description || "",
+      storageScope: rootInfo.scope,
+      model: String(profile?.model || "").trim() || null,
+      sdk: String(profile?.sdk || "").trim() || null,
+      sectionLabel,
+      ...metadata,
+    });
+  }
+  profiles.sort((a, b) => {
+    const sectionCmp = String(a.sectionLabel || "").localeCompare(String(b.sectionLabel || ""));
+    if (sectionCmp !== 0) return sectionCmp;
+    return String(a.name || a.id).localeCompare(String(b.name || b.id));
+  });
+  return profiles;
 }
 
 function resolveVoiceLibraryRoot(callContext = {}) {
@@ -12898,7 +12944,14 @@ async function handleApi(req, res, url) {
         : undefined;
       const metadataPatch = buildTaskMetadataPatch(body || {});
       const requestedStatus = normalizeTaskStatusKey(body?.status);
-      const clearsBlockedState = requestedStatus === "todo";
+      const currentLooksBlocked =
+        normalizeTaskStatusKey(previousTask?.status) === "blocked" ||
+        Boolean(previousTask?.blockedReason) ||
+        Boolean(previousTask?.cooldownUntil) ||
+        Boolean(previousTask?.meta?.autoRecovery) ||
+        Boolean(previousTask?.meta?.worktreeFailure?.blockedReason);
+      const clearsBlockedState =
+        currentLooksBlocked && Boolean(requestedStatus) && requestedStatus !== "blocked";
       const nextMeta = (Object.keys(metadataPatch.meta).length > 0 || clearsBlockedState)
         ? buildTaskMetaPatch(previousTask?.meta, metadataPatch.meta, { clearBlockedState: clearsBlockedState })
         : null;
@@ -12932,6 +12985,9 @@ async function handleApi(req, res, url) {
           ? await adapter.updateTask(taskId, patch)
           : await adapter.updateTaskStatus(taskId, patch.status);
       const updated = withTaskMetadataTopLevel(updatedRaw);
+      if (clearsBlockedState) {
+        resetExecutorTaskThrottleState(taskId);
+      }
       const nextStatus = updated?.status || patch.status || null;
       const lifecycleAction = inferLifecycleAction(
         previousTask?.status || null,
@@ -13039,7 +13095,14 @@ async function handleApi(req, res, url) {
         : undefined;
       const metadataPatch = buildTaskMetadataPatch(body || {});
       const requestedStatus = normalizeTaskStatusKey(body?.status);
-      const clearsBlockedState = requestedStatus === "todo";
+      const currentLooksBlocked =
+        normalizeTaskStatusKey(previousTask?.status) === "blocked" ||
+        Boolean(previousTask?.blockedReason) ||
+        Boolean(previousTask?.cooldownUntil) ||
+        Boolean(previousTask?.meta?.autoRecovery) ||
+        Boolean(previousTask?.meta?.worktreeFailure?.blockedReason);
+      const clearsBlockedState =
+        currentLooksBlocked && Boolean(requestedStatus) && requestedStatus !== "blocked";
       const nextMeta = (Object.keys(metadataPatch.meta).length > 0 || clearsBlockedState)
         ? buildTaskMetaPatch(previousTask?.meta, metadataPatch.meta, { clearBlockedState: clearsBlockedState })
         : null;
@@ -13073,6 +13136,9 @@ async function handleApi(req, res, url) {
           ? await adapter.updateTask(taskId, patch)
           : await adapter.updateTaskStatus(taskId, patch.status);
       const updated = withTaskMetadataTopLevel(updatedRaw);
+      if (clearsBlockedState) {
+        resetExecutorTaskThrottleState(taskId);
+      }
       const nextStatus = updated?.status || patch.status || null;
       const lifecycleAction = inferLifecycleAction(
         previousTask?.status || null,
@@ -13491,16 +13557,14 @@ async function handleApi(req, res, url) {
         search: search || undefined,
       });
       let data = resolved.entries.map(({ entry, rootInfo }) => {
-        const base = {
-          ...entry,
-          storageScope: rootInfo.scope,
-        };
-        if (entry?.type !== "agent") return base;
+        if (entry?.type !== "agent") {
+          return {
+            ...entry,
+            storageScope: rootInfo.scope,
+          };
+        }
         const profile = getEntryContent(rootInfo.rootDir, entry);
-        return {
-          ...base,
-          agentType: resolveAgentProfileType(entry, profile),
-        };
+        return resolveAgentProfileLibraryView(entry, profile, rootInfo.scope);
       });
       if (type === "agent" && (agentTypeRaw === "voice" || agentTypeRaw === "task" || agentTypeRaw === "chat")) {
         data = data.filter((entry) => {
@@ -16836,6 +16900,7 @@ async function handleApi(req, res, url) {
         status: "todo",
         source: "manual-retry",
       });
+      resetExecutorTaskThrottleState(taskId);
       if (!nextTask) {
         if (typeof adapter.updateTask === "function") {
           await adapter.updateTask(taskId, {
@@ -16900,6 +16965,7 @@ async function handleApi(req, res, url) {
         status: targetStatus,
         source: "api.tasks.unblock",
       });
+      resetExecutorTaskThrottleState(taskId);
       if (!updatedTask) {
         const nextMeta = task?.meta && typeof task.meta === "object"
           ? Object.fromEntries(Object.entries(task.meta).filter(([key]) => key !== "autoRecovery"))
@@ -17079,10 +17145,13 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/agents/available" && req.method === "GET") {
     try {
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false })
+        || { workspaceDir: repoRoot, workspaceRoot: repoRoot };
       const agents = getAvailableAgents();
       const active = getPrimaryAgentSelection();
       const mode = getAgentMode();
-      jsonResponse(res, 200, { ok: true, agents, active, mode });
+      const manualAgents = listManualAgentProfiles(workspaceContext);
+      jsonResponse(res, 200, { ok: true, agents, active, mode, manualAgents });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

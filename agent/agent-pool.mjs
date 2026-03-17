@@ -43,6 +43,7 @@ import { resolve, dirname } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { loadConfig } from "../config/config.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "../config/repo-root.mjs";
 import { resolveCodexProfileRuntime } from "../shell/codex-model-profiles.mjs";
@@ -97,6 +98,23 @@ const HARD_TIMEOUT_BUFFER_MS = 5 * 60_000; // 5 minutes
 
 /** Tag for console logging */
 const TAG = "[agent-pool]";
+const require = createRequire(import.meta.url);
+const MODULE_PRESENCE_CACHE = new Map();
+
+function hasOptionalModule(specifier) {
+  if (MODULE_PRESENCE_CACHE.has(specifier)) {
+    return MODULE_PRESENCE_CACHE.get(specifier);
+  }
+  let ok = false;
+  try {
+    require.resolve(specifier);
+    ok = true;
+  } catch {
+    ok = false;
+  }
+  MODULE_PRESENCE_CACHE.set(specifier, ok);
+  return ok;
+}
 const MAX_PROMPT_BYTES = 180_000;
 const MAX_SET_TIMEOUT_MS = 2_147_483_647; // Node.js setTimeout 32-bit signed max
 let timeoutClampWarningKey = "";
@@ -424,13 +442,27 @@ function injectGitHubSessionEnv(baseEnv, token) {
 
 /**
  * Extract a human-readable task heading from the prompt built by _buildTaskPrompt.
- * The first line is "# TASKID — Task Title"; we return the title portion only.
+ * The first line is "# Task: Task Title" (legacy: "# TASKID — Task Title");
+ * we return the title portion only.
  * Falls back to the raw first line if no em-dash separator is found.
  * @param {string} prompt
  * @returns {string}
  */
 function extractTaskHeading(prompt) {
   const firstLine = String(prompt || "").split(/\r?\n/)[0].replace(/^#+\s*/, "").trim();
+  if (!firstLine) return "Execute Task";
+  const lowerLine = firstLine.toLowerCase();
+  if (lowerLine.startsWith("task")) {
+    let index = 4;
+    while (index < firstLine.length && /\s/.test(firstLine[index])) index += 1;
+    const separator = firstLine[index];
+    if (separator === ":" || separator === "-" || separator === "\u2014") {
+      index += 1;
+      while (index < firstLine.length && /\s/.test(firstLine[index])) index += 1;
+      const title = firstLine.slice(index).trim();
+      if (title) return title;
+    }
+  }
   const dashIdx = firstLine.indexOf(" \u2014 ");
   const title = dashIdx !== -1 ? firstLine.slice(dashIdx + 3).trim() : firstLine;
   return title || "Execute Task";
@@ -580,15 +612,20 @@ function hasSdkPrerequisites(name, runtimeEnv = process.env) {
   }
 
   if (name === "codex") {
-    // Codex needs an OpenAI API key (or Azure key, or profile-specific key),
-    // OR a valid ~/.codex/config.toml where an env_key reference is satisfied.
+    if (!hasOptionalModule("@openai/codex-sdk")) {
+      return { ok: false, reason: "@openai/codex-sdk not installed" };
+    }
+    // Codex auth can come from env vars, config env_key mappings, or persisted
+    // CLI login state (for example ~/.codex/auth.json). Because login-based
+    // auth is valid and hard to validate exhaustively, avoid false negatives.
     const hasKey =
       runtimeEnv.OPENAI_API_KEY ||
       runtimeEnv.AZURE_OPENAI_API_KEY ||
       runtimeEnv.CODEX_MODEL_PROFILE_XL_API_KEY ||
       runtimeEnv.CODEX_MODEL_PROFILE_M_API_KEY;
     if (hasKey) return { ok: true, reason: null };
-    // Check ~/.codex/config.toml — Codex CLI SDK reads auth env_key refs from there
+
+    // Check ~/.codex/config.toml — Codex CLI SDK reads auth env_key refs from there.
     try {
       const configToml = resolve(homedir(), ".codex", "config.toml");
       if (existsSync(configToml)) {
@@ -601,14 +638,33 @@ function hasSdkPrerequisites(name, runtimeEnv = process.env) {
     } catch {
       // best effort — fall through to failure
     }
-    return { ok: false, reason: "no API key (OPENAI_API_KEY / AZURE_OPENAI_API_KEY) and no satisfied env_key in ~/.codex/config.toml" };
+
+    // Login-based auth sessions are sufficient even without env keys.
+    try {
+      const authJson = resolve(homedir(), ".codex", "auth.json");
+      if (existsSync(authJson)) {
+        const authText = readFileSync(authJson, "utf8").trim();
+        if (authText) return { ok: true, reason: null };
+      }
+    } catch {
+      // best effort — fall through to permissive behavior
+    }
+
+    // Do not hard-block Codex when auth source cannot be determined.
+    return { ok: true, reason: null };
   }
   if (name === "copilot") {
+    if (!hasOptionalModule("@github/copilot-sdk")) {
+      return { ok: false, reason: "@github/copilot-sdk not installed" };
+    }
     // Copilot auth can come from multiple sources (OAuth manager, gh auth,
     // VS Code Copilot login, env tokens). Don't block execution here.
     return { ok: true, reason: null };
   }
   if (name === "claude") {
+    if (!hasOptionalModule("@anthropic-ai/claude-agent-sdk")) {
+      return { ok: false, reason: "@anthropic-ai/claude-agent-sdk not installed" };
+    }
     const hasKey = runtimeEnv.ANTHROPIC_API_KEY;
     if (!hasKey) {
       return { ok: false, reason: "no ANTHROPIC_API_KEY" };
@@ -1065,6 +1121,19 @@ export function setPoolSdk(name) {
 export function resetPoolSdkCache() {
   resolvedSdkName = null;
   resolutionLogged = false;
+  sdkFailureCooldownUntil.clear();
+}
+
+export function setSdkFailureCooldownForTest(name, cooldownRemainingMs, nowMs = Date.now()) {
+  if (!SDK_ADAPTERS[name]) {
+    throw new Error(`Unknown SDK: ${name}`);
+  }
+  const remainingMs = Number(cooldownRemainingMs);
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
+    sdkFailureCooldownUntil.delete(name);
+    return;
+  }
+  sdkFailureCooldownUntil.set(name, nowMs + Math.trunc(remainingMs));
 }
 
 /**
@@ -1145,6 +1214,11 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
       : process.env;
   const codexSessionEnv = applyNodeWarningSuppressionEnv(codexRuntimeEnv);
   const codexOpts = buildCodexSdkOptions(codexSessionEnv);
+  const explicitEnvModel = String(envOverrides?.CODEX_MODEL || "").trim();
+  if (explicitEnvModel) {
+    codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: explicitEnvModel };
+    codexOpts.config = { ...(codexOpts.config || {}), model: explicitEnvModel };
+  }
   const modelOverride = String(extra?.model || "").trim();
   if (modelOverride) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: modelOverride };
@@ -2384,6 +2458,7 @@ export async function launchEphemeralThread(
       ];
 
   let lastAttemptResult = null;
+  let primaryFailureResult = null;
   const triedSdkNames = [];
   const missingPrereqSdks = [];
   const cooledDownSdks = [];
@@ -2443,6 +2518,10 @@ export async function launchEphemeralThread(
       return result;
     }
 
+    if (name === primaryName) {
+      primaryFailureResult = result;
+    }
+
     applySdkFailureCooldown(name, result.error);
 
     if (name === primaryName) {
@@ -2459,6 +2538,16 @@ export async function launchEphemeralThread(
   const eligibleSdks = Array.from(
     new Set(attemptOrder.filter((name) => SDK_ADAPTERS[name] && !isDisabled(name))),
   );
+  const runnableSdks = eligibleSdks.filter((name) => {
+    const prereq = hasSdkPrerequisites(name, sessionEnv);
+    if (!prereq.ok) {
+      if (!missingPrereqSdks.some((entry) => entry.name === name)) {
+        missingPrereqSdks.push({ name, reason: prereq.reason });
+      }
+      return false;
+    }
+    return true;
+  });
   const cooledDownSet = new Set(cooledDownSdks.map((entry) => entry.name));
   const missingPrereqSet = new Set(missingPrereqSdks.map((entry) => entry.name));
   const allEligibleUnavailable =
@@ -2467,12 +2556,59 @@ export async function launchEphemeralThread(
       (name) => cooledDownSet.has(name) || missingPrereqSet.has(name),
     );
 
+  if (
+    !ignoreSdkCooldown &&
+    !lastAttemptResult &&
+    triedSdkNames.length === 0 &&
+    runnableSdks.length > 0 &&
+    runnableSdks.every((name) => cooledDownSet.has(name))
+  ) {
+    const forcedRetryOrder = runnableSdks.includes(primaryName)
+      ? [primaryName, ...runnableSdks.filter((name) => name !== primaryName)]
+      : runnableSdks;
+
+    for (const name of forcedRetryOrder) {
+      const cooldownRemainingMs = getSdkCooldownRemainingMs(name);
+      if (cooldownRemainingMs <= 0) continue;
+
+      const prereq = hasSdkPrerequisites(name, sessionEnv);
+      if (!prereq.ok) {
+        if (!missingPrereqSdks.some((entry) => entry.name === name)) {
+          missingPrereqSdks.push({ name, reason: prereq.reason });
+        }
+        continue;
+      }
+
+      const remainingSec = Math.max(1, Math.ceil(cooldownRemainingMs / 1000));
+      console.warn(
+        `${TAG} all eligible SDKs are cooling down; force-retrying "${name}" (${remainingSec}s remaining)`,
+      );
+
+      triedSdkNames.push(name);
+      const launcher = await SDK_ADAPTERS[name].load();
+      const result = await launcher(prompt, cwd, timeoutMs, launchExtra);
+      lastAttemptResult = result;
+
+      if (result.success) {
+        return result;
+      }
+
+      if (!shouldFallbackForSdkError(result.error)) {
+        return result;
+      }
+
+      applySdkFailureCooldown(name, result.error);
+      break;
+    }
+  }
+
   // If every eligible SDK is unavailable (cooldown and/or missing credentials),
   // force one cooled-down attempt so work is not blocked for the full cooldown window.
   const shouldForceCooldownBypassAttempt =
     !ignoreSdkCooldown &&
     !lastAttemptResult &&
-    cooledDownSdks.length > 0 &&
+    triedSdkNames.length === 0 &&
+    cooledDownSet.has(primaryName) &&
     allEligibleUnavailable;
   const forcedSdkName = shouldForceCooldownBypassAttempt
     ? cooledDownSet.has(primaryName)
@@ -2513,8 +2649,53 @@ export async function launchEphemeralThread(
     applySdkFailureCooldown(forcedSdkName, forcedResult.error);
   }
 
+  // Recovery path: when all SDKs were skipped due cooldown/prereq gates, force
+  // one direct attempt against cooled-down SDKs to surface a concrete error.
+  if (!lastAttemptResult && triedSdkNames.length === 0 && cooledDownSdks.length > 0) {
+    const cooledDownRescueOrder = cooledDownSdks
+      .map((entry) => entry.name)
+      .filter((name, idx, arr) => SDK_ADAPTERS[name] && arr.indexOf(name) === idx)
+      .sort((a, b) => {
+        if (a === primaryName) return -1;
+        if (b === primaryName) return 1;
+        return 0;
+      });
+
+    for (const name of cooledDownRescueOrder) {
+      const remainingMs = getSdkCooldownRemainingMs(name);
+      const remainingSec = Math.max(1, Math.ceil(remainingMs / 1000));
+      console.warn(
+        `${TAG} no runnable SDK remained after gating; rescue-attempting cooled-down SDK "${name}" (${remainingSec}s remaining)`,
+      );
+
+      triedSdkNames.push(name);
+      const launcher = await SDK_ADAPTERS[name].load();
+      const result = await launcher(prompt, cwd, timeoutMs, launchExtra);
+      lastAttemptResult = result;
+
+      if (result.success) {
+        return result;
+      }
+
+      if (!shouldFallbackForSdkError(result.error)) {
+        return result;
+      }
+
+      if (name === primaryName) {
+        primaryFailureResult = result;
+      }
+
+      applySdkFailureCooldown(name, result.error);
+    }
+  }
   // ── All SDKs exhausted ───────────────────────────────────────────────────
   if (lastAttemptResult) {
+    if (
+      primaryFailureResult &&
+      lastAttemptResult.sdk !== primaryFailureResult.sdk
+    ) {
+      return primaryFailureResult;
+    }
     return lastAttemptResult;
   }
 
@@ -2941,6 +3122,11 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
       : process.env;
   const codexSessionEnv = applyNodeWarningSuppressionEnv(codexRuntimeEnv);
   const codexOpts = buildCodexSdkOptions(codexSessionEnv);
+  const explicitEnvModel = String(envOverrides?.CODEX_MODEL || "").trim();
+  if (explicitEnvModel) {
+    codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: explicitEnvModel };
+    codexOpts.config = { ...(codexOpts.config || {}), model: explicitEnvModel };
+  }
   const modelOverride = String(extra?.model || "").trim();
   if (modelOverride) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: modelOverride };
@@ -3134,6 +3320,7 @@ async function resumeGenericThread(
  * @param {string}  [extra.sessionType] Interaction type used for context-shredding policy lookup.
  * @param {boolean} [extra.forceContextShredding] Force compression regardless of session type defaults.
  * @param {boolean} [extra.skipContextShredding]  Skip compression regardless of policy.
+ * @param {boolean} [extra.pinSdk]     Keep SDK pinned when provided (disables fallback).
  * @param {Function} [extra.onEvent]   Event callback.
  * @param {AbortController} [extra.abortController]
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string, threadId: string|null, resumed: boolean }>}
@@ -3158,8 +3345,8 @@ export async function launchOrResumeThread(
   restExtra.envOverrides = applyNodeWarningSuppressionEnv(restExtra.envOverrides);
   // Pass taskKey through as steer key so SDK launchers can register active sessions
   restExtra.taskKey = taskKey;
-  if (restExtra.sdk) {
-    // Task-bound runs with an explicit SDK should stay pinned to that SDK.
+  if (restExtra.sdk && restExtra.pinSdk === true) {
+    // Task-bound runs with an explicit SDK can optionally stay pinned to that SDK.
     restExtra.disableFallback = true;
   }
   timeoutMs = clampMonitorMonitorTimeout(timeoutMs, taskKey);

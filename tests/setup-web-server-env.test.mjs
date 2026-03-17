@@ -167,6 +167,36 @@ describe("setup web server non-blocking env defaults", () => {
     });
   });
 
+  it("preserves Azure v1 model routes without forcing the legacy api-version query", () => {
+    const result = buildModelsProbeRequest({
+      apiKey: "azure-secret",
+      baseUrl: "https://example-resource.openai.azure.com/openai/v1/chat/completions?api-version=2024-10-21",
+    });
+
+    expect(result).toEqual({
+      endpoint: "https://example-resource.openai.azure.com/openai/v1/models",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": "azure-secret",
+      },
+    });
+  });
+
+  it("normalizes Azure deployment endpoints to a stable models probe api-version", () => {
+    const result = buildModelsProbeRequest({
+      apiKey: "azure-secret",
+      baseUrl: "https://example-resource.openai.azure.com/openai/deployments/gpt-4.1/chat/completions?api-version=2025-01-01-preview",
+    });
+
+    expect(result).toEqual({
+      endpoint: "https://example-resource.openai.azure.com/openai/models?api-version=2024-10-21",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": "azure-secret",
+      },
+    });
+  });
+
   it("normalizes OpenAI-compatible v1 paths when building model probes", () => {
     const result = buildModelsProbeRequest({
       apiKey: "compat-secret",

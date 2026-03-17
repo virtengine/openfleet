@@ -187,6 +187,83 @@ describe("action.bosun_tool", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  action.build_task_prompt
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("action.build_task_prompt", () => {
+  const originalCacheAnchorMode = process.env.BOSUN_CACHE_ANCHOR_MODE;
+
+  afterEach(() => {
+    if (tmpDir) {
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+    if (originalCacheAnchorMode === undefined) {
+      delete process.env.BOSUN_CACHE_ANCHOR_MODE;
+    } else {
+      process.env.BOSUN_CACHE_ANCHOR_MODE = originalCacheAnchorMode;
+    }
+  });
+
+  it("splits user/system prompts and keeps system prompt stable across tasks", async () => {
+    process.env.BOSUN_CACHE_ANCHOR_MODE = "strict";
+    const handler = getNodeType("action.build_task_prompt");
+    const repoRoot = makeTmpDir();
+    writeFileSync(join(repoRoot, "AGENTS.md"), "Agent instructions for tests.");
+
+    const baseNode = {
+      id: "prompt-1",
+      type: "action.build_task_prompt",
+      config: {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        taskDescription: "{{taskDescription}}",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+        worktreePath: "{{worktreePath}}",
+        repoRoot: "{{repoRoot}}",
+        includeAgentsMd: false,
+        includeStatusEndpoint: false,
+      },
+    };
+
+    const ctxA = new WorkflowContext({
+      taskId: "task-abc",
+      taskTitle: "Cache anchor check",
+      taskDescription: "First task description",
+      branch: "task/cache-anchor",
+      baseBranch: "main",
+      worktreePath: join(repoRoot, ".bosun", "worktrees", "task-abc"),
+      repoRoot,
+    });
+    const resultA = await handler.execute(baseNode, ctxA);
+    const userPromptA = resultA.userPrompt || resultA.prompt;
+    const systemPromptA = resultA.systemPrompt || ctxA.data._taskSystemPrompt;
+
+    expect(userPromptA).toContain("Task ID: task-abc");
+    expect(userPromptA).toContain("## Environment");
+    expect(userPromptA).toContain("Co-authored-by: bosun-ve[bot]");
+    expect(systemPromptA).toBeTruthy();
+    expect(systemPromptA).not.toContain("task-abc");
+    expect(systemPromptA).not.toContain("Cache anchor check");
+    expect(systemPromptA).not.toContain("task/cache-anchor");
+
+    const ctxB = new WorkflowContext({
+      taskId: "task-xyz",
+      taskTitle: "Different task",
+      taskDescription: "Second task description",
+      branch: "task/different",
+      baseBranch: "main",
+      worktreePath: join(repoRoot, ".bosun", "worktrees", "task-xyz"),
+      repoRoot,
+    });
+    const resultB = await handler.execute(baseNode, ctxB);
+    const systemPromptB = resultB.systemPrompt || ctxB.data._taskSystemPrompt;
+
+    expect(systemPromptB).toBe(systemPromptA);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  action.invoke_workflow
 // ═══════════════════════════════════════════════════════════════════════════
 

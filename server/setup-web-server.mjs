@@ -69,11 +69,16 @@ function buildModelsProbeRequest({ apiKey = "", baseUrl = "" } = {}) {
       return { endpoint: parsed.toString(), headers };
     }
 
+    if (isAzure && (lowerPath === "/openai/v1" || lowerPath.startsWith("/openai/v1/"))) {
+      parsed.pathname = "/openai/v1/models";
+      parsed.search = "";
+      return { endpoint: parsed.toString(), headers };
+    }
+
     if (isAzure || lowerPath === "/openai" || lowerPath.startsWith("/openai/")) {
       parsed.pathname = "/openai/models";
-      if (!parsed.searchParams.has("api-version")) {
-        parsed.searchParams.set("api-version", "2024-10-21");
-      }
+      parsed.search = "";
+      parsed.searchParams.set("api-version", "2024-10-21");
       return { endpoint: parsed.toString(), headers };
     }
 

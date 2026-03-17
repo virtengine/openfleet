@@ -357,8 +357,14 @@ async function testProfileMatch(criteria = {}) {
   return res?.data || { best: null, candidates: [], plan: null, auto: { shouldAutoApply: false } };
 }
 
-async function fetchLibrarySources() {
-  const res = await apiFetch("/api/library/sources?probe=1");
+async function fetchLibrarySources(options = {}) {
+  const params = new URLSearchParams();
+  if (options?.probe) params.set("probe", "1");
+  if (options?.refresh) params.set("refresh", "1");
+  if (options?.sourceId) params.set("sourceId", String(options.sourceId));
+  const qs = params.toString();
+  const path = qs ? "/api/library/sources?" + qs : "/api/library/sources";
+  const res = await apiFetch(path);
   return res?.data || [];
 }
 
@@ -451,15 +457,37 @@ const TYPE_LABELS = { prompt: "Prompt", agent: "Agent Profile", skill: "Skill", 
 const TYPE_COLORS = { prompt: "#58a6ff", agent: "#af7bff", skill: "#3fb950", mcp: "#f59e0b" };
 const STORAGE_SCOPE_LABELS = { repo: "Repo", workspace: "Workspace", global: "Global" };
 const STORAGE_SCOPE_COLORS = { repo: "info", workspace: "warning", global: "default" };
-const AGENT_TYPE_OPTIONS = Object.freeze([
-  { value: "voice", label: "Voice" },
-  { value: "task", label: "Task" },
-  { value: "chat", label: "Chat" },
+const AGENT_CATEGORY_OPTIONS = Object.freeze([
+  { value: "task", label: "Task Template" },
+  { value: "interactive", label: "Manual Chat Agent" },
+  { value: "voice", label: "Voice Agent" },
+]);
+const INTERACTIVE_MODE_OPTIONS = Object.freeze([
+  { value: "ask", label: "Ask" },
+  { value: "agent", label: "Agent" },
+  { value: "plan", label: "Plan" },
+  { value: "web", label: "Web" },
+  { value: "instant", label: "Instant" },
+  { value: "custom", label: "Custom" },
 ]);
 
-function normalizeAgentType(rawType) {
-  const value = String(rawType || "").trim().toLowerCase();
-  if (value === "voice" || value === "task" || value === "chat") return value;
+function normalizeAgentCategory(rawCategory) {
+  const value = String(rawCategory || "").trim().toLowerCase();
+  if (value === "voice" || value === "task" || value === "interactive") return value;
+  return "task";
+}
+
+function normalizeInteractiveMode(rawMode, agentCategory = "task") {
+  const value = String(rawMode || "").trim().toLowerCase();
+  if (["ask", "agent", "plan", "web", "instant", "custom"].includes(value)) return value;
+  if (agentCategory === "interactive") return "agent";
+  if (agentCategory === "voice") return "voice";
+  return "";
+}
+
+function deriveAgentTypeFromCategory(agentCategory) {
+  if (agentCategory === "voice") return "voice";
+  if (agentCategory === "interactive") return "chat";
   return "task";
 }
 
@@ -476,9 +504,12 @@ function normalizeStorageScope(rawScope, fallback = "repo") {
   return fallback;
 }
 
-function inferAgentTypeFromEntry(entry, parsedContent) {
-  const explicit = normalizeAgentType(parsedContent?.agentType);
-  if (parsedContent?.agentType) return explicit;
+function inferAgentCategoryFromEntry(entry, parsedContent) {
+  const explicitCategory = normalizeAgentCategory(parsedContent?.agentCategory || entry?.agentCategory);
+  if (parsedContent?.agentCategory || entry?.agentCategory) return explicitCategory;
+  const explicitType = String(parsedContent?.agentType || entry?.agentType || "").trim().toLowerCase();
+  if (explicitType === "chat") return "interactive";
+  if (explicitType === "voice") return "voice";
   if (parsedContent?.voiceAgent === true) return "voice";
   const id = String(entry?.id || "").trim().toLowerCase();
   const tags = Array.isArray(entry?.tags)
@@ -487,6 +518,21 @@ function inferAgentTypeFromEntry(entry, parsedContent) {
   if (id.startsWith("voice-agent")) return "voice";
   if (tags.includes("voice") || tags.includes("audio-agent") || tags.includes("realtime")) return "voice";
   return "task";
+}
+
+function inferInteractiveModeFromEntry(entry, parsedContent) {
+  const category = inferAgentCategoryFromEntry(entry, parsedContent);
+  return normalizeInteractiveMode(parsedContent?.interactiveMode || entry?.interactiveMode, category);
+}
+
+function inferInteractiveLabelFromEntry(entry, parsedContent) {
+  return String(parsedContent?.interactiveLabel || entry?.interactiveLabel || "").trim();
+}
+
+function inferShowInChatDropdown(entry, parsedContent) {
+  const explicit = parsedContent?.showInChatDropdown;
+  if (typeof explicit === "boolean") return explicit;
+  return entry?.showInChatDropdown === true;
 }
 
 const AUDIO_AGENT_TEMPLATES = Object.freeze({
@@ -506,6 +552,8 @@ const AUDIO_AGENT_TEMPLATES = Object.freeze({
       promptOverride: null,
       skills: ["concise-voice-guidance", "conversation-memory"],
       agentType: "voice",
+      agentCategory: "voice",
+      interactiveMode: "voice",
       voiceAgent: true,
       voicePersona: "female",
       voiceInstructions: "You are Nova, a female voice agent. Be concise, warm, and practical. Use tools for facts and execution. Keep spoken responses short and clear.",
@@ -527,6 +575,8 @@ const AUDIO_AGENT_TEMPLATES = Object.freeze({
       promptOverride: null,
       skills: ["ops-diagnostics", "task-execution"],
       agentType: "voice",
+      agentCategory: "voice",
+      interactiveMode: "voice",
       voiceAgent: true,
       voicePersona: "male",
       voiceInstructions: "You are Atlas, a male voice agent. Be direct and execution-oriented. Prefer actionable status updates. Use tools proactively for diagnostics.",
@@ -618,7 +668,10 @@ function LibraryCard({ entry, onSelect }) {
             sx=${{ fontSize: "0.74em" }}
           />
           ${entry.type === "agent" && entry.agentType && html`
-            <${Chip} label=${String(entry.agentType).toUpperCase()} size="small" variant="outlined" sx=${{ fontSize: "0.75em" }} />
+            <${Chip} label=${String(entry.agentCategory || entry.agentType).replace(/(^.|\s+.)/g, (m) => m.toUpperCase())} size="small" variant="outlined" sx=${{ fontSize: "0.75em" }} />
+          `}
+          ${entry.type === "agent" && entry.agentCategory === "interactive" && (entry.interactiveLabel || entry.interactiveMode) && html`
+            <${Chip} label=${entry.interactiveLabel || String(entry.interactiveMode || "").toUpperCase()} size="small" variant="outlined" sx=${{ fontSize: "0.75em" }} />
           `}
           ${(entry.tags || []).slice(0, 5).map((tag) => html`
             <${Chip} key=${tag} label=${tag} size="small" sx=${{ fontSize: "0.75em", bgcolor: "primary.main", color: "#fff", opacity: 0.8 }} />
@@ -644,7 +697,10 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
     tags: normalizeTags(entry?.tags).join(", "),
     scope: entry?.scope || "global",
     storageScope: normalizeStorageScope(entry?.storageScope, "repo"),
-    agentType: inferAgentTypeFromEntry(entry, null),
+    agentCategory: inferAgentCategoryFromEntry(entry, null),
+    interactiveMode: inferInteractiveModeFromEntry(entry, null),
+    interactiveLabel: inferInteractiveLabelFromEntry(entry, null),
+    showInChatDropdown: inferShowInChatDropdown(entry, null),
     content: typeof entry?.content === "string" ? entry.content : "",
   };
   const [form, setForm] = useState(initialFormSnapshot);
@@ -670,7 +726,10 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
       tags: normalizeTags(entry?.tags).join(", "),
       scope: entry?.scope || "global",
       storageScope: normalizeStorageScope(entry?.storageScope, "repo"),
-      agentType: inferAgentTypeFromEntry(entry, null),
+      agentCategory: inferAgentCategoryFromEntry(entry, null),
+      interactiveMode: inferInteractiveModeFromEntry(entry, null),
+      interactiveLabel: inferInteractiveLabelFromEntry(entry, null),
+      showInChatDropdown: inferShowInChatDropdown(entry, null),
       content: "",
     };
     setForm(next);
@@ -694,7 +753,10 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
             ...f,
             content: contentStr,
             storageScope: normalizeStorageScope(detail?.storageScope || f.storageScope, "repo"),
-            agentType: inferAgentTypeFromEntry(detail || entry, parsed),
+            agentCategory: inferAgentCategoryFromEntry(detail || entry, parsed),
+            interactiveMode: inferInteractiveModeFromEntry(detail || entry, parsed),
+            interactiveLabel: inferInteractiveLabelFromEntry(detail || entry, parsed),
+            showInChatDropdown: inferShowInChatDropdown(detail || entry, parsed),
           };
           setBaseline(next);
           return next;
@@ -738,12 +800,27 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
           showToast("Agent profile content must be valid JSON", "error");
           return false;
         }
-        const agentType = normalizeAgentType(form.agentType);
+        const agentCategory = normalizeAgentCategory(form.agentCategory);
+        const agentType = deriveAgentTypeFromCategory(agentCategory);
         content.agentType = agentType;
-        if (agentType === "voice") {
+        content.agentCategory = agentCategory;
+        if (agentCategory === "voice") {
           content.voiceAgent = true;
+          content.interactiveMode = "voice";
+          delete content.showInChatDropdown;
         } else if (content.voiceAgent === true) {
           content.voiceAgent = false;
+        }
+        if (agentCategory === "interactive") {
+          const interactiveMode = normalizeInteractiveMode(form.interactiveMode, agentCategory);
+          content.interactiveMode = interactiveMode || "agent";
+          if (String(form.interactiveLabel || "").trim()) content.interactiveLabel = String(form.interactiveLabel || "").trim();
+          else delete content.interactiveLabel;
+          content.showInChatDropdown = form.showInChatDropdown === true;
+        } else {
+          delete content.interactiveLabel;
+          if (agentCategory !== "voice") delete content.interactiveMode;
+          delete content.showInChatDropdown;
         }
       }
       const res = await saveEntry({
@@ -810,6 +887,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
           promptOverride: null,
           skills: [],
           agentType: "task",
+          agentCategory: "task",
           tags: [],
         }, null, 2)
       : "# Skill Title\n\n## Purpose\nDescribe what this skill teaches agents.\n\n## Instructions\n...";
@@ -858,11 +936,24 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
         <//>
         ${form.type === "agent" && html`
           <${FormControl} fullWidth size="small">
-            <${InputLabel}>Agent Type<//>
-            <${Select} value=${normalizeAgentType(form.agentType)} onChange=${updateField("agentType")} label="Agent Type">
-              ${AGENT_TYPE_OPTIONS.map((opt) => html`<${MenuItem} key=${opt.value} value=${opt.value}>${opt.label}<//>`)}
+            <${InputLabel}>Agent Category<//>
+            <${Select} value=${normalizeAgentCategory(form.agentCategory)} onChange=${updateField("agentCategory")} label="Agent Category">
+              ${AGENT_CATEGORY_OPTIONS.map((opt) => html`<${MenuItem} key=${opt.value} value=${opt.value}>${opt.label}<//>`)}
             <//>
           <//>
+        `}
+        ${form.type === "agent" && normalizeAgentCategory(form.agentCategory) === "interactive" && html`
+          <${FormControl} fullWidth size="small">
+            <${InputLabel}>Manual Agent Type<//>
+            <${Select} value=${normalizeInteractiveMode(form.interactiveMode, form.agentCategory)} onChange=${updateField("interactiveMode")} label="Manual Agent Type">
+              ${INTERACTIVE_MODE_OPTIONS.map((opt) => html`<${MenuItem} key=${opt.value} value=${opt.value}>${opt.label}<//>`)}
+            <//>
+          <//>
+          <${TextField} size="small" fullWidth label="Type Label / Section" value=${form.interactiveLabel} onInput=${updateField("interactiveLabel")} placeholder="Optional custom group label, e.g. Research or Reviewer" />
+          <${FormControlLabel}
+            control=${html`<${Switch} checked=${form.showInChatDropdown === true} onChange=${(e) => setForm((f) => ({ ...f, showInChatDropdown: e.target.checked }))} />`}
+            label="Show in chat dropdown"
+          />
         `}
         <${Box}>
           <${Typography} variant="caption" color="text.secondary" sx=${{ mb: 0.5, display: "block" }}>Content<//>
@@ -873,7 +964,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
         <//>
         <${Typography} variant="caption" color="text.secondary" sx=${{ mt: -1 }}>
           ${form.type === "prompt" ? "Use {{VARIABLE_NAME}} for template variables. Reference in workflows as {{prompt:name}}."
-          : form.type === "agent" ? "JSON format. Referenced in workflows as {{agent:name}}."
+          : form.type === "agent" ? "JSON format. Task templates stay in workflow resolution; interactive profiles can also appear in the chat dropdown."
             : form.type === "mcp" ? "MCP server configuration. Managed via the MCP Servers panel."
             : "Markdown format. Referenced in workflows as {{skill:name}}."}
         <//>
@@ -2432,6 +2523,20 @@ const MARKETPLACE_CATEGORIES = [
   { id: "mcp", label: "MCP" },
 ];
 
+const MARKETPLACE_PROBE_TTL_MS = 5 * 60 * 1000;
+let marketplaceSourcesCache = [];
+let marketplaceSourcesProbedAt = 0;
+
+function normalizeMarketplaceSources(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function setMarketplaceSourcesCache(value, { probed = false } = {}) {
+  marketplaceSourcesCache = normalizeMarketplaceSources(value);
+  if (probed) marketplaceSourcesProbedAt = Date.now();
+  return marketplaceSourcesCache;
+}
+
 function getTrustTier(source) {
   const tier = String(source?.trustTier || "").toLowerCase();
   if (tier === "official" || tier === "partner") return { label: "Official", color: "#22c55e", icon: "🏢" };
@@ -2439,9 +2544,33 @@ function getTrustTier(source) {
   return { label: "Unknown", color: "#6b7280", icon: "❔" };
 }
 
+export function buildMarketplaceImportPayload(sourceId, previewData, selectedPaths) {
+  const source = previewData?.source && typeof previewData.source === "object"
+    ? previewData.source
+    : {};
+  const payload = {
+    importAgents: true,
+    importSkills: true,
+    importPrompts: true,
+    importTools: true,
+    includeEntries: selectedPaths,
+  };
+
+  const normalizedSourceId = String(sourceId || source.id || "").trim();
+  const repoUrl = String(source.repoUrl || previewData?.repoUrl || "").trim();
+  const branch = String(source.defaultBranch || source.branch || previewData?.branch || "").trim();
+
+  if (normalizedSourceId) payload.sourceId = normalizedSourceId;
+  if (repoUrl) payload.repoUrl = repoUrl;
+  if (branch) payload.branch = branch;
+
+  return payload;
+}
+
 function LibraryMarketplace({ onImported }) {
-  const [sources, setSources] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [sources, setSources] = useState(() => normalizeMarketplaceSources(marketplaceSourcesCache));
+  const [loading, setLoading] = useState(() => marketplaceSourcesCache.length === 0);
+  const [refreshing, setRefreshing] = useState(false);
   const [searchText, setSearchText] = useState("");
   const [activeCategory, setActiveCategory] = useState("all");
   const [expandedSource, setExpandedSource] = useState(null);
@@ -2454,18 +2583,65 @@ function LibraryMarketplace({ onImported }) {
   const [customBranch, setCustomBranch] = useState("main");
   const [showCustom, setShowCustom] = useState(false);
 
+  const applySources = useCallback((data, options = {}) => {
+    const next = setMarketplaceSourcesCache(data, options);
+    setSources(next);
+  }, []);
+
+  const refreshSources = useCallback(async ({ probe = true, refresh = false, background = false } = {}) => {
+    if (background) setRefreshing(true);
+    else setLoading(true);
+    try {
+      const data = await fetchLibrarySources({ probe, refresh });
+      applySources(data, { probed: probe });
+    } catch (err) {
+      if (!background) {
+        showToast(`Failed to load marketplace sources: ${parseApiError(err)}`, "error");
+      }
+    } finally {
+      if (background) setRefreshing(false);
+      else setLoading(false);
+    }
+  }, [applySources]);
+
   useEffect(() => {
     let alive = true;
-    setLoading(true);
-    fetchLibrarySources()
-      .then((data) => {
+    const load = async () => {
+      if (!marketplaceSourcesCache.length) {
+        try {
+          const data = await fetchLibrarySources();
+          if (!alive) return;
+          applySources(data);
+        } catch (err) {
+          if (alive) {
+            showToast(`Failed to load marketplace sources: ${parseApiError(err)}`, "error");
+          }
+        } finally {
+          if (alive) setLoading(false);
+        }
+      } else if (alive) {
+        setLoading(false);
+      }
+
+      if (!alive) return;
+      const probeIsFresh = marketplaceSourcesProbedAt > 0 && (Date.now() - marketplaceSourcesProbedAt) < MARKETPLACE_PROBE_TTL_MS;
+      if (probeIsFresh) return;
+
+      setRefreshing(true);
+      try {
+        const data = await fetchLibrarySources({ probe: true });
         if (!alive) return;
-        setSources(Array.isArray(data) ? data : []);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
+        applySources(data, { probed: true });
+      } catch {
+        // best effort background refresh
+      } finally {
+        if (alive) setRefreshing(false);
+      }
+    };
+
+    load();
     return () => { alive = false; };
-  }, []);
+  }, [applySources]);
 
   const filteredSources = useMemo(() => {
     let list = [...sources];
@@ -2507,14 +2683,7 @@ function LibraryMarketplace({ onImported }) {
   const doImportSource = useCallback(async (sourceId, selectedPaths) => {
     setImporting(sourceId);
     try {
-      const payload = {
-        sourceId,
-        importAgents: true,
-        importSkills: true,
-        importPrompts: true,
-        importTools: true,
-        includeEntries: selectedPaths,
-      };
+      const payload = buildMarketplaceImportPayload(sourceId, previewData, selectedPaths);
       const res = await importLibrarySource(payload);
       if (!res?.ok) throw new Error(res?.error || "Import failed");
       const count = Number(res?.data?.importedCount || 0);
@@ -2534,7 +2703,7 @@ function LibraryMarketplace({ onImported }) {
       showToast(`Import failed: ${parseApiError(err)}`, "error");
     }
     setImporting(null);
-  }, [onImported]);
+  }, [onImported, previewData]);
 
   const doImportAll = useCallback(async (sourceId) => {
     setImporting(sourceId);
@@ -2574,11 +2743,28 @@ function LibraryMarketplace({ onImported }) {
   return html`
     <div style="margin-top:10px;padding:12px;border:1px solid var(--border,#333);border-radius:10px;">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
-        <div style="font-size:0.95em;font-weight:600;">${iconText(":package: Library Marketplace")}</div>
-        <${Button} variant="text" size="small" onClick=${() => setShowCustom((v) => !v)}
-          style=${{ fontSize: "0.75em", textTransform: "none" }}>
-          ${showCustom ? "Hide Custom URL" : "Custom URL Import"}
-        <//>
+        <div>
+          <div style="font-size:0.95em;font-weight:600;">${iconText(":package: Library Marketplace")}</div>
+          <div style="font-size:0.76em;color:var(--text-secondary);margin-top:2px;">
+            Fast source metadata loads first; health and branch checks refresh separately.
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+          ${refreshing && !loading ? html`
+            <span style="font-size:0.74em;color:var(--text-secondary);display:inline-flex;align-items:center;gap:5px;">
+              <${Spinner} size=${12} /> Refreshing source health…
+            </span>
+          ` : null}
+          <${Button} variant="text" size="small" onClick=${() => refreshSources({ probe: true, refresh: true, background: true })}
+            disabled=${refreshing || loading}
+            style=${{ fontSize: "0.75em", textTransform: "none" }}>
+            ${refreshing && !loading ? "Refreshing…" : "Refresh Health"}
+          <//>
+          <${Button} variant="text" size="small" onClick=${() => setShowCustom((v) => !v)}
+            style=${{ fontSize: "0.75em", textTransform: "none" }}>
+            ${showCustom ? "Hide Custom URL" : "Custom URL Import"}
+          <//>
+        </div>
       </div>
 
       ${/* ── Search Bar ── */ ""}
@@ -2823,6 +3009,18 @@ export function LibraryTab() {
     return list;
   }, [entries.value, filterType.value]);
 
+  const groupedAgentSections = useMemo(() => {
+    if (filterType.value !== "agent") return [];
+    const interactive = displayed.filter((entry) => entry.agentCategory === "interactive");
+    const voice = displayed.filter((entry) => entry.agentCategory === "voice");
+    const task = displayed.filter((entry) => !entry.agentCategory || entry.agentCategory === "task");
+    return [
+      { key: "interactive", title: "Manual Chat Agents", items: interactive },
+      { key: "voice", title: "Voice Agents", items: voice },
+      { key: "task", title: "Task Templates", items: task },
+    ].filter((section) => section.items.length > 0);
+  }, [displayed, filterType.value]);
+
   return html`
     <div class="library-root">
       <div class="library-header">
@@ -2863,7 +3061,6 @@ export function LibraryTab() {
       </div>
 
       ${filterType.value !== "mcp" && html`<${ProfileMatcher} />`}
-      ${filterType.value !== "mcp" && html`<${LibraryMarketplace} onImported=${loadEntries} />`}
       ${filterType.value !== "mcp" && html`<${ScopeDetector} />`}
 
       ${/* ── MCP Marketplace View ── */
@@ -2889,11 +3086,29 @@ export function LibraryTab() {
       `}
 
       ${filterType.value !== "mcp" && !loading && displayed.length > 0 && html`
-        <div class="library-grid">
-          ${displayed.map((e) => html`
-            <${LibraryCard} key=${e.id} entry=${e} onSelect=${handleSelect} />
-          `)}
-        </div>
+        ${filterType.value === "agent"
+          ? html`
+            ${groupedAgentSections.map((section) => html`
+              <${Box} key=${section.key} sx=${{ display: "flex", flexDirection: "column", gap: 1.25, mb: 2 }}>
+                <${Stack} direction="row" alignItems="center" spacing=${1}>
+                  <${Typography} variant="subtitle2">${section.title}<//>
+                  <${Chip} label=${section.items.length} size="small" variant="outlined" />
+                <//>
+                <div class="library-grid">
+                  ${section.items.map((e) => html`
+                    <${LibraryCard} key=${e.id} entry=${e} onSelect=${handleSelect} />
+                  `)}
+                </div>
+              </${Box}>
+            `)}
+          `
+          : html`
+            <div class="library-grid">
+              ${displayed.map((e) => html`
+                <${LibraryCard} key=${e.id} entry=${e} onSelect=${handleSelect} />
+              `)}
+            </div>
+          `}
       `}
 
       ${editing && html`
@@ -2903,6 +3118,23 @@ export function LibraryTab() {
           onSaved=${handleSaved}
           onDeleted=${handleDeleted} />
       `}
+    </div>
+  `;
+}
+
+export function LibraryMarketplaceTab() {
+  injectStyles();
+
+  const handleImported = useCallback(() => {
+    refreshTab("library", { background: true, manual: false, force: true });
+  }, []);
+
+  return html`
+    <div class="library-root">
+      <div class="library-header">
+        <h2>${iconText(":package: Marketplace")}</h2>
+      </div>
+      <${LibraryMarketplace} onImported=${handleImported} />
     </div>
   `;
 }

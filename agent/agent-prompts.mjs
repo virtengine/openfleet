@@ -143,13 +143,10 @@ export function renderPromptTemplate(template, values = {}, rootDir) {
     }
   }
 
-  const rendered = result.replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, (full, key) => {
+  return result.replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, (full, key) => {
     const hit = normalized[String(key).toUpperCase()];
     return hit == null ? "" : hit;
   });
-
-  // Final guardrail: never leak unresolved placeholders to downstream agents.
-  return rendered.replace(/\{\{\s*[\w.-]+\s*\}\}/g, "");
 }
 
 /**

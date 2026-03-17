@@ -585,62 +585,95 @@ describe("launchEphemeralThread", () => {
     nowSpy.mockRestore();
   });
 
+  it("force-retries a cooled primary SDK when no other SDK is eligible", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
+    setPoolSdk("codex");
+    setSdkFailureCooldownForTest("codex", 600000);
+
+    mockCodexStartThread.mockImplementationOnce(() =>
+      makeCodexMockThread("forced-retry-success", "codex-recovered"),
+    );
+
+    const result = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+      sdk: "codex",
+      disableFallback: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.sdk).toBe("codex");
+    expect(result.output).toContain("codex-recovered");
+    expect(mockCodexStartThread).toHaveBeenCalledTimes(1);
+  });
+
+  it("force-retries cooled codex without requiring env API keys", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
+    setPoolSdk("codex");
+    setSdkFailureCooldownForTest("codex", 600000);
+
+    mockCodexStartThread.mockImplementationOnce(() =>
+      makeCodexMockThread("forced-retry-no-env-key-success", "codex-recovered-no-env-key"),
+    );
+
+    const result = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+      sdk: "codex",
+      disableFallback: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.sdk).toBe("codex");
+    expect(result.output).toContain("codex-recovered-no-env-key");
+    expect(mockCodexStartThread).toHaveBeenCalledTimes(1);
+  });
+
+  it("force-retries cooled SDKs when remaining enabled fallback lacks prerequisites", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    delete process.env.ANTHROPIC_API_KEY;
+    setPoolSdk("codex");
+    setSdkFailureCooldownForTest("codex", 600000);
+
+    mockCodexStartThread.mockImplementationOnce(() =>
+      makeCodexMockThread("forced-retry-missing-claude-success", "codex-recovered-with-missing-claude"),
+    );
+
+    const result = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+      sdk: "codex",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.sdk).toBe("codex");
+    expect(result.output).toContain("codex-recovered-with-missing-claude");
+    expect(mockCodexStartThread).toHaveBeenCalledTimes(1);
+  });
+
+  it("rescue-attempts a cooled primary SDK before returning no-sdk errors", async () => {
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
+    setPoolSdk("codex");
+    setSdkFailureCooldownForTest("codex", 120000);
+
+    const result = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+      sdk: "codex",
+      disableFallback: true,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.sdk).toBe("codex");
+    expect(result.error).toMatch(/codex/i);
+    expect(result.error).not.toMatch(/no sdk available/i);
+  });
+
   it("retries primary SDK during cooldown when fallback SDKs are missing credentials", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
     process.env.OPENAI_API_KEY = "test-key";
     process.env.COPILOT_SDK_DISABLED = "1";
     delete process.env.ANTHROPIC_API_KEY;
-    process.env.AGENT_POOL_SDK_FAILURE_COOLDOWN_MS = "1000";
-    setPoolSdk("codex");
-
-    const nowSpy = vi.spyOn(Date, "now");
-    nowSpy.mockReturnValue(1_000_000);
-
-    const makeTimeoutThread = (id) => ({
-      id,
-      runStreamed: async (_prompt, { signal } = {}) => {
-        await new Promise((_, reject) => {
-          const abortNow = () => {
-            const err = new Error("aborted");
-            err.name = "AbortError";
-            reject(err);
-          };
-          if (signal?.aborted) {
-            abortNow();
-            return;
-          }
-          signal?.addEventListener("abort", abortNow, { once: true });
-        });
-      },
-    });
-
-    mockCodexStartThread.mockImplementation(() =>
-      makeTimeoutThread("cooldown-missing-prereq-timeout"),
-    );
-
-    const first = await launchEphemeralThread("test prompt", process.cwd(), 25, {
-      sdk: "codex",
-    });
-    expect(first.success).toBe(false);
-    expect(first.error).toMatch(/codex timeout/i);
-    expect(mockCodexStartThread).toHaveBeenCalledTimes(1);
-
-    const second = await launchEphemeralThread("test prompt", process.cwd(), 25, {
-      sdk: "codex",
-    });
-    expect(second.success).toBe(false);
-    expect(second.error).toMatch(/codex timeout/i);
-    expect(second.error).not.toMatch(/no SDK available/i);
-    expect(mockCodexStartThread).toHaveBeenCalledTimes(2);
-
-    nowSpy.mockRestore();
-  });
-
-  it("bypasses primary prerequisite gate during cooldown when no fallback SDK is eligible", async () => {
-    process.env.__MOCK_CODEX_AVAILABLE = "1";
-    process.env.OPENAI_API_KEY = "test-key";
-    process.env.COPILOT_SDK_DISABLED = "1";
-    process.env.CLAUDE_SDK_DISABLED = "1";
     process.env.AGENT_POOL_SDK_FAILURE_COOLDOWN_MS = "1000";
     setPoolSdk("codex");
 

@@ -1422,8 +1422,3 @@ export function installRecommendedTemplates(engine, overridesById = {}) {
     .map((template) => template.id);
   return installTemplateSet(engine, recommendedIds, overridesById);
 }
-
-
-
-
-

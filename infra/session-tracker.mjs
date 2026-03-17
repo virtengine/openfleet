@@ -12,7 +12,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { buildSessionInsights } from "../lib/session-insights.mjs";
@@ -20,7 +20,20 @@ import { isTestRuntime } from "./test-runtime.mjs";
 import { addCompletedSession } from "./runtime-accumulator.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SESSIONS_DIR = resolve(__dirname, "..", "logs", "sessions");
+const WORKSPACE_MIRROR_MARKER = `${sep}.bosun${sep}workspaces${sep}`.toLowerCase();
+
+function resolveSessionTrackerSourceRepoRoot(startDir = __dirname) {
+  const normalized = resolve(startDir);
+  const lower = normalized.toLowerCase();
+  const mirrorIndex = lower.indexOf(WORKSPACE_MIRROR_MARKER);
+  if (mirrorIndex >= 0) {
+    return normalized.slice(0, mirrorIndex);
+  }
+  return resolve(normalized, "..");
+}
+
+const SESSION_TRACKER_REPO_ROOT = resolveSessionTrackerSourceRepoRoot(__dirname);
+const SESSIONS_DIR = resolve(SESSION_TRACKER_REPO_ROOT, "logs", "sessions");
 
 const TAG = "[session-tracker]";
 
@@ -55,6 +68,11 @@ function resolveSessionTrackerPersistDir(options = {}) {
   }
   return isTestRuntime() ? null : SESSIONS_DIR;
 }
+
+export const _test = Object.freeze({
+  resolveSessionTrackerSourceRepoRoot,
+  resolveSessionTrackerPersistDir,
+});
 
 function resolveSessionMaxMessages(type, metadata, explicitMax, fallbackMax) {
   if (Number.isFinite(explicitMax)) {
@@ -575,18 +593,27 @@ export class SessionTracker {
   listAllSessions() {
     const list = [];
     for (const s of this.#sessions.values()) {
+      const progress = s.status === "active"
+        ? this.getProgressStatus(s.id || s.taskId)
+        : null;
+      const derivedStatus = progress?.status === "ended"
+        ? "completed"
+        : (progress?.status || s.status);
       list.push({
         id: s.id || s.taskId,
         taskId: s.taskId,
         title: s.taskTitle || s.title || null,
         type: s.type || "task",
-        status: s.status,
+        status: derivedStatus,
         workspaceId: String(s?.metadata?.workspaceId || "").trim() || null,
         workspaceDir: String(s?.metadata?.workspaceDir || "").trim() || null,
         branch: String(s?.metadata?.branch || "").trim() || null,
         turnCount: s.turnCount || 0,
         createdAt: s.createdAt || new Date(s.startedAt).toISOString(),
         lastActiveAt: s.lastActiveAt || new Date(s.lastActivityAt).toISOString(),
+        idleMs: progress?.idleMs ?? 0,
+        elapsedMs: progress?.elapsedMs ?? Math.max(0, Date.now() - Number(s.startedAt || Date.now())),
+        recommendation: progress?.recommendation || "none",
         preview: this.#lastMessagePreview(s),
         lastMessage: this.#lastMessagePreview(s),
         insights: s.insights || null,

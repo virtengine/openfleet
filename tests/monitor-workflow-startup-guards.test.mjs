@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 describe("monitor workflow startup guards", () => {
   const monitorSource = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
+  const maintenanceSource = readFileSync(resolve(process.cwd(), "infra/maintenance.mjs"), "utf8");
 
   it("initializes workflow automation before runtime subsystems in non-test mode", () => {
     expect(monitorSource).toContain("if (!isMonitorTestRuntime) {");
@@ -131,6 +132,14 @@ describe("monitor workflow startup guards", () => {
       "CLI command mode in source checkout",
     );
   });
+
+  it("repairs core.bare corruption against the bosun repo root", () => {
+    expect(monitorSource).toContain('fixGitConfigCorruption(resolve(__dirname, ".."));');
+    expect(monitorSource).not.toContain('fixGitConfigCorruption(resolve(__dirname, "..", ".."));');
+    expect(maintenanceSource).toContain('const repoRoot = resolve(import.meta.dirname || ".", "..");');
+    expect(maintenanceSource).not.toContain('const repoRoot = resolve(import.meta.dirname || ".", "..", "..");');
+  });
+
   it("uses BOSUN_PROMPT_PLANNER path before workspace-root planner fallback", () => {
     expect(monitorSource).toContain("process.env.BOSUN_PROMPT_PLANNER");
     expect(monitorSource).toContain("BOSUN_PROMPT_PLANNER=");
