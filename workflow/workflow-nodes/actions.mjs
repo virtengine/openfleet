@@ -103,6 +103,8 @@ import {
   trimLogText,
 } from "./definitions.mjs";
 
+// CLAUDE:SUMMARY — workflow-nodes/actions
+// Implements built-in workflow action nodes, including task prompt assembly and execution helpers.
 const HTML_TEXT_BREAK_TAGS = new Set([
   "address",
   "article",

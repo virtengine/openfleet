@@ -59,6 +59,8 @@ import {
   stopCustomNodeDiscovery,
 } from "./workflow-nodes/custom-loader.mjs";
 
+// CLAUDE:SUMMARY — workflow-nodes
+// Registers built-in workflow node types and shared prompt/runtime actions for Bosun workflows.
 const TAG = "[workflow-nodes]";
 let customLoadPromise = null;
 let customDiscoveryStarted = false;

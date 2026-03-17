@@ -31,6 +31,9 @@ import {
   installTemplate,
 } from "../workflow/workflow-templates.mjs";
 
+// CLAUDE:SUMMARY — workflow-task-lifecycle tests
+// Exercises task lifecycle workflow nodes and template wiring, including prompt assembly and cache anchoring.
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function makeCtx(data = {}) {
