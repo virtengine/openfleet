@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Installation &amp; Deployment — Bosun Docs</title>
+    <meta name="description"
+        content="Install and deploy Bosun via npm, source, Docker Hub, docker-compose, or the Electron desktop app." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+        rel="stylesheet" />
+    <link rel="stylesheet" href="../css/main.css" />
+    <link rel="stylesheet" href="../css/docs.css" />
+    <link rel="icon" type="image/png" href="../favicon.png" />
+</head>
+
+<body>
+
+    <div class="docs-sidebar-backdrop"></div>
+    <button class="docs-sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
+
+    <div class="docs-layout">
+        <aside class="docs-sidebar">
+            <a href="../" class="sidebar-brand">
+                <img src="../logo.svg" alt="Bosun" class="sidebar-brand__logo" width="28" height="28" />
+                Bosun
+            </a>
+            <div class="sidebar-version-info">
+                <span class="sidebar-version" id="current-version">Current Version: v0.41.8</span>
+                <span class="sidebar-version">Docs Last Updated: v0.41.8</span>
+            </div>
+            <div class="docs-search">
+                <input class="docs-search__input" type="text" placeholder="Search docs..." />
+            </div>
+            <div class="sidebar-section">
+                <div class="sidebar-section__title">Getting Started</div>
+                <ul class="sidebar-nav">
+                    <li><a href="./">Overview</a></li>
+                    <li><a href="getting-started.html">Quick Start</a></li>
+                    <li><a href="installation.html" class="active">Installation &amp; Deployment</a></li>
+                    <li><a href="configuration.html">Configuration</a></li>
+                </ul>
+            </div>
+            <div class="sidebar-section">
+                <div class="sidebar-section__title">Reference</div>
+                <ul class="sidebar-nav">
+                    <li><a href="cli-reference.html">CLI Reference</a></li>
+                    <li><a href="architecture.html">Architecture</a></li>
+                    <li><a href="integrations.html">Integrations</a></li>
+                </ul>
+            </div>
+            <div class="sidebar-section">
+                <div class="sidebar-section__title">Links</div>
+                <ul class="sidebar-nav">
+                    <li><a href="https://github.com/virtengine/bosun" target="_blank" rel="noopener">GitHub</a></li>
+                    <li><a href="https://www.npmjs.com/package/bosun" target="_blank" rel="noopener">npm</a></li>
+                    <li><a href="https://hub.docker.com/r/virtengine/bosun" target="_blank" rel="noopener">Docker
+                            Hub</a></li>
+                    <li><a href="../">Home</a></li>
+                </ul>
+            </div>
+        </aside>
+
+        <main class="docs-content">
+            <h1>Installation &amp; Deployment</h1>
+
+            <p>
+                Bosun can be installed and run in several ways depending on your environment and use case.
+                This page covers every option: npm global install, building from source, Docker Hub image,
+                docker&#8209;compose from the cloned repo, and the Electron desktop app.
+            </p>
+
+            <div class="callout callout--info">
+                <p>
+                    <strong>Fastest path:</strong>
+                    <code>npm install -g bosun &amp;&amp; cd your-repo &amp;&amp; bosun --setup</code><br />
+                    <strong>Zero-install path:</strong>
+                    <code>docker run -d -p 3080:3080 -v bosun-data:/data virtengine/bosun:latest</code>
+                </p>
+            </div>
+
+            <!-- ─── Prerequisites ──────────────────────────────────────────────── -->
+            <h2 id="prerequisites">Prerequisites</h2>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Requirement</th>
+                        <th>Notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Node.js 18+</strong></td>
+                        <td>v22 LTS recommended. Required for npm / source installs. Not needed for Docker.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Git</strong></td>
+                        <td>On PATH. Needed by all methods.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Bash</strong> or <strong>PowerShell 7+</strong></td>
+                        <td>For executor wrapper scripts.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>GitHub CLI (<code>gh</code>)</strong></td>
+                        <td>Recommended for PR and repository workflows.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Docker</strong></td>
+                        <td>Required only for Docker-based installs. v20+ recommended.</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <p>At least one AI provider key is needed for executor functionality:</p>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Provider</th>
+                        <th>Environment variable</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>OpenAI / Codex</td>
+                        <td><code>OPENAI_API_KEY</code></td>
+                    </tr>
+                    <tr>
+                        <td>Anthropic / Claude</td>
+                        <td><code>ANTHROPIC_API_KEY</code></td>
+                    </tr>
+                    <tr>
+                        <td>Google / Gemini</td>
+                        <td><code>GEMINI_API_KEY</code></td>
+                    </tr>
+                    <tr>
+                        <td>OpenCode</td>
+                        <td><code>OPENCODE_MODEL</code>, <code>OPENCODE_PORT</code></td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <!-- ─── npm install ────────────────────────────────────────────────── -->
+            <h2 id="npm">Option 1 — Install from npm</h2>
+
+            <p>The fastest path for most users.</p>
+
+            <pre><code># Install globally
+npm install -g bosun
+
+# Verify
+bosun --version</code></pre>
+
+            <p>Navigate to the repository you want Bosun to supervise and run setup:</p>
+
+            <pre><code>cd your-repo
+bosun --setup</code></pre>
+
+            <p>The setup wizard opens a browser-based UI on <code>https://localhost:3080</code> where you configure your
+                executor, task backend, Telegram, and credentials.</p>
+
+            <h3 id="npm-start">Start Bosun</h3>
+
+            <pre><code># Foreground (interactive)
+bosun
+
+# Background daemon
+bosun --daemon
+
+# Daemon + Telegram sentinel
+bosun --daemon --sentinel
+
+# Stop background daemon
+bosun --stop-daemon
+
+# Hard-stop all Bosun processes
+bosun --terminate</code></pre>
+
+            <h3 id="npm-validate">Validate</h3>
+
+            <pre><code>bosun --doctor          # Health check
+bosun --daemon-status   # Daemon heartbeat
+bosun --workspace-list  # Registered workspaces</code></pre>
+
+            <!-- ─── From source ────────────────────────────────────────────────── -->
+            <h2 id="source">Option 2 — Install from source</h2>
+
+            <p>Use this when you want to develop, contribute, or run the latest unreleased code.</p>
+
+            <pre><code># Clone the repository
+git clone https://github.com/virtengine/bosun.git
+cd bosun
+
+# Install dependencies
+npm install
+
+# Run directly
+node cli.mjs --setup
+
+# Or link globally
+npm link
+bosun --setup</code></pre>
+
+            <h3 id="source-dev">Development commands</h3>
+
+            <pre><code># Run tests
+npm test
+
+# Lint / annotation audit
+npm run audit:ci
+
+# Prepublish checks
+npm run prepublishOnly
+
+# Install local git hooks
+npm run hooks:install</code></pre>
+
+            <!-- ─── Docker Hub ─────────────────────────────────────────────────── -->
+            <h2 id="docker-hub">Option 3 — Docker (from Docker Hub)</h2>
+
+            <p>
+                Run Bosun as a container with zero Node.js setup on the host.
+                The image is published to
+                <a href="https://hub.docker.com/r/virtengine/bosun" target="_blank" rel="noopener">Docker Hub</a>.
+            </p>
+
+            <h3 id="docker-hub-quick">Quick start</h3>
+
+            <pre><code>docker run -d \
+  --name bosun \
+  -p 3080:3080 \
+  -v bosun-data:/data \
+  -e BOSUN_API_KEY=your-secret-key-here \
+  -e OPENAI_API_KEY=sk-... \
+  virtengine/bosun:latest</code></pre>
+
+            <p>
+                Open <code>https://localhost:3080</code> in your browser.
+                The first visit launches the setup wizard. Accept the self-signed certificate warning — Bosun
+                auto-generates a TLS certificate on first start.
+            </p>
+
+            <h3 id="docker-env">Environment variables</h3>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Variable</th>
+                        <th>Required</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>BOSUN_API_KEY</code></td>
+                        <td>Recommended</td>
+                        <td>API key for external clients (Electron, scripts). Min 8 chars.</td>
+                    </tr>
+                    <tr>
+                        <td><code>OPENAI_API_KEY</code></td>
+                        <td rowspan="3">At least one</td>
+                        <td>OpenAI / Codex provider key.</td>
+                    </tr>
+                    <tr>
+                        <td><code>ANTHROPIC_API_KEY</code></td>
+                        <td>Anthropic / Claude provider key.</td>
+                    </tr>
+                    <tr>
+                        <td><code>GEMINI_API_KEY</code></td>
+                        <td>Google / Gemini provider key.</td>
+                    </tr>
+                    <tr>
+                        <td><code>TELEGRAM_BOT_TOKEN</code></td>
+                        <td>Optional</td>
+                        <td>Telegram bot token for notifications.</td>
+                    </tr>
+                    <tr>
+                        <td><code>TELEGRAM_CHAT_ID</code></td>
+                        <td>Optional</td>
+                        <td>Telegram chat ID for message delivery.</td>
+                    </tr>
+                    <tr>
+                        <td><code>GITHUB_TOKEN</code></td>
+                        <td>Optional</td>
+                        <td>GitHub PAT for PR workflows.</td>
+                    </tr>
+                    <tr>
+                        <td><code>BOSUN_PORT</code></td>
+                        <td>Optional</td>
+                        <td>Internal port (default <code>3080</code>).</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 id="docker-data">Persistent data</h3>
+
+            <p>
+                The container stores all state (config, sessions, logs, caches) in <code>/data</code>.
+                Mount a Docker volume to retain data across restarts:
+            </p>
+
+            <pre><code>-v bosun-data:/data</code></pre>
+
+            <h3 id="docker-health">Health check</h3>
+
+            <p>
+                The image includes a built-in health check on <code>/healthz</code>.
+                Docker reports the container as <code>healthy</code> once the server is ready:
+            </p>
+
+            <pre><code>docker ps   # STATUS column shows "(healthy)"</code></pre>
+
+            <h3 id="docker-auth">Authentication</h3>
+
+            <p>When <code>BOSUN_API_KEY</code> is set, all API and portal requests require authentication:</p>
+
+            <ul>
+                <li><strong>Header:</strong> <code>X-API-Key: &lt;key&gt;</code> or
+                    <code>Authorization: Bearer &lt;key&gt;</code></li>
+                <li><strong>WebSocket:</strong> <code>wss://host:3080/ws?apiKey=&lt;key&gt;</code></li>
+                <li><strong>Browser:</strong> the setup wizard handles session cookies automatically.</li>
+            </ul>
+
+            <p>Without <code>BOSUN_API_KEY</code>, the server falls back to session-based auth only.</p>
+
+            <h3 id="docker-workspace">Mount a local workspace</h3>
+
+            <p>To give the container access to repositories on the host:</p>
+
+            <pre><code>docker run -d \
+  --name bosun \
+  -p 3080:3080 \
+  -v bosun-data:/data \
+  -v /path/to/your/repos:/workspace:rw \
+  -e BOSUN_API_KEY=your-secret-key-here \
+  virtengine/bosun:latest</code></pre>
+
+            <!-- ─── Docker Compose ─────────────────────────────────────────────── -->
+            <h2 id="docker-compose">Option 4 — Docker (from source with docker&#8209;compose)</h2>
+
+            <p>Build and run from the cloned repository using the included <code>docker-compose.yml</code>.</p>
+
+            <pre><code># Clone the repository
+git clone https://github.com/virtengine/bosun.git
+cd bosun
+
+# Copy and edit environment
+cp .env.example .env
+# Edit .env — set at least one AI provider key
+
+# Build and start
+docker compose up -d
+
+# Check status
+docker compose ps
+
+# View logs
+docker compose logs -f bosun
+
+# Stop
+docker compose down</code></pre>
+
+            <h3 id="compose-custom">Customise docker-compose.yml</h3>
+
+            <p>The provided file includes commented environment variables. Uncomment and set the ones you need:</p>
+
+            <pre><code>services:
+  bosun:
+    build: .
+    ports:
+      - "${BOSUN_PORT:-3080}:3080"
+    volumes:
+      - bosun-data:/data
+      # Mount local repos:
+      # - /path/to/your/repos:/workspace:rw
+    environment:
+      - BOSUN_API_KEY=your-secret-key-here
+      - OPENAI_API_KEY=sk-...
+      # - TELEGRAM_BOT_TOKEN=...
+      # - GITHUB_TOKEN=...</code></pre>
+
+            <h3 id="compose-build">Build the image manually</h3>
+
+            <p>If you prefer building without docker&#8209;compose:</p>
+
+            <pre><code>docker build -t bosun .
+docker run -d --name bosun -p 3080:3080 -v bosun-data:/data bosun</code></pre>
+
+            <!-- ─── Electron desktop ───────────────────────────────────────────── -->
+            <h2 id="desktop">Option 5 — Electron desktop app</h2>
+
+            <p>Bosun includes an Electron wrapper for a native desktop experience.</p>
+
+            <pre><code># From the bosun directory
+npm install
+npm run desktop</code></pre>
+
+            <p>
+                The desktop app starts a local Bosun daemon and opens the portal in a native window.
+                It can also connect to a remote Bosun server:
+            </p>
+
+            <ol>
+                <li>On launch, choose <strong>Connect to Remote</strong> in the connection dialog.</li>
+                <li>Enter the server endpoint (e.g. <code>https://bosun.example.com:3080</code>).</li>
+                <li>Enter the API key configured on the server (<code>BOSUN_API_KEY</code>).</li>
+            </ol>
+
+            <!-- ─── First-run setup ────────────────────────────────────────────── -->
+            <h2 id="first-run">Post-install: first-run setup</h2>
+
+            <p>
+                Regardless of installation method, the first visit to <code>https://localhost:3080</code>
+                launches the <strong>Setup Wizard</strong>. It walks through:
+            </p>
+
+            <ol>
+                <li><strong>Project identity</strong> — repository name and workspace shape.</li>
+                <li><strong>Executor defaults</strong> — Codex, Copilot, Claude, Gemini, or OpenCode.</li>
+                <li><strong>Task backend</strong> — internal, GitHub Issues, Jira, or Vibe-Kanban.</li>
+                <li><strong>Control surfaces</strong> — Telegram Mini App, sentinel, desktop settings.</li>
+                <li><strong>Credentials</strong> — API keys, tokens, and integration secrets.</li>
+            </ol>
+
+            <p>Re-run setup at any time:</p>
+
+            <pre><code>bosun --setup              # Web-based wizard
+bosun --setup-terminal     # Legacy terminal wizard</code></pre>
+
+            <!-- ─── Config files ───────────────────────────────────────────────── -->
+            <h2 id="config-files">Configuration files</h2>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>File</th>
+                        <th>Purpose</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>.env</code></td>
+                        <td>Environment-based settings (API keys, tokens).</td>
+                    </tr>
+                    <tr>
+                        <td><code>bosun.config.json</code></td>
+                        <td>Structured config (executor, routing, profiles).</td>
+                    </tr>
+                    <tr>
+                        <td><code>bosun.config.example.json</code></td>
+                        <td>Canonical reference for config shape.</td>
+                    </tr>
+                    <tr>
+                        <td><code>.env.example</code></td>
+                        <td>Canonical reference for environment variables.</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <pre><code>bosun --where   # Show resolved config directory</code></pre>
+
+            <!-- ─── Troubleshooting ────────────────────────────────────────────── -->
+            <h2 id="troubleshooting">Troubleshooting</h2>
+
+            <h3>Port already in use</h3>
+            <pre><code># macOS / Linux
+lsof -i :3080
+
+# Windows
+netstat -ano | findstr 3080</code></pre>
+
+            <h3>Docker container unhealthy</h3>
+            <pre><code>docker logs bosun
+docker inspect bosun --format='{{json .State.Health}}'</code></pre>
+
+            <h3>Self-signed TLS warning</h3>
+            <p>
+                Bosun auto-generates a self-signed certificate on first start. Your browser will show a
+                security warning — this is expected for local development. Accept the certificate or use
+                <code>curl -k</code> for API calls.
+            </p>
+
+            <h3>Reset everything</h3>
+            <pre><code>bosun --terminate
+rm -rf $(bosun --where)   # Caution: deletes all Bosun config and state</code></pre>
+
+            <!-- ─── Nav ────────────────────────────────────────────────────────── -->
+            <div class="docs-nav-footer">
+                <a href="getting-started.html" class="docs-nav-link">
+                    <div class="docs-nav-link__label">&larr; Previous</div>
+                    <div class="docs-nav-link__title">Quick Start</div>
+                </a>
+                <a href="configuration.html" class="docs-nav-link docs-nav-link--next">
+                    <div class="docs-nav-link__label">Next &rarr;</div>
+                    <div class="docs-nav-link__title">Configuration</div>
+                </a>
+            </div>
+        </main>
+    </div>
+
+    <script src="../js/docs.js"></script>
+    <script src="../js/analytics-config.js"></script>
+    <script src="../js/analytics.js"></script>
+    <script src="../js/main.js"></script>
+</body>
+
+</html>

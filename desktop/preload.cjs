@@ -23,4 +23,12 @@ contextBridge.exposeInMainWorld("veDesktop", {
     resetAll: () => ipcRenderer.invoke("bosun:shortcuts:resetAll"),
     showDialog: () => ipcRenderer.invoke("bosun:shortcuts:showDialog"),
   },
+
+  connection: {
+    get: () => ipcRenderer.invoke("bosun:connection:get"),
+    set: (config) => ipcRenderer.invoke("bosun:connection:set", config),
+    test: (endpoint, apiKey) =>
+      ipcRenderer.invoke("bosun:connection:test", { endpoint, apiKey }),
+    setup: () => ipcRenderer.invoke("bosun:connection:setup"),
+  },
 });

@@ -1,16 +1,20 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Integrations — Bosun Docs</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+    rel="stylesheet" />
   <link rel="stylesheet" href="../css/main.css" />
   <link rel="stylesheet" href="../css/docs.css" />
   <link rel="icon" type="image/png" href="../favicon.png" />
 </head>
+
 <body>
 
   <div class="docs-sidebar-backdrop"></div>
@@ -34,6 +38,7 @@
         <ul class="sidebar-nav">
           <li><a href="./">Overview</a></li>
           <li><a href="getting-started.html">Quick Start</a></li>
+          <li><a href="installation.html">Installation &amp; Deployment</a></li>
           <li><a href="configuration.html">Configuration</a></li>
         </ul>
       </div>
@@ -59,7 +64,8 @@
       <h1>Integrations</h1>
 
       <p>
-        Bosun integrates with task backends, notification channels, executor providers, and operator-facing infrastructure.
+        Bosun integrates with task backends, notification channels, executor providers, and operator-facing
+        infrastructure.
         This page summarizes the current supported surfaces reflected in the repo today.
       </p>
 
@@ -68,7 +74,8 @@
       <p>GitHub integration covers both repository operations and task-board flows.</p>
 
       <ul>
-        <li><strong>Repository and PR automation</strong> for branches, pull requests, CI status handling, and review/merge logic.</li>
+        <li><strong>Repository and PR automation</strong> for branches, pull requests, CI status handling, and
+          review/merge logic.</li>
         <li><strong>Issues and Projects v2</strong> support when GitHub is the active task backend.</li>
         <li><strong>OAuth and GitHub App flows</strong> via the GitHub auth modules and portal/server endpoints.</li>
       </ul>
@@ -121,7 +128,8 @@ JIRA_API_TOKEN=...</code></pre>
 
       <p>
         Bosun still supports Vibe-Kanban-oriented runtime modes and wrapper commands.
-        In current docs and config, this mostly appears through runtime mode and wrapper tooling rather than as the primary public surface.
+        In current docs and config, this mostly appears through runtime mode and wrapper tooling rather than as the
+        primary public surface.
       </p>
 
       <pre><code>EXECUTOR_MODE=vk
@@ -132,14 +140,32 @@ EXECUTOR_MODE=hybrid</code></pre>
 
       <table>
         <thead>
-          <tr><th>Provider</th><th>Current repo support</th></tr>
+          <tr>
+            <th>Provider</th>
+            <th>Current repo support</th>
+          </tr>
         </thead>
         <tbody>
-          <tr><td><strong>Codex</strong></td><td>SDK and transport-based integration through the shell/agent layers.</td></tr>
-          <tr><td><strong>Copilot</strong></td><td>SDK and transport support with model/profile selection.</td></tr>
-          <tr><td><strong>Claude</strong></td><td>SDK and transport support with Anthropic-backed configuration.</td></tr>
-          <tr><td><strong>Gemini</strong></td><td>SDK configuration and optional voice/vision fallback usage.</td></tr>
-          <tr><td><strong>OpenCode</strong></td><td>Local server integration via <code>OPENCODE_PORT</code> and <code>OPENCODE_MODEL</code>.</td></tr>
+          <tr>
+            <td><strong>Codex</strong></td>
+            <td>SDK and transport-based integration through the shell/agent layers.</td>
+          </tr>
+          <tr>
+            <td><strong>Copilot</strong></td>
+            <td>SDK and transport support with model/profile selection.</td>
+          </tr>
+          <tr>
+            <td><strong>Claude</strong></td>
+            <td>SDK and transport support with Anthropic-backed configuration.</td>
+          </tr>
+          <tr>
+            <td><strong>Gemini</strong></td>
+            <td>SDK configuration and optional voice/vision fallback usage.</td>
+          </tr>
+          <tr>
+            <td><strong>OpenCode</strong></td>
+            <td>Local server integration via <code>OPENCODE_PORT</code> and <code>OPENCODE_MODEL</code>.</td>
+          </tr>
         </tbody>
       </table>
 
@@ -151,7 +177,8 @@ EXECUTOR_MODE=hybrid</code></pre>
       </p>
 
       <ul>
-        <li><strong>Voice mode</strong> via <code>VOICE_ENABLED</code>, <code>VOICE_PROVIDER</code>, and related model settings.</li>
+        <li><strong>Voice mode</strong> via <code>VOICE_ENABLED</code>, <code>VOICE_PROVIDER</code>, and related model
+          settings.</li>
         <li><strong>Desktop portal</strong> via the desktop runtime and related CLI flags.</li>
       </ul>
 
@@ -186,4 +213,5 @@ bosun --whatsapp-auth --pairing-code</code></pre>
   <script src="../js/analytics.js"></script>
   <script src="../js/main.js"></script>
 </body>
+
 </html>

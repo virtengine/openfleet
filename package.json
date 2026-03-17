@@ -82,10 +82,12 @@
     "./context-indexer": "./workspace/context-indexer.mjs",
     "./msg-hub": "./workflow/msg-hub.mjs",
     "./declarative-workflows": "./workflow/declarative-workflows.mjs",
-    "./pipeline": "./workflow/pipeline.mjs"
+    "./pipeline": "./workflow/pipeline.mjs",
+    "./entrypoint": "./entrypoint.mjs"
   },
   "bin": {
     "bosun": "cli.mjs",
+    "bosun-entrypoint": "entrypoint.mjs",
     "bosun-mcp": "server/bosun-mcp-server.mjs",
     "bosun-task": "task/task-cli-bin.mjs",
     "bosun-setup": "setup.mjs",

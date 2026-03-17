@@ -1,17 +1,22 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Documentation — Bosun</title>
-  <meta name="description" content="Bosun documentation — current overview, setup, configuration, CLI, architecture, and integrations." />
+  <meta name="description"
+    content="Bosun documentation — current overview, setup, configuration, CLI, architecture, and integrations." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+    rel="stylesheet" />
   <link rel="stylesheet" href="../css/main.css" />
   <link rel="stylesheet" href="../css/docs.css" />
   <link rel="icon" type="image/png" href="../favicon.png" />
 </head>
+
 <body>
 
   <div class="docs-sidebar-backdrop"></div>
@@ -37,6 +42,7 @@
         <ul class="sidebar-nav">
           <li><a href="./" class="active">Overview</a></li>
           <li><a href="getting-started.html">Quick Start</a></li>
+          <li><a href="installation.html">Installation &amp; Deployment</a></li>
           <li><a href="configuration.html">Configuration</a></li>
         </ul>
       </div>
@@ -83,8 +89,10 @@
         <li><strong>Routes execution</strong> across Codex, Copilot, Claude, Gemini, and OpenCode integrations.</li>
         <li><strong>Owns workflow lifecycles</strong> for planning, execution, validation, PR review, and recovery.</li>
         <li><strong>Persists state</strong> for tasks, sessions, shared workspaces, and workflow runs.</li>
-        <li><strong>Operates safely</strong> with retries, watchdogs, review gates, trust checks, and recovery tooling.</li>
-        <li><strong>Exposes control surfaces</strong> through CLI, Telegram, Mini App, desktop, and optional voice mode.</li>
+        <li><strong>Operates safely</strong> with retries, watchdogs, review gates, trust checks, and recovery tooling.
+        </li>
+        <li><strong>Exposes control surfaces</strong> through CLI, Telegram, Mini App, desktop, and optional voice mode.
+        </li>
       </ul>
 
       <h2>Current platform shape</h2>
@@ -107,7 +115,8 @@
           </tr>
           <tr>
             <td><strong>Interfaces</strong></td>
-            <td><code>server/</code>, <code>ui/</code>, <code>telegram/</code>, <code>desktop/</code>, <code>voice/</code></td>
+            <td><code>server/</code>, <code>ui/</code>, <code>telegram/</code>, <code>desktop/</code>,
+              <code>voice/</code></td>
           </tr>
           <tr>
             <td><strong>Integrations</strong></td>
@@ -115,7 +124,8 @@
           </tr>
           <tr>
             <td><strong>Published docs</strong></td>
-            <td><code>site/docs/</code> with supporting source material in <code>docs/</code> and <code>_docs/</code></td>
+            <td><code>site/docs/</code> with supporting source material in <code>docs/</code> and <code>_docs/</code>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -123,25 +133,40 @@
       <h2>Start here</h2>
 
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem;margin:1rem 0;">
-        <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:12px;padding:1.25rem;">
+        <div
+          style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:12px;padding:1.25rem;">
           <h3 style="margin-top:0;"><a href="getting-started.html">Quick Start</a></h3>
           <p style="margin-bottom:0;">Install Bosun, run setup, validate the environment, and launch the monitor.</p>
         </div>
-        <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:12px;padding:1.25rem;">
+        <div
+          style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:12px;padding:1.25rem;">
+          <h3 style="margin-top:0;"><a href="installation.html">Installation &amp; Deployment</a></h3>
+          <p style="margin-bottom:0;">npm, source, Docker Hub, docker&#8209;compose, and Electron — every way to install
+            and run Bosun.</p>
+        </div>
+        <div
+          style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:12px;padding:1.25rem;">
           <h3 style="margin-top:0;"><a href="configuration.html">Configuration</a></h3>
-          <p style="margin-bottom:0;">Understand load order, `.env`, JSON config, executor settings, and integration knobs.</p>
+          <p style="margin-bottom:0;">Understand load order, `.env`, JSON config, executor settings, and integration
+            knobs.</p>
         </div>
-        <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:12px;padding:1.25rem;">
+        <div
+          style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:12px;padding:1.25rem;">
           <h3 style="margin-top:0;"><a href="cli-reference.html">CLI Reference</a></h3>
-          <p style="margin-bottom:0;">See the current command surface for runtime, tasks, workspaces, and companion tools.</p>
+          <p style="margin-bottom:0;">See the current command surface for runtime, tasks, workspaces, and companion
+            tools.</p>
         </div>
-        <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:12px;padding:1.25rem;">
+        <div
+          style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:12px;padding:1.25rem;">
           <h3 style="margin-top:0;"><a href="architecture.html">Architecture</a></h3>
-          <p style="margin-bottom:0;">Map the current module layout and how monitor, workflows, UI, and integrations connect.</p>
+          <p style="margin-bottom:0;">Map the current module layout and how monitor, workflows, UI, and integrations
+            connect.</p>
         </div>
-        <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:12px;padding:1.25rem;">
+        <div
+          style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:12px;padding:1.25rem;">
           <h3 style="margin-top:0;"><a href="integrations.html">Integrations</a></h3>
-          <p style="margin-bottom:0;">GitHub, Telegram, Jira, Cloudflare tunnels, containers, voice, and executor providers.</p>
+          <p style="margin-bottom:0;">GitHub, Telegram, Jira, Cloudflare tunnels, containers, voice, and executor
+            providers.</p>
         </div>
       </div>
 
@@ -149,20 +174,28 @@
 
       <ol>
         <li>Start with <a href="getting-started.html">Quick Start</a> if you are installing or evaluating Bosun.</li>
-        <li>Use <a href="configuration.html">Configuration</a> to shape the runtime around your repos, executors, and channels.</li>
-        <li>Keep <a href="cli-reference.html">CLI Reference</a> open when operating Bosun from a terminal or automation.</li>
-        <li>Read <a href="architecture.html">Architecture</a> before changing workflows, server behavior, or runtime ownership.</li>
-        <li>Use <a href="integrations.html">Integrations</a> when wiring GitHub, Telegram, Jira, Cloudflare, or container execution.</li>
+        <li>See <a href="installation.html">Installation &amp; Deployment</a> for npm, Docker, source, and desktop
+          options.</li>
+        <li>Use <a href="configuration.html">Configuration</a> to shape the runtime around your repos, executors, and
+          channels.</li>
+        <li>Keep <a href="cli-reference.html">CLI Reference</a> open when operating Bosun from a terminal or automation.
+        </li>
+        <li>Read <a href="architecture.html">Architecture</a> before changing workflows, server behavior, or runtime
+          ownership.</li>
+        <li>Use <a href="integrations.html">Integrations</a> when wiring GitHub, Telegram, Jira, Cloudflare, or
+          container execution.</li>
       </ol>
 
       <h2>Requirements</h2>
 
       <ul>
-        <li><strong>Node.js 18+</strong> with current development generally targeting modern Node 20/22+ environments.</li>
+        <li><strong>Node.js 18+</strong> with current development generally targeting modern Node 20/22+ environments.
+        </li>
         <li><strong>Git</strong> on PATH.</li>
         <li><strong>PowerShell 7+</strong> or <strong>Bash</strong> depending on your wrapper and host environment.</li>
         <li><strong>GitHub CLI</strong> recommended for repository and PR workflows.</li>
-        <li><strong>Optional extras</strong> like cloudflared, Docker/Podman, and Telegram credentials depending on which surfaces you enable.</li>
+        <li><strong>Optional extras</strong> like cloudflared, Docker/Podman, and Telegram credentials depending on
+          which surfaces you enable.</li>
       </ul>
 
       <div class="docs-nav-footer">
@@ -180,4 +213,5 @@
   <script src="../js/analytics.js"></script>
   <script src="../js/main.js"></script>
 </body>
+
 </html>

@@ -4118,6 +4118,13 @@ const workflowEngineListenerCleanup = new WeakMap();
 let workflowWsSeq = 0;
 let uiInstanceLockPath = "";
 let uiInstanceLockHeld = false;
+
+// ── Unified setup state (entrypoint integration) ────────────────────────────
+// When running via entrypoint.mjs, `_setupMode` starts true and flips to false
+// once the wizard completes.  In standalone ui-server mode, it's always false.
+let _setupMode = false;
+/** @type {(() => void)|null} */
+let _setupOnComplete = null;
 let _sessionTokenLastTouchedAt = 0;
 let _localRequestAddressCache = {
   loadedAt: 0,
@@ -8425,8 +8432,45 @@ function getExpectedDesktopApiKey() {
   return fromEnv;
 }
 
+/**
+ * Check whether the request carries a valid user-configured API key.
+ * Set via BOSUN_API_KEY env var — intended for external clients (Electron app
+ * connecting to a remote/Docker instance, CLI tools, third-party integrations).
+ * Unlike the desktop API key (auto-generated per install), this is a
+ * user-chosen secret that can be set in .env, docker-compose.yml, etc.
+ */
+function checkApiKey(req) {
+  const expected = String(process.env.BOSUN_API_KEY || "").trim();
+  if (!expected || expected.length < 8) return false;
+  const authHeader = req.headers.authorization || "";
+  // Accept as Bearer token
+  if (authHeader.startsWith("Bearer ")) {
+    const provided = authHeader.slice(7).trim();
+    if (!provided) return false;
+    try {
+      const a = Buffer.from(provided);
+      const b = Buffer.from(expected);
+      if (a.length !== b.length) return false;
+      return timingSafeEqual(a, b);
+    } catch { return false; }
+  }
+  // Accept as X-API-Key header
+  const apiKeyHeader = String(req.headers["x-api-key"] || "").trim();
+  if (apiKeyHeader) {
+    try {
+      const a = Buffer.from(apiKeyHeader);
+      const b = Buffer.from(expected);
+      if (a.length !== b.length) return false;
+      return timingSafeEqual(a, b);
+    } catch { return false; }
+  }
+  return false;
+}
+
 async function requireAuth(req) {
   if (isAllowUnsafe()) return { ok: true, source: "unsafe", issueSessionCookie: false };
+  // User-configured API key (BOSUN_API_KEY env) — external clients, Docker
+  if (checkApiKey(req)) return { ok: true, source: "api-key", issueSessionCookie: false };
   // Desktop Electron API key — non-expiring, set via BOSUN_DESKTOP_API_KEY env
   if (checkDesktopApiKey(req)) return { ok: true, source: "desktop-api-key", issueSessionCookie: false };
   // Session token (browser access)
@@ -8452,6 +8496,19 @@ async function requireAuth(req) {
 
 function resolveWsAuthSource(req, url) {
   if (isAllowUnsafe()) return "unsafe";
+  // User-configured API key (BOSUN_API_KEY) — check Bearer header and query param
+  if (checkApiKey(req)) return "api-key";
+  const qApiKey = url.searchParams.get("apiKey") || "";
+  if (qApiKey) {
+    const expected = String(process.env.BOSUN_API_KEY || "").trim();
+    if (expected && expected.length >= 8) {
+      try {
+        const a = Buffer.from(qApiKey);
+        const b = Buffer.from(expected);
+        if (a.length === b.length && timingSafeEqual(a, b)) return "api-key";
+      } catch { /* ignore */ }
+    }
+  }
   // Desktop Electron API key (query param: desktopKey=...)
   const desktopKey = getExpectedDesktopApiKey();
   if (desktopKey) {
@@ -19324,6 +19381,21 @@ export async function startTelegramUiServer(options = {}) {
   const taskStoreModule = await ensureTaskStoreApi();
   const sandbox = ensureTestRuntimeSandbox();
 
+  // ── Setup mode integration (entrypoint.mjs) ───────────────────────────
+  if (options.setupMode) {
+    _setupMode = true;
+    _setupOnComplete = () => {
+      _setupMode = false;
+      console.log("[telegram-ui] setup complete — portal mode active");
+      // Notify entrypoint to start monitor
+      try {
+        import("../entrypoint.mjs").then((m) => {
+          if (typeof m.markSetupComplete === "function") m.markSetupComplete();
+        }).catch(() => {});
+      } catch { /* not running via entrypoint */ }
+    };
+  }
+
   const rawPort = options.port ?? getDefaultPort();
   const configuredPort = Number(rawPort);
   const isTestRun =
@@ -19496,6 +19568,18 @@ export async function startTelegramUiServer(options = {}) {
       return;
     }
 
+    // Docker / load-balancer health check — no auth required
+    if (url.pathname === "/healthz") {
+      try {
+        const { getHealthStatus } = await import("../entrypoint.mjs");
+        jsonResponse(res, 200, getHealthStatus());
+      } catch {
+        // Fallback if not running through entrypoint (e.g. standalone dev mode)
+        jsonResponse(res, 200, { status: "ok", server: "bosun" });
+      }
+      return;
+    }
+
     // GitHub OAuth callback — public (no session auth required)
     // Accept both /github/callback (registered in GitHub App settings) and
     // /api/github/callback (documented API path) so either works.
@@ -19514,6 +19598,16 @@ export async function startTelegramUiServer(options = {}) {
       return;
     }
 
+    // Setup wizard API routes — handled before the general /api/ catch-all
+    // so the setup wizard works whether running standalone or unified with portal.
+    if (url.pathname.startsWith("/api/setup/")) {
+      const { handleSetupApi } = await import("./setup-web-server.mjs");
+      const handled = await handleSetupApi(req, res, url, {
+        onComplete: _setupOnComplete || undefined,
+      });
+      if (handled) return;
+    }
+
     if (url.pathname.startsWith("/api/")) {
       await handleApi(req, res, url);
       return;
@@ -19529,6 +19623,15 @@ export async function startTelegramUiServer(options = {}) {
     // direct browser→CDN dependency and self-signed cert cross-origin issues
     if (url.pathname.startsWith("/esm/")) {
       await handleEsmProxy(req, res, url);
+      return;
+    }
+
+    // ── Setup wizard page ──────────────────────────────────────────────────
+    // When in setup mode, redirect / → /setup so the user lands on the wizard.
+    // When setup is complete, /setup still works for re-configuration access.
+    if (_setupMode && url.pathname === "/") {
+      res.writeHead(302, { Location: "/setup" });
+      res.end();
       return;
     }
 
