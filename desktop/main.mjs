@@ -1647,9 +1647,16 @@ function showTextInputWindow(title, label, defaultValue, placeholder) {
         sandbox: true,
       },
     });
-    const escapedLabel = label.replace(/'/g, "\\'");
-    const escapedDefault = (defaultValue || "").replace(/'/g, "\\'");
-    const escapedPlaceholder = (placeholder || "").replace(/'/g, "\\'");
+    const escapeHtml = (value) =>
+      String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    const escapedLabel = escapeHtml(label);
+    const escapedDefault = escapeHtml(defaultValue);
+    const escapedPlaceholder = escapeHtml(placeholder);
     const html = `data:text/html;charset=utf-8,${encodeURIComponent(`<!DOCTYPE html>
 <html><head><style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
