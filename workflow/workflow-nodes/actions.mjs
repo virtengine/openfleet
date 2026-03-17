@@ -236,6 +236,7 @@ registerNodeType("action.run_agent", {
     type: "object",
     properties: {
       prompt: { type: "string", description: "Agent prompt (supports {{variables}})" },
+      systemPrompt: { type: "string", description: "Optional stable system prompt for cache anchoring" },
       sdk: { type: "string", enum: ["codex", "copilot", "claude", "auto"], default: "auto" },
       model: { type: "string", description: "Optional model override for the selected SDK" },
       taskId: { type: "string", description: "Optional task ID used for task metadata lookup" },
@@ -292,17 +293,64 @@ registerNodeType("action.run_agent", {
     const timeoutMs = Number.isFinite(resolvedTimeout) && resolvedTimeout > 0
       ? resolvedTimeout
       : 3600000;
-    const includeTaskContext = node.config?.includeTaskContext !== false;
+    const includeTaskContext =
+      node.config?.includeTaskContext !== false &&
+      ctx.data?._taskIncludeContext !== false;
+    const configuredSystemPrompt =
+      ctx.resolve(node.config?.systemPrompt || "") ||
+      ctx.data?._taskSystemPrompt ||
+      "";
+    const strictCacheAnchoring =
+      String(process.env.BOSUN_CACHE_ANCHOR_MODE || "")
+        .trim()
+        .toLowerCase() === "strict";
+    const normalizeMarker = (value) => String(value || "").trim();
+    const fallbackMarkers = [
+      trackedTaskId,
+      trackedTaskTitle,
+      ctx.data?.taskDescription,
+      ctx.data?.task?.description,
+      ctx.data?.task?.body,
+      ctx.data?.branch,
+      ctx.data?.baseBranch,
+      ctx.data?.worktreePath,
+      ctx.data?.repoRoot,
+      ctx.data?.repoSlug,
+    ]
+      .map(normalizeMarker)
+      .filter(Boolean);
+    const dynamicMarkers =
+      Array.isArray(ctx.data?._taskPromptDynamicMarkers) &&
+      ctx.data._taskPromptDynamicMarkers.length > 0
+        ? ctx.data._taskPromptDynamicMarkers
+        : fallbackMarkers;
+    const assertStableSystemPrompt = (candidate) => {
+      if (!strictCacheAnchoring) return;
+      const leaked = dynamicMarkers.find((marker) => candidate.includes(marker));
+      if (leaked) {
+        throw new Error(
+          `BOSUN_CACHE_ANCHOR_MODE=strict violation: system prompt leaked task-specific marker \"${leaked}\"`,
+        );
+      }
+    };
     const toolContract = buildWorkflowAgentToolContract(cwd, agentProfileId);
-    let finalPrompt = `${toolContract}\n\n${prompt}`;
-    if (includeTaskContext) {
+    const effectiveSystemPrompt = String(configuredSystemPrompt || "").trim();
+    assertStableSystemPrompt(effectiveSystemPrompt);
+    let finalPrompt = prompt;
+    const promptHasTaskContext =
+      ctx.data?._taskPromptIncludesTaskContext === true ||
+      String(finalPrompt || "").includes("## Task Context");
+    if (includeTaskContext && !promptHasTaskContext) {
       const explicitContext =
         ctx.data?.taskContext ||
         ctx.data?.taskContextBlock ||
         null;
       const task = ctx.data?.task || ctx.data?.taskDetail || ctx.data?.taskInfo || null;
       const contextBlock = explicitContext || buildTaskContextBlock(task);
-      if (contextBlock) finalPrompt = `${prompt}\n\n${contextBlock}`;
+      if (contextBlock) finalPrompt = `${finalPrompt}\n\n${contextBlock}`;
+    }
+    if (toolContract && !String(finalPrompt || "").includes("## Tool Capability Contract")) {
+      finalPrompt = `${finalPrompt}\n\n${toolContract}`;
     }
 
     ctx.log(node.id, `Running agent (${sdk}) in ${cwd}`);
@@ -652,6 +700,7 @@ registerNodeType("action.run_agent", {
               sdk: sdkOverride,
               model: modelOverride,
               onEvent: launchExtra.onEvent,
+              systemPrompt: effectiveSystemPrompt,
             });
           }
 
@@ -663,10 +712,12 @@ registerNodeType("action.run_agent", {
               sdk: sdkOverride,
               model: modelOverride,
               onEvent: launchExtra.onEvent,
+              systemPrompt: effectiveSystemPrompt,
             });
           }
 
           if (!result) {
+            launchExtra.systemPrompt = effectiveSystemPrompt;
             result = await agentPool.launchEphemeralThread(passPrompt, cwd, timeoutMs, launchExtra);
           }
           success = result?.success === true;
@@ -4985,6 +5036,19 @@ registerNodeType("action.build_task_prompt", {
       String(process.env.BOSUN_CACHE_ANCHOR_MODE || "")
         .trim()
         .toLowerCase() === "strict";
+    const dynamicMarkers = [
+      normalizedTaskId,
+      normalizedTaskTitle,
+      normalizedTaskDescription,
+      normalizedRetryReason,
+      normalizedBranch,
+      normalizedBaseBranch,
+      normalizedWorktreePath,
+      normalizedRepoRoot,
+    ]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+    ctx.data._taskPromptDynamicMarkers = dynamicMarkers;
 
     const buildStableSystemPrompt = () => {
       const systemParts = [];
@@ -5004,42 +5068,41 @@ registerNodeType("action.build_task_prompt", {
       return systemParts.join("\n").trim();
     };
 
-    const buildGitContextBlock = () => {
+    const assertStableSystemPrompt = (candidate) => {
+      if (!strictCacheAnchoring) return;
+      const leaked = dynamicMarkers.find((marker) => candidate.includes(marker));
+      if (leaked) {
+        throw new Error(
+          `BOSUN_CACHE_ANCHOR_MODE=strict violation: system prompt leaked task-specific marker "${leaked}"`,
+        );
+      }
+    };
+
+    const buildGitContextBlock = async () => {
       if (!includeGitContext) return "";
       const root = normalizedWorktreePath || normalizedRepoRoot;
       if (!root) return "";
       if (!existsSync(resolve(root, ".git"))) return "";
 
       try {
-        let commits = [];
-        try {
-          const raw = execGitArgsSync(["log", "--oneline", "-8"], {
-            cwd: root,
-            encoding: "utf8",
-            timeout: 10000,
-            stdio: ["ignore", "pipe", "pipe"],
-          }).trim();
-          if (raw) commits = raw.split("\n").filter(Boolean);
-        } catch { /* best-effort */ }
-
-        let diffSummary = "";
-        try {
-          diffSummary = execGitArgsSync(
-            ["diff", "--stat", `${normalizedBaseBranch || "origin/main"}..HEAD`],
-            { cwd: root, encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"] },
-          ).trim();
-        } catch { /* best-effort */ }
+        const diffStatsMod = await import("../../git/diff-stats.mjs");
+        const commits =
+          diffStatsMod.getRecentCommits?.(root, 8) || [];
+        let diffSummary =
+          diffStatsMod.getCompactDiffSummary?.(root, {
+            baseBranch: normalizedBaseBranch || "origin/main",
+          }) || "";
 
         if (diffSummary && diffSummary.length > 2000) {
           diffSummary = `${diffSummary.slice(0, 2000)}…`;
         }
 
         const lines = ["## Git Context"];
-        if (commits.length > 0) {
+        if (Array.isArray(commits) && commits.length > 0) {
           lines.push("### Recent Commits");
           for (const commit of commits) lines.push(`- ${commit}`);
         }
-        if (diffSummary) {
+        if (diffSummary && diffSummary !== "(no diff stats available)") {
           lines.push("### Diff Summary");
           lines.push("```");
           lines.push(diffSummary);
@@ -5054,6 +5117,7 @@ registerNodeType("action.build_task_prompt", {
     if (customTemplate) {
       const renderedTemplate = renderCustomTemplate(customTemplate);
       const stableSystemPrompt = buildStableSystemPrompt();
+      assertStableSystemPrompt(stableSystemPrompt);
       ctx.data._taskPrompt = renderedTemplate;
       ctx.data._taskUserPrompt = renderedTemplate;
       ctx.data._taskSystemPrompt = stableSystemPrompt;
@@ -5098,7 +5162,7 @@ registerNodeType("action.build_task_prompt", {
       }
     }
 
-    const gitContextBlock = buildGitContextBlock();
+    const gitContextBlock = await buildGitContextBlock();
     if (gitContextBlock) {
       userParts.push(gitContextBlock);
       userParts.push("");
@@ -5241,26 +5305,7 @@ registerNodeType("action.build_task_prompt", {
 
     const userPrompt = userParts.join("\n").trim();
     const systemPrompt = buildStableSystemPrompt();
-
-    if (strictCacheAnchoring) {
-      const dynamicMarkers = [
-        normalizedTaskId,
-        normalizedTaskTitle,
-        normalizedTaskDescription,
-        normalizedRetryReason,
-        normalizedBranch,
-        normalizedBaseBranch,
-        normalizedWorktreePath,
-      ]
-        .map((value) => String(value || "").trim())
-        .filter(Boolean);
-      const leaked = dynamicMarkers.find((marker) => systemPrompt.includes(marker));
-      if (leaked) {
-        throw new Error(
-          `BOSUN_CACHE_ANCHOR_MODE=strict violation: system prompt leaked task-specific marker "${leaked}"`,
-        );
-      }
-    }
+    assertStableSystemPrompt(systemPrompt);
 
     ctx.data._taskPrompt = userPrompt;
     ctx.data._taskUserPrompt = userPrompt;
