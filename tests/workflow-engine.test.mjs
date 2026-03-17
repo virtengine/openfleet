@@ -3712,6 +3712,69 @@ it("action.materialize_planner_tasks passes two args to createTask even with def
   }));
 });
 
+it("action.materialize_planner_tasks supports payload-only createTask adapters", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(materialize): payload-only adapter", "description": "A", "acceptance_criteria": ["ac"], "verification": ["verify"], "repo_areas": ["workflow"] }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  let payloadOnlyCreateCalls = 0;
+  let payloadOnlyCreateArg = null;
+  const createTask = async function createTaskPayloadOnly(taskData = {}) {
+    payloadOnlyCreateCalls += 1;
+    payloadOnlyCreateArg = taskData;
+    if (typeof taskData?.title !== "string" || !taskData.title.trim()) {
+      throw new Error("missing title payload");
+    }
+    if (taskData.projectId !== "proj-payload") {
+      throw new Error("missing project id payload");
+    }
+    return { id: "task-payload-only-1" };
+  };
+
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize-payload-only",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      projectId: "proj-payload",
+      status: "todo",
+      failOnZero: true,
+      dedup: false,
+      minCreated: 1,
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(1);
+  expect(payloadOnlyCreateCalls).toBe(1);
+  expect(payloadOnlyCreateArg).toEqual(expect.objectContaining({
+    title: "[m] fix(materialize): payload-only adapter",
+    status: "todo",
+    projectId: "proj-payload",
+  }));
+});
+
 it("action.materialize_planner_tasks applies workspace defaults from workflow context when planner output omits them", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
