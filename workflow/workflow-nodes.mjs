@@ -11759,64 +11759,9 @@ registerBuiltinNodeType("action.build_task_prompt", {
 
     const buildStableSystemPrompt = () => {
       const systemParts = [];
-      if (includeAgentsMd) {
-        const searchDirs = [normalizedRepoRoot].filter(Boolean);
-        const docFiles = ["AGENTS.md", ".github/copilot-instructions.md"];
-        const loaded = new Set();
-        for (const dir of searchDirs) {
-          for (const doc of docFiles) {
-            if (loaded.has(doc)) continue;
-            const fullPath = resolve(dir, doc);
-            try {
-              if (!existsSync(fullPath)) continue;
-              const content = readFileSync(fullPath, "utf8").trim();
-              if (!content || content.length <= 10) continue;
-              loaded.add(doc);
-              systemParts.push(`## ${doc}`);
-              systemParts.push(content);
-              systemParts.push("");
-            } catch {
-              // best-effort only
-            }
-          }
-        }
-      }
-
-      if (includeStatusEndpoint) {
-        const port = process.env.AGENT_ENDPOINT_PORT || process.env.BOSUN_AGENT_ENDPOINT_PORT || "";
-        if (port) {
-          systemParts.push("## Agent Status Endpoint");
-          systemParts.push(`POST http://127.0.0.1:${port}/status — Report progress`);
-          systemParts.push(`POST http://127.0.0.1:${port}/heartbeat — Heartbeat ping`);
-          systemParts.push(`POST http://127.0.0.1:${port}/error — Report errors`);
-          systemParts.push(`POST http://127.0.0.1:${port}/complete — Signal completion`);
-          systemParts.push("");
-        }
-      }
-
-      systemParts.push("## Tool Discovery");
-      systemParts.push(
-        "Bosun uses a compact MCP discovery layer for external MCP servers and the custom tool library.",
-      );
-      systemParts.push(
-        "Preferred flow: `search` -> `get_schema` -> `execute`.",
-      );
-      systemParts.push(
-        "Only eager tools are preloaded below to keep context small. Use `call_discovered_tool` only as a direct fallback when orchestration code is unnecessary.",
-      );
+      systemParts.push("You are an autonomous software engineering agent inside the Bosun orchestrator.");
+      systemParts.push("Follow the project guidance provided in the user message and execute tasks end-to-end.");
       systemParts.push("");
-
-      const eagerToolBlock = getToolsPromptBlock(normalizedRepoRoot, {
-        includeBuiltins: true,
-        eagerOnly: true,
-        discoveryMode: true,
-        emitReflectHint: true,
-        limit: 12,
-      });
-      if (eagerToolBlock) {
-        systemParts.push(eagerToolBlock);
-        systemParts.push("");
-      }
 
       systemParts.push("## Instructions");
       systemParts.push(
@@ -12036,6 +11981,32 @@ registerBuiltinNodeType("action.build_task_prompt", {
       }
     }
 
+    userParts.push("## Tool Discovery");
+    userParts.push(
+      "Bosun uses a compact MCP discovery layer for external MCP servers and the custom tool library.",
+    );
+    userParts.push(
+      "Preferred flow: `search` -> `get_schema` -> `execute`.",
+    );
+    userParts.push(
+      "Only eager tools are preloaded below to keep context small. Use `call_discovered_tool` only as a direct fallback when orchestration code is unnecessary.",
+    );
+    userParts.push("");
+
+    // Skill-driven eager tools belong with task context to preserve cache anchoring.
+    const taskScopedEagerTools = getToolsPromptBlock(normalizedRepoRoot, {
+      activeSkills: activeSkillFiles,
+      includeBuiltins: true,
+      eagerOnly: true,
+      discoveryMode: true,
+      emitReflectHint: true,
+      limit: 12,
+    });
+    if (taskScopedEagerTools) {
+      userParts.push(taskScopedEagerTools);
+      userParts.push("");
+    }
+
     const relevantSkillsBlock = buildRelevantSkillsPromptBlock(
       normalizedRepoRoot,
       normalizedTaskTitle,
@@ -12081,19 +12052,6 @@ registerBuiltinNodeType("action.build_task_prompt", {
       } catch (err) {
         ctx.log(node.id, `Library skill injection failed (non-fatal): ${err.message}`);
       }
-    }
-    // Skill-driven eager tools belong with task context to preserve cache anchoring.
-    const taskScopedEagerTools = getToolsPromptBlock(normalizedRepoRoot, {
-      activeSkills: activeSkillFiles,
-      includeBuiltins: true,
-      eagerOnly: true,
-      discoveryMode: true,
-      emitReflectHint: false,
-      limit: 12,
-    });
-    if (taskScopedEagerTools) {
-      userParts.push(taskScopedEagerTools);
-      userParts.push("");
     }
 
     const coAuthorTrailer = shouldAddBosunCoAuthor({ taskId: normalizedTaskId })

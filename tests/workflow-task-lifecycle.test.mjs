@@ -1807,6 +1807,52 @@ describe("action.build_task_prompt", () => {
     expect(result.systemPrompt).toContain("commit");
   });
 
+  it("keeps repo instructions and tool discovery in the user prompt for cache stability", async () => {
+    const prevPort = process.env.BOSUN_AGENT_ENDPOINT_PORT;
+    process.env.BOSUN_AGENT_ENDPOINT_PORT = "19623";
+    const repoRoot = mkdtempSync(join(tmpdir(), "prompt-cache-anchor-"));
+    try {
+      writeFileSync(join(repoRoot, "AGENTS.md"), "Repo instructions marker.");
+      mkdirSync(join(repoRoot, ".github"), { recursive: true });
+      writeFileSync(
+        join(repoRoot, ".github", "copilot-instructions.md"),
+        "Copilot instructions marker.",
+      );
+      const nt = getNodeType("action.build_task_prompt");
+      const ctx = makeCtx({});
+      const node = makeNode("action.build_task_prompt", {
+        taskId: "T2b",
+        taskTitle: "Test",
+        taskDescription: "Desc",
+        worktreePath: join(repoRoot, ".bosun", "worktrees", "task-123"),
+        repoRoot,
+        includeAgentsMd: true,
+        includeStatusEndpoint: true,
+      });
+      const result = await nt.execute(node, ctx);
+      const userPrompt = result.userPrompt || result.prompt;
+      const systemPrompt = result.systemPrompt;
+
+      expect(userPrompt).toContain("Repo instructions marker.");
+      expect(userPrompt).toContain("Copilot instructions marker.");
+      expect(userPrompt).toContain("## Agent Status Endpoint");
+      expect(userPrompt).toContain("## Tool Discovery");
+      expect(userPrompt).toContain("search` -> `get_schema` -> `execute`");
+
+      expect(systemPrompt).not.toContain("Repo instructions marker.");
+      expect(systemPrompt).not.toContain("Copilot instructions marker.");
+      expect(systemPrompt).not.toContain("## Agent Status Endpoint");
+      expect(systemPrompt).not.toContain("## Tool Discovery");
+    } finally {
+      if (prevPort === undefined) {
+        delete process.env.BOSUN_AGENT_ENDPOINT_PORT;
+      } else {
+        process.env.BOSUN_AGENT_ENDPOINT_PORT = prevPort;
+      }
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("renders workspace scope contract from explicit repo metadata", async () => {
     const nt = getNodeType("action.build_task_prompt");
     const ctx = makeCtx({});

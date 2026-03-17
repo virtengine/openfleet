@@ -4796,6 +4796,7 @@ registerNodeType("action.build_task_prompt", {
       retryReason: { type: "string", description: "Reason for retry (if retrying)" },
       includeAgentsMd: { type: "boolean", default: true },
       includeComments: { type: "boolean", default: true },
+      includeGitContext: { type: "boolean", default: true },
       includeStatusEndpoint: { type: "boolean", default: true },
       promptTemplate: { type: "string", description: "Custom template (overrides)" },
     },
@@ -4812,7 +4813,10 @@ registerNodeType("action.build_task_prompt", {
     const repoSlug = cfgOrCtx(node, ctx, "repoSlug");
     const retryReason = cfgOrCtx(node, ctx, "retryReason");
     const includeAgentsMd = node.config?.includeAgentsMd !== false;
+    const includeComments = node.config?.includeComments !== false;
+    const includeGitContext = node.config?.includeGitContext !== false;
     const includeStatusEndpoint = node.config?.includeStatusEndpoint !== false;
+    ctx.data._taskIncludeContext = includeComments;
     const customTemplate = cfgOrCtx(node, ctx, "promptTemplate");
     const taskPayload =
       ctx.data?.task && typeof ctx.data.task === "object"
@@ -4982,65 +4986,9 @@ registerNodeType("action.build_task_prompt", {
 
     const buildStableSystemPrompt = () => {
       const systemParts = [];
-      if (includeAgentsMd) {
-        const searchDirs = [normalizedRepoRoot].filter(Boolean);
-        const docFiles = ["AGENTS.md", ".github/copilot-instructions.md"];
-        const loaded = new Set();
-        for (const dir of searchDirs) {
-          for (const doc of docFiles) {
-            if (loaded.has(doc)) continue;
-            const fullPath = resolve(dir, doc);
-            try {
-              if (!existsSync(fullPath)) continue;
-              const content = readFileSync(fullPath, "utf8").trim();
-              if (!content || content.length <= 10) continue;
-              loaded.add(doc);
-              systemParts.push(`## ${doc}`);
-              systemParts.push(content);
-              systemParts.push("");
-            } catch {
-              // best-effort only
-            }
-          }
-        }
-      }
-
-      if (includeStatusEndpoint) {
-        const port = process.env.AGENT_ENDPOINT_PORT || process.env.BOSUN_AGENT_ENDPOINT_PORT || "";
-        if (port) {
-          systemParts.push("## Agent Status Endpoint");
-          systemParts.push(`POST http://127.0.0.1:${port}/status — Report progress`);
-          systemParts.push(`POST http://127.0.0.1:${port}/heartbeat — Heartbeat ping`);
-          systemParts.push(`POST http://127.0.0.1:${port}/error — Report errors`);
-          systemParts.push(`POST http://127.0.0.1:${port}/complete — Signal completion`);
-          systemParts.push("");
-        }
-      }
-
-      systemParts.push("## Tool Discovery");
-      systemParts.push(
-        "Bosun uses a compact MCP discovery layer for external MCP servers and the custom tool library.",
-      );
-      systemParts.push(
-        "Preferred flow: `search` -> `get_schema` -> `execute`.",
-      );
-      systemParts.push(
-        "Only eager tools are preloaded below to keep context small. Use `call_discovered_tool` only as a direct fallback when orchestration code is unnecessary.",
-      );
+      systemParts.push("You are an autonomous software engineering agent inside the Bosun orchestrator.");
+      systemParts.push("Follow the project guidance provided in the user message and execute tasks end-to-end.");
       systemParts.push("");
-
-      const eagerToolBlock = getToolsPromptBlock(normalizedRepoRoot, {
-        includeBuiltins: true,
-        eagerOnly: true,
-        discoveryMode: true,
-        emitReflectHint: true,
-        limit: 12,
-      });
-      if (eagerToolBlock) {
-        systemParts.push(eagerToolBlock);
-        systemParts.push("");
-      }
-
       systemParts.push("## Instructions");
       systemParts.push(
         "1. Follow the project instructions in AGENTS.md.\n" +
@@ -5052,6 +5000,53 @@ registerNodeType("action.build_task_prompt", {
           "7. Use all available tools to verify your work.",
       );
       return systemParts.join("\n").trim();
+    };
+
+    const buildGitContextBlock = () => {
+      if (!includeGitContext) return "";
+      const root = normalizedWorktreePath || normalizedRepoRoot;
+      if (!root) return "";
+      if (!existsSync(resolve(root, ".git"))) return "";
+
+      try {
+        let commits = [];
+        try {
+          const raw = execGitArgsSync(["log", "--oneline", "-8"], {
+            cwd: root,
+            encoding: "utf8",
+            timeout: 10000,
+            stdio: ["ignore", "pipe", "pipe"],
+          }).trim();
+          if (raw) commits = raw.split("\n").filter(Boolean);
+        } catch { /* best-effort */ }
+
+        let diffSummary = "";
+        try {
+          diffSummary = execGitArgsSync(
+            ["diff", "--stat", `${normalizedBaseBranch || "origin/main"}..HEAD`],
+            { cwd: root, encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"] },
+          ).trim();
+        } catch { /* best-effort */ }
+
+        if (diffSummary && diffSummary.length > 2000) {
+          diffSummary = `${diffSummary.slice(0, 2000)}…`;
+        }
+
+        const lines = ["## Git Context"];
+        if (commits.length > 0) {
+          lines.push("### Recent Commits");
+          for (const commit of commits) lines.push(`- ${commit}`);
+        }
+        if (diffSummary) {
+          lines.push("### Diff Summary");
+          lines.push("```");
+          lines.push(diffSummary);
+          lines.push("```");
+        }
+        return lines.length > 1 ? lines.join("\n") : "";
+      } catch {
+        return "";
+      }
     };
 
     if (customTemplate) {
@@ -5089,6 +5084,21 @@ registerNodeType("action.build_task_prompt", {
     if (normalizedTaskDescription) {
       userParts.push("## Description");
       userParts.push(normalizedTaskDescription);
+      userParts.push("");
+    }
+
+    if (includeComments) {
+      const taskContextBlock = buildTaskContextBlock(taskPayload);
+      if (taskContextBlock) {
+        userParts.push(taskContextBlock);
+        userParts.push("");
+        ctx.data._taskPromptIncludesTaskContext = true;
+      }
+    }
+
+    const gitContextBlock = buildGitContextBlock();
+    if (gitContextBlock) {
+      userParts.push(gitContextBlock);
       userParts.push("");
     }
 
