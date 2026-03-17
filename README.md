@@ -12,7 +12,7 @@ _The name "Bosun" comes from "boatswain", the ship's officer responsible for coo
 _That maps directly to the Bosun project: it does not replace the captain or crew, it orchestrates the work. Our Bosun plans tasks, routes them to the right executors, enforces operational checks, and keeps humans in control while the system keeps delivery moving. Autonomous engineering with you in control of the operation._
 
 <p align="center">
-  <a href="https://bosun.engineer">Website</a> · <a href="https://bosun.engineer/docs/">Docs</a> · <a href="https://github.com/virtengine/bosun?tab=readme-ov-file#bosun">GitHub</a> · <a href="https://www.npmjs.com/package/bosun">npm</a> · <a href="https://github.com/virtengine/bosun/issues">Issues</a>
+  <a href="https://bosun.engineer">Website</a> · <a href="https://bosun.engineer/docs/">Docs</a> · <a href="https://github.com/virtengine/bosun?tab=readme-ov-file#bosun">GitHub</a> · <a href="https://www.npmjs.com/package/bosun">npm</a> · <a href="https://hub.docker.com/r/virtengine/bosun">Docker Hub</a> · <a href="https://github.com/virtengine/bosun/issues">Issues</a>
 </p>
 
 <p align="center">
@@ -40,6 +40,28 @@ First run launches setup automatically. You can also run setup directly:
 ```bash
 bosun --setup
 ```
+
+### Docker quick start
+
+Run Bosun with no local Node.js install — pull from Docker Hub:
+
+```bash
+docker run -d --name bosun -p 3080:3080 \
+  -v bosun-data:/data \
+  -e BOSUN_API_KEY=your-secret-key \
+  virtengine/bosun:latest
+```
+
+Or build from the cloned repo:
+
+```bash
+git clone https://github.com/virtengine/bosun.git && cd bosun
+docker compose up -d
+```
+
+Open `https://localhost:3080` to start the setup wizard.
+
+> **All installation options** — npm, source, Docker Hub, docker-compose, Electron desktop — are documented in [`INSTALL.md`](INSTALL.md) and on [bosun.engineer/docs/installation](https://bosun.engineer/docs/installation.html).
 
 Requires:
 

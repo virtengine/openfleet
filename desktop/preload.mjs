@@ -94,4 +94,23 @@ contextBridge.exposeInMainWorld("veDesktop", {
     setScope: (id, isGlobal) =>
       ipcRenderer.invoke("bosun:shortcuts:setScope", { id, isGlobal }),
   },
+
+  /**
+   * Remote connection settings API.
+   * Available in the renderer via `window.veDesktop.connection.*`
+   */
+  connection: {
+    /** Get the current remote connection config + active status. */
+    get: () => ipcRenderer.invoke("bosun:connection:get"),
+
+    /** Save remote connection config. { enabled, endpoint, apiKey } */
+    set: (config) => ipcRenderer.invoke("bosun:connection:set", config),
+
+    /** Test connectivity to a remote endpoint. { endpoint, apiKey } */
+    test: (endpoint, apiKey) =>
+      ipcRenderer.invoke("bosun:connection:test", { endpoint, apiKey }),
+
+    /** Open the interactive remote connection setup dialog. */
+    setup: () => ipcRenderer.invoke("bosun:connection:setup"),
+  },
 });

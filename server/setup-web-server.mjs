@@ -2443,6 +2443,281 @@ function handleApply(body) {
 
 // ── Server ───────────────────────────────────────────────────────────────────
 
+/**
+ * Handle /api/setup/* routes.
+ * Reusable from both the standalone setup server and the unified ui-server.
+ *
+ * @param {import("node:http").IncomingMessage} req
+ * @param {import("node:http").ServerResponse} res
+ * @param {URL} url
+ * @param {object} [options]
+ * @param {() => void} [options.onComplete] - callback for unified mode (instead of process.exit)
+ * @returns {Promise<boolean>} true if the route was handled
+ */
+async function handleSetupApi(req, res, url, options = {}) {
+  if (!url.pathname.startsWith("/api/setup/")) return false;
+
+  const route = url.pathname.replace("/api/setup/", "");
+
+  try {
+    switch (route) {
+      case "status":
+        jsonResponse(res, 200, await handleStatus());
+        return true;
+      case "vendor-status":
+        jsonResponse(res, 200, checkVendorFiles());
+        return true;
+      case "prerequisites":
+        jsonResponse(res, 200, handlePrerequisites());
+        return true;
+      case "defaults":
+        jsonResponse(res, 200, handleDefaults());
+        return true;
+      case "models":
+        jsonResponse(res, 200, handleModels());
+        return true;
+      case "models/probe":
+        if (req.method !== "POST") {
+          jsonResponse(res, 405, { ok: false, error: "POST required" });
+          return true;
+        }
+        jsonResponse(res, 200, await handleModelsProbe(await readBody(req)));
+        return true;
+      case "executors":
+        jsonResponse(res, 200, handleExecutors());
+        return true;
+      case "workflows":
+        jsonResponse(res, 200, handleWorkflowTemplates());
+        return true;
+      case "voice/endpoints/test":
+        if (req.method !== "POST") {
+          jsonResponse(res, 405, { ok: false, error: "POST required" });
+          return true;
+        }
+        jsonResponse(res, 200, await handleVoiceEndpointTest(await readBody(req)));
+        return true;
+
+      // ── Voice OAuth auth routes ─────────────────────────────────────────
+      case "voice/auth/openai/status":
+      case "voice/auth/claude/status":
+      case "voice/auth/gemini/status": {
+        const provider = route.split("/")[2]; // openai | claude | gemini
+        try {
+          const statusFns = {
+            openai: "getOpenAILoginStatus",
+            claude: "getClaudeLoginStatus",
+            gemini: "getGeminiLoginStatus",
+          };
+          const mod = await import("../voice/voice-auth-manager.mjs");
+          const fn = mod[statusFns[provider]];
+          if (!fn) throw new Error(`No status function for ${provider}`);
+          jsonResponse(res, 200, { ok: true, ...fn() });
+        } catch (err) {
+          jsonResponse(res, 200, { ok: true, status: "idle", hasToken: false, error: err.message });
+        }
+        return true;
+      }
+      case "voice/auth/openai/login":
+      case "voice/auth/claude/login":
+      case "voice/auth/gemini/login": {
+        if (req.method !== "POST") {
+          jsonResponse(res, 405, { ok: false, error: "POST required" });
+          return true;
+        }
+        const provider = route.split("/")[2];
+        try {
+          const loginFns = {
+            openai: "startOpenAICodexLogin",
+            claude: "startClaudeLogin",
+            gemini: "startGeminiLogin",
+          };
+          const mod = await import("../voice/voice-auth-manager.mjs");
+          const fn = mod[loginFns[provider]];
+          if (!fn) throw new Error(`No login function for ${provider}`);
+          const result = fn({ openBrowser: false });
+          jsonResponse(res, 200, { ok: true, ...(result || {}) });
+        } catch (err) {
+          jsonResponse(res, 500, { ok: false, error: err.message });
+        }
+        return true;
+      }
+      case "voice/auth/openai/logout":
+      case "voice/auth/claude/logout":
+      case "voice/auth/gemini/logout": {
+        if (req.method !== "POST") {
+          jsonResponse(res, 405, { ok: false, error: "POST required" });
+          return true;
+        }
+        const provider = route.split("/")[2];
+        try {
+          const logoutFns = {
+            openai: "logoutOpenAI",
+            claude: "logoutClaude",
+            gemini: "logoutGemini",
+          };
+          const mod = await import("../voice/voice-auth-manager.mjs");
+          const fn = mod[logoutFns[provider]];
+          if (!fn) throw new Error(`No logout function for ${provider}`);
+          const result = fn();
+          jsonResponse(res, 200, { ok: true, ...(result || {}) });
+        } catch (err) {
+          jsonResponse(res, 500, { ok: false, error: err.message });
+        }
+        return true;
+      }
+      case "voice/auth/openai/cancel":
+      case "voice/auth/claude/cancel":
+      case "voice/auth/gemini/cancel": {
+        if (req.method !== "POST") {
+          jsonResponse(res, 405, { ok: false, error: "POST required" });
+          return true;
+        }
+        const provider = route.split("/")[2];
+        try {
+          const cancelFns = {
+            openai: "cancelOpenAILogin",
+            claude: "cancelClaudeLogin",
+            gemini: "cancelGeminiLogin",
+          };
+          const mod = await import("../voice/voice-auth-manager.mjs");
+          const fn = mod[cancelFns[provider]];
+          if (!fn) throw new Error(`No cancel function for ${provider}`);
+          fn();
+          jsonResponse(res, 200, { ok: true });
+        } catch (err) {
+          jsonResponse(res, 500, { ok: false, error: err.message });
+        }
+        return true;
+      }
+
+      case "validate":
+        if (req.method !== "POST") {
+          jsonResponse(res, 405, { ok: false, error: "POST required" });
+          return true;
+        }
+        jsonResponse(res, 200, handleValidate(await readBody(req)));
+        return true;
+      case "telegram-chat-id": {
+        if (req.method !== "POST") {
+          jsonResponse(res, 405, { ok: false, error: "POST required" });
+          return true;
+        }
+        const result = await handleTelegramChatIdLookup(await readBody(req));
+        jsonResponse(res, result.status, result);
+        return true;
+      }
+      case "apply":
+        if (req.method !== "POST") {
+          jsonResponse(res, 405, { ok: false, error: "POST required" });
+          return true;
+        }
+        jsonResponse(res, 200, handleApply(await readBody(req)));
+        return true;
+      case "install-startup": {
+        if (req.method !== "POST") {
+          jsonResponse(res, 405, { ok: false, error: "POST required" });
+          return true;
+        }
+        try {
+          const body_ = await readBody(req);
+          const { installStartupService } = await import("../infra/startup-service.mjs");
+          const result = await installStartupService({ daemon: body_?.daemon !== false });
+          jsonResponse(res, 200, { ok: true, ...result });
+        } catch (err) {
+          jsonResponse(res, 500, { ok: false, error: err.message });
+        }
+        return true;
+      }
+      case "remove-startup": {
+        if (req.method !== "POST") {
+          jsonResponse(res, 405, { ok: false, error: "POST required" });
+          return true;
+        }
+        try {
+          const { removeStartupService } = await import("../infra/startup-service.mjs");
+          const result = await removeStartupService();
+          jsonResponse(res, 200, { ok: true, ...result });
+        } catch (err) {
+          jsonResponse(res, 500, { ok: false, error: err.message });
+        }
+        return true;
+      }
+      case "install-desktop-shortcut": {
+        if (req.method !== "POST") {
+          jsonResponse(res, 405, { ok: false, error: "POST required" });
+          return true;
+        }
+        try {
+          const { installDesktopShortcut } = await import("../infra/desktop-shortcut.mjs");
+          const result = installDesktopShortcut();
+          jsonResponse(res, 200, { ok: true, ...result });
+        } catch (err) {
+          jsonResponse(res, 500, { ok: false, error: err.message });
+        }
+        return true;
+      }
+      case "remove-desktop-shortcut": {
+        if (req.method !== "POST") {
+          jsonResponse(res, 405, { ok: false, error: "POST required" });
+          return true;
+        }
+        try {
+          const { removeDesktopShortcut } = await import("../infra/desktop-shortcut.mjs");
+          const result = removeDesktopShortcut();
+          jsonResponse(res, 200, { ok: true, ...result });
+        } catch (err) {
+          jsonResponse(res, 500, { ok: false, error: err.message });
+        }
+        return true;
+      }
+      case "complete":
+        if (req.method !== "POST") {
+          jsonResponse(res, 405, { ok: false, error: "POST required" });
+          return true;
+        }
+        jsonResponse(res, 200, { ok: true, message: "Setup complete" });
+        if (options.onComplete) {
+          // Unified mode: signal completion instead of exiting
+          setTimeout(() => options.onComplete(), 500);
+        } else {
+          // Standalone mode: shut down setup server
+          setTimeout(() => {
+            console.log("\n  :check: Setup complete — shutting down wizard server.\n");
+            if (callbackServer) callbackServer.close();
+            server.close();
+            process.exit(0);
+          }, 500);
+        }
+        return true;
+      case "oauth-state": {
+        // The setup wizard polls this to detect when the GitHub OAuth callback
+        // has been received (possibly on a different port).
+        const pendingPath = oauthPendingPath();
+        if (existsSync(pendingPath)) {
+          try {
+            const raw = readFileSync(pendingPath, "utf8");
+            const data = JSON.parse(raw);
+            // Delete the file so it's only claimed once
+            try { unlinkSync(pendingPath); } catch { /* ignore */ }
+            jsonResponse(res, 200, { ok: true, pending: true, ...data });
+          } catch {
+            jsonResponse(res, 200, { ok: true, pending: false });
+          }
+        } else {
+          jsonResponse(res, 200, { ok: true, pending: false });
+        }
+        return true;
+      }
+      default:
+        jsonResponse(res, 404, { ok: false, error: `Unknown route: ${route}` });
+        return true;
+    }
+  } catch (err) {
+    jsonResponse(res, 500, { ok: false, error: err.message });
+    return true;
+  }
+}
+
 async function handleRequest(req, res) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
@@ -2508,262 +2783,10 @@ async function handleRequest(req, res) {
     return;
   }
 
-  // API routes
+  // API routes — delegate to the shared handler (standalone mode, no onComplete callback)
   if (url.pathname.startsWith("/api/setup/")) {
-    const route = url.pathname.replace("/api/setup/", "");
-
-    try {
-      switch (route) {
-        case "status":
-          jsonResponse(res, 200, await handleStatus());
-          return;
-        case "vendor-status":
-          jsonResponse(res, 200, checkVendorFiles());
-          return;
-        case "prerequisites":
-          jsonResponse(res, 200, handlePrerequisites());
-          return;
-        case "defaults":
-          jsonResponse(res, 200, handleDefaults());
-          return;
-        case "models":
-          jsonResponse(res, 200, handleModels());
-          return;
-        case "models/probe":
-          if (req.method !== "POST") {
-            jsonResponse(res, 405, { ok: false, error: "POST required" });
-            return;
-          }
-          jsonResponse(res, 200, await handleModelsProbe(await readBody(req)));
-          return;
-        case "executors":
-          jsonResponse(res, 200, handleExecutors());
-          return;
-        case "workflows":
-          jsonResponse(res, 200, handleWorkflowTemplates());
-          return;
-        case "voice/endpoints/test":
-          if (req.method !== "POST") {
-            jsonResponse(res, 405, { ok: false, error: "POST required" });
-            return;
-          }
-          jsonResponse(res, 200, await handleVoiceEndpointTest(await readBody(req)));
-          return;
-
-        // ── Voice OAuth auth routes ─────────────────────────────────────────
-        case "voice/auth/openai/status":
-        case "voice/auth/claude/status":
-        case "voice/auth/gemini/status": {
-          const provider = route.split("/")[2]; // openai | claude | gemini
-          try {
-            const statusFns = {
-              openai: "getOpenAILoginStatus",
-              claude: "getClaudeLoginStatus",
-              gemini: "getGeminiLoginStatus",
-            };
-            const mod = await import("../voice/voice-auth-manager.mjs");
-            const fn = mod[statusFns[provider]];
-            if (!fn) throw new Error(`No status function for ${provider}`);
-            jsonResponse(res, 200, { ok: true, ...fn() });
-          } catch (err) {
-            jsonResponse(res, 200, { ok: true, status: "idle", hasToken: false, error: err.message });
-          }
-          return;
-        }
-        case "voice/auth/openai/login":
-        case "voice/auth/claude/login":
-        case "voice/auth/gemini/login": {
-          if (req.method !== "POST") {
-            jsonResponse(res, 405, { ok: false, error: "POST required" });
-            return;
-          }
-          const provider = route.split("/")[2];
-          try {
-            const loginFns = {
-              openai: "startOpenAICodexLogin",
-              claude: "startClaudeLogin",
-              gemini: "startGeminiLogin",
-            };
-            const mod = await import("../voice/voice-auth-manager.mjs");
-            const fn = mod[loginFns[provider]];
-            if (!fn) throw new Error(`No login function for ${provider}`);
-            const result = fn({ openBrowser: false });
-            jsonResponse(res, 200, { ok: true, ...(result || {}) });
-          } catch (err) {
-            jsonResponse(res, 500, { ok: false, error: err.message });
-          }
-          return;
-        }
-        case "voice/auth/openai/logout":
-        case "voice/auth/claude/logout":
-        case "voice/auth/gemini/logout": {
-          if (req.method !== "POST") {
-            jsonResponse(res, 405, { ok: false, error: "POST required" });
-            return;
-          }
-          const provider = route.split("/")[2];
-          try {
-            const logoutFns = {
-              openai: "logoutOpenAI",
-              claude: "logoutClaude",
-              gemini: "logoutGemini",
-            };
-            const mod = await import("../voice/voice-auth-manager.mjs");
-            const fn = mod[logoutFns[provider]];
-            if (!fn) throw new Error(`No logout function for ${provider}`);
-            const result = fn();
-            jsonResponse(res, 200, { ok: true, ...(result || {}) });
-          } catch (err) {
-            jsonResponse(res, 500, { ok: false, error: err.message });
-          }
-          return;
-        }
-        case "voice/auth/openai/cancel":
-        case "voice/auth/claude/cancel":
-        case "voice/auth/gemini/cancel": {
-          if (req.method !== "POST") {
-            jsonResponse(res, 405, { ok: false, error: "POST required" });
-            return;
-          }
-          const provider = route.split("/")[2];
-          try {
-            const cancelFns = {
-              openai: "cancelOpenAILogin",
-              claude: "cancelClaudeLogin",
-              gemini: "cancelGeminiLogin",
-            };
-            const mod = await import("../voice/voice-auth-manager.mjs");
-            const fn = mod[cancelFns[provider]];
-            if (!fn) throw new Error(`No cancel function for ${provider}`);
-            fn();
-            jsonResponse(res, 200, { ok: true });
-          } catch (err) {
-            jsonResponse(res, 500, { ok: false, error: err.message });
-          }
-          return;
-        }
-
-        case "validate":
-          if (req.method !== "POST") {
-            jsonResponse(res, 405, { ok: false, error: "POST required" });
-            return;
-          }
-          jsonResponse(res, 200, handleValidate(await readBody(req)));
-          return;
-        case "telegram-chat-id": {
-          if (req.method !== "POST") {
-            jsonResponse(res, 405, { ok: false, error: "POST required" });
-            return;
-          }
-          const result = await handleTelegramChatIdLookup(await readBody(req));
-          jsonResponse(res, result.status, result);
-          return;
-        }
-        case "apply":
-          if (req.method !== "POST") {
-            jsonResponse(res, 405, { ok: false, error: "POST required" });
-            return;
-          }
-          jsonResponse(res, 200, handleApply(await readBody(req)));
-          return;
-        case "install-startup": {
-          if (req.method !== "POST") {
-            jsonResponse(res, 405, { ok: false, error: "POST required" });
-            return;
-          }
-          try {
-            const body_ = await readBody(req);
-            const { installStartupService } = await import("../infra/startup-service.mjs");
-            const result = await installStartupService({ daemon: body_?.daemon !== false });
-            jsonResponse(res, 200, { ok: true, ...result });
-          } catch (err) {
-            jsonResponse(res, 500, { ok: false, error: err.message });
-          }
-          return;
-        }
-        case "remove-startup": {
-          if (req.method !== "POST") {
-            jsonResponse(res, 405, { ok: false, error: "POST required" });
-            return;
-          }
-          try {
-            const { removeStartupService } = await import("../infra/startup-service.mjs");
-            const result = await removeStartupService();
-            jsonResponse(res, 200, { ok: true, ...result });
-          } catch (err) {
-            jsonResponse(res, 500, { ok: false, error: err.message });
-          }
-          return;
-        }
-        case "install-desktop-shortcut": {
-          if (req.method !== "POST") {
-            jsonResponse(res, 405, { ok: false, error: "POST required" });
-            return;
-          }
-          try {
-            const { installDesktopShortcut } = await import("../infra/desktop-shortcut.mjs");
-            const result = installDesktopShortcut();
-            jsonResponse(res, 200, { ok: true, ...result });
-          } catch (err) {
-            jsonResponse(res, 500, { ok: false, error: err.message });
-          }
-          return;
-        }
-        case "remove-desktop-shortcut": {
-          if (req.method !== "POST") {
-            jsonResponse(res, 405, { ok: false, error: "POST required" });
-            return;
-          }
-          try {
-            const { removeDesktopShortcut } = await import("../infra/desktop-shortcut.mjs");
-            const result = removeDesktopShortcut();
-            jsonResponse(res, 200, { ok: true, ...result });
-          } catch (err) {
-            jsonResponse(res, 500, { ok: false, error: err.message });
-          }
-          return;
-        }
-        case "complete":
-          if (req.method !== "POST") {
-            jsonResponse(res, 405, { ok: false, error: "POST required" });
-            return;
-          }
-          jsonResponse(res, 200, { ok: true, message: "Setup complete" });
-          // Shut down server after response is sent
-          setTimeout(() => {
-            console.log("\n  :check: Setup complete — shutting down wizard server.\n");
-            if (callbackServer) callbackServer.close();
-            server.close();
-            process.exit(0);
-          }, 500);
-          return;
-        case "oauth-state": {
-          // The setup wizard polls this to detect when the GitHub OAuth callback
-          // has been received (possibly on a different port).
-          const pendingPath = oauthPendingPath();
-          if (existsSync(pendingPath)) {
-            try {
-              const raw = readFileSync(pendingPath, "utf8");
-              const data = JSON.parse(raw);
-              // Delete the file so it's only claimed once
-              try { unlinkSync(pendingPath); } catch { /* ignore */ }
-              jsonResponse(res, 200, { ok: true, pending: true, ...data });
-            } catch {
-              jsonResponse(res, 200, { ok: true, pending: false });
-            }
-          } else {
-            jsonResponse(res, 200, { ok: true, pending: false });
-          }
-          return;
-        }
-        default:
-          jsonResponse(res, 404, { ok: false, error: `Unknown route: ${route}` });
-          return;
-      }
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-      return;
-    }
+    await handleSetupApi(req, res, url);
+    return;
   }
 
   // Static file serving from ui/
@@ -3065,6 +3088,7 @@ export {
   applyTelegramMiniAppSetupEnv,
   applyNonBlockingSetupEnvDefaults,
   buildModelsProbeRequest,
+  handleSetupApi,
   handleTelegramChatIdLookup,
   isAzureOpenAIHost,
   normalizeWorkflowTemplateOverrides,
