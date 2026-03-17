@@ -1368,6 +1368,7 @@ export function StartTaskModal({
   task,
   defaultSdk = "auto",
   allowTaskIdInput = false,
+  presentation = "modal",
   onClose,
   onStart,
 }) {
@@ -1441,20 +1442,11 @@ export function StartTaskModal({
 
   const resetToInitial = useCallback(() => {
     const base = initialSnapshotRef.current || {};
-    setTitle(base.title || "");
-    setDescription(base.description || "");
-    setBaseBranch(base.baseBranch || "");
-    setPriority(base.priority || "medium");
-    setTaskType(base.taskType || "task");
-    setEpicId(base.epicId || "");
-    setStoryPoints(base.storyPoints || "");
-    setSelectedSprintId(base.sprintId || "");
-    setSprintOrderInput(base.sprintOrder || "");
-    setDependenciesInput(base.dependenciesInput || "");
-    setTagsInput(base.tagsInput || "");
-    setDraft(Boolean(base.draft));
+    setSdk(base.sdk || "auto");
+    setModel(base.model || "");
+    setTaskIdInput(base.taskIdInput || task?.id || "");
     showToast("Changes discarded", "info");
-  }, []);
+  }, [task?.id]);
 
   const handleStart = async ({ closeAfterStart = true } = {}) => {
     if (starting) return;
@@ -3244,7 +3236,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       showToast("Task moved back to todo", "success");
       onClose();
       scheduleRefresh(150);
-    } catch {
+        } catch {
       showToast("Failed to move task back to todo", "error");
     }
   };
