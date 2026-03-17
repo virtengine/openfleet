@@ -9996,7 +9996,7 @@ function refreshManagedWorktreeReuse(
   if (!existsSync(worktreePath) || shouldSkipGitRefreshForTests()) return existsSync(worktreePath);
   let refreshError = "";
   try {
-    execSync(`git pull --rebase origin ${baseBranchShort}`, {
+    execGitArgsSync(["pull", "--rebase", "origin", baseBranchShort], {
       cwd: worktreePath,
       encoding: "utf8",
       timeout: fetchTimeout,
@@ -11100,7 +11100,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
       const baseBranchShort = baseBranch.replace(/^origin\//, "");
       if (!shouldSkipGitRefreshForTests()) {
         try {
-          execSync(`git fetch origin ${baseBranchShort} --no-tags`, {
+          execGitArgsSync(["fetch", "origin", baseBranchShort, "--no-tags"], {
             cwd: repoRoot, encoding: "utf8",
             timeout: fetchTimeout,
             stdio: ["ignore", "pipe", "pipe"],
@@ -11117,7 +11117,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
 
       // Ensure long paths are enabled for this repo before checkout.
       try {
-        execSync("git config --local core.longpaths true", {
+        execGitArgsSync(["config", "--local", "core.longpaths", "true"], {
           cwd: repoRoot,
           encoding: "utf8",
           timeout: 5000,
@@ -11161,8 +11161,8 @@ registerBuiltinNodeType("action.acquire_worktree", {
       // Create fresh worktree
       let attachedExistingBranch = false;
       try {
-        execSync(
-          `git worktree add "${worktreePath}" -b "${branch}" "${baseBranch}" 2>&1`,
+        execGitArgsSync(
+          ["worktree", "add", worktreePath, "-b", branch, baseBranch],
           { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
         );
       } catch (createErr) {
@@ -11219,8 +11219,8 @@ registerBuiltinNodeType("action.acquire_worktree", {
         }
         // Branch already exists — attach worktree to existing branch.
         try {
-          execSync(
-            `git worktree add "${worktreePath}" "${branch}" 2>&1`,
+          execGitArgsSync(
+            ["worktree", "add", worktreePath, branch],
             { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
           );
           attachedExistingBranch = true;
@@ -11363,22 +11363,22 @@ registerBuiltinNodeType("action.release_worktree", {
     }
 
     try {
-      if (existsSync(worktreePath)) {
-        try {
-          execSync(`git worktree remove "${worktreePath}" --force`, {
-            cwd: repoRoot, encoding: "utf8", timeout: removeTimeout,
-            stdio: ["ignore", "pipe", "pipe"],
-          });
+    if (existsSync(worktreePath)) {
+      try {
+        execGitArgsSync(["worktree", "remove", String(worktreePath), "--force"], {
+          cwd: repoRoot, encoding: "utf8", timeout: removeTimeout,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
         } catch {
           /* best-effort — directory might already be gone */
         }
       }
 
-      if (shouldPrune) {
-        try {
-          execSync("git worktree prune", {
-            cwd: repoRoot, encoding: "utf8", timeout: 15000,
-          });
+    if (shouldPrune) {
+      try {
+        execGitArgsSync(["worktree", "prune"], {
+          cwd: repoRoot, encoding: "utf8", timeout: 15000,
+        });
         } catch { /* best-effort */ }
       }
 
