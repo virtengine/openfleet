@@ -227,4 +227,18 @@ describe("agent-prompts workspace", () => {
     expect(rendered).not.toContain("{{taskDescription}}");
     expect(rendered).not.toContain("{{repoSlug}}");
   });
+
+  it("strips inline unresolved template placeholders inside larger values", () => {
+    const rendered = renderPromptTemplate(
+      "Task: {{TASK_TITLE}}\nDescription: {{TASK_DESCRIPTION}}",
+      {
+        TASK_TITLE: "Prompt cleanup",
+        TASK_DESCRIPTION: "Investigate {{repoSlug}} placeholder leakage",
+      },
+    );
+
+    expect(rendered).toContain("Task: Prompt cleanup");
+    expect(rendered).toContain("Description: Investigate placeholder leakage");
+    expect(rendered).not.toContain("{{repoSlug}}");
+  });
 });
