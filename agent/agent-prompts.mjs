@@ -10,8 +10,12 @@ function normalizeTemplateValue(value) {
   if (value == null) return "";
   if (typeof value === "string") {
     const text = value.trim();
-    if (/^\{\{\s*[\w.-]+\s*\}\}$/.test(text)) return "";
-    return value;
+    if (!text) return "";
+    const sanitized = text
+      .replace(/\{\{\s*[\w.-]+\s*\}\}/g, " ")
+      .replace(/[ \t]{2,}/g, " ")
+      .trim();
+    return sanitized;
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return String(value);
