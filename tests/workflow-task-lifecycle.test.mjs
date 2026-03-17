@@ -1946,6 +1946,20 @@ describe("action.build_task_prompt", () => {
     expect(result.prompt).not.toContain("{{taskDescription}}");
   });
 
+  it("falls back to task id title when all title sources are unresolved", async () => {
+    const nt = getNodeType("action.build_task_prompt");
+    const ctx = makeCtx({});
+    const node = makeNode("action.build_task_prompt", {
+      taskId: "T4d",
+      taskTitle: "{{taskTitle}}",
+      taskDescription: "{{taskDescription}}",
+    });
+    const result = await nt.execute(node, ctx);
+    expect(result.prompt).toContain("# Task: Task T4d");
+    expect(result.prompt).toContain("Task ID: T4d");
+    expect(result.prompt).not.toContain("Untitled task");
+  });
+
   it("strips unresolved template placeholders from custom prompt templates", async () => {
     const nt = getNodeType("action.build_task_prompt");
     const ctx = makeCtx({});
