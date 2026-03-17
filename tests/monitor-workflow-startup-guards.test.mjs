@@ -31,6 +31,14 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain("canStartTask,");
   });
 
+  it("normalizes kanban createTask calls from both one-arg and two-arg adapters", () => {
+    expect(monitorSource).toContain("createTask: async (projectIdOrTaskData = {}, taskDataArg = undefined) => {");
+    expect(monitorSource).toContain("const invokedWithProjectId = typeof projectIdOrTaskData === \"string\";");
+    expect(monitorSource).toContain(
+      "(invokedWithProjectId ? projectIdOrTaskData : payload?.projectId) ||",
+    );
+  });
+
   it("auto-disables stale task-batch-pr workflows when workflowDefaults no longer request them", () => {
     expect(monitorSource).toContain('import("../workflow/workflow-templates.mjs")');
     expect(monitorSource).toContain('const staleWorkflowTemplateIds = ["template-task-batch-pr", "template-continuation-loop"]');
