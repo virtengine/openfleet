@@ -32,7 +32,6 @@ stryker.config.mjs
 vitest.config.mjs
 playwright.config.mjs
 __e2e-verbose.txt
-[object Object]
 
 # Documentation (not needed in image)
 _docs/

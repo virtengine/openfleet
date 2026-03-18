@@ -20,7 +20,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -247,7 +247,23 @@ export function getHealthStatus() {
  * Mark setup as complete (called from ui-server when setup finishes).
  */
 export function markSetupComplete() {
+  const wasSetupComplete = setupComplete;
   setupComplete = true;
+
+  // If we just transitioned from "not complete" to "complete", and the process
+  // is still running, ensure the monitor is started when not already running.
+  if (!wasSetupComplete && !shuttingDown && !children.has("monitor")) {
+    try {
+      startMonitor();
+    } catch (err) {
+      // Log but do not crash if automatic monitor start fails
+      console.error(
+        `${TAG} failed to start monitor after setup completion: ${
+          err && err.message ? err.message : err
+        }`,
+      );
+    }
+  }
 }
 
 // ── Main startup ────────────────────────────────────────────────────────────
@@ -314,8 +330,10 @@ async function main() {
 
 // ── Entry ───────────────────────────────────────────────────────────────────
 
-main().catch((err) => {
-  console.error(`${TAG} fatal: ${err.message}`);
-  console.error(err.stack);
-  process.exit(1);
-});
+if (process.argv[1] === __filename) {
+  main().catch((err) => {
+    console.error(`${TAG} fatal: ${err.message}`);
+    console.error(err.stack);
+    process.exit(1);
+  });
+}
