@@ -350,7 +350,9 @@
     "tools/",
     "ui/vendor/",
     "workflow/msg-hub.mjs",
-    "workflow/declarative-workflows.mjs"
+    "workflow/declarative-workflows.mjs",
+    "entrypoint.mjs",
+    "infra/health-status.mjs"
   ],
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",

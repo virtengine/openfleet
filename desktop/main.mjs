@@ -1497,9 +1497,10 @@ async function buildUiUrl() {
       remoteConnectionActive = true;
       const remoteTarget = new URL(remote.endpoint);
       uiOrigin = remoteTarget.origin;
-      if (remote.apiKey) {
-        remoteTarget.searchParams.set("apiKey", remote.apiKey);
-      }
+      // Do NOT put the API key in the URL — it leaks into logs, window
+      // history, crash reports, and Referer headers.  The desktop auth
+      // header bridge (installDesktopAuthHeaderBridge) injects X-API-Key
+      // on every request to this origin automatically.
       return remoteTarget.toString();
     }
     console.warn("[desktop] remote endpoint unreachable, falling back to local");
@@ -1509,15 +1510,14 @@ async function buildUiUrl() {
   const daemonUrl = await resolveDaemonUiUrl();
   if (daemonUrl) {
     uiOrigin = new URL(daemonUrl).origin;
-    // Authenticate the initial WebView load against the separately-running
-    // daemon using the desktop API key (set during bootstrap).
+    // The desktop auth header bridge injects Authorization: Bearer <key>
+    // on every request, so the initial page load will carry the header.
+    // The server validates the header and sets a ve_session cookie, making
+    // subsequent in-page fetches authenticated without URL secrets.
     const desktopKey = ensureDesktopApiKeyInEnv();
-    if (desktopKey) {
-      const daemonTarget = new URL(daemonUrl);
-      daemonTarget.searchParams.set("desktopKey", desktopKey);
-      return daemonTarget.toString();
+    if (!desktopKey) {
+      console.warn("[desktop] BOSUN_DESKTOP_API_KEY unavailable; daemon UI may return 401 until auth bootstrap succeeds");
     }
-    console.warn("[desktop] BOSUN_DESKTOP_API_KEY unavailable; daemon UI may return 401 until auth bootstrap succeeds");
     return daemonUrl;
   }
   // Daemon is not reachable — flag it so the window can show an offline banner.
@@ -1530,17 +1530,9 @@ async function buildUiUrl() {
   }
   const targetUrl = new URL(uiServerUrl);
   uiOrigin = targetUrl.origin;
-  // Prefer the non-expiring desktop API key over the TTL-based session token.
-  // Both result in the server setting a ve_session cookie and redirecting to /.
-    const desktopKey = ensureDesktopApiKeyInEnv();
-    if (desktopKey) {
-      targetUrl.searchParams.set("desktopKey", desktopKey);
-    } else {
-    const sessionToken = api.getSessionToken();
-    if (sessionToken) {
-      targetUrl.searchParams.set("token", sessionToken);
-    }
-  }
+  // Auth is handled by the header bridge. For the local embedded server,
+  // the request arrives with Authorization: Bearer <desktopKey> and the
+  // server validates + sets a ve_session cookie.  No URL secrets needed.
   return targetUrl.toString();
 }
 
@@ -2438,23 +2430,13 @@ async function bootstrap() {
     // — before any network request is made (config loading, API key probe, etc.).
     // allow-insecure-localhost (set pre-ready above) handles 127.0.0.1; this
     // setCertificateVerifyProc covers LAN IPs (192.168.x.x / 10.x etc.).
+    //
+    // SECURITY: Only bypass TLS verification for localhost and private-network
+    // addresses.  Remote/public endpoints must pass standard chain verification.
     session.defaultSession.setCertificateVerifyProc((request, callback) => {
       if (isLocalHost(request.hostname)) {
         callback(0); // 0 = verified OK
         return;
-      }
-      // Trust the remote endpoint host when a remote connection is active
-      if (remoteConnectionActive) {
-        try {
-          const remote = readRemoteConnectionConfig();
-          if (remote.endpoint) {
-            const remoteHost = new URL(remote.endpoint).hostname;
-            if (request.hostname === remoteHost) {
-              callback(0);
-              return;
-            }
-          }
-        } catch { /* fall through to default */ }
       }
       callback(-3); // -3 = use Chromium default chain verification
     });

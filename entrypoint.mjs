@@ -23,6 +23,14 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  getHealthStatus,
+  markSetupComplete as _markSetupComplete,
+  setComponentStatus,
+  setShuttingDown,
+  setMonitorCircuitBroken,
+  setMode,
+} from "./infra/health-status.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -30,6 +38,9 @@ const __dirname = dirname(__filename);
 const TAG = "[entrypoint]";
 const isDocker = process.env.BOSUN_DOCKER === "1";
 const isDesktop = process.env.BOSUN_DESKTOP === "1";
+
+// Synchronise mode flags with the shared health module
+setMode({ docker: isDocker, desktop: isDesktop });
 
 // ── Data directory resolution ───────────────────────────────────────────────
 // In Docker: /data (volume mount)
@@ -51,15 +62,6 @@ const children = new Map();
 
 /** @type {boolean} */
 let shuttingDown = false;
-
-/** @type {number} */
-const startedAt = Date.now();
-
-/** @type {{ monitor: string, server: string }} */
-const componentStatus = {
-  monitor: "stopped",
-  server: "stopped",
-};
 
 /** @type {boolean} */
 let setupComplete = false;
@@ -88,7 +90,7 @@ function spawnChild(name, script, args = [], opts = {}) {
   });
 
   children.set(name, child);
-  componentStatus[name] = "running";
+  setComponentStatus(name, "running");
 
   child.stdout?.on("data", (chunk) => {
     process.stdout.write(chunk);
@@ -99,7 +101,7 @@ function spawnChild(name, script, args = [], opts = {}) {
 
   child.on("exit", (code, signal) => {
     children.delete(name);
-    componentStatus[name] = "stopped";
+    setComponentStatus(name, "stopped");
 
     if (shuttingDown) {
       console.log(`${TAG} ${name} exited (shutdown)`);
@@ -128,6 +130,7 @@ function spawnChild(name, script, args = [], opts = {}) {
       }
       if (monitorCrashTimestamps.length >= MONITOR_CIRCUIT_BREAKER_MAX_CRASHES) {
         monitorCircuitBroken = true;
+        setMonitorCircuitBroken(true);
         console.error(
           `${TAG} monitor circuit breaker tripped: ${monitorCrashTimestamps.length} crashes in ${MONITOR_CIRCUIT_BREAKER_WINDOW_MS / 1000}s — stopping restarts`,
         );
@@ -144,7 +147,7 @@ function spawnChild(name, script, args = [], opts = {}) {
   child.on("error", (err) => {
     console.error(`${TAG} ${name} spawn error: ${err.message}`);
     children.delete(name);
-    componentStatus[name] = "error";
+    setComponentStatus(name, "error");
   });
 
   return child;
@@ -159,7 +162,7 @@ function startMonitor() {
   const monitorScript = resolve(__dirname, "infra", "monitor.mjs");
   if (!existsSync(monitorScript)) {
     console.error(`${TAG} monitor script not found: ${monitorScript}`);
-    componentStatus.monitor = "error";
+    setComponentStatus("monitor", "error");
     return;
   }
 
@@ -180,6 +183,7 @@ const SHUTDOWN_TIMEOUT_MS = 30_000;
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
+  setShuttingDown(true);
   console.log(`${TAG} ${signal} received — shutting down`);
 
   // Send SIGTERM to all children
@@ -226,22 +230,9 @@ process.on("exit", () => {
 });
 
 // ── Health endpoint ─────────────────────────────────────────────────────────
-
-/**
- * Returns current health status object.
- * @returns {object}
- */
-export function getHealthStatus() {
-  return {
-    status: shuttingDown ? "shutting_down" : monitorCircuitBroken ? "degraded" : "ok",
-    setup: setupComplete,
-    monitor: componentStatus.monitor,
-    server: componentStatus.server,
-    uptime: Math.floor((Date.now() - startedAt) / 1000),
-    docker: isDocker,
-    desktop: isDesktop,
-  };
-}
+// Re-export from the side-effect-free health module so existing callers
+// that import from entrypoint.mjs keep working.
+export { getHealthStatus } from "./infra/health-status.mjs";
 
 /**
  * Mark setup as complete (called from ui-server when setup finishes).
@@ -249,6 +240,7 @@ export function getHealthStatus() {
 export function markSetupComplete() {
   const wasSetupComplete = setupComplete;
   setupComplete = true;
+  _markSetupComplete();
 
   // If we just transitioned from "not complete" to "complete", and the process
   // is still running, ensure the monitor is started when not already running.
@@ -283,6 +275,7 @@ async function main() {
   try {
     const { shouldRunSetup } = await import("./setup.mjs");
     setupComplete = !shouldRunSetup();
+    if (setupComplete) _markSetupComplete();
   } catch {
     // If setup.mjs fails to load, assume setup is needed
     setupComplete = false;
@@ -304,15 +297,15 @@ async function main() {
     });
 
     if (server) {
-      componentStatus.server = "running";
+      setComponentStatus("server", "running");
       console.log(`${TAG} ui server started`);
     } else {
       console.warn(`${TAG} ui server returned null — may be a duplicate instance`);
-      componentStatus.server = "error";
+      setComponentStatus("server", "error");
     }
   } catch (err) {
     console.error(`${TAG} failed to start ui server: ${err.message}`);
-    componentStatus.server = "error";
+    setComponentStatus("server", "error");
   }
 
   // ── Start monitor (only if setup is complete) ─────────────────────────

@@ -1408,7 +1408,7 @@ async function recoverTimedBlockedWorkflowTasks({ kanban, ctx, node, projectId }
     const autoRecovery = task?.meta?.autoRecovery;
     if (!autoRecovery || typeof autoRecovery !== "object") continue;
     if (autoRecovery.active === false) continue;
-    if (String(autoRecovery.reason || "").trim() !== "worktree_failure") continue;
+    // Accept any auto-recovery reason (worktree_failure, consecutive_errors, etc.)
     const retryAtMs = Date.parse(String(autoRecovery.retryAt || task?.cooldownUntil || ""));
     if (!Number.isFinite(retryAtMs) || retryAtMs > nowMs) continue;
     await kanban.updateTask(task.id, {
