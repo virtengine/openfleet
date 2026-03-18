@@ -117,6 +117,7 @@ export class AgentEventBus {
     this._sendTelegram = options.sendTelegram || null;
     this._getTask = options.getTask || null;
     this._setTaskStatus = options.setTaskStatus || null;
+    this._updateTask = options.updateTask || null;
     this._supervisor = options.supervisor || null;
 
     this._maxEventLogSize = options.maxEventLogSize || DEFAULTS.maxEventLogSize;
@@ -856,6 +857,34 @@ export class AgentEventBus {
             this._setTaskStatus(taskId, "blocked", "agent-event-bus");
           } catch { /* best-effort */ }
         }
+
+        // Persist blocked metadata so auto-recovery can unblock after cooldown.
+        if (this._updateTask) {
+          try {
+            const autoRecoverDelayMs = 30 * 60 * 1000; // 30 min cooldown
+            const retryAt = new Date(now + autoRecoverDelayMs).toISOString();
+            const blockedReason = String(recovery?.reason || "too many consecutive errors").trim();
+            const existingTask = typeof this._getTask === "function" ? this._getTask(taskId) : null;
+            const existingMeta = existingTask?.meta && typeof existingTask.meta === "object" ? existingTask.meta : {};
+            this._updateTask(taskId, {
+              blockedReason,
+              cooldownUntil: retryAt,
+              meta: {
+                ...existingMeta,
+                autoRecovery: {
+                  active: true,
+                  reason: "consecutive_errors",
+                  errorCount: recovery?.errorCount || 0,
+                  pattern: classification?.pattern || null,
+                  retryAt,
+                  recoveryDelayMs: autoRecoverDelayMs,
+                  recordedAt: new Date(now).toISOString(),
+                },
+              },
+            });
+          } catch { /* best-effort */ }
+        }
+
         if (this._sendTelegram) {
           const title = taskTitle || taskId;
           this._sendTelegram(

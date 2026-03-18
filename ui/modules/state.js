@@ -578,11 +578,16 @@ export async function loadTasks(options = {}) {
   if (tasksSort.value) params.set("sort", tasksSort.value);
 
   const res = await apiFetch(`/api/tasks?${params}`, { _silent: true }).catch(
-    () => ({
-      data: [],
-      total: 0,
-      totalPages: 1,
-    }),
+    (err) => {
+      console.warn("[state] loadTasks fetch failed, keeping previous data:", err?.message || err);
+      return {
+        data: tasksData.value || [],
+        total: tasksTotal.value || 0,
+        totalPages: tasksTotalPages.value || 1,
+        statusCounts: tasksStatusCounts.value || {},
+        _fetchFailed: true,
+      };
+    },
   );
   const nextTasks = Array.isArray(res.data)
     ? res.data.map(normalizeTaskForUi)

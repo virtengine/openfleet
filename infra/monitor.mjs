@@ -15516,6 +15516,8 @@ if (isExecutorDisabled()) {
         getTask: (taskId) => getInternalTask(taskId),
         setTaskStatus: (taskId, status, source) =>
           setInternalTaskStatus(taskId, status, source),
+        updateTask: (taskId, updates) =>
+          updateInternalTask(taskId, updates),
         // broadcastUiEvent is wired later when UI server starts via
         // injectUiDependencies → setBroadcastFn pattern
       });
@@ -15541,6 +15543,8 @@ if (isExecutorDisabled()) {
         getTask: (taskId) => getInternalTask(taskId),
         setTaskStatus: (taskId, status, source) =>
           setInternalTaskStatus(taskId, status, source),
+        updateTask: (taskId, updates) =>
+          updateInternalTask(taskId, updates),
         assessIntervalMs: 30_000,
         // ── Intervention callbacks (steering, thread management) ──
         forceNewThread: (taskId, reason) => {

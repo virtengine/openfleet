@@ -1303,6 +1303,111 @@ describe("ui-server mini app", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   }, 20000);
 
+  it("prefers repo-local .bosun config over global BOSUN_HOME for active workspace routing", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const previousRepoRoot = process.env.REPO_ROOT;
+    const previousBosunHome = process.env.BOSUN_HOME;
+    const previousBosunDir = process.env.BOSUN_DIR;
+    const repoRootDir = mkdtempSync(join(tmpdir(), "bosun-repo-local-config-"));
+    const globalHomeDir = mkdtempSync(join(tmpdir(), "bosun-global-home-"));
+    const repoConfigDir = join(repoRootDir, ".bosun");
+    const repoConfigPath = join(repoConfigDir, "bosun.config.json");
+    const globalConfigPath = join(globalHomeDir, "bosun.config.json");
+    const repoWorkspaceDir = join(repoRootDir, "workspaces", "repo-ws", "bosun");
+    const globalWorkspaceDir = join(globalHomeDir, "workspaces", "global-ws", "bosun");
+
+    mkdirSync(join(repoWorkspaceDir, ".git"), { recursive: true });
+    mkdirSync(join(globalWorkspaceDir, ".git"), { recursive: true });
+    mkdirSync(repoConfigDir, { recursive: true });
+
+    writeFileSync(
+      repoConfigPath,
+      JSON.stringify(
+        {
+          $schema: "./bosun.schema.json",
+          activeWorkspace: "repo-ws",
+          workspaces: [
+            {
+              id: "repo-ws",
+              name: "Repo Workspace",
+              activeRepo: "bosun",
+              repos: [{ name: "bosun", url: repoWorkspaceDir, primary: true }],
+            },
+          ],
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+    writeFileSync(
+      globalConfigPath,
+      JSON.stringify(
+        {
+          $schema: "./bosun.schema.json",
+          activeWorkspace: "global-ws",
+          workspaces: [
+            {
+              id: "global-ws",
+              name: "Global Workspace",
+              activeRepo: "bosun",
+              repos: [{ name: "bosun", url: globalWorkspaceDir, primary: true }],
+            },
+          ],
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+
+    process.env.REPO_ROOT = repoRootDir;
+    process.env.BOSUN_HOME = globalHomeDir;
+    process.env.BOSUN_DIR = globalHomeDir;
+    delete process.env.BOSUN_CONFIG_PATH;
+    vi.resetModules();
+
+    try {
+      const mod = await import("../server/ui-server.mjs");
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const createResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "repo-local-config-test" }),
+      });
+      const createJson = await createResponse.json();
+
+      expect(createResponse.status).toBe(200);
+      expect(createJson.ok).toBe(true);
+      expect(createJson.session.metadata.workspaceId).toBe("repo-ws");
+      expect(createJson.session.metadata.workspaceDir).toBe(repoWorkspaceDir);
+
+      const listJson = await fetch(
+        `http://127.0.0.1:${port}/api/sessions?type=repo-local-config-test`,
+      ).then((r) => r.json());
+      expect(listJson.ok).toBe(true);
+      expect(listJson.sessions).toHaveLength(1);
+      expect(listJson.sessions[0]?.workspaceId).toBe("repo-ws");
+    } finally {
+      vi.resetModules();
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
+      if (previousBosunHome === undefined) delete process.env.BOSUN_HOME;
+      else process.env.BOSUN_HOME = previousBosunHome;
+      if (previousBosunDir === undefined) delete process.env.BOSUN_DIR;
+      else process.env.BOSUN_DIR = previousBosunDir;
+      rmSync(repoRootDir, { recursive: true, force: true });
+      rmSync(globalHomeDir, { recursive: true, force: true });
+    }
+  }, 20000);
+
   it("hides leaked smoke sessions from the default session list", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     const mod = await import("../server/ui-server.mjs");

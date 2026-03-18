@@ -4187,18 +4187,38 @@ async function resolveExecPrimaryPrompt() {
 
 /**
  * Resolve the bosun config directory. Falls back through:
- *   1. uiDeps.configDir (injected at server start)
- *   2. BOSUN_DIR env var
- *   3. ~/bosun (standard default)
+ *   1. uiDeps.configDir (explicitly injected at server start)
+ *   2. BOSUN_CONFIG_PATH parent directory
+ *   3. repo-local config when REPO_ROOT explicitly points at a managed repo
+ *   4. BOSUN_HOME/BOSUN_DIR/test sandbox/default home dir
  * Ensures the directory exists.
  */
 function resolveUiConfigDir() {
   const sandbox = ensureTestRuntimeSandbox();
+  if (uiDeps.configDir) {
+    const injectedDir = resolve(String(uiDeps.configDir));
+    try { mkdirSync(injectedDir, { recursive: true }); } catch { /* ok */ }
+    return injectedDir;
+  }
   if (process.env.BOSUN_CONFIG_PATH) {
     const fromConfigPath = dirname(resolve(process.env.BOSUN_CONFIG_PATH));
     try { mkdirSync(fromConfigPath, { recursive: true }); } catch { /* ok */ }
-    if (!uiDeps.configDir) uiDeps.configDir = fromConfigPath;
     return fromConfigPath;
+  }
+  if (String(process.env.REPO_ROOT || "").trim()) {
+    const repoLocalConfigDirCandidates = [
+      resolve(repoRoot, ".bosun"),
+      repoRoot,
+    ];
+    for (const candidate of repoLocalConfigDirCandidates) {
+      try {
+        if (!existsSync(resolve(candidate, "bosun.config.json"))) continue;
+        mkdirSync(candidate, { recursive: true });
+        return candidate;
+      } catch {
+        // Fall through to the next candidate.
+      }
+    }
   }
   const isWslInteropRuntime = Boolean(
     process.env.WSL_DISTRO_NAME
@@ -4229,8 +4249,6 @@ function resolveUiConfigDir() {
     || resolve(baseDir, "bosun");
   if (dir) {
     try { mkdirSync(dir, { recursive: true }); } catch { /* ok */ }
-    // Cache it so subsequent calls don't re-resolve
-    if (!uiDeps.configDir) uiDeps.configDir = dir;
   }
   return dir;
 }
@@ -8470,9 +8488,11 @@ function checkApiKey(req) {
 async function requireAuth(req) {
   if (isAllowUnsafe()) return { ok: true, source: "unsafe", issueSessionCookie: false };
   // User-configured API key (BOSUN_API_KEY env) — external clients, Docker
-  if (checkApiKey(req)) return { ok: true, source: "api-key", issueSessionCookie: false };
+  // Issue a session cookie so the browser can authenticate WebSocket upgrades
+  // (the WS constructor doesn't support custom headers).
+  if (checkApiKey(req)) return { ok: true, source: "api-key", issueSessionCookie: true };
   // Desktop Electron API key — non-expiring, set via BOSUN_DESKTOP_API_KEY env
-  if (checkDesktopApiKey(req)) return { ok: true, source: "desktop-api-key", issueSessionCookie: false };
+  if (checkDesktopApiKey(req)) return { ok: true, source: "desktop-api-key", issueSessionCookie: true };
   // Session token (browser access)
   if (checkSessionToken(req)) return { ok: true, source: "session", issueSessionCookie: false };
   // Telegram initData HMAC
@@ -19571,10 +19591,10 @@ export async function startTelegramUiServer(options = {}) {
     // Docker / load-balancer health check — no auth required
     if (url.pathname === "/healthz") {
       try {
-        const { getHealthStatus } = await import("../entrypoint.mjs");
+        const { getHealthStatus } = await import("../infra/health-status.mjs");
         jsonResponse(res, 200, getHealthStatus());
       } catch {
-        // Fallback if not running through entrypoint (e.g. standalone dev mode)
+        // Fallback if health module unavailable
         jsonResponse(res, 200, { status: "ok", server: "bosun" });
       }
       return;
@@ -20283,6 +20303,9 @@ export function stopTelegramUiServer() {
   if (!uiServer) return;
   stopTunnel();
   stopWsHeartbeat();
+  // Clear injected configDir so it does not leak between server lifecycles
+  // (tests start/stop servers repeatedly with different config directories).
+  delete uiDeps.configDir;
   for (const socket of wsClients) {
     try {
       stopLogStream(socket);

@@ -15,7 +15,10 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 
 # Install production deps only (skip optional / dev)
-RUN npm ci --omit=dev --ignore-scripts 2>/dev/null || npm install --omit=dev --ignore-scripts
+# --ignore-scripts is used during install to avoid running arbitrary lifecycle
+# scripts from third-party packages. Bosun's own postinstall (vendor sync,
+# JSON-RPC shim, etc.) is run explicitly in the runtime stage after COPY.
+RUN npm ci --omit=dev --ignore-scripts || npm install --omit=dev --ignore-scripts
 
 # ── Stage 2: runtime ─────────────────────────────────────────────────────────
 FROM node:22-slim
@@ -36,6 +39,11 @@ COPY --from=deps /app/node_modules ./node_modules
 
 # Copy application source
 COPY . .
+
+# Run Bosun's own postinstall (vendor sync, JSON-RPC shim, etc.) that was
+# skipped during the deps stage.  This must happen AFTER COPY so the scripts
+# can see the full source tree.
+RUN node postinstall.mjs
 
 # Default environment for container mode
 ENV BOSUN_DOCKER=1 \

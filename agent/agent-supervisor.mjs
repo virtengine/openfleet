@@ -384,6 +384,7 @@ export class AgentSupervisor {
     this._sendTelegram = opts.sendTelegram || null;
     this._getTask = opts.getTask || null;
     this._setTaskStatus = opts.setTaskStatus || null;
+    this._updateTask = opts.updateTask || null;
     this._reviewAgent = opts.reviewAgent || null;
 
     // ── Dispatch functions ──
@@ -523,6 +524,27 @@ export class AgentSupervisor {
           if (this._setTaskStatus) {
             try {
               this._setTaskStatus(taskId, "blocked", "supervisor");
+            } catch { /* best-effort */ }
+          }
+          // Persist recovery metadata so auto-recovery can unblock later
+          if (this._updateTask) {
+            try {
+              const existing = this._resolveTask(taskId);
+              const existingMeta = existing?.meta || {};
+              const cooldownMs = 30 * 60_000; // 30 minutes
+              this._updateTask(taskId, {
+                blockedReason: `Supervisor: ${reason} (situation: ${situation})`,
+                cooldownUntil: Date.now() + cooldownMs,
+                meta: {
+                  ...existingMeta,
+                  autoRecovery: {
+                    active: true,
+                    reason: "supervisor_block",
+                    situation,
+                    retryAt: Date.now() + cooldownMs,
+                  },
+                },
+              });
             } catch { /* best-effort */ }
           }
           const task = this._resolveTask(taskId);
