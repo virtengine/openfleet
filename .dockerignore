@@ -8,6 +8,11 @@ node_modules
 .git
 .gitignore
 
+# Local environment files (may contain secrets)
+.env
+.env.*
+!.env.example
+
 # Build artifacts & caches
 .bosun/
 .bosun-monitor/
