@@ -110,7 +110,15 @@ function hasOptionalModule(specifier) {
     require.resolve(specifier);
     ok = true;
   } catch {
-    ok = false;
+    // ESM-only packages have no CJS "require" export so require.resolve
+    // throws even when the package is installed.  Fall back to checking
+    // whether the package directory exists on disk.
+    try {
+      const pkgDir = resolve(__dirname, "..", "node_modules", ...specifier.split("/"));
+      ok = existsSync(resolve(pkgDir, "package.json"));
+    } catch {
+      ok = false;
+    }
   }
   MODULE_PRESENCE_CACHE.set(specifier, ok);
   return ok;
