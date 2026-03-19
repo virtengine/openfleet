@@ -510,17 +510,24 @@ async function ensureWorkflowAutomationEngine() {
       }
 
       const kanbanService = {
-        createTask: async (taskData = {}) => {
+        createTask: async (projectIdOrTaskData = {}, taskDataArg = undefined) => {
+          const invokedWithProjectId = typeof projectIdOrTaskData === "string";
+          const payloadCandidate = invokedWithProjectId ? taskDataArg : projectIdOrTaskData;
+          const payload =
+            payloadCandidate && typeof payloadCandidate === "object" && !Array.isArray(payloadCandidate)
+              ? { ...payloadCandidate }
+              : {};
           const backend = getActiveKanbanBackend();
           const projectId = String(
-            taskData?.projectId || getConfiguredKanbanProjectId(backend) || "",
+            (invokedWithProjectId ? projectIdOrTaskData : payload?.projectId) ||
+              getConfiguredKanbanProjectId(backend) ||
+              "",
           ).trim();
           if (!projectId) {
             throw new Error(
               `No project ID configured for backend=${backend} (required for workflow action.create_task)`,
             );
           }
-          const payload = { ...(taskData || {}) };
           delete payload.projectId;
           return createTask(projectId, payload);
         },

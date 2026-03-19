@@ -103,6 +103,8 @@ import {
   trimLogText,
 } from "./definitions.mjs";
 
+// CLAUDE:SUMMARY — workflow-nodes/actions
+// Implements built-in workflow action nodes, including task prompt assembly and execution helpers.
 const HTML_TEXT_BREAK_TAGS = new Set([
   "address",
   "article",
@@ -234,6 +236,7 @@ registerNodeType("action.run_agent", {
     type: "object",
     properties: {
       prompt: { type: "string", description: "Agent prompt (supports {{variables}})" },
+      systemPrompt: { type: "string", description: "Optional stable system prompt for cache anchoring" },
       sdk: { type: "string", enum: ["codex", "copilot", "claude", "auto"], default: "auto" },
       model: { type: "string", description: "Optional model override for the selected SDK" },
       taskId: { type: "string", description: "Optional task ID used for task metadata lookup" },
@@ -290,17 +293,64 @@ registerNodeType("action.run_agent", {
     const timeoutMs = Number.isFinite(resolvedTimeout) && resolvedTimeout > 0
       ? resolvedTimeout
       : 3600000;
-    const includeTaskContext = node.config?.includeTaskContext !== false;
+    const includeTaskContext =
+      node.config?.includeTaskContext !== false &&
+      ctx.data?._taskIncludeContext !== false;
+    const configuredSystemPrompt =
+      ctx.resolve(node.config?.systemPrompt || "") ||
+      ctx.data?._taskSystemPrompt ||
+      "";
+    const strictCacheAnchoring =
+      String(process.env.BOSUN_CACHE_ANCHOR_MODE || "")
+        .trim()
+        .toLowerCase() === "strict";
+    const normalizeMarker = (value) => String(value || "").trim();
+    const fallbackMarkers = [
+      trackedTaskId,
+      trackedTaskTitle,
+      ctx.data?.taskDescription,
+      ctx.data?.task?.description,
+      ctx.data?.task?.body,
+      ctx.data?.branch,
+      ctx.data?.baseBranch,
+      ctx.data?.worktreePath,
+      ctx.data?.repoRoot,
+      ctx.data?.repoSlug,
+    ]
+      .map(normalizeMarker)
+      .filter(Boolean);
+    const dynamicMarkers =
+      Array.isArray(ctx.data?._taskPromptDynamicMarkers) &&
+      ctx.data._taskPromptDynamicMarkers.length > 0
+        ? ctx.data._taskPromptDynamicMarkers
+        : fallbackMarkers;
+    const assertStableSystemPrompt = (candidate) => {
+      if (!strictCacheAnchoring) return;
+      const leaked = dynamicMarkers.find((marker) => candidate.includes(marker));
+      if (leaked) {
+        throw new Error(
+          `BOSUN_CACHE_ANCHOR_MODE=strict violation: system prompt leaked task-specific marker \"${leaked}\"`,
+        );
+      }
+    };
     const toolContract = buildWorkflowAgentToolContract(cwd, agentProfileId);
-    let finalPrompt = `${toolContract}\n\n${prompt}`;
-    if (includeTaskContext) {
+    const effectiveSystemPrompt = String(configuredSystemPrompt || "").trim();
+    assertStableSystemPrompt(effectiveSystemPrompt);
+    let finalPrompt = prompt;
+    const promptHasTaskContext =
+      ctx.data?._taskPromptIncludesTaskContext === true ||
+      String(finalPrompt || "").includes("## Task Context");
+    if (includeTaskContext && !promptHasTaskContext) {
       const explicitContext =
         ctx.data?.taskContext ||
         ctx.data?.taskContextBlock ||
         null;
       const task = ctx.data?.task || ctx.data?.taskDetail || ctx.data?.taskInfo || null;
       const contextBlock = explicitContext || buildTaskContextBlock(task);
-      if (contextBlock) finalPrompt = `${prompt}\n\n${contextBlock}`;
+      if (contextBlock) finalPrompt = `${finalPrompt}\n\n${contextBlock}`;
+    }
+    if (toolContract && !String(finalPrompt || "").includes("## Tool Capability Contract")) {
+      finalPrompt = `${finalPrompt}\n\n${toolContract}`;
     }
 
     ctx.log(node.id, `Running agent (${sdk}) in ${cwd}`);
@@ -650,6 +700,7 @@ registerNodeType("action.run_agent", {
               sdk: sdkOverride,
               model: modelOverride,
               onEvent: launchExtra.onEvent,
+              systemPrompt: effectiveSystemPrompt,
             });
           }
 
@@ -661,10 +712,12 @@ registerNodeType("action.run_agent", {
               sdk: sdkOverride,
               model: modelOverride,
               onEvent: launchExtra.onEvent,
+              systemPrompt: effectiveSystemPrompt,
             });
           }
 
           if (!result) {
+            launchExtra.systemPrompt = effectiveSystemPrompt;
             result = await agentPool.launchEphemeralThread(passPrompt, cwd, timeoutMs, launchExtra);
           }
           success = result?.success === true;
@@ -4454,7 +4507,7 @@ function clearWorktreeGitState(gitDir) {
 function resetManagedWorktree(repoRoot, worktreePath, gitDir = "") {
   clearWorktreeGitState(gitDir);
   try {
-    execSync(`git worktree remove "${worktreePath}" --force`, {
+    execGitArgsSync(["worktree", "remove", String(worktreePath), "--force"], {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 30000,
@@ -4481,7 +4534,7 @@ function resetManagedWorktree(repoRoot, worktreePath, gitDir = "") {
     }
   }
   try {
-    execSync("git worktree prune", {
+    execGitArgsSync(["worktree", "prune"], {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 15000,
@@ -4587,7 +4640,7 @@ registerNodeType("action.acquire_worktree", {
       // Ensure base branch ref is fresh
       const baseBranchShort = baseBranch.replace(/^origin\//, "");
       try {
-        execSync(`git fetch origin ${baseBranchShort} --no-tags`, {
+        execGitArgsSync(["fetch", "origin", baseBranchShort, "--no-tags"], {
           cwd: repoRoot, encoding: "utf8",
           timeout: fetchTimeout,
           stdio: ["ignore", "pipe", "pipe"],
@@ -4603,7 +4656,7 @@ registerNodeType("action.acquire_worktree", {
 
       // Ensure long paths are enabled for this repo before checkout.
       try {
-        execSync("git config --local core.longpaths true", {
+        execGitArgsSync(["config", "--local", "core.longpaths", "true"], {
           cwd: repoRoot,
           encoding: "utf8",
           timeout: 5000,
@@ -4618,7 +4671,7 @@ registerNodeType("action.acquire_worktree", {
         let recreatedManagedWorktree = invalidateBrokenReusableWorktree(worktreePath, "pre-reuse");
         if (!recreatedManagedWorktree && existsSync(worktreePath)) {
           try {
-            execSync(`git pull --rebase origin ${baseBranchShort}`, {
+            execGitArgsSync(["pull", "--rebase", "origin", baseBranchShort], {
               cwd: worktreePath, encoding: "utf8",
               timeout: fetchTimeout,
               stdio: ["ignore", "pipe", "pipe"],
@@ -4640,8 +4693,8 @@ registerNodeType("action.acquire_worktree", {
 
       // Create fresh worktree
       try {
-        execSync(
-          `git worktree add "${worktreePath}" -b "${branch}" "${baseBranch}" 2>&1`,
+        execGitArgsSync(
+          ["worktree", "add", worktreePath, "-b", branch, baseBranch],
           { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
         );
       } catch (createErr) {
@@ -4653,8 +4706,8 @@ registerNodeType("action.acquire_worktree", {
         if (attachedPath && existsSync(attachedPath)) {
           if (invalidateBrokenReusableWorktree(attachedPath, "attached-branch")) {
             fixGitConfigCorruption(repoRoot);
-            execSync(
-              `git worktree add "${worktreePath}" -b "${branch}" "${baseBranch}" 2>&1`,
+            execGitArgsSync(
+              ["worktree", "add", worktreePath, "-b", branch, baseBranch],
               { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
             );
             recreatedAttachedWorktree = true;
@@ -4678,8 +4731,8 @@ registerNodeType("action.acquire_worktree", {
         if (!recreatedAttachedWorktree) {
           // Branch already exists — attach worktree to existing branch.
           try {
-            execSync(
-              `git worktree add "${worktreePath}" "${branch}" 2>&1`,
+            execGitArgsSync(
+              ["worktree", "add", worktreePath, branch],
               { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
             );
           } catch (reuseErr) {
@@ -4740,7 +4793,7 @@ registerNodeType("action.release_worktree", {
     try {
       if (existsSync(worktreePath)) {
         try {
-          execSync(`git worktree remove "${worktreePath}" --force`, {
+          execGitArgsSync(["worktree", "remove", String(worktreePath), "--force"], {
             cwd: repoRoot, encoding: "utf8", timeout: removeTimeout,
             stdio: ["ignore", "pipe", "pipe"],
           });
@@ -4751,7 +4804,7 @@ registerNodeType("action.release_worktree", {
 
       if (shouldPrune) {
         try {
-          execSync("git worktree prune", {
+          execGitArgsSync(["worktree", "prune"], {
             cwd: repoRoot, encoding: "utf8", timeout: 15000,
           });
         } catch { /* best-effort */ }
@@ -4796,6 +4849,7 @@ registerNodeType("action.build_task_prompt", {
       retryReason: { type: "string", description: "Reason for retry (if retrying)" },
       includeAgentsMd: { type: "boolean", default: true },
       includeComments: { type: "boolean", default: true },
+      includeGitContext: { type: "boolean", default: true },
       includeStatusEndpoint: { type: "boolean", default: true },
       promptTemplate: { type: "string", description: "Custom template (overrides)" },
     },
@@ -4812,7 +4866,10 @@ registerNodeType("action.build_task_prompt", {
     const repoSlug = cfgOrCtx(node, ctx, "repoSlug");
     const retryReason = cfgOrCtx(node, ctx, "retryReason");
     const includeAgentsMd = node.config?.includeAgentsMd !== false;
+    const includeComments = node.config?.includeComments !== false;
+    const includeGitContext = node.config?.includeGitContext !== false;
     const includeStatusEndpoint = node.config?.includeStatusEndpoint !== false;
+    ctx.data._taskIncludeContext = includeComments;
     const customTemplate = cfgOrCtx(node, ctx, "promptTemplate");
     const taskPayload =
       ctx.data?.task && typeof ctx.data.task === "object"
@@ -4892,7 +4949,7 @@ registerNodeType("action.build_task_prompt", {
       taskPayload?.title,
       taskMeta?.taskTitle,
       taskTitle,
-    ) || "Untitled task";
+    ) || (normalizedTaskId ? `Task ${normalizedTaskId}` : "Untitled task");
     const normalizedTaskDescription = pickFirstString(
       resolvePromptValue("taskDescription"),
       taskPayload?.description,
@@ -4979,68 +5036,25 @@ registerNodeType("action.build_task_prompt", {
       String(process.env.BOSUN_CACHE_ANCHOR_MODE || "")
         .trim()
         .toLowerCase() === "strict";
+    const dynamicMarkers = [
+      normalizedTaskId,
+      normalizedTaskTitle,
+      normalizedTaskDescription,
+      normalizedRetryReason,
+      normalizedBranch,
+      normalizedBaseBranch,
+      normalizedWorktreePath,
+      normalizedRepoRoot,
+    ]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+    ctx.data._taskPromptDynamicMarkers = dynamicMarkers;
 
     const buildStableSystemPrompt = () => {
       const systemParts = [];
-      if (includeAgentsMd) {
-        const searchDirs = [normalizedRepoRoot].filter(Boolean);
-        const docFiles = ["AGENTS.md", ".github/copilot-instructions.md"];
-        const loaded = new Set();
-        for (const dir of searchDirs) {
-          for (const doc of docFiles) {
-            if (loaded.has(doc)) continue;
-            const fullPath = resolve(dir, doc);
-            try {
-              if (!existsSync(fullPath)) continue;
-              const content = readFileSync(fullPath, "utf8").trim();
-              if (!content || content.length <= 10) continue;
-              loaded.add(doc);
-              systemParts.push(`## ${doc}`);
-              systemParts.push(content);
-              systemParts.push("");
-            } catch {
-              // best-effort only
-            }
-          }
-        }
-      }
-
-      if (includeStatusEndpoint) {
-        const port = process.env.AGENT_ENDPOINT_PORT || process.env.BOSUN_AGENT_ENDPOINT_PORT || "";
-        if (port) {
-          systemParts.push("## Agent Status Endpoint");
-          systemParts.push(`POST http://127.0.0.1:${port}/status — Report progress`);
-          systemParts.push(`POST http://127.0.0.1:${port}/heartbeat — Heartbeat ping`);
-          systemParts.push(`POST http://127.0.0.1:${port}/error — Report errors`);
-          systemParts.push(`POST http://127.0.0.1:${port}/complete — Signal completion`);
-          systemParts.push("");
-        }
-      }
-
-      systemParts.push("## Tool Discovery");
-      systemParts.push(
-        "Bosun uses a compact MCP discovery layer for external MCP servers and the custom tool library.",
-      );
-      systemParts.push(
-        "Preferred flow: `search` -> `get_schema` -> `execute`.",
-      );
-      systemParts.push(
-        "Only eager tools are preloaded below to keep context small. Use `call_discovered_tool` only as a direct fallback when orchestration code is unnecessary.",
-      );
+      systemParts.push("You are an autonomous software engineering agent inside the Bosun orchestrator.");
+      systemParts.push("Follow the project guidance provided in the user message and execute tasks end-to-end.");
       systemParts.push("");
-
-      const eagerToolBlock = getToolsPromptBlock(normalizedRepoRoot, {
-        includeBuiltins: true,
-        eagerOnly: true,
-        discoveryMode: true,
-        emitReflectHint: true,
-        limit: 12,
-      });
-      if (eagerToolBlock) {
-        systemParts.push(eagerToolBlock);
-        systemParts.push("");
-      }
-
       systemParts.push("## Instructions");
       systemParts.push(
         "1. Follow the project instructions in AGENTS.md.\n" +
@@ -5054,9 +5068,56 @@ registerNodeType("action.build_task_prompt", {
       return systemParts.join("\n").trim();
     };
 
+    const assertStableSystemPrompt = (candidate) => {
+      if (!strictCacheAnchoring) return;
+      const leaked = dynamicMarkers.find((marker) => candidate.includes(marker));
+      if (leaked) {
+        throw new Error(
+          `BOSUN_CACHE_ANCHOR_MODE=strict violation: system prompt leaked task-specific marker "${leaked}"`,
+        );
+      }
+    };
+
+    const buildGitContextBlock = async () => {
+      if (!includeGitContext) return "";
+      const root = normalizedWorktreePath || normalizedRepoRoot;
+      if (!root) return "";
+      if (!existsSync(resolve(root, ".git"))) return "";
+
+      try {
+        const diffStatsMod = await import("../../git/diff-stats.mjs");
+        const commits =
+          diffStatsMod.getRecentCommits?.(root, 8) || [];
+        let diffSummary =
+          diffStatsMod.getCompactDiffSummary?.(root, {
+            baseBranch: normalizedBaseBranch || "origin/main",
+          }) || "";
+
+        if (diffSummary && diffSummary.length > 2000) {
+          diffSummary = `${diffSummary.slice(0, 2000)}…`;
+        }
+
+        const lines = ["## Git Context"];
+        if (Array.isArray(commits) && commits.length > 0) {
+          lines.push("### Recent Commits");
+          for (const commit of commits) lines.push(`- ${commit}`);
+        }
+        if (diffSummary && diffSummary !== "(no diff stats available)") {
+          lines.push("### Diff Summary");
+          lines.push("```");
+          lines.push(diffSummary);
+          lines.push("```");
+        }
+        return lines.length > 1 ? lines.join("\n") : "";
+      } catch {
+        return "";
+      }
+    };
+
     if (customTemplate) {
       const renderedTemplate = renderCustomTemplate(customTemplate);
       const stableSystemPrompt = buildStableSystemPrompt();
+      assertStableSystemPrompt(stableSystemPrompt);
       ctx.data._taskPrompt = renderedTemplate;
       ctx.data._taskUserPrompt = renderedTemplate;
       ctx.data._taskSystemPrompt = stableSystemPrompt;
@@ -5089,6 +5150,21 @@ registerNodeType("action.build_task_prompt", {
     if (normalizedTaskDescription) {
       userParts.push("## Description");
       userParts.push(normalizedTaskDescription);
+      userParts.push("");
+    }
+
+    if (includeComments) {
+      const taskContextBlock = buildTaskContextBlock(taskPayload);
+      if (taskContextBlock) {
+        userParts.push(taskContextBlock);
+        userParts.push("");
+        ctx.data._taskPromptIncludesTaskContext = true;
+      }
+    }
+
+    const gitContextBlock = await buildGitContextBlock();
+    if (gitContextBlock) {
+      userParts.push(gitContextBlock);
       userParts.push("");
     }
 
@@ -5229,26 +5305,7 @@ registerNodeType("action.build_task_prompt", {
 
     const userPrompt = userParts.join("\n").trim();
     const systemPrompt = buildStableSystemPrompt();
-
-    if (strictCacheAnchoring) {
-      const dynamicMarkers = [
-        normalizedTaskId,
-        normalizedTaskTitle,
-        normalizedTaskDescription,
-        normalizedRetryReason,
-        normalizedBranch,
-        normalizedBaseBranch,
-        normalizedWorktreePath,
-      ]
-        .map((value) => String(value || "").trim())
-        .filter(Boolean);
-      const leaked = dynamicMarkers.find((marker) => systemPrompt.includes(marker));
-      if (leaked) {
-        throw new Error(
-          `BOSUN_CACHE_ANCHOR_MODE=strict violation: system prompt leaked task-specific marker "${leaked}"`,
-        );
-      }
-    }
+    assertStableSystemPrompt(systemPrompt);
 
     ctx.data._taskPrompt = userPrompt;
     ctx.data._taskUserPrompt = userPrompt;

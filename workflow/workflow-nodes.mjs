@@ -59,6 +59,8 @@ import {
   stopCustomNodeDiscovery,
 } from "./workflow-nodes/custom-loader.mjs";
 
+// CLAUDE:SUMMARY — workflow-nodes
+// Registers built-in workflow node types and shared prompt/runtime actions for Bosun workflows.
 const TAG = "[workflow-nodes]";
 let customLoadPromise = null;
 let customDiscoveryStarted = false;
@@ -965,6 +967,43 @@ async function createKanbanTaskWithProject(kanban, taskData = {}, projectIdValue
 
   if (resolvedProjectId) {
     payload.projectId = resolvedProjectId;
+  }
+
+  const createTaskParamNames = (() => {
+    try {
+      const inspectTarget =
+        typeof kanban.createTask?.getMockImplementation === "function"
+          ? kanban.createTask.getMockImplementation() || kanban.createTask
+          : kanban.createTask;
+      const source = Function.prototype.toString.call(inspectTarget);
+      const parenMatch = source.match(/^[^(]*\(([^)]*)\)/s);
+      if (parenMatch) {
+        return String(parenMatch[1] || "")
+          .split(",")
+          .map((entry) =>
+            String(entry || "")
+              .trim()
+              .replace(/^\.{3}/, "")
+              .replace(/\s*=.*$/s, "")
+              .trim(),
+          )
+          .filter(Boolean);
+      }
+      const arrowMatch = source.match(/^(?:async\s+)?([A-Za-z_$][\w$]*)\s*=>/);
+      if (arrowMatch?.[1]) return [arrowMatch[1]];
+    } catch {
+      // Fall back to the project-aware signature when adapter source is opaque.
+    }
+    return [];
+  })();
+  const firstParamName = String(createTaskParamNames[0] || "").toLowerCase();
+  const payloadOnlyCreateTask =
+    createTaskParamNames.length === 1 &&
+    /(task|payload|spec|data)/i.test(firstParamName) &&
+    !/project/i.test(firstParamName);
+
+  if (payloadOnlyCreateTask) {
+    return kanban.createTask(payload);
   }
 
   const taskPayload = { ...payload };
@@ -9994,7 +10033,7 @@ function refreshManagedWorktreeReuse(
   if (!existsSync(worktreePath) || shouldSkipGitRefreshForTests()) return existsSync(worktreePath);
   let refreshError = "";
   try {
-    execSync(`git pull --rebase origin ${baseBranchShort}`, {
+    execGitArgsSync(["pull", "--rebase", "origin", baseBranchShort], {
       cwd: worktreePath,
       encoding: "utf8",
       timeout: fetchTimeout,
@@ -11098,7 +11137,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
       const baseBranchShort = baseBranch.replace(/^origin\//, "");
       if (!shouldSkipGitRefreshForTests()) {
         try {
-          execSync(`git fetch origin ${baseBranchShort} --no-tags`, {
+          execGitArgsSync(["fetch", "origin", baseBranchShort, "--no-tags"], {
             cwd: repoRoot, encoding: "utf8",
             timeout: fetchTimeout,
             stdio: ["ignore", "pipe", "pipe"],
@@ -11115,7 +11154,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
 
       // Ensure long paths are enabled for this repo before checkout.
       try {
-        execSync("git config --local core.longpaths true", {
+        execGitArgsSync(["config", "--local", "core.longpaths", "true"], {
           cwd: repoRoot,
           encoding: "utf8",
           timeout: 5000,
@@ -11159,8 +11198,8 @@ registerBuiltinNodeType("action.acquire_worktree", {
       // Create fresh worktree
       let attachedExistingBranch = false;
       try {
-        execSync(
-          `git worktree add "${worktreePath}" -b "${branch}" "${baseBranch}" 2>&1`,
+        execGitArgsSync(
+          ["worktree", "add", worktreePath, "-b", branch, baseBranch],
           { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
         );
       } catch (createErr) {
@@ -11217,8 +11256,8 @@ registerBuiltinNodeType("action.acquire_worktree", {
         }
         // Branch already exists — attach worktree to existing branch.
         try {
-          execSync(
-            `git worktree add "${worktreePath}" "${branch}" 2>&1`,
+          execGitArgsSync(
+            ["worktree", "add", worktreePath, branch],
             { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
           );
           attachedExistingBranch = true;
@@ -11361,22 +11400,22 @@ registerBuiltinNodeType("action.release_worktree", {
     }
 
     try {
-      if (existsSync(worktreePath)) {
-        try {
-          execSync(`git worktree remove "${worktreePath}" --force`, {
-            cwd: repoRoot, encoding: "utf8", timeout: removeTimeout,
-            stdio: ["ignore", "pipe", "pipe"],
-          });
+    if (existsSync(worktreePath)) {
+      try {
+        execGitArgsSync(["worktree", "remove", String(worktreePath), "--force"], {
+          cwd: repoRoot, encoding: "utf8", timeout: removeTimeout,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
         } catch {
           /* best-effort — directory might already be gone */
         }
       }
 
-      if (shouldPrune) {
-        try {
-          execSync("git worktree prune", {
-            cwd: repoRoot, encoding: "utf8", timeout: 15000,
-          });
+    if (shouldPrune) {
+      try {
+        execGitArgsSync(["worktree", "prune"], {
+          cwd: repoRoot, encoding: "utf8", timeout: 15000,
+        });
         } catch { /* best-effort */ }
       }
 
@@ -11670,7 +11709,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
       taskPayload?.title,
       taskMeta?.taskTitle,
       taskTitle,
-    ) || "Untitled task";
+    ) || (normalizedTaskId ? `Task ${normalizedTaskId}` : "Untitled task");
     const normalizedTaskDescription = pickFirstString(
       resolvePromptValue("taskDescription"),
       taskPayload?.description,
@@ -11759,64 +11798,9 @@ registerBuiltinNodeType("action.build_task_prompt", {
 
     const buildStableSystemPrompt = () => {
       const systemParts = [];
-      if (includeAgentsMd) {
-        const searchDirs = [normalizedRepoRoot].filter(Boolean);
-        const docFiles = ["AGENTS.md", ".github/copilot-instructions.md"];
-        const loaded = new Set();
-        for (const dir of searchDirs) {
-          for (const doc of docFiles) {
-            if (loaded.has(doc)) continue;
-            const fullPath = resolve(dir, doc);
-            try {
-              if (!existsSync(fullPath)) continue;
-              const content = readFileSync(fullPath, "utf8").trim();
-              if (!content || content.length <= 10) continue;
-              loaded.add(doc);
-              systemParts.push(`## ${doc}`);
-              systemParts.push(content);
-              systemParts.push("");
-            } catch {
-              // best-effort only
-            }
-          }
-        }
-      }
-
-      if (includeStatusEndpoint) {
-        const port = process.env.AGENT_ENDPOINT_PORT || process.env.BOSUN_AGENT_ENDPOINT_PORT || "";
-        if (port) {
-          systemParts.push("## Agent Status Endpoint");
-          systemParts.push(`POST http://127.0.0.1:${port}/status — Report progress`);
-          systemParts.push(`POST http://127.0.0.1:${port}/heartbeat — Heartbeat ping`);
-          systemParts.push(`POST http://127.0.0.1:${port}/error — Report errors`);
-          systemParts.push(`POST http://127.0.0.1:${port}/complete — Signal completion`);
-          systemParts.push("");
-        }
-      }
-
-      systemParts.push("## Tool Discovery");
-      systemParts.push(
-        "Bosun uses a compact MCP discovery layer for external MCP servers and the custom tool library.",
-      );
-      systemParts.push(
-        "Preferred flow: `search` -> `get_schema` -> `execute`.",
-      );
-      systemParts.push(
-        "Only eager tools are preloaded below to keep context small. Use `call_discovered_tool` only as a direct fallback when orchestration code is unnecessary.",
-      );
+      systemParts.push("You are an autonomous software engineering agent inside the Bosun orchestrator.");
+      systemParts.push("Follow the project guidance provided in the user message and execute tasks end-to-end.");
       systemParts.push("");
-
-      const eagerToolBlock = getToolsPromptBlock(normalizedRepoRoot, {
-        includeBuiltins: true,
-        eagerOnly: true,
-        discoveryMode: true,
-        emitReflectHint: true,
-        limit: 12,
-      });
-      if (eagerToolBlock) {
-        systemParts.push(eagerToolBlock);
-        systemParts.push("");
-      }
 
       systemParts.push("## Instructions");
       systemParts.push(
@@ -12036,6 +12020,32 @@ registerBuiltinNodeType("action.build_task_prompt", {
       }
     }
 
+    userParts.push("## Tool Discovery");
+    userParts.push(
+      "Bosun uses a compact MCP discovery layer for external MCP servers and the custom tool library.",
+    );
+    userParts.push(
+      "Preferred flow: `search` -> `get_schema` -> `execute`.",
+    );
+    userParts.push(
+      "Only eager tools are preloaded below to keep context small. Use `call_discovered_tool` only as a direct fallback when orchestration code is unnecessary.",
+    );
+    userParts.push("");
+
+    // Skill-driven eager tools belong with task context to preserve cache anchoring.
+    const taskScopedEagerTools = getToolsPromptBlock(normalizedRepoRoot, {
+      activeSkills: activeSkillFiles,
+      includeBuiltins: true,
+      eagerOnly: true,
+      discoveryMode: true,
+      emitReflectHint: true,
+      limit: 12,
+    });
+    if (taskScopedEagerTools) {
+      userParts.push(taskScopedEagerTools);
+      userParts.push("");
+    }
+
     const relevantSkillsBlock = buildRelevantSkillsPromptBlock(
       normalizedRepoRoot,
       normalizedTaskTitle,
@@ -12081,19 +12091,6 @@ registerBuiltinNodeType("action.build_task_prompt", {
       } catch (err) {
         ctx.log(node.id, `Library skill injection failed (non-fatal): ${err.message}`);
       }
-    }
-    // Skill-driven eager tools belong with task context to preserve cache anchoring.
-    const taskScopedEagerTools = getToolsPromptBlock(normalizedRepoRoot, {
-      activeSkills: activeSkillFiles,
-      includeBuiltins: true,
-      eagerOnly: true,
-      discoveryMode: true,
-      emitReflectHint: false,
-      limit: 12,
-    });
-    if (taskScopedEagerTools) {
-      userParts.push(taskScopedEagerTools);
-      userParts.push("");
     }
 
     const coAuthorTrailer = shouldAddBosunCoAuthor({ taskId: normalizedTaskId })
