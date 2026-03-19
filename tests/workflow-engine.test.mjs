@@ -2564,6 +2564,52 @@ describe("Session chaining - action.run_agent", () => {
     expect(runLogText).toMatch(/Agent: Implemented the requested changes\./);
   });
 
+  it("fails fast in strict cache anchor mode when system prompt includes task markers", async () => {
+    const previous = process.env.BOSUN_CACHE_ANCHOR_MODE;
+    process.env.BOSUN_CACHE_ANCHOR_MODE = "strict";
+    try {
+      const handler = getNodeType("action.run_agent");
+      expect(handler).toBeDefined();
+
+      const ctx = new WorkflowContext({
+        taskId: "STRICT-42",
+        taskTitle: "Strict title",
+        worktreePath: "/tmp/strict-cache",
+      });
+      const launchEphemeralThread = vi.fn().mockResolvedValue({
+        success: true,
+        output: "done",
+        sdk: "codex",
+        items: [],
+        threadId: "thread-strict",
+      });
+      const mockEngine = {
+        services: {
+          agentPool: {
+            launchEphemeralThread,
+          },
+        },
+      };
+      const node = {
+        id: "a-strict",
+        type: "action.run_agent",
+        config: {
+          prompt: "Do work",
+          systemPrompt: "System prompt for {{taskTitle}}",
+          autoRecover: false,
+        },
+      };
+
+      await expect(handler.execute(node, ctx, mockEngine)).rejects.toThrow(
+        /BOSUN_CACHE_ANCHOR_MODE=strict/,
+      );
+      expect(launchEphemeralThread).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env.BOSUN_CACHE_ANCHOR_MODE;
+      else process.env.BOSUN_CACHE_ANCHOR_MODE = previous;
+    }
+  });
+
   it("resolves templated timeoutMs before launching agent", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();

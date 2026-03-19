@@ -1616,6 +1616,42 @@ function formatCommentLine(comment) {
   return `- ${author}${when}: ${comment.body}`;
 }
 
+const TASK_PROMPT_ANCHOR_HEADERS = [
+  "## Task Context",
+  "## Git Context",
+  "## Git Attribution",
+  "## Environment",
+  "Task ID:",
+  "Co-authored-by:",
+];
+
+function isStrictCacheAnchorMode() {
+  return String(process.env.BOSUN_CACHE_ANCHOR_MODE || "")
+    .trim()
+    .toLowerCase() === "strict";
+}
+
+function collectCacheAnchorMarkers(values = {}, extra = []) {
+  const markers = new Set();
+  const add = (value) => {
+    const normalized = String(value || "").trim();
+    if (normalized) markers.add(normalized);
+  };
+  for (const value of Object.values(values || {})) add(value);
+  for (const value of extra || []) add(value);
+  return Array.from(markers);
+}
+
+function assertCacheAnchorSystemPrompt(candidate, markers = [], strictCacheAnchoring = false) {
+  if (!strictCacheAnchoring) return;
+  const leaked = markers.find((marker) => candidate.includes(marker));
+  if (leaked) {
+    throw new Error(
+      `BOSUN_CACHE_ANCHOR_MODE=strict violation: system prompt leaked task-specific marker "${leaked}"`,
+    );
+  }
+}
+
 function buildTaskContextBlock(task) {
   if (!task) return "";
   const comments = normalizeTaskComments(task);
@@ -2335,6 +2371,7 @@ registerBuiltinNodeType("action.run_agent", {
       ctx.data?.task?.title ||
         ctx.data?.taskDetail?.title ||
         ctx.data?.taskInfo?.title ||
+        ctx.data?.taskTitle ||
         trackedTaskId ||
         "",
     ).trim();
@@ -2357,6 +2394,59 @@ registerBuiltinNodeType("action.run_agent", {
       .map((value) => String(value || "").trim())
       .filter(Boolean)
       .join("\n\n");
+    const strictCacheAnchoring = isStrictCacheAnchorMode();
+    if (strictCacheAnchoring && effectiveSystemPrompt) {
+      const task = ctx.data?.task || ctx.data?.taskDetail || ctx.data?.taskInfo || null;
+      const taskDescription = String(
+        task?.description ||
+          task?.details ||
+          ctx.data?.taskDescription ||
+          ctx.data?.taskDetail?.description ||
+          ctx.data?.taskInfo?.description ||
+          "",
+      ).trim();
+      const taskBranch = String(
+        ctx.data?.branch ||
+          task?.branch ||
+          task?.branchName ||
+          task?.meta?.branch ||
+          ctx.data?.taskDetail?.branchName ||
+          ctx.data?.taskInfo?.branchName ||
+          "",
+      ).trim();
+      const taskBaseBranch = String(
+        ctx.data?.baseBranch ||
+          task?.baseBranch ||
+          task?.meta?.baseBranch ||
+          ctx.data?.taskDetail?.baseBranch ||
+          ctx.data?.taskInfo?.baseBranch ||
+          "",
+      ).trim();
+      const taskWorktreePath = String(
+        ctx.data?.worktreePath ||
+          task?.worktreePath ||
+          task?.meta?.worktreePath ||
+          ctx.data?.taskDetail?.worktreePath ||
+          ctx.data?.taskInfo?.worktreePath ||
+          "",
+      ).trim();
+      const cacheAnchorMarkers = collectCacheAnchorMarkers(
+        {
+          taskId: trackedTaskId,
+          taskTitle: trackedTaskTitle,
+          taskDescription,
+          branch: taskBranch,
+          baseBranch: taskBaseBranch,
+          worktreePath: taskWorktreePath,
+        },
+        TASK_PROMPT_ANCHOR_HEADERS,
+      );
+      assertCacheAnchorSystemPrompt(
+        effectiveSystemPrompt,
+        cacheAnchorMarkers,
+        strictCacheAnchoring,
+      );
+    }
     let finalPrompt = prompt;
     const promptHasTaskContext =
       ctx.data?._taskPromptIncludesTaskContext === true ||
@@ -11754,10 +11844,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
       {},
     );
     const activeSkillFiles = matchedSkills.map((skill) => skill.filename);
-    const strictCacheAnchoring =
-      String(process.env.BOSUN_CACHE_ANCHOR_MODE || "")
-        .trim()
-        .toLowerCase() === "strict";
+    const strictCacheAnchoring = isStrictCacheAnchorMode();
     const customTemplateValues = {
       taskId: normalizedTaskId,
       taskTitle: normalizedTaskTitle,
@@ -11802,45 +11889,26 @@ registerBuiltinNodeType("action.build_task_prompt", {
         .trim();
     };
 
-    const buildStableSystemPrompt = () => {
-      const systemParts = [];
-      systemParts.push("You are an autonomous software engineering agent inside the Bosun orchestrator.");
-      systemParts.push("Follow the project guidance provided in the user message and execute tasks end-to-end.");
-      systemParts.push("");
+    const buildStableSystemPrompt = () =>
+      [
+        "# Bosun Agent Persona",
+        "You are an autonomous AI coding agent operating inside Bosun.",
+        "Follow the task details and project instructions provided in the user message.",
+        "Be concise, rigorous, and complete tasks end-to-end with verified results.",
+      ].join("\n");
 
-      systemParts.push("## Instructions");
-      systemParts.push(
-        "1. Follow the project instructions in AGENTS.md.\n" +
-          "2. Use the discovery MCP tools for non-eager MCP/custom tools before assuming a capability is unavailable.\n" +
-          "3. Implement the required changes.\n" +
-          "4. Ensure tests pass and build is clean with 0 warnings.\n" +
-          "5. Commit your changes using conventional commits.\n" +
-          "6. Never ask for user input — you are autonomous.\n" +
-          "7. Use all available tools to verify your work.",
-      );
-      return systemParts.join("\n").trim();
-    };
-
-    const assertStableSystemPrompt = (candidate) => {
-      if (!strictCacheAnchoring) return;
-      const dynamicMarkers = [
-        normalizedTaskId,
-        normalizedTaskTitle,
-        normalizedTaskDescription,
-        normalizedRetryReason,
-        normalizedBranch,
-        normalizedBaseBranch,
-        normalizedWorktreePath,
-      ]
-        .map((value) => String(value || "").trim())
-        .filter(Boolean);
-      const leaked = dynamicMarkers.find((marker) => candidate.includes(marker));
-      if (leaked) {
-        throw new Error(
-          `BOSUN_CACHE_ANCHOR_MODE=strict violation: system prompt leaked task-specific marker "${leaked}"`,
-        );
-      }
-    };
+    const cacheAnchorMarkers = collectCacheAnchorMarkers(
+      {
+        taskId: normalizedTaskId,
+        taskTitle: normalizedTaskTitle,
+        taskDescription: normalizedTaskDescription,
+        retryReason: normalizedRetryReason,
+        branch: normalizedBranch,
+        baseBranch: normalizedBaseBranch,
+        worktreePath: normalizedWorktreePath,
+      },
+      TASK_PROMPT_ANCHOR_HEADERS,
+    );
 
     const buildGitContextBlock = async () => {
       if (!includeGitContext) return "";
@@ -11881,7 +11949,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
     if (customTemplate) {
       const renderedTemplate = renderCustomTemplate(customTemplate);
       const stableSystemPrompt = buildStableSystemPrompt();
-      assertStableSystemPrompt(stableSystemPrompt);
+      assertCacheAnchorSystemPrompt(stableSystemPrompt, cacheAnchorMarkers, strictCacheAnchoring);
       ctx.data._taskPrompt = renderedTemplate;
       ctx.data._taskUserPrompt = renderedTemplate;
       ctx.data._taskSystemPrompt = stableSystemPrompt;
@@ -12111,7 +12179,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
 
     const userPrompt = userParts.join("\n").trim();
     const systemPrompt = buildStableSystemPrompt();
-    assertStableSystemPrompt(systemPrompt);
+    assertCacheAnchorSystemPrompt(systemPrompt, cacheAnchorMarkers, strictCacheAnchoring);
 
     ctx.data._taskPrompt = userPrompt;
     ctx.data._taskUserPrompt = userPrompt;

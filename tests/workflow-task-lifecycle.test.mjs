@@ -1806,8 +1806,8 @@ describe("action.build_task_prompt", () => {
       taskDescription: "Desc",
     });
     const result = await nt.execute(node, ctx);
-    // Autonomous execution instructions now live in systemPrompt.
-    expect(result.systemPrompt).toContain("commit");
+    // Execution instructions live in the user prompt to preserve cache anchoring.
+    expect(result.prompt).toContain("commit");
   });
 
   it("keeps repo instructions and tool discovery in the user prompt for cache stability", async () => {
