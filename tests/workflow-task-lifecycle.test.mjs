@@ -1990,6 +1990,29 @@ describe("action.build_task_prompt", () => {
     expect(result.prompt).not.toContain("{{workspace}}");
   });
 
+  it("strips inline unresolved template placeholders from task fields", async () => {
+    const nt = getNodeType("action.build_task_prompt");
+    const ctx = makeCtx({});
+    const node = makeNode("action.build_task_prompt", {
+      taskId: "T4d",
+      taskTitle: "Inline placeholder cleanup",
+      taskDescription: "Investigate {{repoSlug}} placeholder leakage",
+      repoSlug: "{{repoSlug}}",
+      workspace: "workspace {{workspace}}",
+      repository: "primary {{repository}}",
+      repositories: ["shared {{repositories}}"],
+    });
+    const result = await nt.execute(node, ctx);
+    expect(result.prompt).toContain("Investigate placeholder leakage");
+    expect(result.prompt).toContain("**Workspace:** workspace");
+    expect(result.prompt).toContain("**Primary Repository:** primary");
+    expect(result.prompt).toContain("- shared");
+    expect(result.prompt).not.toContain("{{repoSlug}}");
+    expect(result.prompt).not.toContain("{{workspace}}");
+    expect(result.prompt).not.toContain("{{repository}}");
+    expect(result.prompt).not.toContain("{{repositories}}");
+  });
+
   it("injects WORKFLOW.md content when a contract was loaded earlier in the workflow", async () => {
     const nt = getNodeType("action.build_task_prompt");
     const ctx = makeCtx({
