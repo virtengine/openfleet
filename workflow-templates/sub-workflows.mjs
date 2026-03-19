@@ -17,9 +17,11 @@
  *
  * ## Available Sub-Workflows
  *
- *   VALIDATE_AND_PR_SUB   — build → test → lint → push → create-pr
- *   PR_HANDOFF_SUB        — create-pr → pr-created? → set-inreview → handoff-progressor
- *   AGENT_PLAN_EXECUTE_SUB — plan (no code) → implement → verify  
+ *   VALIDATE_AND_PR_SUB    — build → test → lint → push → create-pr
+ *   VALIDATION_GATE_SUB    — build → test → lint (quality gate only, no push/PR)
+ *   PR_HANDOFF_SUB         — create-pr → pr-created? → set-inreview → handoff-progressor
+ *   PR_CHECK_HANDOFF_SUB   — pr-ok? → set-inreview → handoff-progressor (no create-pr)
+ *   AGENT_PLAN_EXECUTE_SUB — plan (no code) → implement → verify
  */
 
 import { node, edge, subWorkflow, agentDefaults } from "./_helpers.mjs";
@@ -85,7 +87,7 @@ export const PR_HANDOFF_SUB = subWorkflow(
       baseBranch: "{{baseBranch}}",
     }, { x: 400, y: 0 }),
     node("pr-created", "condition.expression", "PR Created?", {
-      expression: "$ctx.getNodeOutput($edge.source)?.success === true || $ctx.getNodeOutput($edge.source)?.prUrl",
+      expression: "Boolean($ctx.getNodeOutput($edge.source)?.prNumber || $ctx.getNodeOutput($edge.source)?.prUrl)",
     }, { x: 400, y: 130, outputs: ["yes", "no"] }),
     node("set-inreview", "action.update_task_status", "Set In-Review", {
       taskId: "{{taskId}}",
@@ -160,3 +162,72 @@ export function makeAgentPlanExecuteVerifySub(opts) {
     },
   );
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Validation Gate — build → test → lint (quality check only)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const VALIDATION_GATE_SUB = subWorkflow(
+  "validation-gate",
+  [
+    node("build", "validation.build", "Build Check", {
+      command: "{{buildCommand}}",
+      zeroWarnings: true,
+    }, { x: 400, y: 0 }),
+    node("test", "validation.tests", "Test Run", {
+      command: "{{testCommand}}",
+    }, { x: 400, y: 130 }),
+    node("lint", "validation.lint", "Lint Check", {
+      command: "{{lintCommand}}",
+    }, { x: 400, y: 260 }),
+  ],
+  [
+    edge("build", "test"),
+    edge("test", "lint"),
+  ],
+  {
+    entryNode: "build",
+    exitNode: "lint",
+    description: "Sequential build + test + lint quality gate.",
+  },
+);
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PR Check + Handoff — pr-ok? → set-inreview → handoff-progressor
+//  (For use when create-pr already happened upstream.)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const PR_CHECK_HANDOFF_SUB = subWorkflow(
+  "pr-check-handoff",
+  [
+    node("pr-ok", "condition.expression", "PR Created?", {
+      expression: "Boolean($ctx.getNodeOutput($edge.source)?.prNumber || $ctx.getNodeOutput($edge.source)?.prUrl)",
+    }, { x: 400, y: 0, outputs: ["yes", "no"] }),
+    node("set-inreview", "action.update_task_status", "Set In-Review", {
+      taskId: "{{taskId}}",
+      status: "inreview",
+      taskTitle: "{{taskTitle}}",
+    }, { x: 300, y: 130 }),
+    node("handoff-progressor", "action.execute_workflow", "Handoff PR Progressor", {
+      workflowId: "template-bosun-pr-progressor",
+      mode: "dispatch",
+      input: {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+      },
+    }, { x: 300, y: 260 }),
+  ],
+  [
+    edge("pr-ok", "set-inreview", { port: "yes" }),
+    edge("set-inreview", "handoff-progressor"),
+  ],
+  {
+    entryNode: "pr-ok",
+    exitNode: "handoff-progressor",
+    description: "Check PR result, transition task to in-review, dispatch PR progressor.",
+  },
+);

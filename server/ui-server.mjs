@@ -1,6 +1,6 @@
 import { execSync, spawn, spawnSync } from "node:child_process";
 import * as nodeCrypto from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, createReadStream, writeFileSync, unlinkSync, watchFile, unwatchFile, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, createReadStream, writeFileSync, unlinkSync, watchFile, unwatchFile, readdirSync, statSync } from "node:fs";
 import { open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { get as httpsGet } from "node:https";
@@ -10460,7 +10460,21 @@ function withinDays(entry, days) {
 }
 
 async function readCompletedSessionEntries(maxLines = 100_000) {
-  const sessionLogPath = resolve(repoRoot, ".cache", "session-accumulator.jsonl");
+  // Check multiple candidate paths — repoRoot may be the monorepo root
+  // while data lives under the bosun subdirectory.
+  const candidates = [
+    resolve(repoRoot, ".cache", "session-accumulator.jsonl"),
+    resolve(repoRoot, "bosun", ".cache", "session-accumulator.jsonl"),
+  ];
+  let sessionLogPath = candidates[0];
+  for (const candidate of candidates) {
+    try {
+      if (existsSync(candidate) && statSync(candidate).size > 0) {
+        sessionLogPath = candidate;
+        break;
+      }
+    } catch { /* stat failed, skip */ }
+  }
   const entries = await readJsonlTail(sessionLogPath, maxLines);
   return {
     sessionLogPath,
@@ -10752,10 +10766,21 @@ async function buildUsageAnalytics(days) {
 function resolveAgentWorkLogDir() {
   const candidates = [
     resolve(repoRoot, ".cache", "agent-work-logs"),
+    // When repoRoot is the monorepo root, data lives under bosun/.cache
+    resolve(repoRoot, "bosun", ".cache", "agent-work-logs"),
     // Legacy path used by older task-executor builds.
     resolve(repoRoot, "..", "..", ".cache", "agent-work-logs"),
     resolve(repoRoot, "..", ".cache", "agent-work-logs"),
   ];
+  // Prefer directories that actually contain data (non-empty stream file).
+  for (const dir of candidates) {
+    if (!existsSync(dir)) continue;
+    const streamFile = resolve(dir, "agent-work-stream.jsonl");
+    try {
+      if (existsSync(streamFile) && statSync(streamFile).size > 0) return dir;
+    } catch { /* stat failed, skip */ }
+  }
+  // Fall back to first existing directory, then first candidate.
   for (const dir of candidates) {
     if (existsSync(dir)) return dir;
   }

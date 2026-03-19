@@ -13,7 +13,7 @@ function isAzureOpenAIBaseUrl(value) {
   try {
     const parsed = value instanceof URL ? value : new URL(String(value || ""));
     const host = String(parsed.hostname || "").toLowerCase();
-    return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+    return host === "openai.azure.com" || host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com");
   } catch {
     return false;
   }
@@ -81,8 +81,9 @@ function profileRecord(env, profileName, globalProvider) {
     readProfileField(env, profileName, "PROVIDER"),
     globalProvider,
   );
+  const explicitModel = readProfileField(env, profileName, "MODEL");
   const model =
-    readProfileField(env, profileName, "MODEL") ||
+    explicitModel ||
     (profileName === "xl" ? "gpt-5.3-codex" : profileName === "m" ? "gpt-5.1-codex-mini" : "");
   const baseUrl = readProfileField(env, profileName, "BASE_URL");
   const apiKey = readProfileField(env, profileName, "API_KEY");
@@ -92,6 +93,7 @@ function profileRecord(env, profileName, globalProvider) {
     name: profileName,
     provider,
     model,
+    modelIsExplicit: Boolean(explicitModel),
     baseUrl,
     apiKey,
     apiKeyEnv,
@@ -110,7 +112,7 @@ function readCodexConfigRuntimeDefaults() {
     const modelMatch = head.match(/^\s*model\s*=\s*"([^"]+)"/m);
     const modelProviderMatch = head.match(/^\s*model_provider\s*=\s*"([^"]+)"/m);
     const providers = {};
-    const providerSectionRegex = /^\[model_providers\.([^\]]+)\]\s*([\s\S]*?)(?=^\[[^\]]+\]|\Z)/gm;
+    const providerSectionRegex = /^\[model_providers\.([^\]]+)\]\s*([\s\S]*?)(?=^\[[^\]]+\]|$(?![\s\S]))/gm;
     for (const match of content.matchAll(providerSectionRegex)) {
       const [, rawName = "", body = ""] = match;
       const name = clean(rawName);
@@ -259,17 +261,14 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
   // Azure deployments often differ from default model names.
   // If the env is using Azure and the model is still the default,
   // prefer the top-level ~/.codex/config.toml model when present.
-  const activeProfileModelExplicit = Boolean(
-    readProfileField(sourceEnv, activeProfile, "MODEL"),
-  );
+  // The hardcoded profile fallback (e.g. "gpt-5.3-codex" for xl) should NOT
+  // block the config.toml override — only explicit env or profile fields should.
   const runtimeModelExplicit = Boolean(clean(sourceEnv.CODEX_MODEL));
-  const activeModelValue = clean(env.CODEX_MODEL);
   const shouldPreferAzureConfigModel =
     resolvedProvider === "azure" &&
     configModel &&
-    !activeProfileModelExplicit &&
-    !runtimeModelExplicit &&
-    !activeModelValue;
+    !active.modelIsExplicit &&
+    !runtimeModelExplicit;
   if (shouldPreferAzureConfigModel) {
     env.CODEX_MODEL = configModel;
     active.model = configModel;
@@ -310,5 +309,9 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
     active,
     subagent: sub,
     provider: resolvedProvider,
+    /** The config.toml provider section selected for this runtime. */
+    configProvider: configProvider
+      ? { name: configProvider.name, envKey: configProvider.envKey, baseUrl: configProvider.baseUrl }
+      : null,
   };
 }

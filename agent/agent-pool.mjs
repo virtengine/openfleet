@@ -770,13 +770,14 @@ async function withTemporaryEnv(overrides, fn) {
  * Otherwise strips OPENAI_BASE_URL so the SDK uses its default auth.
  */
 function buildCodexSdkOptions(envInput = process.env) {
-  const { env: resolvedEnv } = resolveCodexProfileRuntime(envInput);
+  const resolved = resolveCodexProfileRuntime(envInput);
+  const { env: resolvedEnv, configProvider } = resolved;
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
   const isAzure = (() => {
         try {
           const parsed = new URL(baseUrl);
           const host = String(parsed.hostname || "").toLowerCase();
-          return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+          return host === "openai.azure.com" || host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com");
         } catch {
           return false;
         }
@@ -791,16 +792,20 @@ function buildCodexSdkOptions(envInput = process.env) {
     if (env.OPENAI_API_KEY && !env.AZURE_OPENAI_API_KEY) {
       env.AZURE_OPENAI_API_KEY = env.OPENAI_API_KEY;
     }
+    // Use the config.toml provider section name and env_key when available,
+    // so the SDK config override is consistent with the user's config.toml.
+    const providerSectionName = configProvider?.name || "azure";
+    const providerEnvKey = configProvider?.envKey || "AZURE_OPENAI_API_KEY";
     const azureModel = env.CODEX_MODEL || undefined;
     return {
       env,
       config: {
-        model_provider: "azure",
+        model_provider: providerSectionName,
         model_providers: {
-          azure: {
+          [providerSectionName]: {
             name: "Azure OpenAI",
             base_url: baseUrl,
-            env_key: "AZURE_OPENAI_API_KEY",
+            env_key: providerEnvKey,
             wire_api: "responses",
           },
         },

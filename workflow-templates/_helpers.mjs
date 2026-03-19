@@ -330,10 +330,12 @@ export function subWorkflow(id, nodes, edges, meta = {}) {
  *
  * @param {object} sub - Sub-workflow from subWorkflow()
  * @param {string} prefix - Unique prefix for this embed (e.g. "backend-")
- * @param {object} [configOverrides] - Config values to merge into every node
+ * @param {object} [opts] - Embedding options
+ * @param {object} [opts.configOverrides] - Config values to merge into every node
+ * @param {object} [opts.nodeOverrides] - Per-node config patches keyed by ORIGINAL (unprefixed) node ID
  * @returns {{ nodes: Array, edges: Array, entryNodeId: string, exitNodeId: string }}
  */
-export function embedSubWorkflow(sub, prefix, configOverrides = {}) {
+export function embedSubWorkflow(sub, prefix, opts = {}) {
   if (!sub || !Array.isArray(sub.nodes)) {
     throw new Error("embedSubWorkflow: first argument must be a sub-workflow");
   }
@@ -341,12 +343,19 @@ export function embedSubWorkflow(sub, prefix, configOverrides = {}) {
     throw new Error("embedSubWorkflow: prefix must be a non-empty string");
   }
 
+  // Support legacy positional: embedSubWorkflow(sub, prefix, configOverrides)
+  const options = (opts && typeof opts === "object" && !Array.isArray(opts))
+    ? (opts.configOverrides || opts.nodeOverrides ? opts : { configOverrides: opts })
+    : {};
+  const configOverrides = options.configOverrides || {};
+  const nodeOverrides = options.nodeOverrides || {};
+
   const prefixedId = (id) => `${prefix}${id}`;
 
   const nodes = sub.nodes.map((n) => ({
     ...n,
     id: prefixedId(n.id),
-    config: { ...n.config, ...configOverrides },
+    config: { ...n.config, ...configOverrides, ...(nodeOverrides[n.id] || {}) },
   }));
 
   const edges = sub.edges.map((e) => ({

@@ -82,19 +82,26 @@ function isAzureOpenAIBaseUrl(value) {
   try {
     const parsed = new URL(String(value || ""));
     const host = String(parsed.hostname || "").toLowerCase();
-    return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+    return host === "openai.azure.com" || host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com");
   } catch {
     return false;
   }
 }
 
 function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env) {
-  const { env: resolvedEnv } = resolveCodexProfileRuntime(envInput);
+  const resolved = resolveCodexProfileRuntime(envInput);
+  const { env: resolvedEnv, configProvider } = resolved;
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
   const isAzure = isAzureOpenAIBaseUrl(baseUrl);
   const env = { ...resolvedEnv };
 
   delete env.OPENAI_BASE_URL;
+
+  // Use the config.toml provider section name and env_key when available,
+  // so Bosun's config override is consistent with the user's config.toml
+  // instead of hardcoding "azure" / "AZURE_OPENAI_API_KEY".
+  const providerSectionName = (isAzure && configProvider?.name) || (isAzure ? "azure" : "openai");
+  const providerEnvKey = (isAzure && configProvider?.envKey) || (isAzure ? "AZURE_OPENAI_API_KEY" : "OPENAI_API_KEY");
 
   if (isAzure && env.OPENAI_API_KEY && !env.AZURE_OPENAI_API_KEY) {
     env.AZURE_OPENAI_API_KEY = env.OPENAI_API_KEY;
@@ -103,11 +110,11 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env) {
   const providerName = isAzure ? "azure" : "openai";
   const config = {
     model_providers: {
-      [providerName]: isAzure
+      [providerSectionName]: isAzure
         ? {
             name: "Azure OpenAI",
             base_url: baseUrl,
-            env_key: "AZURE_OPENAI_API_KEY",
+            env_key: providerEnvKey,
             wire_api: "responses",
             ...streamProviderOverrides,
           }
@@ -116,7 +123,7 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env) {
   };
 
   if (isAzure && env.CODEX_MODEL) {
-    config.model_provider = "azure";
+    config.model_provider = providerSectionName;
     config.model = env.CODEX_MODEL;
   }
 
