@@ -1126,6 +1126,30 @@ let agentChatId = null; // latest chat where an agent is running
 const stickyMenuState = new Map();
 const stickyMenuTimers = new Map();
 const STICKY_MENU_BUMP_MS = 600;
+
+// Persist the sticky menu message ID across restarts so we can edit-in-place
+// instead of creating duplicate (broken) menus on every server restart.
+const STICKY_MENU_PERSIST_PATH = resolve(repoRoot, ".cache", "ve-sticky-menu.json");
+
+function persistStickyMenuId(chatId, messageId) {
+  try {
+    mkdirSync(dirname(STICKY_MENU_PERSIST_PATH), { recursive: true });
+    writeFileSync(STICKY_MENU_PERSIST_PATH, JSON.stringify({ chatId: String(chatId), messageId }));
+  } catch { /* best effort */ }
+}
+
+function loadPersistedStickyMenuId() {
+  try {
+    if (!existsSync(STICKY_MENU_PERSIST_PATH)) return null;
+    const data = JSON.parse(readFileSync(STICKY_MENU_PERSIST_PATH, "utf8"));
+    if (data?.chatId && data?.messageId) return data;
+  } catch { /* corrupt or missing */ }
+  return null;
+}
+
+function clearPersistedStickyMenuId() {
+  try { if (existsSync(STICKY_MENU_PERSIST_PATH)) unlinkSync(STICKY_MENU_PERSIST_PATH); } catch { /* ok */ }
+}
 const callbackActionDeduper = new Map();
 const CALLBACK_ACTION_DEDUPE_MS = Math.max(
   150,
@@ -1385,7 +1409,12 @@ export function isAgentActive() {
 function setStickyMenuState(chatId, patch) {
   if (!chatId) return;
   const current = stickyMenuState.get(chatId) || {};
-  stickyMenuState.set(chatId, { ...current, ...patch });
+  const next = { ...current, ...patch };
+  stickyMenuState.set(chatId, next);
+  // Persist message ID so we can reuse it after a restart
+  if (next.messageId) {
+    persistStickyMenuId(chatId, next.messageId);
+  }
 }
 
 function logTelegramStructured(event, payload = {}) {
@@ -1609,18 +1638,24 @@ async function restoreStickyMenuMessage(chatId, fallbackScreenId = "home", fallb
 }
 
 async function refreshStickyMenu(chatId, screenId = "home", params = {}) {
-  const state = stickyMenuState.get(chatId);
-  if (state?.messageId) {
-    try {
-      await deleteDirect(chatId, state.messageId);
-    } catch {
-      /* best effort */
+  clearStickyMenuTimer(chatId);
+  clearPendingUiInput(chatId);
+  // Try to reuse existing menu message (from in-memory state or persisted across restart)
+  let existingMessageId = stickyMenuState.get(chatId)?.messageId || null;
+  if (!existingMessageId) {
+    const persisted = loadPersistedStickyMenuId();
+    if (persisted && String(persisted.chatId) === String(chatId)) {
+      existingMessageId = persisted.messageId;
     }
   }
-  clearStickyMenuTimer(chatId);
   stickyMenuState.delete(chatId);
-  clearPendingUiInput(chatId);
-  await showUiScreen(chatId, null, screenId, params, { sticky: true });
+  if (existingMessageId) {
+    // Try to edit the existing message in-place (keeps it at its current position,
+    // then bump will move it to bottom if needed)
+    await showUiScreen(chatId, existingMessageId, screenId, params, { sticky: true });
+  } else {
+    await showUiScreen(chatId, null, screenId, params, { sticky: true });
+  }
 }
 
 // ── Telegram API Helpers ─────────────────────────────────────────────────────
@@ -2786,6 +2821,7 @@ async function handleCallbackQuery(query) {
       }
       // Disable sticky state
       stickyMenuState.delete(chatId);
+      clearPersistedStickyMenuId();
     } else if (query.message?.message_id) {
       // Not sticky — just delete the message
       await deleteDirect(chatId, query.message.message_id).catch(() => {});
@@ -2802,6 +2838,7 @@ async function handleCallbackQuery(query) {
         await deleteDirect(chatId, state.messageId).catch(() => {});
       }
       stickyMenuState.delete(chatId);
+      clearPersistedStickyMenuId();
     } else {
       // Menu is closed → open it
       enqueueCommand(() => cmdMenu(chatId));
@@ -7011,6 +7048,13 @@ async function cmdMenu(chatId) {
     safeDetach("menu-button-refresh", refreshMenuButton);
   }
   clearPendingUiInput(chatId);
+  // Reuse existing sticky menu message instead of creating a duplicate
+  const existingId = stickyMenuState.get(chatId)?.messageId || null;
+  if (existingId) {
+    // Delete old and send new at bottom (user explicitly asked for /menu)
+    await deleteDirect(chatId, existingId).catch(() => {});
+    stickyMenuState.delete(chatId);
+  }
   await showUiScreen(chatId, null, "home", {}, { sticky: true });
 }
 
@@ -11610,6 +11654,8 @@ export async function startTelegramBot(options = {}) {
       telegramChatId,
       `:bot: Bosun primary agent online (${getPrimaryAgentName()}).\n\nType /menu for the control center or send any message to chat with the agent.\n\nRefreshing control center menu below…`,
     );
+    // Reuse the persisted menu message if it still exists, so we don't
+    // create a stale duplicate on every restart.
     await refreshStickyMenu(telegramChatId, "home", {});
 
     // ── SECURITY: Alert when ALLOW_UNSAFE is enabled (especially with tunnel) ──
