@@ -98,6 +98,14 @@ const createDialogOpen = signal(false);
 const createDialogName = signal("New Workflow");
 const createDialogCategory = signal("custom");
 
+// ── Update Templates Dialog state ────────────────────────────────────────
+const updateDialogOpen = signal(false);
+const updateDialogChecking = signal(false);
+const updateDialogUpdates = signal([]);       // { workflowId, workflowName, templateId, templateName, updateAvailable, isCustomized, templateVersion, installedTemplateVersion }
+const updateDialogSelected = signal(new Set());
+const updateDialogApplying = signal(false);
+const updateDialogResult = signal(null);      // { ok, updated?, error? }
+
 const workflowsLoading = signal(false);
 const templatesLoading = signal(false);
 const nodeTypesLoading = signal(false);
@@ -1667,6 +1675,75 @@ function closeInstallTemplateDialog() {
   installDialogMode.value = "quick";
   installDialogInstalling.value = false;
   installDialogResult.value = null;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  Check for template updates — bulk scan
+ * ═══════════════════════════════════════════════════════════════ */
+async function checkForTemplateUpdates() {
+  updateDialogChecking.value = true;
+  updateDialogUpdates.value = [];
+  updateDialogSelected.value = new Set();
+  updateDialogResult.value = null;
+  updateDialogOpen.value = true;
+  try {
+    const data = await apiFetch("/api/workflows/template-updates");
+    if (!data?.ok) throw new Error(data?.error || "Check failed");
+    const pending = (data.updates || []).filter((u) => u.updateAvailable);
+    updateDialogUpdates.value = pending;
+    // Pre-select all non-customized
+    const preselect = new Set();
+    for (const u of pending) {
+      if (!u.isCustomized) preselect.add(u.workflowId);
+    }
+    updateDialogSelected.value = preselect;
+    if (pending.length === 0) {
+      updateDialogResult.value = { ok: true, updated: 0 };
+    }
+  } catch (err) {
+    updateDialogResult.value = { ok: false, error: err.message || "Check failed" };
+  } finally {
+    updateDialogChecking.value = false;
+  }
+}
+
+async function applySelectedTemplateUpdates() {
+  const selected = updateDialogSelected.value;
+  if (!selected || selected.size === 0) return;
+  updateDialogApplying.value = true;
+  updateDialogResult.value = null;
+  let successCount = 0;
+  const errors = [];
+  for (const workflowId of selected) {
+    try {
+      const data = await apiFetch(`/api/workflows/${encodeURIComponent(workflowId)}/template-update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "replace", force: true }),
+      });
+      if (data?.workflow) successCount++;
+      else errors.push(workflowId);
+    } catch (err) {
+      errors.push(workflowId);
+    }
+  }
+  updateDialogApplying.value = false;
+  if (errors.length > 0) {
+    updateDialogResult.value = { ok: false, error: `Updated ${successCount}, failed ${errors.length}` };
+  } else {
+    updateDialogResult.value = { ok: true, updated: successCount };
+    showToast(`${successCount} workflow${successCount !== 1 ? "s" : ""} updated to latest templates`, "success");
+    loadWorkflows();
+  }
+}
+
+function closeUpdateDialog() {
+  updateDialogOpen.value = false;
+  updateDialogUpdates.value = [];
+  updateDialogSelected.value = new Set();
+  updateDialogResult.value = null;
+  updateDialogChecking.value = false;
+  updateDialogApplying.value = false;
 }
 
 async function applyTemplateUpdate(workflowId, mode = "replace", force = false) {
@@ -4805,6 +4882,140 @@ function CreateWorkflowDialog() {
   `;
 }
 
+/* ═══════════════════════════════════════════════════════════════
+ *  UpdateTemplatesDialog — bulk check + selective apply
+ * ═══════════════════════════════════════════════════════════════ */
+function UpdateTemplatesDialog() {
+  const open = updateDialogOpen.value;
+  const checking = updateDialogChecking.value;
+  const updates = updateDialogUpdates.value;
+  const selected = updateDialogSelected.value;
+  const applying = updateDialogApplying.value;
+  const result = updateDialogResult.value;
+
+  if (!open) return null;
+
+  const toggleSelection = (workflowId) => {
+    const next = new Set(selected);
+    if (next.has(workflowId)) next.delete(workflowId);
+    else next.add(workflowId);
+    updateDialogSelected.value = next;
+  };
+
+  const toggleAll = () => {
+    if (selected.size === updates.length) {
+      updateDialogSelected.value = new Set();
+    } else {
+      updateDialogSelected.value = new Set(updates.map((u) => u.workflowId));
+    }
+  };
+
+  const allDone = result?.ok === true && result?.updated >= 0 && updates.length > 0;
+  const noUpdates = !checking && updates.length === 0 && result?.ok === true;
+
+  return html`
+    <${Dialog}
+      open=${true}
+      onClose=${closeUpdateDialog}
+      maxWidth="sm"
+      fullWidth
+      PaperProps=${{ sx: { bgcolor: "var(--color-bg-secondary, #1a1f2e)", color: "var(--color-text, #e8eaf0)", borderRadius: "12px" } }}
+    >
+      <${DialogTitle} sx=${{ display: "flex", alignItems: "center", gap: 1 }}>
+        <span class="icon-inline">${resolveIcon("refresh")}</span>
+        <span>Template Updates</span>
+      <//>
+
+      <${DialogContent} dividers>
+        ${checking && html`
+          <div style="text-align: center; padding: 24px;">
+            <${CircularProgress} size=${28} />
+            <div style="margin-top: 12px; font-size: 14px;">Checking installed workflows against latest templates…</div>
+          </div>
+        `}
+
+        ${noUpdates && html`
+          <${Alert} severity="success" sx=${{ my: 1 }}>All installed templates are up to date.</${Alert}>
+        `}
+
+        ${!checking && updates.length > 0 && html`
+          <${Alert} severity="info" sx=${{ mb: 2 }}>
+            ${updates.length} workflow${updates.length !== 1 ? "s have" : " has"} template updates available.
+            Select which to update, then click Apply.
+          </${Alert}>
+
+          <div style="margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; font-weight: 600;">
+              <input
+                type="checkbox"
+                checked=${selected.size === updates.length}
+                onChange=${toggleAll}
+                style="accent-color: #6366f1;"
+              />
+              Select All (${selected.size}/${updates.length})
+            </label>
+          </div>
+
+          <div style="max-height: 320px; overflow-y: auto; border: 1px solid var(--color-border, #2a3040); border-radius: 8px;">
+            ${updates.map((u) => html`
+              <label
+                key=${u.workflowId}
+                style="display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; cursor: pointer; border-bottom: 1px solid var(--color-border, #2a304060);"
+              >
+                <input
+                  type="checkbox"
+                  checked=${selected.has(u.workflowId)}
+                  onChange=${() => toggleSelection(u.workflowId)}
+                  style="margin-top: 3px; accent-color: #6366f1;"
+                />
+                <div style="flex: 1; min-width: 0;">
+                  <div style="font-size: 13px; font-weight: 600;">${u.workflowName}</div>
+                  <div style="font-size: 11px; color: var(--color-text-secondary, #7f8aa0); margin-top: 2px;">
+                    ${u.templateName || u.templateId}
+                    ${u.installedTemplateVersion && u.templateVersion ? html`
+                      <span style="margin-left: 6px; color: #f59e0b;">v${u.installedTemplateVersion} → v${u.templateVersion}</span>
+                    ` : ""}
+                  </div>
+                  ${u.isCustomized && html`
+                    <span style="font-size: 10px; color: #f59e0b; background: #f59e0b15; padding: 1px 6px; border-radius: 4px; margin-top: 4px; display: inline-block;">
+                      Customized — update will overwrite changes
+                    </span>
+                  `}
+                </div>
+              </label>
+            `)}
+          </div>
+        `}
+
+        ${allDone && html`
+          <${Alert} severity="success" sx=${{ mt: 2 }}>${result.updated} workflow${result.updated !== 1 ? "s" : ""} updated successfully.</${Alert}>
+        `}
+
+        ${result && !result.ok && html`
+          <${Alert} severity="error" sx=${{ mt: 2 }}>${result.error || "Update failed"}</${Alert}>
+        `}
+      <//>
+
+      <${DialogActions} sx=${{ px: 3, py: 2 }}>
+        <${Button} onClick=${closeUpdateDialog} sx=${{ textTransform: "none" }}>
+          ${allDone || noUpdates ? "Close" : "Cancel"}
+        <//>
+        ${!checking && updates.length > 0 && !allDone && html`
+          <${Button}
+            variant="contained"
+            onClick=${applySelectedTemplateUpdates}
+            disabled=${applying || selected.size === 0}
+            startIcon=${applying ? html`<${CircularProgress} size=${16} />` : null}
+            sx=${{ textTransform: "none" }}
+          >
+            ${applying ? "Updating…" : `Update ${selected.size} Workflow${selected.size !== 1 ? "s" : ""}`}
+          <//>
+        `}
+      <//>
+    <//>
+  `;
+}
+
 function WorkflowListView() {
   const wfs = workflows.value || [];
   const tmpls = templates.value || [];
@@ -4864,6 +5075,10 @@ function WorkflowListView() {
         <${Button} type="button" variant="outlined" size="small" onClick=${() => relayoutInstalledTemplateWorkflows()}>
           <span class="btn-icon">${resolveIcon("refresh")}</span>
           Re-layout Installed Templates
+        <//>
+        <${Button} type="button" variant="outlined" size="small" onClick=${checkForTemplateUpdates}>
+          <span class="btn-icon">${resolveIcon("download")}</span>
+          Check for Updates
         <//>
       </div>
 
@@ -6334,6 +6549,7 @@ export function WorkflowsTab() {
       <${ExecuteWorkflowDialog} />
       <${InstallTemplateDialog} />
       <${CreateWorkflowDialog} />
+      <${UpdateTemplatesDialog} />
     </div>
   `;
 }
