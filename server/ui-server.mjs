@@ -83,6 +83,21 @@ import {
   resolveAgentProfileLibraryMetadata,
 } from "../infra/library-manager.mjs";
 import {
+  getHookCatalog,
+  getCoreHooks,
+  getDefaultHooks,
+  getHookById,
+  getHookCategories,
+  getSdkCompatibilityMatrix,
+  SDK_CAPABILITIES,
+  loadHookState,
+  enableHook,
+  disableHook,
+  initializeHookState,
+  getEnabledHookIds,
+  getHooksAsLibraryEntries,
+} from "../agent/hook-library.mjs";
+import {
   listCatalog,
   getCatalogEntry,
   installMcpServer,
@@ -14517,6 +14532,128 @@ async function handleApi(req, res, url) {
       // Take first line only to avoid stack-trace scrubbing by jsonResponse
       const msg = String(err?.message || "Import failed").split("\n")[0].trim() || "Import failed";
       jsonResponse(res, 500, { ok: false, error: msg });
+    }
+    return;
+  }
+
+  // ── Hook Library API ───────────────────────────────────────────────────────
+
+  if (path === "/api/hooks/catalog") {
+    try {
+      const category = url.searchParams.get("category") || undefined;
+      const sdk = url.searchParams.get("sdk") || undefined;
+      const coreOnly = url.searchParams.get("core") === "true";
+      const defaultOnly = url.searchParams.get("default") === "true";
+      const search = url.searchParams.get("search") || undefined;
+      const hooks = getHookCatalog({ category, sdk, coreOnly, defaultOnly, search });
+      jsonResponse(res, 200, { ok: true, data: hooks });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/hooks/categories") {
+    try {
+      const categories = getHookCategories();
+      jsonResponse(res, 200, { ok: true, data: categories });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/hooks/sdk-matrix") {
+    try {
+      const matrix = getSdkCompatibilityMatrix();
+      const sdks = SDK_CAPABILITIES;
+      jsonResponse(res, 200, { ok: true, data: { matrix, sdks } });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/hooks/entry") {
+    try {
+      const hookId = url.searchParams.get("id");
+      if (!hookId) {
+        jsonResponse(res, 400, { ok: false, error: "Missing id parameter" });
+        return;
+      }
+      const hook = getHookById(hookId);
+      if (!hook) {
+        jsonResponse(res, 404, { ok: false, error: `Hook not found: ${hookId}` });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, data: hook });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/hooks/state") {
+    try {
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      if (!workspaceContext) {
+        jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
+        return;
+      }
+      const rootDir = workspaceContext.repoRoot || workspaceContext.workspaceRoot || process.cwd();
+
+      if (req.method === "GET") {
+        const state = loadHookState(rootDir);
+        const enabledIds = getEnabledHookIds(rootDir);
+        jsonResponse(res, 200, { ok: true, data: { state, enabledIds } });
+        return;
+      }
+
+      if (req.method === "POST") {
+        const body = await readJsonBody(req).catch(() => ({}));
+        const action = body?.action;
+        const hookId = body?.hookId;
+        if (!hookId) {
+          jsonResponse(res, 400, { ok: false, error: "Missing hookId" });
+          return;
+        }
+        if (action === "enable") {
+          const result = enableHook(rootDir, hookId);
+          jsonResponse(res, result.success ? 200 : 400, { ok: result.success, ...result });
+        } else if (action === "disable") {
+          const force = body?.force === true;
+          const result = disableHook(rootDir, hookId, force);
+          jsonResponse(res, result.success ? 200 : 400, { ok: result.success, ...result });
+        } else if (action === "initialize") {
+          const state = initializeHookState(rootDir);
+          jsonResponse(res, 200, { ok: true, data: state });
+        } else {
+          jsonResponse(res, 400, { ok: false, error: `Unknown action: ${action}. Use enable, disable, or initialize.` });
+        }
+        return;
+      }
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/hooks/core") {
+    try {
+      const hooks = getCoreHooks();
+      jsonResponse(res, 200, { ok: true, data: hooks });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/hooks/defaults") {
+    try {
+      const hooks = getDefaultHooks();
+      jsonResponse(res, 200, { ok: true, data: hooks });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
     }
     return;
   }
