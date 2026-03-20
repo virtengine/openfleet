@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { RunEvaluator } from "../workflow/run-evaluator.mjs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -261,5 +264,113 @@ describe("RunEvaluator", () => {
       expect(result.score).toBe(0);
       expect(result.grade).toBe("F");
     });
+  });
+});
+
+// ── Configurable thresholds ─────────────────────────────────────────────────
+
+describe("RunEvaluator configurable thresholds", () => {
+  it("uses default config when no opts", () => {
+    const ev = new RunEvaluator();
+    const run = makeRunDetail();
+    const result = ev.evaluate(run);
+    expect(result.score).toBeGreaterThanOrEqual(90);
+  });
+
+  it("accepts custom penalty values", () => {
+    // Use an absurdly high penalty for failed nodes
+    const ev = new RunEvaluator({ penaltyFailedNode: 50 });
+    const run = makeRunDetail({
+      nodeStatuses: { n1: "completed", n2: "failed" },
+      errors: [{ nodeId: "n2", error: "err", timestamp: Date.now() }],
+    });
+    const result = ev.evaluate(run);
+    // With 50 penalty per failed node, score should be much lower than default
+    expect(result.score).toBeLessThanOrEqual(50);
+  });
+});
+
+// ── History & Trends ────────────────────────────────────────────────────────
+
+describe("RunEvaluator history & trends", () => {
+  let tmpDir;
+
+  function makeTmpDir() {
+    tmpDir = mkdtempSync(join(tmpdir(), "bosun-eval-test-"));
+    return tmpDir;
+  }
+
+  afterEach(() => {
+    try { if (tmpDir) rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  });
+
+  it("getHistory returns empty array for unknown workflow", () => {
+    const ev = new RunEvaluator({ configDir: makeTmpDir() });
+    expect(ev.getHistory("unknown")).toEqual([]);
+  });
+
+  it("getTrend returns null for unknown workflow", () => {
+    const ev = new RunEvaluator({ configDir: makeTmpDir() });
+    expect(ev.getTrend("unknown")).toBeNull();
+  });
+
+  it("persists history across instances", () => {
+    const dir = makeTmpDir();
+
+    // Create evaluator, attach to mock engine, record some evaluations
+    const ev1 = new RunEvaluator({ configDir: dir });
+    // Manually invoke evaluate and check that history is populated
+    const run = makeRunDetail();
+    // We need to use attachToEngine or manually record. Let's use a mock.
+    const mockEngine = {
+      handlers: {},
+      on(event, handler) { this.handlers[event] = handler; },
+      getRunDetail(runId) { return makeRunDetail(); },
+    };
+    ev1.attachToEngine(mockEngine);
+    // Simulate run:complete
+    mockEngine.handlers["run:complete"]({ runId: "run-1", workflowId: "wf-1" });
+    mockEngine.handlers["run:complete"]({ runId: "run-2", workflowId: "wf-1" });
+
+    const history = ev1.getHistory("wf-1");
+    expect(history).toHaveLength(2);
+    expect(history[0].runId).toBe("run-1");
+    expect(history[1].runId).toBe("run-2");
+
+    // Reload from disk
+    const ev2 = new RunEvaluator({ configDir: dir });
+    const reloaded = ev2.getHistory("wf-1");
+    expect(reloaded).toHaveLength(2);
+  });
+
+  it("getTrend computes average and stable trend", () => {
+    const dir = makeTmpDir();
+    const ev = new RunEvaluator({ configDir: dir });
+    const mockEngine = {
+      handlers: {},
+      on(event, handler) { this.handlers[event] = handler; },
+      getRunDetail() { return makeRunDetail(); }, // perfect runs
+    };
+    ev.attachToEngine(mockEngine);
+
+    // Fire 6 perfect runs
+    for (let i = 0; i < 6; i++) {
+      mockEngine.handlers["run:complete"]({ runId: `run-${i}`, workflowId: "wf-1" });
+    }
+
+    const trend = ev.getTrend("wf-1");
+    expect(trend).toBeTruthy();
+    expect(trend.evaluationCount).toBe(6);
+    expect(trend.avgScore).toBeGreaterThanOrEqual(90);
+    expect(trend.trend).toBe("stable");
+    expect(trend.recentGrades).toHaveLength(5);
+  });
+
+  it("attachToEngine is safe with invalid engine", () => {
+    const ev = new RunEvaluator();
+    // Should not throw
+    ev.attachToEngine(null);
+    ev.attachToEngine({});
+    ev.attachToEngine({ on: "not-a-function" });
   });
 });

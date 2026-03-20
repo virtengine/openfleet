@@ -397,6 +397,8 @@ describe("action.run_command env interpolation", () => {
     expect(result.rawOutputChars).toBeGreaterThan(result.compactedOutputChars);
     expect(result.output).toContain("ERROR workflow reducer failed");
     expect(result.output).toContain("bosun --tool-log");
+    expect(result.outputDiagnostics?.summary).toBeTruthy();
+    expect(result.outputHint || result.outputSuggestedRerun || result.outputDiagnostics?.summary).toBeTruthy();
     expect(Array.isArray(result.items)).toBe(true);
     expect(result.items.length).toBe(1);
   });
@@ -416,6 +418,7 @@ describe("workflow validation output compaction", () => {
     expect(result.output).toContain("FAIL tests/runtime/example.test.ts");
     expect(result.output).toContain("expected true to be false");
     expect(result.output).toContain("bosun --tool-log");
+    expect(result.outputDiagnostics?.suggestedRerun).toContain("vitest run");
   });
 });
 

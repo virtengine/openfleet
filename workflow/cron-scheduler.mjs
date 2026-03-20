@@ -6,10 +6,21 @@
  *
  * No external dependencies — uses only Node.js built-ins.
  *
+ * Features:
+ *   - IANA timezone support (via Intl.DateTimeFormat)
+ *   - Persistence layer (serialize/restore job state to disk)
+ *   - Last-run tracking with error history
+ *   - Next-N preview (getNextOccurrences)
+ *   - Overdue coalescing (fire once for missed ticks)
+ *   - Configurable jitter per job
+ *
  * EXPORTS:
  *   parseCronExpression(expr)  — parse a cron string, returns { next(from) → Date }
  *   CronScheduler              — register/unregister cron jobs, start/stop polling
  */
+
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { resolve, dirname } from "node:path";
 
 const TAG = "[cron-scheduler]";
 
@@ -152,35 +163,68 @@ export function parseCronExpression(expr) {
     fields,
     /**
      * Compute the next occurrence after `from`.
-     * Returns a Date in UTC.
      *
-     * Safety: caps at 4 years of searching to prevent infinite loops
-     * on impossible expressions (e.g. Feb 31).
+     * @param {Date} [from] — reference time (defaults to now)
+     * @param {string} [timezone] — IANA timezone (e.g. "America/New_York"). Defaults to UTC.
+     * @returns {Date} — always in UTC but matching the cron fields in the specified timezone
+     *
+     * Safety: caps at ~1 year of minute scanning to prevent infinite loops.
      */
-    next(from) {
+    next(from, timezone) {
+      const useTz = typeof timezone === "string" && timezone !== "UTC";
       const d = from instanceof Date ? new Date(from.getTime()) : new Date();
       // Advance by 1 minute to ensure we always move forward
       d.setUTCSeconds(0, 0);
       d.setUTCMinutes(d.getUTCMinutes() + 1);
 
       const maxIterations = 366 * 24 * 60; // ~1 year of minutes
+
+      // Helper: get date parts in the target timezone
+      const getParts = useTz ? (date) => {
+        const fmt = new Intl.DateTimeFormat("en-US", {
+          timeZone: timezone,
+          year: "numeric", month: "2-digit", day: "2-digit",
+          hour: "2-digit", minute: "2-digit", second: "2-digit",
+          hour12: false,
+        });
+        const parts = {};
+        for (const { type, value } of fmt.formatToParts(date)) {
+          parts[type] = Number(value);
+        }
+        return {
+          month: parts.month,       // 1-12
+          day: parts.day,           // 1-31
+          hour: parts.hour === 24 ? 0 : parts.hour, // handle midnight
+          minute: parts.minute,
+          // getDay equivalent via a separate formatter
+          dow: date.getDay !== undefined ? new Date(
+            Date.UTC(parts.year, parts.month - 1, parts.day)
+          ).getUTCDay() : 0,
+        };
+      } : null;
+
       for (let i = 0; i < maxIterations; i++) {
-        if (!fields.month.includes(d.getUTCMonth() + 1)) {
-          // Jump to next valid month
+        const month = useTz ? getParts(d).month        : (d.getUTCMonth() + 1);
+        const day   = useTz ? getParts(d).day           : d.getUTCDate();
+        const dow   = useTz ? getParts(d).dow           : d.getUTCDay();
+        const hour  = useTz ? getParts(d).hour          : d.getUTCHours();
+        const min   = useTz ? getParts(d).minute        : d.getUTCMinutes();
+
+        if (!fields.month.includes(month)) {
           d.setUTCMonth(d.getUTCMonth() + 1, 1);
           d.setUTCHours(0, 0, 0, 0);
           continue;
         }
-        if (!fields.dayOfMonth.includes(d.getUTCDate()) || !fields.dayOfWeek.includes(d.getUTCDay())) {
+        if (!fields.dayOfMonth.includes(day) || !fields.dayOfWeek.includes(dow)) {
           d.setUTCDate(d.getUTCDate() + 1);
           d.setUTCHours(0, 0, 0, 0);
           continue;
         }
-        if (!fields.hour.includes(d.getUTCHours())) {
+        if (!fields.hour.includes(hour)) {
           d.setUTCHours(d.getUTCHours() + 1, 0, 0, 0);
           continue;
         }
-        if (!fields.minute.includes(d.getUTCMinutes())) {
+        if (!fields.minute.includes(min)) {
           d.setUTCMinutes(d.getUTCMinutes() + 1, 0, 0);
           continue;
         }
@@ -190,24 +234,60 @@ export function parseCronExpression(expr) {
 
       throw new Error(`Unable to find next cron match within search window for: "${expr}"`);
     },
+
+    /**
+     * Get the next N occurrences starting from `from`.
+     * @param {number} n — how many
+     * @param {Date} [from]
+     * @param {string} [timezone]
+     * @returns {Date[]}
+     */
+    nextN(n, from, timezone) {
+      const results = [];
+      let cursor = from instanceof Date ? new Date(from.getTime()) : new Date();
+      const count = Math.max(1, Math.min(100, n));
+      for (let i = 0; i < count; i++) {
+        const next = this.next(cursor, timezone);
+        results.push(next);
+        cursor = next;
+      }
+      return results;
+    },
   };
 }
 
 // ── CronScheduler class ─────────────────────────────────────────────────────
 
 export class CronScheduler {
-  /** @type {Map<string, { cronExpr: string, parsed: ReturnType<typeof parseCronExpression>, callback: Function, nextRunAt: Date }>} */
+  /** @type {Map<string, { cronExpr: string, parsed: ReturnType<typeof parseCronExpression>, callback: Function, nextRunAt: Date, timezone: string|null, lastRunAt: Date|null, lastError: string|null, runCount: number, errorCount: number, jitterMs: number, coalesce: boolean }>} */
   #jobs = new Map();
   #timer = null;
   #pollIntervalMs = 15000;
+  #persistPath = null;
+
+  /**
+   * @param {object} [opts]
+   * @param {string} [opts.configDir] — enables persistence to {configDir}/.bosun/cron-state.json
+   */
+  constructor({ configDir } = {}) {
+    if (configDir) {
+      const bosunDir = resolve(configDir, ".bosun");
+      this.#persistPath = resolve(bosunDir, "cron-state.json");
+      this.#loadState();
+    }
+  }
 
   /**
    * Register a cron job.
    * @param {string} id       — unique job identifier
    * @param {string} cronExpr — 5-field cron expression
    * @param {Function} callback — called when the cron fires
+   * @param {object} [opts]
+   * @param {string} [opts.timezone] — IANA timezone (e.g. "America/New_York")
+   * @param {number} [opts.jitterMs=0] — random jitter added to fire time (0 = none)
+   * @param {boolean} [opts.coalesce=true] — if true, fire only once for missed ticks
    */
-  register(id, cronExpr, callback) {
+  register(id, cronExpr, callback, { timezone, jitterMs, coalesce } = {}) {
     if (typeof id !== "string" || !id.trim()) {
       throw new Error("Job ID must be a non-empty string");
     }
@@ -215,8 +295,25 @@ export class CronScheduler {
       throw new Error("Callback must be a function");
     }
     const parsed = parseCronExpression(cronExpr);
-    const nextRunAt = parsed.next(new Date());
-    this.#jobs.set(id, { cronExpr, parsed, callback, nextRunAt });
+    const tz = timezone || null;
+    const nextRunAt = parsed.next(new Date(), tz);
+
+    // Preserve history from a previous registration / loaded state
+    const prev = this.#jobs.get(id);
+    this.#jobs.set(id, {
+      cronExpr,
+      parsed,
+      callback,
+      nextRunAt,
+      timezone: tz,
+      lastRunAt: prev?.lastRunAt || null,
+      lastError: prev?.lastError || null,
+      runCount: prev?.runCount || 0,
+      errorCount: prev?.errorCount || 0,
+      jitterMs: Math.max(0, jitterMs || 0),
+      coalesce: coalesce !== false,
+    });
+    this.#saveState();
   }
 
   /**
@@ -225,7 +322,9 @@ export class CronScheduler {
    * @returns {boolean} true if the job existed
    */
   unregister(id) {
-    return this.#jobs.delete(id);
+    const existed = this.#jobs.delete(id);
+    if (existed) this.#saveState();
+    return existed;
   }
 
   /**
@@ -254,7 +353,7 @@ export class CronScheduler {
 
   /**
    * Get status of all registered jobs.
-   * @returns {Array<{ id: string, cronExpr: string, nextRunAt: string }>}
+   * @returns {Array<{ id: string, cronExpr: string, nextRunAt: string, timezone: string|null, lastRunAt: string|null, lastError: string|null, runCount: number, errorCount: number }>}
    */
   getStatus() {
     const result = [];
@@ -263,9 +362,26 @@ export class CronScheduler {
         id,
         cronExpr: job.cronExpr,
         nextRunAt: job.nextRunAt ? job.nextRunAt.toISOString() : null,
+        timezone: job.timezone,
+        lastRunAt: job.lastRunAt ? (job.lastRunAt instanceof Date ? job.lastRunAt.toISOString() : job.lastRunAt) : null,
+        lastError: job.lastError,
+        runCount: job.runCount,
+        errorCount: job.errorCount,
       });
     }
     return result;
+  }
+
+  /**
+   * Get the next N scheduled times for a job.
+   * @param {string} id
+   * @param {number} [n=5]
+   * @returns {Date[]|null}
+   */
+  getNextOccurrences(id, n = 5) {
+    const job = this.#jobs.get(id);
+    if (!job) return null;
+    return job.parsed.nextN(n, new Date(), job.timezone);
   }
 
   /** @returns {number} */
@@ -282,21 +398,115 @@ export class CronScheduler {
 
   #tick() {
     const now = new Date();
+    let stateChanged = false;
+
     for (const [id, job] of this.#jobs) {
-      if (job.nextRunAt && now >= job.nextRunAt) {
+      if (!job.nextRunAt || now < job.nextRunAt) continue;
+
+      // Coalesce: skip intermediate missed ticks — fire once and jump ahead
+      if (job.coalesce) {
+        // Advance nextRunAt past now so we only fire once
+        let nextCandidate = job.nextRunAt;
         try {
-          job.callback(id);
-        } catch (err) {
-          console.warn(`${TAG} cron job "${id}" threw: ${err?.message || err}`);
-        }
-        // Advance to the next occurrence
+          while (nextCandidate && nextCandidate <= now) {
+            nextCandidate = job.parsed.next(nextCandidate, job.timezone);
+          }
+        } catch { nextCandidate = null; }
+        // Fire the callback once for the overdue window
+        this.#fireJob(id, job);
+        job.nextRunAt = nextCandidate;
+      } else {
+        this.#fireJob(id, job);
         try {
-          job.nextRunAt = job.parsed.next(now);
+          job.nextRunAt = job.parsed.next(now, job.timezone);
         } catch (err) {
           console.warn(`${TAG} cron job "${id}" next-run computation failed: ${err?.message || err}`);
           job.nextRunAt = null;
         }
       }
+      stateChanged = true;
+    }
+
+    if (stateChanged) this.#saveState();
+  }
+
+  #fireJob(id, job) {
+    // Apply jitter
+    const jitter = job.jitterMs > 0 ? Math.floor(Math.random() * job.jitterMs) : 0;
+    const fire = () => {
+      try {
+        job.callback(id);
+        job.runCount++;
+        job.lastRunAt = new Date();
+        job.lastError = null;
+      } catch (err) {
+        job.errorCount++;
+        job.lastRunAt = new Date();
+        job.lastError = String(err?.message || err);
+        console.warn(`${TAG} cron job "${id}" threw: ${job.lastError}`);
+      }
+    };
+    if (jitter > 0) {
+      setTimeout(fire, jitter);
+    } else {
+      fire();
+    }
+  }
+
+  // ── Persistence ───────────────────────────────────────────────────────
+
+  #saveState() {
+    if (!this.#persistPath) return;
+    try {
+      const dir = dirname(this.#persistPath);
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      const data = {};
+      for (const [id, job] of this.#jobs) {
+        data[id] = {
+          cronExpr: job.cronExpr,
+          timezone: job.timezone,
+          nextRunAt: job.nextRunAt?.toISOString() || null,
+          lastRunAt: job.lastRunAt instanceof Date ? job.lastRunAt.toISOString() : (job.lastRunAt || null),
+          lastError: job.lastError,
+          runCount: job.runCount,
+          errorCount: job.errorCount,
+          jitterMs: job.jitterMs,
+          coalesce: job.coalesce,
+        };
+      }
+      writeFileSync(this.#persistPath, JSON.stringify(data, null, 2), "utf8");
+    } catch (err) {
+      console.warn(`${TAG} failed to save cron state: ${err?.message || err}`);
+    }
+  }
+
+  #loadState() {
+    if (!this.#persistPath) return;
+    try {
+      if (!existsSync(this.#persistPath)) return;
+      const raw = readFileSync(this.#persistPath, "utf8");
+      const data = JSON.parse(raw);
+      if (!data || typeof data !== "object") return;
+      // Restore metadata only — callbacks must be re-registered
+      for (const [id, entry] of Object.entries(data)) {
+        if (!entry?.cronExpr) continue;
+        // Store partial state; register() or a subsequent call will supply the callback
+        this.#jobs.set(id, {
+          cronExpr: entry.cronExpr,
+          parsed: parseCronExpression(entry.cronExpr),
+          callback: () => { console.warn(`${TAG} cron job "${id}" fired but has no callback (not re-registered)`); },
+          nextRunAt: entry.nextRunAt ? new Date(entry.nextRunAt) : null,
+          timezone: entry.timezone || null,
+          lastRunAt: entry.lastRunAt ? new Date(entry.lastRunAt) : null,
+          lastError: entry.lastError || null,
+          runCount: entry.runCount || 0,
+          errorCount: entry.errorCount || 0,
+          jitterMs: entry.jitterMs || 0,
+          coalesce: entry.coalesce !== false,
+        });
+      }
+    } catch (err) {
+      console.warn(`${TAG} failed to load cron state: ${err?.message || err}`);
     }
   }
 }

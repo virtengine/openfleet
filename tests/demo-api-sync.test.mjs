@@ -198,6 +198,12 @@ const INTENTIONALLY_SKIPPED_ACTIONS = new Set([
   "validate",            // POST /api/workflows/:id/code/validate
   "export",              // GET /api/workflows/:id/export
   "cancel",              // POST /api/workflows/runs/:id/cancel
+  // Credential management — server-only (requires credential store)
+  "credentials",         // GET/POST/PUT/DELETE /api/workflows/:id/credentials
+  // Evaluation & cron — server-only (requires evaluator / scheduler)
+  "evaluations",         // GET /api/workflows/:id/evaluations
+  "cron-preview",        // GET /api/workflows/:id/cron-preview
+  "webhook-log",         // GET /api/workflows/:id/webhook-log
 ]);
 
 describe("demo.html :workflow: ui-server.mjs API sync", () => {

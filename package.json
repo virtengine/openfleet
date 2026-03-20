@@ -190,6 +190,7 @@
     "config/workspace-health.mjs",
     "git/conflict-resolver.mjs",
     "workspace/context-cache.mjs",
+    "workspace/command-diagnostics.mjs",
     "workspace/context-indexer.mjs",
     "config/context-shredding-config.mjs",
     "shell/copilot-shell.mjs",

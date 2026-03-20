@@ -17020,6 +17020,124 @@ async function handleApi(req, res, url) {
         return;
       }
 
+      // ── Cancel a running workflow run ─────────────────────────────
+      if (action === "cancel" && req.method === "POST") {
+        try {
+          const runId = segments[2] || workflowId; // /api/workflows/:wfId/cancel/:runId or /api/workflows/:wfId/cancel
+          const result = engine.cancelRun?.(runId);
+          if (result === false || result === undefined) {
+            jsonResponse(res, 404, { ok: false, error: "Run not found or not cancellable" });
+          } else {
+            jsonResponse(res, 200, { ok: true, cancelled: true, runId });
+          }
+        } catch (err) {
+          jsonResponse(res, 500, { ok: false, error: err.message });
+        }
+        return;
+      }
+
+      // ── Credential management ─────────────────────────────────────
+      if (action === "credentials") {
+        try {
+          const { CredentialStore } = await import("../workflow/credential-store.mjs");
+          const ctx = resolveActiveWorkspaceExecutionContext();
+          const store = new CredentialStore({ configDir: ctx.workspaceDir });
+          const credName = segments[2] || "";
+
+          if (req.method === "GET" && !credName) {
+            // List all credentials (metadata only, no values)
+            jsonResponse(res, 200, { ok: true, credentials: store.list() });
+            return;
+          }
+
+          if (req.method === "GET" && credName) {
+            // Get single credential metadata
+            const cred = store.get(credName);
+            if (!cred) { jsonResponse(res, 404, { ok: false, error: "Credential not found" }); return; }
+            jsonResponse(res, 200, { ok: true, credential: cred });
+            return;
+          }
+
+          if (req.method === "POST" || req.method === "PUT") {
+            const body = await readJsonBody(req);
+            const parsed = typeof body === "string" ? JSON.parse(body) : body;
+            const name = credName || parsed.name;
+            if (!name) { jsonResponse(res, 400, { ok: false, error: "Credential name is required" }); return; }
+            const result = store.set(name, {
+              type: parsed.type || "static",
+              value: parsed.value,
+              label: parsed.label,
+              provider: parsed.provider,
+              scopes: parsed.scopes,
+            });
+            jsonResponse(res, 200, { ok: true, ...result });
+            return;
+          }
+
+          if (req.method === "DELETE" && credName) {
+            const deleted = store.delete(credName);
+            jsonResponse(res, deleted ? 200 : 404, { ok: deleted, deleted: credName });
+            return;
+          }
+
+          jsonResponse(res, 405, { ok: false, error: "Method not allowed" });
+        } catch (err) {
+          jsonResponse(res, 500, { ok: false, error: err.message });
+        }
+        return;
+      }
+
+      // ── Evaluation history + trends ───────────────────────────────
+      if (action === "evaluations" && req.method === "GET") {
+        try {
+          const { RunEvaluator } = await import("../workflow/run-evaluator.mjs");
+          const ctx = resolveActiveWorkspaceExecutionContext();
+          const evaluator = new RunEvaluator({ configDir: ctx.workspaceDir });
+          const history = evaluator.getHistory(workflowId);
+          const trend = evaluator.getTrend(workflowId);
+          jsonResponse(res, 200, { ok: true, workflowId, history, trend });
+        } catch (err) {
+          jsonResponse(res, 500, { ok: false, error: err.message });
+        }
+        return;
+      }
+
+      // ── Cron schedule preview ─────────────────────────────────────
+      if (action === "cron-preview" && req.method === "GET") {
+        try {
+          const { parseCronExpression } = await import("../workflow/cron-scheduler.mjs");
+          const urlObj = new URL(path, "http://localhost");
+          const expr = urlObj.searchParams?.get("expr") || segments[2] || "* * * * *";
+          const tz = urlObj.searchParams?.get("tz") || null;
+          const count = Math.min(20, Math.max(1, Number(urlObj.searchParams?.get("n")) || 5));
+          const parsed = parseCronExpression(expr);
+          const nextOccurrences = parsed.nextN(count, new Date(), tz);
+          jsonResponse(res, 200, {
+            ok: true,
+            expression: expr,
+            timezone: tz || "UTC",
+            next: nextOccurrences.map((d) => d.toISOString()),
+          });
+        } catch (err) {
+          jsonResponse(res, 400, { ok: false, error: err.message });
+        }
+        return;
+      }
+
+      // ── Webhook delivery log ──────────────────────────────────────
+      if (action === "webhook-log" && req.method === "GET") {
+        try {
+          const { WebhookGateway } = await import("../workflow/webhook-gateway.mjs");
+          const ctx = resolveActiveWorkspaceExecutionContext();
+          const gateway = new WebhookGateway({ configDir: ctx.workspaceDir });
+          const log = gateway.getDeliveryLog(workflowId);
+          jsonResponse(res, 200, { ok: true, workflowId, deliveries: log });
+        } catch (err) {
+          jsonResponse(res, 500, { ok: false, error: err.message });
+        }
+        return;
+      }
+
       if (req.method === "DELETE") {
         await engine.delete(workflowId);
         jsonResponse(res, 200, { ok: true });

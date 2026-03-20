@@ -187,6 +187,14 @@ async function getFs() {
   return _fsPromises;
 }
 
+let _commandDiagnosticsMod = null;
+async function getCommandDiagnosticsMod() {
+  if (!_commandDiagnosticsMod) {
+    _commandDiagnosticsMod = await import("./command-diagnostics.mjs");
+  }
+  return _commandDiagnosticsMod;
+}
+
 async function ensureCacheDir() {
   const fs = await getFs();
   await fs.mkdir(TOOL_LOG_DIR, { recursive: true });
@@ -826,6 +834,24 @@ function renderGenericSignalExcerptText(item, logRef, opts) {
     .trimEnd();
 }
 
+function appendCommandDiagnosticFooter(baseText, diagnostic, opts) {
+  if (!diagnostic || typeof diagnostic !== "object") return baseText;
+  const { renderCommandDiagnosticFooter } = diagnostic._helpers || {};
+  const footerText = typeof renderCommandDiagnosticFooter === "function"
+    ? renderCommandDiagnosticFooter(diagnostic)
+    : "";
+  if (!footerText) return baseText;
+  const maxChars = Math.max(
+    Number(opts?.liveToolCompactionTargetChars) || 1800,
+    900,
+  );
+  const footer = `\n\n${footerText}`;
+  const combined = `${String(baseText || "").trimEnd()}${footer}`;
+  if (combined.length <= maxChars + 320) return combined;
+  const headBudget = Math.max(240, maxChars - footer.length - 80);
+  return `${String(baseText || "").slice(0, headBudget).trimEnd()}\n\n[...summary trimmed for diagnostics...]\n\n${footerText}`;
+}
+
 function renderLiveCompactionText(analysis, logRef, opts) {
   const retrieve = `bosun --tool-log ${logRef}`;
   const header = `[Live-compacted ${analysis.family}] ${analysis.commandLabel} -> ${analysis.lineCount} lines / ${charLabel(analysis.originalText)}, saved ~${analysis.savedPct}% | Full output: ${retrieve}`;
@@ -868,6 +894,29 @@ function renderLiveCompactionText(analysis, logRef, opts) {
     rendered = `${rendered.slice(0, Math.max(120, targetChars - retrieve.length - 40))}\n\n[...live summary trimmed... full output: ${retrieve}]`;
   }
   return rendered;
+}
+
+async function analyzeCommandDiagnosticForItem(item, logId = null) {
+  const text = getItemText(item);
+  if (!text) return null;
+  const { analyzeCommandDiagnostic, renderCommandDiagnosticFooter } = await getCommandDiagnosticsMod();
+  const diagnostic = await analyzeCommandDiagnostic({
+    command: extractCommandLine(item),
+    args: Array.isArray(item?.arguments?.argv)
+      ? item.arguments.argv
+      : Array.isArray(item?.args)
+        ? item.args
+        : [],
+    output: item?.aggregated_output ?? item?.output ?? item?.text ?? item?.stdout ?? "",
+    stderr: item?.stderr ?? "",
+    exitCode: item?.exit_code ?? item?.exitCode ?? 0,
+  });
+  if (!diagnostic) return null;
+  return {
+    ...diagnostic,
+    retrieveCommand: logId ? `bosun --tool-log ${logId}` : null,
+    _helpers: { renderCommandDiagnosticFooter },
+  };
 }
 
 function analyzeLiveToolOutput(item, opts) {
@@ -958,6 +1007,11 @@ async function compactStandaloneToolItem(
   if (directGitClass) {
     const logId = await writeToCache(item, extractToolName(item), extractArgsPreview(item));
     const compactedItem = applyImmediateGitCompression(item, logId, opts);
+    const diagnostic = await analyzeCommandDiagnosticForItem(item, logId);
+    if (diagnostic) {
+      compactedItem._commandDiagnostics = diagnostic;
+      setItemText(compactedItem, appendCommandDiagnosticFooter(getItemText(compactedItem), diagnostic, opts));
+    }
     recordShreddingEvent({
       originalChars: existingText.length,
       compressedChars: getItemText(compactedItem).length,
@@ -974,6 +1028,7 @@ async function compactStandaloneToolItem(
   const analysis = analyzeLiveToolOutput(item, opts);
   if (analysis) {
     const logId = await writeToCache(item, extractToolName(item), extractArgsPreview(item));
+    const diagnostic = await analyzeCommandDiagnosticForItem(item, logId);
     const compactedItem = {
       ...item,
       _cachedLogId: logId,
@@ -981,7 +1036,15 @@ async function compactStandaloneToolItem(
       _liveCompactionFamily: analysis.family,
       _liveCompactionCommandFamily: analysis.commandFamily,
     };
-    setItemText(compactedItem, renderLiveCompactionText(analysis, logId, opts));
+    if (diagnostic) compactedItem._commandDiagnostics = diagnostic;
+    setItemText(
+      compactedItem,
+      appendCommandDiagnosticFooter(
+        renderLiveCompactionText(analysis, logId, opts),
+        diagnostic,
+        opts,
+      ),
+    );
     recordShreddingEvent({
       originalChars: analysis.originalText.length,
       compressedChars: getItemText(compactedItem).length,
@@ -996,6 +1059,7 @@ async function compactStandaloneToolItem(
   }
 
   const logId = await writeToCache(item, extractToolName(item), extractArgsPreview(item));
+  const diagnostic = await analyzeCommandDiagnosticForItem(item, logId);
   const compactedItem = {
     ...item,
     _cachedLogId: logId,
@@ -1003,7 +1067,15 @@ async function compactStandaloneToolItem(
     _liveCompactionFamily: "generic",
     _liveCompactionCommandFamily: extractCommandFamily(item),
   };
-  setItemText(compactedItem, renderGenericSignalExcerptText(item, logId, opts));
+  if (diagnostic) compactedItem._commandDiagnostics = diagnostic;
+  setItemText(
+    compactedItem,
+    appendCommandDiagnosticFooter(
+      renderGenericSignalExcerptText(item, logId, opts),
+      diagnostic,
+      opts,
+    ),
+  );
   const compactedText = getItemText(compactedItem);
   if (!compactedText || compactedText.length >= existingText.length) {
     return item;
@@ -1098,6 +1170,7 @@ export async function compactCommandOutputPayload(
   const compactedItem = compactedItems[0] || syntheticItem;
   const compactedText = String(getItemText(compactedItem) || combinedText).trim();
   const toolLogId = compactedItem?._cachedLogId || null;
+  const commandDiagnostics = compactedItem?._commandDiagnostics || null;
 
   return {
     text: compactedText,
@@ -1109,6 +1182,7 @@ export async function compactCommandOutputPayload(
     retrieveCommand: toolLogId ? `bosun --tool-log ${toolLogId}` : null,
     compactionFamily: compactedItem?._liveCompactionFamily || null,
     commandFamily: compactedItem?._liveCompactionCommandFamily || extractCommandFamily(syntheticItem),
+    commandDiagnostics,
   };
 }
 function extractCommandText(item) {

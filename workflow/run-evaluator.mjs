@@ -3,19 +3,33 @@
  *
  * Evaluates completed/failed workflow runs to produce quality scores,
  * grade classifications, and actionable remediation suggestions.
+ *
+ * Features:
+ *   - Configurable penalty/threshold values
+ *   - Auto-trigger integration via engine run:complete event
+ *   - Evaluation history persistence with trend analysis
+ *   - Per-workflow evaluation tracks
  */
 
-// ── Score / Grade Constants ─────────────────────────────────────────────────
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { resolve, dirname } from "node:path";
 
-const PENALTY_FAILED_NODE = 10;
-const PENALTY_RETRIED_NODE = 5;
-const PENALTY_SKIPPED_NODE = 2;
-const PENALTY_SLOW_RUN_MS = 5 * 60 * 1000; // 5 minutes
-const PENALTY_SLOW_RUN = 5;
-const PENALTY_SLOW_NODE_MS = 2 * 60 * 1000; // 2 minutes
-const PENALTY_SLOW_NODE = 10;
-const PENALTY_HIGH_ERROR_RATE = 20;
-const HIGH_ERROR_RATE_THRESHOLD = 0.5;
+const TAG = "[run-evaluator]";
+
+// ── Default penalties (all configurable via constructor) ────────────────────
+
+const DEFAULTS = {
+  penaltyFailedNode: 10,
+  penaltyRetriedNode: 5,
+  penaltySkippedNode: 2,
+  penaltySlowRunMs: 5 * 60 * 1000,
+  penaltySlowRun: 5,
+  penaltySlowNodeMs: 2 * 60 * 1000,
+  penaltySlowNode: 10,
+  penaltyHighErrorRate: 20,
+  highErrorRateThreshold: 0.5,
+  maxHistoryPerWorkflow: 50,
+};
 
 function computeGrade(score) {
   if (score >= 90) return "A";
@@ -28,6 +42,64 @@ function computeGrade(score) {
 // ── RunEvaluator ────────────────────────────────────────────────────────────
 
 export class RunEvaluator {
+  #config;
+  #historyPath = null;
+  /** @type {Map<string, Array<{ runId: string, score: number, grade: string, timestamp: string }>>} */
+  #history = new Map();
+  #autoTriggerEngine = null;
+
+  /**
+   * @param {object} [opts] — override any default penalty / threshold
+   * @param {string} [opts.configDir] — enables evaluation history persistence
+   * @param {number} [opts.penaltyFailedNode]
+   * @param {number} [opts.penaltyRetriedNode]
+   * @param {number} [opts.penaltySkippedNode]
+   * @param {number} [opts.penaltySlowRunMs]
+   * @param {number} [opts.penaltySlowRun]
+   * @param {number} [opts.penaltySlowNodeMs]
+   * @param {number} [opts.penaltySlowNode]
+   * @param {number} [opts.penaltyHighErrorRate]
+   * @param {number} [opts.highErrorRateThreshold]
+   * @param {number} [opts.maxHistoryPerWorkflow]
+   */
+  constructor(opts = {}) {
+    this.#config = { ...DEFAULTS };
+    for (const key of Object.keys(DEFAULTS)) {
+      if (opts[key] !== undefined && typeof opts[key] === "number") {
+        this.#config[key] = opts[key];
+      }
+    }
+    if (opts.configDir) {
+      const bosunDir = resolve(opts.configDir, ".bosun");
+      this.#historyPath = resolve(bosunDir, "evaluation-history.json");
+      this.#loadHistory();
+    }
+  }
+
+  /**
+   * Attach to a workflow engine for auto-triggered evaluation.
+   * Listens to `run:complete` events and evaluates automatically.
+   *
+   * @param {object} engine — must expose `.on(event, handler)` and `.getRunDetail(runId)`
+   * @returns {void}
+   */
+  attachToEngine(engine) {
+    if (!engine?.on || !engine?.getRunDetail) return;
+    this.#autoTriggerEngine = engine;
+    engine.on("run:complete", (evt) => {
+      try {
+        const detail = engine.getRunDetail(evt?.runId);
+        if (detail) {
+          const result = this.evaluate(detail);
+          // Store in history
+          this.#recordHistory(evt?.workflowId || "unknown", evt?.runId, result);
+        }
+      } catch (err) {
+        console.warn(`${TAG} auto-evaluation failed: ${err?.message || err}`);
+      }
+    });
+  }
+
   /**
    * Evaluate a completed/failed run and return quality metrics + remediation.
    *
@@ -106,7 +178,7 @@ export class RunEvaluator {
 
     // Penalty: failed nodes
     if (failedNodes > 0) {
-      const penalty = failedNodes * PENALTY_FAILED_NODE;
+      const penalty = failedNodes * this.#config.penaltyFailedNode;
       score -= penalty;
       for (const [nodeId, status] of Object.entries(nodeStatuses)) {
         if (status === "failed") {
@@ -124,7 +196,7 @@ export class RunEvaluator {
 
     // Penalty: retried nodes
     if (retriedNodes > 0) {
-      const penalty = retriedNodes * PENALTY_RETRIED_NODE;
+      const penalty = retriedNodes * this.#config.penaltyRetriedNode;
       score -= penalty;
       for (const [nodeId, count] of Object.entries(retryAttempts)) {
         if (Number(count) > 0) {
@@ -140,23 +212,23 @@ export class RunEvaluator {
 
     // Penalty: skipped nodes
     if (skippedNodes > 0) {
-      score -= skippedNodes * PENALTY_SKIPPED_NODE;
+      score -= skippedNodes * this.#config.penaltySkippedNode;
     }
 
     // Penalty: slow total duration
-    if (totalDurationMs > PENALTY_SLOW_RUN_MS) {
-      score -= PENALTY_SLOW_RUN;
+    if (totalDurationMs > this.#config.penaltySlowRunMs) {
+      score -= this.#config.penaltySlowRun;
       issues.push({
         severity: "warning",
         nodeId: null,
-        message: `Run took ${Math.round(totalDurationMs / 1000)}s (>${Math.round(PENALTY_SLOW_RUN_MS / 1000)}s threshold)`,
+        message: `Run took ${Math.round(totalDurationMs / 1000)}s (>${Math.round(this.#config.penaltySlowRunMs / 1000)}s threshold)`,
         suggestion: "Consider optimising slow nodes or splitting workflow",
       });
     }
 
-    // Penalty: any single node > 2 min
-    if (slowestNode.durationMs > PENALTY_SLOW_NODE_MS) {
-      score -= PENALTY_SLOW_NODE;
+    // Penalty: any single node > threshold
+    if (slowestNode.durationMs > this.#config.penaltySlowNodeMs) {
+      score -= this.#config.penaltySlowNode;
       issues.push({
         severity: "warning",
         nodeId: slowestNode.nodeId,
@@ -166,12 +238,12 @@ export class RunEvaluator {
     }
 
     // Penalty: high error rate
-    if (errorRate > HIGH_ERROR_RATE_THRESHOLD) {
-      score -= PENALTY_HIGH_ERROR_RATE;
+    if (errorRate > this.#config.highErrorRateThreshold) {
+      score -= this.#config.penaltyHighErrorRate;
       issues.push({
         severity: "error",
         nodeId: null,
-        message: `Error rate is ${Math.round(errorRate * 100)}% (>${Math.round(HIGH_ERROR_RATE_THRESHOLD * 100)}% threshold)`,
+        message: `Error rate is ${Math.round(errorRate * 100)}% (>${Math.round(this.#config.highErrorRateThreshold * 100)}% threshold)`,
         suggestion: "Review workflow design — most nodes are failing",
       });
     }
@@ -272,5 +344,97 @@ export class RunEvaluator {
     if (/not\s*found/i.test(errMsg) || /does\s*not\s*exist/i.test(errMsg)) return "Check configuration paths/IDs";
     if (/permission|unauthorized|forbidden/i.test(errMsg)) return "Check permissions/credentials";
     return "Review error details";
+  }
+
+  // ── History & Trends ──────────────────────────────────────────────────
+
+  /**
+   * Get evaluation history for a workflow.
+   * @param {string} workflowId
+   * @param {number} [limit=20]
+   * @returns {Array<{ runId: string, score: number, grade: string, timestamp: string }>}
+   */
+  getHistory(workflowId) {
+    return this.#history.get(workflowId) || [];
+  }
+
+  /**
+   * Get trend data for a workflow (average score over recent evaluations).
+   * @param {string} workflowId
+   * @returns {{ avgScore: number, trend: "improving"|"stable"|"declining", evaluationCount: number, recentGrades: string[] }|null}
+   */
+  getTrend(workflowId) {
+    const entries = this.#history.get(workflowId);
+    if (!entries || entries.length === 0) return null;
+
+    const scores = entries.map((e) => e.score);
+    const avgScore = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+    const recentGrades = entries.slice(-5).map((e) => e.grade);
+
+    // Determine trend by comparing first half vs second half
+    let trend = "stable";
+    if (scores.length >= 4) {
+      const mid = Math.floor(scores.length / 2);
+      const firstHalf = scores.slice(0, mid);
+      const secondHalf = scores.slice(mid);
+      const firstAvg = firstHalf.reduce((a, b) => a + b, 0) / firstHalf.length;
+      const secondAvg = secondHalf.reduce((a, b) => a + b, 0) / secondHalf.length;
+      if (secondAvg - firstAvg > 5) trend = "improving";
+      else if (firstAvg - secondAvg > 5) trend = "declining";
+    }
+
+    return { avgScore, trend, evaluationCount: entries.length, recentGrades };
+  }
+
+  #recordHistory(workflowId, runId, result) {
+    if (!this.#history.has(workflowId)) {
+      this.#history.set(workflowId, []);
+    }
+    const entries = this.#history.get(workflowId);
+    entries.push({
+      runId: runId || "unknown",
+      score: result.score,
+      grade: result.grade,
+      timestamp: new Date().toISOString(),
+    });
+    while (entries.length > this.#config.maxHistoryPerWorkflow) {
+      entries.shift();
+    }
+    this.#saveHistory();
+  }
+
+  // ── Persistence ───────────────────────────────────────────────────────
+
+  #loadHistory() {
+    if (!this.#historyPath) return;
+    try {
+      if (!existsSync(this.#historyPath)) return;
+      const raw = readFileSync(this.#historyPath, "utf8");
+      const data = JSON.parse(raw);
+      if (data && typeof data === "object") {
+        for (const [wfId, entries] of Object.entries(data)) {
+          if (Array.isArray(entries)) {
+            this.#history.set(wfId, entries);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`${TAG} failed to load evaluation history: ${err?.message || err}`);
+    }
+  }
+
+  #saveHistory() {
+    if (!this.#historyPath) return;
+    try {
+      const dir = dirname(this.#historyPath);
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      const data = {};
+      for (const [wfId, entries] of this.#history) {
+        data[wfId] = entries;
+      }
+      writeFileSync(this.#historyPath, JSON.stringify(data, null, 2), "utf8");
+    } catch (err) {
+      console.warn(`${TAG} failed to save evaluation history: ${err?.message || err}`);
+    }
   }
 }

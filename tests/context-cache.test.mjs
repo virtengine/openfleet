@@ -8,6 +8,7 @@ const __dirname = dirname(__filename);
 
 // Use a temp directory for test cache to avoid polluting real cache
 const TEST_CACHE_DIR = resolve(__dirname, "..", ".cache-test-tool-logs");
+const TEST_COMMAND_DIAGNOSTICS_STATE = resolve(TEST_CACHE_DIR, "command-diagnostics-state.json");
 
 // Mock the cache directory before importing the module
 vi.mock("node:path", async (importOriginal) => {
@@ -18,10 +19,13 @@ vi.mock("node:path", async (importOriginal) => {
 describe("context-cache", () => {
   let contextCache;
   let originalGitOutputMaxChars;
+  let originalCommandDiagnosticsStateFile;
 
   beforeEach(async () => {
     originalGitOutputMaxChars = process.env.BOSUN_GIT_OUTPUT_MAX_CHARS;
+    originalCommandDiagnosticsStateFile = process.env.BOSUN_COMMAND_DIAGNOSTICS_STATE_FILE;
     delete process.env.BOSUN_GIT_OUTPUT_MAX_CHARS;
+    process.env.BOSUN_COMMAND_DIAGNOSTICS_STATE_FILE = TEST_COMMAND_DIAGNOSTICS_STATE;
     // Clean test directory
     rmSync(TEST_CACHE_DIR, { recursive: true, force: true });
     mkdirSync(TEST_CACHE_DIR, { recursive: true });
@@ -36,6 +40,11 @@ describe("context-cache", () => {
       delete process.env.BOSUN_GIT_OUTPUT_MAX_CHARS;
     } else {
       process.env.BOSUN_GIT_OUTPUT_MAX_CHARS = originalGitOutputMaxChars;
+    }
+    if (originalCommandDiagnosticsStateFile === undefined) {
+      delete process.env.BOSUN_COMMAND_DIAGNOSTICS_STATE_FILE;
+    } else {
+      process.env.BOSUN_COMMAND_DIAGNOSTICS_STATE_FILE = originalCommandDiagnosticsStateFile;
     }
     rmSync(TEST_CACHE_DIR, { recursive: true, force: true });
     vi.restoreAllMocks();
@@ -998,6 +1007,7 @@ describe("live tool compaction", () => {
     expect(result[0]._liveCompactionFamily).toBe("build");
     expect(result[0].aggregated_output).toContain("Failed Bosun.Tests.WorkflowContextTests.ResolveTemplates");
     expect(result[0].aggregated_output).toContain("WorkflowContextTests.cs:line 42");
+    expect(result[0].aggregated_output).toContain("Suggested rerun: dotnet test --filter");
     expect(result[0].aggregated_output).toContain("bosun --tool-log");
   });
 
@@ -1086,8 +1096,49 @@ describe("live tool compaction", () => {
     expect(compacted.text).toContain("CUSTOMER_PIPELINE_MODE");
     expect(compacted.text).toContain("bosun --tool-log");
   });
-});
 
+  it("tracks deltas across repeated similar test runs and surfaces rerun guidance", async () => {
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    const first = await cacheModule.compactCommandOutputPayload({
+      command: "vitest run",
+      output: [
+        ...Array.from({ length: 180 }, (_, i) => `ok helper-${i} ${"x".repeat(18)}`),
+        "FAIL tests/runtime/alpha.test.ts",
+        "FAIL tests/runtime/beta.test.ts",
+        "Error: expected true to be false",
+      ].join("\n"),
+      exitCode: 1,
+    });
+    const second = await cacheModule.compactCommandOutputPayload({
+      command: "vitest run",
+      output: [
+        ...Array.from({ length: 180 }, (_, i) => `ok helper-${i} ${"x".repeat(18)}`),
+        "FAIL tests/runtime/beta.test.ts",
+        "Error: expected true to be false",
+      ].join("\n"),
+      exitCode: 1,
+    });
+
+    expect(first.commandDiagnostics?.suggestedRerun).toContain("vitest run");
+    expect(second.commandDiagnostics?.deltaSummary).toContain("1 resolved");
+    expect(second.commandDiagnostics?.deltaSummary).toContain("1 still failing");
+    expect(second.text).toContain("Delta: 1 resolved, 1 still failing");
+    expect(second.text).toContain("Suggested rerun: vitest run");
+  });
+
+  it("flags low-signal failures when output is large but diagnostics are weak", async () => {
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    const compacted = await cacheModule.compactCommandOutputPayload({
+      command: "custom-runner --phase verify",
+      output: Array.from({ length: 260 }, (_, i) => `noise only line ${i} ${"z".repeat(20)}`).join("\n"),
+      exitCode: 1,
+    });
+
+    expect(compacted.commandDiagnostics?.insufficientSignal).toBe(true);
+    expect(compacted.text).toContain("Signal coverage: low");
+    expect(compacted.text).toContain("Hint: Signal coverage is low.");
+  });
+});
 
 
 

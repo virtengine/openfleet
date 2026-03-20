@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { parseCronExpression, CronScheduler } from "../workflow/cron-scheduler.mjs";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 // ── parseCronExpression ─────────────────────────────────────────────────────
 
@@ -207,5 +210,107 @@ describe("CronScheduler", () => {
     // The every-minute cron may or may not fire depending on timing,
     // but the scheduler should not throw
     scheduler.stop();
+  });
+
+  it("getStatus includes new fields", () => {
+    scheduler.register("j1", "0 9 * * *", () => {});
+    const status = scheduler.getStatus();
+    expect(status[0]).toHaveProperty("timezone");
+    expect(status[0]).toHaveProperty("lastRunAt");
+    expect(status[0]).toHaveProperty("lastError");
+    expect(status[0]).toHaveProperty("runCount", 0);
+    expect(status[0]).toHaveProperty("errorCount", 0);
+  });
+});
+
+// ── nextN() ─────────────────────────────────────────────────────────────────
+
+describe("parseCronExpression.nextN()", () => {
+  it("returns exactly N dates", () => {
+    const cron = parseCronExpression("0 9 * * *"); // daily at 9AM
+    const from = new Date("2026-01-15T00:00:00Z");
+    const results = cron.nextN(5, from);
+    expect(results).toHaveLength(5);
+    expect(results.every((d) => d instanceof Date)).toBe(true);
+  });
+
+  it("returns dates in ascending order", () => {
+    const cron = parseCronExpression("*/10 * * * *"); // every 10 min
+    const results = cron.nextN(5, new Date("2026-01-15T10:00:00Z"));
+    for (let i = 1; i < results.length; i++) {
+      expect(results[i].getTime()).toBeGreaterThan(results[i - 1].getTime());
+    }
+  });
+
+  it("caps at 100", () => {
+    const cron = parseCronExpression("* * * * *");
+    const results = cron.nextN(200);
+    expect(results).toHaveLength(100);
+  });
+});
+
+// ── CronScheduler persistence ───────────────────────────────────────────────
+
+describe("CronScheduler persistence", () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "bosun-cron-test-"));
+  });
+
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  });
+
+  it("persists state to disk when configDir provided", () => {
+    const sched = new CronScheduler({ configDir: tmpDir });
+    sched.register("j1", "0 9 * * *", () => {});
+    const statePath = join(tmpDir, ".bosun", "cron-state.json");
+    expect(existsSync(statePath)).toBe(true);
+    sched.stop();
+  });
+
+  it("restores job metadata on new instance", () => {
+    const sched1 = new CronScheduler({ configDir: tmpDir });
+    sched1.register("j1", "0 9 * * *", () => {});
+    sched1.stop();
+
+    const sched2 = new CronScheduler({ configDir: tmpDir });
+    const status = sched2.getStatus();
+    expect(status).toHaveLength(1);
+    expect(status[0].id).toBe("j1");
+    expect(status[0].cronExpr).toBe("0 9 * * *");
+    sched2.stop();
+  });
+});
+
+// ── CronScheduler.getNextOccurrences ────────────────────────────────────────
+
+describe("CronScheduler.getNextOccurrences", () => {
+  it("returns null for unknown job", () => {
+    const sched = new CronScheduler();
+    expect(sched.getNextOccurrences("nope")).toBeNull();
+    sched.stop();
+  });
+
+  it("returns N future dates for a registered job", () => {
+    const sched = new CronScheduler();
+    sched.register("j1", "0 9 * * *", () => {});
+    const dates = sched.getNextOccurrences("j1", 3);
+    expect(dates).toHaveLength(3);
+    expect(dates.every((d) => d instanceof Date)).toBe(true);
+    sched.stop();
+  });
+});
+
+// ── CronScheduler with timezone ─────────────────────────────────────────────
+
+describe("CronScheduler with timezone", () => {
+  it("registers job with timezone", () => {
+    const sched = new CronScheduler();
+    sched.register("tz-job", "0 9 * * *", () => {}, { timezone: "America/New_York" });
+    const status = sched.getStatus();
+    expect(status[0].timezone).toBe("America/New_York");
+    sched.stop();
   });
 });
