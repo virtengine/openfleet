@@ -1329,9 +1329,39 @@ function buildModelProviderSection(providerName, config = {}) {
   return lines.join("\n");
 }
 
+/**
+ * Codex CLI built-in provider IDs that cannot be used in [model_providers.*].
+ * Declaring these in config.toml causes a fatal "reserved built-in provider"
+ * error on Codex CLI >=0.x (March 2026+).
+ */
+const CODEX_RESERVED_PROVIDER_IDS = new Set(["openai"]);
+
+/**
+ * Migrate legacy [model_providers.openai] sections that Bosun previously
+ * generated.  Newer Codex CLI versions reject this ID as a reserved built-in.
+ * We rename it to "openai-direct" so existing timeout / retry settings
+ * are preserved without triggering the error.
+ */
+function migrateReservedProviderIds(toml) {
+  const migrated = [];
+  for (const reserved of CODEX_RESERVED_PROVIDER_IDS) {
+    const header = `[model_providers.${reserved}]`;
+    if (toml.includes(header)) {
+      const replacement = `[model_providers.${reserved}-direct]`;
+      toml = toml.replace(header, replacement);
+      migrated.push({ from: reserved, to: `${reserved}-direct` });
+    }
+  }
+  return { toml, migrated };
+}
+
 function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
   const added = [];
   const { env: resolvedEnv, active } = resolveCodexProfileRuntime(env);
+
+  // Migrate any legacy reserved provider IDs before adding new sections
+  const migration = migrateReservedProviderIds(toml);
+  toml = migration.toml;
 
   const activeProvider = String(active?.provider || "").toLowerCase();
   const activeBaseUrl =
@@ -1363,15 +1393,11 @@ function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
     }
   }
 
-  if (!hasModelProviderSection(toml, "openai")) {
-    toml += buildModelProviderSection("openai", {
-      name: "OpenAI",
-      envKey: "OPENAI_API_KEY",
-    });
-    added.push("openai");
-  }
+  // NOTE: Do NOT add [model_providers.openai] — it is a Codex built-in.
+  // The built-in already handles OPENAI_API_KEY.  Declaring it causes:
+  //   "model_providers contains reserved built-in provider IDs: openai"
 
-  return { toml, added };
+  return { toml, added, migrated: migration.migrated };
 }
 
 /**
