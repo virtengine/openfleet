@@ -175,6 +175,14 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/agent/modes",
   // Webhook & cron management — server-only (requires webhook gateway + config dir)
   "/api/workflows\\/:id",
+  // Hook library — server-only (requires hook-library + agent-hooks runtime)
+  "/api/hooks/catalog",
+  "/api/hooks/categories",
+  "/api/hooks/sdk-matrix",
+  "/api/hooks/entry",
+  "/api/hooks/state",
+  "/api/hooks/core",
+  "/api/hooks/defaults",
 ]);
 
 // ── Session actions intentionally skipped in demo ─────────────────────
@@ -204,6 +212,10 @@ const INTENTIONALLY_SKIPPED_ACTIONS = new Set([
   "evaluations",         // GET /api/workflows/:id/evaluations
   "cron-preview",        // GET /api/workflows/:id/cron-preview
   "webhook-log",         // GET /api/workflows/:id/webhook-log
+  // Session control — server-only (requires session runtime)
+  "enable",              // POST /api/sessions/:id/enable
+  "disable",             // POST /api/sessions/:id/disable
+  "initialize",          // POST /api/sessions/:id/initialize
 ]);
 
 describe("demo.html :workflow: ui-server.mjs API sync", () => {
