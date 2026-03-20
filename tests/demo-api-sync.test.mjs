@@ -193,6 +193,11 @@ const INTENTIONALLY_SKIPPED_ACTIONS = new Set([
   "snapshots",           // GET /api/workflows/runs/:id/snapshots
   "restore",             // POST /api/workflows/runs/:id/restore
   "remediate",           // POST /api/workflows/runs/:id/remediate
+  // Code view & export — server-only (requires workflow serializer + exporter)
+  "code",                // GET/PUT /api/workflows/:id/code
+  "validate",            // POST /api/workflows/:id/code/validate
+  "export",              // GET /api/workflows/:id/export
+  "cancel",              // POST /api/workflows/runs/:id/cancel
 ]);
 
 describe("demo.html :workflow: ui-server.mjs API sync", () => {

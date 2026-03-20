@@ -63,7 +63,7 @@ const selectedNodeId = signal(null);
 const selectedEdgeId = signal(null);
 const draggingNode = signal(null);
 const connectingFrom = signal(null);
-const viewMode = signal("list"); // "list" | "canvas" | "runs"
+const viewMode = signal("list"); // "list" | "canvas" | "runs" | "code"
 const WORKFLOW_RUN_PAGE_SIZE = 50;
 const WORKFLOW_RUN_MAX_FETCH = 5000;
 const WORKFLOW_LIVE_POLL_MS = 3000;
@@ -229,6 +229,29 @@ function summarizeWorkflowEdges(workflow, limit = 24) {
   return lines.join("\n");
 }
 
+function summarizeWorkflowNodeLinks(workflow, nodeId, direction = "incoming", limit = 10) {
+  const safeNodeId = String(nodeId || "").trim();
+  if (!safeNodeId) return direction === "outgoing" ? "No downstream edges." : "No upstream edges.";
+  const edges = Array.isArray(workflow?.edges) ? workflow.edges : [];
+  const relevant = edges.filter((edge) => {
+    const sourceId = String(edge?.source || edge?.from || "").trim();
+    const targetId = String(edge?.target || edge?.to || "").trim();
+    return direction === "outgoing" ? sourceId === safeNodeId : targetId === safeNodeId;
+  });
+  if (!relevant.length) return direction === "outgoing" ? "No downstream edges." : "No upstream edges.";
+  const lines = relevant.slice(0, limit).map((edge, index) => {
+    const sourceId = String(edge?.source || edge?.from || "?").trim() || "?";
+    const targetId = String(edge?.target || edge?.to || "?").trim() || "?";
+    const sourcePort = String(edge?.sourcePort || edge?.fromPort || "").trim() || "default";
+    const targetPort = String(edge?.targetPort || edge?.toPort || "").trim() || "default";
+    return `${index + 1}. ${sourceId}:${sourcePort} -> ${targetId}:${targetPort}`;
+  });
+  if (relevant.length > limit) {
+    lines.push(`... ${relevant.length - limit} more ${direction} edge(s) omitted`);
+  }
+  return lines.join("\n");
+}
+
 function summarizeRunNodeStatuses(run, limit = 25) {
   const nodeStatuses = buildNodeStatusesFromRunDetail(run);
   const entries = Object.entries(nodeStatuses || {});
@@ -315,6 +338,51 @@ function buildWorkflowExplainPrompt(workflow) {
   ].join("\n");
 }
 
+function buildWorkflowNodePrompt(workflow, node, nodeTypeMap = new Map()) {
+  if (!node) return "";
+  const workflowId = String(workflow?.id || "").trim() || "(unknown)";
+  const workflowName = String(workflow?.name || workflowId).trim() || workflowId;
+  const nodeType = String(node?.type || "unknown").trim() || "unknown";
+  const typeInfo = nodeTypeMap.get(nodeType) || null;
+  const schemaKeys = Object.keys(typeInfo?.schema?.properties || {});
+  return [
+    "You are helping inside Bosun with workflow node authoring.",
+    "Explain what this node does, how it interacts with adjacent nodes, what is risky or underspecified, and which exact config edits Bosun should make next.",
+    "",
+    "Return:",
+    "1. Node purpose",
+    "2. Upstream/downstream interaction notes",
+    "3. Risks, missing validation, or bad defaults",
+    "4. Concrete config or graph edits",
+    "",
+    "Workflow Context",
+    `- Workflow: ${workflowName}`,
+    `- Workflow ID: ${workflowId}`,
+    `- Node count: ${Array.isArray(workflow?.nodes) ? workflow.nodes.length : 0}`,
+    `- Edge count: ${Array.isArray(workflow?.edges) ? workflow.edges.length : 0}`,
+    "",
+    "Node Context",
+    `- Node ID: ${String(node?.id || "").trim() || "(unknown)"}`,
+    `- Label: ${String(node?.label || node?.name || "").trim() || "(none)"}`,
+    `- Type: ${nodeType}`,
+    `- Category: ${nodeType.split(".")[0] || "unknown"}`,
+    `- Description: ${String(typeInfo?.description || "").trim() || "None provided."}`,
+    `- Schema keys: ${schemaKeys.length ? schemaKeys.join(", ") : "None"}`,
+    "",
+    "Upstream Edges",
+    summarizeWorkflowNodeLinks(workflow, node?.id, "incoming"),
+    "",
+    "Downstream Edges",
+    summarizeWorkflowNodeLinks(workflow, node?.id, "outgoing"),
+    "",
+    "Node Config",
+    formatWorkflowCopilotBlock(node?.config || {}, 3500),
+    "",
+    "Raw Node Snapshot",
+    formatWorkflowCopilotBlock(node, 3500),
+  ].join("\n");
+}
+
 function buildRunCopilotPrompt(run, intent = "ask") {
   const workflowName = String(run?.workflowName || getWorkflowNameById(run?.workflowId) || run?.workflowId || "Unknown Workflow").trim();
   const status = String(run?.status || "unknown").trim() || "unknown";
@@ -358,6 +426,80 @@ function buildRunCopilotPrompt(run, intent = "ask") {
     "Recent Logs",
     formatWorkflowCopilotBlock(logs.slice(-40), 4000),
   ].join("\n");
+}
+
+function buildRunNodeCopilotPrompt(run, nodeId, opts = {}) {
+  const safeNodeId = String(nodeId || "").trim();
+  if (!safeNodeId) return "";
+  const workflow = opts?.workflow || null;
+  const node = Array.isArray(workflow?.nodes)
+    ? workflow.nodes.find((entry) => String(entry?.id || "").trim() === safeNodeId) || null
+    : null;
+  const nodeStatuses = buildNodeStatusesFromRunDetail(run);
+  const nodeOutputs = run?.detail?.nodeOutputs && typeof run.detail.nodeOutputs === "object"
+    ? run.detail.nodeOutputs
+    : {};
+  const errors = Array.isArray(run?.detail?.errors) ? run.detail.errors : [];
+  const relatedErrors = errors.filter((entry) => formatWorkflowCopilotBlock(entry, 500).includes(safeNodeId));
+  const failed = String(opts?.intent || "").trim().toLowerCase() === "fix"
+    || String(nodeStatuses[safeNodeId] || "").trim().toLowerCase() === "failed";
+  return [
+    "You are helping inside Bosun with workflow run node analysis.",
+    failed
+      ? "Diagnose why this node failed or behaved incorrectly, identify the root cause, and propose the smallest concrete fix Bosun should make."
+      : "Explain what happened in this node during the run, what inputs or outputs matter, and what Bosun should inspect next.",
+    "",
+    "Return:",
+    "1. Short diagnosis",
+    "2. Evidence from this node",
+    failed ? "3. Concrete fix plan" : "3. Recommended next checks",
+    failed ? "4. Retry advice for this node or run" : "4. Risks or follow-up notes",
+    "",
+    "Run Context",
+    `- Workflow ID: ${String(run?.workflowId || workflow?.id || "").trim() || "(unknown)"}`,
+    `- Run ID: ${String(run?.runId || "").trim() || "(unknown)"}`,
+    `- Run status: ${String(run?.status || "unknown").trim() || "unknown"}`,
+    `- Started: ${formatDate(run?.startedAt)}`,
+    `- Finished: ${run?.endedAt ? formatDate(run.endedAt) : "Running"}`,
+    "",
+    "Node Context",
+    `- Node ID: ${safeNodeId}`,
+    `- Node label: ${String(node?.label || node?.name || "").trim() || "(none)"}`,
+    `- Node type: ${String(node?.type || "").trim() || "(unknown)"}`,
+    `- Node status: ${String(nodeStatuses[safeNodeId] || "unknown").trim() || "unknown"}`,
+    "",
+    "Node Config",
+    formatWorkflowCopilotBlock(node?.config || {}, 2500),
+    "",
+    "Node Output",
+    formatWorkflowCopilotBlock(nodeOutputs[safeNodeId] ?? null, 3500),
+    "",
+    "Node Errors",
+    formatWorkflowCopilotBlock(relatedErrors.length ? relatedErrors : errors.slice(0, 8), 3000),
+  ].join("\n");
+}
+
+async function fetchWorkflowCopilotPrompt(endpoint, fetchOptions = {}) {
+  const safeEndpoint = String(endpoint || "").trim();
+  if (!safeEndpoint) return null;
+  try {
+    const data = await apiFetch(safeEndpoint, fetchOptions);
+    const prompt = String(data?.prompt || "").trim();
+    return prompt || null;
+  } catch {
+    return null;
+  }
+}
+
+async function startWorkflowCopilotSession({
+  endpoint = "",
+  fetchOptions = {},
+  fallbackPrompt = "",
+  title = "",
+  successToast = "",
+} = {}) {
+  const prompt = await fetchWorkflowCopilotPrompt(endpoint, fetchOptions) || String(fallbackPrompt || "").trim();
+  return openWorkflowCopilotChat(prompt, { title, successToast });
 }
 
 async function openWorkflowCopilotChat(prompt, opts = {}) {
@@ -456,6 +598,32 @@ async function saveWorkflow(def) {
     return data?.workflow;
   } catch (err) {
     showToast("Failed to save workflow", "error");
+  }
+}
+
+async function exportWorkflow(workflow) {
+  if (!workflow?.id) return;
+  try {
+    const bundle = await apiFetch(`/api/workflows/${encodeURIComponent(workflow.id)}/export`);
+    if (!bundle?.files) throw new Error("No export data received");
+
+    const content = JSON.stringify({
+      _bosunExport: true,
+      projectName: bundle.projectName,
+      metadata: bundle.metadata,
+      files: bundle.files,
+    }, null, 2);
+
+    const blob = new Blob([content], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${bundle.projectName || "workflow"}-export.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast("Workflow exported successfully", "success");
+  } catch (err) {
+    showToast("Export failed: " + (err.message || err), "error");
   }
 }
 
@@ -1788,6 +1956,44 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const normalizeNodesForCanvas = useCallback((nodeList = []) => (
     (Array.isArray(nodeList) ? nodeList : []).map((node) => ensureNodePortMetadata(node))
   ), [ensureNodePortMetadata]);
+  const createWorkflowSnapshotForCopilot = useCallback(() => ({
+    ...(workflow || {}),
+    nodes: normalizeNodesForCanvas(nodesRef.current || []),
+    edges: Array.isArray(edgesRef.current) ? [...edgesRef.current] : [],
+  }), [normalizeNodesForCanvas, workflow]);
+  const openWorkflowCopilotFromCanvas = useCallback(async ({
+    intent = "explain",
+    nodeId = "",
+    title = "",
+    successToast = "",
+  } = {}) => {
+    const snapshot = createWorkflowSnapshotForCopilot();
+    const safeWorkflowId = String(snapshot?.id || workflow?.id || "").trim();
+    const safeNodeId = String(nodeId || "").trim();
+    const fallbackNode = safeNodeId
+      ? (snapshot.nodes || []).find((entry) => String(entry?.id || "").trim() === safeNodeId) || null
+      : null;
+    const fallbackPrompt = safeNodeId
+      ? buildWorkflowNodePrompt(snapshot, fallbackNode, nodeTypeMap)
+      : buildWorkflowExplainPrompt(snapshot);
+    if (!safeWorkflowId) {
+      return openWorkflowCopilotChat(fallbackPrompt, { title, successToast });
+    }
+    return startWorkflowCopilotSession({
+      endpoint: `/api/workflows/${encodeURIComponent(safeWorkflowId)}/copilot-context`,
+      fetchOptions: {
+        method: "POST",
+        body: JSON.stringify({
+          intent,
+          ...(safeNodeId ? { nodeId: safeNodeId } : {}),
+          workflow: snapshot,
+        }),
+      },
+      fallbackPrompt,
+      title,
+      successToast,
+    });
+  }, [createWorkflowSnapshotForCopilot, nodeTypeMap, workflow]);
   useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds; }, [selectedNodeIds]);
   useEffect(() => {
     nodesRef.current = nodes;
@@ -2861,7 +3067,8 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         <${Button}
           variant="outlined"
           size="small"
-          onClick=${() => openWorkflowCopilotChat(buildWorkflowExplainPrompt(workflow), {
+          onClick=${() => openWorkflowCopilotFromCanvas({
+            intent: "explain",
             title: `Explain workflow ${workflow?.name || workflow?.id || ""}`.trim(),
             successToast: "Opened workflow explanation chat",
           })}
@@ -2899,6 +3106,14 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         >
           <span class="btn-icon">${resolveIcon("chart")}</span>
           Runs
+        <//>
+        <${Button} variant="outlined" size="small" onClick=${() => { viewMode.value = "code"; }}>
+          <span class="btn-icon">${resolveIcon("settings")}</span>
+          Code
+        <//>
+        <${Button} variant="outlined" size="small" onClick=${() => exportWorkflow(workflow)}>
+          <span class="btn-icon">${resolveIcon("save")}</span>
+          Export
         <//>
         ${workflow?.metadata?.installedFrom && html`<${Button}
           variant="outlined"
@@ -3400,6 +3615,21 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       <!-- Context Menu -->
       ${contextMenu && html`
         <div class="wf-context-menu" style="position: fixed; left: ${contextMenu.x}px; top: ${contextMenu.y}px; z-index: 50;">
+          <${MenuItem}
+            onClick=${() => {
+              const node = nodes.find((entry) => entry.id === contextMenu.nodeId) || null;
+              setContextMenu(null);
+              openWorkflowCopilotFromCanvas({
+                intent: "node",
+                nodeId: contextMenu.nodeId,
+                title: `Ask Bosun about node ${node?.label || contextMenu.nodeId}`.trim(),
+                successToast: "Opened node copilot chat",
+              });
+            }}
+          >
+            <span class="btn-icon">${resolveIcon("bot")}</span>
+            Ask Bosun About Node
+          <//>
           <${MenuItem} onClick=${() => { setEditingNode(contextMenu.nodeId); setContextMenu(null); }}>
             <span class="btn-icon">${resolveIcon("settings")}</span>
             Edit Config
@@ -3428,6 +3658,12 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
           inlineFieldKeys=${inlineDescriptors.map((field) => field.key)}
           onUpdate=${(config) => updateNodeConfig(editingNode, config)}
           onUpdateLabel=${(label) => updateNodeLabel(editingNode, label)}
+          onAskBosun=${() => openWorkflowCopilotFromCanvas({
+            intent: "node",
+            nodeId: editingNode,
+            title: `Ask Bosun about node ${editingNodeDef?.label || editingNode}`.trim(),
+            successToast: "Opened node copilot chat",
+          })}
           onClose=${() => setEditingNode(null)}
           onDelete=${() => deleteNode(editingNode)}
         />
@@ -3839,7 +4075,7 @@ function WorkflowAgentLibraryPicker({ config, onUpdate }) {
  *  Node Config Editor (right side panel)
  * ═══════════════════════════════════════════════════════════════ */
 
-function NodeConfigEditor({ node, nodeTypes: types, inlineFieldKeys = [], onUpdate, onUpdateLabel, onClose, onDelete }) {
+function NodeConfigEditor({ node, nodeTypes: types, inlineFieldKeys = [], onUpdate, onUpdateLabel, onAskBosun, onClose, onDelete }) {
   if (!node) return null;
 
   const meta = getNodeMeta(node.type);
@@ -3890,6 +4126,17 @@ function NodeConfigEditor({ node, nodeTypes: types, inlineFieldKeys = [], onUpda
         <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 12px; padding: 8px; background: var(--color-bg-secondary, #1a1f2e); border-radius: 8px;">
           ${typeInfo.description}
         </div>
+      `}
+      ${typeof onAskBosun === "function" && html`
+        <${Button}
+          onClick=${onAskBosun}
+          variant="outlined"
+          size="small"
+          sx=${{ width: "100%", marginBottom: "12px", textTransform: "none" }}
+        >
+          <span class="btn-icon">${resolveIcon("bot")}</span>
+          Ask Bosun About This Node
+        <//>
       `}
 
       <!-- ═══ Smart Presets: action.run_command ═══ -->
@@ -4591,6 +4838,17 @@ function WorkflowListView() {
                       >
                         <span class="icon-inline">${resolveIcon("play")}</span>
                       <//>
+                      <${Button}
+                        variant="text"
+                        size="small"
+                        sx=${{ fontSize: '11px', textTransform: 'none' }}
+                        onClick=${(e) => {
+                          e.stopPropagation();
+                          exportWorkflow(wf);
+                        }}
+                      >
+                        <span class="icon-inline">${resolveIcon("save")}</span>
+                      <//>
                       ${!isCore && html`<${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
                         <span class="icon-inline">${resolveIcon("trash")}</span>
                       <//>`}
@@ -4935,11 +5193,36 @@ function RunHistoryView() {
     });
     return true;
   }, [canLoadMoreRuns, loadingMoreRuns, runs.length, totalRuns]);
+  const openRunCopilot = useCallback((run, intent = "ask") => {
+    const safeRunId = String(run?.runId || "").trim();
+    const safeIntent = String(intent || "ask").trim().toLowerCase();
+    if (!safeRunId) return null;
+    return startWorkflowCopilotSession({
+      endpoint: `/api/workflows/runs/${encodeURIComponent(safeRunId)}/copilot-context?intent=${encodeURIComponent(safeIntent)}`,
+      fallbackPrompt: buildRunCopilotPrompt(run, safeIntent),
+      title: `${safeIntent === "fix" ? "Fix failed workflow run" : "Ask about workflow run"} ${safeRunId}`.trim(),
+      successToast: safeIntent === "fix" ? "Opened failed-run fix chat" : "Opened workflow run analysis chat",
+    });
+  }, []);
+  const openRunNodeCopilot = useCallback((run, nodeId, intent = "node", workflow = null) => {
+    const safeRunId = String(run?.runId || "").trim();
+    const safeNodeId = String(nodeId || "").trim();
+    const safeIntent = String(intent || "node").trim().toLowerCase();
+    if (!safeRunId || !safeNodeId) return null;
+    return startWorkflowCopilotSession({
+      endpoint: `/api/workflows/runs/${encodeURIComponent(safeRunId)}/copilot-context?intent=${encodeURIComponent(safeIntent)}&nodeId=${encodeURIComponent(safeNodeId)}`,
+      fallbackPrompt: buildRunNodeCopilotPrompt(run, safeNodeId, { intent: safeIntent, workflow }),
+      title: `${safeIntent === "fix" ? "Fix node" : "Ask Bosun about node"} ${safeNodeId}`.trim(),
+      successToast: safeIntent === "fix" ? "Opened node fix chat" : "Opened node copilot chat",
+    });
+  }, []);
 
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
     const logs = Array.isArray(selectedRun?.detail?.logs) ? selectedRun.detail.logs : [];
     const errors = Array.isArray(selectedRun?.detail?.errors) ? selectedRun.detail.errors : [];
+    const currentWorkflow =
+      (workflows.value || []).find((workflow) => workflow?.id === selectedRun.workflowId) || null;
     const nodeStatuses = buildNodeStatusesFromRunDetail(selectedRun);
     const nodeOutputs = selectedRun?.detail?.nodeOutputs || {};
     const nodeIds = Object.keys(nodeStatuses).sort((a, b) => {
@@ -4969,10 +5252,7 @@ function RunHistoryView() {
           <${Button}
             variant="outlined"
             size="small"
-            onClick=${() => openWorkflowCopilotChat(buildRunCopilotPrompt(selectedRun, "ask"), {
-              title: `Ask about workflow run ${selectedRun.runId || ""}`.trim(),
-              successToast: "Opened workflow run analysis chat",
-            })}
+            onClick=${() => openRunCopilot(selectedRun, "ask")}
           >
             <span class="btn-icon">${resolveIcon("bot")}</span>
             Ask Bosun
@@ -4982,13 +5262,48 @@ function RunHistoryView() {
               variant="contained"
               size="small"
               color="error"
-              onClick=${() => openWorkflowCopilotChat(buildRunCopilotPrompt(selectedRun, "fix"), {
-                title: `Fix failed workflow run ${selectedRun.runId || ""}`.trim(),
-                successToast: "Opened failed-run fix chat",
-              })}
+              onClick=${() => openRunCopilot(selectedRun, "fix")}
             >
               <span class="btn-icon">${resolveIcon("settings")}</span>
               Fix With Bosun
+            <//>
+          `}
+          ${selectedRun.status === "failed" && html`
+            <${Button}
+              variant="contained"
+              size="small"
+              color="warning"
+              onClick=${async () => {
+                try {
+                  await apiFetch("/api/workflows/runs/" + encodeURIComponent(selectedRun.runId) + "/retry", { method: "POST" });
+                  showToast("Run retry initiated", "success");
+                  setTimeout(() => loadRunDetail(selectedRun.runId), 1000);
+                } catch (err) {
+                  showToast("Retry failed: " + (err.message || err), "error");
+                }
+              }}
+            >
+              <span class="btn-icon">${resolveIcon("refresh")}</span>
+              Retry Run
+            <//>
+          `}
+          ${selectedRun.status === "running" && html`
+            <${Button}
+              variant="contained"
+              size="small"
+              color="error"
+              onClick=${async () => {
+                try {
+                  await apiFetch("/api/workflows/runs/" + encodeURIComponent(selectedRun.runId) + "/cancel", { method: "POST" });
+                  showToast("Run cancellation requested", "success");
+                  setTimeout(() => loadRunDetail(selectedRun.runId), 1000);
+                } catch (err) {
+                  showToast("Cancel failed: " + (err.message || err), "error");
+                }
+              }}
+            >
+              <span class="btn-icon">${resolveIcon("close")}</span>
+              Stop Run
             <//>
           `}
         </div>
@@ -5043,6 +5358,27 @@ function RunHistoryView() {
                     ${nodeNarrative ? html`<div style="margin-top: ${nodeSummary ? "6px" : "0"};"><b>Narrative:</b> ${nodeNarrative}</div>` : ""}
                   </div>
                 `}
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px;">
+                  <${Button}
+                    variant="outlined"
+                    size="small"
+                    onClick=${() => openRunNodeCopilot(selectedRun, nodeId, "node", currentWorkflow)}
+                  >
+                    <span class="btn-icon">${resolveIcon("bot")}</span>
+                    Ask Bosun About This Node
+                  <//>
+                  ${String(nodeStatus || "").trim().toLowerCase() === "failed" && html`
+                    <${Button}
+                      variant="contained"
+                      size="small"
+                      color="error"
+                      onClick=${() => openRunNodeCopilot(selectedRun, nodeId, "fix", currentWorkflow)}
+                    >
+                      <span class="btn-icon">${resolveIcon("settings")}</span>
+                      Fix This Node
+                    <//>
+                  `}
+                </div>
                 <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(nodeOutput)}</pre>
               </details>
             `;
@@ -5233,6 +5569,171 @@ function RunHistoryView() {
           <//>
         </div>
       `}
+    </div>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  Code View — JSON Editor for Workflows
+ * ═══════════════════════════════════════════════════════════════ */
+
+function WorkflowCodeView({ workflow, onSave }) {
+  const [code, setCode] = useState("");
+  const [originalCode, setOriginalCode] = useState("");
+  const [errors, setErrors] = useState([]);
+  const [isDirty, setIsDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const textareaRef = useRef(null);
+
+  useEffect(() => {
+    if (!workflow?.id) return;
+    apiFetch(`/api/workflows/${encodeURIComponent(workflow.id)}/code`)
+      .then(data => {
+        if (data?.code) {
+          setCode(data.code);
+          setOriginalCode(data.code);
+          setErrors([]);
+          setIsDirty(false);
+        }
+      })
+      .catch(() => showToast("Failed to load workflow code", "error"));
+  }, [workflow?.id]);
+
+  const handleCodeChange = useCallback((e) => {
+    const newCode = e.target.value;
+    setCode(newCode);
+    setIsDirty(newCode !== originalCode);
+
+    try {
+      JSON.parse(newCode);
+      setErrors([]);
+    } catch (err) {
+      const lineMatch = String(err.message).match(/position\s+(\d+)/i);
+      let line;
+      if (lineMatch) {
+        const pos = parseInt(lineMatch[1], 10);
+        line = newCode.slice(0, pos).split("\n").length;
+      }
+      setErrors([{ message: err.message, line }]);
+    }
+  }, [originalCode]);
+
+  const handleSave = useCallback(async () => {
+    if (!workflow?.id || !isDirty) return;
+    setSaving(true);
+    try {
+      const resp = await apiFetch(`/api/workflows/${encodeURIComponent(workflow.id)}/code`, {
+        method: "PUT",
+        body: JSON.stringify({ code }),
+      });
+      if (resp?.ok) {
+        showToast("Workflow updated from code", "success");
+        setOriginalCode(code);
+        setIsDirty(false);
+        if (resp.workflow && onSave) onSave(resp.workflow);
+      } else if (resp?.errors) {
+        setErrors(resp.errors.map(e => typeof e === "string" ? { message: e } : e));
+        showToast("Validation errors — check below", "error");
+      }
+    } catch (err) {
+      showToast("Failed to save: " + (err.message || err), "error");
+    } finally {
+      setSaving(false);
+    }
+  }, [workflow?.id, code, isDirty, onSave]);
+
+  const handleRevert = useCallback(() => {
+    setCode(originalCode);
+    setIsDirty(false);
+    setErrors([]);
+  }, [originalCode]);
+
+  const handleFormat = useCallback(() => {
+    try {
+      const parsed = JSON.parse(code);
+      const formatted = JSON.stringify(parsed, null, 2);
+      setCode(formatted);
+      setIsDirty(formatted !== originalCode);
+      setErrors([]);
+    } catch {
+      showToast("Cannot format — fix JSON syntax errors first", "warning");
+    }
+  }, [code, originalCode]);
+
+  const lineCount = code.split("\n").length;
+
+  return html`
+    <div style="padding: 0 4px; display: flex; flex-direction: column; height: calc(100vh - 120px);">
+      <!-- Toolbar -->
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;">
+        <${Button} variant="text" size="small" onClick=${() => { viewMode.value = "canvas"; }}>
+          ← Back to Canvas
+        <//>
+        <h2 style="margin: 0; font-size: 18px; font-weight: 700; flex: 1;">
+          Code View: ${workflow?.name || "Workflow"}
+        </h2>
+        <${Button} variant="outlined" size="small" onClick=${handleFormat} disabled=${saving}>
+          Format JSON
+        <//>
+        <${Button} variant="outlined" size="small" onClick=${handleRevert} disabled=${!isDirty || saving}>
+          Revert
+        <//>
+        <${Button} variant="contained" size="small" onClick=${handleSave} disabled=${!isDirty || errors.length > 0 || saving}>
+          ${saving ? "Saving…" : "Save"}
+        <//>
+        ${isDirty && html`
+          <${Chip} label="Unsaved changes" size="small" color="warning" variant="outlined" />
+        `}
+      </div>
+
+      <!-- Error bar -->
+      ${errors.length > 0 && html`
+        <${Alert} severity="error" style="margin-bottom: 8px; font-size: 12px;">
+          ${errors.map((e, i) => html`
+            <div key=${i}>${e.line ? `Line ${e.line}: ` : ""}${e.message}</div>
+          `)}
+        <//>
+      `}
+
+      <!-- Editor area -->
+      <div style="flex: 1; display: flex; border: 1px solid ${errors.length > 0 ? '#ef4444' : 'var(--color-border, #2a3040)'}; border-radius: 8px; overflow: hidden; background: #0d1117;">
+        <!-- Line numbers -->
+        <div style="padding: 12px 8px; background: #161b22; color: #484f58; font-family: 'Fira Code', 'Cascadia Code', monospace; font-size: 12px; line-height: 1.6; text-align: right; user-select: none; min-width: 48px; border-right: 1px solid #21262d;">
+          ${Array.from({ length: lineCount }, (_, i) => html`<div key=${i}>${i + 1}</div>`)}
+        </div>
+
+        <!-- Code textarea -->
+        <textarea
+          ref=${textareaRef}
+          value=${code}
+          onInput=${handleCodeChange}
+          spellcheck=${false}
+          style="flex: 1; padding: 12px; background: transparent; color: #e6edf3; font-family: 'Fira Code', 'Cascadia Code', monospace; font-size: 12px; line-height: 1.6; border: none; outline: none; resize: none; tab-size: 2; white-space: pre; overflow: auto;"
+          onKeyDown=${(e) => {
+            if (e.key === "Tab") {
+              e.preventDefault();
+              const ta = e.target;
+              const start = ta.selectionStart;
+              const end = ta.selectionEnd;
+              const newVal = code.slice(0, start) + "  " + code.slice(end);
+              setCode(newVal);
+              setIsDirty(newVal !== originalCode);
+              requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = start + 2; });
+            }
+            if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+              e.preventDefault();
+              handleSave();
+            }
+          }}
+        />
+      </div>
+
+      <!-- Status bar -->
+      <div style="display: flex; align-items: center; gap: 12px; padding: 6px 4px; font-size: 11px; color: var(--color-text-secondary, #8b95a5);">
+        <span>${lineCount} lines</span>
+        <span>${code.length} characters</span>
+        <span>JSON${errors.length === 0 ? " ✓" : " ✗"}</span>
+      </div>
     </div>
   `;
 }
@@ -5506,7 +6007,9 @@ export function WorkflowsTab() {
       class="wf-theme"
       style="padding: 8px; --color-bg: var(--bg-card); --color-bg-secondary: var(--bg-secondary); --color-border: var(--border); --color-text: var(--text-primary); --color-text-secondary: var(--text-secondary);"
     >
-      ${mode === "canvas" && activeWorkflow.value
+      ${mode === "code" && activeWorkflow.value
+        ? html`<${WorkflowCodeView} workflow=${activeWorkflow.value} onSave=${(wf) => { activeWorkflow.value = wf; viewMode.value = "canvas"; }} />`
+        : mode === "canvas" && activeWorkflow.value
         ? html`<${WorkflowCanvas} workflow=${activeWorkflow.value} nodeTypes=${nodeTypes.value} />`
         : mode === "runs"
         ? html`<${RunHistoryView} />`
