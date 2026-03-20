@@ -970,6 +970,37 @@ describe("live tool compaction", () => {
     expect(result[0].aggregated_output).toContain("bosun --tool-log");
   });
 
+  it("classifies dotnet test output as build-family and keeps failing test anchors", async () => {
+    const lines = [];
+    for (let i = 0; i < 180; i++) {
+      lines.push(`Passed! helper/test-${i}.dll`);
+    }
+    lines.push("Failed!  - Failed:     1, Passed:   512, Skipped:     0, Total:   513, Duration: 14 s");
+    lines.push("Failed Bosun.Tests.WorkflowContextTests.ResolveTemplates [148 ms]");
+    lines.push("Error Message:");
+    lines.push(" Expected: True");
+    lines.push(" But was:  False");
+    lines.push(" Stack Trace:");
+    lines.push("    at C:\\repo\\tests\\WorkflowContextTests.cs:line 42");
+    const items = [{
+      type: "command_execution",
+      command: "dotnet test",
+      exit_code: 1,
+      aggregated_output: lines.join("\n"),
+    }];
+
+    const result = await runLiveCompaction(items, {
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS: "1200",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT: "5",
+    });
+
+    expect(result[0]._liveCompacted).toBe(true);
+    expect(result[0]._liveCompactionFamily).toBe("build");
+    expect(result[0].aggregated_output).toContain("Failed Bosun.Tests.WorkflowContextTests.ResolveTemplates");
+    expect(result[0].aggregated_output).toContain("WorkflowContextTests.cs:line 42");
+    expect(result[0].aggregated_output).toContain("bosun --tool-log");
+  });
+
   it("keeps git diff filenames and hunk context while dropping bulk diff noise", async () => {
     const lines = [
       "diff --git a/src/app.ts b/src/app.ts",
@@ -1035,9 +1066,27 @@ describe("live tool compaction", () => {
     expect(result[0].aggregated_output).toContain("Traceback: reconnect loop exceeded budget");
     expect(result[0].aggregated_output).toContain("Repeated noise omitted:");
   });
+
+  it("uses signal-first fallback compaction for unknown large command outputs", async () => {
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    const compacted = await cacheModule.compactCommandOutputPayload({
+      command: "custom-audit-runner",
+      output: [
+        ...Array.from({ length: 180 }, (_, i) => `noise line ${i} ${"x".repeat(20)}`),
+        "ERROR subsystem exploded in src/custom/checker.ts:91",
+        "detail: assertion mismatch for CUSTOMER_PIPELINE_MODE",
+        ...Array.from({ length: 80 }, (_, i) => `tail line ${i} ${"y".repeat(20)}`),
+      ].join("\n"),
+      exitCode: 1,
+    });
+
+    expect(compacted.compacted).toBe(true);
+    expect(compacted.compactionFamily).toBeTruthy();
+    expect(compacted.text).toContain("ERROR subsystem exploded");
+    expect(compacted.text).toContain("CUSTOMER_PIPELINE_MODE");
+    expect(compacted.text).toContain("bosun --tool-log");
+  });
 });
-
-
 
 
 

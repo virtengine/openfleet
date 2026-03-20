@@ -55,8 +55,7 @@ import {
   MAX_STREAM_RETRIES,
 } from "../infra/stream-resilience.mjs";
 import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
-import { compressAllItems, estimateSavings, estimateContextUsagePct, recordShreddingEvent } from "../workspace/context-cache.mjs";
-import { resolveContextShreddingOptions } from "../config/context-shredding-config.mjs";
+import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
 
 // Lazy-load MCP registry to avoid circular dependencies.
 // Cached at module scope per AGENTS.md hard rules.
@@ -252,29 +251,12 @@ async function maybeCompressResultItems(
 
   const resolvedSessionType = normalizeSessionType(sessionType, "task");
   const agentType = normalizeSdkForShredding(sdk);
-  const shreddingOpts = resolveContextShreddingOptions(
-    resolvedSessionType,
+  return maybeCompressSessionItems(items, {
+    sessionType: resolvedSessionType,
     agentType,
-  );
-  if (shreddingOpts?._skip === true) return items;
-
-  const usagePct = estimateContextUsagePct(items);
-  const threshold = Number.isFinite(shreddingOpts?.contextUsageThreshold)
-    ? Number(shreddingOpts.contextUsageThreshold)
-    : 0.5;
-  if (usagePct < threshold) return items;
-
-  shreddingOpts.contextUsagePct = usagePct;
-  const compressedItems = await compressAllItems(items, shreddingOpts);
-  try {
-    const savings = estimateSavings(items, compressedItems);
-    if (savings.savedChars > 0) {
-      recordShreddingEvent({ ...savings, agentType: agentType || sdk });
-    }
-  } catch {
-    /* non-fatal */
-  }
-  return compressedItems;
+    force: forceCompression,
+    skip: skipCompression,
+  });
 }
 
 function resolveCodexStreamSafety(totalTimeoutMs) {

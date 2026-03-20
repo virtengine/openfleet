@@ -100,7 +100,7 @@ describe("DEFAULT_SHREDDING_CONFIG", () => {
     expect(DEFAULT_SHREDDING_CONFIG.msgTier1MaxAge).toBe(4);
     expect(DEFAULT_SHREDDING_CONFIG.msgMinCompressChars).toBe(120);
     expect(DEFAULT_SHREDDING_CONFIG.userMsgFullTurns).toBe(1);
-    expect(DEFAULT_SHREDDING_CONFIG.liveToolCompactionEnabled).toBe(false);
+    expect(DEFAULT_SHREDDING_CONFIG.liveToolCompactionEnabled).toBe(true);
     expect(DEFAULT_SHREDDING_CONFIG.liveToolCompactionMode).toBe("auto");
     expect(DEFAULT_SHREDDING_CONFIG.liveToolCompactionMinChars).toBe(4000);
     expect(DEFAULT_SHREDDING_CONFIG.liveToolCompactionTargetChars).toBe(1800);
@@ -275,7 +275,7 @@ describe("getDefaultOptions", () => {
     expect(opts).toHaveProperty("msgTier1MaxAge", 4);
     expect(opts).toHaveProperty("msgMinCompressChars", 120);
     expect(opts).toHaveProperty("userMsgFullTurns", 1);
-    expect(opts).toHaveProperty("liveToolCompactionEnabled", false);
+    expect(opts).toHaveProperty("liveToolCompactionEnabled", true);
     expect(opts).toHaveProperty("liveToolCompactionMode", "auto");
     expect(opts).toHaveProperty("liveToolCompactionMinChars", 4000);
     expect(opts).toHaveProperty("liveToolCompactionTargetChars", 1800);
@@ -480,4 +480,3 @@ describe("integration", () => {
     expect(opts.fullContextTurns).toBeUndefined();
   });
 });
-

@@ -1350,6 +1350,55 @@ function normalizeLegacyWorkflowCommand(command) {
   return normalized;
 }
 
+let _contextCacheMod = null;
+async function getContextCacheMod() {
+  if (!_contextCacheMod) {
+    _contextCacheMod = await import("../workspace/context-cache.mjs");
+  }
+  return _contextCacheMod;
+}
+
+async function compactWorkflowCommandResult({
+  command = "",
+  args = [],
+  output = "",
+  stderr = "",
+  exitCode = 0,
+  durationMs = null,
+  sessionType = "flow",
+} = {}) {
+  const rawOutput = String(output || "");
+  const rawStderr = String(stderr || "");
+  const { compactCommandOutputPayload } = await getContextCacheMod();
+  const compacted = await compactCommandOutputPayload(
+    {
+      command,
+      args,
+      output: rawOutput,
+      stderr: rawStderr,
+      exitCode,
+      durationMs,
+    },
+    {
+      sessionType,
+      agentType: "workflow",
+      force: true,
+    },
+  );
+
+  return {
+    output: compacted.text || rawOutput || rawStderr,
+    outputCompacted: compacted.compacted,
+    rawOutputChars: compacted.originalChars,
+    compactedOutputChars: compacted.compactedChars,
+    outputToolLogId: compacted.toolLogId,
+    outputRetrieveCommand: compacted.retrieveCommand,
+    outputCompactionFamily: compacted.compactionFamily,
+    outputCommandFamily: compacted.commandFamily,
+    items: compacted.item ? [compacted.item] : [],
+  };
+}
+
 function resolveWorkflowNodeValue(value, ctx) {
   if (typeof value === "string") {
     const resolved = ctx.resolve(value);
@@ -3209,6 +3258,7 @@ registerBuiltinNodeType("action.run_command", {
       ctx.log(node.id, `Normalized legacy command for portability: ${command}`);
     }
     ctx.log(node.id, `Running: ${usedArgv ? `${command} ${commandArgs.join(" ")}`.trim() : command}`);
+    const startedAt = Date.now();
     try {
       const output = usedArgv
         ? execFileSync(command, commandArgs, {
@@ -3228,19 +3278,37 @@ registerBuiltinNodeType("action.run_command", {
             env: commandEnv,
           });
       ctx.log(node.id, `Command succeeded`);
-      return { success: true, output: parseOutput(output), exitCode: 0 };
+      const parsedOutput = parseOutput(output);
+      if (shouldParseJson || typeof parsedOutput !== "string") {
+        return { success: true, output: parsedOutput, exitCode: 0 };
+      }
+      const compacted = await compactWorkflowCommandResult({
+        command,
+        args: commandArgs,
+        output: parsedOutput,
+        exitCode: 0,
+        durationMs: Date.now() - startedAt,
+      });
+      return { success: true, exitCode: 0, ...compacted };
     } catch (err) {
       const output = err.stdout?.toString() || "";
       const stderr = err.stderr?.toString() || "";
-      const result = {
-        success: false,
-        output: parseOutput(output),
+      const compacted = await compactWorkflowCommandResult({
+        command,
+        args: commandArgs,
+        output,
         stderr,
         exitCode: err.status,
+        durationMs: Date.now() - startedAt,
+      });
+      const result = {
+        success: false,
+        exitCode: err.status,
         error: err.message,
+        ...compacted,
       };
       if (node.config?.failOnError) {
-        const reason = trimLogText(stderr || output || err.message, 400) || err.message;
+        const reason = trimLogText(result.output || stderr || output || err.message, 400) || err.message;
         throw new Error(reason);
       }
       return result;
@@ -4409,11 +4477,34 @@ registerBuiltinNodeType("action.git_operations", {
 
     const runGitCommand = ({ op, cmd }) => {
       ctx.log(node.id, `Git ${op}: ${cmd}`);
+      const startedAt = Date.now();
       try {
         const output = execSync(cmd, { cwd, encoding: "utf8", timeout: 120000 });
-        return { success: true, output: output?.trim(), operation: op, command: cmd };
+        return compactWorkflowCommandResult({
+          command: cmd,
+          output: output?.trim() || "",
+          exitCode: 0,
+          durationMs: Date.now() - startedAt,
+        }).then((compacted) => ({
+          success: true,
+          operation: op,
+          command: cmd,
+          ...compacted,
+        }));
       } catch (err) {
-        return { success: false, error: err.message, operation: op, command: cmd };
+        return compactWorkflowCommandResult({
+          command: cmd,
+          output: err.stdout?.toString() || "",
+          stderr: err.stderr?.toString() || err.message,
+          exitCode: err.status,
+          durationMs: Date.now() - startedAt,
+        }).then((compacted) => ({
+          success: false,
+          error: err.message,
+          operation: op,
+          command: cmd,
+          ...compacted,
+        }));
       }
     };
 
@@ -4424,7 +4515,7 @@ registerBuiltinNodeType("action.git_operations", {
       const steps = [];
       for (const spec of operationList) {
         const resolved = resolveOpCommand(spec || {});
-        const result = runGitCommand(resolved);
+        const result = await runGitCommand(resolved);
         steps.push(result);
         if (result.success !== true) {
           return {
@@ -4443,7 +4534,7 @@ registerBuiltinNodeType("action.git_operations", {
       return { success: false, error: "No git operation provided", operation: null };
     }
     const resolved = resolveOpCommand({ op });
-    return runGitCommand(resolved);
+    return await runGitCommand(resolved);
   },
 });
 
@@ -5205,14 +5296,27 @@ registerBuiltinNodeType("validation.tests", {
     const timeout = node.config?.timeoutMs || 600000;
 
     ctx.log(node.id, `Running tests: ${command}`);
+    const startedAt = Date.now();
     try {
       const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
       ctx.log(node.id, "Tests passed");
-      return { passed: true, output: output?.trim() };
+      const compacted = await compactWorkflowCommandResult({
+        command,
+        output: output?.trim() || "",
+        exitCode: 0,
+        durationMs: Date.now() - startedAt,
+      });
+      return { passed: true, ...compacted };
     } catch (err) {
       const output = (err.stdout?.toString() || "") + (err.stderr?.toString() || "");
       ctx.log(node.id, "Tests failed", "error");
-      return { passed: false, output, exitCode: err.status };
+      const compacted = await compactWorkflowCommandResult({
+        command,
+        output,
+        exitCode: err.status,
+        durationMs: Date.now() - startedAt,
+      });
+      return { passed: false, exitCode: err.status, ...compacted };
     }
   },
 });
@@ -5238,15 +5342,29 @@ registerBuiltinNodeType("validation.build", {
       ctx.log(node.id, `Normalized legacy command for portability: ${command}`);
     }
     ctx.log(node.id, `Building: ${command}`);
+    const startedAt = Date.now();
     try {
       const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
       const hasWarnings = /warning/i.test(output || "");
+      const compacted = await compactWorkflowCommandResult({
+        command,
+        output: output?.trim() || "",
+        exitCode: 0,
+        durationMs: Date.now() - startedAt,
+      });
       if (node.config?.zeroWarnings && hasWarnings) {
-        return { passed: false, reason: "warnings_found", output: output?.trim() };
+        return { passed: false, reason: "warnings_found", ...compacted };
       }
-      return { passed: true, output: output?.trim() };
+      return { passed: true, ...compacted };
     } catch (err) {
-      return { passed: false, output: err.stderr?.toString() || err.message, exitCode: err.status };
+      const compacted = await compactWorkflowCommandResult({
+        command,
+        output: err.stdout?.toString() || "",
+        stderr: err.stderr?.toString() || err.message,
+        exitCode: err.status,
+        durationMs: Date.now() - startedAt,
+      });
+      return { passed: false, exitCode: err.status, ...compacted };
     }
   },
 });
@@ -5267,11 +5385,25 @@ registerBuiltinNodeType("validation.lint", {
       return { passed: true, output: "no lint configured", skipped: true };
     }
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const startedAt = Date.now();
     try {
       const output = execSync(command, { cwd, timeout: node.config?.timeoutMs || 120000, encoding: "utf8", stdio: "pipe" });
-      return { passed: true, output: output?.trim() };
+      const compacted = await compactWorkflowCommandResult({
+        command,
+        output: output?.trim() || "",
+        exitCode: 0,
+        durationMs: Date.now() - startedAt,
+      });
+      return { passed: true, ...compacted };
     } catch (err) {
-      return { passed: false, output: err.stderr?.toString() || err.message };
+      const compacted = await compactWorkflowCommandResult({
+        command,
+        output: err.stdout?.toString() || "",
+        stderr: err.stderr?.toString() || err.message,
+        exitCode: err.status,
+        durationMs: Date.now() - startedAt,
+      });
+      return { passed: false, ...compacted };
     }
   },
 });
