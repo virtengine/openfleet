@@ -42,6 +42,7 @@ import {
   resolvePathForTestRuntime,
 } from "../infra/test-runtime.mjs";
 import { getTemplate } from "./workflow-templates.mjs";
+import { WorkflowExecutionLedger } from "./execution-ledger.mjs";
 
 // Lazy-loaded workspace manager for workspace-aware scheduling
 let _workspaceManagerMod = null;
@@ -399,6 +400,12 @@ function hydrateWorkflowDefinition(def, { strict = false } = {}) {
 
   return normalized;
 }
+
+function cleanObject(value = {}) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry !== undefined),
+  );
+}
 /**
  * Register a node type handler.
  * @param {string} type - Node type identifier (e.g., "trigger.task_low", "action.run_agent")
@@ -602,6 +609,21 @@ export class WorkflowContext {
     return this._nodeInputs[String(nodeId)] || null;
   }
 
+  /** Merge metadata into an existing DAGState node entry */
+  annotateDagNode(nodeId, patch = {}) {
+    const dagState = this.data?._dagState;
+    if (!dagState || typeof dagState !== "object" || !dagState.nodes || typeof dagState.nodes !== "object") {
+      return;
+    }
+    const existing = dagState.nodes[nodeId];
+    if (!existing || typeof existing !== "object") return;
+    dagState.nodes[nodeId] = {
+      ...existing,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
   /** Set output from a node */
   setNodeOutput(nodeId, output) {
     this.nodeOutputs.set(nodeId, output);
@@ -616,6 +638,11 @@ export class WorkflowContext {
   setNodeStatus(nodeId, status) {
     this.nodeStatuses.set(nodeId, status);
     this.nodeStatusEvents.push({ nodeId, status, timestamp: Date.now() });
+    const dagNode = this.data?._dagState?.nodes?.[nodeId];
+    if (dagNode && typeof dagNode === "object") {
+      dagNode.status = status;
+      dagNode.lastStatusAt = new Date().toISOString();
+    }
   }
 
   /** Get node execution status */
@@ -694,6 +721,8 @@ export class WorkflowContext {
       nodeStatusEvents: this.nodeStatusEvents,
       nodeTimings: { ...this._nodeTimings },
       nodeInputs: { ...this._nodeInputs },
+      dagState: this.data?._dagState || null,
+      issueAdvisor: this.data?._issueAdvisor || null,
     };
   }
 }
@@ -749,9 +778,182 @@ export class WorkflowEngine extends EventEmitter {
     this._runQueue = [];             // FIFO queue of { resolve, reject, args }
     this._runIndexCache = null;      // cached run index (invalidated on writes)
     this._runIndexCacheMtime = 0;    // mtime of the cached index file
+    this._executionLedger = new WorkflowExecutionLedger({ runsDir: this.runsDir });
 
     // Lazy-load workspace manager for schedule evaluation
     void ensureWorkspaceManager().catch(() => {});
+  }
+
+  _initializeDagState(def, ctx, extra = {}) {
+    const dependencyMap = new Map();
+    for (const node of def?.nodes || []) {
+      dependencyMap.set(node.id, []);
+    }
+    for (const edge of def?.edges || []) {
+      if (!edge?.target || edge.backEdge === true) continue;
+      const deps = dependencyMap.get(edge.target) || [];
+      deps.push(edge.source);
+      dependencyMap.set(edge.target, deps);
+    }
+
+    const nowIso = new Date(ctx.startedAt).toISOString();
+    const dagState = {
+      version: 1,
+      runId: ctx.id,
+      workflowId: def?.id || ctx.data?._workflowId || null,
+      workflowName: def?.name || ctx.data?._workflowName || null,
+      rootRunId: extra.rootRunId || ctx.data?._workflowRootRunId || ctx.id,
+      parentRunId: extra.parentRunId || ctx.data?._workflowParentRunId || null,
+      retryOf: extra.retryOf || ctx.data?._retryOf || null,
+      retryMode: extra.retryMode || null,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      status: WorkflowStatus.RUNNING,
+      counts: {
+        total: Array.isArray(def?.nodes) ? def.nodes.length : 0,
+        pending: Array.isArray(def?.nodes) ? def.nodes.length : 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+        skipped: 0,
+      },
+      nodes: Object.fromEntries(
+        (def?.nodes || []).map((node) => [
+          node.id,
+          {
+            nodeId: node.id,
+            type: node.type,
+            label: node.label || null,
+            status: NodeStatus.PENDING,
+            dependencies: dependencyMap.get(node.id) || [],
+            attempts: 0,
+            lastError: null,
+            outputSummary: null,
+            startedAt: null,
+            endedAt: null,
+            updatedAt: nowIso,
+          },
+        ]),
+      ),
+    };
+    ctx.data._workflowRootRunId = dagState.rootRunId;
+    if (dagState.parentRunId) ctx.data._workflowParentRunId = dagState.parentRunId;
+    ctx.data._dagState = dagState;
+    this._refreshDagState(ctx, dagState.status);
+    return dagState;
+  }
+
+  _refreshDagState(ctx, status = null) {
+    const dagState = ctx?.data?._dagState;
+    if (!dagState || typeof dagState !== "object" || !dagState.nodes || typeof dagState.nodes !== "object") {
+      return null;
+    }
+    const nodes = Object.values(dagState.nodes);
+    const counts = {
+      total: nodes.length,
+      pending: nodes.filter((node) => node?.status === NodeStatus.PENDING).length,
+      running: nodes.filter((node) => node?.status === NodeStatus.RUNNING || node?.status === NodeStatus.WAITING).length,
+      completed: nodes.filter((node) => node?.status === NodeStatus.COMPLETED).length,
+      failed: nodes.filter((node) => node?.status === NodeStatus.FAILED).length,
+      skipped: nodes.filter((node) => node?.status === NodeStatus.SKIPPED).length,
+    };
+    dagState.counts = counts;
+    dagState.status = status || dagState.status || WorkflowStatus.RUNNING;
+    dagState.updatedAt = new Date().toISOString();
+
+    const failedNodes = nodes.filter((node) => node?.status === NodeStatus.FAILED);
+    const pendingNodes = nodes.filter((node) => node?.status === NodeStatus.PENDING || node?.status === NodeStatus.WAITING);
+    const firstFailed = failedNodes[0] || null;
+    const firstPending = pendingNodes[0] || null;
+
+    let recommendedAction = "continue";
+    let summary = "Workflow is ready to continue.";
+    if (failedNodes.length > 0) {
+      recommendedAction = counts.completed > 0 ? "replan_from_failed" : "inspect_failure";
+      summary = firstFailed?.lastError
+        ? `Failed at ${firstFailed.label || firstFailed.nodeId}: ${firstFailed.lastError}`
+        : `Workflow has ${failedNodes.length} failed node(s).`;
+    } else if (pendingNodes.length > 0 && counts.completed > 0) {
+      recommendedAction = "resume_remaining";
+      summary = `Resume from ${firstPending?.label || firstPending?.nodeId || "the next pending node"}.`;
+    }
+
+    const issueAdvisor = {
+      status: dagState.status,
+      summary,
+      recommendedAction,
+      failedNodeCount: failedNodes.length,
+      pendingNodeCount: pendingNodes.length,
+      completedNodeCount: counts.completed,
+      suggestedRerun: firstFailed?.suggestedRerun || null,
+      failedNodes: failedNodes.slice(0, 6).map((node) => ({
+        nodeId: node.nodeId,
+        label: node.label || null,
+        error: node.lastError || null,
+        attempts: node.attempts || 0,
+      })),
+      updatedAt: dagState.updatedAt,
+    };
+
+    ctx.data._issueAdvisor = issueAdvisor;
+    const existingFeedback =
+      ctx.data?._plannerFeedback && typeof ctx.data._plannerFeedback === "object" && !Array.isArray(ctx.data._plannerFeedback)
+        ? ctx.data._plannerFeedback
+        : {};
+    ctx.data._plannerFeedback = {
+      ...existingFeedback,
+      issueAdvisor,
+      dagStateSummary: {
+        runId: dagState.runId,
+        workflowId: dagState.workflowId,
+        status: dagState.status,
+        counts,
+      },
+    };
+    return issueAdvisor;
+  }
+
+  _recordDagNodeOutcome(ctx, node, {
+    status,
+    result = undefined,
+    error = null,
+    attempt = undefined,
+  } = {}) {
+    if (!ctx || !node?.id) return;
+    const timing = ctx.getNodeTiming(node.id) || {};
+    const nodePatch = cleanObject({
+      status,
+      attempts: Number.isFinite(Number(attempt)) ? Number(attempt) : ctx.getRetryCount(node.id),
+      lastError: error ? String(error) : null,
+      outputSummary: result !== undefined ? this._summarizeTaskTraceNodeResult(result) : undefined,
+      startedAt: Number.isFinite(Number(timing.startedAt)) ? new Date(Number(timing.startedAt)).toISOString() : null,
+      endedAt: Number.isFinite(Number(timing.endedAt)) ? new Date(Number(timing.endedAt)).toISOString() : null,
+      suggestedRerun:
+        result && typeof result === "object"
+          ? (result.outputSuggestedRerun || result.outputDiagnostics?.suggestedRerun || undefined)
+          : undefined,
+      outputHint:
+        result && typeof result === "object" && result.outputHint
+          ? String(result.outputHint)
+          : undefined,
+      outputDeltaSummary:
+        result && typeof result === "object" && result.outputDeltaSummary
+          ? String(result.outputDeltaSummary)
+          : undefined,
+    });
+    ctx.annotateDagNode(node.id, nodePatch);
+    const workflowStatus = error
+      ? WorkflowStatus.FAILED
+      : (ctx.data?._workflowTerminalStatus || WorkflowStatus.RUNNING);
+    this._refreshDagState(ctx, workflowStatus);
+  }
+
+  _recordLedgerEvent(event = {}) {
+    try {
+      this._executionLedger.appendEvent(event);
+    } catch (err) {
+      console.warn(`${TAG} execution ledger write failed: ${String(err?.message || err)}`);
+    }
   }
 
 
@@ -1287,8 +1489,23 @@ export class WorkflowEngine extends EventEmitter {
       ...initialData,
       _workflowId: workflowId,
       _workflowName: def.name,
+      ...(opts._decisionReason ? { _retryDecisionReason: opts._decisionReason } : {}),
     });
     ctx.variables = { ...def.variables };
+    this._initializeDagState(def, ctx, {
+      rootRunId:
+        opts._rootRunId ||
+        initialData._workflowRootRunId ||
+        initialData._rootRunId ||
+        null,
+      parentRunId:
+        opts._parentRunId ||
+        initialData._workflowParentRunId ||
+        initialData._parentRunId ||
+        null,
+      retryOf: opts._originalRunId || initialData._retryOf || null,
+      retryMode: opts._retryMode || null,
+    });
 
     const runId = ctx.id;
     this._activeRuns.set(runId, {
@@ -1303,6 +1520,22 @@ export class WorkflowEngine extends EventEmitter {
     this._persistActiveRunState(runId, workflowId, def.name, ctx);
 
     this.emit("run:start", { runId, workflowId, name: def.name });
+    this._recordLedgerEvent({
+      eventType: "run.start",
+      runId,
+      workflowId,
+      workflowName: def.name,
+      rootRunId: ctx.data?._workflowRootRunId || runId,
+      parentRunId: ctx.data?._workflowParentRunId || null,
+      retryOf: ctx.data?._retryOf || null,
+      retryMode: opts._retryMode || null,
+      status: WorkflowStatus.RUNNING,
+      meta: {
+        triggerSource: ctx.data?._triggerSource || null,
+        targetRepo: ctx.data?._targetRepo || null,
+        decisionReason: opts._decisionReason || null,
+      },
+    });
     await this._emitTaskTraceEvent("workflow.run.start", {
       ctx,
       runId,
@@ -1326,7 +1559,24 @@ export class WorkflowEngine extends EventEmitter {
 
       const status = this._resolveWorkflowStatus(ctx);
       this._activeRuns.get(runId).status = status;
+      this._refreshDagState(ctx, status);
       this.emit("run:end", { runId, workflowId, status, duration: Date.now() - ctx.startedAt });
+      this._recordLedgerEvent({
+        eventType: "run.end",
+        runId,
+        workflowId,
+        workflowName: def.name,
+        rootRunId: ctx.data?._workflowRootRunId || runId,
+        parentRunId: ctx.data?._workflowParentRunId || null,
+        retryOf: ctx.data?._retryOf || null,
+        retryMode: opts._retryMode || null,
+        status,
+        durationMs: Date.now() - ctx.startedAt,
+        summary: ctx.data?._issueAdvisor?.summary || null,
+        meta: {
+          decisionReason: opts._decisionReason || null,
+        },
+      });
       await this._emitTaskTraceEvent("workflow.run.end", {
         ctx,
         runId,
@@ -1338,7 +1588,25 @@ export class WorkflowEngine extends EventEmitter {
     } catch (err) {
       ctx.error("_engine", err);
       this._activeRuns.get(runId).status = WorkflowStatus.FAILED;
+      this._refreshDagState(ctx, WorkflowStatus.FAILED);
       this.emit("run:error", { runId, workflowId, error: err.message });
+      this._recordLedgerEvent({
+        eventType: "run.error",
+        runId,
+        workflowId,
+        workflowName: def.name,
+        rootRunId: ctx.data?._workflowRootRunId || runId,
+        parentRunId: ctx.data?._workflowParentRunId || null,
+        retryOf: ctx.data?._retryOf || null,
+        retryMode: opts._retryMode || null,
+        status: WorkflowStatus.FAILED,
+        durationMs: Date.now() - ctx.startedAt,
+        error: err.message,
+        summary: ctx.data?._issueAdvisor?.summary || null,
+        meta: {
+          decisionReason: opts._decisionReason || null,
+        },
+      });
       await this._emitTaskTraceEvent("workflow.run.error", {
         ctx,
         runId,
@@ -1389,6 +1657,7 @@ export class WorkflowEngine extends EventEmitter {
    */
   async retryRun(runId, retryOpts = {}) {
     const mode = retryOpts.mode === "from_scratch" ? "from_scratch" : "from_failed";
+    const decisionReason = String(retryOpts._decisionReason || "").trim() || null;
     const originalRun = this.getRunDetail(runId);
     if (!originalRun) {
       throw new Error(`${TAG} Run "${runId}" not found — cannot retry`);
@@ -1415,13 +1684,22 @@ export class WorkflowEngine extends EventEmitter {
       workflowId,
       mode,
       attempt: retryOpts._attempt || 1,
+      decisionReason,
     });
 
     if (mode === "from_scratch") {
+      const originalRootRunId =
+        originalRun.detail?.dagState?.rootRunId ||
+        originalRun.detail?.data?._workflowRootRunId ||
+        originalRun.runId ||
+        runId;
       const ctx = await this.execute(workflowId, retryData, {
         ...retryOpts,
         _isRetry: true,
         _originalRunId: runId,
+        _parentRunId: runId,
+        _rootRunId: originalRootRunId,
+        _retryMode: mode,
         force: true,
       });
       return { retryRunId: ctx.id, mode, originalRunId: runId, ctx };
@@ -1441,6 +1719,15 @@ export class WorkflowEngine extends EventEmitter {
       _retryOf: runId,
     });
     ctx.variables = { ...def.variables };
+    this._initializeDagState(def, ctx, {
+      rootRunId:
+        originalRun.detail?.dagState?.rootRunId ||
+        originalRun.detail?.data?._workflowRootRunId ||
+        runId,
+      parentRunId: runId,
+      retryOf: runId,
+      retryMode: mode,
+    });
 
     // Pre-populate nodes that already succeeded.
     for (const [nodeId, status] of Object.entries(nodeStatuses)) {
@@ -1449,6 +1736,10 @@ export class WorkflowEngine extends EventEmitter {
         if (nodeOutputs[nodeId] !== undefined) {
           ctx.setNodeOutput(nodeId, nodeOutputs[nodeId]);
         }
+        this._recordDagNodeOutcome(ctx, { id: nodeId }, {
+          status: NodeStatus.COMPLETED,
+          result: nodeOutputs[nodeId],
+        });
       }
       // Reset failed / skipped nodes so the DAG will re-run them.
     }
@@ -1463,6 +1754,20 @@ export class WorkflowEngine extends EventEmitter {
     });
     this._persistActiveRunState(retryRunId, workflowId, def.name, ctx);
     this.emit("run:start", { runId: retryRunId, workflowId, name: def.name, retryOf: runId, mode });
+    this._recordLedgerEvent({
+      eventType: "run.start",
+      runId: retryRunId,
+      workflowId,
+      workflowName: def.name,
+      rootRunId: ctx.data?._workflowRootRunId || retryRunId,
+      parentRunId: runId,
+      retryOf: runId,
+      retryMode: mode,
+      status: WorkflowStatus.RUNNING,
+      meta: {
+        decisionReason,
+      },
+    });
     await this._emitTaskTraceEvent("workflow.run.start", {
       ctx,
       runId: retryRunId,
@@ -1485,6 +1790,7 @@ export class WorkflowEngine extends EventEmitter {
 
       const status = this._resolveWorkflowStatus(ctx);
       this._activeRuns.get(retryRunId).status = status;
+      this._refreshDagState(ctx, status);
       this.emit("run:end", {
         runId: retryRunId,
         workflowId,
@@ -1492,6 +1798,22 @@ export class WorkflowEngine extends EventEmitter {
         duration: Date.now() - ctx.startedAt,
         retryOf: runId,
         mode,
+      });
+      this._recordLedgerEvent({
+        eventType: "run.end",
+        runId: retryRunId,
+        workflowId,
+        workflowName: def.name,
+        rootRunId: ctx.data?._workflowRootRunId || retryRunId,
+        parentRunId: runId,
+        retryOf: runId,
+        retryMode: mode,
+        status,
+        durationMs: Date.now() - ctx.startedAt,
+        summary: ctx.data?._issueAdvisor?.summary || null,
+        meta: {
+          decisionReason,
+        },
       });
       await this._emitTaskTraceEvent("workflow.run.end", {
         ctx,
@@ -1505,7 +1827,25 @@ export class WorkflowEngine extends EventEmitter {
     } catch (err) {
       ctx.error("_engine", err);
       this._activeRuns.get(retryRunId).status = WorkflowStatus.FAILED;
+      this._refreshDagState(ctx, WorkflowStatus.FAILED);
       this.emit("run:error", { runId: retryRunId, workflowId, error: err.message, retryOf: runId });
+      this._recordLedgerEvent({
+        eventType: "run.error",
+        runId: retryRunId,
+        workflowId,
+        workflowName: def.name,
+        rootRunId: ctx.data?._workflowRootRunId || retryRunId,
+        parentRunId: runId,
+        retryOf: runId,
+        retryMode: mode,
+        status: WorkflowStatus.FAILED,
+        durationMs: Date.now() - ctx.startedAt,
+        error: err.message,
+        summary: ctx.data?._issueAdvisor?.summary || null,
+        meta: {
+          decisionReason,
+        },
+      });
       await this._emitTaskTraceEvent("workflow.run.error", {
         ctx,
         runId: retryRunId,
@@ -1561,6 +1901,60 @@ export class WorkflowEngine extends EventEmitter {
     return ctx.errors.length > 0 ? WorkflowStatus.FAILED : WorkflowStatus.COMPLETED;
   }
 
+  _chooseRetryModeFromDetail(detail, options = {}) {
+    const fallbackMode = options.fallbackMode === "from_scratch"
+      ? "from_scratch"
+      : "from_failed";
+    const issueAdvisor =
+      detail?.issueAdvisor && typeof detail.issueAdvisor === "object"
+        ? detail.issueAdvisor
+        : null;
+    const dagCounts =
+      detail?.dagState?.counts && typeof detail.dagState.counts === "object"
+        ? detail.dagState.counts
+        : null;
+    const counts = dagCounts || this._countNodeStatuses(detail?.nodeStatuses || {});
+    const completedCount = Number(counts.completed ?? counts.completedCount ?? 0) || 0;
+    const failedCount = Number(counts.failed ?? counts.failedCount ?? 0) || 0;
+
+    let mode = fallbackMode;
+    let reason = `fallback:${fallbackMode}`;
+
+    if (issueAdvisor?.recommendedAction === "resume_remaining") {
+      mode = "from_failed";
+      reason = "issue_advisor.resume_remaining";
+    } else if (issueAdvisor?.recommendedAction === "replan_from_failed") {
+      mode = "from_scratch";
+      reason = "issue_advisor.replan_from_failed";
+    } else if (issueAdvisor?.recommendedAction === "inspect_failure") {
+      mode = "from_scratch";
+      reason = "issue_advisor.inspect_failure";
+    } else if (completedCount <= 0) {
+      mode = "from_scratch";
+      reason = "dag_state.no_completed_nodes";
+    } else if (failedCount > 1) {
+      mode = "from_scratch";
+      reason = "dag_state.multiple_failures";
+    } else if (completedCount > 0) {
+      mode = "from_failed";
+      reason = "dag_state.localized_resume";
+    }
+
+    return {
+      mode,
+      reason,
+      fallbackMode,
+      completedCount,
+      failedCount,
+      issueAdvisorRecommendation: issueAdvisor?.recommendedAction || null,
+      issueAdvisorSummary: issueAdvisor?.summary || null,
+    };
+  }
+
+  _chooseRetryModeForRun(runDetail, options = {}) {
+    return this._chooseRetryModeFromDetail(runDetail?.detail || {}, options);
+  }
+
   /**
    * Escalating auto-retry loop.
    *
@@ -1574,9 +1968,13 @@ export class WorkflowEngine extends EventEmitter {
    */
   async _autoRetryLoop(originalRunId, workflowId, inputData, retryConfig, baseOpts) {
     const { maxAttempts, cooldownMs } = retryConfig;
+    const originalRun = this.getRunDetail(originalRunId);
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const mode = attempt === 1 ? "from_failed" : "from_scratch";
+      const retryDecision = this._chooseRetryModeForRun(originalRun, {
+        fallbackMode: attempt === 1 ? "from_failed" : "from_scratch",
+      });
+      const mode = attempt === 1 ? retryDecision.mode : "from_scratch";
       const needsCooldown = attempt >= 3 && cooldownMs > 0;
 
       if (needsCooldown) {
@@ -1594,7 +1992,8 @@ export class WorkflowEngine extends EventEmitter {
       }
 
       console.log(
-        `${TAG} Auto-retry attempt ${attempt}/${maxAttempts} for run ${originalRunId} (mode=${mode})`,
+        `${TAG} Auto-retry attempt ${attempt}/${maxAttempts} for run ${originalRunId} ` +
+        `(mode=${mode}, reason=${retryDecision.reason})`,
       );
 
       try {
@@ -1602,6 +2001,7 @@ export class WorkflowEngine extends EventEmitter {
           mode,
           _isRetry: true,
           _attempt: attempt,
+          _decisionReason: retryDecision.reason,
         });
 
         if (!ctx.errors || ctx.errors.length === 0) {
@@ -1614,6 +2014,8 @@ export class WorkflowEngine extends EventEmitter {
             retryRunId,
             workflowId,
             attempt,
+            mode,
+            decisionReason: retryDecision.reason,
           });
           return; // Success — stop retrying
         }
@@ -1627,6 +2029,8 @@ export class WorkflowEngine extends EventEmitter {
           retryRunId,
           workflowId,
           attempt,
+          mode,
+          decisionReason: retryDecision.reason,
           errors: ctx.errors,
         });
       } catch (err) {
@@ -1638,6 +2042,8 @@ export class WorkflowEngine extends EventEmitter {
           originalRunId,
           workflowId,
           attempt,
+          mode,
+          decisionReason: retryDecision.reason,
           errors: [{ error: err.message }],
         });
       }
@@ -1998,6 +2404,17 @@ export class WorkflowEngine extends EventEmitter {
       reason,
       requestedAt: active.cancelRequestedAt,
     });
+    this._recordLedgerEvent({
+      eventType: "run.cancel.requested",
+      runId: normalizedRunId,
+      workflowId: active.workflowId || null,
+      workflowName: active.workflowName || null,
+      rootRunId: active.ctx?.data?._workflowRootRunId || normalizedRunId,
+      parentRunId: active.ctx?.data?._workflowParentRunId || null,
+      retryOf: active.ctx?.data?._retryOf || null,
+      status: active.status || WorkflowStatus.RUNNING,
+      reason,
+    });
     if (active.ctx) this._checkpointRun(active.ctx);
 
     return {
@@ -2014,6 +2431,7 @@ export class WorkflowEngine extends EventEmitter {
   getRunDetail(runId) {
     const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
     if (!normalizedRunId) return null;
+    const ledger = this.getRunLedger(normalizedRunId);
 
     const activeRun = this._activeRuns.get(normalizedRunId);
     if (activeRun?.ctx) {
@@ -2022,6 +2440,7 @@ export class WorkflowEngine extends EventEmitter {
       return {
         ...summary,
         detail: this._serializeRunContext(activeRun.ctx, true),
+        ledger,
       };
     }
 
@@ -2041,7 +2460,7 @@ export class WorkflowEngine extends EventEmitter {
           status: summary.status || WorkflowStatus.COMPLETED,
           detail,
         });
-        return { ...summary, ...recomputed, detail };
+        return { ...summary, ...recomputed, detail, ledger };
       }
       const terminalRaw = String(detail?.data?._workflowTerminalStatus || "")
         .trim()
@@ -2060,10 +2479,78 @@ export class WorkflowEngine extends EventEmitter {
         status,
         detail,
       });
-      return { ...computed, detail };
+      return { ...computed, detail, ledger };
     } catch {
       return null;
     }
+  }
+
+  getRunLedger(runId) {
+    const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
+    if (!normalizedRunId) return null;
+    return this._executionLedger.getRunLedger(normalizedRunId);
+  }
+
+  getRetryOptions(runId) {
+    const run = this.getRunDetail(runId);
+    if (!run) return null;
+    const issueAdvisor =
+      run?.detail?.issueAdvisor && typeof run.detail.issueAdvisor === "object"
+        ? run.detail.issueAdvisor
+        : null;
+    const nodeStatuses =
+      run?.detail?.nodeStatuses && typeof run.detail.nodeStatuses === "object"
+        ? run.detail.nodeStatuses
+        : {};
+    const failedNodesFromAdvisor = Array.isArray(issueAdvisor?.failedNodes)
+      ? issueAdvisor.failedNodes
+          .map((entry) => String(entry?.nodeId || "").trim())
+          .filter(Boolean)
+      : [];
+    const failedNodesFromStatuses = Object.entries(nodeStatuses)
+      .filter(([, status]) => String(status || "").trim().toLowerCase() === NodeStatus.FAILED)
+      .map(([nodeId]) => String(nodeId || "").trim())
+      .filter(Boolean);
+    const failedNodes = Array.from(new Set([
+      ...failedNodesFromAdvisor,
+      ...failedNodesFromStatuses,
+    ]));
+    const retryDecision = this._chooseRetryModeForRun(run, {
+      fallbackMode: "from_failed",
+    });
+    const canResumeFromFailed = retryDecision.completedCount > 0 || failedNodes.length > 0;
+
+    return {
+      runId: run.runId,
+      status: run.status,
+      recommendedMode: retryDecision.mode,
+      recommendedReason: retryDecision.reason,
+      recommendedAction: retryDecision.issueAdvisorRecommendation,
+      summary: retryDecision.issueAdvisorSummary,
+      failedNodes,
+      options: [
+        {
+          mode: "from_failed",
+          label: "Retry from last failed step",
+          description: canResumeFromFailed
+            ? "Reuse already completed node outputs and resume remaining workflow work."
+            : "Resume state is limited; this may behave similarly to a fresh rerun.",
+          recommended: retryDecision.mode === "from_failed",
+          reason: retryDecision.mode === "from_failed" ? retryDecision.reason : null,
+          available: canResumeFromFailed,
+          failedNodes,
+        },
+        {
+          mode: "from_scratch",
+          label: "Retry from scratch",
+          description: "Re-run the workflow from the beginning with the original input data.",
+          recommended: retryDecision.mode === "from_scratch",
+          reason: retryDecision.mode === "from_scratch" ? retryDecision.reason : null,
+          available: true,
+          failedNodes,
+        },
+      ],
+    };
   }
 
 
@@ -2349,10 +2836,29 @@ export class WorkflowEngine extends EventEmitter {
     const markNodeSkipped = (nodeId, reason = "skipped", payload = {}) => {
       const node = nodeMap.get(nodeId) || null;
       ctx.setNodeStatus(nodeId, NodeStatus.SKIPPED);
+      this._recordDagNodeOutcome(ctx, node || { id: nodeId }, {
+        status: NodeStatus.SKIPPED,
+        error: payload?.error || null,
+      });
       emitNodeEvent("node:skip", node, {
         status: NodeStatus.SKIPPED,
         reason,
         ...payload,
+      });
+      this._recordLedgerEvent({
+        eventType: "node.skipped",
+        runId: ctx.id,
+        workflowId,
+        workflowName,
+        rootRunId: ctx.data?._workflowRootRunId || ctx.id,
+        parentRunId: ctx.data?._workflowParentRunId || null,
+        retryOf: ctx.data?._retryOf || null,
+        nodeId,
+        nodeType: node?.type || null,
+        nodeLabel: node?.label || null,
+        status: NodeStatus.SKIPPED,
+        reason,
+        meta: payload && typeof payload === "object" ? payload : undefined,
       });
     };
 
@@ -2445,11 +2951,28 @@ export class WorkflowEngine extends EventEmitter {
           }
 
           ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
+          this._recordDagNodeOutcome(ctx, node, {
+            status: NodeStatus.RUNNING,
+            attempt: ctx.getRetryCount(nodeId),
+          });
           const isTriggerNode = node.type?.startsWith("trigger.");
           if (!isTriggerNode) {
             console.log(`${TAG} node:start ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
           }
           emitNodeEvent("node:start", node, { status: NodeStatus.RUNNING });
+          this._recordLedgerEvent({
+            eventType: "node.started",
+            runId: ctx.id,
+            workflowId,
+            workflowName,
+            rootRunId: ctx.data?._workflowRootRunId || ctx.id,
+            parentRunId: ctx.data?._workflowParentRunId || null,
+            retryOf: ctx.data?._retryOf || null,
+            nodeId,
+            nodeType: node?.type || null,
+            nodeLabel: node?.label || null,
+            status: NodeStatus.RUNNING,
+          });
           await this._emitTaskTraceEvent("workflow.node.start", {
             ctx,
             runId: ctx.id,
@@ -2485,12 +3008,36 @@ export class WorkflowEngine extends EventEmitter {
                 const backoffMs = Math.min(baseRetryDelay * Math.pow(2, attempt - 1), 30000);
                 ctx.log(nodeId, `Retry ${attempt}/${maxRetries} after ${backoffMs}ms`, "warn");
                 emitNodeEvent("node:retry", node, { attempt, maxRetries, backoffMs });
+                this._recordLedgerEvent({
+                  eventType: "node.retry",
+                  runId: ctx.id,
+                  workflowId,
+                  workflowName,
+                  rootRunId: ctx.data?._workflowRootRunId || ctx.id,
+                  parentRunId: ctx.data?._workflowParentRunId || null,
+                  retryOf: ctx.data?._retryOf || null,
+                  nodeId,
+                  nodeType: node?.type || null,
+                  nodeLabel: node?.label || null,
+                  status: NodeStatus.RUNNING,
+                  attempt,
+                  meta: { maxRetries, backoffMs },
+                });
                 await new Promise((r) => setTimeout(r, backoffMs));
                 ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
+                this._recordDagNodeOutcome(ctx, node, {
+                  status: NodeStatus.RUNNING,
+                  attempt: ctx.getRetryCount(nodeId),
+                });
               }
               const result = await this._executeNode(node, ctx, opts);
               ctx.setNodeOutput(nodeId, result);
               ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
+              this._recordDagNodeOutcome(ctx, node, {
+                status: NodeStatus.COMPLETED,
+                result,
+                attempt: ctx.getRetryCount(nodeId),
+              });
               executed.add(nodeId);
               // Quiet mode for trigger nodes: only log when they actually fire
               if (isTriggerNode) {
@@ -2505,6 +3052,22 @@ export class WorkflowEngine extends EventEmitter {
               emitNodeEvent("node:complete", node, {
                 status: NodeStatus.COMPLETED,
                 output: result,
+              });
+              this._recordLedgerEvent({
+                eventType: "node.completed",
+                runId: ctx.id,
+                workflowId,
+                workflowName,
+                rootRunId: ctx.data?._workflowRootRunId || ctx.id,
+                parentRunId: ctx.data?._workflowParentRunId || null,
+                retryOf: ctx.data?._retryOf || null,
+                nodeId,
+                nodeType: node?.type || null,
+                nodeLabel: node?.label || null,
+                status: NodeStatus.COMPLETED,
+                attempt: ctx.getRetryCount(nodeId),
+                durationMs: Number(ctx.getNodeTiming(nodeId)?.endedAt || 0) - Number(ctx.getNodeTiming(nodeId)?.startedAt || 0),
+                summary: this._summarizeTaskTraceNodeResult(result),
               });
               await this._emitTaskTraceEvent("workflow.node.complete", {
                 ctx,
@@ -2531,12 +3094,32 @@ export class WorkflowEngine extends EventEmitter {
           // All retries exhausted
           ctx.error(nodeId, lastErr);
           ctx.setNodeStatus(nodeId, NodeStatus.FAILED);
+          this._recordDagNodeOutcome(ctx, node, {
+            status: NodeStatus.FAILED,
+            error: lastErr?.message || String(lastErr),
+            attempt: ctx.getRetryCount(nodeId),
+          });
           executed.add(nodeId);
           console.warn(`${TAG} node:FAILED ${nodeId} (${node.type}) [${node.label || ""}]: ${lastErr?.message || lastErr}`);
           emitNodeEvent("node:error", node, {
             status: NodeStatus.FAILED,
             error: lastErr.message,
             retries: ctx.getRetryCount(nodeId),
+          });
+          this._recordLedgerEvent({
+            eventType: "node.failed",
+            runId: ctx.id,
+            workflowId,
+            workflowName,
+            rootRunId: ctx.data?._workflowRootRunId || ctx.id,
+            parentRunId: ctx.data?._workflowParentRunId || null,
+            retryOf: ctx.data?._retryOf || null,
+            nodeId,
+            nodeType: node?.type || null,
+            nodeLabel: node?.label || null,
+            status: NodeStatus.FAILED,
+            attempt: ctx.getRetryCount(nodeId),
+            error: lastErr?.message || String(lastErr),
           });
           await this._emitTaskTraceEvent("workflow.node.error", {
             ctx,
@@ -3143,6 +3726,25 @@ export class WorkflowEngine extends EventEmitter {
     const triggeredBy = detail?.data?._triggeredBy || null;
     const targetRepo = detail?.data?._targetRepo || null;
     const triggerVars = detail?.data?._triggerVars || null;
+    const rootRunId =
+      detail?.dagState?.rootRunId ||
+      detail?.data?._workflowRootRunId ||
+      null;
+    const parentRunId =
+      detail?.dagState?.parentRunId ||
+      detail?.data?._workflowParentRunId ||
+      null;
+    const retryOf =
+      detail?.dagState?.retryOf ||
+      detail?.data?._retryOf ||
+      null;
+    const retryMode =
+      detail?.dagState?.retryMode ||
+      detail?.data?._retryMode ||
+      null;
+    const retryDecisionReason = detail?.data?._retryDecisionReason || null;
+    const issueAdvisorRecommendation = detail?.issueAdvisor?.recommendedAction || null;
+    const issueAdvisorSummary = detail?.issueAdvisor?.summary || null;
 
     return {
       runId,
@@ -3169,6 +3771,13 @@ export class WorkflowEngine extends EventEmitter {
       triggeredBy,
       targetRepo,
       triggerVars,
+      rootRunId,
+      parentRunId,
+      retryOf,
+      retryMode,
+      retryDecisionReason,
+      issueAdvisorRecommendation,
+      issueAdvisorSummary,
     };
   }
 
@@ -3579,29 +4188,21 @@ export class WorkflowEngine extends EventEmitter {
 
           // Reuse cached detail if available (already parsed above)
           const detail = runDetailCache.get(run.runId) ?? JSON.parse(readFileSync(detailPath, "utf8"));
-          const nodeStatuses = detail.nodeStatuses || {};
-          const hasCompletedNodes = Object.values(nodeStatuses).some(
-            (s) => s === NodeStatus.COMPLETED,
-          );
+          const retryDecision = this._chooseRetryModeFromDetail(detail, {
+            fallbackMode: "from_scratch",
+          });
 
-          if (hasCompletedNodes) {
-            // Resume from where it left off using retryRun("from_failed")
-            console.log(`${TAG} Resuming run ${run.runId} from failed/interrupted node...`);
-            await this.retryRun(run.runId, { mode: "from_failed" }).catch((err) => {
-              console.error(`${TAG} Failed to resume run ${run.runId}:`, err.message);
-              this._markRunUnresumable(run.runId, `retry_error: ${err.message}`);
-            });
-          } else {
-            // No nodes completed — re-run from scratch
-            console.log(`${TAG} Re-executing run ${run.runId} from scratch...`);
-            const originalData = detail.inputData || detail.data || {};
-            // Clean up internal metadata from data before re-executing
-            const { _workflowId, _workflowName, _retryOf, ...cleanData } = originalData;
-            await this.execute(run.workflowId, cleanData, { force: true }).catch((err) => {
-              console.error(`${TAG} Failed to re-execute run ${run.runId}:`, err.message);
-              this._markRunUnresumable(run.runId, `execute_error: ${err.message}`);
-            });
-          }
+          console.log(
+            `${TAG} Resuming run ${run.runId} via retryRun(${retryDecision.mode}) ` +
+            `[${retryDecision.reason}]...`,
+          );
+          await this.retryRun(run.runId, {
+            mode: retryDecision.mode,
+            _decisionReason: retryDecision.reason,
+          }).catch((err) => {
+            console.error(`${TAG} Failed to resume run ${run.runId}:`, err.message);
+            this._markRunUnresumable(run.runId, `retry_error: ${err.message}`);
+          });
 
           // Mark the original interrupted run as no longer resumable
           // (the retry/re-execute created a new run)

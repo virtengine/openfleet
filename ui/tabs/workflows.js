@@ -291,6 +291,98 @@ function summarizeRunNodeOutputs(run, limit = 12) {
   return lines.join("\n");
 }
 
+function getRunDagCounts(run) {
+  const dagCounts = run?.detail?.dagState?.counts;
+  if (dagCounts && typeof dagCounts === "object") {
+    return {
+      nodeCount: Number(dagCounts.nodeCount ?? dagCounts.total ?? run?.nodeCount ?? 0) || 0,
+      completed: Number(dagCounts.completed ?? dagCounts.completedCount ?? run?.completedCount ?? 0) || 0,
+      failed: Number(dagCounts.failed ?? dagCounts.failedCount ?? run?.failedCount ?? 0) || 0,
+      skipped: Number(dagCounts.skipped ?? dagCounts.skippedCount ?? run?.skippedCount ?? 0) || 0,
+      active: Number(dagCounts.active ?? dagCounts.activeNodeCount ?? run?.activeNodeCount ?? 0) || 0,
+    };
+  }
+  return {
+    nodeCount: Number(run?.nodeCount || 0) || 0,
+    completed: Number(run?.completedCount || 0) || 0,
+    failed: Number(run?.failedCount || 0) || 0,
+    skipped: Number(run?.skippedCount || 0) || 0,
+    active: Number(run?.activeNodeCount || 0) || 0,
+  };
+}
+
+function formatRetryModeLabel(mode) {
+  const normalized = String(mode || "").trim().toLowerCase();
+  if (normalized === "from_failed") return "Retry from failed step";
+  if (normalized === "from_scratch") return "Retry from scratch";
+  return normalized || "Unknown retry mode";
+}
+
+function formatRetryDecisionReason(reason) {
+  const normalized = String(reason || "").trim().toLowerCase();
+  if (!normalized) return "No retry decision reason recorded.";
+  if (normalized === "issue_advisor.replan_from_failed") return "Issue advisor recommends replanning from the failure boundary.";
+  if (normalized === "issue_advisor.resume_remaining") return "Issue advisor recommends resuming remaining work.";
+  if (normalized === "issue_advisor.inspect_failure") return "Issue advisor recommends inspection before trusting resume state.";
+  if (normalized === "dag_state.no_completed_nodes") return "No completed nodes were available to resume from.";
+  if (normalized === "dag_state.multiple_failures") return "Multiple failed nodes suggest a clean rerun is safer.";
+  if (normalized === "dag_state.localized_resume") return "Completed upstream work can be reused for a localized retry.";
+  if (normalized.startsWith("fallback:")) {
+    return `Fallback retry policy selected ${formatRetryModeLabel(normalized.replace("fallback:", ""))}.`;
+  }
+  return normalized.replaceAll("_", " ");
+}
+
+function formatIssueAdvisorAction(action) {
+  const normalized = String(action || "").trim().toLowerCase();
+  if (normalized === "replan_from_failed") return "Replan from failed node";
+  if (normalized === "resume_remaining") return "Resume remaining work";
+  if (normalized === "inspect_failure") return "Inspect failure first";
+  if (normalized === "continue") return "Continue";
+  return normalized ? normalized.replaceAll("_", " ") : "No recommendation";
+}
+
+function summarizeLedgerEvent(event) {
+  if (!event || typeof event !== "object") return "Unknown event";
+  const parts = [String(event.eventType || "event").trim() || "event"];
+  if (event.nodeId) parts.push(String(event.nodeId).trim());
+  if (event.status) parts.push(`status=${String(event.status).trim()}`);
+  if (event.retryMode) parts.push(`mode=${String(event.retryMode).trim()}`);
+  if (event.error) parts.push(`error=${String(event.error).trim()}`);
+  return parts.join(" · ");
+}
+
+function summarizeRunExecutionInsights(run, limit = 12) {
+  const issueAdvisor =
+    run?.detail?.issueAdvisor && typeof run.detail.issueAdvisor === "object"
+      ? run.detail.issueAdvisor
+      : null;
+  const counts = getRunDagCounts(run);
+  const ledgerEvents = Array.isArray(run?.ledger?.events) ? run.ledger.events : [];
+  const lines = [
+    `- Completed nodes: ${counts.completed}/${counts.nodeCount}`,
+    `- Failed nodes: ${counts.failed}`,
+    `- Skipped nodes: ${counts.skipped}`,
+    `- Active nodes: ${counts.active}`,
+    `- Root run: ${String(run?.rootRunId || run?.detail?.dagState?.rootRunId || "—")}`,
+    `- Parent run: ${String(run?.parentRunId || run?.detail?.dagState?.parentRunId || "—")}`,
+    `- Retry of: ${String(run?.retryOf || run?.detail?.dagState?.retryOf || "—")}`,
+    `- Retry mode: ${formatRetryModeLabel(run?.retryMode || run?.detail?.dagState?.retryMode || "")}`,
+    `- Retry decision: ${formatRetryDecisionReason(run?.retryDecisionReason)}`,
+    `- Issue advisor action: ${formatIssueAdvisorAction(issueAdvisor?.recommendedAction)}`,
+    `- Issue advisor summary: ${String(issueAdvisor?.summary || "None recorded.")}`,
+  ];
+  if (ledgerEvents.length) {
+    lines.push("");
+    lines.push("Recent Ledger Events");
+    const recent = ledgerEvents.slice(-limit);
+    for (const entry of recent) {
+      lines.push(`- ${entry?.timestamp ? formatDate(entry.timestamp) : "unknown time"} · ${summarizeLedgerEvent(entry)}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 function buildWorkflowExplainPrompt(workflow) {
   const workflowId = String(workflow?.id || "").trim() || "(unknown)";
   const workflowName = String(workflow?.name || workflowId).trim() || workflowId;
@@ -413,6 +505,9 @@ function buildRunCopilotPrompt(run, intent = "ask") {
     `- Active nodes: ${Number(run?.activeNodeCount || 0)}`,
     `- Error count: ${Number(run?.errorCount || errors.length)}`,
     `- Log count: ${Number(run?.logCount || logs.length)}`,
+    "",
+    "Execution Insights",
+    summarizeRunExecutionInsights(run, 10),
     "",
     "Node Statuses",
     summarizeRunNodeStatuses(run),
@@ -5216,6 +5311,67 @@ function RunHistoryView() {
       successToast: safeIntent === "fix" ? "Opened node fix chat" : "Opened node copilot chat",
     });
   }, []);
+  const requestWorkflowRunRetry = useCallback(async (run, explicitMode = "") => {
+    const safeRunId = String(run?.runId || "").trim();
+    if (!safeRunId) return;
+    try {
+      const retryInfo = await apiFetch(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/retry`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      const options = Array.isArray(retryInfo?.options) ? retryInfo.options : [];
+      const recommended =
+        options.find((entry) => entry?.recommended) ||
+        options.find((entry) => String(entry?.mode || "").trim() === String(retryInfo?.recommendedMode || "").trim()) ||
+        options[0] ||
+        null;
+
+      let selectedMode = String(explicitMode || "").trim().toLowerCase();
+      if (!selectedMode) {
+        if (options.length <= 1) {
+          selectedMode = String(recommended?.mode || retryInfo?.recommendedMode || "from_failed").trim().toLowerCase();
+        } else {
+          const promptLines = [
+            `Retry mode for workflow run ${safeRunId}:`,
+            "",
+            ...options.map((entry) => {
+              const mode = String(entry?.mode || "").trim();
+              const label = String(entry?.label || formatRetryModeLabel(mode)).trim();
+              const description = String(entry?.description || "").trim();
+              const suffix = entry?.recommended ? " (recommended)" : "";
+              return `- ${mode}: ${label}${suffix}${description ? ` — ${description}` : ""}`;
+            }),
+            "",
+            `Recommended: ${String(recommended?.mode || retryInfo?.recommendedMode || "from_failed")}`,
+            retryInfo?.summary ? `Why: ${retryInfo.summary}` : "",
+            retryInfo?.recommendedReason ? `Signal: ${formatRetryDecisionReason(retryInfo.recommendedReason)}` : "",
+            "",
+            "Type from_failed or from_scratch.",
+          ].filter(Boolean);
+          const choice = window.prompt(
+            promptLines.join("\n"),
+            String(recommended?.mode || retryInfo?.recommendedMode || "from_failed"),
+          );
+          if (choice == null) return;
+          selectedMode = String(choice || "").trim().toLowerCase();
+        }
+      }
+
+      if (selectedMode !== "from_failed" && selectedMode !== "from_scratch") {
+        showToast("Retry cancelled: invalid retry mode", "warning");
+        return;
+      }
+
+      const result = await apiFetch(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/retry`, {
+        method: "POST",
+        body: JSON.stringify({ mode: selectedMode }),
+      });
+      showToast(`Run retry initiated: ${formatRetryModeLabel(result?.mode || selectedMode)}`, "success");
+      setTimeout(() => loadRunDetail(safeRunId), 1000);
+    } catch (err) {
+      showToast("Retry failed: " + (err.message || err), "error");
+    }
+  }, []);
 
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
@@ -5239,6 +5395,17 @@ function RunHistoryView() {
       ? Math.max(0, nowTick - lastActivityAt)
       : 0;
     const showStuck = selectedRun.status === "running" && selectedRun.isStuck;
+    const issueAdvisor =
+      selectedRun?.detail?.issueAdvisor && typeof selectedRun.detail.issueAdvisor === "object"
+        ? selectedRun.detail.issueAdvisor
+        : null;
+    const dagCounts = getRunDagCounts(selectedRun);
+    const ledgerEvents = Array.isArray(selectedRun?.ledger?.events) ? selectedRun.ledger.events : [];
+    const recommendedRetryMode =
+      selectedRun?.status === "failed"
+        ? (selectedRun?.issueAdvisorRecommendation === "replan_from_failed" ? "from_scratch" : "from_failed")
+        : "";
+    const recommendedRetryLabel = formatRetryModeLabel(recommendedRetryMode);
 
     return html`
       <div style="padding: 0 4px;">
@@ -5273,18 +5440,20 @@ function RunHistoryView() {
               variant="contained"
               size="small"
               color="warning"
-              onClick=${async () => {
-                try {
-                  await apiFetch("/api/workflows/runs/" + encodeURIComponent(selectedRun.runId) + "/retry", { method: "POST" });
-                  showToast("Run retry initiated", "success");
-                  setTimeout(() => loadRunDetail(selectedRun.runId), 1000);
-                } catch (err) {
-                  showToast("Retry failed: " + (err.message || err), "error");
-                }
-              }}
+              onClick=${() => requestWorkflowRunRetry(selectedRun, recommendedRetryMode)}
             >
               <span class="btn-icon">${resolveIcon("refresh")}</span>
-              Retry Run
+              ${recommendedRetryMode ? recommendedRetryLabel : "Retry Run"}
+            <//>
+          `}
+          ${selectedRun.status === "failed" && html`
+            <${Button}
+              variant="outlined"
+              size="small"
+              onClick=${() => requestWorkflowRunRetry(selectedRun)}
+            >
+              <span class="btn-icon">${resolveIcon("settings")}</span>
+              Retry Options
             <//>
           `}
           ${selectedRun.status === "running" && html`
@@ -5332,6 +5501,54 @@ function RunHistoryView() {
             ${selectedRun.status === "running" && html`<div><b>No Progress For:</b> ${formatDuration(staleMs)}</div>`}
             <div><b>Nodes:</b> ${selectedRun.nodeCount || 0} · <b>Logs:</b> ${selectedRun.logCount || logs.length} · <b>Errors:</b> ${selectedRun.errorCount || errors.length}</div>
             <div><b>Active Nodes:</b> ${selectedRun.activeNodeCount || 0}</div>
+            <div><b>Trigger:</b> ${getWorkflowRunTriggerLabel(selectedRun)}</div>
+            <div><b>Root Run:</b> <code>${selectedRun.rootRunId || "—"}</code></div>
+            <div><b>Parent Run:</b> <code>${selectedRun.parentRunId || "—"}</code></div>
+            <div><b>Retry Of:</b> <code>${selectedRun.retryOf || "—"}</code></div>
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; margin-bottom: 12px;">
+          <div style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+              <span class="wf-badge" style="background:#3b82f620; color:#93c5fd;">Execution Insight</span>
+              ${issueAdvisor?.recommendedAction && html`
+                <span class="wf-badge" style="background:#f59e0b24; color:#fbbf24;">
+                  ${formatIssueAdvisorAction(issueAdvisor.recommendedAction)}
+                </span>
+              `}
+            </div>
+            <div style="font-size: 12px; color: var(--color-text-secondary, #cbd5e1); line-height: 1.6;">
+              <div><b>Completed:</b> ${dagCounts.completed}/${dagCounts.nodeCount}</div>
+              <div><b>Failed:</b> ${dagCounts.failed} · <b>Skipped:</b> ${dagCounts.skipped} · <b>Active:</b> ${dagCounts.active}</div>
+              <div><b>Recommendation:</b> ${formatIssueAdvisorAction(issueAdvisor?.recommendedAction)}</div>
+              <div style="margin-top: 6px; color: #e5e7eb;">${issueAdvisor?.summary || "No issue-advisor summary recorded for this run."}</div>
+            </div>
+          </div>
+
+          <div style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+              <span class="wf-badge" style="background:#10b98120; color:#6ee7b7;">Recovery & Lineage</span>
+            </div>
+            <div style="font-size: 12px; color: var(--color-text-secondary, #cbd5e1); line-height: 1.6;">
+              <div><b>Retry Mode:</b> ${selectedRun.retryMode ? formatRetryModeLabel(selectedRun.retryMode) : "—"}</div>
+              <div><b>Retry Decision:</b> ${formatRetryDecisionReason(selectedRun.retryDecisionReason)}</div>
+              <div><b>Root Run:</b> <code>${selectedRun.rootRunId || "—"}</code></div>
+              <div><b>Parent Run:</b> <code>${selectedRun.parentRunId || "—"}</code></div>
+              <div><b>Retry Of:</b> <code>${selectedRun.retryOf || "—"}</code></div>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+              ${selectedRun.parentRunId && html`
+                <${Button} variant="outlined" size="small" onClick=${() => loadRunDetail(selectedRun.parentRunId)}>
+                  Open Parent Run
+                <//>
+              `}
+              ${selectedRun.rootRunId && selectedRun.rootRunId !== selectedRun.runId && html`
+                <${Button} variant="outlined" size="small" onClick=${() => loadRunDetail(selectedRun.rootRunId)}>
+                  Open Root Run
+                <//>
+              `}
+            </div>
           </div>
         </div>
 
@@ -5393,6 +5610,23 @@ function RunHistoryView() {
           <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
             <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Errors (${errors.length})</summary>
             <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #fca5a5; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(errors)}</pre>
+          </details>
+          <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
+            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Execution Ledger (${ledgerEvents.length})</summary>
+            ${ledgerEvents.length === 0
+              ? html`<div style="margin-top: 8px; font-size: 12px; color: var(--color-text-secondary, #8b95a5);">No ledger events recorded.</div>`
+              : html`
+                <div style="margin-top: 8px; display:flex; flex-direction:column; gap:6px;">
+                  ${ledgerEvents.slice(-20).map((event, index) => html`
+                    <div key=${`${event?.timestamp || "event"}-${index}`} style="background:#111827; border:1px solid #1f2937; border-radius:6px; padding:8px;">
+                      <div style="font-size:11px; color:#93c5fd; margin-bottom:4px;">
+                        ${event?.timestamp ? `${formatDate(event.timestamp)} (${formatRelative(event.timestamp)})` : "unknown time"}
+                      </div>
+                      <div style="font-size:12px; color:#e5e7eb;">${summarizeLedgerEvent(event)}</div>
+                    </div>
+                  `)}
+                </div>
+              `}
           </details>
           <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
             <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Raw Run JSON</summary>
@@ -5517,6 +5751,10 @@ function RunHistoryView() {
             ? "var(--accent-warning, #f59e0b)"
             : (run.status === "running" ? "var(--accent, #60a5fa)" : "var(--color-border, #2a3040)");
           const triggerLabel = getWorkflowRunTriggerLabel(run);
+          const retryBadge = run.retryOf ? formatRetryModeLabel(run.retryMode) : "";
+          const advisorBadge = run.issueAdvisorRecommendation
+            ? formatIssueAdvisorAction(run.issueAdvisorRecommendation)
+            : "";
           return html`
             <${Button}
               key=${run.runId}
@@ -5542,6 +5780,17 @@ function RunHistoryView() {
                     : `Finished ${run.endedAt ? formatRelative(run.endedAt) : "—"}`}</span>
                   <span>Trigger: ${triggerLabel}</span>
                 </div>
+                ${(advisorBadge || retryBadge) && html`
+                  <div style="font-size: 11px; color: var(--color-text-secondary, #94a3b8); margin-top: 4px; display:flex; gap:8px; flex-wrap:wrap;">
+                    ${advisorBadge ? html`<span>Advisor: ${advisorBadge}</span>` : ""}
+                    ${retryBadge ? html`<span>Retry: ${retryBadge}</span>` : ""}
+                  </div>
+                `}
+                ${run.issueAdvisorSummary && html`
+                  <div style="font-size: 11px; color: #cbd5e1; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                    ${run.issueAdvisorSummary}
+                  </div>
+                `}
                 <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); margin-top: 2px;">
                   Run: <code>${run.runId}</code>
                 </div>
@@ -5551,6 +5800,7 @@ function RunHistoryView() {
                   ${run.status || "unknown"}
                 </span>
                 ${run.isStuck && html`<span class="wf-badge" style="background: #f59e0b2f; color: #f59e0b; border-color: #f59e0b50;">stuck</span>`}
+                ${run.retryOf && html`<span class="wf-badge" style="background:#10b98120; color:#6ee7b7;">retry</span>`}
               </div>
             <//>
           `;

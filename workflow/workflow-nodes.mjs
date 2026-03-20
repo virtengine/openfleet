@@ -1617,6 +1617,63 @@ function normalizeWorkflowStack(value) {
     .filter(Boolean);
 }
 
+function getChildWorkflowLineage(ctx, childWorkflowId = "", extra = {}) {
+  const sourceData = ctx?.data && typeof ctx.data === "object"
+    ? ctx.data
+    : {};
+  const parentWorkflowId = String(
+    extra.parentWorkflowId ?? sourceData._workflowId ?? "",
+  ).trim();
+  const workflowStack = normalizeWorkflowStack(extra.workflowStack ?? sourceData._workflowStack);
+  if (parentWorkflowId && workflowStack[workflowStack.length - 1] !== parentWorkflowId) {
+    workflowStack.push(parentWorkflowId);
+  }
+
+  const normalizedChildWorkflowId = String(childWorkflowId || "").trim();
+  const parentRunId = String(extra.parentRunId ?? ctx?.id ?? "").trim() || null;
+  const rootRunId = String(
+    extra.rootRunId ??
+      sourceData._workflowRootRunId ??
+      parentRunId ??
+      "",
+  ).trim() || null;
+  const retryOf = String(extra.retryOf ?? sourceData._retryOf ?? "").trim() || null;
+  const retryMode = String(extra.retryMode ?? sourceData._retryMode ?? "").trim() || null;
+
+  return {
+    parentWorkflowId,
+    parentRunId,
+    rootRunId,
+    retryOf,
+    retryMode,
+    workflowStack: normalizedChildWorkflowId
+      ? [...workflowStack, normalizedChildWorkflowId]
+      : [...workflowStack],
+  };
+}
+
+function applyChildWorkflowLineage(ctx, inputData = {}, childWorkflowId = "", extra = {}) {
+  const lineage = getChildWorkflowLineage(ctx, childWorkflowId, extra);
+  return {
+    ...(inputData && typeof inputData === "object" ? inputData : {}),
+    _parentWorkflowId: lineage.parentWorkflowId || "",
+    _workflowParentRunId: lineage.parentRunId,
+    _workflowRootRunId: lineage.rootRunId,
+    _workflowStack: lineage.workflowStack,
+    ...(lineage.retryOf ? { _retryOf: lineage.retryOf } : {}),
+    ...(lineage.retryMode ? { _retryMode: lineage.retryMode } : {}),
+  };
+}
+
+function makeChildWorkflowExecuteOptions(ctx, extra = {}) {
+  const lineage = getChildWorkflowLineage(ctx, extra.childWorkflowId || "", extra);
+  return {
+    ...(extra && typeof extra === "object" ? extra : {}),
+    _parentRunId: lineage.parentRunId,
+    _rootRunId: lineage.rootRunId,
+  };
+}
+
 function isBosunStateComment(text) {
   const raw = String(text || "").toLowerCase();
   return raw.includes("bosun-state") || raw.includes("codex:ignore");
@@ -2587,10 +2644,14 @@ registerBuiltinNodeType("action.run_agent", {
 
           // Delegate to this agent workflow
           ctx.log(node.id, `Delegating to agent workflow "${wf.name}" (${wf.id})`);
-          const subCtx = await engine.execute(wf.id, {
-            ...delegationData,
-            _agentWorkflowActive: true,
-          });
+          const subCtx = await engine.execute(
+            wf.id,
+            applyChildWorkflowLineage(ctx, {
+              ...delegationData,
+              _agentWorkflowActive: true,
+            }, wf.id),
+            makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: wf.id }),
+          );
           const subErrors = Array.isArray(subCtx?.errors) ? subCtx.errors : [];
           const subStatus = subErrors.length === 0 ? "completed" : "failed";
           if (tracker && trackedTaskId) {
@@ -3453,11 +3514,11 @@ registerBuiltinNodeType("action.execute_workflow", {
       );
     }
 
-    const childInput = {
+    const childInput = applyChildWorkflowLineage(ctx, {
       ...inheritedInput,
       ...configuredInput,
-      _workflowStack: [...workflowStack, workflowId],
-    };
+    }, workflowId);
+    const childRunOpts = makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: workflowId });
 
     // Forward _triggerVars — explicit config takes precedence over inherited
     const triggerVarsConfig = resolveWorkflowNodeValue(node.config?.triggerVars ?? null, ctx);
@@ -3480,7 +3541,7 @@ registerBuiltinNodeType("action.execute_workflow", {
       ctx.log(node.id, `Dispatching workflow "${workflowId}"`);
       let dispatched;
       try {
-        dispatched = Promise.resolve(engine.execute(workflowId, childInput));
+        dispatched = Promise.resolve(engine.execute(workflowId, childInput, childRunOpts));
       } catch (err) {
         dispatched = Promise.reject(err);
       }
@@ -3508,7 +3569,7 @@ registerBuiltinNodeType("action.execute_workflow", {
     }
 
     ctx.log(node.id, `Executing workflow "${workflowId}" (sync)`);
-    const childCtx = await engine.execute(workflowId, childInput);
+    const childCtx = await engine.execute(workflowId, childInput, childRunOpts);
     const childErrors = Array.isArray(childCtx?.errors)
       ? childCtx.errors.map((entry) => ({
           nodeId: entry?.nodeId || null,
@@ -3690,12 +3751,10 @@ registerBuiltinNodeType("action.inline_workflow", {
       );
     }
 
-    const childInput = {
+    const childInput = applyChildWorkflowLineage(ctx, {
       ...inheritedInput,
       ...configuredInput,
-      _workflowStack: [...workflowStack, inlineWorkflowId],
-      _parentWorkflowId: parentWorkflowId,
-    };
+    }, inlineWorkflowId, { parentWorkflowId });
 
     const inlineName = String(workflowDef.name || node.label || `Inline ${node.id}`).trim() || inlineWorkflowId;
     const executeInline = () => engine.executeDefinition({
@@ -3710,6 +3769,7 @@ registerBuiltinNodeType("action.inline_workflow", {
         parentWorkflowId,
       },
     }, childInput, {
+      ...makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: inlineWorkflowId }),
       force: true,
       sourceNodeId: node.id,
       inlineWorkflowId,
@@ -5735,14 +5795,17 @@ registerNodeType("action.emit_event", {
         try {
           const childCtx = await engine.execute(
             workflowId,
-            {
+            applyChildWorkflowLineage(ctx, {
               ...(payload && typeof payload === "object" ? payload : {}),
               eventType,
               _triggerSource: "workflow.emit_event",
               _triggeredByWorkflowId: currentWorkflowId || null,
               _triggeredByRunId: ctx.id,
+            }, workflowId),
+            {
+              ...makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: workflowId }),
+              force: true,
             },
-            { force: true },
           );
           const childErrors = Array.isArray(childCtx?.errors) ? childCtx.errors : [];
           output.runs.push({
@@ -7466,17 +7529,17 @@ const UNIVERSAL_FLOW_NODE = {
       );
     }
 
-    const childInput = {
+    const childInput = applyChildWorkflowLineage(ctx, {
       ...inheritedInput,
       ...configuredInput,
-      _workflowStack: [...workflowStack, workflowId],
-    };
+    }, workflowId);
+    const childRunOpts = makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: workflowId });
 
     if (mode === "dispatch") {
       ctx.log(node.id, `Dispatching universal workflow \"${workflowId}\"`);
       let dispatched;
       try {
-        dispatched = Promise.resolve(engine.execute(workflowId, childInput));
+        dispatched = Promise.resolve(engine.execute(workflowId, childInput, childRunOpts));
       } catch (err) {
         dispatched = Promise.reject(err);
       }
@@ -7501,7 +7564,7 @@ const UNIVERSAL_FLOW_NODE = {
     }
 
     ctx.log(node.id, `Executing universal workflow \"${workflowId}\" (sync)`);
-    const childCtx = await engine.execute(workflowId, childInput);
+    const childCtx = await engine.execute(workflowId, childInput, childRunOpts);
     const errorCount = Array.isArray(childCtx?.errors) ? childCtx.errors.length : 0;
     const output = {
       success: errorCount === 0,
@@ -7573,16 +7636,20 @@ registerBuiltinNodeType("loop.for_each", {
         const batch = items.slice(batchStart, batchStart + maxConcurrent);
         const batchPromises = batch.map(async (item, batchIdx) => {
           const itemIndex = batchStart + batchIdx;
-          const itemData = {
+          const itemData = applyChildWorkflowLineage(ctx, {
             ...ctx.data,
             [varName]: item,
             [indexVar]: itemIndex,
             _loopParentNodeId: node.id,
             _loopIteration: itemIndex,
             _loopTotal: items.length,
-          };
+          }, subWorkflowId);
           try {
-            const runCtx = await engine.execute(subWorkflowId, itemData);
+            const runCtx = await engine.execute(
+              subWorkflowId,
+              itemData,
+              makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: subWorkflowId }),
+            );
             const ok = !runCtx?.errors?.length;
             return { index: itemIndex, item, success: ok, runId: runCtx?.id || null };
           } catch (err) {
@@ -7666,16 +7733,19 @@ registerBuiltinNodeType("loop.while", {
 
       // Execute sub-workflow if specified
       if (subWorkflowId && engine?.execute) {
-        const iterInput = {
+        const iterInput = applyChildWorkflowLineage(ctx, {
           ...ctx.data,
           [stateVar]: loopState,
           _whileIteration: i,
           _whileMaxIterations: maxIter,
           _previousAttempts: iterations.map((r) => r.output),
-        };
+        }, subWorkflowId);
 
         try {
-          const childCtx = await engine.execute(subWorkflowId, iterInput, { force: true });
+          const childCtx = await engine.execute(subWorkflowId, iterInput, {
+            ...makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: subWorkflowId }),
+            force: true,
+          });
           const ok = !childCtx?.errors?.length;
           const childOutputs = childCtx?.nodeOutputs
             ? Object.fromEntries(childCtx.nodeOutputs)
@@ -8233,24 +8303,18 @@ registerBuiltinNodeType("action.invoke_workflow", {
 
     // Build child input from config + optional context piping
     const resolvedInput = resolveWorkflowNodeValue(node.config?.input ?? {}, ctx);
-    const childInput = {
+    const childInput = applyChildWorkflowLineage(ctx, {
       ...(pipeContext ? { ...ctx.data } : {}),
       ...(typeof resolvedInput === "object" && resolvedInput !== null ? resolvedInput : {}),
-      _parentWorkflowId: ctx.data?._workflowId || "",
-      _workflowStack: normalizeWorkflowStack(ctx.data?._workflowStack),
-    };
-    const parentId = String(ctx.data?._workflowId || "").trim();
-    if (parentId && childInput._workflowStack[childInput._workflowStack.length - 1] !== parentId) {
-      childInput._workflowStack.push(parentId);
-    }
-    childInput._workflowStack.push(workflowId);
+    }, workflowId);
+    const childRunOpts = makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: workflowId });
 
     // ── Dispatch mode ──
     if (mode === "dispatch") {
       ctx.log(node.id, `Dispatching workflow "${workflowId}" (fire-and-forget)`);
       let promise;
       try {
-        promise = Promise.resolve(engine.execute(workflowId, childInput));
+        promise = Promise.resolve(engine.execute(workflowId, childInput, childRunOpts));
       } catch (err) {
         promise = Promise.reject(err);
       }
@@ -8276,7 +8340,7 @@ registerBuiltinNodeType("action.invoke_workflow", {
     const timeoutMs = node.config?.timeout || 300000;
     try {
       childCtx = await Promise.race([
-        engine.execute(workflowId, childInput),
+        engine.execute(workflowId, childInput, childRunOpts),
         new Promise((_, reject) =>
           setTimeout(() => reject(new Error(`Workflow "${workflowId}" timed out after ${timeoutMs}ms`)), timeoutMs),
         ),
@@ -12905,7 +12969,11 @@ registerBuiltinNodeType("flow.try_catch", {
         attempts++;
         try {
           ctx.log(node.id, `try: executing workflow "${tryWfId}" (attempt ${attempts}/${attemptLimit})`);
-          const runCtx = await engine.execute(tryWfId, { ...ctx.data });
+          const runCtx = await engine.execute(
+            tryWfId,
+            applyChildWorkflowLineage(ctx, { ...ctx.data }, tryWfId),
+            makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: tryWfId }),
+          );
           const hasErrors = runCtx?.errors?.length > 0;
           if (hasErrors) {
             const msg = runCtx.errors.map((e) => e.error || e.message || String(e)).join("; ");
@@ -12944,7 +13012,11 @@ registerBuiltinNodeType("flow.try_catch", {
       if (catchWfId && engine?.execute) {
         try {
           ctx.log(node.id, `catch: executing workflow "${catchWfId}"`);
-          const catchCtx = await engine.execute(catchWfId, { ...ctx.data, [errorVar]: errorObj });
+          const catchCtx = await engine.execute(
+            catchWfId,
+            applyChildWorkflowLineage(ctx, { ...ctx.data, [errorVar]: errorObj }, catchWfId),
+            makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: catchWfId }),
+          );
           catchResult = { executed: true, runId: catchCtx?.id || null };
         } catch (catchErr) {
           catchResult = { executed: true, error: catchErr.message };
@@ -12957,7 +13029,11 @@ registerBuiltinNodeType("flow.try_catch", {
     if (finallyWfId && engine?.execute) {
       try {
         ctx.log(node.id, `finally: executing workflow "${finallyWfId}"`);
-        const finallyCtx = await engine.execute(finallyWfId, { ...ctx.data });
+        const finallyCtx = await engine.execute(
+          finallyWfId,
+          applyChildWorkflowLineage(ctx, { ...ctx.data }, finallyWfId),
+          makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: finallyWfId }),
+        );
         finallyResult = { executed: true, runId: finallyCtx?.id || null };
       } catch (finErr) {
         finallyResult = { executed: true, error: finErr.message };
@@ -13033,12 +13109,20 @@ registerBuiltinNodeType("flow.parallel", {
     ctx.log(node.id, `parallel: launching ${branches.length} branches (${strategy})`);
 
     const makeBranchPromise = (branch) => {
-      const branchData = { ...ctx.data, ...(branch.data || {}), _parallelBranch: branch.name };
       const wfId = ctx.resolve(branch.workflowId || "");
       if (!wfId) {
         return Promise.resolve({ name: branch.name, success: false, error: "Missing workflowId" });
       }
-      return engine.execute(wfId, branchData).then(
+      const branchData = applyChildWorkflowLineage(
+        ctx,
+        { ...ctx.data, ...(branch.data || {}), _parallelBranch: branch.name },
+        wfId,
+      );
+      return engine.execute(
+        wfId,
+        branchData,
+        makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: wfId }),
+      ).then(
         (runCtx) => {
           const hasErrors = runCtx?.errors?.length > 0;
           return {

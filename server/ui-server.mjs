@@ -4084,6 +4084,62 @@ function summarizeRunNodeOutputsForCopilot(run = {}, limit = 12) {
   return lines.join("\n");
 }
 
+function summarizeRunExecutionInsightsForCopilot(run = {}, limit = 12) {
+  const issueAdvisor =
+    run?.detail?.issueAdvisor && typeof run.detail.issueAdvisor === "object"
+      ? run.detail.issueAdvisor
+      : null;
+  const dagCounts =
+    run?.detail?.dagState?.counts && typeof run.detail.dagState.counts === "object"
+      ? run.detail.dagState.counts
+      : null;
+  const ledgerEvents = Array.isArray(run?.ledger?.events) ? run.ledger.events : [];
+  const lines = [
+    `- Root run: ${String(run?.rootRunId || run?.detail?.dagState?.rootRunId || "—")}`,
+    `- Parent run: ${String(run?.parentRunId || run?.detail?.dagState?.parentRunId || "—")}`,
+    `- Retry of: ${String(run?.retryOf || run?.detail?.dagState?.retryOf || "—")}`,
+    `- Retry mode: ${String(run?.retryMode || run?.detail?.dagState?.retryMode || "—")}`,
+    `- Retry decision reason: ${String(run?.retryDecisionReason || "—")}`,
+    `- Issue advisor action: ${String(issueAdvisor?.recommendedAction || "—")}`,
+    `- Issue advisor summary: ${String(issueAdvisor?.summary || "None recorded.")}`,
+  ];
+  if (dagCounts) {
+    lines.push(`- DAG counts: completed=${Number(dagCounts.completed ?? 0) || 0}, failed=${Number(dagCounts.failed ?? 0) || 0}, skipped=${Number(dagCounts.skipped ?? 0) || 0}, active=${Number(dagCounts.active ?? 0) || 0}`);
+  }
+  if (ledgerEvents.length) {
+    lines.push("");
+    lines.push("Recent Ledger Events");
+    for (const event of ledgerEvents.slice(-limit)) {
+      const eventParts = [String(event?.eventType || "event").trim() || "event"];
+      if (event?.nodeId) eventParts.push(`node=${String(event.nodeId).trim()}`);
+      if (event?.status) eventParts.push(`status=${String(event.status).trim()}`);
+      if (event?.retryMode) eventParts.push(`mode=${String(event.retryMode).trim()}`);
+      if (event?.error) eventParts.push(`error=${String(event.error).trim()}`);
+      lines.push(`- ${event?.timestamp ? formatWorkflowCopilotTimestamp(event.timestamp) : "unknown time"} · ${eventParts.join(" · ")}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function summarizeRetryOptionsForCopilot(retryOptions = {}) {
+  const options = Array.isArray(retryOptions?.options) ? retryOptions.options : [];
+  if (!options.length) return "No retry options available.";
+  const lines = [
+    `Recommended mode: ${String(retryOptions?.recommendedMode || "—")}`,
+    `Recommended reason: ${String(retryOptions?.recommendedReason || "—")}`,
+    retryOptions?.summary ? `Summary: ${String(retryOptions.summary)}` : null,
+    "Options:",
+    ...options.map((option) => {
+      const mode = String(option?.mode || "").trim() || "(unknown)";
+      const label = String(option?.label || mode).trim() || mode;
+      const description = String(option?.description || "").trim();
+      const suffix = option?.recommended ? " [recommended]" : "";
+      return `- ${mode}: ${label}${suffix}${description ? ` — ${description}` : ""}`;
+    }),
+  ].filter(Boolean);
+  return lines.join("\n");
+}
+
 function buildRunNodeCopilotPrompt(run = {}, workflow = {}, nodeId = "", opts = {}) {
   const safeNodeId = String(nodeId || "").trim();
   if (!safeNodeId) return "";
@@ -4134,6 +4190,15 @@ function buildRunNodeCopilotPrompt(run = {}, workflow = {}, nodeId = "", opts = 
     "Node Errors",
     formatWorkflowCopilotBlock(relatedErrors.length ? relatedErrors : rawErrors.slice(0, 8), 3000),
     "",
+    "Execution Insights",
+    summarizeRunExecutionInsightsForCopilot(run, 8),
+    "",
+    "Retry Guidance",
+    summarizeRetryOptionsForCopilot(opts?.retryOptions || null),
+    "",
+    "Remediation",
+    formatWorkflowCopilotBlock(opts?.evaluation?.remediation || null, 3500),
+    "",
     "Node Forensics",
     formatWorkflowCopilotBlock(opts?.forensics || null, 3500),
   ].join("\n");
@@ -4146,10 +4211,14 @@ function buildRunCopilotContextPayload(run = {}, opts = {}) {
   const intent = String(opts?.intent || "ask").trim().toLowerCase();
   const nodeId = String(opts?.nodeId || "").trim();
   if (nodeId) {
+    const evaluation = opts?.evaluation || null;
+    const retryOptions = opts?.retryOptions || null;
     return {
       prompt: buildRunNodeCopilotPrompt(run, workflow, nodeId, {
         intent,
         forensics: opts?.nodeForensics || null,
+        evaluation,
+        retryOptions,
       }),
       context: {
         scope: "run-node",
@@ -4158,12 +4227,20 @@ function buildRunCopilotContextPayload(run = {}, opts = {}) {
         workflowId,
         workflowName,
         nodeId,
+        issueAdvisor: run?.detail?.issueAdvisor || null,
+        retryOptions,
+        evaluation,
+        actions: Array.isArray(evaluation?.remediation?.fixActions)
+          ? evaluation.remediation.fixActions.filter((action) => String(action?.nodeId || "").trim() === nodeId)
+          : [],
       },
     };
   }
   const errors = Array.isArray(run?.detail?.errors) ? run.detail.errors : [];
   const logs = Array.isArray(run?.detail?.logs) ? run.detail.logs : [];
   const failed = intent === "fix" || String(run?.status || "").trim().toLowerCase() === "failed";
+  const evaluation = opts?.evaluation || null;
+  const retryOptions = opts?.retryOptions || null;
   return {
     prompt: [
       "You are helping inside Bosun with workflow run analysis.",
@@ -4189,6 +4266,12 @@ function buildRunCopilotContextPayload(run = {}, opts = {}) {
       `- Error count: ${Number(run?.errorCount || errors.length)}`,
       `- Log count: ${Number(run?.logCount || logs.length)}`,
       "",
+      "Execution Insights",
+      summarizeRunExecutionInsightsForCopilot(run),
+      "",
+      "Retry Guidance",
+      summarizeRetryOptionsForCopilot(retryOptions),
+      "",
       "Node Statuses",
       summarizeRunNodeStatusesForCopilot(run),
       "",
@@ -4203,6 +4286,9 @@ function buildRunCopilotContextPayload(run = {}, opts = {}) {
       "",
       "Run Forensics",
       formatWorkflowCopilotBlock(opts?.runForensics || null, 3000),
+      "",
+      "Evaluation",
+      formatWorkflowCopilotBlock(evaluation || null, 3500),
     ].join("\n"),
     context: {
       scope: "run",
@@ -4210,6 +4296,12 @@ function buildRunCopilotContextPayload(run = {}, opts = {}) {
       runId: String(run?.runId || "").trim() || "(unknown)",
       workflowId,
       workflowName,
+      issueAdvisor: run?.detail?.issueAdvisor || null,
+      retryOptions,
+      evaluation,
+      actions: Array.isArray(evaluation?.remediation?.fixActions)
+        ? evaluation.remediation.fixActions
+        : [],
     },
   };
 }
@@ -16787,19 +16879,22 @@ async function handleApi(req, res, url) {
         const body = await readJsonBody(req);
         const mode = body?.mode;
         if (!mode) {
-          // No mode specified — return available retry options so the UI can
-          // present a picker (from scratch vs from failed step).
-          const failedNodes = [];
-          const nodeStatuses = run.detail?.nodeStatuses || {};
-          for (const [nodeId, status] of Object.entries(nodeStatuses)) {
-            if (status === "failed") failedNodes.push(nodeId);
+          const retryOptions = typeof engine.getRetryOptions === "function"
+            ? engine.getRetryOptions(runId)
+            : null;
+          if (retryOptions) {
+            jsonResponse(res, 200, {
+              ok: true,
+              ...retryOptions,
+            });
+            return;
           }
           jsonResponse(res, 200, {
             ok: true,
             runId,
             status: run.status,
             options: [
-              { mode: "from_failed", label: "Retry from last failed step", failedNodes },
+              { mode: "from_failed", label: "Retry from last failed step", failedNodes: [] },
               { mode: "from_scratch", label: "Retry from scratch" },
             ],
           });
