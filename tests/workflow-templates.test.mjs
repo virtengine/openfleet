@@ -494,8 +494,8 @@ describe("workflow-templates", () => {
   it("agent templates only advance to inreview after a real PR is linked", () => {
     const backendTemplate = getTemplate("template-backend-agent");
     expect(backendTemplate).toBeDefined();
-    const backendGate = backendTemplate.nodes.find((n) => n.id === "pr-created");
-    const backendRetryGate = backendTemplate.nodes.find((n) => n.id === "pr-created-retry");
+    const backendGate = backendTemplate.nodes.find((n) => n.id === "main-pr-ok");
+    const backendRetryGate = backendTemplate.nodes.find((n) => n.id === "retry-pr-ok");
     expect(backendGate?.config?.expression).toContain("prNumber");
     expect(backendGate?.config?.expression).toContain("prUrl");
     expect(backendGate?.config?.expression).not.toContain("success === true");

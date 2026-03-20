@@ -711,9 +711,15 @@ function detectRepoSlug(repoRoot = "") {
   const direct = tryResolve(process.cwd());
   if (direct) return direct;
 
-  // Fall back to detected repo root if provided (or detectable)
-  const root = repoRoot || detectRepoRoot();
-  if (root) {
+  // Fall back to detected repo root if provided
+  if (repoRoot) {
+    const viaRoot = tryResolve(repoRoot);
+    if (viaRoot) return viaRoot;
+  }
+
+  // Last resort — use cached detectRepoRoot (avoids redundant subprocess calls)
+  const root = detectRepoRoot();
+  if (root && root !== process.cwd()) {
     const viaRoot = tryResolve(root);
     if (viaRoot) return viaRoot;
   }
@@ -721,7 +727,16 @@ function detectRepoSlug(repoRoot = "") {
   return null;
 }
 
+let _detectRepoRootCache = null;
+
 function detectRepoRoot() {
+  if (_detectRepoRootCache) return _detectRepoRootCache;
+  const result = _detectRepoRootUncached();
+  _detectRepoRootCache = result;
+  return result;
+}
+
+function _detectRepoRootUncached() {
   const gitExecOptions = {
     encoding: "utf8",
     stdio: ["pipe", "pipe", "ignore"],
@@ -734,43 +749,8 @@ function detectRepoRoot() {
     if (existsSync(envRoot)) return envRoot;
   }
 
-  // 2. Try git from cwd
-  try {
-    const gitRoot = execSync("git rev-parse --show-toplevel", {
-      ...gitExecOptions,
-    }).trim();
-    if (gitRoot) return gitRoot;
-  } catch {
-    // not in a git repo from cwd
-  }
-
-  // 3. Bosun package directory may be inside a repo (common: scripts/bosun/ within a project)
-  try {
-    const gitRoot = execSync("git rev-parse --show-toplevel", {
-      cwd: __dirname,
-      ...gitExecOptions,
-    }).trim();
-    if (gitRoot) return gitRoot;
-  } catch {
-    // bosun installed standalone, not in a repo
-  }
-
-  // 4. Module root detection — when bosun is installed as a standalone npm package,
-  //    use the module root directory as a stable base for config resolution.
-  const moduleRoot = detectBosunModuleRoot();
-  if (moduleRoot && moduleRoot !== process.cwd()) {
-    try {
-      const gitRoot = execSync("git rev-parse --show-toplevel", {
-        cwd: moduleRoot,
-        ...gitExecOptions,
-      }).trim();
-      if (gitRoot) return gitRoot;
-    } catch {
-      // module root is not inside a git repo
-    }
-  }
-
-  // 5. Check bosun config for workspace repos
+  // 2. Check bosun config for workspace repos FIRST — this is the primary
+  //    source of truth and works regardless of whether cwd is inside a git repo.
   const configDirs = getConfigSearchDirs();
   let fallbackRepo = null;
   for (const cfgName of CONFIG_FILES) {
@@ -792,11 +772,45 @@ function detectRepoRoot() {
   }
   if (fallbackRepo) return fallbackRepo;
 
-  // 6. Final fallback — warn and return cwd.
-  // git repo (e.g. when the daemon spawns with cwd=homedir), but returning
-  // null would crash downstream callers like resolve(repoRoot).  The warning
-  // helps diagnose "not a git repository" errors from child processes.
-  console.warn("[config] detectRepoRoot: no git repository found — falling back to cwd:", process.cwd());
+  // 3. Try git from cwd
+  try {
+    const gitRoot = execSync("git rev-parse --show-toplevel", {
+      ...gitExecOptions,
+    }).trim();
+    if (gitRoot) return gitRoot;
+  } catch {
+    // not in a git repo from cwd
+  }
+
+  // 4. Bosun package directory may be inside a repo (common: scripts/bosun/ within a project)
+  try {
+    const gitRoot = execSync("git rev-parse --show-toplevel", {
+      cwd: __dirname,
+      ...gitExecOptions,
+    }).trim();
+    if (gitRoot) return gitRoot;
+  } catch {
+    // bosun installed standalone, not in a repo
+  }
+
+  // 5. Module root detection — when bosun is installed as a standalone npm package,
+  //    use the module root directory as a stable base for config resolution.
+  const moduleRoot = detectBosunModuleRoot();
+  if (moduleRoot && moduleRoot !== process.cwd()) {
+    try {
+      const gitRoot = execSync("git rev-parse --show-toplevel", {
+        cwd: moduleRoot,
+        ...gitExecOptions,
+      }).trim();
+      if (gitRoot) return gitRoot;
+    } catch {
+      // module root is not inside a git repo
+    }
+  }
+
+  // 6. Final fallback — return cwd silently. The config system resolves
+  //    repos from BOSUN_HOME workspaces, so a missing git repo in cwd is
+  //    expected for globally-installed usage and daemon spawns.
   return process.cwd();
 }
 

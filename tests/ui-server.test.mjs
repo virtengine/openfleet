@@ -2507,6 +2507,7 @@ describe("ui-server mini app", () => {
     process.env.EXECUTOR_MODE = "internal";
 
     const mod = await import("../server/ui-server.mjs");
+    mod._testInjectWorkflowEngine(null, null);
     const rawGuard = {
       canStart: false,
       reason: "dependency_blocked",
@@ -2670,6 +2671,7 @@ describe("ui-server mini app", () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
     const mod = await import("../server/ui-server.mjs");
+    mod._testInjectWorkflowEngine(null, null);
     mod.injectUiDependencies({
       taskStoreApi: {
         canStartTask: vi.fn(() => ({
@@ -2744,6 +2746,7 @@ describe("ui-server mini app", () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
     const mod = await import("../server/ui-server.mjs");
+    mod._testInjectWorkflowEngine(null, null);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     mod.injectUiDependencies({
       taskStoreApi: {

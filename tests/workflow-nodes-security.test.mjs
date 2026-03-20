@@ -380,6 +380,46 @@ describe("action.run_command env interpolation", () => {
     expect(parsed.conflicts).toHaveLength(2);
     expect(parsed.ciFailures).toHaveLength(1);
   });
+
+  it("automatically compacts large command output before storing it in workflow context", async () => {
+    const nodeType = getNodeType("action.run_command");
+    const node = makeNode("action.run_command", {
+      command: "node",
+      args: [
+        "-e",
+        "for (let i = 0; i < 260; i += 1) console.log(`noise-${i} ${'x'.repeat(18)}`); console.log('ERROR workflow reducer failed at src/runtime/handler.ts:42');",
+      ],
+    });
+
+    const result = await nodeType.execute(node, makeCtx());
+    expect(result.success).toBe(true);
+    expect(result.outputCompacted).toBe(true);
+    expect(result.rawOutputChars).toBeGreaterThan(result.compactedOutputChars);
+    expect(result.output).toContain("ERROR workflow reducer failed");
+    expect(result.output).toContain("bosun --tool-log");
+    expect(result.outputDiagnostics?.summary).toBeTruthy();
+    expect(result.outputHint || result.outputSuggestedRerun || result.outputDiagnostics?.summary).toBeTruthy();
+    expect(Array.isArray(result.items)).toBe(true);
+    expect(result.items.length).toBe(1);
+  });
+});
+
+describe("workflow validation output compaction", () => {
+  it("compacts noisy failed test output automatically", async () => {
+    const nodeType = getNodeType("validation.tests");
+    const node = makeNode("validation.tests", {
+      command:
+        "node -e \"for (let i = 0; i < 220; i += 1) console.log('ok helper-' + i + ' ' + 'x'.repeat(16)); console.log('FAIL tests/runtime/example.test.ts'); console.log('Error: expected true to be false'); process.exit(1);\"",
+    });
+
+    const result = await nodeType.execute(node, makeCtx());
+    expect(result.passed).toBe(false);
+    expect(result.outputCompacted).toBe(true);
+    expect(result.output).toContain("FAIL tests/runtime/example.test.ts");
+    expect(result.output).toContain("expected true to be false");
+    expect(result.output).toContain("bosun --tool-log");
+    expect(result.outputDiagnostics?.suggestedRerun).toContain("vitest run");
+  });
 });
 
 // -- action.git_operations Safety ----------------------------------------------

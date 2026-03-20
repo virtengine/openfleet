@@ -35,7 +35,7 @@
  *             NO → release-slot → log skipped
  */
 
-import { node, edge, resetLayout } from "./_helpers.mjs";
+import { node, edge, resetLayout, agentPhase } from "./_helpers.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Task Lifecycle — Full Task Execution Pipeline
@@ -175,46 +175,19 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       repositories: "{{repositories}}",
     }, { x: 200, y: 1610 }),
     // ── Execute agent (phase 1: planning) ───────────────────────────────
-    node("run-agent-plan", "action.run_agent", "Agent Plan", {
-      prompt: "{{_taskPrompt}}\n\nExecution phase: planning. Produce a concrete implementation plan and identify required tests. Do not make code changes in this phase.",
-      taskId: "{{taskId}}",
-      sdk: "{{resolvedSdk}}",
-      model: "{{resolvedModel}}",
-      agentProfile: "{{agentProfile}}",
-      cwd: "{{worktreePath}}",
-      timeoutMs: "{{taskTimeoutMs}}",
-      maxRetries: "{{maxRetries}}",
-      maxContinues: "{{maxContinues}}",
-      failOnError: false,
-    }, { x: 200, y: 1740 }),
+    agentPhase("run-agent-plan", "Agent Plan",
+      "{{_taskPrompt}}\n\nExecution phase: planning. Produce a concrete implementation plan and identify required tests. Do not make code changes in this phase.",
+      {}, { x: 200, y: 1740 }),
 
     // ── Execute agent (phase 2: tests-first) ────────────────────────────
-    node("run-agent-tests", "action.run_agent", "Agent Tests", {
-      prompt: "{{_taskPrompt}}\n\nExecution phase: tests. Write or update tests first for the target behavior, then validate failures/pass criteria before implementation changes.",
-      taskId: "{{taskId}}",
-      sdk: "{{resolvedSdk}}",
-      model: "{{resolvedModel}}",
-      agentProfile: "{{agentProfile}}",
-      cwd: "{{worktreePath}}",
-      timeoutMs: "{{taskTimeoutMs}}",
-      maxRetries: "{{maxRetries}}",
-      maxContinues: "{{maxContinues}}",
-      failOnError: false,
-    }, { x: 200, y: 1545 }),
+    agentPhase("run-agent-tests", "Agent Tests",
+      "{{_taskPrompt}}\n\nExecution phase: tests. Write or update tests first for the target behavior, then validate failures/pass criteria before implementation changes.",
+      {}, { x: 200, y: 1545 }),
 
     // ── Execute agent (phase 3: implementation + verification) ──────────
-    node("run-agent-implement", "action.run_agent", "Agent Implement", {
-      prompt: "{{_taskPrompt}}\n\nExecution phase: implementation. Complete implementation after tests exist, run required verification (tests/lint/build), then commit, push, and create/update PR.",
-      taskId: "{{taskId}}",
-      sdk: "{{resolvedSdk}}",
-      model: "{{resolvedModel}}",
-      agentProfile: "{{agentProfile}}",
-      cwd: "{{worktreePath}}",
-      timeoutMs: "{{taskTimeoutMs}}",
-      maxRetries: "{{maxRetries}}",
-      maxContinues: "{{maxContinues}}",
-      failOnError: false,
-    }, { x: 200, y: 1610 }),
+    agentPhase("run-agent-implement", "Agent Implement",
+      "{{_taskPrompt}}\n\nExecution phase: implementation. Complete implementation after tests exist, run required verification (tests/lint/build), then commit, push, and create/update PR.",
+      {}, { x: 200, y: 1610 }),
 
     // ── Check if claim was stolen during agent execution ─────────────────
     node("claim-stolen", "condition.expression", "Claim Stolen?", {
@@ -681,17 +654,7 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     }, { x: 300, y: 1480 }),
 
     // ── Run agent ────────────────────────────────────────────────────────
-    node("agent", "action.run_agent", "Run Agent", {
-      prompt: "{{_taskPrompt}}",
-      taskId: "{{taskId}}",
-      sdk: "{{resolvedSdk}}",
-      model: "{{resolvedModel}}",
-      agentProfile: "{{agentProfile}}",
-      cwd: "{{worktreePath}}",
-      timeoutMs: "{{taskTimeoutMs}}",
-      maxRetries: "{{maxRetries}}",
-      failOnError: false,
-    }, { x: 300, y: 1610 }),
+    agentPhase("agent", "Run Agent", "{{_taskPrompt}}", {}, { x: 300, y: 1610 }),
 
     // ── Detect commits ───────────────────────────────────────────────────
     node("commits", "action.detect_new_commits", "Check Commits", {

@@ -1350,6 +1350,60 @@ function normalizeLegacyWorkflowCommand(command) {
   return normalized;
 }
 
+let _contextCacheMod = null;
+async function getContextCacheMod() {
+  if (!_contextCacheMod) {
+    _contextCacheMod = await import("../workspace/context-cache.mjs");
+  }
+  return _contextCacheMod;
+}
+
+async function compactWorkflowCommandResult({
+  command = "",
+  args = [],
+  output = "",
+  stderr = "",
+  exitCode = 0,
+  durationMs = null,
+  sessionType = "flow",
+} = {}) {
+  const rawOutput = String(output || "");
+  const rawStderr = String(stderr || "");
+  const { compactCommandOutputPayload } = await getContextCacheMod();
+  const compacted = await compactCommandOutputPayload(
+    {
+      command,
+      args,
+      output: rawOutput,
+      stderr: rawStderr,
+      exitCode,
+      durationMs,
+    },
+    {
+      sessionType,
+      agentType: "workflow",
+      force: true,
+    },
+  );
+
+  return {
+    output: compacted.text || rawOutput || rawStderr,
+    outputCompacted: compacted.compacted,
+    rawOutputChars: compacted.originalChars,
+    compactedOutputChars: compacted.compactedChars,
+    outputToolLogId: compacted.toolLogId,
+    outputRetrieveCommand: compacted.retrieveCommand,
+    outputCompactionFamily: compacted.compactionFamily,
+    outputCommandFamily: compacted.commandFamily,
+    outputDiagnostics: compacted.commandDiagnostics || null,
+    outputSuggestedRerun: compacted.commandDiagnostics?.suggestedRerun || null,
+    outputDeltaSummary: compacted.commandDiagnostics?.deltaSummary || "",
+    outputHint: compacted.commandDiagnostics?.hint || "",
+    outputInsufficientSignal: compacted.commandDiagnostics?.insufficientSignal === true,
+    items: compacted.item ? [compacted.item] : [],
+  };
+}
+
 function resolveWorkflowNodeValue(value, ctx) {
   if (typeof value === "string") {
     const resolved = ctx.resolve(value);
@@ -3209,6 +3263,7 @@ registerBuiltinNodeType("action.run_command", {
       ctx.log(node.id, `Normalized legacy command for portability: ${command}`);
     }
     ctx.log(node.id, `Running: ${usedArgv ? `${command} ${commandArgs.join(" ")}`.trim() : command}`);
+    const startedAt = Date.now();
     try {
       const output = usedArgv
         ? execFileSync(command, commandArgs, {
@@ -3228,19 +3283,37 @@ registerBuiltinNodeType("action.run_command", {
             env: commandEnv,
           });
       ctx.log(node.id, `Command succeeded`);
-      return { success: true, output: parseOutput(output), exitCode: 0 };
+      const parsedOutput = parseOutput(output);
+      if (shouldParseJson || typeof parsedOutput !== "string") {
+        return { success: true, output: parsedOutput, exitCode: 0 };
+      }
+      const compacted = await compactWorkflowCommandResult({
+        command,
+        args: commandArgs,
+        output: parsedOutput,
+        exitCode: 0,
+        durationMs: Date.now() - startedAt,
+      });
+      return { success: true, exitCode: 0, ...compacted };
     } catch (err) {
       const output = err.stdout?.toString() || "";
       const stderr = err.stderr?.toString() || "";
-      const result = {
-        success: false,
-        output: parseOutput(output),
+      const compacted = await compactWorkflowCommandResult({
+        command,
+        args: commandArgs,
+        output,
         stderr,
         exitCode: err.status,
+        durationMs: Date.now() - startedAt,
+      });
+      const result = {
+        success: false,
+        exitCode: err.status,
         error: err.message,
+        ...compacted,
       };
       if (node.config?.failOnError) {
-        const reason = trimLogText(stderr || output || err.message, 400) || err.message;
+        const reason = trimLogText(result.output || stderr || output || err.message, 400) || err.message;
         throw new Error(reason);
       }
       return result;
@@ -4409,11 +4482,34 @@ registerBuiltinNodeType("action.git_operations", {
 
     const runGitCommand = ({ op, cmd }) => {
       ctx.log(node.id, `Git ${op}: ${cmd}`);
+      const startedAt = Date.now();
       try {
         const output = execSync(cmd, { cwd, encoding: "utf8", timeout: 120000 });
-        return { success: true, output: output?.trim(), operation: op, command: cmd };
+        return compactWorkflowCommandResult({
+          command: cmd,
+          output: output?.trim() || "",
+          exitCode: 0,
+          durationMs: Date.now() - startedAt,
+        }).then((compacted) => ({
+          success: true,
+          operation: op,
+          command: cmd,
+          ...compacted,
+        }));
       } catch (err) {
-        return { success: false, error: err.message, operation: op, command: cmd };
+        return compactWorkflowCommandResult({
+          command: cmd,
+          output: err.stdout?.toString() || "",
+          stderr: err.stderr?.toString() || err.message,
+          exitCode: err.status,
+          durationMs: Date.now() - startedAt,
+        }).then((compacted) => ({
+          success: false,
+          error: err.message,
+          operation: op,
+          command: cmd,
+          ...compacted,
+        }));
       }
     };
 
@@ -4424,7 +4520,7 @@ registerBuiltinNodeType("action.git_operations", {
       const steps = [];
       for (const spec of operationList) {
         const resolved = resolveOpCommand(spec || {});
-        const result = runGitCommand(resolved);
+        const result = await runGitCommand(resolved);
         steps.push(result);
         if (result.success !== true) {
           return {
@@ -4443,7 +4539,7 @@ registerBuiltinNodeType("action.git_operations", {
       return { success: false, error: "No git operation provided", operation: null };
     }
     const resolved = resolveOpCommand({ op });
-    return runGitCommand(resolved);
+    return await runGitCommand(resolved);
   },
 });
 
@@ -5205,14 +5301,27 @@ registerBuiltinNodeType("validation.tests", {
     const timeout = node.config?.timeoutMs || 600000;
 
     ctx.log(node.id, `Running tests: ${command}`);
+    const startedAt = Date.now();
     try {
       const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
       ctx.log(node.id, "Tests passed");
-      return { passed: true, output: output?.trim() };
+      const compacted = await compactWorkflowCommandResult({
+        command,
+        output: output?.trim() || "",
+        exitCode: 0,
+        durationMs: Date.now() - startedAt,
+      });
+      return { passed: true, ...compacted };
     } catch (err) {
       const output = (err.stdout?.toString() || "") + (err.stderr?.toString() || "");
       ctx.log(node.id, "Tests failed", "error");
-      return { passed: false, output, exitCode: err.status };
+      const compacted = await compactWorkflowCommandResult({
+        command,
+        output,
+        exitCode: err.status,
+        durationMs: Date.now() - startedAt,
+      });
+      return { passed: false, exitCode: err.status, ...compacted };
     }
   },
 });
@@ -5238,15 +5347,29 @@ registerBuiltinNodeType("validation.build", {
       ctx.log(node.id, `Normalized legacy command for portability: ${command}`);
     }
     ctx.log(node.id, `Building: ${command}`);
+    const startedAt = Date.now();
     try {
       const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
       const hasWarnings = /warning/i.test(output || "");
+      const compacted = await compactWorkflowCommandResult({
+        command,
+        output: output?.trim() || "",
+        exitCode: 0,
+        durationMs: Date.now() - startedAt,
+      });
       if (node.config?.zeroWarnings && hasWarnings) {
-        return { passed: false, reason: "warnings_found", output: output?.trim() };
+        return { passed: false, reason: "warnings_found", ...compacted };
       }
-      return { passed: true, output: output?.trim() };
+      return { passed: true, ...compacted };
     } catch (err) {
-      return { passed: false, output: err.stderr?.toString() || err.message, exitCode: err.status };
+      const compacted = await compactWorkflowCommandResult({
+        command,
+        output: err.stdout?.toString() || "",
+        stderr: err.stderr?.toString() || err.message,
+        exitCode: err.status,
+        durationMs: Date.now() - startedAt,
+      });
+      return { passed: false, exitCode: err.status, ...compacted };
     }
   },
 });
@@ -5267,11 +5390,25 @@ registerBuiltinNodeType("validation.lint", {
       return { passed: true, output: "no lint configured", skipped: true };
     }
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const startedAt = Date.now();
     try {
       const output = execSync(command, { cwd, timeout: node.config?.timeoutMs || 120000, encoding: "utf8", stdio: "pipe" });
-      return { passed: true, output: output?.trim() };
+      const compacted = await compactWorkflowCommandResult({
+        command,
+        output: output?.trim() || "",
+        exitCode: 0,
+        durationMs: Date.now() - startedAt,
+      });
+      return { passed: true, ...compacted };
     } catch (err) {
-      return { passed: false, output: err.stderr?.toString() || err.message };
+      const compacted = await compactWorkflowCommandResult({
+        command,
+        output: err.stdout?.toString() || "",
+        stderr: err.stderr?.toString() || err.message,
+        exitCode: err.status,
+        durationMs: Date.now() - startedAt,
+      });
+      return { passed: false, ...compacted };
     }
   },
 });
@@ -12695,6 +12832,289 @@ registerBuiltinNodeType("action.web_search", {
         error: err.message,
       };
     }
+  },
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  CONTROL FLOW — Try/Catch Error Boundary
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerBuiltinNodeType("flow.try_catch", {
+  describe: () => "Error boundary — execute a sub-workflow and catch failures gracefully",
+  schema: {
+    type: "object",
+    properties: {
+      tryWorkflowId: {
+        type: "string",
+        description: "Workflow ID to execute in the 'try' block",
+      },
+      catchWorkflowId: {
+        type: "string",
+        description: "Optional workflow ID to execute on error (receives $error in data)",
+      },
+      finallyWorkflowId: {
+        type: "string",
+        description: "Optional workflow ID to always execute after try/catch",
+      },
+      tryNodes: {
+        type: "array",
+        items: { type: "string" },
+        description: "Alternative: list of node IDs from the parent workflow to treat as the try block",
+      },
+      errorVariable: {
+        type: "string",
+        default: "$error",
+        description: "Variable name to store the caught error object",
+      },
+      propagateError: {
+        type: "boolean",
+        default: false,
+        description: "If true, re-throw the error after catch/finally (bubble to parent)",
+      },
+      maxRetries: {
+        type: "number",
+        default: 0,
+        description: "Auto-retry the try block up to N times before falling through to catch",
+      },
+      retryDelayMs: {
+        type: "number",
+        default: 1000,
+        description: "Delay between retries in ms",
+      },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const tryWfId = ctx.resolve(node.config?.tryWorkflowId || "");
+    const catchWfId = ctx.resolve(node.config?.catchWorkflowId || "");
+    const finallyWfId = ctx.resolve(node.config?.finallyWorkflowId || "");
+    const errorVar = node.config?.errorVariable || "$error";
+    const propagate = node.config?.propagateError === true;
+    const maxRetries = Math.max(0, Math.min(10, node.config?.maxRetries || 0));
+    const retryDelay = Math.max(0, node.config?.retryDelayMs || 1000);
+
+    let tryResult = null;
+    let caughtError = null;
+    let catchResult = null;
+    let finallyResult = null;
+    let attempts = 0;
+
+    // ── TRY ───────────────────────────────────────────────────────────
+    if (tryWfId && engine?.execute) {
+      const attemptLimit = 1 + maxRetries;
+      while (attempts < attemptLimit) {
+        attempts++;
+        try {
+          ctx.log(node.id, `try: executing workflow "${tryWfId}" (attempt ${attempts}/${attemptLimit})`);
+          const runCtx = await engine.execute(tryWfId, { ...ctx.data });
+          const hasErrors = runCtx?.errors?.length > 0;
+          if (hasErrors) {
+            const msg = runCtx.errors.map((e) => e.error || e.message || String(e)).join("; ");
+            throw new Error(msg);
+          }
+          tryResult = { success: true, runId: runCtx?.id || null, attempt: attempts };
+          caughtError = null; // Clear any previous retry errors on success
+          break; // success — exit retry loop
+        } catch (err) {
+          caughtError = err;
+          if (attempts < attemptLimit) {
+            ctx.log(node.id, `try: attempt ${attempts} failed, retrying in ${retryDelay}ms…`);
+            await new Promise((r) => setTimeout(r, retryDelay));
+          }
+        }
+      }
+    } else if (!tryWfId) {
+      // No sub-workflow — the try block is a no-op (node acts as passthrough)
+      tryResult = { success: true, passthrough: true };
+    } else {
+      tryResult = { success: true, noEngine: true };
+    }
+
+    // ── CATCH ─────────────────────────────────────────────────────────
+    if (caughtError) {
+      ctx.log(node.id, `catch: error from try block — ${caughtError.message}`);
+      const errorObj = {
+        message: caughtError.message,
+        name: caughtError.name || "Error",
+        stack: caughtError.stack || null,
+        attempt: attempts,
+      };
+      ctx.data[errorVar] = errorObj;
+      tryResult = { success: false, error: errorObj.message, attempt: attempts };
+
+      if (catchWfId && engine?.execute) {
+        try {
+          ctx.log(node.id, `catch: executing workflow "${catchWfId}"`);
+          const catchCtx = await engine.execute(catchWfId, { ...ctx.data, [errorVar]: errorObj });
+          catchResult = { executed: true, runId: catchCtx?.id || null };
+        } catch (catchErr) {
+          catchResult = { executed: true, error: catchErr.message };
+          ctx.log(node.id, `catch workflow also failed: ${catchErr.message}`, "warn");
+        }
+      }
+    }
+
+    // ── FINALLY ───────────────────────────────────────────────────────
+    if (finallyWfId && engine?.execute) {
+      try {
+        ctx.log(node.id, `finally: executing workflow "${finallyWfId}"`);
+        const finallyCtx = await engine.execute(finallyWfId, { ...ctx.data });
+        finallyResult = { executed: true, runId: finallyCtx?.id || null };
+      } catch (finErr) {
+        finallyResult = { executed: true, error: finErr.message };
+        ctx.log(node.id, `finally workflow failed: ${finErr.message}`, "warn");
+      }
+    }
+
+    // ── Propagate ─────────────────────────────────────────────────────
+    if (caughtError && propagate) {
+      throw caughtError;
+    }
+
+    return {
+      tryResult,
+      catchResult,
+      finallyResult,
+      hadError: !!caughtError,
+      errorMessage: caughtError?.message || null,
+      attempts,
+    };
+  },
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  CONTROL FLOW — Parallel Execution
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerBuiltinNodeType("flow.parallel", {
+  describe: () => "Execute multiple named branches (sub-workflows) simultaneously and collect all results",
+  schema: {
+    type: "object",
+    properties: {
+      branches: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name:       { type: "string", description: "Branch label (used as key in results)" },
+            workflowId: { type: "string", description: "Workflow ID to execute for this branch" },
+            data:       { type: "object", description: "Optional data overrides for this branch" },
+          },
+          required: ["name", "workflowId"],
+        },
+        description: "List of branches to execute in parallel",
+      },
+      failStrategy: {
+        type: "string",
+        enum: ["all-settled", "fail-fast"],
+        default: "all-settled",
+        description: "'all-settled' waits for every branch; 'fail-fast' aborts remaining on first failure",
+      },
+      timeoutMs: {
+        type: "number",
+        default: 300000,
+        description: "Maximum time to wait for all branches (ms)",
+      },
+    },
+    required: ["branches"],
+  },
+  async execute(node, ctx, engine) {
+    const branches = Array.isArray(node.config?.branches) ? node.config.branches : [];
+    const strategy = node.config?.failStrategy || "all-settled";
+    const timeoutMs = node.config?.timeoutMs || 300_000;
+
+    if (branches.length === 0) {
+      return { branches: [], results: {}, successCount: 0, failCount: 0 };
+    }
+
+    if (!engine?.execute) {
+      throw new Error("flow.parallel requires an engine with sub-workflow execution support");
+    }
+
+    ctx.log(node.id, `parallel: launching ${branches.length} branches (${strategy})`);
+
+    const makeBranchPromise = (branch) => {
+      const branchData = { ...ctx.data, ...(branch.data || {}), _parallelBranch: branch.name };
+      const wfId = ctx.resolve(branch.workflowId || "");
+      if (!wfId) {
+        return Promise.resolve({ name: branch.name, success: false, error: "Missing workflowId" });
+      }
+      return engine.execute(wfId, branchData).then(
+        (runCtx) => {
+          const hasErrors = runCtx?.errors?.length > 0;
+          return {
+            name: branch.name,
+            success: !hasErrors,
+            runId: runCtx?.id || null,
+            error: hasErrors ? runCtx.errors[0]?.error : null,
+          };
+        },
+        (err) => ({
+          name: branch.name,
+          success: false,
+          runId: null,
+          error: err?.message || String(err),
+        }),
+      );
+    };
+
+    let branchResults;
+
+    if (strategy === "fail-fast") {
+      // Use Promise.all — first rejection aborts
+      const timeout$ = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`Parallel branches timed out after ${timeoutMs}ms`)), timeoutMs),
+      );
+      try {
+        const raw = await Promise.race([
+          Promise.all(branches.map((b) => {
+            return makeBranchPromise(b).then((r) => {
+              if (!r.success) throw Object.assign(new Error(r.error || "Branch failed"), { branchName: r.name });
+              return r;
+            });
+          })),
+          timeout$,
+        ]);
+        branchResults = raw;
+      } catch (err) {
+        // One branch failed fast
+        branchResults = [{ name: err.branchName || "unknown", success: false, error: err.message }];
+      }
+    } else {
+      // all-settled — wait for every branch
+      const timeout$ = new Promise((resolve) =>
+        setTimeout(() => resolve("__timeout__"), timeoutMs),
+      );
+      const allSettled$ = Promise.allSettled(branches.map(makeBranchPromise)).then((settled) =>
+        settled.map((s, i) =>
+          s.status === "fulfilled"
+            ? s.value
+            : { name: branches[i]?.name || `branch-${i}`, success: false, error: s.reason?.message || String(s.reason) },
+        ),
+      );
+
+      const winner = await Promise.race([allSettled$, timeout$]);
+      if (winner === "__timeout__") {
+        branchResults = branches.map((b) => ({ name: b.name, success: false, error: "Timed out" }));
+      } else {
+        branchResults = winner;
+      }
+    }
+
+    const results = {};
+    for (const r of branchResults) results[r.name] = r;
+
+    const successCount = branchResults.filter((r) => r.success).length;
+    const failCount = branchResults.length - successCount;
+
+    ctx.log(node.id, `parallel: ${successCount}/${branchResults.length} branches succeeded`);
+
+    return {
+      branches: branchResults.map((r) => r.name),
+      results,
+      successCount,
+      failCount,
+      totalBranches: branches.length,
+    };
   },
 });
 

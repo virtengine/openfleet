@@ -1345,7 +1345,7 @@ function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
       try {
         const parsed = new URL(String(activeBaseUrl || ""));
         const host = String(parsed.hostname || "").toLowerCase();
-        return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+        return host === "openai.azure.com" || host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com");
       } catch {
         return false;
       }

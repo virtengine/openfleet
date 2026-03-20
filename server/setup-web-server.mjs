@@ -43,7 +43,7 @@ function isAzureOpenAIHost(value) {
   try {
     const parsed = value instanceof URL ? value : new URL(String(value || "").trim());
     const host = String(parsed.hostname || "").toLowerCase();
-    return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+    return host === "openai.azure.com" || host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com");
   } catch {
     return false;
   }

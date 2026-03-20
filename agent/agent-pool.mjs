@@ -55,8 +55,7 @@ import {
   MAX_STREAM_RETRIES,
 } from "../infra/stream-resilience.mjs";
 import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
-import { compressAllItems, estimateSavings, estimateContextUsagePct, recordShreddingEvent } from "../workspace/context-cache.mjs";
-import { resolveContextShreddingOptions } from "../config/context-shredding-config.mjs";
+import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
 
 // Lazy-load MCP registry to avoid circular dependencies.
 // Cached at module scope per AGENTS.md hard rules.
@@ -110,7 +109,15 @@ function hasOptionalModule(specifier) {
     require.resolve(specifier);
     ok = true;
   } catch {
-    ok = false;
+    // ESM-only packages have no CJS "require" export so require.resolve
+    // throws even when the package is installed.  Fall back to checking
+    // whether the package directory exists on disk.
+    try {
+      const pkgDir = resolve(__dirname, "..", "node_modules", ...specifier.split("/"));
+      ok = existsSync(resolve(pkgDir, "package.json"));
+    } catch {
+      ok = false;
+    }
   }
   MODULE_PRESENCE_CACHE.set(specifier, ok);
   return ok;
@@ -244,29 +251,12 @@ async function maybeCompressResultItems(
 
   const resolvedSessionType = normalizeSessionType(sessionType, "task");
   const agentType = normalizeSdkForShredding(sdk);
-  const shreddingOpts = resolveContextShreddingOptions(
-    resolvedSessionType,
+  return maybeCompressSessionItems(items, {
+    sessionType: resolvedSessionType,
     agentType,
-  );
-  if (shreddingOpts?._skip === true) return items;
-
-  const usagePct = estimateContextUsagePct(items);
-  const threshold = Number.isFinite(shreddingOpts?.contextUsageThreshold)
-    ? Number(shreddingOpts.contextUsageThreshold)
-    : 0.5;
-  if (usagePct < threshold) return items;
-
-  shreddingOpts.contextUsagePct = usagePct;
-  const compressedItems = await compressAllItems(items, shreddingOpts);
-  try {
-    const savings = estimateSavings(items, compressedItems);
-    if (savings.savedChars > 0) {
-      recordShreddingEvent({ ...savings, agentType: agentType || sdk });
-    }
-  } catch {
-    /* non-fatal */
-  }
-  return compressedItems;
+    force: forceCompression,
+    skip: skipCompression,
+  });
 }
 
 function resolveCodexStreamSafety(totalTimeoutMs) {
@@ -762,13 +752,14 @@ async function withTemporaryEnv(overrides, fn) {
  * Otherwise strips OPENAI_BASE_URL so the SDK uses its default auth.
  */
 function buildCodexSdkOptions(envInput = process.env) {
-  const { env: resolvedEnv } = resolveCodexProfileRuntime(envInput);
+  const resolved = resolveCodexProfileRuntime(envInput);
+  const { env: resolvedEnv, configProvider } = resolved;
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
   const isAzure = (() => {
         try {
           const parsed = new URL(baseUrl);
           const host = String(parsed.hostname || "").toLowerCase();
-          return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+          return host === "openai.azure.com" || host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com");
         } catch {
           return false;
         }
@@ -783,16 +774,20 @@ function buildCodexSdkOptions(envInput = process.env) {
     if (env.OPENAI_API_KEY && !env.AZURE_OPENAI_API_KEY) {
       env.AZURE_OPENAI_API_KEY = env.OPENAI_API_KEY;
     }
+    // Use the config.toml provider section name and env_key when available,
+    // so the SDK config override is consistent with the user's config.toml.
+    const providerSectionName = configProvider?.name || "azure";
+    const providerEnvKey = configProvider?.envKey || "AZURE_OPENAI_API_KEY";
     const azureModel = env.CODEX_MODEL || undefined;
     return {
       env,
       config: {
-        model_provider: "azure",
+        model_provider: providerSectionName,
         model_providers: {
-          azure: {
+          [providerSectionName]: {
             name: "Azure OpenAI",
             base_url: baseUrl,
-            env_key: "AZURE_OPENAI_API_KEY",
+            env_key: providerEnvKey,
             wire_api: "responses",
           },
         },
