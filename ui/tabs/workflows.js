@@ -30,6 +30,8 @@ import {
   serializeGraphSnapshot,
   undoHistory,
 } from "./workflow-canvas-utils.mjs";
+import { createSession } from "../components/session-list.js";
+import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import { Card, Badge, EmptyState } from "../components/shared.js";
 import {
   Typography, Box, Stack, Card as MuiCard, CardContent, Button, IconButton, Chip,
@@ -173,6 +175,228 @@ export function openWorkflowRunsView(workflowId, runId = null) {
   loadRuns(scopedWorkflowId, { reset: true }).catch(() => {});
   if (runId) {
     loadRunDetail(runId, { workflowId: scopedWorkflowId }).catch(() => {});
+  }
+}
+
+const WORKFLOW_COPILOT_MAX_CHARS = 5000;
+
+function formatWorkflowCopilotBlock(value, maxChars = WORKFLOW_COPILOT_MAX_CHARS) {
+  try {
+    const json = JSON.stringify(value, null, 2);
+    if (json.length <= maxChars) return json;
+    const omitted = json.length - maxChars;
+    return `${json.slice(0, maxChars)}\n\n[truncated ${omitted} chars]`;
+  } catch {
+    const text = String(value ?? "");
+    if (text.length <= maxChars) return text;
+    const omitted = text.length - maxChars;
+    return `${text.slice(0, maxChars)}\n\n[truncated ${omitted} chars]`;
+  }
+}
+
+function summarizeWorkflowNodes(workflow, limit = 20) {
+  const nodes = Array.isArray(workflow?.nodes) ? workflow.nodes : [];
+  if (!nodes.length) return "No nodes defined.";
+  const lines = nodes.slice(0, limit).map((node, index) => {
+    const nodeId = String(node?.id || `node-${index + 1}`).trim();
+    const nodeType = String(node?.type || "unknown").trim();
+    const nodeName =
+      String(node?.name || node?.label || node?.title || "").trim() || null;
+    const configKeys = Object.keys(node?.config || {}).slice(0, 6);
+    const configSummary = configKeys.length ? ` config keys: ${configKeys.join(", ")}` : "";
+    return `${index + 1}. ${nodeId} [${nodeType}]${nodeName ? ` - ${nodeName}` : ""}${configSummary}`;
+  });
+  if (nodes.length > limit) {
+    lines.push(`... ${nodes.length - limit} more node(s) omitted`);
+  }
+  return lines.join("\n");
+}
+
+function summarizeWorkflowEdges(workflow, limit = 24) {
+  const edges = Array.isArray(workflow?.edges) ? workflow.edges : [];
+  if (!edges.length) return "No edges defined.";
+  const lines = edges.slice(0, limit).map((edge, index) => {
+    const from = String(edge?.source || edge?.from || "?").trim() || "?";
+    const to = String(edge?.target || edge?.to || "?").trim() || "?";
+    const fromPort = String(edge?.sourcePort || edge?.fromPort || "").trim();
+    const toPort = String(edge?.targetPort || edge?.toPort || "").trim();
+    const portSummary = fromPort || toPort ? ` (${fromPort || "default"} -> ${toPort || "default"})` : "";
+    return `${index + 1}. ${from} -> ${to}${portSummary}`;
+  });
+  if (edges.length > limit) {
+    lines.push(`... ${edges.length - limit} more edge(s) omitted`);
+  }
+  return lines.join("\n");
+}
+
+function summarizeRunNodeStatuses(run, limit = 25) {
+  const nodeStatuses = buildNodeStatusesFromRunDetail(run);
+  const entries = Object.entries(nodeStatuses || {});
+  if (!entries.length) return "No node status data recorded.";
+  const sorted = entries.sort((a, b) => {
+    const rankDiff = getNodeStatusRank(a[1]) - getNodeStatusRank(b[1]);
+    if (rankDiff !== 0) return rankDiff;
+    return String(a[0]).localeCompare(String(b[0]));
+  });
+  const lines = sorted.slice(0, limit).map(([nodeId, status], index) => (
+    `${index + 1}. ${nodeId}: ${status || "unknown"}`
+  ));
+  if (sorted.length > limit) {
+    lines.push(`... ${sorted.length - limit} more node status entries omitted`);
+  }
+  return lines.join("\n");
+}
+
+function summarizeRunNodeOutputs(run, limit = 12) {
+  const outputs = run?.detail?.nodeOutputs && typeof run.detail.nodeOutputs === "object"
+    ? run.detail.nodeOutputs
+    : {};
+  const entries = Object.entries(outputs);
+  if (!entries.length) return "No node outputs recorded.";
+  const lines = entries.slice(0, limit).map(([nodeId, output], index) => {
+    const summary = String(output?.summary || "").trim();
+    const narrative = String(output?.narrative || "").trim();
+    if (summary || narrative) {
+      const parts = [summary, narrative].filter(Boolean);
+      return `${index + 1}. ${nodeId}: ${parts.join(" | ")}`;
+    }
+    return `${index + 1}. ${nodeId}: ${formatWorkflowCopilotBlock(output, 500)}`;
+  });
+  if (entries.length > limit) {
+    lines.push(`... ${entries.length - limit} more node output entries omitted`);
+  }
+  return lines.join("\n");
+}
+
+function buildWorkflowExplainPrompt(workflow) {
+  const workflowId = String(workflow?.id || "").trim() || "(unknown)";
+  const workflowName = String(workflow?.name || workflowId).trim() || workflowId;
+  const description = String(workflow?.description || "").trim() || "None provided.";
+  const variables = workflow?.variables && typeof workflow.variables === "object"
+    ? workflow.variables
+    : {};
+  return [
+    "You are helping inside Bosun with a workflow authoring review.",
+    "Explain this workflow in plain English, identify the riskiest nodes or missing guardrails, and suggest the smallest high-leverage improvements.",
+    "",
+    "Return:",
+    "1. A concise summary of what the workflow is trying to do",
+    "2. The critical nodes or transitions that matter most",
+    "3. Failure risks, ambiguity, or missing validation/retry/observability",
+    "4. Concrete next edits Bosun should make",
+    "",
+    "Workflow Context",
+    `- Name: ${workflowName}`,
+    `- ID: ${workflowId}`,
+    `- Enabled: ${workflow?.enabled === false ? "no" : "yes"}`,
+    `- Core workflow: ${workflow?.core === true ? "yes" : "no"}`,
+    `- Description: ${description}`,
+    `- Node count: ${Array.isArray(workflow?.nodes) ? workflow.nodes.length : 0}`,
+    `- Edge count: ${Array.isArray(workflow?.edges) ? workflow.edges.length : 0}`,
+    "",
+    "Variables",
+    formatWorkflowCopilotBlock(variables, 2500),
+    "",
+    "Node Summary",
+    summarizeWorkflowNodes(workflow),
+    "",
+    "Edge Summary",
+    summarizeWorkflowEdges(workflow),
+    "",
+    "Raw Workflow Snapshot",
+    formatWorkflowCopilotBlock({
+      id: workflow?.id,
+      name: workflow?.name,
+      description: workflow?.description,
+      enabled: workflow?.enabled,
+      core: workflow?.core,
+      metadata: workflow?.metadata || {},
+    }, 2500),
+  ].join("\n");
+}
+
+function buildRunCopilotPrompt(run, intent = "ask") {
+  const workflowName = String(run?.workflowName || getWorkflowNameById(run?.workflowId) || run?.workflowId || "Unknown Workflow").trim();
+  const status = String(run?.status || "unknown").trim() || "unknown";
+  const errors = Array.isArray(run?.detail?.errors) ? run.detail.errors : [];
+  const logs = Array.isArray(run?.detail?.logs) ? run.detail.logs : [];
+  const failed = intent === "fix" || status === "failed";
+  const request = failed
+    ? "Analyze why this workflow run failed. Identify the root cause, name the most likely failing node or nodes, propose the smallest concrete fix, and say whether Bosun should retry from failed state or rerun from the beginning."
+    : "Explain what happened in this workflow run, call out unusual or risky behavior, and suggest the next debugging or hardening steps.";
+  return [
+    "You are helping inside Bosun with workflow run analysis.",
+    request,
+    "",
+    "Return:",
+    "1. Short diagnosis",
+    "2. Evidence from the run",
+    failed ? "3. Concrete fix plan" : "3. Recommended next steps",
+    failed ? "4. Retry advice: retry from failed, rerun from start, or do not retry yet" : "4. Risks or follow-up checks",
+    "",
+    "Run Context",
+    `- Workflow: ${workflowName}`,
+    `- Workflow ID: ${String(run?.workflowId || "").trim() || "(unknown)"}`,
+    `- Run ID: ${String(run?.runId || "").trim() || "(unknown)"}`,
+    `- Status: ${status}`,
+    `- Started: ${formatDate(run?.startedAt)}`,
+    `- Finished: ${run?.endedAt ? formatDate(run.endedAt) : "Running"}`,
+    `- Duration: ${formatDuration(run?.duration)}`,
+    `- Active nodes: ${Number(run?.activeNodeCount || 0)}`,
+    `- Error count: ${Number(run?.errorCount || errors.length)}`,
+    `- Log count: ${Number(run?.logCount || logs.length)}`,
+    "",
+    "Node Statuses",
+    summarizeRunNodeStatuses(run),
+    "",
+    "Node Output Summaries",
+    summarizeRunNodeOutputs(run),
+    "",
+    "Errors",
+    formatWorkflowCopilotBlock(errors.slice(0, 8), 3500),
+    "",
+    "Recent Logs",
+    formatWorkflowCopilotBlock(logs.slice(-40), 4000),
+  ].join("\n");
+}
+
+async function openWorkflowCopilotChat(prompt, opts = {}) {
+  const content = String(prompt || "").trim();
+  if (!content) {
+    showToast("Workflow copilot prompt was empty", "error");
+    return null;
+  }
+  const successToast = String(opts?.successToast || "Opened workflow copilot chat").trim();
+  try {
+    const created = await createSession({
+      type: "primary",
+      reuseFresh: false,
+      ...(opts?.title ? { title: String(opts.title) } : {}),
+    });
+    const session = created?.session || null;
+    const sessionId = String(session?.id || "").trim();
+    if (!sessionId) throw new Error("Session creation failed");
+    const messagePath = buildSessionApiPath(sessionId, "message", {
+      workspace: resolveSessionWorkspaceHint(session, "active"),
+    });
+    if (!messagePath) throw new Error("Session path unavailable");
+    await apiFetch(messagePath, {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    });
+    const navigated = navigateTo("chat", {
+      params: { sessionId },
+      forceRefresh: true,
+    });
+    if (!navigated) {
+      showToast("Workflow copilot session started. Open Chat after resolving unsaved changes.", "info");
+      return sessionId;
+    }
+    showToast(successToast, "success");
+    return sessionId;
+  } catch (err) {
+    showToast(`Failed to start workflow copilot: ${err.message || "Unknown error"}`, "error");
+    return null;
   }
 }
 
@@ -2634,6 +2858,17 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         <${Button} variant="text" size="small" onClick=${returnToWorkflowList}>
           ← Back to Workflows
         <//>
+        <${Button}
+          variant="outlined"
+          size="small"
+          onClick=${() => openWorkflowCopilotChat(buildWorkflowExplainPrompt(workflow), {
+            title: `Explain workflow ${workflow?.name || workflow?.id || ""}`.trim(),
+            successToast: "Opened workflow explanation chat",
+          })}
+        >
+          <span class="btn-icon">${resolveIcon("bot")}</span>
+          Explain With Bosun
+        <//>
         <${Button} variant="contained" size="small" onClick=${() => openNodePalette()} sx=${{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <span style="font-size: 18px;">+</span> Add Node /
         <//>
@@ -4731,6 +4966,31 @@ function RunHistoryView() {
           ${selectedRun.workflowId && html`<${Button} variant="text" size="small" onClick=${() => openWorkflowCanvas(selectedRun.workflowId)}>Open Workflow<//>`}
           <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run Details</h2>
           <${Button} variant="text" size="small" onClick=${() => loadRunDetail(selectedRun.runId)}>Refresh<//>
+          <${Button}
+            variant="outlined"
+            size="small"
+            onClick=${() => openWorkflowCopilotChat(buildRunCopilotPrompt(selectedRun, "ask"), {
+              title: `Ask about workflow run ${selectedRun.runId || ""}`.trim(),
+              successToast: "Opened workflow run analysis chat",
+            })}
+          >
+            <span class="btn-icon">${resolveIcon("bot")}</span>
+            Ask Bosun
+          <//>
+          ${selectedRun.status === "failed" && html`
+            <${Button}
+              variant="contained"
+              size="small"
+              color="error"
+              onClick=${() => openWorkflowCopilotChat(buildRunCopilotPrompt(selectedRun, "fix"), {
+                title: `Fix failed workflow run ${selectedRun.runId || ""}`.trim(),
+                successToast: "Opened failed-run fix chat",
+              })}
+            >
+              <span class="btn-icon">${resolveIcon("settings")}</span>
+              Fix With Bosun
+            <//>
+          `}
         </div>
 
         <div style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px; margin-bottom: 12px;">

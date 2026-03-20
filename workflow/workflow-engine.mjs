@@ -535,6 +535,8 @@ export class WorkflowContext {
     this.nodeStatusEvents = [];
     this.variables = {};
     this.retryAttempts = new Map();
+    this._nodeTimings = {};
+    this._nodeInputs = {};
   }
 
   /** Target repo for multi-repo workspaces (convenience accessor) */
@@ -573,6 +575,27 @@ export class WorkflowContext {
       forked.nodeOutputs.set(k, v);
     }
     return forked;
+  }
+
+  /** Set a timing field for a node (startedAt / endedAt) */
+  setNodeTiming(nodeId, field, value) {
+    if (!this._nodeTimings[nodeId]) this._nodeTimings[nodeId] = {};
+    this._nodeTimings[nodeId][field] = value;
+  }
+
+  /** Get timing data for a node */
+  getNodeTiming(nodeId) {
+    return this._nodeTimings[nodeId] || null;
+  }
+
+  /** Store the resolved input snapshot for a node */
+  setNodeInput(nodeId, input) {
+    this._nodeInputs[nodeId] = input;
+  }
+
+  /** Get the stored input snapshot for a node */
+  getNodeInput(nodeId) {
+    return this._nodeInputs[nodeId] || null;
   }
 
   /** Set output from a node */
@@ -665,6 +688,8 @@ export class WorkflowContext {
       logs: this.logs,
       errors: this.errors,
       nodeStatusEvents: this.nodeStatusEvents,
+      nodeTimings: { ...this._nodeTimings },
+      nodeInputs: { ...this._nodeInputs },
     };
   }
 }
@@ -2051,7 +2076,199 @@ export class WorkflowEngine extends EventEmitter {
       ? detail.data._taskWorkflowEvents
       : [];
     return events.map((event) => ({ ...event }));
-  }  // ── Internal DAG Execution ────────────────────────────────────────────
+  }
+
+  /**
+   * Get detailed forensics for a single node in a run.
+   * @param {string} runId
+   * @param {string} nodeId
+   * @returns {object|null}
+   */
+  getNodeForensics(runId, nodeId) {
+    const run = this.getRunDetail(runId);
+    if (!run) return null;
+    const detail = run.detail || {};
+    const nodeStatuses = detail.nodeStatuses || {};
+    if (!(nodeId in nodeStatuses)) return null;
+
+    const timings = detail.nodeTimings?.[nodeId] || {};
+    const startedAt = timings.startedAt || null;
+    const endedAt = timings.endedAt || null;
+    const durationMs = startedAt && endedAt ? Math.max(0, endedAt - startedAt) : null;
+
+    return {
+      nodeId,
+      status: nodeStatuses[nodeId] || null,
+      startedAt,
+      endedAt,
+      durationMs,
+      input: detail.nodeInputs?.[nodeId] || null,
+      output: detail.nodeOutputs?.[nodeId] || null,
+      errors: (detail.errors || []).filter((e) => e.nodeId === nodeId),
+      retryAttempts: detail.retryAttempts?.[nodeId] || 0,
+      statusEvents: (detail.nodeStatusEvents || []).filter((e) => e.nodeId === nodeId),
+    };
+  }
+
+  /**
+   * Get forensics for all nodes in a run.
+   * @param {string} runId
+   * @returns {object|null}
+   */
+  getRunForensics(runId) {
+    const run = this.getRunDetail(runId);
+    if (!run) return null;
+    const detail = run.detail || {};
+    const nodeStatuses = detail.nodeStatuses || {};
+    const nodes = {};
+    for (const nodeId of Object.keys(nodeStatuses)) {
+      nodes[nodeId] = this.getNodeForensics(runId, nodeId);
+    }
+    return {
+      runId,
+      status: run.status || null,
+      startedAt: detail.startedAt || null,
+      endedAt: detail.endedAt || null,
+      durationMs: detail.duration || null,
+      nodes,
+    };
+  }
+
+  /**
+   * Create a snapshot of a completed run for later restore.
+   * @param {string} runId
+   * @returns {{ snapshotId: string, path: string }|null}
+   */
+  createRunSnapshot(runId) {
+    const run = this.getRunDetail(runId);
+    if (!run) return null;
+    const detail = run.detail || {};
+    const workflowId = run.workflowId || detail.data?._workflowId;
+    const snapshotsDir = resolve(this.runsDir, "snapshots");
+    mkdirSync(snapshotsDir, { recursive: true });
+    const snapshotId = runId;
+    const snapshotPath = resolve(snapshotsDir, `${snapshotId}.json`);
+    const snapshot = {
+      snapshotId,
+      runId,
+      workflowId,
+      createdAt: Date.now(),
+      nodeStatuses: detail.nodeStatuses || {},
+      nodeOutputs: detail.nodeOutputs || {},
+      nodeTimings: detail.nodeTimings || {},
+      nodeInputs: detail.nodeInputs || {},
+      retryAttempts: detail.retryAttempts || {},
+      variables: detail.data || {},
+      errors: detail.errors || [],
+    };
+    writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2), "utf8");
+    return { snapshotId, path: snapshotPath };
+  }
+
+  /**
+   * Restore a run from a snapshot — creates a new execution pre-seeded
+   * with completed node state from the snapshot.
+   * @param {string} snapshotId
+   * @param {object} [opts]
+   * @param {object} [opts.variables] - Override variables
+   * @returns {Promise<object>}
+   */
+  async restoreFromSnapshot(snapshotId, opts = {}) {
+    const snapshotPath = resolve(this.runsDir, "snapshots", `${snapshotId}.json`);
+    if (!existsSync(snapshotPath)) {
+      throw new Error(`Snapshot "${snapshotId}" not found`);
+    }
+    const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8"));
+    const workflowId = snapshot.workflowId;
+    const def = this.get(workflowId);
+    if (!def) {
+      throw new Error(`Workflow "${workflowId}" no longer exists — cannot restore`);
+    }
+
+    const inputData = {
+      ...def.variables,
+      ...(snapshot.variables || {}),
+      ...(opts.variables || {}),
+      _workflowId: workflowId,
+      _workflowName: def.name,
+      _restoredFrom: snapshotId,
+    };
+
+    // Remove internal keys that should be regenerated
+    delete inputData._workflowId;
+    delete inputData._workflowName;
+
+    const ctx = new WorkflowContext(inputData);
+    ctx.data._workflowId = workflowId;
+    ctx.data._workflowName = def.name;
+    ctx.data._restoredFrom = snapshotId;
+    ctx.variables = { ...def.variables, ...(opts.variables || {}) };
+
+    // Pre-seed completed nodes from snapshot
+    const nodeStatuses = snapshot.nodeStatuses || {};
+    const nodeOutputs = snapshot.nodeOutputs || {};
+    for (const [nodeId, status] of Object.entries(nodeStatuses)) {
+      if (status === "completed") {
+        ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
+        if (nodeOutputs[nodeId] !== undefined) {
+          ctx.setNodeOutput(nodeId, nodeOutputs[nodeId]);
+        }
+      }
+    }
+
+    const retryRunId = ctx.id;
+    this._activeRuns.set(retryRunId, {
+      workflowId,
+      workflowName: def.name,
+      ctx,
+      startedAt: ctx.startedAt,
+      status: WorkflowStatus.RUNNING,
+    });
+    this.emit("run:start", { runId: retryRunId, workflowId, name: def.name, restoredFrom: snapshotId });
+
+    try {
+      const adjacency = this._buildAdjacency(def);
+      const entryNodes = this._findEntryNodes(def);
+      await this._executeDag(def, entryNodes, adjacency, ctx, opts);
+      const finalStatus = ctx.errors.length > 0 ? WorkflowStatus.FAILED : WorkflowStatus.COMPLETED;
+      this._persistRun(retryRunId, workflowId, ctx);
+      this._activeRuns.delete(retryRunId);
+      return { runId: retryRunId, snapshotId, workflowId, ctx, status: finalStatus };
+    } catch (err) {
+      this._persistRun(retryRunId, workflowId, ctx);
+      this._activeRuns.delete(retryRunId);
+      throw err;
+    }
+  }
+
+  /**
+   * List available snapshots, optionally filtered by workflowId.
+   * @param {string} [workflowId]
+   * @returns {Array<object>}
+   */
+  listSnapshots(workflowId) {
+    const snapshotsDir = resolve(this.runsDir, "snapshots");
+    if (!existsSync(snapshotsDir)) return [];
+    const files = readdirSync(snapshotsDir).filter((f) => f.endsWith(".json"));
+    const snapshots = [];
+    for (const file of files) {
+      try {
+        const data = JSON.parse(readFileSync(resolve(snapshotsDir, file), "utf8"));
+        if (workflowId && data.workflowId !== workflowId) continue;
+        snapshots.push({
+          snapshotId: data.snapshotId,
+          runId: data.runId,
+          workflowId: data.workflowId,
+          createdAt: data.createdAt,
+        });
+      } catch {
+        // skip corrupt snapshot files
+      }
+    }
+    return snapshots.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  }
+
+  // ── Internal DAG Execution ────────────────────────────────────────────
 
   _buildAdjacency(def) {
     const adj = new Map();
@@ -2639,6 +2856,9 @@ export class WorkflowEngine extends EventEmitter {
     // Resolve config templates against context
     const resolvedConfig = this._resolveConfig(node.config || {}, ctx);
 
+    // Capture resolved input snapshot for forensics
+    ctx.setNodeInput(node.id, resolvedConfig);
+
     // Dry run — skip capability checks and handler execution.
     // Services aren't needed for simulation; this keeps dry-run tests fast.
     if (opts.dryRun) {
@@ -2668,6 +2888,7 @@ export class WorkflowEngine extends EventEmitter {
     // Execute with timeout — clear timer on completion to avoid resource leaks
     const timeout = resolveNodeTimeoutMs(node, resolvedConfig);
     let timer;
+    ctx.setNodeTiming(node.id, "startedAt", Date.now());
     try {
       const result = await Promise.race([
         handler.execute(
@@ -2679,7 +2900,11 @@ export class WorkflowEngine extends EventEmitter {
           timer = setTimeout(() => reject(new Error(`Node "${node.label || node.id}" timed out after ${timeout}ms`)), timeout);
         }),
       ]);
+      ctx.setNodeTiming(node.id, "endedAt", Date.now());
       return result;
+    } catch (err) {
+      ctx.setNodeTiming(node.id, "endedAt", Date.now());
+      throw err;
     } finally {
       clearTimeout(timer);
     }

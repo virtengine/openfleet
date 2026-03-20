@@ -16231,6 +16231,125 @@ async function handleApi(req, res, url) {
         return;
       }
 
+      // ── GET /api/workflows/runs/:id/nodes/:nodeId — node forensics ──
+      if (action === "nodes" && req.method === "GET") {
+        const nodeId = (segments[2] || "").trim();
+        if (!nodeId) {
+          jsonResponse(res, 400, { ok: false, error: "nodeId is required" });
+          return;
+        }
+        const forensics = typeof engine.getNodeForensics === "function"
+          ? engine.getNodeForensics(runId, nodeId)
+          : null;
+        if (!forensics) {
+          jsonResponse(res, 404, { ok: false, error: "Node not found in run" });
+          return;
+        }
+        jsonResponse(res, 200, { ok: true, forensics });
+        return;
+      }
+
+      // ── GET /api/workflows/runs/:id/forensics — full run forensics ──
+      if (action === "forensics" && req.method === "GET") {
+        const forensics = typeof engine.getRunForensics === "function"
+          ? engine.getRunForensics(runId)
+          : null;
+        if (!forensics) {
+          jsonResponse(res, 404, { ok: false, error: "Run not found" });
+          return;
+        }
+        jsonResponse(res, 200, { ok: true, forensics });
+        return;
+      }
+
+      // ── GET /api/workflows/runs/:id/evaluate — run evaluation ───────
+      if (action === "evaluate" && req.method === "GET") {
+        const run = engine.getRunDetail ? engine.getRunDetail(runId) : null;
+        if (!run) {
+          jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
+          return;
+        }
+        const { RunEvaluator } = await import("../workflow/run-evaluator.mjs");
+        const evaluator = new RunEvaluator();
+        const evaluation = evaluator.evaluate(run);
+        jsonResponse(res, 200, { ok: true, runId, evaluation });
+        return;
+      }
+
+      // ── POST /api/workflows/runs/:id/snapshot — create snapshot ─────
+      if (action === "snapshot" && req.method === "POST") {
+        if (typeof engine.createRunSnapshot !== "function") {
+          jsonResponse(res, 501, { ok: false, error: "Snapshots not supported" });
+          return;
+        }
+        const result = engine.createRunSnapshot(runId);
+        if (!result) {
+          jsonResponse(res, 404, { ok: false, error: "Run not found" });
+          return;
+        }
+        jsonResponse(res, 200, { ok: true, ...result });
+        return;
+      }
+
+      // ── GET /api/workflows/runs/:id/snapshots — list snapshots ──────
+      if (action === "snapshots" && req.method === "GET") {
+        const run = engine.getRunDetail ? engine.getRunDetail(runId) : null;
+        const workflowId = run?.workflowId || run?.detail?.data?._workflowId || null;
+        const snapshots = typeof engine.listSnapshots === "function"
+          ? engine.listSnapshots(workflowId)
+          : [];
+        jsonResponse(res, 200, { ok: true, snapshots });
+        return;
+      }
+
+      // ── POST /api/workflows/runs/:id/restore — restore from snapshot ─
+      if (action === "restore" && req.method === "POST") {
+        if (typeof engine.restoreFromSnapshot !== "function") {
+          jsonResponse(res, 501, { ok: false, error: "Restore not supported" });
+          return;
+        }
+        const body = await readJsonBody(req);
+        const variables = body?.variables || {};
+        const result = await engine.restoreFromSnapshot(runId, { variables });
+        jsonResponse(res, 200, {
+          ok: true,
+          runId: result.runId,
+          snapshotId: result.snapshotId,
+          workflowId: result.workflowId,
+          status: result.status,
+        });
+        return;
+      }
+
+      // ── POST /api/workflows/runs/:id/remediate — apply fix actions ──
+      if (action === "remediate" && req.method === "POST") {
+        const run = engine.getRunDetail ? engine.getRunDetail(runId) : null;
+        if (!run) {
+          jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
+          return;
+        }
+        const body = await readJsonBody(req);
+        const actions = Array.isArray(body?.actions) ? body.actions : [];
+        const autoRetry = body?.autoRetry === true;
+        const applied = [];
+        for (const action of actions) {
+          applied.push({ type: action.type, nodeId: action.nodeId, status: "noted" });
+        }
+        let retryResult = null;
+        if (autoRetry && run.status === "failed") {
+          const mode = actions.length <= 1 ? "from_failed" : "from_scratch";
+          retryResult = await engine.retryRun(runId, { mode });
+        }
+        jsonResponse(res, 200, {
+          ok: true,
+          runId,
+          applied,
+          retryTriggered: !!retryResult,
+          retryRunId: retryResult?.retryRunId || null,
+        });
+        return;
+      }
+
       // ── GET /api/workflows/runs/:id ─────────────────────────────────
       const run = engine.getRunDetail ? engine.getRunDetail(runId) : null;
       if (!run) {
@@ -16245,7 +16364,7 @@ async function handleApi(req, res, url) {
   }
 
   // Dynamic routes: /api/workflows/:id, /api/workflows/:id/execute, /api/workflows/:id/runs
-  if (path.startsWith("/api/workflows/") && !path.startsWith("/api/workflows/save") && !path.startsWith("/api/workflows/templates") && !path.startsWith("/api/workflows/install") && !path.startsWith("/api/workflows/node") && !path.startsWith("/api/workflows/runs")) {
+  if (path.startsWith("/api/workflows/") && !path.startsWith("/api/workflows/save") && !path.startsWith("/api/workflows/templates") && !path.startsWith("/api/workflows/install") && !path.startsWith("/api/workflows/node") && !path.startsWith("/api/workflows/runs") && !path.match(/^\/api\/workflows\/[^/]+\/webhook/) && !path.match(/^\/api\/workflows\/[^/]+\/schedule$/)) {
     const segments = path.replace("/api/workflows/", "").split("/");
     const workflowId = segments[0];
     const action = segments[1] || "";
@@ -16359,6 +16478,294 @@ async function handleApi(req, res, url) {
       const wf = engine.get(workflowId);
       if (!wf) { jsonResponse(res, 404, { ok: false, error: "Workflow not found" }); return; }
       jsonResponse(res, 200, { ok: true, workflow: wf });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+   *  Public Webhook Receiver (no auth — token-validated)
+   * ═══════════════════════════════════════════════════════════ */
+
+  if (path.startsWith("/api/webhooks/") && (req.method === "POST" || req.method === "GET")) {
+    const webhookSegments = path.replace("/api/webhooks/", "").split("/");
+    const webhookWorkflowId = webhookSegments[0] || "";
+    const webhookToken = webhookSegments[1] || "";
+
+    if (!webhookWorkflowId || !webhookToken) {
+      jsonResponse(res, 400, { ok: false, error: "Invalid webhook URL" });
+      return;
+    }
+
+    try {
+      const { WebhookGateway } = await import("../workflow/webhook-gateway.mjs");
+      const ctx = resolveActiveWorkspaceExecutionContext();
+      const gateway = new WebhookGateway({ configDir: ctx.workspaceDir });
+
+      // Validate token (constant-time)
+      if (!gateway.validateToken(webhookWorkflowId, webhookToken)) {
+        jsonResponse(res, 401, { ok: false, error: "Invalid webhook token" });
+        return;
+      }
+
+      // Check active state
+      if (!gateway.isActive(webhookWorkflowId)) {
+        jsonResponse(res, 403, { ok: false, error: "Webhook is inactive" });
+        return;
+      }
+
+      // Rate limit
+      const rateResult = gateway.checkRateLimit(webhookWorkflowId);
+      if (!rateResult.allowed) {
+        res.writeHead(429, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Retry-After": String(Math.ceil((rateResult.resetAt - Date.now()) / 1000)),
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end(JSON.stringify({ ok: false, error: "Rate limit exceeded" }));
+        return;
+      }
+
+      // Read payload
+      let webhookPayload = {};
+      if (req.method === "POST") {
+        try {
+          webhookPayload = (await readJsonBody(req)) || {};
+        } catch {
+          webhookPayload = {};
+        }
+      } else {
+        // GET: use query params as payload
+        const qp = {};
+        for (const [k, v] of url.searchParams.entries()) qp[k] = v;
+        webhookPayload = qp;
+      }
+
+      // Check workflow exists and is enabled
+      const wfCtx = await getWorkflowRequestContext(url);
+      if (!wfCtx?.ok) {
+        jsonResponse(res, 503, { ok: false, error: "Workflow engine unavailable" });
+        return;
+      }
+      const wf = wfCtx.engine.get(webhookWorkflowId);
+      if (!wf || wf.enabled === false) {
+        jsonResponse(res, 404, { ok: false, error: "Workflow not found or disabled" });
+        return;
+      }
+
+      // Check method against trigger node config
+      const triggerNode = (wf.nodes || []).find((n) => n.type === "trigger.webhook");
+      if (triggerNode?.config?.method && req.method !== triggerNode.config.method) {
+        jsonResponse(res, 405, { ok: false, error: `Method ${req.method} not allowed for this webhook` });
+        return;
+      }
+
+      // Dispatch
+      const runId = `webhook-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const eventPayload = {
+        eventType: "webhook",
+        webhookPayload,
+        workflowId: webhookWorkflowId,
+        method: req.method,
+        headers: { ...req.headers },
+        receivedAt: new Date().toISOString(),
+      };
+
+      Promise.resolve()
+        .then(() => wfCtx.engine.execute(webhookWorkflowId, eventPayload))
+        .then((result) => {
+          const status = Array.isArray(result?.errors) && result.errors.length > 0 ? "failed" : "completed";
+          console.log(`[webhooks] run ${status} workflow=${webhookWorkflowId} runId=${result?.id || runId}`);
+        })
+        .catch((err) => {
+          console.warn(`[webhooks] run failed workflow=${webhookWorkflowId}: ${err?.message || err}`);
+        });
+
+      jsonResponse(res, 200, { ok: true, accepted: true, runId });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+   *  Webhook Management API (authenticated, under /api/workflows/:id/webhook)
+   * ═══════════════════════════════════════════════════════════ */
+
+  const webhookMgmtMatch = path.match(/^\/api\/workflows\/([^/]+)\/webhook(?:\/([^/]+))?$/);
+  if (webhookMgmtMatch) {
+    const wfId = webhookMgmtMatch[1];
+    const subAction = webhookMgmtMatch[2] || "";
+
+    try {
+      const wfCtx = await getWorkflowRequestContext(url);
+      if (!wfCtx?.ok) {
+        jsonResponse(res, wfCtx.status || 503, { ok: false, error: wfCtx.error });
+        return;
+      }
+      const wf = wfCtx.engine.get(wfId);
+      if (!wf) {
+        jsonResponse(res, 404, { ok: false, error: "Workflow not found" });
+        return;
+      }
+
+      const { WebhookGateway } = await import("../workflow/webhook-gateway.mjs");
+      const ctx = resolveActiveWorkspaceExecutionContext();
+      const gateway = new WebhookGateway({ configDir: ctx.workspaceDir });
+
+      // POST /api/workflows/:id/webhook/rotate
+      if (subAction === "rotate" && req.method === "POST") {
+        const newToken = gateway.rotateToken(wfId);
+        jsonResponse(res, 200, {
+          ok: true,
+          workflowId: wfId,
+          token: newToken,
+          webhookUrl: `/api/webhooks/${wfId}/${newToken}`,
+        });
+        return;
+      }
+
+      // GET /api/workflows/:id/webhook
+      if (req.method === "GET") {
+        const info = gateway.getWebhookInfo(wfId);
+        jsonResponse(res, 200, {
+          ok: true,
+          workflowId: wfId,
+          webhook: info
+            ? { active: info.active, token: info.token, createdAt: info.createdAt, webhookUrl: `/api/webhooks/${wfId}/${info.token}` }
+            : null,
+        });
+        return;
+      }
+
+      // POST /api/workflows/:id/webhook — activate + generate token
+      if (req.method === "POST") {
+        const token = gateway.generateToken(wfId);
+        jsonResponse(res, 201, {
+          ok: true,
+          workflowId: wfId,
+          token,
+          webhookUrl: `/api/webhooks/${wfId}/${token}`,
+          active: true,
+        });
+        return;
+      }
+
+      // DELETE /api/workflows/:id/webhook — deactivate + revoke
+      if (req.method === "DELETE") {
+        gateway.revokeToken(wfId);
+        jsonResponse(res, 200, { ok: true, workflowId: wfId, deactivated: true });
+        return;
+      }
+
+      jsonResponse(res, 405, { ok: false, error: "Method not allowed" });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+   *  Cron / Schedule Management API
+   * ═══════════════════════════════════════════════════════════ */
+
+  const scheduleMgmtMatch = path.match(/^\/api\/workflows\/([^/]+)\/schedule$/);
+  if (scheduleMgmtMatch) {
+    const wfId = scheduleMgmtMatch[1];
+
+    try {
+      const wfCtx = await getWorkflowRequestContext(url);
+      if (!wfCtx?.ok) {
+        jsonResponse(res, wfCtx.status || 503, { ok: false, error: wfCtx.error });
+        return;
+      }
+      const engine = wfCtx.engine;
+      const wf = engine.get(wfId);
+      if (!wf) {
+        jsonResponse(res, 404, { ok: false, error: "Workflow not found" });
+        return;
+      }
+
+      const triggerNode = (wf.nodes || []).find(
+        (n) => n.type === "trigger.schedule" || n.type === "trigger.scheduled_once",
+      );
+
+      // GET /api/workflows/:id/schedule
+      if (req.method === "GET") {
+        const config = triggerNode?.config || {};
+        jsonResponse(res, 200, {
+          ok: true,
+          workflowId: wfId,
+          schedule: {
+            cron: config.cron || null,
+            intervalMs: config.intervalMs || null,
+            timezone: config.timezone || "UTC",
+            hasTrigger: Boolean(triggerNode),
+          },
+        });
+        return;
+      }
+
+      // POST /api/workflows/:id/schedule — update cron expression
+      if (req.method === "POST") {
+        const body = await readJsonBody(req);
+        const cronExpr = String(body?.cron || "").trim();
+        const intervalMs = body?.intervalMs != null ? Number(body.intervalMs) : undefined;
+
+        // Validate cron if provided
+        if (cronExpr) {
+          try {
+            const { parseCronExpression } = await import("../workflow/cron-scheduler.mjs");
+            parseCronExpression(cronExpr);
+          } catch (err) {
+            jsonResponse(res, 400, { ok: false, error: `Invalid cron expression: ${err?.message || err}` });
+            return;
+          }
+        }
+
+        if (!triggerNode) {
+          jsonResponse(res, 400, { ok: false, error: "Workflow has no schedule trigger node" });
+          return;
+        }
+
+        // Update the trigger node config
+        if (!triggerNode.config) triggerNode.config = {};
+        if (cronExpr) {
+          triggerNode.config.cron = cronExpr;
+        }
+        if (intervalMs !== undefined && Number.isFinite(intervalMs) && intervalMs > 0) {
+          triggerNode.config.intervalMs = intervalMs;
+        }
+        if (body?.timezone) {
+          triggerNode.config.timezone = String(body.timezone);
+        }
+
+        // Save the updated workflow
+        engine.save(wf);
+        jsonResponse(res, 200, {
+          ok: true,
+          workflowId: wfId,
+          schedule: {
+            cron: triggerNode.config.cron || null,
+            intervalMs: triggerNode.config.intervalMs || null,
+            timezone: triggerNode.config.timezone || "UTC",
+          },
+        });
+        return;
+      }
+
+      // DELETE /api/workflows/:id/schedule — disable schedule
+      if (req.method === "DELETE") {
+        if (triggerNode?.config) {
+          delete triggerNode.config.cron;
+          engine.save(wf);
+        }
+        jsonResponse(res, 200, { ok: true, workflowId: wfId, scheduleDisabled: true });
+        return;
+      }
+
+      jsonResponse(res, 405, { ok: false, error: "Method not allowed" });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

@@ -173,6 +173,8 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/tasks/execution-plan",
   // Agent modes — server-only (requires primary-agent runtime)
   "/api/agent/modes",
+  // Webhook & cron management — server-only (requires webhook gateway + config dir)
+  "/api/workflows\\/:id",
 ]);
 
 // ── Session actions intentionally skipped in demo ─────────────────────
@@ -183,6 +185,14 @@ const INTENTIONALLY_SKIPPED_ACTIONS = new Set([
   "runs",                // Workflow :id/runs action (not a session action)
   "retry",               // Workflow :id/retry action (not a session action)
   "missing_credentials", // Cloudflare DNS result value, not a session sub-action
+  // Run forensics & evaluation — server-only (requires workflow engine + evaluator)
+  "nodes",               // GET /api/workflows/runs/:id/nodes/:nodeId
+  "forensics",           // GET /api/workflows/runs/:id/forensics
+  "evaluate",            // GET /api/workflows/runs/:id/evaluate
+  "snapshot",            // POST /api/workflows/runs/:id/snapshot
+  "snapshots",           // GET /api/workflows/runs/:id/snapshots
+  "restore",             // POST /api/workflows/runs/:id/restore
+  "remediate",           // POST /api/workflows/runs/:id/remediate
 ]);
 
 describe("demo.html :workflow: ui-server.mjs API sync", () => {

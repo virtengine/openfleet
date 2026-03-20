@@ -493,19 +493,22 @@ export function initSessionWsListener() {
  */
 export async function createSession(options = {}) {
   const type = options?.type || "manual";
+  const allowReuseFresh = options?.reuseFresh !== false;
 
   // Duplicate prevention: if a fresh empty session of same type exists, reuse it
   const existing = sessionsData.value || [];
-  const fresh = existing.find(
-    (s) =>
-      s.type === type &&
-      s.status === "active" &&
-      (s.turnCount || 0) === 0 &&
-      (!s.preview || s.preview.trim() === ""),
-  );
-  if (fresh) {
-    selectedSessionId.value = fresh.id;
-    return { ok: true, session: fresh };
+  if (allowReuseFresh) {
+    const fresh = existing.find(
+      (s) =>
+        s.type === type &&
+        s.status === "active" &&
+        (s.turnCount || 0) === 0 &&
+        (!s.preview || s.preview.trim() === ""),
+    );
+    if (fresh) {
+      selectedSessionId.value = fresh.id;
+      return { ok: true, session: fresh };
+    }
   }
 
   try {

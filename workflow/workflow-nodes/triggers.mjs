@@ -18,6 +18,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { parseCronExpression } from "../cron-scheduler.mjs";
 import {
   normalizePlannerAreaKey,
   resolveTaskRepoAreas,
@@ -153,15 +154,33 @@ registerNodeType("trigger.task_low", {
 });
 
 registerNodeType("trigger.schedule", {
-  describe: () => "Fires on a cron-like schedule (checked by supervisor loop)",
+  describe: () => "Fires on a cron-like schedule or interval (checked by supervisor loop)",
   schema: {
     type: "object",
     properties: {
-      intervalMs: { type: "number", default: 3600000, description: "Interval in milliseconds" },
-      cron: { type: "string", description: "Cron expression (future support)" },
+      intervalMs: { type: "number", default: 3600000, description: "Interval in milliseconds (ignored when cron is set)" },
+      cron: { type: "string", description: "Standard 5-field cron expression (min hour dom mon dow)" },
+      timezone: { type: "string", default: "UTC", description: "Timezone for cron evaluation (currently UTC only)" },
     },
   },
   async execute(node, ctx) {
+    const cronExpr = typeof node.config?.cron === "string" ? node.config.cron.trim() : "";
+
+    if (cronExpr) {
+      try {
+        const parsed = parseCronExpression(cronExpr);
+        const lastRun = ctx.data?._lastRunAt ? new Date(ctx.data._lastRunAt) : new Date(0);
+        const nextRun = parsed.next(lastRun);
+        const now = new Date();
+        const triggered = now >= nextRun;
+        ctx.log(node.id, `Cron check: expr="${cronExpr}", nextRun=${nextRun.toISOString()}, triggered=${triggered}`);
+        return { triggered, cron: cronExpr, nextRunAt: nextRun.toISOString() };
+      } catch (err) {
+        ctx.log(node.id, `Cron parse error: ${err?.message || err}`);
+        return { triggered: false, error: err?.message || "invalid cron" };
+      }
+    }
+
     const interval = node.config?.intervalMs ?? 3600000;
     const lastRun = ctx.data?._lastRunAt ?? 0;
     const elapsed = Date.now() - lastRun;
