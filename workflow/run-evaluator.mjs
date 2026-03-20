@@ -252,7 +252,7 @@ export class RunEvaluator {
     const grade = computeGrade(score);
 
     // ── Remediation ───────────────────────────────────────────────────
-    const remediation = this._buildRemediation(nodeStatuses, errors, metrics);
+    const remediation = this._buildRemediation(runDetail, detail, nodeStatuses, errors, metrics, retryAttempts);
 
     return { score, grade, issues, metrics, remediation };
   }
@@ -277,15 +277,26 @@ export class RunEvaluator {
       },
       remediation: {
         canAutoFix: false,
+        canAutoRetry: false,
         fixActions: [],
         suggestedRetryMode: null,
+        retryReason: null,
+        summary: reason,
       },
     };
   }
 
-  _buildRemediation(nodeStatuses, errors, metrics) {
+  _buildRemediation(runDetail, detail, nodeStatuses, errors, metrics, retryAttempts = {}) {
     const fixActions = [];
     const failedNodeIds = [];
+    const issueAdvisor =
+      detail?.issueAdvisor && typeof detail.issueAdvisor === "object"
+        ? detail.issueAdvisor
+        : null;
+    const dagState =
+      detail?.dagState && typeof detail.dagState === "object"
+        ? detail.dagState
+        : null;
 
     for (const [nodeId, status] of Object.entries(nodeStatuses)) {
       if (status !== "failed") continue;
@@ -325,17 +336,74 @@ export class RunEvaluator {
       }
     }
 
+    for (const [nodeId, count] of Object.entries(retryAttempts || {})) {
+      const retries = Number(count) || 0;
+      if (retries <= 0) continue;
+      fixActions.push({
+        type: "tune_retry_policy",
+        nodeId,
+        description: `Node retried ${retries} time(s) — review retry delay or transient dependency handling`,
+        action: { field: "config.retryDelayMs", suggestion: "increase_or_backoff" },
+      });
+    }
+
     let suggestedRetryMode = null;
-    if (failedNodeIds.length === 1) {
+    let retryReason = null;
+    if (issueAdvisor?.recommendedAction === "resume_remaining") {
       suggestedRetryMode = "from_failed";
+      retryReason = "issue_advisor.resume_remaining";
+    } else if (issueAdvisor?.recommendedAction === "replan_from_failed") {
+      suggestedRetryMode = "from_scratch";
+      retryReason = "issue_advisor.replan_from_failed";
+      fixActions.push({
+        type: "replan_workflow",
+        nodeId: failedNodeIds[0] || null,
+        description: "Issue advisor recommends replanning from the failed boundary before re-running.",
+        action: { field: null, suggestion: "replan" },
+      });
+    } else if (issueAdvisor?.recommendedAction === "inspect_failure") {
+      suggestedRetryMode = null;
+      retryReason = "issue_advisor.inspect_failure";
+      fixActions.push({
+        type: "inspect_failure",
+        nodeId: failedNodeIds[0] || null,
+        description: "Inspect failure details before retrying; resume state may not be trustworthy yet.",
+        action: { field: null, suggestion: "inspect" },
+      });
+    } else if (failedNodeIds.length === 1) {
+      suggestedRetryMode = "from_failed";
+      retryReason = "failed_node_count.single";
     } else if (failedNodeIds.length > 1) {
       suggestedRetryMode = "from_scratch";
+      retryReason = "failed_node_count.multiple";
     }
 
     const canAutoFix = fixActions.length > 0 &&
       fixActions.every((a) => a.type === "increase_timeout" || a.type === "check_config");
 
-    return { canAutoFix, fixActions, suggestedRetryMode };
+    const canAutoRetry = Boolean(
+      suggestedRetryMode &&
+      issueAdvisor?.recommendedAction !== "inspect_failure",
+    );
+    const summary = issueAdvisor?.summary ||
+      (failedNodeIds.length
+        ? `Detected ${failedNodeIds.length} failed node(s); recommended retry is ${suggestedRetryMode || "manual review"}.`
+        : "No remediation required.");
+
+    return {
+      canAutoFix,
+      canAutoRetry,
+      fixActions,
+      suggestedRetryMode,
+      retryReason,
+      failedNodeIds,
+      lineage: {
+        rootRunId: runDetail?.rootRunId || dagState?.rootRunId || null,
+        parentRunId: runDetail?.parentRunId || dagState?.parentRunId || null,
+        retryOf: runDetail?.retryOf || dagState?.retryOf || null,
+      },
+      summary,
+    };
   }
 
   _suggestFixForError(errMsg) {

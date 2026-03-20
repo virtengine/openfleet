@@ -601,6 +601,119 @@ describe("WorkflowEngine - run history details", () => {
     expect(run.detail.nodeStatuses.log).toBeDefined();
     expect(Array.isArray(run.detail.logs)).toBe(true);
     expect(Array.isArray(run.detail.nodeStatusEvents)).toBe(true);
+    expect(run.detail.dagState?.workflowId).toBe(wf.id);
+    expect(run.detail.dagState?.counts?.completed).toBeGreaterThanOrEqual(2);
+    expect(run.ledger?.events?.some((event) => event.eventType === "run.start")).toBe(true);
+    expect(run.ledger?.events?.some((event) => event.eventType === "node.completed")).toBe(true);
+    expect(run.ledger?.events?.some((event) => event.eventType === "run.end")).toBe(true);
+  });
+
+  it("stores issue-advisor and DAGState failure context for continuation", async () => {
+    registerNodeType("test.always_fail_for_dag", {
+      describe: () => "Fails for DAGState coverage",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        throw new Error("validation step failed");
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "fail", type: "test.always_fail_for_dag", label: "Fail Step", config: { maxRetries: 0 } },
+      ],
+      [{ id: "e1", source: "trigger", target: "fail" }],
+      { name: "Issue Advisor Workflow" },
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+    expect(ctx.errors.length).toBeGreaterThan(0);
+
+    const detail = engine.getRunDetail(ctx.id);
+    expect(detail?.status).toBe(WorkflowStatus.FAILED);
+    expect(detail?.detail?.dagState?.counts?.failed).toBe(1);
+    expect(detail?.detail?.issueAdvisor?.recommendedAction).toBe("replan_from_failed");
+    expect(detail?.detail?.issueAdvisor?.failedNodes?.[0]?.nodeId).toBe("fail");
+    expect(detail?.detail?.issueAdvisor?.summary).toContain("Fail Step");
+  });
+
+  it("returns retry options with an issue-advisor recommendation", async () => {
+    registerNodeType("test.fail_for_retry_options", {
+      describe: () => "Completes once then fails",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        if (node.id === "fail") throw new Error("retry choice needed");
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "prepare", type: "test.fail_for_retry_options", label: "Prepare", config: {} },
+        { id: "fail", type: "test.fail_for_retry_options", label: "Fail Step", config: { maxRetries: 0 } },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "prepare" },
+        { id: "e2", source: "prepare", target: "fail" },
+      ],
+      { id: "wf-retry-options", name: "Retry Options Workflow" },
+    );
+
+    engine.save(wf);
+    const failedCtx = await engine.execute(wf.id, {});
+    const retryOptions = engine.getRetryOptions(failedCtx.id);
+
+    expect(retryOptions?.recommendedMode).toBe("from_scratch");
+    expect(retryOptions?.recommendedReason).toBe("issue_advisor.replan_from_failed");
+    expect(retryOptions?.failedNodes).toContain("fail");
+    expect(retryOptions?.options?.find((entry) => entry.mode === "from_scratch")?.recommended).toBe(true);
+  });
+
+  it("uses issue-advisor guidance to escalate first auto-retry attempt to from_scratch", async () => {
+    registerNodeType("test.auto_retry_replan_step", {
+      describe: () => "Succeeds once then fails",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        if (node.id === "fail") {
+          throw new Error("retry needs replanning");
+        }
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "prepare", type: "test.auto_retry_replan_step", label: "Prepare", config: {} },
+        { id: "fail", type: "test.auto_retry_replan_step", label: "Fail Step", config: { maxRetries: 0 } },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "prepare" },
+        { id: "e2", source: "prepare", target: "fail" },
+      ],
+      { id: "wf-auto-retry-replan", name: "Auto Retry Replan" },
+    );
+
+    engine.save(wf);
+    const failedCtx = await engine.execute(wf.id, {});
+    expect(failedCtx.errors.length).toBeGreaterThan(0);
+
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({
+      retryRunId: "retry-1",
+      ctx: { errors: [] },
+    });
+
+    await engine._autoRetryLoop(failedCtx.id, wf.id, {}, { maxAttempts: 1, cooldownMs: 0 }, {});
+
+    expect(retrySpy).toHaveBeenCalledWith(
+      failedCtx.id,
+      expect.objectContaining({
+        mode: "from_scratch",
+        _decisionReason: "issue_advisor.replan_from_failed",
+      }),
+    );
   });
 
   it("returns runs in descending order and null for unknown run details", async () => {
@@ -997,6 +1110,76 @@ describe("WorkflowEngine - run history details", () => {
 
     const resumedRun = engine.getRunDetail(retryRunId);
     expect(resumedRun?.detail?.data?.prePrValidationCommand).toBe("auto");
+  });
+
+  it("resumes interrupted runs from_scratch when issue-advisor requests replanning", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-resume-replan", name: "Resume Replan Workflow" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const interruptedRunId = "run-interrupted-replan";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: interruptedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: null,
+            resumable: true,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${interruptedRunId}.json`),
+      JSON.stringify({
+        id: interruptedRunId,
+        startedAt: 1000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+        },
+        dagState: {
+          counts: { completed: 1, failed: 1 },
+        },
+        issueAdvisor: {
+          recommendedAction: "replan_from_failed",
+          summary: "Retry requires replanning from the failed node",
+        },
+        nodeStatuses: {
+          trigger: NodeStatus.COMPLETED,
+          fail: NodeStatus.FAILED,
+        },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [{ nodeId: "fail", error: "boom" }],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
+
+    await engine.resumeInterruptedRuns();
+
+    expect(retrySpy).toHaveBeenCalledWith(
+      interruptedRunId,
+      expect.objectContaining({
+        mode: "from_scratch",
+        _decisionReason: "issue_advisor.replan_from_failed",
+      }),
+    );
   });
 
   it("does not resume an interrupted task run when a newer run already exists for the same task", async () => {
@@ -1529,7 +1712,13 @@ describe("New node types", () => {
       "template-task-archiver",
       expect.objectContaining({
         taskId: "TASK-42",
+        _workflowParentRunId: ctx.id,
+        _workflowRootRunId: ctx.id,
         _workflowStack: ["parent-wf", "template-task-archiver"],
+      }),
+      expect.objectContaining({
+        _parentRunId: ctx.id,
+        _rootRunId: ctx.id,
       }),
     );
     expect(canonical).toBe(typoAlias);
@@ -1659,6 +1848,10 @@ describe("action.execute_workflow", () => {
     expect(childDetail.detail?.data?.sharedValue).toBe("inherit-me");
     expect(childDetail.detail?.data?.ignoredValue).toBeUndefined();
     expect(childDetail.detail?.data?._workflowStack).toEqual([parentWorkflow.id, childWorkflow.id]);
+    expect(childDetail.detail?.dagState?.parentRunId).toBe(parentCtx.id);
+    expect(childDetail.detail?.dagState?.rootRunId).toBe(parentCtx.id);
+    expect(childDetail.ledger?.parentRunId).toBe(parentCtx.id);
+    expect(childDetail.ledger?.rootRunId).toBe(parentCtx.id);
   });
 
   it("sync mode resolves installed template aliases via metadata.installedFrom", async () => {
@@ -1752,7 +1945,13 @@ describe("action.execute_workflow", () => {
       expect(mockEngine.execute).toHaveBeenCalledWith(
         "child-dispatch-wf",
         expect.objectContaining({
+          _workflowParentRunId: ctx.id,
+          _workflowRootRunId: ctx.id,
           _workflowStack: ["parent-dispatch-wf", "child-dispatch-wf"],
+        }),
+        expect.objectContaining({
+          _parentRunId: ctx.id,
+          _rootRunId: ctx.id,
         }),
       );
     } finally {
@@ -2000,6 +2199,10 @@ describe("action.inline_workflow and executeDefinition", () => {
     expect(childDetail?.detail?.data?.payload).toBe("payload-value");
     expect(childDetail?.detail?.data?.sharedValue).toBe("inherit-me");
     expect(childDetail?.detail?.data?.ignoredValue).toBeUndefined();
+    expect(childDetail?.detail?.dagState?.parentRunId).toBe(parentCtx.id);
+    expect(childDetail?.detail?.dagState?.rootRunId).toBe(parentCtx.id);
+    expect(childDetail?.ledger?.parentRunId).toBe(parentCtx.id);
+    expect(childDetail?.ledger?.rootRunId).toBe(parentCtx.id);
   });
 
   it("dispatch mode queues embedded workflows without waiting for completion", async () => {
@@ -2039,6 +2242,12 @@ describe("action.inline_workflow and executeDefinition", () => {
       });
       expect(ctx.data.inlineDispatchSummary).toEqual(result);
       expect(mockEngine.executeDefinition).toHaveBeenCalledTimes(1);
+      const [definition, childInput, childOpts] = mockEngine.executeDefinition.mock.calls[0];
+      expect(definition.id).toBe("inline-child-dispatch");
+      expect(childInput._workflowParentRunId).toBe(ctx.id);
+      expect(childInput._workflowRootRunId).toBe(ctx.id);
+      expect(childOpts._parentRunId).toBe(ctx.id);
+      expect(childOpts._rootRunId).toBe(ctx.id);
     } finally {
       releaseChild?.(new WorkflowContext({}));
       await childRunPromise;
@@ -3185,6 +3394,10 @@ describe("Session chaining - action.run_agent", () => {
         eventType: "task.assigned",
         taskId: "TASK-DELEGATE-1",
         taskTitle: "Add API endpoint",
+      }),
+      expect.objectContaining({
+        _parentRunId: ctx.id,
+        _rootRunId: ctx.id,
       }),
     );
     expect(launchEphemeralThread).not.toHaveBeenCalled();

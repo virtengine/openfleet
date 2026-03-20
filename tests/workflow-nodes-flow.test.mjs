@@ -210,6 +210,35 @@ describe("flow.try_catch node", () => {
     expect(ctx.data.myError.message).toBe("custom-var-test");
   });
 
+  it("propagates parent/root run lineage into try/catch child workflows", async () => {
+    const engine = {
+      execute: vi.fn(() => Promise.resolve({ id: "wf-try-run", errors: [] })),
+    };
+    const node = makeNode("flow.try_catch", {
+      tryWorkflowId: "wf-try",
+    });
+    const ctx = makeCtx({
+      _workflowId: "parent-workflow",
+      _workflowRootRunId: "root-run-1",
+    });
+
+    await nodeType.execute(node, ctx, engine);
+
+    expect(engine.execute).toHaveBeenCalledWith(
+      "wf-try",
+      expect.objectContaining({
+        _parentWorkflowId: "parent-workflow",
+        _workflowParentRunId: ctx.id,
+        _workflowRootRunId: "root-run-1",
+        _workflowStack: ["parent-workflow", "wf-try"],
+      }),
+      expect.objectContaining({
+        _parentRunId: ctx.id,
+        _rootRunId: "root-run-1",
+      }),
+    );
+  });
+
   it("passthrough when no tryWorkflowId", async () => {
     const engine = makeMockEngine();
     const node = makeNode("flow.try_catch", {});
@@ -343,6 +372,44 @@ describe("flow.parallel node", () => {
     expect(passedData.base).toBe(true);
     expect(passedData.extra).toBe(42);
     expect(passedData._parallelBranch).toBe("a");
+  });
+
+  it("propagates lineage into parallel branch workflow executions", async () => {
+    const engine = {
+      execute: vi.fn((wfId, data) =>
+        Promise.resolve({ id: `run-${wfId}`, errors: [], data }),
+      ),
+    };
+    const node = makeNode("flow.parallel", {
+      branches: [
+        { name: "a", workflowId: "wf-a", data: { extra: 42 } },
+      ],
+      failStrategy: "all-settled",
+    });
+    const ctx = makeCtx({
+      base: true,
+      _workflowId: "parent-workflow",
+      _workflowRootRunId: "root-run-1",
+    });
+
+    await nodeType.execute(node, ctx, engine);
+
+    expect(engine.execute).toHaveBeenCalledWith(
+      "wf-a",
+      expect.objectContaining({
+        base: true,
+        extra: 42,
+        _parallelBranch: "a",
+        _parentWorkflowId: "parent-workflow",
+        _workflowParentRunId: ctx.id,
+        _workflowRootRunId: "root-run-1",
+        _workflowStack: ["parent-workflow", "wf-a"],
+      }),
+      expect.objectContaining({
+        _parentRunId: ctx.id,
+        _rootRunId: "root-run-1",
+      }),
+    );
   });
 
   it("handles branch with missing workflowId", async () => {
