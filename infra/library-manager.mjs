@@ -37,6 +37,7 @@ export const SKILL_DIR = ".bosun/skills";
 export const PROFILE_DIR = ".bosun/profiles";
 export const MCP_DIR = ".bosun/mcp-servers";
 export const TOOL_DIR = ".bosun/tools";
+export const HOOK_DIR = ".bosun/hooks";
 export const LIBRARY_INDEX_DIR = ".bosun/library-index";
 export const AGENT_PROFILE_INDEX = "agent-profiles.json";
 export const SKILL_ENTRY_INDEX = "skills.json";
@@ -199,7 +200,7 @@ const FRAMEWORK_DOMAIN_MAP = Object.freeze({
 });
 
 /** Resource types managed by the library */
-export const RESOURCE_TYPES = Object.freeze(["prompt", "agent", "skill", "mcp", "custom-tool"]);
+export const RESOURCE_TYPES = Object.freeze(["prompt", "agent", "skill", "mcp", "custom-tool", "hook"]);
 export const AGENT_LIBRARY_CATEGORIES = Object.freeze(["task", "interactive", "voice"]);
 export const INTERACTIVE_AGENT_MODES = Object.freeze(["ask", "agent", "plan", "web", "instant", "custom", "voice"]);
 
@@ -1227,13 +1228,14 @@ function dirForType(rootDir, type) {
     case "agent":  return resolve(root, PROFILE_DIR);
     case "mcp":    return resolve(root, MCP_DIR);
     case "custom-tool": return resolve(root, TOOL_DIR);
+    case "hook": return resolve(root, HOOK_DIR);
     default: throw new Error(`Unknown library resource type: ${type}`);
   }
 }
 
 function extForType(type) {
   if (type === "agent" || type === "mcp") return ".json";
-  if (type === "custom-tool") return ".json"; // tools/index.json is the authoritative source
+  if (type === "custom-tool" || type === "hook") return ".json";
   return ".md";
 }
 

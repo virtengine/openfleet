@@ -144,7 +144,7 @@ export const HOOK_EVENTS = Object.freeze([
  * Canonical SDK names.
  * @type {readonly string[]}
  */
-const VALID_SDKS = Object.freeze(["codex", "copilot", "claude", "opencode"]);
+const VALID_SDKS = Object.freeze(["codex", "copilot", "claude", "opencode", "gemini"]);
 
 /**
  * Wildcard indicating a hook applies to all SDKs.
@@ -1197,4 +1197,59 @@ function _normalizeEnvValues(env) {
 function _truncate(str, maxLen) {
   if (!str || str.length <= maxLen) return str ?? "";
   return str.slice(0, maxLen) + "\n... (truncated)";
+}
+
+// ── Hook Library Integration ────────────────────────────────────────────────
+
+/**
+ * Register hooks from the hook-library into the agent-hooks runtime registry.
+ * This bridges the declarative hook catalog with the execution engine.
+ *
+ * @param {Record<string, Array<{id: string, command: string, description?: string, timeout?: number, blocking?: boolean, sdks?: string[], builtin?: boolean, retryable?: boolean, maxRetries?: number, env?: Record<string,string>}>>} hooksByEvent
+ *   - Output of getHooksForRegistration() from hook-library.mjs
+ * @returns {{ registered: number, skipped: number }}
+ */
+export function registerLibraryHooks(hooksByEvent) {
+  let registered = 0;
+  let skipped = 0;
+
+  if (!hooksByEvent || typeof hooksByEvent !== "object") {
+    return { registered, skipped };
+  }
+
+  for (const [event, hooks] of Object.entries(hooksByEvent)) {
+    if (!HOOK_EVENTS.includes(event)) {
+      console.warn(`${TAG} unknown hook event from library: ${event}`);
+      skipped += hooks.length;
+      continue;
+    }
+
+    for (const hook of hooks) {
+      // Skip if a hook with this ID is already registered (built-in takes priority)
+      const existing = (_registry.get(event) ?? []).find((h) => h.id === hook.id);
+      if (existing) {
+        skipped++;
+        continue;
+      }
+
+      registerHook(event, {
+        id: hook.id,
+        command: hook.command,
+        description: hook.description ?? "",
+        timeout: hook.timeout ?? DEFAULT_TIMEOUT_MS,
+        blocking: hook.blocking ?? false,
+        sdks: hook.sdks ?? [SDK_WILDCARD],
+        builtin: hook.builtin ?? false,
+        retryable: hook.retryable ?? false,
+        maxRetries: hook.maxRetries,
+        env: hook.env,
+      });
+      registered++;
+    }
+  }
+
+  if (registered > 0) {
+    console.log(`${TAG} registered ${registered} hook(s) from hook library`);
+  }
+  return { registered, skipped };
 }

@@ -215,13 +215,14 @@ function mapCommandsToHooks(event, commands) {
 }
 
 export function normalizeHookTargets(value) {
+  const VALID_TARGETS = ["codex", "claude", "copilot", "gemini", "opencode"];
   if (Array.isArray(value)) {
     const arr = value
       .map((item) => String(item).trim().toLowerCase())
       .filter(Boolean);
     return [
       ...new Set(
-        arr.filter((item) => ["codex", "claude", "copilot"].includes(item)),
+        arr.filter((item) => VALID_TARGETS.includes(item)),
       ),
     ];
   }
@@ -233,10 +234,10 @@ export function normalizeHookTargets(value) {
 
   const unique = [...new Set(raw)];
   const filtered = unique.filter((item) =>
-    ["codex", "claude", "copilot", "all"].includes(item),
+    [...VALID_TARGETS, "all"].includes(item),
   );
 
-  if (filtered.includes("all")) return ["codex", "claude", "copilot"];
+  if (filtered.includes("all")) return [...VALID_TARGETS];
   if (filtered.length === 0) return ["codex", "claude", "copilot"];
   return filtered;
 }
@@ -647,6 +648,57 @@ export function scaffoldAgentHookFiles(repoRoot, options = {}) {
         result.updated.push(normalizePathForOutput(relative(root, claudePath)));
       } else {
         result.written.push(normalizePathForOutput(relative(root, claudePath)));
+      }
+    }
+  }
+
+  // ── Gemini: write .gemini/settings.json bridge config ──
+  if (targets.includes("gemini")) {
+    const geminiPath = resolve(root, ".gemini", "settings.json");
+    const geminiConfig = {
+      hooks: {
+        SessionStart: [{ command: "node agent-hook-bridge.mjs --agent gemini --event SessionStart" }],
+        SessionStop: [{ command: "node agent-hook-bridge.mjs --agent gemini --event SessionStop" }],
+        PreToolUse: [{ command: "node agent-hook-bridge.mjs --agent gemini --event PreToolUse" }],
+        PostToolUse: [{ command: "node agent-hook-bridge.mjs --agent gemini --event PostToolUse" }],
+      },
+      _bosun: { managed: true, profile: result.profile, generated: new Date().toISOString() },
+    };
+    const existedBefore = existsSync(geminiPath);
+    if (existedBefore && !overwriteExisting) {
+      result.skipped.push(normalizePathForOutput(relative(root, geminiPath)));
+    } else {
+      writeJson(geminiPath, geminiConfig);
+      if (existedBefore) {
+        result.updated.push(normalizePathForOutput(relative(root, geminiPath)));
+      } else {
+        result.written.push(normalizePathForOutput(relative(root, geminiPath)));
+      }
+    }
+  }
+
+  // ── OpenCode: write .opencode/hooks.json bridge config ──
+  if (targets.includes("opencode")) {
+    const opencodePath = resolve(root, ".opencode", "hooks.json");
+    const opencodeConfig = {
+      hooks: {
+        SessionStart: [{ command: "node agent-hook-bridge.mjs --agent opencode --event SessionStart" }],
+        SessionStop: [{ command: "node agent-hook-bridge.mjs --agent opencode --event SessionStop" }],
+        PreToolUse: [{ command: "node agent-hook-bridge.mjs --agent opencode --event PreToolUse" }],
+        PostToolUse: [{ command: "node agent-hook-bridge.mjs --agent opencode --event PostToolUse" }],
+        TaskComplete: [{ command: "node agent-hook-bridge.mjs --agent opencode --event TaskComplete" }],
+      },
+      _bosun: { managed: true, profile: result.profile, generated: new Date().toISOString() },
+    };
+    const existedBefore = existsSync(opencodePath);
+    if (existedBefore && !overwriteExisting) {
+      result.skipped.push(normalizePathForOutput(relative(root, opencodePath)));
+    } else {
+      writeJson(opencodePath, opencodeConfig);
+      if (existedBefore) {
+        result.updated.push(normalizePathForOutput(relative(root, opencodePath)));
+      } else {
+        result.written.push(normalizePathForOutput(relative(root, opencodePath)));
       }
     }
   }
