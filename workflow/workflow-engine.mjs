@@ -3367,7 +3367,14 @@ export class WorkflowEngine extends EventEmitter {
           if (edge.backEdge) {
             const edgeKey = edge.id || `${edge.source}->${edge.target}`;
             const iterCount = (backEdgeIterations.get(edgeKey) || 0) + 1;
-            const maxIter = Number(edge.maxIterations) || MAX_BACK_EDGE_ITERATIONS;
+            // During dry-run, conditions return stub objects instead of real
+            // booleans so loop-exit expressions never fire.  Cap iterations
+            // to a small number (2) to validate the loop structure without
+            // executing hundreds of iterations.
+            const DRY_RUN_BACK_EDGE_CAP = 2;
+            const maxIter = opts.dryRun
+              ? Math.min(Number(edge.maxIterations) || MAX_BACK_EDGE_ITERATIONS, DRY_RUN_BACK_EDGE_CAP)
+              : (Number(edge.maxIterations) || MAX_BACK_EDGE_ITERATIONS);
 
             if (iterCount > maxIter) {
               ctx.log(nodeId,

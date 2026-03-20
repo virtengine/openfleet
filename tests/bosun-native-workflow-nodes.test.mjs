@@ -633,6 +633,7 @@ describe("action.invoke_workflow", () => {
     expect(mockEngine.execute).toHaveBeenCalledWith(
       "dynamic-child-wf",
       expect.objectContaining({ _parentWorkflowId: "parent-wf" }),
+      expect.anything(),
     );
   });
 
