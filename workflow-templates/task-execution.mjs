@@ -5,20 +5,13 @@
  * patterns. Each template uses trigger.task_assigned with regex filters so
  * the right workflow picks up the right kind of task automatically.
  *
- * Agent-run nodes default to library-resolved skills — the Library Resolver
- * selects the best agents/skills for each phase based on the task + node prompt.
- * Users can override by manually selecting skills in the workflow editor.
- *
  * ## Composition
  *
- * All 6 task-type templates share identical structure (trigger → phase₁ →
- * phase₂ → … → done) and identical agent config boilerplate. They are now
- * built with `makeAgentPipeline()` — a factory that only requires:
- *   - taskPattern regex
- *   - ordered phase definitions (id + label + prompt)
- *
- * To add a new task type: call makeAgentPipeline() with your phases.
- * To change agent defaults: update agentDefaults() in _helpers.mjs once.
+ * Templates use `makeAgentPipeline()` for the creative agent phases and
+ * embed `VALIDATE_AND_PR_SUB` for the deterministic validation + PR tail.
+ * Agent nodes handle planning and implementation (token-worthy creative work).
+ * Build, test, lint, push, and PR creation use explicit workflow nodes —
+ * no agent reasoning wasted on deterministic shell commands.
  *
  * Templates:
  *   - Fullstack Task Workflow
@@ -29,20 +22,111 @@
  *   - Design Task Workflow
  */
 
-import { makeAgentPipeline } from "./_helpers.mjs";
+import { node, edge, agentPhase, embedSubWorkflow, wire, resetLayout } from "./_helpers.mjs";
+import { VALIDATE_AND_PR_SUB } from "./sub-workflows.mjs";
+
+/**
+ * Build a task-execution template with agent phases followed by an
+ * embedded validate-and-PR sub-workflow tail.
+ *
+ * Agent phases handle planning/implementation (creative work).
+ * Validation (build/test/lint) + push + PR use explicit nodes.
+ */
+function makeTaskTemplate(opts) {
+  if (!opts?.id) throw new Error("makeTaskTemplate: id is required");
+  if (!opts?.taskPattern) throw new Error("makeTaskTemplate: taskPattern is required");
+  if (!Array.isArray(opts?.phases) || opts.phases.length === 0) {
+    throw new Error("makeTaskTemplate: at least one phase is required");
+  }
+
+  resetLayout();
+
+  const defaultVariables = {
+    taskTimeoutMs: 21600000,
+    maxRetries: 2,
+    maxContinues: 3,
+    testCommand: "auto",
+    buildCommand: "auto",
+    lintCommand: "auto",
+  };
+
+  const triggerNode = node("trigger", "trigger.task_assigned", "Task Assigned", {
+    taskPattern: opts.taskPattern,
+  }, { x: 400, y: 50 });
+
+  const yStart = 180;
+  const yStep = 160;
+  const phaseNodes = opts.phases.map((phase, i) =>
+    agentPhase(phase.id, phase.label, phase.prompt, phase.extra || {}, {
+      x: 400,
+      y: yStart + i * yStep,
+    }),
+  );
+
+  // Embed the validate-and-PR sub-workflow after the last agent phase
+  const vpSub = embedSubWorkflow(VALIDATE_AND_PR_SUB, "vp-");
+  // Reposition embedded nodes below the agent phases
+  const vpYStart = yStart + opts.phases.length * yStep;
+  const vpNodes = vpSub.nodes.map((n, i) => ({
+    ...n,
+    position: { x: 400, y: vpYStart + i * 130 },
+  }));
+
+  const doneNode = node("done", "notify.log", "Complete", {
+    message: opts.doneMessage || `${opts.name} completed.`,
+  }, { x: 400, y: vpYStart + vpNodes.length * 130 });
+
+  const allNodes = [triggerNode, ...phaseNodes, ...vpNodes, doneNode];
+
+  // Edges: trigger → phase0 → … → phaseN → vp-entry → … → vp-exit → done
+  const edges = [];
+  edges.push(edge("trigger", opts.phases[0].id));
+  for (let i = 0; i < opts.phases.length - 1; i++) {
+    edges.push(edge(opts.phases[i].id, opts.phases[i + 1].id));
+  }
+  // Wire last agent phase → validate-and-PR entry
+  edges.push(wire(opts.phases[opts.phases.length - 1].id, vpSub.entryNodeId));
+  // Include sub-workflow internal edges
+  edges.push(...vpSub.edges);
+  // Wire validate-and-PR exit → done
+  edges.push(wire(vpSub.exitNodeId, "done"));
+
+  return {
+    id: opts.id,
+    name: opts.name,
+    description: opts.description || "",
+    category: opts.category || "task-execution",
+    enabled: true,
+    recommended: opts.recommended !== false,
+    trigger: "trigger.task_assigned",
+    variables: { ...defaultVariables, ...opts.variables },
+    metadata: {
+      author: "bosun",
+      version: 2,
+      createdAt: "2025-06-01T00:00:00Z",
+      templateVersion: "2.0.0",
+      tags: opts.tags || [],
+      resolveMode: "library",
+      ...(opts.metadata || {}),
+    },
+    nodes: allNodes,
+    edges,
+  };
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Fullstack Task Workflow
 // ═══════════════════════════════════════════════════════════════════════════
 
-export const FULLSTACK_TASK_TEMPLATE = makeAgentPipeline({
+export const FULLSTACK_TASK_TEMPLATE = makeTaskTemplate({
   id: "template-task-fullstack",
   name: "Fullstack Task Workflow",
   description:
     "Handles tasks that span frontend and backend — API endpoints, " +
-    "database models, and UI components. Runs four agent phases: " +
-    "architecture planning, backend implementation, frontend implementation, " +
-    "and integration testing.",
+    "database models, and UI components. Agent phases handle architecture " +
+    "planning, backend implementation, and frontend implementation. " +
+    "Validation (build/test/lint) and PR creation run as explicit nodes.",
   taskPattern: "full.?stack|end.to.end|api.*ui|server.*client|frontend.*backend|database.*component",
   tags: ["fullstack", "task-type"],
   recommended: true,
@@ -71,7 +155,6 @@ Implement the server-side / API changes from the architecture plan:
 - API routes and controllers
 - Service / business logic
 - Unit tests for backend logic
-- Run tests: {{testCommand}}
 
 Commit backend changes separately.`,
     },
@@ -85,26 +168,11 @@ Implement the client-side / UI changes:
 - State management and API integration
 - Styling and responsive design
 - Component tests
-- Run build: {{buildCommand}}
 
 Commit frontend changes separately.`,
     },
-    {
-      id: "integration-test",
-      label: "Integration Test",
-      prompt: `## Phase: Integration Testing
-
-Verify the full stack works end-to-end:
-1. Run the full test suite: {{testCommand}}
-2. Run the build: {{buildCommand}}
-3. Run lint: {{lintCommand}}
-4. Fix any integration issues between frontend and backend
-5. Ensure all tests pass before completing
-
-Push all changes and create/update the PR.`,
-    },
   ],
-  doneMessage: "Fullstack task completed — all layers implemented and tested.",
+  doneMessage: "Fullstack task completed — all layers implemented, validated, and PR created.",
 });
 
 
@@ -112,13 +180,13 @@ Push all changes and create/update the PR.`,
 //  Backend Task Workflow
 // ═══════════════════════════════════════════════════════════════════════════
 
-export const BACKEND_TASK_TEMPLATE = makeAgentPipeline({
+export const BACKEND_TASK_TEMPLATE = makeTaskTemplate({
   id: "template-task-backend",
   name: "Backend Task Workflow",
   description:
     "Specialised for server-side tasks — APIs, databases, services, " +
-    "middleware. Runs three phases: plan, implement with TDD, and " +
-    "verify with full test suite.",
+    "middleware. Agent phases handle planning and TDD implementation. " +
+    "Validation and PR creation run as explicit nodes.",
   taskPattern: "api|server|backend|database|model|migration|endpoint|middleware|service|graphql|rest|grpc",
   tags: ["backend", "api", "server", "task-type"],
   recommended: true,
@@ -146,25 +214,11 @@ Do NOT write code yet.`,
 2. Verify tests fail (red)
 3. Implement the backend logic to make tests pass (green)
 4. Refactor for clarity and performance
-5. Run full test suite: {{testCommand}}
-6. Run build: {{buildCommand}}
-7. Run lint: {{lintCommand}}
 
 Commit with descriptive messages.`,
     },
-    {
-      id: "verify",
-      label: "Verify & PR",
-      prompt: `## Phase: Verification
-
-1. Run the complete test suite: {{testCommand}}
-2. Run build: {{buildCommand}}
-3. Ensure no regressions
-4. Push changes and create/update PR
-5. Include test results summary in PR description`,
-    },
   ],
-  doneMessage: "Backend task completed — API/service implemented and tested.",
+  doneMessage: "Backend task completed — API/service implemented, validated, and PR created.",
 });
 
 
@@ -172,13 +226,13 @@ Commit with descriptive messages.`,
 //  Frontend Task Workflow
 // ═══════════════════════════════════════════════════════════════════════════
 
-export const FRONTEND_TASK_TEMPLATE = makeAgentPipeline({
+export const FRONTEND_TASK_TEMPLATE = makeTaskTemplate({
   id: "template-task-frontend",
   name: "Frontend Task Workflow",
   description:
     "Specialised for UI tasks — components, pages, styling, " +
-    "accessibility. Runs three phases: design analysis, implement " +
-    "with component tests, and visual verification.",
+    "accessibility. Agent phases handle design analysis and UI " +
+    "implementation. Validation and PR creation run as explicit nodes.",
   taskPattern: "frontend|ui|component|page|layout|style|css|responsive|accessibility|a11y|design.system",
   tags: ["frontend", "ui", "css", "component", "task-type"],
   recommended: true,
@@ -207,26 +261,11 @@ Do NOT write code yet.`,
 2. Implement layouts, styling, and responsive design
 3. Add proper accessibility attributes
 4. Write component tests
-5. Run tests: {{testCommand}}
-6. Run build: {{buildCommand}}
-7. Run lint: {{lintCommand}}
 
 Commit with descriptive messages.`,
     },
-    {
-      id: "verify-visual",
-      label: "Verify & PR",
-      prompt: `## Phase: Visual Verification
-
-1. Run the full test suite: {{testCommand}}
-2. Run build: {{buildCommand}}
-3. Verify components render correctly
-4. Check responsive breakpoints
-5. Verify accessibility (screen reader, keyboard)
-6. Push changes and create/update PR`,
-    },
   ],
-  doneMessage: "Frontend task completed — UI implemented and verified.",
+  doneMessage: "Frontend task completed — UI implemented, validated, and PR created.",
 });
 
 
@@ -234,13 +273,13 @@ Commit with descriptive messages.`,
 //  Debug Task Workflow
 // ═══════════════════════════════════════════════════════════════════════════
 
-export const DEBUG_TASK_TEMPLATE = makeAgentPipeline({
+export const DEBUG_TASK_TEMPLATE = makeTaskTemplate({
   id: "template-task-debug",
   name: "Debug Task Workflow",
   description:
-    "Bug investigation and fix workflow. Starts with reproduction " +
-    "and root-cause analysis, then implements a targeted fix with " +
-    "regression tests.",
+    "Bug investigation and fix workflow. Agent phases handle reproduction, " +
+    "root-cause analysis, and surgical fix with regression tests. " +
+    "Validation and PR creation run as explicit nodes.",
   taskPattern: "bug|fix|error|crash|regression|broken|debug|issue|defect|hotfix|patch",
   tags: ["debug", "bug", "fix", "error", "task-type"],
   recommended: true,
@@ -267,26 +306,11 @@ Do NOT fix the bug yet — only diagnose.`,
 1. Write a regression test that demonstrates the bug (must fail before fix)
 2. Apply the minimal, surgical fix
 3. Verify the regression test now passes
-4. Run the full test suite: {{testCommand}}
-5. Run build: {{buildCommand}}
-6. Run lint: {{lintCommand}}
-7. Ensure no other tests broke
 
 Commit fix and test together with a clear commit message.`,
     },
-    {
-      id: "verify",
-      label: "Verify & PR",
-      prompt: `## Phase: Final Verification
-
-1. Run complete test suite: {{testCommand}}
-2. Run build: {{buildCommand}}
-3. Confirm the original bug is fixed
-4. Confirm no regressions
-5. Push and create/update PR with root cause analysis in description`,
-    },
   ],
-  doneMessage: "Debug task completed — bug fixed with regression test.",
+  doneMessage: "Debug task completed — bug fixed, validated, and PR created.",
 });
 
 
@@ -294,13 +318,17 @@ Commit fix and test together with a clear commit message.`,
 //  CI/CD Task Workflow
 // ═══════════════════════════════════════════════════════════════════════════
 
-export const CICD_TASK_TEMPLATE = makeAgentPipeline({
+// ═══════════════════════════════════════════════════════════════════════════
+//  CI/CD Task Workflow
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const CICD_TASK_TEMPLATE = makeTaskTemplate({
   id: "template-task-cicd",
   name: "CI/CD Task Workflow",
   description:
     "For pipeline, deployment, infrastructure, and build-system tasks. " +
-    "Plans the change, implements with validation steps, then verifies " +
-    "the pipeline works end-to-end.",
+    "Agent phases handle planning and implementation. " +
+    "Validation and PR creation run as explicit nodes.",
   taskPattern: "ci|cd|pipeline|deploy|infrastructure|docker|kubernetes|k8s|terraform|github.action|build.system|release|devops",
   tags: ["ci", "cd", "pipeline", "deploy", "infrastructure", "task-type"],
   recommended: true,
@@ -327,25 +355,12 @@ Do NOT make changes yet.`,
 1. Make the CI/CD / infrastructure changes per the plan
 2. Update configuration files (workflows, Dockerfiles, Terraform, etc.)
 3. Add or update pipeline tests where applicable
-4. Run build: {{buildCommand}}
-5. Run lint: {{lintCommand}}
-6. Validate configuration syntax
+4. Validate configuration syntax
 
 Commit changes with clear descriptions.`,
     },
-    {
-      id: "verify-pipeline",
-      label: "Verify & PR",
-      prompt: `## Phase: Pipeline Verification
-
-1. Run full test suite: {{testCommand}}
-2. Run build: {{buildCommand}}
-3. Verify pipeline configuration is valid
-4. Push and create/update PR
-5. Include deployment / rollback instructions in PR description`,
-    },
   ],
-  doneMessage: "CI/CD task completed — pipeline updated and verified.",
+  doneMessage: "CI/CD task completed — pipeline updated, validated, and PR created.",
 });
 
 
@@ -353,13 +368,13 @@ Commit changes with clear descriptions.`,
 //  Design Task Workflow
 // ═══════════════════════════════════════════════════════════════════════════
 
-export const DESIGN_TASK_TEMPLATE = makeAgentPipeline({
+export const DESIGN_TASK_TEMPLATE = makeTaskTemplate({
   id: "template-task-design",
   name: "Design Task Workflow",
   description:
     "For design-related tasks — mockups, wireframes, design tokens, " +
-    "component library work. Analyses design requirements, implements " +
-    "the design system changes, and verifies visual output.",
+    "component library work. Agent phases handle analysis and implementation. " +
+    "Validation and PR creation run as explicit nodes.",
   taskPattern: "design|mockup|wireframe|prototype|design.system|theme|color|typography|icon|illustration|ux",
   tags: ["design", "mockup", "wireframe", "design-system", "task-type"],
   phases: [
@@ -385,22 +400,9 @@ Do NOT make changes yet.`,
 2. Create / update components per the design specification
 3. Ensure consistency with existing design system
 4. Add visual tests or snapshots where applicable
-5. Run build: {{buildCommand}}
-6. Run lint: {{lintCommand}}
 
 Commit changes with descriptive messages.`,
     },
-    {
-      id: "verify-design",
-      label: "Verify & PR",
-      prompt: `## Phase: Design Verification
-
-1. Run tests: {{testCommand}}
-2. Run build: {{buildCommand}}
-3. Verify visual consistency
-4. Check design token values are correct
-5. Push and create/update PR`,
-    },
   ],
-  doneMessage: "Design task completed — design changes implemented and verified.",
+  doneMessage: "Design task completed — design implemented, validated, and PR created.",
 });

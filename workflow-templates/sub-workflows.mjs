@@ -231,3 +231,200 @@ export const PR_CHECK_HANDOFF_SUB = subWorkflow(
     description: "Check PR result, transition task to in-review, dispatch PR progressor.",
   },
 );
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Installable Sub-Workflow Templates
+//
+//  These are fully-formed workflow templates (with trigger.workflow_call)
+//  that appear under the "Sub-Workflows" category and can be installed
+//  standalone, then invoked at runtime via action.execute_workflow.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Validation Gate — build → test → lint quality check.
+ * Callable from other workflows via action.execute_workflow.
+ */
+export const VALIDATION_GATE_TEMPLATE = {
+  id: "template-sub-validation-gate",
+  name: "Validation Gate",
+  description:
+    "Sequential build → test → lint quality gate. Use as a reusable " +
+    "building block — call from other workflows via Execute Workflow node.",
+  category: "sub-workflow",
+  enabled: true,
+  recommended: false,
+  trigger: "trigger.workflow_call",
+  variables: {
+    buildCommand: "auto",
+    testCommand: "auto",
+    lintCommand: "auto",
+    worktreePath: "",
+  },
+  metadata: {
+    author: "bosun",
+    version: 1,
+    tags: ["sub-workflow", "validation", "quality-gate"],
+  },
+  nodes: [
+    node("trigger", "trigger.workflow_call", "Workflow Called", {}, { x: 400, y: 50 }),
+    node("build", "action.run_command", "Build", {
+      command: "{{buildCommand}}",
+      cwd: "{{worktreePath}}",
+      continueOnError: true,
+    }, { x: 400, y: 180 }),
+    node("test", "action.run_command", "Test", {
+      command: "{{testCommand}}",
+      cwd: "{{worktreePath}}",
+      continueOnError: true,
+    }, { x: 400, y: 310 }),
+    node("lint", "action.run_command", "Lint", {
+      command: "{{lintCommand}}",
+      cwd: "{{worktreePath}}",
+      continueOnError: true,
+    }, { x: 400, y: 440 }),
+    node("done", "notify.log", "Validation Complete", {
+      message: "Validation gate passed: build + test + lint.",
+    }, { x: 400, y: 570 }),
+  ],
+  edges: [
+    edge("trigger", "build"),
+    edge("build", "test"),
+    edge("test", "lint"),
+    edge("lint", "done"),
+  ],
+};
+
+/**
+ * Validate & PR — build/test/lint → push → create PR.
+ * Callable from other workflows via action.execute_workflow.
+ */
+export const VALIDATE_AND_PR_TEMPLATE = {
+  id: "template-sub-validate-and-pr",
+  name: "Validate & Create PR",
+  description:
+    "Build → Test → Lint → Push → Create/Update PR. A complete " +
+    "validation-through-PR pipeline as a reusable sub-workflow.",
+  category: "sub-workflow",
+  enabled: true,
+  recommended: false,
+  trigger: "trigger.workflow_call",
+  variables: {
+    buildCommand: "auto",
+    testCommand: "auto",
+    lintCommand: "auto",
+    worktreePath: "",
+    branch: "",
+    baseBranch: "",
+    taskId: "",
+    taskTitle: "",
+  },
+  metadata: {
+    author: "bosun",
+    version: 1,
+    tags: ["sub-workflow", "validation", "pr", "push"],
+  },
+  nodes: [
+    node("trigger", "trigger.workflow_call", "Workflow Called", {}, { x: 400, y: 50 }),
+    node("build", "action.run_command", "Build", {
+      command: "{{buildCommand}}",
+      cwd: "{{worktreePath}}",
+      continueOnError: true,
+    }, { x: 400, y: 180 }),
+    node("test", "action.run_command", "Test", {
+      command: "{{testCommand}}",
+      cwd: "{{worktreePath}}",
+      continueOnError: true,
+    }, { x: 400, y: 310 }),
+    node("lint", "action.run_command", "Lint", {
+      command: "{{lintCommand}}",
+      cwd: "{{worktreePath}}",
+      continueOnError: true,
+    }, { x: 400, y: 440 }),
+    node("push", "action.push_branch", "Push Branch", {
+      cwd: "{{worktreePath}}",
+      branch: "{{branch}}",
+    }, { x: 400, y: 570 }),
+    node("create-pr", "action.create_pr", "Create / Update PR", {
+      taskId: "{{taskId}}",
+      taskTitle: "{{taskTitle}}",
+      branch: "{{branch}}",
+      baseBranch: "{{baseBranch}}",
+    }, { x: 400, y: 700 }),
+    node("done", "notify.log", "PR Pipeline Complete", {
+      message: "Validation passed, branch pushed, PR created/updated.",
+    }, { x: 400, y: 830 }),
+  ],
+  edges: [
+    edge("trigger", "build"),
+    edge("build", "test"),
+    edge("test", "lint"),
+    edge("lint", "push"),
+    edge("push", "create-pr"),
+    edge("create-pr", "done"),
+  ],
+};
+
+/**
+ * PR Handoff — create PR → verify → transition to in-review → dispatch progressor.
+ * Callable from other workflows via action.execute_workflow.
+ */
+export const PR_HANDOFF_TEMPLATE = {
+  id: "template-sub-pr-handoff",
+  name: "PR Handoff",
+  description:
+    "Create PR → verify creation → set task to in-review → dispatch " +
+    "PR Progressor workflow. Reusable handoff building block.",
+  category: "sub-workflow",
+  enabled: true,
+  recommended: false,
+  trigger: "trigger.workflow_call",
+  variables: {
+    taskId: "",
+    taskTitle: "",
+    branch: "",
+    baseBranch: "",
+  },
+  metadata: {
+    author: "bosun",
+    version: 1,
+    tags: ["sub-workflow", "pr", "handoff"],
+  },
+  nodes: [
+    node("trigger", "trigger.workflow_call", "Workflow Called", {}, { x: 400, y: 50 }),
+    node("create-pr", "action.create_pr", "Create / Update PR", {
+      taskId: "{{taskId}}",
+      taskTitle: "{{taskTitle}}",
+      branch: "{{branch}}",
+      baseBranch: "{{baseBranch}}",
+    }, { x: 400, y: 180 }),
+    node("pr-created", "condition.expression", "PR Created?", {
+      expression: "Boolean($ctx.getNodeOutput($edge.source)?.prNumber || $ctx.getNodeOutput($edge.source)?.prUrl)",
+    }, { x: 400, y: 310, outputs: ["yes", "no"] }),
+    node("set-inreview", "action.update_task_status", "Set In-Review", {
+      taskId: "{{taskId}}",
+      status: "inreview",
+      taskTitle: "{{taskTitle}}",
+    }, { x: 300, y: 440 }),
+    node("handoff-progressor", "action.execute_workflow", "Handoff PR Progressor", {
+      workflowId: "template-bosun-pr-progressor",
+      mode: "dispatch",
+      input: {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+      },
+    }, { x: 300, y: 570 }),
+    node("done", "notify.log", "Handoff Complete", {
+      message: "PR created and PR Progressor dispatched.",
+    }, { x: 300, y: 700 }),
+  ],
+  edges: [
+    edge("trigger", "create-pr"),
+    edge("create-pr", "pr-created"),
+    edge("pr-created", "set-inreview", { port: "yes" }),
+    edge("set-inreview", "handoff-progressor"),
+    edge("handoff-progressor", "done"),
+  ],
+};

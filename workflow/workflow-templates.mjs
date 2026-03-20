@@ -163,6 +163,13 @@ import {
   GIT_HEALTH_PIPELINE_TEMPLATE,
 } from "../workflow-templates/bosun-native.mjs";
 
+// Sub-Workflow Templates (installable reusable building blocks)
+import {
+  VALIDATION_GATE_TEMPLATE,
+  VALIDATE_AND_PR_TEMPLATE,
+  PR_HANDOFF_TEMPLATE,
+} from "../workflow-templates/sub-workflows.mjs";
+
 // ── Re-export individual templates for direct import ────────────────────────
 
 export {
@@ -230,6 +237,9 @@ export {
   INLINE_WORKFLOW_COMPOSITION_TEMPLATE,
   MCP_TO_BOSUN_BRIDGE_TEMPLATE,
   GIT_HEALTH_PIPELINE_TEMPLATE,
+  VALIDATION_GATE_TEMPLATE,
+  VALIDATE_AND_PR_TEMPLATE,
+  PR_HANDOFF_TEMPLATE,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -249,8 +259,9 @@ export const TEMPLATE_CATEGORIES = Object.freeze({
   research:    { label: "Research",     icon: ":microscope:", order: 9 },
   coverage:    { label: "Coverage",     icon: ":chart:", order: 10 },
   "mcp-integration": { label: "MCP Integration", icon: ":plug:", order: 11 },
-  maintenance: { label: "Maintenance",   icon: ":wrench:",   order: 12 },
-  custom:      { label: "Custom",       icon: ":settings:", order: 13 },
+  maintenance:   { label: "Maintenance",   icon: ":wrench:",    order: 12 },
+  "sub-workflow": { label: "Sub-Workflows", icon: ":workflow:", order: 13 },
+  custom:        { label: "Custom",        icon: ":settings:", order: 14 },
 });
 
 const BUILTIN_WORKFLOW_TEMPLATES = [
@@ -333,6 +344,10 @@ const BUILTIN_WORKFLOW_TEMPLATES = [
   INLINE_WORKFLOW_COMPOSITION_TEMPLATE,
   MCP_TO_BOSUN_BRIDGE_TEMPLATE,
   GIT_HEALTH_PIPELINE_TEMPLATE,
+  // ── Sub-Workflows (reusable building blocks) ──
+  VALIDATION_GATE_TEMPLATE,
+  VALIDATE_AND_PR_TEMPLATE,
+  PR_HANDOFF_TEMPLATE,
 ];
 
 for (const template of BUILTIN_WORKFLOW_TEMPLATES) {

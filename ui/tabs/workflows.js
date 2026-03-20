@@ -92,6 +92,12 @@ const installDialogVars = signal({});
 const installDialogMode = signal("quick");
 const installDialogInstalling = signal(false);
 const installDialogResult = signal(null);
+
+// ── Create Workflow Dialog state ──────────────────────────────────────────
+const createDialogOpen = signal(false);
+const createDialogName = signal("New Workflow");
+const createDialogCategory = signal("custom");
+
 const workflowsLoading = signal(false);
 const templatesLoading = signal(false);
 const nodeTypesLoading = signal(false);
@@ -4714,6 +4720,91 @@ function resolveWorkflowTemplateSource(workflow, templateLookupById, templateLoo
   return null;
 }
 
+/* ═══════════════════════════════════════════════════════════════
+ *  Create Workflow Dialog
+ * ═══════════════════════════════════════════════════════════════ */
+
+function openCreateWorkflowDialog() {
+  createDialogName.value = "New Workflow";
+  createDialogCategory.value = "custom";
+  createDialogOpen.value = true;
+}
+
+function CreateWorkflowDialog() {
+  const open = createDialogOpen.value;
+  const tmpls = templates.value || [];
+
+  // Collect unique categories from template metadata
+  const categoryEntries = useMemo(() => {
+    const seen = new Map();
+    for (const t of tmpls) {
+      const key = String(t?.category || "custom").trim();
+      if (!seen.has(key)) {
+        seen.set(key, {
+          key,
+          label: String(t?.categoryLabel || humanizeWorkflowCategory(key)),
+          order: Number.isFinite(Number(t?.categoryOrder)) ? Number(t.categoryOrder) : 99,
+        });
+      }
+    }
+    // Ensure sub-workflow and custom are always available
+    if (!seen.has("sub-workflow")) seen.set("sub-workflow", { key: "sub-workflow", label: "Sub-Workflows", order: 13 });
+    if (!seen.has("custom")) seen.set("custom", { key: "custom", label: "Custom", order: 14 });
+    return [...seen.values()].sort((a, b) => a.order - b.order);
+  }, [tmpls]);
+
+  const handleCreate = useCallback(() => {
+    const name = String(createDialogName.value || "").trim() || "New Workflow";
+    const category = String(createDialogCategory.value || "custom").trim();
+    const newWf = { name, description: "", category, enabled: true, nodes: [], edges: [], variables: {} };
+    createDialogOpen.value = false;
+    saveWorkflow(newWf).then(wf => {
+      if (wf) {
+        activeWorkflow.value = wf;
+        viewMode.value = "canvas";
+      }
+    });
+  }, []);
+
+  if (!open) return null;
+
+  return html`
+    <${Dialog} open=${true} onClose=${() => { createDialogOpen.value = false; }} maxWidth="xs" fullWidth PaperProps=${{ sx: { background: "var(--color-bg-secondary, #1a1f2e)", color: "var(--color-text, white)" } }}>
+      <${DialogTitle}>Create Workflow<//>
+      <${DialogContent}>
+        <${TextField}
+          autoFocus
+          fullWidth
+          label="Workflow Name"
+          size="small"
+          value=${createDialogName.value}
+          onInput=${(e) => { createDialogName.value = e.target.value; }}
+          sx=${{ mt: 1, mb: 2 }}
+          InputProps=${{ sx: { color: "var(--color-text, white)" } }}
+          InputLabelProps=${{ sx: { color: "var(--color-text-secondary, #8b95a5)" } }}
+        />
+        <${FormControl} fullWidth size="small">
+          <${InputLabel} sx=${{ color: "var(--color-text-secondary, #8b95a5)" }}>Category<//>
+          <${Select}
+            value=${createDialogCategory.value}
+            onChange=${(e) => { createDialogCategory.value = e.target.value; }}
+            label="Category"
+            sx=${{ color: "var(--color-text, white)" }}
+          >
+            ${categoryEntries.map(cat => html`
+              <${MenuItem} key=${cat.key} value=${cat.key}>${cat.label}<//>
+            `)}
+          <//>
+        <//>
+      <//>
+      <${DialogActions}>
+        <${Button} onClick=${() => { createDialogOpen.value = false; }} sx=${{ color: "var(--color-text-secondary, #8b95a5)" }}>Cancel<//>
+        <${Button} variant="contained" onClick=${handleCreate}>Create<//>
+      <//>
+    <//>
+  `;
+}
+
 function WorkflowListView() {
   const wfs = workflows.value || [];
   const tmpls = templates.value || [];
@@ -4761,23 +4852,7 @@ function WorkflowListView() {
           type="button"
           variant="contained"
           size="small"
-          onClick=${() => {
-            const newWf = {
-              name: "New Workflow",
-              description: "",
-              category: "custom",
-              enabled: true,
-              nodes: [],
-              edges: [],
-              variables: {},
-            };
-            saveWorkflow(newWf).then(wf => {
-              if (wf) {
-                activeWorkflow.value = wf;
-                viewMode.value = "canvas";
-              }
-            });
-          }}
+          onClick=${() => openCreateWorkflowDialog()}
         >
           <span class="btn-icon">${resolveIcon("plus")}</span>
           Create Workflow
@@ -4963,10 +5038,7 @@ function WorkflowListView() {
             to error recovery. Install a template below or create one from scratch.
           </div>
           <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
-            <${Button} variant="contained" size="small" onClick=${() => {
-              const newWf = { name: "New Workflow", description: "", category: "custom", enabled: true, nodes: [], edges: [], variables: {} };
-              saveWorkflow(newWf).then(wf => { if (wf) { activeWorkflow.value = wf; viewMode.value = "canvas"; } });
-            }}>+ Create Blank<//>
+            <${Button} variant="contained" size="small" onClick=${() => openCreateWorkflowDialog()}>+ Create Blank<//>
             ${availableTemplates.length > 0 && html`
               <${Button} variant="outlined" size="small" sx=${{ borderColor: '#f59e0b60', color: '#f59e0b', textTransform: 'none' }} onClick=${() => openInstallTemplateDialog(availableTemplates[0]?.id)}>
                 <span class="btn-icon">${resolveIcon("zap")}</span>
@@ -6261,6 +6333,7 @@ export function WorkflowsTab() {
       }
       <${ExecuteWorkflowDialog} />
       <${InstallTemplateDialog} />
+      <${CreateWorkflowDialog} />
     </div>
   `;
 }
