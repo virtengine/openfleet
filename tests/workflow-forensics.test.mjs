@@ -71,8 +71,8 @@ function makeWorkflow(nodes, edges, id = "forensics-wf") {
 describe("WorkflowContext forensics fields", () => {
   it("initialises _nodeTimings and _nodeInputs", () => {
     const ctx = new WorkflowContext();
-    expect(ctx._nodeTimings).toEqual({});
-    expect(ctx._nodeInputs).toEqual({});
+    expect(Object.keys(ctx._nodeTimings)).toEqual([]);
+    expect(Object.keys(ctx._nodeInputs)).toEqual([]);
   });
 
   it("setNodeTiming / getNodeTiming round-trips", () => {
@@ -105,6 +105,17 @@ describe("WorkflowContext forensics fields", () => {
     const json = ctx.toJSON();
     expect(json.nodeTimings).toEqual({ n1: { startedAt: 100 } });
     expect(json.nodeInputs).toEqual({ n1: { x: 1 } });
+  });
+
+  it("treats reserved property names as regular node ids", () => {
+    const ctx = new WorkflowContext();
+    ctx.setNodeTiming("__proto__", "startedAt", 123);
+    ctx.setNodeInput("constructor", { ok: true });
+
+    expect(ctx.getNodeTiming("__proto__")).toEqual({ startedAt: 123 });
+    expect(ctx.getNodeInput("constructor")).toEqual({ ok: true });
+    expect({}.startedAt).toBeUndefined();
+    expect({}.ok).toBeUndefined();
   });
 });
 

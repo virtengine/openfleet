@@ -9,7 +9,8 @@ const STATE_FILE = process.env.BOSUN_COMMAND_DIAGNOSTICS_STATE_FILE
   : resolve(__dirname, "..", ".cache", "command-diagnostics", "state.json");
 const CACHE_DIR = dirname(STATE_FILE);
 const MAX_STATE_RECORDS = 120;
-const FILE_REF_REGEX = /((?:[A-Za-z]:)?[.~/\\\w-]+(?:[\\/][^:\s]+)+(?::\d+(?::\d+)?)?)/g;
+const MAX_SCAN_CHARS = 20_000;
+const MAX_SCAN_LINES = 400;
 
 let _fsPromises = null;
 let _stateCache = null;
@@ -59,8 +60,57 @@ function uniqueValues(values = []) {
 function quoteArg(value) {
   const raw = String(value || "");
   if (!raw) return '""';
-  if (!/[\s"'|&()]/.test(raw)) return raw;
-  return `"${raw.replace(/"/g, '\\"')}"`;
+  if (!/[\\s"'|&()\\\\]/.test(raw)) return raw;
+  return `"${raw.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+function getDiagnosticSample(value = "") {
+  return String(value || "").slice(0, MAX_SCAN_CHARS);
+}
+
+function getDiagnosticLines(value = "") {
+  return getDiagnosticSample(value).split(/\r?\n/).slice(0, MAX_SCAN_LINES);
+}
+
+function trimTokenEdge(token = "") {
+  let start = 0;
+  let end = token.length;
+  while (start < end && "\"'`([{<".includes(token[start])) start += 1;
+  while (end > start && "\"'`)]}>,;.!?".includes(token[end - 1])) end -= 1;
+  return token.slice(start, end);
+}
+
+function isLikelyFileRef(token = "") {
+  if (!token || token.length < 3) return false;
+  if (token.includes("://")) return false;
+  const hasPathSeparator = token.includes("/") || token.includes("\\");
+  const hasDrivePrefix = /^[A-Za-z]:/.test(token);
+  const hasRelativePrefix = token.startsWith("./") || token.startsWith("../") || token.startsWith("~/");
+  if (!hasPathSeparator && !hasDrivePrefix && !hasRelativePrefix) return false;
+  return token.includes(".");
+}
+
+function extractLeadingInteger(value = "") {
+  let digits = "";
+  for (const char of String(value || "")) {
+    if (char < "0" || char > "9") break;
+    digits += char;
+  }
+  return digits ? Number(digits) : null;
+}
+
+function findSummaryCount(text = "", label = "failed") {
+  const lowerLabel = String(label || "").toLowerCase();
+  for (const line of getDiagnosticLines(text)) {
+    const tokens = line.trim().split(/\s+/).filter(Boolean);
+    for (let index = 0; index < tokens.length - 1; index += 1) {
+      if (tokens[index + 1].toLowerCase().startsWith(lowerLabel)) {
+        const numeric = extractLeadingInteger(tokens[index].replace(/^=/, ""));
+        if (numeric !== null) return numeric;
+      }
+    }
+  }
+  return null;
 }
 
 function normalizeCommandSignature(command = "", args = []) {
@@ -79,10 +129,21 @@ function resolveCommandKind(commandLine = "", output = "") {
   if (/\bvitest\b/.test(lower)) return { family: "test", runner: "vitest" };
   if (/\bjest\b/.test(lower)) return { family: "test", runner: "jest" };
   if (/\bgo\s+test\b/.test(lower)) return { family: "test", runner: "go-test" };
-  if (/^\s*fail\s+.+\.(test|spec)\.[a-z0-9]+/im.test(output) || /test files\s+\d+\s+failed/i.test(output)) {
+  const outputLines = getDiagnosticLines(output);
+  const hasVitestFailureLine = outputLines.some((line) => {
+    const trimmed = line.trimStart().toLowerCase();
+    return trimmed.startsWith("fail ") && (trimmed.includes(".test.") || trimmed.includes(".spec."));
+  });
+  const hasVitestSummary = lower.includes("test files") && lower.includes("failed");
+  if (hasVitestFailureLine || hasVitestSummary) {
     return { family: "test", runner: "vitest" };
   }
-  if (/^failed\s+.+::.+\s+-/im.test(output) || /collected \d+ items/i.test(output)) {
+  const hasPytestFailureLine = outputLines.some((line) => {
+    const trimmed = line.trimStart();
+    return trimmed.startsWith("FAILED ") && trimmed.includes("::") && trimmed.includes(" - ");
+  });
+  const hasPytestCollection = lower.includes("collected ") && lower.includes(" items");
+  if (hasPytestFailureLine || hasPytestCollection) {
     return { family: "test", runner: "pytest" };
   }
   if (/\bgit\s+diff\b/.test(lower)) return { family: "git", runner: "git-diff" };
@@ -99,9 +160,15 @@ function countRegex(text, regex) {
 
 function extractFileRefs(text = "", limit = 10) {
   const refs = [];
-  for (const match of String(text || "").matchAll(FILE_REF_REGEX)) {
-    refs.push(match[1]);
-    if (refs.length >= limit) break;
+  for (const line of getDiagnosticLines(text)) {
+    for (const token of line.split(/\s+/)) {
+      const trimmed = trimTokenEdge(token);
+      if (!isLikelyFileRef(trimmed)) continue;
+      refs.push(trimmed);
+      if (refs.length >= limit) {
+        return uniqueValues(refs);
+      }
+    }
   }
   return uniqueValues(refs);
 }
@@ -128,11 +195,14 @@ function parseDotnetTest(text) {
 
 function parsePytest(text) {
   const failedTargets = [];
-  for (const match of String(text).matchAll(/^FAILED\s+(.+?)\s+-/gm)) {
-    failedTargets.push(match[1]);
+  for (const line of getDiagnosticLines(text)) {
+    const trimmed = line.trimStart();
+    if (!trimmed.startsWith("FAILED ")) continue;
+    const payload = trimmed.slice("FAILED ".length).trim();
+    const separatorIndex = payload.indexOf(" - ");
+    failedTargets.push((separatorIndex === -1 ? payload : payload.slice(0, separatorIndex)).trim());
   }
-  const failedCountMatch = text.match(/(^|[ =])(\d+)\s+failed\b/i);
-  const failedCount = failedCountMatch ? Number(failedCountMatch[2]) : failedTargets.length;
+  const failedCount = findSummaryCount(text, "failed") ?? failedTargets.length;
   const summary = failedCount ? `${failedCount} failed pytest target${failedCount === 1 ? "" : "s"}` : "";
   return {
     failedTargets: uniqueValues(failedTargets),
@@ -145,8 +215,10 @@ function parsePytest(text) {
 
 function parseVitestLike(text, runner = "vitest") {
   const failedTargets = [];
-  for (const match of String(text).matchAll(/^\s*FAIL\s+(.+)$/gm)) {
-    failedTargets.push(match[1].trim());
+  for (const line of getDiagnosticLines(text)) {
+    const trimmed = line.trimStart();
+    if (!trimmed.startsWith("FAIL ")) continue;
+    failedTargets.push(trimmed.slice("FAIL ".length).trim());
   }
   const fileRefs = extractFileRefs(text, 12).filter((value) => /\.(test|spec)\.[A-Za-z0-9]+(?::\d+)?$/i.test(value));
   const effectiveTargets = uniqueValues([...failedTargets, ...fileRefs]);

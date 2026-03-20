@@ -535,8 +535,8 @@ export class WorkflowContext {
     this.nodeStatusEvents = [];
     this.variables = {};
     this.retryAttempts = new Map();
-    this._nodeTimings = {};
-    this._nodeInputs = {};
+    this._nodeTimings = Object.create(null);
+    this._nodeInputs = Object.create(null);
   }
 
   /** Target repo for multi-repo workspaces (convenience accessor) */
@@ -579,23 +579,27 @@ export class WorkflowContext {
 
   /** Set a timing field for a node (startedAt / endedAt) */
   setNodeTiming(nodeId, field, value) {
-    if (!this._nodeTimings[nodeId]) this._nodeTimings[nodeId] = {};
-    this._nodeTimings[nodeId][field] = value;
+    const key = String(nodeId);
+    const fieldKey = String(field);
+    if (!this._nodeTimings[key] || typeof this._nodeTimings[key] !== "object") {
+      this._nodeTimings[key] = Object.create(null);
+    }
+    this._nodeTimings[key][fieldKey] = value;
   }
 
   /** Get timing data for a node */
   getNodeTiming(nodeId) {
-    return this._nodeTimings[nodeId] || null;
+    return this._nodeTimings[String(nodeId)] || null;
   }
 
   /** Store the resolved input snapshot for a node */
   setNodeInput(nodeId, input) {
-    this._nodeInputs[nodeId] = input;
+    this._nodeInputs[String(nodeId)] = input;
   }
 
   /** Get the stored input snapshot for a node */
   getNodeInput(nodeId) {
-    return this._nodeInputs[nodeId] || null;
+    return this._nodeInputs[String(nodeId)] || null;
   }
 
   /** Set output from a node */
