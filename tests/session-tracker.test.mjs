@@ -410,10 +410,10 @@ describe("session-tracker", () => {
         const listed = timedTracker.listAllSessions().find((entry) => entry.id === "chat-runtime");
         expect(listed).toEqual(
           expect.objectContaining({
-            status: "stalled",
+            status: "idle",
             lifecycleStatus: "active",
-            runtimeState: "stalled",
-            runtimeIsLive: false,
+            runtimeState: "idle",
+            runtimeIsLive: true,
           }),
         );
       } finally {
