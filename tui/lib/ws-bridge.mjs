@@ -100,6 +100,9 @@ class TuiWsBridge {
 			case "session:update":
 				this._emit("session:update", payload);
 				break;
+			case "sessions:update":
+				this._emit("sessions:update", payload);
+				break;
 			case "session:end":
 				this._emit("session:end", payload);
 				break;
@@ -117,6 +120,13 @@ class TuiWsBridge {
 				break;
 			case "retry:update":
 				this._emit("retry:update", payload);
+				break;
+			case "retry-queue-updated":
+				this._emit("retry-queue-updated", payload);
+				this._emit("retry:update", payload);
+				break;
+			case "invalidate":
+				this._emit("invalidate", payload);
 				break;
 			case "workflow:trigger":
 				this._emit("workflow:trigger", payload);

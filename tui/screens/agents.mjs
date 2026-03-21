@@ -1,294 +1,465 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { Box, Text } from "ink";
+import React from "react";
+import htm from "htm";
+import { Box, Text, useInput, useStdout } from "ink";
 
-const SESSION_STATUS_COLORS = {
-	active: "green",
-	idle: "cyan",
-	completed: "blue",
-	failed: "red",
-	pending: "yellow",
-};
+import {
+  buildOsc52CopySequence,
+  formatRetryQueueCountdown,
+  projectSessionRow,
+  reconcileSessionEntries,
+} from "./agents-screen-helpers.mjs";
 
-const EXECUTOR_COLORS = {
-	codex: "green",
-	copilot: "blue",
-	claude: "yellow",
-	opencode: "magenta",
-	gemini: "red",
-};
+const html = htm.bind(React.createElement);
+const FIXED_TABLE_WIDTH = 2 + 8 + 12 + 8 + 10 + 12 + 14 + 7;
 
-function formatDuration(startedAt, endedAt) {
-	if (!startedAt) return "N/A";
-	const start = new Date(startedAt).getTime();
-	const end = endedAt ? new Date(endedAt).getTime() : Date.now();
-	const diff = end - start;
-
-	const seconds = Math.floor(diff / 1000);
-	const minutes = Math.floor(seconds / 60);
-	const hours = Math.floor(minutes / 60);
-
-	if (hours > 0) return `${hours}h ${minutes % 60}m`;
-	if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
-	return `${seconds}s`;
+function pad(text, width, align = "left") {
+  const value = String(text || "");
+  if (width <= 0) return "";
+  if (value.length >= width) return value.slice(0, width);
+  if (align === "right") return `${" ".repeat(width - value.length)}${value}`;
+  return `${value}${" ".repeat(width - value.length)}`;
 }
 
-function SessionRow({ session, selected, onSelect }) {
-	const statusColor = SESSION_STATUS_COLORS[session.status] || "white";
-	const executorColor = EXECUTOR_COLORS[session.executor] || "white";
-
-	return (
-		<Box
-			paddingX={1}
-			paddingY={0}
-			borderStyle={selected ? "bold" : "single"}
-			borderDim={!selected}
-			onClick={onSelect}
-		>
-			<Box width={10}>
-				<Text dimColor>{session.id?.slice(0, 8) || "?"}</Text>
-			</Box>
-			<Box width={12}>
-				<Text color={executorColor} bold>
-					{session.executor || "unknown"}
-				</Text>
-			</Box>
-			<Box width={10}>
-				<Text color={statusColor}>{session.status || "pending"}</Text>
-			</Box>
-			<Box width={12}>
-				<Text>{session.taskId?.slice(0, 10) || "-"}</Text>
-			</Box>
-			<Box width={12}>
-				<Text>{formatDuration(session.startedAt, session.endedAt)}</Text>
-			</Box>
-			<Box width={15}>
-				<Text dimColor>
-					{session.model || "-"}
-				</Text>
-			</Box>
-			<Box flexGrow={1}>
-				<Text numberOfLines={1}>
-					{session.taskTitle || session.prompt?.slice(0, 50) || "-"}
-				</Text>
-			</Box>
-		</Box>
-	);
+function renderCell(value, width, { color, inverse, dimColor, align = "left" } = {}) {
+  return html`
+    <${Box} width=${width}>
+      <${Text} color=${color} inverse=${inverse} dimColor=${dimColor}>
+        ${pad(value, width, align)}
+      <//>
+    <//>
+  `;
 }
 
-function SessionDetail({ session, onClose, onAction }) {
-	if (!session) return null;
-
-	return (
-		<Box flexDirection="column" padding={1} borderStyle="bold" borderColor="cyan">
-			<Box justifyContent="space-between">
-				<Text bold>Session Details</Text>
-				<Text dimColor onClick={onClose}>
-					[Esc] Close
-				</Text>
-			</Box>
-			<Box marginTop={1} flexDirection="column">
-				<Box>
-					<Text dimColor>ID: </Text>
-					<Text>{session.id}</Text>
-				</Box>
-				<Box>
-					<Text dimColor>Executor: </Text>
-					<Text color={EXECUTOR_COLORS[session.executor]}>
-						{session.executor}
-					</Text>
-				</Box>
-				<Box>
-					<Text dimColor>Status: </Text>
-					<Text color={SESSION_STATUS_COLORS[session.status]}>
-						{session.status}
-					</Text>
-				</Box>
-				<Box>
-					<Text dimColor>Task: </Text>
-					<Text>{session.taskTitle || session.taskId}</Text>
-				</Box>
-				<Box>
-					<Text dimColor>Model: </Text>
-					<Text>{session.model || "-"}</Text>
-				</Box>
-				<Box>
-					<Text dimColor>Started: </Text>
-					<Text>{session.startedAt ? new Date(session.startedAt).toLocaleString() : "N/A"}</Text>
-				</Box>
-				<Box>
-					<Text dimColor>Duration: </Text>
-					<Text>{formatDuration(session.startedAt, session.endedAt)}</Text>
-				</Box>
-				{session.error && (
-					<Box flexDirection="column" marginTop={1}>
-						<Text red bold>
-							Error:
-						</Text>
-						<Text red>{session.error}</Text>
-					</Box>
-				)}
-			</Box>
-			<Box marginTop={1}>
-				<Text green onClick={() => onAction("continue", session)}>
-					[Enter] Continue Session
-				</Text>
-				<Text> </Text>
-				<Text red onClick={() => onAction("terminate", session)}>
-					[t] Terminate
-				</Text>
-			</Box>
-		</Box>
-	);
+function describeSelection(session) {
+  return String(session?.id || "").slice(0, 8) || "session";
 }
 
-export default function AgentsScreen({ sessions, wsBridge, refreshMs }) {
-	const [selectedIndex, setSelectedIndex] = useState(0);
-	const [showDetail, setShowDetail] = useState(false);
-	const [sortBy, setSortBy] = useState("startedAt");
-	const [filterExecutor, setFilterExecutor] = useState("");
+function sessionActionPath(sessionId, action) {
+  return `/api/sessions/${encodeURIComponent(String(sessionId || "").trim())}/${action}?workspace=all`;
+}
 
-	const sortedSessions = [...(sessions || [])]
-		.filter((s) => !filterExecutor || s.executor === filterExecutor)
-		.sort((a, b) => {
-			if (sortBy === "startedAt") {
-				return new Date(b.startedAt || 0).getTime() - new Date(a.startedAt || 0).getTime();
-			}
-			if (sortBy === "status") {
-				return (a.status || "").localeCompare(b.status || "");
-			}
-			if (sortBy === "executor") {
-				return (a.executor || "").localeCompare(b.executor || "");
-			}
-			return 0;
-		});
+async function fetchJson(host, port, path, init) {
+  const response = await fetch(`http://${host}:${port}${path}`, init);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.ok === false) {
+    throw new Error(payload?.error || `Request failed: ${response.status}`);
+  }
+  return payload;
+}
 
-	const currentSession = sortedSessions[selectedIndex];
-	const executors = [...new Set((sessions || []).map((s) => s.executor).filter(Boolean))];
+function summarizeDiff(diffPayload) {
+  const diff = diffPayload?.diff || {};
+  const files = Array.isArray(diff.files) ? diff.files : [];
+  return {
+    summary: String(diffPayload?.summary || diff.formatted || "").trim() || "(no diff summary)",
+    files: files.slice(0, 12).map((file) => ({
+      name: file.filename || file.path || "unknown",
+      additions: Number(file.additions || 0),
+      deletions: Number(file.deletions || 0),
+    })),
+  };
+}
 
-	const handleKeyPress = useCallback((key) => {
-		if (showDetail) {
-			if (key === "Escape") {
-				setShowDetail(false);
-			}
-			if (key === "Enter" && currentSession) {
-				wsBridge.send("session:continue", { sessionId: currentSession.id });
-			}
-			if (key === "t" && currentSession) {
-				wsBridge.send("session:terminate", { sessionId: currentSession.id });
-			}
-			return;
-		}
+function sessionMessagesToLogLines(sessionPayload) {
+  const messages = Array.isArray(sessionPayload?.session?.messages)
+    ? sessionPayload.session.messages
+    : [];
+  return messages.slice(-40).map((message) => {
+    const ts = String(message.timestamp || "").replace("T", " ").replace("Z", "");
+    const role = String(message.role || message.type || "event").padEnd(10, " ");
+    const content = String(message.content || "").replace(/\s+/g, " ").trim();
+    return `${ts}  ${role}  ${content}`;
+  });
+}
 
-		if (key === "k" || key === "arrowUp") {
-			setSelectedIndex((prev) => Math.max(0, prev - 1));
-		}
-		if (key === "j" || key === "arrowDown") {
-			setSelectedIndex((prev) => Math.min(sortedSessions.length - 1, prev + 1));
-		}
-		if (key === "Enter") {
-			setShowDetail(true);
-		}
-		if (key === "s") {
-			setSortBy((prev) => (prev === "startedAt" ? "status" : prev === "status" ? "executor" : "startedAt"));
-		}
-		if (key === "f") {
-			setFilterExecutor((prev) => {
-				const execs = executors;
-				const idx = execs.indexOf(prev);
-				return execs[(idx + 1) % execs.length] || "";
-			});
-		}
-	}, [sortedSessions.length, showDetail, currentSession]);
+function detailLines(sessionPayload) {
+  const session = sessionPayload?.session || {};
+  return [
+    `ID        ${session.id || "-"}`,
+    `Status    ${session.status || "-"}`,
+    `Type      ${session.type || "-"}`,
+    `Workspace ${session.metadata?.workspaceId || session.workspaceId || "-"}`,
+    `Path      ${session.metadata?.workspaceDir || session.workspaceDir || "-"}`,
+    `Model     ${session.metadata?.model || session.model || "-"}`,
+    `Agent     ${session.metadata?.agent || session.agent || "-"}`,
+    `Turns     ${session.turnCount || 0}`,
+    `Messages  ${Array.isArray(session.messages) ? session.messages.length : 0}`,
+  ];
+}
 
-	useEffect(() => {
-		process.stdin.setRawMode(true);
-		const handle = (chunk) => {
-			const key = chunk.toString();
-			handleKeyPress(key);
-		};
-		process.stdin.on("data", handle);
-		return () => {
-			process.stdin.removeListener("data", handle);
-			process.stdin.setRawMode(false);
-		};
-	}, [handleKeyPress]);
+export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080 }) {
+  const resolvedHost = wsBridge?.host || host;
+  const resolvedPort = wsBridge?.port || port;
+  const { stdout } = useStdout();
+  const liveSessionsRef = React.useRef([]);
+  const [entries, setEntries] = React.useState([]);
+  const [retryQueue, setRetryQueue] = React.useState({ count: 0, items: [] });
+  const [selectedId, setSelectedId] = React.useState("");
+  const [showBackoff, setShowBackoff] = React.useState(true);
+  const [detailView, setDetailView] = React.useState(null);
+  const [logLines, setLogLines] = React.useState([]);
+  const [diffView, setDiffView] = React.useState(null);
+  const [confirmKill, setConfirmKill] = React.useState(false);
+  const [statusLine, setStatusLine] = React.useState("");
+  const [clockMs, setClockMs] = React.useState(Date.now());
 
-	const handleAction = (action, session) => {
-		wsBridge.send(`session:${action}`, { sessionId: session.id });
-		setShowDetail(false);
-	};
+  const applyRetryQueue = React.useCallback((payload) => {
+    setRetryQueue({
+      count: Number(payload?.count || 0),
+      items: Array.isArray(payload?.items) ? payload.items : [],
+    });
+  }, []);
 
-	return (
-		<Box flexDirection="column" flexGrow={1} paddingY={1}>
-			<Box paddingX={1} borderStyle="single" borderBottom>
-				<Box width={10}>
-					<Text bold dimColor>
-						ID
-					</Text>
-				</Box>
-				<Box width={12}>
-					<Text bold dimColor>
-						Executor
-					</Text>
-				</Box>
-				<Box width={10}>
-					<Text bold dimColor>
-						Status
-					</Text>
-				</Box>
-				<Box width={12}>
-					<Text bold dimColor>
-						Task ID
-					</Text>
-				</Box>
-				<Box width={12}>
-					<Text bold dimColor>
-						Duration
-					</Text>
-				</Box>
-				<Box width={15}>
-					<Text bold dimColor>
-						Model
-					</Text>
-				</Box>
-				<Box flexGrow={1}>
-					<Text bold dimColor>
-						Title / Prompt
-					</Text>
-				</Box>
-			</Box>
+  const applySessionSnapshot = React.useCallback((incomingSessions, now = Date.now()) => {
+    liveSessionsRef.current = Array.isArray(incomingSessions) ? incomingSessions : [];
+    setClockMs(now);
+    setEntries((previous) => {
+      const nextEntries = reconcileSessionEntries(previous, liveSessionsRef.current, now);
+      setSelectedId((current) => {
+        if (current && nextEntries.some((entry) => entry.id === current)) return current;
+        return nextEntries[0]?.id || "";
+      });
+      return nextEntries;
+    });
+  }, []);
 
-			<Box flexDirection="column" flexGrow={1}>
-				{sortedSessions.map((session, idx) => (
-					<SessionRow
-						key={session.id}
-						session={session}
-						selected={idx === selectedIndex}
-						onSelect={() => setSelectedIndex(idx)}
-					/>
-				))}
-				{sortedSessions.length === 0 && (
-					<Box padding={1}>
-						<Text dimColor>No active sessions</Text>
-					</Box>
-				)}
-			</Box>
+  const refreshData = React.useCallback(async () => {
+    try {
+      const [sessionsPayload, retryPayload] = await Promise.all([
+        fetchJson(resolvedHost, resolvedPort, "/api/sessions?workspace=all"),
+        fetchJson(resolvedHost, resolvedPort, "/api/retry-queue"),
+      ]);
+      const now = Date.now();
+      applyRetryQueue(retryPayload);
+      applySessionSnapshot(sessionsPayload.sessions || [], now);
+    } catch (error) {
+      setStatusLine(error.message || String(error));
+    }
+  }, [applyRetryQueue, applySessionSnapshot, resolvedHost, resolvedPort]);
 
-			{showDetail && currentSession && (
-				<SessionDetail
-					session={currentSession}
-					onClose={() => setShowDetail(false)}
-					onAction={handleAction}
-				/>
-			)}
+  React.useEffect(() => {
+    let active = true;
+    const load = async () => {
+      if (!active) return;
+      await refreshData();
+    };
+    void load();
+    const intervalId = setInterval(() => {
+      const now = Date.now();
+      setClockMs(now);
+      setEntries((previous) => reconcileSessionEntries(previous, liveSessionsRef.current, now));
+    }, 1000);
+    return () => {
+      active = false;
+      clearInterval(intervalId);
+    };
+  }, [refreshData]);
 
-			{!showDetail && (
-				<Box paddingX={1} borderStyle="single" borderTop>
-					<Text dimColor>
-						 [↑↓] Navigate [Enter] Details [s] Sort: {sortBy} [f] Filter: {filterExecutor || "all"}
-					</Text>
-				</Box>
-			)}
-		</Box>
-	);
+  React.useEffect(() => {
+    if (!wsBridge || typeof wsBridge.on !== "function") return undefined;
+    const handlers = [
+      wsBridge.on("sessions:update", (payload) => {
+        const sessions = Array.isArray(payload?.sessions)
+          ? payload.sessions
+          : Array.isArray(payload)
+            ? payload
+            : [];
+        applySessionSnapshot(sessions, Date.now());
+      }),
+      wsBridge.on("session:start", () => {
+        void refreshData();
+      }),
+      wsBridge.on("session:update", () => {
+        void refreshData();
+      }),
+      wsBridge.on("session:end", () => {
+        void refreshData();
+      }),
+      wsBridge.on("session:event", () => {
+        void refreshData();
+      }),
+      wsBridge.on("retry-queue-updated", (payload) => {
+        if (payload && typeof payload === "object") {
+          applyRetryQueue(payload);
+          return;
+        }
+        void refreshData();
+      }),
+      wsBridge.on("retry:update", (payload) => {
+        if (payload && typeof payload === "object") {
+          applyRetryQueue(payload);
+          return;
+        }
+        void refreshData();
+      }),
+      wsBridge.on("invalidate", (payload) => {
+        const reason = String(payload?.reason || "").toLowerCase();
+        if (reason.includes("session") || reason.includes("retry")) {
+          void refreshData();
+        }
+      }),
+    ].filter(Boolean);
+    return () => {
+      for (const off of handlers) {
+        try {
+          off?.();
+        } catch {
+          // best effort
+        }
+      }
+    };
+  }, [applyRetryQueue, applySessionSnapshot, refreshData, wsBridge]);
+
+  const selectedIndex = React.useMemo(() => {
+    const index = entries.findIndex((entry) => entry.id === selectedId);
+    return index >= 0 ? index : 0;
+  }, [entries, selectedId]);
+  const selectedEntry = entries[selectedIndex] || null;
+  const selectedSession = selectedEntry?.session || null;
+
+  React.useEffect(() => {
+    if (!selectedId && entries[0]?.id) {
+      setSelectedId(entries[0].id);
+    }
+  }, [entries, selectedId]);
+
+  const openDetail = React.useCallback(async () => {
+    if (!selectedSession?.id) return;
+    const payload = await fetchJson(
+      resolvedHost,
+      resolvedPort,
+      `/api/sessions/${encodeURIComponent(selectedSession.id)}?workspace=all&full=1`,
+    );
+    setDetailView(detailLines(payload));
+    setLogLines([]);
+    setDiffView(null);
+    setStatusLine("");
+  }, [resolvedHost, resolvedPort, selectedSession]);
+
+  const openLogs = React.useCallback(async () => {
+    if (!selectedSession?.id) return;
+    const payload = await fetchJson(
+      resolvedHost,
+      resolvedPort,
+      `/api/sessions/${encodeURIComponent(selectedSession.id)}?workspace=all&full=1`,
+    );
+    setLogLines(sessionMessagesToLogLines(payload));
+    setDetailView(null);
+    setDiffView(null);
+    setStatusLine(`Logs filtered to ${describeSelection(selectedSession)}`);
+  }, [resolvedHost, resolvedPort, selectedSession]);
+
+  const openDiff = React.useCallback(async () => {
+    if (!selectedSession?.id) return;
+    const payload = await fetchJson(
+      resolvedHost,
+      resolvedPort,
+      `/api/sessions/${encodeURIComponent(selectedSession.id)}/diff?workspace=all`,
+    );
+    setDiffView(summarizeDiff(payload));
+    setDetailView(null);
+    setLogLines([]);
+    setStatusLine("");
+  }, [resolvedHost, resolvedPort, selectedSession]);
+
+  const postAction = React.useCallback(
+    async (action) => {
+      if (!selectedSession?.id) return;
+      await fetchJson(resolvedHost, resolvedPort, sessionActionPath(selectedSession.id, action), {
+        method: "POST",
+      });
+      setStatusLine(`${action} sent for ${describeSelection(selectedSession)}`);
+      await refreshData();
+    },
+    [refreshData, resolvedHost, resolvedPort, selectedSession],
+  );
+
+  useInput((input, key) => {
+    if (confirmKill) {
+      if (input === "y" || input === "Y") {
+        setConfirmKill(false);
+        void postAction("stop");
+      } else if (input === "n" || input === "N" || key.escape) {
+        setConfirmKill(false);
+        setStatusLine("Kill cancelled");
+      }
+      return;
+    }
+
+    if (key.upArrow) {
+      const nextIndex = Math.max(0, selectedIndex - 1);
+      setSelectedId(entries[nextIndex]?.id || "");
+      return;
+    }
+    if (key.downArrow) {
+      const nextIndex = Math.min(entries.length - 1, selectedIndex + 1);
+      setSelectedId(entries[nextIndex]?.id || "");
+      return;
+    }
+    if (key.return) {
+      void openDetail();
+      return;
+    }
+    if (input === "k" || input === "K") {
+      if (selectedSession?.id) setConfirmKill(true);
+      return;
+    }
+    if (input === "p" || input === "P") {
+      void postAction("pause");
+      return;
+    }
+    if (input === "r" || input === "R") {
+      void postAction("resume");
+      return;
+    }
+    if (input === "l" || input === "L") {
+      void openLogs();
+      return;
+    }
+    if (input === "d" || input === "D") {
+      void openDiff();
+      return;
+    }
+    if (input === "c" || input === "C") {
+      if (selectedSession?.id) {
+        stdout.write(buildOsc52CopySequence(selectedSession.id));
+        setStatusLine(`Copied ${selectedSession.id}`);
+      }
+      return;
+    }
+    if (input === "b" || input === "B") {
+      setShowBackoff((current) => !current);
+      return;
+    }
+    if (key.escape) {
+      setDetailView(null);
+      setLogLines([]);
+      setDiffView(null);
+      setConfirmKill(false);
+    }
+  });
+
+  const eventWidth = Math.max(12, (stdout?.columns || 120) - FIXED_TABLE_WIDTH);
+  const backoffMessageWidth = Math.max(20, (stdout?.columns || 120) - 34);
+
+  return html`
+    <${Box} flexDirection="column" paddingY=${1}>
+      <${Box} borderStyle="single" paddingX=${1}>
+        ${renderCell("", 2, {})}
+        ${renderCell("ID", 8, { dimColor: true })}
+        ${renderCell("STAGE", 12, { dimColor: true })}
+        ${renderCell("PID", 8, { dimColor: true })}
+        ${renderCell("AGE/TURN", 10, { dimColor: true })}
+        ${renderCell("TOKENS", 12, { dimColor: true })}
+        ${renderCell("SESSION", 14, { dimColor: true })}
+        ${renderCell("EVENT", eventWidth, { dimColor: true })}
+      <//>
+      ${(entries.length ? entries : [{ id: "empty", session: null }]).map((entry) => {
+        if (!entry.session) {
+          return html`
+            <${Box} key="empty" paddingX=${1}>
+              <${Text} dimColor>No sessions<//>
+            <//>
+          `;
+        }
+        const row = projectSessionRow(entry.session, clockMs, eventWidth);
+        const selected = entry.id === selectedSession?.id;
+        return html`
+          <${Box} key=${entry.id} paddingX=${1}>
+            ${renderCell(row.statusDot, 2, {
+              color: row.statusColor,
+              inverse: selected,
+              dimColor: row.isDimmed || entry.isRetained,
+            })}
+            ${renderCell(row.idText, 8, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
+            ${renderCell(row.stageText, 12, {
+              inverse: selected,
+              color: row.statusColor,
+              dimColor: row.isDimmed || entry.isRetained,
+            })}
+            ${renderCell(row.pidText, 8, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
+            ${renderCell(row.ageTurnText, 10, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
+            ${renderCell(row.tokensText, 12, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
+            ${renderCell(row.sessionText, 14, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
+            ${renderCell(row.eventText, eventWidth, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
+          <//>
+        `;
+      })}
+
+      <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+        <${Text} bold>
+          Backoff queue (${retryQueue.count || 0}) ${showBackoff ? "[B to collapse]" : "[B to expand]"}
+        <//>
+        ${showBackoff
+          ? (retryQueue.items || []).slice(0, 6).map((item, index) => html`
+              <${Text} key=${item.taskId || item.id || index} wrap="truncate-end">
+                ${pad(String(item.taskTitle || item.taskId || item.id || `item-${index}`), 16)}
+                ${pad(formatRetryQueueCountdown(item, clockMs), 16)}
+                ${pad(String(item.lastError || item.error || item.reason || "-"), backoffMessageWidth)}
+              <//>
+            `)
+          : null}
+        ${showBackoff && !(retryQueue.items || []).length
+          ? html`<${Text} dimColor>No tasks cooling down<//>`
+          : null}
+      <//>
+
+      ${confirmKill && selectedSession
+        ? html`
+            <${Box} marginTop=${1}>
+              <${Text} color="red">Kill ${describeSelection(selectedSession)}? [y/N]<//>
+            <//>
+          `
+        : null}
+
+      ${detailView
+        ? html`
+            <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+              <${Text} bold>Detail<//>
+              ${detailView.map((line) => html`<${Text} key=${line}>${line}<//>`)}
+            <//>
+          `
+        : null}
+
+      ${logLines.length
+        ? html`
+            <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+              <${Text} bold>Logs<//>
+              ${logLines.map((line, index) => html`
+                <${Text} key=${index} wrap="truncate-end">${line}<//>
+              `)}
+            <//>
+          `
+        : null}
+
+      ${diffView
+        ? html`
+            <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+              <${Text} bold>Diff<//>
+              <${Text}>${diffView.summary}<//>
+              ${diffView.files.length
+                ? diffView.files.map((file) => html`
+                    <${Text} key=${file.name}>
+                      ${file.name}  +${file.additions}  -${file.deletions}
+                    <//>
+                  `)
+                : html`<${Text} dimColor>No changed files<//>`}
+            <//>
+          `
+        : null}
+
+      <${Box} marginTop=${1} borderStyle="single" paddingX=${1}>
+        <${Text} dimColor>
+          [K]ill session  [P]ause  [R]esume  [L]ogs  [D]iff  [C]opy ID  [Enter] Detail
+        <//>
+      <//>
+      ${statusLine
+        ? html`
+            <${Box} marginTop=${1}>
+              <${Text} color="yellow">${statusLine}<//>
+            <//>
+          `
+        : null}
+    <//>
+  `;
 }
