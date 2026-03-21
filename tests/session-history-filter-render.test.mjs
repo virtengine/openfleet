@@ -28,9 +28,9 @@ for (const { relPath, source } of sourceFiles) {
       );
     });
 
-    it("renders All, Active, and Historic filter buttons with counts", () => {
+    it("renders All, Lifecycle Active, and Historic filter buttons with counts", () => {
       expect(source).toContain("All (${allCount})");
-      expect(source).toContain("Active (${activeCount})");
+      expect(source).toContain("Lifecycle Active (${activeCount})");
       expect(source).toContain("Historic (${historicCount})");
     });
 

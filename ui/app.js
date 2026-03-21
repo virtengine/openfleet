@@ -274,7 +274,13 @@ import {
   TAB_CONFIG,
 } from "./modules/router.js";
 import { formatRelative } from "./modules/utils.js";
-import { buildSessionApiPath, resolveSessionWorkspaceHint } from "./modules/session-api.js";
+import {
+  buildSessionApiPath,
+  getSessionLifecycleState,
+  getSessionRecencyTimestamp,
+  getSessionRuntimeState,
+  resolveSessionWorkspaceHint,
+} from "./modules/session-api.js";
 import { buildSessionInsights, formatCompactCount } from "./modules/session-insights.js";
 import { VeTheme, CssBaseline, AppBar, Toolbar, Tabs, Tab, Drawer, Box, IconButton, Typography, Chip, Badge, BottomNavigation, BottomNavigationAction, Tooltip, Avatar, Stack, Paper, CircularProgress, Button, Divider, Menu, MenuItem, Fab, Snackbar, Alert } from "./modules/mui.js";
 
@@ -800,33 +806,38 @@ function SidebarNav({ collapsed = false, onToggle }) {
 
 function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onCollapse, onExpand, sessionType = "primary" }) {
   const [showArchived, setShowArchived] = useState(false);
-  const sessions = sessionsData.value || [];
-  const activeCount = sessions.filter(
-    (s) => s.status === "active" || s.status === "running",
-  ).length;
+  const allSessions = sessionsData.value || [];
+  const sessions = filterSessionsByType(allSessions, sessionType);
+  const liveRuntimeCount = sessions.filter((s) => getSessionRuntimeState(s).isLive).length;
 
   useEffect(() => {
     // Session polling belongs to the active tab (Chat/Agents). The rail only
     // performs a one-time fallback load to avoid filter thrash/flicker.
-    if ((sessionsData.value || []).length > 0) return;
+    if (sessions.length > 0) return;
     void loadSessions({ type: sessionType }).catch(() => {});
-  }, [sessionType]);
+  }, [sessionType, sessions.length]);
 
   useEffect(() => {
-    if (selectedSessionId.value || sessions.length === 0) return;
+    if (sessions.length === 0) return;
+    if (sessions.some((session) => session?.id === selectedSessionId.value)) return;
     const next =
-      sessions.find((s) => s.status === "active" || s.status === "running") ||
+      sessions.find((s) => getSessionRuntimeState(s).isLive) ||
+      sessions.find((s) => getSessionLifecycleState(s).isActive) ||
       sessions[0];
     if (next?.id) selectedSessionId.value = next.id;
-  }, [sessionsData.value, selectedSessionId.value]);
+  }, [sessionType, sessionsData.value, selectedSessionId.value]);
 
   if (collapsed) {
     // Icon-only strip: colored dots for sessions + expand button
     const dots = sessions.slice(0, 12);
     const statusColor = (s) => {
-      if (s.status === "active" || s.status === "running") return "var(--color-done, #10b981)";
-      if (s.status === "error" || s.status === "failed") return "var(--color-error, #ef4444)";
-      if (s.status === "archived") return "rgba(255,255,255,0.2)";
+      const runtime = getSessionRuntimeState(s);
+      const lifecycle = getSessionLifecycleState(s);
+      if (runtime.tone === "success") return "var(--color-done, #10b981)";
+      if (runtime.tone === "info") return "var(--accent, #4f8cff)";
+      if (runtime.tone === "warning") return "var(--color-warning, #f59e0b)";
+      if (runtime.tone === "error" || lifecycle.tone === "error") return "var(--color-error, #ef4444)";
+      if (lifecycle.key === "archived") return "rgba(255,255,255,0.2)";
       return "rgba(255,255,255,0.35)";
     };
 
@@ -862,8 +873,8 @@ function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onC
         <div class="rail-icon-footer">
           <div
             class="rail-active-count"
-            title="${activeCount} active session${activeCount !== 1 ? 's' : ''}"
-          >${activeCount > 0 ? activeCount : ''}</div>
+            title="${liveRuntimeCount} live runtime session${liveRuntimeCount !== 1 ? 's' : ''}"
+          >${liveRuntimeCount > 0 ? liveRuntimeCount : ''}</div>
         </div>
       </aside>
     `;
@@ -875,7 +886,7 @@ function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onC
         <div class="rail-header-inner">
           <div class="rail-title">Sessions</div>
           <div class="rail-meta">
-            ${activeCount} active · ${sessions.length} total
+            ${liveRuntimeCount} live runtime · ${sessions.length} total
           </div>
         </div>
         <${IconButton}
@@ -893,7 +904,7 @@ function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onC
       <${SessionList}
         showArchived=${showArchived}
         onToggleArchived=${setShowArchived}
-        defaultType="primary"
+        defaultType=${sessionType}
       />
       ${showResizer
         ? html`
@@ -910,13 +921,30 @@ function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onC
   `;
 }
 
+function filterSessionsByType(allSessions, sessionType = "primary") {
+  const sessions = Array.isArray(allSessions) ? allSessions : [];
+  const normalizedType = String(sessionType || "").trim().toLowerCase();
+  if (!normalizedType) return sessions;
+  return sessions.filter((session) => {
+    const type = String(session?.type || "").trim().toLowerCase();
+    if (normalizedType === "primary") {
+      return type !== "task" && type !== "review";
+    }
+    if (normalizedType === "task") {
+      return type === "task";
+    }
+    return type === normalizedType;
+  });
+}
+
 function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
   const sessionId = selectedSessionId.value;
   const session = (sessionsData.value || []).find((s) => s.id === sessionId);
   const isSessionTab = activeTab.value === "chat" || activeTab.value === "agents";
-  const status = session?.status || "idle";
+  const lifecycle = getSessionLifecycleState(session);
+  const runtime = getSessionRuntimeState(session);
   const type = session?.type || "manual";
-  const lastActive = session?.updatedAt || session?.createdAt;
+  const lastActive = getSessionRecencyTimestamp(session);
   const preview = session?.lastMessage
     ? session.lastMessage.slice(0, 160)
     : "No messages yet.";
@@ -971,7 +999,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
           : [];
         const severityHits = classified.filter((entry) => entry.level !== "info");
         let selected = sessionHits.length ? sessionHits : severityHits;
-        if (!selected.length && (status === "active" || status === "running")) {
+        if (!selected.length && lifecycle.isActive) {
           selected = classified.slice(-3);
         }
         const pruned = selected.slice(-6).map((entry) => ({
@@ -991,7 +1019,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
       active = false;
       clearInterval(interval);
     };
-  }, [isSessionTab, sessionId, session?.taskId, session?.branch, status]);
+  }, [isSessionTab, sessionId, session?.taskId, session?.branch, lifecycle.isActive]);
 
   useEffect(() => {
     if (!isSessionTab || !sessionId) {
@@ -1110,9 +1138,10 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
         ${session
           ? html`
               <div class="inspector-kv"><span>Session</span><strong>${session.title || session.taskId || session.id}</strong></div>
-              <div class="inspector-kv"><span>Status</span><strong>${status}</strong></div>
+              <div class="inspector-kv"><span>Lifecycle</span><strong>${lifecycle.label}</strong></div>
+              <div class="inspector-kv"><span>Runtime</span><strong>${runtime.label}</strong></div>
               <div class="inspector-kv"><span>Type</span><strong>${type}</strong></div>
-              <div class="inspector-kv"><span>Last Active</span><strong>${lastActiveLabel}</strong></div>
+              <div class="inspector-kv"><span>Freshness</span><strong>${lastActiveLabel}</strong></div>
               <div class="inspector-kv inspector-kv-preview"><span>Preview</span><strong class="inspector-preview-value" title=${preview}>${preview}</strong></div>
             `
           : html`<div class="inspector-empty">Select a session to see context.</div>`}
