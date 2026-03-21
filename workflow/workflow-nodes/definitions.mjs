@@ -212,6 +212,10 @@ const CONTEXTLESS_AGENT_RESPONSE_PATTERNS = Object.freeze([
   /\blast\s+incomplete\s+step\b/i,
   /\bpaste\s+the\s+last\s+(?:instruction|message|command\s+output|step)\b/i,
   /\bshare\s+(?:the\s+)?last\s+(?:instruction|message|command\s+output|step)\b/i,
+  /\bno\s+(?:task\s+)?description\s+(?:was\s+)?provided\b/i,
+  /\bcan(?:not|'t)\s+(?:determine|identify|find)\s+(?:the\s+)?(?:task|what\s+to\s+(?:do|work\s+on))\b/i,
+  /\bwhat\s+(?:would\s+you\s+like|do\s+you\s+want)\s+me\s+to\s+(?:do|work\s+on|implement)\b/i,
+  /\bprovide\s+(?:me\s+with\s+)?(?:the\s+)?(?:task\s+)?(?:description|details|instructions)\b/i,
 ]);
 
 function detectContextlessAgentResponse(candidate) {

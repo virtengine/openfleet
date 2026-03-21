@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, beforeEach } from "vitest";
-import { _test, createSessionTracker, SessionTracker } from "../infra/session-tracker.mjs";
+import { addSessionStateListener, _test, createSessionTracker, SessionTracker } from "../infra/session-tracker.mjs";
 
 describe("session-tracker", () => {
   /** @type {SessionTracker} */
@@ -64,6 +64,26 @@ describe("session-tracker", () => {
     it("returns null for non-existent session", () => {
       expect(tracker.getSession("nonexistent")).toBeNull();
     });
+  });
+
+  it("emits session state changes for lifecycle transitions and message activity", () => {
+    const seen = [];
+    const dispose = addSessionStateListener((payload) => seen.push(payload));
+    try {
+      tracker.startSession("task-1", "Test Task");
+      tracker.recordEvent("task-1", {
+        type: "item.completed",
+        item: { type: "agent_message", text: "hello" },
+      });
+      tracker.endSession("task-1", "completed");
+    } finally {
+      dispose();
+    }
+
+    expect(seen.map((entry) => entry.reason)).toEqual(["started", "message", "ended"]);
+    expect(seen[0].sessionId).toBe("task-1");
+    expect(seen[1].session.insights).toBeTruthy();
+    expect(seen[2].status).toBe("completed");
   });
 
   describe("recordEvent", () => {

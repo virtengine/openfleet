@@ -19721,7 +19721,7 @@
           "type": "notify.log",
           "label": "Log No Commits",
           "config": {
-            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — no new commits, returning to todo",
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — no new commits, moving to blocked for review",
             "level": "warn"
           },
           "position": {
@@ -19735,10 +19735,10 @@
         {
           "id": "set-todo-cooldown",
           "type": "action.update_task_status",
-          "label": "Set Todo (Cooldown)",
+          "label": "Set Blocked (No Commits)",
           "config": {
             "taskId": "{{taskId}}",
-            "status": "todo",
+            "status": "blocked",
             "taskTitle": "{{taskTitle}}"
           },
           "position": {
@@ -21218,10 +21218,10 @@
         {
           "id": "set-todo",
           "type": "action.update_task_status",
-          "label": "Back to Todo",
+          "label": "Set Blocked (No Commits)",
           "config": {
             "taskId": "{{taskId}}",
-            "status": "todo"
+            "status": "blocked"
           },
           "position": {
             "x": 480,
@@ -40505,7 +40505,7 @@
           "type": "notify.log",
           "label": "Log No Commits",
           "config": {
-            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — no new commits, returning to todo",
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — no new commits, moving to blocked for review",
             "level": "warn"
           },
           "position": {
@@ -40519,10 +40519,10 @@
         {
           "id": "set-todo-cooldown",
           "type": "action.update_task_status",
-          "label": "Set Todo (Cooldown)",
+          "label": "Set Blocked (No Commits)",
           "config": {
             "taskId": "{{taskId}}",
-            "status": "todo",
+            "status": "blocked",
             "taskTitle": "{{taskTitle}}"
           },
           "position": {
@@ -41967,10 +41967,10 @@
         {
           "id": "set-todo",
           "type": "action.update_task_status",
-          "label": "Back to Todo",
+          "label": "Set Blocked (No Commits)",
           "config": {
             "taskId": "{{taskId}}",
-            "status": "todo"
+            "status": "blocked"
           },
           "position": {
             "x": 480,

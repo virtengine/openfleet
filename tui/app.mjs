@@ -41,6 +41,49 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
 			setStats(data);
 		});
 
+		bridge.on("monitor:stats", (data) => {
+			setStats(data);
+		});
+
+		bridge.on("sessions:update", (snapshot) => {
+			setSessions(Array.isArray(snapshot) ? snapshot : []);
+		});
+
+		bridge.on("session:event", (event) => {
+			if (!event?.session || !event?.sessionId) return;
+			setSessions((prev) => {
+				const index = prev.findIndex((entry) => entry.id === event.sessionId);
+				if (index >= 0) {
+					const next = [...prev];
+					next[index] = { ...next[index], ...event.session };
+					return next;
+				}
+				return [...prev, { id: event.sessionId, taskId: event.taskId, ...event.session }];
+			});
+		});
+
+		bridge.on("tasks:update", (diff) => {
+			setTasks((prev) => {
+				const taskId = String(diff?.taskId || "").trim();
+				const task = diff?.task && typeof diff.task === "object" ? diff.task : null;
+				const index = taskId
+					? prev.findIndex((entry) => String(entry?.id || entry?.taskId || "") === taskId)
+					: -1;
+				if (task) {
+					if (index >= 0) {
+						const next = [...prev];
+						next[index] = { ...next[index], ...task };
+						return next;
+					}
+					return [...prev, task];
+				}
+				if (index >= 0 && /delete|remove/i.test(String(diff?.reason || ""))) {
+					return prev.filter((_, entryIndex) => entryIndex !== index);
+				}
+				return prev;
+			});
+		});
+
 		bridge.on("session:start", (session) => {
 			setSessions((prev) => [...prev, session]);
 		});
@@ -103,8 +146,10 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
 			setScreen("agents");
 		}
 		if (key === "r") {
-			if (wsBridge._instance?._ws) {
-				wsBridge._instance._ws.send(JSON.stringify({ type: "refresh" }));
+			if (wsBridge._instance?.ws) {
+				wsBridge._instance.send("subscribe", {
+					channels: ["tui", "stats", "sessions", "tasks", "workflows", "logs"],
+				});
 			}
 		}
 	}, []);

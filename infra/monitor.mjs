@@ -15218,10 +15218,12 @@ if (isExecutorDisabled()) {
             {
               taskId,
               taskTitle: task?.title || "",
+              taskDescription: task?.description || task?.body || "",
               taskStatus: "inprogress",
               sdk: slot?.sdk || null,
               branch: slot?.branch || null,
               worktreePath: slot?.worktreePath || null,
+              task: task && typeof task === "object" ? task : null,
             },
             { dedupKey: `workflow-event:task.assigned:${taskId}` },
           );

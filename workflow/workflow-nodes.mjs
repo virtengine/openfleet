@@ -639,6 +639,10 @@ const CONTEXTLESS_AGENT_RESPONSE_PATTERNS = Object.freeze([
   /\blast\s+incomplete\s+step\b/i,
   /\bpaste\s+the\s+last\s+(?:instruction|message|command\s+output|step)\b/i,
   /\bshare\s+(?:the\s+)?last\s+(?:instruction|message|command\s+output|step)\b/i,
+  /\bno\s+(?:task\s+)?description\s+(?:was\s+)?provided\b/i,
+  /\bcan(?:not|'t)\s+(?:determine|identify|find)\s+(?:the\s+)?(?:task|what\s+to\s+(?:do|work\s+on))\b/i,
+  /\bwhat\s+(?:would\s+you\s+like|do\s+you\s+want)\s+me\s+to\s+(?:do|work\s+on|implement)\b/i,
+  /\bprovide\s+(?:me\s+with\s+)?(?:the\s+)?(?:task\s+)?(?:description|details|instructions)\b/i,
 ]);
 
 function detectContextlessAgentResponse(candidate) {
@@ -11178,6 +11182,18 @@ registerBuiltinNodeType("action.allocate_slot", {
     ctx.data.branch = branch;
     ctx.data.baseBranch = baseBranch;
 
+    // Sync slot to executor _activeSlots so UI/getStatus() reports it
+    try {
+      const executor = ctx.data?._executor
+        || (await Promise.race([
+          import("../infra/monitor.mjs").then((m) => m.getInternalExecutor?.()).catch(() => null),
+          new Promise((r) => setTimeout(() => r(null), 500)),
+        ]));
+      if (executor && typeof executor.updateWorkflowSlot === "function") {
+        executor.updateWorkflowSlot(taskId, { agentInstanceId, branch, baseBranch, taskTitle });
+      }
+    } catch { /* best effort */ }
+
     ctx.log(node.id, `Slot allocated: "${taskTitle}" (${taskId}) agent=${agentInstanceId}`);
     return { success: true, slot: slotInfo, agentInstanceId };
   },
@@ -11212,6 +11228,18 @@ registerBuiltinNodeType("action.release_slot", {
       slot.durationMs = slot.releasedAt - (slot.startedAt || slot.releasedAt);
       ctx.data._allocatedSlot = null;
     }
+
+    // Deregister from executor _activeSlots
+    try {
+      const executor = ctx.data?._executor
+        || (await Promise.race([
+          import("../infra/monitor.mjs").then((m) => m.getInternalExecutor?.()).catch(() => null),
+          new Promise((r) => setTimeout(() => r(null), 500)),
+        ]));
+      if (executor && typeof executor.releaseWorkflowSlot === "function") {
+        executor.releaseWorkflowSlot(taskId);
+      }
+    } catch { /* best effort */ }
 
     ctx.log(node.id, `Slot released: ${taskId || "(unknown)"}`);
     return { success: true, taskId, releasedAt: Date.now() };
@@ -11754,6 +11782,55 @@ registerBuiltinNodeType("action.acquire_worktree", {
           if (cleared1) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${worktreePath}`);
           return { success: true, worktreePath, created: false, reused: true, branch, baseBranch };
         }
+      }
+
+      const existingBranchWorktree = findExistingWorktreePathForBranch(repoRoot, branch);
+      if (existingBranchWorktree && existsSync(existingBranchWorktree)) {
+        const existingWorktreeIsBroken = (
+          !isValidGitWorktreePath(existingBranchWorktree) ||
+          hasUnresolvedGitOperation(existingBranchWorktree)
+        ) && isManagedBosunWorktree(existingBranchWorktree, repoRoot);
+        if (existingWorktreeIsBroken) {
+          ctx.log(
+            node.id,
+            `Existing branch worktree is invalid or unresolved, recreating managed path: ${existingBranchWorktree}`,
+          );
+          cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
+        }
+      }
+      if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
+        isValidGitWorktreePath(existingBranchWorktree) &&
+        !hasUnresolvedGitOperation(existingBranchWorktree)
+      ) {
+        refreshManagedWorktreeReuse(
+          node.id,
+          ctx,
+          repoRoot,
+          existingBranchWorktree,
+          baseBranch,
+          baseBranchShort,
+          fetchTimeout,
+        );
+      }
+      if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
+        isValidGitWorktreePath(existingBranchWorktree) &&
+        !hasUnresolvedGitOperation(existingBranchWorktree)
+      ) {
+        ctx.data.worktreePath = existingBranchWorktree;
+        ctx.data._worktreeCreated = false;
+        ctx.data._worktreeManaged = true;
+        ctx.log(node.id, `Reusing existing branch worktree: ${existingBranchWorktree}`);
+        const cleared2 = clearBlockedWorktreeIdentity(existingBranchWorktree);
+        if (cleared2) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${existingBranchWorktree}`);
+        return {
+          success: true,
+          worktreePath: existingBranchWorktree,
+          created: false,
+          reused: true,
+          reusedExistingBranch: true,
+          branch,
+          baseBranch,
+        };
       }
 
       // Create fresh worktree
@@ -12463,6 +12540,38 @@ registerBuiltinNodeType("action.build_task_prompt", {
         userParts.push("");
         ctx.data._taskPromptIncludesTaskContext = true;
       }
+    }
+
+    // ── Prior Session Summary (for resumed/retried tasks) ─────────────
+    if (normalizedTaskId) {
+      try {
+        const tracker = getSessionTracker();
+        const priorSession = tracker.getSessionById(normalizedTaskId);
+        if (priorSession && priorSession.turnCount > 0) {
+          const insights = priorSession.insights;
+          const summaryParts = ["## Prior Session Summary"];
+          summaryParts.push(`A prior session ran ${priorSession.turnCount} turn(s) with status "${priorSession.status || "unknown"}".`);
+          const editedFiles = insights?.files?.edited;
+          if (Array.isArray(editedFiles) && editedFiles.length > 0) {
+            summaryParts.push("### Files Previously Edited");
+            for (const f of editedFiles.slice(0, 15)) {
+              summaryParts.push(`- ${f.path} (${f.count || f.edits || 1} edit(s))`);
+            }
+          }
+          const recentActions = insights?.recentActions;
+          if (Array.isArray(recentActions) && recentActions.length > 0) {
+            summaryParts.push("### Recent Actions From Prior Session");
+            for (const action of recentActions.slice(0, 8)) {
+              summaryParts.push(`- ${action.label || action.type || "unknown"}`);
+            }
+          }
+          summaryParts.push("");
+          summaryParts.push("Continue from where the prior session left off. Do NOT redo work that was already completed.");
+          userParts.push(summaryParts.join("\n"));
+          userParts.push("");
+          ctx.data._taskPromptIncludesPriorSession = true;
+        }
+      } catch { /* best-effort */ }
     }
 
     const gitContextBlock = await buildGitContextBlock();

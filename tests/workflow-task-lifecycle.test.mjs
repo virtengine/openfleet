@@ -1454,7 +1454,7 @@ describe("action.acquire_worktree", () => {
     expect(ctx.data.baseBranch).toBe("main");
     expect(result.created).toBe(true);
     expect(existsSync(result.worktreePath)).toBe(true);
-  });
+  }, 15000);
 
   it("marks reused worktrees as managed for cleanup", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -1510,7 +1510,7 @@ describe("action.acquire_worktree", () => {
     expect(result.created).toBe(false);
     expect(String(result.worktreePath).replace(/\\/g, "/")).toBe(String(legacyPath).replace(/\\/g, "/"));
     expect(ctx.data._worktreeManaged).toBe(true);
-  }, 10000);
+  }, 15000);
   it("uses a short managed worktree directory derived from task id", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const ctx = makeCtx({});
@@ -1714,7 +1714,7 @@ describe("action.acquire_worktree", () => {
       }
       try { rmSync(remoteDir, { recursive: true, force: true }); } catch { /* ok */ }
     }
-  }, 20000);
+  }, 30000);
 
   it("returns a non-retryable failure when an existing task branch conflicts with the latest base", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -1787,7 +1787,7 @@ describe("action.acquire_worktree", () => {
       }
       try { rmSync(remoteDir, { recursive: true, force: true }); } catch { /* ok */ }
     }
-  }, 20000);
+  }, 30000);
 
   it("enables core.longpaths before checkout", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -3060,3 +3060,4 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
+

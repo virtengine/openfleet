@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import WebSocket from "ws";
+import { WebSocket } from "ws";
 
 function sanitizedGitEnv(extra = {}) {
   const env = { ...process.env, ...extra };
@@ -59,6 +61,8 @@ describe("ui-server mini app", () => {
     "CODEX_MONITOR_HOME",
     "CODEX_MONITOR_DIR",
     "BOSUN_DESKTOP_API_KEY",
+    "BOSUN_UI_TOKEN",
+    "BOSUN_UI_SESSION_TOKEN",
     "KANBAN_BACKEND",
     "GITHUB_PROJECT_MODE",
     "GITHUB_PROJECT_WEBHOOK_SECRET",
@@ -117,6 +121,85 @@ describe("ui-server mini app", () => {
     return `sha256=${digest}`;
   }
 
+  async function collectWsMessages(url, { count = 3, timeoutMs = 5000 } = {}) {
+    return await new Promise((resolve, reject) => {
+      const socket = new WebSocket(url);
+      const messages = [];
+      const timer = setTimeout(() => {
+        try {
+          socket.close();
+        } catch {}
+        reject(new Error(`Timed out waiting for ${count} WebSocket messages`));
+      }, timeoutMs);
+
+      socket.on("message", (raw) => {
+        messages.push(JSON.parse(String(raw)));
+        if (messages.length >= count) {
+          clearTimeout(timer);
+          socket.close();
+          resolve(messages);
+        }
+      });
+      socket.on("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
+  }
+
+  async function connectWs(url) {
+    const socket = new WebSocket(url);
+    const messages = [];
+    const messageListeners = new Set();
+
+    socket.on("message", (raw) => {
+      let payload;
+      try {
+        payload = JSON.parse(String(raw || "{}"));
+      } catch {
+        return;
+      }
+      messages.push(payload);
+      for (const listener of messageListeners) {
+        listener(payload);
+      }
+    });
+
+    await new Promise((resolve, reject) => {
+      socket.once("open", resolve);
+      socket.once("error", reject);
+    });
+
+    async function waitFor(predicate, timeoutMs = 5000) {
+      for (const message of messages) {
+        if (predicate(message)) return message;
+      }
+      return await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          messageListeners.delete(onMessage);
+          reject(new Error(`Timed out waiting for WS message after ${timeoutMs}ms`));
+        }, timeoutMs);
+        const onMessage = (message) => {
+          if (!predicate(message)) return;
+          clearTimeout(timer);
+          messageListeners.delete(onMessage);
+          resolve(message);
+        };
+        messageListeners.add(onMessage);
+      });
+    }
+
+    async function close() {
+      if (socket.readyState === socket.CLOSED) return;
+      await new Promise((resolve) => {
+        socket.once("close", resolve);
+        socket.close();
+      });
+    }
+
+    return { socket, messages, waitFor, close };
+  }
+
   it("exports mini app server helpers", async () => {
     const mod = await import("../server/ui-server.mjs");
     expect(typeof mod.startTelegramUiServer).toBe("function");
@@ -133,6 +216,41 @@ describe("ui-server mini app", () => {
     expect(ip.length).toBeGreaterThan(0);
   });
 
+  it("accepts websocket auth via the shared UI token and emits initial TUI events", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+    process.env.BOSUN_UI_TOKEN = "a".repeat(64);
+
+    const [{ default: Ajv }, { TUI_EVENT_SCHEMAS }, mod] = await Promise.all([
+      import("ajv"),
+      import("../infra/tui-bridge.mjs"),
+      import("../server/ui-server.mjs"),
+    ]);
+    const ajv = new Ajv({ allErrors: true, strict: false });
+    const validateSessions = ajv.compile(TUI_EVENT_SCHEMAS["sessions:update"]);
+    const validateStats = ajv.compile(TUI_EVENT_SCHEMAS["monitor:stats"]);
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const messages = await collectWsMessages(
+      `ws://127.0.0.1:${port}/ws?token=${process.env.BOSUN_UI_TOKEN}`,
+    );
+
+    const hello = messages.find((message) => message.type === "hello");
+    const sessionsUpdate = messages.find((message) => message.type === "sessions:update");
+    const monitorStats = messages.find((message) => message.type === "monitor:stats");
+
+    expect(hello?.payload).toEqual({ connected: true });
+    expect(Array.isArray(sessionsUpdate?.payload)).toBe(true);
+    expect(validateSessions(sessionsUpdate?.payload), ajv.errorsText(validateSessions.errors)).toBe(true);
+    expect(validateStats(monitorStats?.payload), ajv.errorsText(validateStats.errors)).toBe(true);
+  });
   it("preserves launch query params when exchanging session token", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     const mod = await import("../server/ui-server.mjs");
@@ -192,6 +310,103 @@ describe("ui-server mini app", () => {
     expect(third.status).toBe(200);
     expect(String(third.headers.get("content-type") || "")).toContain("application/javascript");
   });
+
+  it("accepts raw WS auth with the portal session token and sends initial TUI snapshots", async () => {
+    process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+    const token = mod.getSessionToken();
+
+    const ws = await connectWs(`ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(token)}`);
+    try {
+      const hello = await ws.waitFor((message) => message?.type === "hello");
+      const sessionsUpdate = await ws.waitFor((message) => message?.type === "sessions:update");
+      const stats = await ws.waitFor((message) => message?.type === "monitor:stats");
+
+      expect(hello.payload).toEqual({ connected: true });
+      expect(Array.isArray(sessionsUpdate.payload)).toBe(true);
+      expect(stats.payload).toEqual(
+        expect.objectContaining({
+          activeAgents: expect.any(Number),
+          maxAgents: expect.any(Number),
+          tokensIn: expect.any(Number),
+          tokensOut: expect.any(Number),
+          tokensTotal: expect.any(Number),
+          throughputTps: expect.any(Number),
+          uptimeMs: expect.any(Number),
+          rateLimits: expect.any(Object),
+          ts: expect.any(Number),
+        }),
+      );
+    } finally {
+      await ws.close();
+    }
+  }, 15000);
+
+  it("emits session:event and before/after sessions:update snapshots over raw WS", async () => {
+    process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const sessionId = `ws-session-${Date.now()}`;
+    const mod = await import("../server/ui-server.mjs");
+    const { getSessionTracker } = await import("../infra/session-tracker.mjs");
+    const tracker = getSessionTracker();
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+    const token = mod.getSessionToken();
+
+    const ws = await connectWs(`ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(token)}`);
+    try {
+      await ws.waitFor((message) => message?.type === "sessions:update");
+
+      tracker.startSession(sessionId, "WS Task");
+      const startedSnapshot = await ws.waitFor(
+        (message) => message?.type === "sessions:update"
+          && Array.isArray(message.payload)
+          && message.payload.some((entry) => entry?.id === sessionId && entry?.status === "active"),
+      );
+
+      tracker.recordEvent(sessionId, {
+        type: "item.completed",
+        item: { type: "agent_message", text: "hello from ws" },
+      });
+      const sessionEvent = await ws.waitFor(
+        (message) => message?.type === "session:event"
+          && message?.payload?.sessionId === sessionId,
+      );
+
+      tracker.endSession(sessionId, "completed");
+      const endedSnapshot = await ws.waitFor(
+        (message) => message?.type === "sessions:update"
+          && Array.isArray(message.payload)
+          && message.payload.some((entry) => entry?.id === sessionId && entry?.status === "completed"),
+      );
+
+      expect(startedSnapshot.payload.find((entry) => entry.id === sessionId)?.title).toBe("WS Task");
+      expect(sessionEvent.payload.message.content).toContain("hello from ws");
+      expect(endedSnapshot.payload.find((entry) => entry.id === sessionId)?.status).toBe("completed");
+    } finally {
+      try {
+        tracker.removeSession?.(sessionId);
+      } catch {
+        // best effort cleanup for shared test process state
+      }
+      await ws.close();
+    }
+  }, 15000);
 
   it("serves shared /lib modules after local bootstrap", async () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
@@ -4264,3 +4479,10 @@ describe("ui-server mini app", () => {
   });
 
 });
+
+
+
+
+
+
+

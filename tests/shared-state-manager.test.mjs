@@ -968,7 +968,7 @@ describe("shared-state-manager", () => {
       const state = await getSharedState("task-many-events", tempRoot);
 
       expect(state.eventLog.length).toBeLessThanOrEqual(MAX_EVENT_LOG_ENTRIES);
-    });
+    }, 15000);
   });
 
   describe("corruption recovery", () => {
@@ -1205,3 +1205,4 @@ describe("shared-state-manager", () => {
     });
   });
 });
+

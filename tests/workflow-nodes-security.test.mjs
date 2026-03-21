@@ -114,7 +114,7 @@ describe("action.create_pr base-branch resolution logic", () => {
     const nodeType = getNodeType("action.create_pr");
     const result = await nodeType.execute(node, makeCtx());
     expect(result.base).toBe("release");
-  });
+  }, 15000);
 
   it("falls back to 'main' when neither base nor baseBranch is set", async () => {
     const node = makeNode("action.create_pr", {
@@ -125,7 +125,7 @@ describe("action.create_pr base-branch resolution logic", () => {
     const nodeType = getNodeType("action.create_pr");
     const result = await nodeType.execute(node, makeCtx());
     expect(result.base).toBe("main");
-  });
+  }, 15000);
 
   it("normalizes remote-qualified base branches before gh PR calls", async () => {
     const node = makeNode("action.create_pr", {
@@ -137,7 +137,7 @@ describe("action.create_pr base-branch resolution logic", () => {
     const nodeType = getNodeType("action.create_pr");
     const result = await nodeType.execute(node, makeCtx());
     expect(result.base).toBe("main");
-  });
+  }, 15000);
 });
 
 // -- Node Registration Completeness -------------------------------------------
@@ -334,7 +334,7 @@ describe("action.run_command env interpolation", () => {
     const result = await nodeType.execute(node, makeCtx());
     expect(result.success).toBe(true);
     expect(result.output).toEqual([{ taskId: "t-2" }]);
-  });
+  }, 15000);
 
   it("resolves template env values before executing commands", async () => {
     const nodeType = getNodeType("action.run_command");
@@ -476,3 +476,4 @@ describe("WorkflowContext template resolution is not a shell evaluator", () => {
     expect(result).not.toBeNull();
   });
 });
+

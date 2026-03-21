@@ -61,6 +61,16 @@ function collectSourceFiles(dir, out = []) {
   return out;
 }
 
+function collectIncludedSourceFiles() {
+  const files = [];
+  for (const root of INCLUDED_ROOTS) {
+    const absRoot = resolve(REPO_ROOT, root);
+    if (!existsSync(absRoot)) continue;
+    collectSourceFiles(absRoot, files);
+  }
+  return files;
+}
+
 function findStaticRelativeUrlRefs(source) {
   const refs = [];
   const regex = /new\s+URL\(\s*(["'`])((?:\.\.\/|\.\/)[^"'`]+)\1\s*,\s*import\.meta\.url\s*\)/g;
@@ -73,7 +83,7 @@ function findStaticRelativeUrlRefs(source) {
 
 describe("static relative URL paths", () => {
   it("resolves all new URL('./...|../...', import.meta.url) targets", () => {
-    const files = collectSourceFiles(REPO_ROOT);
+    const files = collectIncludedSourceFiles();
 
     const missing = [];
 

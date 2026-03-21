@@ -4230,6 +4230,49 @@ class TaskExecutor {
    * @returns {Object}
    */
   getStatus() {
+    const slotsFromMap = Array.from(this._activeSlots.values()).map((s) => ({
+      taskId: s.taskId,
+      taskTitle: s.taskTitle,
+      branch: s.branch,
+      baseBranch: s.baseBranch || null,
+      sdk: s.sdk,
+      model: s.model || "",
+      attempt: s.attempt,
+      agentInstanceId: s.agentInstanceId ?? null,
+      startedAt: s.startedAt,
+      runningFor: Math.round((Date.now() - s.startedAt) / 1000),
+      status: s.status,
+    }));
+
+    // Supplement with active sessions from session tracker that aren't already
+    // represented in _activeSlots (covers workflow-created sessions).
+    const slotTaskIds = new Set(slotsFromMap.map((s) => s.taskId));
+    let supplemented = slotsFromMap;
+    try {
+      const tracker = getSessionTracker();
+      if (tracker && typeof tracker.listAllSessions === "function") {
+        const activeSessions = tracker.listAllSessions()
+          .filter((s) => s.status === "active" && s.type === "task" && s.taskId && !slotTaskIds.has(s.taskId));
+        for (const session of activeSessions) {
+          const started = session.startedAt || Date.parse(session.createdAt) || Date.now();
+          supplemented.push({
+            taskId: session.taskId,
+            taskTitle: session.title || session.taskId,
+            branch: session.branch || "",
+            baseBranch: null,
+            sdk: "",
+            model: "",
+            attempt: 1,
+            agentInstanceId: null,
+            startedAt: started,
+            runningFor: Math.round((Date.now() - started) / 1000),
+            status: "running",
+            sessionId: session.id,
+          });
+        }
+      }
+    } catch { /* best effort — session tracker may not be available */ }
+
     return {
       running: this._running,
       paused: this._paused,
@@ -4244,20 +4287,8 @@ class TaskExecutor {
       baseBranchParallelLimit: this.baseBranchParallelLimit,
       repoAreaParallelLimit: this.repoAreaParallelLimit,
       sdk: this.sdk === "auto" ? getPoolSdkName() : this.sdk,
-      activeSlots: this._activeSlots.size,
-      slots: Array.from(this._activeSlots.values()).map((s) => ({
-        taskId: s.taskId,
-        taskTitle: s.taskTitle,
-        branch: s.branch,
-        baseBranch: s.baseBranch || null,
-        sdk: s.sdk,
-        model: s.model || "",
-        attempt: s.attempt,
-        agentInstanceId: s.agentInstanceId ?? null,
-        startedAt: s.startedAt,
-        runningFor: Math.round((Date.now() - s.startedAt) / 1000),
-        status: s.status,
-      })),
+      activeSlots: supplemented.length,
+      slots: supplemented,
       cooldowns: this._taskCooldowns.size,
       blockedTasks: this._getBlockedTaskIds(),
       noCommitCounts: Object.fromEntries(this._noCommitCounts),
@@ -4388,6 +4419,38 @@ class TaskExecutor {
     const noCommitCount = this._noCommitCounts.get(key) || 0;
     if (noCommitCount >= MAX_NO_COMMIT_ATTEMPTS) return true;
     return false;
+  }
+
+  /**
+   * Release a workflow-owned slot. Called by the workflow release_slot node
+   * to keep executor slot state in sync.
+   * @param {string} taskId
+   */
+  releaseWorkflowSlot(taskId) {
+    const key = normalizeTaskIdKey(taskId);
+    if (!key) return;
+    this._activeSlots.delete(key);
+  }
+
+  /**
+   * Update a workflow-owned slot (e.g. set sdk, model, agentInstanceId, worktreePath).
+   * Called by workflow nodes after resolve_executor / acquire_worktree.
+   * @param {string} taskId
+   * @param {Object} patch — fields to merge into the slot
+   */
+  updateWorkflowSlot(taskId, patch) {
+    const key = normalizeTaskIdKey(taskId);
+    if (!key) return;
+    const slot = this._activeSlots.get(key);
+    if (!slot) return;
+    if (patch.sdk) slot.sdk = patch.sdk;
+    if (patch.model) slot.model = patch.model;
+    if (patch.agentInstanceId) slot.agentInstanceId = patch.agentInstanceId;
+    if (patch.worktreePath) slot.worktreePath = patch.worktreePath;
+    if (patch.branch) slot.branch = patch.branch;
+    if (patch.baseBranch) slot.baseBranch = patch.baseBranch;
+    if (patch.status) slot.status = patch.status;
+    if (patch.taskTitle) slot.taskTitle = patch.taskTitle;
   }
 
   /**
@@ -5407,6 +5470,7 @@ class TaskExecutor {
         taskId,
         taskTitle,
         branch,
+        baseBranch: String(task?.baseBranch || task?.meta?.baseBranch || "").trim() || null,
         worktreePath,
         sdk: resolvedSdk,
         model: resolvedModel || null,
@@ -5415,6 +5479,9 @@ class TaskExecutor {
         status: "running",
         agentInstanceId: null,
       };
+
+      // Register into _activeSlots so getStatus() reports running work
+      this._activeSlots.set(taskId, slot);
 
       if (typeof this.onTaskStarted === "function") {
         try {

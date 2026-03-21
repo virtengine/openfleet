@@ -155,7 +155,16 @@ import {
 import {
   getSessionTracker,
   addSessionEventListener,
+  addSessionStateListener,
 } from "../infra/session-tracker.mjs";
+import {
+  buildMonitorStats,
+  buildSessionEventPayload,
+  buildSessionsUpdatePayload,
+  buildStructuredLogLine,
+  buildTaskUpdatePayload,
+  buildWorkflowStatusPayload,
+} from "../infra/tui-bridge.mjs";
 import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import {
   addSessionAccumulationListener,
@@ -4733,14 +4742,18 @@ let _browserOpened = false;
 const AUTO_OPEN_MARKER_FILE = "ui-auto-open.json";
 const UI_INSTANCE_LOCK_FILE = "ui-server.instance.lock.json";
 const UI_SESSION_TOKEN_FILE = "ui-session-token.json";
+const UI_SESSION_TOKEN_COMPAT_FILE = "ui-token";
 const UI_LAST_PORT_FILE = "ui-last-port.json";
 const DEFAULT_AUTO_OPEN_COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12h
 const DEFAULT_SESSION_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const wsClients = new Set();
 let sessionListenerAttached = false;
+let sessionStateListenerAttached = false;
 let sessionAccumulatorListenerAttached = false;
 /** @type {ReturnType<typeof setInterval>|null} */
 let wsHeartbeatTimer = null;
+/** @type {ReturnType<typeof setInterval>|null} */
+let statsBroadcastInterval = null;
 const WORKFLOW_WS_BATCH_MS = 80;
 const workflowWsBatchByKey = new Map();
 const workflowEngineListenerCleanup = new WeakMap();
@@ -5099,6 +5112,21 @@ function isValidSessionToken(token) {
 }
 
 function readPersistedSessionToken() {
+  const envToken = String(process.env.BOSUN_UI_TOKEN || process.env.BOSUN_UI_SESSION_TOKEN || "").trim();
+  if (isValidSessionToken(envToken)) {
+    return envToken;
+  }
+  try {
+    const compatPath = resolveUiCachePath(UI_SESSION_TOKEN_COMPAT_FILE);
+    if (existsSync(compatPath)) {
+      const compatToken = String(readFileSync(compatPath, "utf8") || "").trim();
+      if (isValidSessionToken(compatToken)) {
+        return compatToken;
+      }
+    }
+  } catch {
+    // best effort
+  }
   try {
     const tokenPath = resolveUiCachePath(UI_SESSION_TOKEN_FILE);
     if (!existsSync(tokenPath)) return "";
@@ -5131,6 +5159,7 @@ function persistSessionToken(token) {
       ),
       "utf8",
     );
+    writeFileSync(resolveUiCachePath(UI_SESSION_TOKEN_COMPAT_FILE), token + "\n", "utf8");
   } catch {
     // best effort
   }
@@ -9205,6 +9234,28 @@ function sendWsMessage(socket, payload) {
   }
 }
 
+function broadcastWsPayload(required, payload) {
+  for (const socket of wsClients) {
+    const subscribed = socket.__channels || new Set(["*"]);
+    const shouldSend =
+      subscribed.has("*") ||
+      Array.from(required).some((channel) => subscribed.has(channel));
+    if (shouldSend) {
+      sendWsMessage(socket, payload);
+    }
+  }
+}
+
+function broadcastTuiEvent(channels, type, payload = {}) {
+  const required = new Set([...(Array.isArray(channels) ? channels : [channels]), "tui"]);
+  broadcastWsPayload(required, {
+    type,
+    channels: Array.from(required),
+    payload,
+    ts: Date.now(),
+  });
+}
+
 function normalizeWorkflowNodeStatus(status) {
   const normalized = String(status || "").trim().toLowerCase();
   if (normalized === "completed" || normalized === "success") return "success";
@@ -9361,6 +9412,17 @@ function queueWorkflowWsEvent(event = {}) {
         runId: bucket.runId,
         events,
       });
+      for (const entry of events) {
+        const eventType = String(entry?.eventType || "").trim();
+        if (
+          eventType === "run:start"
+          || eventType === "node:complete"
+          || eventType === "run:end"
+          || eventType === "run:error"
+        ) {
+          broadcastTuiEvent(["workflows"], "workflow:status", buildWorkflowStatusPayload(entry));
+        }
+      }
     }
     if (!bucket.events.length) workflowWsBatchByKey.delete(key);
   }, WORKFLOW_WS_BATCH_MS);
@@ -9525,14 +9587,13 @@ function broadcastUiEvent(channels, type, payload = {}) {
     payload,
     ts: Date.now(),
   };
-  for (const socket of wsClients) {
-    const subscribed = socket.__channels || new Set(["*"]);
-    const shouldSend =
-      subscribed.has("*") ||
-      Array.from(required).some((channel) => subscribed.has(channel));
-    if (shouldSend) {
-      sendWsMessage(socket, message);
-    }
+  broadcastWsPayload(required, message);
+  if (type === "invalidate" && required.has("tasks")) {
+    broadcastTuiEvent(["tasks"], "tasks:update", buildTaskUpdatePayload({
+      ...payload,
+      kanbanBackend: getKanbanBackendName(),
+      timestamp: Date.now(),
+    }));
   }
 }
 
@@ -9544,15 +9605,7 @@ function broadcastSessionMessage(payload) {
     payload,
     ts: Date.now(),
   };
-  for (const socket of wsClients) {
-    const subscribed = socket.__channels || new Set(["*"]);
-    const shouldSend =
-      subscribed.has("*") ||
-      Array.from(required).some((channel) => subscribed.has(channel));
-    if (shouldSend) {
-      sendWsMessage(socket, message);
-    }
-  }
+  broadcastWsPayload(required, message);
 }
 
 async function collectUiStats() {
@@ -9878,6 +9931,19 @@ function startLogStream(socket, logType, query) {
         const lines = text.split("\n").filter(Boolean);
         if (lines.length > 0) {
           sendWsMessage(socket, { type: "log-lines", lines });
+          for (const line of lines) {
+            const structuredLine = buildStructuredLogLine(line, {
+              logType,
+              filePath,
+              ts: Date.now(),
+            });
+            sendWsMessage(socket, {
+              type: "logs:stream",
+              channels: ["logs", "tui"],
+              payload: structuredLine,
+              ts: structuredLine.ts,
+            });
+          }
         }
       } finally {
         await handle.close();
@@ -9938,6 +10004,13 @@ function stopWsHeartbeat() {
   if (wsHeartbeatTimer) {
     clearInterval(wsHeartbeatTimer);
     wsHeartbeatTimer = null;
+  }
+}
+
+function stopStatsBroadcast() {
+  if (statsBroadcastInterval) {
+    clearInterval(statsBroadcastInterval);
+    statsBroadcastInterval = null;
   }
 }
 
@@ -18748,21 +18821,66 @@ async function handleApi(req, res, url) {
           taskId,
         });
       } else {
-        // Ad-hoc prompt dispatch via command handler
-        const handler = uiDeps.handleUiCommand;
-        if (typeof handler === "function") {
-          const result = await handler(`/prompt ${prompt}`);
-          jsonResponse(res, 200, {
-            ok: true,
-            slotIndex: status.activeSlots || 0,
-            data: result || null,
+        // Ad-hoc prompt dispatch — create a real kanban task so it's trackable
+        try {
+          const adapter = getKanbanAdapter();
+          const projId = await resolveDefaultKanbanProjectId(adapter, "");
+          const promptTitle = prompt.length > 120 ? prompt.slice(0, 117) + "…" : prompt;
+          const created = await adapter.createTask(projId, {
+            title: promptTitle,
+            description: prompt,
+            status: "todo",
+            tags: ["ad-hoc"],
+            meta: { adhoc: true, source: "fleet-dispatch" },
           });
-        } else {
-          jsonResponse(res, 400, {
-            ok: false,
-            error: "Prompt dispatch not available — no command handler.",
-          });
-          return;
+          const createdTask = created?.task || created;
+          const newTaskId = String(createdTask?.id || "").trim();
+          if (newTaskId) {
+            executor.executeTask(createdTask, { force: true }).catch((error) => {
+              console.warn(
+                `[telegram-ui] ad-hoc dispatch failed for ${newTaskId}: ${error.message}`,
+              );
+            });
+            jsonResponse(res, 200, {
+              ok: true,
+              slotIndex: status.activeSlots || 0,
+              taskId: newTaskId,
+            });
+          } else {
+            // Fallback: task creation didn't return an ID — use legacy path
+            const handler = uiDeps.handleUiCommand;
+            if (typeof handler === "function") {
+              const result = await handler(`/prompt ${prompt}`);
+              jsonResponse(res, 200, {
+                ok: true,
+                slotIndex: status.activeSlots || 0,
+                data: result || null,
+              });
+            } else {
+              jsonResponse(res, 400, {
+                ok: false,
+                error: "Prompt dispatch not available — no command handler.",
+              });
+              return;
+            }
+          }
+        } catch (adhocErr) {
+          // Fallback to legacy handler on failure
+          const handler = uiDeps.handleUiCommand;
+          if (typeof handler === "function") {
+            const result = await handler(`/prompt ${prompt}`);
+            jsonResponse(res, 200, {
+              ok: true,
+              slotIndex: status.activeSlots || 0,
+              data: result || null,
+            });
+          } else {
+            jsonResponse(res, 400, {
+              ok: false,
+              error: `Prompt dispatch failed: ${adhocErr.message}`,
+            });
+            return;
+          }
         }
       }
       broadcastUiEvent(
@@ -21328,6 +21446,20 @@ export async function startTelegramUiServer(options = {}) {
       sessionListenerAttached = true;
       addSessionEventListener((payload) => {
         broadcastSessionMessage(payload);
+        broadcastTuiEvent(["sessions"], "session:event", buildSessionEventPayload({
+          ...payload,
+          ts: Date.now(),
+        }));
+      });
+    }
+    if (!sessionStateListenerAttached) {
+      sessionStateListenerAttached = true;
+      addSessionStateListener(() => {
+        broadcastTuiEvent(
+          ["sessions"],
+          "sessions:update",
+          buildSessionsUpdatePayload(getSessionTracker().listAllSessions()),
+        );
       });
     }
     if (!sessionAccumulatorListenerAttached) {
@@ -21343,15 +21475,17 @@ export async function startTelegramUiServer(options = {}) {
     }
 
     // Periodic stats broadcast for TUI
-    let statsBroadcastInterval = null;
     function startStatsBroadcast() {
       if (statsBroadcastInterval) return;
       const intervalMs = Number(process.env.BOSUN_STATS_BROADCAST_MS) || 2000;
-      statsBroadcastInterval = setInterval(async () => {
+      statsBroadcastInterval = setInterval(() => {
         try {
-          const stats = await collectUiStats();
+          const stats = buildMonitorStats({
+            rateLimits: globalThis.__bosun_tuiRateLimits || {},
+          });
           broadcastUiEvent(["stats", "tui"], "stats", stats);
-        } catch (err) {
+          broadcastTuiEvent(["stats"], "monitor:stats", stats);
+        } catch {
           // best effort
         }
       }, intervalMs);
@@ -21415,6 +21549,21 @@ export async function startTelegramUiServer(options = {}) {
         channels: ["*"],
         payload: { connected: true },
         ts: Date.now(),
+      });
+      sendWsMessage(socket, {
+        type: "sessions:update",
+        channels: ["sessions", "tui"],
+        payload: buildSessionsUpdatePayload(getSessionTracker().listAllSessions()),
+        ts: Date.now(),
+      });
+      const initialStats = buildMonitorStats({
+        rateLimits: globalThis.__bosun_tuiRateLimits || {},
+      });
+      sendWsMessage(socket, {
+        type: "monitor:stats",
+        channels: ["stats", "tui"],
+        payload: initialStats,
+        ts: initialStats.ts,
       });
 
       socket.on("message", (raw) => {
@@ -21911,6 +22060,7 @@ export function stopTelegramUiServer() {
   if (!uiServer) return;
   stopTunnel();
   stopWsHeartbeat();
+  stopStatsBroadcast();
   // Clear injected configDir so it does not leak between server lifecycles
   // (tests start/stop servers repeatedly with different config directories).
   delete uiDeps.configDir;

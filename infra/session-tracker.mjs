@@ -114,11 +114,18 @@ function resolveSessionMaxMessages(type, metadata, explicitMax, fallbackMax) {
 const FLUSH_INTERVAL_MS = 2000;
 
 const SESSION_EVENT_LISTENERS = new Set();
+const SESSION_STATE_LISTENERS = new Set();
 
 export function addSessionEventListener(listener) {
   if (typeof listener !== "function") return () => {};
   SESSION_EVENT_LISTENERS.add(listener);
   return () => SESSION_EVENT_LISTENERS.delete(listener);
+}
+
+export function addSessionStateListener(listener) {
+  if (typeof listener !== "function") return () => {};
+  SESSION_STATE_LISTENERS.add(listener);
+  return () => SESSION_STATE_LISTENERS.delete(listener);
 }
 
 function emitSessionEvent(session, message) {
@@ -137,6 +144,40 @@ function emitSessionEvent(session, message) {
     },
   };
   for (const listener of SESSION_EVENT_LISTENERS) {
+    try {
+      listener(payload);
+    } catch {
+      // best-effort listeners
+    }
+  }
+}
+
+function summarizeSessionState(session) {
+  if (!session) return null;
+  return {
+    id: session.id || session.taskId,
+    taskId: session.taskId || session.id,
+    title: session.taskTitle || session.title || null,
+    type: session.type || "task",
+    status: session.status || "active",
+    turnCount: Number(session.turnCount || 0),
+    createdAt: session.createdAt || null,
+    lastActiveAt: session.lastActiveAt || null,
+    endedAt: Number.isFinite(Number(session.endedAt)) ? Number(session.endedAt) : null,
+    insights: session.insights || null,
+  };
+}
+
+function emitSessionStateChange(reason, session, extra = {}) {
+  if (!session || SESSION_STATE_LISTENERS.size === 0) return;
+  const payload = {
+    reason: String(reason || "updated").trim() || "updated",
+    sessionId: session.id || session.taskId,
+    taskId: session.taskId || session.id,
+    session: summarizeSessionState(session),
+    ...extra,
+  };
+  for (const listener of SESSION_STATE_LISTENERS) {
     try {
       listener(payload);
     } catch {
@@ -261,6 +302,7 @@ export class SessionTracker {
       insights: buildSessionInsights({ messages: [] }),
     });
     this.#markDirty(taskId);
+    emitSessionStateChange("started", this.#sessions.get(taskId));
   }
 
   /**
@@ -323,6 +365,7 @@ export class SessionTracker {
       this.#refreshDerivedState(session);
       this.#markDirty(taskId);
       emitSessionEvent(session, msg);
+      emitSessionStateChange("message", session, { messageType: msg.type || msg.role || "system" });
       return;
     }
 
@@ -356,6 +399,7 @@ export class SessionTracker {
       this.#refreshDerivedState(session);
       this.#markDirty(taskId);
       emitSessionEvent(session, msg);
+      emitSessionStateChange("message", session, { messageType: msg.type || msg.role || "message" });
       return;
     }
 
@@ -373,6 +417,7 @@ export class SessionTracker {
     this.#refreshDerivedState(session);
     this.#markDirty(taskId);
     emitSessionEvent(session, msg);
+    emitSessionStateChange("message", session, { messageType: msg.type || msg.role || "event" });
   }
 
   /**
@@ -389,6 +434,7 @@ export class SessionTracker {
     this.#refreshDerivedState(session);
     this.#accumulateCompletedSession(session, taskId);
     this.#markDirty(taskId);
+    emitSessionStateChange("ended", session, { status });
   }
 
   /**
@@ -563,6 +609,9 @@ export class SessionTracker {
         if (existsSync(filePath)) unlinkSync(filePath);
       } catch { /* best effort */ }
     }
+    if (session) {
+      emitSessionStateChange("removed", session);
+    }
   }
 
   /**
@@ -625,6 +674,7 @@ export class SessionTracker {
     this.#sessions.set(id, session);
     this.#markDirty(id);
     this.#flushDirty(); // immediate write for create
+    emitSessionStateChange("created", session);
     return session;
   }
 
@@ -701,6 +751,7 @@ export class SessionTracker {
     this.#refreshDerivedState(session);
     this.#accumulateCompletedSession(session, sessionId);
     this.#markDirty(sessionId);
+    emitSessionStateChange("status", session, { status });
   }
 
   /**
@@ -714,6 +765,7 @@ export class SessionTracker {
     session.taskTitle = newTitle;
     session.title = newTitle;
     this.#markDirty(sessionId);
+    emitSessionStateChange("renamed", session);
   }
 
   /**
@@ -893,6 +945,11 @@ export class SessionTracker {
   #autoCreateSession(taskId, event) {
     const type = event._sessionType || "task";
     const runtimeMetadata = extractSessionRuntimeMetadata(event);
+    // Try to extract a meaningful title from the event or task ID
+    const eventTitle = String(
+      event._taskTitle || event.taskTitle || event.title || "",
+    ).trim();
+    const titleFromId = eventTitle || taskId;
     this.createSession({
       id: taskId,
       sessionKey: `${taskId}:${Date.now()}:${randomToken(8)}`,
@@ -900,9 +957,33 @@ export class SessionTracker {
       taskId,
       metadata: {
         autoCreated: true,
+        title: titleFromId,
         ...(runtimeMetadata.executor ? { executor: runtimeMetadata.executor } : {}),
         ...(runtimeMetadata.model ? { model: runtimeMetadata.model } : {}),
       },
+    });
+    // If we only have the raw taskId, schedule an async kanban lookup for a better title
+    if (!eventTitle) {
+      this.#scheduleTitleLookup(taskId);
+    }
+  }
+
+  /**
+   * Schedule an async title lookup and rename the session once resolved.
+   * @param {string} taskId
+   */
+  #scheduleTitleLookup(taskId) {
+    // Fire-and-forget — don't block auto-creation
+    Promise.resolve().then(async () => {
+      try {
+        const { getTask } = await import("../kanban/kanban-adapter.mjs");
+        if (typeof getTask !== "function") return;
+        const task = await getTask(taskId);
+        const title = String(task?.title || "").trim();
+        if (title && title.toLowerCase() !== "untitled task") {
+          this.renameSession(taskId, title);
+        }
+      } catch { /* best effort */ }
     });
   }
 
@@ -944,6 +1025,7 @@ export class SessionTracker {
         this.#refreshDerivedState(session);
         this.#accumulateCompletedSession(session, id);
         this.#markDirty(id);
+        emitSessionStateChange("reaped", session, { status: "completed" });
         reaped++;
       }
     }

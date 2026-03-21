@@ -4750,6 +4750,27 @@ registerNodeType("action.acquire_worktree", {
         }
       }
 
+      const existingBranchWorktree = findAttachedWorktreeForBranch();
+      if (existingBranchWorktree && existsSync(existingBranchWorktree)) {
+        let recreatedAttachedWorktree = invalidateBrokenReusableWorktree(existingBranchWorktree, "attached-branch-pre-reuse");
+        if (!recreatedAttachedWorktree && existsSync(existingBranchWorktree)) {
+          ctx.data.worktreePath = existingBranchWorktree;
+          ctx.data.baseBranch = baseBranch;
+          ctx.data._worktreeCreated = false;
+          ctx.data._worktreeManaged = true;
+          ctx.log(node.id, `Reusing existing branch worktree: ${existingBranchWorktree}`);
+          return {
+            success: true,
+            worktreePath: existingBranchWorktree,
+            created: false,
+            reused: true,
+            reusedExistingBranch: true,
+            branch,
+            baseBranch,
+          };
+        }
+      }
+
       // Create fresh worktree
       try {
         execGitArgsSync(
@@ -5215,6 +5236,41 @@ registerNodeType("action.build_task_prompt", {
         userParts.push("");
         ctx.data._taskPromptIncludesTaskContext = true;
       }
+    }
+
+    // ── Prior Session Summary (for resumed/retried tasks) ─────────────
+    // If a prior session exists for this task, inject a compact summary
+    // so the agent understands what was already accomplished and avoids
+    // redoing completed work — even when the SDK thread has expired.
+    if (normalizedTaskId) {
+      try {
+        const tracker = getSessionTracker();
+        const priorSession = tracker.getSessionById(normalizedTaskId);
+        if (priorSession && priorSession.turnCount > 0) {
+          const insights = priorSession.insights;
+          const summaryParts = ["## Prior Session Summary"];
+          summaryParts.push(`A prior session ran ${priorSession.turnCount} turn(s) with status "${priorSession.status || "unknown"}".`);
+          const editedFiles = insights?.files?.edited;
+          if (Array.isArray(editedFiles) && editedFiles.length > 0) {
+            summaryParts.push("### Files Previously Edited");
+            for (const f of editedFiles.slice(0, 15)) {
+              summaryParts.push(`- ${f.path} (${f.count || f.edits || 1} edit(s))`);
+            }
+          }
+          const recentActions = insights?.recentActions;
+          if (Array.isArray(recentActions) && recentActions.length > 0) {
+            summaryParts.push("### Recent Actions From Prior Session");
+            for (const action of recentActions.slice(0, 8)) {
+              summaryParts.push(`- ${action.label || action.type || "unknown"}`);
+            }
+          }
+          summaryParts.push("");
+          summaryParts.push("Continue from where the prior session left off. Do NOT redo work that was already completed.");
+          userParts.push(summaryParts.join("\n"));
+          userParts.push("");
+          ctx.data._taskPromptIncludesPriorSession = true;
+        }
+      } catch { /* best-effort — never block prompt generation */ }
     }
 
     const gitContextBlock = await buildGitContextBlock();
