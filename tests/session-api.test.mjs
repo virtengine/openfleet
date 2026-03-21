@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  formatSessionFreshnessTimestamp,
+  getSessionManualRetryState,
   buildSessionApiPath,
   createSessionLoadMeta,
   getSessionRetryDelayMs,
@@ -23,6 +25,51 @@ describe("session api workspace routing", () => {
 
   it("falls back to all when session metadata is absent", () => {
     expect(resolveSessionWorkspaceHint(null, "all")).toBe("all");
+  });
+
+  it("formats freshness labels with relative and absolute timestamps", () => {
+    const label = formatSessionFreshnessTimestamp("2026-01-02T00:00:00.000Z", {
+      formatRelative: () => "2m ago",
+      formatDate: () => "Jan 2, 2026, 12:00 AM",
+    });
+    expect(label).toBe("2m ago (Jan 2, 2026, 12:00 AM)");
+    expect(formatSessionFreshnessTimestamp(null)).toBe("unknown");
+  });
+
+  it("disables manual retry while retry backoff is active", () => {
+    const now = Date.UTC(2026, 0, 2, 0, 0, 0);
+    const pendingRetry = createSessionLoadMeta({
+      stale: true,
+      retryAttempt: 2,
+      maxAttempts: 5,
+      nextRetryAt: new Date(now + 5000).toISOString(),
+    });
+    expect(getSessionManualRetryState(pendingRetry, { now })).toEqual(
+      expect.objectContaining({
+        disabled: true,
+        label: "Retry in 5s",
+        reason: "Manual retry is disabled while automatic backoff is active.",
+        retrySeconds: 5,
+        backoffActive: true,
+      }),
+    );
+
+    const exhaustedRetry = createSessionLoadMeta({
+      stale: true,
+      retryAttempt: 5,
+      retriesExhausted: true,
+      maxAttempts: 5,
+      nextRetryAt: null,
+    });
+    expect(getSessionManualRetryState(exhaustedRetry, { now })).toEqual(
+      expect.objectContaining({
+        disabled: false,
+        label: "Retry now",
+        reason: "",
+        retrySeconds: 0,
+        backoffActive: false,
+      }),
+    );
   });
 });
 
@@ -70,16 +117,29 @@ describe("session api stale/retry metadata", () => {
   it("resets stale retry counters on success and manual reset", () => {
     const now = Date.UTC(2026, 0, 2, 0, 0, 0);
     let meta = createSessionLoadMeta();
-    meta = markSessionLoadFailure(meta, now);
+    meta = markSessionLoadFailure(meta, now, {
+      staleReason: {
+        code: "request_failed",
+        message: "Gateway timeout",
+      },
+    });
     meta = markSessionLoadFailure(meta, now + 1000);
     expect(meta.stale).toBe(true);
     expect(meta.retryAttempt).toBeGreaterThan(0);
+    expect(meta.staleReasonCode).toBe("request_failed");
+    expect(meta.staleReasonLabel).toBe("Refresh request failed");
+    expect(meta.staleReason).toBe("Gateway timeout");
+    expect(meta.lastFailureAt).toBe(new Date(now).toISOString());
 
     const successMeta = markSessionLoadSuccess(meta, now + 2000);
     expect(successMeta.stale).toBe(false);
     expect(successMeta.retryAttempt).toBe(0);
     expect(successMeta.retriesExhausted).toBe(false);
     expect(successMeta.lastSuccessAt).toBe(new Date(now + 2000).toISOString());
+    expect(successMeta.staleReason).toBe(null);
+    expect(successMeta.staleReasonCode).toBe(null);
+    expect(successMeta.staleReasonLabel).toBe(null);
+    expect(successMeta.staleReasonMeta).toBe(null);
 
     const resetMeta = resetSessionRetryMeta(markSessionLoadFailure(successMeta, now + 3000));
     expect(resetMeta.retryAttempt).toBe(0);
@@ -87,3 +147,4 @@ describe("session api stale/retry metadata", () => {
     expect(resetMeta.retriesExhausted).toBe(false);
   });
 });
+

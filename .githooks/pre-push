@@ -63,13 +63,13 @@ npm run smoke:packed-cli
 # Format: "source_prefix|test_glob_1|test_glob_2|..."
 # Globs are matched against tests/*.test.mjs filenames (basename only).
 ADJACENCY_MAP=(
-  "workflow/|workflow-*|workflow-pipeline-primitives*|manual-flows*|mcp-workflow-adapter*|bosun-native-workflow-nodes*|meeting-workflow*"
+  "workflow/|workflow-*|workflow-pipeline-primitives*|manual-flows*|mcp-workflow-adapter*|bosun-native-workflow-nodes*|meeting-workflow*|run-evaluator*|webhook-gateway*|credential-store*|cron-scheduler*"
   "workflow-templates/|workflow-templates*|workflow-new-templates*|workflow-engine*|manual-flows*"
   "task/|task-*|kanban-*|ve-orchestrator*|vk-api*|ve-kanban*"
   "kanban/|kanban-*|task-store*|task-claims*|ve-kanban*|ve-orchestrator*|vk-api*"
   "workspace/|workspace-*|shared-state*|worktree-*|sync-engine*"
   "infra/|monitor-*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*"
-  "agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*"
+  "agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*"
   "bench/|bench-swebench*|benchmark-*|task-*"
   "config/|config-*|bosun-skills*|codex-config*"
   "telegram/|telegram-*|whatsapp-*"
@@ -80,6 +80,7 @@ ADJACENCY_MAP=(
   "github/|github-*|hook-profiles*"
   "git/|git-*|branch-*|diff-stats*|conflict-*"
   "shell/|*-shell*|codex-shell*|gemini-shell*|opencode-shell*|sdk-shell*|continue-detection*"
+  "tools/|apply-pr-suggestions*|demo-defaults-sync*|prepublish-check*|vitest-runner*"
   "lib/|logger*|utils*|library-*|error-detector*|context-*|codebase-audit*"
   # Top-level runtime files that don't live in a subdirectory.
   "cli.mjs|cli-*|smoke*"
@@ -315,6 +316,7 @@ if [ "${#FINAL_TEST_LIST[@]}" -eq 0 ]; then
 fi
 
 echo "[hooks] running ${#FINAL_TEST_LIST[@]}/${TOTAL_TESTS} targeted tests…"
-node node_modules/vitest/vitest.mjs run --config vitest.config.mjs "${FINAL_TEST_LIST[@]}"
+node tools/vitest-runner.mjs run --config vitest.config.mjs "${FINAL_TEST_LIST[@]}"
 
 echo "[hooks] pre-push checks passed ✓"
+

@@ -120,11 +120,17 @@ for (const { relPath, source } of sessionListSourceFiles) {
     it("renders explicit stale-state banner text", () => {
       expect(source).toContain("Session list is showing stale data.");
       expect(source).toContain("Last successful refresh:");
+      expect(source).toContain("Freshness:");
+      expect(source).toContain("Reason:");
+      expect(source).toContain("Refresh request failed");
     });
 
     it("renders bounded retry status text for countdown and exhaustion", () => {
       expect(source).toContain("Automatic retries stopped after ${loadMeta.maxAttempts} attempts.");
       expect(source).toContain("Retry ${retryAttemptDisplay}/${loadMeta.maxAttempts} in ${retrySeconds}s.");
+      expect(source).toContain("disabled=${manualRetryState.disabled}");
+      expect(source).toContain("${manualRetryState.label || \"Retry now\"}");
+      expect(source).toContain("Manual retry is disabled while automatic backoff is active.");
     });
   });
 }
@@ -242,3 +248,4 @@ describe("fleet entry building logic", () => {
     }
   });
 });
+

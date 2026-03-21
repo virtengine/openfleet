@@ -261,6 +261,38 @@ describe("action.build_task_prompt", () => {
 
     expect(systemPromptB).toBe(systemPromptA);
   });
+
+  it("falls back to the task ID when the title is the default placeholder", async () => {
+    const handler = getNodeType("action.build_task_prompt");
+    const repoRoot = makeTmpDir();
+
+    const node = {
+      id: "prompt-untitled",
+      type: "action.build_task_prompt",
+      config: {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        taskDescription: "{{taskDescription}}",
+        includeAgentsMd: false,
+        includeStatusEndpoint: false,
+      },
+    };
+
+    const ctx = new WorkflowContext({
+      taskId: "89d82c54-c804-45f7-8018-137de0702ddb",
+      taskTitle: "Untitled task",
+      taskDescription: "Prompt body",
+      repoRoot,
+      worktreePath: join(repoRoot, ".bosun", "worktrees", "task-89d82c54"),
+    });
+
+    const result = await handler.execute(node, ctx);
+    const userPrompt = result.userPrompt || result.prompt;
+
+    expect(userPrompt).toContain("# Task: Task 89d82c54-c804-45f7-8018-137de0702ddb");
+    expect(userPrompt).toContain("Task ID: 89d82c54-c804-45f7-8018-137de0702ddb");
+    expect(userPrompt).not.toContain("# Task: Untitled task");
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

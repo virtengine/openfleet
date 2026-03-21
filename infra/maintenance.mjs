@@ -117,11 +117,15 @@ function clearBranchSyncWarning(key) {
 function logThrottledBranchSync(
   key,
   message,
-  {
+  levelOrOptions = {},
+) {
+  const options = typeof levelOrOptions === "string"
+    ? { level: levelOrOptions }
+    : (levelOrOptions || {});
+  const {
     level = "warn",
     throttleMs = BRANCH_SYNC_LOG_THROTTLE_MS,
-  } = {},
-) {
+  } = options;
   const normalizedKey = String(key || "default").trim() || "default";
   const now = Date.now();
   const state = branchSyncLogState.get(normalizedKey) || {
@@ -149,9 +153,7 @@ function logThrottledBranchSync(
 
   if (level === "error") {
     console.error(line);
-  } else if (level === "info") {
-    console.info(line);
-  } else if (level === "log") {
+  } else if (level === "info" || level === "log") {
     console.log(line);
   } else {
     console.warn(line);
@@ -702,7 +704,7 @@ function parsePidFile(raw) {
   return { pid: Number(text), raw: text };
 }
 
-function formatPidFileSummary(parsed) {
+export function formatPidFileSummary(parsed) {
   const pid = Number(parsed?.pid);
   if (Number.isFinite(pid) && pid > 0) return String(pid);
   const raw = String(parsed?.raw || "").replace(/\s+/g, " ").trim();
@@ -1144,10 +1146,11 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           windowsHide: true,
         });
         if (statusCheck.stdout?.trim()) {
+          console.log(`[maintenance] local '${branch}' diverged (${ahead}↑ ${behind}↓) but has uncommitted changes — skipping`);
           logThrottledBranchSync(
             `sync:${branch}:diverged-dirty`,
             `[maintenance] local '${branch}' diverged (${ahead}↑ ${behind}↓) but has uncommitted changes — skipping`,
-            "info",
+            "log",
           );
           continue;
         }
@@ -1205,10 +1208,11 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           windowsHide: true,
         });
         if (statusCheck.stdout?.trim()) {
+          console.log(`[maintenance] '${branch}' is checked out with uncommitted changes — skipping pull`);
           logThrottledBranchSync(
             `sync:${branch}:dirty-pull-skip`,
             `[maintenance] '${branch}' is checked out with uncommitted changes — skipping pull`,
-            "info",
+            "log",
           );
           continue;
         }

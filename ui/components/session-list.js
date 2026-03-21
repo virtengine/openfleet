@@ -11,12 +11,14 @@ import { apiFetch, onWsMessage } from "../modules/api.js";
 import {
   buildSessionApiPath,
   createSessionLoadMeta,
+  deriveSessionStaleReason,
+  formatSessionFreshnessTimestamp,
+  getSessionManualRetryState,
   markSessionLoadFailure,
   markSessionLoadSuccess,
-  resetSessionRetryMeta,
   resolveSessionWorkspaceHint,
 } from "../modules/session-api.js";
-import { formatRelative, truncate } from "../modules/utils.js";
+import { formatDate, formatRelative, truncate } from "../modules/utils.js";
 import { resolveIcon } from "../modules/icon-utils.js";
 import {
   List, ListItem, ListItemButton, ListItemText, ListItemIcon,
@@ -44,6 +46,7 @@ export const selectedSessionId = signal(readPersistedSelectedSessionId());
 export const sessionMessages = signal([]);
 export const sessionMessagesSessionId = signal("");
 export const sessionsError = signal(null);
+export const sessionsLoading = signal(false);
 export const sessionLoadMeta = signal(createSessionLoadMeta());
 /** Pagination metadata from the last loadSessionMessages call */
 export const sessionPagination = signal(null);
@@ -107,6 +110,7 @@ export async function loadSessions(filter = {}, _opts = {}) {
     normalizedFilter.workspace = "active";
   }
   _lastLoadFilter = normalizedFilter;
+  sessionsLoading.value = true;
   try {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(normalizedFilter)) {
@@ -124,14 +128,25 @@ export async function loadSessions(filter = {}, _opts = {}) {
       }
     }
     clearSessionRetryTimer();
-    sessionLoadMeta.value = markSessionLoadSuccess(sessionLoadMeta.peek());
+    const responseMeta = createSessionLoadMeta({
+      ...sessionLoadMeta.peek(),
+      ...(res?.loadMeta && typeof res.loadMeta === "object" ? res.loadMeta : {}),
+    });
+    sessionLoadMeta.value = markSessionLoadSuccess(
+      responseMeta,
+      responseMeta.lastSuccessAt || Date.now(),
+    );
     sessionsError.value = null;
-  } catch {
-    const nextMeta = markSessionLoadFailure(sessionLoadMeta.peek());
+  } catch (error) {
+    const nextMeta = markSessionLoadFailure(sessionLoadMeta.peek(), Date.now(), {
+      staleReason: deriveSessionStaleReason(error),
+    });
     sessionLoadMeta.value = nextMeta;
     scheduleSessionRetry(nextMeta);
     const hasCachedData = Array.isArray(sessionsData.peek()) && sessionsData.peek().length > 0;
     sessionsError.value = hasCachedData || Boolean(nextMeta.lastSuccessAt) ? null : "unavailable";
+  } finally {
+    sessionsLoading.value = false;
   }
 }
 
@@ -904,6 +919,7 @@ export function SessionList({
   );
   const allSessions = sessionsData.value || [];
   const loadMeta = sessionLoadMeta.value || createSessionLoadMeta();
+  const isLoadingSessions = sessionsLoading.value === true;
   const error = sessionsError.value;
   const showStaleBanner = Boolean(loadMeta.stale && (loadMeta.lastSuccessAt || allSessions.length > 0));
   const [retryCountdownNow, setRetryCountdownNow] = useState(() => Date.now());
@@ -1001,9 +1017,13 @@ export function SessionList({
   );
 
   const handleRetry = useCallback(() => {
+    const manualRetryState = getSessionManualRetryState(sessionLoadMeta.peek(), {
+      now: Date.now(),
+      isLoading: sessionsLoading.peek() === true,
+    });
+    if (manualRetryState.disabled) return;
     clearSessionRetryTimer();
     sessionsError.value = null;
-    sessionLoadMeta.value = resetSessionRetryMeta(sessionLoadMeta.peek());
     loadSessions(_lastLoadFilter, { source: "manual-retry" });
   }, []);
 
@@ -1146,6 +1166,26 @@ export function SessionList({
       ? Math.max(0, Math.ceil((nextRetryMs - retryCountdownNow) / 1000))
       : 0;
   const retryAttemptDisplay = Math.min(loadMeta.retryAttempt || 0, loadMeta.maxAttempts || 0);
+  const manualRetryState = getSessionManualRetryState(loadMeta, {
+    now: retryCountdownNow,
+    isLoading: isLoadingSessions,
+  });
+  const lastSuccessLabel = formatSessionFreshnessTimestamp(loadMeta.lastSuccessAt, {
+    formatRelative,
+    formatDate,
+  });
+  const staleReasonLabel =
+    loadMeta.staleReasonLabel || loadMeta.staleReasonMeta?.label || "Refresh request failed";
+  const staleReasonText =
+    loadMeta.staleReason || "Last refresh failed before new session data could be loaded.";
+  const staleReasonSummary = staleReasonText
+    ? `${staleReasonLabel}: ${staleReasonText}`
+    : staleReasonLabel;
+  const manualRetryReasonText =
+    manualRetryState.reason ||
+    (manualRetryState.disabled && retrySeconds > 0
+      ? "Manual retry is disabled while automatic backoff is active."
+      : "");
 
   if (error && !showStaleBanner) {
     return html`
@@ -1158,8 +1198,13 @@ export function SessionList({
           <${Alert} severity="error" variant="outlined" sx=${{ mb: 1 }}>
             Sessions not available
           </${Alert}>
-          <${Button} variant="outlined" size="small" onClick=${handleRetry}>
-            Retry
+          <${Button}
+            variant="outlined"
+            size="small"
+            onClick=${handleRetry}
+            disabled=${manualRetryState.disabled}
+          >
+            ${manualRetryState.label || "Retry now"}
           </${Button}>
         </${Box}>
       </${Paper}>
@@ -1208,8 +1253,13 @@ export function SessionList({
             severity="warning"
             variant="outlined"
             action=${html`
-              <${Button} size="small" color="warning" onClick=${handleRetry}>
-                Retry now
+              <${Button}
+                size="small"
+                color="warning"
+                onClick=${handleRetry}
+                disabled=${manualRetryState.disabled}
+              >
+                ${manualRetryState.label || "Retry now"}
               </${Button}>
             `}
           >
@@ -1217,13 +1267,26 @@ export function SessionList({
               Session list is showing stale data.
             </${Typography}>
             <${Typography} variant="caption" component="div">
-              Last successful refresh: ${loadMeta.lastSuccessAt ? formatRelative(loadMeta.lastSuccessAt) : "unknown"}
+              Last successful refresh: ${lastSuccessLabel}
+            </${Typography}>
+            <${Typography} variant="caption" component="div">
+              Freshness: cached data is being shown until the next successful refresh.
+            </${Typography}>
+            <${Typography} variant="caption" component="div">
+              Reason: ${staleReasonSummary}
             </${Typography}>
             <${Typography} variant="caption" component="div">
               ${loadMeta.retriesExhausted
                 ? `Automatic retries stopped after ${loadMeta.maxAttempts} attempts.`
                 : `Retry ${retryAttemptDisplay}/${loadMeta.maxAttempts} in ${retrySeconds}s.`}
             </${Typography}>
+            ${manualRetryReasonText
+              ? html`
+                  <${Typography} variant="caption" component="div">
+                    ${manualRetryReasonText}
+                  </${Typography}>
+                `
+              : null}
           </${Alert}>
         </${Box}>
       `}
@@ -1383,3 +1446,6 @@ export function SessionList({
     </${Paper}>
   `;
 }
+
+
+

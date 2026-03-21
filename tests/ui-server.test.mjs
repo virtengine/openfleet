@@ -1446,6 +1446,49 @@ describe("ui-server mini app", () => {
     expect(hiddenListJson.sessions.some((session) => session.id === "smoke-openai-legacy")).toBe(true);
   });
 
+  it("includes freshness metadata in session list payloads", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../server/ui-server.mjs");
+    const { _resetSingleton, getSessionTracker } = await import("../infra/session-tracker.mjs");
+    _resetSingleton({ persistDir: null });
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+    const tracker = getSessionTracker();
+    tracker.createSession({
+      id: "freshness-visible-session",
+      type: "primary",
+      metadata: { title: "Freshness Visible Session" },
+    });
+
+    const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions`);
+    const listJson = await listRes.json();
+    expect(listRes.status).toBe(200);
+    expect(listJson.ok).toBe(true);
+    expect(listJson.loadMeta).toEqual(
+      expect.objectContaining({
+        stale: false,
+        lastSuccessAt: expect.any(String),
+        lastFailureAt: null,
+        staleReason: null,
+        staleReasonCode: null,
+        staleReasonLabel: null,
+        staleReasonMeta: null,
+        retryAttempt: 0,
+        retryDelayMs: 0,
+        nextRetryAt: null,
+        retriesExhausted: false,
+      }),
+    );
+    expect(Number.isNaN(Date.parse(listJson.loadMeta.lastSuccessAt))).toBe(false);
+
+    server.close();
+  });
+
   it("uses the higher authenticated session rate limit for session-token requests", async () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -4042,3 +4085,6 @@ describe("ui-server mini app", () => {
   });
 
 });
+
+
+

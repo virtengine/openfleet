@@ -78,8 +78,9 @@ function normalizeReplayMaxBytes(value) {
   const rounded = Math.trunc(parsed);
   return Math.min(maxBytes, Math.max(minBytes, rounded));
 }
-const ALERT_COOLDOWN_REPLAY_MAX_BYTES = normalizeReplayMaxBytes(
-  process.env.AGENT_ALERT_COOLDOWN_REPLAY_MAX_BYTES,
+const ALERT_COOLDOWN_REPLAY_MAX_BYTES = Math.max(
+  256 * 1024,
+  normalizeReplayMaxBytes(process.env.AGENT_ALERT_COOLDOWN_REPLAY_MAX_BYTES),
 );
 
 function getAlertCooldownMs(alert) {
