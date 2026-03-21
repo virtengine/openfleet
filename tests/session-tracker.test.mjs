@@ -80,7 +80,7 @@ describe("session-tracker", () => {
       unsubscribe();
 
       expect(events.map((event) => event.reason)).toEqual([
-        "session-started",
+        "session-created",
         "session-status",
         "session-renamed",
         "session-ended",
