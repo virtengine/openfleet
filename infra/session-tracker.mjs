@@ -267,7 +267,7 @@ export class SessionTracker {
     });
     const session = this.#sessions.get(taskId);
     this.#markDirty(taskId);
-    emitSessionStateEvent(session, "session-started", { title: taskTitle || taskId });
+    emitSessionStateEvent(session, "session-created", { title: taskTitle || taskId });
   }
 
   /**
