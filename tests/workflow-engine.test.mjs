@@ -3320,6 +3320,93 @@ describe("Session chaining - action.run_agent", () => {
     expect(ctx.data._agentSessionNodeId).toBe("run-agent-implement");
   });
 
+  it("falls back to fresh recovery when continue-session returns a contextless response", async () => {
+    const handler = getNodeType("action.run_agent");
+    const ctx = new WorkflowContext({
+      worktreePath: "/tmp/test",
+      sessionId: "thread-existing-2",
+    });
+    const continueSession = vi.fn().mockResolvedValue({
+      success: true,
+      output: "I don't have the prior context in this session. What task should I resume?",
+      threadId: "thread-existing-2",
+      sdk: "copilot",
+    });
+    const execWithRetry = vi.fn().mockResolvedValue({
+      success: true,
+      output: "implemented after fresh retry",
+      threadId: "thread-fresh-2",
+      sdk: "copilot",
+    });
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: "fallback",
+      sdk: "copilot",
+      threadId: "thread-fallback",
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+          continueSession,
+          execWithRetry,
+        },
+      },
+    };
+    const node = { id: "a4", type: "action.run_agent", config: { prompt: "Continue work", continueOnSession: true } };
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(result.threadId).toBe("thread-fresh-2");
+    expect(continueSession).toHaveBeenCalledTimes(1);
+    expect(execWithRetry).toHaveBeenCalledTimes(1);
+    expect(launchEphemeralThread).not.toHaveBeenCalled();
+  });
+
+  it("aborts with blocked_missing_context when retry returns a contextless response", async () => {
+    const handler = getNodeType("action.run_agent");
+    const ctx = new WorkflowContext({
+      worktreePath: "/tmp/test",
+      sessionId: "thread-existing-3",
+    });
+    const continueSession = vi.fn().mockResolvedValue({
+      success: false,
+      error: "thread missing",
+      sdk: "copilot",
+    });
+    const execWithRetry = vi.fn().mockResolvedValue({
+      success: true,
+      output: "I don't have the previous context in this session. Share the last instruction and I will continue.",
+      threadId: "thread-existing-3",
+      sdk: "copilot",
+    });
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: "should-not-run",
+      sdk: "copilot",
+      threadId: "thread-fallback-3",
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+          continueSession,
+          execWithRetry,
+        },
+      },
+    };
+    const node = { id: "a5", type: "action.run_agent", config: { prompt: "Resume task", continueOnSession: true } };
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(false);
+    expect(result.contextLossDetected).toBe(true);
+    expect(result.blockedReason).toBe("blocked_missing_context");
+    expect(result.recoveryDecision).toBe("abort_after_contextless_retry");
+    expect(continueSession).toHaveBeenCalledTimes(1);
+    expect(execWithRetry).toHaveBeenCalledTimes(1);
+    expect(launchEphemeralThread).not.toHaveBeenCalled();
+  });
+
   it("runs multi-candidate selector mode when candidateCount > 1 and restores selected branch", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();

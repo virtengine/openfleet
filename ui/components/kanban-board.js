@@ -725,6 +725,7 @@ function KanbanColumn({
   loadingMoreTasks = false,
   onLoadMoreTasks = null,
   autoLoadMore = true,
+  globalTaskCount = 0,
 }) {
   const [showCreate, setShowCreate] = useState(false);
   const inputRef = useRef(null);
@@ -754,7 +755,7 @@ function KanbanColumn({
       (entries) => {
         for (const entry of entries) {
           if (!entry.isIntersecting) continue;
-          const key = tasks.length;
+          const key = globalTaskCount;
           if (lastAutoLoadCountRef.current === key || loadingMoreTasks) continue;
           lastAutoLoadCountRef.current = key;
           void onLoadMoreTasks();
@@ -768,7 +769,7 @@ function KanbanColumn({
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [autoLoadMore, hasMoreTasks, loadingMoreTasks, onLoadMoreTasks, tasks.length]);
+  }, [autoLoadMore, hasMoreTasks, loadingMoreTasks, onLoadMoreTasks, globalTaskCount]);
 
   useLayoutEffect(() => {
     const root = cardsRef.current;
@@ -776,11 +777,11 @@ function KanbanColumn({
     const remaining = root.scrollHeight - root.scrollTop - root.clientHeight;
     const underfilled = root.scrollHeight <= root.clientHeight + LOAD_MORE_THRESHOLD_PX;
     if (!underfilled && remaining > LOAD_MORE_THRESHOLD_PX) return;
-    const key = tasks.length;
+    const key = globalTaskCount;
     if (lastAutoLoadCountRef.current === key) return;
     lastAutoLoadCountRef.current = key;
     void onLoadMoreTasks();
-  }, [autoLoadMore, hasMoreTasks, loadingMoreTasks, onLoadMoreTasks, tasks.length, showCreate]);
+  }, [autoLoadMore, hasMoreTasks, loadingMoreTasks, onLoadMoreTasks, globalTaskCount, showCreate]);
 
   const onCardsScroll = useCallback((event) => {
     if (!autoLoadMore) return;
@@ -788,9 +789,9 @@ function KanbanColumn({
     if (!el) return;
     const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
     if (remaining > LOAD_MORE_THRESHOLD_PX) return;
-    lastAutoLoadCountRef.current = tasks.length;
+    lastAutoLoadCountRef.current = globalTaskCount;
     triggerLoadMore();
-  }, [autoLoadMore, tasks.length, triggerLoadMore]);
+  }, [autoLoadMore, globalTaskCount, triggerLoadMore]);
 
   const onCardsWheel = useCallback((event) => {
     const el = event?.currentTarget;
@@ -1169,6 +1170,7 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
             loadingMoreTasks=${loadingMoreTasks}
             onLoadMoreTasks=${onLoadMoreTasks}
             autoLoadMore=${autoLoadMore}
+            globalTaskCount=${filteredTasks.length}
             onOpen=${onOpenTask}
           />
         `)}

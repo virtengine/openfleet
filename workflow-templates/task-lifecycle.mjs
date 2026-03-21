@@ -28,7 +28,7 @@
  *                             → [has commits?]
  *                               YES → action.push_branch → action.create_pr
  *                                     → set inreview
- *                               NO  → set todo (cooldown)
+ *                               NO  → set blocked (manual review)
  *                           YES → log & set todo
  *                         → release-worktree → release-claim → release-slot
  *                   NO  → release-claim → set todo → release-slot → notify
@@ -296,14 +296,14 @@ export const TASK_LIFECYCLE_TEMPLATE = {
 
     // ── NO COMMITS PATH: Log no-commit ───────────────────────────────────
     node("log-no-commits", "notify.log", "Log No Commits", {
-      message: "Task \"{{taskTitle}}\" ({{taskId}}) — no new commits, returning to todo",
+      message: "Task \"{{taskTitle}}\" ({{taskId}}) — no new commits, moving to blocked for review",
       level: "warn",
     }, { x: 350, y: 2000 }),
 
-    // ── NO COMMITS PATH: Set status → todo (cooldown) ────────────────────
-    node("set-todo-cooldown", "action.update_task_status", "Set Todo (Cooldown)", {
+    // ── NO COMMITS PATH: Set status → blocked ────────────────────────────
+    node("set-todo-cooldown", "action.update_task_status", "Set Blocked (No Commits)", {
       taskId: "{{taskId}}",
-      status: "todo",
+      status: "blocked",
       taskTitle: "{{taskTitle}}",
     }, { x: 350, y: 2130 }),
 
@@ -694,10 +694,10 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
       status: "inreview",
     }, { x: 180, y: 2000 }),
 
-    // ── No commits → todo ────────────────────────────────────────────────
-    node("set-todo", "action.update_task_status", "Back to Todo", {
+    // ── No commits → blocked ─────────────────────────────────────────────
+    node("set-todo", "action.update_task_status", "Set Blocked (No Commits)", {
       taskId: "{{taskId}}",
-      status: "todo",
+      status: "blocked",
     }, { x: 480, y: 1740 }),
 
     node("join-outcomes", "flow.join", "Join Outcome Paths", {

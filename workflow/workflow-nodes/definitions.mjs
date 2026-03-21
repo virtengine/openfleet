@@ -206,6 +206,38 @@ function normalizeLineEndings(value) {
     .replace(/\r/g, "\n");
 }
 
+const CONTEXTLESS_AGENT_RESPONSE_PATTERNS = Object.freeze([
+  /\bi\s+do(?:n['’]t|\s+not)\s+have\s+(?:the\s+)?(?:prior|previous)\s+(?:task\s+)?(?:context|state|step|turn)\b/i,
+  /\bwhat\s+(?:task|step)\s+(?:should|do)\s+i\s+(?:resume|continue)\b/i,
+  /\blast\s+incomplete\s+step\b/i,
+  /\bpaste\s+the\s+last\s+(?:instruction|message|command\s+output|step)\b/i,
+  /\bshare\s+(?:the\s+)?last\s+(?:instruction|message|command\s+output|step)\b/i,
+]);
+
+function detectContextlessAgentResponse(candidate) {
+  if (!candidate || typeof candidate !== "object") return null;
+  const fields = [
+    ["output", candidate.output],
+    ["message", candidate.message],
+    ["error", candidate.error],
+    ["summary", candidate.summary],
+    ["narrative", candidate.narrative],
+  ];
+  for (const [field, value] of fields) {
+    const text = String(value || "").trim();
+    if (!text) continue;
+    const matchedPattern = CONTEXTLESS_AGENT_RESPONSE_PATTERNS.find((pattern) => pattern.test(text));
+    if (matchedPattern) {
+      return {
+        matched: true,
+        field,
+        text,
+      };
+    }
+  }
+  return null;
+}
+
 function simplifyPathLabel(filePath) {
   const normalized = String(filePath || "").replace(/\\/g, "/");
   if (!normalized) return "";
@@ -1209,6 +1241,7 @@ export {
   collectWakePhraseCandidates,
   condenseAgentItems,
   createKanbanTaskWithProject,
+  detectContextlessAgentResponse,
   decodeWorkflowUnicodeIconToken,
   deriveManagedWorktreeDirName,
   detectWakePhraseMatch,
@@ -1241,4 +1274,3 @@ export {
   summarizePathListingBlock,
   trimLogText,
 };
-

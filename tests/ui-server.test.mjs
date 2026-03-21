@@ -3510,7 +3510,7 @@ describe("ui-server mini app", () => {
     });
     const port = server.address().port;
 
-    const logDir = join(process.cwd(), "logs");
+    const logDir = join(process.cwd(), ".bosun", "logs");
     mkdirSync(logDir, { recursive: true });
     const logNames = ["monitor.log", "monitor-error.log", "daemon.log"];
     const backup = new Map(
@@ -3556,6 +3556,73 @@ describe("ui-server mini app", () => {
     } finally {
       for (const [name, content] of backup.entries()) {
         const filePath = join(logDir, name);
+        if (content == null) rmSync(filePath, { force: true });
+        else writeFileSync(filePath, content, "utf8");
+      }
+    }
+  });
+
+  it("prefers repo .bosun system logs over stale root log duplicates", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const rootLogDir = join(process.cwd(), "logs");
+    const bosunLogDir = join(process.cwd(), ".bosun", "logs");
+    mkdirSync(rootLogDir, { recursive: true });
+    mkdirSync(bosunLogDir, { recursive: true });
+    const logNames = ["monitor.log", "monitor-error.log", "daemon.log"];
+    const backup = [
+      ...logNames.map((name) => {
+        const filePath = join(rootLogDir, name);
+        return { dir: rootLogDir, name, content: existsSync(filePath) ? readFileSync(filePath, "utf8") : null };
+      }),
+      ...logNames.map((name) => {
+        const filePath = join(bosunLogDir, name);
+        return { dir: bosunLogDir, name, content: existsSync(filePath) ? readFileSync(filePath, "utf8") : null };
+      }),
+    ];
+
+    const staleRootFixtures = {
+      "daemon.log": "2026-03-04T04:08:15.000Z [INFO] [daemon] stale-root-daemon\n",
+      "monitor.log": "2026-03-04T04:08:15.001Z [INFO] [monitor] stale-root-monitor\n",
+      "monitor-error.log": "2026-03-04T04:08:15.002Z [WARN] [monitor] stale-root-error\n",
+    };
+
+    const liveBosunFixtures = {
+      "daemon.log": "2026-03-04T04:08:16.000Z [INFO] [daemon] live-bosun-daemon\n",
+      "monitor.log": "2026-03-04T04:08:16.001Z [INFO] [monitor] live-bosun-monitor\n",
+      "monitor-error.log": "2026-03-04T04:08:16.002Z [WARN] [monitor] live-bosun-error\n",
+    };
+
+    try {
+      for (const [name, content] of Object.entries(staleRootFixtures)) {
+        writeFileSync(join(rootLogDir, name), content, "utf8");
+      }
+      for (const [name, content] of Object.entries(liveBosunFixtures)) {
+        writeFileSync(join(bosunLogDir, name), content, "utf8");
+      }
+
+      const payload = await fetch(`http://127.0.0.1:${port}/api/logs?lines=6`).then((r) => r.json());
+
+      expect(payload.ok).toBe(true);
+      expect(payload.data?.files).toEqual(["monitor.log", "monitor-error.log", "daemon.log"]);
+      expect(payload.data?.lines).toEqual([
+        "2026-03-04T04:08:16.000Z [INFO] [daemon] live-bosun-daemon",
+        "2026-03-04T04:08:16.001Z [INFO] [monitor] live-bosun-monitor",
+        "2026-03-04T04:08:16.002Z [WARN] [monitor] live-bosun-error",
+      ]);
+      expect(payload.data?.lines.join("\n")).not.toContain("stale-root");
+    } finally {
+      for (const { dir, name, content } of backup) {
+        const filePath = join(dir, name);
         if (content == null) rmSync(filePath, { force: true });
         else writeFileSync(filePath, content, "utf8");
       }
@@ -3865,6 +3932,118 @@ describe("ui-server mini app", () => {
     }
   });
 
+  it("backfills telemetry agent labels from session_start events when completed sessions lack executors", async () => {
+    const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-usage-backfill-"));
+    const previousRepoRoot = process.env.REPO_ROOT;
+    process.env.REPO_ROOT = isolatedRepoRoot;
+    vi.resetModules();
+
+    const logDir = join(isolatedRepoRoot, ".cache", "agent-work-logs");
+    mkdirSync(logDir, { recursive: true });
+    const streamPath = join(logDir, "agent-work-stream.jsonl");
+    const sessionAccumulatorPath = join(isolatedRepoRoot, ".cache", "session-accumulator.jsonl");
+    const previousStream = existsSync(streamPath)
+      ? readFileSync(streamPath, "utf8")
+      : null;
+    const previousSessions = existsSync(sessionAccumulatorPath)
+      ? readFileSync(sessionAccumulatorPath, "utf8")
+      : null;
+
+    const now = new Date("2026-03-21T11:40:00.000Z");
+    writeFileSync(
+      streamPath,
+      `${[
+        {
+          event_type: "session_start",
+          ts: new Date(now.getTime() - 9 * 60 * 1000).toISOString(),
+          session_id: "session-c",
+          task_id: "task-c",
+          executor: "codex-sdk",
+        },
+        {
+          event_type: "session_start",
+          ts: new Date(now.getTime() - 7 * 60 * 1000).toISOString(),
+          session_id: "session-d",
+          task_id: "task-d",
+          executor: "claude-sdk",
+        },
+      ].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      "utf8",
+    );
+    writeFileSync(
+      sessionAccumulatorPath,
+      `${[
+        {
+          type: "completed_session",
+          sessionKey: "task-c:session-c",
+          id: "session-c",
+          taskId: "task-c",
+          taskTitle: "Recovered telemetry A",
+          executor: null,
+          model: null,
+          startedAt: now.getTime() - 8 * 60 * 1000,
+          endedAt: now.getTime() - 7 * 60 * 1000,
+          durationMs: 60_000,
+          tokenCount: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsd: 0,
+          recordedAt: new Date(now.getTime() - 7 * 60 * 1000).toISOString(),
+        },
+        {
+          type: "completed_session",
+          sessionKey: "task-d:session-d",
+          id: "session-d",
+          taskId: "task-d",
+          taskTitle: "Recovered telemetry B",
+          executor: null,
+          model: null,
+          startedAt: now.getTime() - 6 * 60 * 1000,
+          endedAt: now.getTime() - 5 * 60 * 1000,
+          durationMs: 60_000,
+          tokenCount: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsd: 0,
+          recordedAt: new Date(now.getTime() - 5 * 60 * 1000).toISOString(),
+        },
+      ].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/analytics/usage?days=30`);
+      const payload = await response.json();
+      expect(payload.ok).toBe(true);
+      expect(payload.data?.agentRuns).toBe(2);
+      expect(payload.data?.diagnostics?.agentRunSource).toBe("completed_sessions");
+      expect(payload.data?.diagnostics?.backfilledCompletedSessions).toBe(2);
+      expect(payload.data?.topAgents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "codex", count: 1 }),
+          expect.objectContaining({ name: "claude", count: 1 }),
+        ]),
+      );
+    } finally {
+      if (previousStream == null) rmSync(streamPath, { force: true });
+      else writeFileSync(streamPath, previousStream, "utf8");
+      if (previousSessions == null) rmSync(sessionAccumulatorPath, { force: true });
+      else writeFileSync(sessionAccumulatorPath, previousSessions, "utf8");
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
+      rmSync(isolatedRepoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("serves benchmark snapshots and persists benchmark mode for the active workspace", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-ui-benchmark-mode-"));
@@ -4085,6 +4264,3 @@ describe("ui-server mini app", () => {
   });
 
 });
-
-
-

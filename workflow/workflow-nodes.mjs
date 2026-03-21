@@ -633,6 +633,38 @@ function normalizeLineEndings(value) {
     .replace(/\r/g, "\n");
 }
 
+const CONTEXTLESS_AGENT_RESPONSE_PATTERNS = Object.freeze([
+  /\bi\s+do(?:n['’]t|\s+not)\s+have\s+(?:the\s+)?(?:prior|previous)\s+(?:task\s+)?(?:context|state|step|turn)\b/i,
+  /\bwhat\s+(?:task|step)\s+(?:should|do)\s+i\s+(?:resume|continue)\b/i,
+  /\blast\s+incomplete\s+step\b/i,
+  /\bpaste\s+the\s+last\s+(?:instruction|message|command\s+output|step)\b/i,
+  /\bshare\s+(?:the\s+)?last\s+(?:instruction|message|command\s+output|step)\b/i,
+]);
+
+function detectContextlessAgentResponse(candidate) {
+  if (!candidate || typeof candidate !== "object") return null;
+  const fields = [
+    ["output", candidate.output],
+    ["message", candidate.message],
+    ["error", candidate.error],
+    ["summary", candidate.summary],
+    ["narrative", candidate.narrative],
+  ];
+  for (const [field, value] of fields) {
+    const text = String(value || "").trim();
+    if (!text) continue;
+    const matchedPattern = CONTEXTLESS_AGENT_RESPONSE_PATTERNS.find((pattern) => pattern.test(text));
+    if (matchedPattern) {
+      return {
+        matched: true,
+        field,
+        text,
+      };
+    }
+  }
+  return null;
+}
+
 function simplifyPathLabel(filePath) {
   const normalized = String(filePath || "").replace(/\\/g, "/");
   if (!normalized) return "";
@@ -3064,7 +3096,15 @@ registerBuiltinNodeType("action.run_agent", {
                 sdk: sdkOverride,
                 model: modelOverride,
               });
-              if (result?.success) {
+              const contextlessResume = detectContextlessAgentResponse(result);
+              if (result?.success && contextlessResume) {
+                ctx.log(
+                  node.id,
+                  `${passLabel} Recovery: continue-session returned contextless response (${contextlessResume.field}); falling back to fresh recovery`.trim(),
+                  "warn",
+                );
+                result = null;
+              } else if (result?.success) {
                 ctx.log(node.id, `${passLabel} Recovery: continue-session succeeded`.trim());
               } else {
                 ctx.log(
@@ -3101,6 +3141,22 @@ registerBuiltinNodeType("action.run_agent", {
               onEvent: launchExtra.onEvent,
               systemPrompt: effectiveSystemPrompt,
             });
+            const contextlessRetry = detectContextlessAgentResponse(result);
+            if (result?.success && contextlessRetry) {
+              result = {
+                ...result,
+                success: false,
+                contextLossDetected: true,
+                blockedReason: "blocked_missing_context",
+                recoveryDecision: "abort_after_contextless_retry",
+                error: `Agent returned a contextless response after retry recovery (${contextlessRetry.field}).`,
+              };
+              ctx.log(
+                node.id,
+                `${passLabel} Recovery: contextless response after retry (${contextlessRetry.field}); aborting further recovery to avoid token churn`.trim(),
+                "warn",
+              );
+            }
           }
 
           if (!result && autoRecover && typeof agentPool.launchOrResumeThread === "function") {
@@ -3113,11 +3169,43 @@ registerBuiltinNodeType("action.run_agent", {
               onEvent: launchExtra.onEvent,
               systemPrompt: effectiveSystemPrompt,
             });
+            const contextlessResumeThread = detectContextlessAgentResponse(result);
+            if (result?.success && contextlessResumeThread) {
+              result = {
+                ...result,
+                success: false,
+                contextLossDetected: true,
+                blockedReason: "blocked_missing_context",
+                recoveryDecision: "abort_after_contextless_resume_thread",
+                error: `Agent returned a contextless response after launchOrResumeThread (${contextlessResumeThread.field}).`,
+              };
+              ctx.log(
+                node.id,
+                `${passLabel} Recovery: contextless response after launchOrResumeThread (${contextlessResumeThread.field}); aborting`.trim(),
+                "warn",
+              );
+            }
           }
 
           if (!result) {
             launchExtra.systemPrompt = effectiveSystemPrompt;
             result = await agentPool.launchEphemeralThread(passPrompt, cwd, timeoutMs, launchExtra);
+            const contextlessEphemeral = detectContextlessAgentResponse(result);
+            if (result?.success && contextlessEphemeral) {
+              result = {
+                ...result,
+                success: false,
+                contextLossDetected: true,
+                blockedReason: "blocked_missing_context",
+                recoveryDecision: "abort_after_contextless_ephemeral",
+                error: `Agent returned a contextless response in fresh execution (${contextlessEphemeral.field}).`,
+              };
+              ctx.log(
+                node.id,
+                `${passLabel} Recovery: contextless response in fresh execution (${contextlessEphemeral.field}); aborting`.trim(),
+                "warn",
+              );
+            }
           }
           success = result?.success === true;
         } finally {
@@ -3166,6 +3254,9 @@ registerBuiltinNodeType("action.run_agent", {
             attempts: result?.attempts,
             continues: result?.continues,
             resumed: result?.resumed,
+            contextLossDetected: result?.contextLossDetected === true,
+            blockedReason: result?.blockedReason,
+            recoveryDecision: result?.recoveryDecision,
             summary: digest.summary,
             narrative: digest.narrative,
             thoughts: digest.thoughts,

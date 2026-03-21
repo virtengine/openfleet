@@ -3612,6 +3612,116 @@ function resolveDefaultRepositoryForWorkspaceContext(workspaceContext = {}) {
   ).trim();
 }
 
+function resolveManagedWorkspaceForContext(workspaceContext = {}) {
+  const configDir = resolveUiConfigDir();
+  if (!configDir) return null;
+  const listed = listManagedWorkspaces(configDir, { repoRoot });
+  const workspaceId = String(workspaceContext?.workspaceId || "").trim().toLowerCase();
+  return (workspaceId
+    ? listed.find((entry) => String(entry?.id || "").trim().toLowerCase() === workspaceId)
+    : null) || getActiveManagedWorkspace(configDir) || listed[0] || null;
+}
+
+function dedupeNormalizedPaths(paths = []) {
+  const seen = new Set();
+  const deduped = [];
+  for (const candidate of paths) {
+    const normalized = normalizeCandidatePath(candidate);
+    if (!normalized) continue;
+    const key = process.platform === "win32" ? normalized.toLowerCase() : normalized;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(normalized);
+  }
+  return deduped;
+}
+
+function resolveWorktreeRepoRootsForWorkspaceContext(workspaceContext = {}, { includeFallback = true } = {}) {
+  const workspace = resolveManagedWorkspaceForContext(workspaceContext);
+  const repoPaths = Array.isArray(workspace?.repos)
+    ? workspace.repos.map((repo) => repo?.path)
+    : [];
+  const fallbackPaths = includeFallback
+    ? [workspaceContext?.workspaceDir, repoRoot]
+    : [];
+  return dedupeNormalizedPaths([...repoPaths, ...fallbackPaths]);
+}
+
+function listScopedActiveWorktrees(workspaceContext = {}) {
+  const repoRoots = resolveWorktreeRepoRootsForWorkspaceContext(workspaceContext);
+  const seen = new Set();
+  const worktrees = [];
+  for (const root of repoRoots) {
+    const repository = basename(root);
+    for (const entry of listActiveWorktrees(root) || []) {
+      const uniqueKey =
+        normalizeWorktreePath(entry?.path) ||
+        `${root}:${String(entry?.branch || "")}:${String(entry?.taskKey || "")}`;
+      if (seen.has(uniqueKey)) continue;
+      seen.add(uniqueKey);
+      worktrees.push({
+        ...entry,
+        repoRoot: root,
+        repository,
+      });
+    }
+  }
+  return worktrees;
+}
+
+function summarizeScopedWorktreeStats(worktrees = []) {
+  const stats = {
+    total: 0,
+    active: 0,
+    stale: 0,
+    byOwner: {},
+    byRepository: {},
+  };
+  for (const worktree of worktrees) {
+    stats.total += 1;
+    if (String(worktree?.status || "").trim().toLowerCase() === "active") {
+      stats.active += 1;
+    }
+    if (String(worktree?.status || "").trim().toLowerCase() === "stale") {
+      stats.stale += 1;
+    }
+    const owner = String(worktree?.owner || "unknown").trim() || "unknown";
+    const repository = String(worktree?.repository || basename(String(worktree?.repoRoot || "")) || "unknown").trim() || "unknown";
+    stats.byOwner[owner] = (stats.byOwner[owner] || 0) + 1;
+    stats.byRepository[repository] = (stats.byRepository[repository] || 0) + 1;
+  }
+  return stats;
+}
+
+async function pruneScopedWorktrees(workspaceContext = {}, opts = {}) {
+  const repoRoots = resolveWorktreeRepoRootsForWorkspaceContext(workspaceContext);
+  let pruned = 0;
+  let evicted = 0;
+  for (const root of repoRoots) {
+    const result = await pruneStaleWorktrees(root, opts);
+    pruned += Number(result?.pruned || 0);
+    evicted += Number(result?.evicted || 0);
+  }
+  return { pruned, evicted, repoRoots: repoRoots.length };
+}
+
+async function releaseScopedWorktree(workspaceContext = {}, { taskKey = "", branch = "" } = {}) {
+  const scopedWorktrees = listScopedActiveWorktrees(workspaceContext);
+  const target = findWorktreeMatch(scopedWorktrees, { path: "", branch, taskKey });
+  if (target?.repoRoot) {
+    if (taskKey) return releaseWorktree(target.repoRoot, taskKey);
+    if (branch) return releaseWorktreeByBranch(target.repoRoot, branch);
+  }
+  const repoRoots = resolveWorktreeRepoRootsForWorkspaceContext(workspaceContext);
+  for (const root of repoRoots) {
+    const result = taskKey
+      ? await releaseWorktree(root, taskKey)
+      : await releaseWorktreeByBranch(root, branch);
+    if (result?.success) return result;
+  }
+  return { success: false, path: null };
+}
+
 async function resolveDefaultKanbanProjectId(adapter, requestedProjectId = "") {
   const explicitProjectId = String(requestedProjectId || "").trim();
   if (explicitProjectId) return explicitProjectId;
@@ -9612,6 +9722,7 @@ async function listDirFilesWithMtime(dir, predicate = () => true) {
           name,
           path: fullPath,
           mtimeMs: Number(info.mtimeMs || 0),
+          size: Number(info.size || 0),
         };
       }),
   );
@@ -9624,19 +9735,74 @@ const SYSTEM_LOG_PRIORITY = Object.freeze({
   "daemon.log": 200,
 });
 
+const SYSTEM_LOG_DIR_CANDIDATES = Object.freeze([
+  {
+    // The daemon's packaged runtime writes system logs next to the Bosun module.
+    path: resolve(__dirname, "..", ".bosun", "logs"),
+    dirPriority: 220,
+  },
+  {
+    path: resolve(repoRoot, ".bosun", "logs"),
+    dirPriority: 200,
+  },
+  {
+    // When repoRoot resolves to the umbrella checkout, Bosun runtime logs live
+    // under the package subdirectory instead of repoRoot/.bosun.
+    path: resolve(repoRoot, "bosun", ".bosun", "logs"),
+    dirPriority: 190,
+  },
+  {
+    path: logsDir,
+    dirPriority: 100,
+  },
+]);
+
+function compareSystemLogCandidates(a, b) {
+  const dirPriorityDelta = (b.dirPriority || 0) - (a.dirPriority || 0);
+  if (dirPriorityDelta !== 0) return dirPriorityDelta;
+  const mtimeDelta = (b.mtimeMs || 0) - (a.mtimeMs || 0);
+  if (mtimeDelta !== 0) return mtimeDelta;
+  const sizeDelta = (b.size || 0) - (a.size || 0);
+  if (sizeDelta !== 0) return sizeDelta;
+  return String(a.path || "").localeCompare(String(b.path || ""));
+}
+
+function comparePreferredSystemLogEntries(a, b) {
+  const priorityDelta =
+    (SYSTEM_LOG_PRIORITY[b.name] || 0) - (SYSTEM_LOG_PRIORITY[a.name] || 0);
+  if (priorityDelta !== 0) return priorityDelta;
+  const mtimeDelta = (b.mtimeMs || 0) - (a.mtimeMs || 0);
+  if (mtimeDelta !== 0) return mtimeDelta;
+  const sizeDelta = (b.size || 0) - (a.size || 0);
+  if (sizeDelta !== 0) return sizeDelta;
+  return compareSystemLogCandidates(a, b);
+}
+
 async function listPreferredSystemLogEntries(limit = 4) {
-  const rootLogEntries = await listDirFilesWithMtime(
-    logsDir,
-    (name) => name.endsWith(".log"),
-  );
-  return rootLogEntries
-    .sort((a, b) => {
-      const priorityDelta =
-        (SYSTEM_LOG_PRIORITY[b.name] || 0) - (SYSTEM_LOG_PRIORITY[a.name] || 0);
-      if (priorityDelta !== 0) return priorityDelta;
-      return b.mtimeMs - a.mtimeMs;
-    })
-    .slice(0, Math.max(1, limit));
+  const logEntries = (
+    await Promise.all(
+      SYSTEM_LOG_DIR_CANDIDATES.map(async ({ path, dirPriority }) =>
+        (await listDirFilesWithMtime(path, (name) => name.endsWith(".log"))).map((entry) => ({
+          ...entry,
+          dirPriority,
+        })),
+      ),
+    )
+  ).flat();
+
+  const preferredByName = new Map();
+  for (const entry of logEntries.sort(compareSystemLogCandidates)) {
+    if (!preferredByName.has(entry.name)) {
+      preferredByName.set(entry.name, entry);
+    }
+  }
+
+  const preferredEntries = Array.from(preferredByName.values()).sort(comparePreferredSystemLogEntries);
+  const canonicalEntries = preferredEntries.filter((entry) => (SYSTEM_LOG_PRIORITY[entry.name] || 0) > 0);
+  if (canonicalEntries.length > 0) {
+    return canonicalEntries.slice(0, Math.max(1, limit));
+  }
+  return preferredEntries.slice(0, Math.max(1, limit));
 }
 
 async function resolvePreferredSystemLogPath() {
@@ -11093,6 +11259,84 @@ function normalizeShreddingAgentType(rawType) {
   return normalized;
 }
 
+const USAGE_AGENT_LABELS = Object.freeze({
+  "codex-sdk": "codex",
+  codex: "codex",
+  openai: "codex",
+  "copilot-sdk": "copilot",
+  copilot: "copilot",
+  "claude-sdk": "claude",
+  claude: "claude",
+  gemini: "gemini",
+  opencode: "opencode",
+});
+
+function normalizeUsageAgentName(rawExecutor, rawModel = "") {
+  const executor = String(rawExecutor || "").trim().toLowerCase();
+  if (executor && USAGE_AGENT_LABELS[executor]) {
+    return USAGE_AGENT_LABELS[executor];
+  }
+  if (executor) return executor;
+  const model = String(rawModel || "").trim().toLowerCase();
+  if (!model) return "unknown";
+  if (model.includes("claude")) return "claude";
+  if (model.includes("copilot")) return "copilot";
+  if (model.includes("gemini")) return "gemini";
+  if (model.includes("codex") || model.includes("gpt")) return "codex";
+  return model;
+}
+
+function buildUsageSessionStartIndex(events = [], cutoff = 0) {
+  const index = new Map();
+  for (const entry of events) {
+    if (entry?.event_type !== "session_start") continue;
+    const ts = getEntryTimestamp(entry);
+    if (cutoff && Number.isFinite(ts) && ts < cutoff) continue;
+    const executor = String(entry?.executor || entry?.data?.executor || "").trim() || null;
+    const model = String(entry?.model || entry?.data?.model || "").trim() || null;
+    const keys = [
+      entry?.sessionKey,
+      entry?.session_key,
+      entry?.sessionId,
+      entry?.session_id,
+      entry?.id,
+      entry?.taskId,
+      entry?.task_id,
+      entry?.attemptId,
+      entry?.attempt_id,
+    ]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+    for (const key of keys) {
+      if (!index.has(key)) {
+        index.set(key, { executor, model });
+      }
+    }
+  }
+  return index;
+}
+
+function resolveUsageSessionIdentity(session = {}, sessionStartIndex = new Map()) {
+  const keys = [
+    session?.sessionKey,
+    session?.session_key,
+    session?.sessionId,
+    session?.session_id,
+    session?.id,
+    session?.taskId,
+    session?.task_id,
+    session?.attemptId,
+    session?.attempt_id,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  for (const key of keys) {
+    const match = sessionStartIndex.get(key);
+    if (match) return match;
+  }
+  return { executor: null, model: null };
+}
+
 function numberOrZero(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -11142,12 +11386,14 @@ async function buildUsageAnalytics(days) {
   ]);
 
   const cutoff = days ? Date.now() - days * 24 * 60 * 60 * 1000 : 0;
+  const sessionStartIndex = buildUsageSessionStartIndex(events, cutoff);
 
   let agentRuns = 0;
   let skillInvocations = 0;
   let mcpToolCalls = 0;
   let oldestTs = Infinity;
   let newestTs = 0;
+  let backfilledCompletedSessions = 0;
 
   /** @type {Map<string,number>} */
   const agents = new Map();
@@ -11180,7 +11426,14 @@ async function buildUsageAnalytics(days) {
       if (day) allDates.add(day);
 
       agentRuns += 1;
-      const exec = String(session.executor || session.model || "unknown").trim() || "unknown";
+      const fallbackIdentity = resolveUsageSessionIdentity(session, sessionStartIndex);
+      if ((!session?.executor && fallbackIdentity.executor) || (!session?.model && fallbackIdentity.model)) {
+        backfilledCompletedSessions += 1;
+      }
+      const exec = normalizeUsageAgentName(
+        session?.executor || fallbackIdentity.executor,
+        session?.model || fallbackIdentity.model,
+      );
       agents.set(exec, (agents.get(exec) || 0) + 1);
       if (day) {
         (dailyAgents[day] = dailyAgents[day] || {})[exec] =
@@ -11203,7 +11456,7 @@ async function buildUsageAnalytics(days) {
       streamSessionStarts += 1;
       if (sessionWindow.length === 0) {
         agentRuns++;
-        const exec = e.executor || "unknown";
+        const exec = normalizeUsageAgentName(e.executor, e.model || e.data?.model);
         agents.set(exec, (agents.get(exec) || 0) + 1);
         if (day) {
           (dailyAgents[day] = dailyAgents[day] || {})[exec] =
@@ -11278,6 +11531,7 @@ async function buildUsageAnalytics(days) {
       agentRunSource: sessionWindow.length > 0 ? "completed_sessions" : "session_start_events",
       completedSessions: sessionWindow.length,
       sessionStarts: streamSessionStarts,
+      backfilledCompletedSessions,
     },
   };
 }
@@ -15264,8 +15518,10 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/worktrees") {
     try {
-      const worktrees = listActiveWorktrees(repoRoot);
-      const stats = await getWorktreeStats(repoRoot);
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false })
+        || resolveActiveWorkspaceExecutionContext();
+      const worktrees = listScopedActiveWorktrees(workspaceContext);
+      const stats = summarizeScopedWorktreeStats(worktrees);
       jsonResponse(res, 200, { ok: true, data: worktrees, stats });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -15278,7 +15534,9 @@ async function handleApi(req, res, url) {
       const pathParam = url.searchParams.get("path") || "";
       const branch = url.searchParams.get("branch") || "";
       const taskKey = url.searchParams.get("taskKey") || url.searchParams.get("task") || "";
-      const worktrees = listActiveWorktrees(repoRoot);
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false })
+        || resolveActiveWorkspaceExecutionContext();
+      const worktrees = listScopedActiveWorktrees(workspaceContext);
       const target = findWorktreeMatch(worktrees, { path: pathParam, branch, taskKey });
       if (!target) {
         jsonResponse(res, 404, { ok: false, error: "Worktree not found" });
@@ -15294,7 +15552,9 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/worktrees/prune") {
     try {
-      const result = await pruneStaleWorktrees({ actor: "telegram-ui" });
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false })
+        || resolveActiveWorkspaceExecutionContext();
+      const result = await pruneScopedWorktrees(workspaceContext, { actor: "telegram-ui" });
       jsonResponse(res, 200, { ok: true, data: result });
       broadcastUiEvent(["worktrees"], "invalidate", {
         reason: "worktrees-pruned",
@@ -15310,18 +15570,16 @@ async function handleApi(req, res, url) {
       const body = await readJsonBody(req);
       const taskKey = body?.taskKey || body?.key;
       const branch = body?.branch;
-      let released = null;
-      if (taskKey) {
-        released = await releaseWorktree(repoRoot, taskKey);
-      } else if (branch) {
-        released = await releaseWorktreeByBranch(repoRoot, branch);
-      } else {
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false })
+        || resolveActiveWorkspaceExecutionContext();
+      if (!taskKey && !branch) {
         jsonResponse(res, 400, {
           ok: false,
           error: "taskKey or branch required",
         });
         return;
       }
+      const released = await releaseScopedWorktree(workspaceContext, { taskKey, branch });
       jsonResponse(res, 200, { ok: true, data: released });
       broadcastUiEvent(["worktrees"], "invalidate", {
         reason: "worktree-released",
@@ -21690,5 +21948,3 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
-
-

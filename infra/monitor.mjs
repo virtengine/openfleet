@@ -217,6 +217,7 @@ import {
   getStaleInProgressTasks,
   getStaleInReviewTasks,
   getAllTasks as getAllInternalTasks,
+  recoverAutoBlockedTasks,
 } from "../task/task-store.mjs";
 import { createAgentEndpoint } from "../agent/agent-endpoint.mjs";
 import { createAgentEventBus } from "../agent/agent-event-bus.mjs";
@@ -14851,6 +14852,18 @@ async function syncDivergedWorktrees() {
 const worktreeSyncIntervalMs = 5 * 60 * 1000; // 5 min
 safeSetInterval("worktree-sync", syncDivergedWorktrees, worktreeSyncIntervalMs);
 
+// ── Periodic blocked-task auto-recovery: every 2 min ────────────────────────
+safeSetInterval("blocked-task-recovery", () => {
+  try {
+    const result = recoverAutoBlockedTasks();
+    if (result && result.recoveredCount > 0) {
+      console.log(`[monitor:blocked-recovery] recovered ${result.recoveredCount} task(s): ${result.recoveredTaskIds.join(", ")}`);
+    }
+  } catch (err) {
+    console.warn(`[monitor:blocked-recovery] error: ${err.message || err}`);
+  }
+}, 2 * 60 * 1000);
+
 // ── Periodic epic branch sync/merge: every 15 min ──────────────────────────
 const epicMergeIntervalMs = 15 * 60 * 1000;
 safeSetInterval("epic-merge-check", () => checkEpicBranches("interval"), epicMergeIntervalMs);
@@ -15284,7 +15297,7 @@ if (isExecutorDisabled()) {
               {
                 taskId,
                 taskTitle: task?.title || "",
-                taskStatus: "todo",
+                taskStatus: "blocked",
                 attempts: Number(result?.attempts || 0),
                 success: false,
                 branch,

@@ -1422,7 +1422,7 @@ describe("task-executor", () => {
 
       expect(updateTaskStatus).toHaveBeenCalledWith(
         "blocked-1",
-        "todo",
+        "blocked",
         expect.any(Object),
       );
       expect(executeSpy).not.toHaveBeenCalled();
@@ -1483,7 +1483,7 @@ describe("task-executor", () => {
 
       expect(updateTaskStatus).toHaveBeenCalledWith(
         "blocked-thread-1",
-        "todo",
+        "blocked",
         expect.any(Object),
       );
       expect(executeSpy).not.toHaveBeenCalled();
@@ -1521,7 +1521,7 @@ describe("task-executor", () => {
 
       expect(updateTaskStatus).toHaveBeenCalledWith(
         "blocked-err-1",
-        "todo",
+        "blocked",
         expect.any(Object),
       );
       expect(ex._slotRuntimeState.has("blocked-err-1")).toBe(false);

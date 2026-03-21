@@ -1,7 +1,9 @@
+import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, dirname, basename } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const tempDirs = [];
 const TEST_ENV_KEYS = [
@@ -114,11 +116,7 @@ describe("task-store path configuration", () => {
       );
 
       taskStore.configureTaskStore({ storePath: persistentPath });
-      expect(taskStore.getStorePath()).toContain("kanban-state-vitest-");
-      expect(taskStore.getStorePath()).not.toBe(persistentPath);
-      expect(taskStore.getStorePath()).not.toContain(
-        resolve(homeDir, ".cache"),
-      );
+      expect(taskStore.getStorePath()).toBe(persistentPath);
     } finally {
       restoreEnv(env);
     }
@@ -138,6 +136,41 @@ describe("task-store path configuration", () => {
 
       expect(storePath).toContain("kanban-state-vitest-");
       expect(storePath).toContain(basename(explicitRepoRoot).toLowerCase());
+      expect(storePath).not.toContain(basename(homeDir).toLowerCase());
+    } finally {
+      restoreEnv(env);
+    }
+  });
+
+  it("prefers inferred repo root over BOSUN_HOME when cwd is inside a repo", async () => {
+    const env = snapshotEnv();
+    const repoRoot = makeTempDir("ve-task-store-inferred-repo-");
+    const homeDir = makeTempDir("ve-task-store-inferred-home-");
+    try {
+      delete process.env.REPO_ROOT;
+      delete process.env.BOSUN_DIR;
+      delete process.env.VITEST;
+      delete process.env.VITEST_POOL_ID;
+      delete process.env.VITEST_WORKER_ID;
+      delete process.env.JEST_WORKER_ID;
+      delete process.env.NODE_ENV;
+      mkdirSync(resolve(repoRoot, ".git"), { recursive: true });
+
+      const output = execFileSync(
+        process.execPath,
+        ["-e", `import(${JSON.stringify(pathToFileURL(resolve(process.cwd(), "task", "task-store.mjs")).href)}).then((m)=>console.log(m.getStorePath()))`],
+        {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            BOSUN_HOME: homeDir,
+          },
+          encoding: "utf8",
+        },
+      );
+      const storePath = String(output || "").trim().toLowerCase();
+
+      expect(storePath).toContain(resolve(repoRoot, ".bosun", ".cache", "kanban-state.json").toLowerCase());
       expect(storePath).not.toContain(basename(homeDir).toLowerCase());
     } finally {
       restoreEnv(env);

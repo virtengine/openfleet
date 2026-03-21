@@ -62,14 +62,25 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Resolve repo root from BOSUN_HOME config first, then fall back to git detection.
+function isLikelyBosunRepoRoot(dirPath) {
+  if (!dirPath) return false;
+  const root = resolve(dirPath);
+  if (!existsSync(root)) return false;
+  // A valid Bosun repo root must include sentinel + CLI entrypoints.
+  return (
+    existsSync(resolve(root, "cli.mjs")) &&
+    existsSync(resolve(root, "telegram", "telegram-sentinel.mjs"))
+  );
+}
+
+// Resolve repo root from explicit env/config first, then fall back to module root.
 // This avoids depending on cwd being inside a git repo (daemon/sentinel may start
 // from homedir or any arbitrary directory).
 function _resolveSentinelRepoRoot() {
   // 1. Explicit env
   if (process.env.REPO_ROOT) {
     const r = resolve(process.env.REPO_ROOT);
-    if (existsSync(r)) return r;
+    if (isLikelyBosunRepoRoot(r)) return r;
   }
   // 2. Check BOSUN_HOME workspace config for a primary repo
   const bosunDir = resolveBosunConfigDir();
@@ -89,7 +100,7 @@ function _resolveSentinelRepoRoot() {
             if (!name) continue;
             const wsId = ws?.id || "default";
             const repoPath = resolve(bosunDir, "workspaces", wsId, name);
-            if (existsSync(resolve(repoPath, ".git"))) return repoPath;
+            if (isLikelyBosunRepoRoot(repoPath)) return repoPath;
           }
         }
         // Check flat repositories
@@ -98,15 +109,20 @@ function _resolveSentinelRepoRoot() {
           for (const repo of repos) {
             const repoPath = typeof repo === "string" ? repo : (repo?.path || repo?.repoRoot);
             if (!repoPath) continue;
-            const resolved = resolve(isAbsolute(repoPath) ? repoPath : resolve(bosunDir, repoPath));
-            if (existsSync(resolve(resolved, ".git"))) return resolved;
+            const resolvedRepoPath = resolve(isAbsolute(repoPath) ? repoPath : resolve(bosunDir, repoPath));
+            if (isLikelyBosunRepoRoot(resolvedRepoPath)) return resolvedRepoPath;
           }
         }
       } catch { /* invalid config */ }
     }
   }
-  // 3. Fall back to standard repo-root resolution (git detection)
-  return resolveRepoRoot();
+  // 3. Prefer the module root that shipped this sentinel script.
+  const moduleRoot = resolve(__dirname, "..");
+  if (isLikelyBosunRepoRoot(moduleRoot)) return moduleRoot;
+
+  // 4. Fall back to generic repo resolution, but keep module root as safe default.
+  const detected = resolveRepoRoot({ cwd: moduleRoot });
+  return isLikelyBosunRepoRoot(detected) ? detected : moduleRoot;
 }
 
 const repoRoot = _resolveSentinelRepoRoot();
@@ -167,6 +183,29 @@ const SENTINEL_MONITOR_RECOVERY_FILE = resolve(
 );
 const MONITOR_POLL_LOCK_FILE = resolve(cacheDir, "telegram-getupdates.lock");
 const STATUS_FILE = resolve(cacheDir, "ve-orchestrator-status.json");
+
+function getStatusFileCandidates() {
+  return [
+    STATUS_FILE,
+    ...CACHE_CANDIDATES.map((dir) => resolve(dir, "ve-orchestrator-status.json")),
+  ];
+}
+
+async function readStatusSnapshot() {
+  for (const statusPath of new Set(getStatusFileCandidates())) {
+    try {
+      if (!existsSync(statusPath)) continue;
+      const statusRaw = await readFile(statusPath, "utf8");
+      const parsed = JSON.parse(statusRaw || "{}");
+      if (parsed && typeof parsed === "object") {
+        return { path: statusPath, data: parsed };
+      }
+    } catch {
+      // Try the next candidate path.
+    }
+  }
+  return null;
+}
 
 const TAG = "[sentinel]";
 const POLL_TIMEOUT_S = 30;
@@ -496,11 +535,11 @@ async function assessMonitorMonitorHealth() {
     return { ok: true, reason: "devmode monitor-monitor disabled" };
   }
   try {
-    if (!existsSync(STATUS_FILE)) {
+    const snapshot = await readStatusSnapshot();
+    if (!snapshot) {
       return { ok: false, reason: "status file missing" };
     }
-    const statusRaw = await readFile(STATUS_FILE, "utf8");
-    const status = JSON.parse(statusRaw || "{}");
+    const status = snapshot.data;
     const mm = status?.monitor_monitor || status?.monitorMonitor || null;
     if (!mm || typeof mm !== "object") {
       // If the monitor-monitor section was never written, the feature is
@@ -1315,17 +1354,19 @@ async function handlePing(chatId) {
  */
 async function handleStatus(chatId) {
   try {
-    if (!existsSync(STATUS_FILE)) {
+    const snapshot = await readStatusSnapshot();
+    if (!snapshot) {
       await sendTelegram(
         chatId,
         ":chart: No status file found. bosun may not have run yet.",
       );
       return;
     }
-    const raw = await readFile(STATUS_FILE, "utf8");
-    const data = JSON.parse(raw);
+    const data = snapshot.data;
 
     const lines = [":chart: *Orchestrator Status*", ""];
+    lines.push(`Status file: \`${snapshot.path}\``);
+    lines.push("");
 
     if (data.executor_mode) lines.push(`Mode: \`${data.executor_mode}\``);
     if (data.active_slots) lines.push(`Slots: \`${data.active_slots}\``);

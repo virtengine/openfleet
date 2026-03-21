@@ -71,6 +71,7 @@ import {
   collectWakePhraseCandidates,
   condenseAgentItems,
   createKanbanTaskWithProject,
+  detectContextlessAgentResponse,
   decodeWorkflowUnicodeIconToken,
   deriveManagedWorktreeDirName,
   detectWakePhraseMatch,
@@ -554,9 +555,7 @@ registerNodeType("action.run_agent", {
         ).trim();
         const sessionId = resolvedSessionId || null;
         const explicitTaskKey = String(ctx.resolve(node.config?.taskKey || "") || "").trim();
-        const fallbackTaskKey =
-          sessionId ||
-          `${ctx.data?._workflowId || "workflow"}:${ctx.id}:${node.id}`;
+        const fallbackTaskKey = `${ctx.data?._workflowId || "workflow"}:${ctx.id}:${node.id}`;
         const recoveryTaskKey = options.taskKey || explicitTaskKey || fallbackTaskKey;
         const autoRecover = options.autoRecover ?? (node.config?.autoRecover !== false);
         const continueOnSession =
@@ -666,7 +665,15 @@ registerNodeType("action.run_agent", {
                 sdk: sdkOverride,
                 model: modelOverride,
               });
-              if (result?.success) {
+              const contextlessResume = detectContextlessAgentResponse(result);
+              if (result?.success && contextlessResume) {
+                ctx.log(
+                  node.id,
+                  `${passLabel} Recovery: continue-session returned contextless response (${contextlessResume.field}); falling back to fresh recovery`.trim(),
+                  "warn",
+                );
+                result = null;
+              } else if (result?.success) {
                 ctx.log(node.id, `${passLabel} Recovery: continue-session succeeded`.trim());
               } else {
                 ctx.log(
@@ -703,6 +710,22 @@ registerNodeType("action.run_agent", {
               onEvent: launchExtra.onEvent,
               systemPrompt: effectiveSystemPrompt,
             });
+            const contextlessRetry = detectContextlessAgentResponse(result);
+            if (result?.success && contextlessRetry) {
+              result = {
+                ...result,
+                success: false,
+                contextLossDetected: true,
+                blockedReason: "blocked_missing_context",
+                recoveryDecision: "abort_after_contextless_retry",
+                error: `Agent returned a contextless response after retry recovery (${contextlessRetry.field}).`,
+              };
+              ctx.log(
+                node.id,
+                `${passLabel} Recovery: contextless response after retry (${contextlessRetry.field}); aborting further recovery to avoid token churn`.trim(),
+                "warn",
+              );
+            }
           }
 
           if (!result && autoRecover && typeof agentPool.launchOrResumeThread === "function") {
@@ -715,11 +738,43 @@ registerNodeType("action.run_agent", {
               onEvent: launchExtra.onEvent,
               systemPrompt: effectiveSystemPrompt,
             });
+            const contextlessResumeThread = detectContextlessAgentResponse(result);
+            if (result?.success && contextlessResumeThread) {
+              result = {
+                ...result,
+                success: false,
+                contextLossDetected: true,
+                blockedReason: "blocked_missing_context",
+                recoveryDecision: "abort_after_contextless_resume_thread",
+                error: `Agent returned a contextless response after launchOrResumeThread (${contextlessResumeThread.field}).`,
+              };
+              ctx.log(
+                node.id,
+                `${passLabel} Recovery: contextless response after launchOrResumeThread (${contextlessResumeThread.field}); aborting`.trim(),
+                "warn",
+              );
+            }
           }
 
           if (!result) {
             launchExtra.systemPrompt = effectiveSystemPrompt;
             result = await agentPool.launchEphemeralThread(passPrompt, cwd, timeoutMs, launchExtra);
+            const contextlessEphemeral = detectContextlessAgentResponse(result);
+            if (result?.success && contextlessEphemeral) {
+              result = {
+                ...result,
+                success: false,
+                contextLossDetected: true,
+                blockedReason: "blocked_missing_context",
+                recoveryDecision: "abort_after_contextless_ephemeral",
+                error: `Agent returned a contextless response in fresh execution (${contextlessEphemeral.field}).`,
+              };
+              ctx.log(
+                node.id,
+                `${passLabel} Recovery: contextless response in fresh execution (${contextlessEphemeral.field}); aborting`.trim(),
+                "warn",
+              );
+            }
           }
           success = result?.success === true;
         } finally {
@@ -766,6 +821,9 @@ registerNodeType("action.run_agent", {
             attempts: result?.attempts,
             continues: result?.continues,
             resumed: result?.resumed,
+            contextLossDetected: result?.contextLossDetected === true,
+            blockedReason: result?.blockedReason,
+            recoveryDecision: result?.recoveryDecision,
             summary: digest.summary,
             narrative: digest.narrative,
             thoughts: digest.thoughts,

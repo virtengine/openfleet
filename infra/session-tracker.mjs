@@ -145,6 +145,39 @@ function emitSessionEvent(session, message) {
   }
 }
 
+function normalizeRuntimeIdentity(value) {
+  const normalized = String(value || "").trim();
+  return normalized || null;
+}
+
+function extractSessionRuntimeMetadata(event = {}, metadata = {}) {
+  const eventMeta = event?.meta && typeof event.meta === "object" ? event.meta : {};
+  const item = event?.item && typeof event.item === "object" ? event.item : {};
+  const data = event?.data && typeof event.data === "object" ? event.data : {};
+  return {
+    executor: normalizeRuntimeIdentity(
+      metadata?.executor ||
+        metadata?.sdk ||
+        metadata?.agentType ||
+        event?.executor ||
+        event?.sdk ||
+        event?._sessionExecutor ||
+        eventMeta?.executor ||
+        eventMeta?.sdk ||
+        eventMeta?.agentType ||
+        data?.executor,
+    ),
+    model: normalizeRuntimeIdentity(
+      metadata?.model ||
+        event?.model ||
+        event?._sessionModel ||
+        eventMeta?.model ||
+        data?.model ||
+        item?.model,
+    ),
+  };
+}
+
 // ── SessionTracker Class ────────────────────────────────────────────────────
 
 export class SessionTracker {
@@ -256,6 +289,14 @@ export class SessionTracker {
         session = this.#sessions.get(taskId);
       }
       if (!session) return;
+    }
+
+    const runtimeMetadata = extractSessionRuntimeMetadata(event, session.metadata || {});
+    if (runtimeMetadata.executor && !session.executor) {
+      session.executor = runtimeMetadata.executor;
+    }
+    if (runtimeMetadata.model && !session.model) {
+      session.model = runtimeMetadata.model;
     }
 
     const maxMessages =
@@ -561,6 +602,8 @@ export class SessionTracker {
       id,
       taskId: taskId || id,
       taskTitle: metadata.title || id,
+      executor: normalizeRuntimeIdentity(metadata.executor || metadata.sdk || metadata.agentType),
+      model: normalizeRuntimeIdentity(metadata.model),
       sessionKey:
         String(sessionKey || "").trim() ||
         `${taskId || id}:${Date.now()}:${randomToken(8)}`,
@@ -827,6 +870,8 @@ export class SessionTracker {
         taskTitle: data.title || data.taskTitle || null,
         id: sessionId,
         type: data.type || "task",
+        executor: normalizeRuntimeIdentity(data.executor),
+        model: normalizeRuntimeIdentity(data.model),
         startedAt: Date.parse(data.createdAt || "") || Date.now(),
         createdAt: data.createdAt || new Date().toISOString(),
         lastActiveAt: data.lastActiveAt || data.updatedAt || new Date().toISOString(),
@@ -847,12 +892,17 @@ export class SessionTracker {
   /** Auto-create a session when recordEvent is called for an unknown taskId. */
   #autoCreateSession(taskId, event) {
     const type = event._sessionType || "task";
+    const runtimeMetadata = extractSessionRuntimeMetadata(event);
     this.createSession({
       id: taskId,
       sessionKey: `${taskId}:${Date.now()}:${randomToken(8)}`,
       type,
       taskId,
-      metadata: { autoCreated: true },
+      metadata: {
+        autoCreated: true,
+        ...(runtimeMetadata.executor ? { executor: runtimeMetadata.executor } : {}),
+        ...(runtimeMetadata.model ? { model: runtimeMetadata.model } : {}),
+      },
     });
   }
 

@@ -3997,7 +3997,7 @@ class TaskExecutor {
       const noCommitCount = this._noCommitCounts.get(id) || 0;
       if (noCommitCount >= MAX_NO_COMMIT_ATTEMPTS) {
         try {
-          await transitionTaskStatus(id, "todo", {
+          await transitionTaskStatus(id, "blocked", {
             source: "task-executor-recovery-no-commit-block",
           });
         } catch {
@@ -4006,7 +4006,7 @@ class TaskExecutor {
         try {
           transitionInternalTaskStatus(
             id,
-            "todo",
+            "blocked",
             "task-executor-recovery-no-commit-block",
           );
         } catch {
