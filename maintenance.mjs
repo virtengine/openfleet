@@ -22,3 +22,4 @@ export function formatPidFileSummary(parsed) {
   }
 
   return rawPid;
+}

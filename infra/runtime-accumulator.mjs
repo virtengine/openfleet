@@ -28,7 +28,23 @@ const DEFAULT_CACHE_DIR = resolve(__dirname, "..", ".cache");
 const SNAPSHOT_FILE_NAME = "runtime-accumulator.json";
 const SESSION_LOG_FILE_NAME = "session-accumulator.jsonl";
 const MAX_SESSION_TOKENS = 100;
-const MAX_COMPLETED_SESSIONS = 500;
+const DEFAULT_MAX_COMPLETED_SESSIONS = 50_000;
+const MAX_COMPLETED_SESSIONS = (() => {
+	const raw = process.env.RUNTIME_MAX_COMPLETED_SESSIONS;
+	if (!raw) return DEFAULT_MAX_COMPLETED_SESSIONS;
+	const parsed = Number.parseInt(raw, 10);
+	if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MAX_COMPLETED_SESSIONS;
+	// Hard cap to avoid unbounded memory use even if misconfigured.
+	return Math.min(parsed, DEFAULT_MAX_COMPLETED_SESSIONS);
+})();
+const MAX_COMPLETED_SESSIONS = (() => {
+	const raw = process.env.RUNTIME_MAX_COMPLETED_SESSIONS;
+	if (!raw) return DEFAULT_MAX_COMPLETED_SESSIONS;
+	const parsed = Number.parseInt(raw, 10);
+	if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MAX_COMPLETED_SESSIONS;
+	// Hard cap to avoid unbounded memory use even if misconfigured.
+	return Math.min(parsed, DEFAULT_MAX_COMPLETED_SESSIONS);
+})();
 
 let _cacheDir = DEFAULT_CACHE_DIR;
 let _runtimeFile = resolve(_cacheDir, SNAPSHOT_FILE_NAME);
