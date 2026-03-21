@@ -4646,6 +4646,10 @@ let sessionListenerAttached = false;
 let sessionStateListenerAttached = false;
 let activeSessionListenerAttached = false;
 let sessionAccumulatorListenerAttached = false;
+let removeSessionEventListener = null;
+let removeSessionStateListener = null;
+let removeActiveSessionListener = null;
+let removeSessionAccumulatorListener = null;
 /** @type {ReturnType<typeof setInterval>|null} */
 let wsHeartbeatTimer = null;
 let tuiStatsEmitter = null;
@@ -9168,15 +9172,6 @@ function broadcastTuiSessionsSnapshot(reason = "updated", detail = {}) {
   }
 }
 
-function pickFiniteStat(...candidates) {
-  for (const candidate of candidates) {
-    if (candidate == null) continue;
-    const numeric = Number(candidate);
-    if (Number.isFinite(numeric)) return numeric;
-  }
-  return 0;
-}
-
 function buildCurrentTuiMonitorStats() {
   const executor = uiDeps.getInternalExecutor?.() || null;
   const status = executor?.getStatus?.() || {};
@@ -9184,22 +9179,28 @@ function buildCurrentTuiMonitorStats() {
   const runtimeStats = getRuntimeStats() || {};
   const runtimeExport = exportRuntimeData();
   const injectedStats = uiDeps.getTuiMonitorStats?.() || {};
-  const tokensIn = (runtimeExport?.sessions || []).reduce((sum, session) => {
-    const v = Number(session?.inputTokens ?? 0);
-    return sum + (Number.isFinite(v) ? v : 0);
-  }, 0);
-  const tokensOut = (runtimeExport?.sessions || []).reduce((sum, session) => {
-    const v = Number(session?.outputTokens ?? 0);
-    return sum + (Number.isFinite(v) ? v : 0);
-  }, 0);
+  const tokensIn = (runtimeExport?.sessions || []).reduce((sum, session) => sum + Number(session?.inputTokens || 0), 0);
+  const tokensOut = (runtimeExport?.sessions || []).reduce((sum, session) => sum + Number(session?.outputTokens || 0), 0);
+
+  const pickNumericStat = (...candidates) => {
+    for (const candidate of candidates) {
+      if (candidate == null) continue;
+      const numeric = Number(candidate);
+      if (Number.isFinite(numeric)) {
+        return numeric;
+      }
+    }
+    return 0;
+  };
+
   return buildMonitorStatsPayload({
     agentPool: {
-      activeAgents: pickFiniteStat(status?.activeSlots, slots.length, injectedStats?.activeAgents),
-      maxAgents: pickFiniteStat(status?.maxParallel, injectedStats?.maxAgents),
-      tokensIn: pickFiniteStat(injectedStats?.tokensIn, tokensIn),
-      tokensOut: pickFiniteStat(injectedStats?.tokensOut, tokensOut),
+      activeAgents: pickNumericStat(status?.activeSlots, slots.length, injectedStats?.activeAgents),
+      maxAgents: pickNumericStat(status?.maxParallel, injectedStats?.maxAgents),
+      tokensIn: pickNumericStat(injectedStats?.tokensIn, tokensIn),
+      tokensOut: pickNumericStat(injectedStats?.tokensOut, tokensOut),
       throughputTps: injectedStats?.throughputTps,
-      rateLimits: injectedStats?.rateLimits ?? {},
+      rateLimits: injectedStats?.rateLimits || {},
     },
     runtimeStats: {
       ...runtimeStats,
@@ -9863,9 +9864,7 @@ function startLogStream(socket, logType, query) {
         const lines = text.split("\n").filter(Boolean);
         if (lines.length > 0) {
           sendWsMessage(socket, { type: "log-lines", lines });
-          for (const line of lines) {
-            sendWsMessage(socket, { type: "logs:stream", payload: buildLogStreamPayload({ logType, query, filePath, line }) });
-          }
+
         }
       } finally {
         await handle.close();
@@ -21239,19 +21238,19 @@ export async function startTelegramUiServer(options = {}) {
     wsServer = new WebSocketServer({ noServer: true });
     if (!sessionListenerAttached) {
       sessionListenerAttached = true;
-      addSessionEventListener((payload) => {
+      removeSessionEventListener = addSessionEventListener((payload) => {
         broadcastSessionMessage(payload);
       });
     }
     if (!sessionStateListenerAttached) {
       sessionStateListenerAttached = true;
-      addSessionStateListener((payload) => {
+      removeSessionStateListener = addSessionStateListener((payload) => {
         broadcastTuiSessionsSnapshot(payload?.reason || payload?.event?.reason || "updated", payload || {});
       });
     }
     if (!activeSessionListenerAttached) {
       activeSessionListenerAttached = true;
-      addActiveSessionListener((sessions, detail = {}) => {
+      removeActiveSessionListener = addActiveSessionListener((sessions, detail = {}) => {
         const snapshot = getCurrentSessionSnapshot();
         broadcastCanonicalEvent(["sessions", "tui"], "sessions:update", snapshot);
         if (detail?.taskKey) {
@@ -21277,7 +21276,7 @@ export async function startTelegramUiServer(options = {}) {
     }
     if (!sessionAccumulatorListenerAttached) {
       sessionAccumulatorListenerAttached = true;
-      addSessionAccumulationListener((payload) => {
+      removeSessionAccumulatorListener = addSessionAccumulationListener((payload) => {
         broadcastUiEvent(["tasks", "overview", "telemetry", "sessions"], "invalidate", {
           reason: "session-accumulated",
           taskId: payload?.taskId || null,
@@ -21861,6 +21860,18 @@ export function stopTelegramUiServer() {
   stopWsHeartbeat();
   tuiStatsEmitter?.stop?.();
   tuiStatsEmitter = null;
+  removeSessionEventListener?.();
+  removeSessionEventListener = null;
+  sessionListenerAttached = false;
+  removeSessionStateListener?.();
+  removeSessionStateListener = null;
+  sessionStateListenerAttached = false;
+  removeActiveSessionListener?.();
+  removeActiveSessionListener = null;
+  activeSessionListenerAttached = false;
+  removeSessionAccumulatorListener?.();
+  removeSessionAccumulatorListener = null;
+  sessionAccumulatorListenerAttached = false;
   // Clear injected configDir so it does not leak between server lifecycles
   // (tests start/stop servers repeatedly with different config directories).
   delete uiDeps.configDir;
