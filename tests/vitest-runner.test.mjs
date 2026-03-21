@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { findVitestEntry } from "../tools/vitest-runner.mjs";
+import {
+  findPackageRoot,
+  findVitestEntry,
+  resolveVitestArgs,
+} from "../tools/vitest-runner.mjs";
 
 const tempDirs = [];
 
@@ -44,6 +48,38 @@ describe("vitest-runner", () => {
     mkdirSync(nestedWorktree, { recursive: true });
 
     expect(findVitestEntry({ startDir: nestedWorktree })).toBeNull();
+  });
+
+  it("finds the nearest package root from a nested worktree path", () => {
+    const root = createFixture();
+    const nestedWorktree = resolve(root, ".bosun", "worktrees", "task-789", "deep");
+
+    mkdirSync(nestedWorktree, { recursive: true });
+    writeFileSync(
+      resolve(root, "package.json"),
+      JSON.stringify({ name: "fixture", version: "1.0.0" }),
+    );
+
+    expect(findPackageRoot({ startDir: nestedWorktree })).toBe(root);
+  });
+
+  it("resolves relative config paths from the package root when invoked in a nested worktree", () => {
+    const root = createFixture();
+    const nestedWorktree = resolve(root, ".bosun", "worktrees", "task-999", "deep");
+    const configPath = resolve(root, "vitest.config.mjs");
+
+    mkdirSync(nestedWorktree, { recursive: true });
+    writeFileSync(
+      resolve(root, "package.json"),
+      JSON.stringify({ name: "fixture", version: "1.0.0" }),
+    );
+    writeFileSync(configPath, "export default {};\n");
+
+    expect(
+      resolveVitestArgs(["run", "--config", "vitest.config.mjs"], {
+        startDir: nestedWorktree,
+      }),
+    ).toEqual(["run", "--config", configPath]);
   });
 
   it("routes package test scripts through the worktree-safe runner", () => {
