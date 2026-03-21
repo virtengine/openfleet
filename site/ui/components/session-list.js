@@ -6,17 +6,19 @@
 import { h } from "preact";
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import htm from "htm";
-import { signal, computed } from "@preact/signals";
+import { signal, computed, effect } from "@preact/signals";
 import { apiFetch, onWsMessage } from "../modules/api.js";
 import {
   buildSessionApiPath,
   createSessionLoadMeta,
+  deriveSessionStaleReason,
+  formatSessionFreshnessTimestamp,
+  getSessionManualRetryState,
   markSessionLoadFailure,
   markSessionLoadSuccess,
-  resetSessionRetryMeta,
   resolveSessionWorkspaceHint,
 } from "../modules/session-api.js";
-import { formatRelative, truncate } from "../modules/utils.js";
+import { formatDate, formatRelative, truncate } from "../modules/utils.js";
 import { resolveIcon } from "../modules/icon-utils.js";
 import {
   List, ListItem, ListItemButton, ListItemText, ListItemIcon,
@@ -26,15 +28,42 @@ import {
 } from "@mui/material";
 
 const html = htm.bind(h);
+const SELECTED_SESSION_STORAGE_KEY = "ve-selected-session-id";
+
+function readPersistedSelectedSessionId() {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    const value = String(localStorage.getItem(SELECTED_SESSION_STORAGE_KEY) || "").trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
 
 /* ─── Signals ─── */
 export const sessionsData = signal([]);
-export const selectedSessionId = signal(null);
+export const selectedSessionId = signal(readPersistedSelectedSessionId());
 export const sessionMessages = signal([]);
+export const sessionMessagesSessionId = signal("");
 export const sessionsError = signal(null);
+export const sessionsLoading = signal(false);
 export const sessionLoadMeta = signal(createSessionLoadMeta());
 /** Pagination metadata from the last loadSessionMessages call */
 export const sessionPagination = signal(null);
+
+effect(() => {
+  const sessionId = selectedSessionId.value ? String(selectedSessionId.value).trim() : "";
+  if (typeof localStorage === "undefined") return;
+  try {
+    if (sessionId) {
+      localStorage.setItem(SELECTED_SESSION_STORAGE_KEY, sessionId);
+    } else {
+      localStorage.removeItem(SELECTED_SESSION_STORAGE_KEY);
+    }
+  } catch {
+    // localStorage may be unavailable in some embeds.
+  }
+});
 
 const DEFAULT_SESSION_PAGE_SIZE = 50;
 const MAX_SESSION_PAGE_SIZE = 200;
@@ -81,6 +110,7 @@ export async function loadSessions(filter = {}, _opts = {}) {
     normalizedFilter.workspace = "active";
   }
   _lastLoadFilter = normalizedFilter;
+  sessionsLoading.value = true;
   try {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(normalizedFilter)) {
@@ -88,20 +118,48 @@ export async function loadSessions(filter = {}, _opts = {}) {
       params.set(key, String(value));
     }
     const res = await apiFetch(`/api/sessions?${params}`, { _silent: true });
-    if (res?.sessions) sessionsData.value = res.sessions;
+    if (res?.sessions) {
+      sessionsData.value = res.sessions;
+      const sessionIds = new Set(
+        res.sessions.map((session) => String(session?.id || "")).filter(Boolean),
+      );
+      if (selectedSessionId.value && !sessionIds.has(String(selectedSessionId.value))) {
+        selectedSessionId.value = null;
+      }
+    }
     clearSessionRetryTimer();
-    sessionLoadMeta.value = markSessionLoadSuccess(sessionLoadMeta.peek());
+    const responseMeta = createSessionLoadMeta({
+      ...sessionLoadMeta.peek(),
+      ...(res?.loadMeta && typeof res.loadMeta === "object" ? res.loadMeta : {}),
+    });
+    sessionLoadMeta.value = markSessionLoadSuccess(
+      responseMeta,
+      responseMeta.lastSuccessAt || Date.now(),
+    );
     sessionsError.value = null;
-  } catch {
-    const nextMeta = markSessionLoadFailure(sessionLoadMeta.peek());
+  } catch (error) {
+    const nextMeta = markSessionLoadFailure(sessionLoadMeta.peek(), Date.now(), {
+      staleReason: deriveSessionStaleReason(error),
+    });
     sessionLoadMeta.value = nextMeta;
     scheduleSessionRetry(nextMeta);
     const hasCachedData = Array.isArray(sessionsData.peek()) && sessionsData.peek().length > 0;
     sessionsError.value = hasCachedData || Boolean(nextMeta.lastSuccessAt) ? null : "unavailable";
+  } finally {
+    sessionsLoading.value = false;
   }
 }
 
+function _bindSessionStore(targetId, messages, pagination) {
+  if (String(selectedSessionId.value || "") !== String(targetId)) return;
+  sessionMessagesSessionId.value = targetId;
+  sessionMessages.value = messages;
+  sessionPagination.value = pagination;
+}
+
 export async function loadSessionMessages(id, opts = {}) {
+  const targetSessionId = String(id || "").trim();
+  if (!targetSessionId) return { ok: false, error: "invalid" };
   const parseApiError = (err) => {
     const raw = String(err?.message || "").trim();
     if (!raw) return "";
@@ -144,7 +202,7 @@ export async function loadSessionMessages(id, opts = {}) {
     return apiFetch(url, { _silent: true });
   };
   try {
-    const baseUrl = sessionPath(id);
+    const baseUrl = sessionPath(targetSessionId);
     if (!baseUrl) return { ok: false, error: "invalid" };
     const requestedLimit = opts.limit != null ? Number(opts.limit) : DEFAULT_SESSION_PAGE_SIZE;
     const limit =
@@ -165,18 +223,27 @@ export async function loadSessionMessages(id, opts = {}) {
     }
     if (res?.session) {
       const normalized = dedupeMessages(res.session.messages || []);
-      if (opts.prepend && sessionMessages.value?.length) {
+      const sameBoundSession =
+        String(sessionMessagesSessionId.value || "") === targetSessionId;
+      if (opts.prepend && sameBoundSession && sessionMessages.value?.length) {
         // Prepend older messages (loading history on scroll up)
         const merged = dedupeMessages([...normalized, ...sessionMessages.value]);
-        sessionMessages.value = merged;
+        _bindSessionStore(targetSessionId, merged, res.pagination || null);
       } else {
-        sessionMessages.value = normalized;
+        _bindSessionStore(targetSessionId, normalized, res.pagination || null);
       }
-      sessionPagination.value = res.pagination || null;
       return { ok: true, messages: normalized, pagination: res.pagination || null };
+    }
+    if (!opts.prepend) {
+      _bindSessionStore(targetSessionId, [], res?.pagination || null);
+      sessionMessagesSessionId.value = targetSessionId;
     }
     return { ok: false, error: "empty" };
   } catch {
+    if (!opts.prepend) {
+      _bindSessionStore(targetSessionId, [], null);
+      sessionMessagesSessionId.value = targetSessionId;
+    }
     return { ok: false, error: "unavailable" };
   }
 }
@@ -373,6 +440,11 @@ function _flushMessageBatch() {
   if (_msgBatchBuffer.length === 0) return;
   const batch = _msgBatchBuffer;
   _msgBatchBuffer = [];
+  const selectedId = String(selectedSessionId.value || "");
+  if (!selectedId) return;
+  const boundId = String(sessionMessagesSessionId.value || "");
+  if (boundId && boundId !== selectedId) return;
+  if (!boundId) sessionMessagesSessionId.value = selectedId;
   const current = Array.isArray(sessionMessages.value) ? sessionMessages.value : [];
   const merged = dedupeMessages([...current, ...batch]);
   if (merged.length !== current.length) {
@@ -436,19 +508,22 @@ export function initSessionWsListener() {
  */
 export async function createSession(options = {}) {
   const type = options?.type || "manual";
+  const allowReuseFresh = options?.reuseFresh !== false;
 
   // Duplicate prevention: if a fresh empty session of same type exists, reuse it
   const existing = sessionsData.value || [];
-  const fresh = existing.find(
-    (s) =>
-      s.type === type &&
-      s.status === "active" &&
-      (s.turnCount || 0) === 0 &&
-      (!s.preview || s.preview.trim() === ""),
-  );
-  if (fresh) {
-    selectedSessionId.value = fresh.id;
-    return { ok: true, session: fresh };
+  if (allowReuseFresh) {
+    const fresh = existing.find(
+      (s) =>
+        s.type === type &&
+        s.status === "active" &&
+        (s.turnCount || 0) === 0 &&
+        (!s.preview || s.preview.trim() === ""),
+    );
+    if (fresh) {
+      selectedSessionId.value = fresh.id;
+      return { ok: true, session: fresh };
+    }
   }
 
   try {
@@ -844,6 +919,7 @@ export function SessionList({
   );
   const allSessions = sessionsData.value || [];
   const loadMeta = sessionLoadMeta.value || createSessionLoadMeta();
+  const isLoadingSessions = sessionsLoading.value === true;
   const error = sessionsError.value;
   const showStaleBanner = Boolean(loadMeta.stale && (loadMeta.lastSuccessAt || allSessions.length > 0));
   const [retryCountdownNow, setRetryCountdownNow] = useState(() => Date.now());
@@ -941,9 +1017,13 @@ export function SessionList({
   );
 
   const handleRetry = useCallback(() => {
+    const manualRetryState = getSessionManualRetryState(sessionLoadMeta.peek(), {
+      now: Date.now(),
+      isLoading: sessionsLoading.peek() === true,
+    });
+    if (manualRetryState.disabled) return;
     clearSessionRetryTimer();
     sessionsError.value = null;
-    sessionLoadMeta.value = resetSessionRetryMeta(sessionLoadMeta.peek());
     loadSessions(_lastLoadFilter, { source: "manual-retry" });
   }, []);
 
@@ -1086,6 +1166,26 @@ export function SessionList({
       ? Math.max(0, Math.ceil((nextRetryMs - retryCountdownNow) / 1000))
       : 0;
   const retryAttemptDisplay = Math.min(loadMeta.retryAttempt || 0, loadMeta.maxAttempts || 0);
+  const manualRetryState = getSessionManualRetryState(loadMeta, {
+    now: retryCountdownNow,
+    isLoading: isLoadingSessions,
+  });
+  const lastSuccessLabel = formatSessionFreshnessTimestamp(loadMeta.lastSuccessAt, {
+    formatRelative,
+    formatDate,
+  });
+  const staleReasonLabel =
+    loadMeta.staleReasonLabel || loadMeta.staleReasonMeta?.label || "Refresh request failed";
+  const staleReasonText =
+    loadMeta.staleReason || "Last refresh failed before new session data could be loaded.";
+  const staleReasonSummary = staleReasonText
+    ? `${staleReasonLabel}: ${staleReasonText}`
+    : staleReasonLabel;
+  const manualRetryReasonText =
+    manualRetryState.reason ||
+    (manualRetryState.disabled && retrySeconds > 0
+      ? "Manual retry is disabled while automatic backoff is active."
+      : "");
 
   if (error && !showStaleBanner) {
     return html`
@@ -1098,8 +1198,13 @@ export function SessionList({
           <${Alert} severity="error" variant="outlined" sx=${{ mb: 1 }}>
             Sessions not available
           </${Alert}>
-          <${Button} variant="outlined" size="small" onClick=${handleRetry}>
-            Retry
+          <${Button}
+            variant="outlined"
+            size="small"
+            onClick=${handleRetry}
+            disabled=${manualRetryState.disabled}
+          >
+            ${manualRetryState.label || "Retry now"}
           </${Button}>
         </${Box}>
       </${Paper}>
@@ -1148,8 +1253,13 @@ export function SessionList({
             severity="warning"
             variant="outlined"
             action=${html`
-              <${Button} size="small" color="warning" onClick=${handleRetry}>
-                Retry now
+              <${Button}
+                size="small"
+                color="warning"
+                onClick=${handleRetry}
+                disabled=${manualRetryState.disabled}
+              >
+                ${manualRetryState.label || "Retry now"}
               </${Button}>
             `}
           >
@@ -1157,13 +1267,26 @@ export function SessionList({
               Session list is showing stale data.
             </${Typography}>
             <${Typography} variant="caption" component="div">
-              Last successful refresh: ${loadMeta.lastSuccessAt ? formatRelative(loadMeta.lastSuccessAt) : "unknown"}
+              Last successful refresh: ${lastSuccessLabel}
+            </${Typography}>
+            <${Typography} variant="caption" component="div">
+              Freshness: cached data is being shown until the next successful refresh.
+            </${Typography}>
+            <${Typography} variant="caption" component="div">
+              Reason: ${staleReasonSummary}
             </${Typography}>
             <${Typography} variant="caption" component="div">
               ${loadMeta.retriesExhausted
                 ? `Automatic retries stopped after ${loadMeta.maxAttempts} attempts.`
                 : `Retry ${retryAttemptDisplay}/${loadMeta.maxAttempts} in ${retrySeconds}s.`}
             </${Typography}>
+            ${manualRetryReasonText
+              ? html`
+                  <${Typography} variant="caption" component="div">
+                    ${manualRetryReasonText}
+                  </${Typography}>
+                `
+              : null}
           </${Alert}>
         </${Box}>
       `}
@@ -1323,3 +1446,6 @@ export function SessionList({
     </${Paper}>
   `;
 }
+
+
+
