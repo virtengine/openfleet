@@ -10918,9 +10918,9 @@ async function tailFile(filePath, lineCount, maxBytes = 1_000_000) {
   };
 }
 
-async function readJsonlTail(filePath, maxLines = 2000) {
+async function readJsonlTail(filePath, maxLines = 2000, maxBytes = 1_000_000) {
   if (!existsSync(filePath)) return [];
-  const tail = await tailFile(filePath, maxLines);
+  const tail = await tailFile(filePath, maxLines, maxBytes);
   return (tail.lines || [])
     .map((line) => {
       try {
@@ -10994,7 +10994,7 @@ async function readCompletedSessionEntries(maxLines = 100_000) {
       }
     } catch { /* stat failed, skip */ }
   }
-  const entries = await readJsonlTail(sessionLogPath, maxLines);
+  const entries = await readJsonlTail(sessionLogPath, maxLines, 50_000_000);
   return {
     sessionLogPath,
     entries: entries.filter((entry) => String(entry?.type || "completed_session") === "completed_session"),
@@ -11138,7 +11138,7 @@ async function buildUsageAnalytics(days) {
   const streamPath = resolve(logDir, "agent-work-stream.jsonl");
   const [{ entries: completedSessions }, events] = await Promise.all([
     readCompletedSessionEntries(100_000),
-    readJsonlTail(streamPath, 100_000),
+    readJsonlTail(streamPath, 100_000, 50_000_000),
   ]);
 
   const cutoff = days ? Date.now() - days * 24 * 60 * 60 * 1000 : 0;
@@ -15497,25 +15497,42 @@ async function handleApi(req, res, url) {
       const days = Number(url.searchParams.get("days") || "7");
       const logDir = resolveAgentWorkLogDir();
       const metricsPath = resolve(logDir, "agent-metrics.jsonl");
-      const metrics = await readJsonlTail(metricsPath, 3000);
+      const metrics = await readJsonlTail(metricsPath, 100_000, 50_000_000);
       const summary = summarizeTelemetry(metrics, days) || {};
-      const runtimeStats = getRuntimeStats();
-      const completedSessions = getCompletedSessions(10_000);
-      const lifetimeTotals = completedSessions.reduce(
+
+      // Read lifetime totals from the full JSONL log (not the capped in-memory state)
+      // so the count is accurate even when sessions exceed the in-memory cap.
+      const { entries: allSessions } = await readCompletedSessionEntries(200_000);
+      const lifetimeTotals = allSessions.reduce(
         (acc, session) => {
           acc.attemptsCount += 1;
           acc.tokenCount += Number(session?.tokenCount || 0);
           acc.inputTokens += Number(session?.inputTokens || 0);
           acc.outputTokens += Number(session?.outputTokens || 0);
+          acc.durationMs += Math.max(0, Number(session?.durationMs || 0));
           return acc;
         },
-        { attemptsCount: 0, tokenCount: 0, inputTokens: 0, outputTokens: 0 },
+        { attemptsCount: 0, tokenCount: 0, inputTokens: 0, outputTokens: 0, durationMs: 0 },
       );
-      summary.runtimeMs = Number(runtimeStats?.runtimeMs || 0);
-      summary.lifetimeTotals = {
-        ...lifetimeTotals,
-        durationMs: summary.runtimeMs,
-      };
+
+      // Supplement token counts from agent-metrics.jsonl which has actual LLM usage data
+      // (prompt_tokens, completion_tokens, total_tokens) that the session log may lack.
+      if (lifetimeTotals.tokenCount <= 0 && metrics.length > 0) {
+        let metricsTokens = 0;
+        let metricsInputTokens = 0;
+        let metricsOutputTokens = 0;
+        for (const m of metrics) {
+          const met = m?.metrics || m;
+          metricsTokens += Number(met?.total_tokens || 0);
+          metricsInputTokens += Number(met?.prompt_tokens || 0);
+          metricsOutputTokens += Number(met?.completion_tokens || 0);
+        }
+        lifetimeTotals.tokenCount = metricsTokens;
+        lifetimeTotals.inputTokens = metricsInputTokens;
+        lifetimeTotals.outputTokens = metricsOutputTokens;
+      }
+
+      summary.lifetimeTotals = lifetimeTotals;
       jsonResponse(res, 200, { ok: true, data: summary });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });

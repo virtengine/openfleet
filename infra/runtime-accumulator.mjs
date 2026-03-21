@@ -28,7 +28,7 @@ const DEFAULT_CACHE_DIR = resolve(__dirname, "..", ".cache");
 const SNAPSHOT_FILE_NAME = "runtime-accumulator.json";
 const SESSION_LOG_FILE_NAME = "session-accumulator.jsonl";
 const MAX_SESSION_TOKENS = 100;
-const MAX_COMPLETED_SESSIONS = 500;
+const MAX_COMPLETED_SESSIONS = 50_000;
 
 let _cacheDir = DEFAULT_CACHE_DIR;
 let _runtimeFile = resolve(_cacheDir, SNAPSHOT_FILE_NAME);
