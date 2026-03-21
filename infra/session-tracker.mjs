@@ -114,11 +114,18 @@ function resolveSessionMaxMessages(type, metadata, explicitMax, fallbackMax) {
 const FLUSH_INTERVAL_MS = 2000;
 
 const SESSION_EVENT_LISTENERS = new Set();
+const SESSION_STATE_LISTENERS = new Set();
 
 export function addSessionEventListener(listener) {
   if (typeof listener !== "function") return () => {};
   SESSION_EVENT_LISTENERS.add(listener);
   return () => SESSION_EVENT_LISTENERS.delete(listener);
+}
+
+export function addSessionStateListener(listener) {
+  if (typeof listener !== "function") return () => {};
+  SESSION_STATE_LISTENERS.add(listener);
+  return () => SESSION_STATE_LISTENERS.delete(listener);
 }
 
 function emitSessionEvent(session, message) {
@@ -137,6 +144,37 @@ function emitSessionEvent(session, message) {
     },
   };
   for (const listener of SESSION_EVENT_LISTENERS) {
+    try {
+      listener(payload);
+    } catch {
+      // best-effort listeners
+    }
+  }
+}
+
+function emitSessionStateEvent(session, reason, extra = {}) {
+  if (!session || SESSION_STATE_LISTENERS.size === 0) return;
+  const normalizedReason = String(reason || "updated").trim() || "updated";
+  const payload = {
+    sessionId: session.id || session.taskId,
+    taskId: session.taskId || session.id,
+    reason: normalizedReason,
+    session: {
+      id: session.id || session.taskId,
+      taskId: session.taskId || session.id,
+      type: session.type || "task",
+      status: session.status || "active",
+      lastActiveAt: session.lastActiveAt || new Date().toISOString(),
+      turnCount: session.turnCount || 0,
+      title: session.taskTitle || session.title || null,
+    },
+    event: {
+      kind: "state",
+      reason: normalizedReason,
+      ...extra,
+    },
+  };
+  for (const listener of SESSION_STATE_LISTENERS) {
     try {
       listener(payload);
     } catch {
@@ -228,6 +266,7 @@ export class SessionTracker {
       insights: buildSessionInsights({ messages: [] }),
     });
     this.#markDirty(taskId);
+    emitSessionStateEvent(session, "session-updated", { eventKind: msg.type || msg.role || "message" });
   }
 
   /**
@@ -331,6 +370,7 @@ export class SessionTracker {
     }
     this.#refreshDerivedState(session);
     this.#markDirty(taskId);
+    emitSessionStateEvent(session, "session-updated", { eventKind: msg.type || msg.role || "message" });
     emitSessionEvent(session, msg);
   }
 
@@ -348,6 +388,7 @@ export class SessionTracker {
     this.#refreshDerivedState(session);
     this.#accumulateCompletedSession(session, taskId);
     this.#markDirty(taskId);
+    emitSessionStateEvent(session, "session-ended", { status });
   }
 
   /**
@@ -582,6 +623,7 @@ export class SessionTracker {
     this.#sessions.set(id, session);
     this.#markDirty(id);
     this.#flushDirty(); // immediate write for create
+    emitSessionStateEvent(session, "session-created");
     return session;
   }
 
@@ -658,6 +700,7 @@ export class SessionTracker {
     this.#refreshDerivedState(session);
     this.#accumulateCompletedSession(session, sessionId);
     this.#markDirty(sessionId);
+    emitSessionStateEvent(session, "session-status", { status });
   }
 
   /**
@@ -671,6 +714,7 @@ export class SessionTracker {
     session.taskTitle = newTitle;
     session.title = newTitle;
     this.#markDirty(sessionId);
+    emitSessionStateEvent(session, "session-renamed", { title: newTitle });
   }
 
   /**
@@ -1658,3 +1702,6 @@ export function _resetSingleton(nextOptions) {
     _instance = new SessionTracker(nextOptions);
   }
 }
+
+
+

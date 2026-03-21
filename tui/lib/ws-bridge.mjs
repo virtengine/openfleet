@@ -1,3 +1,39 @@
+import { resolve } from "node:path";
+
+import { resolveTuiAuthToken as resolveSharedTuiAuthToken } from "../../infra/tui-bridge.mjs";
+
+function defaultConfigDir() {
+	const explicit = String(
+		process.env.BOSUN_DIR
+			|| process.env.BOSUN_HOME
+			|| "",
+	).trim();
+	if (explicit) return resolve(explicit);
+	return resolve(process.cwd(), ".bosun");
+}
+
+function normalizeProtocol(protocol) {
+	const value = String(protocol || "").trim().toLowerCase();
+	return value === "wss" ? "wss" : "ws";
+}
+
+function resolveTuiAuthToken(options = {}) {
+	return resolveSharedTuiAuthToken({
+		env: options.env || process.env,
+		configDir: options.configDir || (options.cwd ? resolve(options.cwd, ".bosun") : defaultConfigDir()),
+		cacheDir: options.cacheDir || (options.cwd ? resolve(options.cwd, ".bosun", ".cache") : undefined),
+	});
+}
+
+function buildTuiWebSocketUrl({ host, port, token = "", protocol = "ws" }) {
+	const url = new URL(`${normalizeProtocol(protocol)}://${host}:${port}/ws`);
+	const normalizedToken = String(token || "").trim();
+	if (normalizedToken) {
+		url.searchParams.set("token", normalizedToken);
+	}
+	return url.toString();
+}
+
 /**
  * WebSocket Bridge for TUI
  *
@@ -6,9 +42,11 @@
  */
 
 class TuiWsBridge {
-	constructor({ host, port }) {
+	constructor({ host, port, configDir, protocol = "ws" }) {
 		this.host = host;
 		this.port = port;
+		this.configDir = configDir || defaultConfigDir();
+		this.protocol = protocol;
 		this.ws = null;
 		this.listeners = new Map();
 		this.reconnectAttempts = 0;
@@ -16,7 +54,12 @@ class TuiWsBridge {
 		this.reconnectDelay = 1000;
 		this.reconnectTimer = null;
 		this._connected = false;
-		this._url = `ws://${host}:${port}/ws`;
+		this._url = buildTuiWebSocketUrl({
+			host,
+			port,
+			protocol,
+			token: resolveTuiAuthToken({ configDir: this.configDir }),
+		});
 	}
 
 	connect() {
@@ -25,11 +68,20 @@ class TuiWsBridge {
 		}
 
 		try {
+			this._url = buildTuiWebSocketUrl({
+				host: this.host,
+				port: this.port,
+				protocol: this.protocol,
+				token: resolveTuiAuthToken({ configDir: this.configDir }),
+			});
 			this.ws = new WebSocket(this._url);
 
 			this.ws.onopen = () => {
 				this._connected = true;
 				this.reconnectAttempts = 0;
+				this.send("subscribe", {
+					channels: ["monitor", "stats", "sessions", "tasks", "workflows", "tui"],
+				});
 				this._emit("connect", {});
 				console.log("[ws-bridge] Connected to UI server");
 			};
@@ -91,38 +143,25 @@ class TuiWsBridge {
 		const { type, payload } = data;
 
 		switch (type) {
+			case "monitor:stats":
 			case "stats":
+				this._emit("monitor:stats", payload);
 				this._emit("stats", payload);
 				break;
-			case "session:start":
-				this._emit("session:start", payload);
-				break;
-			case "session:update":
-				this._emit("session:update", payload);
-				break;
-			case "session:end":
-				this._emit("session:end", payload);
+			case "sessions:update":
+				this._emit("sessions:update", payload);
 				break;
 			case "session:event":
 				this._emit("session:event", payload);
 				break;
-			case "task:create":
-				this._emit("task:create", payload);
+			case "logs:stream":
+				this._emit("logs:stream", payload);
 				break;
-			case "task:update":
-				this._emit("task:update", payload);
+			case "workflow:status":
+				this._emit("workflow:status", payload);
 				break;
-			case "task:delete":
-				this._emit("task:delete", payload);
-				break;
-			case "retry:update":
-				this._emit("retry:update", payload);
-				break;
-			case "workflow:trigger":
-				this._emit("workflow:trigger", payload);
-				break;
-			case "workflow:complete":
-				this._emit("workflow:complete", payload);
+			case "tasks:update":
+				this._emit("tasks:update", payload);
 				break;
 			case "pong":
 				break;
@@ -133,7 +172,10 @@ class TuiWsBridge {
 
 	send(type, payload = {}) {
 		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-			this.ws.send(JSON.stringify({ type, payload }));
+			const message = type === "subscribe"
+				? { type, channels: Array.isArray(payload.channels) ? payload.channels : [] }
+				: { type, payload };
+			this.ws.send(JSON.stringify(message));
 		}
 	}
 
@@ -167,22 +209,35 @@ class TuiWsBridge {
 let _instance = null;
 let _lastHost = null;
 let _lastPort = null;
+let _lastConfigDir = null;
+let _lastProtocol = null;
 
-function createWsBridge({ host, port }) {
-	_instance = new TuiWsBridge({ host, port });
+function createWsBridge({ host, port, configDir, protocol }) {
+	_instance = new TuiWsBridge({ host, port, configDir, protocol });
 	_lastHost = host;
 	_lastPort = port;
+	_lastConfigDir = configDir || defaultConfigDir();
+	_lastProtocol = protocol || "ws";
 	return _instance;
 }
 
-function wsBridge({ host, port }) {
-	// If host/port changed, create new instance
-	if (_instance && (host !== _lastHost || port !== _lastPort)) {
+function wsBridge({ host, port, configDir, protocol }) {
+	const resolvedConfigDir = configDir || defaultConfigDir();
+	const resolvedProtocol = protocol || "ws";
+	if (
+		_instance
+		&& (
+			host !== _lastHost
+			|| port !== _lastPort
+			|| resolvedConfigDir !== _lastConfigDir
+			|| resolvedProtocol !== _lastProtocol
+		)
+	) {
 		_instance.disconnect();
-		return createWsBridge({ host, port });
+		return createWsBridge({ host, port, configDir: resolvedConfigDir, protocol: resolvedProtocol });
 	}
 	if (!_instance) {
-		return createWsBridge({ host, port });
+		return createWsBridge({ host, port, configDir: resolvedConfigDir, protocol: resolvedProtocol });
 	}
 	return _instance;
 }
@@ -190,4 +245,10 @@ function wsBridge({ host, port }) {
 wsBridge._instance = null;
 
 export default wsBridge;
-export { TuiWsBridge, createWsBridge };
+export {
+	TuiWsBridge,
+	buildTuiWebSocketUrl,
+	createWsBridge,
+	defaultConfigDir,
+	resolveTuiAuthToken,
+};
