@@ -20,6 +20,12 @@ afterEach(() => {
 });
 
 describe("vitest-runner", () => {
+  it("keeps the pre-push adjacency map aligned with newer non-prefixed suites", () => {
+    const prePushHook = readFileSync(resolve(process.cwd(), ".githooks", "pre-push"), "utf8");
+
+    expect(prePushHook).toContain('"workflow/|workflow-*|workflow-pipeline-primitives*|manual-flows*|mcp-workflow-adapter*|bosun-native-workflow-nodes*|meeting-workflow*|run-evaluator*|webhook-gateway*|credential-store*|cron-scheduler*"');
+    expect(prePushHook).toContain('"agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*"');
+  });
   it("finds vitest from an ancestor node_modules directory", () => {
     const root = createFixture();
     const vitestEntry = resolve(root, "node_modules", "vitest", "vitest.mjs");
@@ -56,3 +62,4 @@ describe("vitest-runner", () => {
     expect(prePushHook).not.toContain("node node_modules/vitest/vitest.mjs");
   });
 });
+

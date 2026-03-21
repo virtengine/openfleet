@@ -842,6 +842,37 @@ describe("template drift + update behavior", () => {
     expect(wf.metadata.templateState.updateAvailable).toBe(false);
   });
 
+  it("does not treat derived node port metadata as template customization", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    wf.nodes[0].inputs = ["manual"];
+    wf.nodes[0].outputs = ["result"];
+    applyWorkflowTemplateState(wf);
+
+    expect(wf.metadata.templateState.isCustomized).toBe(false);
+    expect(wf.metadata.templateState.updateAvailable).toBe(false);
+  });
+
+  it("does not treat canvas input/output aliases as template customization", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    const targetNode = wf.nodes.find((node) => Array.isArray(node.inputPorts) || Array.isArray(node.outputPorts));
+
+    expect(targetNode).toBeDefined();
+
+    if (Array.isArray(targetNode.inputPorts)) {
+      targetNode.inputs = structuredClone(targetNode.inputPorts);
+    }
+    if (Array.isArray(targetNode.outputPorts)) {
+      targetNode.outputs = structuredClone(targetNode.outputPorts);
+    }
+
+    applyWorkflowTemplateState(wf);
+
+    expect(wf.metadata.templateState.isCustomized).toBe(false);
+    expect(wf.metadata.templateState.updateAvailable).toBe(false);
+  });
+
   it("auto-updates unmodified workflows when template version drift is detected", () => {
     const installed = installTemplate("template-error-recovery", engine);
     const wf = engine.get(installed.id);
