@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
@@ -83,6 +83,12 @@ function sanitizedGitEnv(extra = {}) {
     delete env[key];
   }
   return env;
+}
+
+function readWorktreeRecoveryStatus(repoRoot) {
+  const statusPath = join(repoRoot, ".cache", "ve-orchestrator-status.json");
+  if (!existsSync(statusPath)) return null;
+  return JSON.parse(readFileSync(statusPath, "utf8")).worktreeRecovery || null;
 }
 
 let tmpDir;
@@ -1479,6 +1485,16 @@ describe("action.acquire_worktree", () => {
     }).trim().replace(/\\/g, "/");
     const expectedRoot = String(second.worktreePath).replace(/\\/g, "/");
     expect(topLevel).toBe(expectedRoot);
+
+    const recovery = readWorktreeRecoveryStatus(repoDir);
+    expect(recovery?.health).toBe("recovered");
+    expect(recovery?.failureStreak).toBe(0);
+    expect(recovery?.recentEvents?.[0]).toMatchObject({
+      outcome: "recreated",
+      reason: "poisoned_worktree",
+      branch,
+      taskId: "recreate-invalid-1",
+    });
   }, 15000);
 
   it("recreates managed worktrees left in unresolved rebase state before reuse", async () => {
@@ -1533,6 +1549,40 @@ describe("action.acquire_worktree", () => {
     }).trim().replace(/\\/g, "/");
     const expectedRoot = String(second.worktreePath).replace(/\\/g, "/");
     expect(topLevel).toBe(expectedRoot);
+
+    const recovery = readWorktreeRecoveryStatus(repoDir);
+    expect(recovery?.health).toBe("recovered");
+    expect(recovery?.recentEvents?.[0]).toMatchObject({
+      outcome: "recreated",
+      reason: "poisoned_worktree",
+      branch,
+      taskId: "recreate-rebase-1",
+    });
+  }, 15000);
+
+  it("does not record recovery noise when reusing a healthy managed worktree", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const branch = "task/reuse-healthy-managed";
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "reuse-healthy-1",
+      branch,
+      baseBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const first = await nt.execute(node, makeCtx({}));
+    expect(first.success).toBe(true);
+
+    const second = await nt.execute(node, makeCtx({}));
+    expect(second.success).toBe(true);
+    expect(second.reused).toBe(true);
+
+    const recovery = readWorktreeRecoveryStatus(repoDir);
+    expect(recovery?.health).toBe("healthy");
+    expect(recovery?.failureStreak).toBe(0);
+    expect(recovery?.recentEvents || []).toEqual([]);
   }, 15000);
 
   it("recreates dirty managed worktrees and rebases existing task branches onto the latest base", async () => {
@@ -1686,6 +1736,22 @@ describe("action.acquire_worktree", () => {
       expect(second.retryable).toBe(false);
       expect(second.failureKind).toBe("branch_refresh_conflict");
       expect(second.error).toContain("managed worktree was removed after stale refresh state");
+
+      const thirdCtx = makeCtx({});
+      const third = await nt.execute(node, thirdCtx);
+      expect(third.success).toBe(false);
+      expect(third.retryable).toBe(false);
+      expect(third.failureKind).toBe("branch_refresh_conflict");
+
+      const recovery = readWorktreeRecoveryStatus(repoDir);
+      expect(recovery?.health).toBe("degraded");
+      expect(recovery?.failureStreak).toBe(2);
+      expect(recovery?.recentEvents?.[0]).toMatchObject({
+        outcome: "recreation_failed",
+        reason: "poisoned_worktree",
+        branch,
+        taskId: "recreate-conflict-1",
+      });
     } finally {
       if (previousAllowRefresh === undefined) {
         delete process.env.BOSUN_TEST_ALLOW_GIT_REFRESH;
