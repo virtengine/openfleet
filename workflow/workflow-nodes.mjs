@@ -956,6 +956,191 @@ function bindTaskContext(ctx, { taskId, taskTitle, task = null } = {}) {
     ctx.data.task = task;
   }
 }
+
+function resolveInjectedTaskPayload(ctx) {
+  const data = ctx?.data && typeof ctx.data === "object" ? ctx.data : {};
+  const candidates = [
+    data.currentTask,
+    data.item,
+    data.task,
+    data.taskDetail,
+    data.taskInfo,
+  ];
+
+  let sourceTask = null;
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const hasIdentity = pickTaskString(
+      candidate.taskId,
+      candidate.id,
+      candidate.task_id,
+      candidate.taskTitle,
+      candidate.title,
+    );
+    if (hasIdentity) {
+      sourceTask = candidate;
+      break;
+    }
+  }
+
+  const taskId = pickTaskString(
+    sourceTask?.taskId,
+    sourceTask?.id,
+    sourceTask?.task_id,
+    data.taskId,
+    data.activeTaskId,
+  );
+  const taskTitle = pickTaskString(
+    sourceTask?.taskTitle,
+    sourceTask?.title,
+    sourceTask?.task_title,
+    data.taskTitle,
+  );
+  if (!taskId && !taskTitle) return null;
+
+  const normalizedTask = sourceTask && typeof sourceTask === "object"
+    ? { ...sourceTask }
+    : {};
+  if (!pickTaskString(normalizedTask.id) && taskId) normalizedTask.id = taskId;
+  if (!pickTaskString(normalizedTask.taskId) && taskId) normalizedTask.taskId = taskId;
+  if (!pickTaskString(normalizedTask.title) && taskTitle) normalizedTask.title = taskTitle;
+  if (!pickTaskString(normalizedTask.taskTitle) && taskTitle) normalizedTask.taskTitle = taskTitle;
+
+  const taskDescription = pickTaskString(
+    normalizedTask.description,
+    normalizedTask.taskDescription,
+    normalizedTask.task_description,
+    data.taskDescription,
+  );
+  const taskWorkspace = pickTaskString(
+    normalizedTask.workspace,
+    normalizedTask.workspacePath,
+    normalizedTask.meta?.workspace,
+    normalizedTask.metadata?.workspace,
+    data.workspace,
+  );
+  const taskRepository = pickTaskString(
+    normalizedTask.repository,
+    normalizedTask.repo,
+    normalizedTask.repoSlug,
+    normalizedTask.meta?.repository,
+    normalizedTask.metadata?.repository,
+    data.repository,
+    data.repoSlug,
+  );
+  const baseBranch = pickTaskString(
+    normalizedTask.baseBranch,
+    normalizedTask.base_branch,
+    normalizedTask.meta?.baseBranch,
+    normalizedTask.metadata?.baseBranch,
+    data.baseBranch,
+  );
+  const branch = pickTaskString(
+    normalizedTask.branch,
+    normalizedTask.branchName,
+    normalizedTask.meta?.branch,
+    normalizedTask.metadata?.branch,
+    data.branch,
+  ) || deriveTaskBranch(normalizedTask);
+  const repoRootHint = pickTaskString(
+    normalizedTask.repoRoot,
+    normalizedTask.worktreePath,
+    data.repoRoot,
+    process.cwd(),
+  );
+  const repoRoot = resolveTaskRepositoryRoot(taskRepository, repoRootHint)
+    || (looksLikeFilesystemPath(taskWorkspace) ? taskWorkspace : "")
+    || repoRootHint;
+
+  if (taskDescription && !pickTaskString(normalizedTask.description)) {
+    normalizedTask.description = taskDescription;
+  }
+  if (taskWorkspace && !pickTaskString(normalizedTask.workspace)) {
+    normalizedTask.workspace = taskWorkspace;
+  }
+  if (taskRepository && !pickTaskString(normalizedTask.repository)) {
+    normalizedTask.repository = taskRepository;
+  }
+  if (baseBranch && !pickTaskString(normalizedTask.baseBranch)) {
+    normalizedTask.baseBranch = baseBranch;
+  }
+  if (branch && !pickTaskString(normalizedTask.branch)) {
+    normalizedTask.branch = branch;
+  }
+  if (repoRoot && !pickTaskString(normalizedTask.repoRoot)) {
+    normalizedTask.repoRoot = repoRoot;
+  }
+
+  return {
+    task: normalizedTask,
+    taskId,
+    taskTitle,
+    taskDescription,
+    taskWorkspace,
+    taskRepository,
+    baseBranch,
+    branch,
+    repoRoot,
+  };
+}
+
+function applyResolvedTaskContext(ctx, resolvedTask) {
+  if (!ctx || !resolvedTask) return;
+  const {
+    task,
+    taskId,
+    taskTitle,
+    taskDescription,
+    taskWorkspace,
+    taskRepository,
+    baseBranch,
+    branch,
+    repoRoot,
+  } = resolvedTask;
+
+  bindTaskContext(ctx, { taskId, taskTitle, task });
+  if (taskDescription) ctx.data.taskDescription = taskDescription;
+  if (taskWorkspace) {
+    ctx.data.workspace = taskWorkspace;
+    if (!pickTaskString(ctx.data.repoRoot) && looksLikeFilesystemPath(taskWorkspace)) {
+      ctx.data.repoRoot = taskWorkspace;
+    }
+  }
+  if (taskRepository) {
+    ctx.data.repository = taskRepository;
+    ctx.data.repoSlug = taskRepository;
+  }
+  if (repoRoot) ctx.data.repoRoot = repoRoot;
+  if (baseBranch) ctx.data.baseBranch = baseBranch;
+  if (branch) ctx.data.branch = branch;
+  if (Array.isArray(task?.repositories) && task.repositories.length > 0) {
+    ctx.data.repositories = task.repositories;
+  }
+  ctx.data.currentTask = task;
+  ctx.data.taskMeta = task?.meta && typeof task.meta === "object"
+    ? { ...task.meta }
+    : {};
+}
+
+function hasEnabledCanonicalBatchDispatcher(engine) {
+  if (!engine || typeof engine.list !== "function" || typeof engine.get !== "function") {
+    return false;
+  }
+  const batchTemplateIds = new Set([
+    "template-task-batch-processor",
+    "template-task-batch-pr",
+  ]);
+  for (const summary of engine.list() || []) {
+    const workflowId = String(summary?.id || "").trim();
+    if (!workflowId) continue;
+    const def = engine.get(workflowId);
+    const templateId = String(def?.metadata?.installedFrom || "").trim();
+    if (!batchTemplateIds.has(templateId)) continue;
+    if (def?.enabled === false) continue;
+    return true;
+  }
+  return false;
+}
 async function createKanbanTaskWithProject(kanban, taskData = {}, projectIdValue = "") {
   if (!kanban || typeof kanban.createTask !== "function") {
     throw new Error("Kanban adapter not available");
@@ -7597,6 +7782,7 @@ registerBuiltinNodeType("loop.for_each", {
     properties: {
       items: { type: "string", description: "Expression that resolves to an array" },
       variable: { type: "string", default: "item", description: "Variable name for current item" },
+      itemVariable: { type: "string", description: "Alias for variable; preserved for installed template compatibility" },
       indexVariable: { type: "string", default: "index", description: "Variable name for current index" },
       maxIterations: { type: "number", default: 50, description: "Cap on total iterations" },
       maxConcurrent: { type: "number", default: 1, description: "Parallel fan-out width (1 = sequential)" },
@@ -7605,21 +7791,30 @@ registerBuiltinNodeType("loop.for_each", {
     required: ["items"],
   },
   async execute(node, ctx, engine) {
-    const expr = node.config?.items || "[]";
+    const resolvedItems = ctx.resolve(node.config?.items || "[]");
+    const expr = typeof resolvedItems === "string" ? resolvedItems : null;
     let items;
-    try {
-      const fn = new Function("$data", "$ctx", `return (${expr});`);
-      items = fn(ctx.data, ctx);
-    } catch {
-      items = [];
+    if (expr == null) {
+      items = resolvedItems;
+    } else {
+      try {
+        const fn = new Function("$data", "$ctx", `return (${expr});`);
+        items = fn(ctx.data, ctx);
+      } catch {
+        items = [];
+      }
     }
     if (!Array.isArray(items)) items = [items];
-    const max = node.config?.maxIterations || 50;
+    const resolvedMax = Number(ctx.resolve(node.config?.maxIterations ?? 50));
+    const max = Number.isFinite(resolvedMax) ? resolvedMax : 50;
     items = items.slice(0, max);
-    const varName = node.config?.variable || "item";
-    const indexVar = node.config?.indexVariable || "index";
-    const maxConcurrent = Math.max(1, node.config?.maxConcurrent || 1);
-    const subWorkflowId = node.config?.workflowId || "";
+    const varName = String(
+      ctx.resolve(node.config?.itemVariable || node.config?.variable || "item") || "item",
+    );
+    const indexVar = String(ctx.resolve(node.config?.indexVariable || "index") || "index");
+    const resolvedConcurrency = Number(ctx.resolve(node.config?.maxConcurrent ?? 1));
+    const maxConcurrent = Math.max(1, Number.isFinite(resolvedConcurrency) ? resolvedConcurrency : 1);
+    const subWorkflowId = String(ctx.resolve(node.config?.workflowId || "") || "");
 
     // Store items for downstream processing (backward compat)
     ctx.data[`_loop_${node.id}_items`] = items;
@@ -10430,6 +10625,34 @@ registerBuiltinNodeType("trigger.task_available", {
     },
   },
   async execute(node, ctx, engine) {
+    const injectedTask = resolveInjectedTaskPayload(ctx);
+    if (injectedTask) {
+      applyResolvedTaskContext(ctx, injectedTask);
+      ctx.log(node.id, `Using injected task ${injectedTask.taskId || injectedTask.taskTitle || "unknown"}`);
+      return {
+        triggered: true,
+        taskCount: 1,
+        tasks: [injectedTask.task],
+        selectedTaskId: injectedTask.taskId || null,
+        selectedTaskTitle: injectedTask.taskTitle || null,
+        source: "injected",
+      };
+    }
+
+    const activeWorkflowId = String(ctx?.data?._workflowId || "").trim();
+    const activeWorkflowDef =
+      activeWorkflowId && engine && typeof engine.get === "function"
+        ? engine.get(activeWorkflowId)
+        : null;
+    const activeTemplateId = String(activeWorkflowDef?.metadata?.installedFrom || "").trim();
+    if (
+      activeTemplateId === "template-task-lifecycle" &&
+      hasEnabledCanonicalBatchDispatcher(engine)
+    ) {
+      ctx.log(node.id, "Skipping direct lifecycle polling because canonical batch dispatch is enabled");
+      return { triggered: false, reason: "canonical_batch_dispatch", taskCount: 0 };
+    }
+
     const maxParallel = node.config?.maxParallel ?? 3;
     const status = node.config?.status ?? "todo";
     const projectId = cfgOrCtx(node, ctx, "projectId") || undefined;
@@ -10755,56 +10978,12 @@ registerBuiltinNodeType("trigger.task_available", {
 
     const primaryTask = toDispatch[0] || null;
     if (primaryTask) {
-      const taskId = pickTaskString(primaryTask.id, primaryTask.task_id);
-      const taskTitle = pickTaskString(primaryTask.title, primaryTask.task_title);
-      bindTaskContext(ctx, { taskId, taskTitle, task: primaryTask });
-      const taskDescription = pickTaskString(
-        primaryTask.description,
-        primaryTask.task_description,
-      );
-      if (taskDescription) ctx.data.taskDescription = taskDescription;
-      const taskWorkspace = pickTaskString(
-        primaryTask.workspace,
-        primaryTask.workspacePath,
-        primaryTask.meta?.workspace,
-        primaryTask.metadata?.workspace,
-      );
-      if (taskWorkspace) {
-        ctx.data.workspace = taskWorkspace;
-        if (!pickTaskString(ctx.data.repoRoot) && looksLikeFilesystemPath(taskWorkspace)) {
-          ctx.data.repoRoot = taskWorkspace;
-        }
-      }
-      const taskRepository = pickTaskString(
-        primaryTask.repository,
-        primaryTask.repo,
-        primaryTask.meta?.repository,
-        primaryTask.metadata?.repository,
-      );
-      if (taskRepository) {
-        ctx.data.repository = taskRepository;
-        ctx.data.repoSlug = taskRepository;
-      }
-      const resolvedRepoRoot = resolveTaskRepositoryRoot(
-        taskRepository,
-        pickTaskString(ctx.data.repoRoot, process.cwd()),
-      );
-      if (resolvedRepoRoot) {
-        ctx.data.repoRoot = resolvedRepoRoot;
-      }
-      const taskRepositories = Array.isArray(primaryTask.repositories)
-        ? primaryTask.repositories
-        : [];
-      if (taskRepositories.length > 0) {
-        ctx.data.repositories = taskRepositories;
-      }
-      const baseBranch = pickTaskString(primaryTask.baseBranch, primaryTask.base_branch);
-      if (baseBranch) ctx.data.baseBranch = baseBranch;
-      const branch = deriveTaskBranch(primaryTask);
-      if (branch) ctx.data.branch = branch;
-      ctx.data.taskMeta = primaryTask?.meta && typeof primaryTask.meta === "object"
-        ? { ...primaryTask.meta }
-        : {};
+      applyResolvedTaskContext(ctx, resolveInjectedTaskPayload({
+        data: {
+          ...ctx.data,
+          currentTask: primaryTask,
+        },
+      }));
     }
 
     ctx.log(node.id, `Found ${toDispatch.length} task(s) ready (${remaining} slot(s) free)`);

@@ -3867,6 +3867,40 @@ export class WorkflowEngine extends EventEmitter {
     }
   }
 
+  _buildActiveRunIndexEntry(runId, workflowId, workflowName, source = {}) {
+    const data = source?.data && typeof source.data === "object"
+      ? source.data
+      : source;
+    const taskId = this._sanitizeTaskId(
+      data?.taskId ||
+      data?.activeTaskId ||
+      data?.currentTask?.taskId ||
+      data?.currentTask?.id,
+    );
+    const activeTaskId = this._sanitizeTaskId(
+      data?.activeTaskId ||
+      data?.taskId ||
+      data?.currentTask?.taskId ||
+      data?.currentTask?.id,
+    );
+    const taskTitle = String(
+      data?.taskTitle ||
+      data?.currentTask?.taskTitle ||
+      data?.currentTask?.title ||
+      "",
+    ).trim();
+    const startedAt = Number(data?.startedAt || source?.startedAt || 0) || 0;
+    return {
+      runId,
+      workflowId,
+      workflowName,
+      startedAt,
+      ...(taskId ? { taskId } : {}),
+      ...(activeTaskId ? { activeTaskId } : {}),
+      ...(taskTitle ? { taskTitle } : {}),
+    };
+  }
+
   /**
    * Persist a run to the active-runs index AND write an initial detail file.
    * Called at the very start of execute() / retryRun() so the run is on disk
@@ -3878,7 +3912,7 @@ export class WorkflowEngine extends EventEmitter {
 
       // Add to active-runs index
       const entries = this._readActiveRunsIndex().filter((e) => e.runId !== runId);
-      entries.push({ runId, workflowId, workflowName, startedAt: ctx.startedAt });
+      entries.push(this._buildActiveRunIndexEntry(runId, workflowId, workflowName, ctx));
       this._writeActiveRunsIndex(entries);
 
       // Write initial detail file so we can resume from it
@@ -3913,6 +3947,14 @@ export class WorkflowEngine extends EventEmitter {
         this._ensureDirs();
         const detail = this._serializeRunContext(ctx, true);
         this._writeRunDetail(runId, detail);
+        const entries = this._readActiveRunsIndex().filter((e) => e.runId !== runId);
+        entries.push(this._buildActiveRunIndexEntry(
+          runId,
+          ctx?.data?._workflowId || this._activeRuns.get(runId)?.workflowId || null,
+          ctx?.data?._workflowName || this._activeRuns.get(runId)?.workflowName || null,
+          detail,
+        ));
+        this._writeActiveRunsIndex(entries);
       } catch (err) {
         console.error(`${TAG} Checkpoint failed for run ${runId}:`, err.message);
       }

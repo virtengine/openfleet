@@ -475,6 +475,76 @@ describe("WorkflowEngine - loop.for_each", () => {
       failCount: 0,
     });
   });
+
+  it("accepts itemVariable as an alias for variable in fan-out templates", async () => {
+    const executed = [];
+    registerNodeType("test.collect_current_task", {
+      describe: () => "Collect currentTask from context",
+      schema: { type: "object", properties: {} },
+      async execute(node, ctx) {
+        executed.push(ctx.data.currentTask);
+        return { collected: ctx.data.currentTask };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "loop",
+          type: "loop.for_each",
+          label: "Loop Items",
+          config: { items: '[{"taskId":"a"},{"taskId":"b"}]', itemVariable: "currentTask" },
+        },
+        { id: "collect", type: "test.collect_current_task", label: "Collect", config: {} },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "loop" },
+        { id: "e2", source: "loop", target: "collect" },
+      ],
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {});
+    expect(result.errors.length).toBe(0);
+    expect(executed).toEqual([{ taskId: "a" }, { taskId: "b" }]);
+  });
+
+  it("resolves exact-placeholder arrays before loop fan-out execution", async () => {
+    const executed = [];
+    registerNodeType("test.collect_resolved_loop_item", {
+      describe: () => "Collect resolved loop item",
+      schema: { type: "object", properties: {} },
+      async execute(node, ctx) {
+        executed.push(ctx.data.currentTask);
+        return { collected: ctx.data.currentTask };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "loop",
+          type: "loop.for_each",
+          label: "Loop Items",
+          config: { items: "{{list}}", itemVariable: "currentTask" },
+        },
+        { id: "collect", type: "test.collect_resolved_loop_item", label: "Collect", config: {} },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "loop" },
+        { id: "e2", source: "loop", target: "collect" },
+      ],
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {
+      list: [{ taskId: "a" }, { taskId: "b" }],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(executed).toEqual([{ taskId: "a" }, { taskId: "b" }]);
+  });
 });
 
 describe("WorkflowEngine - source port routing", () => {
@@ -1110,6 +1180,28 @@ describe("WorkflowEngine - run history details", () => {
 
     const resumedRun = engine.getRunDetail(retryRunId);
     expect(resumedRun?.detail?.data?.prePrValidationCommand).toBe("auto");
+  });
+
+  it("persists task identity in the active-runs index for restart recovery", () => {
+    const ctx = new WorkflowContext({
+      taskId: "task-active-1",
+      activeTaskId: "task-active-1",
+      taskTitle: "Recover Me",
+    });
+
+    engine._persistActiveRunState("run-active-1", "wf-active", "Active Workflow", ctx);
+
+    const activeRuns = JSON.parse(readFileSync(join(tmpDir, "runs", "_active-runs.json"), "utf8"));
+    expect(activeRuns).toEqual([
+      expect.objectContaining({
+        runId: "run-active-1",
+        workflowId: "wf-active",
+        workflowName: "Active Workflow",
+        taskId: "task-active-1",
+        activeTaskId: "task-active-1",
+        taskTitle: "Recover Me",
+      }),
+    ]);
   });
 
   it("resumes interrupted runs from_scratch when issue-advisor requests replanning", async () => {

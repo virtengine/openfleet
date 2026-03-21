@@ -236,11 +236,104 @@ describe("trigger.task_available", () => {
     expect(ctx.data.taskId).toBe("abc-123");
     expect(ctx.data.taskTitle).toBe("Implement dispatch fix");
     expect(ctx.data.taskDescription).toBe("Ensure claims initialize");
-    expect(ctx.data.repoRoot).toBe("C:/repo/bosun");
+    expect(String(ctx.data.repoRoot || "").replace(/\\/g, "/")).toBe(resolve(process.cwd()).replace(/\\/g, "/"));
     expect(ctx.data.workspace).toBe("C:/repo/bosun");
     expect(ctx.data.repository).toBe("virtengine/bosun");
     expect(ctx.data.baseBranch).toBe("main");
     expect(ctx.data.branch.startsWith("task/abc123-")).toBe(true);
+  });
+
+  it("uses injected batch task context instead of polling the backlog again", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const listTasks = vi.fn();
+    const ctx = makeCtx({
+      currentTask: {
+        taskId: "batch-123",
+        taskTitle: "Dispatched from batch",
+        description: "Do not re-query kanban",
+        workspace: "C:/repo/bosun",
+        repository: "virtengine/bosun",
+        baseBranch: "main",
+      },
+      activeSlotCount: 99,
+    });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      status: "todo",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: {
+          listTasks,
+        },
+      },
+    });
+
+    expect(listTasks).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      triggered: true,
+      taskCount: 1,
+      selectedTaskId: "batch-123",
+      source: "injected",
+    });
+    expect(ctx.data.taskId).toBe("batch-123");
+    expect(ctx.data.taskTitle).toBe("Dispatched from batch");
+    expect(ctx.data.taskDescription).toBe("Do not re-query kanban");
+    expect(ctx.data.repository).toBe("virtengine/bosun");
+    expect(ctx.data.workspace).toBe("C:/repo/bosun");
+    expect(ctx.data.baseBranch).toBe("main");
+    expect(ctx.data.branch.startsWith("task/batch123-")).toBe(true);
+  });
+
+  it("suppresses direct lifecycle polling when a canonical batch dispatcher is enabled", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const listTasks = vi.fn();
+    const ctx = makeCtx({
+      _workflowId: "wf-task-lifecycle",
+      activeSlotCount: 0,
+    });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      status: "todo",
+    });
+    const engine = {
+      services: {
+        kanban: {
+          listTasks,
+        },
+      },
+      list: () => [
+        { id: "wf-task-lifecycle" },
+        { id: "wf-task-batch" },
+      ],
+      get: (id) => {
+        if (id === "wf-task-lifecycle") {
+          return {
+            id,
+            enabled: true,
+            metadata: { installedFrom: "template-task-lifecycle" },
+          };
+        }
+        if (id === "wf-task-batch") {
+          return {
+            id,
+            enabled: true,
+            metadata: { installedFrom: "template-task-batch-processor" },
+          };
+        }
+        return null;
+      },
+    };
+
+    const result = await nt.execute(node, ctx, engine);
+
+    expect(listTasks).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      triggered: false,
+      reason: "canonical_batch_dispatch",
+      taskCount: 0,
+    });
   });
 
   it("resolves repoRoot to matching sibling repository when task repository differs", async () => {

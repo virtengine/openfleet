@@ -1389,27 +1389,10 @@ describe("github template CLI compatibility", () => {
       .toBe("{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}");
     expect(syncNode?.config?.env?.BOSUN_FETCH_PR_STATE)
       .toBe("{{$ctx.getNodeOutput('fetch-pr-state')?.output || '{}'}}");
-    expect(fetchCommand).toContain("function collectReposFromConfig(){");
-    expect(fetchCommand).toContain("const repoTargets=resolveRepoTargets();");
-    expect(fetchCommand).toContain("if(repo){ mergedArgs.push('--repo',repo); openArgs.push('--repo',repo); }");
-    expect(fetchCommand).toContain("reposScanned: repoTargets.length");
-    expect(fetchCommand).toContain("repo:p.__repo||''");
-    expect(syncCommand).toContain("const maxBuffer=25*1024*1024;");
-    expect(syncCommand).toContain("const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':'';");
-    expect(syncCommand).toContain("const taskRunner=cliPath?'cli':(taskCli?'task-cli':'');");
-    expect(syncCommand).toContain("['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']");
-    expect(syncCommand).toContain("reviewStatus");
-    expect(syncCommand).toContain("runTask(['update',id,'--status','inreview'])");
-    expect(syncCommand).toContain("parseJsonObject(raw)");
-    expect(syncCommand).toContain(String.raw`const candidate=lines.slice(start).join('\n').trim();`);
-    expect(syncCommand).toContain("token==='['||token==='{'");
-    expect(syncCommand).toContain("const task=parseJsonObject(raw)");
-    expect(syncCommand).toContain("function listTasks(){");
-    expect(syncCommand).toContain("function resolveTaskId(item){");
-    expect(syncCommand).toContain("const taskBranch=String(task?.branchName||'').trim();");
-    expect(syncCommand).toContain("task_lookup_failed");
-    expect(syncCommand).toContain("const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||\'\').trim());");
-    expect(syncCommand).not.toContain("current==='todo'||current==='inprogress'");
+    expect(fetchNode?.config?.env?.BOSUN_GITHUB_SYNC_LOOKBACK_HOURS).toBe("{{lookbackHours}}");
+    expect(fetchNode?.config?.env?.BOSUN_GITHUB_SYNC_REPO_SCOPE).toBe("{{repoScope}}");
+    expect(fetchCommand).toBe("node tools/github-kanban-sync-fetch-pr-state.mjs");
+    expect(syncCommand).toBe("node tools/github-kanban-sync-programmatic.mjs");
 
     const syncAgentNeededNode = syncTemplate.nodes.find((n) => n.id === "sync-agent-needed");
     expect(syncAgentNeededNode?.config?.expression)

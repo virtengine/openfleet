@@ -70,12 +70,16 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
         const path = require("node:path");
         const { pathToFileURL } = require("node:url");
         const cwd = process.cwd();
+        const configuredRepoRoot = typeof process.env.REPO_ROOT === "string" ? process.env.REPO_ROOT.trim() : "";
+        const configuredStorePath = typeof process.env.BOSUN_STORE_PATH === "string" ? process.env.BOSUN_STORE_PATH.trim() : "";
         const mirrorMarker = (path.sep + ".bosun" + path.sep + "workspaces" + path.sep).toLowerCase();
-        let repoRoot = cwd;
+        let repoRoot = configuredRepoRoot || cwd;
         if (cwd.toLowerCase().includes(mirrorMarker)) {
           const sourceRepoRoot = path.resolve(cwd, "..", "..", "..", "..");
           if (fs.existsSync(path.join(sourceRepoRoot, "kanban", "kanban-adapter.mjs"))) repoRoot = sourceRepoRoot;
         }
+        process.env.REPO_ROOT = repoRoot;
+        process.env.BOSUN_STORE_PATH = configuredStorePath || path.join(repoRoot, ".bosun", ".cache", "kanban-state.json");
         const kanbanModuleUrl = pathToFileURL(path.join(repoRoot, "kanban", "kanban-adapter.mjs")).href;
         import(kanbanModuleUrl)
           .then(k => k.listTasks(undefined, { status: "todo" }))
@@ -91,14 +95,20 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
               taskTitle: t.title || t.id,
               status: t.status,
               branch: t.branch || t.metadata?.branch || null,
+              baseBranch: t.baseBranch || t.metadata?.baseBranch || null,
               scope: t.scope || t.metadata?.scope || null,
               repository: typeof t?.repository === "string" ? t.repository.trim() : null,
               workspace: typeof t?.workspace === "string" ? t.workspace.trim() : null,
+              repoRoot,
             }))));
           })
           .catch(e => { console.error(e.message); process.exit(1); });
       `],
-      env: { MAX_BATCH: "{{maxBatchSize}}" },
+      env: {
+        MAX_BATCH: "{{maxBatchSize}}",
+        REPO_ROOT: "{{$data?.repoRoot || ''}}",
+        BOSUN_STORE_PATH: "{{$data?.repoRoot ? $data.repoRoot + '/.bosun/.cache/kanban-state.json' : ''}}",
+      },
       parseJson: true,
     }, { x: 400, y: 310 }),
 
@@ -139,7 +149,7 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
   ],
   edges: [
     edge("trigger", "check-coordinator"),
-    edge("check-coordinator", "query-tasks", { condition: "result.result === true" }),
+    edge("check-coordinator", "query-tasks", { condition: "$output?.result === true" }),
     edge("query-tasks", "dispatch-tasks"),
     edge("dispatch-tasks", "join-dispatch"),
     edge("join-dispatch", "record-results"),
@@ -196,12 +206,16 @@ export const TASK_BATCH_PR_TEMPLATE = {
         const path = require("node:path");
         const { pathToFileURL } = require("node:url");
         const cwd = process.cwd();
+        const configuredRepoRoot = typeof process.env.REPO_ROOT === "string" ? process.env.REPO_ROOT.trim() : "";
+        const configuredStorePath = typeof process.env.BOSUN_STORE_PATH === "string" ? process.env.BOSUN_STORE_PATH.trim() : "";
         const mirrorMarker = (path.sep + ".bosun" + path.sep + "workspaces" + path.sep).toLowerCase();
-        let repoRoot = cwd;
+        let repoRoot = configuredRepoRoot || cwd;
         if (cwd.toLowerCase().includes(mirrorMarker)) {
           const sourceRepoRoot = path.resolve(cwd, "..", "..", "..", "..");
           if (fs.existsSync(path.join(sourceRepoRoot, "kanban", "kanban-adapter.mjs"))) repoRoot = sourceRepoRoot;
         }
+        process.env.REPO_ROOT = repoRoot;
+        process.env.BOSUN_STORE_PATH = configuredStorePath || path.join(repoRoot, ".bosun", ".cache", "kanban-state.json");
         const kanbanModuleUrl = pathToFileURL(path.join(repoRoot, "kanban", "kanban-adapter.mjs")).href;
         import(kanbanModuleUrl)
           .then(k => k.listTasks(undefined, { status: "todo" }))
@@ -216,13 +230,19 @@ export const TASK_BATCH_PR_TEMPLATE = {
               taskId: t.id,
               taskTitle: t.title || t.id,
               branch: t.branch || t.metadata?.branch || null,
+              baseBranch: t.baseBranch || t.metadata?.baseBranch || null,
               repository: t.repository || null,
               workspace: t.workspace || null,
+              repoRoot,
             }))));
           })
           .catch(e => { console.error(e.message); process.exit(1); });
       `],
-      env: { MAX_BATCH: "{{maxBatchSize}}" },
+      env: {
+        MAX_BATCH: "{{maxBatchSize}}",
+        REPO_ROOT: "{{$data?.repoRoot || ''}}",
+        BOSUN_STORE_PATH: "{{$data?.repoRoot ? $data.repoRoot + '/.bosun/.cache/kanban-state.json' : ''}}",
+      },
       parseJson: true,
     }, { x: 400, y: 180 }),
 
