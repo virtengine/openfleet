@@ -21848,12 +21848,6 @@ export async function startTelegramUiServer(options = {}) {
   return uiServer;
 }
 
-      }
-    }
-
-  return uiServer;
-}
-
 export function stopTelegramUiServer() {
   if (!uiServer) return;
   stopTunnel();
