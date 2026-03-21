@@ -4611,6 +4611,36 @@ registerNodeType("action.acquire_worktree", {
     const baseBranch = pickGitRef(baseBranchRaw, defaultTargetBranch, "origin/main", "main");
     const fetchTimeout = node.config?.fetchTimeout ?? 30000;
     const worktreeTimeout = node.config?.worktreeTimeout ?? 60000;
+    const recoveryState = {
+      recreated: false,
+      detectedIssues: new Set(),
+      phase: null,
+      worktreePath: null,
+    };
+    const persistRecoveryEvent = async (event) => {
+      const payload = {
+        reason: "poisoned_worktree",
+        branch,
+        taskId,
+        worktreePath: event?.worktreePath || recoveryState.worktreePath || null,
+        phase: event?.phase || recoveryState.phase || null,
+        detectedIssues: event?.detectedIssues || Array.from(recoveryState.detectedIssues),
+        error: event?.error || null,
+        outcome: event?.outcome || "healthy_noop",
+        timestamp: new Date().toISOString(),
+      };
+      const details = [
+        `outcome=${payload.outcome}`,
+        `branch=${payload.branch}`,
+        payload.taskId ? `taskId=${payload.taskId}` : "",
+        payload.phase ? `phase=${payload.phase}` : "",
+        payload.worktreePath ? `path=${payload.worktreePath}` : "",
+        payload.detectedIssues.length ? `issues=${payload.detectedIssues.join(",")}` : "",
+        payload.error ? `error=${payload.error}` : "",
+      ].filter(Boolean).join(" ");
+      ctx.log(node.id, `[worktree-recovery] ${details}`);
+      await recordWorktreeRecoveryEvent(repoRoot, payload);
+    };
 
     if (!branch) throw new Error("action.acquire_worktree: branch is required");
     if (!taskId) throw new Error("action.acquire_worktree: taskId is required");
