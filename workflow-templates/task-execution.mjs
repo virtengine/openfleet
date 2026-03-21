@@ -7,11 +7,13 @@
  *
  * ## Composition
  *
- * Templates use `makeAgentPipeline()` for the creative agent phases and
- * embed `VALIDATE_AND_PR_SUB` for the deterministic validation + PR tail.
- * Agent nodes handle planning and implementation (token-worthy creative work).
- * Build, test, lint, push, and PR creation use explicit workflow nodes —
- * no agent reasoning wasted on deterministic shell commands.
+ * Templates are built with `makeTaskTemplate()`, which wires together
+ * creative agent phases via `agentPhase()` and then embeds the
+ * `VALIDATE_AND_PR_SUB` sub-workflow via `embedSubWorkflow()` for the
+ * deterministic validation + PR tail.
+ * Agent phases handle planning and implementation (token-worthy creative
+ * work). Build, test, lint, push, and PR creation use explicit workflow
+ * nodes — no agent reasoning wasted on deterministic shell commands.
  *
  * Templates:
  *   - Fullstack Task Workflow

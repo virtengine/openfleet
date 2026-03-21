@@ -342,7 +342,7 @@ export const VALIDATE_AND_PR_TEMPLATE = {
       cwd: "{{worktreePath}}",
       continueOnError: true,
     }, { x: 400, y: 440 }),
-    node("push", "action.push_branch", "Push Branch", {
+      worktreePath: "{{worktreePath}}",
       worktreePath: "{{worktreePath}}",
       branch: "{{branch}}",
       baseBranch: "{{baseBranch}}",
@@ -422,11 +422,15 @@ export const PR_HANDOFF_TEMPLATE = {
     node("done", "notify.log", "Handoff Complete", {
       message: "PR created and PR Progressor dispatched.",
     }, { x: 300, y: 700 }),
+    node("pr-create-failed", "notify.log", "PR Creation Failed", {
+      message: "PR creation failed: no PR number or URL was returned from create_pr.",
+    }, { x: 600, y: 440 }),
   ],
   edges: [
     edge("trigger", "create-pr"),
     edge("create-pr", "pr-created"),
     edge("pr-created", "set-inreview", { port: "yes" }),
+    edge("pr-created", "pr-create-failed", { port: "no" }),
     edge("set-inreview", "handoff-progressor"),
     edge("handoff-progressor", "done"),
   ],
