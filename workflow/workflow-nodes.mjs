@@ -39,6 +39,7 @@ import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, emitSkillInvokeEvent, findRelevantSkills } from "../agent/bosun-skills.mjs";
 import { readBenchmarkModeState, taskMatchesBenchmarkMode } from "../bench/benchmark-mode.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
+import { recordWorktreeRecoveryEvent } from "../infra/worktree-recovery-state.mjs";
 import {
   appendKnowledgeEntry,
   buildKnowledgeEntry,
@@ -11433,6 +11434,45 @@ registerBuiltinNodeType("action.acquire_worktree", {
     try {
       // Ensure base branch ref is fresh
       const baseBranchShort = baseBranch.replace(/^origin\//, "");
+      const recoveryState = {
+        recreated: false,
+        detectedIssues: new Set(),
+        phase: null,
+        worktreePath: null,
+      };
+      const notePoisonedWorktree = (phase, worktreePath, issues = []) => {
+        recoveryState.recreated = true;
+        recoveryState.phase = phase;
+        recoveryState.worktreePath = worktreePath || recoveryState.worktreePath || null;
+        for (const issue of issues) {
+          const normalized = String(issue || "").trim();
+          if (normalized) recoveryState.detectedIssues.add(normalized);
+        }
+      };
+      const persistRecoveryEvent = async (event) => {
+        const payload = {
+          reason: "poisoned_worktree",
+          branch,
+          taskId,
+          worktreePath: event?.worktreePath || recoveryState.worktreePath || null,
+          phase: event?.phase || recoveryState.phase || null,
+          detectedIssues: event?.detectedIssues || Array.from(recoveryState.detectedIssues),
+          error: event?.error || null,
+          outcome: event?.outcome || "healthy_noop",
+          timestamp: new Date().toISOString(),
+        };
+        const details = [
+          `outcome=${payload.outcome}`,
+          `branch=${payload.branch}`,
+          payload.taskId ? `taskId=${payload.taskId}` : "",
+          payload.phase ? `phase=${payload.phase}` : "",
+          payload.worktreePath ? `path=${payload.worktreePath}` : "",
+          payload.detectedIssues.length ? `issues=${payload.detectedIssues.join(",")}` : "",
+          payload.error ? `error=${payload.error}` : "",
+        ].filter(Boolean).join(" ");
+        ctx.log(node.id, `[worktree-recovery] ${details}`);
+        await recordWorktreeRecoveryEvent(repoRoot, payload);
+      };
       if (!shouldSkipGitRefreshForTests()) {
         try {
           execGitArgsSync(["fetch", "origin", baseBranchShort, "--no-tags"], {
@@ -11465,9 +11505,11 @@ registerBuiltinNodeType("action.acquire_worktree", {
       if (existsSync(worktreePath)) {
         if (!isValidGitWorktreePath(worktreePath)) {
           ctx.log(node.id, `Managed worktree is invalid, recreating: ${worktreePath}`);
+          notePoisonedWorktree("pre-reuse", worktreePath, ["missing_git_metadata"]);
           cleanupBrokenManagedWorktree(repoRoot, worktreePath);
         } else if (hasUnresolvedGitOperation(worktreePath)) {
           ctx.log(node.id, `Managed worktree has unresolved git state, recreating: ${worktreePath}`);
+          notePoisonedWorktree("pre-reuse", worktreePath, ["unresolved_git_operation"]);
           cleanupBrokenManagedWorktree(repoRoot, worktreePath);
         }
       }
@@ -11486,6 +11528,10 @@ registerBuiltinNodeType("action.acquire_worktree", {
           ctx.data.worktreePath = worktreePath;
           ctx.data._worktreeCreated = false;
           ctx.data._worktreeManaged = true;
+          await persistRecoveryEvent({
+            outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+            worktreePath,
+          });
           ctx.log(node.id, `Reusing worktree: ${worktreePath}`);
           const cleared1 = clearBlockedWorktreeIdentity(worktreePath);
           if (cleared1) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${worktreePath}`);
@@ -11515,6 +11561,11 @@ registerBuiltinNodeType("action.acquire_worktree", {
               node.id,
               `Existing branch worktree is invalid or unresolved, recreating managed path: ${existingBranchWorktree}`,
             );
+            notePoisonedWorktree("attached-branch", existingBranchWorktree, [
+              !isValidGitWorktreePath(existingBranchWorktree)
+                ? "missing_git_metadata"
+                : "unresolved_git_operation",
+            ]);
             cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
           }
         }
@@ -11539,6 +11590,10 @@ registerBuiltinNodeType("action.acquire_worktree", {
           ctx.data.worktreePath = existingBranchWorktree;
           ctx.data._worktreeCreated = false;
           ctx.data._worktreeManaged = true;
+          await persistRecoveryEvent({
+            outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+            worktreePath: existingBranchWorktree,
+          });
           ctx.log(node.id, `Reusing existing branch worktree: ${existingBranchWorktree}`);
           const cleared2 = clearBlockedWorktreeIdentity(existingBranchWorktree);
           if (cleared2) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${existingBranchWorktree}`);
@@ -11571,6 +11626,11 @@ registerBuiltinNodeType("action.acquire_worktree", {
                 node.id,
                 `Existing branch worktree is invalid or unresolved, recreating managed path: ${existingBranchWorktree}`,
               );
+              notePoisonedWorktree("attached-branch", existingBranchWorktree, [
+                !isValidGitWorktreePath(existingBranchWorktree)
+                  ? "missing_git_metadata"
+                  : "unresolved_git_operation",
+              ]);
               cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
             }
           }
@@ -11595,6 +11655,10 @@ registerBuiltinNodeType("action.acquire_worktree", {
             ctx.data.worktreePath = existingBranchWorktree;
             ctx.data._worktreeCreated = false;
             ctx.data._worktreeManaged = true;
+            await persistRecoveryEvent({
+              outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+              worktreePath: existingBranchWorktree,
+            });
             ctx.log(node.id, `Reusing existing branch worktree: ${existingBranchWorktree}`);
             const cleared2 = clearBlockedWorktreeIdentity(existingBranchWorktree);
             if (cleared2) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${existingBranchWorktree}`);
@@ -11625,6 +11689,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
           fetchTimeout,
         );
         if (!existsSync(worktreePath)) {
+          notePoisonedWorktree("post-pull", worktreePath, ["refresh_conflict"]);
           throw new Error(
             `Worktree refresh failed for existing branch ${branch}; managed worktree was removed after stale refresh state`,
           );
@@ -11637,6 +11702,10 @@ registerBuiltinNodeType("action.acquire_worktree", {
       ctx.data.worktreePath = worktreePath;
       ctx.data._worktreeCreated = true;
       ctx.data._worktreeManaged = true;
+      await persistRecoveryEvent({
+        outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+        worktreePath,
+      });
       ctx.log(node.id, `Worktree created: ${worktreePath} (branch: ${branch}, base: ${baseBranch})`);
       return { success: true, worktreePath, created: true, branch, baseBranch };
     } catch (err) {
@@ -11648,6 +11717,15 @@ registerBuiltinNodeType("action.acquire_worktree", {
       const blockedReason = retryable
         ? errorMessage
         : "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.";
+      if (!retryable) {
+        await persistRecoveryEvent({
+          outcome: "recreation_failed",
+          phase: recoveryState.phase || "post-pull",
+          worktreePath: recoveryState.worktreePath || resolve(repoRoot, ".bosun", "worktrees", deriveManagedWorktreeDirName(taskId, branch)),
+          detectedIssues: Array.from(recoveryState.detectedIssues.size ? recoveryState.detectedIssues : ["refresh_conflict"]),
+          error: errorMessage,
+        });
+      }
       ctx.log(node.id, `Worktree acquisition failed: ${errorMessage}`);
       return {
         success: false,

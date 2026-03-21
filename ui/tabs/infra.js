@@ -22,6 +22,7 @@ import {
 } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
 import { cloneValue, formatRelative, formatBytes, downloadFile } from "../modules/utils.js";
+import { buildWorktreeRecoveryViewModel } from "../modules/worktree-recovery.js";
 import {
   Card as LegacyCard,
   Badge as LegacyBadge,
@@ -78,6 +79,7 @@ export function InfraTab() {
     ? wtRaw
     : wtRaw?.worktrees || wtRaw?.data || [];
   const wStats = (wtRaw && !Array.isArray(wtRaw) ? wtRaw.stats : null) || {};
+  const recovery = buildWorktreeRecoveryViewModel(wStats.recovery || null);
 
   /* Shared workspaces */
   const swRaw = sharedWorkspaces?.value;
@@ -533,6 +535,29 @@ export function InfraTab() {
                 <${Typography} variant="h5" sx=${{ color: "warning.main" }}>${wStats.stale ?? 0}<//>
                 <${Typography} variant="caption" color="text.secondary">Stale<//>
               <//>
+            <//>
+
+            <${Paper} variant="outlined" sx=${{ p: 1.5 }}>
+              <${Stack} direction="row" justifyContent="space-between" alignItems="flex-start" spacing=${1}>
+                <${Box}>
+                  <${Typography} fontWeight=${600}>Recovery Diagnostics<//>
+                  <${Typography} variant="body2" color="text.secondary">${recovery.headline}<//>
+                  <${Typography} variant="caption" color="text.secondary">${recovery.summary}<//>
+                <//>
+                <${Chip}
+                  label=${recovery.health}
+                  size="small"
+                  color=${recovery.tone === "error" ? "error" : recovery.tone === "warning" ? "warning" : "success"}
+                  variant="outlined"
+                />
+              <//>
+              ${recovery.events.slice(0, 4).map((event) => html`
+                <${Paper} key=${event.key} variant="outlined" sx=${{ p: 1, mt: 1, bgcolor: "background.default" }}>
+                  <${Typography} variant="body2" fontWeight=${600}>${event.title}<//>
+                  <${Typography} variant="caption" color="text.secondary">${event.detail}<//>
+                  ${event.error && html`<${Typography} variant="caption" color="error.main" sx=${{ display: "block", mt: 0.5 }}>${event.error}<//>`}
+                <//>
+              `)}
             <//>
 
             <${Stack} direction="row" spacing=${1}>

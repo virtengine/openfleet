@@ -49,6 +49,7 @@ import { getAgentToolConfig, getEffectiveTools } from "../../agent/agent-tool-co
 import { getToolsPromptBlock } from "../../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../../agent/bosun-skills.mjs";
 import { getSessionTracker } from "../../infra/session-tracker.mjs";
+import { recordWorktreeRecoveryEvent } from "../../infra/worktree-recovery-state.mjs";
 import { normalizeBaseBranch } from "../../git/git-safety.mjs";
 import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../../git/git-commit-helpers.mjs";
 import {
@@ -4641,12 +4642,49 @@ registerNodeType("action.acquire_worktree", {
           );
         }
         ctx.log(node.id, `Discarding broken managed worktree (${phaseLabel}): ${candidatePath} ${details}`.trim());
+        recoveryState.recreated = true;
+        recoveryState.phase = phaseLabel;
+        recoveryState.worktreePath = candidatePath;
+        for (const issue of state.issues || []) {
+          const normalized = String(issue || "").trim();
+          if (normalized) recoveryState.detectedIssues.add(normalized);
+        }
         resetManagedWorktree(repoRoot, candidatePath, state.gitDir);
         return true;
       };
 
       // Ensure base branch ref is fresh
       const baseBranchShort = baseBranch.replace(/^origin\//, "");
+      const recoveryState = {
+        recreated: false,
+        detectedIssues: new Set(),
+        phase: null,
+        worktreePath: null,
+      };
+      const persistRecoveryEvent = async (event) => {
+        const payload = {
+          reason: "poisoned_worktree",
+          branch,
+          taskId,
+          worktreePath: event?.worktreePath || recoveryState.worktreePath || null,
+          phase: event?.phase || recoveryState.phase || null,
+          detectedIssues: event?.detectedIssues || Array.from(recoveryState.detectedIssues),
+          error: event?.error || null,
+          outcome: event?.outcome || "healthy_noop",
+          timestamp: new Date().toISOString(),
+        };
+        const details = [
+          `outcome=${payload.outcome}`,
+          `branch=${payload.branch}`,
+          payload.taskId ? `taskId=${payload.taskId}` : "",
+          payload.phase ? `phase=${payload.phase}` : "",
+          payload.worktreePath ? `path=${payload.worktreePath}` : "",
+          payload.detectedIssues.length ? `issues=${payload.detectedIssues.join(",")}` : "",
+          payload.error ? `error=${payload.error}` : "",
+        ].filter(Boolean).join(" ");
+        ctx.log(node.id, `[worktree-recovery] ${details}`);
+        await recordWorktreeRecoveryEvent(repoRoot, payload);
+      };
       try {
         execGitArgsSync(["fetch", "origin", baseBranchShort, "--no-tags"], {
           cwd: repoRoot, encoding: "utf8",
@@ -4694,6 +4732,10 @@ registerNodeType("action.acquire_worktree", {
           ctx.data.baseBranch = baseBranch;
           ctx.data._worktreeCreated = false;
           ctx.data._worktreeManaged = true;
+          await persistRecoveryEvent({
+            outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+            worktreePath,
+          });
           ctx.log(node.id, `Reusing worktree: ${worktreePath}`);
           return { success: true, worktreePath, created: false, reused: true, branch, baseBranch };
         }
@@ -4724,6 +4766,10 @@ registerNodeType("action.acquire_worktree", {
             ctx.data.baseBranch = baseBranch;
             ctx.data._worktreeCreated = false;
             ctx.data._worktreeManaged = true;
+            await persistRecoveryEvent({
+              outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+              worktreePath: attachedPath,
+            });
             ctx.log(node.id, `Reusing existing branch worktree: ${attachedPath}`);
             return {
               success: true,
@@ -4758,9 +4804,22 @@ registerNodeType("action.acquire_worktree", {
       ctx.data.baseBranch = baseBranch;
       ctx.data._worktreeCreated = true;
       ctx.data._worktreeManaged = true;
+      await persistRecoveryEvent({
+        outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+        worktreePath,
+      });
       ctx.log(node.id, `Worktree created: ${worktreePath} (branch: ${branch}, base: ${baseBranch})`);
       return { success: true, worktreePath, created: true, branch, baseBranch };
     } catch (err) {
+      if (/managed worktree was removed after stale refresh state/i.test(String(err?.message || ""))) {
+        await persistRecoveryEvent({
+          outcome: "recreation_failed",
+          phase: recoveryState.phase || "post-pull",
+          worktreePath: recoveryState.worktreePath || worktreePath,
+          detectedIssues: Array.from(recoveryState.detectedIssues.size ? recoveryState.detectedIssues : ["refresh_conflict"]),
+          error: String(err?.message || err),
+        });
+      }
       ctx.log(node.id, `Worktree acquisition failed: ${err.message}`);
       return { success: false, error: err.message, branch, baseBranch };
     }
