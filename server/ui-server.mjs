@@ -21231,7 +21231,7 @@ export async function startTelegramUiServer(options = {}) {
     if (!sessionStateListenerAttached) {
       sessionStateListenerAttached = true;
       addSessionStateListener((payload) => {
-        broadcastTuiSessionsSnapshot(payload?.reason || "updated", payload || {});
+        broadcastTuiSessionsSnapshot(payload?.reason || payload?.event?.reason || "updated", payload || {});
       });
     }
     if (!activeSessionListenerAttached) {
@@ -21883,6 +21883,7 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
 
 
 

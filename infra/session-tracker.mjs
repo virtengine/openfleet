@@ -265,8 +265,9 @@ export class SessionTracker {
       metadata: {},
       insights: buildSessionInsights({ messages: [] }),
     });
+    const session = this.#sessions.get(taskId);
     this.#markDirty(taskId);
-    emitSessionStateEvent(session, "session-updated", { eventKind: msg.type || msg.role || "message" });
+    emitSessionStateEvent(session, "session-started", { title: taskTitle || taskId });
   }
 
   /**
@@ -370,7 +371,6 @@ export class SessionTracker {
     }
     this.#refreshDerivedState(session);
     this.#markDirty(taskId);
-    emitSessionStateEvent(session, "session-updated", { eventKind: msg.type || msg.role || "message" });
     emitSessionEvent(session, msg);
   }
 
@@ -938,6 +938,7 @@ export class SessionTracker {
         this.#refreshDerivedState(session);
         this.#accumulateCompletedSession(session, id);
         this.#markDirty(id);
+        emitSessionStateEvent(session, "session-idle-timeout", { status: session.status, idleMs });
         reaped++;
       }
     }

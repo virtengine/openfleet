@@ -1,177 +1,234 @@
 # TUI WebSocket Event Contract
 
-Bosun's terminal UI connects to the same local WebSocket server as the portal at `/ws`.
-The TUI subscribes to a canonical set of real-time event types and should treat the
-payloads below as the stable contract.
+The Bosun TUI subscribes to the same local WebSocket endpoint as the portal: `/ws` on the `server/ui-server.mjs` HTTP server.
 
 ## Authentication
 
-- The WebSocket server uses the same session token as the portal.
-- The token can be sent as `Authorization: Bearer <token>` or as the `token` query
-  parameter on `/ws`.
-- Bosun persists a compatible plain-text token at `.bosun/.cache/ui-token`.
-- The TUI may also read the token from `BOSUN_TUI_AUTH_TOKEN`, `BOSUN_TUI_WS_TOKEN`,
-  `BOSUN_UI_TOKEN`, or `BOSUN_WS_TOKEN`.
-- When the portal session token rotates, Bosun refreshes `.bosun/.cache/ui-token` so the
-  TUI can reconnect without a portal-specific workaround.
+The TUI uses the same session token as the portal.
 
-Example URL:
+1. Bosun creates or reuses the UI session token during UI server startup.
+2. The server persists the token to both:
+   - `.bosun/.cache/ui-session-token.json`
+   - `.bosun/.cache/ui-token`
+3. The TUI resolves its token from:
+   - `BOSUN_TUI_WS_TOKEN`
+   - `BOSUN_UI_TOKEN`
+   - `BOSUN_WS_TOKEN`
+   - `.bosun/.cache/ui-token`
+4. The TUI connects to `ws://127.0.0.1:<port>/ws` or `wss://.../ws` and passes the token as either:
+   - `Authorization: Bearer <token>`
+   - `?token=<token>`
 
-```text
-ws://127.0.0.1:3080/ws?token=<shared-ui-token>
+No portal-specific workaround is required: the TUI reuses the same token and endpoint the portal already uses.
+
+## Envelope
+
+Every server-originated WS message uses the standard envelope:
+
+```json
+{
+  "type": "monitor:stats",
+  "channels": ["monitor", "stats", "tui"],
+  "payload": {},
+  "ts": 1774100000000
+}
 ```
 
-## Existing WS Audit
-
-The current WebSocket bus is centered in `server/ui-server.mjs`. `telegram/telegram-bot.mjs`
-relies on that local UI server rather than maintaining a separate TUI-specific socket bus.
-The audit below catalogs the emitted events relevant to the TUI bridge.
-
-| Event | Payload shape | Emitter location |
-| --- | --- | --- |
-| `hello` | `{ connected: true }` handshake envelope | `server/ui-server.mjs` socket accept path |
-| `subscribed` | `{ ok: true }` subscription ack | `server/ui-server.mjs` WS message handler |
-| `pong` | ping/pong heartbeat envelope | `server/ui-server.mjs` WS message handler |
-| `session-message` | legacy per-message payload from session tracker | `server/ui-server.mjs` → `broadcastSessionMessage()` |
-| `sessions:update` | canonical full session snapshot array | `server/ui-server.mjs` → initial connect, `broadcastTuiSessionsSnapshot()`, message mirror, active-session listener |
-| `session:event` | canonical incremental session payload | `server/ui-server.mjs` → `broadcastTuiSessionsSnapshot()` and `broadcastSessionMessage()` |
-| `monitor:stats` | canonical monitor aggregate snapshot | `server/ui-server.mjs` → initial connect and `createTuiStatsEmitter()` |
-| `stats` | legacy portal stats payload | `server/ui-server.mjs` stats emitter |
-| `workflow-run-events` | legacy batched workflow run/node updates | `server/ui-server.mjs` → `queueWorkflowWsEvent()` |
-| `workflow:status` | canonical workflow status payload | `workflow/workflow-engine.mjs` emits lifecycle events; `server/ui-server.mjs` bridges them in `attachWorkflowEngineLiveBridge()` |
-| `log-lines` | legacy streamed raw log lines | `server/ui-server.mjs` → `startLogStream()` |
-| `logs:stream` | canonical structured log line payload | `server/ui-server.mjs` → `startLogStream()` |
-| `retry-queue-updated` / `invalidate` | legacy task and overview invalidation payloads | `server/ui-server.mjs` → `broadcastUiEvent()` |
-| `tasks:update` | canonical task diff payload | `server/ui-server.mjs` → derived inside `broadcastUiEvent()` |
+The TUI subscribes to the canonical event types below.
 
 ## Canonical Events
 
 ### `monitor:stats`
 
-Emitted every 2 seconds with system-wide aggregate stats.
+System-wide aggregate stats, emitted on connect and every 2 seconds from `server/ui-server.mjs` via the TUI stats emitter.
 
-Payload fields:
+Payload schema:
 
-- `activeAgents`
-- `maxAgents`
-- `tokensIn`
-- `tokensOut`
-- `tokensTotal`
-- `throughputTps`
-- `uptimeMs`
-- `rateLimits` — map keyed by provider with `{ primary, secondary, credits, unit }`
+```json
+{
+  "activeAgents": 2,
+  "maxAgents": 5,
+  "tokensIn": 150,
+  "tokensOut": 50,
+  "tokensTotal": 200,
+  "throughputTps": 10,
+  "uptimeMs": 123456,
+  "rateLimits": {
+    "openai": {
+      "primary": 1000,
+      "secondary": 500,
+      "credits": 200,
+      "unit": "tokens/min"
+    }
+  }
+}
+```
 
-Primary emitters:
-
-- `server/ui-server.mjs` initial WS snapshot on connect
-- `server/ui-server.mjs` periodic `createTuiStatsEmitter()` broadcast
+Emitter path:
+- `server/ui-server.mjs` periodic stats emitter
+- `infra/tui-bridge.mjs` `buildMonitorStatsPayload()`
 
 ### `sessions:update`
 
-Emitted whenever session state changes. The payload is the full session snapshot array in
-the same shape returned by the session tracker list API.
+Full session snapshot, emitted on connect and whenever tracked session state changes.
 
-Typical triggers:
+Payload schema:
 
-- agent session starts
-- token counters update
-- agent session ends
-- session metadata changes
-- active-session registry changes
+```json
+[
+  {
+    "id": "session-1",
+    "taskId": "task-1",
+    "title": "Example session",
+    "type": "task",
+    "status": "active",
+    "workspaceId": "workspace-1",
+    "workspaceDir": "C:/repo/workspace-1",
+    "branch": "feature/example",
+    "turnCount": 3,
+    "createdAt": "2026-03-21T12:00:00.000Z",
+    "lastActiveAt": "2026-03-21T12:00:02.000Z",
+    "idleMs": 0,
+    "elapsedMs": 2000,
+    "recommendation": "continue",
+    "preview": "hello",
+    "lastMessage": "hello",
+    "insights": {}
+  }
+]
+```
 
-Primary emitters:
-
-- `infra/session-tracker.mjs` state listeners for start, update, end, status, rename
-- `agent/agent-pool.mjs` active-session listener for steerable session lifecycle
-- `server/ui-server.mjs` initial WS snapshot on connect
+Emitter path:
+- `infra/session-tracker.mjs` state listeners
+- `server/ui-server.mjs` `broadcastTuiSessionsSnapshot()`
 
 ### `session:event`
 
-Incremental per-session event stream.
+Incremental per-session event, emitted for message activity and state changes.
 
-Two common shapes:
+Payload schema:
 
-- `event.kind = "message"` for streamed session messages
-- `event.kind = "state"` for lifecycle changes such as start, refresh, usage, or end
+```json
+{
+  "sessionId": "session-1",
+  "taskId": "task-1",
+  "session": {
+    "id": "session-1",
+    "taskId": "task-1",
+    "type": "task",
+    "status": "active",
+    "lastActiveAt": "2026-03-21T12:00:03.000Z",
+    "turnCount": 4
+  },
+  "event": {
+    "kind": "state",
+    "reason": "session-updated"
+  }
+}
+```
 
-Primary emitters:
-
-- `server/ui-server.mjs` message mirror in `broadcastSessionMessage()`
-- `server/ui-server.mjs` state mirror in `broadcastTuiSessionsSnapshot()`
+Emitter path:
+- `infra/session-tracker.mjs` message/state listeners
+- `server/ui-server.mjs` session WS bridge
 
 ### `logs:stream`
 
-Structured log line event emitted while log streaming is active.
+Structured log line emitted after a client sends `subscribe-logs`.
 
-Payload fields:
+Payload schema:
 
-- `logType`
-- `query`
-- `filePath`
-- `line`
-- `raw`
-- `level`
-- `timestamp`
+```json
+{
+  "logType": "system",
+  "query": "monitor",
+  "filePath": "C:/tmp/monitor.log",
+  "line": "2026-03-21T12:00:04.000Z info monitor heartbeat",
+  "raw": "2026-03-21T12:00:04.000Z info monitor heartbeat",
+  "level": "info",
+  "timestamp": "2026-03-21T12:00:04.000Z"
+}
+```
 
-Emitter location:
-
-- `server/ui-server.mjs` → `startLogStream()`
+Emitter path:
+- `server/ui-server.mjs` log stream poller
+- `infra/tui-bridge.mjs` `buildLogStreamPayload()`
 
 ### `workflow:status`
 
-Workflow lifecycle event emitted by the workflow engine.
+Workflow run state changes. Emitted at run start, node complete, run complete, and run error.
 
-Emitted at minimum for:
+Payload schema:
 
-- run start
-- node complete
-- run complete
-- run error
+```json
+{
+  "runId": "run-1",
+  "workflowId": "workflow-1",
+  "workflowName": "Test Workflow",
+  "eventType": "node:complete",
+  "status": "success",
+  "nodeId": "node-1",
+  "nodeType": "action.test",
+  "nodeLabel": "Test Node",
+  "error": null,
+  "durationMs": 15,
+  "timestamp": 1774100000000,
+  "meta": {
+    "attempt": 0
+  }
+}
+```
 
-Payload fields:
-
-- `runId`
-- `workflowId`
-- `workflowName`
-- `eventType`
-- `status`
-- `nodeId`
-- `nodeType`
-- `nodeLabel`
-- `error`
-- `durationMs`
-- `timestamp`
-- `meta`
-
-Primary emitters:
-
-- `workflow/workflow-engine.mjs` → `_emitWorkflowStatus()`
-- `server/ui-server.mjs` → `attachWorkflowEngineLiveBridge()`
+Emitter path:
+- `workflow/workflow-engine.mjs` `_emitWorkflowStatus()`
+- `server/ui-server.mjs` workflow WS bridge
 
 ### `tasks:update`
 
-Canonical task/kanban diff event. Bosun derives this from broader task invalidation and
-task mutation broadcasts so the TUI can consume a stable payload shape.
+Canonical task/kanban diff event derived from task invalidation and CRUD broadcasts.
 
-Payload fields:
+Payload schema:
 
-- `reason`
-- `sourceEvent`
-- `taskId`
-- `taskIds`
-- `status`
-- `workspaceId`
-- `projectId`
-- `patch`
+```json
+{
+  "reason": "task-status-changed",
+  "sourceEvent": "invalidate",
+  "taskId": "task-1",
+  "taskIds": null,
+  "status": "inprogress",
+  "workspaceId": "workspace-1",
+  "projectId": null,
+  "patch": {
+    "reason": "task-status-changed",
+    "taskId": "task-1",
+    "status": "inprogress"
+  }
+}
+```
 
-Emitter location:
+Emitter path:
+- `server/ui-server.mjs` `broadcastUiEvent()`
+- `infra/tui-bridge.mjs` `buildTasksUpdatePayload()`
 
-- `server/ui-server.mjs` → `broadcastUiEvent()` task-channel derivation
+## Current WS Audit
 
-## Notes
+The current WS bridge in `server/ui-server.mjs` emits:
 
-- Legacy UI events such as `stats`, `session-message`, `workflow-run-events`, and
-  `log-lines` may still be present for portal compatibility.
-- The TUI should prefer the six canonical event types documented here.
-- CI validates the contract schemas with Ajv in `tests/tui-events.test.mjs`,
-  `tests/tui-bridge.test.mjs`, and `tests/ui-server-tui-events.test.mjs`.
+- `hello` - initial connection acknowledgement
+- `subscribed` - channel subscription acknowledgement
+- `pong` - heartbeat reply
+- `session-message` - existing chat/session stream used by portal clients
+- `monitor:stats` - canonical TUI stats snapshot
+- `sessions:update` - canonical full session snapshot
+- `session:event` - canonical per-session incremental event
+- `logs:stream` - canonical structured log line
+- `workflow:status` - canonical workflow state change
+- `tasks:update` - canonical task diff event
+- `workflow-run-events` - existing workflow timeline batch for portal UI
+- `stats` - legacy portal/TUI aggregate event kept for compatibility
+- `invalidate` and other portal-specific channel events used by existing portal tabs
+
+## CI Validation
+
+`tests/tui-events.test.mjs` validates the schema contract with Ajv.
+`tests/ui-server-tui-events.test.mjs` validates live WS auth and canonical snapshot delivery.
+`tests/workflow-engine.tui-status.test.mjs` validates workflow engine status emissions.
