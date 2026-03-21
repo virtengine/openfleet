@@ -11465,26 +11465,25 @@ registerBuiltinNodeType("action.acquire_worktree", {
         outcome: event?.outcome || "healthy_noop",
         timestamp: new Date().toISOString(),
       };
+      try {
+        await recordWorktreeRecoveryEvent(repoRoot, payload);
+      } catch (err) {
+        ctx.log(
+          node.id,
+          `[worktree-recovery] failed to persist recovery event: ${
+            err && err.message ? err.message : String(err)
+          }`,
+        );
+      }
       const details = [
         `outcome=${payload.outcome}`,
         `branch=${payload.branch}`,
         payload.taskId ? `taskId=${payload.taskId}` : "",
         payload.phase ? `phase=${payload.phase}` : "",
         payload.worktreePath ? `path=${payload.worktreePath}` : "",
-        try {
-          await recordWorktreeRecoveryEvent(repoRoot, payload);
-        } catch (err) {
-          ctx.log(
-            node.id,
-            `[worktree-recovery] failed to persist recovery event: ${
-              err && err.message ? err.message : String(err)
-            }`,
-          );
-        }
         payload.error ? `error=${payload.error}` : "",
       ].filter(Boolean).join(" ");
       ctx.log(node.id, `[worktree-recovery] ${details}`);
-      await recordWorktreeRecoveryEvent(repoRoot, payload);
     };
 
     if (!branch) throw new Error("action.acquire_worktree: branch is required");
