@@ -18833,7 +18833,23 @@ async function handleApi(req, res, url) {
         const detailed = tracker.getSessionById(session.id) || session;
         return sessionMatchesWorkspaceContext(detailed, workspaceContext);
       });
-      jsonResponse(res, 200, { ok: true, sessions });
+      jsonResponse(res, 200, {
+        ok: true,
+        sessions,
+        loadMeta: {
+          stale: false,
+          lastSuccessAt: new Date().toISOString(),
+          lastFailureAt: null,
+          staleReason: null,
+          staleReasonCode: null,
+          staleReasonLabel: null,
+          staleReasonMeta: null,
+          retryAttempt: 0,
+          retryDelayMs: 0,
+          nextRetryAt: null,
+          retriesExhausted: false,
+        },
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -21674,3 +21690,5 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
+
