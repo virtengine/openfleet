@@ -4,10 +4,15 @@
 # No cross-repo token needed — uses the built-in GITHUB_TOKEN.
 #
 # GitHub Pages settings for virtengine/bosun:
-#   Settings → Pages → Source: GitHub Actions
+#   Settings → Pages → Source: Deploy from branch (gh-pages / root)
 #
 # The CNAME file in site/ keeps bosun.engineer wired up.
 # NOTE: site/ui is a symlink to ../ui — resolved at deploy time.
+#
+# WARNING: Do NOT add a second workflow using actions/deploy-pages@v4.
+# That action requires build_type="workflow" but this repo uses legacy
+# branch-based deployment. The two are mutually exclusive and the API
+# deploy will hang on "purging_cdn" indefinitely.
 
 name: "Bosun: Deploy Site"
 
@@ -17,6 +22,10 @@ on:
     paths:
       - "site/**"
       - "ui/**"
+      - "_docs/**"
+      - "docs/**"
+      - "package.json"
+      - "tools/build-docs.mjs"
   workflow_dispatch:
 
 jobs:
@@ -31,6 +40,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Inject version into docs
+        run: node tools/build-docs.mjs
 
       # GitHub Pages does not follow symlinks.
       # site/ui → ../ui is a symlink that works locally but breaks on GH Pages.
