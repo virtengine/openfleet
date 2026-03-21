@@ -225,6 +225,7 @@ describe("template fingerprint normalization for hydrated port metadata", () => 
     assert.equal(wf.metadata.templateState.isCustomized, false);
 
     for (const node of wf.nodes) {
+      node.inputs = ["default"];
       node.inputPorts = [{ name: "default", label: "Default", type: "Any" }];
       node.outputPorts = [{ name: "default", label: "Default", type: "Any" }];
       node.outputs = ["default", "default"];

@@ -351,7 +351,9 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
     if (!node || typeof node !== "object") return node;
     const next = JSON.parse(JSON.stringify(node));
     delete next.position;
+    delete next.inputs;
     delete next.inputPorts;
+    delete next.outputs;
     delete next.outputPorts;
     delete next.width;
     delete next.height;

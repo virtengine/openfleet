@@ -12001,12 +12001,18 @@ registerBuiltinNodeType("action.build_task_prompt", {
       taskMeta?.taskId,
       taskId,
     );
-    const normalizedTaskTitle = pickFirstString(
+    const resolvedTaskTitle = pickFirstString(
       resolvePromptValue("taskTitle"),
       taskPayload?.title,
       taskMeta?.taskTitle,
       taskTitle,
-    ) || (normalizedTaskId ? `Task ${normalizedTaskId}` : "Untitled task");
+    );
+    const normalizedTaskTitle =
+      resolvedTaskTitle && resolvedTaskTitle.toLowerCase() !== "untitled task"
+        ? resolvedTaskTitle
+        : normalizedTaskId
+          ? `Task ${normalizedTaskId}`
+          : "Untitled task";
     const normalizedTaskDescription = pickFirstString(
       resolvePromptValue("taskDescription"),
       taskPayload?.description,

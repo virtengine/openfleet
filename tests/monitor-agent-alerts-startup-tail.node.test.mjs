@@ -41,4 +41,12 @@ describe("monitor agent alerts startup tail", () => {
       "agentAlertsOffset should be restored from persisted state on startup",
     );
   });
+
+  it("seeks to the current alert log size on startup when replay is disabled", () => {
+    assert.ok(
+      source.includes("initializeAgentAlertsOffset") &&
+        source.includes("statSync(path).size"),
+      "startup tailing should initialize from the current alert log size by default",
+    );
+  });
 });
