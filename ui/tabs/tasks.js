@@ -1529,7 +1529,7 @@ export function StartTaskModal({
             fullWidth
             options=${(() => {
               const STARTABLE = new Set(["draft", "backlog", "open", "new", "todo", "blocked", "error", "failed"]);
-              const GROUP_LABELS = { draft: "Draft", backlog: "Todo", blocked: "Blocked" };
+
               const getGroup = (s) => {
                 const lower = (s || "").toLowerCase();
                 if (lower === "draft") return "Draft";

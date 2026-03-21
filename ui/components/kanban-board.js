@@ -875,9 +875,9 @@ function KanbanColumn({
   const isOver = dragOverCol.value === col.id || touchOverCol.value === col.id;
   const liveCount = tasks.length;
   const serverCount = Number.isFinite(Number(totalCount)) && Number(totalCount) > 0 ? Number(totalCount) : 0;
-  const countLabel = serverCount > liveCount
-    ? (hasMoreTasks ? `${liveCount}/${serverCount}` : serverCount)
-    : (hasMoreTasks ? `${liveCount}+` : liveCount);
+  const countLabel = hasMoreTasks
+    ? (serverCount > liveCount ? `${liveCount}/${serverCount}` : `${liveCount}+`)
+    : liveCount;
 
   return html`
     <div
