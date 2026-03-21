@@ -4676,7 +4676,14 @@ registerNodeType("action.acquire_worktree", {
               currentBranch = branchRef.replace(/^refs\/heads\//, "");
             }
           }
-          if (currentPath && currentBranch === branch) return currentPath;
+        try {
+          await recordWorktreeRecoveryEvent(repoRoot, payload);
+        } catch (err) {
+          ctx.log(
+            node.id,
+            `[worktree-recovery] Warning: failed to record recovery event: ${err && err.message ? err.message : String(err)}`,
+          );
+        }
         } catch {
           // best-effort only
         }
@@ -4835,12 +4842,36 @@ registerNodeType("action.acquire_worktree", {
       ctx.log(node.id, `Worktree created: ${worktreePath} (branch: ${branch}, base: ${baseBranch})`);
       return { success: true, worktreePath, created: true, branch, baseBranch };
     } catch (err) {
+      // Safely derive recovery context without assuming try-block scoped bindings exist here.
+      const safeRecoveryState =
+        typeof recoveryState !== "undefined" && recoveryState
+          ? recoveryState
+          : {
+              phase: "post-pull",
+              worktreePath:
+                (typeof worktreePath !== "undefined" && worktreePath) ||
+                (ctx?.data && ctx.data.worktreePath) ||
+                undefined,
+              detectedIssues: new Set(["refresh_conflict"]),
+            };
+      const safePersistRecoveryEvent =
+        typeof persistRecoveryEvent === "function" ? persistRecoveryEvent : async () => {};
+      const safeWorktreePath =
+        (typeof worktreePath !== "undefined" && worktreePath) ||
+        safeRecoveryState.worktreePath ||
+        (ctx?.data && ctx.data.worktreePath) ||
+        undefined;
+
       if (/managed worktree was removed after stale refresh state/i.test(String(err?.message || ""))) {
-        await persistRecoveryEvent({
+        await safePersistRecoveryEvent({
           outcome: "recreation_failed",
-          phase: recoveryState.phase || "post-pull",
-          worktreePath: recoveryState.worktreePath || worktreePath,
-          detectedIssues: Array.from(recoveryState.detectedIssues.size ? recoveryState.detectedIssues : ["refresh_conflict"]),
+          phase: safeRecoveryState.phase || "post-pull",
+          worktreePath: safeRecoveryState.worktreePath || safeWorktreePath,
+          detectedIssues: Array.from(
+            safeRecoveryState.detectedIssues && safeRecoveryState.detectedIssues.size
+              ? safeRecoveryState.detectedIssues
+              : ["refresh_conflict"],
+          ),
           error: String(err?.message || err),
         });
       }

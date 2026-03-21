@@ -11464,7 +11464,16 @@ registerBuiltinNodeType("action.acquire_worktree", {
         payload.taskId ? `taskId=${payload.taskId}` : "",
         payload.phase ? `phase=${payload.phase}` : "",
         payload.worktreePath ? `path=${payload.worktreePath}` : "",
-        payload.detectedIssues.length ? `issues=${payload.detectedIssues.join(",")}` : "",
+        try {
+          await recordWorktreeRecoveryEvent(repoRoot, payload);
+        } catch (err) {
+          ctx.log(
+            node.id,
+            `[worktree-recovery] failed to persist recovery event: ${
+              err && err.message ? err.message : String(err)
+            }`,
+          );
+        }
         payload.error ? `error=${payload.error}` : "",
       ].filter(Boolean).join(" ");
       ctx.log(node.id, `[worktree-recovery] ${details}`);
@@ -11742,11 +11751,16 @@ registerBuiltinNodeType("action.acquire_worktree", {
         ? errorMessage
         : "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.";
       if (!retryable) {
-        await persistRecoveryEvent({
+        await recordWorktreeRecoveryEvent({
           outcome: "recreation_failed",
-          phase: recoveryState.phase || "post-pull",
-          worktreePath: recoveryState.worktreePath || resolve(repoRoot, ".bosun", "worktrees", deriveManagedWorktreeDirName(taskId, branch)),
-          detectedIssues: Array.from(recoveryState.detectedIssues.size ? recoveryState.detectedIssues : ["refresh_conflict"]),
+          phase: "post-pull",
+          worktreePath: resolve(
+            repoRoot,
+            ".bosun",
+            "worktrees",
+            deriveManagedWorktreeDirName(taskId, branch)
+          ),
+          detectedIssues: ["refresh_conflict"],
           error: errorMessage,
         });
       }

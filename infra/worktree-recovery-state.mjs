@@ -18,6 +18,17 @@ const VALID_HEALTH = new Set(["healthy", "recovered", "failing", "degraded"]);
 const VALID_OUTCOMES = new Set(["healthy_noop", "recreated", "recreation_failed"]);
 
 function getStatusPath(repoRoot) {
+  const override = String(process.env.STATUS_FILE || "").trim();
+  if (override) {
+    // If override is an absolute path, resolve it directly;
+    // if it's relative, resolve it against the repo root.
+    const isWindowsAbsolute = /^[a-zA-Z]:[\\/]/.test(override) || override.startsWith("\\\\");
+    const isPosixAbsolute = override.startsWith("/");
+    if (isWindowsAbsolute || isPosixAbsolute) {
+      return resolve(override);
+    }
+    return resolve(repoRoot, override);
+  }
   return resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
 }
 
