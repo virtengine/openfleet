@@ -256,6 +256,9 @@ const ANOMALY_SIGNAL_PATH = resolve(
 );
 
 const AGENT_ALERT_POLL_MS = 10_000;
+const AGENT_ALERTS_REPLAY_STARTUP = isTruthyFlag(
+  process.env.AGENT_ALERTS_REPLAY_STARTUP,
+);
 let agentWorkAnalyzerActive = false;
 let agentAlertsOffset = 0;
 let agentAlertsTimer = null;
@@ -316,6 +319,22 @@ function saveAgentAlertsState() {
     writeFileSync(statePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   } catch (err) {
     console.warn(`[monitor] failed saving alert tail state: ${err.message}`);
+  }
+}
+
+function initializeAgentAlertsOffset() {
+  loadAgentAlertsState();
+  if (AGENT_ALERTS_REPLAY_STARTUP) {
+    agentAlertsOffset = 0;
+    return;
+  }
+  if (agentAlertsOffset > 0) return;
+  const path = getAgentAlertsPath();
+  if (!existsSync(path)) return;
+  try {
+    agentAlertsOffset = statSync(path).size;
+  } catch {
+    agentAlertsOffset = 0;
   }
 }
 
@@ -1627,7 +1646,7 @@ function stopAgentWorkAnalyzer() {
 
 function startAgentAlertTailer() {
   if (agentAlertsTimer) return;
-  loadAgentAlertsState();
+  initializeAgentAlertsOffset();
   agentAlertsTimer = setInterval(() => {
     runDetached("agent-alerts:poll-interval", pollAgentAlerts);
   }, AGENT_ALERT_POLL_MS);
@@ -7046,8 +7065,9 @@ function buildEpicMergeBody(tasks, headName, baseName) {
   const maxList = 25;
   const slice = safeTasks.slice(0, maxList);
   for (const task of slice) {
-    const title = String(task?.title || task?.name || "Untitled task").trim();
-    const id = task?.id ? ` (${task.id})` : "";
+    const normalizedTaskId = String(task?.id || "").trim();
+    const title = deriveTaskDisplayTitle(task?.title || task?.name, normalizedTaskId);
+    const id = normalizedTaskId ? ` (${normalizedTaskId})` : "";
     lines.push(`- ${title}${id}`);
   }
   if (safeTasks.length > maxList) {
@@ -7057,6 +7077,16 @@ function buildEpicMergeBody(tasks, headName, baseName) {
   lines.push("---");
   lines.push("*Created by [Bosun Bot](https://github.com/apps/bosun-ve)*");
   return lines.join("\n");
+}
+
+function deriveTaskDisplayTitle(titleValue, taskId) {
+  const title = String(titleValue || "").trim();
+  if (title && title.toLowerCase() !== "untitled task") {
+    return title;
+  }
+
+  const normalizedTaskId = String(taskId || "").trim();
+  return normalizedTaskId ? `Task ${normalizedTaskId}` : "Untitled task";
 }
 
 function summarizeEpicBranch(headBranch, baseBranch) {
@@ -10103,8 +10133,8 @@ function formatRecentStatusItems(items, timestampField, maxItems = 6) {
     })
     .slice(0, maxItems)
     .map((entry) => {
-      const title = entry?.task_title || entry?.title || "Untitled task";
       const id = (entry?.task_id || entry?.id || "").toString().slice(0, 8);
+      const title = deriveTaskDisplayTitle(entry?.task_title || entry?.title, id);
       const suffix = id ? ` (${id})` : "";
       return `- ${title}${suffix}`;
     });
@@ -13880,7 +13910,7 @@ function startSelfWatcher() {
         } catch {}
       }
     }
-    console.log(`[monitor] watching source files for self-restart: ${watchedDirs.join(", ")}`);
+    console.log(`[monitor] watching own source files (root + lib/) for self-restart: ${watchedDirs.join(", ")}`);
   } catch (err) {
     console.warn(`[monitor] self-watcher failed: ${err.message}`);
   }
