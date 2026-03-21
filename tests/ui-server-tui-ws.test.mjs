@@ -77,6 +77,7 @@ describe("ui-server TUI websocket", () => {
     process.env.TELEGRAM_UI_TLS_DISABLE = "true";
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_STATS_BROADCAST_MS = "50";
     tmpDir = mkdtempSync(join(tmpdir(), "bosun-tui-ws-"));
     process.env.BOSUN_HOME = tmpDir;
     process.env.BOSUN_DIR = tmpDir;
@@ -115,19 +116,18 @@ describe("ui-server TUI websocket", () => {
 
     const sessionsSnapshot = await waitForMessage((message) => message?.type === "sessions:update");
     expect(Array.isArray(sessionsSnapshot.payload)).toBe(true);
+    expect(validateSessionsUpdate(sessionsSnapshot.payload), JSON.stringify(validateSessionsUpdate.errors || [])).toBe(true);
 
     const statsMessage = await waitForMessage((message) => message?.type === "monitor:stats");
-    expect(statsMessage.payload).toMatchObject({
-      activeAgents: expect.any(Number),
-      maxAgents: expect.any(Number),
-      tokensIn: expect.any(Number),
-      tokensOut: expect.any(Number),
-      tokensTotal: expect.any(Number),
-      throughputTps: expect.any(Number),
-      uptimeMs: expect.any(Number),
-      rateLimits: expect.any(Object),
-      ts: expect.any(Number),
-    });
+    expect(validateMonitorStats(statsMessage.payload), JSON.stringify(validateMonitorStats.errors || [])).toBe(true);
+
+    const nextStatsMessage = await waitForMessage(
+      (message) => message?.type === "monitor:stats"
+        && Number(message?.ts || 0) > Number(statsMessage.ts || 0),
+      5000,
+    );
+    expect(validateMonitorStats(nextStatsMessage.payload), JSON.stringify(validateMonitorStats.errors || [])).toBe(true);
+    expect(Number(nextStatsMessage.ts || 0)).toBeGreaterThan(Number(statsMessage.ts || 0));
 
     await createSession({
       id: "task-ws-1",
@@ -140,6 +140,7 @@ describe("ui-server TUI websocket", () => {
         && message.payload.some((entry) => entry.id === "task-ws-1"),
     );
     expect(createdSnapshot.payload.some((entry) => entry.id === "task-ws-1")).toBe(true);
+    expect(validateSessionsUpdate(createdSnapshot.payload), JSON.stringify(validateSessionsUpdate.errors || [])).toBe(true);
 
     getSessionTracker().recordEvent("task-ws-1", {
       role: "assistant",
@@ -150,6 +151,7 @@ describe("ui-server TUI websocket", () => {
       (message) => message?.type === "session:event" && message?.payload?.sessionId === "task-ws-1",
     );
     expect(sessionEvent.payload.message.content).toContain("hello from ws");
+    expect(validateSessionEvent(sessionEvent.payload), JSON.stringify(validateSessionEvent.errors || [])).toBe(true);
 
     updateSessionStatus("task-ws-1", "completed");
     const completedSnapshot = await waitForMessage(
@@ -158,7 +160,9 @@ describe("ui-server TUI websocket", () => {
         && message.payload.some((entry) => entry.id === "task-ws-1" && entry.status === "completed"),
     );
     expect(completedSnapshot.payload.some((entry) => entry.id === "task-ws-1" && entry.status === "completed")).toBe(true);
+    expect(validateSessionsUpdate(completedSnapshot.payload), JSON.stringify(validateSessionsUpdate.errors || [])).toBe(true);
 
     socket.close();
   }, 15000);
 });
+

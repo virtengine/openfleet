@@ -251,6 +251,7 @@
     "agent/review-agent.mjs",
     "git/sdk-conflict-resolver.mjs",
     "infra/session-tracker.mjs",
+    "infra/tui-bridge.mjs",
     "infra/test-runtime.mjs",
     "setup.mjs",
     "server/bosun-mcp-server.mjs",
@@ -402,3 +403,6 @@
     "gaxios": "7.1.4"
   }
 }
+
+
+
