@@ -21848,6 +21848,12 @@ export async function startTelegramUiServer(options = {}) {
   return uiServer;
 }
 
+      }
+    }
+
+  return uiServer;
+}
+
 export function stopTelegramUiServer() {
   if (!uiServer) return;
   stopTunnel();
@@ -21860,24 +21866,30 @@ export function stopTelegramUiServer() {
   removeSessionStateListener?.();
   removeSessionStateListener = null;
   sessionStateListenerAttached = false;
+  removeActiveSessionListener?.();
+  removeActiveSessionListener = null;
+  activeSessionListenerAttached = false;
+  removeSessionAccumulatorListener?.();
+  removeSessionAccumulatorListener = null;
+  sessionAccumulatorListenerAttached = false;
+  // Clear injected configDir so it does not leak between server lifecycles
+  // (tests start/stop servers repeatedly with different config directories).
+  delete uiDeps.configDir;
+  for (const socket of wsClients) {
+    try {
+      stopLogStream(socket);
+      socket.close();
+    } catch {
+      // best effort
+    }
+  }
+  wsClients.clear();
+  // Clean up any remaining log stream poll timers
+  for (const [, streamer] of logStreamers) {
+    if (streamer.pollTimer) clearInterval(streamer.pollTimer);
+  }
   logStreamers.clear();
   if (wsServer) {
     try {
       wsServer.close();
     } catch {
-      // best effort
-    }
-  }
-  wsServer = null;
-  try {
-    uiServer.close();
-  } catch {
-    /* best effort */
-  }
-  uiServer = null;
-  uiServerTls = false;
-  resetProjectSyncWebhookMetrics();
-  releaseUiInstanceLock();
-}
-
-export { getLocalLanIp };
