@@ -80,10 +80,10 @@ describe("session-tracker", () => {
       unsubscribe();
 
       expect(events.map((event) => event.reason)).toEqual([
-        "started",
-        "status-change",
-        "renamed",
-        "ended",
+        "session-started",
+        "session-status",
+        "session-renamed",
+        "session-ended",
       ]);
       expect(events.every((event) => event.event?.kind === "state")).toBe(true);
       expect(events[0]?.session?.taskId).toBe("task-1");
