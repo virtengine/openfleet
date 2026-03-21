@@ -4688,6 +4688,35 @@ async function resolveVoiceRelay() {
 let _fallbackExecPrimaryPrompt = null;
 /** Track in-flight chat turns so /api/sessions/:id/stop can abort them. */
 const sessionRunAbortControllers = new Map();
+let _activeSessions = [];
+
+function getLiveSessionSnapshot({ includeHidden = false } = {}) {
+  const tracker = getSessionTracker();
+  let sessions = tracker.listAllSessions();
+  if (!includeHidden) {
+    sessions = sessions.filter((session) => {
+      const detailed = tracker.getSessionById(session.id) || session;
+      return !shouldHideSessionFromDefaultList(detailed);
+    });
+  }
+  return sessions;
+}
+
+function broadcastSessionsSnapshot(sessions = getLiveSessionSnapshot()) {
+  const normalized = Array.isArray(sessions) ? sessions : [];
+  broadcastUiEvent(["sessions", "tui"], "sessions:update", {
+    sessions: normalized,
+  });
+}
+
+function updateActiveSessions(sessions) {
+  _activeSessions = Array.isArray(sessions) ? sessions : [];
+  broadcastSessionsSnapshot(_activeSessions);
+  for (const session of _activeSessions) {
+    broadcastUiEvent(["sessions", "tui"], "session:update", session);
+  }
+}
+
 async function resolveExecPrimaryPrompt() {
   if (typeof uiDeps.execPrimaryPrompt === "function") return uiDeps.execPrimaryPrompt;
   if (_fallbackExecPrimaryPrompt) return _fallbackExecPrimaryPrompt;
@@ -21176,36 +21205,6 @@ export async function startTelegramUiServer(options = {}) {
     }
     globalThis.__bosun_setRetryQueueData = setRetryQueueData;
 
-    // Session tracking
-    let _activeSessions = [];
-    function getLiveSessionSnapshot({ includeHidden = false } = {}) {
-      const tracker = getSessionTracker();
-      let sessions = tracker.listAllSessions();
-      if (!includeHidden) {
-        sessions = sessions.filter((session) => {
-          const detailed = tracker.getSessionById(session.id) || session;
-          return !shouldHideSessionFromDefaultList(detailed);
-        });
-      }
-      return sessions;
-    }
-
-    function broadcastSessionsSnapshot(sessions = getLiveSessionSnapshot()) {
-      const normalized = Array.isArray(sessions) ? sessions : [];
-      broadcastUiEvent(["sessions", "tui"], "sessions:update", {
-        sessions: normalized,
-      });
-    }
-
-    function updateActiveSessions(sessions) {
-      _activeSessions = Array.isArray(sessions) ? sessions : [];
-      broadcastSessionsSnapshot(_activeSessions);
-      // Broadcast session updates
-      for (const session of _activeSessions) {
-        broadcastUiEvent(["sessions", "tui"], "session:update", session);
-      }
-    }
-
     // Task CRUD events
     function broadcastTaskEvent(type, task) {
       broadcastUiEvent(["tasks", "tui"], type, task);
@@ -21727,6 +21726,7 @@ export function stopTelegramUiServer() {
   if (!uiServer) return;
   stopTunnel();
   stopWsHeartbeat();
+  _activeSessions = [];
   // Clear injected configDir so it does not leak between server lifecycles
   // (tests start/stop servers repeatedly with different config directories).
   delete uiDeps.configDir;
