@@ -13,7 +13,10 @@ import {
   createSessionLoadMeta,
   deriveSessionStaleReason,
   formatSessionFreshnessTimestamp,
+  getSessionLifecycleState,
   getSessionManualRetryState,
+  getSessionRecencyTimestamp,
+  getSessionRuntimeState,
   markSessionLoadFailure,
   markSessionLoadSuccess,
   resolveSessionWorkspaceHint,
@@ -516,7 +519,7 @@ export async function createSession(options = {}) {
     const fresh = existing.find(
       (s) =>
         s.type === type &&
-        s.status === "active" &&
+        getSessionLifecycleState(s).isActive &&
         (s.turnCount || 0) === 0 &&
         (!s.preview || s.preview.trim() === ""),
     );
@@ -583,16 +586,12 @@ export async function resumeSession(id) {
 }
 
 /* ─── Helpers ─── */
-const STATUS_COLOR_MAP = {
-  running: "var(--accent)",
-  active: "var(--accent)",
-  idle: "var(--color-warning)",
-  stalled: "var(--color-error)",
-  paused: "var(--text-hint)",
-  completed: "var(--color-done)",
-  done: "var(--color-done)",
+const STATUS_TONE_COLOR_MAP = {
+  success: "var(--color-done)",
+  info: "var(--accent)",
+  warning: "var(--color-warning)",
   error: "var(--color-error)",
-  archived: "var(--text-hint)",
+  default: "var(--text-hint)",
 };
 
 export const SESSION_VIEW_FILTER = Object.freeze({
@@ -609,12 +608,11 @@ function normalizeSessionViewFilter(value) {
 }
 
 function getSessionStatusKey(session) {
-  return String(session?.status || "idle").trim().toLowerCase();
+  return getSessionLifecycleState(session).key;
 }
 
 function isActiveSession(session) {
-  const status = getSessionStatusKey(session);
-  return status === "active" || status === "running";
+  return getSessionLifecycleState(session).isActive;
 }
 
 function isHistoricSession(session) {
@@ -647,10 +645,24 @@ function SwipeableSessionItem({
   const title = s.title || s.taskId || "Untitled";
   const isArchived = s.status === "archived";
   const isCompleted = s.status === "completed";
-  const statusKey = String(s.status || "idle").toLowerCase().replace(/\s+/g, "-");
-  const typeLabel = (s.type || "session").toUpperCase();
-  const dotColor = STATUS_COLOR_MAP[statusKey] || "var(--text-hint)";
-  const preview = s.lastMessage && !isArchived ? truncate(s.lastMessage, 50) : "";
+  const lifecycleState = getSessionLifecycleState(s);
+  const runtimeState = getSessionRuntimeState(s);
+  const recencyAt = getSessionRecencyTimestamp(s);
+  const typeLabel = String(s.type || "session").trim().replace(/[-_]+/g, " ");
+  const typeSummary = typeLabel
+    ? typeLabel.charAt(0).toUpperCase() + typeLabel.slice(1)
+    : "Session";
+  const dotColor = STATUS_TONE_COLOR_MAP[runtimeState.tone] || STATUS_TONE_COLOR_MAP[lifecycleState.tone] || "var(--text-hint)";
+  const preview = s.lastMessage && !isArchived ? truncate(s.lastMessage, 36) : "";
+  const metaSummary = [
+    `Type: ${typeSummary}`,
+    `Lifecycle: ${lifecycleState.label}`,
+    `Runtime: ${runtimeState.label}`,
+    preview || "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const freshnessLabel = recencyAt ? formatRelative(recencyAt) : "unknown";
 
   /* ── Touch / pointer swipe handling ── */
   function onPointerDown(e) {
@@ -857,7 +869,7 @@ function SwipeableSessionItem({
             : html`
                 <${ListItemText}
                   primary=${truncate(title, 32)}
-                  secondary=${preview || null}
+                  secondary=${metaSummary}
                   primaryTypographyProps=${{
                     variant: "body2",
                     fontWeight: isSelected ? 600 : 400,
@@ -870,14 +882,8 @@ function SwipeableSessionItem({
                 />
               `}
           <${Stack} direction="row" spacing=${0.5} alignItems="center" sx=${{ ml: "auto", flexShrink: 0, pl: 1 }}>
-            <${Chip}
-              label=${typeLabel}
-              size="small"
-              variant="outlined"
-              sx=${{ fontSize: "0.65rem", height: 18, "& .MuiChip-label": { px: 0.5 } }}
-            />
             <${Typography} variant="caption" color="text.secondary" noWrap>
-              ${formatRelative(s.updatedAt || s.createdAt)}
+              Freshness: ${freshnessLabel}
             </${Typography}>
             <${Tooltip} title="Actions">
               <${IconButton}
@@ -1126,14 +1132,14 @@ export function SessionList({
   const emptyTitle = hasSearch
     ? "No matching sessions"
     : resolvedSessionView === SESSION_VIEW_FILTER.active
-      ? "No active sessions"
+      ? "No lifecycle-active sessions"
       : resolvedSessionView === SESSION_VIEW_FILTER.historic
         ? "No historic sessions"
         : "No sessions yet";
   const emptyHint = hasSearch
     ? "Try a different keyword or clear the search."
     : resolvedSessionView === SESSION_VIEW_FILTER.active
-      ? "Start a new session or switch to All."
+      ? "Start a new session or switch to All lifecycle states."
       : resolvedSessionView === SESSION_VIEW_FILTER.historic
         ? "Historic sessions appear after they finish."
         : "Create a session to get started.";
@@ -1323,7 +1329,7 @@ export function SessionList({
           clickable
         />
         <${Chip}
-          label=${`Active (${activeCount})`}
+          label=${`Lifecycle Active (${activeCount})`}
           size="small"
           variant=${resolvedSessionView === SESSION_VIEW_FILTER.active ? "filled" : "outlined"}
           color=${resolvedSessionView === SESSION_VIEW_FILTER.active ? "primary" : "default"}
@@ -1349,7 +1355,7 @@ export function SessionList({
           html`
             <${ListItem} disablePadding sx=${{ px: 1.5, pt: 1.5, pb: 0.5 }}>
               <${Typography} variant="overline" color="text.secondary" sx=${{ fontSize: "0.65rem", letterSpacing: 1 }}>
-                Active Sessions
+                Lifecycle Active
               </${Typography}>
             </${ListItem}>
             ${active.map(renderSessionItem)}
@@ -1446,6 +1452,4 @@ export function SessionList({
     </${Paper}>
   `;
 }
-
-
 

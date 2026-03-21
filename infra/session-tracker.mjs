@@ -599,18 +599,23 @@ export class SessionTracker {
       const derivedStatus = progress?.status === "ended"
         ? "completed"
         : (progress?.status || s.status);
+      const lastActiveAt = s.lastActiveAt || new Date(s.lastActivityAt).toISOString();
       list.push({
         id: s.id || s.taskId,
         taskId: s.taskId,
         title: s.taskTitle || s.title || null,
         type: s.type || "task",
         status: derivedStatus,
+        lifecycleStatus: s.status || "active",
+        runtimeState: progress?.status || null,
+        runtimeUpdatedAt: lastActiveAt,
+        runtimeIsLive: Boolean(progress && progress.status !== "ended" && progress.status !== "not_found"),
         workspaceId: String(s?.metadata?.workspaceId || "").trim() || null,
         workspaceDir: String(s?.metadata?.workspaceDir || "").trim() || null,
         branch: String(s?.metadata?.branch || "").trim() || null,
         turnCount: s.turnCount || 0,
         createdAt: s.createdAt || new Date(s.startedAt).toISOString(),
-        lastActiveAt: s.lastActiveAt || new Date(s.lastActivityAt).toISOString(),
+        lastActiveAt,
         idleMs: progress?.idleMs ?? 0,
         elapsedMs: progress?.elapsedMs ?? Math.max(0, Date.now() - Number(s.startedAt || Date.now())),
         recommendation: progress?.recommendation || "none",
