@@ -85,6 +85,7 @@ import {
   Paper, CircularProgress, Skeleton, Alert, Switch, FormControlLabel,
   Menu as MuiMenu, Fab, Table, TableBody, TableCell, TableContainer,
   TableHead, TableRow, TableSortLabel, ToggleButton, ToggleButtonGroup, Badge,
+  Autocomplete,
 } from "@mui/material";
 
 /* ─── View mode toggle ─── */
@@ -1522,13 +1523,40 @@ export function StartTaskModal({
       <${Stack} spacing=${2}>
         ${(allowTaskIdInput || !task?.id) &&
         html`
-          <${TextField}
-            label="Task ID"
-            placeholder="e.g. task-123"
+          <${Autocomplete}
+            freeSolo
             size="small"
             fullWidth
-            value=${taskIdInput}
-            onChange=${(e) => setTaskIdInput(e.target.value)}
+            options=${(() => {
+              const STARTABLE = new Set(["draft", "backlog", "open", "new", "todo", "blocked", "error", "failed"]);
+              const GROUP_LABELS = { draft: "Draft", backlog: "Todo", blocked: "Blocked" };
+              const getGroup = (s) => {
+                const lower = (s || "").toLowerCase();
+                if (lower === "draft") return "Draft";
+                if (["blocked", "error", "failed"].includes(lower)) return "Blocked";
+                return "Todo";
+              };
+              return (tasksData.value || [])
+                .filter(t => STARTABLE.has((t.status || "").toLowerCase()))
+                .map(t => ({ id: t.id, title: t.title || "(untitled)", status: t.status, group: getGroup(t.status) }))
+                .sort((a, b) => a.group.localeCompare(b.group) || (a.title || "").localeCompare(b.title || ""));
+            })()}
+            groupBy=${(opt) => opt.group || ""}
+            getOptionLabel=${(opt) => typeof opt === "string" ? opt : opt.title ? `${opt.title} (${opt.id})` : opt.id || ""}
+            isOptionEqualToValue=${(opt, val) => opt.id === (typeof val === "string" ? val : val?.id)}
+            inputValue=${taskIdInput}
+            onInputChange=${(_, val) => setTaskIdInput(val || "")}
+            onChange=${(_, val) => {
+              if (val && typeof val === "object" && val.id) {
+                setTaskIdInput(val.id);
+              } else if (typeof val === "string") {
+                setTaskIdInput(val);
+              }
+            }}
+            renderInput=${(params) => html`<${TextField} ...${params} label="Task ID" placeholder="Search or enter task ID" />`}
+            renderOption=${(props, opt) => html`<li ...${props} key=${opt.id}><${Box} sx=${{ display: "flex", flexDirection: "column" }}><${Typography} variant="body2">${opt.title}<//><${Typography} variant="caption" color="text.secondary">${opt.id}<//><//>
+            </li>`}
+            disablePortal
           />
         `}
         <${TextField}
