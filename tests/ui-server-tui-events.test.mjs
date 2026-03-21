@@ -128,7 +128,7 @@ describe("ui-server TUI websocket bridge", () => {
     expect(validateStats(secondMonitorStats.payload), JSON.stringify(validateStats.errors || [])).toBe(true);
 
     ws.close();
-  });
+  }, 10000);
 
   it("emits canonical session events for message activity", async () => {
     const mod = await import("../server/ui-server.mjs");
@@ -158,14 +158,29 @@ describe("ui-server TUI websocket bridge", () => {
 
     const tracker = getSessionTracker({ persistDir: null });
     tracker.startSession("task-1", "Task 1");
+
+    const startedEvent = await waitFor(() => messages.find((message) => message.type === "session:event" && message.payload?.taskId === "task-1" && message.payload?.event?.kind === "state" && String(message.payload?.event?.reason || "").includes("start")));
+    const startedSnapshot = await waitFor(() => messages.find((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1" && session.status === "active")));
+
     tracker.recordEvent("task-1", { role: "assistant", content: "hello from tui bridge" });
 
     const sessionEvent = await waitFor(() => messages.find((message) => message.type === "session:event" && message.payload?.taskId === "task-1" && message.payload?.event?.kind === "message"));
-    const sessionsUpdate = await waitFor(() => messages.find((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1")));
+    const sessionsUpdate = await waitFor(() => messages.findLast?.((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1")) || [...messages].reverse().find((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1")));
 
+    tracker.endSession("task-1", "completed");
+
+    const endedEvent = await waitFor(() => messages.find((message) => message.type === "session:event" && message.payload?.taskId === "task-1" && message.payload?.event?.kind === "state" && String(message.payload?.event?.reason || "").includes("end")));
+    const endedSnapshot = await waitFor(() => messages.find((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1" && session.status === "completed")));
+
+    expect(validateSessionEvent(startedEvent.payload), JSON.stringify(validateSessionEvent.errors || [])).toBe(true);
+    expect(validateSessions(startedSnapshot.payload), JSON.stringify(validateSessions.errors || [])).toBe(true);
     expect(validateSessionEvent(sessionEvent.payload), JSON.stringify(validateSessionEvent.errors || [])).toBe(true);
     expect(validateSessions(sessionsUpdate.payload), JSON.stringify(validateSessions.errors || [])).toBe(true);
+    expect(validateSessionEvent(endedEvent.payload), JSON.stringify(validateSessionEvent.errors || [])).toBe(true);
+    expect(validateSessions(endedSnapshot.payload), JSON.stringify(validateSessions.errors || [])).toBe(true);
 
     ws.close();
-  });
+  }, 10000);
 });
+
+
