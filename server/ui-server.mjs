@@ -9195,22 +9195,6 @@ function buildCurrentTuiMonitorStats() {
       maxAgents: pickNumericStat(status?.maxParallel, injectedStats?.maxAgents),
       tokensIn: pickNumericStat(injectedStats?.tokensIn, tokensIn),
       tokensOut: pickNumericStat(injectedStats?.tokensOut, tokensOut),
-    for (const candidate of candidates) {
-      if (candidate == null) continue;
-      const numeric = Number(candidate);
-      if (Number.isFinite(numeric)) {
-        return numeric;
-      }
-    }
-    return 0;
-  };
-
-  return buildMonitorStatsPayload({
-    agentPool: {
-      activeAgents: pickNumericStat(status?.activeSlots, slots.length, injectedStats?.activeAgents),
-      maxAgents: pickNumericStat(status?.maxParallel, injectedStats?.maxAgents),
-      tokensIn: pickNumericStat(injectedStats?.tokensIn, tokensIn),
-      tokensOut: pickNumericStat(injectedStats?.tokensOut, tokensOut),
       throughputTps: injectedStats?.throughputTps,
       rateLimits: injectedStats?.rateLimits || {},
     },
@@ -9860,7 +9844,8 @@ function startLogStream(socket, logType, query) {
 
       if (size < streamState.offset) {
         // File was truncated/rotated — reset
-
+        streamState.offset = 0;
+      }
       if (size <= streamState.offset) return;
 
       // Read only new bytes
@@ -9874,7 +9859,6 @@ function startLogStream(socket, logType, query) {
         const lines = text.split("\n").filter(Boolean);
         if (lines.length > 0) {
           sendWsMessage(socket, { type: "log-lines", lines });
-
         }
       } finally {
         await handle.close();
@@ -21876,8 +21860,6 @@ export function stopTelegramUiServer() {
   removeSessionStateListener?.();
   removeSessionStateListener = null;
   sessionStateListenerAttached = false;
-
-  }
   logStreamers.clear();
   if (wsServer) {
     try {
