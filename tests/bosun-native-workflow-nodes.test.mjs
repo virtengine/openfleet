@@ -289,8 +289,9 @@ describe("action.build_task_prompt", () => {
     const result = await handler.execute(node, ctx);
     const userPrompt = result.userPrompt || result.prompt;
 
-    expect(userPrompt).toContain("# 89d82c54-c804-45f7-8018-137de0702ddb — Task 89d82c54-c804-45f7-8018-137de0702ddb");
-    expect(userPrompt).not.toContain("# 89d82c54-c804-45f7-8018-137de0702ddb — Untitled task");
+    expect(userPrompt).toContain("# Task: Task 89d82c54-c804-45f7-8018-137de0702ddb");
+    expect(userPrompt).toContain("Task ID: 89d82c54-c804-45f7-8018-137de0702ddb");
+    expect(userPrompt).not.toContain("# Task: Untitled task");
   });
 });
 
