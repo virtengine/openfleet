@@ -6,12 +6,16 @@ import test from "node:test";
 const source = readFileSync(resolve(process.cwd(), "infra/maintenance.mjs"), "utf8");
 
 test("maintenance logs benign dirty-working-tree branch sync skips at info/log level", () => {
+  assert.ok(source.includes("function logThrottledBranchSync("));
+  assert.ok(source.includes('level = "warn"'));
+  assert.ok(source.includes('throttleMs = BRANCH_SYNC_LOG_THROTTLE_MS'));
+  assert.ok(source.includes('else if (level === "info")'));
   assert.match(
     source,
-    /console\.log\(\s*`\[maintenance\] local '\$\{branch\}' diverged \(\$\{ahead\}↑ \$\{behind\}↓\) but has uncommitted changes — skipping`/,
+    /logThrottledBranchSync\(\s*`sync:\$\{branch\}:diverged-dirty`,\s*`\[maintenance\] local '\$\{branch\}' diverged \(\$\{ahead\}↑ \$\{behind\}↓\) but has uncommitted changes — skipping`,\s*"info"/,
   );
   assert.match(
     source,
-    /console\.log\(\s*`\[maintenance\] '\$\{branch\}' is checked out with uncommitted changes — skipping pull`/,
+    /logThrottledBranchSync\(\s*`sync:\$\{branch\}:dirty-pull-skip`,\s*`\[maintenance\] '\$\{branch\}' is checked out with uncommitted changes — skipping pull`,\s*"info"/,
   );
 });

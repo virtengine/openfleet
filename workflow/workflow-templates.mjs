@@ -353,6 +353,8 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
     delete next.position;
     delete next.inputPorts;
     delete next.outputPorts;
+    delete next.inputs;
+    delete next.outputs;
     delete next.width;
     delete next.height;
     return next;
