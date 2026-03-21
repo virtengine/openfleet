@@ -9461,12 +9461,24 @@ function buildCurrentTuiMonitorStats() {
   const status = executor?.getStatus?.() || {};
   const slots = Array.isArray(status?.slots) ? status.slots : [];
   const runtimeStats = getRuntimeStats() || {};
-  const runtimeExport = exportRuntimeData();
-  const injectedStats = uiDeps.getTuiMonitorStats?.() || {};
-  const tokensIn = (runtimeExport?.sessions || []).reduce((sum, session) => sum + Number(session?.inputTokens || 0), 0);
-  const tokensOut = (runtimeExport?.sessions || []).reduce((sum, session) => sum + Number(session?.outputTokens || 0), 0);
 
   const pickNumericStat = (...candidates) => {
+    for (const candidate of candidates) {
+      if (candidate == null) continue;
+      const numeric = Number(candidate);
+      if (Number.isFinite(numeric)) {
+        return numeric;
+      }
+    }
+    return 0;
+  };
+
+  return buildMonitorStatsPayload({
+    agentPool: {
+      activeAgents: pickNumericStat(status?.activeSlots, slots.length, injectedStats?.activeAgents),
+      maxAgents: pickNumericStat(status?.maxParallel, injectedStats?.maxAgents),
+      tokensIn: pickNumericStat(injectedStats?.tokensIn, tokensIn),
+      tokensOut: pickNumericStat(injectedStats?.tokensOut, tokensOut),
     for (const candidate of candidates) {
       if (candidate == null) continue;
       const numeric = Number(candidate);
@@ -10132,8 +10144,6 @@ function startLogStream(socket, logType, query) {
 
       if (size < streamState.offset) {
         // File was truncated/rotated — reset
-        streamState.offset = 0;
-      }
 
       if (size <= streamState.offset) return;
 
@@ -22209,27 +22219,7 @@ export function stopTelegramUiServer() {
   removeSessionStateListener?.();
   removeSessionStateListener = null;
   sessionStateListenerAttached = false;
-  removeActiveSessionListener?.();
-  removeActiveSessionListener = null;
-  activeSessionListenerAttached = false;
-  removeSessionAccumulatorListener?.();
-  removeSessionAccumulatorListener = null;
-  sessionAccumulatorListenerAttached = false;
-  // Clear injected configDir so it does not leak between server lifecycles
-  // (tests start/stop servers repeatedly with different config directories).
-  delete uiDeps.configDir;
-  for (const socket of wsClients) {
-    try {
-      stopLogStream(socket);
-      socket.close();
-    } catch {
-      // best effort
-    }
-  }
-  wsClients.clear();
-  // Clean up any remaining log stream poll timers
-  for (const [, streamer] of logStreamers) {
-    if (streamer.pollTimer) clearInterval(streamer.pollTimer);
+
   }
   logStreamers.clear();
   if (wsServer) {
