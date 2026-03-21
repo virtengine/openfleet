@@ -1704,5 +1704,3 @@ export function _resetSingleton(nextOptions) {
   }
 }
 
-
-

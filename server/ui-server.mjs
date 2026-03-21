@@ -9177,12 +9177,24 @@ function buildCurrentTuiMonitorStats() {
   const injectedStats = uiDeps.getTuiMonitorStats?.() || {};
   const tokensIn = (runtimeExport?.sessions || []).reduce((sum, session) => sum + Number(session?.inputTokens || 0), 0);
   const tokensOut = (runtimeExport?.sessions || []).reduce((sum, session) => sum + Number(session?.outputTokens || 0), 0);
+
+  const pickNumericStat = (...candidates) => {
+    for (const candidate of candidates) {
+      if (candidate == null) continue;
+      const numeric = Number(candidate);
+      if (Number.isFinite(numeric)) {
+        return numeric;
+      }
+    }
+    return 0;
+  };
+
   return buildMonitorStatsPayload({
     agentPool: {
-      activeAgents: Number(status?.activeSlots || slots.length || injectedStats?.activeAgents || 0),
-      maxAgents: Number(status?.maxParallel || injectedStats?.maxAgents || 0),
-      tokensIn: Number(injectedStats?.tokensIn || tokensIn || 0),
-      tokensOut: Number(injectedStats?.tokensOut || tokensOut || 0),
+      activeAgents: pickNumericStat(status?.activeSlots, slots.length, injectedStats?.activeAgents),
+      maxAgents: pickNumericStat(status?.maxParallel, injectedStats?.maxAgents),
+      tokensIn: pickNumericStat(injectedStats?.tokensIn, tokensIn),
+      tokensOut: pickNumericStat(injectedStats?.tokensOut, tokensOut),
       throughputTps: injectedStats?.throughputTps,
       rateLimits: injectedStats?.rateLimits || {},
     },
@@ -9848,9 +9860,7 @@ function startLogStream(socket, logType, query) {
         const lines = text.split("\n").filter(Boolean);
         if (lines.length > 0) {
           sendWsMessage(socket, { type: "log-lines", lines });
-          for (const line of lines) {
-            broadcastCanonicalEvent(["logs", "tui"], "logs:stream", buildLogStreamPayload({ logType, query, filePath, line }));
-          }
+
         }
       } finally {
         await handle.close();
@@ -21866,24 +21876,4 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
