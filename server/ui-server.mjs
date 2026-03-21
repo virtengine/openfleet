@@ -9452,6 +9452,15 @@ function broadcastTuiSessionsSnapshot(reason = "updated", detail = {}) {
   }
 }
 
+function pickFiniteStat(...candidates) {
+  for (const candidate of candidates) {
+    if (candidate == null) continue;
+    const numeric = Number(candidate);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return 0;
+}
+
 function buildCurrentTuiMonitorStats() {
   const executor = uiDeps.getInternalExecutor?.() || null;
   const status = executor?.getStatus?.() || {};
@@ -9459,16 +9468,22 @@ function buildCurrentTuiMonitorStats() {
   const runtimeStats = getRuntimeStats() || {};
   const runtimeExport = exportRuntimeData();
   const injectedStats = uiDeps.getTuiMonitorStats?.() || {};
-  const tokensIn = (runtimeExport?.sessions || []).reduce((sum, session) => sum + Number(session?.inputTokens || 0), 0);
-  const tokensOut = (runtimeExport?.sessions || []).reduce((sum, session) => sum + Number(session?.outputTokens || 0), 0);
+  const tokensIn = (runtimeExport?.sessions || []).reduce((sum, session) => {
+    const v = Number(session?.inputTokens ?? 0);
+    return sum + (Number.isFinite(v) ? v : 0);
+  }, 0);
+  const tokensOut = (runtimeExport?.sessions || []).reduce((sum, session) => {
+    const v = Number(session?.outputTokens ?? 0);
+    return sum + (Number.isFinite(v) ? v : 0);
+  }, 0);
   return buildMonitorStatsPayload({
     agentPool: {
-      activeAgents: Number(status?.activeSlots || slots.length || injectedStats?.activeAgents || 0),
-      maxAgents: Number(status?.maxParallel || injectedStats?.maxAgents || 0),
-      tokensIn: Number(injectedStats?.tokensIn || tokensIn || 0),
-      tokensOut: Number(injectedStats?.tokensOut || tokensOut || 0),
+      activeAgents: pickFiniteStat(status?.activeSlots, slots.length, injectedStats?.activeAgents),
+      maxAgents: pickFiniteStat(status?.maxParallel, injectedStats?.maxAgents),
+      tokensIn: pickFiniteStat(injectedStats?.tokensIn, tokensIn),
+      tokensOut: pickFiniteStat(injectedStats?.tokensOut, tokensOut),
       throughputTps: injectedStats?.throughputTps,
-      rateLimits: injectedStats?.rateLimits || {},
+      rateLimits: injectedStats?.rateLimits ?? {},
     },
     runtimeStats: {
       ...runtimeStats,
@@ -10133,7 +10148,7 @@ function startLogStream(socket, logType, query) {
         if (lines.length > 0) {
           sendWsMessage(socket, { type: "log-lines", lines });
           for (const line of lines) {
-            broadcastCanonicalEvent(["logs", "tui"], "logs:stream", buildLogStreamPayload({ logType, query, filePath, line }));
+            sendWsMessage(socket, { type: "logs:stream", payload: buildLogStreamPayload({ logType, query, filePath, line }) });
           }
         }
       } finally {
@@ -22225,7 +22240,4 @@ export function stopTelegramUiServer() {
   releaseUiInstanceLock();
 }
 
-export { getLocalLanIp };
-=======
-
->>>>>>> 4633280e (fix(tui): emit session state snapshots)
+export { getLocalLanIp };\n

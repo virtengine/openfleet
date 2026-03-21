@@ -413,7 +413,3 @@ export function createTuiStatsEmitter({ intervalMs = 2000, getPayload, emit } = 
     },
   };
 }
-
-
-
-

@@ -43,6 +43,7 @@ import {
 } from "../infra/test-runtime.mjs";
 import { getTemplate } from "./workflow-templates.mjs";
 import { WorkflowExecutionLedger } from "./execution-ledger.mjs";
+import { buildWorkflowStatusPayload } from "../infra/tui-bridge.mjs";
 
 // Lazy-loaded workspace manager for workspace-aware scheduling
 let _workspaceManagerMod = null;
@@ -784,21 +785,7 @@ export class WorkflowEngine extends EventEmitter {
     void ensureWorkspaceManager().catch(() => {});
   }
   _emitWorkflowStatus(payload = {}) {
-    const event = {
-      ...payload,
-      runId: String(payload?.runId || "").trim(),
-      workflowId: String(payload?.workflowId || "").trim(),
-      workflowName: String(payload?.workflowName || payload?.name || "").trim() || null,
-      eventType: String(payload?.eventType || payload?.event || "").trim(),
-      status: String(payload?.status || "unknown").trim() || "unknown",
-      nodeId: String(payload?.nodeId || "").trim() || null,
-      nodeType: String(payload?.nodeType || "").trim() || null,
-      nodeLabel: String(payload?.nodeLabel || "").trim() || null,
-      error: String(payload?.error || "").trim() || null,
-      durationMs: Number.isFinite(Number(payload?.durationMs)) ? Number(payload.durationMs) : null,
-      timestamp: Number.isFinite(Number(payload?.timestamp)) ? Number(payload.timestamp) : Date.now(),
-      meta: payload?.meta && typeof payload.meta === "object" ? { ...payload.meta } : null,
-    };
+    const event = buildWorkflowStatusPayload(payload);
     if (!event.runId || !event.workflowId || !event.eventType) return;
     this.emit("workflow:status", event);
   }
@@ -4477,11 +4464,3 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
-
-
-
-
-
-
-
-

@@ -148,56 +148,49 @@ class TuiWsBridge {
 				this._emit("monitor:stats", payload);
 				this._emit("stats", payload);
 				break;
-<<<<<<< HEAD
-			case "session:start":
-				this._emit("session:start", payload);
-				break;
-			case "session:update":
-				this._emit("session:update", payload);
-				break;
 			case "sessions:update":
 				this._emit("sessions:update", payload);
 				break;
-			case "session:end":
-				this._emit("session:end", payload);
-=======
-			case "sessions:update":
-				this._emit("sessions:update", payload);
->>>>>>> 7a014f17 (feat(tui): add websocket event bridge contract)
-				break;
-			case "session:event":
+			case "session:event": {
 				this._emit("session:event", payload);
+				// backward compat: bridge to legacy session lifecycle events
+				const sessionEventReason = payload?.event?.reason || "";
+				const sessionData = payload?.session || {};
+				if (sessionEventReason === "session-started") {
+					this._emit("session:start", sessionData);
+				} else if (sessionEventReason === "session-ended") {
+					this._emit("session:end", sessionData);
+				} else {
+					this._emit("session:update", sessionData);
+				}
 				break;
+			}
 			case "logs:stream":
 				this._emit("logs:stream", payload);
 				break;
 			case "workflow:status":
 				this._emit("workflow:status", payload);
 				break;
-<<<<<<< HEAD
-			case "task:delete":
-				this._emit("task:delete", payload);
-				break;
-			case "retry:update":
-				this._emit("retry:update", payload);
-				break;
-			case "retry-queue-updated":
-				this._emit("retry-queue-updated", payload);
-				this._emit("retry:update", payload);
-				break;
-			case "invalidate":
-				this._emit("invalidate", payload);
-				break;
-			case "workflow:trigger":
-				this._emit("workflow:trigger", payload);
-				break;
-			case "workflow:complete":
-				this._emit("workflow:complete", payload);
-=======
-			case "tasks:update":
+			case "tasks:update": {
 				this._emit("tasks:update", payload);
->>>>>>> 7a014f17 (feat(tui): add websocket event bridge contract)
+				// backward compat: bridge to legacy task events
+				const taskReason = payload?.reason || "";
+				const taskSourceEvent = payload?.sourceEvent || "";
+				const taskId = payload?.taskId ?? payload?.patch?.id;
+				const taskPatch = { ...payload?.patch, id: taskId };
+				if (taskReason === "task-created" || taskSourceEvent === "task:created") {
+					this._emit("task:create", taskPatch);
+				} else if (
+					taskReason === "task-deleted"
+					|| taskSourceEvent === "task:deleted"
+					|| taskSourceEvent === "delete"
+				) {
+					this._emit("task:delete", taskId);
+				} else {
+					this._emit("task:update", taskPatch);
+				}
 				break;
+			}
 			case "pong":
 				break;
 			default:
@@ -253,6 +246,7 @@ function createWsBridge({ host, port, configDir, protocol }) {
 	_lastPort = port;
 	_lastConfigDir = configDir || defaultConfigDir();
 	_lastProtocol = protocol || "ws";
+	wsBridge._instance = _instance;
 	return _instance;
 }
 
