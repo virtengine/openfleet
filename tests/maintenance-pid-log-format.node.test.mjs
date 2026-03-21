@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 
-const source = readFileSync(resolve(process.cwd(), "maintenance.mjs"), "utf8");
+const source = readFileSync(resolve(process.cwd(), "infra/maintenance.mjs"), "utf8");
 
 test("maintenance formats stale pid warning with compact pid summary", () => {
   assert.match(

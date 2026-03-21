@@ -69,7 +69,7 @@ ADJACENCY_MAP=(
   "kanban/|kanban-*|task-store*|task-claims*|ve-kanban*|ve-orchestrator*|vk-api*"
   "workspace/|workspace-*|shared-state*|worktree-*|sync-engine*"
   "infra/|monitor-*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*|tui-bridge*"
-  "agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*"
+  "agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*"
   "bench/|bench-swebench*|benchmark-*|task-*"
   "config/|config-*|bosun-skills*|codex-config*"
   "telegram/|telegram-*|whatsapp-*"
@@ -319,3 +319,4 @@ echo "[hooks] running ${#FINAL_TEST_LIST[@]}/${TOTAL_TESTS} targeted tests…"
 node tools/vitest-runner.mjs run --config vitest.config.mjs "${FINAL_TEST_LIST[@]}"
 
 echo "[hooks] pre-push checks passed ✓"
+
