@@ -275,6 +275,9 @@ export const TEMPLATE_FIXTURES = {
   "template-pr-conflict-resolver":         { scenario: scenarios.conflictPR(55),   inputVars: { prNumber: 55,  branch: "feat/conflicts" } },
   "template-stale-pr-reaper":              { scenario: scenarios.stalePRs(),        inputVars: {} },
   "template-release-drafter":              { scenario: scenarios.releaseReady(),    inputVars: { tagName: "v1.1.0" } },
+  "template-sub-validation-gate":         { scenario: scenarios.greenPR(59),      inputVars: { worktreePath: "." } },
+  "template-sub-validate-and-pr":         { scenario: scenarios.greenPR(60),      inputVars: { taskId: "TASK-PR-0", taskTitle: "Validate and PR", branch: "feat/validate-pr", baseBranch: "main", worktreePath: "." } },
+  "template-sub-pr-handoff":              { scenario: scenarios.greenPR(60),      inputVars: { taskId: "TASK-PR-1", taskTitle: "PR Handoff", branch: "feat/pr-progress", baseBranch: "main" } },
   "template-bosun-pr-progressor":          { scenario: scenarios.greenPR(60),      inputVars: { taskId: "TASK-PR-1", taskTitle: "Progress PR", prNumber: 60, prUrl: "https://github.com/virtengine/bosun/pull/60", repo: "virtengine/bosun", branch: "feat/pr-progress", baseBranch: "main" } },
   "template-bosun-pr-watchdog":            { scenario: scenarios.greenPR(60),      inputVars: { prNumber: 60 } },
   "template-github-kanban-sync":           { scenario: scenarios.kanbanState(),     inputVars: {} },
@@ -336,4 +339,5 @@ export const TEMPLATE_FIXTURES = {
   "template-task-cicd":                  { scenario: scenarios.cicdDeploy(),      inputVars: { taskId: "TASK-CI-1", worktreePath: "/tmp/wt/cicd", branch: "feat/cicd", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
   "template-task-design":                { scenario: scenarios.greenPR(214),      inputVars: { taskId: "TASK-DS-1", worktreePath: "/tmp/wt/design", branch: "feat/design", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
 };
+
 

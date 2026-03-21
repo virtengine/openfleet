@@ -18158,6 +18158,9 @@
           "sub-workflow",
           "pr",
           "handoff"
+        ],
+        "requiredTemplates": [
+          "template-bosun-pr-progressor"
         ]
       },
       "nodes": [
@@ -20504,7 +20507,7 @@
         "buildCommand": "auto",
         "testCommand": "auto",
         "lintCommand": "auto",
-        "worktreePath": "",
+        "worktreePath": ".",
         "branch": "",
         "baseBranch": "",
         "taskId": "",
@@ -41282,7 +41285,7 @@
         "buildCommand": "auto",
         "testCommand": "auto",
         "lintCommand": "auto",
-        "worktreePath": "",
+        "worktreePath": ".",
         "branch": "",
         "baseBranch": "",
         "taskId": "",
