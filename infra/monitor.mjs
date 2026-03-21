@@ -1639,7 +1639,8 @@ function startAgentWorkAnalyzer() {
 
 function stopAgentWorkAnalyzer() {
   if (!agentWorkAnalyzerActive) return;
-  try {
+        const existingData = readFileSync(path, "utf8");
+        agentAlertsOffset = existingData.length;
     stopAnalyzer();
   } catch {
     /* ignore */
