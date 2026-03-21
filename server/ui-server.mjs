@@ -21887,3 +21887,19 @@ export function stopTelegramUiServer() {
     try {
       wsServer.close();
     } catch {
+      // best effort
+    }
+  }
+  wsServer = null;
+  try {
+    uiServer.close();
+  } catch {
+    /* best effort */
+  }
+  uiServer = null;
+  uiServerTls = false;
+  resetProjectSyncWebhookMetrics();
+  releaseUiInstanceLock();
+}
+
+export { getLocalLanIp };
