@@ -2871,6 +2871,19 @@ function sdkSupportsPersistentThreads(sdkName) {
 
 /** @type {Map<string, ActiveSession>} */
 const activeSessions = new Map();
+const ACTIVE_SESSION_LISTENERS = new Set();
+
+function notifyActiveSessionListeners(reason = "update", taskKey = null) {
+  if (ACTIVE_SESSION_LISTENERS.size === 0) return;
+  const snapshot = getActiveSessions();
+  for (const listener of ACTIVE_SESSION_LISTENERS) {
+    try {
+      listener(snapshot, { reason, taskKey });
+    } catch {
+      /* best effort */
+    }
+  }
+}
 
 /** Threshold for approaching-exhaustion warning (80% of MAX_THREAD_TURNS). */
 const THREAD_EXHAUSTION_WARNING_THRESHOLD = Math.floor(MAX_THREAD_TURNS * 0.8);
@@ -2892,6 +2905,7 @@ function registerActiveSession(taskKey, sdk, threadId, sendFn) {
     send: sendFn,
     registeredAt: Date.now(),
   });
+  notifyActiveSessionListeners("start", taskKey);
 }
 
 /**
@@ -2900,6 +2914,7 @@ function registerActiveSession(taskKey, sdk, threadId, sendFn) {
  */
 function unregisterActiveSession(taskKey) {
   activeSessions.delete(taskKey);
+  notifyActiveSessionListeners("end", taskKey);
 }
 
 /**
@@ -2949,15 +2964,31 @@ export function hasActiveSession(taskKey) {
  * Get info about which tasks have active (steerable) sessions.
  * @returns {Array<{ taskKey: string, sdk: string, threadId: string|null, age: number }>}
  */
+export function addActiveSessionListener(listener) {
+  if (typeof listener !== "function") return () => {};
+  ACTIVE_SESSION_LISTENERS.add(listener);
+  return () => ACTIVE_SESSION_LISTENERS.delete(listener);
+}
+
 export function getActiveSessions() {
   const now = Date.now();
   const result = [];
   for (const [key, session] of activeSessions) {
+    const record = threadRegistry.get(key) || null;
+    const createdAt = Number(record?.createdAt || session.registeredAt || now);
+    const lastUsedAt = Number(record?.lastUsedAt || now);
     result.push({
+      id: key,
+      taskId: key,
       taskKey: key,
       sdk: session.sdk,
       threadId: session.threadId,
-      age: now - session.registeredAt,
+      type: "task",
+      status: "active",
+      turnCount: Number(record?.turnCount || 0),
+      createdAt: new Date(createdAt).toISOString(),
+      lastActiveAt: new Date(lastUsedAt).toISOString(),
+      age: Math.max(0, now - createdAt),
     });
   }
   return result;
@@ -3973,3 +4004,5 @@ export function getActiveThreads() {
   }
   return result;
 }
+
+
