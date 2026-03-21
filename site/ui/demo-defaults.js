@@ -4822,7 +4822,7 @@
           "type": "condition.expression",
           "label": "PR Created?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput($edge.source)?.prNumber || $ctx.getNodeOutput($edge.source)?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
           },
           "position": {
             "x": 400,
@@ -5046,7 +5046,7 @@
           "type": "condition.expression",
           "label": "PR Created?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput($edge.source)?.prNumber || $ctx.getNodeOutput($edge.source)?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
           },
           "position": {
             "x": 400,
@@ -14269,7 +14269,7 @@
     {
       "id": "template-task-backend",
       "name": "Backend Task Workflow",
-      "description": "Specialised for server-side tasks — APIs, databases, services, middleware. Runs three phases: plan, implement with TDD, and verify with full test suite.",
+      "description": "Specialised for server-side tasks — APIs, databases, services, middleware. Agent phases handle planning and TDD implementation. Validation and PR creation run as explicit nodes.",
       "category": "task-execution",
       "categoryLabel": "Task Execution",
       "categoryIcon": ":settings:",
@@ -14280,8 +14280,8 @@
         "server",
         "task-type"
       ],
-      "nodeCount": 5,
-      "edgeCount": 4,
+      "nodeCount": 9,
+      "edgeCount": 8,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_assigned",
@@ -14295,9 +14295,9 @@
       },
       "metadata": {
         "author": "bosun",
-        "version": 1,
+        "version": 2,
         "createdAt": "2025-06-01T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "2.0.0",
         "tags": [
           "backend",
           "api",
@@ -14352,7 +14352,7 @@
           "type": "action.run_agent",
           "label": "Implement (TDD)",
           "config": {
-            "prompt": "## Phase: Test-Driven Implementation\n\n1. Write tests FIRST for the planned changes\n2. Verify tests fail (red)\n3. Implement the backend logic to make tests pass (green)\n4. Refactor for clarity and performance\n5. Run full test suite: {{testCommand}}\n6. Run build: {{buildCommand}}\n7. Run lint: {{lintCommand}}\n\nCommit with descriptive messages.",
+            "prompt": "## Phase: Test-Driven Implementation\n\n1. Write tests FIRST for the planned changes\n2. Verify tests fail (red)\n3. Implement the backend logic to make tests pass (green)\n4. Refactor for clarity and performance\n\nCommit with descriptive messages.",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -14373,21 +14373,13 @@
           ]
         },
         {
-          "id": "verify",
-          "type": "action.run_agent",
-          "label": "Verify & PR",
+          "id": "vp-build",
+          "type": "action.run_command",
+          "label": "Build",
           "config": {
-            "prompt": "## Phase: Verification\n\n1. Run the complete test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Ensure no regressions\n4. Push changes and create/update PR\n5. Include test results summary in PR description",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
+            "command": "{{buildCommand}}",
             "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
+            "continueOnError": true
           },
           "position": {
             "x": 400,
@@ -14398,15 +14390,84 @@
           ]
         },
         {
+          "id": "vp-test",
+          "type": "action.run_command",
+          "label": "Test",
+          "config": {
+            "command": "{{testCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 630
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-lint",
+          "type": "action.run_command",
+          "label": "Lint",
+          "config": {
+            "command": "{{lintCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 760
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-push",
+          "type": "action.push_branch",
+          "label": "Push Branch",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 890
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-create-pr",
+          "type": "action.create_pr",
+          "label": "Create / Update PR",
+          "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 1020
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "done",
           "type": "notify.log",
           "label": "Complete",
           "config": {
-            "message": "Backend task completed — API/service implemented and tested."
+            "message": "Backend task completed — API/service implemented, validated, and PR created."
           },
           "position": {
             "x": 400,
-            "y": 660
+            "y": 1150
           },
           "outputs": [
             "default"
@@ -14427,14 +14488,38 @@
           "sourcePort": "default"
         },
         {
-          "id": "implement-tdd->verify",
+          "id": "implement-tdd->vp-build",
           "source": "implement-tdd",
-          "target": "verify",
+          "target": "vp-build",
           "sourcePort": "default"
         },
         {
-          "id": "verify->done",
-          "source": "verify",
+          "id": "vp-build->vp-test",
+          "source": "vp-build",
+          "target": "vp-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-test->vp-lint",
+          "source": "vp-test",
+          "target": "vp-lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-lint->vp-push",
+          "source": "vp-lint",
+          "target": "vp-push",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-push->vp-create-pr",
+          "source": "vp-push",
+          "target": "vp-create-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-create-pr->done",
+          "source": "vp-create-pr",
           "target": "done",
           "sourcePort": "default"
         }
@@ -14646,7 +14731,7 @@
     {
       "id": "template-task-cicd",
       "name": "CI/CD Task Workflow",
-      "description": "For pipeline, deployment, infrastructure, and build-system tasks. Plans the change, implements with validation steps, then verifies the pipeline works end-to-end.",
+      "description": "For pipeline, deployment, infrastructure, and build-system tasks. Agent phases handle planning and implementation. Validation and PR creation run as explicit nodes.",
       "category": "task-execution",
       "categoryLabel": "Task Execution",
       "categoryIcon": ":settings:",
@@ -14659,8 +14744,8 @@
         "infrastructure",
         "task-type"
       ],
-      "nodeCount": 5,
-      "edgeCount": 4,
+      "nodeCount": 9,
+      "edgeCount": 8,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_assigned",
@@ -14674,9 +14759,9 @@
       },
       "metadata": {
         "author": "bosun",
-        "version": 1,
+        "version": 2,
         "createdAt": "2025-06-01T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "2.0.0",
         "tags": [
           "ci",
           "cd",
@@ -14733,7 +14818,7 @@
           "type": "action.run_agent",
           "label": "Implement Pipeline",
           "config": {
-            "prompt": "## Phase: Pipeline Implementation\n\n1. Make the CI/CD / infrastructure changes per the plan\n2. Update configuration files (workflows, Dockerfiles, Terraform, etc.)\n3. Add or update pipeline tests where applicable\n4. Run build: {{buildCommand}}\n5. Run lint: {{lintCommand}}\n6. Validate configuration syntax\n\nCommit changes with clear descriptions.",
+            "prompt": "## Phase: Pipeline Implementation\n\n1. Make the CI/CD / infrastructure changes per the plan\n2. Update configuration files (workflows, Dockerfiles, Terraform, etc.)\n3. Add or update pipeline tests where applicable\n4. Validate configuration syntax\n\nCommit changes with clear descriptions.",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -14754,21 +14839,13 @@
           ]
         },
         {
-          "id": "verify-pipeline",
-          "type": "action.run_agent",
-          "label": "Verify & PR",
+          "id": "vp-build",
+          "type": "action.run_command",
+          "label": "Build",
           "config": {
-            "prompt": "## Phase: Pipeline Verification\n\n1. Run full test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify pipeline configuration is valid\n4. Push and create/update PR\n5. Include deployment / rollback instructions in PR description",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
+            "command": "{{buildCommand}}",
             "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
+            "continueOnError": true
           },
           "position": {
             "x": 400,
@@ -14779,15 +14856,84 @@
           ]
         },
         {
+          "id": "vp-test",
+          "type": "action.run_command",
+          "label": "Test",
+          "config": {
+            "command": "{{testCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 630
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-lint",
+          "type": "action.run_command",
+          "label": "Lint",
+          "config": {
+            "command": "{{lintCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 760
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-push",
+          "type": "action.push_branch",
+          "label": "Push Branch",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 890
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-create-pr",
+          "type": "action.create_pr",
+          "label": "Create / Update PR",
+          "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 1020
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "done",
           "type": "notify.log",
           "label": "Complete",
           "config": {
-            "message": "CI/CD task completed — pipeline updated and verified."
+            "message": "CI/CD task completed — pipeline updated, validated, and PR created."
           },
           "position": {
             "x": 400,
-            "y": 660
+            "y": 1150
           },
           "outputs": [
             "default"
@@ -14808,14 +14954,38 @@
           "sourcePort": "default"
         },
         {
-          "id": "implement-pipeline->verify-pipeline",
+          "id": "implement-pipeline->vp-build",
           "source": "implement-pipeline",
-          "target": "verify-pipeline",
+          "target": "vp-build",
           "sourcePort": "default"
         },
         {
-          "id": "verify-pipeline->done",
-          "source": "verify-pipeline",
+          "id": "vp-build->vp-test",
+          "source": "vp-build",
+          "target": "vp-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-test->vp-lint",
+          "source": "vp-test",
+          "target": "vp-lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-lint->vp-push",
+          "source": "vp-lint",
+          "target": "vp-push",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-push->vp-create-pr",
+          "source": "vp-push",
+          "target": "vp-create-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-create-pr->done",
+          "source": "vp-create-pr",
           "target": "done",
           "sourcePort": "default"
         }
@@ -15150,7 +15320,7 @@
     {
       "id": "template-task-debug",
       "name": "Debug Task Workflow",
-      "description": "Bug investigation and fix workflow. Starts with reproduction and root-cause analysis, then implements a targeted fix with regression tests.",
+      "description": "Bug investigation and fix workflow. Agent phases handle reproduction, root-cause analysis, and surgical fix with regression tests. Validation and PR creation run as explicit nodes.",
       "category": "task-execution",
       "categoryLabel": "Task Execution",
       "categoryIcon": ":settings:",
@@ -15162,8 +15332,8 @@
         "error",
         "task-type"
       ],
-      "nodeCount": 5,
-      "edgeCount": 4,
+      "nodeCount": 9,
+      "edgeCount": 8,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_assigned",
@@ -15177,9 +15347,9 @@
       },
       "metadata": {
         "author": "bosun",
-        "version": 1,
+        "version": 2,
         "createdAt": "2025-06-01T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "2.0.0",
         "tags": [
           "debug",
           "bug",
@@ -15235,7 +15405,7 @@
           "type": "action.run_agent",
           "label": "Fix & Regression Test",
           "config": {
-            "prompt": "## Phase: Fix Implementation with Regression Tests\n\n1. Write a regression test that demonstrates the bug (must fail before fix)\n2. Apply the minimal, surgical fix\n3. Verify the regression test now passes\n4. Run the full test suite: {{testCommand}}\n5. Run build: {{buildCommand}}\n6. Run lint: {{lintCommand}}\n7. Ensure no other tests broke\n\nCommit fix and test together with a clear commit message.",
+            "prompt": "## Phase: Fix Implementation with Regression Tests\n\n1. Write a regression test that demonstrates the bug (must fail before fix)\n2. Apply the minimal, surgical fix\n3. Verify the regression test now passes\n\nCommit fix and test together with a clear commit message.",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -15256,21 +15426,13 @@
           ]
         },
         {
-          "id": "verify",
-          "type": "action.run_agent",
-          "label": "Verify & PR",
+          "id": "vp-build",
+          "type": "action.run_command",
+          "label": "Build",
           "config": {
-            "prompt": "## Phase: Final Verification\n\n1. Run complete test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Confirm the original bug is fixed\n4. Confirm no regressions\n5. Push and create/update PR with root cause analysis in description",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
+            "command": "{{buildCommand}}",
             "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
+            "continueOnError": true
           },
           "position": {
             "x": 400,
@@ -15281,15 +15443,84 @@
           ]
         },
         {
+          "id": "vp-test",
+          "type": "action.run_command",
+          "label": "Test",
+          "config": {
+            "command": "{{testCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 630
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-lint",
+          "type": "action.run_command",
+          "label": "Lint",
+          "config": {
+            "command": "{{lintCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 760
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-push",
+          "type": "action.push_branch",
+          "label": "Push Branch",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 890
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-create-pr",
+          "type": "action.create_pr",
+          "label": "Create / Update PR",
+          "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 1020
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "done",
           "type": "notify.log",
           "label": "Complete",
           "config": {
-            "message": "Debug task completed — bug fixed with regression test."
+            "message": "Debug task completed — bug fixed, validated, and PR created."
           },
           "position": {
             "x": 400,
-            "y": 660
+            "y": 1150
           },
           "outputs": [
             "default"
@@ -15310,14 +15541,38 @@
           "sourcePort": "default"
         },
         {
-          "id": "fix-and-test->verify",
+          "id": "fix-and-test->vp-build",
           "source": "fix-and-test",
-          "target": "verify",
+          "target": "vp-build",
           "sourcePort": "default"
         },
         {
-          "id": "verify->done",
-          "source": "verify",
+          "id": "vp-build->vp-test",
+          "source": "vp-build",
+          "target": "vp-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-test->vp-lint",
+          "source": "vp-test",
+          "target": "vp-lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-lint->vp-push",
+          "source": "vp-lint",
+          "target": "vp-push",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-push->vp-create-pr",
+          "source": "vp-push",
+          "target": "vp-create-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-create-pr->done",
+          "source": "vp-create-pr",
           "target": "done",
           "sourcePort": "default"
         }
@@ -15326,7 +15581,7 @@
     {
       "id": "template-task-design",
       "name": "Design Task Workflow",
-      "description": "For design-related tasks — mockups, wireframes, design tokens, component library work. Analyses design requirements, implements the design system changes, and verifies visual output.",
+      "description": "For design-related tasks — mockups, wireframes, design tokens, component library work. Agent phases handle analysis and implementation. Validation and PR creation run as explicit nodes.",
       "category": "task-execution",
       "categoryLabel": "Task Execution",
       "categoryIcon": ":settings:",
@@ -15338,8 +15593,8 @@
         "design-system",
         "task-type"
       ],
-      "nodeCount": 5,
-      "edgeCount": 4,
+      "nodeCount": 9,
+      "edgeCount": 8,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_assigned",
@@ -15353,9 +15608,9 @@
       },
       "metadata": {
         "author": "bosun",
-        "version": 1,
+        "version": 2,
         "createdAt": "2025-06-01T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "2.0.0",
         "tags": [
           "design",
           "mockup",
@@ -15411,7 +15666,7 @@
           "type": "action.run_agent",
           "label": "Implement Design",
           "config": {
-            "prompt": "## Phase: Design Implementation\n\n1. Update design tokens (colors, spacing, typography) if needed\n2. Create / update components per the design specification\n3. Ensure consistency with existing design system\n4. Add visual tests or snapshots where applicable\n5. Run build: {{buildCommand}}\n6. Run lint: {{lintCommand}}\n\nCommit changes with descriptive messages.",
+            "prompt": "## Phase: Design Implementation\n\n1. Update design tokens (colors, spacing, typography) if needed\n2. Create / update components per the design specification\n3. Ensure consistency with existing design system\n4. Add visual tests or snapshots where applicable\n\nCommit changes with descriptive messages.",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -15432,21 +15687,13 @@
           ]
         },
         {
-          "id": "verify-design",
-          "type": "action.run_agent",
-          "label": "Verify & PR",
+          "id": "vp-build",
+          "type": "action.run_command",
+          "label": "Build",
           "config": {
-            "prompt": "## Phase: Design Verification\n\n1. Run tests: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify visual consistency\n4. Check design token values are correct\n5. Push and create/update PR",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
+            "command": "{{buildCommand}}",
             "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
+            "continueOnError": true
           },
           "position": {
             "x": 400,
@@ -15457,15 +15704,84 @@
           ]
         },
         {
+          "id": "vp-test",
+          "type": "action.run_command",
+          "label": "Test",
+          "config": {
+            "command": "{{testCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 630
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-lint",
+          "type": "action.run_command",
+          "label": "Lint",
+          "config": {
+            "command": "{{lintCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 760
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-push",
+          "type": "action.push_branch",
+          "label": "Push Branch",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 890
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-create-pr",
+          "type": "action.create_pr",
+          "label": "Create / Update PR",
+          "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 1020
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "done",
           "type": "notify.log",
           "label": "Complete",
           "config": {
-            "message": "Design task completed — design changes implemented and verified."
+            "message": "Design task completed — design implemented, validated, and PR created."
           },
           "position": {
             "x": 400,
-            "y": 660
+            "y": 1150
           },
           "outputs": [
             "default"
@@ -15486,14 +15802,38 @@
           "sourcePort": "default"
         },
         {
-          "id": "implement-design->verify-design",
+          "id": "implement-design->vp-build",
           "source": "implement-design",
-          "target": "verify-design",
+          "target": "vp-build",
           "sourcePort": "default"
         },
         {
-          "id": "verify-design->done",
-          "source": "verify-design",
+          "id": "vp-build->vp-test",
+          "source": "vp-build",
+          "target": "vp-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-test->vp-lint",
+          "source": "vp-test",
+          "target": "vp-lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-lint->vp-push",
+          "source": "vp-lint",
+          "target": "vp-push",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-push->vp-create-pr",
+          "source": "vp-push",
+          "target": "vp-create-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-create-pr->done",
+          "source": "vp-create-pr",
           "target": "done",
           "sourcePort": "default"
         }
@@ -15686,7 +16026,7 @@
     {
       "id": "template-task-frontend",
       "name": "Frontend Task Workflow",
-      "description": "Specialised for UI tasks — components, pages, styling, accessibility. Runs three phases: design analysis, implement with component tests, and visual verification.",
+      "description": "Specialised for UI tasks — components, pages, styling, accessibility. Agent phases handle design analysis and UI implementation. Validation and PR creation run as explicit nodes.",
       "category": "task-execution",
       "categoryLabel": "Task Execution",
       "categoryIcon": ":settings:",
@@ -15698,8 +16038,8 @@
         "component",
         "task-type"
       ],
-      "nodeCount": 5,
-      "edgeCount": 4,
+      "nodeCount": 9,
+      "edgeCount": 8,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_assigned",
@@ -15713,9 +16053,9 @@
       },
       "metadata": {
         "author": "bosun",
-        "version": 1,
+        "version": 2,
         "createdAt": "2025-06-01T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "2.0.0",
         "tags": [
           "frontend",
           "ui",
@@ -15771,7 +16111,7 @@
           "type": "action.run_agent",
           "label": "Implement UI",
           "config": {
-            "prompt": "## Phase: UI Implementation\n\n1. Create / update components per the design plan\n2. Implement layouts, styling, and responsive design\n3. Add proper accessibility attributes\n4. Write component tests\n5. Run tests: {{testCommand}}\n6. Run build: {{buildCommand}}\n7. Run lint: {{lintCommand}}\n\nCommit with descriptive messages.",
+            "prompt": "## Phase: UI Implementation\n\n1. Create / update components per the design plan\n2. Implement layouts, styling, and responsive design\n3. Add proper accessibility attributes\n4. Write component tests\n\nCommit with descriptive messages.",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -15792,21 +16132,13 @@
           ]
         },
         {
-          "id": "verify-visual",
-          "type": "action.run_agent",
-          "label": "Verify & PR",
+          "id": "vp-build",
+          "type": "action.run_command",
+          "label": "Build",
           "config": {
-            "prompt": "## Phase: Visual Verification\n\n1. Run the full test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify components render correctly\n4. Check responsive breakpoints\n5. Verify accessibility (screen reader, keyboard)\n6. Push changes and create/update PR",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
+            "command": "{{buildCommand}}",
             "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
+            "continueOnError": true
           },
           "position": {
             "x": 400,
@@ -15817,15 +16149,84 @@
           ]
         },
         {
+          "id": "vp-test",
+          "type": "action.run_command",
+          "label": "Test",
+          "config": {
+            "command": "{{testCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 630
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-lint",
+          "type": "action.run_command",
+          "label": "Lint",
+          "config": {
+            "command": "{{lintCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 760
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-push",
+          "type": "action.push_branch",
+          "label": "Push Branch",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 890
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-create-pr",
+          "type": "action.create_pr",
+          "label": "Create / Update PR",
+          "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 1020
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "done",
           "type": "notify.log",
           "label": "Complete",
           "config": {
-            "message": "Frontend task completed — UI implemented and verified."
+            "message": "Frontend task completed — UI implemented, validated, and PR created."
           },
           "position": {
             "x": 400,
-            "y": 660
+            "y": 1150
           },
           "outputs": [
             "default"
@@ -15846,14 +16247,38 @@
           "sourcePort": "default"
         },
         {
-          "id": "implement-ui->verify-visual",
+          "id": "implement-ui->vp-build",
           "source": "implement-ui",
-          "target": "verify-visual",
+          "target": "vp-build",
           "sourcePort": "default"
         },
         {
-          "id": "verify-visual->done",
-          "source": "verify-visual",
+          "id": "vp-build->vp-test",
+          "source": "vp-build",
+          "target": "vp-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-test->vp-lint",
+          "source": "vp-test",
+          "target": "vp-lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-lint->vp-push",
+          "source": "vp-lint",
+          "target": "vp-push",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-push->vp-create-pr",
+          "source": "vp-push",
+          "target": "vp-create-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-create-pr->done",
+          "source": "vp-create-pr",
           "target": "done",
           "sourcePort": "default"
         }
@@ -15862,7 +16287,7 @@
     {
       "id": "template-task-fullstack",
       "name": "Fullstack Task Workflow",
-      "description": "Handles tasks that span frontend and backend — API endpoints, database models, and UI components. Runs four agent phases: architecture planning, backend implementation, frontend implementation, and integration testing.",
+      "description": "Handles tasks that span frontend and backend — API endpoints, database models, and UI components. Agent phases handle architecture planning, backend implementation, and frontend implementation. Validation (build/test/lint) and PR creation run as explicit nodes.",
       "category": "task-execution",
       "categoryLabel": "Task Execution",
       "categoryIcon": ":settings:",
@@ -15871,8 +16296,8 @@
         "fullstack",
         "task-type"
       ],
-      "nodeCount": 6,
-      "edgeCount": 5,
+      "nodeCount": 10,
+      "edgeCount": 9,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_assigned",
@@ -15886,9 +16311,9 @@
       },
       "metadata": {
         "author": "bosun",
-        "version": 1,
+        "version": 2,
         "createdAt": "2025-06-01T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "2.0.0",
         "tags": [
           "fullstack",
           "task-type"
@@ -15941,7 +16366,7 @@
           "type": "action.run_agent",
           "label": "Implement Backend",
           "config": {
-            "prompt": "## Phase: Backend Implementation\n\nImplement the server-side / API changes from the architecture plan:\n- Models, schemas, database migrations\n- API routes and controllers\n- Service / business logic\n- Unit tests for backend logic\n- Run tests: {{testCommand}}\n\nCommit backend changes separately.",
+            "prompt": "## Phase: Backend Implementation\n\nImplement the server-side / API changes from the architecture plan:\n- Models, schemas, database migrations\n- API routes and controllers\n- Service / business logic\n- Unit tests for backend logic\n\nCommit backend changes separately.",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -15966,7 +16391,7 @@
           "type": "action.run_agent",
           "label": "Implement Frontend",
           "config": {
-            "prompt": "## Phase: Frontend Implementation\n\nImplement the client-side / UI changes:\n- Components, pages, layouts\n- State management and API integration\n- Styling and responsive design\n- Component tests\n- Run build: {{buildCommand}}\n\nCommit frontend changes separately.",
+            "prompt": "## Phase: Frontend Implementation\n\nImplement the client-side / UI changes:\n- Components, pages, layouts\n- State management and API integration\n- Styling and responsive design\n- Component tests\n\nCommit frontend changes separately.",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -15987,21 +16412,13 @@
           ]
         },
         {
-          "id": "integration-test",
-          "type": "action.run_agent",
-          "label": "Integration Test",
+          "id": "vp-build",
+          "type": "action.run_command",
+          "label": "Build",
           "config": {
-            "prompt": "## Phase: Integration Testing\n\nVerify the full stack works end-to-end:\n1. Run the full test suite: {{testCommand}}\n2. Run the build: {{buildCommand}}\n3. Run lint: {{lintCommand}}\n4. Fix any integration issues between frontend and backend\n5. Ensure all tests pass before completing\n\nPush all changes and create/update the PR.",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
+            "command": "{{buildCommand}}",
             "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
+            "continueOnError": true
           },
           "position": {
             "x": 400,
@@ -16012,15 +16429,84 @@
           ]
         },
         {
+          "id": "vp-test",
+          "type": "action.run_command",
+          "label": "Test",
+          "config": {
+            "command": "{{testCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 790
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-lint",
+          "type": "action.run_command",
+          "label": "Lint",
+          "config": {
+            "command": "{{lintCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 920
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-push",
+          "type": "action.push_branch",
+          "label": "Push Branch",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 1050
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-create-pr",
+          "type": "action.create_pr",
+          "label": "Create / Update PR",
+          "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 1180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "done",
           "type": "notify.log",
           "label": "Complete",
           "config": {
-            "message": "Fullstack task completed — all layers implemented and tested."
+            "message": "Fullstack task completed — all layers implemented, validated, and PR created."
           },
           "position": {
             "x": 400,
-            "y": 820
+            "y": 1310
           },
           "outputs": [
             "default"
@@ -16047,14 +16533,38 @@
           "sourcePort": "default"
         },
         {
-          "id": "implement-frontend->integration-test",
+          "id": "implement-frontend->vp-build",
           "source": "implement-frontend",
-          "target": "integration-test",
+          "target": "vp-build",
           "sourcePort": "default"
         },
         {
-          "id": "integration-test->done",
-          "source": "integration-test",
+          "id": "vp-build->vp-test",
+          "source": "vp-build",
+          "target": "vp-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-test->vp-lint",
+          "source": "vp-test",
+          "target": "vp-lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-lint->vp-push",
+          "source": "vp-lint",
+          "target": "vp-push",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-push->vp-create-pr",
+          "source": "vp-push",
+          "target": "vp-create-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-create-pr->done",
+          "source": "vp-create-pr",
           "target": "done",
           "sourcePort": "default"
         }
@@ -17613,6 +18123,175 @@
           "id": "dispatch-processing->log-complete",
           "source": "dispatch-processing",
           "target": "log-complete",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-sub-pr-handoff",
+      "name": "PR Handoff",
+      "description": "Create PR → verify creation → set task to in-review → dispatch PR Progressor workflow. Reusable handoff building block.",
+      "category": "sub-workflow",
+      "categoryLabel": "Sub Workflow",
+      "categoryIcon": ":settings:",
+      "categoryOrder": 99,
+      "tags": [
+        "sub-workflow",
+        "pr",
+        "handoff"
+      ],
+      "nodeCount": 6,
+      "edgeCount": 5,
+      "recommended": false,
+      "enabled": true,
+      "trigger": "trigger.workflow_call",
+      "variables": {
+        "taskId": "",
+        "taskTitle": "",
+        "branch": "",
+        "baseBranch": ""
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "tags": [
+          "sub-workflow",
+          "pr",
+          "handoff"
+        ]
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.workflow_call",
+          "label": "Workflow Called",
+          "config": {},
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "create-pr",
+          "type": "action.create_pr",
+          "label": "Create / Update PR",
+          "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pr-created",
+          "type": "condition.expression",
+          "label": "PR Created?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
+          },
+          "position": {
+            "x": 400,
+            "y": 310
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-inreview",
+          "type": "action.update_task_status",
+          "label": "Set In-Review",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "inreview",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 300,
+            "y": 440
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "handoff-progressor",
+          "type": "action.execute_workflow",
+          "label": "Handoff PR Progressor",
+          "config": {
+            "workflowId": "template-bosun-pr-progressor",
+            "mode": "dispatch",
+            "input": {
+              "taskId": "{{taskId}}",
+              "taskTitle": "{{taskTitle}}",
+              "branch": "{{branch}}",
+              "baseBranch": "{{baseBranch}}"
+            }
+          },
+          "position": {
+            "x": 300,
+            "y": 570
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Handoff Complete",
+          "config": {
+            "message": "PR created and PR Progressor dispatched."
+          },
+          "position": {
+            "x": 300,
+            "y": 700
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->create-pr",
+          "source": "trigger",
+          "target": "create-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "create-pr->pr-created",
+          "source": "create-pr",
+          "target": "pr-created",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created->set-inreview",
+          "source": "pr-created",
+          "target": "set-inreview",
+          "sourcePort": "yes"
+        },
+        {
+          "id": "set-inreview->handoff-progressor",
+          "source": "set-inreview",
+          "target": "handoff-progressor",
+          "sourcePort": "default"
+        },
+        {
+          "id": "handoff-progressor->done",
+          "source": "handoff-progressor",
+          "target": "done",
           "sourcePort": "default"
         }
       ]
@@ -19798,6 +20477,341 @@
           "id": "release-slot-wt-failed->notify-wt-failed",
           "source": "release-slot-wt-failed",
           "target": "notify-wt-failed",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-sub-validate-and-pr",
+      "name": "Validate & Create PR",
+      "description": "Build → Test → Lint → Push → Create/Update PR. A complete validation-through-PR pipeline as a reusable sub-workflow.",
+      "category": "sub-workflow",
+      "categoryLabel": "Sub Workflow",
+      "categoryIcon": ":settings:",
+      "categoryOrder": 99,
+      "tags": [
+        "sub-workflow",
+        "validation",
+        "pr",
+        "push"
+      ],
+      "nodeCount": 7,
+      "edgeCount": 6,
+      "recommended": false,
+      "enabled": true,
+      "trigger": "trigger.workflow_call",
+      "variables": {
+        "buildCommand": "auto",
+        "testCommand": "auto",
+        "lintCommand": "auto",
+        "worktreePath": "",
+        "branch": "",
+        "baseBranch": "",
+        "taskId": "",
+        "taskTitle": ""
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "tags": [
+          "sub-workflow",
+          "validation",
+          "pr",
+          "push"
+        ]
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.workflow_call",
+          "label": "Workflow Called",
+          "config": {},
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "build",
+          "type": "action.run_command",
+          "label": "Build",
+          "config": {
+            "command": "{{buildCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "test",
+          "type": "action.run_command",
+          "label": "Test",
+          "config": {
+            "command": "{{testCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 310
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "lint",
+          "type": "action.run_command",
+          "label": "Lint",
+          "config": {
+            "command": "{{lintCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 440
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "push",
+          "type": "action.push_branch",
+          "label": "Push Branch",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 570
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "create-pr",
+          "type": "action.create_pr",
+          "label": "Create / Update PR",
+          "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 700
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "PR Pipeline Complete",
+          "config": {
+            "message": "Validation passed, branch pushed, PR created/updated."
+          },
+          "position": {
+            "x": 400,
+            "y": 830
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->build",
+          "source": "trigger",
+          "target": "build",
+          "sourcePort": "default"
+        },
+        {
+          "id": "build->test",
+          "source": "build",
+          "target": "test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "test->lint",
+          "source": "test",
+          "target": "lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "lint->push",
+          "source": "lint",
+          "target": "push",
+          "sourcePort": "default"
+        },
+        {
+          "id": "push->create-pr",
+          "source": "push",
+          "target": "create-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "create-pr->done",
+          "source": "create-pr",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-sub-validation-gate",
+      "name": "Validation Gate",
+      "description": "Sequential build → test → lint quality gate. Use as a reusable building block — call from other workflows via Execute Workflow node.",
+      "category": "sub-workflow",
+      "categoryLabel": "Sub Workflow",
+      "categoryIcon": ":settings:",
+      "categoryOrder": 99,
+      "tags": [
+        "sub-workflow",
+        "validation",
+        "quality-gate"
+      ],
+      "nodeCount": 5,
+      "edgeCount": 4,
+      "recommended": false,
+      "enabled": true,
+      "trigger": "trigger.workflow_call",
+      "variables": {
+        "buildCommand": "auto",
+        "testCommand": "auto",
+        "lintCommand": "auto",
+        "worktreePath": "."
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "tags": [
+          "sub-workflow",
+          "validation",
+          "quality-gate"
+        ]
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.workflow_call",
+          "label": "Workflow Called",
+          "config": {},
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "build",
+          "type": "action.run_command",
+          "label": "Build",
+          "config": {
+            "command": "{{buildCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "test",
+          "type": "action.run_command",
+          "label": "Test",
+          "config": {
+            "command": "{{testCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 310
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "lint",
+          "type": "action.run_command",
+          "label": "Lint",
+          "config": {
+            "command": "{{lintCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 440
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Validation Complete",
+          "config": {
+            "message": "Validation gate passed: build + test + lint."
+          },
+          "position": {
+            "x": 400,
+            "y": 570
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->build",
+          "source": "trigger",
+          "target": "build",
+          "sourcePort": "default"
+        },
+        {
+          "id": "build->test",
+          "source": "build",
+          "target": "test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "test->lint",
+          "source": "test",
+          "target": "lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "lint->done",
+          "source": "lint",
+          "target": "done",
           "sourcePort": "default"
         }
       ]
@@ -25340,7 +26354,7 @@
           "type": "condition.expression",
           "label": "PR Created?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput($edge.source)?.prNumber || $ctx.getNodeOutput($edge.source)?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
           },
           "position": {
             "x": 400,
@@ -25564,7 +26578,7 @@
           "type": "condition.expression",
           "label": "PR Created?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput($edge.source)?.prNumber || $ctx.getNodeOutput($edge.source)?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
           },
           "position": {
             "x": 400,
@@ -34276,10 +35290,10 @@
     {
       "id": "wf-task-backend",
       "name": "Backend Task Workflow",
-      "description": "Specialised for server-side tasks — APIs, databases, services, middleware. Runs three phases: plan, implement with TDD, and verify with full test suite.",
+      "description": "Specialised for server-side tasks — APIs, databases, services, middleware. Agent phases handle planning and TDD implementation. Validation and PR creation run as explicit nodes.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 5,
+      "nodeCount": 9,
       "trigger": "trigger.task_assigned",
       "variables": {
         "taskTimeoutMs": 21600000,
@@ -34335,7 +35349,7 @@
           "type": "action.run_agent",
           "label": "Implement (TDD)",
           "config": {
-            "prompt": "## Phase: Test-Driven Implementation\n\n1. Write tests FIRST for the planned changes\n2. Verify tests fail (red)\n3. Implement the backend logic to make tests pass (green)\n4. Refactor for clarity and performance\n5. Run full test suite: {{testCommand}}\n6. Run build: {{buildCommand}}\n7. Run lint: {{lintCommand}}\n\nCommit with descriptive messages.",
+            "prompt": "## Phase: Test-Driven Implementation\n\n1. Write tests FIRST for the planned changes\n2. Verify tests fail (red)\n3. Implement the backend logic to make tests pass (green)\n4. Refactor for clarity and performance\n\nCommit with descriptive messages.",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -34356,21 +35370,13 @@
           ]
         },
         {
-          "id": "verify",
-          "type": "action.run_agent",
-          "label": "Verify & PR",
+          "id": "vp-build",
+          "type": "action.run_command",
+          "label": "Build",
           "config": {
-            "prompt": "## Phase: Verification\n\n1. Run the complete test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Ensure no regressions\n4. Push changes and create/update PR\n5. Include test results summary in PR description",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
+            "command": "{{buildCommand}}",
             "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
+            "continueOnError": true
           },
           "position": {
             "x": 400,
@@ -34381,15 +35387,84 @@
           ]
         },
         {
+          "id": "vp-test",
+          "type": "action.run_command",
+          "label": "Test",
+          "config": {
+            "command": "{{testCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 630
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-lint",
+          "type": "action.run_command",
+          "label": "Lint",
+          "config": {
+            "command": "{{lintCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 760
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-push",
+          "type": "action.push_branch",
+          "label": "Push Branch",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 890
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-create-pr",
+          "type": "action.create_pr",
+          "label": "Create / Update PR",
+          "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 1020
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "done",
           "type": "notify.log",
           "label": "Complete",
           "config": {
-            "message": "Backend task completed — API/service implemented and tested."
+            "message": "Backend task completed — API/service implemented, validated, and PR created."
           },
           "position": {
             "x": 400,
-            "y": 660
+            "y": 1150
           },
           "outputs": [
             "default"
@@ -34410,14 +35485,38 @@
           "sourcePort": "default"
         },
         {
-          "id": "implement-tdd->verify",
+          "id": "implement-tdd->vp-build",
           "source": "implement-tdd",
-          "target": "verify",
+          "target": "vp-build",
           "sourcePort": "default"
         },
         {
-          "id": "verify->done",
-          "source": "verify",
+          "id": "vp-build->vp-test",
+          "source": "vp-build",
+          "target": "vp-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-test->vp-lint",
+          "source": "vp-test",
+          "target": "vp-lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-lint->vp-push",
+          "source": "vp-lint",
+          "target": "vp-push",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-push->vp-create-pr",
+          "source": "vp-push",
+          "target": "vp-create-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-create-pr->done",
+          "source": "vp-create-pr",
           "target": "done",
           "sourcePort": "default"
         }
@@ -34429,8 +35528,8 @@
         "templateState": {
           "templateId": "template-task-backend",
           "templateName": "Backend Task Workflow",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "2.0.0",
+          "installedTemplateVersion": "2.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -34635,10 +35734,10 @@
     {
       "id": "wf-task-cicd",
       "name": "CI/CD Task Workflow",
-      "description": "For pipeline, deployment, infrastructure, and build-system tasks. Plans the change, implements with validation steps, then verifies the pipeline works end-to-end.",
+      "description": "For pipeline, deployment, infrastructure, and build-system tasks. Agent phases handle planning and implementation. Validation and PR creation run as explicit nodes.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 5,
+      "nodeCount": 9,
       "trigger": "trigger.task_assigned",
       "variables": {
         "taskTimeoutMs": 21600000,
@@ -34694,7 +35793,7 @@
           "type": "action.run_agent",
           "label": "Implement Pipeline",
           "config": {
-            "prompt": "## Phase: Pipeline Implementation\n\n1. Make the CI/CD / infrastructure changes per the plan\n2. Update configuration files (workflows, Dockerfiles, Terraform, etc.)\n3. Add or update pipeline tests where applicable\n4. Run build: {{buildCommand}}\n5. Run lint: {{lintCommand}}\n6. Validate configuration syntax\n\nCommit changes with clear descriptions.",
+            "prompt": "## Phase: Pipeline Implementation\n\n1. Make the CI/CD / infrastructure changes per the plan\n2. Update configuration files (workflows, Dockerfiles, Terraform, etc.)\n3. Add or update pipeline tests where applicable\n4. Validate configuration syntax\n\nCommit changes with clear descriptions.",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -34715,21 +35814,13 @@
           ]
         },
         {
-          "id": "verify-pipeline",
-          "type": "action.run_agent",
-          "label": "Verify & PR",
+          "id": "vp-build",
+          "type": "action.run_command",
+          "label": "Build",
           "config": {
-            "prompt": "## Phase: Pipeline Verification\n\n1. Run full test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify pipeline configuration is valid\n4. Push and create/update PR\n5. Include deployment / rollback instructions in PR description",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
+            "command": "{{buildCommand}}",
             "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
+            "continueOnError": true
           },
           "position": {
             "x": 400,
@@ -34740,15 +35831,84 @@
           ]
         },
         {
+          "id": "vp-test",
+          "type": "action.run_command",
+          "label": "Test",
+          "config": {
+            "command": "{{testCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 630
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-lint",
+          "type": "action.run_command",
+          "label": "Lint",
+          "config": {
+            "command": "{{lintCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 760
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-push",
+          "type": "action.push_branch",
+          "label": "Push Branch",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 890
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-create-pr",
+          "type": "action.create_pr",
+          "label": "Create / Update PR",
+          "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 1020
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "done",
           "type": "notify.log",
           "label": "Complete",
           "config": {
-            "message": "CI/CD task completed — pipeline updated and verified."
+            "message": "CI/CD task completed — pipeline updated, validated, and PR created."
           },
           "position": {
             "x": 400,
-            "y": 660
+            "y": 1150
           },
           "outputs": [
             "default"
@@ -34769,14 +35929,38 @@
           "sourcePort": "default"
         },
         {
-          "id": "implement-pipeline->verify-pipeline",
+          "id": "implement-pipeline->vp-build",
           "source": "implement-pipeline",
-          "target": "verify-pipeline",
+          "target": "vp-build",
           "sourcePort": "default"
         },
         {
-          "id": "verify-pipeline->done",
-          "source": "verify-pipeline",
+          "id": "vp-build->vp-test",
+          "source": "vp-build",
+          "target": "vp-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-test->vp-lint",
+          "source": "vp-test",
+          "target": "vp-lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-lint->vp-push",
+          "source": "vp-lint",
+          "target": "vp-push",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-push->vp-create-pr",
+          "source": "vp-push",
+          "target": "vp-create-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-create-pr->done",
+          "source": "vp-create-pr",
           "target": "done",
           "sourcePort": "default"
         }
@@ -34788,8 +35972,8 @@
         "templateState": {
           "templateId": "template-task-cicd",
           "templateName": "CI/CD Task Workflow",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "2.0.0",
+          "installedTemplateVersion": "2.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -35111,10 +36295,10 @@
     {
       "id": "wf-task-debug",
       "name": "Debug Task Workflow",
-      "description": "Bug investigation and fix workflow. Starts with reproduction and root-cause analysis, then implements a targeted fix with regression tests.",
+      "description": "Bug investigation and fix workflow. Agent phases handle reproduction, root-cause analysis, and surgical fix with regression tests. Validation and PR creation run as explicit nodes.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 5,
+      "nodeCount": 9,
       "trigger": "trigger.task_assigned",
       "variables": {
         "taskTimeoutMs": 21600000,
@@ -35170,7 +36354,7 @@
           "type": "action.run_agent",
           "label": "Fix & Regression Test",
           "config": {
-            "prompt": "## Phase: Fix Implementation with Regression Tests\n\n1. Write a regression test that demonstrates the bug (must fail before fix)\n2. Apply the minimal, surgical fix\n3. Verify the regression test now passes\n4. Run the full test suite: {{testCommand}}\n5. Run build: {{buildCommand}}\n6. Run lint: {{lintCommand}}\n7. Ensure no other tests broke\n\nCommit fix and test together with a clear commit message.",
+            "prompt": "## Phase: Fix Implementation with Regression Tests\n\n1. Write a regression test that demonstrates the bug (must fail before fix)\n2. Apply the minimal, surgical fix\n3. Verify the regression test now passes\n\nCommit fix and test together with a clear commit message.",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -35191,21 +36375,13 @@
           ]
         },
         {
-          "id": "verify",
-          "type": "action.run_agent",
-          "label": "Verify & PR",
+          "id": "vp-build",
+          "type": "action.run_command",
+          "label": "Build",
           "config": {
-            "prompt": "## Phase: Final Verification\n\n1. Run complete test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Confirm the original bug is fixed\n4. Confirm no regressions\n5. Push and create/update PR with root cause analysis in description",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
+            "command": "{{buildCommand}}",
             "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
+            "continueOnError": true
           },
           "position": {
             "x": 400,
@@ -35216,15 +36392,84 @@
           ]
         },
         {
+          "id": "vp-test",
+          "type": "action.run_command",
+          "label": "Test",
+          "config": {
+            "command": "{{testCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 630
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-lint",
+          "type": "action.run_command",
+          "label": "Lint",
+          "config": {
+            "command": "{{lintCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 760
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-push",
+          "type": "action.push_branch",
+          "label": "Push Branch",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 890
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-create-pr",
+          "type": "action.create_pr",
+          "label": "Create / Update PR",
+          "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 1020
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "done",
           "type": "notify.log",
           "label": "Complete",
           "config": {
-            "message": "Debug task completed — bug fixed with regression test."
+            "message": "Debug task completed — bug fixed, validated, and PR created."
           },
           "position": {
             "x": 400,
-            "y": 660
+            "y": 1150
           },
           "outputs": [
             "default"
@@ -35245,14 +36490,38 @@
           "sourcePort": "default"
         },
         {
-          "id": "fix-and-test->verify",
+          "id": "fix-and-test->vp-build",
           "source": "fix-and-test",
-          "target": "verify",
+          "target": "vp-build",
           "sourcePort": "default"
         },
         {
-          "id": "verify->done",
-          "source": "verify",
+          "id": "vp-build->vp-test",
+          "source": "vp-build",
+          "target": "vp-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-test->vp-lint",
+          "source": "vp-test",
+          "target": "vp-lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-lint->vp-push",
+          "source": "vp-lint",
+          "target": "vp-push",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-push->vp-create-pr",
+          "source": "vp-push",
+          "target": "vp-create-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-create-pr->done",
+          "source": "vp-create-pr",
           "target": "done",
           "sourcePort": "default"
         }
@@ -35264,8 +36533,8 @@
         "templateState": {
           "templateId": "template-task-debug",
           "templateName": "Debug Task Workflow",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "2.0.0",
+          "installedTemplateVersion": "2.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -35274,10 +36543,10 @@
     {
       "id": "wf-task-design",
       "name": "Design Task Workflow",
-      "description": "For design-related tasks — mockups, wireframes, design tokens, component library work. Analyses design requirements, implements the design system changes, and verifies visual output.",
+      "description": "For design-related tasks — mockups, wireframes, design tokens, component library work. Agent phases handle analysis and implementation. Validation and PR creation run as explicit nodes.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 5,
+      "nodeCount": 9,
       "trigger": "trigger.task_assigned",
       "variables": {
         "taskTimeoutMs": 21600000,
@@ -35333,7 +36602,7 @@
           "type": "action.run_agent",
           "label": "Implement Design",
           "config": {
-            "prompt": "## Phase: Design Implementation\n\n1. Update design tokens (colors, spacing, typography) if needed\n2. Create / update components per the design specification\n3. Ensure consistency with existing design system\n4. Add visual tests or snapshots where applicable\n5. Run build: {{buildCommand}}\n6. Run lint: {{lintCommand}}\n\nCommit changes with descriptive messages.",
+            "prompt": "## Phase: Design Implementation\n\n1. Update design tokens (colors, spacing, typography) if needed\n2. Create / update components per the design specification\n3. Ensure consistency with existing design system\n4. Add visual tests or snapshots where applicable\n\nCommit changes with descriptive messages.",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -35354,21 +36623,13 @@
           ]
         },
         {
-          "id": "verify-design",
-          "type": "action.run_agent",
-          "label": "Verify & PR",
+          "id": "vp-build",
+          "type": "action.run_command",
+          "label": "Build",
           "config": {
-            "prompt": "## Phase: Design Verification\n\n1. Run tests: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify visual consistency\n4. Check design token values are correct\n5. Push and create/update PR",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
+            "command": "{{buildCommand}}",
             "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
+            "continueOnError": true
           },
           "position": {
             "x": 400,
@@ -35379,15 +36640,84 @@
           ]
         },
         {
+          "id": "vp-test",
+          "type": "action.run_command",
+          "label": "Test",
+          "config": {
+            "command": "{{testCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 630
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-lint",
+          "type": "action.run_command",
+          "label": "Lint",
+          "config": {
+            "command": "{{lintCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 760
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-push",
+          "type": "action.push_branch",
+          "label": "Push Branch",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 890
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-create-pr",
+          "type": "action.create_pr",
+          "label": "Create / Update PR",
+          "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 1020
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "done",
           "type": "notify.log",
           "label": "Complete",
           "config": {
-            "message": "Design task completed — design changes implemented and verified."
+            "message": "Design task completed — design implemented, validated, and PR created."
           },
           "position": {
             "x": 400,
-            "y": 660
+            "y": 1150
           },
           "outputs": [
             "default"
@@ -35408,14 +36738,38 @@
           "sourcePort": "default"
         },
         {
-          "id": "implement-design->verify-design",
+          "id": "implement-design->vp-build",
           "source": "implement-design",
-          "target": "verify-design",
+          "target": "vp-build",
           "sourcePort": "default"
         },
         {
-          "id": "verify-design->done",
-          "source": "verify-design",
+          "id": "vp-build->vp-test",
+          "source": "vp-build",
+          "target": "vp-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-test->vp-lint",
+          "source": "vp-test",
+          "target": "vp-lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-lint->vp-push",
+          "source": "vp-lint",
+          "target": "vp-push",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-push->vp-create-pr",
+          "source": "vp-push",
+          "target": "vp-create-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-create-pr->done",
+          "source": "vp-create-pr",
           "target": "done",
           "sourcePort": "default"
         }
@@ -35427,8 +36781,8 @@
         "templateState": {
           "templateId": "template-task-design",
           "templateName": "Design Task Workflow",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "2.0.0",
+          "installedTemplateVersion": "2.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -35613,10 +36967,10 @@
     {
       "id": "wf-task-frontend",
       "name": "Frontend Task Workflow",
-      "description": "Specialised for UI tasks — components, pages, styling, accessibility. Runs three phases: design analysis, implement with component tests, and visual verification.",
+      "description": "Specialised for UI tasks — components, pages, styling, accessibility. Agent phases handle design analysis and UI implementation. Validation and PR creation run as explicit nodes.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 5,
+      "nodeCount": 9,
       "trigger": "trigger.task_assigned",
       "variables": {
         "taskTimeoutMs": 21600000,
@@ -35672,7 +37026,7 @@
           "type": "action.run_agent",
           "label": "Implement UI",
           "config": {
-            "prompt": "## Phase: UI Implementation\n\n1. Create / update components per the design plan\n2. Implement layouts, styling, and responsive design\n3. Add proper accessibility attributes\n4. Write component tests\n5. Run tests: {{testCommand}}\n6. Run build: {{buildCommand}}\n7. Run lint: {{lintCommand}}\n\nCommit with descriptive messages.",
+            "prompt": "## Phase: UI Implementation\n\n1. Create / update components per the design plan\n2. Implement layouts, styling, and responsive design\n3. Add proper accessibility attributes\n4. Write component tests\n\nCommit with descriptive messages.",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -35693,21 +37047,13 @@
           ]
         },
         {
-          "id": "verify-visual",
-          "type": "action.run_agent",
-          "label": "Verify & PR",
+          "id": "vp-build",
+          "type": "action.run_command",
+          "label": "Build",
           "config": {
-            "prompt": "## Phase: Visual Verification\n\n1. Run the full test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify components render correctly\n4. Check responsive breakpoints\n5. Verify accessibility (screen reader, keyboard)\n6. Push changes and create/update PR",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
+            "command": "{{buildCommand}}",
             "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
+            "continueOnError": true
           },
           "position": {
             "x": 400,
@@ -35718,15 +37064,84 @@
           ]
         },
         {
+          "id": "vp-test",
+          "type": "action.run_command",
+          "label": "Test",
+          "config": {
+            "command": "{{testCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 630
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-lint",
+          "type": "action.run_command",
+          "label": "Lint",
+          "config": {
+            "command": "{{lintCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 760
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-push",
+          "type": "action.push_branch",
+          "label": "Push Branch",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 890
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-create-pr",
+          "type": "action.create_pr",
+          "label": "Create / Update PR",
+          "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 1020
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "done",
           "type": "notify.log",
           "label": "Complete",
           "config": {
-            "message": "Frontend task completed — UI implemented and verified."
+            "message": "Frontend task completed — UI implemented, validated, and PR created."
           },
           "position": {
             "x": 400,
-            "y": 660
+            "y": 1150
           },
           "outputs": [
             "default"
@@ -35747,14 +37162,38 @@
           "sourcePort": "default"
         },
         {
-          "id": "implement-ui->verify-visual",
+          "id": "implement-ui->vp-build",
           "source": "implement-ui",
-          "target": "verify-visual",
+          "target": "vp-build",
           "sourcePort": "default"
         },
         {
-          "id": "verify-visual->done",
-          "source": "verify-visual",
+          "id": "vp-build->vp-test",
+          "source": "vp-build",
+          "target": "vp-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-test->vp-lint",
+          "source": "vp-test",
+          "target": "vp-lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-lint->vp-push",
+          "source": "vp-lint",
+          "target": "vp-push",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-push->vp-create-pr",
+          "source": "vp-push",
+          "target": "vp-create-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-create-pr->done",
+          "source": "vp-create-pr",
           "target": "done",
           "sourcePort": "default"
         }
@@ -35766,8 +37205,8 @@
         "templateState": {
           "templateId": "template-task-frontend",
           "templateName": "Frontend Task Workflow",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "2.0.0",
+          "installedTemplateVersion": "2.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -35776,10 +37215,10 @@
     {
       "id": "wf-task-fullstack",
       "name": "Fullstack Task Workflow",
-      "description": "Handles tasks that span frontend and backend — API endpoints, database models, and UI components. Runs four agent phases: architecture planning, backend implementation, frontend implementation, and integration testing.",
+      "description": "Handles tasks that span frontend and backend — API endpoints, database models, and UI components. Agent phases handle architecture planning, backend implementation, and frontend implementation. Validation (build/test/lint) and PR creation run as explicit nodes.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 6,
+      "nodeCount": 10,
       "trigger": "trigger.task_assigned",
       "variables": {
         "taskTimeoutMs": 21600000,
@@ -35835,7 +37274,7 @@
           "type": "action.run_agent",
           "label": "Implement Backend",
           "config": {
-            "prompt": "## Phase: Backend Implementation\n\nImplement the server-side / API changes from the architecture plan:\n- Models, schemas, database migrations\n- API routes and controllers\n- Service / business logic\n- Unit tests for backend logic\n- Run tests: {{testCommand}}\n\nCommit backend changes separately.",
+            "prompt": "## Phase: Backend Implementation\n\nImplement the server-side / API changes from the architecture plan:\n- Models, schemas, database migrations\n- API routes and controllers\n- Service / business logic\n- Unit tests for backend logic\n\nCommit backend changes separately.",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -35860,7 +37299,7 @@
           "type": "action.run_agent",
           "label": "Implement Frontend",
           "config": {
-            "prompt": "## Phase: Frontend Implementation\n\nImplement the client-side / UI changes:\n- Components, pages, layouts\n- State management and API integration\n- Styling and responsive design\n- Component tests\n- Run build: {{buildCommand}}\n\nCommit frontend changes separately.",
+            "prompt": "## Phase: Frontend Implementation\n\nImplement the client-side / UI changes:\n- Components, pages, layouts\n- State management and API integration\n- Styling and responsive design\n- Component tests\n\nCommit frontend changes separately.",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -35881,21 +37320,13 @@
           ]
         },
         {
-          "id": "integration-test",
-          "type": "action.run_agent",
-          "label": "Integration Test",
+          "id": "vp-build",
+          "type": "action.run_command",
+          "label": "Build",
           "config": {
-            "prompt": "## Phase: Integration Testing\n\nVerify the full stack works end-to-end:\n1. Run the full test suite: {{testCommand}}\n2. Run the build: {{buildCommand}}\n3. Run lint: {{lintCommand}}\n4. Fix any integration issues between frontend and backend\n5. Ensure all tests pass before completing\n\nPush all changes and create/update the PR.",
-            "taskId": "{{taskId}}",
-            "sdk": "{{resolvedSdk}}",
-            "model": "{{resolvedModel}}",
-            "agentProfile": "{{agentProfile}}",
+            "command": "{{buildCommand}}",
             "cwd": "{{worktreePath}}",
-            "timeoutMs": "{{taskTimeoutMs}}",
-            "maxRetries": "{{maxRetries}}",
-            "maxContinues": "{{maxContinues}}",
-            "resolveMode": "library",
-            "failOnError": false
+            "continueOnError": true
           },
           "position": {
             "x": 400,
@@ -35906,15 +37337,84 @@
           ]
         },
         {
+          "id": "vp-test",
+          "type": "action.run_command",
+          "label": "Test",
+          "config": {
+            "command": "{{testCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 790
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-lint",
+          "type": "action.run_command",
+          "label": "Lint",
+          "config": {
+            "command": "{{lintCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 920
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-push",
+          "type": "action.push_branch",
+          "label": "Push Branch",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 1050
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "vp-create-pr",
+          "type": "action.create_pr",
+          "label": "Create / Update PR",
+          "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 1180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "done",
           "type": "notify.log",
           "label": "Complete",
           "config": {
-            "message": "Fullstack task completed — all layers implemented and tested."
+            "message": "Fullstack task completed — all layers implemented, validated, and PR created."
           },
           "position": {
             "x": 400,
-            "y": 820
+            "y": 1310
           },
           "outputs": [
             "default"
@@ -35941,14 +37441,38 @@
           "sourcePort": "default"
         },
         {
-          "id": "implement-frontend->integration-test",
+          "id": "implement-frontend->vp-build",
           "source": "implement-frontend",
-          "target": "integration-test",
+          "target": "vp-build",
           "sourcePort": "default"
         },
         {
-          "id": "integration-test->done",
-          "source": "integration-test",
+          "id": "vp-build->vp-test",
+          "source": "vp-build",
+          "target": "vp-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-test->vp-lint",
+          "source": "vp-test",
+          "target": "vp-lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-lint->vp-push",
+          "source": "vp-lint",
+          "target": "vp-push",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-push->vp-create-pr",
+          "source": "vp-push",
+          "target": "vp-create-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "vp-create-pr->done",
+          "source": "vp-create-pr",
           "target": "done",
           "sourcePort": "default"
         }
@@ -35960,8 +37484,8 @@
         "templateState": {
           "templateId": "template-task-fullstack",
           "templateName": "Fullstack Task Workflow",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "2.0.0",
+          "installedTemplateVersion": "2.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -37455,6 +38979,169 @@
           "templateName": "MCP-to-Bosun Bridge",
           "templateVersion": "1.0.0",
           "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-sub-pr-handoff",
+      "name": "PR Handoff",
+      "description": "Create PR → verify creation → set task to in-review → dispatch PR Progressor workflow. Reusable handoff building block.",
+      "category": "sub-workflow",
+      "enabled": true,
+      "nodeCount": 6,
+      "trigger": "trigger.workflow_call",
+      "variables": {
+        "taskId": "",
+        "taskTitle": "",
+        "branch": "",
+        "baseBranch": ""
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.workflow_call",
+          "label": "Workflow Called",
+          "config": {},
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "create-pr",
+          "type": "action.create_pr",
+          "label": "Create / Update PR",
+          "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pr-created",
+          "type": "condition.expression",
+          "label": "PR Created?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
+          },
+          "position": {
+            "x": 400,
+            "y": 310
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-inreview",
+          "type": "action.update_task_status",
+          "label": "Set In-Review",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "inreview",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 300,
+            "y": 440
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "handoff-progressor",
+          "type": "action.execute_workflow",
+          "label": "Handoff PR Progressor",
+          "config": {
+            "workflowId": "template-bosun-pr-progressor",
+            "mode": "dispatch",
+            "input": {
+              "taskId": "{{taskId}}",
+              "taskTitle": "{{taskTitle}}",
+              "branch": "{{branch}}",
+              "baseBranch": "{{baseBranch}}"
+            }
+          },
+          "position": {
+            "x": 300,
+            "y": 570
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Handoff Complete",
+          "config": {
+            "message": "PR created and PR Progressor dispatched."
+          },
+          "position": {
+            "x": 300,
+            "y": 700
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->create-pr",
+          "source": "trigger",
+          "target": "create-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "create-pr->pr-created",
+          "source": "create-pr",
+          "target": "pr-created",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created->set-inreview",
+          "source": "pr-created",
+          "target": "set-inreview",
+          "sourcePort": "yes"
+        },
+        {
+          "id": "set-inreview->handoff-progressor",
+          "source": "set-inreview",
+          "target": "handoff-progressor",
+          "sourcePort": "default"
+        },
+        {
+          "id": "handoff-progressor->done",
+          "source": "handoff-progressor",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-sub-pr-handoff",
+          "templateName": "PR Handoff",
+          "templateVersion": 1,
+          "installedTemplateVersion": 1,
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -39578,6 +41265,327 @@
           "templateName": "Task Lifecycle",
           "templateVersion": "2.0.0",
           "installedTemplateVersion": "2.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-sub-validate-and-pr",
+      "name": "Validate & Create PR",
+      "description": "Build → Test → Lint → Push → Create/Update PR. A complete validation-through-PR pipeline as a reusable sub-workflow.",
+      "category": "sub-workflow",
+      "enabled": true,
+      "nodeCount": 7,
+      "trigger": "trigger.workflow_call",
+      "variables": {
+        "buildCommand": "auto",
+        "testCommand": "auto",
+        "lintCommand": "auto",
+        "worktreePath": "",
+        "branch": "",
+        "baseBranch": "",
+        "taskId": "",
+        "taskTitle": ""
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.workflow_call",
+          "label": "Workflow Called",
+          "config": {},
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "build",
+          "type": "action.run_command",
+          "label": "Build",
+          "config": {
+            "command": "{{buildCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "test",
+          "type": "action.run_command",
+          "label": "Test",
+          "config": {
+            "command": "{{testCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 310
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "lint",
+          "type": "action.run_command",
+          "label": "Lint",
+          "config": {
+            "command": "{{lintCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 440
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "push",
+          "type": "action.push_branch",
+          "label": "Push Branch",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 570
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "create-pr",
+          "type": "action.create_pr",
+          "label": "Create / Update PR",
+          "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 700
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "PR Pipeline Complete",
+          "config": {
+            "message": "Validation passed, branch pushed, PR created/updated."
+          },
+          "position": {
+            "x": 400,
+            "y": 830
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->build",
+          "source": "trigger",
+          "target": "build",
+          "sourcePort": "default"
+        },
+        {
+          "id": "build->test",
+          "source": "build",
+          "target": "test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "test->lint",
+          "source": "test",
+          "target": "lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "lint->push",
+          "source": "lint",
+          "target": "push",
+          "sourcePort": "default"
+        },
+        {
+          "id": "push->create-pr",
+          "source": "push",
+          "target": "create-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "create-pr->done",
+          "source": "create-pr",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-sub-validate-and-pr",
+          "templateName": "Validate & Create PR",
+          "templateVersion": 1,
+          "installedTemplateVersion": 1,
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-sub-validation-gate",
+      "name": "Validation Gate",
+      "description": "Sequential build → test → lint quality gate. Use as a reusable building block — call from other workflows via Execute Workflow node.",
+      "category": "sub-workflow",
+      "enabled": true,
+      "nodeCount": 5,
+      "trigger": "trigger.workflow_call",
+      "variables": {
+        "buildCommand": "auto",
+        "testCommand": "auto",
+        "lintCommand": "auto",
+        "worktreePath": "."
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.workflow_call",
+          "label": "Workflow Called",
+          "config": {},
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "build",
+          "type": "action.run_command",
+          "label": "Build",
+          "config": {
+            "command": "{{buildCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "test",
+          "type": "action.run_command",
+          "label": "Test",
+          "config": {
+            "command": "{{testCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 310
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "lint",
+          "type": "action.run_command",
+          "label": "Lint",
+          "config": {
+            "command": "{{lintCommand}}",
+            "cwd": "{{worktreePath}}",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 440
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Validation Complete",
+          "config": {
+            "message": "Validation gate passed: build + test + lint."
+          },
+          "position": {
+            "x": 400,
+            "y": 570
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->build",
+          "source": "trigger",
+          "target": "build",
+          "sourcePort": "default"
+        },
+        {
+          "id": "build->test",
+          "source": "build",
+          "target": "test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "test->lint",
+          "source": "test",
+          "target": "lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "lint->done",
+          "source": "lint",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-sub-validation-gate",
+          "templateName": "Validation Gate",
+          "templateVersion": 1,
+          "installedTemplateVersion": 1,
           "isCustomized": false,
           "updateAvailable": false
         }

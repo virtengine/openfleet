@@ -49,8 +49,9 @@ export const VALIDATE_AND_PR_SUB = subWorkflow(
       continueOnError: true,
     }, { x: 400, y: 260 }),
     node("push", "action.push_branch", "Push Branch", {
-      cwd: "{{worktreePath}}",
+      worktreePath: "{{worktreePath}}",
       branch: "{{branch}}",
+      baseBranch: "{{baseBranch}}",
     }, { x: 400, y: 390 }),
     node("create-pr", "action.create_pr", "Create / Update PR", {
       taskId: "{{taskId}}",
@@ -87,7 +88,7 @@ export const PR_HANDOFF_SUB = subWorkflow(
       baseBranch: "{{baseBranch}}",
     }, { x: 400, y: 0 }),
     node("pr-created", "condition.expression", "PR Created?", {
-      expression: "Boolean($ctx.getNodeOutput($edge.source)?.prNumber || $ctx.getNodeOutput($edge.source)?.prUrl)",
+      expression: "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)",
     }, { x: 400, y: 130, outputs: ["yes", "no"] }),
     node("set-inreview", "action.update_task_status", "Set In-Review", {
       taskId: "{{taskId}}",
@@ -203,7 +204,7 @@ export const PR_CHECK_HANDOFF_SUB = subWorkflow(
   "pr-check-handoff",
   [
     node("pr-ok", "condition.expression", "PR Created?", {
-      expression: "Boolean($ctx.getNodeOutput($edge.source)?.prNumber || $ctx.getNodeOutput($edge.source)?.prUrl)",
+      expression: "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)",
     }, { x: 400, y: 0, outputs: ["yes", "no"] }),
     node("set-inreview", "action.update_task_status", "Set In-Review", {
       taskId: "{{taskId}}",
@@ -259,7 +260,7 @@ export const VALIDATION_GATE_TEMPLATE = {
     buildCommand: "auto",
     testCommand: "auto",
     lintCommand: "auto",
-    worktreePath: "",
+    worktreePath: ".",
   },
   metadata: {
     author: "bosun",
@@ -313,7 +314,7 @@ export const VALIDATE_AND_PR_TEMPLATE = {
     buildCommand: "auto",
     testCommand: "auto",
     lintCommand: "auto",
-    worktreePath: "",
+    worktreePath: ".",
     branch: "",
     baseBranch: "",
     taskId: "",
@@ -342,8 +343,9 @@ export const VALIDATE_AND_PR_TEMPLATE = {
       continueOnError: true,
     }, { x: 400, y: 440 }),
     node("push", "action.push_branch", "Push Branch", {
-      cwd: "{{worktreePath}}",
+      worktreePath: "{{worktreePath}}",
       branch: "{{branch}}",
+      baseBranch: "{{baseBranch}}",
     }, { x: 400, y: 570 }),
     node("create-pr", "action.create_pr", "Create / Update PR", {
       taskId: "{{taskId}}",
@@ -389,6 +391,7 @@ export const PR_HANDOFF_TEMPLATE = {
     author: "bosun",
     version: 1,
     tags: ["sub-workflow", "pr", "handoff"],
+    requiredTemplates: ["template-bosun-pr-progressor"],
   },
   nodes: [
     node("trigger", "trigger.workflow_call", "Workflow Called", {}, { x: 400, y: 50 }),
@@ -399,7 +402,7 @@ export const PR_HANDOFF_TEMPLATE = {
       baseBranch: "{{baseBranch}}",
     }, { x: 400, y: 180 }),
     node("pr-created", "condition.expression", "PR Created?", {
-      expression: "Boolean($ctx.getNodeOutput($edge.source)?.prNumber || $ctx.getNodeOutput($edge.source)?.prUrl)",
+      expression: "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)",
     }, { x: 400, y: 310, outputs: ["yes", "no"] }),
     node("set-inreview", "action.update_task_status", "Set In-Review", {
       taskId: "{{taskId}}",
@@ -428,3 +431,5 @@ export const PR_HANDOFF_TEMPLATE = {
     edge("handoff-progressor", "done"),
   ],
 };
+
+
