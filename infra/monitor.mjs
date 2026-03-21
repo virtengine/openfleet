@@ -323,11 +323,14 @@ function saveAgentAlertsState() {
 }
 
 function initializeAgentAlertsOffset() {
-  loadAgentAlertsState();
   if (AGENT_ALERTS_REPLAY_STARTUP) {
+    // In replay mode, start from the beginning and ignore any persisted
+    // deduplication state so that replayed alerts are not suppressed.
     agentAlertsOffset = 0;
+    agentAlertsDedup.clear();
     return;
   }
+  loadAgentAlertsState();
   if (agentAlertsOffset > 0) return;
   const path = getAgentAlertsPath();
   if (!existsSync(path)) return;
@@ -7067,7 +7070,9 @@ function buildEpicMergeBody(tasks, headName, baseName) {
   for (const task of slice) {
     const normalizedTaskId = String(task?.id || "").trim();
     const title = deriveTaskDisplayTitle(task?.title || task?.name, normalizedTaskId);
-    const id = normalizedTaskId ? ` (${normalizedTaskId})` : "";
+    const shouldOmitIdSuffix =
+      normalizedTaskId && title === `Task ${normalizedTaskId}`;
+    const id = normalizedTaskId && !shouldOmitIdSuffix ? ` (${normalizedTaskId})` : "";
     lines.push(`- ${title}${id}`);
   }
   if (safeTasks.length > maxList) {
@@ -10135,7 +10140,8 @@ function formatRecentStatusItems(items, timestampField, maxItems = 6) {
     .map((entry) => {
       const id = (entry?.task_id || entry?.id || "").toString().slice(0, 8);
       const title = deriveTaskDisplayTitle(entry?.task_title || entry?.title, id);
-      const suffix = id ? ` (${id})` : "";
+      const suffix =
+        id && title !== `Task ${id}` ? ` (${id})` : "";
       return `- ${title}${suffix}`;
     });
 }
