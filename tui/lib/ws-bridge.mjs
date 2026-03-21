@@ -151,18 +151,46 @@ class TuiWsBridge {
 			case "sessions:update":
 				this._emit("sessions:update", payload);
 				break;
-			case "session:event":
+			case "session:event": {
 				this._emit("session:event", payload);
+				// backward compat: bridge to legacy session lifecycle events
+				const sessionEventReason = payload?.event?.reason || "";
+				const sessionData = payload?.session || {};
+				if (sessionEventReason === "session-started") {
+					this._emit("session:start", sessionData);
+				} else if (sessionEventReason === "session-ended") {
+					this._emit("session:end", sessionData);
+				} else {
+					this._emit("session:update", sessionData);
+				}
 				break;
+			}
 			case "logs:stream":
 				this._emit("logs:stream", payload);
 				break;
 			case "workflow:status":
 				this._emit("workflow:status", payload);
 				break;
-			case "tasks:update":
+			case "tasks:update": {
 				this._emit("tasks:update", payload);
+				// backward compat: bridge to legacy task events
+				const taskReason = payload?.reason || "";
+				const taskSourceEvent = payload?.sourceEvent || "";
+				const taskId = payload?.taskId ?? payload?.patch?.id;
+				const taskPatch = { ...payload?.patch, id: taskId };
+				if (taskReason === "task-created" || taskSourceEvent === "task:created") {
+					this._emit("task:create", taskPatch);
+				} else if (
+					taskReason === "task-deleted"
+					|| taskSourceEvent === "task:deleted"
+					|| taskSourceEvent === "delete"
+				) {
+					this._emit("task:delete", taskId);
+				} else {
+					this._emit("task:update", taskPatch);
+				}
 				break;
+			}
 			case "pong":
 				break;
 			default:
@@ -218,6 +246,7 @@ function createWsBridge({ host, port, configDir, protocol }) {
 	_lastPort = port;
 	_lastConfigDir = configDir || defaultConfigDir();
 	_lastProtocol = protocol || "ws";
+	wsBridge._instance = _instance;
 	return _instance;
 }
 
