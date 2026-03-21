@@ -1703,6 +1703,3 @@ export function _resetSingleton(nextOptions) {
     _instance = new SessionTracker(nextOptions);
   }
 }
-
-
-
