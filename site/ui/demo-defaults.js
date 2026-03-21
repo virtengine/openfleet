@@ -4607,7 +4607,7 @@
         "multi-language"
       ],
       "nodeCount": 29,
-      "edgeCount": 30,
+      "edgeCount": 28,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_assigned",
@@ -4714,7 +4714,7 @@
           ]
         },
         {
-          "id": "build",
+          "id": "main-build",
           "type": "validation.build",
           "label": "Build Check",
           "config": {
@@ -4723,29 +4723,29 @@
           },
           "position": {
             "x": 400,
-            "y": 650
+            "y": 0
           },
           "outputs": [
             "default"
           ]
         },
         {
-          "id": "test-final",
+          "id": "main-test",
           "type": "validation.tests",
-          "label": "Final Test Run",
+          "label": "Test Run",
           "config": {
             "command": "{{testCommand}}"
           },
           "position": {
             "x": 400,
-            "y": 780
+            "y": 130
           },
           "outputs": [
             "default"
           ]
         },
         {
-          "id": "lint",
+          "id": "main-lint",
           "type": "validation.lint",
           "label": "Lint Check",
           "config": {
@@ -4753,7 +4753,7 @@
           },
           "position": {
             "x": 400,
-            "y": 910
+            "y": 260
           },
           "outputs": [
             "default"
@@ -4764,7 +4764,7 @@
           "type": "condition.expression",
           "label": "All Checks Passed?",
           "config": {
-            "expression": "$ctx.getNodeOutput('build')?.passed === true && $ctx.getNodeOutput('test-final')?.passed === true && $ctx.getNodeOutput('lint')?.passed === true"
+            "expression": "$ctx.getNodeOutput('main-build')?.passed === true && $ctx.getNodeOutput('main-test')?.passed === true && $ctx.getNodeOutput('main-lint')?.passed === true"
           },
           "position": {
             "x": 400,
@@ -4796,22 +4796,6 @@
           ]
         },
         {
-          "id": "push-ok",
-          "type": "condition.expression",
-          "label": "Push OK?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('push-branch')?.pushed === true"
-          },
-          "position": {
-            "x": 250,
-            "y": 1175
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
           "id": "create-pr",
           "type": "action.create_pr",
           "label": "Handoff PR Lifecycle",
@@ -4834,15 +4818,15 @@
           ]
         },
         {
-          "id": "pr-created",
+          "id": "main-pr-ok",
           "type": "condition.expression",
-          "label": "Handoff Recorded?",
+          "label": "PR Created?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput($edge.source)?.prNumber || $ctx.getNodeOutput($edge.source)?.prUrl)"
           },
           "position": {
-            "x": 250,
-            "y": 1240
+            "x": 400,
+            "y": 0
           },
           "outputs": [
             "yes",
@@ -4850,7 +4834,7 @@
           ]
         },
         {
-          "id": "set-inreview",
+          "id": "main-set-inreview",
           "type": "action.update_task_status",
           "label": "Set In-Review",
           "config": {
@@ -4859,8 +4843,30 @@
             "taskTitle": "{{taskTitle}}"
           },
           "position": {
-            "x": 180,
-            "y": 1320
+            "x": 300,
+            "y": 130
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "main-handoff-progressor",
+          "type": "action.execute_workflow",
+          "label": "Handoff PR Progressor",
+          "config": {
+            "workflowId": "template-bosun-pr-progressor",
+            "mode": "dispatch",
+            "input": {
+              "taskId": "{{taskId}}",
+              "taskTitle": "{{taskTitle}}",
+              "branch": "{{branch}}",
+              "baseBranch": "{{baseBranch}}"
+            }
+          },
+          "position": {
+            "x": 300,
+            "y": 260
           },
           "outputs": [
             "default"
@@ -4903,7 +4909,7 @@
           "label": "Summarize Validation Output",
           "config": {
             "key": "validationSummary",
-            "value": "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('build') || {}; const test = $ctx.getNodeOutput('test-final') || {}; const lint = $ctx.getNodeOutput('lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
+            "value": "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('main-build') || {}; const test = $ctx.getNodeOutput('main-test') || {}; const lint = $ctx.getNodeOutput('main-lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
             "isExpression": true
           },
           "position": {
@@ -4932,46 +4938,46 @@
           ]
         },
         {
-          "id": "build-retry",
+          "id": "retry-build",
           "type": "validation.build",
-          "label": "Build Check (Retry)",
+          "label": "Build Check",
           "config": {
             "command": "{{buildCommand}}",
             "zeroWarnings": true
           },
           "position": {
-            "x": 620,
-            "y": 1300
+            "x": 400,
+            "y": 0
           },
           "outputs": [
             "default"
           ]
         },
         {
-          "id": "test-retry",
+          "id": "retry-test",
           "type": "validation.tests",
-          "label": "Final Test Run (Retry)",
+          "label": "Test Run",
           "config": {
             "command": "{{testCommand}}"
           },
           "position": {
-            "x": 620,
-            "y": 1430
+            "x": 400,
+            "y": 130
           },
           "outputs": [
             "default"
           ]
         },
         {
-          "id": "lint-retry",
+          "id": "retry-lint",
           "type": "validation.lint",
-          "label": "Lint Check (Retry)",
+          "label": "Lint Check",
           "config": {
             "command": "{{lintCommand}}"
           },
           "position": {
-            "x": 620,
-            "y": 1560
+            "x": 400,
+            "y": 260
           },
           "outputs": [
             "default"
@@ -4982,7 +4988,7 @@
           "type": "condition.expression",
           "label": "Retry Checks Passed?",
           "config": {
-            "expression": "$ctx.getNodeOutput('build-retry')?.passed === true && $ctx.getNodeOutput('test-retry')?.passed === true && $ctx.getNodeOutput('lint-retry')?.passed === true"
+            "expression": "$ctx.getNodeOutput('retry-build')?.passed === true && $ctx.getNodeOutput('retry-test')?.passed === true && $ctx.getNodeOutput('retry-lint')?.passed === true"
           },
           "position": {
             "x": 620,
@@ -5014,22 +5020,6 @@
           ]
         },
         {
-          "id": "push-ok-retry",
-          "type": "condition.expression",
-          "label": "Push OK? (Retry)",
-          "config": {
-            "expression": "$ctx.getNodeOutput('push-branch-retry')?.pushed === true"
-          },
-          "position": {
-            "x": 450,
-            "y": 1825
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
           "id": "create-pr-retry",
           "type": "action.create_pr",
           "label": "Handoff PR Lifecycle (After Retry)",
@@ -5052,15 +5042,15 @@
           ]
         },
         {
-          "id": "pr-created-retry",
+          "id": "retry-pr-ok",
           "type": "condition.expression",
-          "label": "Handoff Recorded (Retry Path)?",
+          "label": "PR Created?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput($edge.source)?.prNumber || $ctx.getNodeOutput($edge.source)?.prUrl)"
           },
           "position": {
-            "x": 450,
-            "y": 1890
+            "x": 400,
+            "y": 0
           },
           "outputs": [
             "yes",
@@ -5068,17 +5058,39 @@
           ]
         },
         {
-          "id": "set-inreview-retry",
+          "id": "retry-set-inreview",
           "type": "action.update_task_status",
-          "label": "Set In-Review (Retry)",
+          "label": "Set In-Review",
           "config": {
             "taskId": "{{taskId}}",
             "status": "inreview",
             "taskTitle": "{{taskTitle}}"
           },
           "position": {
-            "x": 360,
-            "y": 1980
+            "x": 300,
+            "y": 130
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-handoff-progressor",
+          "type": "action.execute_workflow",
+          "label": "Handoff PR Progressor",
+          "config": {
+            "workflowId": "template-bosun-pr-progressor",
+            "mode": "dispatch",
+            "input": {
+              "taskId": "{{taskId}}",
+              "taskTitle": "{{taskTitle}}",
+              "branch": "{{branch}}",
+              "baseBranch": "{{baseBranch}}"
+            }
+          },
+          "position": {
+            "x": 300,
+            "y": 260
           },
           "outputs": [
             "default"
@@ -5151,26 +5163,26 @@
           "sourcePort": "default"
         },
         {
-          "id": "implement->build",
+          "id": "implement->main-build",
           "source": "implement",
-          "target": "build",
+          "target": "main-build",
           "sourcePort": "default"
         },
         {
-          "id": "build->test-final",
-          "source": "build",
-          "target": "test-final",
+          "id": "main-build->main-test",
+          "source": "main-build",
+          "target": "main-test",
           "sourcePort": "default"
         },
         {
-          "id": "test-final->lint",
-          "source": "test-final",
-          "target": "lint",
+          "id": "main-test->main-lint",
+          "source": "main-test",
+          "target": "main-lint",
           "sourcePort": "default"
         },
         {
-          "id": "lint->all-passed",
-          "source": "lint",
+          "id": "main-lint->all-passed",
+          "source": "main-lint",
           "target": "all-passed",
           "sourcePort": "default"
         },
@@ -5189,78 +5201,69 @@
           "condition": "$output?.result !== true"
         },
         {
+          "id": "push-branch->create-pr",
+          "source": "push-branch",
+          "target": "create-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "create-pr->main-pr-ok",
+          "source": "create-pr",
+          "target": "main-pr-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "main-pr-ok->main-set-inreview",
+          "source": "main-pr-ok",
+          "target": "main-set-inreview",
+          "sourcePort": "yes"
+        },
+        {
+          "id": "main-set-inreview->main-handoff-progressor",
+          "source": "main-set-inreview",
+          "target": "main-handoff-progressor",
+          "sourcePort": "default"
+        },
+        {
+          "id": "main-handoff-progressor->notify-done",
+          "source": "main-handoff-progressor",
+          "target": "notify-done",
+          "sourcePort": "default"
+        },
+        {
+          "id": "main-pr-ok->notify-pr-failed",
+          "source": "main-pr-ok",
+          "target": "notify-pr-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
           "id": "set-validation-summary->auto-fix",
           "source": "set-validation-summary",
           "target": "auto-fix",
           "sourcePort": "default"
         },
         {
-          "id": "push-branch->push-ok",
-          "source": "push-branch",
-          "target": "push-ok",
-          "sourcePort": "default"
-        },
-        {
-          "id": "push-ok->create-pr",
-          "source": "push-ok",
-          "target": "create-pr",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "push-ok->notify-pr-failed",
-          "source": "push-ok",
-          "target": "notify-pr-failed",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "create-pr->pr-created",
-          "source": "create-pr",
-          "target": "pr-created",
-          "sourcePort": "default"
-        },
-        {
-          "id": "pr-created->set-inreview",
-          "source": "pr-created",
-          "target": "set-inreview",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "set-inreview->notify-done",
-          "source": "set-inreview",
-          "target": "notify-done",
-          "sourcePort": "default"
-        },
-        {
-          "id": "pr-created->notify-pr-failed",
-          "source": "pr-created",
-          "target": "notify-pr-failed",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "auto-fix->build-retry",
+          "id": "auto-fix->retry-build",
           "source": "auto-fix",
-          "target": "build-retry",
+          "target": "retry-build",
           "sourcePort": "default"
         },
         {
-          "id": "build-retry->test-retry",
-          "source": "build-retry",
-          "target": "test-retry",
+          "id": "retry-build->retry-test",
+          "source": "retry-build",
+          "target": "retry-test",
           "sourcePort": "default"
         },
         {
-          "id": "test-retry->lint-retry",
-          "source": "test-retry",
-          "target": "lint-retry",
+          "id": "retry-test->retry-lint",
+          "source": "retry-test",
+          "target": "retry-lint",
           "sourcePort": "default"
         },
         {
-          "id": "lint-retry->retry-passed",
-          "source": "lint-retry",
+          "id": "retry-lint->retry-passed",
+          "source": "retry-lint",
           "target": "retry-passed",
           "sourcePort": "default"
         },
@@ -5279,47 +5282,38 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "push-branch-retry->push-ok-retry",
+          "id": "push-branch-retry->create-pr-retry",
           "source": "push-branch-retry",
-          "target": "push-ok-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "push-ok-retry->create-pr-retry",
-          "source": "push-ok-retry",
           "target": "create-pr-retry",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "push-ok-retry->notify-pr-failed-retry",
-          "source": "push-ok-retry",
-          "target": "notify-pr-failed-retry",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "create-pr-retry->pr-created-retry",
-          "source": "create-pr-retry",
-          "target": "pr-created-retry",
           "sourcePort": "default"
         },
         {
-          "id": "pr-created-retry->set-inreview-retry",
-          "source": "pr-created-retry",
-          "target": "set-inreview-retry",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
+          "id": "create-pr-retry->retry-pr-ok",
+          "source": "create-pr-retry",
+          "target": "retry-pr-ok",
+          "sourcePort": "default"
         },
         {
-          "id": "set-inreview-retry->notify-done-retry",
-          "source": "set-inreview-retry",
+          "id": "retry-pr-ok->retry-set-inreview",
+          "source": "retry-pr-ok",
+          "target": "retry-set-inreview",
+          "sourcePort": "yes"
+        },
+        {
+          "id": "retry-set-inreview->retry-handoff-progressor",
+          "source": "retry-set-inreview",
+          "target": "retry-handoff-progressor",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-handoff-progressor->notify-done-retry",
+          "source": "retry-handoff-progressor",
           "target": "notify-done-retry",
           "sourcePort": "default"
         },
         {
-          "id": "pr-created-retry->notify-pr-failed-retry",
-          "source": "pr-created-retry",
+          "id": "retry-pr-ok->notify-pr-failed-retry",
+          "source": "retry-pr-ok",
           "target": "notify-pr-failed-retry",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
@@ -14372,7 +14366,7 @@
           },
           "position": {
             "x": 400,
-            "y": 380
+            "y": 340
           },
           "outputs": [
             "default"
@@ -14397,7 +14391,7 @@
           },
           "position": {
             "x": 400,
-            "y": 560
+            "y": 500
           },
           "outputs": [
             "default"
@@ -14412,7 +14406,7 @@
           },
           "position": {
             "x": 400,
-            "y": 720
+            "y": 660
           },
           "outputs": [
             "default"
@@ -14753,7 +14747,7 @@
           },
           "position": {
             "x": 400,
-            "y": 380
+            "y": 340
           },
           "outputs": [
             "default"
@@ -14778,7 +14772,7 @@
           },
           "position": {
             "x": 400,
-            "y": 560
+            "y": 500
           },
           "outputs": [
             "default"
@@ -14793,7 +14787,7 @@
           },
           "position": {
             "x": 400,
-            "y": 720
+            "y": 660
           },
           "outputs": [
             "default"
@@ -15255,7 +15249,7 @@
           },
           "position": {
             "x": 400,
-            "y": 380
+            "y": 340
           },
           "outputs": [
             "default"
@@ -15280,7 +15274,7 @@
           },
           "position": {
             "x": 400,
-            "y": 560
+            "y": 500
           },
           "outputs": [
             "default"
@@ -15295,7 +15289,7 @@
           },
           "position": {
             "x": 400,
-            "y": 720
+            "y": 660
           },
           "outputs": [
             "default"
@@ -15346,7 +15340,7 @@
       ],
       "nodeCount": 5,
       "edgeCount": 4,
-      "recommended": false,
+      "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_assigned",
       "variables": {
@@ -15431,7 +15425,7 @@
           },
           "position": {
             "x": 400,
-            "y": 380
+            "y": 340
           },
           "outputs": [
             "default"
@@ -15456,7 +15450,7 @@
           },
           "position": {
             "x": 400,
-            "y": 560
+            "y": 500
           },
           "outputs": [
             "default"
@@ -15471,7 +15465,7 @@
           },
           "position": {
             "x": 400,
-            "y": 720
+            "y": 660
           },
           "outputs": [
             "default"
@@ -15791,7 +15785,7 @@
           },
           "position": {
             "x": 400,
-            "y": 380
+            "y": 340
           },
           "outputs": [
             "default"
@@ -15816,7 +15810,7 @@
           },
           "position": {
             "x": 400,
-            "y": 560
+            "y": 500
           },
           "outputs": [
             "default"
@@ -15831,7 +15825,7 @@
           },
           "position": {
             "x": 400,
-            "y": 720
+            "y": 660
           },
           "outputs": [
             "default"
@@ -18724,6 +18718,7 @@
             "timeoutMs": "{{taskTimeoutMs}}",
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
             "failOnError": false
           },
           "position": {
@@ -18748,6 +18743,7 @@
             "timeoutMs": "{{taskTimeoutMs}}",
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
             "failOnError": false
           },
           "position": {
@@ -18772,6 +18768,7 @@
             "timeoutMs": "{{taskTimeoutMs}}",
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
             "failOnError": false
           },
           "position": {
@@ -20080,6 +20077,8 @@
             "cwd": "{{worktreePath}}",
             "timeoutMs": "{{taskTimeoutMs}}",
             "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
             "failOnError": false
           },
           "position": {
@@ -25233,7 +25232,7 @@
           ]
         },
         {
-          "id": "build",
+          "id": "main-build",
           "type": "validation.build",
           "label": "Build Check",
           "config": {
@@ -25242,29 +25241,29 @@
           },
           "position": {
             "x": 400,
-            "y": 650
+            "y": 0
           },
           "outputs": [
             "default"
           ]
         },
         {
-          "id": "test-final",
+          "id": "main-test",
           "type": "validation.tests",
-          "label": "Final Test Run",
+          "label": "Test Run",
           "config": {
             "command": "{{testCommand}}"
           },
           "position": {
             "x": 400,
-            "y": 780
+            "y": 130
           },
           "outputs": [
             "default"
           ]
         },
         {
-          "id": "lint",
+          "id": "main-lint",
           "type": "validation.lint",
           "label": "Lint Check",
           "config": {
@@ -25272,7 +25271,7 @@
           },
           "position": {
             "x": 400,
-            "y": 910
+            "y": 260
           },
           "outputs": [
             "default"
@@ -25283,7 +25282,7 @@
           "type": "condition.expression",
           "label": "All Checks Passed?",
           "config": {
-            "expression": "$ctx.getNodeOutput('build')?.passed === true && $ctx.getNodeOutput('test-final')?.passed === true && $ctx.getNodeOutput('lint')?.passed === true"
+            "expression": "$ctx.getNodeOutput('main-build')?.passed === true && $ctx.getNodeOutput('main-test')?.passed === true && $ctx.getNodeOutput('main-lint')?.passed === true"
           },
           "position": {
             "x": 400,
@@ -25315,22 +25314,6 @@
           ]
         },
         {
-          "id": "push-ok",
-          "type": "condition.expression",
-          "label": "Push OK?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('push-branch')?.pushed === true"
-          },
-          "position": {
-            "x": 250,
-            "y": 1175
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
           "id": "create-pr",
           "type": "action.create_pr",
           "label": "Handoff PR Lifecycle",
@@ -25353,15 +25336,15 @@
           ]
         },
         {
-          "id": "pr-created",
+          "id": "main-pr-ok",
           "type": "condition.expression",
-          "label": "Handoff Recorded?",
+          "label": "PR Created?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput($edge.source)?.prNumber || $ctx.getNodeOutput($edge.source)?.prUrl)"
           },
           "position": {
-            "x": 250,
-            "y": 1240
+            "x": 400,
+            "y": 0
           },
           "outputs": [
             "yes",
@@ -25369,7 +25352,7 @@
           ]
         },
         {
-          "id": "set-inreview",
+          "id": "main-set-inreview",
           "type": "action.update_task_status",
           "label": "Set In-Review",
           "config": {
@@ -25378,8 +25361,30 @@
             "taskTitle": "{{taskTitle}}"
           },
           "position": {
-            "x": 180,
-            "y": 1320
+            "x": 300,
+            "y": 130
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "main-handoff-progressor",
+          "type": "action.execute_workflow",
+          "label": "Handoff PR Progressor",
+          "config": {
+            "workflowId": "template-bosun-pr-progressor",
+            "mode": "dispatch",
+            "input": {
+              "taskId": "{{taskId}}",
+              "taskTitle": "{{taskTitle}}",
+              "branch": "{{branch}}",
+              "baseBranch": "{{baseBranch}}"
+            }
+          },
+          "position": {
+            "x": 300,
+            "y": 260
           },
           "outputs": [
             "default"
@@ -25422,7 +25427,7 @@
           "label": "Summarize Validation Output",
           "config": {
             "key": "validationSummary",
-            "value": "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('build') || {}; const test = $ctx.getNodeOutput('test-final') || {}; const lint = $ctx.getNodeOutput('lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
+            "value": "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('main-build') || {}; const test = $ctx.getNodeOutput('main-test') || {}; const lint = $ctx.getNodeOutput('main-lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
             "isExpression": true
           },
           "position": {
@@ -25451,46 +25456,46 @@
           ]
         },
         {
-          "id": "build-retry",
+          "id": "retry-build",
           "type": "validation.build",
-          "label": "Build Check (Retry)",
+          "label": "Build Check",
           "config": {
             "command": "{{buildCommand}}",
             "zeroWarnings": true
           },
           "position": {
-            "x": 620,
-            "y": 1300
+            "x": 400,
+            "y": 0
           },
           "outputs": [
             "default"
           ]
         },
         {
-          "id": "test-retry",
+          "id": "retry-test",
           "type": "validation.tests",
-          "label": "Final Test Run (Retry)",
+          "label": "Test Run",
           "config": {
             "command": "{{testCommand}}"
           },
           "position": {
-            "x": 620,
-            "y": 1430
+            "x": 400,
+            "y": 130
           },
           "outputs": [
             "default"
           ]
         },
         {
-          "id": "lint-retry",
+          "id": "retry-lint",
           "type": "validation.lint",
-          "label": "Lint Check (Retry)",
+          "label": "Lint Check",
           "config": {
             "command": "{{lintCommand}}"
           },
           "position": {
-            "x": 620,
-            "y": 1560
+            "x": 400,
+            "y": 260
           },
           "outputs": [
             "default"
@@ -25501,7 +25506,7 @@
           "type": "condition.expression",
           "label": "Retry Checks Passed?",
           "config": {
-            "expression": "$ctx.getNodeOutput('build-retry')?.passed === true && $ctx.getNodeOutput('test-retry')?.passed === true && $ctx.getNodeOutput('lint-retry')?.passed === true"
+            "expression": "$ctx.getNodeOutput('retry-build')?.passed === true && $ctx.getNodeOutput('retry-test')?.passed === true && $ctx.getNodeOutput('retry-lint')?.passed === true"
           },
           "position": {
             "x": 620,
@@ -25533,22 +25538,6 @@
           ]
         },
         {
-          "id": "push-ok-retry",
-          "type": "condition.expression",
-          "label": "Push OK? (Retry)",
-          "config": {
-            "expression": "$ctx.getNodeOutput('push-branch-retry')?.pushed === true"
-          },
-          "position": {
-            "x": 450,
-            "y": 1825
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
           "id": "create-pr-retry",
           "type": "action.create_pr",
           "label": "Handoff PR Lifecycle (After Retry)",
@@ -25571,15 +25560,15 @@
           ]
         },
         {
-          "id": "pr-created-retry",
+          "id": "retry-pr-ok",
           "type": "condition.expression",
-          "label": "Handoff Recorded (Retry Path)?",
+          "label": "PR Created?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput($edge.source)?.prNumber || $ctx.getNodeOutput($edge.source)?.prUrl)"
           },
           "position": {
-            "x": 450,
-            "y": 1890
+            "x": 400,
+            "y": 0
           },
           "outputs": [
             "yes",
@@ -25587,17 +25576,39 @@
           ]
         },
         {
-          "id": "set-inreview-retry",
+          "id": "retry-set-inreview",
           "type": "action.update_task_status",
-          "label": "Set In-Review (Retry)",
+          "label": "Set In-Review",
           "config": {
             "taskId": "{{taskId}}",
             "status": "inreview",
             "taskTitle": "{{taskTitle}}"
           },
           "position": {
-            "x": 360,
-            "y": 1980
+            "x": 300,
+            "y": 130
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-handoff-progressor",
+          "type": "action.execute_workflow",
+          "label": "Handoff PR Progressor",
+          "config": {
+            "workflowId": "template-bosun-pr-progressor",
+            "mode": "dispatch",
+            "input": {
+              "taskId": "{{taskId}}",
+              "taskTitle": "{{taskTitle}}",
+              "branch": "{{branch}}",
+              "baseBranch": "{{baseBranch}}"
+            }
+          },
+          "position": {
+            "x": 300,
+            "y": 260
           },
           "outputs": [
             "default"
@@ -25670,26 +25681,26 @@
           "sourcePort": "default"
         },
         {
-          "id": "implement->build",
+          "id": "implement->main-build",
           "source": "implement",
-          "target": "build",
+          "target": "main-build",
           "sourcePort": "default"
         },
         {
-          "id": "build->test-final",
-          "source": "build",
-          "target": "test-final",
+          "id": "main-build->main-test",
+          "source": "main-build",
+          "target": "main-test",
           "sourcePort": "default"
         },
         {
-          "id": "test-final->lint",
-          "source": "test-final",
-          "target": "lint",
+          "id": "main-test->main-lint",
+          "source": "main-test",
+          "target": "main-lint",
           "sourcePort": "default"
         },
         {
-          "id": "lint->all-passed",
-          "source": "lint",
+          "id": "main-lint->all-passed",
+          "source": "main-lint",
           "target": "all-passed",
           "sourcePort": "default"
         },
@@ -25708,78 +25719,69 @@
           "condition": "$output?.result !== true"
         },
         {
+          "id": "push-branch->create-pr",
+          "source": "push-branch",
+          "target": "create-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "create-pr->main-pr-ok",
+          "source": "create-pr",
+          "target": "main-pr-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "main-pr-ok->main-set-inreview",
+          "source": "main-pr-ok",
+          "target": "main-set-inreview",
+          "sourcePort": "yes"
+        },
+        {
+          "id": "main-set-inreview->main-handoff-progressor",
+          "source": "main-set-inreview",
+          "target": "main-handoff-progressor",
+          "sourcePort": "default"
+        },
+        {
+          "id": "main-handoff-progressor->notify-done",
+          "source": "main-handoff-progressor",
+          "target": "notify-done",
+          "sourcePort": "default"
+        },
+        {
+          "id": "main-pr-ok->notify-pr-failed",
+          "source": "main-pr-ok",
+          "target": "notify-pr-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
           "id": "set-validation-summary->auto-fix",
           "source": "set-validation-summary",
           "target": "auto-fix",
           "sourcePort": "default"
         },
         {
-          "id": "push-branch->push-ok",
-          "source": "push-branch",
-          "target": "push-ok",
-          "sourcePort": "default"
-        },
-        {
-          "id": "push-ok->create-pr",
-          "source": "push-ok",
-          "target": "create-pr",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "push-ok->notify-pr-failed",
-          "source": "push-ok",
-          "target": "notify-pr-failed",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "create-pr->pr-created",
-          "source": "create-pr",
-          "target": "pr-created",
-          "sourcePort": "default"
-        },
-        {
-          "id": "pr-created->set-inreview",
-          "source": "pr-created",
-          "target": "set-inreview",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "set-inreview->notify-done",
-          "source": "set-inreview",
-          "target": "notify-done",
-          "sourcePort": "default"
-        },
-        {
-          "id": "pr-created->notify-pr-failed",
-          "source": "pr-created",
-          "target": "notify-pr-failed",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "auto-fix->build-retry",
+          "id": "auto-fix->retry-build",
           "source": "auto-fix",
-          "target": "build-retry",
+          "target": "retry-build",
           "sourcePort": "default"
         },
         {
-          "id": "build-retry->test-retry",
-          "source": "build-retry",
-          "target": "test-retry",
+          "id": "retry-build->retry-test",
+          "source": "retry-build",
+          "target": "retry-test",
           "sourcePort": "default"
         },
         {
-          "id": "test-retry->lint-retry",
-          "source": "test-retry",
-          "target": "lint-retry",
+          "id": "retry-test->retry-lint",
+          "source": "retry-test",
+          "target": "retry-lint",
           "sourcePort": "default"
         },
         {
-          "id": "lint-retry->retry-passed",
-          "source": "lint-retry",
+          "id": "retry-lint->retry-passed",
+          "source": "retry-lint",
           "target": "retry-passed",
           "sourcePort": "default"
         },
@@ -25798,47 +25800,38 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "push-branch-retry->push-ok-retry",
+          "id": "push-branch-retry->create-pr-retry",
           "source": "push-branch-retry",
-          "target": "push-ok-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "push-ok-retry->create-pr-retry",
-          "source": "push-ok-retry",
           "target": "create-pr-retry",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "push-ok-retry->notify-pr-failed-retry",
-          "source": "push-ok-retry",
-          "target": "notify-pr-failed-retry",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "create-pr-retry->pr-created-retry",
-          "source": "create-pr-retry",
-          "target": "pr-created-retry",
           "sourcePort": "default"
         },
         {
-          "id": "pr-created-retry->set-inreview-retry",
-          "source": "pr-created-retry",
-          "target": "set-inreview-retry",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
+          "id": "create-pr-retry->retry-pr-ok",
+          "source": "create-pr-retry",
+          "target": "retry-pr-ok",
+          "sourcePort": "default"
         },
         {
-          "id": "set-inreview-retry->notify-done-retry",
-          "source": "set-inreview-retry",
+          "id": "retry-pr-ok->retry-set-inreview",
+          "source": "retry-pr-ok",
+          "target": "retry-set-inreview",
+          "sourcePort": "yes"
+        },
+        {
+          "id": "retry-set-inreview->retry-handoff-progressor",
+          "source": "retry-set-inreview",
+          "target": "retry-handoff-progressor",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-handoff-progressor->notify-done-retry",
+          "source": "retry-handoff-progressor",
           "target": "notify-done-retry",
           "sourcePort": "default"
         },
         {
-          "id": "pr-created-retry->notify-pr-failed-retry",
-          "source": "pr-created-retry",
+          "id": "retry-pr-ok->notify-pr-failed-retry",
+          "source": "retry-pr-ok",
           "target": "notify-pr-failed-retry",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
@@ -34356,7 +34349,7 @@
           },
           "position": {
             "x": 400,
-            "y": 380
+            "y": 340
           },
           "outputs": [
             "default"
@@ -34381,7 +34374,7 @@
           },
           "position": {
             "x": 400,
-            "y": 560
+            "y": 500
           },
           "outputs": [
             "default"
@@ -34396,7 +34389,7 @@
           },
           "position": {
             "x": 400,
-            "y": 720
+            "y": 660
           },
           "outputs": [
             "default"
@@ -34715,7 +34708,7 @@
           },
           "position": {
             "x": 400,
-            "y": 380
+            "y": 340
           },
           "outputs": [
             "default"
@@ -34740,7 +34733,7 @@
           },
           "position": {
             "x": 400,
-            "y": 560
+            "y": 500
           },
           "outputs": [
             "default"
@@ -34755,7 +34748,7 @@
           },
           "position": {
             "x": 400,
-            "y": 720
+            "y": 660
           },
           "outputs": [
             "default"
@@ -35191,7 +35184,7 @@
           },
           "position": {
             "x": 400,
-            "y": 380
+            "y": 340
           },
           "outputs": [
             "default"
@@ -35216,7 +35209,7 @@
           },
           "position": {
             "x": 400,
-            "y": 560
+            "y": 500
           },
           "outputs": [
             "default"
@@ -35231,7 +35224,7 @@
           },
           "position": {
             "x": 400,
-            "y": 720
+            "y": 660
           },
           "outputs": [
             "default"
@@ -35354,7 +35347,7 @@
           },
           "position": {
             "x": 400,
-            "y": 380
+            "y": 340
           },
           "outputs": [
             "default"
@@ -35379,7 +35372,7 @@
           },
           "position": {
             "x": 400,
-            "y": 560
+            "y": 500
           },
           "outputs": [
             "default"
@@ -35394,7 +35387,7 @@
           },
           "position": {
             "x": 400,
-            "y": 720
+            "y": 660
           },
           "outputs": [
             "default"
@@ -35693,7 +35686,7 @@
           },
           "position": {
             "x": 400,
-            "y": 380
+            "y": 340
           },
           "outputs": [
             "default"
@@ -35718,7 +35711,7 @@
           },
           "position": {
             "x": 400,
-            "y": 560
+            "y": 500
           },
           "outputs": [
             "default"
@@ -35733,7 +35726,7 @@
           },
           "position": {
             "x": 400,
-            "y": 720
+            "y": 660
           },
           "outputs": [
             "default"
@@ -38493,6 +38486,7 @@
             "timeoutMs": "{{taskTimeoutMs}}",
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
             "failOnError": false
           },
           "position": {
@@ -38517,6 +38511,7 @@
             "timeoutMs": "{{taskTimeoutMs}}",
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
             "failOnError": false
           },
           "position": {
@@ -38541,6 +38536,7 @@
             "timeoutMs": "{{taskTimeoutMs}}",
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
             "failOnError": false
           },
           "position": {
@@ -39828,6 +39824,8 @@
             "cwd": "{{worktreePath}}",
             "timeoutMs": "{{taskTimeoutMs}}",
             "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
             "failOnError": false
           },
           "position": {
