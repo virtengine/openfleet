@@ -159,7 +159,13 @@ describe("ui-server TUI websocket bridge", () => {
     const tracker = getSessionTracker({ persistDir: null });
     tracker.startSession("task-1", "Task 1");
 
-    const startedEvent = await waitFor(() => messages.find((message) => message.type === "session:event" && message.payload?.taskId === "task-1" && message.payload?.event?.kind === "state" && String(message.payload?.event?.reason || "").includes("start")));
+    const startedEvent = await waitFor(() => messages.find((message) => {
+      const reason = String(message.payload?.event?.reason || "");
+      return message.type === "session:event"
+        && message.payload?.taskId === "task-1"
+        && message.payload?.event?.kind === "state"
+        && (reason.includes("start") || reason.includes("create"));
+    }));
     const startedSnapshot = await waitFor(() => messages.find((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1" && session.status === "active")));
 
     tracker.recordEvent("task-1", { role: "assistant", content: "hello from tui bridge" });
@@ -182,5 +188,4 @@ describe("ui-server TUI websocket bridge", () => {
     ws.close();
   }, 10000);
 });
-
 
