@@ -167,17 +167,6 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
         applySessionSnapshot(sessions, Date.now());
       }),
 
-    const index = entries.findIndex((entry) => entry.id === selectedId);
-    return index >= 0 ? index : 0;
-  }, [entries, selectedId]);
-  const selectedEntry = entries[selectedIndex] || null;
-  const selectedSession = selectedEntry?.session || null;
-
-  React.useEffect(() => {
-    if (!selectedId && entries[0]?.id) {
-      setSelectedId(entries[0].id);
-    }
-  }, [entries, selectedId]);
 
   const openDetail = React.useCallback(async () => {
     if (!selectedSession?.id) return;
