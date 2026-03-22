@@ -29,4 +29,9 @@ describe("agent endpoint stale-pid handling", () => {
     expect(source).toContain("function shouldLogAccessDeniedCooldown");
     expect(source).toContain("if (shouldLogAccessDeniedCooldown(port, nowMs))");
   });
+
+  it("skips forced kill unless conflict reaping is explicitly enabled", () => {
+    expect(source).toContain("this._allowConflictKill = options.allowConflictKill === true");
+    expect(source).toContain("skipping forced kill and trying next port");
+  });
 });

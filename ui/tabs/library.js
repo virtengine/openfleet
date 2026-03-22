@@ -238,6 +238,34 @@ const LIBRARY_STYLES = `
 }
 `;
 
+function normalizeLibraryTaskStatus(status) {
+  return String(status || "").trim().toLowerCase();
+}
+
+export function isSelectableLibraryTask(task) {
+  const status = normalizeLibraryTaskStatus(task?.status);
+  return (
+    status === "draft" ||
+    status === "todo" ||
+    status === "backlog" ||
+    status === "planned" ||
+    status === "open" ||
+    status === "new" ||
+    status === ""
+  );
+}
+
+export function extractSelectableLibraryTasks(payload) {
+  const tasks = Array.isArray(payload?.tasks)
+    ? payload.tasks
+    : Array.isArray(payload?.data)
+      ? payload.data
+      : Array.isArray(payload)
+        ? payload
+        : [];
+  return tasks.filter(isSelectableLibraryTask).slice(0, 100);
+}
+
 let stylesInjected = false;
 function injectStyles() {
   if (stylesInjected) return;
@@ -329,9 +357,23 @@ async function testProfileMatch(criteria = {}) {
   return res?.data || { best: null, candidates: [], plan: null, auto: { shouldAutoApply: false } };
 }
 
-async function fetchLibrarySources() {
-  const res = await apiFetch("/api/library/sources?probe=1");
+async function fetchLibrarySources(options = {}) {
+  const params = new URLSearchParams();
+  if (options?.probe) params.set("probe", "1");
+  if (options?.refresh) params.set("refresh", "1");
+  if (options?.sourceId) params.set("sourceId", String(options.sourceId));
+  const qs = params.toString();
+  const path = qs ? "/api/library/sources?" + qs : "/api/library/sources";
+  const res = await apiFetch(path);
   return res?.data || [];
+}
+
+async function previewLibrarySource(payload = {}) {
+  return apiFetch("/api/library/preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload || {}),
+  });
 }
 
 async function importLibrarySource(payload = {}) {
@@ -415,16 +457,45 @@ const TYPE_LABELS = { prompt: "Prompt", agent: "Agent Profile", skill: "Skill", 
 const TYPE_COLORS = { prompt: "#58a6ff", agent: "#af7bff", skill: "#3fb950", mcp: "#f59e0b" };
 const STORAGE_SCOPE_LABELS = { repo: "Repo", workspace: "Workspace", global: "Global" };
 const STORAGE_SCOPE_COLORS = { repo: "info", workspace: "warning", global: "default" };
-const AGENT_TYPE_OPTIONS = Object.freeze([
-  { value: "voice", label: "Voice" },
-  { value: "task", label: "Task" },
-  { value: "chat", label: "Chat" },
+const AGENT_CATEGORY_OPTIONS = Object.freeze([
+  { value: "task", label: "Task Template" },
+  { value: "interactive", label: "Manual Chat Agent" },
+  { value: "voice", label: "Voice Agent" },
+]);
+const INTERACTIVE_MODE_OPTIONS = Object.freeze([
+  { value: "ask", label: "Ask" },
+  { value: "agent", label: "Agent" },
+  { value: "plan", label: "Plan" },
+  { value: "web", label: "Web" },
+  { value: "instant", label: "Instant" },
+  { value: "custom", label: "Custom" },
 ]);
 
-function normalizeAgentType(rawType) {
-  const value = String(rawType || "").trim().toLowerCase();
-  if (value === "voice" || value === "task" || value === "chat") return value;
+function normalizeAgentCategory(rawCategory) {
+  const value = String(rawCategory || "").trim().toLowerCase();
+  if (value === "voice" || value === "task" || value === "interactive") return value;
   return "task";
+}
+
+function normalizeInteractiveMode(rawMode, agentCategory = "task") {
+  const value = String(rawMode || "").trim().toLowerCase();
+  if (["ask", "agent", "plan", "web", "instant", "custom"].includes(value)) return value;
+  if (agentCategory === "interactive") return "agent";
+  if (agentCategory === "voice") return "voice";
+  return "";
+}
+
+function deriveAgentTypeFromCategory(agentCategory) {
+  if (agentCategory === "voice") return "voice";
+  if (agentCategory === "interactive") return "chat";
+  return "task";
+}
+
+/** Normalize tags to an array regardless of input type (string, array, null). */
+function normalizeTags(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === "string") return raw.split(/[,\s]+/).map(t => t.trim()).filter(Boolean);
+  return [];
 }
 
 function normalizeStorageScope(rawScope, fallback = "repo") {
@@ -433,9 +504,12 @@ function normalizeStorageScope(rawScope, fallback = "repo") {
   return fallback;
 }
 
-function inferAgentTypeFromEntry(entry, parsedContent) {
-  const explicit = normalizeAgentType(parsedContent?.agentType);
-  if (parsedContent?.agentType) return explicit;
+function inferAgentCategoryFromEntry(entry, parsedContent) {
+  const explicitCategory = normalizeAgentCategory(parsedContent?.agentCategory || entry?.agentCategory);
+  if (parsedContent?.agentCategory || entry?.agentCategory) return explicitCategory;
+  const explicitType = String(parsedContent?.agentType || entry?.agentType || "").trim().toLowerCase();
+  if (explicitType === "chat") return "interactive";
+  if (explicitType === "voice") return "voice";
   if (parsedContent?.voiceAgent === true) return "voice";
   const id = String(entry?.id || "").trim().toLowerCase();
   const tags = Array.isArray(entry?.tags)
@@ -444,6 +518,21 @@ function inferAgentTypeFromEntry(entry, parsedContent) {
   if (id.startsWith("voice-agent")) return "voice";
   if (tags.includes("voice") || tags.includes("audio-agent") || tags.includes("realtime")) return "voice";
   return "task";
+}
+
+function inferInteractiveModeFromEntry(entry, parsedContent) {
+  const category = inferAgentCategoryFromEntry(entry, parsedContent);
+  return normalizeInteractiveMode(parsedContent?.interactiveMode || entry?.interactiveMode, category);
+}
+
+function inferInteractiveLabelFromEntry(entry, parsedContent) {
+  return String(parsedContent?.interactiveLabel || entry?.interactiveLabel || "").trim();
+}
+
+function inferShowInChatDropdown(entry, parsedContent) {
+  const explicit = parsedContent?.showInChatDropdown;
+  if (typeof explicit === "boolean") return explicit;
+  return entry?.showInChatDropdown === true;
 }
 
 const AUDIO_AGENT_TEMPLATES = Object.freeze({
@@ -463,6 +552,8 @@ const AUDIO_AGENT_TEMPLATES = Object.freeze({
       promptOverride: null,
       skills: ["concise-voice-guidance", "conversation-memory"],
       agentType: "voice",
+      agentCategory: "voice",
+      interactiveMode: "voice",
       voiceAgent: true,
       voicePersona: "female",
       voiceInstructions: "You are Nova, a female voice agent. Be concise, warm, and practical. Use tools for facts and execution. Keep spoken responses short and clear.",
@@ -484,6 +575,8 @@ const AUDIO_AGENT_TEMPLATES = Object.freeze({
       promptOverride: null,
       skills: ["ops-diagnostics", "task-execution"],
       agentType: "voice",
+      agentCategory: "voice",
+      interactiveMode: "voice",
       voiceAgent: true,
       voicePersona: "male",
       voiceInstructions: "You are Atlas, a male voice agent. Be direct and execution-oriented. Prefer actionable status updates. Use tools proactively for diagnostics.",
@@ -575,7 +668,10 @@ function LibraryCard({ entry, onSelect }) {
             sx=${{ fontSize: "0.74em" }}
           />
           ${entry.type === "agent" && entry.agentType && html`
-            <${Chip} label=${String(entry.agentType).toUpperCase()} size="small" variant="outlined" sx=${{ fontSize: "0.75em" }} />
+            <${Chip} label=${String(entry.agentCategory || entry.agentType).replace(/(^.|\s+.)/g, (m) => m.toUpperCase())} size="small" variant="outlined" sx=${{ fontSize: "0.75em" }} />
+          `}
+          ${entry.type === "agent" && entry.agentCategory === "interactive" && (entry.interactiveLabel || entry.interactiveMode) && html`
+            <${Chip} label=${entry.interactiveLabel || String(entry.interactiveMode || "").toUpperCase()} size="small" variant="outlined" sx=${{ fontSize: "0.75em" }} />
           `}
           ${(entry.tags || []).slice(0, 5).map((tag) => html`
             <${Chip} key=${tag} label=${tag} size="small" sx=${{ fontSize: "0.75em", bgcolor: "primary.main", color: "#fff", opacity: 0.8 }} />
@@ -598,15 +694,22 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
     type: entry?.type || "prompt",
     name: entry?.name || "",
     description: entry?.description || "",
-    tags: (entry?.tags || []).join(", "),
+    tags: normalizeTags(entry?.tags).join(", "),
     scope: entry?.scope || "global",
     storageScope: normalizeStorageScope(entry?.storageScope, "repo"),
-    agentType: inferAgentTypeFromEntry(entry, null),
+    agentCategory: inferAgentCategoryFromEntry(entry, null),
+    interactiveMode: inferInteractiveModeFromEntry(entry, null),
+    interactiveLabel: inferInteractiveLabelFromEntry(entry, null),
+    showInChatDropdown: inferShowInChatDropdown(entry, null),
     content: typeof entry?.content === "string" ? entry.content : "",
   };
   const [form, setForm] = useState(initialFormSnapshot);
   const [baseline, setBaseline] = useState(initialFormSnapshot);
   const [loading, setLoading] = useState(false);
+  const [importAgents, setImportAgents] = useState(true);
+  const [importSkills, setImportSkills] = useState(true);
+  const [importPrompts, setImportPrompts] = useState(true);
+  const [importTools, setImportTools] = useState(true);
   const [loadingContent, setLoadingContent] = useState(!isNew && !!entry?.id);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const pendingKey = useMemo(
@@ -620,10 +723,13 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
       type: entry?.type || "prompt",
       name: entry?.name || "",
       description: entry?.description || "",
-      tags: (entry?.tags || []).join(", "),
+      tags: normalizeTags(entry?.tags).join(", "),
       scope: entry?.scope || "global",
       storageScope: normalizeStorageScope(entry?.storageScope, "repo"),
-      agentType: inferAgentTypeFromEntry(entry, null),
+      agentCategory: inferAgentCategoryFromEntry(entry, null),
+      interactiveMode: inferInteractiveModeFromEntry(entry, null),
+      interactiveLabel: inferInteractiveLabelFromEntry(entry, null),
+      showInChatDropdown: inferShowInChatDropdown(entry, null),
       content: "",
     };
     setForm(next);
@@ -647,7 +753,10 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
             ...f,
             content: contentStr,
             storageScope: normalizeStorageScope(detail?.storageScope || f.storageScope, "repo"),
-            agentType: inferAgentTypeFromEntry(detail || entry, parsed),
+            agentCategory: inferAgentCategoryFromEntry(detail || entry, parsed),
+            interactiveMode: inferInteractiveModeFromEntry(detail || entry, parsed),
+            interactiveLabel: inferInteractiveLabelFromEntry(detail || entry, parsed),
+            showInChatDropdown: inferShowInChatDropdown(detail || entry, parsed),
           };
           setBaseline(next);
           return next;
@@ -691,12 +800,27 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
           showToast("Agent profile content must be valid JSON", "error");
           return false;
         }
-        const agentType = normalizeAgentType(form.agentType);
+        const agentCategory = normalizeAgentCategory(form.agentCategory);
+        const agentType = deriveAgentTypeFromCategory(agentCategory);
         content.agentType = agentType;
-        if (agentType === "voice") {
+        content.agentCategory = agentCategory;
+        if (agentCategory === "voice") {
           content.voiceAgent = true;
+          content.interactiveMode = "voice";
+          delete content.showInChatDropdown;
         } else if (content.voiceAgent === true) {
           content.voiceAgent = false;
+        }
+        if (agentCategory === "interactive") {
+          const interactiveMode = normalizeInteractiveMode(form.interactiveMode, agentCategory);
+          content.interactiveMode = interactiveMode || "agent";
+          if (String(form.interactiveLabel || "").trim()) content.interactiveLabel = String(form.interactiveLabel || "").trim();
+          else delete content.interactiveLabel;
+          content.showInChatDropdown = form.showInChatDropdown === true;
+        } else {
+          delete content.interactiveLabel;
+          if (agentCategory !== "voice") delete content.interactiveMode;
+          delete content.showInChatDropdown;
         }
       }
       const res = await saveEntry({
@@ -763,6 +887,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
           promptOverride: null,
           skills: [],
           agentType: "task",
+          agentCategory: "task",
           tags: [],
         }, null, 2)
       : "# Skill Title\n\n## Purpose\nDescribe what this skill teaches agents.\n\n## Instructions\n...";
@@ -811,11 +936,24 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
         <//>
         ${form.type === "agent" && html`
           <${FormControl} fullWidth size="small">
-            <${InputLabel}>Agent Type<//>
-            <${Select} value=${normalizeAgentType(form.agentType)} onChange=${updateField("agentType")} label="Agent Type">
-              ${AGENT_TYPE_OPTIONS.map((opt) => html`<${MenuItem} key=${opt.value} value=${opt.value}>${opt.label}<//>`)}
+            <${InputLabel}>Agent Category<//>
+            <${Select} value=${normalizeAgentCategory(form.agentCategory)} onChange=${updateField("agentCategory")} label="Agent Category">
+              ${AGENT_CATEGORY_OPTIONS.map((opt) => html`<${MenuItem} key=${opt.value} value=${opt.value}>${opt.label}<//>`)}
             <//>
           <//>
+        `}
+        ${form.type === "agent" && normalizeAgentCategory(form.agentCategory) === "interactive" && html`
+          <${FormControl} fullWidth size="small">
+            <${InputLabel}>Manual Agent Type<//>
+            <${Select} value=${normalizeInteractiveMode(form.interactiveMode, form.agentCategory)} onChange=${updateField("interactiveMode")} label="Manual Agent Type">
+              ${INTERACTIVE_MODE_OPTIONS.map((opt) => html`<${MenuItem} key=${opt.value} value=${opt.value}>${opt.label}<//>`)}
+            <//>
+          <//>
+          <${TextField} size="small" fullWidth label="Type Label / Section" value=${form.interactiveLabel} onInput=${updateField("interactiveLabel")} placeholder="Optional custom group label, e.g. Research or Reviewer" />
+          <${FormControlLabel}
+            control=${html`<${Switch} checked=${form.showInChatDropdown === true} onChange=${(e) => setForm((f) => ({ ...f, showInChatDropdown: e.target.checked }))} />`}
+            label="Show in chat dropdown"
+          />
         `}
         <${Box}>
           <${Typography} variant="caption" color="text.secondary" sx=${{ mb: 0.5, display: "block" }}>Content<//>
@@ -826,7 +964,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
         <//>
         <${Typography} variant="caption" color="text.secondary" sx=${{ mt: -1 }}>
           ${form.type === "prompt" ? "Use {{VARIABLE_NAME}} for template variables. Reference in workflows as {{prompt:name}}."
-          : form.type === "agent" ? "JSON format. Referenced in workflows as {{agent:name}}."
+          : form.type === "agent" ? "JSON format. Task templates stay in workflow resolution; interactive profiles can also appear in the chat dropdown."
             : form.type === "mcp" ? "MCP server configuration. Managed via the MCP Servers panel."
             : "Markdown format. Referenced in workflows as {{skill:name}}."}
         <//>
@@ -1283,7 +1421,7 @@ function McpMarketplace({ onInstalled }) {
       <div style="margin-bottom:8px;">
         <${SearchInput}
           value=${marketplaceSearch}
-          onChange=${setMarketplaceSearch}
+          onInput=${(e) => setMarketplaceSearch(e.target.value)}
           placeholder="Search marketplace (GitHub, Playwright, Exa, etc.)..." />
       </div>
 
@@ -1465,11 +1603,18 @@ function McpCustomInstallForm({ onInstall, installing }) {
 function ScopeDetector() {
   const [showing, setShowing] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [importAgents, setImportAgents] = useState(true);
+  const [importSkills, setImportSkills] = useState(true);
+  const [importPrompts, setImportPrompts] = useState(true);
+  const [importTools, setImportTools] = useState(true);
 
   const loadScopes = useCallback(async () => {
     if (scopes.value.length && showing) { setShowing(false); return; }
     setLoading(true);
     try {
+      if (!importAgents && !importPrompts && !importSkills && !importTools) {
+        throw new Error("Select at least one import type");
+      }
       const result = await fetchScopes();
       scopes.value = result;
     } catch (err) {
@@ -1504,6 +1649,39 @@ function ScopeDetector() {
   `;
 }
 
+/* ─ Workflow Step Resolver ─────────────────────────────────── */
+
+async function resolveWorkflowSteps(title, description) {
+  const steps = ["tdd", "implementation", "review"];
+  const results = {};
+  for (const step of steps) {
+    const stepTitle = `${step}: ${title}`;
+    try {
+      const resp = await testProfileMatch({ title: stepTitle, description, topN: 1 });
+      results[step] = resp;
+    } catch {
+      results[step] = { best: null, candidates: [], plan: null };
+    }
+  }
+  return results;
+}
+
+/* ─ Score Breakdown Definitions ────────────────────────────── */
+
+const SIGNAL_DEFS = [
+  { key: "titlePattern", label: "Title Pattern", max: 10, color: "#3b82f6" },
+  { key: "scope", label: "Scope", max: 6, color: "#22c55e" },
+  { key: "tags", label: "Tags", max: 6, color: "#eab308" },
+  { key: "voice", label: "Voice", max: 3, color: "#a855f7" },
+  { key: "paths", label: "Paths", max: 8, color: "#f97316" },
+  { key: "repoCtx", label: "Repo Ctx", max: 6, color: "#14b8a6" },
+  { key: "fileType", label: "File Type", max: 4, color: "#ec4899" },
+  { key: "descMatch", label: "Desc Match", max: 8, color: "#06b6d4" },
+  { key: "taskType", label: "Task Type", max: 5, color: "#6366f1" },
+];
+
+const MAX_SCORE_TOTAL = SIGNAL_DEFS.reduce((sum, s) => sum + s.max, 0);
+
 /* ─ Profile Matcher Panel ─────────────────────────────────── */
 
 function ProfileMatcher() {
@@ -1512,11 +1690,58 @@ function ProfileMatcher() {
   const [changedFiles, setChangedFiles] = useState("");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [importAgents, setImportAgents] = useState(true);
+  const [importSkills, setImportSkills] = useState(true);
+  const [importPrompts, setImportPrompts] = useState(true);
+  const [importTools, setImportTools] = useState(true);
+  const [expandedAlts, setExpandedAlts] = useState({});
+  const [workflowSteps, setWorkflowSteps] = useState(null);
+  const [workflowLoading, setWorkflowLoading] = useState(false);
+
+  // ── Execution Plan state ──────────────────────────────────────────────
+  const [execPlan, setExecPlan] = useState(null);
+  const [execPlanLoading, setExecPlanLoading] = useState(false);
+  const [dryRunLoading, setDryRunLoading] = useState(false);
+  const [dryRunResults, setDryRunResults] = useState(null);
+  const [expandedStages, setExpandedStages] = useState({});
+  const [expandedNodes, setExpandedNodes] = useState({});
+  const [taskList, setTaskList] = useState([]);
+  const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [taskListLoading, setTaskListLoading] = useState(false);
+
+  // Load task list for dropdown
+  useEffect(() => {
+    setTaskListLoading(true);
+    const wsParam = typeof window !== "undefined" && window.__bosunWorkspaceId ? `&workspace=${encodeURIComponent(window.__bosunWorkspaceId)}` : "";
+    fetch(`/api/tasks?pageSize=100&status=library${wsParam}`)
+      .then((r) => r.json())
+      .then((data) => {
+        setTaskList(extractSelectableLibraryTasks(data));
+      })
+      .catch(() => {})
+      .finally(() => setTaskListLoading(false));
+  }, []);
+
+  // When a task is selected from dropdown, populate title/description
+  const handleTaskSelect = useCallback((e) => {
+    const id = e.currentTarget.value;
+    setSelectedTaskId(id);
+    if (id) {
+      const t = taskList.find((t) => t.id === id);
+      if (t) {
+        setTitle(t.title || "");
+        setDescription(t.description || "");
+      }
+    }
+  }, [taskList]);
 
   const doMatch = useCallback(async () => {
     if (!title.trim() && !description.trim()) return;
     setLoading(true);
     try {
+      if (!importAgents && !importPrompts && !importSkills && !importTools) {
+        throw new Error("Select at least one import type");
+      }
       const response = await testProfileMatch({
         title: title.trim(),
         description: description.trim(),
@@ -1530,6 +1755,41 @@ function ProfileMatcher() {
     setLoading(false);
   }, [title, description, changedFiles]);
 
+  // ── Execution plan resolver ─────────────────────────────────────────
+  const fetchExecPlan = useCallback(async (mode = "resolve") => {
+    const taskId = selectedTaskId;
+    if (!taskId && !title.trim()) return;
+    if (mode === "resolve") { setExecPlan(null); setExecPlanLoading(true); setDryRunResults(null); }
+    else { setDryRunLoading(true); }
+    try {
+      const wsParam = typeof window !== "undefined" && window.__bosunWorkspaceId ? `&workspace=${encodeURIComponent(window.__bosunWorkspaceId)}` : "";
+      let url;
+      if (taskId) {
+        url = `/api/tasks/execution-plan?taskId=${encodeURIComponent(taskId)}${wsParam}&mode=${mode}`;
+      } else {
+        url = `/api/tasks/execution-plan?title=${encodeURIComponent(title.trim())}&description=${encodeURIComponent(description.trim())}${wsParam}&mode=${mode}`;
+      }
+      const resp = await fetch(url).then((r) => r.json());
+      if (resp?.ok) {
+        setExecPlan(resp);
+        if (mode === "dry-run") setDryRunResults(resp.dryRunResults || null);
+      } else {
+        showToast(`Execution plan failed: ${resp?.error || "Unknown error"}`, "error");
+      }
+    } catch (err) {
+      showToast(`Execution plan failed: ${err.message}`, "error");
+    }
+    setExecPlanLoading(false);
+    setDryRunLoading(false);
+  }, [selectedTaskId, title, description]);
+
+  const toggleStageExpand = useCallback((si) => {
+    setExpandedStages((prev) => ({ ...prev, [si]: prev[si] === false ? true : prev[si] ? false : false }));
+  }, []);
+  const toggleNodeExpand = useCallback((si, nid) => {
+    setExpandedNodes((prev) => ({ ...prev, [`${si}-${nid}`]: !prev[`${si}-${nid}`] }));
+  }, []);
+
   const best = result?.best || null;
   const candidates = Array.isArray(result?.candidates) ? result.candidates : [];
   const plan = result?.plan || null;
@@ -1537,6 +1797,16 @@ function ProfileMatcher() {
 
   return html`
     <div>
+      ${/* ── Task Selector ── */ ""}
+      <label style="display:block;font-size:0.82em;color:var(--text-secondary);margin-bottom:4px;">Select Existing Task (or type manually below)</label>
+      <select value=${selectedTaskId} onChange=${handleTaskSelect}
+        style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border,#333);background:var(--bg-input,#0d1117);color:var(--text-primary,#eee);margin-bottom:8px;">
+        <option value="">— ${taskListLoading ? "Loading tasks…" : `${taskList.length} tasks available`} —</option>
+        ${taskList.map((t) => html`
+          <option key=${t.id} value=${t.id}>${t.title || t.id}${t.status ? ` [${t.status}]` : ""}</option>
+        `)}
+      </select>
+
       <label style="display:block;font-size:0.82em;color:var(--text-secondary);">Task Title</label>
       <input type="text" value=${title} onInput=${(e) => setTitle(e.currentTarget.value)}
         placeholder="feat(ui): improve onboarding flow"
@@ -1549,31 +1819,152 @@ function ProfileMatcher() {
       <input type="text" value=${changedFiles} onInput=${(e) => setChangedFiles(e.currentTarget.value)}
         placeholder="ui/tabs/library.js, server/ui-server.mjs"
         style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border,#333);background:var(--bg-input,#0d1117);color:var(--text-primary,#eee);" />
-      <div class="library-actions">
+      <div class="library-actions" style="display:flex;gap:8px;flex-wrap:wrap;">
         <${Button} variant="outlined" size="small" onClick=${doMatch} disabled=${loading || (!title.trim() && !description.trim())}>
           ${loading ? html`<${Spinner} size=${14} />` : iconText(":mag: Resolve Plan")}
         <//>
+        <${Button} variant="outlined" size="small" onClick=${() => fetchExecPlan("resolve")} disabled=${execPlanLoading || (!selectedTaskId && !title.trim())}>
+          ${execPlanLoading ? html`<${Spinner} size=${14} />` : html`${resolveIcon("play")} Execution Plan`}
+        <//>
+        <${Button} variant="outlined" size="small" onClick=${() => fetchExecPlan("dry-run")} disabled=${dryRunLoading || (!selectedTaskId && !title.trim())}>
+          ${dryRunLoading ? html`<${Spinner} size=${14} />` : html`${resolveIcon("play")} Dry Run`}
+        <//>
       </div>
+
+      ${/* ── Library Profile Match Results (Rich Visualization) ── */ ""}
       ${best && html`
-        <div class="library-profile-match" style="margin-top:8px;">
-          <div class="library-profile-match-label">Best match:</div>
-          <div>
-            <span class="library-profile-match-name">${iconText(`${TYPE_ICONS.agent} ${best.name}`)}</span>
-            <span class="library-profile-match-score">score: ${best.score} | confidence: ${Math.round(Number(best.confidence || 0) * 100)}%</span>
+        <div class="library-profile-match" style="margin-top:12px;padding:12px;border:1px solid var(--border,#333);border-radius:10px;background:var(--bg-card,rgba(255,255,255,0.03));">
+          ${/* ── Header with name, score, confidence ── */ ""}
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span style="font-weight:600;font-size:0.95em;">${iconText(`${TYPE_ICONS.agent} ${best.name}`)}</span>
+            <${Chip} size="small" label=${`Score: ${best.score}/${MAX_SCORE_TOTAL}`} color="primary" variant="outlined" />
+            <${Chip} size="small" label=${`${Math.round(Number(best.confidence || 0) * 100)}% confidence`}
+              color=${Number(best.confidence || 0) >= 0.45 ? "success" : "warning"} variant="outlined" />
           </div>
-          <div style="font-size:0.8em;color:var(--text-secondary);margin-top:4px;">auto-trigger: ${auto.shouldAutoApply ? "eligible" : "not eligible"} (${auto.reason || "n/a"})</div>
-          ${best.description && html`
-            <div style="font-size:0.8em;color:var(--text-secondary);margin-top:4px;">${best.description}</div>
+          ${best.description && html`<div style="font-size:0.82em;color:var(--text-secondary);margin-top:6px;">${best.description}</div>`}
+
+          ${/* ── Auto-trigger status ── */ ""}
+          <div style="display:flex;align-items:center;gap:6px;margin-top:8px;padding:6px 10px;border-radius:8px;background:${auto.shouldAutoApply ? "rgba(34,197,94,0.1)" : Number(best.confidence || 0) >= 0.35 ? "rgba(245,158,11,0.1)" : "rgba(239,68,68,0.1)"};">
+            <span style="font-size:1.1em;">${auto.shouldAutoApply ? "✅" : Number(best.confidence || 0) >= 0.35 ? "⚠️" : "❌"}</span>
+            <span style="font-size:0.82em;font-weight:500;color:${auto.shouldAutoApply ? "#22c55e" : Number(best.confidence || 0) >= 0.35 ? "#f59e0b" : "#ef4444"};">
+              Auto-trigger: ${auto.shouldAutoApply ? "Eligible" : "Not eligible"}
+            </span>
+            <span style="font-size:0.75em;color:var(--text-secondary);">(${auto.reason || "n/a"})</span>
+          </div>
+
+          ${/* ── Score Breakdown Bar ── */ ""}
+          <div style="margin-top:10px;">
+            <div style="font-size:0.78em;font-weight:600;color:var(--text-secondary);margin-bottom:4px;">Score Breakdown</div>
+            <div style="display:flex;height:22px;border-radius:6px;overflow:hidden;background:rgba(255,255,255,0.05);border:1px solid var(--border,#333);">
+              ${SIGNAL_DEFS.map((sig) => {
+                const val = Number(best.breakdown?.[sig.key] || 0);
+                const pct = (sig.max / MAX_SCORE_TOTAL) * 100;
+                return html`
+                  <${Tooltip} title=${`${sig.label}: ${val}/${sig.max}`} key=${sig.key}>
+                    <div style="width:${pct}%;height:100%;position:relative;border-right:1px solid rgba(0,0,0,0.2);">
+                      <div style="position:absolute;bottom:0;left:0;right:0;height:${sig.max > 0 ? (val / sig.max) * 100 : 0}%;background:${sig.color};opacity:0.85;transition:height 0.3s;"></div>
+                      <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:0.6em;color:#fff;white-space:nowrap;text-shadow:0 1px 2px rgba(0,0,0,0.6);z-index:1;">${val > 0 ? val : ""}</div>
+                    </div>
+                  <//>
+                `;
+              })}
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;">
+              ${SIGNAL_DEFS.map((sig) => {
+                const val = Number(best.breakdown?.[sig.key] || 0);
+                return html`<span key=${sig.key} style="font-size:0.65em;display:flex;align-items:center;gap:3px;color:var(--text-secondary);">
+                  <span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${sig.color};opacity:${val > 0 ? 1 : 0.3};"></span>
+                  ${sig.label}
+                </span>`;
+              })}
+            </div>
+          </div>
+
+          ${/* ── Detected Task Types ── */ ""}
+          ${result?.context?.detectedTaskTypes?.length > 0 && html`
+            <div style="margin-top:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              <span style="font-size:0.78em;color:var(--text-secondary);font-weight:500;">Detected:</span>
+              ${result.context.detectedTaskTypes.map((t) => html`
+                <${Chip} key=${t} size="small" label=${t} variant="outlined"
+                  style=${{ fontSize: "0.72em", height: "20px" }} />
+              `)}
+            </div>
           `}
-          ${Array.isArray(best.reasons) && best.reasons.length > 0 && html`
-            <div style="font-size:0.78em;color:var(--text-secondary);margin-top:4px;">reasons: ${best.reasons.join(", ")}</div>
-          `}
+
+          ${/* ── Skills Preview ── */ ""}
           ${plan && html`
-            <div style="font-size:0.78em;color:var(--text-secondary);margin-top:6px;">prompt: ${plan.prompt?.name || "none"} | skills: ${(plan.skillIds || []).slice(0, 4).join(", ") || "none"}</div>
-            <div style="font-size:0.78em;color:var(--text-secondary);margin-top:4px;">builtin tools: ${(plan.builtinToolIds || []).slice(0, 6).join(", ") || "none"} | MCP: ${(plan.enabledMcpServers || []).slice(0, 4).join(", ") || "none"}</div>
+            <div style="margin-top:10px;padding:8px 10px;border:1px solid var(--border,#333);border-radius:8px;background:rgba(255,255,255,0.02);">
+              <div style="font-size:0.8em;font-weight:600;margin-bottom:4px;">📚 Skills (${(plan.skillIds || []).length} resolved)</div>
+              ${(plan.skillIds || []).length > 0 ? (plan.skillIds || []).map((s) => html`
+                <div key=${s} style="font-size:0.78em;color:var(--text-secondary);padding:2px 0;">  ✓ ${s} (profile-skill)</div>
+              `) : html`<div style="font-size:0.78em;color:var(--text-secondary);">  No skills resolved</div>`}
+              <div style="font-size:0.78em;color:var(--text-secondary);margin-top:4px;">
+                Prompt: ${plan.prompt?.name || "none"} · Tools: ${(plan.builtinToolIds || []).slice(0, 6).join(", ") || "none"} · MCP: ${(plan.enabledMcpServers || []).slice(0, 4).join(", ") || "none"}
+              </div>
+            </div>
           `}
+
+          ${/* ── Workflow Step Preview ── */ ""}
+          <div style="margin-top:10px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="font-size:0.8em;font-weight:600;">Workflow Steps</span>
+              <${Button} variant="text" size="small" onClick=${async () => {
+                if (!title.trim()) return;
+                setWorkflowLoading(true);
+                try {
+                  const steps = await resolveWorkflowSteps(title.trim(), description.trim());
+                  setWorkflowSteps(steps);
+                } catch { setWorkflowSteps(null); }
+                setWorkflowLoading(false);
+              }} disabled=${workflowLoading || !title.trim()}
+                style=${{ fontSize: "0.72em", minWidth: 0, padding: "2px 8px" }}>
+                ${workflowLoading ? html`<${Spinner} size=${12} />` : "Resolve"}
+              <//>
+            </div>
+            ${workflowSteps && html`
+              <div style="margin-top:4px;padding:8px 10px;border-left:3px solid var(--border,#555);font-size:0.78em;font-family:monospace;">
+                ${Object.entries(workflowSteps).map(([step, stepResult], i, arr) => {
+                  const connector = i === 0 ? "┌" : i === arr.length - 1 ? "└" : "├";
+                  const stepBest = stepResult?.best;
+                  const stepPlan = stepResult?.plan;
+                  const skills = stepPlan?.skillIds?.slice(0, 3)?.join(", ") || "none";
+                  return html`<div key=${step} style="color:var(--text-secondary);padding:1px 0;">
+                    ${connector} <span style="text-transform:capitalize;font-weight:500;color:var(--text-primary);">${step}</span> → ${stepBest?.name || "No match"} + [${skills}]
+                  </div>`;
+                })}
+              </div>
+            `}
+          </div>
+
+          ${/* ── Alternatives as expandable cards ── */ ""}
           ${candidates.length > 1 && html`
-            <div style="font-size:0.78em;color:var(--text-secondary);margin-top:6px;">alternatives: ${candidates.slice(1, 4).map((c) => `${c.name} (${c.score})`).join(" | ")}</div>
+            <div style="margin-top:10px;">
+              <div style="font-size:0.8em;font-weight:600;color:var(--text-secondary);margin-bottom:6px;">Alternatives (${candidates.length - 1})</div>
+              ${candidates.slice(1).map((c, i) => html`
+                <div key=${c.id || i} style="margin-bottom:6px;border:1px solid var(--border,#333);border-radius:8px;overflow:hidden;background:rgba(255,255,255,0.02);">
+                  <div onClick=${() => setExpandedAlts((prev) => ({ ...prev, [i]: !prev[i] }))}
+                    style="display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;user-select:none;">
+                    <span style="font-size:0.82em;font-weight:500;flex:1;">${iconText(`${TYPE_ICONS.agent} ${c.name}`)}</span>
+                    <div style="width:60px;height:6px;border-radius:3px;background:rgba(255,255,255,0.08);overflow:hidden;">
+                      <div style="height:100%;width:${Math.round(Number(c.confidence || 0) * 100)}%;background:#3b82f6;border-radius:3px;"></div>
+                    </div>
+                    <span style="font-size:0.72em;color:var(--text-secondary);min-width:40px;text-align:right;">${c.score}pts</span>
+                    <span style="font-size:0.7em;transform:${expandedAlts[i] ? "rotate(180deg)" : "none"};transition:transform 0.2s;">▼</span>
+                  </div>
+                  ${expandedAlts[i] && html`
+                    <div style="padding:6px 10px 8px;border-top:1px solid var(--border,#333);font-size:0.78em;color:var(--text-secondary);">
+                      <div>Confidence: ${Math.round(Number(c.confidence || 0) * 100)}%</div>
+                      ${c.description && html`<div style="margin-top:2px;">${c.description}</div>`}
+                      ${Array.isArray(c.reasons) && c.reasons.length > 0 && html`
+                        <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px;">
+                          ${c.reasons.map((r) => html`<${Chip} key=${r} size="small" label=${r} variant="outlined" style=${{ fontSize: "0.68em", height: "18px" }} />`)}
+                        </div>
+                      `}
+                    </div>
+                  `}
+                </div>
+              `)}
+            </div>
           `}
         </div>
       `}
@@ -1582,17 +1973,389 @@ function ProfileMatcher() {
           No matching agent profile. Import or create one to improve routing coverage.
         </div>
       `}
+
+      ${/* ── Execution Plan Visualization ── */ ""}
+      ${execPlan && html`
+        <div style="margin-top:16px;border-top:1px solid var(--border,#333);padding-top:12px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+            <strong style="font-size:0.9em;">${resolveIcon("play")} Execution Plan</strong>
+            <span style="font-size:0.75em;opacity:0.6;">${execPlan.stageCount || 0} workflows · ${execPlan.agentRunTotal || 0} agent runs</span>
+            ${execPlan.mode === "dry-run" && html`<span style="font-size:0.75em;color:#10b981;font-weight:600;">✓ Dry-run complete</span>`}
+            ${execPlan.validationIssues?.length > 0 && html`
+              <span style="background:#ef444430;color:#f87171;padding:1px 6px;border-radius:3px;font-size:0.7em;font-weight:600;">
+                ${execPlan.validationIssues.filter((v) => v.level === "error").length} errors
+              </span>
+            `}
+          </div>
+
+          ${/* ── Validation Issues ── */ ""}
+          ${execPlan.validationIssues?.length > 0 && html`
+            <div style="margin-bottom:10px;border:1px solid #ef444440;border-radius:6px;padding:8px;background:#ef444410;">
+              <div style="font-weight:600;font-size:0.8em;color:#f87171;margin-bottom:4px;">${resolveIcon("warning")} Validation Issues</div>
+              ${execPlan.validationIssues.map((issue, ii) => html`
+                <div key=${`vi-${ii}`} style="font-size:0.75em;padding:2px 0;display:flex;gap:4px;align-items:start;">
+                  <span style="color:${issue.level === 'error' ? '#f87171' : '#fbbf24'};flex-shrink:0;">${issue.level === "error" ? "✗" : "⚠"}</span>
+                  <span><strong>${issue.workflowName}:</strong> ${issue.message}</span>
+                </div>
+              `)}
+            </div>
+          `}
+
+          ${/* ── Workflow Stages ── */ ""}
+          ${execPlan.stages?.map((stage, si) => html`
+            <div key=${`stage-${si}`} style="margin-bottom:10px;border:1px solid var(--border-color,#333);border-radius:8px;overflow:hidden;">
+              <div style="padding:8px 12px;background:var(--color-bg-secondary,#141820);display:flex;align-items:center;gap:8px;cursor:pointer;border-bottom:1px solid var(--border-color,#333);"
+                   onClick=${() => toggleStageExpand(si)}>
+                <span style="font-size:0.75em;opacity:0.5;">${expandedStages[si] === false ? "▸" : "▾"}</span>
+                ${stage.core ? html`<span style="background:#8b5cf620;color:#a78bfa;padding:1px 6px;border-radius:3px;font-size:0.65em;font-weight:600;">CORE</span>` : ""}
+                <strong style="font-size:0.85em;flex:1;">${stage.workflowName}</strong>
+                <span style="font-size:0.7em;padding:1px 6px;border-radius:3px;background:${stage.matchType === 'polling' ? '#6b728020' : '#3b82f620'};color:${stage.matchType === 'polling' ? '#9ca3af' : '#60a5fa'};">
+                  ${stage.matchType === "polling" ? "lifecycle" : "matched"}
+                </span>
+                <span style="font-size:0.7em;opacity:0.5;">${stage.nodeCount} nodes · ${stage.agentRunCount} agents</span>
+                <span style="font-size:0.65em;opacity:0.4;text-transform:uppercase;">${stage.category || ""}</span>
+              </div>
+
+              ${expandedStages[si] !== false && html`
+                <div style="padding:10px 12px;">
+                  ${stage.description ? html`<div style="font-size:0.78em;opacity:0.6;margin-bottom:8px;">${stage.description}</div>` : ""}
+                  <div style="display:flex;flex-direction:column;gap:3px;">
+                    ${(stage.nodes || []).map((nd, ni) => {
+                      const isExpanded = expandedNodes[`${si}-${nd.id}`];
+                      const nodeColors = nd.isAgentRun ? { bg: "#1a2a4a", border: "#2d5a9f", accent: "#60a5fa" }
+                        : nd.isTrigger ? { bg: "#2a2010", border: "#8b6914", accent: "#fbbf24" }
+                        : nd.isCondition ? { bg: "#1a1a30", border: "#5b21b6", accent: "#a78bfa" }
+                        : nd.isCommand || nd.isValidation ? { bg: "#1a2a20", border: "#166534", accent: "#4ade80" }
+                        : nd.isStatusUpdate ? { bg: "#2a1a1a", border: "#7f1d1d", accent: "#fca5a5" }
+                        : nd.isNotify ? { bg: "#1a2020", border: "#334155", accent: "#94a3b8" }
+                        : { bg: "#1a1a1e", border: "#333", accent: "#888" };
+                      const hasIssue = nd.expressionValid === false || !nd.typeRegistered || (nd.unresolvedVars?.length > 0);
+                      const dryRunNode = dryRunResults?.find((dr) => dr.workflowId === stage.workflowId)?.nodes?.find((dn) => dn.id === nd.id);
+
+                      return html`
+                        <div key=${`n-${ni}`}>
+                          ${ni > 0 && html`<div style="margin-left:18px;height:8px;border-left:2px solid ${nodeColors.border};opacity:0.3;"></div>`}
+                          <div style="border:1px solid ${hasIssue ? '#ef4444' : nodeColors.border};border-radius:6px;background:${nodeColors.bg};cursor:pointer;transition:all 0.15s;"
+                               onClick=${() => toggleNodeExpand(si, nd.id)}>
+                            <div style="padding:6px 10px;display:flex;align-items:center;gap:6px;">
+                              <span style="font-size:0.65em;opacity:0.5;width:16px;text-align:center;">${ni + 1}</span>
+                              <span style="font-size:0.7em;color:${nodeColors.accent};opacity:0.7;min-width:60px;">${nd.type.split(".").pop()}</span>
+                              <strong style="font-size:0.8em;flex:1;">${nd.label}</strong>
+                              ${hasIssue ? html`<span style="color:#ef4444;font-size:0.7em;" title="Has issues">✗</span>` : ""}
+                              ${nd.isAgentRun && nd.resolvedAgent ? html`
+                                <span style="font-size:0.7em;color:${nodeColors.accent};opacity:0.8;">
+                                  ${resolveIcon("bot")} ${nd.resolvedAgent}
+                                  ${nd.confidence ? html` (${Math.round(nd.confidence * 100)}%)` : ""}
+                                </span>
+                              ` : ""}
+                              ${nd.isAgentRun && !nd.resolvedAgent && nd.resolveMode === "library" ? html`
+                                <span style="font-size:0.7em;opacity:0.5;">Library Auto</span>
+                              ` : ""}
+                              ${nd.isCommand ? html`<span style="font-size:0.65em;font-family:monospace;opacity:0.5;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${nd.commandResolved || nd.commandRaw}</span>` : ""}
+                              ${nd.isStatusUpdate ? html`<span style="font-size:0.7em;opacity:0.6;">→ ${nd.targetStatus}</span>` : ""}
+                              ${dryRunNode ? html`<span style="font-size:0.65em;color:${dryRunNode.status === 'simulated' || dryRunNode.status === 'COMPLETED' ? '#10b981' : '#fbbf24'};">● ${dryRunNode.status}</span>` : ""}
+                              <span style="font-size:0.65em;opacity:0.3;">${isExpanded ? "▾" : "▸"}</span>
+                            </div>
+
+                            ${isExpanded && html`
+                              <div style="padding:6px 10px 8px;border-top:1px solid ${nodeColors.border}40;font-size:0.75em;">
+                                <div style="display:grid;grid-template-columns:auto 1fr;gap:3px 10px;align-items:start;">
+                                  <span style="opacity:0.5;">Type:</span>
+                                  <span style="font-family:monospace;">${nd.type}${!nd.typeRegistered ? html` <span style="color:#ef4444;">✗ unregistered</span>` : ""}</span>
+
+                                  ${nd.isTrigger && nd.taskPattern ? html`
+                                    <span style="opacity:0.5;">Pattern:</span>
+                                    <span style="font-family:monospace;">${nd.taskPattern} ${nd.patternMatches === true ? html`<span style="color:#10b981;">✓ matches</span>` : nd.patternMatches === false ? html`<span style="color:#ef4444;">✗ no match</span>` : ""}</span>
+                                  ` : ""}
+
+                                  ${nd.isCondition && nd.expression ? html`
+                                    <span style="opacity:0.5;">Expression:</span>
+                                    <span style="font-family:monospace;word-break:break-all;">${nd.expression}${nd.expressionValid === false ? html` <span style="color:#ef4444;">✗ ${nd.expressionError}</span>` : html` <span style="color:#10b981;">✓</span>`}</span>
+                                  ` : ""}
+
+                                  ${nd.isAgentRun ? html`
+                                    <span style="opacity:0.5;">SDK:</span><span>${nd.sdk || "auto"}</span>
+                                    <span style="opacity:0.5;">Model:</span><span>${nd.model || "auto"}</span>
+                                    <span style="opacity:0.5;">Timeout:</span><span>${Math.round((nd.timeoutMs || 3600000) / 60000)}min</span>
+                                    <span style="opacity:0.5;">Retries:</span><span>${nd.maxRetries ?? 2} retries, ${nd.maxContinues ?? 2} continues</span>
+                                    <span style="opacity:0.5;">Resolve:</span><span>${nd.resolveMode || "manual"}</span>
+                                    <span style="opacity:0.5;">CWD:</span><span style="font-family:monospace;">${nd.cwd || "auto"}</span>
+                                  ` : ""}
+
+                                  ${nd.isCommand ? html`
+                                    <span style="opacity:0.5;">Command:</span>
+                                    <span style="font-family:monospace;word-break:break-all;">${nd.commandResolved || nd.commandRaw}</span>
+                                    <span style="opacity:0.5;">CWD:</span><span style="font-family:monospace;">${nd.commandCwd}</span>
+                                    <span style="opacity:0.5;">Timeout:</span><span>${Math.round((nd.commandTimeout || 300000) / 1000)}s</span>
+                                    <span style="opacity:0.5;">Fail on error:</span><span>${nd.failOnError ? "Yes" : "No"}</span>
+                                  ` : ""}
+
+                                  ${nd.isResolveExecutor ? html`
+                                    <span style="opacity:0.5;">SDK Override:</span><span>${nd.sdkOverride || "auto"}</span>
+                                    <span style="opacity:0.5;">Model Override:</span><span>${nd.modelOverride || "auto"}</span>
+                                  ` : ""}
+
+                                  ${nd.isSubWorkflow ? html`
+                                    <span style="opacity:0.5;">Sub-workflow:</span><span style="font-family:monospace;">${nd.targetWorkflowId || "—"}</span>
+                                    <span style="opacity:0.5;">Inherit ctx:</span><span>${nd.inheritContext ? "Yes" : "No"}</span>
+                                  ` : ""}
+
+                                  ${nd.isValidation ? html`
+                                    <span style="opacity:0.5;">${nd.validationType} cmd:</span>
+                                    <span style="font-family:monospace;">${nd.commandResolved || nd.commandRaw || "auto"}</span>
+                                  ` : ""}
+
+                                  ${nd.unresolvedVars?.length > 0 ? html`
+                                    <span style="opacity:0.5;color:#fbbf24;">Unresolved:</span>
+                                    <span style="color:#fbbf24;">${nd.unresolvedVars.map((v) => `{{${v}}}`).join(", ")}</span>
+                                  ` : ""}
+                                </div>
+
+                                ${nd.isAgentRun && nd.resolvedSkills?.length > 0 ? html`
+                                  <div style="margin-top:6px;padding-top:4px;border-top:1px dashed ${nodeColors.border}40;">
+                                    <div style="opacity:0.6;margin-bottom:3px;">${resolveIcon("star")} Resolved Skills:</div>
+                                    ${nd.resolvedSkills.map((sk) => html`
+                                      <div style="display:flex;gap:6px;padding:1px 0;align-items:center;">
+                                        <span style="font-weight:500;">${sk.name}</span>
+                                        ${sk.score ? html`<span style="opacity:0.4;font-size:0.9em;">${Math.round(sk.score * 100)}%</span>` : ""}
+                                        ${sk.source ? html`<span style="opacity:0.3;font-size:0.85em;">(${sk.source})</span>` : ""}
+                                      </div>
+                                    `)}
+                                  </div>
+                                ` : ""}
+
+                                ${nd.isAgentRun && nd.resolvedTools && (nd.resolvedTools.builtin?.length > 0 || nd.resolvedTools.mcp?.length > 0) ? html`
+                                  <div style="margin-top:4px;">
+                                    <span style="opacity:0.6;">${resolveIcon("tool")} Tools: </span>
+                                    <span>${[...(nd.resolvedTools.builtin || []), ...(nd.resolvedTools.mcp || [])].join(", ")}</span>
+                                  </div>
+                                ` : ""}
+
+                                ${nd.isAgentRun && nd.alternatives?.length > 0 ? html`
+                                  <div style="margin-top:4px;opacity:0.5;">
+                                    <span>Alt: ${nd.alternatives.map((a) => `${a.name} (${Math.round((a.confidence || 0) * 100)}%)`).join(", ")}</span>
+                                  </div>
+                                ` : ""}
+
+                                ${nd.isAgentRun && nd.promptResolved ? html`
+                                  <details style="margin-top:6px;">
+                                    <summary style="cursor:pointer;opacity:0.6;font-size:0.9em;">Prompt Preview (${nd.promptResolved.length} chars)</summary>
+                                    <pre style="margin-top:4px;padding:6px;background:#00000030;border-radius:4px;white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto;font-size:0.85em;">${nd.promptResolved.slice(0, 2000)}${nd.promptResolved.length > 2000 ? "\n…(truncated)" : ""}</pre>
+                                  </details>
+                                ` : ""}
+                              </div>
+                            `}
+                          </div>
+                        </div>
+                      `;
+                    })}
+                  </div>
+
+                  ${stage.edges?.some((e) => e.condition || e.sourcePort || e.isBackEdge) && html`
+                    <details style="margin-top:8px;">
+                      <summary style="cursor:pointer;font-size:0.75em;opacity:0.5;">Edge routing (${stage.edges.length} edges)</summary>
+                      <div style="margin-top:4px;font-size:0.7em;font-family:monospace;">
+                        ${stage.edges.filter((e) => e.condition || e.sourcePort || e.isBackEdge).map((e) => html`
+                          <div style="padding:2px 0;display:flex;gap:4px;align-items:center;">
+                            <span>${e.source}</span><span style="opacity:0.3;">→</span><span>${e.target}</span>
+                            ${e.sourcePort ? html`<span style="color:#a78bfa;">[${e.sourcePort}]</span>` : ""}
+                            ${e.condition ? html`<span style="opacity:0.5;color:${e.conditionValid === false ? '#ef4444' : '#4ade80'};">${e.condition.length > 50 ? e.condition.slice(0, 50) + "…" : e.condition}</span>` : ""}
+                            ${e.isBackEdge ? html`<span style="color:#fbbf24;">↩ loop</span>` : ""}
+                            ${e.conditionValid === false ? html`<span style="color:#ef4444;">✗ ${e.conditionError}</span>` : ""}
+                          </div>
+                        `)}
+                      </div>
+                    </details>
+                  `}
+                </div>
+              `}
+            </div>
+          `)}
+
+          ${/* ── Dry-run results summary ── */ ""}
+          ${dryRunResults && html`
+            <div style="margin-top:8px;border:1px solid #10b98140;border-radius:6px;padding:8px;background:#10b98110;">
+              <div style="font-weight:600;font-size:0.8em;color:#10b981;margin-bottom:4px;">${resolveIcon("check")} Dry-Run Results</div>
+              ${dryRunResults.map((dr) => html`
+                <div style="font-size:0.75em;padding:2px 0;">
+                  <span style="font-weight:500;">${dr.workflowName}</span>
+                  <span style="color:${dr.status === 'completed' ? '#10b981' : dr.status === 'error' ? '#ef4444' : '#fbbf24'};">
+                    — ${dr.status}
+                  </span>
+                  ${dr.error ? html`<span style="color:#ef4444;margin-left:4px;">${dr.error}</span>` : ""}
+                  ${dr.nodes?.length > 0 ? html`<span style="opacity:0.5;margin-left:4px;">(${dr.nodes.length} nodes simulated)</span>` : ""}
+                </div>
+              `)}
+            </div>
+          `}
+        </div>
+      `}
     </div>
+  `;
+}
+
+function parseApiError(err) {
+  const msg = String(err?.message || err || "Unknown error");
+  try {
+    const parsed = JSON.parse(msg);
+    if (parsed?.error) return String(parsed.error);
+  } catch { /* not JSON */ }
+  return msg;
+}
+
+function ImportPreviewModal({ candidates, source, onConfirm, onClose, loading, duplicates, intraDuplicates }) {
+  const [selection, setSelection] = useState(() => {
+    const map = {};
+    for (const c of (candidates || [])) map[c.relPath] = c.selected !== false;
+    return map;
+  });
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [showDupOnly, setShowDupOnly] = useState(false);
+
+  const dupMap = duplicates || {};
+  const intraDupMap = intraDuplicates || {};
+  const dupCount = Object.keys(dupMap).length;
+
+  const filtered = useMemo(() => {
+    let list = candidates || [];
+    if (typeFilter !== "all") list = list.filter((c) => c.kind === typeFilter);
+    if (showDupOnly) list = list.filter((c) => dupMap[c.relPath] || intraDupMap[c.relPath]);
+    return list;
+  }, [candidates, typeFilter, showDupOnly, dupMap, intraDupMap]);
+
+  const selectedCount = useMemo(() => Object.values(selection).filter(Boolean).length, [selection]);
+  const typeCounts = useMemo(() => {
+    const counts = { agent: 0, skill: 0, prompt: 0, mcp: 0 };
+    for (const c of (candidates || [])) counts[c.kind] = (counts[c.kind] || 0) + 1;
+    return counts;
+  }, [candidates]);
+
+  const toggleAll = useCallback((checked) => {
+    setSelection((prev) => {
+      const next = { ...prev };
+      for (const c of filtered) next[c.relPath] = checked;
+      return next;
+    });
+  }, [filtered]);
+
+  const toggle = useCallback((relPath) => {
+    setSelection((prev) => ({ ...prev, [relPath]: !prev[relPath] }));
+  }, []);
+
+  const handleConfirm = useCallback(() => {
+    const selected = Object.entries(selection).filter(([, v]) => v).map(([k]) => k);
+    onConfirm(selected);
+  }, [selection, onConfirm]);
+
+  const kindIcon = { agent: "🤖", skill: "⚡", prompt: "📝", mcp: "🔧" };
+  const allFilteredSelected = filtered.length > 0 && filtered.every((c) => selection[c.relPath]);
+
+  const dupReasonLabel = (info) => {
+    if (!info) return "";
+    if (info.reason === "exact-name") return "Exact name match";
+    if (info.reason === "slug-match") return "Very similar name";
+    return `${Math.round((info.similarity || 0) * 100)}% similar`;
+  };
+
+  return html`
+    <${Modal} title="Select Items to Import" onClose=${onClose} wide=${true}>
+      <div style="display:flex;flex-direction:column;gap:10px;max-height:70vh;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span style="font-size:0.85em;font-weight:600;">${source?.name || "Repository"}</span>
+          <span style="font-size:0.8em;color:var(--text-secondary);">·</span>
+          <span style="font-size:0.8em;color:var(--text-secondary);">${(candidates || []).length} items found</span>
+          <span style="font-size:0.8em;color:var(--text-secondary);">·</span>
+          <span style="font-size:0.8em;color:var(--text-secondary);">${selectedCount} selected</span>
+          ${dupCount > 0 ? html`
+            <span style="font-size:0.8em;color:var(--text-secondary);">·</span>
+            <span style="font-size:0.78em;padding:2px 8px;border-radius:999px;background:rgba(245,158,11,0.18);color:#f59e0b;cursor:pointer;" onClick=${() => setShowDupOnly(!showDupOnly)}>
+              ⚠ ${dupCount} duplicate${dupCount !== 1 ? "s" : ""}${showDupOnly ? " (showing)" : ""}
+            </span>
+          ` : null}
+        </div>
+        ${dupCount > 0 ? html`
+          <div style="font-size:0.75em;padding:6px 10px;border-radius:8px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2);color:var(--text-secondary);">
+            ⚠ ${dupCount} item${dupCount !== 1 ? "s" : ""} appear${dupCount === 1 ? "s" : ""} similar to entries already in your library.
+            Exact matches are auto-deselected. Review and toggle as needed.
+          </div>
+        ` : null}
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          ${[
+            ["all", "All", (candidates || []).length],
+            ["agent", "Agents", typeCounts.agent],
+            ["skill", "Skills", typeCounts.skill],
+            ["prompt", "Prompts", typeCounts.prompt],
+            ["mcp", "Tools", typeCounts.mcp],
+          ].filter(([, , count]) => count > 0 || true).map(([key, label, count]) => html`
+            <button key=${key} onClick=${() => setTypeFilter(key)}
+              style="padding:3px 10px;border-radius:12px;border:1px solid var(--border,#333);background:${typeFilter === key ? "var(--accent,#3b82f6)" : "transparent"};color:${typeFilter === key ? "#fff" : "var(--text-secondary)"};font-size:0.78em;cursor:pointer;">
+              ${label} (${count})
+            </button>
+          `)}
+          <span style="flex:1;" />
+          <button onClick=${() => toggleAll(true)} style="padding:3px 8px;border:1px solid var(--border,#333);border-radius:8px;background:transparent;color:var(--text-secondary);font-size:0.75em;cursor:pointer;">Select All</button>
+          <button onClick=${() => toggleAll(false)} style="padding:3px 8px;border:1px solid var(--border,#333);border-radius:8px;background:transparent;color:var(--text-secondary);font-size:0.75em;cursor:pointer;">Deselect All</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border,#333);">
+          <input type="checkbox" checked=${allFilteredSelected} onChange=${(e) => toggleAll(e.currentTarget.checked)} />
+          <span style="font-size:0.75em;font-weight:600;color:var(--text-secondary);flex:1;">NAME</span>
+          <span style="font-size:0.75em;font-weight:600;color:var(--text-secondary);width:60px;text-align:center;">TYPE</span>
+        </div>
+        <div style="overflow-y:auto;max-height:50vh;display:flex;flex-direction:column;">
+          ${filtered.map((c) => {
+            const dupInfo = dupMap[c.relPath];
+            const intraDup = intraDupMap[c.relPath];
+            const hasDup = !!dupInfo;
+            const hasIntraDup = !!intraDup;
+            return html`
+              <label key=${c.relPath} style="display:flex;align-items:flex-start;gap:6px;padding:5px 0;border-bottom:1px solid var(--border,#222);cursor:pointer;opacity:${selection[c.relPath] ? 1 : 0.5};${hasDup ? "background:rgba(245,158,11,0.04);" : ""}">
+                <input type="checkbox" checked=${Boolean(selection[c.relPath])} onChange=${() => toggle(c.relPath)} style="margin-top:2px;" />
+                <div style="flex:1;min-width:0;">
+                  <div style="font-size:0.82em;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${c.name || c.fileName}</div>
+                  <div style="font-size:0.72em;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title=${c.relPath}>${c.relPath}</div>
+                  ${c.description ? html`<div style="font-size:0.72em;color:var(--text-secondary);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${String(c.description || "").slice(0, 120)}</div>` : null}
+                  ${hasDup ? html`
+                    <div style="font-size:0.7em;margin-top:3px;padding:2px 6px;border-radius:6px;background:rgba(245,158,11,0.12);color:#f59e0b;display:inline-flex;align-items:center;gap:4px;">
+                      ⚠ ${dupReasonLabel(dupInfo)}: existing "${dupInfo.existingEntries?.[0]?.name || "?"}"
+                      ${dupInfo.similarity >= 0.95 ? html` · <em>auto-deselected</em>` : null}
+                    </div>
+                  ` : null}
+                  ${hasIntraDup && !hasDup ? html`
+                    <div style="font-size:0.7em;margin-top:3px;padding:2px 6px;border-radius:6px;background:rgba(59,130,246,0.12);color:#3b82f6;display:inline-flex;align-items:center;gap:4px;">
+                      ↔ Similar to ${intraDup.length} other item${intraDup.length !== 1 ? "s" : ""} in this import
+                    </div>
+                  ` : null}
+                </div>
+                <span style="font-size:0.72em;padding:2px 6px;border-radius:999px;background:${c.kind === "agent" ? "rgba(59,130,246,0.18)" : c.kind === "skill" ? "rgba(34,197,94,0.18)" : "rgba(168,85,247,0.18)"};color:var(--text-secondary);width:60px;text-align:center;flex-shrink:0;">${kindIcon[c.kind] || ""} ${c.kind}</span>
+              </label>
+            `;
+          })}
+          ${filtered.length === 0 ? html`<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:0.85em;">No items found</div>` : null}
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;padding-top:8px;border-top:1px solid var(--border,#333);">
+          <${Button} variant="text" size="small" onClick=${onClose} disabled=${loading}>Cancel<//>
+          <${Button} variant="contained" size="small" onClick=${handleConfirm} disabled=${loading || selectedCount === 0}>
+            ${loading ? html`<${Spinner} size=${14} />` : iconText(`:download: Import ${selectedCount} Items`)}
+          <//>
+        </div>
+      </div>
+    <//>
   `;
 }
 
 function AgentLibraryImporter({ onImported }) {
   const [sources, setSources] = useState([]);
-  const [sourceId, setSourceId] = useState("microsoft-hve-core");
+  const [sourceId, setSourceId] = useState("microsoft-skills");
   const [repoUrl, setRepoUrl] = useState("");
   const [branch, setBranch] = useState("main");
-  const [maxProfiles, setMaxProfiles] = useState("80");
-  const [loading, setLoading] = useState(false);
+  const [maxProfiles, setMaxProfiles] = useState("200");
+  const [scanning, setScanning] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [previewData, setPreviewData] = useState(null);
+  const [importAgents, setImportAgents] = useState(true);
+  const [importSkills, setImportSkills] = useState(true);
+  const [importPrompts, setImportPrompts] = useState(true);
+  const [importTools, setImportTools] = useState(true);
   const selectedSource = useMemo(() => (sources || []).find((source) => source.id === sourceId) || null, [sources, sourceId]);
 
   useEffect(() => {
@@ -1606,41 +2369,93 @@ function AgentLibraryImporter({ onImported }) {
     return () => { alive = false; };
   }, []);
 
-  const doImport = useCallback(async () => {
-    setLoading(true);
+  const doPreview = useCallback(async () => {
+    setScanning(true);
     try {
       const payload = {
-        sourceId: sourceId || undefined,
+        sourceId: repoUrl.trim() ? undefined : (sourceId || undefined),
         repoUrl: repoUrl.trim() || undefined,
         branch: branch.trim() || undefined,
-        maxProfiles: Number.parseInt(String(maxProfiles || ""), 10) || undefined,
-        importPrompts: true,
+        maxEntries: Number.parseInt(String(maxProfiles || ""), 10) || undefined,
+      };
+      const res = await previewLibrarySource(payload);
+      if (!res?.ok) throw new Error(res?.error || "Preview failed");
+      const data = res?.data;
+      if (!data?.candidates?.length) {
+        showToast("No importable items found in this repository", "warning");
+      } else {
+        setPreviewData(data);
+      }
+    } catch (err) {
+      showToast(`Preview failed: ${parseApiError(err)}`, "error");
+    }
+    setScanning(false);
+  }, [sourceId, repoUrl, branch, maxProfiles]);
+
+  const doImport = useCallback(async (selectedPaths) => {
+    setImporting(true);
+    try {
+      if (!importAgents && !importPrompts && !importSkills && !importTools) {
+        throw new Error("Select at least one import type");
+      }
+      const payload = {
+        sourceId: repoUrl.trim() ? undefined : (sourceId || undefined),
+        repoUrl: repoUrl.trim() || undefined,
+        branch: branch.trim() || undefined,
+        maxEntries: Number.parseInt(String(maxProfiles || ""), 10) || undefined,
+        importAgents,
+        importSkills,
+        importPrompts,
+        importTools,
+        includeEntries: selectedPaths,
       };
       const res = await importLibrarySource(payload);
       if (!res?.ok) throw new Error(res?.error || "Import failed");
       const count = Number(res?.data?.importedCount || 0);
-      showToast(`Imported ${count} profiles`, "success");
+      const byType = res?.data?.importedByType || {};
+      const details = [
+        `agents ${Number(byType?.agent || 0)}`,
+        `prompts ${Number(byType?.prompt || 0)}`,
+        `skills ${Number(byType?.skill || 0)}`,
+        `tools ${Number(byType?.mcp || 0)}`,
+      ].join(", ");
+      showToast(`Imported ${count} entries (${details})`, "success");
+      setPreviewData(null);
       if (typeof onImported === "function") onImported();
     } catch (err) {
-      showToast(`Import failed: ${err.message}`, "error");
+      showToast(`Import failed: ${parseApiError(err)}`, "error");
     }
-    setLoading(false);
-  }, [sourceId, repoUrl, branch, maxProfiles, onImported]);
+    setImporting(false);
+  }, [sourceId, repoUrl, branch, maxProfiles, importAgents, importSkills, importPrompts, importTools, onImported]);
 
   return html`
     <div style="margin-top:10px;padding:10px;border:1px solid var(--border,#333);border-radius:10px;">
-      <div style="font-size:0.9em;font-weight:600;margin-bottom:6px;">${iconText(":package: Import Agent Library")}</div>
+      <div style="font-size:0.9em;font-weight:600;margin-bottom:6px;">${iconText(":package: Import Library Content")}</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;">
         <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82em;color:var(--text-secondary);">
           Source
           <select value=${sourceId} onChange=${(e) => setSourceId(e.currentTarget.value)}>
-            ${(sources.length ? sources : [
-              { id: "microsoft-hve-core", name: "Microsoft HVE Core" },
-              { id: "microsoft-skills", name: "Microsoft Skills" },
-              { id: "github-copilot-sdk", name: "GitHub Copilot SDK" },
-              { id: "azure-sdk-for-js", name: "Azure SDK for JavaScript" },
-              { id: "microsoft-vscode-python-environments", name: "Microsoft VS Code Python Environments" },
-            ]).map((s) => html`<option key=${s.id} value=${s.id}>${s.name}</option>`)}
+            ${(sources.length ? [...sources].sort((a, b) => (Number(b.estimatedPlugins || 0) - Number(a.estimatedPlugins || 0)) || String(a.name || "").localeCompare(String(b.name || ""))) : [
+              { id: "microsoft-skills", name: "Microsoft Skills", estimatedPlugins: 180 },
+              { id: "microsoft-hve-core", name: "Microsoft HVE Core", estimatedPlugins: 60 },
+              { id: "canonical-copilot-collections", name: "Canonical Copilot Collections", estimatedPlugins: 50 },
+              { id: "microsoft-copilot-for-azure", name: "GitHub Copilot for Azure", estimatedPlugins: 45 },
+              { id: "mastra-ai-mastra", name: "Mastra AI Framework", estimatedPlugins: 40 },
+              { id: "copilot-kit", name: "Copilot Kit", estimatedPlugins: 35 },
+              { id: "copilot-prompts-collection", name: "GitHub Copilot Prompts", estimatedPlugins: 30 },
+              { id: "playwright-mcp-prompts", name: "Playwright MCP Prompts", estimatedPlugins: 25 },
+              { id: "modelcontextprotocol-servers", name: "MCP Official Servers", estimatedPlugins: 25 },
+              { id: "microsoft-typespec", name: "Microsoft TypeSpec", estimatedPlugins: 20 },
+              { id: "microsoft-vscode", name: "Microsoft VS Code", estimatedPlugins: 15 },
+              { id: "azure-sdk-for-js", name: "Azure SDK for JavaScript", estimatedPlugins: 15 },
+              { id: "microsoft-powertoys", name: "Microsoft PowerToys", estimatedPlugins: 10 },
+              { id: "github-copilot-sdk", name: "GitHub Copilot SDK", estimatedPlugins: 10 },
+              { id: "github-desktop", name: "GitHub Desktop", estimatedPlugins: 10 },
+            ]).map((s) => {
+              const est = Number(s.estimatedPlugins || 0);
+              const label = est > 0 ? `${s.name} (~${est} plugins)` : s.name;
+              return html`<option key=${s.id} value=${s.id}>${label}</option>`;
+            })}
           </select>
         </label>
         <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82em;color:var(--text-secondary);">
@@ -1648,49 +2463,456 @@ function AgentLibraryImporter({ onImported }) {
           <input value=${branch} onInput=${(e) => setBranch(e.currentTarget.value)} placeholder="main" />
         </label>
         <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82em;color:var(--text-secondary);">
-          Max Profiles
-          <input value=${maxProfiles} onInput=${(e) => setMaxProfiles(e.currentTarget.value)} placeholder="80" />
+          Max Entries
+          <input value=${maxProfiles} onInput=${(e) => setMaxProfiles(e.currentTarget.value)} placeholder="200" />
         </label>
       </div>
       <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82em;color:var(--text-secondary);margin-top:8px;">
-        Custom Repo URL (optional)
+        Custom Repo URL (optional — overrides source selection)
         <input value=${repoUrl} onInput=${(e) => setRepoUrl(e.currentTarget.value)} placeholder="https://github.com/org/repo.git" />
       </label>
+      <div style="margin-top:8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px;">
+        <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importAgents} onChange=${(e) => setImportAgents(Boolean(e.currentTarget.checked))} /> Agent Profiles</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importPrompts} onChange=${(e) => setImportPrompts(Boolean(e.currentTarget.checked))} /> Prompts</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importSkills} onChange=${(e) => setImportSkills(Boolean(e.currentTarget.checked))} /> Skills</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importTools} onChange=${(e) => setImportTools(Boolean(e.currentTarget.checked))} /> Tools (MCP)</label>
+      </div>
       ${selectedSource ? html`
         <div style="margin-top:8px;padding:8px 10px;border:1px solid var(--border,#333);border-radius:10px;background:var(--surface-2,rgba(255,255,255,0.03));display:flex;flex-direction:column;gap:6px;">
           <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
             <span style="font-size:0.8em;font-weight:600;">${selectedSource.name}</span>
-            <span style="font-size:0.75em;padding:2px 6px;border-radius:999px;background:${selectedSource.status === "healthy" ? "rgba(34,197,94,0.18)" : selectedSource.status === "warning" ? "rgba(245,158,11,0.18)" : "rgba(239,68,68,0.18)"};color:var(--text-secondary);">${String(selectedSource.status || "unknown").toUpperCase()}</span>
-            <span style="font-size:0.75em;padding:2px 6px;border-radius:999px;background:rgba(59,130,246,0.16);color:var(--text-secondary);">Trust ${Number(selectedSource?.trust?.score || 0)}/100</span>
-            ${selectedSource.enabled === false ? html`<span style="font-size:0.75em;padding:2px 6px;border-radius:999px;background:rgba(239,68,68,0.18);color:var(--text-secondary);">AUTO-DISABLED</span>` : null}
+            <span style="font-size:0.75em;padding:2px 6px;border-radius:999px;background:${selectedSource.status === "healthy" ? "rgba(34,197,94,0.18)" : selectedSource.status === "warning" ? "rgba(245,158,11,0.18)" : selectedSource.status === "low-trust" ? "rgba(245,158,11,0.18)" : "rgba(239,68,68,0.18)"};color:var(--text-secondary);">${String(selectedSource.status || "unknown").toUpperCase()}</span>
+            <span style="font-size:0.75em;padding:2px 6px;border-radius:999px;background:rgba(59,130,246,0.16);color:var(--text-secondary);cursor:help;" title="Trust score (0-100) based on: source tier (official/partner/community), GitHub owner reputation, import coverage (high/medium/low), HTTPS hosting bonus, repository age & stars, recent probe (reachable, branch exists, not archived).">Trust ${Number(selectedSource?.trust?.score || 0)}/100</span>
+            ${selectedSource.enabled === false ? html`<span style="font-size:0.75em;padding:2px 6px;border-radius:999px;background:rgba(239,68,68,0.18);color:var(--text-secondary);">UNAVAILABLE</span>` : null}
+            ${selectedSource?.trust?.lowTrust ? html`<span style="font-size:0.75em;padding:2px 6px;border-radius:999px;background:rgba(245,158,11,0.22);color:var(--text-secondary);">⚠ LOW TRUST</span>` : null}
           </div>
           <div style="font-size:0.8em;color:var(--text-secondary);">${selectedSource.description || ""}</div>
-          ${(selectedSource?.trust?.reasons?.length || 0) ? html`<div style="font-size:0.75em;color:var(--text-secondary);">Signals: ${selectedSource.trust.reasons.slice(0, 4).join(", ")}</div>` : null}
+          ${selectedSource?.trust?.lowTrust && selectedSource.enabled !== false ? html`<div style="font-size:0.78em;color:var(--warning,#f59e0b);padding:4px 6px;border-radius:6px;background:rgba(245,158,11,0.08);">⚠ Low trust score — import with caution. Review items before using in production.</div>` : null}
+          ${(selectedSource?.trust?.reasons?.length || 0) ? html`<div style="font-size:0.75em;color:var(--text-secondary);">Signals: ${selectedSource.trust.reasons.slice(0, 6).join(", ")}</div>` : null}
           ${selectedSource?.probe?.checkedAt ? html`<div style="font-size:0.75em;color:var(--text-secondary);">Last probe: ${new Date(selectedSource.probe.checkedAt).toLocaleString()}${selectedSource?.probe?.error ? ` · ${selectedSource.probe.error}` : ""}</div>` : null}
         </div>
       ` : null}
       <div class="library-actions">
-        <${Button} variant="outlined" size="small" onClick=${doImport} disabled=${loading || selectedSource?.enabled === false}>
-          ${loading ? html`<${Spinner} size=${14} />` : iconText(":download: Import")}
+        <${Button} variant="outlined" size="small" onClick=${doPreview} disabled=${scanning || importing || selectedSource?.enabled === false}>
+          ${scanning ? html`<${Spinner} size=${14} /> Scanning…` : iconText(":mag: Preview & Select")}
         <//>
       </div>
     </div>
+    ${previewData ? html`
+      <${ImportPreviewModal}
+        candidates=${previewData.candidates}
+        source=${previewData.source}
+        duplicates=${previewData.duplicates}
+        intraDuplicates=${previewData.intraDuplicates}
+        onConfirm=${doImport}
+        onClose=${() => setPreviewData(null)}
+        loading=${importing}
+      />
+    ` : null}
   `;
 }
 
-/* ═══════════════════════════════════════════════════════════════
- *  Main Library Tab
- * ═══════════════════════════════════════════════════════════════ */
+/* ─ Library Marketplace ───────────────────────────────────── */
+
+const MARKETPLACE_CATEGORIES = [
+  { id: "all", label: "All" },
+  { id: "official", label: "Official" },
+  { id: "community", label: "Community" },
+  { id: "agents", label: "Agents" },
+  { id: "skills", label: "Skills" },
+  { id: "mcp", label: "MCP" },
+];
+
+const MARKETPLACE_PROBE_TTL_MS = 5 * 60 * 1000;
+let marketplaceSourcesCache = [];
+let marketplaceSourcesProbedAt = 0;
+
+function normalizeMarketplaceSources(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function setMarketplaceSourcesCache(value, { probed = false } = {}) {
+  marketplaceSourcesCache = normalizeMarketplaceSources(value);
+  if (probed) marketplaceSourcesProbedAt = Date.now();
+  return marketplaceSourcesCache;
+}
+
+function getTrustTier(source) {
+  const tier = String(source?.trustTier || "").toLowerCase();
+  if (tier === "official" || tier === "partner") return { label: "Official", color: "#22c55e", icon: "🏢" };
+  if (tier === "community") return { label: "Community", color: "#3b82f6", icon: "👥" };
+  return { label: "Unknown", color: "#6b7280", icon: "❔" };
+}
+
+export function buildMarketplaceImportPayload(sourceId, previewData, selectedPaths) {
+  const source = previewData?.source && typeof previewData.source === "object"
+    ? previewData.source
+    : {};
+  const payload = {
+    importAgents: true,
+    importSkills: true,
+    importPrompts: true,
+    importTools: true,
+    includeEntries: selectedPaths,
+  };
+
+  const normalizedSourceId = String(sourceId || source.id || "").trim();
+  const repoUrl = String(source.repoUrl || previewData?.repoUrl || "").trim();
+  const branch = String(source.defaultBranch || source.branch || previewData?.branch || "").trim();
+
+  if (normalizedSourceId) payload.sourceId = normalizedSourceId;
+  if (repoUrl) payload.repoUrl = repoUrl;
+  if (branch) payload.branch = branch;
+
+  return payload;
+}
+
+function LibraryMarketplace({ onImported }) {
+  const [sources, setSources] = useState(() => normalizeMarketplaceSources(marketplaceSourcesCache));
+  const [loading, setLoading] = useState(() => marketplaceSourcesCache.length === 0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [searchText, setSearchText] = useState("");
+  const [activeCategory, setActiveCategory] = useState("all");
+  const [expandedSource, setExpandedSource] = useState(null);
+  const [previewData, setPreviewData] = useState(null);
+  const [previewSourceId, setPreviewSourceId] = useState(null);
+  const [scanning, setScanning] = useState(null);
+  const [importing, setImporting] = useState(null);
+  const [importedSources, setImportedSources] = useState(new Set());
+  const [customUrl, setCustomUrl] = useState("");
+  const [customBranch, setCustomBranch] = useState("main");
+  const [showCustom, setShowCustom] = useState(false);
+
+  const applySources = useCallback((data, options = {}) => {
+    const next = setMarketplaceSourcesCache(data, options);
+    setSources(next);
+  }, []);
+
+  const refreshSources = useCallback(async ({ probe = true, refresh = false, background = false } = {}) => {
+    if (background) setRefreshing(true);
+    else setLoading(true);
+    try {
+      const data = await fetchLibrarySources({ probe, refresh });
+      applySources(data, { probed: probe });
+    } catch (err) {
+      if (!background) {
+        showToast(`Failed to load marketplace sources: ${parseApiError(err)}`, "error");
+      }
+    } finally {
+      if (background) setRefreshing(false);
+      else setLoading(false);
+    }
+  }, [applySources]);
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      if (!marketplaceSourcesCache.length) {
+        try {
+          const data = await fetchLibrarySources();
+          if (!alive) return;
+          applySources(data);
+        } catch (err) {
+          if (alive) {
+            showToast(`Failed to load marketplace sources: ${parseApiError(err)}`, "error");
+          }
+        } finally {
+          if (alive) setLoading(false);
+        }
+      } else if (alive) {
+        setLoading(false);
+      }
+
+      if (!alive) return;
+      const probeIsFresh = marketplaceSourcesProbedAt > 0 && (Date.now() - marketplaceSourcesProbedAt) < MARKETPLACE_PROBE_TTL_MS;
+      if (probeIsFresh) return;
+
+      setRefreshing(true);
+      try {
+        const data = await fetchLibrarySources({ probe: true });
+        if (!alive) return;
+        applySources(data, { probed: true });
+      } catch {
+        // best effort background refresh
+      } finally {
+        if (alive) setRefreshing(false);
+      }
+    };
+
+    load();
+    return () => { alive = false; };
+  }, [applySources]);
+
+  const filteredSources = useMemo(() => {
+    let list = [...sources];
+    if (searchText.trim()) {
+      const q = searchText.trim().toLowerCase();
+      list = list.filter((s) => {
+        const haystack = `${s.name || ""} ${s.description || ""} ${(s.focuses || []).join(" ")} ${s.id || ""}`.toLowerCase();
+        return haystack.includes(q);
+      });
+    }
+    if (activeCategory !== "all") {
+      if (activeCategory === "official") {
+        list = list.filter((s) => s.trustTier === "official" || s.trustTier === "partner");
+      } else if (activeCategory === "community") {
+        list = list.filter((s) => s.trustTier === "community" || !s.trustTier);
+      } else if (activeCategory === "agents" || activeCategory === "skills" || activeCategory === "mcp") {
+        list = list.filter((s) => {
+          const focuses = (s.focuses || []).map((f) => f.toLowerCase());
+          return focuses.includes(activeCategory) || String(s.description || "").toLowerCase().includes(activeCategory);
+        });
+      }
+    }
+    return list.sort((a, b) => (Number(b.estimatedPlugins || 0) - Number(a.estimatedPlugins || 0)) || String(a.name || "").localeCompare(String(b.name || "")));
+  }, [sources, searchText, activeCategory]);
+
+  const doPreviewSource = useCallback(async (sourceId) => {
+    setScanning(sourceId);
+    try {
+      const res = await previewLibrarySource({ sourceId });
+      if (!res?.ok) throw new Error(res?.error || "Preview failed");
+      setPreviewData(res?.data);
+      setPreviewSourceId(sourceId);
+    } catch (err) {
+      showToast(`Preview failed: ${parseApiError(err)}`, "error");
+    }
+    setScanning(null);
+  }, []);
+
+  const doImportSource = useCallback(async (sourceId, selectedPaths) => {
+    setImporting(sourceId);
+    try {
+      const payload = buildMarketplaceImportPayload(sourceId, previewData, selectedPaths);
+      const res = await importLibrarySource(payload);
+      if (!res?.ok) throw new Error(res?.error || "Import failed");
+      const count = Number(res?.data?.importedCount || 0);
+      const byType = res?.data?.importedByType || {};
+      const details = [
+        `agents ${Number(byType?.agent || 0)}`,
+        `prompts ${Number(byType?.prompt || 0)}`,
+        `skills ${Number(byType?.skill || 0)}`,
+        `tools ${Number(byType?.mcp || 0)}`,
+      ].join(", ");
+      showToast(`Imported ${count} entries (${details})`, "success");
+      setImportedSources((prev) => new Set([...prev, sourceId]));
+      setPreviewData(null);
+      setPreviewSourceId(null);
+      if (typeof onImported === "function") onImported();
+    } catch (err) {
+      showToast(`Import failed: ${parseApiError(err)}`, "error");
+    }
+    setImporting(null);
+  }, [onImported, previewData]);
+
+  const doImportAll = useCallback(async (sourceId) => {
+    setImporting(sourceId);
+    try {
+      const res = await importLibrarySource({
+        sourceId,
+        importAgents: true,
+        importSkills: true,
+        importPrompts: true,
+        importTools: true,
+      });
+      if (!res?.ok) throw new Error(res?.error || "Import failed");
+      const count = Number(res?.data?.importedCount || 0);
+      showToast(`Imported ${count} entries from ${sourceId}`, "success");
+      setImportedSources((prev) => new Set([...prev, sourceId]));
+      if (typeof onImported === "function") onImported();
+    } catch (err) {
+      showToast(`Import failed: ${parseApiError(err)}`, "error");
+    }
+    setImporting(null);
+  }, [onImported]);
+
+  const doCustomImport = useCallback(async () => {
+    if (!customUrl.trim()) return;
+    setScanning("custom");
+    try {
+      const res = await previewLibrarySource({ repoUrl: customUrl.trim(), branch: customBranch.trim() || "main" });
+      if (!res?.ok) throw new Error(res?.error || "Preview failed");
+      setPreviewData(res?.data);
+      setPreviewSourceId("custom");
+    } catch (err) {
+      showToast(`Preview failed: ${parseApiError(err)}`, "error");
+    }
+    setScanning(null);
+  }, [customUrl, customBranch]);
+
+  return html`
+    <div style="margin-top:10px;padding:12px;border:1px solid var(--border,#333);border-radius:10px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+        <div>
+          <div style="font-size:0.95em;font-weight:600;">${iconText(":package: Library Marketplace")}</div>
+          <div style="font-size:0.76em;color:var(--text-secondary);margin-top:2px;">
+            Fast source metadata loads first; health and branch checks refresh separately.
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+          ${refreshing && !loading ? html`
+            <span style="font-size:0.74em;color:var(--text-secondary);display:inline-flex;align-items:center;gap:5px;">
+              <${Spinner} size=${12} /> Refreshing source health…
+            </span>
+          ` : null}
+          <${Button} variant="text" size="small" onClick=${() => refreshSources({ probe: true, refresh: true, background: true })}
+            disabled=${refreshing || loading}
+            style=${{ fontSize: "0.75em", textTransform: "none" }}>
+            ${refreshing && !loading ? "Refreshing…" : "Refresh Health"}
+          <//>
+          <${Button} variant="text" size="small" onClick=${() => setShowCustom((v) => !v)}
+            style=${{ fontSize: "0.75em", textTransform: "none" }}>
+            ${showCustom ? "Hide Custom URL" : "Custom URL Import"}
+          <//>
+        </div>
+      </div>
+
+      ${/* ── Search Bar ── */ ""}
+      <input type="text" value=${searchText} onInput=${(e) => setSearchText(e.currentTarget.value)}
+        placeholder="Search sources, descriptions, focuses…"
+        style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border,#333);background:var(--bg-input,#0d1117);color:var(--text-primary,#eee);margin-bottom:8px;font-size:0.85em;" />
+
+      ${/* ── Category Filter Pills ── */ ""}
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+        ${MARKETPLACE_CATEGORIES.map((cat) => html`
+          <${Chip} key=${cat.id} label=${cat.label} size="small"
+            variant=${activeCategory === cat.id ? "filled" : "outlined"}
+            color=${activeCategory === cat.id ? "primary" : "default"}
+            onClick=${() => setActiveCategory(cat.id)}
+            style=${{ cursor: "pointer", fontSize: "0.78em" }} />
+        `)}
+      </div>
+
+      ${/* ── Custom URL Import ── */ ""}
+      ${showCustom && html`
+        <div style="margin-bottom:10px;padding:10px;border:1px solid var(--border,#333);border-radius:8px;background:rgba(255,255,255,0.02);">
+          <div style="font-size:0.82em;font-weight:500;margin-bottom:6px;">Custom Repository Import</div>
+          <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end;">
+            <input type="text" value=${customUrl} onInput=${(e) => setCustomUrl(e.currentTarget.value)}
+              placeholder="https://github.com/org/repo.git"
+              style="width:100%;padding:6px 10px;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#0d1117);color:var(--text-primary);font-size:0.82em;" />
+            <input type="text" value=${customBranch} onInput=${(e) => setCustomBranch(e.currentTarget.value)}
+              placeholder="main" style="width:80px;padding:6px 10px;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#0d1117);color:var(--text-primary);font-size:0.82em;" />
+          </div>
+          <div style="margin-top:6px;">
+            <${Button} variant="outlined" size="small" onClick=${doCustomImport} disabled=${scanning === "custom" || !customUrl.trim()}>
+              ${scanning === "custom" ? html`<${Spinner} size=${14} /> Scanning…` : iconText(":mag: Preview")}
+            <//>
+          </div>
+        </div>
+      `}
+
+      ${/* ── Loading State ── */ ""}
+      ${loading && html`
+        <div style="text-align:center;padding:20px;">
+          <${Spinner} size=${24} />
+          <div style="font-size:0.82em;color:var(--text-secondary);margin-top:8px;">Loading marketplace sources…</div>
+        </div>
+      `}
+
+      ${/* ── Source Cards Grid ── */ ""}
+      ${!loading && html`
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;">
+          ${filteredSources.map((source) => {
+            const trust = getTrustTier(source);
+            const trustScore = Number(source?.trust?.score || 0);
+            const est = Number(source.estimatedPlugins || 0);
+            const isImported = importedSources.has(source.id);
+            const isScanning = scanning === source.id;
+            const isImporting = importing === source.id;
+            const isExpanded = expandedSource === source.id;
+            const focuses = (source.focuses || []).slice(0, 4);
+
+            return html`
+              <div key=${source.id} style="border:1px solid var(--border,#333);border-radius:10px;overflow:hidden;background:var(--bg-card,rgba(255,255,255,0.03));transition:border-color 0.2s;${isImported ? "border-color:#22c55e;" : ""}">
+                <div style="padding:10px 12px;">
+                  ${/* ── Card Header ── */ ""}
+                  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px;">
+                    <span style="font-size:1em;">${trust.icon}</span>
+                    <span style="font-size:0.88em;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${source.name}</span>
+                    <span style="font-size:0.68em;padding:2px 8px;border-radius:999px;background:${trust.color}22;color:${trust.color};font-weight:500;">${trust.label}</span>
+                    ${isImported && html`<span style="font-size:0.68em;padding:2px 8px;border-radius:999px;background:rgba(34,197,94,0.15);color:#22c55e;">✓ Imported</span>`}
+                  </div>
+
+                  ${/* ── Stats and description ── */ ""}
+                  <div style="font-size:0.78em;color:var(--text-secondary);margin-bottom:4px;">
+                    ${est > 0 ? `~${est} plugins` : ""}${est > 0 && focuses.length > 0 ? " · " : ""}${focuses.join(", ")}
+                  </div>
+                  ${source.description && html`
+                    <div style="font-size:0.78em;color:var(--text-secondary);margin-bottom:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">${source.description}</div>
+                  `}
+
+                  ${/* ── Trust Score Bar ── */ ""}
+                  <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+                    <span style="font-size:0.72em;color:var(--text-secondary);min-width:55px;">Trust ${trustScore}/100</span>
+                    <div style="flex:1;height:4px;border-radius:2px;background:rgba(255,255,255,0.08);overflow:hidden;">
+                      <div style="height:100%;width:${trustScore}%;border-radius:2px;background:${trustScore >= 70 ? "#22c55e" : trustScore >= 40 ? "#f59e0b" : "#ef4444"};"></div>
+                    </div>
+                  </div>
+
+                  ${/* ── Action Buttons ── */ ""}
+                  <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                    <${Button} variant="outlined" size="small" onClick=${() => doPreviewSource(source.id)} disabled=${isScanning || isImporting || source.enabled === false}
+                      style=${{ fontSize: "0.72em", padding: "3px 10px", textTransform: "none" }}>
+                      ${isScanning ? html`<${Spinner} size=${12} />` : "Preview"}
+                    <//>
+                    <${Button} variant="outlined" size="small" onClick=${() => doImportAll(source.id)} disabled=${isScanning || isImporting || source.enabled === false}
+                      style=${{ fontSize: "0.72em", padding: "3px 10px", textTransform: "none" }}>
+                      ${isImporting ? html`<${Spinner} size=${12} />` : "Import All"}
+                    <//>
+                  </div>
+
+                  ${/* ── Low trust warning ── */ ""}
+                  ${source?.trust?.lowTrust && source.enabled !== false ? html`
+                    <div style="font-size:0.72em;color:#f59e0b;margin-top:6px;padding:3px 6px;border-radius:4px;background:rgba(245,158,11,0.08);">⚠ Low trust — review before use</div>
+                  ` : null}
+                  ${source.enabled === false ? html`
+                    <div style="font-size:0.72em;color:#ef4444;margin-top:6px;padding:3px 6px;border-radius:4px;background:rgba(239,68,68,0.08);">Unavailable</div>
+                  ` : null}
+                </div>
+              </div>
+            `;
+          })}
+        </div>
+        ${filteredSources.length === 0 && html`
+          <div style="text-align:center;padding:20px;color:var(--text-secondary);font-size:0.85em;">
+            No sources match your search.
+          </div>
+        `}
+      `}
+
+      ${/* ── Preview Modal ── */ ""}
+      ${previewData ? html`
+        <${ImportPreviewModal}
+          candidates=${previewData.candidates}
+          source=${previewData.source}
+          duplicates=${previewData.duplicates}
+          intraDuplicates=${previewData.intraDuplicates}
+          onConfirm=${(selected) => doImportSource(previewSourceId, selected)}
+          onClose=${() => { setPreviewData(null); setPreviewSourceId(null); }}
+          loading=${importing != null}
+        />
+      ` : null}
+    </div>
+  `;
+}
 
 export function LibraryTab() {
   injectStyles();
   const [editing, setEditing] = useState(null);      // entry being edited, or {} for new
   const [loading, setLoading] = useState(false);
+  const [importAgents, setImportAgents] = useState(true);
+  const [importSkills, setImportSkills] = useState(true);
+  const [importPrompts, setImportPrompts] = useState(true);
+  const [importTools, setImportTools] = useState(true);
 
   // Load all entries on mount and type/search changes
   const loadEntries = useCallback(async () => {
     setLoading(true);
     try {
+      if (!importAgents && !importPrompts && !importSkills && !importTools) {
+        throw new Error("Select at least one import type");
+      }
       const [filteredEntries, globalEntries] = await Promise.all([
         fetchEntries(filterType.value),
         apiFetch("/api/library").then((res) => res?.data || []),
@@ -1728,6 +2950,9 @@ export function LibraryTab() {
   const handleInit = useCallback(async () => {
     setLoading(true);
     try {
+      if (!importAgents && !importPrompts && !importSkills && !importTools) {
+        throw new Error("Select at least one import type");
+      }
       const res = await doInit();
       if (res?.ok) {
         showToast(`Library initialized: ${res.data?.entries || 0} entries, ${res.data?.scaffolded || 0} profiles scaffolded`, "success");
@@ -1784,6 +3009,18 @@ export function LibraryTab() {
     return list;
   }, [entries.value, filterType.value]);
 
+  const groupedAgentSections = useMemo(() => {
+    if (filterType.value !== "agent") return [];
+    const interactive = displayed.filter((entry) => entry.agentCategory === "interactive");
+    const voice = displayed.filter((entry) => entry.agentCategory === "voice");
+    const task = displayed.filter((entry) => !entry.agentCategory || entry.agentCategory === "task");
+    return [
+      { key: "interactive", title: "Manual Chat Agents", items: interactive },
+      { key: "voice", title: "Voice Agents", items: voice },
+      { key: "task", title: "Task Templates", items: task },
+    ].filter((section) => section.items.length > 0);
+  }, [displayed, filterType.value]);
+
   return html`
     <div class="library-root">
       <div class="library-header">
@@ -1817,14 +3054,13 @@ export function LibraryTab() {
         <div class="search-wrap">
           <${SearchInput}
             value=${searchQuery.value}
-            onChange=${handleSearch}
+            onInput=${(e) => handleSearch(e.target.value)}
             placeholder="Search prompts, agents, skills, MCP servers..." />
         </div>
         <${TypePills} />
       </div>
 
       ${filterType.value !== "mcp" && html`<${ProfileMatcher} />`}
-      ${filterType.value !== "mcp" && html`<${AgentLibraryImporter} onImported=${loadEntries} />`}
       ${filterType.value !== "mcp" && html`<${ScopeDetector} />`}
 
       ${/* ── MCP Marketplace View ── */
@@ -1850,11 +3086,29 @@ export function LibraryTab() {
       `}
 
       ${filterType.value !== "mcp" && !loading && displayed.length > 0 && html`
-        <div class="library-grid">
-          ${displayed.map((e) => html`
-            <${LibraryCard} key=${e.id} entry=${e} onSelect=${handleSelect} />
-          `)}
-        </div>
+        ${filterType.value === "agent"
+          ? html`
+            ${groupedAgentSections.map((section) => html`
+              <${Box} key=${section.key} sx=${{ display: "flex", flexDirection: "column", gap: 1.25, mb: 2 }}>
+                <${Stack} direction="row" alignItems="center" spacing=${1}>
+                  <${Typography} variant="subtitle2">${section.title}<//>
+                  <${Chip} label=${section.items.length} size="small" variant="outlined" />
+                <//>
+                <div class="library-grid">
+                  ${section.items.map((e) => html`
+                    <${LibraryCard} key=${e.id} entry=${e} onSelect=${handleSelect} />
+                  `)}
+                </div>
+              </${Box}>
+            `)}
+          `
+          : html`
+            <div class="library-grid">
+              ${displayed.map((e) => html`
+                <${LibraryCard} key=${e.id} entry=${e} onSelect=${handleSelect} />
+              `)}
+            </div>
+          `}
       `}
 
       ${editing && html`
@@ -1864,6 +3118,23 @@ export function LibraryTab() {
           onSaved=${handleSaved}
           onDeleted=${handleDeleted} />
       `}
+    </div>
+  `;
+}
+
+export function LibraryMarketplaceTab() {
+  injectStyles();
+
+  const handleImported = useCallback(() => {
+    refreshTab("library", { background: true, manual: false, force: true });
+  }, []);
+
+  return html`
+    <div class="library-root">
+      <div class="library-header">
+        <h2>${iconText(":package: Marketplace")}</h2>
+      </div>
+      <${LibraryMarketplace} onImported=${handleImported} />
     </div>
   `;
 }

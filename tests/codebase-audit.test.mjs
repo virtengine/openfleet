@@ -13,6 +13,7 @@ import {
   scanRepository,
   trimAuditArtifacts,
 } from "../lib/codebase-audit.mjs";
+import { upsertManagedBlock } from "../lib/codebase-audit-manifests.mjs";
 
 const tempRoots = [];
 
@@ -80,6 +81,30 @@ function createRepo() {
     ].join("\n"),
     "utf8",
   );
+  writeFileSync(
+    resolve(root, "src", "cycle-a.mjs"),
+    [
+      'import { b } from "./cycle-b.mjs";',
+      "",
+      "export function a() {",
+      "  return b();",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  writeFileSync(
+    resolve(root, "src", "cycle-b.mjs"),
+    [
+      'import { a } from "./cycle-a.mjs";',
+      "",
+      "export function b() {",
+      "  return a();",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
   return root;
 }
 
@@ -88,12 +113,13 @@ describe("codebase audit engine", () => {
     const root = createRepo();
     const result = scanRepository(root, { dryRun: true });
 
-    expect(result.totals.files).toBe(4);
-    expect(result.totals.missingSummary).toBe(3);
-    expect(result.languages.javascript).toBe(1);
+    expect(result.totals.files).toBe(6);
+    expect(result.totals.missingSummary).toBe(5);
+    expect(result.languages.javascript).toBe(3);
     expect(result.languages.python).toBe(1);
     expect(result.languages.go).toBe(1);
     expect(result.languages.rust).toBe(1);
+    expect(result.warningKinds["circular-deps"]).toBeGreaterThan(0);
     expect(result.warningKinds["lazy-init"]).toBeGreaterThan(0);
     expect(result.warningKinds["side-effects"]).toBeGreaterThan(0);
   });
@@ -102,7 +128,7 @@ describe("codebase audit engine", () => {
     const root = createRepo();
 
     const summaryResult = generateSummaries(root);
-    expect(summaryResult.added).toBe(3);
+    expect(summaryResult.added).toBe(5);
 
     const warnResult = generateWarnings(root);
     expect(warnResult.added).toBeGreaterThan(0);
@@ -114,46 +140,81 @@ describe("codebase audit engine", () => {
 
     const goContent = readFileSync(resolve(root, "cmd", "server.go"), "utf8");
     expect(goContent).toContain("CLAUDE:SUMMARY");
+
+    const cycleContent = readFileSync(resolve(root, "src", "cycle-a.mjs"), "utf8");
+    expect(cycleContent).toContain("circular dependency chains");
   });
 
-  it("ignores marker literals that only appear inside code", () => {
+  it("does not treat marker literals as real annotations", () => {
     const root = createRepo();
     writeFileSync(
-      resolve(root, "src", "marker-literals.mjs"),
+      resolve(root, "src", "marker-literal.mjs"),
       [
-        'const summaryMarker = "CLAUDE:SUMMARY";',
-        'const warnMarker = "CLAUDE:WARN";',
-        '',
-        'export function markerLiterals() {',
-        '  return { summaryMarker, warnMarker };',
-        '}',
-        '',
+        'export const marker = "CLAUDE:SUMMARY in a string literal";',
+        "",
+        "export function markerLiteral() {",
+        "  return marker;",
+        "}",
+        "",
       ].join("\n"),
       "utf8",
     );
 
     const scan = scanRepository(root, { dryRun: true });
-    const file = scan.files.find((entry) => entry.path === "src/marker-literals.mjs");
+    const markerFile = scan.files.find((file) => file.path === "src/marker-literal.mjs");
+    expect(markerFile).toBeTruthy();
+    expect(markerFile.hasSummary).toBe(false);
 
-    expect(file.hasSummary).toBe(false);
-    expect(file.hasWarn).toBe(false);
-    expect(file.summaryLine).toBe("");
-    expect(file.warnLines).toEqual([]);
+    generateSummaries(root);
+    const content = readFileSync(resolve(root, "src", "marker-literal.mjs"), "utf8");
+    expect(content).toMatch(/^\/\/ CLAUDE:SUMMARY/m);
+  });
+
+  it("replaces an existing managed block without regex backtracking", () => {
+    const existing = [
+      "intro",
+      "<!-- bosun-audit:begin -->",
+      "old",
+      "<!-- bosun-audit:end -->",
+      "\t".repeat(4000),
+      "outro",
+    ].join("\n");
+    const block = [
+      "<!-- bosun-audit:begin -->",
+      "new",
+      "<!-- bosun-audit:end -->",
+    ].join("\n");
+
+    const updated = upsertManagedBlock(existing, block);
+    expect(updated).toContain("new");
+    expect(updated).not.toContain("\nold\n");
+    expect(updated).toContain("outro");
   });
 
 
   it("scans a single file target and keeps root manifests deduplicated", () => {
     const root = createRepo();
-    writeFileSync(resolve(root, "root.mjs"), [
-      "export function rootTask() {",
-      "  return true;",
-      "}",
-      "",
-    ].join("\n"), "utf8");
+    writeFileSync(
+      resolve(root, "root.mjs"),
+      [
+        "export function rootTask() {",
+        "  return true;",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
 
     const fileScan = scanRepository(root, { targetDir: "src/app.mjs", dryRun: true });
     expect(fileScan.files.map((file) => file.path)).toEqual(["src/app.mjs"]);
 
+    // First summary/manifest generation.
+    generateSummaries(root);
+    generateManifests(root);
+
+    // Run another scan and manifest generation to exercise deduplication.
+    const secondScan = scanRepository(root, { dryRun: true });
+    expect(secondScan.files.some((file) => file.path === "root.mjs")).toBe(true);
     generateSummaries(root);
     generateManifests(root);
 
@@ -170,7 +231,7 @@ describe("codebase audit engine", () => {
     const trimResult = trimAuditArtifacts(root, { dryRun: true });
 
     expect(manifestResult.directories).toBeGreaterThan(0);
-    expect(indexResult.entries).toBe(4);
+    expect(indexResult.entries).toBe(6);
     expect(trimResult.conformityScore).toBeGreaterThanOrEqual(0);
     expect(existsSync(resolve(root, "CLAUDE.md"))).toBe(true);
     expect(existsSync(resolve(root, "AGENTS.md"))).toBe(true);
@@ -179,9 +240,13 @@ describe("codebase audit engine", () => {
 
     const conformity = runConformity(root);
     expect(existsSync(resolve(root, ".bosun", "audit", "schedule.json"))).toBe(true);
+    expect(existsSync(trimResult.schedulePath)).toBe(true);
+
+    const trimmedSchedule = JSON.parse(readFileSync(trimResult.schedulePath, "utf8"));
+    expect(trimmedSchedule.filesAudited).toBe(6);
 
     const schedule = JSON.parse(readFileSync(resolve(root, ".bosun", "audit", "schedule.json"), "utf8"));
-    expect(schedule.filesAudited).toBe(4);
+    expect(schedule.filesAudited).toBe(6);
     expect(schedule.conformityScore).toBe(conformity.score);
   });
 
@@ -199,14 +264,39 @@ describe("codebase audit engine", () => {
       "utf8",
     );
     writeFileSync(
+      resolve(root, "src", "legacy-style.mjs"),
+      [
+        "// SUMMARY: Legacy JS summary format.",
+        "",
+        "export function legacyStyle() {",
+        "  return true;",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    writeFileSync(
+      resolve(root, "src", "legacy-warn.py"),
+      [
+        "# WARNING: Legacy warning format.",
+        "",
+        "def legacy_warn():",
+        "    return True",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    writeFileSync(
       resolve(root, "src", "secret.mjs"),
-      'const token = "sk-1234567890ABCDEFGHIJKLMNOP";\n',
+      'const token = "sk-test-fake-token-not-real-no-access";\n',
       "utf8",
     );
 
     const migrateResult = migrateAnnotations(root);
     expect(migrateResult.migrated).toBeGreaterThan(0);
     expect(readFileSync(resolve(root, "src", "legacy.py"), "utf8")).toContain("CLAUDE:SUMMARY");
+    expect(readFileSync(resolve(root, "src", "legacy-style.mjs"), "utf8")).toContain("CLAUDE:SUMMARY");
+    expect(readFileSync(resolve(root, "src", "legacy-warn.py"), "utf8")).toContain("CLAUDE:WARN");
 
     const conformity = runConformity(root, { dryRun: true });
     expect(conformity.ok).toBe(false);

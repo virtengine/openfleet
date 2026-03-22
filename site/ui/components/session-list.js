@@ -6,10 +6,22 @@
 import { h } from "preact";
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import htm from "htm";
-import { signal, computed } from "@preact/signals";
+import { signal, computed, effect } from "@preact/signals";
 import { apiFetch, onWsMessage } from "../modules/api.js";
-import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
-import { formatRelative, truncate } from "../modules/utils.js";
+import {
+  buildSessionApiPath,
+  createSessionLoadMeta,
+  deriveSessionStaleReason,
+  formatSessionFreshnessTimestamp,
+  getSessionLifecycleState,
+  getSessionManualRetryState,
+  getSessionRecencyTimestamp,
+  getSessionRuntimeState,
+  markSessionLoadFailure,
+  markSessionLoadSuccess,
+  resolveSessionWorkspaceHint,
+} from "../modules/session-api.js";
+import { formatDate, formatRelative, truncate } from "../modules/utils.js";
 import { resolveIcon } from "../modules/icon-utils.js";
 import {
   List, ListItem, ListItemButton, ListItemText, ListItemIcon,
@@ -19,14 +31,42 @@ import {
 } from "@mui/material";
 
 const html = htm.bind(h);
+const SELECTED_SESSION_STORAGE_KEY = "ve-selected-session-id";
+
+function readPersistedSelectedSessionId() {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    const value = String(localStorage.getItem(SELECTED_SESSION_STORAGE_KEY) || "").trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
 
 /* ─── Signals ─── */
 export const sessionsData = signal([]);
-export const selectedSessionId = signal(null);
+export const selectedSessionId = signal(readPersistedSelectedSessionId());
 export const sessionMessages = signal([]);
+export const sessionMessagesSessionId = signal("");
 export const sessionsError = signal(null);
+export const sessionsLoading = signal(false);
+export const sessionLoadMeta = signal(createSessionLoadMeta());
 /** Pagination metadata from the last loadSessionMessages call */
 export const sessionPagination = signal(null);
+
+effect(() => {
+  const sessionId = selectedSessionId.value ? String(selectedSessionId.value).trim() : "";
+  if (typeof localStorage === "undefined") return;
+  try {
+    if (sessionId) {
+      localStorage.setItem(SELECTED_SESSION_STORAGE_KEY, sessionId);
+    } else {
+      localStorage.removeItem(SELECTED_SESSION_STORAGE_KEY);
+    }
+  } catch {
+    // localStorage may be unavailable in some embeds.
+  }
+});
 
 const DEFAULT_SESSION_PAGE_SIZE = 50;
 const MAX_SESSION_PAGE_SIZE = 200;
@@ -35,6 +75,25 @@ let _wsListenerReady = false;
 
 /** Track the last filter used so createSession can reload with the same filter */
 let _lastLoadFilter = {};
+let _sessionRetryTimer = null;
+
+function clearSessionRetryTimer() {
+  if (_sessionRetryTimer) {
+    clearTimeout(_sessionRetryTimer);
+    _sessionRetryTimer = null;
+  }
+}
+
+function scheduleSessionRetry(meta) {
+  clearSessionRetryTimer();
+  const nextRetryAt = Date.parse(String(meta?.nextRetryAt || ""));
+  if (!Number.isFinite(nextRetryAt)) return;
+  const delayMs = Math.max(0, nextRetryAt - Date.now());
+  _sessionRetryTimer = setTimeout(() => {
+    _sessionRetryTimer = null;
+    loadSessions(_lastLoadFilter, { source: "retry" }).catch(() => {});
+  }, delayMs);
+}
 
 function sessionPath(id, action = "") {
   const session = (sessionsData.peek() || []).find((entry) => entry?.id === id) || null;
@@ -46,7 +105,7 @@ function sessionPath(id, action = "") {
 }
 
 /* ─── Data loaders ─── */
-export async function loadSessions(filter = {}) {
+export async function loadSessions(filter = {}, _opts = {}) {
   const normalizedFilter = {
     ...(filter && typeof filter === "object" ? filter : {}),
   };
@@ -54,6 +113,7 @@ export async function loadSessions(filter = {}) {
     normalizedFilter.workspace = "active";
   }
   _lastLoadFilter = normalizedFilter;
+  sessionsLoading.value = true;
   try {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(normalizedFilter)) {
@@ -61,14 +121,48 @@ export async function loadSessions(filter = {}) {
       params.set(key, String(value));
     }
     const res = await apiFetch(`/api/sessions?${params}`, { _silent: true });
-    if (res?.sessions) sessionsData.value = res.sessions;
+    if (res?.sessions) {
+      sessionsData.value = res.sessions;
+      const sessionIds = new Set(
+        res.sessions.map((session) => String(session?.id || "")).filter(Boolean),
+      );
+      if (selectedSessionId.value && !sessionIds.has(String(selectedSessionId.value))) {
+        selectedSessionId.value = null;
+      }
+    }
+    clearSessionRetryTimer();
+    const responseMeta = createSessionLoadMeta({
+      ...sessionLoadMeta.peek(),
+      ...(res?.loadMeta && typeof res.loadMeta === "object" ? res.loadMeta : {}),
+    });
+    sessionLoadMeta.value = markSessionLoadSuccess(
+      responseMeta,
+      responseMeta.lastSuccessAt || Date.now(),
+    );
     sessionsError.value = null;
-  } catch {
-    sessionsError.value = "unavailable";
+  } catch (error) {
+    const nextMeta = markSessionLoadFailure(sessionLoadMeta.peek(), Date.now(), {
+      staleReason: deriveSessionStaleReason(error),
+    });
+    sessionLoadMeta.value = nextMeta;
+    scheduleSessionRetry(nextMeta);
+    const hasCachedData = Array.isArray(sessionsData.peek()) && sessionsData.peek().length > 0;
+    sessionsError.value = hasCachedData || Boolean(nextMeta.lastSuccessAt) ? null : "unavailable";
+  } finally {
+    sessionsLoading.value = false;
   }
 }
 
+function _bindSessionStore(targetId, messages, pagination) {
+  if (String(selectedSessionId.value || "") !== String(targetId)) return;
+  sessionMessagesSessionId.value = targetId;
+  sessionMessages.value = messages;
+  sessionPagination.value = pagination;
+}
+
 export async function loadSessionMessages(id, opts = {}) {
+  const targetSessionId = String(id || "").trim();
+  if (!targetSessionId) return { ok: false, error: "invalid" };
   const parseApiError = (err) => {
     const raw = String(err?.message || "").trim();
     if (!raw) return "";
@@ -111,7 +205,7 @@ export async function loadSessionMessages(id, opts = {}) {
     return apiFetch(url, { _silent: true });
   };
   try {
-    const baseUrl = sessionPath(id);
+    const baseUrl = sessionPath(targetSessionId);
     if (!baseUrl) return { ok: false, error: "invalid" };
     const requestedLimit = opts.limit != null ? Number(opts.limit) : DEFAULT_SESSION_PAGE_SIZE;
     const limit =
@@ -132,18 +226,27 @@ export async function loadSessionMessages(id, opts = {}) {
     }
     if (res?.session) {
       const normalized = dedupeMessages(res.session.messages || []);
-      if (opts.prepend && sessionMessages.value?.length) {
+      const sameBoundSession =
+        String(sessionMessagesSessionId.value || "") === targetSessionId;
+      if (opts.prepend && sameBoundSession && sessionMessages.value?.length) {
         // Prepend older messages (loading history on scroll up)
         const merged = dedupeMessages([...normalized, ...sessionMessages.value]);
-        sessionMessages.value = merged;
+        _bindSessionStore(targetSessionId, merged, res.pagination || null);
       } else {
-        sessionMessages.value = normalized;
+        _bindSessionStore(targetSessionId, normalized, res.pagination || null);
       }
-      sessionPagination.value = res.pagination || null;
       return { ok: true, messages: normalized, pagination: res.pagination || null };
+    }
+    if (!opts.prepend) {
+      _bindSessionStore(targetSessionId, [], res?.pagination || null);
+      sessionMessagesSessionId.value = targetSessionId;
     }
     return { ok: false, error: "empty" };
   } catch {
+    if (!opts.prepend) {
+      _bindSessionStore(targetSessionId, [], null);
+      sessionMessagesSessionId.value = targetSessionId;
+    }
     return { ok: false, error: "unavailable" };
   }
 }
@@ -340,6 +443,11 @@ function _flushMessageBatch() {
   if (_msgBatchBuffer.length === 0) return;
   const batch = _msgBatchBuffer;
   _msgBatchBuffer = [];
+  const selectedId = String(selectedSessionId.value || "");
+  if (!selectedId) return;
+  const boundId = String(sessionMessagesSessionId.value || "");
+  if (boundId && boundId !== selectedId) return;
+  if (!boundId) sessionMessagesSessionId.value = selectedId;
   const current = Array.isArray(sessionMessages.value) ? sessionMessages.value : [];
   const merged = dedupeMessages([...current, ...batch]);
   if (merged.length !== current.length) {
@@ -403,19 +511,22 @@ export function initSessionWsListener() {
  */
 export async function createSession(options = {}) {
   const type = options?.type || "manual";
+  const allowReuseFresh = options?.reuseFresh !== false;
 
   // Duplicate prevention: if a fresh empty session of same type exists, reuse it
   const existing = sessionsData.value || [];
-  const fresh = existing.find(
-    (s) =>
-      s.type === type &&
-      s.status === "active" &&
-      (s.turnCount || 0) === 0 &&
-      (!s.preview || s.preview.trim() === ""),
-  );
-  if (fresh) {
-    selectedSessionId.value = fresh.id;
-    return { ok: true, session: fresh };
+  if (allowReuseFresh) {
+    const fresh = existing.find(
+      (s) =>
+        s.type === type &&
+        getSessionLifecycleState(s).isActive &&
+        (s.turnCount || 0) === 0 &&
+        (!s.preview || s.preview.trim() === ""),
+    );
+    if (fresh) {
+      selectedSessionId.value = fresh.id;
+      return { ok: true, session: fresh };
+    }
   }
 
   try {
@@ -475,14 +586,12 @@ export async function resumeSession(id) {
 }
 
 /* ─── Helpers ─── */
-const STATUS_COLOR_MAP = {
-  running: "var(--accent)",
-  active: "var(--accent)",
-  paused: "var(--text-hint)",
-  completed: "var(--color-done)",
-  done: "var(--color-done)",
+const STATUS_TONE_COLOR_MAP = {
+  success: "var(--color-done)",
+  info: "var(--accent)",
+  warning: "var(--color-warning)",
   error: "var(--color-error)",
-  archived: "var(--text-hint)",
+  default: "var(--text-hint)",
 };
 
 export const SESSION_VIEW_FILTER = Object.freeze({
@@ -499,12 +608,11 @@ function normalizeSessionViewFilter(value) {
 }
 
 function getSessionStatusKey(session) {
-  return String(session?.status || "idle").trim().toLowerCase();
+  return getSessionLifecycleState(session).key;
 }
 
 function isActiveSession(session) {
-  const status = getSessionStatusKey(session);
-  return status === "active" || status === "running";
+  return getSessionLifecycleState(session).isActive;
 }
 
 function isHistoricSession(session) {
@@ -536,11 +644,25 @@ function SwipeableSessionItem({
 
   const title = s.title || s.taskId || "Untitled";
   const isArchived = s.status === "archived";
-  const isCompleted = s.status === "completed";
-  const statusKey = String(s.status || "idle").toLowerCase().replace(/\s+/g, "-");
-  const typeLabel = (s.type || "session").toUpperCase();
-  const dotColor = STATUS_COLOR_MAP[statusKey] || "var(--text-hint)";
-  const preview = s.lastMessage && !isArchived ? truncate(s.lastMessage, 50) : "";
+
+  const lifecycleState = getSessionLifecycleState(s);
+  const runtimeState = getSessionRuntimeState(s);
+  const recencyAt = getSessionRecencyTimestamp(s);
+  const typeLabel = String(s.type || "session").trim().replace(/[-_]+/g, " ");
+  const typeSummary = typeLabel
+    ? typeLabel.charAt(0).toUpperCase() + typeLabel.slice(1)
+    : "Session";
+  const dotColor = STATUS_TONE_COLOR_MAP[runtimeState.tone] || STATUS_TONE_COLOR_MAP[lifecycleState.tone] || "var(--text-hint)";
+  const preview = s.lastMessage && !isArchived ? truncate(s.lastMessage, 36) : "";
+  const metaSummary = [
+    `Type: ${typeSummary}`,
+    `Lifecycle: ${lifecycleState.label}`,
+    `Runtime: ${runtimeState.label}`,
+    preview || "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const freshnessLabel = recencyAt ? formatRelative(recencyAt) : "unknown";
 
   /* ── Touch / pointer swipe handling ── */
   function onPointerDown(e) {
@@ -747,7 +869,7 @@ function SwipeableSessionItem({
             : html`
                 <${ListItemText}
                   primary=${truncate(title, 32)}
-                  secondary=${preview || null}
+                  secondary=${metaSummary}
                   primaryTypographyProps=${{
                     variant: "body2",
                     fontWeight: isSelected ? 600 : 400,
@@ -760,14 +882,8 @@ function SwipeableSessionItem({
                 />
               `}
           <${Stack} direction="row" spacing=${0.5} alignItems="center" sx=${{ ml: "auto", flexShrink: 0, pl: 1 }}>
-            <${Chip}
-              label=${typeLabel}
-              size="small"
-              variant="outlined"
-              sx=${{ fontSize: "0.65rem", height: 18, "& .MuiChip-label": { px: 0.5 } }}
-            />
             <${Typography} variant="caption" color="text.secondary" noWrap>
-              ${formatRelative(s.updatedAt || s.createdAt)}
+              Freshness: ${freshnessLabel}
             </${Typography}>
             <${Tooltip} title="Actions">
               <${IconButton}
@@ -808,7 +924,11 @@ export function SessionList({
     normalizeSessionViewFilter(sessionView),
   );
   const allSessions = sessionsData.value || [];
+  const loadMeta = sessionLoadMeta.value || createSessionLoadMeta();
+  const isLoadingSessions = sessionsLoading.value === true;
   const error = sessionsError.value;
+  const showStaleBanner = Boolean(loadMeta.stale && (loadMeta.lastSuccessAt || allSessions.length > 0));
+  const [retryCountdownNow, setRetryCountdownNow] = useState(() => Date.now());
   const hasSearch = search.trim().length > 0;
   const resolvedSessionView =
     typeof onSessionViewChange === "function"
@@ -822,6 +942,14 @@ export function SessionList({
       setUncontrolledSessionView(normalized);
     }
   }, [onSessionViewChange, sessionView, uncontrolledSessionView]);
+
+  useEffect(() => {
+    if (!showStaleBanner || !loadMeta.nextRetryAt || loadMeta.retriesExhausted) return undefined;
+    const interval = setInterval(() => {
+      setRetryCountdownNow(Date.now());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [showStaleBanner, loadMeta.nextRetryAt, loadMeta.retriesExhausted]);
 
   const setSessionView = useCallback(
     (nextFilter) => {
@@ -895,8 +1023,14 @@ export function SessionList({
   );
 
   const handleRetry = useCallback(() => {
+    const manualRetryState = getSessionManualRetryState(sessionLoadMeta.peek(), {
+      now: Date.now(),
+      isLoading: sessionsLoading.peek() === true,
+    });
+    if (manualRetryState.disabled) return;
+    clearSessionRetryTimer();
     sessionsError.value = null;
-    loadSessions(_lastLoadFilter);
+    loadSessions(_lastLoadFilter, { source: "manual-retry" });
   }, []);
 
   const handleCreateSession = useCallback(() => {
@@ -998,14 +1132,14 @@ export function SessionList({
   const emptyTitle = hasSearch
     ? "No matching sessions"
     : resolvedSessionView === SESSION_VIEW_FILTER.active
-      ? "No active sessions"
+      ? "No lifecycle-active sessions"
       : resolvedSessionView === SESSION_VIEW_FILTER.historic
         ? "No historic sessions"
         : "No sessions yet";
   const emptyHint = hasSearch
     ? "Try a different keyword or clear the search."
     : resolvedSessionView === SESSION_VIEW_FILTER.active
-      ? "Start a new session or switch to All."
+      ? "Start a new session or switch to All lifecycle states."
       : resolvedSessionView === SESSION_VIEW_FILTER.historic
         ? "Historic sessions appear after they finish."
         : "Create a session to get started.";
@@ -1032,7 +1166,34 @@ export function SessionList({
     `;
   }
 
-  if (error) {
+  const nextRetryMs = Date.parse(String(loadMeta.nextRetryAt || ""));
+  const retrySeconds =
+    Number.isFinite(nextRetryMs) && !loadMeta.retriesExhausted
+      ? Math.max(0, Math.ceil((nextRetryMs - retryCountdownNow) / 1000))
+      : 0;
+  const retryAttemptDisplay = Math.min(loadMeta.retryAttempt || 0, loadMeta.maxAttempts || 0);
+  const manualRetryState = getSessionManualRetryState(loadMeta, {
+    now: retryCountdownNow,
+    isLoading: isLoadingSessions,
+  });
+  const lastSuccessLabel = formatSessionFreshnessTimestamp(loadMeta.lastSuccessAt, {
+    formatRelative,
+    formatDate,
+  });
+  const staleReasonLabel =
+    loadMeta.staleReasonLabel || loadMeta.staleReasonMeta?.label || "Refresh request failed";
+  const staleReasonText =
+    loadMeta.staleReason || "Last refresh failed before new session data could be loaded.";
+  const staleReasonSummary = staleReasonText
+    ? `${staleReasonLabel}: ${staleReasonText}`
+    : staleReasonLabel;
+  const manualRetryReasonText =
+    manualRetryState.reason ||
+    (manualRetryState.disabled && retrySeconds > 0
+      ? "Manual retry is disabled while automatic backoff is active."
+      : "");
+
+  if (error && !showStaleBanner) {
     return html`
       <${Paper} elevation=${0} sx=${{ height: "100%", display: "flex", flexDirection: "column" }}>
         <${Box} sx=${{ p: 1.5, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1043,8 +1204,13 @@ export function SessionList({
           <${Alert} severity="error" variant="outlined" sx=${{ mb: 1 }}>
             Sessions not available
           </${Alert}>
-          <${Button} variant="outlined" size="small" onClick=${handleRetry}>
-            Retry
+          <${Button}
+            variant="outlined"
+            size="small"
+            onClick=${handleRetry}
+            disabled=${manualRetryState.disabled}
+          >
+            ${manualRetryState.label || "Retry now"}
           </${Button}>
         </${Box}>
       </${Paper}>
@@ -1086,6 +1252,51 @@ export function SessionList({
         </${Stack}>
       </${Box}>
 
+      ${showStaleBanner &&
+      html`
+        <${Box} sx=${{ px: 1.5, pb: 1 }}>
+          <${Alert}
+            severity="warning"
+            variant="outlined"
+            action=${html`
+              <${Button}
+                size="small"
+                color="warning"
+                onClick=${handleRetry}
+                disabled=${manualRetryState.disabled}
+              >
+                ${manualRetryState.label || "Retry now"}
+              </${Button}>
+            `}
+          >
+            <${Typography} variant="body2" sx=${{ fontWeight: 600 }}>
+              Session list is showing stale data.
+            </${Typography}>
+            <${Typography} variant="caption" component="div">
+              Last successful refresh: ${lastSuccessLabel}
+            </${Typography}>
+            <${Typography} variant="caption" component="div">
+              Freshness: cached data is being shown until the next successful refresh.
+            </${Typography}>
+            <${Typography} variant="caption" component="div">
+              Reason: ${staleReasonSummary}
+            </${Typography}>
+            <${Typography} variant="caption" component="div">
+              ${loadMeta.retriesExhausted
+                ? `Automatic retries stopped after ${loadMeta.maxAttempts} attempts.`
+                : `Retry ${retryAttemptDisplay}/${loadMeta.maxAttempts} in ${retrySeconds}s.`}
+            </${Typography}>
+            ${manualRetryReasonText
+              ? html`
+                  <${Typography} variant="caption" component="div">
+                    ${manualRetryReasonText}
+                  </${Typography}>
+                `
+              : null}
+          </${Alert}>
+        </${Box}>
+      `}
+
       <!-- Search bar -->
       <${Box} sx=${{ px: 1.5, pb: 1 }}>
         <${TextField}
@@ -1118,7 +1329,7 @@ export function SessionList({
           clickable
         />
         <${Chip}
-          label=${`Active (${activeCount})`}
+          label=${`Lifecycle Active (${activeCount})`}
           size="small"
           variant=${resolvedSessionView === SESSION_VIEW_FILTER.active ? "filled" : "outlined"}
           color=${resolvedSessionView === SESSION_VIEW_FILTER.active ? "primary" : "default"}
@@ -1144,7 +1355,7 @@ export function SessionList({
           html`
             <${ListItem} disablePadding sx=${{ px: 1.5, pt: 1.5, pb: 0.5 }}>
               <${Typography} variant="overline" color="text.secondary" sx=${{ fontSize: "0.65rem", letterSpacing: 1 }}>
-                Active Sessions
+                Lifecycle Active
               </${Typography}>
             </${ListItem}>
             ${active.map(renderSessionItem)}
@@ -1241,3 +1452,4 @@ export function SessionList({
     </${Paper}>
   `;
 }
+

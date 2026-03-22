@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const mockCodexCtor = vi.fn();
 const mockStartThread = vi.fn();
 
 vi.mock("@openai/codex-sdk", () => ({
   Codex: class MockCodex {
+    constructor(options) {
+      mockCodexCtor(options);
+    }
+
     startThread(...args) {
       return mockStartThread(...args);
     }
@@ -61,11 +66,26 @@ const {
   execCodexPrompt,
   resetThread,
 } = await import("../shell/codex-shell.mjs");
+const { resolveCodexProfileRuntime } = await import("../shell/codex-model-profiles.mjs");
+
+async function loadFreshCodexShell() {
+  vi.resetModules();
+  const shellModule = await import("../shell/codex-shell.mjs");
+  const profileModule = await import("../shell/codex-model-profiles.mjs");
+  return {
+    ...shellModule,
+    resolveCodexProfileRuntime: profileModule.resolveCodexProfileRuntime,
+  };
+}
 
 const ENV_KEYS = [
   "INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS",
   "INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN",
   "INTERNAL_EXECUTOR_STREAM_MAX_ITEM_CHARS",
+  "OPENAI_BASE_URL",
+  "OPENAI_API_KEY",
+  "AZURE_OPENAI_API_KEY",
+  "CODEX_MODEL",
 ];
 
 let savedEnv = {};
@@ -90,7 +110,9 @@ function restoreEnv() {
 describe("codex-shell stream safeguards", () => {
   beforeEach(async () => {
     saveEnv();
+    mockCodexCtor.mockReset();
     mockStartThread.mockReset();
+    resolveCodexProfileRuntime.mockReturnValue({ env: {} });
     await resetThread();
   });
 
@@ -227,5 +249,104 @@ describe("codex-shell stream safeguards", () => {
 
     expect(result.finalResponse).toContain("recovered after thread reset");
     expect(runAttempt).toBe(2);
+  });
+
+  it("strips OPENAI_BASE_URL and configures Azure provider overrides", async () => {
+    delete process.env.AZURE_OPENAI_API_KEY;
+    const {
+      execCodexPrompt: freshExecCodexPrompt,
+      resetThread: freshResetThread,
+      resolveCodexProfileRuntime: freshResolveCodexProfileRuntime,
+    } = await loadFreshCodexShell();
+
+    await freshResetThread();
+    freshResolveCodexProfileRuntime.mockReturnValue({
+      env: {
+        OPENAI_BASE_URL: "https://example-resource.openai.azure.com/openai/v1",
+        OPENAI_API_KEY: "azure-key",
+        CODEX_MODEL: "gpt-5.4",
+      },
+    });
+    mockStartThread.mockImplementation(() => ({
+      id: "codex-test-thread-azure",
+      runStreamed: async () => ({
+        events: {
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "item.completed",
+              item: { type: "agent_message", text: "azure ok" },
+            };
+            yield { type: "turn.completed" };
+          },
+        },
+      }),
+    }));
+
+    const result = await freshExecCodexPrompt("azure runtime", { timeoutMs: 5000 });
+
+    expect(result.finalResponse).toContain("azure ok");
+    expect(process.env.OPENAI_BASE_URL).toBeUndefined();
+    expect(process.env.AZURE_OPENAI_API_KEY).toBe("azure-key");
+    expect(mockCodexCtor).toHaveBeenCalledTimes(1);
+    expect(mockCodexCtor).toHaveBeenLastCalledWith(expect.objectContaining({
+      config: expect.objectContaining({
+        model_provider: "azure",
+        model: "gpt-5.4",
+        model_providers: expect.objectContaining({
+          azure: expect.objectContaining({
+            base_url: "https://example-resource.openai.azure.com/openai/v1",
+            env_key: "AZURE_OPENAI_API_KEY",
+            wire_api: "responses",
+          }),
+        }),
+      }),
+    }));
+  });
+
+  it("strips non-Azure OPENAI_BASE_URL before creating the SDK", async () => {
+    const {
+      execCodexPrompt: freshExecCodexPrompt,
+      resetThread: freshResetThread,
+      resolveCodexProfileRuntime: freshResolveCodexProfileRuntime,
+    } = await loadFreshCodexShell();
+
+    await freshResetThread();
+    freshResolveCodexProfileRuntime.mockReturnValue({
+      env: {
+        OPENAI_BASE_URL: "https://gateway.example.com/v1",
+        OPENAI_API_KEY: "openai-key",
+      },
+    });
+    mockStartThread.mockImplementation(() => ({
+      id: "codex-test-thread-openai",
+      runStreamed: async () => ({
+        events: {
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "item.completed",
+              item: { type: "agent_message", text: "openai ok" },
+            };
+            yield { type: "turn.completed" };
+          },
+        },
+      }),
+    }));
+
+    const result = await freshExecCodexPrompt("openai runtime", { timeoutMs: 5000 });
+
+    expect(result.finalResponse).toContain("openai ok");
+    expect(process.env.OPENAI_BASE_URL).toBeUndefined();
+    expect(mockCodexCtor).toHaveBeenCalledTimes(1);
+    expect(mockCodexCtor).toHaveBeenLastCalledWith(expect.objectContaining({
+      config: expect.objectContaining({
+        model_providers: expect.objectContaining({
+          openai: expect.objectContaining({
+            stream_idle_timeout_ms: 3600000,
+            stream_max_retries: 15,
+            request_max_retries: 6,
+          }),
+        }),
+      }),
+    }));
   });
 });

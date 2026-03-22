@@ -63,22 +63,24 @@ npm run smoke:packed-cli
 # Format: "source_prefix|test_glob_1|test_glob_2|..."
 # Globs are matched against tests/*.test.mjs filenames (basename only).
 ADJACENCY_MAP=(
-  "workflow/|workflow-*|manual-flows*|mcp-workflow-adapter*|bosun-native-workflow-nodes*|meeting-workflow*"
+  "workflow/|workflow-*|workflow-pipeline-primitives*|manual-flows*|mcp-workflow-adapter*|bosun-native-workflow-nodes*|meeting-workflow*|run-evaluator*|webhook-gateway*|credential-store*|cron-scheduler*"
   "workflow-templates/|workflow-templates*|workflow-new-templates*|workflow-engine*|manual-flows*"
   "task/|task-*|kanban-*|ve-orchestrator*|vk-api*|ve-kanban*"
   "kanban/|kanban-*|task-store*|task-claims*|ve-kanban*|ve-orchestrator*|vk-api*"
   "workspace/|workspace-*|shared-state*|worktree-*|sync-engine*"
-  "infra/|monitor-*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*"
-  "agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*"
-  "config/|config-*|bosun-skills*|codex-config*"
-  "telegram/|telegram-*|whatsapp-*"
+  "infra/|monitor-*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*|tui-bridge*|weekly-agent-work-report*"
+  "agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*|weekly-agent-work-report*"
+  "bench/|bench-swebench*|benchmark-*|task-*"
+  "config/|config-*|workspace-health*|bosun-skills*|codex-config*"
+  "telegram/|telegram-*|whatsapp-*|weekly-agent-work-report*"
   "voice/|voice-*|mic-*|native-call*"
-  "ui/|ui-*|static-relative*|mui-theme*|tab-swipe*|session-theme*|session-history*|demo-*|fleet-tab*"
-  "site/|ui-*|static-relative*|demo-*"
-  "server/|ui-server*|setup-web*|tunnel-*|ui-realtime*|presence*"
+  "ui/|ui-*|stream-timeline*|workflow-canvas-utils*|static-relative*|mui-theme*|tab-swipe*|session-theme*|session-history*|demo-*|fleet-tab*|portal-ui-smoke*"
+  "site/|ui-*|stream-timeline*|static-relative*|demo-*|portal-ui-smoke*"
+  "server/|ui-server*|setup-web*|bosun-mcp-server*|tunnel-*|ui-realtime*|presence*|portal-ui-smoke*"
   "github/|github-*|hook-profiles*"
   "git/|git-*|branch-*|diff-stats*|conflict-*"
   "shell/|*-shell*|codex-shell*|gemini-shell*|opencode-shell*|sdk-shell*|continue-detection*"
+  "tools/|apply-pr-suggestions*|demo-defaults-sync*|prepublish-check*|vitest-runner*"
   "lib/|logger*|utils*|library-*|error-detector*|context-*|codebase-audit*"
   # Top-level runtime files that don't live in a subdirectory.
   "cli.mjs|cli-*|smoke*"
@@ -176,7 +178,7 @@ for file in "${!CHANGED_MAP[@]}"; do
       ;;
   esac
   case "$file" in
-    tests/*.test.mjs)
+    tests/*.test.mjs|tests/*.node.test.mjs)
       CHANGED_TESTS+=("$file")
       ;;
   esac
@@ -210,7 +212,7 @@ collect_import_linked_tests() {
   while IFS= read -r test_file; do
     [ -z "$test_file" ] && continue
     TARGET_TESTS["$test_file"]=1
-  done < <(rg -l --glob "*.test.mjs" -e "from.*['\"].*${normalized}" -e "import.*['\"].*${normalized}" -e "require.*['\"].*${normalized}" tests 2>/dev/null || true)
+  done < <(rg -l --glob "*.test.mjs" --glob "*.node.test.mjs" -e "from.*['\"].*${normalized}" -e "import.*['\"].*${normalized}" -e "require.*['\"].*${normalized}" tests 2>/dev/null || true)
 
   # Also search by basename without extension for relative imports.
   local base
@@ -221,7 +223,7 @@ collect_import_linked_tests() {
     while IFS= read -r test_file; do
       [ -z "$test_file" ] && continue
       TARGET_TESTS["$test_file"]=1
-    done < <(rg -l --glob "*.test.mjs" -e "from.*['\"].*/${base}(\\.m?js)?['\"]" tests 2>/dev/null || true)
+    done < <(rg -l --glob "*.test.mjs" --glob "*.node.test.mjs" -e "from.*['\"].*/${base}(\\.m?js)?['\"]" tests 2>/dev/null || true)
   fi
 }
 
@@ -255,7 +257,7 @@ collect_adjacent_tests() {
         while IFS= read -r test_file; do
           [ -z "$test_file" ] && continue
           TARGET_TESTS["$test_file"]=1
-        done < <(find tests -maxdepth 1 -name "${glob}.test.mjs" 2>/dev/null || true)
+        done < <(find tests -maxdepth 1 \( -name "${glob}.test.mjs" -o -name "${glob}.node.test.mjs" \) 2>/dev/null || true)
       done
     fi
   done
@@ -314,7 +316,6 @@ if [ "${#FINAL_TEST_LIST[@]}" -eq 0 ]; then
 fi
 
 echo "[hooks] running ${#FINAL_TEST_LIST[@]}/${TOTAL_TESTS} targeted tests…"
-node node_modules/vitest/vitest.mjs run --config vitest.config.mjs "${FINAL_TEST_LIST[@]}"
+node tools/vitest-runner.mjs run --config vitest.config.mjs "${FINAL_TEST_LIST[@]}"
 
 echo "[hooks] pre-push checks passed ✓"
-

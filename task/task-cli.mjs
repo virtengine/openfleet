@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 /**
  * task-cli.mjs — CLI task management for Bosun
  *
@@ -14,7 +12,7 @@
  *   bosun task update <task-id> <json-patch>
  *   bosun task update <task-id> --status todo --priority high
  *   bosun task delete <task-id>
- *   bosun task stats [--json]
+ *   bosun task stats [--json] [--debug]
  *   bosun task import <json-file>
  *
  * EXPORTS:
@@ -32,11 +30,12 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { getTaskLifetimeTotals } from "../infra/runtime-accumulator.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const TAG = "[task-cli]";
-const EXECUTOR_RUNTIME_STATE_FILE = resolve(
+const DEFAULT_EXECUTOR_RUNTIME_STATE_FILE = resolve(
   __dirname,
   "..",
   ".cache",
@@ -48,6 +47,14 @@ const REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS = 8 * 60 * 60 * 1000;
 // ── Store helpers ─────────────────────────────────────────────────────────────
 
 let _storeReady = false;
+let _resolvedStorePath = null;
+
+function normalizeStorePath(pathLike) {
+  const resolvedPath = resolve(String(pathLike || ""));
+  return process.platform === "win32"
+    ? resolvedPath.toLowerCase()
+    : resolvedPath;
+}
 
 function ensureStore() {
   if (_storeReady) return;
@@ -74,11 +81,14 @@ async function initStore() {
   if (!_taskStoreModule) {
     _taskStoreModule = await import("./task-store.mjs");
   }
-  if (!_storeReady) {
-    const storePath = resolveKanbanStorePath();
+  const storePath = resolveKanbanStorePath();
+  const normalizedStorePath = normalizeStorePath(storePath);
+  if (!_storeReady || normalizedStorePath !== _resolvedStorePath) {
+    await flushStoreWrites(_taskStoreModule);
     _taskStoreModule.configureTaskStore({ storePath });
     _taskStoreModule.loadStore();
     _storeReady = true;
+    _resolvedStorePath = normalizedStorePath;
   }
   return _taskStoreModule;
 }
@@ -224,6 +234,12 @@ function hasFlag(args, flag) {
   return args.includes(flag);
 }
 
+function isDebugModeEnabled(args = []) {
+  if (hasFlag(args, "--debug")) return true;
+  const envValue = String(process.env.BOSUN_DEBUG || "").trim().toLowerCase();
+  return ["1", "true", "yes", "on"].includes(envValue);
+}
+
 // ── Programmatic API ──────────────────────────────────────────────────────────
 
 /**
@@ -350,6 +366,34 @@ export async function taskList(filters = {}) {
   return tasks;
 }
 
+function withTaskLifetimeTotals(task) {
+  if (!task || typeof task !== "object") return task;
+  const taskId = String(task.id || task.taskId || "").trim();
+  const lifetimeTotals = taskId ? getTaskLifetimeTotals(taskId) : null;
+  return {
+    ...task,
+    lifetimeTotals,
+    meta: {
+      ...(task.meta || {}),
+      lifetimeTotals,
+    },
+  };
+}
+
+function formatDurationMs(ms) {
+  const value = Number(ms || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0s";
+  if (value < 1000) return `${Math.round(value)}ms`;
+  const seconds = Math.round(value / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = seconds % 60;
+  if (minutes < 60) return remSeconds > 0 ? `${minutes}m ${remSeconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return remMinutes > 0 ? `${hours}h ${remMinutes}m` : `${hours}h`;
+}
+
 /**
  * Get a single task by ID.
  * @param {string} id - Task ID (UUID or partial prefix)
@@ -360,12 +404,12 @@ export async function taskGet(id) {
 
   // Try exact match first
   let task = store.getTask(id);
-  if (task) return task;
+  if (task) return withTaskLifetimeTotals(task);
 
   // Try prefix match
   const all = store.getAllTasks();
   const matches = all.filter((t) => t.id?.startsWith(id));
-  if (matches.length === 1) return matches[0];
+  if (matches.length === 1) return withTaskLifetimeTotals(matches[0]);
   if (matches.length > 1) {
     throw new Error(
       `Ambiguous task ID prefix "${id}" — matches ${matches.length} tasks. Use a longer prefix.`,
@@ -451,10 +495,17 @@ export async function taskStats() {
   };
 }
 
+function resolveExecutorRuntimeStateFile() {
+  const explicit = String(process.env.BOSUN_TASK_EXECUTOR_RUNTIME_FILE || "").trim();
+  if (explicit) return resolve(explicit);
+  return DEFAULT_EXECUTOR_RUNTIME_STATE_FILE;
+}
+
 function readRepoAreaLocksFromRuntimeState() {
-  if (!existsSync(EXECUTOR_RUNTIME_STATE_FILE)) return null;
+  const runtimeStateFile = resolveExecutorRuntimeStateFile();
+  if (!existsSync(runtimeStateFile)) return null;
   try {
-    const raw = readFileSync(EXECUTOR_RUNTIME_STATE_FILE, "utf8");
+    const raw = readFileSync(runtimeStateFile, "utf8");
     const parsed = JSON.parse(raw);
     const configuredLimit = Math.max(
       0,
@@ -484,6 +535,25 @@ function readRepoAreaLocksFromRuntimeState() {
       parsed?.repoAreaDispatchCycle && typeof parsed.repoAreaDispatchCycle === "object"
         ? parsed.repoAreaDispatchCycle
         : {};
+    const contentionEvents = Array.isArray(parsed?.repoAreaContentionEvents)
+      ? parsed.repoAreaContentionEvents
+          .slice(-60)
+          .map((event) => ({
+            at: event?.at ? String(event.at) : null,
+            taskId: normalizeTaskId(event?.taskId),
+            area: normalizeRepoAreaKey(event?.area),
+            waitMs: Math.max(0, Math.trunc(Number(event?.waitMs || 0))),
+            resolutionReason: normalizeRepoAreaResolutionReason(
+              event?.resolutionReason,
+            ),
+          }))
+          .filter((event) => event.taskId && event.area)
+      : [];
+    const contentionByReason = Object.create(null);
+    for (const event of contentionEvents) {
+      const reason = normalizeRepoAreaResolutionReason(event.resolutionReason);
+      contentionByReason[reason] = (contentionByReason[reason] || 0) + 1;
+    }
     const activeSignals = new Map();
     const activeCounts = new Map();
     for (const [taskId, slot] of Object.entries(runtimeSlots)) {
@@ -651,6 +721,16 @@ function readRepoAreaLocksFromRuntimeState() {
         ),
         waitSamples: areas.reduce((sum, area) => sum + (area.waitSamples || 0), 0),
         waitingTasks: areas.reduce((sum, area) => sum + (area.waitingTasks || 0), 0),
+        contentionEvents: contentionEvents.length,
+      },
+      contention: {
+        events: contentionEvents.length,
+        waitMsTotal: contentionEvents.reduce(
+          (sum, event) => sum + Math.max(0, Number(event?.waitMs || 0)),
+          0,
+        ),
+        byReason: contentionByReason,
+        recent: contentionEvents.slice(-10),
       },
       dispatch: {
         cycles: Math.max(0, Math.trunc(Number(parsed?.repoAreaDispatchCycles || 0))),
@@ -714,6 +794,11 @@ function normalizeTaskId(value) {
 
 function normalizeRepoAreaKey(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function normalizeRepoAreaResolutionReason(value, fallback = "resolved") {
+  const normalized = normalizeRepoAreaKey(value);
+  return normalized || fallback;
 }
 
 function normalizeRepoAreas(input) {
@@ -1218,6 +1303,12 @@ async function cliGet(args) {
     console.log(`  Branch:      ${task.baseBranch || "main"}`);
     console.log(`  Created:     ${task.createdAt || "?"}`);
     console.log(`  Updated:     ${task.updatedAt || "?"}`);
+    const lifetimeTotals = task.lifetimeTotals || task.meta?.lifetimeTotals || null;
+    if (lifetimeTotals) {
+      console.log(`  Attempts count:                     ${lifetimeTotals.attemptsCount || 0}`);
+      console.log(`  Total tokens across all attempts:   ${lifetimeTotals.tokenCount || 0}`);
+      console.log(`  Total runtime across all attempts:  ${formatDurationMs(lifetimeTotals.durationMs || 0)}`);
+    }
     if (task.workspace) console.log(`  Workspace:   ${task.workspace}`);
     if (task.repository) console.log(`  Repository:  ${task.repository}`);
     if (task.description) {
@@ -1357,6 +1448,7 @@ async function cliDelete(args) {
 
 async function cliStats(args) {
   const stats = await taskStats();
+  const debugMode = isDebugModeEnabled(args);
 
   if (hasFlag(args, "--json")) {
     console.log(JSON.stringify(stats, null, 2));
@@ -1371,13 +1463,15 @@ async function cliStats(args) {
   console.log(`    Done:        ${stats.done || 0}`);
   console.log(`    Blocked:     ${stats.blocked || 0}`);
   console.log(`    Total:       ${stats.total || 0}`);
-  if (stats.repoAreaLocks) {
+  if (debugMode && stats.repoAreaLocks) {
     const lockState = stats.repoAreaLocks;
     const totals = lockState.totals || {};
+    const contention = lockState.contention || {};
     console.log(`\n  Repo Area Locks:`);
     console.log(`    Dispatch Cycles:   ${totals.dispatchCycles || lockState.dispatchCycles || 0}`);
     console.log(`    Conflict Events:   ${totals.conflictEvents || lockState.conflictEvents || 0}`);
     console.log(`    Blocked Tracked:   ${lockState.blockedTasksTracked || lockState.dispatch?.blockedTasksTracked || 0}`);
+    console.log(`    Contention Events: ${totals.contentionEvents || contention.events || 0}`);
     const totalWaitSamples = Number(totals.waitSamples || 0);
     const totalWaitMs = Number(totals.waitMsTotal || 0);
     const globalAvgWaitMs =
@@ -1398,6 +1492,14 @@ async function cliStats(args) {
     for (const area of topAreas) {
       console.log(
         `    - ${area.area}: blocked=${area.blockedDispatches || 0}, selected=${area.selectedDispatches || 0}, limit=${area.effectiveLimit || 0}/${area.configuredLimit || lockState.configuredLimit || 0}, avgWaitMs=${Math.round(area.averageWaitMs || 0)}`,
+      );
+    }
+    const recentEvents = Array.isArray(contention.recent)
+      ? contention.recent.slice(-3)
+      : [];
+    for (const event of recentEvents) {
+      console.log(
+        `    - contention: area=${event.area || "unknown"}, waitMs=${Math.max(0, Math.trunc(Number(event.waitMs || 0)))}, reason=${normalizeRepoAreaResolutionReason(event.resolutionReason)}, task=${String(event.taskId || "").slice(0, 8)}`,
       );
     }
   }
@@ -1549,7 +1651,7 @@ function showTaskHelp() {
     get, show   Show task details           bosun task get --help
     update, edit Update task fields         bosun task update --help
     delete, rm  Delete a task              bosun task delete --help
-    stats       Aggregate statistics        bosun task stats --json
+    stats       Aggregate statistics        bosun task stats --json/--debug
     import      Bulk import from JSON file  bosun task import --help
 
   QUICK REFERENCE
@@ -1646,3 +1748,4 @@ if (process.argv[1] && resolve(process.argv[1]) === __filename) {
     process.exit(1);
   });
 }
+

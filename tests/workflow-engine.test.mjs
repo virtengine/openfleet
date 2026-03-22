@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import {
@@ -277,6 +277,38 @@ describe("WorkflowEngine - retry logic", () => {
     expect(reached).toEqual(["branch"]);
   });
 
+  it("propagates skipped branch dependencies so converging false-path nodes can still run", async () => {
+    const reached = [];
+    registerNodeType("test.record_path", {
+      describe: () => "Records execution order",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        reached.push(node.id);
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "skipped-branch", type: "test.record_path", label: "Skipped Branch", config: {} },
+        { id: "converge", type: "test.record_path", label: "Converge", config: {} },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "skipped-branch", condition: "false" },
+        { id: "e2", source: "trigger", target: "converge", condition: "true" },
+        { id: "e3", source: "skipped-branch", target: "converge" },
+      ],
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+
+    expect(ctx.errors).toEqual([]);
+    expect(ctx.getNodeStatus("skipped-branch")).toBe("skipped");
+    expect(reached).toEqual(["converge"]);
+  });
+
   it("retries then succeeds on second attempt", async () => {
     let callCount = 0;
     registerNodeType("test.flaky_second_try", {
@@ -492,6 +524,38 @@ describe("WorkflowEngine - source port routing", () => {
     expect(result.errors).toEqual([]);
     expect(visited).toEqual(["left"]);
   });
+
+  it("keeps shared downstream nodes runnable when one conditional edge is false", async () => {
+    const visited = [];
+    registerNodeType("test.capture_multi_edge", {
+      describe: () => "Capture multi-edge convergence",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        visited.push(node.id);
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "branch", type: "notify.log", label: "Branch", config: { message: "branch" } },
+        { id: "shared", type: "test.capture_multi_edge", label: "Shared", config: {} },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "branch" },
+        { id: "e2", source: "branch", target: "shared", condition: "false" },
+        { id: "e3", source: "branch", target: "shared", condition: "true" },
+      ],
+      { name: "Conditional Convergence Workflow" },
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {});
+    expect(result.errors).toEqual([]);
+    expect(visited).toEqual(["shared"]);
+    expect(result.getNodeStatus("shared")).toBe(NodeStatus.COMPLETED);
+  });
 });
 
 // ── Run History / Detail Tests ──────────────────────────────────────────────
@@ -537,6 +601,119 @@ describe("WorkflowEngine - run history details", () => {
     expect(run.detail.nodeStatuses.log).toBeDefined();
     expect(Array.isArray(run.detail.logs)).toBe(true);
     expect(Array.isArray(run.detail.nodeStatusEvents)).toBe(true);
+    expect(run.detail.dagState?.workflowId).toBe(wf.id);
+    expect(run.detail.dagState?.counts?.completed).toBeGreaterThanOrEqual(2);
+    expect(run.ledger?.events?.some((event) => event.eventType === "run.start")).toBe(true);
+    expect(run.ledger?.events?.some((event) => event.eventType === "node.completed")).toBe(true);
+    expect(run.ledger?.events?.some((event) => event.eventType === "run.end")).toBe(true);
+  });
+
+  it("stores issue-advisor and DAGState failure context for continuation", async () => {
+    registerNodeType("test.always_fail_for_dag", {
+      describe: () => "Fails for DAGState coverage",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        throw new Error("validation step failed");
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "fail", type: "test.always_fail_for_dag", label: "Fail Step", config: { maxRetries: 0 } },
+      ],
+      [{ id: "e1", source: "trigger", target: "fail" }],
+      { name: "Issue Advisor Workflow" },
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+    expect(ctx.errors.length).toBeGreaterThan(0);
+
+    const detail = engine.getRunDetail(ctx.id);
+    expect(detail?.status).toBe(WorkflowStatus.FAILED);
+    expect(detail?.detail?.dagState?.counts?.failed).toBe(1);
+    expect(detail?.detail?.issueAdvisor?.recommendedAction).toBe("replan_from_failed");
+    expect(detail?.detail?.issueAdvisor?.failedNodes?.[0]?.nodeId).toBe("fail");
+    expect(detail?.detail?.issueAdvisor?.summary).toContain("Fail Step");
+  });
+
+  it("returns retry options with an issue-advisor recommendation", async () => {
+    registerNodeType("test.fail_for_retry_options", {
+      describe: () => "Completes once then fails",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        if (node.id === "fail") throw new Error("retry choice needed");
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "prepare", type: "test.fail_for_retry_options", label: "Prepare", config: {} },
+        { id: "fail", type: "test.fail_for_retry_options", label: "Fail Step", config: { maxRetries: 0 } },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "prepare" },
+        { id: "e2", source: "prepare", target: "fail" },
+      ],
+      { id: "wf-retry-options", name: "Retry Options Workflow" },
+    );
+
+    engine.save(wf);
+    const failedCtx = await engine.execute(wf.id, {});
+    const retryOptions = engine.getRetryOptions(failedCtx.id);
+
+    expect(retryOptions?.recommendedMode).toBe("from_scratch");
+    expect(retryOptions?.recommendedReason).toBe("issue_advisor.replan_from_failed");
+    expect(retryOptions?.failedNodes).toContain("fail");
+    expect(retryOptions?.options?.find((entry) => entry.mode === "from_scratch")?.recommended).toBe(true);
+  });
+
+  it("uses issue-advisor guidance to escalate first auto-retry attempt to from_scratch", async () => {
+    registerNodeType("test.auto_retry_replan_step", {
+      describe: () => "Succeeds once then fails",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        if (node.id === "fail") {
+          throw new Error("retry needs replanning");
+        }
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "prepare", type: "test.auto_retry_replan_step", label: "Prepare", config: {} },
+        { id: "fail", type: "test.auto_retry_replan_step", label: "Fail Step", config: { maxRetries: 0 } },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "prepare" },
+        { id: "e2", source: "prepare", target: "fail" },
+      ],
+      { id: "wf-auto-retry-replan", name: "Auto Retry Replan" },
+    );
+
+    engine.save(wf);
+    const failedCtx = await engine.execute(wf.id, {});
+    expect(failedCtx.errors.length).toBeGreaterThan(0);
+
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({
+      retryRunId: "retry-1",
+      ctx: { errors: [] },
+    });
+
+    await engine._autoRetryLoop(failedCtx.id, wf.id, {}, { maxAttempts: 1, cooldownMs: 0 }, {});
+
+    expect(retrySpy).toHaveBeenCalledWith(
+      failedCtx.id,
+      expect.objectContaining({
+        mode: "from_scratch",
+        _decisionReason: "issue_advisor.replan_from_failed",
+      }),
+    );
   });
 
   it("returns runs in descending order and null for unknown run details", async () => {
@@ -555,6 +732,53 @@ describe("WorkflowEngine - run history details", () => {
     expect(history.length).toBeGreaterThanOrEqual(2);
     expect(history[0].startedAt).toBeGreaterThanOrEqual(history[1].startedAt);
     expect(engine.getRunDetail("does-not-exist")).toBeNull();
+  });
+
+  it("returns paginated run history metadata without dropping total counts", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { name: "Paged History Workflow" },
+    );
+
+    engine.save(wf);
+    await engine.execute(wf.id, { run: 1 });
+    await engine.execute(wf.id, { run: 2 });
+    await engine.execute(wf.id, { run: 3 });
+
+    const page = engine.getRunHistoryPage(wf.id, { offset: 1, limit: 1 });
+    expect(page.total).toBeGreaterThanOrEqual(3);
+    expect(page.offset).toBe(1);
+    expect(page.limit).toBe(1);
+    expect(page.count).toBe(1);
+    expect(Array.isArray(page.runs)).toBe(true);
+    expect(page.runs).toHaveLength(1);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextOffset).toBe(2);
+  });
+  it("paginates global run history beyond the initial page size", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { name: "Global Paged History Workflow" },
+    );
+
+    engine.save(wf);
+    for (let i = 0; i < 35; i += 1) {
+      await engine.execute(wf.id, { run: i + 1 });
+    }
+
+    const all = engine.getRunHistory();
+    expect(all.length).toBeGreaterThanOrEqual(35);
+
+    const page = engine.getRunHistoryPage(null, { offset: 20, limit: 10 });
+    expect(page.total).toBeGreaterThanOrEqual(35);
+    expect(page.offset).toBe(20);
+    expect(page.limit).toBe(10);
+    expect(page.count).toBe(10);
+    expect(page.runs).toHaveLength(10);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextOffset).toBe(30);
   });
 
   it("includes active runs in history and exposes live run detail while executing", async () => {
@@ -621,6 +845,24 @@ describe("WorkflowEngine - run history details", () => {
       if (prevThreshold === undefined) delete process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS;
       else process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS = prevThreshold;
     }
+  });
+
+
+  it("skips checkpoint writes once a run is no longer active", async () => {
+    const runId = "run-inactive-checkpoint";
+    const runsDir = join(tmpDir, "runs");
+    const detailPath = join(runsDir, `${runId}.json`);
+
+    const ctx = new WorkflowContext(runId, {
+      _workflowId: "wf-checkpoint-skip",
+      _workflowName: "Checkpoint Skip",
+    });
+
+    // Simulate a debounced checkpoint firing for a run that was already removed.
+    engine._checkpointRun(ctx);
+
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(existsSync(detailPath)).toBe(false);
   });
 
   it("reclassifies stale RUNNING index entries as interrupted on startup recovery", () => {
@@ -708,6 +950,422 @@ describe("WorkflowEngine - run history details", () => {
     expect(recovered.workflowId).toBe(wf.id);
     expect(recovered.status).toBe(WorkflowStatus.PAUSED);
     expect(recovered.resumable).toBe(true);
+    expect(typeof recovered.endedAt).toBe("number");
+    expect(recovered.activeNodeCount).toBe(0);
+  });
+
+  it("does not resume an interrupted task run when a newer run already exists for the same task", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-resume-superseded", name: "Resume Superseded Workflow" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const interruptedRunId = "run-interrupted-older";
+    const newerRunId = "run-newer-active";
+    const taskId = "task-shared-1";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: interruptedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: null,
+            resumable: true,
+          },
+          {
+            runId: newerRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.RUNNING,
+            startedAt: 2000,
+            endedAt: null,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${interruptedRunId}.json`),
+      JSON.stringify({
+        id: interruptedRunId,
+        startedAt: 1000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId,
+        },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${newerRunId}.json`),
+      JSON.stringify({
+        id: newerRunId,
+        startedAt: 2000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId,
+        },
+        nodeStatuses: { trigger: NodeStatus.RUNNING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
+
+    await engine.resumeInterruptedRuns();
+
+    expect(retrySpy).not.toHaveBeenCalled();
+
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const interrupted = index.runs.find((entry) => entry.runId === interruptedRunId);
+    expect(interrupted).toBeTruthy();
+    expect(interrupted.resumable).toBe(false);
+    expect(interrupted.resumeResult).toBe("duplicate_task_run");
+  });
+
+  it("refreshes migrated task-lifecycle defaults when retrying an interrupted run", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      {
+        id: "wf-resume-migrated-default",
+        name: "Resume Migrated Default",
+        variables: { prePrValidationCommand: "auto" },
+      },
+    );
+    wf.metadata = {
+      ...(wf.metadata || {}),
+      installedFrom: "template-task-lifecycle",
+    };
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const interruptedRunId = "run-stale-quality-gate";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: interruptedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: null,
+            resumable: true,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${interruptedRunId}.json`),
+      JSON.stringify({
+        id: interruptedRunId,
+        startedAt: 1000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId: "task-shared-1",
+          prePrValidationCommand: "npm run prepush:check",
+        },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const executeDagSpy = vi.spyOn(engine, "_executeDag").mockResolvedValue();
+
+    const { retryRunId } = await engine.retryRun(interruptedRunId, { mode: "from_failed" });
+
+    expect(executeDagSpy).toHaveBeenCalledTimes(1);
+    const resumedCtx = executeDagSpy.mock.calls[0][3];
+    expect(resumedCtx.data.prePrValidationCommand).toBe("auto");
+
+    const resumedRun = engine.getRunDetail(retryRunId);
+    expect(resumedRun?.detail?.data?.prePrValidationCommand).toBe("auto");
+  });
+
+  it("resumes interrupted runs from_scratch when issue-advisor requests replanning", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-resume-replan", name: "Resume Replan Workflow" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const interruptedRunId = "run-interrupted-replan";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: interruptedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: null,
+            resumable: true,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${interruptedRunId}.json`),
+      JSON.stringify({
+        id: interruptedRunId,
+        startedAt: 1000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+        },
+        dagState: {
+          counts: { completed: 1, failed: 1 },
+        },
+        issueAdvisor: {
+          recommendedAction: "replan_from_failed",
+          summary: "Retry requires replanning from the failed node",
+        },
+        nodeStatuses: {
+          trigger: NodeStatus.COMPLETED,
+          fail: NodeStatus.FAILED,
+        },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [{ nodeId: "fail", error: "boom" }],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
+
+    await engine.resumeInterruptedRuns();
+
+    expect(retrySpy).toHaveBeenCalledWith(
+      interruptedRunId,
+      expect.objectContaining({
+        mode: "from_scratch",
+        _decisionReason: "issue_advisor.replan_from_failed",
+      }),
+    );
+  });
+
+  it("does not resume an interrupted task run when a newer run already exists for the same task", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-resume-superseded", name: "Resume Superseded Workflow" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const interruptedRunId = "run-interrupted-older";
+    const newerRunId = "run-newer-active";
+    const taskId = "task-shared-1";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: interruptedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: null,
+            resumable: true,
+          },
+          {
+            runId: newerRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.RUNNING,
+            startedAt: 2000,
+            endedAt: null,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${interruptedRunId}.json`),
+      JSON.stringify({
+        id: interruptedRunId,
+        startedAt: 1000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId,
+        },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${newerRunId}.json`),
+      JSON.stringify({
+        id: newerRunId,
+        startedAt: 2000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId,
+        },
+        nodeStatuses: { trigger: NodeStatus.RUNNING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
+
+    await engine.resumeInterruptedRuns();
+
+    expect(retrySpy).not.toHaveBeenCalled();
+
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const interrupted = index.runs.find((entry) => entry.runId === interruptedRunId);
+    expect(interrupted).toBeTruthy();
+    expect(interrupted.resumable).toBe(false);
+    expect(interrupted.resumeResult).toBe("duplicate_task_run");
+  });
+
+  it("refreshes migrated task-lifecycle defaults when retrying an interrupted run", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      {
+        id: "wf-resume-migrated-default",
+        name: "Resume Migrated Default",
+        variables: { prePrValidationCommand: "auto" },
+      },
+    );
+    wf.metadata = {
+      ...(wf.metadata || {}),
+      installedFrom: "template-task-lifecycle",
+    };
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const interruptedRunId = "run-stale-quality-gate";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: interruptedRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: null,
+            resumable: true,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${interruptedRunId}.json`),
+      JSON.stringify({
+        id: interruptedRunId,
+        startedAt: 1000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          taskId: "task-shared-1",
+          prePrValidationCommand: "npm run prepush:check",
+        },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    const executeDagSpy = vi.spyOn(engine, "_executeDag").mockResolvedValue();
+
+    const { retryRunId } = await engine.retryRun(interruptedRunId, { mode: "from_failed" });
+
+    expect(executeDagSpy).toHaveBeenCalledTimes(1);
+    const resumedCtx = executeDagSpy.mock.calls[0][3];
+    expect(resumedCtx.data.prePrValidationCommand).toBe("auto");
+
+    const resumedRun = engine.getRunDetail(retryRunId);
+    expect(resumedRun?.detail?.data?.prePrValidationCommand).toBe("auto");
+  });
+
+  it("refreshes migrated task-lifecycle defaults for fresh task-lifecycle executions", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      {
+        id: "wf-fresh-migrated-default",
+        name: "Fresh Migrated Default",
+        variables: { prePrValidationCommand: "npm run prepush:check" },
+      },
+    );
+    wf.metadata = {
+      ...(wf.metadata || {}),
+      installedFrom: "template-task-lifecycle",
+      templateState: {
+        ...(wf.metadata?.templateState || {}),
+        isCustomized: false,
+      },
+    };
+    engine.save(wf);
+
+    const ctx = await engine.execute(wf.id, {});
+
+    expect(ctx.data.prePrValidationCommand).toBe("auto");
+
+    const persisted = engine.getRunDetail(ctx.id);
+    expect(persisted?.detail?.data?.prePrValidationCommand).toBe("auto");
   });
 
   it("hydrates missing history entries from run detail files when index is truncated", () => {
@@ -1054,7 +1712,13 @@ describe("New node types", () => {
       "template-task-archiver",
       expect.objectContaining({
         taskId: "TASK-42",
+        _workflowParentRunId: ctx.id,
+        _workflowRootRunId: ctx.id,
         _workflowStack: ["parent-wf", "template-task-archiver"],
+      }),
+      expect.objectContaining({
+        _parentRunId: ctx.id,
+        _rootRunId: ctx.id,
       }),
     );
     expect(canonical).toBe(typoAlias);
@@ -1184,6 +1848,65 @@ describe("action.execute_workflow", () => {
     expect(childDetail.detail?.data?.sharedValue).toBe("inherit-me");
     expect(childDetail.detail?.data?.ignoredValue).toBeUndefined();
     expect(childDetail.detail?.data?._workflowStack).toEqual([parentWorkflow.id, childWorkflow.id]);
+    expect(childDetail.detail?.dagState?.parentRunId).toBe(parentCtx.id);
+    expect(childDetail.detail?.dagState?.rootRunId).toBe(parentCtx.id);
+    expect(childDetail.ledger?.parentRunId).toBe(parentCtx.id);
+    expect(childDetail.ledger?.rootRunId).toBe(parentCtx.id);
+  });
+
+  it("sync mode resolves installed template aliases via metadata.installedFrom", async () => {
+    const childWorkflow = makeSimpleWorkflow(
+      [
+        { id: "child-trigger", type: "trigger.manual", label: "Start Child", config: {} },
+      ],
+      [],
+      { id: "child-installed-uuid", name: "Installed Template Child" },
+    );
+    childWorkflow.metadata = {
+      ...(childWorkflow.metadata || {}),
+      installedFrom: "template-installed-child",
+    };
+
+    const parentWorkflow = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start Parent", config: {} },
+        {
+          id: "invoke-child",
+          type: "action.execute_workflow",
+          label: "Invoke Installed Child",
+          config: {
+            workflowId: "template-installed-child",
+            outputVariable: "childSummary",
+          },
+        },
+      ],
+      [{ id: "e1", source: "trigger", target: "invoke-child" }],
+      { id: "parent-template-alias", name: "Parent Template Alias Workflow" },
+    );
+
+    engine.save(childWorkflow);
+    engine.save(parentWorkflow);
+
+    expect(engine.get("template-installed-child")?.id).toBe(childWorkflow.id);
+
+    const parentCtx = await engine.execute(parentWorkflow.id, {});
+
+    expect(parentCtx.errors).toEqual([]);
+    const output = parentCtx.getNodeOutput("invoke-child");
+    expect(output).toMatchObject({
+      success: true,
+      queued: false,
+      mode: "sync",
+      workflowId: "template-installed-child",
+      status: "completed",
+      errorCount: 0,
+    });
+    expect(parentCtx.data.childSummary).toEqual(output);
+
+    const childDetail = engine.getRunDetail(output.runId);
+    expect(childDetail).toBeTruthy();
+    expect(childDetail.workflowId).toBe("template-installed-child");
+    expect(engine.get(childDetail.workflowId)?.id).toBe(childWorkflow.id);
   });
 
   it("dispatch mode queues child workflow without waiting for completion", async () => {
@@ -1222,7 +1945,13 @@ describe("action.execute_workflow", () => {
       expect(mockEngine.execute).toHaveBeenCalledWith(
         "child-dispatch-wf",
         expect.objectContaining({
+          _workflowParentRunId: ctx.id,
+          _workflowRootRunId: ctx.id,
           _workflowStack: ["parent-dispatch-wf", "child-dispatch-wf"],
+        }),
+        expect.objectContaining({
+          _parentRunId: ctx.id,
+          _rootRunId: ctx.id,
         }),
       );
     } finally {
@@ -1345,6 +2074,184 @@ describe("action.execute_workflow", () => {
       error: "child exploded",
     });
     expect(softCtx.data.childResult).toEqual(softResult);
+  });
+});
+
+describe("action.inline_workflow and executeDefinition", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("executeDefinition runs an ephemeral workflow without saving it", async () => {
+    const inlineDefinition = {
+      name: "Ephemeral Inline Workflow",
+      trigger: "trigger.workflow_call",
+      nodes: [
+        {
+          id: "trigger",
+          type: "trigger.workflow_call",
+          label: "Start",
+          config: { inputs: { message: { type: "string", required: false } } },
+        },
+        {
+          id: "set-reply",
+          type: "action.set_variable",
+          label: "Set Reply",
+          config: { key: "reply", value: "{{message}}" },
+        },
+        {
+          id: "finish",
+          type: "flow.end",
+          label: "Finish",
+          config: {
+            status: "completed",
+            output: {
+              reply: "{{reply}}",
+            },
+          },
+        },
+      ],
+      edges: [
+        { id: "e1", source: "trigger", target: "set-reply" },
+        { id: "e2", source: "set-reply", target: "finish" },
+      ],
+    };
+
+    const ctx = await engine.executeDefinition(inlineDefinition, { message: "hello" }, {
+      inlineWorkflowId: "inline:ephemeral-test",
+    });
+
+    expect(ctx.errors).toEqual([]);
+    expect(ctx.data.reply).toBe("hello");
+    expect(engine.get("inline:ephemeral-test")).toBeNull();
+    const detail = engine.getRunDetail(ctx.id);
+    expect(detail?.workflowId).toBe("inline:ephemeral-test");
+  });
+
+  it("sync mode executes embedded workflows and unwraps flow.end output", async () => {
+    const parentWorkflow = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start Parent", config: {} },
+        {
+          id: "inline-child",
+          type: "action.inline_workflow",
+          label: "Inline Child",
+          config: {
+            mode: "sync",
+            inheritContext: true,
+            includeKeys: ["sharedValue"],
+            input: { payload: "{{payload}}" },
+            outputVariable: "inlineSummary",
+            workflow: {
+              trigger: "trigger.workflow_call",
+              nodes: [
+                {
+                  id: "trigger",
+                  type: "trigger.workflow_call",
+                  label: "Start Child",
+                  config: { inputs: { payload: { type: "string", required: false } } },
+                },
+                {
+                  id: "finish",
+                  type: "flow.end",
+                  label: "Finish Child",
+                  config: {
+                    status: "completed",
+                    output: {
+                      echoed: "{{payload}}",
+                      shared: "{{sharedValue}}",
+                    },
+                  },
+                },
+              ],
+              edges: [{ id: "e1", source: "trigger", target: "finish" }],
+            },
+          },
+        },
+      ],
+      [{ id: "e1", source: "trigger", target: "inline-child" }],
+      { id: "parent-inline-sync", name: "Parent Inline Sync" },
+    );
+
+    engine.save(parentWorkflow);
+
+    const parentCtx = await engine.execute(parentWorkflow.id, {
+      payload: "payload-value",
+      sharedValue: "inherit-me",
+      ignoredValue: "do-not-inherit",
+    });
+
+    expect(parentCtx.errors).toEqual([]);
+    const output = parentCtx.getNodeOutput("inline-child");
+    expect(output).toMatchObject({
+      success: true,
+      dispatched: false,
+      mode: "sync",
+      status: "completed",
+      echoed: "payload-value",
+      shared: "inherit-me",
+    });
+    expect(typeof output.runId).toBe("string");
+    expect(parentCtx.data.inlineSummary).toEqual(output);
+
+    const childDetail = engine.getRunDetail(output.runId);
+    expect(childDetail?.detail?.data?.payload).toBe("payload-value");
+    expect(childDetail?.detail?.data?.sharedValue).toBe("inherit-me");
+    expect(childDetail?.detail?.data?.ignoredValue).toBeUndefined();
+    expect(childDetail?.detail?.dagState?.parentRunId).toBe(parentCtx.id);
+    expect(childDetail?.detail?.dagState?.rootRunId).toBe(parentCtx.id);
+    expect(childDetail?.ledger?.parentRunId).toBe(parentCtx.id);
+    expect(childDetail?.ledger?.rootRunId).toBe(parentCtx.id);
+  });
+
+  it("dispatch mode queues embedded workflows without waiting for completion", async () => {
+    const handler = getNodeType("action.inline_workflow");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ _workflowId: "parent-inline-dispatch" });
+    let releaseChild;
+    const childRunPromise = new Promise((resolve) => {
+      releaseChild = resolve;
+    });
+    const mockEngine = {
+      executeDefinition: vi.fn().mockReturnValue(childRunPromise),
+    };
+    const node = {
+      id: "dispatch-inline-child",
+      type: "action.inline_workflow",
+      config: {
+        mode: "dispatch",
+        outputVariable: "inlineDispatchSummary",
+        workflow: {
+          id: "inline-child-dispatch",
+          trigger: "trigger.workflow_call",
+          nodes: [{ id: "trigger", type: "trigger.workflow_call", label: "Start", config: {} }],
+          edges: [],
+        },
+      },
+    };
+
+    try {
+      const result = await handler.execute(node, ctx, mockEngine);
+      expect(result).toMatchObject({
+        success: true,
+        dispatched: true,
+        mode: "dispatch",
+        workflowId: "inline-child-dispatch",
+      });
+      expect(ctx.data.inlineDispatchSummary).toEqual(result);
+      expect(mockEngine.executeDefinition).toHaveBeenCalledTimes(1);
+      const [definition, childInput, childOpts] = mockEngine.executeDefinition.mock.calls[0];
+      expect(definition.id).toBe("inline-child-dispatch");
+      expect(childInput._workflowParentRunId).toBe(ctx.id);
+      expect(childInput._workflowRootRunId).toBe(ctx.id);
+      expect(childOpts._parentRunId).toBe(ctx.id);
+      expect(childOpts._rootRunId).toBe(ctx.id);
+    } finally {
+      releaseChild?.(new WorkflowContext({}));
+      await childRunPromise;
+    }
   });
 });
 
@@ -1674,6 +2581,36 @@ describe("WorkflowEngine trigger evaluation", () => {
     });
   });
 
+  it("evaluateScheduleTriggers resolves templated schedule interval from workflow variables", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        {
+          id: "sched-trigger",
+          type: "trigger.schedule",
+          label: "Every 5min (templated)",
+          config: { intervalMs: "{{intervalMs}}" },
+        },
+      ],
+      [],
+      {
+        id: "sched-wf-templated-interval",
+        name: "Scheduled Workflow Templated Interval",
+        variables: { intervalMs: 300000 },
+      },
+    );
+    engine.save(wf);
+
+    await engine.execute("sched-wf-templated-interval");
+    const indexPath = join(engine.runsDir, "index.json");
+    const index = JSON.parse(readFileSync(indexPath, "utf8"));
+    const run = (index.runs || []).find((entry) => entry.workflowId === "sched-wf-templated-interval");
+    expect(run).toBeTruthy();
+    run.startedAt = Date.now() - 10 * 60 * 1000; // 10 minutes ago
+    writeFileSync(indexPath, JSON.stringify(index, null, 2), "utf8");
+
+    const hits = engine.evaluateScheduleTriggers();
+    expect(hits.some((h) => h.workflowId === "sched-wf-templated-interval")).toBe(true);
+  });
   it("evaluateScheduleTriggers polls trigger.task_available workflows", () => {
     const wf = makeSimpleWorkflow(
       [
@@ -1826,11 +2763,60 @@ describe("Session chaining - action.run_agent", () => {
     expect(ctx.data.threadId).toBe("thread-abc-123");
     expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
     expect(launchEphemeralThread.mock.calls[0][3]).toEqual(
-      expect.objectContaining({ onEvent: expect.any(Function) }),
+      expect.objectContaining({
+        onEvent: expect.any(Function),
+        systemPrompt: expect.any(String),
+      }),
     );
     const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
     expect(runLogText).toMatch(/Tool call: apply_patch/);
     expect(runLogText).toMatch(/Agent: Implemented the requested changes\./);
+  });
+
+  it("fails fast in strict cache anchor mode when system prompt includes task markers", async () => {
+    const previous = process.env.BOSUN_CACHE_ANCHOR_MODE;
+    process.env.BOSUN_CACHE_ANCHOR_MODE = "strict";
+    try {
+      const handler = getNodeType("action.run_agent");
+      expect(handler).toBeDefined();
+
+      const ctx = new WorkflowContext({
+        taskId: "STRICT-42",
+        taskTitle: "Strict title",
+        worktreePath: "/tmp/strict-cache",
+      });
+      const launchEphemeralThread = vi.fn().mockResolvedValue({
+        success: true,
+        output: "done",
+        sdk: "codex",
+        items: [],
+        threadId: "thread-strict",
+      });
+      const mockEngine = {
+        services: {
+          agentPool: {
+            launchEphemeralThread,
+          },
+        },
+      };
+      const node = {
+        id: "a-strict",
+        type: "action.run_agent",
+        config: {
+          prompt: "Do work",
+          systemPrompt: "System prompt for {{taskTitle}}",
+          autoRecover: false,
+        },
+      };
+
+      await expect(handler.execute(node, ctx, mockEngine)).rejects.toThrow(
+        /BOSUN_CACHE_ANCHOR_MODE=strict/,
+      );
+      expect(launchEphemeralThread).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env.BOSUN_CACHE_ANCHOR_MODE;
+      else process.env.BOSUN_CACHE_ANCHOR_MODE = previous;
+    }
   });
 
   it("resolves templated timeoutMs before launching agent", async () => {
@@ -2072,6 +3058,7 @@ describe("Session chaining - action.run_agent", () => {
       expect.objectContaining({
         sessionType: "flow",
         onEvent: expect.any(Function),
+        systemPrompt: expect.any(String),
       }),
     );
   });
@@ -2115,6 +3102,7 @@ describe("Session chaining - action.run_agent", () => {
       expect.objectContaining({
         sessionType: "task",
         onEvent: expect.any(Function),
+        systemPrompt: expect.any(String),
       }),
     );
 
@@ -2188,6 +3176,56 @@ describe("Session chaining - action.run_agent", () => {
     expect(result.threadId).toBe("thread-existing-1");
     expect(continueSession).toHaveBeenCalledTimes(1);
     expect(execWithRetry).not.toHaveBeenCalled();
+  });
+
+  it("skips continuing a stored session from a different run_agent node", async () => {
+    const handler = getNodeType("action.run_agent");
+    const ctx = new WorkflowContext({
+      worktreePath: "/tmp/test",
+      sessionId: "thread-tests-1",
+      _agentSessionNodeId: "run-agent-tests",
+    });
+    const continueSession = vi.fn().mockResolvedValue({
+      success: true,
+      output: "should-not-be-used",
+      threadId: "thread-tests-1",
+      sdk: "copilot",
+    });
+    const execWithRetry = vi.fn().mockResolvedValue({
+      success: true,
+      output: "implemented",
+      threadId: "thread-implement-1",
+      sdk: "copilot",
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn().mockResolvedValue({
+            success: true,
+            output: "fallback",
+            sdk: "copilot",
+            threadId: "thread-fallback",
+          }),
+          continueSession,
+          execWithRetry,
+        },
+      },
+    };
+    const node = {
+      id: "run-agent-implement",
+      type: "action.run_agent",
+      config: { prompt: "Implement work", continueOnSession: true },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(result.threadId).toBe("thread-implement-1");
+    expect(continueSession).not.toHaveBeenCalled();
+    expect(execWithRetry).toHaveBeenCalledTimes(1);
+    expect(execWithRetry.mock.calls[0][1].taskKey).not.toBe("thread-tests-1");
+    expect(execWithRetry.mock.calls[0][1].taskKey).toContain(":run-agent-implement");
+    expect(ctx.data._agentSessionNodeId).toBe("run-agent-implement");
   });
 
   it("runs multi-candidate selector mode when candidateCount > 1 and restores selected branch", async () => {
@@ -2356,6 +3394,10 @@ describe("Session chaining - action.run_agent", () => {
         eventType: "task.assigned",
         taskId: "TASK-DELEGATE-1",
         taskTitle: "Add API endpoint",
+      }),
+      expect.objectContaining({
+        _parentRunId: ctx.id,
+        _rootRunId: ctx.id,
       }),
     );
     expect(launchEphemeralThread).not.toHaveBeenCalled();
@@ -2929,6 +3971,69 @@ it("action.materialize_planner_tasks passes two args to createTask even with def
   }));
 });
 
+it("action.materialize_planner_tasks supports payload-only createTask adapters", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(materialize): payload-only adapter", "description": "A", "acceptance_criteria": ["ac"], "verification": ["verify"], "repo_areas": ["workflow"] }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  let payloadOnlyCreateCalls = 0;
+  let payloadOnlyCreateArg = null;
+  const createTask = async function createTaskPayloadOnly(taskData = {}) {
+    payloadOnlyCreateCalls += 1;
+    payloadOnlyCreateArg = taskData;
+    if (typeof taskData?.title !== "string" || !taskData.title.trim()) {
+      throw new Error("missing title payload");
+    }
+    if (taskData.projectId !== "proj-payload") {
+      throw new Error("missing project id payload");
+    }
+    return { id: "task-payload-only-1" };
+  };
+
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize-payload-only",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      projectId: "proj-payload",
+      status: "todo",
+      failOnZero: true,
+      dedup: false,
+      minCreated: 1,
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(1);
+  expect(payloadOnlyCreateCalls).toBe(1);
+  expect(payloadOnlyCreateArg).toEqual(expect.objectContaining({
+    title: "[m] fix(materialize): payload-only adapter",
+    status: "todo",
+    projectId: "proj-payload",
+  }));
+});
+
 it("action.materialize_planner_tasks applies workspace defaults from workflow context when planner output omits them", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
@@ -3118,7 +4223,7 @@ it("action.materialize_planner_tasks enforces planner quality gates and persists
   }));
 });
 
-it("action.materialize_planner_tasks applies calibrated default impact/risk gates", async () => {
+it("action.materialize_planner_tasks reorders candidates using replayed executor feedback priors", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
 
@@ -3128,306 +4233,264 @@ it("action.materialize_planner_tasks applies calibrated default impact/risk gate
       "```json",
       "{",
       '  "tasks": [',
-      '    { "title": "[m] fix(workflow): low default impact", "description": "A", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.68, "risk": 0.2 },',
-      '    { "title": "[m] fix(workflow): semantically high risk", "description": "B", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.8, "risk": "high risk: production blast radius" },',
-      '    { "title": "[m] fix(server): default valid", "description": "C", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["server"], "impact": "8/10", "confidence": "70%", "risk": "5/10" }',
+      '    { "title": "[m] fix(workflow): repeat offender", "description": "A", "acceptance_criteria": ["ac-a"], "verification": ["verify-a"], "repo_areas": ["workflow"], "impact": 0.9, "confidence": 0.9, "risk": 0.2 },',
+      '    { "title": "[m] chore(workflow): stable follow-up", "description": "B", "acceptance_criteria": ["ac-b"], "verification": ["verify-b"], "repo_areas": ["workflow"], "impact": 0.7, "confidence": 0.8, "risk": 0.2 }',
       "  ]",
       "}",
       "```",
     ].join("\n"),
   });
 
-  const createTask = vi.fn(async () => ({ id: "task-default-gates-1" }));
+  const createTask = vi
+    .fn()
+    .mockResolvedValueOnce({ id: "task-rank-1" })
+    .mockResolvedValueOnce({ id: "task-rank-2" });
+  const listTasks = vi.fn().mockResolvedValue([
+    {
+      id: "hist-1",
+      title: "[m] fix(workflow): failed attempt 1",
+      status: "todo",
+      agentAttempts: 3,
+      consecutiveNoCommits: 2,
+      blockedReason: "merge conflict",
+      meta: { repo_areas: ["workflow"] },
+    },
+    {
+      id: "hist-2",
+      title: "[m] fix(workflow): failed attempt 2",
+      status: "todo",
+      agentAttempts: 2,
+      consecutiveNoCommits: 1,
+      blockedReason: "tests failing",
+      meta: { repo_areas: ["workflow"] },
+    },
+    {
+      id: "hist-3",
+      title: "[m] chore(workflow): baseline success",
+      status: "done",
+      hasCommits: true,
+      agentAttempts: 1,
+      consecutiveNoCommits: 0,
+      meta: { repo_areas: ["workflow"] },
+    },
+  ]);
+
   const mockEngine = {
     services: {
       kanban: {
         createTask,
+        listTasks,
       },
     },
   };
 
   const node = {
-    id: "materialize-default-gates",
+    id: "materialize-ranked",
     type: "action.materialize_planner_tasks",
     config: {
       plannerNodeId: "run-planner",
-      dedup: false,
       failOnZero: true,
-      minCreated: 1,
+      dedup: false,
+      minCreated: 2,
+      failurePriorThreshold: 2,
+      failurePriorStep: 2,
+      feedbackSignalScale: 0.2,
     },
   };
 
   const result = await handler.execute(node, ctx, mockEngine);
   expect(result.success).toBe(true);
-  expect(result.createdCount).toBe(1);
-  expect(result.skippedCount).toBe(2);
-  expect(result.skipped).toEqual(expect.arrayContaining([
-    expect.objectContaining({ title: "[m] fix(workflow): low default impact", reason: "below_min_impact" }),
-    expect.objectContaining({ title: "[m] fix(workflow): semantically high risk", reason: "risk_above_threshold" }),
-  ]));
-  expect(createTask).toHaveBeenCalledWith("", expect.objectContaining({
-    title: "[m] fix(server): default valid",
-    meta: expect.objectContaining({
-      planner: expect.objectContaining({
-        impact: 8,
-        confidence: 7,
-        risk: "medium",
-      }),
-    }),
-  }));
+  expect(result.createdCount).toBe(2);
+  const createdTitles = createTask.mock.calls.map((call) => call?.[1]?.title);
+  expect(createdTitles).toEqual([
+    "[m] chore(workflow): stable follow-up",
+    "[m] fix(workflow): repeat offender",
+  ]);
+  expect(result.rankedTasks?.[0]?.title).toBe("[m] chore(workflow): stable follow-up");
 });
 
-it("action.materialize_planner_tasks treats explicit integer impact thresholds as 0-10 scale", async () => {
+it("action.materialize_planner_tasks reorders candidates from planner feedback replay when historical rows lack signals", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
 
-  const ctx = new WorkflowContext({});
-  ctx.setNodeOutput("run-planner", {
-    output: [
-      "```json",
-      "{",
-      '  "tasks": [',
-      '    { "title": "[m] fix(workflow): score two on ten", "description": "A", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 2, "confidence": 8, "risk": 2 }',
-      "  ]",
-      "}",
-      "```",
-    ].join("\n"),
-  });
-
-  const createTask = vi.fn(async () => ({ id: "task-explicit-threshold-1" }));
-  const mockEngine = {
-    services: {
-      kanban: {
-        createTask,
-      },
-    },
-  };
-
-  const node = {
-    id: "materialize-explicit-threshold",
-    type: "action.materialize_planner_tasks",
-    config: {
-      plannerNodeId: "run-planner",
-      dedup: false,
-      failOnZero: true,
-      minCreated: 1,
-      minImpactScore: 1,
-      maxRiskWithoutHuman: "medium",
-    },
-  };
-
-  const result = await handler.execute(node, ctx, mockEngine);
-  expect(result.success).toBe(true);
-  expect(result.createdCount).toBe(1);
-  expect(result.skippedCount).toBe(0);
-  expect(createTask).toHaveBeenCalledTimes(1);
-});
-
-it("action.materialize_planner_tasks normalizes mixed 0-1 and 0-10 planner scores consistently", async () => {
-  const handler = getNodeType("action.materialize_planner_tasks");
-  expect(handler).toBeDefined();
-
-  const ctx = new WorkflowContext({});
-  ctx.setNodeOutput("run-planner", {
-    output: [
-      "```json",
-      "{",
-      '  "tasks": [',
-      '    { "title": "[m] fix(workflow): one on ten risk", "description": "A", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 7, "confidence": 8, "risk": 1 },',
-      '    { "title": "[m] fix(server): one on one risk", "description": "B", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["server"], "impact": 0.8, "confidence": 0.7, "risk": 1 }',
-      "  ]",
-      "}",
-      "```",
-    ].join("\n"),
-  });
-
-  const createTask = vi.fn(async () => ({ id: "task-score-normalization-1" }));
-  const mockEngine = {
-    services: {
-      kanban: {
-        createTask,
-      },
-    },
-  };
-
-  const node = {
-    id: "materialize-score-normalization",
-    type: "action.materialize_planner_tasks",
-    config: {
-      plannerNodeId: "run-planner",
-      dedup: false,
-      failOnZero: true,
-      minCreated: 1,
-      minImpactScore: 6,
-      maxRiskWithoutHuman: "medium",
-    },
-  };
-
-  const result = await handler.execute(node, ctx, mockEngine);
-  expect(result.success).toBe(true);
-  expect(result.createdCount).toBe(1);
-  expect(result.skipped).toEqual(expect.arrayContaining([
-    expect.objectContaining({ title: "[m] fix(server): one on one risk", reason: "risk_above_threshold" }),
-  ]));
-  expect(createTask).toHaveBeenCalledWith("", expect.objectContaining({
-    title: "[m] fix(workflow): one on ten risk",
-    meta: expect.objectContaining({
-      planner: expect.objectContaining({
-        impact: 7,
-        confidence: 8,
-        risk: "low",
-      }),
-    }),
-  }));
-});
-
-it("action.materialize_planner_tasks keeps fractional sub-1 scores on ten-scale tasks", async () => {
-  const handler = getNodeType("action.materialize_planner_tasks");
-  expect(handler).toBeDefined();
-
-  const ctx = new WorkflowContext({});
-  ctx.setNodeOutput("run-planner", {
-    output: [
-      "```json",
-      "{",
-      '  "tasks": [',
-      '    { "title": "[m] fix(workflow): decimal on ten scale", "description": "A", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 8, "confidence": 7, "risk": 0.8 },',
-      '    { "title": "[m] fix(server): decimal on ratio scale", "description": "B", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["server"], "impact": 0.8, "confidence": 0.7, "risk": 0.8 }',
-      "  ]",
-      "}",
-      "```",
-    ].join("\n"),
-  });
-
-  const createTask = vi.fn(async () => ({ id: "task-decimal-mapping-1" }));
-  const mockEngine = {
-    services: {
-      kanban: {
-        createTask,
-      },
-    },
-  };
-
-  const node = {
-    id: "materialize-decimal-mapping",
-    type: "action.materialize_planner_tasks",
-    config: {
-      plannerNodeId: "run-planner",
-      dedup: false,
-      failOnZero: true,
-      minCreated: 1,
-      minImpactScore: 6,
-      maxRiskWithoutHuman: "medium",
-    },
-  };
-
-  const result = await handler.execute(node, ctx, mockEngine);
-  expect(result.success).toBe(true);
-  expect(result.createdCount).toBe(1);
-  expect(result.skipped).toEqual(expect.arrayContaining([
-    expect.objectContaining({ title: "[m] fix(server): decimal on ratio scale", reason: "risk_above_threshold" }),
-  ]));
-  expect(createTask).toHaveBeenCalledWith("", expect.objectContaining({
-    title: "[m] fix(workflow): decimal on ten scale",
-    meta: expect.objectContaining({
-      planner: expect.objectContaining({
-        impact: 8,
-        confidence: 7,
-        risk: "low",
-      }),
-    }),
-  }));
-});
-
-it("action.materialize_planner_tasks improves skip-reason histogram with calibrated defaults", async () => {
-  const handler = getNodeType("action.materialize_planner_tasks");
-  expect(handler).toBeDefined();
-
-  const plannerTasks = [
-    { title: "[m] fix(api): low ratio impact", impact: 0.4, confidence: 0.8, risk: 0.2 },
-    { title: "[m] fix(worker): low ten impact", impact: 4, confidence: 8, risk: 2 },
-    { title: "[m] fix(ui): medium impact ratio", impact: 0.62, confidence: 0.8, risk: 0.3 },
-    { title: "[m] fix(ui): medium impact ten", impact: "6.2/10", confidence: "8/10", risk: "3/10" },
-    { title: "[m] fix(core): semantically high risk", impact: 0.8, confidence: 0.7, risk: "high risk: production blast radius" },
-    { title: "[m] fix(core): semantically major risk", impact: "8/10", confidence: "8/10", risk: "major migration risk" },
-    { title: "[m] fix(task): healthy ratio", impact: 0.82, confidence: 0.75, risk: 0.25 },
-    { title: "[m] fix(task): healthy ten", impact: 8.2, confidence: 7.5, risk: 2.5 },
-  ];
-  const plannerOutput = [
-    "```json",
-    JSON.stringify({
-      tasks: plannerTasks.map((task) => ({
-        ...task,
-        description: "sample",
-        acceptance_criteria: ["ac"],
-        verification: ["v"],
-        repo_areas: ["workflow"],
-      })),
-    }, null, 2),
-    "```",
-  ].join("\n");
-
-  const runNode = async (config) => {
-    const ctx = new WorkflowContext({});
-    ctx.setNodeOutput("run-planner", { output: plannerOutput });
-    let createId = 0;
-    const createTask = vi.fn(async () => {
-      createId += 1;
-      return { id: `task-${createId}` };
-    });
-    const mockEngine = {
-      services: {
-        kanban: {
-          createTask,
+  const ctx = new WorkflowContext({
+    _plannerFeedback: {
+      rankingSignals: {
+        failureThreshold: 2.5,
+        weights: {
+          agentAttempts: 0.35,
+          consecutiveNoCommits: 1.25,
+          blockedReason: 1.5,
+          debtTrend: 0.4,
         },
+        patterns: [
+          {
+            key: "workflow::fix",
+            repoArea: "workflow",
+            archetype: "fix",
+            failureCounter: 6.2,
+            failures: 4,
+            successes: 0,
+            negativePrior: 2.2,
+          },
+        ],
       },
-    };
-    const result = await handler.execute({
-      id: "materialize-histogram",
+      taskStore: {
+        hotTasks: [
+          {
+            taskId: "hist-hot-1",
+            title: "[m] fix(workflow): repeat offender",
+            status: "blocked",
+            agentAttempts: 3,
+            consecutiveNoCommits: 2,
+            blockedReason: "merge conflict",
+            archetype: "fix",
+            repoAreas: ["workflow"],
+          },
+        ],
+      },
+    },
+  });
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): repeat offender", "description": "A", "acceptance_criteria": ["ac-a"], "verification": ["verify-a"], "repo_areas": ["workflow"], "impact": 0.9, "confidence": 0.9, "risk": 0.2 },',
+      '    { "title": "[m] chore(workflow): stable follow-up", "description": "B", "acceptance_criteria": ["ac-b"], "verification": ["verify-b"], "repo_areas": ["workflow"], "impact": 0.7, "confidence": 0.8, "risk": 0.2 }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi
+    .fn()
+    .mockResolvedValueOnce({ id: "task-feedback-rank-1" })
+    .mockResolvedValueOnce({ id: "task-feedback-rank-2" });
+  const listTasks = vi.fn().mockResolvedValue([
+    {
+      id: "hist-empty-1",
+      title: "[m] fix(workflow): old task without executor metadata",
+      status: "todo",
+      meta: { repo_areas: ["workflow"] },
+    },
+  ]);
+
+  const node = {
+    id: "materialize-feedback-ranked",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      failOnZero: true,
+      dedup: false,
+      minCreated: 2,
+      failurePriorThreshold: 2,
+      failurePriorStep: 2,
+      feedbackSignalScale: 0.2,
+    },
+  };
+
+  const result = await handler.execute(node, ctx, {
+    services: {
+      kanban: {
+        createTask,
+        listTasks,
+      },
+    },
+  });
+  expect(result.success).toBe(true);
+  const createdTitles = createTask.mock.calls.map((call) => call?.[1]?.title);
+  expect(createdTitles).toEqual([
+    "[m] chore(workflow): stable follow-up",
+    "[m] fix(workflow): repeat offender",
+  ]);
+});
+
+it("action.materialize_planner_tasks avoids over-penalizing patterns after transient failures recover", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): recovered pattern", "description": "A", "acceptance_criteria": ["ac-a"], "verification": ["verify-a"], "repo_areas": ["workflow"], "impact": 0.9, "confidence": 0.9, "risk": 0.2 },',
+      '    { "title": "[m] chore(workflow): fallback task", "description": "B", "acceptance_criteria": ["ac-b"], "verification": ["verify-b"], "repo_areas": ["workflow"], "impact": 0.8, "confidence": 0.85, "risk": 0.2 }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi
+    .fn()
+    .mockResolvedValueOnce({ id: "task-recovered-1" })
+    .mockResolvedValueOnce({ id: "task-recovered-2" });
+  const listTasks = vi.fn().mockResolvedValue([
+    {
+      id: "hist-recovered-failure",
+      title: "[m] fix(workflow): temporary failure",
+      status: "todo",
+      agentAttempts: 2,
+      consecutiveNoCommits: 2,
+      blockedReason: "merge conflict",
+      meta: { repo_areas: ["workflow"] },
+    },
+    {
+      id: "hist-recovered-success-1",
+      title: "[m] fix(workflow): merged follow-up",
+      status: "done",
+      hasCommits: true,
+      agentAttempts: 1,
+      consecutiveNoCommits: 0,
+      meta: { repo_areas: ["workflow"] },
+    },
+    {
+      id: "hist-recovered-success-2",
+      title: "[m] fix(workflow): merged stabilization",
+      status: "done",
+      hasCommits: true,
+      agentAttempts: 1,
+      consecutiveNoCommits: 0,
+      meta: { repo_areas: ["workflow"] },
+    },
+  ]);
+
+  const result = await handler.execute(
+    {
+      id: "materialize-recovered",
       type: "action.materialize_planner_tasks",
       config: {
         plannerNodeId: "run-planner",
-        maxTasks: plannerTasks.length,
+        failOnZero: true,
         dedup: false,
-        failOnZero: false,
-        minCreated: 0,
-        ...config,
+        minCreated: 2,
+        failurePriorThreshold: 2,
+        failurePriorStep: 2,
+        feedbackSignalScale: 0.2,
       },
-    }, ctx, mockEngine);
-    const histogram = result.skipReasonHistogram || {};
-    return { result, histogram };
-  };
+    },
+    ctx,
+    {
+      services: {
+        kanban: {
+          createTask,
+          listTasks,
+        },
+      },
+    },
+  );
 
-  const baseline = await runNode({
-    minImpactScore: 5,
-    maxRiskWithoutHuman: "high",
-  });
-  const calibrated = await runNode({});
-
-  expect(calibrated.histogram.below_min_impact || 0).toBeGreaterThan(baseline.histogram.below_min_impact || 0);
-  expect(calibrated.histogram.risk_above_threshold || 0).toBeGreaterThan(baseline.histogram.risk_above_threshold || 0);
-
-  // Calibrated defaults should reduce low-value/high-risk creation while preserving non-zero throughput.
-  expect(calibrated.result.createdCount).toBeGreaterThan(0);
-  expect(calibrated.result.createdCount).toBeLessThan(baseline.result.createdCount);
-  expect(calibrated.result.materializationOutcomes).toEqual(expect.arrayContaining([
-    expect.objectContaining({
-      title: "[m] fix(core): semantically high risk",
-      impact: 8,
-      confidence: 7,
-      risk: "high",
-      created: false,
-      reason: "risk_above_threshold",
-    }),
-    expect.objectContaining({
-      title: "[m] fix(task): healthy ten",
-      impact: 8.2,
-      confidence: 7.5,
-      risk: "low",
-      created: true,
-      reason: null,
-    }),
-  ]));
+  expect(result.success).toBe(true);
+  const createdTitles = createTask.mock.calls.map((call) => call?.[1]?.title);
+  expect(createdTitles).toEqual([
+    "[m] fix(workflow): recovered pattern",
+    "[m] chore(workflow): fallback task",
+  ]);
+  expect(result.rankedTasks?.[0]?._ranking?.penalty ?? 0).toBeLessThan(0.4);
 });
 describe("WorkflowEngine singleton services", () => {
   beforeEach(() => {
@@ -3459,6 +4522,38 @@ describe("WorkflowEngine singleton services", () => {
     expect(second.services.agentPool).toBeDefined();
     expect(second.services.prompts?.planner).toBe("Planner prompt");
   }, 20000);
+
+  it("reinitializes the singleton when explicit workflow directories change", () => {
+    const workflowDirA = join(tmpDir, "singleton-workflows-a");
+    const runsDirA = join(tmpDir, "singleton-runs-a");
+    const configDirA = join(tmpDir, "singleton-config-a");
+    const workflowDirB = join(tmpDir, "singleton-workflows-b");
+    const runsDirB = join(tmpDir, "singleton-runs-b");
+    const configDirB = join(tmpDir, "singleton-config-b");
+
+    const first = getWorkflowEngine({
+      workflowDir: workflowDirA,
+      runsDir: runsDirA,
+      configDir: configDirA,
+      services: {
+        kanban: { createTask: () => ({ id: "1" }) },
+      },
+    });
+    const second = getWorkflowEngine({
+      workflowDir: workflowDirB,
+      runsDir: runsDirB,
+      configDir: configDirB,
+      services: {
+        agentPool: { launchEphemeralThread: async () => ({ success: true, output: "" }) },
+      },
+    });
+
+    expect(second).not.toBe(first);
+    expect(second.workflowDir).toBe(resolve(workflowDirB));
+    expect(second.runsDir).toBe(resolve(runsDirB));
+    expect(second.services.kanban).toBeDefined();
+    expect(second.services.agentPool).toBeDefined();
+  });
 });
 
 // ── Anomaly Detector Integration Tests ──────────────────────────────────────

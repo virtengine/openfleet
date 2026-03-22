@@ -27,6 +27,7 @@ const html = htm.bind(h);
 const COLUMN_MAP = {
   draft: ["draft"],
   backlog: ["backlog", "open", "new", "todo"],
+  blocked: ["blocked", "error", "failed"],
   inProgress: ["in-progress", "inprogress", "working", "active", "assigned"],
   inReview: ["in-review", "inreview", "review", "pr-open", "pr-review"],
   done: ["done", "completed", "closed", "merged", "cancelled"],
@@ -35,6 +36,7 @@ const COLUMN_MAP = {
 const COLUMNS = [
   { id: "draft", title: "Drafts", icon: "\u{1F4DD}", color: "var(--color-warning, #f59e0b)" },
   { id: "backlog", title: "Backlog", icon: "\u{1F4CB}", color: "var(--text-secondary)" },
+  { id: "blocked", title: "Blocked", icon: "\u26D4", color: "var(--color-error, #ef4444)" },
   { id: "inProgress", title: "In Progress", icon: "\u{1F528}", color: "var(--color-inprogress, #3b82f6)" },
   { id: "inReview", title: "In Review", icon: "\u{1F440}", color: "var(--color-inreview, #f59e0b)" },
   { id: "done", title: "Done", icon: "\u2705", color: "var(--color-done, #22c55e)" },
@@ -43,6 +45,7 @@ const COLUMNS = [
 const COLUMN_TO_STATUS = {
   draft: "draft",
   backlog: "todo",
+  blocked: "blocked",
   inProgress: "inprogress",
   inReview: "inreview",
   done: "done",
@@ -63,9 +66,102 @@ const PRIORITY_LABELS = {
 };
 
 const LOAD_MORE_THRESHOLD_PX = 140;
+const KANBAN_BOARD_FILTER_SCHEMA_VERSION = 1;
+const KANBAN_BOARD_FILTER_STORAGE_PREFIX = "ve-kanban-board-filters";
+const KANBAN_BOARD_FILTER_LEGACY_KEY = "ve-kanban-board-filters";
+const KANBAN_BOARD_GLOBAL_SCOPE = "global";
+const DEFAULT_BOARD_FILTERS = Object.freeze({ repo: "", assignee: "", priority: "", search: "" });
+const BOARD_FILTER_KEYS = ["repo", "assignee", "priority", "search"];
+const ALLOWED_PRIORITIES = new Set(["critical", "high", "medium", "low"]);
 
 function matchTaskId(a, b) {
   return String(a) === String(b);
+}
+
+function getBoardFilterStorage(storage) {
+  if (storage && typeof storage.getItem === "function" && typeof storage.setItem === "function") return storage;
+  if (typeof localStorage === "undefined") return null;
+  return localStorage;
+}
+
+export function normalizeBoardWorkspaceScope(workspaceId) {
+  const raw = String(workspaceId || "").trim();
+  return raw || KANBAN_BOARD_GLOBAL_SCOPE;
+}
+
+export function buildBoardFilterStorageKey(workspaceId) {
+  return `${KANBAN_BOARD_FILTER_STORAGE_PREFIX}:${normalizeBoardWorkspaceScope(workspaceId)}`;
+}
+
+function trimFilterValue(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+export function sanitizeBoardFilters(filters, options = {}) {
+  const raw = filters && typeof filters === "object" ? filters : {};
+  const result = { ...DEFAULT_BOARD_FILTERS };
+  for (const key of BOARD_FILTER_KEYS) {
+    result[key] = trimFilterValue(raw[key]);
+  }
+
+  if (!ALLOWED_PRIORITIES.has(result.priority)) result.priority = "";
+
+  const repoSet = options?.allowedRepos instanceof Set ? options.allowedRepos : null;
+  const assigneeSet = options?.allowedAssignees instanceof Set ? options.allowedAssignees : null;
+  if (repoSet && result.repo && !repoSet.has(result.repo)) result.repo = "";
+  if (assigneeSet && result.assignee && !assigneeSet.has(result.assignee)) result.assignee = "";
+  return result;
+}
+
+function areBoardFiltersEqual(a, b) {
+  return (
+    String(a?.repo || "") === String(b?.repo || "") &&
+    String(a?.assignee || "") === String(b?.assignee || "") &&
+    String(a?.priority || "") === String(b?.priority || "") &&
+    String(a?.search || "") === String(b?.search || "")
+  );
+}
+
+function readRawPersistedBoardFilters(storage, key) {
+  const raw = storage?.getItem?.(key);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (parsed.version !== KANBAN_BOARD_FILTER_SCHEMA_VERSION) return null;
+    if (!parsed.filters || typeof parsed.filters !== "object") return null;
+    return parsed.filters;
+  } catch {
+    return null;
+  }
+}
+
+export function readPersistedBoardFilters({ storage, workspaceId, validateWith } = {}) {
+  const resolvedStorage = getBoardFilterStorage(storage);
+  if (!resolvedStorage) return { ...DEFAULT_BOARD_FILTERS };
+
+  const scopedKey = buildBoardFilterStorageKey(workspaceId);
+  let rawFilters = readRawPersistedBoardFilters(resolvedStorage, scopedKey);
+  if (!rawFilters) {
+    rawFilters = readRawPersistedBoardFilters(resolvedStorage, KANBAN_BOARD_FILTER_LEGACY_KEY);
+  }
+  return sanitizeBoardFilters(rawFilters || DEFAULT_BOARD_FILTERS, validateWith);
+}
+
+export function persistBoardFilters({ storage, workspaceId, filters } = {}) {
+  const resolvedStorage = getBoardFilterStorage(storage);
+  if (!resolvedStorage) return false;
+  const payload = {
+    version: KANBAN_BOARD_FILTER_SCHEMA_VERSION,
+    workspace: normalizeBoardWorkspaceScope(workspaceId),
+    filters: sanitizeBoardFilters(filters),
+  };
+  try {
+    resolvedStorage.setItem(buildBoardFilterStorageKey(workspaceId), JSON.stringify(payload));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function getColumnForStatus(status) {
@@ -95,6 +191,29 @@ function getTaskBaseBranch(task) {
     task.meta?.base_branch ||
     ""
   );
+}
+
+function getTaskBlockedPreview(task) {
+  const direct = String(
+    task?.blockedReason ||
+    task?.meta?.worktreeFailure?.blockedReason ||
+    task?.meta?.blockedContext?.summary ||
+    "",
+  ).trim();
+  if (direct) return direct;
+  const timeline = Array.isArray(task?.timeline) ? task.timeline : [];
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const message = String(
+      timeline[index]?.message ||
+      timeline[index]?.reason ||
+      timeline[index]?.error ||
+      "",
+    ).trim();
+    if (/worktree failed|pre-pr validation failed|blocked/i.test(message)) {
+      return message;
+    }
+  }
+  return "";
 }
 
 /* ─── Derived column data ─── */
@@ -411,6 +530,7 @@ function KanbanCard({ task, onOpen }) {
   const priorityLabel = PRIORITY_LABELS[task.priority] || null;
   const tags = getTaskTags(task);
   const baseBranch = getTaskBaseBranch(task);
+  const blockedPreview = getTaskBlockedPreview(task);
   const repoName = task.repo || task.repository || "";
   const issueNum = task.issueNumber || task.issue_number || (typeof task.id === "string" && /^\d+$/.test(task.id) ? task.id : null);
   const hasAgent = Boolean(
@@ -463,6 +583,11 @@ function KanbanCard({ task, onOpen }) {
         <${Typography} variant="body2" fontWeight=${500}>${truncate(task.title || "(untitled)", 80)}</${Typography}>
         ${task.description && html`
           <${Typography} variant="caption" color="text.secondary" sx=${{ display: 'block', mt: 0.5 }}>${truncate(task.description, 72)}</${Typography}>
+        `}
+        ${String(task?.status || "").toLowerCase() === "blocked" && html`
+          <${Typography} variant="caption" sx=${{ display: 'block', mt: 0.5, color: 'var(--color-error, #ef4444)', fontWeight: 600 }}>
+            ${truncate(blockedPreview || "Blocked task. Open details for diagnostics.", 96)}
+          </${Typography}>
         `}
         ${baseBranch && html`
           <${Typography} variant="caption" color="text.secondary" sx=${{ display: 'block', mt: 0.5 }}>Base: ${truncate(baseBranch, 24)}</${Typography}>
@@ -758,9 +883,47 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
 }
 
 /* ─── KanbanBoard (main export) ─── */
-export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks = false, onLoadMoreTasks = null, columnTotals = {}, totalTasks = 0 }) {
-  const [filters, setFilters] = useState({ repo: "", assignee: "", priority: "", search: "" });
+export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks = false, onLoadMoreTasks = null, columnTotals = {}, totalTasks = 0, workspaceId = "" }) {
+  const workspaceScope = normalizeBoardWorkspaceScope(workspaceId);
+  const [filters, setFilters] = useState(() => readPersistedBoardFilters({ workspaceId: workspaceScope }));
   const allTasks = tasksData.value || [];
+  const boardTasksLoaded = Boolean(tasksLoaded.value);
+  const knownRepos = useMemo(() => {
+    const repos = new Set();
+    for (const task of allTasks) {
+      const repoName = String(task?.repo || task?.repository || "").trim();
+      if (repoName) repos.add(repoName);
+    }
+    return repos;
+  }, [allTasks]);
+  const knownAssignees = useMemo(() => {
+    const assignees = new Set();
+    for (const task of allTasks) {
+      const assignee = String(task?.assignee || "").trim();
+      if (assignee) assignees.add(assignee);
+    }
+    return assignees;
+  }, [allTasks]);
+
+  useEffect(() => {
+    const hydrated = readPersistedBoardFilters({ workspaceId: workspaceScope });
+    setFilters((prev) => (areBoardFiltersEqual(prev, hydrated) ? prev : hydrated));
+  }, [workspaceScope]);
+
+  useEffect(() => {
+    if (!boardTasksLoaded) return;
+    setFilters((prev) => {
+      const sanitized = sanitizeBoardFilters(prev, {
+        allowedRepos: knownRepos,
+        allowedAssignees: knownAssignees,
+      });
+      return areBoardFiltersEqual(prev, sanitized) ? prev : sanitized;
+    });
+  }, [boardTasksLoaded, knownRepos, knownAssignees]);
+
+  useEffect(() => {
+    persistBoardFilters({ workspaceId: workspaceScope, filters });
+  }, [workspaceScope, filters]);
 
   const filteredTasks = useMemo(() => {
     let tasks = allTasks;
@@ -810,8 +973,6 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
     </${Box}>
   `;
 }
-
-
 
 
 

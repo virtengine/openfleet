@@ -128,6 +128,13 @@ function fleetThreadKey(thread, index) {
   return `thread-${index}:${taskKey}:${id}`;
 }
 
+function resolveFleetEntrySessionId(entry) {
+  const sessionId = String(entry?.session?.id || "").trim();
+  if (sessionId) return sessionId;
+  if (entry?.isTaskFallback || entry?.slot?.synthetic) return "";
+  return String(entry?.slot?.sessionId || "").trim();
+}
+
 function buildSessionLogQueryParts(values = []) {
   return Array.from(
     new Set(
@@ -2016,7 +2023,7 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
           branch: task?.branchName || task?.branch || task?.meta?.branchName || "",
           baseBranch: task?.baseBranch || task?.meta?.baseBranch || null,
           status: task?.status || task?.runtimeSnapshot?.state || "idle",
-          sessionId: String(task?.id || task?.taskId || "").trim(),
+          sessionId: "",
           startedAt:
             task?.lastActivityAt ||
             task?.updatedAt ||
@@ -2109,19 +2116,10 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
     visibleEntries.find((entry) => entry.key === selectedEntryKey)
     || visibleEntries[0]
     || null;
-  const streamSessionId =
-    selectedEntry?.session?.id
-    || selectedEntry?.slot?.sessionId
-    || selectedEntry?.slot?.taskId
-    || null;
-  const diffSessionId =
-    selectedEntry?.session?.id
-    || selectedEntry?.slot?.sessionId
-    || null;
-  const contextSessionId =
-    selectedEntry?.session?.id
-    || selectedEntry?.slot?.sessionId
-    || "";
+  const resolvedSessionId = resolveFleetEntrySessionId(selectedEntry);
+  const streamSessionId = resolvedSessionId || null;
+  const diffSessionId = resolvedSessionId || null;
+  const contextSessionId = resolvedSessionId || "";
   const contextTaskId =
     selectedEntry?.slot?.taskId
     || selectedEntry?.session?.taskId
@@ -2489,4 +2487,3 @@ export function FleetSessionsTab() {
     `}
   `;
 }
-

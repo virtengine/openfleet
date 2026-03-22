@@ -8,6 +8,7 @@ import {
   ensureTrustedProjects,
   ensureTopLevelSandboxPermissions,
 } from "../shell/codex-config.mjs";
+import { resolveCodexProfileRuntime } from "../shell/codex-model-profiles.mjs";
 
 describe("codex-config defaults", () => {
   it("includes expanded MCP server defaults", () => {
@@ -157,4 +158,18 @@ describe("codex-config defaults", () => {
     const allEntries = [...result.added, ...result.already];
     expect(allEntries.some((entry) => entry.includes("\\\\?\\C:\\"))).toBe(true);
   });
+
+  it("normalizes Azure OpenAI runtime base URLs for Codex", () => {
+    const result = resolveCodexProfileRuntime({
+      OPENAI_BASE_URL: "https://example-resource.openai.azure.com/openai/deployments/gpt-5/chat/completions?api-version=2024-10-21",
+      OPENAI_API_KEY: "azure-key",
+      CODEX_MODEL: "gpt-5-deployment",
+    });
+
+    expect(result.provider).toBe("azure");
+    expect(result.env.OPENAI_BASE_URL).toBe("https://example-resource.openai.azure.com/openai/v1");
+    expect(result.active.baseUrl).toBe("https://example-resource.openai.azure.com/openai/v1");
+  });
 });
+
+

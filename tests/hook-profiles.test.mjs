@@ -48,7 +48,7 @@ describe("hook-profiles", () => {
 
   it("normalizes hook targets", () => {
     expect(normalizeHookTargets("codex,claude")).toEqual(["codex", "claude"]);
-    expect(normalizeHookTargets("all")).toEqual(["codex", "claude", "copilot"]);
+    expect(normalizeHookTargets("all")).toEqual(["codex", "claude", "copilot", "gemini", "opencode"]);
   });
 
   it("builds scaffold options from env", () => {

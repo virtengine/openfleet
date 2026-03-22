@@ -21,8 +21,23 @@ const sourceFiles = [
   source: readFileSync(resolve(process.cwd(), relPath), "utf8"),
 }));
 
+const sessionListSourceFiles = [
+  "ui/components/session-list.js",
+  "site/ui/components/session-list.js",
+].map((relPath) => ({
+  relPath,
+  source: readFileSync(resolve(process.cwd(), relPath), "utf8"),
+}));
+
 for (const { relPath, source } of sourceFiles) {
   describe(`FleetSessionsPanel render stability (${relPath})`, () => {
+    it("never fabricates session ids for task-only fallback entries", () => {
+      expect(source).toContain("function resolveFleetEntrySessionId(entry)");
+      expect(source).toContain("if (entry?.isTaskFallback || entry?.slot?.synthetic) return \"\";");
+      expect(source).toContain("sessionId: \"\",");
+      expect(source).not.toContain("sessionId: String(task?.id || task?.taskId || \"\").trim(),");
+    });
+
     it("treats detached sessions as active based on status, not history-only placement", () => {
       expect(source).toContain("function isFleetEntryActive(entry)");
       expect(source).not.toContain("if (entry.isHistory) return false;");
@@ -96,6 +111,26 @@ for (const { relPath, source } of sourceFiles) {
       expect(statCardChunk).not.toMatch(/key=\$\{i\}/);
       // Should use a content-derived key (helper or inline expression)
       expect(statCardChunk).toMatch(/key=\$\{(?:fleetThreadKey\(|t\.taskKey)/);
+    });
+  });
+}
+
+for (const { relPath, source } of sessionListSourceFiles) {
+  describe(`SessionList stale-data UI parity (${relPath})`, () => {
+    it("renders explicit stale-state banner text", () => {
+      expect(source).toContain("Session list is showing stale data.");
+      expect(source).toContain("Last successful refresh:");
+      expect(source).toContain("Freshness:");
+      expect(source).toContain("Reason:");
+      expect(source).toContain("Refresh request failed");
+    });
+
+    it("renders bounded retry status text for countdown and exhaustion", () => {
+      expect(source).toContain("Automatic retries stopped after ${loadMeta.maxAttempts} attempts.");
+      expect(source).toContain("Retry ${retryAttemptDisplay}/${loadMeta.maxAttempts} in ${retrySeconds}s.");
+      expect(source).toContain("disabled=${manualRetryState.disabled}");
+      expect(source).toContain("${manualRetryState.label || \"Retry now\"}");
+      expect(source).toContain("Manual retry is disabled while automatic backoff is active.");
     });
   });
 }

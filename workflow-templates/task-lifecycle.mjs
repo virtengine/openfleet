@@ -31,11 +31,16 @@
  *                               NO  → set todo (cooldown)
  *                           YES → log & set todo
  *                         → release-worktree → release-claim → release-slot
- *                   NO  → release-claim → set todo → release-slot → notify
+ *                   NO  → [retryable?]
+ *                         YES → recover-worktree → retry acquire
+ *                               → [retry OK?]
+ *                                  YES → rejoin main flow
+ *                                  NO  → release-claim → set todo → release-slot → notify
+ *                         NO  → release-claim → set blocked → release-slot → notify
  *             NO → release-slot → log skipped
  */
 
-import { node, edge, resetLayout } from "./_helpers.mjs";
+import { node, edge, resetLayout, agentPhase } from "./_helpers.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Task Lifecycle — Full Task Execution Pipeline
@@ -51,8 +56,9 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     "agent dispatch → commit detection → PR creation → status transition. " +
     "Replaces the monolithic TaskExecutor.executeTask() method with a " +
     "composable workflow DAG.",
-  category: "lifecycle",
+  category: "task-execution",
   enabled: true,
+  core: true,
   recommended: true,
   trigger: "trigger.task_available",
   variables: {
@@ -60,10 +66,14 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     baseBranchLimit: 0,
     pollIntervalMs: 30000,
     claimTtlMinutes: 180,
-    claimRenewIntervalMs: 300000,
+    claimRenewIntervalMs: 60000,
     defaultSdk: "auto",
     defaultTargetBranch: "origin/main",
     taskTimeoutMs: 21600000, // 6 hours
+    prePrValidationEnabled: true,
+    prePrValidationCommand: "auto",
+    autoMergeOnCreate: false,
+    autoMergeMethod: "squash",
     maxRetries: 2,
     maxContinues: 3,
     protectedBranches: ["main", "master", "develop", "production"],
@@ -144,6 +154,17 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       cwd: "{{worktreePath}}",
     }, { x: 200, y: 1220 }),
 
+    // ── Optional per-project WORKFLOW.md contract ───────────────────────
+    node("read-workflow-contract", "read-workflow-contract", "Read WORKFLOW.md", {
+      repoRoot: "{{repoRoot}}",
+      worktreePath: "{{worktreePath}}",
+    }, { x: 200, y: 1350 }),
+
+    node("workflow-contract-validation", "workflow-contract-validation", "Validate WORKFLOW.md", {
+      repoRoot: "{{repoRoot}}",
+      worktreePath: "{{worktreePath}}",
+    }, { x: 200, y: 1480 }),
+
     // ── Build agent prompt ───────────────────────────────────────────────
     node("build-prompt", "action.build_task_prompt", "Build Prompt", {
       taskId: "{{taskId}}",
@@ -157,21 +178,21 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       workspace: "{{workspace}}",
       repository: "{{repository}}",
       repositories: "{{repositories}}",
-    }, { x: 200, y: 1350 }),
+    }, { x: 200, y: 1610 }),
+    // ── Execute agent (phase 1: planning) ───────────────────────────────
+    agentPhase("run-agent-plan", "Agent Plan",
+      "{{_taskPrompt}}\n\nExecution phase: planning. Produce a concrete implementation plan and identify required tests. Do not make code changes in this phase.",
+      {}, { x: 200, y: 1740 }),
 
-    // ── Execute agent ────────────────────────────────────────────────────
-    node("run-agent", "action.run_agent", "Execute Agent", {
-      prompt: "{{_taskPrompt}}",
-      taskId: "{{taskId}}",
-      sdk: "{{resolvedSdk}}",
-      model: "{{resolvedModel}}",
-      agentProfile: "{{agentProfile}}",
-      cwd: "{{worktreePath}}",
-      timeoutMs: "{{taskTimeoutMs}}",
-      maxRetries: "{{maxRetries}}",
-      maxContinues: "{{maxContinues}}",
-      failOnError: false,
-    }, { x: 200, y: 1480 }),
+    // ── Execute agent (phase 2: tests-first) ────────────────────────────
+    agentPhase("run-agent-tests", "Agent Tests",
+      "{{_taskPrompt}}\n\nExecution phase: tests. Write or update tests first for the target behavior, then validate failures/pass criteria before implementation changes.",
+      {}, { x: 200, y: 1545 }),
+
+    // ── Execute agent (phase 3: implementation + verification) ──────────
+    agentPhase("run-agent-implement", "Agent Implement",
+      "{{_taskPrompt}}\n\nExecution phase: implementation. Complete implementation after tests exist, run required verification (tests/lint/build), then commit, push, and create/update PR.",
+      {}, { x: 200, y: 1610 }),
 
     // ── Check if claim was stolen during agent execution ─────────────────
     node("claim-stolen", "condition.expression", "Claim Stolen?", {
@@ -189,12 +210,44 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       expression: "$ctx.getNodeOutput('detect-commits')?.hasCommits === true",
     }, { x: 120, y: 1870, outputs: ["yes", "no"] }),
 
+    // ── SUCCESS PATH: Local quality gate before push/PR ──────────────────
+    node("pre-pr-validation", "action.run_command", "Pre-PR Validation", {
+      command: "{{prePrValidationCommand}}",
+      commandType: "qualityGate",
+      cwd: "{{worktreePath}}",
+      failOnError: false,
+    }, { x: -120, y: 1940 }),
+
+    node("pre-pr-validation-ok", "condition.expression", "Validation Passed?", {
+      expression:
+        "(() => {" +
+        "const enabled = $data?.prePrValidationEnabled !== false;" +
+        "if (!enabled) return true;" +
+        "const out = $ctx.getNodeOutput('pre-pr-validation');" +
+        "if (!out) return false;" +
+        "if (out.success === true) return true;" +
+        "const code = Number(out.exitCode);" +
+        "return Number.isFinite(code) && code === 0;" +
+        "})()",
+    }, { x: -120, y: 2060, outputs: ["yes", "no"] }),
+
+    node("log-validation-failed", "notify.log", "Log Validation Failed", {
+      message: "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed, returning to todo",
+      level: "warn",
+    }, { x: 300, y: 2000 }),
+
+    node("set-todo-validation-failed", "action.update_task_status", "Set Todo (Validation Fail)", {
+      taskId: "{{taskId}}",
+      status: "todo",
+      taskTitle: "{{taskTitle}}",
+    }, { x: 300, y: 2130 }),
     // ── SUCCESS PATH: Push branch (with rebase + empty-diff guard) ───────
     node("push-branch", "action.push_branch", "Push Branch", {
       worktreePath: "{{worktreePath}}",
       branch: "{{branch}}",
       baseBranch: "{{baseBranch}}",
       rebaseBeforePush: true,
+      skipHooks: true,
       emptyDiffGuard: true,
       protectedBranches: "{{protectedBranches}}",
     }, { x: 0, y: 2000 }),
@@ -211,10 +264,12 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       base: "{{baseBranch}}",
       branch: "{{branch}}",
       cwd: "{{worktreePath}}",
+      enableAutoMerge: "{{autoMergeOnCreate}}",
+      autoMergeMethod: "{{autoMergeMethod}}",
     }, { x: 0, y: 2260 }),
 
     node("pr-created", "condition.expression", "PR Linked?", {
-      expression: "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)",
+      expression: "Boolean($ctx.getNodeOutput('create-pr')?.success === true && ($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl))",
     }, { x: 0, y: 2325, outputs: ["yes", "no"] }),
 
     // ── SUCCESS PATH: Set status → inreview ──────────────────────────────
@@ -224,11 +279,25 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       taskTitle: "{{taskTitle}}",
     }, { x: 0, y: 2390 }),
 
+    node("handoff-pr-progressor", "action.execute_workflow", "Handoff PR Progressor", {
+      workflowId: "template-bosun-pr-progressor",
+      mode: "dispatch",
+      input: {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+        prNumber: "{{$ctx.getNodeOutput('create-pr')?.prNumber ?? $data?.prNumber ?? null}}",
+        prUrl: "{{$ctx.getNodeOutput('create-pr')?.prUrl || $data?.prUrl || ''}}",
+        repo: "{{$ctx.getNodeOutput('create-pr')?.repoSlug || $data?.repo || $data?.repoSlug || $data?.repository || ''}}",
+      },
+    }, { x: -120, y: 2520 }),
+
     // ── SUCCESS PATH: Log success ────────────────────────────────────────
     node("log-success", "notify.log", "Log Success", {
       message: "Task \"{{taskTitle}}\" ({{taskId}}) completed — PR created",
       level: "info",
-    }, { x: 0, y: 2520 }),
+    }, { x: -120, y: 2650 }),
 
     // ── NO COMMITS PATH: Log no-commit ───────────────────────────────────
     node("log-no-commits", "notify.log", "Log No Commits", {
@@ -251,21 +320,61 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     }, { x: 180, y: 2260 }),
 
     // ── CLAIM STOLEN PATH: Log ───────────────────────────────────────────
+    node("create-pr-retry", "action.create_pr", "Recover PR Link", {
+      title: "{{taskTitle}}",
+      body: "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+      base: "{{baseBranch}}",
+      branch: "{{branch}}",
+      cwd: "{{worktreePath}}",
+      failOnError: false,
+      enableAutoMerge: "{{autoMergeOnCreate}}",
+      autoMergeMethod: "{{autoMergeMethod}}",
+    }, { x: 400, y: 1740 }),
+
+    node("pr-created-stolen", "condition.expression", "PR Linked After Claim Loss?", {
+      expression: "Boolean($ctx.getNodeOutput('create-pr-retry')?.success === true && ($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl))",
+    }, { x: 400, y: 1870, outputs: ["yes", "no"] }),
+
+    node("set-inreview-stolen", "action.update_task_status", "Set In-Review (Recovered)", {
+      taskId: "{{taskId}}",
+      status: "inreview",
+      taskTitle: "{{taskTitle}}",
+    }, { x: 250, y: 2000 }),
+
+    node("handoff-pr-progressor-stolen", "action.execute_workflow", "Handoff PR Progressor (Recovered)", {
+      workflowId: "template-bosun-pr-progressor",
+      mode: "dispatch",
+      input: {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+        prNumber: "{{$ctx.getNodeOutput('create-pr-retry')?.prNumber ?? $data?.prNumber ?? null}}",
+        prUrl: "{{$ctx.getNodeOutput('create-pr-retry')?.prUrl || $data?.prUrl || ''}}",
+        repo: "{{$ctx.getNodeOutput('create-pr-retry')?.repoSlug || $data?.repo || $data?.repoSlug || $data?.repository || ''}}",
+      },
+    }, { x: 120, y: 2130 }),
+
+    node("log-claim-stolen-recovered", "notify.log", "Log Claim Loss Recovery", {
+      message: "Task \"{{taskTitle}}\" ({{taskId}}) — claim lost after PR link recovery, keeping inreview",
+      level: "warn",
+    }, { x: 120, y: 2260 }),
+
     node("log-claim-stolen", "notify.log", "Log Claim Stolen", {
       message: "Task \"{{taskTitle}}\" ({{taskId}}) — claim was stolen, aborting",
       level: "warn",
-    }, { x: 400, y: 1740 }),
+    }, { x: 550, y: 2000 }),
 
     // ── CLAIM STOLEN PATH: Set todo ──────────────────────────────────────
     node("set-todo-stolen", "action.update_task_status", "Set Todo (Stolen)", {
       taskId: "{{taskId}}",
       status: "todo",
       taskTitle: "{{taskTitle}}",
-    }, { x: 400, y: 1870 }),
+    }, { x: 550, y: 2130 }),
 
     node("join-outcomes", "flow.join", "Join Outcome Paths", {
       mode: "all",
-      sourceNodeIds: ["log-success", "set-todo-push-failed", "set-todo-cooldown", "set-todo-stolen"],
+      sourceNodeIds: ["log-success", "set-todo-push-failed", "set-todo-cooldown", "set-todo-validation-failed", "set-todo-stolen", "log-claim-stolen-recovered"],
       includeSkipped: true,
     }, { x: 200, y: 2560 }),
 
@@ -301,19 +410,71 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       taskId: "{{taskId}}",
     }, { x: 600, y: 1090 }),
 
+    node("wt-failure-blocking", "condition.expression", "Non-Retryable WT Failure?", {
+      expression: "$ctx.getNodeOutput('acquire-worktree')?.retryable === false",
+    }, { x: 600, y: 1220, outputs: ["yes", "no"] }),
+
+    node("set-blocked-wt-failed", "action.update_task_status", "Set Blocked (WT Fail)", {
+      taskId: "{{taskId}}",
+      status: "blocked",
+      taskTitle: "{{taskTitle}}",
+    }, { x: 470, y: 1350 }),
+    
+    node("annotate-blocked-wt-failed", "action.bosun_function", "Annotate Blocked (WT Fail)", {
+      function: "tasks.update",
+      args: {
+        taskId: "{{taskId}}",
+        fields: {
+          cooldownUntil: "{{acquire-worktree.retryAt}}",
+          blockedReason: "{{acquire-worktree.blockedReason}}",
+          meta: "{{(() => { const current = ($data.taskMeta && typeof $data.taskMeta === 'object') ? $data.taskMeta : {}; const output = $ctx.getNodeOutput('acquire-worktree') || {}; return { ...current, autoRecovery: { active: true, reason: 'worktree_failure', failureKind: output.failureKind || 'branch_refresh_conflict', retryAt: output.retryAt || null, recoveryDelayMs: output.autoRecoverDelayMs || null, error: output.error || '', recordedAt: output.recordedAt || null }, worktreeFailure: { failureKind: output.failureKind || 'branch_refresh_conflict', retryable: output.retryable !== false, retryAt: output.retryAt || null, blockedReason: output.blockedReason || '', error: output.error || '', recordedAt: output.recordedAt || null } }; })()}}",
+        },
+      },
+    }, { x: 470, y: 1480 }),
+
     node("set-todo-wt-failed", "action.update_task_status", "Set Todo (WT Fail)", {
       taskId: "{{taskId}}",
       status: "todo",
       taskTitle: "{{taskTitle}}",
-    }, { x: 600, y: 1220 }),
+    }, { x: 730, y: 1350 }),
 
     node("release-slot-wt-failed", "action.release_slot", "Release Slot (WT Fail)", {
       taskId: "{{taskId}}",
-    }, { x: 600, y: 1350 }),
+    }, { x: 600, y: 1480 }),
 
     node("notify-wt-failed", "notify.telegram", "Notify WT Failed", {
-      message: "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}})",
-    }, { x: 600, y: 1480 }),
+      message: "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{acquire-worktree.recoveryNote}}",
+    }, { x: 600, y: 1740 }),
+
+    // ── AUTO-RECOVERY: Retry worktree acquisition once after cleanup ─────
+    node("wt-retry-eligible", "condition.expression", "Retryable WT Failure?", {
+      expression: "$ctx.getNodeOutput('acquire-worktree')?.retryable !== false",
+    }, { x: 850, y: 960, outputs: ["yes", "no"] }),
+
+    node("recover-worktree", "action.recover_worktree", "Clean Broken WT", {
+      repoRoot: "{{repoRoot}}",
+      branch: "{{branch}}",
+      taskId: "{{taskId}}",
+    }, { x: 850, y: 1090 }),
+
+    node("retry-acquire-wt", "action.acquire_worktree", "Retry Acquire WT", {
+      repoRoot: "{{repoRoot}}",
+      branch: "{{branch}}",
+      taskId: "{{taskId}}",
+      baseBranch: "{{baseBranch}}",
+      defaultTargetBranch: "{{defaultTargetBranch}}",
+    }, { x: 850, y: 1220 }),
+
+    node("retry-wt-ok", "condition.expression", "Retry WT OK?", {
+      expression: "$ctx.getNodeOutput('retry-acquire-wt')?.success === true",
+    }, { x: 850, y: 1350, outputs: ["yes", "no"] }),
+
+    // ── CLEANUP: Sweep task worktrees at end of lifecycle ────────────────
+    node("sweep-task-wts", "action.recover_worktree", "Sweep Task WTs", {
+      repoRoot: "{{repoRoot}}",
+      branch: "{{branch}}",
+      taskId: "{{taskId}}",
+    }, { x: 200, y: 3090 }),
   ],
   edges: [
     // Main flow
@@ -326,22 +487,32 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("acquire-worktree", "worktree-ok"),
     edge("worktree-ok", "resolve-executor", { condition: "$output?.result === true", port: "yes" }),
     edge("resolve-executor", "record-head"),
-    edge("record-head", "build-prompt"),
-    edge("build-prompt", "run-agent"),
-    edge("run-agent", "claim-stolen"),
+    edge("record-head", "read-workflow-contract"),
+    edge("read-workflow-contract", "workflow-contract-validation"),
+    edge("workflow-contract-validation", "build-prompt"),
+    edge("build-prompt", "run-agent-plan"),
+    edge("run-agent-plan", "run-agent-tests"),
+    edge("run-agent-tests", "run-agent-implement"),
+    edge("run-agent-implement", "claim-stolen"),
 
     // Post-agent: check claim
     edge("claim-stolen", "detect-commits", { condition: "$output?.result !== true", port: "no" }),
     edge("detect-commits", "has-commits"),
 
     // Success path (has commits)
-    edge("has-commits", "push-branch", { condition: "$output?.result === true", port: "yes" }),
+    edge("has-commits", "pre-pr-validation", { condition: "$output?.result === true", port: "yes" }),
+    edge("pre-pr-validation", "pre-pr-validation-ok"),
+    edge("pre-pr-validation-ok", "push-branch", { condition: "$output?.result === true", port: "yes" }),
+    edge("pre-pr-validation-ok", "log-validation-failed", { condition: "$output?.result !== true", port: "no" }),
+    edge("log-validation-failed", "set-todo-validation-failed"),
+    edge("set-todo-validation-failed", "join-outcomes"),
     edge("push-branch", "push-ok"),
     edge("push-ok", "create-pr", { condition: "$output?.result === true", port: "yes" }),
     edge("create-pr", "pr-created"),
     edge("pr-created", "set-inreview", { condition: "$output?.result === true", port: "yes" }),
     edge("pr-created", "set-todo-push-failed", { condition: "$output?.result !== true", port: "no" }),
-    edge("set-inreview", "log-success"),
+    edge("set-inreview", "handoff-pr-progressor"),
+    edge("handoff-pr-progressor", "log-success"),
     edge("log-success", "join-outcomes"),
 
     // Push failed path
@@ -354,7 +525,13 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("set-todo-cooldown", "join-outcomes"),
 
     // Claim stolen path
-    edge("claim-stolen", "log-claim-stolen", { condition: "$output?.result === true", port: "yes" }),
+    edge("claim-stolen", "create-pr-retry", { condition: "$output?.result === true", port: "yes" }),
+    edge("create-pr-retry", "pr-created-stolen"),
+    edge("pr-created-stolen", "set-inreview-stolen", { condition: "$output?.result === true", port: "yes" }),
+    edge("set-inreview-stolen", "handoff-pr-progressor-stolen"),
+    edge("handoff-pr-progressor-stolen", "log-claim-stolen-recovered"),
+    edge("log-claim-stolen-recovered", "join-outcomes"),
+    edge("pr-created-stolen", "log-claim-stolen", { condition: "$output?.result !== true", port: "no" }),
     edge("log-claim-stolen", "set-todo-stolen"),
     edge("set-todo-stolen", "join-outcomes"),
 
@@ -362,14 +539,31 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("join-outcomes", "release-worktree"),
     edge("release-worktree", "release-claim"),
     edge("release-claim", "release-slot"),
+    edge("release-slot", "sweep-task-wts"),
 
     // Claim failed path
     edge("claim-ok", "release-slot-claim-failed", { condition: "$output?.result !== true", port: "no" }),
     edge("release-slot-claim-failed", "log-claim-failed"),
 
-    // Worktree failed path
-    edge("worktree-ok", "release-claim-wt-failed", { condition: "$output?.result !== true", port: "no" }),
-    edge("release-claim-wt-failed", "set-todo-wt-failed"),
+    // Worktree failed path — auto-recovery attempt first
+    edge("worktree-ok", "wt-retry-eligible", { condition: "$output?.result !== true", port: "no" }),
+
+    // Retryable: clean up broken worktree and re-acquire
+    edge("wt-retry-eligible", "recover-worktree", { condition: "$output?.result === true", port: "yes" }),
+    edge("recover-worktree", "retry-acquire-wt"),
+    edge("retry-acquire-wt", "retry-wt-ok"),
+    // Retry succeeded — rejoin main flow at resolve-executor
+    edge("retry-wt-ok", "resolve-executor", { condition: "$output?.result === true", port: "yes" }),
+    // Retry failed — fall through to original failure path
+    edge("retry-wt-ok", "release-claim-wt-failed", { condition: "$output?.result !== true", port: "no" }),
+
+    // Non-retryable: skip recovery, go directly to failure path
+    edge("wt-retry-eligible", "release-claim-wt-failed", { condition: "$output?.result !== true", port: "no" }),
+    edge("release-claim-wt-failed", "wt-failure-blocking"),
+    edge("wt-failure-blocking", "set-blocked-wt-failed", { condition: "$output?.result === true", port: "yes" }),
+    edge("wt-failure-blocking", "set-todo-wt-failed", { condition: "$output?.result !== true", port: "no" }),
+    edge("set-blocked-wt-failed", "annotate-blocked-wt-failed"),
+    edge("annotate-blocked-wt-failed", "release-slot-wt-failed"),
     edge("set-todo-wt-failed", "release-slot-wt-failed"),
     edge("release-slot-wt-failed", "notify-wt-failed"),
   ],
@@ -379,6 +573,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     createdAt: "2026-03-01T00:00:00Z",
     templateVersion: "2.0.0",
     tags: ["task", "lifecycle", "executor", "workflow-first", "core"],
+    requiredTemplates: ["template-bosun-pr-progressor"],
     replaces: {
       module: "task-executor.mjs",
       functions: [
@@ -410,7 +605,7 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     "Simplified task lifecycle for lightweight deployments. Same core " +
     "flow as the full Task Lifecycle (slot → claim → worktree → agent → " +
     "push → PR) but with fewer failure branches and no anti-thrash.",
-  category: "lifecycle",
+  category: "task-execution",
   enabled: true,
   recommended: false,
   trigger: "trigger.task_available",
@@ -485,6 +680,16 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
       cwd: "{{worktreePath}}",
     }, { x: 300, y: 1090 }),
 
+    node("read-workflow-contract", "read-workflow-contract", "Read WORKFLOW.md", {
+      repoRoot: "{{repoRoot}}",
+      worktreePath: "{{worktreePath}}",
+    }, { x: 300, y: 1220 }),
+
+    node("workflow-contract-validation", "workflow-contract-validation", "Validate WORKFLOW.md", {
+      repoRoot: "{{repoRoot}}",
+      worktreePath: "{{worktreePath}}",
+    }, { x: 300, y: 1350 }),
+
     // ── Build prompt ─────────────────────────────────────────────────────
     node("prompt", "action.build_task_prompt", "Build Prompt", {
       taskTitle: "{{taskTitle}}",
@@ -494,20 +699,10 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
       workspace: "{{workspace}}",
       repository: "{{repository}}",
       repositories: "{{repositories}}",
-    }, { x: 300, y: 1220 }),
+    }, { x: 300, y: 1480 }),
 
     // ── Run agent ────────────────────────────────────────────────────────
-    node("agent", "action.run_agent", "Run Agent", {
-      prompt: "{{_taskPrompt}}",
-      taskId: "{{taskId}}",
-      sdk: "{{resolvedSdk}}",
-      model: "{{resolvedModel}}",
-      agentProfile: "{{agentProfile}}",
-      cwd: "{{worktreePath}}",
-      timeoutMs: "{{taskTimeoutMs}}",
-      maxRetries: "{{maxRetries}}",
-      failOnError: false,
-    }, { x: 300, y: 1350 }),
+    agentPhase("agent", "Run Agent", "{{_taskPrompt}}", {}, { x: 300, y: 1610 }),
 
     // ── Detect commits ───────────────────────────────────────────────────
     node("commits", "action.detect_new_commits", "Check Commits", {
@@ -538,7 +733,7 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     }, { x: 180, y: 1870 }),
 
     node("pr-created", "condition.expression", "PR Linked?", {
-      expression: "Boolean($ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl)",
+      expression: "Boolean($ctx.getNodeOutput('pr')?.success === true && ($ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl))",
     }, { x: 180, y: 1935, outputs: ["yes", "no"] }),
 
     // ── Set inreview ─────────────────────────────────────────────────────
@@ -596,7 +791,9 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     edge("set-inprogress", "acquire-worktree"),
     edge("acquire-worktree", "resolve"),
     edge("resolve", "record-head"),
-    edge("record-head", "prompt"),
+    edge("record-head", "read-workflow-contract"),
+    edge("read-workflow-contract", "workflow-contract-validation"),
+    edge("workflow-contract-validation", "prompt"),
     edge("prompt", "agent"),
     edge("agent", "commits"),
     edge("commits", "has-commits"),
@@ -641,4 +838,3 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     },
   },
 };
-

@@ -599,6 +599,148 @@ Always use deterministic TF ops.
     });
   });
 
+  describe("retrieveKnowledgeEntries / formatKnowledgeBriefing", () => {
+    let initSharedKnowledge;
+    let buildKnowledgeEntry;
+    let appendKnowledgeEntry;
+    let retrieveKnowledgeEntries;
+    let formatKnowledgeBriefing;
+
+    beforeEach(async () => {
+      ({
+        initSharedKnowledge,
+        buildKnowledgeEntry,
+        appendKnowledgeEntry,
+        retrieveKnowledgeEntries,
+        formatKnowledgeBriefing,
+      } = await import("../workspace/shared-knowledge.mjs"));
+      initSharedKnowledge({ repoRoot: tempRoot, targetFile: "TEST.md" });
+    });
+
+    it("retrieves only memories visible to the current scope chain", async () => {
+      const entries = [
+        {
+          content: "Run memory: retried login migrations only after seeding fixtures.",
+          scopeLevel: "run",
+          teamId: "team-a",
+          workspaceId: "workspace-1",
+          sessionId: "session-1",
+          runId: "run-1",
+          agentId: "agent-run",
+        },
+        {
+          content: "Session memory: keep mocked clocks aligned across retry attempts.",
+          scopeLevel: "session",
+          teamId: "team-a",
+          workspaceId: "workspace-1",
+          sessionId: "session-1",
+          runId: "run-0",
+          agentId: "agent-session",
+        },
+        {
+          content: "Workspace memory: flaky login tests need a DB fixture reset.",
+          scopeLevel: "workspace",
+          teamId: "team-a",
+          workspaceId: "workspace-1",
+          sessionId: "session-0",
+          runId: "run-0",
+          agentId: "agent-workspace",
+        },
+        {
+          content: "Team memory: prefer deterministic waits in browser tests.",
+          scopeLevel: "team",
+          teamId: "team-a",
+          workspaceId: "workspace-0",
+          sessionId: "session-0",
+          runId: "run-0",
+          agentId: "agent-team",
+        },
+        {
+          content: "Workspace memory: payments smoke tests require a sandbox token.",
+          scopeLevel: "workspace",
+          teamId: "team-a",
+          workspaceId: "workspace-2",
+          sessionId: "session-2",
+          runId: "run-2",
+          agentId: "agent-other-workspace",
+        },
+      ];
+
+      for (const entry of entries) {
+        const result = await appendKnowledgeEntry(
+          buildKnowledgeEntry({
+            ...entry,
+            scope: "testing",
+            category: "pattern",
+          }),
+        );
+        expect(result.success).toBe(true);
+      }
+
+      const retrieved = await retrieveKnowledgeEntries({
+        repoRoot: tempRoot,
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        query: "stabilize flaky login retries with fixture reset and deterministic waits",
+        limit: 10,
+      });
+
+      expect(retrieved.map((entry) => entry.scopeLevel)).toEqual([
+        "run",
+        "session",
+        "workspace",
+        "team",
+      ]);
+      expect(retrieved.map((entry) => entry.content)).not.toContain(
+        "Workspace memory: payments smoke tests require a sandbox token.",
+      );
+    });
+
+    it("formats a bounded briefing for prompt injection", async () => {
+      const retrieved = [
+        buildKnowledgeEntry({
+          content: "Run memory: reseed fixtures before the final retry.",
+          scope: "testing",
+          scopeLevel: "run",
+          teamId: "team-a",
+          workspaceId: "workspace-1",
+          sessionId: "session-1",
+          runId: "run-1",
+          agentId: "agent-run",
+        }),
+        buildKnowledgeEntry({
+          content: "Workspace memory: browser login tests fail without fixture reset.",
+          scope: "testing",
+          scopeLevel: "workspace",
+          teamId: "team-a",
+          workspaceId: "workspace-1",
+          sessionId: "session-9",
+          runId: "run-9",
+          agentId: "agent-workspace",
+        }),
+        buildKnowledgeEntry({
+          content: "Team memory: deterministic waits beat sleep-based polling.",
+          scope: "testing",
+          scopeLevel: "team",
+          teamId: "team-a",
+          workspaceId: "workspace-9",
+          sessionId: "session-9",
+          runId: "run-9",
+          agentId: "agent-team",
+        }),
+      ];
+
+      const briefing = formatKnowledgeBriefing(retrieved, { maxEntries: 2 });
+
+      expect(briefing).toContain("## Persistent Memory Briefing");
+      expect(briefing).toContain("[run]");
+      expect(briefing).toContain("[workspace]");
+      expect(briefing).not.toContain("[team]");
+    });
+  });
+
 
   // ── Task List Sharing ────────────────────────────────────────────────────
 

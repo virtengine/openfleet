@@ -9,6 +9,9 @@ const ENV_KEYS = [
   "INTERNAL_EXECUTOR_PARALLEL",
   "DEPENDABOT_MERGE_METHOD",
   "BOSUN_CONFIG_PATH",
+  "BOSUN_HOME",
+  "BOSUN_DIR",
+  "BOSUN_GITHUB_CLIENT_ID",
   "TELEGRAM_BOT_TOKEN",
   "TELEGRAM_CHAT_ID",
   "INTERNAL_EXECUTOR_SDK",
@@ -188,6 +191,39 @@ describe("loadConfig validation and edge cases", () => {
     expect(config.configDir).toBe(repoConfigDir);
   });
 
+  it("loads .bosun env when BOSUN_HOME is declared in repo .env", async () => {
+    const repoRoot = resolve(tempConfigDir, "repo-from-env");
+    const repoConfigDir = resolve(repoRoot, ".bosun");
+
+    await mkdir(repoConfigDir, { recursive: true });
+    await writeFile(
+      resolve(repoRoot, ".env"),
+      `BOSUN_HOME=${repoConfigDir}\n`,
+      "utf8",
+    );
+    await writeFile(
+      resolve(repoConfigDir, ".env"),
+      "TELEGRAM_INTERVAL_MIN=42\nBOSUN_GITHUB_CLIENT_ID=test-client-id\n",
+      "utf8",
+    );
+
+    delete process.env.BOSUN_HOME;
+    delete process.env.BOSUN_DIR;
+    delete process.env.BOSUN_GITHUB_CLIENT_ID;
+    delete process.env.TELEGRAM_INTERVAL_MIN;
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--repo-root",
+      repoRoot,
+    ]);
+
+    expect(config.configDir).toBe(repoConfigDir);
+    expect(config.telegramIntervalMin).toBe(42);
+    expect(process.env.BOSUN_GITHUB_CLIENT_ID).toBe("test-client-id");
+  });
+
   it("accepts valid env overrides", () => {
     process.env.TELEGRAM_INTERVAL_MIN = "30";
     process.env.INTERNAL_EXECUTOR_PARALLEL = "5";
@@ -257,6 +293,55 @@ describe("loadConfig validation and edge cases", () => {
     expect(typeof config.workflowRecovery.maxAttempts).toBe("number");
     expect(typeof config.workflowRecovery.escalationWarnAfterAttempts).toBe("number");
     expect(Array.isArray(config.triggerSystem.templates)).toBe(true);
+    expect(typeof config.workflowDefaults).toBe("object");
+    expect(Array.isArray(config.workflows)).toBe(true);
+  });
+
+  it("normalizes typed workflow entries from bosun.config.json", async () => {
+    await writeFile(
+      resolve(tempConfigDir, "bosun.config.json"),
+      JSON.stringify(
+        {
+          workflows: [
+            {
+              type: "continuation-loop",
+              enabled: true,
+              taskId: "LIN-123",
+              maxTurns: 5,
+              pollIntervalMs: 2500,
+              terminalStates: ["Done", "Cancelled", "done"],
+              stuckThresholdMs: 120000,
+              onStuck: "pause",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(Array.isArray(config.workflows)).toBe(true);
+    expect(config.workflows).toHaveLength(1);
+    expect(config.workflows[0]).toMatchObject({
+      type: "continuation-loop",
+      enabled: true,
+      taskId: "LIN-123",
+      maxTurns: 5,
+      pollIntervalMs: 2500,
+      terminalStates: ["done", "cancelled"],
+      stuckThresholdMs: 120000,
+      onStuck: "pause",
+    });
   });
 
   it("parses executor model lists from EXECUTORS env", () => {
@@ -555,4 +640,34 @@ describe("loadConfig validation and edge cases", () => {
 
     expect(config.scriptPath).toBe(scriptFile);
   });
+  it("loads declarative workflow definitions from bosun.config.json", async () => {
+    await writeFile(
+      resolve(tempConfigDir, "bosun.config.json"),
+      JSON.stringify({
+        workflows: {
+          "code-review": {
+            type: "sequential",
+            stages: ["implement", "review"],
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.workflows["code-review"]).toMatchObject({
+      name: "code-review",
+      type: "sequential",
+    });
+    expect(config.workflows["parallel-search"]).toBeTruthy();
+  });
 });
+

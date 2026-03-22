@@ -30,6 +30,12 @@
  */
 
 const TAG = "[agent-supervisor]";
+const API_ERROR_CONTINUE_COOLDOWNS_MS = Object.freeze([
+  3 * 60_000,
+  5 * 60_000,
+  5 * 60_000,
+]);
+const API_ERROR_RECOVERY_RESET_MS = 15 * 60_000;
 
 // ── Situation Types (30+ edge cases) ────────────────────────────────────────
 
@@ -140,7 +146,7 @@ const INTERVENTION_LADDER = {
   [SITUATION.PRE_PUSH_FAILURE]:   [INTERVENTION.INJECT_PROMPT, INTERVENTION.INJECT_PROMPT, INTERVENTION.FORCE_NEW_THREAD, INTERVENTION.BLOCK_AND_NOTIFY],
 
   [SITUATION.RATE_LIMITED]:       [INTERVENTION.COOLDOWN, INTERVENTION.COOLDOWN, INTERVENTION.PAUSE_EXECUTOR],
-  [SITUATION.API_ERROR]:          [INTERVENTION.COOLDOWN, INTERVENTION.COOLDOWN, INTERVENTION.BLOCK_AND_NOTIFY],
+  [SITUATION.API_ERROR]:          [INTERVENTION.FORCE_NEW_THREAD, INTERVENTION.REDISPATCH_TASK, INTERVENTION.BLOCK_AND_NOTIFY],
   [SITUATION.TOKEN_OVERFLOW]:     [INTERVENTION.FORCE_NEW_THREAD, INTERVENTION.FORCE_NEW_THREAD, INTERVENTION.BLOCK_AND_NOTIFY],
   [SITUATION.SESSION_EXPIRED]:    [INTERVENTION.FORCE_NEW_THREAD, INTERVENTION.FORCE_NEW_THREAD, INTERVENTION.BLOCK_AND_NOTIFY],
   [SITUATION.MODEL_ERROR]:        [INTERVENTION.BLOCK_AND_NOTIFY],       // Not retryable — wrong model name
@@ -263,9 +269,12 @@ const RECOVERY_PROMPTS = {
   [SITUATION.REBASE_SPIRAL]: () =>
     `You're stuck in a rebase loop. STOP rebasing and try:\n` +
     `1. git rebase --abort\n` +
-    `2. git checkout -B <your-branch> origin/main\n` +
-    `3. Re-apply your changes manually\n` +
-    `4. Commit and push`,
+    `2. git stash (save any local changes)\n` +
+    `3. git fetch origin && git merge origin/main --no-edit\n` +
+    `4. If merge conflicts, resolve them manually\n` +
+    `5. git stash pop (if you stashed changes)\n` +
+    `6. Commit and push\n` +
+    `WARNING: Do NOT use git checkout -B to reset your branch to origin/main — this destroys all PR changes.`,
 
   [SITUATION.THOUGHT_SPINNING]: () =>
     `You've been reasoning without taking action. STOP thinking and START doing:\n` +
@@ -375,6 +384,7 @@ export class AgentSupervisor {
     this._sendTelegram = opts.sendTelegram || null;
     this._getTask = opts.getTask || null;
     this._setTaskStatus = opts.setTaskStatus || null;
+    this._updateTask = opts.updateTask || null;
     this._reviewAgent = opts.reviewAgent || null;
 
     // ── Dispatch functions ──
@@ -440,13 +450,15 @@ export class AgentSupervisor {
     const signals = this._gatherSignals(taskId, context);
     const situation = this._diagnose(signals, context);
     const healthScore = this._computeHealthScore(signals);
+    const recoveryOverride = this._selectRecoveryIntervention(taskId, situation, context, state);
     const attemptIndex = Math.min(
       state.interventionCount,
       (INTERVENTION_LADDER[situation] || [INTERVENTION.NONE]).length - 1,
     );
-    const intervention = (INTERVENTION_LADDER[situation] || [INTERVENTION.NONE])[attemptIndex];
+    const intervention = recoveryOverride?.intervention
+      || (INTERVENTION_LADDER[situation] || [INTERVENTION.NONE])[attemptIndex];
     const prompt = this._buildPrompt(situation, taskId, context);
-    const reason = this._buildReason(situation, signals, context);
+    const reason = recoveryOverride?.reason || this._buildReason(situation, signals, context);
 
     // Record
     state.situationHistory.push({ situation, ts: Date.now() });
@@ -482,6 +494,9 @@ export class AgentSupervisor {
           break;
 
         case INTERVENTION.CONTINUE_SIGNAL:
+          if (situation === SITUATION.API_ERROR) {
+            this._recordApiErrorContinue(taskId);
+          }
           if (this._sendContinueSignal) {
             this._sendContinueSignal(taskId);
           }
@@ -509,6 +524,27 @@ export class AgentSupervisor {
           if (this._setTaskStatus) {
             try {
               this._setTaskStatus(taskId, "blocked", "supervisor");
+            } catch { /* best-effort */ }
+          }
+          // Persist recovery metadata so auto-recovery can unblock later
+          if (this._updateTask) {
+            try {
+              const existing = this._resolveTask(taskId);
+              const existingMeta = existing?.meta || {};
+              const cooldownMs = 30 * 60_000; // 30 minutes
+              this._updateTask(taskId, {
+                blockedReason: `Supervisor: ${reason} (situation: ${situation})`,
+                cooldownUntil: Date.now() + cooldownMs,
+                meta: {
+                  ...existingMeta,
+                  autoRecovery: {
+                    active: true,
+                    reason: "supervisor_block",
+                    situation,
+                    retryAt: Date.now() + cooldownMs,
+                  },
+                },
+              });
             } catch { /* best-effort */ }
           }
           const task = this._resolveTask(taskId);
@@ -722,6 +758,12 @@ export class AgentSupervisor {
       qualityScore: state.qualityScore,
       reviewVerdict: state.reviewVerdict,
       reviewIssueCount: state.reviewIssues?.length || 0,
+      apiErrorRecovery: state.apiErrorRecovery
+        ? {
+            ...state.apiErrorRecovery,
+            cooldownRemainingMs: Math.max(0, Number(state.apiErrorRecovery.cooldownUntil || 0) - Date.now()),
+          }
+        : null,
       recentSituations: state.situationHistory.slice(-10),
     };
   }
@@ -786,9 +828,102 @@ export class AgentSupervisor {
         qualityScore: null,
         reviewVerdict: null,
         reviewIssues: null,
+        apiErrorRecovery: null,
       });
     }
     return this._taskState.get(taskId);
+  }
+
+  _normalizeApiErrorSignature(context) {
+    const raw = String(context?.error || context?.output || "").trim().toLowerCase();
+    if (!raw) return "api_error";
+    return raw
+      .replace(/\s+/g, " ")
+      .replace(/\b\d{2,}\b/g, "#")
+      .slice(0, 240);
+  }
+
+  _selectRecoveryIntervention(taskId, situation, context, state) {
+    if (situation !== SITUATION.API_ERROR) {
+      if (state?.apiErrorRecovery) state.apiErrorRecovery = null;
+      return null;
+    }
+
+    const now = Date.now();
+    const signature = this._normalizeApiErrorSignature(context);
+    const current = state.apiErrorRecovery || {
+      signature,
+      continueAttempts: 0,
+      lastErrorAt: 0,
+      cooldownUntil: 0,
+    };
+
+    const shouldReset =
+      current.signature !== signature ||
+      (current.lastErrorAt > 0 && now - current.lastErrorAt > API_ERROR_RECOVERY_RESET_MS);
+
+    const nextState = shouldReset
+      ? {
+          signature,
+          continueAttempts: 0,
+          lastErrorAt: now,
+          cooldownUntil: 0,
+        }
+      : {
+          ...current,
+          signature,
+          lastErrorAt: now,
+        };
+
+    state.apiErrorRecovery = nextState;
+
+    if (Number(nextState.cooldownUntil || 0) > now) {
+      const remainingMs = Math.max(0, nextState.cooldownUntil - now);
+      return {
+        intervention: INTERVENTION.COOLDOWN,
+        reason: `Transient API failure on cooldown for ${Math.ceil(remainingMs / 60000)} minute(s) before retrying the same thread.`,
+      };
+    }
+
+    if (nextState.continueAttempts < API_ERROR_CONTINUE_COOLDOWNS_MS.length) {
+      const cooldownMs = API_ERROR_CONTINUE_COOLDOWNS_MS[nextState.continueAttempts];
+      return {
+        intervention: INTERVENTION.CONTINUE_SIGNAL,
+        reason: `Transient API failure — continue the current thread and back off for ${Math.ceil(cooldownMs / 60000)} minute(s) if it repeats.`,
+      };
+    }
+
+    const ladder = INTERVENTION_LADDER[SITUATION.API_ERROR] || [INTERVENTION.BLOCK_AND_NOTIFY];
+    const escalationIndex = Math.min(
+      nextState.continueAttempts - API_ERROR_CONTINUE_COOLDOWNS_MS.length,
+      ladder.length - 1,
+    );
+    const escalation = ladder[escalationIndex];
+    const escalationReason = escalation === INTERVENTION.FORCE_NEW_THREAD
+      ? "Repeated API failures survived 3 continue attempts — forcing a fresh thread."
+      : escalation === INTERVENTION.REDISPATCH_TASK
+        ? "Repeated API failures survived continue attempts and a fresh thread — redispatching the task."
+        : "Repeated API failures survived all automated recovery attempts — blocking for human review.";
+    return {
+      intervention: escalation,
+      reason: escalationReason,
+    };
+  }
+
+  _recordApiErrorContinue(taskId) {
+    const state = this._getTaskState(taskId);
+    if (!state?.apiErrorRecovery) return;
+    const attemptIndex = Math.min(
+      state.apiErrorRecovery.continueAttempts,
+      API_ERROR_CONTINUE_COOLDOWNS_MS.length - 1,
+    );
+    const cooldownMs = API_ERROR_CONTINUE_COOLDOWNS_MS[attemptIndex] || 0;
+    state.apiErrorRecovery = {
+      ...state.apiErrorRecovery,
+      continueAttempts: Number(state.apiErrorRecovery.continueAttempts || 0) + 1,
+      cooldownUntil: cooldownMs > 0 ? Date.now() + cooldownMs : 0,
+      lastErrorAt: Date.now(),
+    };
   }
 
   _getTaskState(taskId) {

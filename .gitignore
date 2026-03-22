@@ -65,3 +65,4 @@ reports/mutation/
 .tmp-*
 
 .bosun-monitor/backups/*
+tmp/*

@@ -11,7 +11,65 @@
  *   - Meeting Orchestrator + Subworkflow Chain
  */
 
-import { node, edge, resetLayout } from "./_helpers.mjs";
+import { node, edge, resetLayout, embedSubWorkflow, wire } from "./_helpers.mjs";
+import { VALIDATION_GATE_SUB, PR_CHECK_HANDOFF_SUB } from "./sub-workflows.mjs";
+
+const AGENT_SESSION_MONITOR_COMMAND = [
+  'node -e "',
+  "const fs = require('node:fs');",
+  "const path = require('node:path');",
+  "const { pathToFileURL } = require('node:url');",
+  "const cwd = process.cwd();",
+  "const mirrorMarker = `${path.sep}.bosun${path.sep}workspaces${path.sep}`.toLowerCase();",
+  "let repoRoot = cwd;",
+  "if (cwd.toLowerCase().includes(mirrorMarker)) {",
+  "const sourceRepoRoot = path.resolve(cwd, '..', '..', '..', '..');",
+  "if (fs.existsSync(path.join(sourceRepoRoot, 'infra', 'session-tracker.mjs'))) repoRoot = sourceRepoRoot;",
+  "}",
+  "const trackerModuleUrl = pathToFileURL(path.join(repoRoot, 'infra', 'session-tracker.mjs')).href;",
+  "import(trackerModuleUrl).then(({ getSessionTracker }) => {",
+  "const tracker = getSessionTracker();",
+  "const sessions = tracker.getActiveSessions().map((session) => {",
+  "const progress = tracker.getProgressStatus(session.taskId);",
+  "return {",
+  "id: session.taskId,",
+  "taskId: session.taskId,",
+  "taskTitle: session.taskTitle || null,",
+  "status: progress.status,",
+  "idleMs: progress.idleMs,",
+  "totalEvents: progress.totalEvents,",
+  "elapsedMs: progress.elapsedMs,",
+  "lastEventType: progress.lastEventType,",
+  "recommendation: progress.recommendation,",
+  "tokenPercent: null",
+  "};",
+  "});",
+  "console.log(JSON.stringify(sessions));",
+  "}).catch((err) => { console.error(err?.stack || String(err)); process.exit(1); });",
+  '"',
+].join("");
+
+const buildAgentSessionMonitorParseExpression = (rawExpression) => [
+  "(() => {",
+  `const raw = String(${rawExpression} || '[]');`,
+  "const lines = raw.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean);",
+  "const candidate = lines.length ? lines[lines.length - 1] : '[]';",
+  "try {",
+  "const parsed = JSON.parse(candidate);",
+  "return Array.isArray(parsed) ? parsed : [];",
+  "} catch {",
+  "return [];",
+  "}",
+  "})()",
+].join("");
+
+const AGENT_SESSION_MONITOR_LIST_PARSE_EXPRESSION = buildAgentSessionMonitorParseExpression(
+  "$ctx.getNodeOutput('list-sessions')?.output",
+);
+
+const AGENT_SESSION_MONITOR_HEALTH_PARSE_EXPRESSION = buildAgentSessionMonitorParseExpression(
+  "$ctx.getNodeOutput('check-health')?.output",
+);
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Frontend Agent with Screenshot Validation
@@ -368,21 +426,21 @@ export const AGENT_SESSION_MONITOR_TEMPLATE = {
     }, { x: 400, y: 50 }),
 
     node("list-sessions", "action.run_command", "List Active Sessions", {
-      command: "bosun agent list --json --active",
+      command: AGENT_SESSION_MONITOR_COMMAND,
       continueOnError: true,
     }, { x: 400, y: 200 }),
 
     node("has-active", "condition.expression", "Any Active?", {
-      expression: "($ctx.getNodeOutput('list-sessions')?.output || '[]') !== '[]' && ($ctx.getNodeOutput('list-sessions')?.output || '').length > 5",
+      expression: `${AGENT_SESSION_MONITOR_LIST_PARSE_EXPRESSION}.length > 0`,
     }, { x: 400, y: 340 }),
 
     node("check-health", "action.run_command", "Check Session Health", {
-      command: "bosun agent health --json",
+      command: AGENT_SESSION_MONITOR_COMMAND,
       continueOnError: true,
     }, { x: 200, y: 490 }),
 
     node("has-issues", "condition.expression", "Any Unhealthy?", {
-      expression: "(() => { const out = String($ctx.getNodeOutput('check-health')?.output || ''); const maxIdleMs = Number($data?.maxIdleMs || 600000); const maxTokenPercent = Number($data?.maxTokenPercent || 85); const idleMatch = out.match(/idle(?:_ms)?\\s*[:=]\\s*(\\d+)/i); const tokenMatch = out.match(/token(?:_usage|_percent)?\\s*[:=]\\s*(\\d+(?:\\.\\d+)?)/i); const idleExceeded = idleMatch ? Number(idleMatch[1]) > maxIdleMs : false; const tokenExceeded = tokenMatch ? Number(tokenMatch[1]) >= maxTokenPercent : false; return out.includes('stalled') || out.includes('timeout') || idleExceeded || tokenExceeded; })()",
+      expression: `(() => { const sessions = ${AGENT_SESSION_MONITOR_HEALTH_PARSE_EXPRESSION}; const maxIdleMs = Number($data?.maxIdleMs || 600000); const maxTokenPercent = Number($data?.maxTokenPercent || 85); return sessions.some((item) => { const status = String(item?.status || '').toLowerCase(); const idleMs = Number(item?.idleMs || 0); const tokenPercent = Number(item?.tokenPercent); return status === 'idle' || status === 'stalled' || status === 'timeout' || idleMs > maxIdleMs || (Number.isFinite(tokenPercent) && tokenPercent >= maxTokenPercent); }); })()`,
     }, { x: 200, y: 640 }),
 
     node("auto-continue", "action.continue_session", "Auto-Continue Stalled", {
@@ -433,41 +491,53 @@ export const AGENT_SESSION_MONITOR_TEMPLATE = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  Backend Agent
+//  Task Completion Agent
 // ═══════════════════════════════════════════════════════════════════════════
 
 resetLayout();
 
-export const BACKEND_AGENT_TEMPLATE = {
-  id: "template-backend-agent",
-  name: "Backend Agent",
-  description:
-    "Spins up an agent focused on backend/API development with a " +
-    "test-first methodology. Writes tests first, implements the feature, " +
-    "validates with build + lint, then creates a PR.",
-  category: "agents",
-  enabled: true,
-  recommended: true,
-  trigger: "trigger.task_assigned",
-  variables: {
-    testFramework: "node --test",
-    buildCommand: "npm run build",
-    agentSdk: "auto",
-    timeoutMs: 3600000,
-    autoFixTimeoutMs: 1200000,
-  },
-  nodes: [
-    node("trigger", "trigger.task_assigned", "Task Assigned", {
-      filter: "task.tags?.some(t => t === 'backend' || t === 'api')",
-    }, { x: 400, y: 50 }),
+export const BACKEND_AGENT_TEMPLATE = (() => {
+  resetLayout();
 
-    node("plan-work", "agent.run_planner", "Plan Implementation", {
-      prompt: "Analyze the task requirements and create a step-by-step implementation plan. Identify which files need to be modified, what tests need to be written, and any API contracts to maintain.",
-      outputVariable: "plan",
-    }, { x: 400, y: 180 }),
+  // ── Embed sub-workflows ────────────────────────────────────────────────
+  const mainValidation = embedSubWorkflow(VALIDATION_GATE_SUB, "main-");
+  const retryValidation = embedSubWorkflow(VALIDATION_GATE_SUB, "retry-");
+  const mainPrHandoff = embedSubWorkflow(PR_CHECK_HANDOFF_SUB, "main-");
+  const retryPrHandoff = embedSubWorkflow(PR_CHECK_HANDOFF_SUB, "retry-");
 
-    node("write-tests", "action.run_agent", "Write Tests First", {
-      prompt: `# Test-First Development
+  return {
+    id: "template-backend-agent",
+    name: "Task Completion Agent",
+    description:
+      "General-purpose task completion agent with a test-first methodology. " +
+      "Writes tests first, implements the feature, validates with build + lint, " +
+      "then creates a PR. Works with any language/framework — commands are " +
+      "auto-detected from your project or fully customizable.",
+    category: "agents",
+    enabled: true,
+    recommended: true,
+    trigger: "trigger.task_assigned",
+    variables: {
+      testCommand: "npm test",
+      buildCommand: "npm run build",
+      lintCommand: "",
+      baseBranch: "main",
+      protectedBranches: ["main", "master", "develop", "production"],
+      agentSdk: "auto",
+      timeoutMs: 3600000,
+      autoFixTimeoutMs: 1200000,
+    },
+    nodes: [
+      node("trigger", "trigger.task_assigned", "Task Assigned", {
+      }, { x: 400, y: 50 }),
+
+      node("plan-work", "agent.run_planner", "Plan Implementation", {
+        prompt: "Analyze the task requirements and create a step-by-step implementation plan. Identify which files need to be modified, what tests need to be written, and any API contracts to maintain.",
+        outputVariable: "plan",
+      }, { x: 400, y: 180 }),
+
+      node("write-tests", "action.run_agent", "Write Tests First", {
+        prompt: `# Test-First Development
 
 Based on the plan:
 {{plan}}
@@ -477,14 +547,14 @@ Write comprehensive tests FIRST before any implementation:
 2. Integration tests for API endpoints if applicable
 3. Edge cases and error scenarios
 
-Use the project's existing test framework: {{testFramework}}
+Use the project's test command: {{testCommand}}
 Commit with message "test: add tests for [feature]"`,
-      sdk: "{{agentSdk}}",
-      timeoutMs: "{{timeoutMs}}",
-    }, { x: 400, y: 330 }),
+        sdk: "{{agentSdk}}",
+        timeoutMs: "{{timeoutMs}}",
+      }, { x: 400, y: 330 }),
 
-    node("implement", "action.run_agent", "Implement Feature", {
-      prompt: `# Implement Backend Feature
+      node("implement", "action.run_agent", "Implement Feature", {
+        prompt: `# Implement Feature
 
 The tests have been written. Now implement the feature to make them pass:
 1. Follow existing code conventions
@@ -492,62 +562,62 @@ The tests have been written. Now implement the feature to make them pass:
 3. Ensure all new tests pass
 4. Do NOT modify the tests — make the code fit the contract
 
-Run \`{{testFramework}}\` after implementation.
+Run \`{{testCommand}}\` after implementation.
 Commit with message "feat: implement [feature]"`,
-      sdk: "{{agentSdk}}",
-      timeoutMs: "{{timeoutMs}}",
-    }, { x: 400, y: 490 }),
+        sdk: "{{agentSdk}}",
+        timeoutMs: "{{timeoutMs}}",
+      }, { x: 400, y: 490 }),
 
-    node("build", "validation.build", "Build Check", {
-      command: "{{buildCommand}}",
-      zeroWarnings: true,
-    }, { x: 400, y: 650 }),
+      // ── Main Validation Gate (build → test → lint) via sub-workflow ────
+      ...mainValidation.nodes,
 
-    node("test-final", "validation.tests", "Final Test Run", {
-      command: "{{testFramework}}",
-    }, { x: 400, y: 780 }),
+      node("all-passed", "condition.expression", "All Checks Passed?", {
+        expression: `$ctx.getNodeOutput('main-build')?.passed === true && $ctx.getNodeOutput('main-test')?.passed === true && $ctx.getNodeOutput('main-lint')?.passed === true`,
+      }, { x: 400, y: 1040, outputs: ["yes", "no"] }),
 
-    node("lint", "validation.lint", "Lint Check", {
-      command: "npm run lint 2>/dev/null || echo 'no lint script'",
-    }, { x: 400, y: 910 }),
+      // ── Main Push + PR path ────────────────────────────────────────────
+      node("push-branch", "action.push_branch", "Push Branch", {
+        worktreePath: "{{worktreePath}}",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+        rebaseBeforePush: true,
+        emptyDiffGuard: true,
+        protectedBranches: "{{protectedBranches}}",
+      }, { x: 250, y: 1110 }),
 
-    node("all-passed", "condition.expression", "All Checks Passed?", {
-      expression: "$ctx.getNodeOutput('build')?.passed === true && $ctx.getNodeOutput('test-final')?.passed === true && $ctx.getNodeOutput('lint')?.passed === true",
-    }, { x: 400, y: 1040, outputs: ["yes", "no"] }),
+      node("create-pr", "action.create_pr", "Handoff PR Lifecycle", {
+        title: "feat: {{taskTitle}}",
+        body: "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing. Bosun lifecycle handoff ready.",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+        failOnError: true,
+        maxRetries: 3,
+        retryDelayMs: 15000,
+        continueOnError: true,
+      }, { x: 250, y: 1170 }),
 
-    node("create-pr", "action.create_pr", "Handoff PR Lifecycle", {
-      title: "feat: {{taskTitle}}",
-      body: "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing. Bosun lifecycle handoff ready.",
-      branch: "feat/{{taskSlug}}",
-      baseBranch: "main",
-      failOnError: true,
-      maxRetries: 3,
-      retryDelayMs: 15000,
-      continueOnError: true,
-    }, { x: 250, y: 1170 }),
+      // ── Main PR handoff (pr-ok? → set-inreview → dispatch) via sub-wf ─
+      ...mainPrHandoff.nodes,
 
-    node("pr-created", "condition.expression", "Handoff Recorded?", {
-      expression: "$ctx.getNodeOutput('create-pr')?.success === true",
-    }, { x: 250, y: 1240, outputs: ["yes", "no"] }),
+      node("notify-done", "notify.log", "Task Complete", {
+        message: "Task completion agent finished task — PR lifecycle handoff recorded",
+        level: "info",
+      }, { x: 180, y: 1320 }),
 
-    node("notify-done", "notify.log", "Task Complete", {
-      message: "Backend agent completed task — PR lifecycle handoff recorded",
-      level: "info",
-    }, { x: 180, y: 1320 }),
+      node("notify-pr-failed", "notify.telegram", "Escalate Lifecycle Handoff Failure", {
+        message: ":alert: Task completion agent passed validation for {{taskTitle}} but failed to record Bosun PR lifecycle handoff after retries. Manual follow-up required.",
+      }, { x: 420, y: 1320 }),
 
-    node("notify-pr-failed", "notify.telegram", "Escalate Lifecycle Handoff Failure", {
-      message: ":alert: Backend agent passed validation for {{taskTitle}} but failed to record Bosun PR lifecycle handoff after retries. Manual follow-up required.",
-    }, { x: 420, y: 1320 }),
+      // ── Retry path (validation failed → auto-fix → re-validate) ───────
+      node("set-validation-summary", "action.set_variable", "Summarize Validation Output", {
+        key: "validationSummary",
+        value:
+          "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('main-build') || {}; const test = $ctx.getNodeOutput('main-test') || {}; const lint = $ctx.getNodeOutput('main-lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
+        isExpression: true,
+      }, { x: 620, y: 1090 }),
 
-    node("set-validation-summary", "action.set_variable", "Summarize Validation Output", {
-      key: "validationSummary",
-      value:
-        "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('build') || {}; const test = $ctx.getNodeOutput('test-final') || {}; const lint = $ctx.getNodeOutput('lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
-      isExpression: true,
-    }, { x: 620, y: 1090 }),
-
-    node("auto-fix", "action.run_agent", "Auto-Fix Validation Failures", {
-      prompt: `# Fix Backend Validation Failures
+      node("auto-fix", "action.run_agent", "Auto-Fix Validation Failures", {
+        prompt: `# Fix Validation Failures
 
 The first validation pass failed for task **{{taskTitle}}**.
 
@@ -562,97 +632,106 @@ Do NOT weaken, remove, or bypass tests.
 Keep the original task scope.
 
 Run build + tests + lint locally before finishing.
-Commit with message "fix: address backend workflow validation failures"`,
-      sdk: "{{agentSdk}}",
-      timeoutMs: "{{autoFixTimeoutMs}}",
-    }, { x: 620, y: 1170 }),
+Commit with message "fix: address validation failures"`,
+        sdk: "{{agentSdk}}",
+        timeoutMs: "{{autoFixTimeoutMs}}",
+      }, { x: 620, y: 1170 }),
 
-    node("build-retry", "validation.build", "Build Check (Retry)", {
-      command: "{{buildCommand}}",
-      zeroWarnings: true,
-    }, { x: 620, y: 1300 }),
+      // ── Retry Validation Gate (build → test → lint) via sub-workflow ───
+      ...retryValidation.nodes,
 
-    node("test-retry", "validation.tests", "Final Test Run (Retry)", {
-      command: "{{testFramework}}",
-    }, { x: 620, y: 1430 }),
+      node("retry-passed", "condition.expression", "Retry Checks Passed?", {
+        expression: `$ctx.getNodeOutput('retry-build')?.passed === true && $ctx.getNodeOutput('retry-test')?.passed === true && $ctx.getNodeOutput('retry-lint')?.passed === true`,
+      }, { x: 620, y: 1690, outputs: ["yes", "no"] }),
 
-    node("lint-retry", "validation.lint", "Lint Check (Retry)", {
-      command: "npm run lint 2>/dev/null || echo 'no lint script'",
-    }, { x: 620, y: 1560 }),
+      // ── Retry Push + PR path ───────────────────────────────────────────
+      node("push-branch-retry", "action.push_branch", "Push Branch (Retry)", {
+        worktreePath: "{{worktreePath}}",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+        rebaseBeforePush: true,
+        emptyDiffGuard: true,
+        protectedBranches: "{{protectedBranches}}",
+      }, { x: 450, y: 1760 }),
 
-    node("retry-passed", "condition.expression", "Retry Checks Passed?", {
-      expression: "$ctx.getNodeOutput('build-retry')?.passed === true && $ctx.getNodeOutput('test-retry')?.passed === true && $ctx.getNodeOutput('lint-retry')?.passed === true",
-    }, { x: 620, y: 1690, outputs: ["yes", "no"] }),
+      node("create-pr-retry", "action.create_pr", "Handoff PR Lifecycle (After Retry)", {
+        title: "feat: {{taskTitle}}",
+        body: "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation. Bosun lifecycle handoff ready.",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+        failOnError: true,
+        maxRetries: 3,
+        retryDelayMs: 15000,
+        continueOnError: true,
+      }, { x: 450, y: 1820 }),
 
-    node("create-pr-retry", "action.create_pr", "Handoff PR Lifecycle (After Retry)", {
-      title: "feat: {{taskTitle}}",
-      body: "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation. Bosun lifecycle handoff ready.",
-      branch: "feat/{{taskSlug}}",
-      baseBranch: "main",
-      failOnError: true,
-      maxRetries: 3,
-      retryDelayMs: 15000,
-      continueOnError: true,
-    }, { x: 450, y: 1820 }),
+      // ── Retry PR handoff via sub-workflow ──────────────────────────────
+      ...retryPrHandoff.nodes,
 
-    node("pr-created-retry", "condition.expression", "Handoff Recorded (Retry Path)?", {
-      expression: "$ctx.getNodeOutput('create-pr-retry')?.success === true",
-    }, { x: 450, y: 1890, outputs: ["yes", "no"] }),
+      node("notify-done-retry", "notify.log", "Task Complete (After Retry)", {
+        message: "Task completion agent finished task after retry — PR lifecycle handoff recorded",
+        level: "info",
+      }, { x: 360, y: 1980 }),
 
-    node("notify-done-retry", "notify.log", "Task Complete (After Retry)", {
-      message: "Backend agent completed task after retry — PR lifecycle handoff recorded",
-      level: "info",
-    }, { x: 360, y: 1980 }),
+      node("notify-fail", "notify.telegram", "Checks Failed", {
+        message: ":alert: Task completion agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed.",
+      }, { x: 820, y: 1820 }),
 
-    node("notify-fail", "notify.telegram", "Checks Failed", {
-      message: ":alert: Backend agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed.",
-    }, { x: 820, y: 1820 }),
+      node("notify-pr-failed-retry", "notify.telegram", "Escalate Lifecycle Failure (Retry Path)", {
+        message: ":alert: Task completion agent remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed after retries. Manual follow-up required.",
+      }, { x: 620, y: 1980 }),
+    ],
+    edges: [
+      edge("trigger", "plan-work"),
+      edge("plan-work", "write-tests"),
+      edge("write-tests", "implement"),
 
-    node("notify-pr-failed-retry", "notify.telegram", "Escalate Lifecycle Failure (Retry Path)", {
-      message: ":alert: Backend agent remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed after retries. Manual follow-up required.",
-    }, { x: 620, y: 1980 }),
-  ],
-  edges: [
-    edge("trigger", "plan-work"),
-    edge("plan-work", "write-tests"),
-    edge("write-tests", "implement"),
-    edge("implement", "build"),
-    edge("build", "test-final"),
-    edge("test-final", "lint"),
-    edge("lint", "all-passed"),
-    edge("all-passed", "create-pr", { condition: "$output?.result === true", port: "yes" }),
-    edge("all-passed", "set-validation-summary", { condition: "$output?.result !== true", port: "no" }),
-    edge("set-validation-summary", "auto-fix"),
-    edge("create-pr", "pr-created"),
-    edge("pr-created", "notify-done", { condition: "$output?.result === true", port: "yes" }),
-    edge("pr-created", "notify-pr-failed", { condition: "$output?.result !== true", port: "no" }),
-    edge("auto-fix", "build-retry"),
-    edge("build-retry", "test-retry"),
-    edge("test-retry", "lint-retry"),
-    edge("lint-retry", "retry-passed"),
-    edge("retry-passed", "create-pr-retry", { condition: "$output?.result === true", port: "yes" }),
-    edge("retry-passed", "notify-fail", { condition: "$output?.result !== true", port: "no" }),
-    edge("create-pr-retry", "pr-created-retry"),
-    edge("pr-created-retry", "notify-done-retry", { condition: "$output?.result === true", port: "yes" }),
-    edge("pr-created-retry", "notify-pr-failed-retry", { condition: "$output?.result !== true", port: "no" }),
-  ],
-  metadata: {
-    author: "bosun",
-    version: 1,
-    createdAt: "2025-02-25T00:00:00Z",
-    templateVersion: "1.0.0",
-    tags: ["agent", "backend", "api", "test-first", "tdd"],
-    replaces: {
-      module: "primary-agent.mjs",
-      functions: ["runAgentWithTask"],
-      calledFrom: ["task-executor.mjs:executeTask"],
-      description:
-        "Replaces generic agent task execution with a structured backend " +
-        "workflow. Test-first methodology, build/lint gates, and Bosun-managed PR lifecycle handoff " +
-        "are enforced as distinct workflow stages.",
+      // implement → main validation gate
+      wire("implement", mainValidation.entryNodeId),
+      ...mainValidation.edges,
+      wire(mainValidation.exitNodeId, "all-passed"),
+
+      // Main pass → push → PR → handoff
+      edge("all-passed", "push-branch", { condition: "$output?.result === true", port: "yes" }),
+      edge("all-passed", "set-validation-summary", { condition: "$output?.result !== true", port: "no" }),
+      edge("push-branch", "create-pr"),
+      wire("create-pr", mainPrHandoff.entryNodeId),
+      ...mainPrHandoff.edges,
+      wire(mainPrHandoff.exitNodeId, "notify-done"),
+      edge(mainPrHandoff.entryNodeId, "notify-pr-failed", { condition: "$output?.result !== true", port: "no" }),
+
+      // Retry path: auto-fix → retry validation → push → PR → handoff
+      edge("set-validation-summary", "auto-fix"),
+      wire("auto-fix", retryValidation.entryNodeId),
+      ...retryValidation.edges,
+      wire(retryValidation.exitNodeId, "retry-passed"),
+
+      edge("retry-passed", "push-branch-retry", { condition: "$output?.result === true", port: "yes" }),
+      edge("retry-passed", "notify-fail", { condition: "$output?.result !== true", port: "no" }),
+      edge("push-branch-retry", "create-pr-retry"),
+      wire("create-pr-retry", retryPrHandoff.entryNodeId),
+      ...retryPrHandoff.edges,
+      wire(retryPrHandoff.exitNodeId, "notify-done-retry"),
+      edge(retryPrHandoff.entryNodeId, "notify-pr-failed-retry", { condition: "$output?.result !== true", port: "no" }),
+    ],
+    metadata: {
+      author: "bosun",
+      version: 2,
+      createdAt: "2025-02-25T00:00:00Z",
+      templateVersion: "2.0.0",
+      tags: ["agent", "task-completion", "test-first", "tdd", "multi-language"],
+      replaces: {
+        module: "primary-agent.mjs",
+        functions: ["runAgentWithTask"],
+        calledFrom: ["task-executor.mjs:executeTask"],
+        description:
+          "Replaces generic agent task execution with a structured " +
+          "workflow. Test-first methodology, build/lint gates, and Bosun-managed PR lifecycle handoff " +
+          "are enforced as distinct workflow stages. Works with any language/framework.",
+      },
     },
-  },
-};
+  };
+})();
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Voice + Video Rollout (Parallel Lanes)

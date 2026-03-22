@@ -51,6 +51,7 @@ const CACHE_TTL = {
   threads: 5000, logs: 15000, worktrees: 30000, workspaces: 30000,
   presence: 30000, config: 60000, projects: 60000, git: 20000,
   infra: 30000,
+  benchmarks: 8000,
   telemetry: 15000,
   analytics: 30000,
 };
@@ -81,6 +82,18 @@ export function sanitizeTaskText(value) {
   return text.replace(/\s{2,}/g, " ").trim();
 }
 
+export function isPlaceholderTaskDescription(value) {
+  const text = sanitizeTaskText(value || "");
+  if (!text) return false;
+  const normalized = text.toLowerCase();
+  return (
+    TASK_TEMPLATE_PLACEHOLDER_RE.test(text) ||
+    normalized === "internal server error" ||
+    normalized === "{\"ok\":false,\"error\":\"internal server error\"}" ||
+    normalized === "{\"error\":\"internal server error\"}"
+  );
+}
+
 function synthesizeTaskDescription(task) {
   const title = sanitizeTaskText(task?.title || "");
   if (!title) {
@@ -92,12 +105,18 @@ function synthesizeTaskDescription(task) {
 function normalizeTaskForUi(task) {
   if (!task || typeof task !== "object") return task;
   const title = sanitizeTaskText(task.title || "");
-  const description = sanitizeTaskText(task.description || "");
+  const rawDescription = sanitizeTaskText(task.description || "");
+  const description = isPlaceholderTaskDescription(rawDescription) ? "" : rawDescription;
   const meta = task.meta && typeof task.meta === "object"
     ? {
         ...task.meta,
         title: task.meta.title != null ? sanitizeTaskText(task.meta.title) : task.meta.title,
-        description: task.meta.description != null ? sanitizeTaskText(task.meta.description) : task.meta.description,
+        description:
+          task.meta.description != null
+            ? (isPlaceholderTaskDescription(task.meta.description)
+              ? ""
+              : sanitizeTaskText(task.meta.description))
+            : task.meta.description,
       }
     : task.meta;
   return {
@@ -151,8 +170,9 @@ export const tasksSearch = signal("");
 export const tasksSort = signal("updated");
 export const tasksTotalPages = signal(1);
 export const tasksTotal = signal(0);
-export const tasksStatusCounts = signal({ draft: 0, backlog: 0, inProgress: 0, inReview: 0, done: 0 });
+export const tasksStatusCounts = signal({ draft: 0, backlog: 0, blocked: 0, inProgress: 0, inReview: 0, done: 0 });
 const TASK_IGNORE_LABEL = "codex:ignore";
+const TASK_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
 const TASK_TEXT_REPLACEMENTS = [
   [/\u00D4\u00C7\u00F6/g, "-"],
   [/\u00D4\u00C7\u00A3/g, "\""],
@@ -247,6 +267,10 @@ export const usageAnalytics = signal(null);
 // ── Config (routing, regions, etc.)
 export const configData = signal(null);
 
+// ── Benchmarks
+export const benchmarksData = signal(null);
+export const benchmarksLoaded = signal(false);
+
 // ── Toasts
 export const toasts = signal([]);
 
@@ -334,61 +358,18 @@ export function shouldShowToast(toast) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
- *  EXECUTOR DEFAULTS — apply stored settings on first load
+ *  LEGACY STORED DEFAULTS MIGRATION HOOK
  * ═══════════════════════════════════════════════════════════════ */
 
 let _defaultsApplied = false;
 
 /**
- * Read stored executor defaults from CloudStorage and POST them to
- * the server if they differ from the current config.
- * Only runs once per app lifecycle (not on tab switches).
+ * Reserved for one-time client preference migrations.
+ * Executor runtime defaults now live only in Server Config.
  */
 export async function applyStoredDefaults() {
   if (_defaultsApplied) return;
   _defaultsApplied = true;
-
-  const [maxP, sdk, region] = await Promise.all([
-    _cloudGet("defaultMaxParallel"),
-    _cloudGet("defaultSdk"),
-    _cloudGet("defaultRegion"),
-  ]);
-
-  const promises = [];
-
-  if (maxP != null) {
-    const current = executorData.value;
-    const currentMax =
-      current?.data?.maxParallel ??
-      current?.maxParallel ??
-      null;
-    const isPaused = Boolean(current?.paused || current?.data?.paused);
-    if (!isPaused && currentMax !== maxP) {
-      promises.push(
-        apiFetch("/api/executor/maxparallel", {
-          method: "POST",
-          body: JSON.stringify({ maxParallel: maxP }),
-          _silent: true,
-        }).catch(() => {}),
-      );
-    }
-  }
-
-  const configUpdates = {};
-  if (sdk && sdk !== "auto") configUpdates.sdk = sdk;
-  if (region && region !== "auto") configUpdates.region = region;
-
-  if (Object.keys(configUpdates).length) {
-    promises.push(
-      apiFetch("/api/config/update", {
-        method: "POST",
-        body: JSON.stringify(configUpdates),
-        _silent: true,
-      }).catch(() => {}),
-    );
-  }
-
-  if (promises.length) await Promise.all(promises);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -559,6 +540,7 @@ export async function loadTasks(options = {}) {
   tasksStatusCounts.value = {
     draft: Number(res?.statusCounts?.draft || 0),
     backlog: Number(res?.statusCounts?.backlog || 0),
+    blocked: Number(res?.statusCounts?.blocked || 0),
     inProgress: Number(res?.statusCounts?.inProgress || 0),
     inReview: Number(res?.statusCounts?.inReview || 0),
     done: Number(res?.statusCounts?.done || 0),
@@ -845,6 +827,20 @@ export async function loadUsageAnalytics(days = 30) {
   }
 }
 
+export async function loadBenchmarks(providerId = "") {
+  const params = new URLSearchParams();
+  if (providerId) params.set("provider", providerId);
+  const url = params.size > 0 ? `/api/benchmarks?${params}` : "/api/benchmarks";
+  const cached = _cacheGet(url);
+  if (_cacheFresh(url, "benchmarks")) return;
+  if (cached) benchmarksData.value = cached.data;
+  const res = await apiFetch(url, { _silent: true }).catch(() => ({ ok: false }));
+  benchmarksData.value = res?.data ?? null;
+  benchmarksLoaded.value = true;
+  _cacheSet(url, benchmarksData.value);
+  _markFresh("benchmarks");
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  TAB REFRESH — map tab names to their required loaders
  * ═══════════════════════════════════════════════════════════════ */
@@ -853,6 +849,7 @@ const TAB_LOADERS = {
   dashboard: () =>
     Promise.all([loadStatus(), loadExecutor(), loadProjectSummary()]),
   tasks: () => loadTasks(),
+  benchmarks: () => loadBenchmarks(),
   agents: () => Promise.all([loadAgents(), loadExecutor(), import("../components/session-list.js").then((m) => m.loadSessions()).catch(() => {})]),
   infra: () =>
     Promise.all([
@@ -958,6 +955,7 @@ export function scheduleRefresh(ms = 5000) {
 const WS_CHANNEL_MAP = {
   dashboard: ["overview", "executor", "tasks", "agents"],
   tasks: ["tasks"],
+  benchmarks: ["benchmarks", "tasks", "executor", "workflows", "workspaces", "library"],
   agents: ["agents", "executor"],
   infra: ["worktrees", "workspaces", "presence"],
   control: ["executor", "overview"],
@@ -990,5 +988,3 @@ export function initWsInvalidationListener() {
       });
   });
 }
-
-

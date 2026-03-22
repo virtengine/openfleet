@@ -15,6 +15,8 @@ const STRIPPED_GIT_ENV_KEYS = [
 const BLOCKED_TEST_GIT_IDENTITIES = new Set([
   "test@example.com",
   "bosun-tests@example.com",
+  "bot@example.com",
+  "test@test.com",
 ]);
 
 const TEST_FIXTURE_SENTINEL_PATHS = new Set([
@@ -229,6 +231,21 @@ export function evaluateBranchSafetyForPush(worktreePath, opts = {}) {
     reasons.push(`HEAD tracks only ${headFiles}/${baseFiles} files vs ${remoteRef}`);
   }
 
+  // Zero-diff guard: refuse to push if HEAD is identical to base (would wipe PR)
+  try {
+    const headRes = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: worktreePath, encoding: "utf8", timeout: 5_000, stdio: ["pipe", "pipe", "pipe"],
+    });
+    const baseRes = spawnSync("git", ["rev-parse", remoteRef], {
+      cwd: worktreePath, encoding: "utf8", timeout: 5_000, stdio: ["pipe", "pipe", "pipe"],
+    });
+    const headSha = headRes.stdout?.trim();
+    const baseSha = baseRes.stdout?.trim();
+    if (headSha && baseSha && headSha === baseSha) {
+      reasons.push(`HEAD (${headSha.slice(0, 8)}) is identical to ${remoteRef} — push would create zero-diff PR`);
+    }
+  } catch { /* best-effort */ }
+
   const deletedToInserted =
     diff.inserted > 0 ? diff.deleted / diff.inserted : diff.deleted > 0 ? Infinity : 0;
   const manyFilesChanged = diff.files >= Math.max(2_000, Math.floor(baseFiles * 0.5));
@@ -263,4 +280,19 @@ export function evaluateBranchSafetyForPush(worktreePath, opts = {}) {
       deleted: diff.deleted,
     },
   };
+}
+
+/**
+ * Clear any blocked test git identity from a worktree's local config.
+ * Worktrees inherit the parent repo's config, so if a test ever set
+ * user.name/email there it will poison all task commits until cleared.
+ * Call this after acquiring any worktree.
+ */
+export function clearBlockedWorktreeIdentity(worktreePath) {
+  const email = getGitConfig(worktreePath, "user.email").toLowerCase();
+  if (!BLOCKED_TEST_GIT_IDENTITIES.has(email)) return false;
+
+  runGit(["config", "--local", "--unset", "user.email"], worktreePath, 5_000);
+  runGit(["config", "--local", "--unset", "user.name"], worktreePath, 5_000);
+  return true;
 }

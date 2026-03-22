@@ -40,7 +40,10 @@
  */
 
 import { resolve, dirname } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { loadConfig } from "../config/config.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "../config/repo-root.mjs";
 import { resolveCodexProfileRuntime } from "../shell/codex-model-profiles.mjs";
@@ -51,8 +54,8 @@ import {
   streamRetryDelay,
   MAX_STREAM_RETRIES,
 } from "../infra/stream-resilience.mjs";
-import { compressAllItems, estimateSavings, estimateContextUsagePct, recordShreddingEvent } from "../workspace/context-cache.mjs";
-import { resolveContextShreddingOptions } from "../config/context-shredding-config.mjs";
+import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
+import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
 
 // Lazy-load MCP registry to avoid circular dependencies.
 // Cached at module scope per AGENTS.md hard rules.
@@ -94,6 +97,31 @@ const HARD_TIMEOUT_BUFFER_MS = 5 * 60_000; // 5 minutes
 
 /** Tag for console logging */
 const TAG = "[agent-pool]";
+const require = createRequire(import.meta.url);
+const MODULE_PRESENCE_CACHE = new Map();
+
+function hasOptionalModule(specifier) {
+  if (MODULE_PRESENCE_CACHE.has(specifier)) {
+    return MODULE_PRESENCE_CACHE.get(specifier);
+  }
+  let ok = false;
+  try {
+    require.resolve(specifier);
+    ok = true;
+  } catch {
+    // ESM-only packages have no CJS "require" export so require.resolve
+    // throws even when the package is installed.  Fall back to checking
+    // whether the package directory exists on disk.
+    try {
+      const pkgDir = resolve(__dirname, "..", "node_modules", ...specifier.split("/"));
+      ok = existsSync(resolve(pkgDir, "package.json"));
+    } catch {
+      ok = false;
+    }
+  }
+  MODULE_PRESENCE_CACHE.set(specifier, ok);
+  return ok;
+}
 const MAX_PROMPT_BYTES = 180_000;
 const MAX_SET_TIMEOUT_MS = 2_147_483_647; // Node.js setTimeout 32-bit signed max
 let timeoutClampWarningKey = "";
@@ -223,29 +251,12 @@ async function maybeCompressResultItems(
 
   const resolvedSessionType = normalizeSessionType(sessionType, "task");
   const agentType = normalizeSdkForShredding(sdk);
-  const shreddingOpts = resolveContextShreddingOptions(
-    resolvedSessionType,
+  return maybeCompressSessionItems(items, {
+    sessionType: resolvedSessionType,
     agentType,
-  );
-  if (shreddingOpts?._skip === true) return items;
-
-  const usagePct = estimateContextUsagePct(items);
-  const threshold = Number.isFinite(shreddingOpts?.contextUsageThreshold)
-    ? Number(shreddingOpts.contextUsageThreshold)
-    : 0.5;
-  if (usagePct < threshold) return items;
-
-  shreddingOpts.contextUsagePct = usagePct;
-  const compressedItems = await compressAllItems(items, shreddingOpts);
-  try {
-    const savings = estimateSavings(items, compressedItems);
-    if (savings.savedChars > 0) {
-      recordShreddingEvent({ ...savings, agentType: agentType || sdk });
-    }
-  } catch {
-    /* non-fatal */
-  }
-  return compressedItems;
+    force: forceCompression,
+    skip: skipCompression,
+  });
 }
 
 function resolveCodexStreamSafety(totalTimeoutMs) {
@@ -332,6 +343,17 @@ function envFlagEnabled(value) {
   return ["1", "true", "yes", "on", "y"].includes(raw);
 }
 
+function applyNodeWarningSuppressionEnv(runtimeEnv) {
+  const nextEnv = { ...(runtimeEnv || {}) };
+  if (String(process.env.BOSUN_SUPPRESS_NODE_WARNINGS ?? "").trim() === "0") {
+    return nextEnv;
+  }
+  if (!nextEnv.NODE_NO_WARNINGS) {
+    nextEnv.NODE_NO_WARNINGS = "1";
+  }
+  return nextEnv;
+}
+
 const GITHUB_TOKEN_CACHE_TTL_MS = 60_000;
 let cachedGithubSessionToken = null;
 let cachedGithubSessionTokenAt = 0;
@@ -410,13 +432,27 @@ function injectGitHubSessionEnv(baseEnv, token) {
 
 /**
  * Extract a human-readable task heading from the prompt built by _buildTaskPrompt.
- * The first line is "# TASKID — Task Title"; we return the title portion only.
+ * The first line is "# Task: Task Title" (legacy: "# TASKID — Task Title");
+ * we return the title portion only.
  * Falls back to the raw first line if no em-dash separator is found.
  * @param {string} prompt
  * @returns {string}
  */
 function extractTaskHeading(prompt) {
   const firstLine = String(prompt || "").split(/\r?\n/)[0].replace(/^#+\s*/, "").trim();
+  if (!firstLine) return "Execute Task";
+  const lowerLine = firstLine.toLowerCase();
+  if (lowerLine.startsWith("task")) {
+    let index = 4;
+    while (index < firstLine.length && /\s/.test(firstLine[index])) index += 1;
+    const separator = firstLine[index];
+    if (separator === ":" || separator === "-" || separator === "\u2014") {
+      index += 1;
+      while (index < firstLine.length && /\s/.test(firstLine[index])) index += 1;
+      const title = firstLine.slice(index).trim();
+      if (title) return title;
+    }
+  }
   const dashIdx = firstLine.indexOf(" \u2014 ");
   const title = dashIdx !== -1 ? firstLine.slice(dashIdx + 3).trim() : firstLine;
   return title || "Execute Task";
@@ -566,23 +602,59 @@ function hasSdkPrerequisites(name, runtimeEnv = process.env) {
   }
 
   if (name === "codex") {
-    // Codex needs an OpenAI API key (or Azure key, or profile-specific key)
+    if (!hasOptionalModule("@openai/codex-sdk")) {
+      return { ok: false, reason: "@openai/codex-sdk not installed" };
+    }
+    // Codex auth can come from env vars, config env_key mappings, or persisted
+    // CLI login state (for example ~/.codex/auth.json). Because login-based
+    // auth is valid and hard to validate exhaustively, avoid false negatives.
     const hasKey =
       runtimeEnv.OPENAI_API_KEY ||
       runtimeEnv.AZURE_OPENAI_API_KEY ||
       runtimeEnv.CODEX_MODEL_PROFILE_XL_API_KEY ||
       runtimeEnv.CODEX_MODEL_PROFILE_M_API_KEY;
-    if (!hasKey) {
-      return { ok: false, reason: "no API key (OPENAI_API_KEY / AZURE_OPENAI_API_KEY)" };
+    if (hasKey) return { ok: true, reason: null };
+
+    // Check ~/.codex/config.toml — Codex CLI SDK reads auth env_key refs from there.
+    try {
+      const configToml = resolve(homedir(), ".codex", "config.toml");
+      if (existsSync(configToml)) {
+        const tomlText = readFileSync(configToml, "utf8");
+        // Extract all env_key = "VAR_NAME" entries and check if any are set
+        for (const match of tomlText.matchAll(/env_key\s*=\s*"([^"]+)"/g)) {
+          if (runtimeEnv[match[1]]) return { ok: true, reason: null };
+        }
+      }
+    } catch {
+      // best effort — fall through to failure
     }
+
+    // Login-based auth sessions are sufficient even without env keys.
+    try {
+      const authJson = resolve(homedir(), ".codex", "auth.json");
+      if (existsSync(authJson)) {
+        const authText = readFileSync(authJson, "utf8").trim();
+        if (authText) return { ok: true, reason: null };
+      }
+    } catch {
+      // best effort — fall through to permissive behavior
+    }
+
+    // Do not hard-block Codex when auth source cannot be determined.
     return { ok: true, reason: null };
   }
   if (name === "copilot") {
+    if (!hasOptionalModule("@github/copilot-sdk")) {
+      return { ok: false, reason: "@github/copilot-sdk not installed" };
+    }
     // Copilot auth can come from multiple sources (OAuth manager, gh auth,
     // VS Code Copilot login, env tokens). Don't block execution here.
     return { ok: true, reason: null };
   }
   if (name === "claude") {
+    if (!hasOptionalModule("@anthropic-ai/claude-agent-sdk")) {
+      return { ok: false, reason: "@anthropic-ai/claude-agent-sdk not installed" };
+    }
     const hasKey = runtimeEnv.ANTHROPIC_API_KEY;
     if (!hasKey) {
       return { ok: false, reason: "no ANTHROPIC_API_KEY" };
@@ -680,13 +752,14 @@ async function withTemporaryEnv(overrides, fn) {
  * Otherwise strips OPENAI_BASE_URL so the SDK uses its default auth.
  */
 function buildCodexSdkOptions(envInput = process.env) {
-  const { env: resolvedEnv } = resolveCodexProfileRuntime(envInput);
+  const resolved = resolveCodexProfileRuntime(envInput);
+  const { env: resolvedEnv, configProvider } = resolved;
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
   const isAzure = (() => {
         try {
           const parsed = new URL(baseUrl);
           const host = String(parsed.hostname || "").toLowerCase();
-          return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+          return host === "openai.azure.com" || host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com");
         } catch {
           return false;
         }
@@ -701,16 +774,20 @@ function buildCodexSdkOptions(envInput = process.env) {
     if (env.OPENAI_API_KEY && !env.AZURE_OPENAI_API_KEY) {
       env.AZURE_OPENAI_API_KEY = env.OPENAI_API_KEY;
     }
+    // Use the config.toml provider section name and env_key when available,
+    // so the SDK config override is consistent with the user's config.toml.
+    const providerSectionName = configProvider?.name || "azure";
+    const providerEnvKey = configProvider?.envKey || "AZURE_OPENAI_API_KEY";
     const azureModel = env.CODEX_MODEL || undefined;
     return {
       env,
       config: {
-        model_provider: "azure",
+        model_provider: providerSectionName,
         model_providers: {
-          azure: {
+          [providerSectionName]: {
             name: "Azure OpenAI",
             base_url: baseUrl,
-            env_key: "AZURE_OPENAI_API_KEY",
+            env_key: providerEnvKey,
             wire_api: "responses",
           },
         },
@@ -870,6 +947,7 @@ function applySdkFailureCooldown(name, error, nowMs = Date.now()) {
 }
 
 const MONITOR_MONITOR_TASK_KEY = "monitor-monitor";
+const MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING = parseBoundedNumber(process.env.DEVMODE_MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING, 5, 1, 1000);
 let monitorMonitorTimeoutBoundsWarningKey = "";
 let monitorMonitorTimeoutAdjustmentKey = "";
 
@@ -1038,6 +1116,19 @@ export function setPoolSdk(name) {
 export function resetPoolSdkCache() {
   resolvedSdkName = null;
   resolutionLogged = false;
+  sdkFailureCooldownUntil.clear();
+}
+
+export function setSdkFailureCooldownForTest(name, cooldownRemainingMs, nowMs = Date.now()) {
+  if (!SDK_ADAPTERS[name]) {
+    throw new Error(`Unknown SDK: ${name}`);
+  }
+  const remainingMs = Number(cooldownRemainingMs);
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
+    sdkFailureCooldownUntil.delete(name);
+    return;
+  }
+  sdkFailureCooldownUntil.set(name, nowMs + Math.trunc(remainingMs));
 }
 
 /**
@@ -1072,6 +1163,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
     onThreadReady = null,
     taskKey: steerKey = null,
     envOverrides = null,
+    systemPrompt = "",
   } = extra;
 
   let reportedThreadId = null;
@@ -1115,7 +1207,13 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
     envOverrides && typeof envOverrides === "object"
       ? { ...process.env, ...envOverrides }
       : process.env;
-  const codexOpts = buildCodexSdkOptions(codexRuntimeEnv);
+  const codexSessionEnv = applyNodeWarningSuppressionEnv(codexRuntimeEnv);
+  const codexOpts = buildCodexSdkOptions(codexSessionEnv);
+  const explicitEnvModel = String(envOverrides?.CODEX_MODEL || "").trim();
+  if (explicitEnvModel) {
+    codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: explicitEnvModel };
+    codexOpts.config = { ...(codexOpts.config || {}), model: explicitEnvModel };
+  }
   const modelOverride = String(extra?.model || "").trim();
   if (modelOverride) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: modelOverride };
@@ -1183,7 +1281,10 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   // ── 4. Stream the turn ───────────────────────────────────────────────────
   try {
     const streamSafety = resolveCodexStreamSafety(timeoutMs);
-    const safePrompt = sanitizeAndBoundPrompt(`${prompt}${TOOL_OUTPUT_GUARDRAIL}`);
+    const anchoredPrompt = String(systemPrompt || "").trim()
+      ? `${String(systemPrompt).trim()}\n\n---\n\n${prompt}`
+      : prompt;
+    const safePrompt = sanitizeAndBoundPrompt(`${anchoredPrompt}${TOOL_OUTPUT_GUARDRAIL}`);
     const turn = await thread.runStreamed(safePrompt, {
       signal: controller.signal,
     });
@@ -1418,11 +1519,12 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
     envOverrides && typeof envOverrides === "object"
       ? { ...process.env, ...envOverrides }
       : process.env;
+  const runtimeSessionEnv = applyNodeWarningSuppressionEnv(runtimeEnv);
   const token =
-    runtimeEnv.COPILOT_CLI_TOKEN ||
-    runtimeEnv.GITHUB_TOKEN ||
-    runtimeEnv.GH_TOKEN ||
-    runtimeEnv.GITHUB_PAT ||
+    runtimeSessionEnv.COPILOT_CLI_TOKEN ||
+    runtimeSessionEnv.GITHUB_TOKEN ||
+    runtimeSessionEnv.GH_TOKEN ||
+    runtimeSessionEnv.GITHUB_PAT ||
     undefined;
 
   // ── 3. Create & start ephemeral client (LOCAL mode) ──────────────────────
@@ -1438,15 +1540,16 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
 
   let client;
   let unsubscribe = null;
+  let stopCopilotFirstEventWatch = null;
   let finalResponse = "";
   const allItems = [];
   const autoApprovePermissions = shouldAutoApproveCopilotPermissions();
   const clientEnv = autoApprovePermissions
     ? {
-        ...runtimeEnv,
-        COPILOT_ALLOW_ALL: runtimeEnv.COPILOT_ALLOW_ALL || "true",
+        ...runtimeSessionEnv,
+        COPILOT_ALLOW_ALL: runtimeSessionEnv.COPILOT_ALLOW_ALL || "true",
       }
-    : runtimeEnv;
+    : runtimeSessionEnv;
   try {
     await withSanitizedOpenAiEnv(async () => {
       let clientOpts;
@@ -1466,7 +1569,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
           }
         }
         const cliLaunch = resolveCopilotCliLaunchConfig({
-          env: runtimeEnv,
+          env: runtimeSessionEnv,
           repoRoot: REPO_ROOT,
           cliArgs: buildPoolCopilotCliArgs(mcpConfigPath),
         });
@@ -1672,7 +1775,50 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
         // Don't let this timer keep the process alive
         if (ht && typeof ht.unref === "function") ht.unref();
       });
-      await Promise.race([sendPromise, copilotHardTimeout]);
+      // Some Copilot SDK builds can stall sendAndWait without yielding any
+      // events. Apply an early watchdog so we can fail over before the full
+      // task timeout elapses.
+      let copilotFirstEventTimeoutMs = null;
+      const firstEventWatch =
+        typeof session.on === "function"
+          ? new Promise((_, reject) => {
+              copilotFirstEventTimeoutMs = getFirstEventTimeoutMs(timeoutMs);
+              if (!Number.isFinite(copilotFirstEventTimeoutMs) || copilotFirstEventTimeoutMs <= 0) {
+                return;
+              }
+              let settled = false;
+              let off = null;
+              const timer = setTimeout(() => {
+                settled = true;
+                if (typeof off === "function") off();
+                reject(new Error("timeout_no_events"));
+              }, clampTimerDelayMs(copilotFirstEventTimeoutMs, "copilot-first-event-timeout"));
+              if (timer && typeof timer.unref === "function") timer.unref();
+              off = session.on((event) => {
+                if (settled) return;
+                if (!event || typeof event !== "object") return;
+                const t = String(event.type || "");
+                if (
+                  t === "assistant.message" ||
+                  t === "assistant.message_delta" ||
+                  t === "session.idle" ||
+                  t === "session.error"
+                ) {
+                  settled = true;
+                  clearTimeout(timer);
+                  if (typeof off === "function") off();
+                }
+              });
+              stopCopilotFirstEventWatch = () => {
+                settled = true;
+                clearTimeout(timer);
+                if (typeof off === "function") off();
+              };
+            })
+          : null;
+      await Promise.race(
+        [sendPromise, copilotHardTimeout, firstEventWatch].filter(Boolean),
+      );
     }
 
     const output =
@@ -1694,6 +1840,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
       err?.name === "AbortError" ||
       errMsg === "timeout" ||
       errMsg === "hard_timeout" ||
+      errMsg === "timeout_no_events" ||
       errMsg === "timeout_waiting_for_idle" ||
       isIdleWaitTimeout;
 
@@ -1715,11 +1862,15 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
     }
 
     if (isTimeout) {
+      const noEventsSuffix =
+        errMsg === "timeout_no_events"
+          ? ` (no events received within ${getFirstEventTimeoutMs(timeoutMs)}ms)`
+          : "";
       return {
         success: false,
         output: "",
         items: allItems,
-        error: `${TAG} copilot timeout after ${timeoutMs}ms${isIdleWaitTimeout ? " waiting for session.idle" : ""}`,
+        error: `${TAG} copilot timeout after ${timeoutMs}ms${isIdleWaitTimeout ? " waiting for session.idle" : noEventsSuffix}`,
         sdk: "copilot",
         threadId: resumeThreadId,
       };
@@ -1751,6 +1902,13 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
       threadId: resumeThreadId,
     };
   } finally {
+    try {
+      if (typeof stopCopilotFirstEventWatch === "function") {
+        stopCopilotFirstEventWatch();
+      }
+    } catch {
+      /* best effort */
+    }
     clearAbortScope();
     if (steerKey) unregisterActiveSession(steerKey);
     try {
@@ -1817,6 +1975,7 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
     model: requestedModel = null,
     taskKey: steerKey = null,
     envOverrides = null,
+    systemPrompt = "",
   } = extra;
 
   // ── 1. Load the SDK ──────────────────────────────────────────────────────
@@ -1841,10 +2000,11 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
     envOverrides && typeof envOverrides === "object"
       ? { ...process.env, ...envOverrides }
       : process.env;
+  const runtimeSessionEnv = applyNodeWarningSuppressionEnv(runtimeEnv);
   const apiKey =
-    runtimeEnv.ANTHROPIC_API_KEY ||
-    runtimeEnv.CLAUDE_API_KEY ||
-    runtimeEnv.CLAUDE_KEY ||
+    runtimeSessionEnv.ANTHROPIC_API_KEY ||
+    runtimeSessionEnv.CLAUDE_API_KEY ||
+    runtimeSessionEnv.CLAUDE_KEY ||
     undefined;
 
   // ── 3. Build message queue ───────────────────────────────────────────────
@@ -1959,7 +2119,10 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
       `# ${extractTaskHeading(prompt)}\n\n${prompt}\n\n---\n` +
       'Do NOT respond with "Ready" or ask what to do. EXECUTE this task.';
 
-    msgQueue.push(makeUserMessage(formattedPrompt));
+    const anchoredPrompt = String(systemPrompt || "").trim()
+      ? `${String(systemPrompt).trim()}\n\n---\n\n${formattedPrompt}`
+      : formattedPrompt;
+    msgQueue.push(makeUserMessage(anchoredPrompt));
 
     // Register active session for mid-execution steering (Claude uses message queue)
     if (steerKey) {
@@ -1984,28 +2147,28 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
       settingSources: ["user", "project"],
       permissionMode:
         claudePermissionMode ||
-        runtimeEnv.CLAUDE_PERMISSION_MODE ||
+        runtimeSessionEnv.CLAUDE_PERMISSION_MODE ||
         "bypassPermissions",
     };
     if (apiKey) options.apiKey = apiKey;
     const explicitAllowedTools = normalizeList(claudeAllowedTools);
     const allowedTools = explicitAllowedTools.length
       ? explicitAllowedTools
-      : normalizeList(runtimeEnv.CLAUDE_ALLOWED_TOOLS);
+      : normalizeList(runtimeSessionEnv.CLAUDE_ALLOWED_TOOLS);
     if (allowedTools.length) {
       options.allowedTools = allowedTools;
     }
 
     const model = String(
       requestedModel ||
-        runtimeEnv.CLAUDE_MODEL ||
-        runtimeEnv.CLAUDE_CODE_MODEL ||
-        runtimeEnv.ANTHROPIC_MODEL ||
+        runtimeSessionEnv.CLAUDE_MODEL ||
+        runtimeSessionEnv.CLAUDE_CODE_MODEL ||
+        runtimeSessionEnv.ANTHROPIC_MODEL ||
         "",
     ).trim();
     if (model) options.model = model;
 
-    const result = await withTemporaryEnv(runtimeEnv, async () =>
+    const result = await withTemporaryEnv(runtimeSessionEnv, async () =>
       queryFn({
         prompt: msgQueue.iterator(),
         options,
@@ -2290,6 +2453,7 @@ export async function launchEphemeralThread(
       ];
 
   let lastAttemptResult = null;
+  let primaryFailureResult = null;
   const triedSdkNames = [];
   const missingPrereqSdks = [];
   const cooledDownSdks = [];
@@ -2324,16 +2488,8 @@ export async function launchEphemeralThread(
       missingPrereqSdks.push({ name, reason: prereq.reason });
       if (name === primaryName) {
         console.warn(
-          `${TAG} primary SDK "${name}" missing prerequisites: ${prereq.reason}; not attempting fallback`,
+          `${TAG} primary SDK "${name}" missing prerequisites: ${prereq.reason}; trying fallback chain`,
         );
-        return {
-          success: false,
-          output: "",
-          items: [],
-          error: `${TAG} ${name} unavailable: ${prereq.reason}`,
-          sdk: primaryName,
-          threadId: null,
-        };
       } else {
         console.log(`${TAG} skipping fallback SDK "${name}": ${prereq.reason}`);
       }
@@ -2357,6 +2513,10 @@ export async function launchEphemeralThread(
       return result;
     }
 
+    if (name === primaryName) {
+      primaryFailureResult = result;
+    }
+
     applySdkFailureCooldown(name, result.error);
 
     if (name === primaryName) {
@@ -2370,14 +2530,169 @@ export async function launchEphemeralThread(
     }
   }
 
-  // ── All SDKs exhausted ───────────────────────────────────────────────────
-  if (lastAttemptResult) {
-    return lastAttemptResult;
-  }
-
   const eligibleSdks = Array.from(
     new Set(attemptOrder.filter((name) => SDK_ADAPTERS[name] && !isDisabled(name))),
   );
+  const runnableSdks = eligibleSdks.filter((name) => {
+    const prereq = hasSdkPrerequisites(name, sessionEnv);
+    if (!prereq.ok) {
+      if (!missingPrereqSdks.some((entry) => entry.name === name)) {
+        missingPrereqSdks.push({ name, reason: prereq.reason });
+      }
+      return false;
+    }
+    return true;
+  });
+  const cooledDownSet = new Set(cooledDownSdks.map((entry) => entry.name));
+  const missingPrereqSet = new Set(missingPrereqSdks.map((entry) => entry.name));
+  const allEligibleUnavailable =
+    eligibleSdks.length > 0 &&
+    eligibleSdks.every(
+      (name) => cooledDownSet.has(name) || missingPrereqSet.has(name),
+    );
+
+  if (
+    !ignoreSdkCooldown &&
+    !lastAttemptResult &&
+    triedSdkNames.length === 0 &&
+    runnableSdks.length > 0 &&
+    runnableSdks.every((name) => cooledDownSet.has(name))
+  ) {
+    const forcedRetryOrder = runnableSdks.includes(primaryName)
+      ? [primaryName, ...runnableSdks.filter((name) => name !== primaryName)]
+      : runnableSdks;
+
+    for (const name of forcedRetryOrder) {
+      const cooldownRemainingMs = getSdkCooldownRemainingMs(name);
+      if (cooldownRemainingMs <= 0) continue;
+
+      const prereq = hasSdkPrerequisites(name, sessionEnv);
+      if (!prereq.ok) {
+        if (!missingPrereqSdks.some((entry) => entry.name === name)) {
+          missingPrereqSdks.push({ name, reason: prereq.reason });
+        }
+        continue;
+      }
+
+      const remainingSec = Math.max(1, Math.ceil(cooldownRemainingMs / 1000));
+      console.warn(
+        `${TAG} all eligible SDKs are cooling down; force-retrying "${name}" (${remainingSec}s remaining)`,
+      );
+
+      triedSdkNames.push(name);
+      const launcher = await SDK_ADAPTERS[name].load();
+      const result = await launcher(prompt, cwd, timeoutMs, launchExtra);
+      lastAttemptResult = result;
+
+      if (result.success) {
+        return result;
+      }
+
+      if (!shouldFallbackForSdkError(result.error)) {
+        return result;
+      }
+
+      applySdkFailureCooldown(name, result.error);
+      break;
+    }
+  }
+
+  // If every eligible SDK is unavailable (cooldown and/or missing credentials),
+  // force one cooled-down attempt so work is not blocked for the full cooldown window.
+  const shouldForceCooldownBypassAttempt =
+    !ignoreSdkCooldown &&
+    !lastAttemptResult &&
+    triedSdkNames.length === 0 &&
+    cooledDownSet.has(primaryName) &&
+    allEligibleUnavailable;
+  const forcedSdkName = shouldForceCooldownBypassAttempt
+    ? cooledDownSet.has(primaryName)
+      ? primaryName
+      : eligibleSdks.find((name) => cooledDownSet.has(name)) || null
+    : null;
+
+  if (forcedSdkName) {
+    const prereq = hasSdkPrerequisites(forcedSdkName, sessionEnv);
+    if (!prereq.ok) {
+      // Cooldown means we recently attempted this SDK. Keep one forced retry path
+      // to avoid hard-blocking work on strict prerequisite heuristics.
+      if (
+        !missingPrereqSdks.some(
+          (entry) => entry.name === forcedSdkName && entry.reason === prereq.reason,
+        )
+      ) {
+        missingPrereqSdks.push({ name: forcedSdkName, reason: prereq.reason });
+      }
+      console.warn(
+        `${TAG} all eligible SDKs unavailable; bypassing SDK "${forcedSdkName}" prerequisite gate for forced retry (${prereq.reason})`,
+      );
+    } else {
+      console.warn(
+        `${TAG} no runnable fallback SDK is available (cooldown/prerequisite gate); forcing SDK "${forcedSdkName}" retry`,
+      );
+    }
+    triedSdkNames.push(forcedSdkName);
+    const launcher = await SDK_ADAPTERS[forcedSdkName].load();
+    const forcedResult = await launcher(prompt, cwd, timeoutMs, launchExtra);
+    if (forcedResult.success) {
+      return forcedResult;
+    }
+    lastAttemptResult = forcedResult;
+    if (!shouldFallbackForSdkError(forcedResult.error)) {
+      return forcedResult;
+    }
+    applySdkFailureCooldown(forcedSdkName, forcedResult.error);
+  }
+
+  // Recovery path: when all SDKs were skipped due cooldown/prereq gates, force
+  // one direct attempt against cooled-down SDKs to surface a concrete error.
+  if (!lastAttemptResult && triedSdkNames.length === 0 && cooledDownSdks.length > 0) {
+    const cooledDownRescueOrder = cooledDownSdks
+      .map((entry) => entry.name)
+      .filter((name, idx, arr) => SDK_ADAPTERS[name] && arr.indexOf(name) === idx)
+      .sort((a, b) => {
+        if (a === primaryName) return -1;
+        if (b === primaryName) return 1;
+        return 0;
+      });
+
+    for (const name of cooledDownRescueOrder) {
+      const remainingMs = getSdkCooldownRemainingMs(name);
+      const remainingSec = Math.max(1, Math.ceil(remainingMs / 1000));
+      console.warn(
+        `${TAG} no runnable SDK remained after gating; rescue-attempting cooled-down SDK "${name}" (${remainingSec}s remaining)`,
+      );
+
+      triedSdkNames.push(name);
+      const launcher = await SDK_ADAPTERS[name].load();
+      const result = await launcher(prompt, cwd, timeoutMs, launchExtra);
+      lastAttemptResult = result;
+
+      if (result.success) {
+        return result;
+      }
+
+      if (!shouldFallbackForSdkError(result.error)) {
+        return result;
+      }
+
+      if (name === primaryName) {
+        primaryFailureResult = result;
+      }
+
+      applySdkFailureCooldown(name, result.error);
+    }
+  }
+  // ── All SDKs exhausted ───────────────────────────────────────────────────
+  if (lastAttemptResult) {
+    if (
+      primaryFailureResult &&
+      lastAttemptResult.sdk !== primaryFailureResult.sdk
+    ) {
+      return primaryFailureResult;
+    }
+    return lastAttemptResult;
+  }
 
   let errorMsg = `${TAG} no SDK available.`;
   if (triedSdkNames.length > 0) {
@@ -2515,7 +2830,10 @@ export async function execPooledPrompt(userMessage, options = {}) {
 /** @type {Map<string, ThreadRecord>} In-memory registry keyed by taskKey */
 const threadRegistry = new Map();
 
-const THREAD_REGISTRY_FILE = resolve(__dirname, "..", "logs", "thread-registry.json");
+const testSandbox = ensureTestRuntimeSandbox();
+const THREAD_REGISTRY_FILE = testSandbox?.cacheDir
+  ? resolve(testSandbox.cacheDir, "thread-registry.json")
+  : resolve(__dirname, "..", "logs", "thread-registry.json");
 const THREAD_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 /** Maximum turns before a thread is considered exhausted and must be replaced */
@@ -2553,6 +2871,19 @@ function sdkSupportsPersistentThreads(sdkName) {
 
 /** @type {Map<string, ActiveSession>} */
 const activeSessions = new Map();
+const ACTIVE_SESSION_LISTENERS = new Set();
+
+function notifyActiveSessionListeners(reason = "update", taskKey = null) {
+  if (ACTIVE_SESSION_LISTENERS.size === 0) return;
+  const snapshot = getActiveSessions();
+  for (const listener of ACTIVE_SESSION_LISTENERS) {
+    try {
+      listener(snapshot, { reason, taskKey });
+    } catch {
+      /* best effort */
+    }
+  }
+}
 
 /** Threshold for approaching-exhaustion warning (80% of MAX_THREAD_TURNS). */
 const THREAD_EXHAUSTION_WARNING_THRESHOLD = Math.floor(MAX_THREAD_TURNS * 0.8);
@@ -2574,6 +2905,7 @@ function registerActiveSession(taskKey, sdk, threadId, sendFn) {
     send: sendFn,
     registeredAt: Date.now(),
   });
+  notifyActiveSessionListeners("start", taskKey);
 }
 
 /**
@@ -2582,6 +2914,7 @@ function registerActiveSession(taskKey, sdk, threadId, sendFn) {
  */
 function unregisterActiveSession(taskKey) {
   activeSessions.delete(taskKey);
+  notifyActiveSessionListeners("end", taskKey);
 }
 
 /**
@@ -2631,15 +2964,31 @@ export function hasActiveSession(taskKey) {
  * Get info about which tasks have active (steerable) sessions.
  * @returns {Array<{ taskKey: string, sdk: string, threadId: string|null, age: number }>}
  */
+export function addActiveSessionListener(listener) {
+  if (typeof listener !== "function") return () => {};
+  ACTIVE_SESSION_LISTENERS.add(listener);
+  return () => ACTIVE_SESSION_LISTENERS.delete(listener);
+}
+
 export function getActiveSessions() {
   const now = Date.now();
   const result = [];
   for (const [key, session] of activeSessions) {
+    const record = threadRegistry.get(key) || null;
+    const createdAt = Number(record?.createdAt || session.registeredAt || now);
+    const lastUsedAt = Number(record?.lastUsedAt || now);
     result.push({
+      id: key,
+      taskId: key,
       taskKey: key,
       sdk: session.sdk,
       threadId: session.threadId,
-      age: now - session.registeredAt,
+      type: "task",
+      status: "active",
+      turnCount: Number(record?.turnCount || 0),
+      createdAt: new Date(createdAt).toISOString(),
+      lastActiveAt: new Date(lastUsedAt).toISOString(),
+      age: Math.max(0, now - createdAt),
     });
   }
   return result;
@@ -2701,7 +3050,7 @@ async function loadThreadRegistry() {
 async function saveThreadRegistry() {
   try {
     const { writeFile, mkdir } = await import("node:fs/promises");
-    await mkdir(resolve(__dirname, "..", "logs"), { recursive: true });
+    await mkdir(dirname(THREAD_REGISTRY_FILE), { recursive: true });
     const obj = Object.fromEntries(threadRegistry);
     await writeFile(THREAD_REGISTRY_FILE, JSON.stringify(obj, null, 2), "utf8");
   } catch {
@@ -2757,6 +3106,10 @@ function isPoisonedCodexResumeError(errorValue) {
   );
 }
 
+function isCodexResumeTimeoutError(errorValue) {
+  return String(errorValue || "").toLowerCase().includes("codex resume timeout");
+}
+
 /**
  * Resume an existing Codex thread and run a follow-up prompt.
  * Uses `codex.resumeThread(threadId)` from @openai/codex-sdk.
@@ -2793,7 +3146,13 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
     envOverrides && typeof envOverrides === "object"
       ? { ...process.env, ...envOverrides }
       : process.env;
-  const codexOpts = buildCodexSdkOptions(codexRuntimeEnv);
+  const codexSessionEnv = applyNodeWarningSuppressionEnv(codexRuntimeEnv);
+  const codexOpts = buildCodexSdkOptions(codexSessionEnv);
+  const explicitEnvModel = String(envOverrides?.CODEX_MODEL || "").trim();
+  if (explicitEnvModel) {
+    codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: explicitEnvModel };
+    codexOpts.config = { ...(codexOpts.config || {}), model: explicitEnvModel };
+  }
   const modelOverride = String(extra?.model || "").trim();
   if (modelOverride) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: modelOverride };
@@ -2927,6 +3286,7 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
         : `Thread resume error: ${err.message}`,
       sdk: "codex",
       threadId: null,
+      staleResumeState: isTimeout,
       poisonedResumeState:
         !isTimeout && isPoisonedCodexResumeError(err.message),
     };
@@ -2986,6 +3346,7 @@ async function resumeGenericThread(
  * @param {string}  [extra.sessionType] Interaction type used for context-shredding policy lookup.
  * @param {boolean} [extra.forceContextShredding] Force compression regardless of session type defaults.
  * @param {boolean} [extra.skipContextShredding]  Skip compression regardless of policy.
+ * @param {boolean} [extra.pinSdk]     Keep SDK pinned when provided (disables fallback).
  * @param {Function} [extra.onEvent]   Event callback.
  * @param {AbortController} [extra.abortController]
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string, threadId: string|null, resumed: boolean }>}
@@ -3007,10 +3368,11 @@ export async function launchOrResumeThread(
     restBaseEnv,
     resolvedGithubToken,
   );
+  restExtra.envOverrides = applyNodeWarningSuppressionEnv(restExtra.envOverrides);
   // Pass taskKey through as steer key so SDK launchers can register active sessions
   restExtra.taskKey = taskKey;
-  if (restExtra.sdk) {
-    // Task-bound runs with an explicit SDK should stay pinned to that SDK.
+  if (restExtra.sdk && restExtra.pinSdk === true) {
+    // Task-bound runs with an explicit SDK can optionally stay pinned to that SDK.
     restExtra.disableFallback = true;
   }
   timeoutMs = clampMonitorMonitorTimeout(timeoutMs, taskKey);
@@ -3029,19 +3391,32 @@ export async function launchOrResumeThread(
   // Check registry for existing thread
   const existing = threadRegistry.get(taskKey);
   if (existing && existing.alive && existing.threadId) {
+    const turnsRemaining = MAX_THREAD_TURNS - existing.turnCount;
+    const shouldForceRefreshMonitorMonitorThread =
+      String(taskKey || "").trim() === MONITOR_MONITOR_TASK_KEY &&
+      turnsRemaining <= MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING;
+    if (shouldForceRefreshMonitorMonitorThread) {
+      console.log(
+        `${TAG} proactively refreshing monitor-monitor thread with ${turnsRemaining} turns remaining (threshold=${MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING})`,
+      );
+      existing.alive = false;
+      threadRegistry.set(taskKey, existing);
+      saveThreadRegistry().catch(() => {});
+    }
+
     // Approaching-exhaustion warning (non-blocking — still proceeds with resume)
     if (
       existing.turnCount >= THREAD_EXHAUSTION_WARNING_THRESHOLD &&
-      existing.turnCount < MAX_THREAD_TURNS
+      existing.turnCount < MAX_THREAD_TURNS &&
+      existing.alive
     ) {
-      const remaining = MAX_THREAD_TURNS - existing.turnCount;
       console.warn(
-        `${TAG} :alert: thread for task "${taskKey}" approaching exhaustion: ${existing.turnCount}/${MAX_THREAD_TURNS} turns (${remaining} remaining)`,
+        `${TAG} :alert: thread for task "${taskKey}" approaching exhaustion: ${existing.turnCount}/${MAX_THREAD_TURNS} turns (${turnsRemaining} remaining)`,
       );
     }
 
     // Check if thread has exceeded max turns — force fresh start
-    if (existing.turnCount >= MAX_THREAD_TURNS) {
+    if (existing.alive && existing.turnCount >= MAX_THREAD_TURNS) {
       console.warn(
         `${TAG} thread for task "${taskKey}" exceeded ${MAX_THREAD_TURNS} turns (has ${existing.turnCount}) — invalidating and starting fresh`,
       );
@@ -3049,7 +3424,10 @@ export async function launchOrResumeThread(
       threadRegistry.set(taskKey, existing);
       saveThreadRegistry().catch(() => {});
       // Fall through to fresh launch below
-    } else if (Date.now() - existing.createdAt > THREAD_MAX_ABSOLUTE_AGE_MS) {
+    } else if (
+      existing.alive &&
+      Date.now() - existing.createdAt > THREAD_MAX_ABSOLUTE_AGE_MS
+    ) {
       console.warn(
         `${TAG} thread for task "${taskKey}" exceeded absolute age limit — invalidating and starting fresh`,
       );
@@ -3087,10 +3465,12 @@ export async function launchOrResumeThread(
         // Resume failed — fall through to fresh launch
         if (
           result.poisonedResumeState ||
-          isPoisonedCodexResumeError(result.error)
+          result.staleResumeState ||
+          isPoisonedCodexResumeError(result.error) ||
+          isCodexResumeTimeoutError(result.error)
         ) {
           console.warn(
-            `${TAG} resume failed for task "${taskKey}" with corrupted state: ${result.error}. Dropping cached thread metadata and starting fresh.`,
+            `${TAG} resume failed for task "${taskKey}" with stale or corrupted state: ${result.error}. Dropping cached thread metadata and starting fresh.`,
           );
           threadRegistry.delete(taskKey);
         } else {
@@ -3624,3 +4004,5 @@ export function getActiveThreads() {
   }
   return result;
 }
+
+

@@ -95,9 +95,12 @@ let runtimeConfigLoaded = false;
 let trayMode = false;
 /** True when the main window should start hidden (background mode). */
 let startHidden = false;
+/** True when connected to a user-configured remote Bosun instance. */
+let remoteConnectionActive = false;
 const DEFAULT_TELEGRAM_UI_PORT = 3080;
 const DESKTOP_RELEASES_URL = "https://github.com/virtengine/bosun/releases";
 const STARTUP_UPDATE_REMIND_LATER_MS = 12 * 60 * 60 * 1000;
+const REMOTE_CONNECTION_FILE = "remote-connection.json";
 
 /** @type {{
  * checking: boolean,
@@ -199,18 +202,30 @@ function installDesktopAuthHeaderBridge() {
   if (!ses) return;
   ses.webRequest.onBeforeSendHeaders((details, callback) => {
     try {
-      const desktopKey = String(process.env.BOSUN_DESKTOP_API_KEY || "").trim();
-      if (!desktopKey) {
-        callback({ requestHeaders: details.requestHeaders });
-        return;
-      }
       if (!isTrustedDesktopRequestUrl(details?.url || "")) {
         callback({ requestHeaders: details.requestHeaders });
         return;
       }
       const headers = { ...(details.requestHeaders || {}) };
       const existingAuth = String(headers.Authorization || headers.authorization || "").trim();
-      if (!existingAuth) {
+      if (existingAuth) {
+        callback({ requestHeaders: headers });
+        return;
+      }
+
+      // When connected to a remote instance, use the configured API key
+      if (remoteConnectionActive) {
+        const remote = readRemoteConnectionConfig();
+        if (remote.apiKey) {
+          headers["X-API-Key"] = remote.apiKey;
+          callback({ requestHeaders: headers });
+          return;
+        }
+      }
+
+      // Otherwise use the local desktop API key
+      const desktopKey = String(process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+      if (desktopKey) {
         headers.Authorization = `Bearer ${desktopKey}`;
       }
       callback({ requestHeaders: headers });
@@ -371,6 +386,66 @@ function ensureDesktopApiKeyInEnv() {
     return fromDisk;
   }
   return current;
+}
+
+/* ── Remote-connection config persistence ─────────────────────── */
+
+/**
+ * Read the persisted remote-connection config.
+ * Returns { enabled: boolean, endpoint: string, apiKey: string }.
+ */
+function readRemoteConnectionConfig() {
+  try {
+    const file = resolve(resolveDesktopConfigDir(), REMOTE_CONNECTION_FILE);
+    if (!existsSync(file)) return { enabled: false, endpoint: "", apiKey: "" };
+    const raw = JSON.parse(readFileSync(file, "utf8"));
+    return {
+      enabled: !!raw?.enabled,
+      endpoint: String(raw?.endpoint || "").trim(),
+      apiKey: String(raw?.apiKey || "").trim(),
+    };
+  } catch {
+    return { enabled: false, endpoint: "", apiKey: "" };
+  }
+}
+
+/**
+ * Persist remote-connection config to disk.
+ * @param {{ enabled: boolean, endpoint: string, apiKey: string }} config
+ */
+function saveRemoteConnectionConfig(config) {
+  const dir = resolveDesktopConfigDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const file = resolve(dir, REMOTE_CONNECTION_FILE);
+  const payload = {
+    enabled: !!config?.enabled,
+    endpoint: String(config?.endpoint || "").trim(),
+    apiKey: String(config?.apiKey || "").trim(),
+  };
+  writeFileSync(file, JSON.stringify(payload, null, 2), "utf8");
+  return payload;
+}
+
+/**
+ * Probe a remote Bosun endpoint. Returns true if reachable.
+ */
+async function probeRemoteEndpoint(endpoint, apiKey) {
+  try {
+    const url = new URL("/api/status", endpoint);
+    const headers = {};
+    if (apiKey) headers["x-api-key"] = apiKey;
+    const mod = url.protocol === "https:" ? await import("node:https") : await import("node:http");
+    return new Promise((ok) => {
+      const req = mod.get(url, { headers, timeout: 3000, rejectUnauthorized: false }, (res) => {
+        ok(res.statusCode >= 200 && res.statusCode < 400);
+        res.resume();
+      });
+      req.on("error", () => ok(false));
+      req.on("timeout", () => { req.destroy(); ok(false); });
+    });
+  } catch {
+    return false;
+  }
 }
 
 function isProcessAlive(pid) {
@@ -1261,7 +1336,7 @@ async function loadRuntimeConfig() {
 
 async function loadUiServerModule() {
   if (uiApi) return uiApi;
-  uiApi = await loadBosunModule("ui-server.mjs");
+  uiApi = await loadBosunModule("server/ui-server.mjs");
   return uiApi;
 }
 
@@ -1412,18 +1487,37 @@ async function startUiServer() {
 
 async function buildUiUrl() {
   await loadRuntimeConfig();
+
+  // ── Check for active remote connection config ──
+  const remote = readRemoteConnectionConfig();
+  if (remote.enabled && remote.endpoint) {
+    const reachable = await probeRemoteEndpoint(remote.endpoint, remote.apiKey);
+    if (reachable) {
+      console.log("[desktop] using remote Bosun endpoint:", remote.endpoint);
+      remoteConnectionActive = true;
+      const remoteTarget = new URL(remote.endpoint);
+      uiOrigin = remoteTarget.origin;
+      // Do NOT put the API key in the URL — it leaks into logs, window
+      // history, crash reports, and Referer headers.  The desktop auth
+      // header bridge (installDesktopAuthHeaderBridge) injects X-API-Key
+      // on every request to this origin automatically.
+      return remoteTarget.toString();
+    }
+    console.warn("[desktop] remote endpoint unreachable, falling back to local");
+    remoteConnectionActive = false;
+  }
+
   const daemonUrl = await resolveDaemonUiUrl();
   if (daemonUrl) {
     uiOrigin = new URL(daemonUrl).origin;
-    // Authenticate the initial WebView load against the separately-running
-    // daemon using the desktop API key (set during bootstrap).
+    // The desktop auth header bridge injects Authorization: Bearer <key>
+    // on every request, so the initial page load will carry the header.
+    // The server validates the header and sets a ve_session cookie, making
+    // subsequent in-page fetches authenticated without URL secrets.
     const desktopKey = ensureDesktopApiKeyInEnv();
-    if (desktopKey) {
-      const daemonTarget = new URL(daemonUrl);
-      daemonTarget.searchParams.set("desktopKey", desktopKey);
-      return daemonTarget.toString();
+    if (!desktopKey) {
+      console.warn("[desktop] BOSUN_DESKTOP_API_KEY unavailable; daemon UI may return 401 until auth bootstrap succeeds");
     }
-    console.warn("[desktop] BOSUN_DESKTOP_API_KEY unavailable; daemon UI may return 401 until auth bootstrap succeeds");
     return daemonUrl;
   }
   // Daemon is not reachable — flag it so the window can show an offline banner.
@@ -1436,18 +1530,174 @@ async function buildUiUrl() {
   }
   const targetUrl = new URL(uiServerUrl);
   uiOrigin = targetUrl.origin;
-  // Prefer the non-expiring desktop API key over the TTL-based session token.
-  // Both result in the server setting a ve_session cookie and redirecting to /.
-    const desktopKey = ensureDesktopApiKeyInEnv();
-    if (desktopKey) {
-      targetUrl.searchParams.set("desktopKey", desktopKey);
-    } else {
-    const sessionToken = api.getSessionToken();
-    if (sessionToken) {
-      targetUrl.searchParams.set("token", sessionToken);
-    }
-  }
+  // Auth is handled by the header bridge. For the local embedded server,
+  // the request arrives with Authorization: Bearer <desktopKey> and the
+  // server validates + sets a ve_session cookie.  No URL secrets needed.
   return targetUrl.toString();
+}
+
+/* ── Launch-time connection dialogs ──────────────────────────── */
+
+/**
+ * Show a dialog asking the user how to proceed when no local daemon is found.
+ * Returns "local" | "remote" | "offline".
+ */
+async function showConnectionChoiceDialog() {
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: "question",
+    title: "Bosun — No Running Instance Detected",
+    message: "Bosun couldn't find a running daemon.\nHow would you like to proceed?",
+    detail: [
+      "• Start Local — launch Bosun in this process (default)",
+      "• Connect to Remote — connect to an external Bosun instance (Docker, VM, cloud)",
+      "• Continue Offline — open the portal in offline mode",
+    ].join("\n"),
+    buttons: ["Start Local", "Connect to Remote", "Continue Offline"],
+    defaultId: 0,
+    cancelId: 2,
+    noLink: true,
+  });
+  if (response === 1) return "remote";
+  if (response === 2) return "offline";
+  return "local";
+}
+
+/**
+ * Prompt the user for a remote Bosun endpoint URL and API key.
+ * Returns { endpoint, apiKey } or null if cancelled.
+ */
+async function showRemoteConnectionInputDialog() {
+  /* ── Step 1: Endpoint URL ── */
+  const existing = readRemoteConnectionConfig();
+  const endpointPrompt = await dialog.showMessageBox(mainWindow, {
+    type: "question",
+    title: "Remote Bosun — Enter Endpoint",
+    message: "Enter the URL of the remote Bosun instance:",
+    detail: `Example: https://bosun.example.com:3080\n\nCurrent: ${existing.endpoint || "(none)"}`,
+    buttons: ["OK", "Cancel"],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+    // Electron doesn't have an input dialog builtin, so we use a two-step
+    // approach with a prompt window for the actual text input.
+  });
+  if (endpointPrompt.response === 1) return null;
+
+  // Use a small BrowserWindow as a text-input dialog
+  const endpoint = await showTextInputWindow(
+    "Remote Bosun — Endpoint URL",
+    "Enter the Bosun endpoint URL:",
+    existing.endpoint || "https://",
+    "e.g. https://bosun.example.com:3080",
+  );
+  if (!endpoint) return null;
+
+  /* ── Step 2: API Key ── */
+  const apiKey = await showTextInputWindow(
+    "Remote Bosun — API Key",
+    "Enter the API key (BOSUN_API_KEY) for authentication:",
+    existing.apiKey || "",
+    "Leave empty if none is required",
+  );
+  // apiKey can be empty — that's valid (server may have auth disabled)
+
+  // Validate connectivity before saving
+  const reachable = await probeRemoteEndpoint(endpoint, apiKey || "");
+  if (!reachable) {
+    await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      title: "Connection Failed",
+      message: `Could not reach ${endpoint}`,
+      detail: "The remote instance may be offline or the URL/API key may be incorrect.\nThe config has been saved — you can update it in Settings.",
+      buttons: ["OK"],
+    });
+  }
+  return { endpoint, apiKey: apiKey || "" };
+}
+
+/**
+ * Show a small modal window with a text input field.
+ * Returns the entered string or null if cancelled.
+ */
+function showTextInputWindow(title, label, defaultValue, placeholder) {
+  return new Promise((resolvePromise) => {
+    const parent = mainWindow || undefined;
+    const inputWin = new BrowserWindow({
+      width: 520,
+      height: 210,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      modal: !!parent,
+      parent,
+      show: false,
+      backgroundColor: "#1a1a2e",
+      autoHideMenuBar: true,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+    const escapeHtml = (value) =>
+      String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    const escapedLabel = escapeHtml(label);
+    const escapedDefault = escapeHtml(defaultValue);
+    const escapedPlaceholder = escapeHtml(placeholder);
+    const html = `data:text/html;charset=utf-8,${encodeURIComponent(`<!DOCTYPE html>
+<html><head><style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background: #1a1a2e; color: #e0e0e0; padding: 20px; display: flex;
+         flex-direction: column; height: 100vh; }
+  label { display: block; margin-bottom: 8px; font-weight: 600; }
+  input { width: 100%; padding: 8px 12px; font-size: 14px; border: 1px solid #444;
+          border-radius: 6px; background: #0f0f23; color: #e0e0e0; outline: none; }
+  input:focus { border-color: #6366f1; }
+  .btns { display: flex; gap: 10px; justify-content: flex-end; margin-top: auto; }
+  button { padding: 8px 20px; border: none; border-radius: 6px; font-size: 14px;
+           cursor: pointer; font-weight: 500; }
+  .ok { background: #4f46e5; color: #fff; }
+  .ok:hover { background: #6366f1; }
+  .cancel { background: #333; color: #ccc; }
+  .cancel:hover { background: #444; }
+</style></head><body>
+  <label>${escapedLabel}</label>
+  <input id="val" type="text" value="${escapedDefault}" placeholder="${escapedPlaceholder}" autofocus />
+  <div class="btns">
+    <button class="cancel" onclick="close()">Cancel</button>
+    <button class="ok" onclick="submit()">OK</button>
+  </div>
+  <script>
+    const inp = document.getElementById('val');
+    inp.select();
+    function submit() { document.title = 'RESULT:' + inp.value; }
+    function close() { document.title = 'CANCEL'; }
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') close(); });
+  </script>
+</body></html>`)}`;
+
+    inputWin.loadURL(html);
+    inputWin.once("ready-to-show", () => inputWin.show());
+
+    inputWin.webContents.on("page-title-updated", (_ev, newTitle) => {
+      if (newTitle.startsWith("RESULT:")) {
+        const val = newTitle.slice(7).trim();
+        inputWin.destroy();
+        resolvePromise(val || null);
+      } else if (newTitle === "CANCEL") {
+        inputWin.destroy();
+        resolvePromise(null);
+      }
+    });
+
+    inputWin.on("closed", () => resolvePromise(null));
+  });
 }
 
 async function createMainWindow() {
@@ -1530,6 +1780,28 @@ async function createMainWindow() {
   await mainWindow.loadURL(buildLoadingPageUrl("Starting Bosun services..."));
   await setLoadingMessage("Preparing background daemon...");
   await ensureDaemonRunning();
+
+  // ── If daemon is offline, check remote config or prompt user ──
+  if (bosunDaemonWasOffline) {
+    const remote = readRemoteConnectionConfig();
+    const remoteReachable = remote.enabled && remote.endpoint
+      ? await probeRemoteEndpoint(remote.endpoint, remote.apiKey)
+      : false;
+
+    if (!remoteReachable) {
+      await setLoadingMessage("No running Bosun instance detected...");
+      const choice = await showConnectionChoiceDialog();
+      if (choice === "remote") {
+        const config = await showRemoteConnectionInputDialog();
+        if (config) {
+          saveRemoteConnectionConfig({ ...config, enabled: true });
+        }
+      }
+      // "local" choice: we already tried; buildUiUrl will fall back to in-process server
+      // "offline" choice: continue with in-process server
+    }
+  }
+
   await setLoadingMessage("Connecting to Bosun portal...");
   const uiUrl = await buildUiUrl();
   await mainWindow.loadURL(uiUrl);
@@ -2100,6 +2372,56 @@ function registerDesktopIpc() {
     if (!workspaceId) return { ok: false, error: "workspaceId required" };
     return switchWorkspace(workspaceId);
   });
+
+  // ── Connection Settings IPC ──────────────────────────────────────────
+  /** Get the current remote connection config. */
+  ipcMain.handle("bosun:connection:get", () => {
+    const config = readRemoteConnectionConfig();
+    return { ok: true, ...config, active: remoteConnectionActive };
+  });
+
+  /**
+   * Update the remote connection config.
+   * Payload: { enabled: boolean, endpoint: string, apiKey: string }
+   */
+  ipcMain.handle("bosun:connection:set", async (_event, config) => {
+    try {
+      const saved = saveRemoteConnectionConfig(config);
+      // If switching to remote, update origin tracking flag
+      if (saved.enabled && saved.endpoint) {
+        remoteConnectionActive = true;
+      } else {
+        remoteConnectionActive = false;
+      }
+      return { ok: true, ...saved };
+    } catch (err) {
+      return { ok: false, error: err?.message || "Failed to save connection config" };
+    }
+  });
+
+  /**
+   * Test connectivity to a remote Bosun endpoint.
+   * Payload: { endpoint: string, apiKey: string }
+   */
+  ipcMain.handle("bosun:connection:test", async (_event, { endpoint, apiKey } = {}) => {
+    if (!endpoint) return { ok: false, error: "endpoint required" };
+    const reachable = await probeRemoteEndpoint(endpoint, apiKey || "");
+    return { ok: true, reachable };
+  });
+
+  /**
+   * Open the remote connection setup dialog.
+   * Returns the config if set, or null if cancelled.
+   */
+  ipcMain.handle("bosun:connection:setup", async () => {
+    const config = await showRemoteConnectionInputDialog();
+    if (config) {
+      saveRemoteConnectionConfig({ ...config, enabled: true });
+      remoteConnectionActive = true;
+      return { ok: true, ...config, enabled: true };
+    }
+    return { ok: false, cancelled: true };
+  });
 }
 
 async function bootstrap() {
@@ -2108,6 +2430,9 @@ async function bootstrap() {
     // — before any network request is made (config loading, API key probe, etc.).
     // allow-insecure-localhost (set pre-ready above) handles 127.0.0.1; this
     // setCertificateVerifyProc covers LAN IPs (192.168.x.x / 10.x etc.).
+    //
+    // SECURITY: Only bypass TLS verification for localhost and private-network
+    // addresses.  Remote/public endpoints must pass standard chain verification.
     session.defaultSession.setCertificateVerifyProc((request, callback) => {
       if (isLocalHost(request.hostname)) {
         callback(0); // 0 = verified OK

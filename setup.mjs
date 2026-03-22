@@ -60,6 +60,7 @@ import {
   resolveWorkflowTemplateIds,
   normalizeTemplateOverridesById,
 } from "./workflow/workflow-templates.mjs";
+import { discoverTelegramChats } from "./telegram/get-telegram-chat-id.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -87,6 +88,14 @@ function getVersion() {
   } catch {
     return "0.0.0";
   }
+}
+
+function formatTelegramChatChoice(chat) {
+  const parts = [String(chat.id)];
+  if (chat.type) parts.push(chat.type);
+  if (chat.username) parts.push(`@${chat.username}`);
+  if (chat.title) parts.push(chat.title);
+  return parts.join(" · ");
 }
 
 function hasSetupMarkers(dir) {
@@ -3883,32 +3892,26 @@ async function main() {
               // Try to fetch chat ID from Telegram API
               info("Fetching your chat ID from Telegram...");
               try {
-                const response = await fetch(
-                  `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getUpdates`,
-                );
-                const data = await response.json();
+                const discovery = await discoverTelegramChats(env.TELEGRAM_BOT_TOKEN);
 
-                if (data.ok && data.result && data.result.length > 0) {
-                  // Find the most recent message
-                  const latestMessage = data.result[data.result.length - 1];
-                  const chatId = latestMessage?.message?.chat?.id;
-
-                  if (chatId) {
-                    env.TELEGRAM_CHAT_ID = String(chatId);
-                    info(`✓ Found your chat ID: ${chatId}`);
-                    console.log();
-                  } else {
-                    warn(
-                      "Couldn't find a chat ID. Make sure you sent a message to your bot.",
-                    );
-                    env.TELEGRAM_CHAT_ID = await prompt.ask(
-                      "Enter chat ID manually",
-                      "",
-                    );
-                  }
+                if (discovery.chats.length === 1) {
+                  env.TELEGRAM_CHAT_ID = String(discovery.chats[0].id);
+                  info(`✓ Found your chat ID: ${env.TELEGRAM_CHAT_ID}`);
+                  console.log();
+                } else if (discovery.chats.length > 1) {
+                  const selectedIdx = await prompt.choose(
+                    "Select the chat Bosun should use:",
+                    discovery.chats.map(formatTelegramChatChoice),
+                    0,
+                  );
+                  const selectedChat = discovery.chats[selectedIdx];
+                  env.TELEGRAM_CHAT_ID = String(selectedChat.id);
+                  info(`✓ Selected chat ID: ${env.TELEGRAM_CHAT_ID}`);
+                  console.log();
                 } else {
                   warn(
-                    "No messages found. Make sure you sent a message to your bot first.",
+                    discovery.message ||
+                    "Couldn't find a chat ID. Make sure you sent a message to your bot.",
                   );
                   console.log(
                     chalk.dim(

@@ -39,9 +39,76 @@ export const isSdkVoiceActive = computed(() =>
   sdkVoiceState.value !== "idle" && sdkVoiceState.value !== "error"
 );
 
-// Noise-control default: disable user-side live ASR transcript output/persistence.
-// Assistant response text remains enabled.
-const ENABLE_USER_TRANSCRIPT = false;
+// User transcript is always enabled — transcription is surfaced from the API's
+// input_audio_transcription feature (primary) or browser SpeechRecognition (backup).
+const ENABLE_USER_TRANSCRIPT = true;
+
+// ── Browser SpeechRecognition (parallel backup for user transcription) ──────
+
+const _BrowserSpeechRecognition = typeof globalThis !== "undefined"
+  ? (globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition)
+  : null;
+let _browserRecognition = null;
+let _browserTranscriptActive = false;
+// When the API-level transcription delivers a user transcript, we prefer it
+// over the browser's; this flag suppresses duplicate browser results.
+let _apiTranscriptDelivered = false;
+
+function _startBrowserTranscription() {
+  if (!_BrowserSpeechRecognition || _browserRecognition) return;
+  try {
+    const recognition = new _BrowserSpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+    // Attempt to match user's language, fall back to English
+    recognition.lang = navigator?.language || "en-US";
+
+    recognition.onresult = (event) => {
+      // Only use browser transcript when API-level transcription hasn't delivered yet
+      if (_apiTranscriptDelivered) return;
+      let transcript = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript;
+      }
+      const text = transcript.trim();
+      if (!text) return;
+      sdkVoiceTranscript.value = text;
+      emit("transcript", { text, final: event.results[event.resultIndex]?.isFinal || false, source: "browser" });
+      if (event.results[event.resultIndex]?.isFinal) {
+        _persistTranscriptIfNew("user", text, "browser.speech_recognition.final");
+      }
+    };
+
+    recognition.onerror = (e) => {
+      // Non-fatal: browser recognition may fail on some systems
+      if (e.error !== "no-speech" && e.error !== "aborted") {
+        console.warn("[voice-client-sdk] Browser SpeechRecognition error:", e.error);
+      }
+    };
+
+    recognition.onend = () => {
+      // Auto-restart while session is active
+      if (_browserTranscriptActive && _session) {
+        try { recognition.start(); } catch { /* already running or stopped */ }
+      }
+    };
+
+    recognition.start();
+    _browserRecognition = recognition;
+    _browserTranscriptActive = true;
+  } catch (err) {
+    console.warn("[voice-client-sdk] Browser SpeechRecognition unavailable:", err?.message);
+  }
+}
+
+function _stopBrowserTranscription() {
+  _browserTranscriptActive = false;
+  if (_browserRecognition) {
+    try { _browserRecognition.stop(); } catch { /* ignore */ }
+    _browserRecognition = null;
+  }
+}
 
 // ── Module-scope state ──────────────────────────────────────────────────────
 
@@ -74,7 +141,13 @@ let _toolCompletionAckTimer = null;
 let _assistantBaselineBeforeToolAck = "";
 const _sdkCapturedMicStreams = new Set();
 let _lastAutoBargeInAt = 0;
-const AUTO_BARGE_IN_COOLDOWN_MS = 700;
+const AUTO_BARGE_IN_COOLDOWN_MS = 1200;
+// Minimum speech duration (ms) before an interrupt is allowed — filters keyboard/click noise
+let _speechStartedAt = 0;
+const MIN_SPEECH_DURATION_FOR_INTERRUPT_MS = 400;
+// Delayed response clear — keep response visible in center after turn ends
+let _responseClearTimer = null;
+const RESPONSE_DISPLAY_HOLD_MS = 8000;
 let _traceTurnCounter = 0;
 let _traceCurrentTurnId = null;
 let _traceTurnActive = false;
@@ -108,6 +181,14 @@ function emit(event, data) {
 
 function maybeAutoInterruptSdkResponse(reason = "speech-started") {
   const now = Date.now();
+  // Only interrupt if speech has been ongoing long enough to be real speech
+  // (filters out keyboard clicks, mouse clicks, coughs, etc.)
+  if (_speechStartedAt > 0) {
+    const speechDuration = now - _speechStartedAt;
+    if (speechDuration < MIN_SPEECH_DURATION_FOR_INTERRUPT_MS) {
+      return false;
+    }
+  }
   if (!shouldAutoBargeIn({
     muted: isVoiceMicMuted.value,
     audioActive: Boolean(_session),
@@ -378,6 +459,13 @@ function _resetTranscriptPersistenceState() {
   _traceTurnActive = false;
   _traceLlmFirstTokenMarked = false;
   _traceTtsFirstAudioMarked = false;
+  _apiTranscriptDelivered = false;
+  // Clean up tool result injection state
+  for (const timer of _pendingToolResultTimers.values()) {
+    clearTimeout(timer);
+  }
+  _pendingToolResultTimers.clear();
+  _toolResultInjected.clear();
 }
 
 function _flushPendingTranscriptBuffers() {
@@ -391,7 +479,7 @@ function _flushPendingTranscriptBuffers() {
   }
 
   const finalUser = String(_pendingUserTranscriptText || "").trim();
-  if (finalUser && ENABLE_USER_TRANSCRIPT) {
+  if (finalUser) {
     _persistTranscriptIfNew("user", finalUser, "sdk.history_updated.user.flush");
   }
 
@@ -447,25 +535,201 @@ function _markAssistantToolResponseObserved(latestAssistantText = "") {
   }
 }
 
+// ── Robust tool result injection ────────────────────────────────────────────
+// After the SDK processes a tool call, we verify that the model has received
+// the function_call_output. If the model hasn't responded within a short
+// window, we manually inject the result via sendEvent() as a fallback.
+
+let _pendingToolResultTimers = new Map();
+let _toolResultInjected = new Set(); // call IDs that were manually injected
+
+function _ensureToolResultInjected(session, callId, toolName, resultStr) {
+  // Immediately inject the tool result into the model's conversation context.
+  // The SDK's auto-injection is unreliable — the result gets stored in the
+  // session tracker / chat history but doesn't always reach the model's
+  // realtime conversation context, causing the model to say "I'm having
+  // trouble" even though the tool succeeded.
+  const key = String(callId || "");
+  if (!key) return;
+
+  // Truncate large results for voice context
+  const VOICE_TOOL_OUTPUT_MAX = 6000;
+  let output = resultStr || "Done";
+  if (output.length > VOICE_TOOL_OUTPUT_MAX) {
+    output = output.slice(0, VOICE_TOOL_OUTPUT_MAX)
+      + "\n... (truncated for voice — full result available in chat)";
+  }
+
+  // Mark as injected immediately to prevent duplicate injections
+  _toolResultInjected.add(key);
+
+  // Inject NOW — don't wait for SDK auto-injection
+  if (session && typeof session.sendEvent === "function") {
+    try {
+      session.sendEvent({
+        type: "conversation.item.create",
+        item: {
+          type: "function_call_output",
+          call_id: callId,
+          output,
+        },
+      });
+      session.sendEvent({ type: "response.create" });
+      console.info(`[voice-client-sdk] Injected tool result for ${toolName} (${callId})`);
+      return;
+    } catch (err) {
+      console.warn("[voice-client-sdk] sendEvent injection failed:", err?.message);
+    }
+  }
+
+  // Fallback: inject as user-role context message
+  _injectContextMessage(
+    session,
+    `[Tool Result — ${toolName}]\n${output}`,
+  );
+}
+
+/**
+ * Inject a context message directly into the voice agent's conversation.
+ * Used for tool result fallback injection and background progress updates.
+ */
+function _injectContextMessage(session, text) {
+  if (!session || !text) return;
+  const inputText = String(text).trim();
+  if (!inputText) return;
+
+  if (typeof session.sendMessage === "function") {
+    // @openai/agents SDK — sendMessage injects as user text and triggers response
+    session.sendMessage(inputText);
+  } else if (typeof session.sendEvent === "function") {
+    session.sendEvent({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: inputText }],
+      },
+    });
+    session.sendEvent({ type: "response.create" });
+  } else if (session.readyState === WebSocket.OPEN) {
+    // Gemini WebSocket
+    session.send(JSON.stringify({ type: "text.input", text: inputText }));
+  }
+}
+
+// ── Background agent progress tracking ──────────────────────────────────────
+// When a voice tool dispatches a background task/agent, we track it and
+// periodically inject progress updates into the voice conversation so the
+// model stays aware without the user having to ask.
+
+let _backgroundProgressTimer = null;
+let _trackedBackgroundTasks = new Map(); // taskId → { name, startedAt, lastStatus, sessionId }
+
+function _trackBackgroundTask(taskId, info = {}) {
+  const key = String(taskId || "").trim();
+  if (!key) return;
+  _trackedBackgroundTasks.set(key, {
+    name: String(info.name || "background task").trim(),
+    startedAt: Date.now(),
+    lastStatus: "started",
+    lastCheckedAt: 0,
+    sessionId: String(info.sessionId || "").trim() || null,
+    completionInjected: false,
+  });
+  _ensureBackgroundProgressPolling();
+}
+
+function _ensureBackgroundProgressPolling() {
+  if (_backgroundProgressTimer) return;
+  if (_trackedBackgroundTasks.size === 0) return;
+
+  _backgroundProgressTimer = setInterval(async () => {
+    if (!_session || _trackedBackgroundTasks.size === 0) {
+      _stopBackgroundProgressPolling();
+      return;
+    }
+
+    for (const [taskId, task] of _trackedBackgroundTasks) {
+      const now = Date.now();
+      // Don't check more than every 15 seconds
+      if (now - task.lastCheckedAt < 15_000) continue;
+      task.lastCheckedAt = now;
+
+      try {
+        const res = await fetch("/api/voice/tool", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            toolName: "poll_background_session",
+            args: { sessionId: task.sessionId || taskId },
+            sessionId: sdkVoiceSessionId.value,
+          }),
+        });
+        const result = await res.json();
+        const statusText = typeof result?.result === "string"
+          ? result.result
+          : JSON.stringify(result?.result || "");
+
+        // Detect completion/failure
+        const isComplete = /complete|finished|done|failed|error/i.test(statusText);
+        const previousStatus = task.lastStatus;
+        task.lastStatus = statusText.slice(0, 200);
+
+        // Only inject if status meaningfully changed or task completed
+        if (isComplete && !task.completionInjected) {
+          task.completionInjected = true;
+          const summary = statusText.length > 500
+            ? statusText.slice(0, 500) + "..."
+            : statusText;
+          _injectContextMessage(
+            _session,
+            `[Background Task Update — ${task.name}]\nStatus: ${summary}\n` +
+            "(You don't need to tell the user about this unless they ask about it.)",
+          );
+          // Remove completed task
+          _trackedBackgroundTasks.delete(taskId);
+        }
+      } catch {
+        // Non-fatal — will retry on next interval
+      }
+    }
+
+    if (_trackedBackgroundTasks.size === 0) {
+      _stopBackgroundProgressPolling();
+    }
+  }, 10_000); // Check every 10 seconds
+}
+
+function _stopBackgroundProgressPolling() {
+  if (_backgroundProgressTimer) {
+    clearInterval(_backgroundProgressTimer);
+    _backgroundProgressTimer = null;
+  }
+  _trackedBackgroundTasks.clear();
+  // Clean up pending tool result timers
+  for (const timer of _pendingToolResultTimers.values()) {
+    clearTimeout(timer);
+  }
+  _pendingToolResultTimers.clear();
+  _toolResultInjected.clear();
+}
+
 function _scheduleUserTranscriptFinalize(text) {
   const value = String(text || "").trim();
   if (!value) return;
   _pendingUserTranscriptText = value;
+  // API-level transcript arrived — prefer it over browser SpeechRecognition
+  _apiTranscriptDelivered = true;
   if (_pendingUserTranscriptTimer) clearTimeout(_pendingUserTranscriptTimer);
   _pendingUserTranscriptTimer = setTimeout(() => {
     _pendingUserTranscriptTimer = null;
     const finalText = String(_pendingUserTranscriptText || "").trim();
     if (!finalText) return;
-    if (ENABLE_USER_TRANSCRIPT) {
-      sdkVoiceTranscript.value = finalText;
-      emit("transcript", { text: finalText, final: true });
-      _persistTranscriptIfNew("user", finalText, "sdk.history_updated.user.final");
-    } else {
-      sdkVoiceTranscript.value = "";
-      // Skip persisting user transcript — ASR often hallucinates wrong
-      // languages from short fragments; the model still receives the raw
-      // audio correctly so nothing is lost.
-    }
+    sdkVoiceTranscript.value = finalText;
+    emit("transcript", { text: finalText, final: true, source: "api" });
+    _persistTranscriptIfNew("user", finalText, "sdk.history_updated.user.final");
+    // Reset for next utterance
+    _apiTranscriptDelivered = false;
   }, 350);
 }
 
@@ -478,7 +742,6 @@ function _scheduleAssistantTranscriptFinalize(text) {
     _pendingAssistantTranscriptTimer = null;
     const finalText = String(_pendingAssistantTranscriptText || "").trim();
     if (!finalText) return;
-    sdkVoiceState.value = "thinking";
     _sdkTraceMarkLlmFirstToken("llm_first_token", { reason: "assistant_transcript.final" });
     _sdkTraceMarkTtsFirstAudio("tts_first_audio", { reason: "assistant_transcript.final" });
     sdkVoiceResponse.value = finalText;
@@ -486,8 +749,37 @@ function _scheduleAssistantTranscriptFinalize(text) {
     _persistTranscriptIfNew("assistant", finalText, "sdk.history_updated.assistant.final");
     _markAssistantToolResponseObserved(finalText);
     _sdkTraceEndTurn("turn_end", { reason: "assistant_transcript.final" });
+    // Keep response visible in center — schedule delayed clear instead of
+    // immediately setting sdkVoiceResponse to "". The response will persist
+    // until the user starts speaking or the hold timer expires.
+    _scheduleResponseClear();
     sdkVoiceState.value = "listening";
   }, 700);
+}
+
+/**
+ * Schedule a delayed clear of the assistant response from the center display.
+ * The response stays visible for RESPONSE_DISPLAY_HOLD_MS or until the user
+ * starts speaking (whichever comes first).
+ */
+function _scheduleResponseClear() {
+  if (_responseClearTimer) clearTimeout(_responseClearTimer);
+  _responseClearTimer = setTimeout(() => {
+    _responseClearTimer = null;
+    sdkVoiceResponse.value = "";
+  }, RESPONSE_DISPLAY_HOLD_MS);
+}
+
+/**
+ * Immediately clear the response display — called when the user starts
+ * speaking so the center area shows their new transcript.
+ */
+function _clearResponseForNewTurn() {
+  if (_responseClearTimer) {
+    clearTimeout(_responseClearTimer);
+    _responseClearTimer = null;
+  }
+  sdkVoiceResponse.value = "";
 }
 
 // ── OpenAI/Azure Agents SDK Session ─────────────────────────────────────────
@@ -568,7 +860,22 @@ async function startAgentsSdkSession(config, options = {}) {
         }
         // SDK expects string results — ensure we always return a string.
         const output = result.result ?? result.output ?? "Done";
-        return typeof output === "string" ? output : JSON.stringify(output);
+        const outputStr = typeof output === "string" ? output : JSON.stringify(output);
+
+        // Track background tasks for progress polling
+        const BACKGROUND_TOOLS = new Set([
+          "delegate_to_agent", "execute_workflow", "create_task",
+        ]);
+        if (BACKGROUND_TOOLS.has(t.name)) {
+          const taskId = result?.taskId || result?.sessionId
+            || args?.sessionId || `bg-${Date.now()}`;
+          _trackBackgroundTask(taskId, {
+            name: `${t.name}: ${String(args?.prompt || args?.title || args?.workflowId || "").slice(0, 60)}`,
+            sessionId: result?.sessionId || args?.sessionId || taskId,
+          });
+        }
+
+        return outputStr;
       };
 
       // The @openai/agents SDK calls invokeFunctionTool → tool.invoke(runContext, input, details)
@@ -618,22 +925,22 @@ async function startAgentsSdkSession(config, options = {}) {
     type: turnDetection,
     ...(turnDetection === "server_vad"
       ? {
-          threshold: 0.7,
-          prefix_padding_ms: 400,
-          silence_duration_ms: 1300,
+          threshold: 0.82,
+          prefix_padding_ms: 500,
+          silence_duration_ms: 1600,
           create_response: true,
-          interrupt_response: true,
+          interrupt_response: false,
           createResponse: true,
-          interruptResponse: true,
+          interruptResponse: false,
         }
       : {}),
     ...(turnDetection === "semantic_vad"
       ? {
-          eagerness: "medium",
+          eagerness: "low",
           create_response: true,
-          interrupt_response: true,
+          interrupt_response: false,
           createResponse: true,
-          interruptResponse: true,
+          interruptResponse: false,
         }
       : {}),
   };
@@ -704,9 +1011,22 @@ async function startAgentsSdkSession(config, options = {}) {
   session.on("transport_event", (event) => {
     const eventType = event?.type || "";
     if (eventType === "input_audio_buffer.speech_started") {
+      _speechStartedAt = Date.now();
       _sdkTraceBeginTurn("turn_start", { reason: "speech_started" });
-      maybeAutoInterruptSdkResponse("speech-started");
+      // Clear any lingering response so the center shows user's new transcript
+      _clearResponseForNewTurn();
+      // Don't interrupt immediately — the barge-in will check speech duration
+      // in maybeAutoInterruptSdkResponse when called from the debounced path.
+      // Only attempt barge-in after MIN_SPEECH_DURATION_FOR_INTERRUPT_MS.
+      setTimeout(() => {
+        if (_speechStartedAt > 0 && (Date.now() - _speechStartedAt) >= MIN_SPEECH_DURATION_FOR_INTERRUPT_MS) {
+          maybeAutoInterruptSdkResponse("speech-started-confirmed");
+        }
+      }, MIN_SPEECH_DURATION_FOR_INTERRUPT_MS);
       emit("speech-started", {});
+    }
+    if (eventType === "input_audio_buffer.speech_stopped") {
+      _speechStartedAt = 0;
     }
   });
 
@@ -731,13 +1051,22 @@ async function startAgentsSdkSession(config, options = {}) {
   session.on("agent_tool_end", (_ctx, _agent, tool, result, details) => {
     const toolCall = details?.toolCall || {};
     const callId = toolCall?.callId || toolCall?.call_id;
-    const resultPreview = typeof result === "string"
-      ? result.slice(0, 120) + (result.length > 120 ? "..." : "")
-      : "(non-string result)";
-    console.info(`[voice-client-sdk] tool call done: ${tool?.name} (${callId}) → ${resultPreview}`);
+    const name = tool?.name || "unknown";
+    const resultStr = typeof result === "string" ? result : JSON.stringify(result ?? "");
+    const resultPreview = resultStr.length > 120
+      ? resultStr.slice(0, 120) + "..."
+      : resultStr;
+    console.info(`[voice-client-sdk] tool call done: ${name} (${callId}) → ${resultPreview}`);
     sdkVoiceToolCalls.value = sdkVoiceToolCalls.value.map((tc) =>
       tc.callId === callId ? { ...tc, status: "complete" } : tc
     );
+
+    // ── Robust tool result injection ──
+    // The SDK should auto-inject the function_call_output, but in case it
+    // doesn't (race condition, SDK bug, etc.), we verify via a short delay
+    // and manually inject if the model hasn't acknowledged the result.
+    _ensureToolResultInjected(session, callId, name, resultStr);
+
     // Return to listening once all tool calls have resolved.
     const stillRunning = sdkVoiceToolCalls.value.some((tc) => tc.status === "running");
     if (!stillRunning && sdkVoiceState.value === "thinking") {
@@ -746,7 +1075,7 @@ async function startAgentsSdkSession(config, options = {}) {
     if (!stillRunning) {
       _markToolCompletionPending();
     }
-    emit("tool-call-complete", { callId, name: tool?.name, result });
+    emit("tool-call-complete", { callId, name, result });
   });
 
   session.on("error", (err) => {
@@ -870,6 +1199,10 @@ async function startAgentsSdkSession(config, options = {}) {
   sdkVoiceSessionId.value = _callContext.sessionId || `voice-sdk-${Date.now()}`;
   startDurationTimer();
 
+  // Start browser SpeechRecognition as parallel/backup transcription source
+  _apiTranscriptDelivered = false;
+  _startBrowserTranscription();
+
   emit("connected", {
     provider: tokenData.provider,
     sessionId: sdkVoiceSessionId.value,
@@ -925,6 +1258,10 @@ async function startGeminiLiveSession(config, options = {}) {
       _sessionStartTime = Date.now();
       sdkVoiceSessionId.value = _callContext.sessionId || `voice-gemini-${Date.now()}`;
       startDurationTimer();
+
+      // Start browser SpeechRecognition as parallel/backup transcription
+      _apiTranscriptDelivered = false;
+      _startBrowserTranscription();
 
       // Start mic capture and stream to server
       startGeminiMicCapture(ws).catch((err) => {
@@ -1133,12 +1470,8 @@ function handleGeminiServerEvent(msg) {
 
   switch (type) {
     case "transcript.user":
-      if (ENABLE_USER_TRANSCRIPT) {
-        sdkVoiceTranscript.value = msg.text || "";
-        emit("transcript", { text: msg.text, final: true });
-      } else {
-        sdkVoiceTranscript.value = "";
-      }
+      sdkVoiceTranscript.value = msg.text || "";
+      emit("transcript", { text: msg.text, final: true, source: "api" });
       _persistTranscriptIfNew("user", msg.text, "gemini.user_transcript");
       break;
 
@@ -1289,6 +1622,8 @@ export async function startSdkVoiceSession(options = {}) {
   sdkVoiceToolCalls.value = [];
   _usingLegacyFallback = false;
   _lastAutoBargeInAt = 0;
+  _speechStartedAt = 0;
+  if (_responseClearTimer) { clearTimeout(_responseClearTimer); _responseClearTimer = null; }
   _resetTranscriptPersistenceState();
 
   try {
@@ -1367,6 +1702,8 @@ export function stopSdkVoiceSession() {
   _sdkExplicitStop = true;
   emit("session-ending", { sessionId: sdkVoiceSessionId.value });
   _flushPendingTranscriptBuffers();
+  _stopBrowserTranscription();
+  _stopBackgroundProgressPolling();
   if (_geminiRecorder) {
     try { _geminiRecorder.stop(); } catch { /* ignore */ }
     _geminiRecorder = null;
@@ -1400,6 +1737,8 @@ export function stopSdkVoiceSession() {
 
   clearInterval(_durationTimer);
   _durationTimer = null;
+  if (_responseClearTimer) { clearTimeout(_responseClearTimer); _responseClearTimer = null; }
+  _speechStartedAt = 0;
 
   sdkVoiceState.value = "idle";
   sdkVoiceTranscript.value = "";

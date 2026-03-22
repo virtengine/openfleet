@@ -1,0 +1,57 @@
+# ── Bosun .dockerignore ───────────────────────────────────────────────────────
+# Keep the build context small and exclude dev/test artifacts.
+
+# Dependencies (installed fresh in build stage)
+node_modules
+
+# Git
+.git
+.gitignore
+
+# Local environment files (may contain secrets)
+.env
+.env.*
+!.env.example
+
+# Build artifacts & caches
+.bosun/
+.bosun-monitor/
+.cache/
+.prism/
+.tmp-*
+tmp/
+logs/
+output/
+test-results/
+playwright-screenshots/
+coverage-report.json
+
+# Dev/test files
+tests/
+stryker.config.mjs
+vitest.config.mjs
+playwright.config.mjs
+__e2e-verbose.txt
+
+# Documentation (not needed in image)
+_docs/
+docs/
+*.md
+!README.md
+
+# Desktop (Electron) — not needed in Docker
+desktop/
+
+# Editor
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Bosun worktrees (dev only)
+bosun-worktrees/
+virtengine-gh/

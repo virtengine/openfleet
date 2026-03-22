@@ -2,6 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CONFIG_FILES } from "./config-file-names.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -97,6 +98,47 @@ export function resolveRepoRoot(options = {}) {
 
   const cwd = options.cwd || process.cwd();
 
+  // Check bosun config for workspace repos FIRST — works regardless of cwd
+  const configDirs = [...getConfigSearchDirs(), __dirname];
+  if (process.env.BOSUN_HOME) configDirs.unshift(resolve(process.env.BOSUN_HOME));
+  let fallbackRepo = null;
+  for (const cfgName of CONFIG_FILES) {
+    for (const dir of configDirs) {
+      const cfgPath = resolve(dir, cfgName);
+      if (!existsSync(cfgPath)) continue;
+      try {
+        const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+        // Check workspace repos (higher priority — explicit workspace configuration)
+        const workspaces = Array.isArray(cfg.workspaces) ? cfg.workspaces : [];
+        for (const ws of workspaces) {
+          const wsRepos = ws?.repos || ws?.repositories || [];
+          if (!Array.isArray(wsRepos)) continue;
+          const wsId = ws?.id || "default";
+          for (const repo of wsRepos) {
+            const name = typeof repo === "string" ? repo.split("/").pop() : (repo?.name || repo?.id || "");
+            if (!name) continue;
+            const repoPath = resolve(dir, "workspaces", wsId, name);
+            if (existsSync(resolve(repoPath, ".git"))) return repoPath;
+            if (existsSync(repoPath)) fallbackRepo ??= repoPath;
+          }
+        }
+        // Check flat repositories
+        const repos = cfg.repositories || cfg.repos || [];
+        if (Array.isArray(repos) && repos.length > 0) {
+          const primary = repos.find((r) => r.primary) || repos[0];
+          const repoPath = typeof primary === "string" ? primary : (primary?.path || primary?.repoRoot);
+          const resolved = normalizeConfigRepoPath(repoPath, dir);
+          if (!resolved || !existsSync(resolved)) continue;
+          if (existsSync(resolve(resolved, ".git"))) return resolved;
+          fallbackRepo ??= resolved;
+        }
+      } catch {
+        /* invalid config */
+      }
+    }
+  }
+  if (fallbackRepo) return fallbackRepo;
+
   // Try git from cwd
   try {
     const gitRoot = execSync("git rev-parse --show-toplevel", {
@@ -120,40 +162,6 @@ export function resolveRepoRoot(options = {}) {
   } catch {
     // bosun installed standalone
   }
-
-  // Check if __dirname itself is the bosun module root (installed as npm package)
-  const moduleRoot = detectBosunModuleRoot();
-  if (moduleRoot && moduleRoot !== cwd && existsSync(resolve(moduleRoot, "package.json"))) {
-    // When bosun is installed globally/locally outside a git repo, use its directory
-    // as a reference point if no git root was found above.
-    // Only use it if it's a valid directory on disk (don't return the fallback as a repo root).
-  }
-
-  // Check bosun config for workspace repos
-  const CONFIG_FILES = ["bosun.config.json", ".bosun.json", "bosun.json"];
-  const configDirs = [...getConfigSearchDirs(), __dirname];
-  let fallbackRepo = null;
-  for (const cfgName of CONFIG_FILES) {
-    for (const dir of configDirs) {
-      const cfgPath = resolve(dir, cfgName);
-      if (!existsSync(cfgPath)) continue;
-      try {
-        const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
-        const repos = cfg.repositories || cfg.repos || [];
-        if (Array.isArray(repos) && repos.length > 0) {
-          const primary = repos.find((r) => r.primary) || repos[0];
-          const repoPath = typeof primary === "string" ? primary : (primary?.path || primary?.repoRoot);
-          const resolved = normalizeConfigRepoPath(repoPath, dir);
-          if (!resolved || !existsSync(resolved)) continue;
-          if (existsSync(resolve(resolved, ".git"))) return resolved;
-          fallbackRepo ??= resolved;
-        }
-      } catch {
-        /* invalid config */
-      }
-    }
-  }
-  if (fallbackRepo) return fallbackRepo;
 
   return resolve(cwd);
 }
@@ -192,7 +200,6 @@ export function resolveAgentRepoRoot(options = {}) {
  * @returns {string|null}
  */
 function _resolveWorkspacePrimaryRepo() {
-  const CONFIG_FILES = ["bosun.config.json", ".bosun.json", "bosun.json"];
   const configDirs = [...getConfigSearchDirs(), __dirname];
   for (const cfgName of CONFIG_FILES) {
     for (const dir of configDirs) {

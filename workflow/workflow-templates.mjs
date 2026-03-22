@@ -31,9 +31,11 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import { detectProjectStack, getCommandPresets } from "./project-detection.mjs";
+import { normalizeTemplateLayoutInPlace } from "../workflow-templates/_helpers.mjs";
 
 // ── Re-export helpers for external consumers ────────────────────────────────
-export { node, edge, resetLayout } from "../workflow-templates/_helpers.mjs";
+export { node, edge, resetLayout, normalizeTemplateLayoutInPlace } from "../workflow-templates/_helpers.mjs";
 
 // ── Import templates from category modules ──────────────────────────────────
 
@@ -44,6 +46,7 @@ import {
   PR_CONFLICT_RESOLVER_TEMPLATE,
   STALE_PR_REAPER_TEMPLATE,
   RELEASE_DRAFTER_TEMPLATE,
+  BOSUN_PR_PROGRESSOR_TEMPLATE,
   BOSUN_PR_WATCHDOG_TEMPLATE,
   GITHUB_KANBAN_SYNC_TEMPLATE,
   SDK_CONFLICT_RESOLVER_TEMPLATE,
@@ -102,6 +105,16 @@ import {
   CODE_QUALITY_STRIKER_TEMPLATE,
 } from "../workflow-templates/code-quality.mjs";
 
+// Task Execution (task-type-specific workflows)
+import {
+  FULLSTACK_TASK_TEMPLATE,
+  BACKEND_TASK_TEMPLATE,
+  FRONTEND_TASK_TEMPLATE,
+  DEBUG_TASK_TEMPLATE,
+  CICD_TASK_TEMPLATE,
+  DESIGN_TASK_TEMPLATE,
+} from "../workflow-templates/task-execution.mjs";
+
 // Task Lifecycle (workflow-first core)
 import {
   TASK_LIFECYCLE_TEMPLATE,
@@ -128,6 +141,11 @@ import {
   FLOW_CONTROL_SUITE_TEMPLATE,
 } from "../workflow-templates/coverage.mjs";
 
+// Continuation Loop (issue-state continuation polling)
+import {
+  CONTINUATION_LOOP_TEMPLATE,
+} from "../workflow-templates/continuation-loop.mjs";
+
 // MCP Integration (MCP tool → workflow data piping)
 import {
   MCP_TOOL_CHAIN_TEMPLATE,
@@ -140,6 +158,7 @@ import {
 import {
   BOSUN_TOOL_PIPELINE_TEMPLATE,
   WORKFLOW_COMPOSITION_TEMPLATE,
+  INLINE_WORKFLOW_COMPOSITION_TEMPLATE,
   MCP_TO_BOSUN_BRIDGE_TEMPLATE,
   GIT_HEALTH_PIPELINE_TEMPLATE,
 } from "../workflow-templates/bosun-native.mjs";
@@ -152,6 +171,7 @@ export {
   PR_CONFLICT_RESOLVER_TEMPLATE,
   STALE_PR_REAPER_TEMPLATE,
   RELEASE_DRAFTER_TEMPLATE,
+  BOSUN_PR_PROGRESSOR_TEMPLATE,
   BOSUN_PR_WATCHDOG_TEMPLATE,
   GITHUB_KANBAN_SYNC_TEMPLATE,
   SDK_CONFLICT_RESOLVER_TEMPLATE,
@@ -184,6 +204,12 @@ export {
   DEPENDENCY_AUDIT_TEMPLATE,
   SECRET_SCANNER_TEMPLATE,
   CODE_QUALITY_STRIKER_TEMPLATE,
+  FULLSTACK_TASK_TEMPLATE,
+  BACKEND_TASK_TEMPLATE,
+  FRONTEND_TASK_TEMPLATE,
+  DEBUG_TASK_TEMPLATE,
+  CICD_TASK_TEMPLATE,
+  DESIGN_TASK_TEMPLATE,
   TASK_LIFECYCLE_TEMPLATE,
   VE_ORCHESTRATOR_LITE_TEMPLATE,
   TASK_BATCH_PROCESSOR_TEMPLATE,
@@ -194,12 +220,14 @@ export {
   MCP_RESEARCH_PROBE_TEMPLATE,
   AGENT_EXECUTION_PIPELINE_TEMPLATE,
   FLOW_CONTROL_SUITE_TEMPLATE,
+  CONTINUATION_LOOP_TEMPLATE,
   MCP_TOOL_CHAIN_TEMPLATE,
   MCP_GITHUB_PR_MONITOR_TEMPLATE,
   MCP_CROSS_SERVER_PIPELINE_TEMPLATE,
   MCP_ITERATIVE_RESEARCH_TEMPLATE,
   BOSUN_TOOL_PIPELINE_TEMPLATE,
   WORKFLOW_COMPOSITION_TEMPLATE,
+  INLINE_WORKFLOW_COMPOSITION_TEMPLATE,
   MCP_TO_BOSUN_BRIDGE_TEMPLATE,
   GIT_HEALTH_PIPELINE_TEMPLATE,
 };
@@ -210,27 +238,29 @@ export {
 
 /** Category metadata for UI grouping. */
 export const TEMPLATE_CATEGORIES = Object.freeze({
-  github:      { label: "GitHub",       icon: ":git:", order: 1 },
-  agents:      { label: "Agents",       icon: ":bot:", order: 2 },
-  planning:    { label: "Planning",     icon: ":clipboard:", order: 3 },
-  "ci-cd":     { label: "CI / CD",      icon: ":refresh:", order: 4 },
-  reliability: { label: "Reliability",  icon: ":shield:", order: 5 },
-  security:    { label: "Security",     icon: ":lock:", order: 6 },
-  lifecycle:   { label: "Lifecycle",    icon: ":rocket:", order: 7 },
-  research:    { label: "Research",     icon: ":microscope:", order: 8 },
-  coverage:    { label: "Coverage",     icon: ":chart:", order: 9 },
-  "mcp-integration": { label: "MCP Integration", icon: ":plug:", order: 10 },
-  maintenance: { label: "Maintenance",   icon: ":wrench:",   order: 11 },
-  custom:      { label: "Custom",       icon: ":settings:", order: 12 },
+  "task-execution": { label: "Task Execution", icon: ":play:", order: 1 },
+  github:      { label: "GitHub",       icon: ":git:", order: 2 },
+  agents:      { label: "Agents",       icon: ":bot:", order: 3 },
+  planning:    { label: "Planning",     icon: ":clipboard:", order: 4 },
+  "ci-cd":     { label: "CI / CD",      icon: ":refresh:", order: 5 },
+  reliability: { label: "Reliability",  icon: ":shield:", order: 6 },
+  security:    { label: "Security",     icon: ":lock:", order: 7 },
+  lifecycle:   { label: "Lifecycle",    icon: ":rocket:", order: 8 },
+  research:    { label: "Research",     icon: ":microscope:", order: 9 },
+  coverage:    { label: "Coverage",     icon: ":chart:", order: 10 },
+  "mcp-integration": { label: "MCP Integration", icon: ":plug:", order: 11 },
+  maintenance: { label: "Maintenance",   icon: ":wrench:",   order: 12 },
+  custom:      { label: "Custom",       icon: ":settings:", order: 13 },
 });
 
-export const WORKFLOW_TEMPLATES = Object.freeze([
+const BUILTIN_WORKFLOW_TEMPLATES = [
   // ── GitHub ──
   PR_MERGE_STRATEGY_TEMPLATE,
   PR_TRIAGE_TEMPLATE,
   PR_CONFLICT_RESOLVER_TEMPLATE,
   STALE_PR_REAPER_TEMPLATE,
   RELEASE_DRAFTER_TEMPLATE,
+  BOSUN_PR_PROGRESSOR_TEMPLATE,
   BOSUN_PR_WATCHDOG_TEMPLATE,
   GITHUB_KANBAN_SYNC_TEMPLATE,
   SDK_CONFLICT_RESOLVER_TEMPLATE,
@@ -269,6 +299,13 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   SECRET_SCANNER_TEMPLATE,
   // ── Maintenance (structural quality, agentic dev) ──
   CODE_QUALITY_STRIKER_TEMPLATE,
+  // ── Task Execution (task-type workflows + core lifecycle) ──
+  FULLSTACK_TASK_TEMPLATE,
+  BACKEND_TASK_TEMPLATE,
+  FRONTEND_TASK_TEMPLATE,
+  DEBUG_TASK_TEMPLATE,
+  CICD_TASK_TEMPLATE,
+  DESIGN_TASK_TEMPLATE,
   // ── Task Lifecycle (workflow-first core) ──
   TASK_LIFECYCLE_TEMPLATE,
   VE_ORCHESTRATOR_LITE_TEMPLATE,
@@ -283,6 +320,8 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   MCP_RESEARCH_PROBE_TEMPLATE,
   AGENT_EXECUTION_PIPELINE_TEMPLATE,
   FLOW_CONTROL_SUITE_TEMPLATE,
+  // ── Continuation Loop ──
+  CONTINUATION_LOOP_TEMPLATE,
   // ── MCP Integration (MCP tool → workflow data piping) ──
   MCP_TOOL_CHAIN_TEMPLATE,
   MCP_GITHUB_PR_MONITOR_TEMPLATE,
@@ -291,230 +330,384 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   // ── Bosun Native (tools, sub-workflows, functions) ──
   BOSUN_TOOL_PIPELINE_TEMPLATE,
   WORKFLOW_COMPOSITION_TEMPLATE,
+  INLINE_WORKFLOW_COMPOSITION_TEMPLATE,
   MCP_TO_BOSUN_BRIDGE_TEMPLATE,
   GIT_HEALTH_PIPELINE_TEMPLATE,
-]);
+];
+
+for (const template of BUILTIN_WORKFLOW_TEMPLATES) {
+  normalizeTemplateLayoutInPlace(template);
+}
+
+export const WORKFLOW_TEMPLATES = Object.freeze(BUILTIN_WORKFLOW_TEMPLATES);
 
 const _TEMPLATE_BY_ID = new Map(
   WORKFLOW_TEMPLATES.map((template) => [template.id, template]),
 );
-const TEMPLATE_STATE_VERSION = 1;
+function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
+  const templateStateVersion = 1;
 
-function stableNormalize(value) {
-  if (Array.isArray(value)) {
-    return value.map((entry) => stableNormalize(entry));
+  function toFingerprintNode(node = {}) {
+    if (!node || typeof node !== "object") return node;
+    const next = JSON.parse(JSON.stringify(node));
+    delete next.position;
+    delete next.inputs;
+    delete next.inputPorts;
+    delete next.outputs;
+    delete next.outputPorts;
+    delete next.inputs;
+    delete next.outputs;
+    delete next.width;
+    delete next.height;
+    return next;
   }
-  if (value && typeof value === "object") {
-    const normalized = {};
-    for (const key of Object.keys(value).sort()) {
-      normalized[key] = stableNormalize(value[key]);
+
+  function toFingerprintEdge(edgeDef = {}) {
+    if (!edgeDef || typeof edgeDef !== "object") return edgeDef;
+    const next = JSON.parse(JSON.stringify(edgeDef));
+    next.sourcePort = String(next.sourcePort || "default").trim() || "default";
+    next.targetPort = String(next.targetPort || "default").trim() || "default";
+    delete next.sourcePortType;
+    delete next.targetPortType;
+    return next;
+  }
+
+  function stableNormalize(value) {
+    if (Array.isArray(value)) {
+      return value.map((entry) => stableNormalize(entry));
     }
-    return normalized;
+    if (value && typeof value === "object") {
+      const normalized = {};
+      for (const key of Object.keys(value).sort()) {
+        normalized[key] = stableNormalize(value[key]);
+      }
+      return normalized;
+    }
+    return value;
   }
-  return value;
-}
 
-function stableStringify(value) {
-  return JSON.stringify(stableNormalize(value));
-}
+  function stableStringify(value) {
+    return JSON.stringify(stableNormalize(value));
+  }
 
-function hashContent(value) {
-  return createHash("sha256").update(stableStringify(value)).digest("hex");
-}
+  function hashContent(value) {
+    return createHash("sha256").update(stableStringify(value)).digest("hex");
+  }
 
-function toWorkflowFingerprintPayload(def = {}) {
+  function toWorkflowFingerprintPayload(def = {}) {
+    return {
+      name: def.name || "",
+      description: def.description || "",
+      category: def.category || "custom",
+      trigger: def.trigger || "",
+      variables: def.variables || {},
+      nodes: Array.isArray(def.nodes) ? def.nodes.map((node) => toFingerprintNode(node)) : [],
+      edges: Array.isArray(def.edges) ? def.edges.map((edgeDef) => toFingerprintEdge(edgeDef)) : [],
+    };
+  }
+
+  function computeWorkflowFingerprint(def = {}) {
+    return hashContent(toWorkflowFingerprintPayload(def));
+  }
+
+  function deriveTemplateState(def, template) {
+    const nowIso = new Date().toISOString();
+    const currentFingerprint = computeWorkflowFingerprint(def);
+    const templateFingerprint = computeWorkflowFingerprint(template);
+    const previousState = def?.metadata?.templateState || {};
+
+    const installedTemplateFingerprint = typeof previousState.installedTemplateFingerprint === "string"
+      ? previousState.installedTemplateFingerprint
+      : (currentFingerprint === templateFingerprint ? templateFingerprint : null);
+
+    const installedFingerprint = typeof previousState.installedFingerprint === "string"
+      ? previousState.installedFingerprint
+      : currentFingerprint;
+
+    const isCustomized = currentFingerprint !== installedFingerprint;
+    const updateAvailable = installedTemplateFingerprint
+      ? installedTemplateFingerprint !== templateFingerprint
+      : false;
+
+    return {
+      stateVersion: templateStateVersion,
+      templateId: template.id,
+      templateName: template.name,
+      templateVersion: templateFingerprint.slice(0, 12),
+      templateFingerprint,
+      installedTemplateFingerprint,
+      installedTemplateVersion: installedTemplateFingerprint
+        ? installedTemplateFingerprint.slice(0, 12)
+        : null,
+      installedFingerprint,
+      currentFingerprint,
+      isCustomized,
+      updateAvailable,
+      refreshedAt: nowIso,
+    };
+  }
+
+  function applyWorkflowTemplateState(def = {}) {
+    if (!def || typeof def !== "object") return def;
+    const templateId = String(def?.metadata?.installedFrom || "").trim();
+    if (!templateId) return def;
+    const template = getTemplate(templateId);
+    if (!template) return def;
+    if (!def.metadata || typeof def.metadata !== "object") def.metadata = {};
+    def.metadata.templateState = deriveTemplateState(def, template);
+    return def;
+  }
+
+  function applyLegacyTemplateVariableMigrations(existing, template, variables, opts = {}) {
+    if (!variables || typeof variables !== "object") return variables;
+    const assumeUncustomized = opts.assumeUncustomized === true;
+    if (!assumeUncustomized && existing?.metadata?.templateState?.isCustomized === true) {
+      return variables;
+    }
+
+    const templateId = String(template?.id || existing?.metadata?.installedFrom || "").trim();
+    if (templateId === "template-task-lifecycle") {
+      const currentValue = existing?.variables?.prePrValidationCommand;
+      const nextDefault = template?.variables?.prePrValidationCommand;
+      if (currentValue === "npm run prepush:check" && nextDefault === "auto") {
+        variables.prePrValidationCommand = nextDefault;
+      }
+    }
+
+    return variables;
+  }
+
+  function makeUpdatedWorkflowFromTemplate(existing, template, mode = "replace", opts = {}) {
+    const templateClone = cloneTemplateDefinition(template);
+    const nowIso = new Date().toISOString();
+    const mergedVariables = applyLegacyTemplateVariableMigrations(existing, templateClone, {
+      ...(templateClone.variables || {}),
+      ...(existing.variables || {}),
+    }, opts);
+    const next = {
+      ...templateClone,
+      id: mode === "copy" ? randomUUID() : existing.id,
+      name: mode === "copy" ? `${existing.name} (Updated)` : existing.name,
+      enabled: existing.enabled !== false,
+      variables: mergedVariables,
+      metadata: {
+        ...(existing.metadata || {}),
+        ...(templateClone.metadata || {}),
+        installedFrom: template.id,
+        templateUpdatedAt: nowIso,
+      },
+    };
+    delete next.metadata.templateState;
+    if (mode === "copy") {
+      next.metadata.createdAt = nowIso;
+      next.metadata.updatedAt = nowIso;
+    }
+    return applyWorkflowTemplateState(next);
+  }
+
+  function updateWorkflowFromTemplate(engine, workflowId, opts = {}) {
+    const mode = String(opts.mode || "replace").toLowerCase();
+    if (!["replace", "copy"].includes(mode)) {
+      throw new Error(`Unsupported template update mode "${mode}"`);
+    }
+
+    const existing = engine.get(workflowId);
+    if (!existing) throw new Error(`Workflow "${workflowId}" not found`);
+    const templateId = String(existing?.metadata?.installedFrom || "").trim();
+    if (!templateId) throw new Error(`Workflow "${workflowId}" is not template-backed`);
+    const template = getTemplate(templateId);
+    if (!template) throw new Error(`Template "${templateId}" not found`);
+
+    const hydrated = applyWorkflowTemplateState(existing);
+    if (mode === "replace" && hydrated?.metadata?.templateState?.isCustomized && opts.force !== true) {
+      throw new Error("Workflow has custom changes; pass force=true to replace it");
+    }
+
+    const next = makeUpdatedWorkflowFromTemplate(hydrated, template, mode, {
+      assumeUncustomized: opts.assumeUncustomized === true,
+    });
+    return engine.save(next);
+  }
+
+  function reconcileInstalledTemplates(engine, opts = {}) {
+    const autoUpdateUnmodified = opts.autoUpdateUnmodified !== false;
+    const forceUpdateTemplateIds = new Set(
+      (Array.isArray(opts.forceUpdateTemplateIds)
+        ? opts.forceUpdateTemplateIds
+        : [opts.forceUpdateTemplateIds])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean),
+    );
+    const workflows = engine.list();
+    const result = {
+      scanned: 0,
+      metadataUpdated: 0,
+      autoUpdated: 0,
+      forceUpdated: [],
+      updateAvailable: [],
+      customized: [],
+      updatedWorkflowIds: [],
+      errors: [],
+    };
+
+    for (const summary of workflows) {
+      const wfId = summary?.id;
+      if (!wfId) continue;
+      const def = engine.get(wfId);
+      if (!def?.metadata?.installedFrom) continue;
+      result.scanned += 1;
+
+      try {
+        const previousState = def.metadata?.templateState || null;
+        const before = stableStringify(previousState);
+        applyWorkflowTemplateState(def);
+        const state = def.metadata?.templateState || null;
+        const after = stableStringify(state);
+        if (before !== after) {
+          engine.save(def);
+          result.metadataUpdated += 1;
+        }
+
+        if (!state) continue;
+        if (state.isCustomized) {
+          result.customized.push({
+            workflowId: def.id,
+            name: def.name,
+            templateId: state.templateId,
+            updateAvailable: state.updateAvailable === true,
+          });
+        }
+        if (state.updateAvailable === true) {
+          result.updateAvailable.push({
+            workflowId: def.id,
+            name: def.name,
+            templateId: state.templateId,
+            isCustomized: state.isCustomized === true,
+          });
+        }
+
+        const templateId = String(state.templateId || "").trim();
+        const shouldForceUpdate = templateId && forceUpdateTemplateIds.has(templateId);
+        const assumeUncustomized = previousState?.isCustomized !== true;
+        if (shouldForceUpdate) {
+          const saved = updateWorkflowFromTemplate(engine, def.id, {
+            mode: "replace",
+            force: true,
+            assumeUncustomized,
+          });
+          result.autoUpdated += 1;
+          result.updatedWorkflowIds.push(saved.id);
+          result.forceUpdated.push(saved.id);
+          continue;
+        }
+
+        const wasCustomized = previousState?.isCustomized === true;
+        if (autoUpdateUnmodified && state.updateAvailable === true && !wasCustomized) {
+          const saved = updateWorkflowFromTemplate(engine, def.id, {
+            mode: "replace",
+            force: true,
+            assumeUncustomized: true,
+          });
+          result.autoUpdated += 1;
+          result.updatedWorkflowIds.push(saved.id);
+        }
+      } catch (err) {
+        result.errors.push({
+          workflowId: wfId,
+          error: err.message,
+        });
+      }
+    }
+
+    return result;
+  }
+
   return {
-    name: def.name || "",
-    description: def.description || "",
-    category: def.category || "custom",
-    trigger: def.trigger || "",
-    variables: def.variables || {},
-    nodes: def.nodes || [],
-    edges: def.edges || [],
+    applyWorkflowTemplateState,
+    computeWorkflowFingerprint,
+    reconcileInstalledTemplates,
+    updateWorkflowFromTemplate,
   };
 }
 
-export function computeWorkflowFingerprint(def = {}) {
-  return hashContent(toWorkflowFingerprintPayload(def));
-}
 
 function cloneTemplateDefinition(template) {
   return JSON.parse(JSON.stringify(template));
 }
 
-function getTemplateVersion(templateId) {
-  const template = getTemplate(templateId);
-  if (!template) return null;
-  return computeWorkflowFingerprint(template).slice(0, 12);
-}
-
-function deriveTemplateState(def, template) {
-  const nowIso = new Date().toISOString();
-  const currentFingerprint = computeWorkflowFingerprint(def);
-  const templateFingerprint = computeWorkflowFingerprint(template);
-  const previousState = def?.metadata?.templateState || {};
-
-  const installedTemplateFingerprint = typeof previousState.installedTemplateFingerprint === "string"
-    ? previousState.installedTemplateFingerprint
-    : (currentFingerprint === templateFingerprint ? templateFingerprint : null);
-
-  const installedFingerprint = typeof previousState.installedFingerprint === "string"
-    ? previousState.installedFingerprint
-    : currentFingerprint;
-
-  const isCustomized = currentFingerprint !== installedFingerprint;
-  const updateAvailable = installedTemplateFingerprint
-    ? installedTemplateFingerprint !== templateFingerprint
-    : false;
-
-  return {
-    stateVersion: TEMPLATE_STATE_VERSION,
-    templateId: template.id,
-    templateName: template.name,
-    templateVersion: templateFingerprint.slice(0, 12),
-    templateFingerprint,
-    installedTemplateFingerprint,
-    installedTemplateVersion: installedTemplateFingerprint
-      ? installedTemplateFingerprint.slice(0, 12)
-      : null,
-    installedFingerprint,
-    currentFingerprint,
-    isCustomized,
-    updateAvailable,
-    refreshedAt: nowIso,
-  };
-}
-
-export function applyWorkflowTemplateState(def = {}) {
+function relayoutWorkflowDefinition(def = {}) {
   if (!def || typeof def !== "object") return def;
-  const templateId = String(def?.metadata?.installedFrom || "").trim();
-  if (!templateId) return def;
-  const template = getTemplate(templateId);
-  if (!template) return def;
-  if (!def.metadata || typeof def.metadata !== "object") def.metadata = {};
-  def.metadata.templateState = deriveTemplateState(def, template);
+  normalizeTemplateLayoutInPlace(def);
+  applyWorkflowTemplateState(def);
   return def;
 }
 
-function makeUpdatedWorkflowFromTemplate(existing, template, mode = "replace") {
-  const templateClone = cloneTemplateDefinition(template);
-  const nowIso = new Date().toISOString();
-  const mergedVariables = {
-    ...(templateClone.variables || {}),
-    ...(existing.variables || {}),
-  };
-  const next = {
-    ...templateClone,
-    id: mode === "copy" ? randomUUID() : existing.id,
-    name: mode === "copy" ? `${existing.name} (Updated)` : existing.name,
-    enabled: existing.enabled !== false,
-    variables: mergedVariables,
-    metadata: {
-      ...(existing.metadata || {}),
-      ...(templateClone.metadata || {}),
-      installedFrom: template.id,
-      templateUpdatedAt: nowIso,
-    },
-  };
-  delete next.metadata.templateState;
-  if (mode === "copy") {
-    next.metadata.createdAt = nowIso;
-    next.metadata.updatedAt = nowIso;
+function normalizeRelayoutWorkflowIdInput(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry || "").trim()).filter(Boolean);
   }
-  return applyWorkflowTemplateState(next);
+  const id = String(value || "").trim();
+  return id ? [id] : [];
 }
 
-export function updateWorkflowFromTemplate(engine, workflowId, opts = {}) {
-  const mode = String(opts.mode || "replace").toLowerCase();
-  if (!["replace", "copy"].includes(mode)) {
-    throw new Error(`Unsupported template update mode "${mode}"`);
+function resolveRelayoutWorkflowTargets(engine, requestedIds = []) {
+  const targets = new Set();
+  for (const requestedId of requestedIds) {
+    const normalizedId = String(requestedId || "").trim();
+    if (!normalizedId) continue;
+    const resolved = engine.get(normalizedId);
+    if (resolved?.id) {
+      targets.add(String(resolved.id).trim());
+      continue;
+    }
+    targets.add(normalizedId);
   }
-  const existing = engine.get(workflowId);
-  if (!existing) throw new Error(`Workflow "${workflowId}" not found`);
-  const templateId = String(existing?.metadata?.installedFrom || "").trim();
-  if (!templateId) throw new Error(`Workflow "${workflowId}" is not template-backed`);
-  const template = getTemplate(templateId);
-  if (!template) throw new Error(`Template "${templateId}" not found`);
-
-  const hydrated = applyWorkflowTemplateState(existing);
-  if (mode === "replace" && hydrated?.metadata?.templateState?.isCustomized && opts.force !== true) {
-    throw new Error("Workflow has custom changes; pass force=true to replace it");
-  }
-
-  const next = makeUpdatedWorkflowFromTemplate(hydrated, template, mode);
-  return engine.save(next);
+  return targets;
 }
 
-export function reconcileInstalledTemplates(engine, opts = {}) {
-  const autoUpdateUnmodified = opts.autoUpdateUnmodified !== false;
-  const workflows = engine.list();
+export function relayoutInstalledTemplateWorkflows(engine, opts = {}) {
+  if (!engine || typeof engine.list !== "function" || typeof engine.get !== "function" || typeof engine.save !== "function") {
+    throw new Error("A workflow engine with list/get/save is required");
+  }
+
+  const targetWorkflowIds = resolveRelayoutWorkflowTargets(
+    engine,
+    normalizeRelayoutWorkflowIdInput(opts.workflowIds || opts.workflowId),
+  );
   const result = {
     scanned: 0,
-    metadataUpdated: 0,
-    autoUpdated: 0,
-    updateAvailable: [],
-    customized: [],
+    updated: 0,
+    skipped: 0,
     updatedWorkflowIds: [],
+    skippedWorkflowIds: [],
     errors: [],
   };
 
-  for (const summary of workflows) {
-    const wfId = summary?.id;
-    if (!wfId) continue;
-    const def = engine.get(wfId);
-    if (!def?.metadata?.installedFrom) continue;
+  for (const summary of engine.list()) {
+    const workflowId = String(summary?.id || "").trim();
+    if (!workflowId) continue;
+    if (targetWorkflowIds.size > 0 && !targetWorkflowIds.has(workflowId)) continue;
     result.scanned += 1;
 
     try {
-      const before = stableStringify(def.metadata?.templateState || null);
-      applyWorkflowTemplateState(def);
-      const state = def.metadata?.templateState || null;
-      const after = stableStringify(state);
-      if (before !== after) {
-        engine.save(def);
-        result.metadataUpdated += 1;
+      const def = engine.get(workflowId);
+      if (!def?.metadata?.installedFrom) {
+        result.skipped += 1;
+        result.skippedWorkflowIds.push(workflowId);
+        continue;
       }
-
-      if (!state) continue;
-      if (state.isCustomized) {
-        result.customized.push({
-          workflowId: def.id,
-          name: def.name,
-          templateId: state.templateId,
-          updateAvailable: state.updateAvailable === true,
-        });
-      }
-      if (state.updateAvailable === true) {
-        result.updateAvailable.push({
-          workflowId: def.id,
-          name: def.name,
-          templateId: state.templateId,
-          isCustomized: state.isCustomized === true,
-        });
-      }
-
-      if (autoUpdateUnmodified && state.updateAvailable === true && state.isCustomized !== true) {
-        const saved = updateWorkflowFromTemplate(engine, def.id, { mode: "replace", force: true });
-        result.autoUpdated += 1;
-        result.updatedWorkflowIds.push(saved.id);
-      }
+      relayoutWorkflowDefinition(def);
+      engine.save(def);
+      result.updated += 1;
+      result.updatedWorkflowIds.push(workflowId);
     } catch (err) {
-      result.errors.push({
-        workflowId: wfId,
-        error: err.message,
-      });
+      result.errors.push({ workflowId, error: err.message });
     }
   }
 
   return result;
 }
 
-/**
- * Setup workflow profiles used by `bosun --setup`.
- * - `manual`: human-driven dispatch with reliability safety nets.
- * - `balanced`: recommended default for most teams.
- * - `autonomous`: higher automation with planning + maintenance workflows.
- */
 export const WORKFLOW_SETUP_PROFILES = Object.freeze({
   manual: Object.freeze({
     id: "manual",
@@ -729,6 +922,21 @@ export function getTemplate(id) {
   return _TEMPLATE_BY_ID.get(id) || null;
 }
 
+const {
+  applyWorkflowTemplateState,
+  computeWorkflowFingerprint,
+  reconcileInstalledTemplates,
+  updateWorkflowFromTemplate,
+} = createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition });
+
+export {
+  applyWorkflowTemplateState,
+  computeWorkflowFingerprint,
+  reconcileInstalledTemplates,
+  updateWorkflowFromTemplate,
+};
+
+
 // ── Grouped Flows ──────────────────────────────────────────────────────────
 // Templates that use action.execute_workflow to chain into other templates
 // declare metadata.requiredTemplates. When one template in a group is
@@ -791,7 +999,34 @@ export function expandTemplateGroups(templateIds) {
  * List all available templates with metadata.
  * @returns {Array<{id, name, description, category, tags, replaces?}>}
  */
-function inferVariableInputAndOptions(key, defaultValue) {
+/**
+ * Classify a variable key into a command category if it matches.
+ * Returns "test" | "build" | "lint" | "syntaxCheck" | "qualityGate" | null.
+ */
+function classifyCommandVariable(key) {
+  const k = String(key || "").toLowerCase();
+  if (k.includes("testcommand") || k.includes("test_command") || k === "testframework" || k === "test_framework") return "test";
+  if (k.includes("buildcommand") || k.includes("build_command")) return "build";
+  if (k.includes("lintcommand") || k.includes("lint_command") || k.includes("lintcmd")) return "lint";
+  if (k.includes("syntaxcheck") || k.includes("syntax_check") || k.includes("typecheckcommand") || k.includes("type_check")) return "syntaxCheck";
+  if (k.includes("preprvalidationcommand") || k.includes("pre_pr_validation_command") || k.includes("qualitygatecommand") || k.includes("quality_gate_command")) return "qualityGate";
+  return null;
+}
+
+let _cachedDetection = null;
+let _cachedDetectionRoot = null;
+
+function getCachedDetection(rootDir) {
+  if (!rootDir) return null;
+  if (_cachedDetectionRoot === rootDir && _cachedDetection) return _cachedDetection;
+  try {
+    _cachedDetection = detectProjectStack(rootDir);
+    _cachedDetectionRoot = rootDir;
+  } catch { _cachedDetection = null; }
+  return _cachedDetection;
+}
+
+function inferVariableInputAndOptions(key, defaultValue, rootDir) {
   const normalized = String(key || "").trim().toLowerCase();
   if (typeof defaultValue === "boolean") return { input: "toggle", options: [] };
   if (typeof defaultValue === "number") return { input: "number", options: [] };
@@ -800,10 +1035,30 @@ function inferVariableInputAndOptions(key, defaultValue) {
   }
 
   const optionValues = [];
-  if (normalized.includes("executor") || normalized.includes("sdk")) {
+
+  // Command-type variables get auto-detected + multi-language presets
+  const cmdCategory = classifyCommandVariable(normalized);
+  if (cmdCategory) {
+    const detected = rootDir ? getCachedDetection(rootDir) : null;
+    const presets = getCommandPresets(detected);
+    const presetList = presets[cmdCategory] || [];
+
+    if (presetList.length > 0) {
+      // Put current default first if not already in presets
+      const existingValues = new Set(presetList.map(p => p.value));
+      if (typeof defaultValue === "string" && defaultValue.trim() && !existingValues.has(defaultValue.trim())) {
+        optionValues.push(defaultValue.trim());
+      }
+      for (const p of presetList) {
+        optionValues.push(p.value);
+      }
+    }
+  } else if (normalized.includes("executor") || normalized.includes("sdk")) {
     optionValues.push("auto", "codex", "claude", "copilot");
   } else if (normalized.includes("bumptype") || normalized.includes("bump_type")) {
     optionValues.push("patch", "minor", "major");
+  } else if (normalized === "basebranch" || normalized === "base_branch" || normalized === "defaultbasebranch" || normalized === "targetbranch" || normalized === "default_target_branch") {
+    optionValues.push("main", "master", "develop", "staging");
   }
 
   if (typeof defaultValue === "string" && defaultValue.trim()) {
@@ -829,10 +1084,16 @@ function inferVariableDescription(key, defaultValue) {
   const normalized = String(key || "").trim().toLowerCase();
   if (normalized.includes("taskid") || normalized.includes("task_id")) return "Task identifier (for example TASK-123).";
   if (normalized.includes("prompt") || normalized.includes("problem") || normalized.includes("description")) return "Free-form instruction text.";
+  if (normalized === "basebranch" || normalized === "base_branch" || normalized === "defaultbasebranch") return "Base branch for PRs (e.g. main, master, develop). Select from common options or type a custom branch.";
   if (normalized.includes("branch")) return "Git branch name.";
   if (normalized.includes("timeout") || normalized.includes("delay") || normalized.includes("cooldown")) return "Duration in milliseconds.";
   if (normalized.includes("executor") || normalized.includes("sdk")) return "Executor profile used by agent nodes.";
   if (normalized.includes("model")) return "Model id used by agent nodes.";
+  if (classifyCommandVariable(normalized) === "test") return "Test command for your project. Auto-detected from project files when available.";
+  if (classifyCommandVariable(normalized) === "build") return "Build command for your project. Auto-detected from project files when available.";
+  if (classifyCommandVariable(normalized) === "lint") return "Lint/style check command. Auto-detected from project files when available.";
+  if (classifyCommandVariable(normalized) === "syntaxCheck") return "Syntax/compile check command. Auto-detected from project files when available.";
+  if (classifyCommandVariable(normalized) === "qualityGate") return "Pre-PR validation command. Auto-detected from project files and repo hooks when available.";
   if (typeof defaultValue === "boolean") return "Toggle this setting on or off.";
   if (typeof defaultValue === "number") return "Numeric workflow setting.";
   return "";
@@ -876,7 +1137,7 @@ function collectTemplateCapabilities(template) {
   };
 }
 
-export function listTemplates() {
+export function listTemplates(rootDir) {
   return WORKFLOW_TEMPLATES.map((t) => {
     const cat = TEMPLATE_CATEGORIES[t.category] || TEMPLATE_CATEGORIES.custom;
     const fingerprint = computeWorkflowFingerprint(t);
@@ -903,7 +1164,7 @@ export function listTemplates() {
       variables: t.variables && typeof t.variables === "object"
         ? Object.entries(t.variables).map(([key, defaultValue]) => {
             const required = defaultValue === "" || defaultValue == null;
-            const inferred = inferVariableInputAndOptions(key, defaultValue);
+            const inferred = inferVariableInputAndOptions(key, defaultValue, rootDir);
             return {
               key,
               defaultValue,
@@ -965,9 +1226,13 @@ export function getWorkflowSetupProfile(profileId = "balanced") {
  * @returns {string[]}
  */
 export function resolveWorkflowTemplateIds(opts = {}) {
+  const fromWorkflowConfig = resolveWorkflowTemplateConfig(opts.workflows || []);
   const explicit = normalizeTemplateIdList(opts.templateIds || []);
-  if (explicit.length > 0) return explicit;
-  return resolveProfileTemplateIds(opts.profileId || "balanced");
+  if (explicit.length > 0) {
+    return normalizeTemplateIdList([...explicit, ...fromWorkflowConfig.templateIds]);
+  }
+  const fromProfile = resolveProfileTemplateIds(opts.profileId || "balanced");
+  return normalizeTemplateIdList([...fromProfile, ...fromWorkflowConfig.templateIds]);
 }
 
 function coerceTemplateVariableValue(rawValue, defaultValue) {
@@ -1161,4 +1426,3 @@ export function installRecommendedTemplates(engine, overridesById = {}) {
     .map((template) => template.id);
   return installTemplateSet(engine, recommendedIds, overridesById);
 }
-

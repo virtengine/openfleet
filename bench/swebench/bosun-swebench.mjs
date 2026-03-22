@@ -1,21 +1,25 @@
-#!/usr/bin/env node
-
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { taskCreate, taskList } from "../../task-cli.mjs";
+import { taskCreate, taskList } from "../../task/task-cli.mjs";
+import { WorkflowEngine } from "../../workflow/workflow-engine.mjs";
+import { installTemplateSet } from "../../workflow/workflow-templates.mjs";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+const DEFAULT_SWEBENCH_TEMPLATE_IDS = Object.freeze(["template-task-lifecycle"]);
+const DEFAULT_SWEBENCH_TEMPLATE_OVERRIDES = Object.freeze({
+  "template-task-lifecycle": Object.freeze({
+    maxParallel: 1,
+  }),
+});
 
-function usage() {
+export function usage() {
   console.log(`
 Bosun SWE-bench bridge
 
 Usage:
-  node bench/swebench/bosun-swebench.mjs import --instances <path> [--status todo] [--priority high] [--candidates 3]
+  node bench/swebench/bosun-swebench.mjs import --instances <path> [--status todo] [--priority high] [--candidates 3] [--no-ensure-runtime]
   node bench/swebench/bosun-swebench.mjs export --out <predictions.jsonl> --model <name>
   node bench/swebench/bosun-swebench.mjs eval --predictions <predictions.jsonl> --instance-ids <ids.jsonl> [--max-workers 8] [--run-id bosun-run]
 
@@ -26,7 +30,7 @@ Notes:
 `);
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const args = { _: [] };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -50,7 +54,14 @@ function parseArgs(argv) {
   return args;
 }
 
-function readJsonOrJsonl(pathLike) {
+function isFlagDisabled(args, key) {
+  const value = args?.[key];
+  if (value === undefined) return false;
+  if (value === true) return true;
+  return ["0", "false", "no", "off"].includes(normString(value).toLowerCase());
+}
+
+export function readJsonOrJsonl(pathLike) {
   const file = resolve(pathLike);
   const raw = readFileSync(file, "utf8");
   const trimmed = raw.trim();
@@ -87,7 +98,7 @@ function firstNonEmpty(obj, keys) {
   return "";
 }
 
-function buildTaskFromInstance(instance, opts = {}) {
+export function buildTaskFromInstance(instance, opts = {}) {
   const instanceId = firstNonEmpty(instance, ["instance_id", "id"]);
   if (!instanceId) throw new Error("Missing instance_id");
   const problem = firstNonEmpty(instance, ["problem_statement", "statement", "text"]);
@@ -120,13 +131,17 @@ function buildTaskFromInstance(instance, opts = {}) {
     description,
     status: opts.status || "todo",
     priority: opts.priority || "high",
-    tags: ["swebench", "benchmark"],
+    tags: ["swebench", "benchmark", "benchmark:swebench"],
     workspace: workspace || process.cwd(),
     repository: repo,
     baseBranch: "main",
     meta: {
       candidateCount: candidateCount > 1 ? candidateCount : undefined,
       execution: candidateCount > 1 ? { candidateCount } : {},
+      benchmark: {
+        type: "swebench",
+        provider: "swebench",
+      },
       swebench: {
         instance_id: instanceId,
         repo,
@@ -139,7 +154,55 @@ function buildTaskFromInstance(instance, opts = {}) {
   };
 }
 
-function writeJsonl(pathLike, records) {
+export function resolveSwebenchWorkflowRuntimePaths(workspace) {
+  const repoRoot = resolve(normString(workspace) || process.cwd());
+  return {
+    repoRoot,
+    workflowDir: resolve(repoRoot, ".bosun", "workflows"),
+    runsDir: resolve(repoRoot, ".bosun", "workflow-runs"),
+  };
+}
+
+export function resolveSwebenchKanbanStorePath(workspace) {
+  const repoRoot = resolve(normString(workspace) || process.cwd());
+  return resolve(repoRoot, ".bosun", ".cache", "kanban-state.json");
+}
+
+export function ensureSwebenchWorkflowRuntime(workspace, opts = {}) {
+  const { repoRoot, workflowDir, runsDir } = resolveSwebenchWorkflowRuntimePaths(workspace);
+  if (!existsSync(repoRoot)) {
+    return {
+      repoRoot,
+      workflowDir,
+      runsDir,
+      installed: [],
+      skipped: [],
+      errors: [{ id: "workspace", error: `Workspace does not exist: ${repoRoot}` }],
+    };
+  }
+  const templateIds = Array.isArray(opts.templateIds) && opts.templateIds.length > 0
+    ? opts.templateIds
+    : [...DEFAULT_SWEBENCH_TEMPLATE_IDS];
+  const lifecycleOverrides = {
+    ...DEFAULT_SWEBENCH_TEMPLATE_OVERRIDES["template-task-lifecycle"],
+    ...(opts.overridesById?.["template-task-lifecycle"] || {}),
+  };
+  const overridesById = {
+    ...DEFAULT_SWEBENCH_TEMPLATE_OVERRIDES,
+    ...(opts.overridesById || {}),
+    "template-task-lifecycle": lifecycleOverrides,
+  };
+  const engine = new WorkflowEngine({ workflowDir, runsDir });
+  const result = installTemplateSet(engine, templateIds, overridesById);
+  return {
+    repoRoot,
+    workflowDir,
+    runsDir,
+    ...result,
+  };
+}
+
+export function writeJsonl(pathLike, records) {
   const outFile = resolve(pathLike);
   mkdirSync(dirname(outFile), { recursive: true });
   const body = records.map((r) => JSON.stringify(r)).join("\n") + "\n";
@@ -147,20 +210,25 @@ function writeJsonl(pathLike, records) {
   return outFile;
 }
 
-function sha256File(pathLike) {
+export function sha256File(pathLike) {
   const content = readFileSync(pathLike);
   return createHash("sha256").update(content).digest("hex");
 }
 
-function safeGit(args, cwd = process.cwd()) {
+export function safeGit(args, cwd = process.cwd()) {
   try {
+    // Block dangerous git arguments that could execute arbitrary commands
+    const blocked = ["--upload-pack", "--exec", "-c"];
+    for (const a of args) {
+      if (blocked.some((b) => String(a).startsWith(b))) return "";
+    }
     return execFileSync("git", args, { encoding: "utf8", cwd }).trim();
   } catch {
     return "";
   }
 }
 
-function getTaskSwebenchMeta(task) {
+export function getTaskSwebenchMeta(task) {
   const meta = task?.meta?.swebench;
   if (!meta || typeof meta !== "object") return null;
   const instanceId = normString(meta.instance_id);
@@ -173,7 +241,7 @@ function getTaskSwebenchMeta(task) {
   };
 }
 
-function computePatchForTask(task, sweMeta) {
+export function computePatchForTask(task, sweMeta) {
   const repoDir = sweMeta.workspace || process.cwd();
   const base = sweMeta.base_commit;
   const ref = normString(task.branchName || "HEAD");
@@ -187,12 +255,14 @@ function computePatchForTask(task, sweMeta) {
   return diff;
 }
 
-async function cmdImport(args) {
+export async function cmdImport(args) {
   const instancesPath = normString(args.instances);
   if (!instancesPath) throw new Error("--instances is required");
   const instances = readJsonOrJsonl(instancesPath);
+  const ensureRuntime = !isFlagDisabled(args, "no-ensure-runtime");
   let created = 0;
   let skipped = 0;
+  const runtimeResults = new Map();
 
   for (const inst of instances) {
     const task = buildTaskFromInstance(inst, {
@@ -200,9 +270,32 @@ async function cmdImport(args) {
       priority: normString(args.priority) || "high",
       candidateCount: normString(args.candidates || args.candidateCount || ""),
     });
+    if (ensureRuntime) {
+      const runtimeKey = resolve(normString(task.workspace) || process.cwd());
+      if (!runtimeResults.has(runtimeKey)) {
+        const runtimeResult = ensureSwebenchWorkflowRuntime(task.workspace);
+        if (Array.isArray(runtimeResult.errors) && runtimeResult.errors.length > 0) {
+          const firstError = runtimeResult.errors[0];
+          throw new Error(
+            `Failed to ensure SWE-bench workflow runtime for ${runtimeKey}: ${firstError?.error || "unknown error"}`,
+          );
+        }
+        runtimeResults.set(runtimeKey, runtimeResult);
+      }
+    }
 
     try {
-      await taskCreate(task);
+      const previousStorePath = process.env.BOSUN_STORE_PATH;
+      process.env.BOSUN_STORE_PATH = resolveSwebenchKanbanStorePath(task.workspace);
+      try {
+        await taskCreate(task);
+      } finally {
+        if (previousStorePath == null) {
+          delete process.env.BOSUN_STORE_PATH;
+        } else {
+          process.env.BOSUN_STORE_PATH = previousStorePath;
+        }
+      }
       created += 1;
     } catch (err) {
       if (String(err.message || "").toLowerCase().includes("exists")) {
@@ -213,10 +306,39 @@ async function cmdImport(args) {
     }
   }
 
+  if (ensureRuntime) {
+    let installed = 0;
+    let alreadyPresent = 0;
+    for (const result of runtimeResults.values()) {
+      installed += Array.isArray(result.installed) ? result.installed.length : 0;
+      alreadyPresent += Array.isArray(result.skipped) ? result.skipped.length : 0;
+    }
+    console.log(
+      `Ensured SWE-bench workflow runtime: workspaces=${runtimeResults.size}, installed=${installed}, already_present=${alreadyPresent}`,
+    );
+  }
+
   console.log(`Imported SWE-bench tasks: created=${created}, skipped=${skipped}, total=${instances.length}`);
+  return {
+    created,
+    skipped,
+    total: instances.length,
+    ensureRuntime,
+    runtime: {
+      workspaces: runtimeResults.size,
+      installed: [...runtimeResults.values()].reduce(
+        (sum, result) => sum + (Array.isArray(result.installed) ? result.installed.length : 0),
+        0,
+      ),
+      alreadyPresent: [...runtimeResults.values()].reduce(
+        (sum, result) => sum + (Array.isArray(result.skipped) ? result.skipped.length : 0),
+        0,
+      ),
+    },
+  };
 }
 
-async function cmdExport(args) {
+export async function cmdExport(args) {
   const out = normString(args.out);
   if (!out) throw new Error("--out is required");
   const model = normString(args.model) || "bosun";
@@ -252,7 +374,7 @@ async function cmdExport(args) {
   }
 }
 
-function cmdEval(args) {
+export function cmdEval(args) {
   const predictions = normString(args.predictions);
   const instanceIds = normString(args["instance-ids"] || args.instances);
   if (!predictions) throw new Error("--predictions is required");
@@ -298,8 +420,8 @@ function cmdEval(args) {
   execFileSync("python", cmd, { stdio: "inherit" });
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
+export async function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
   const cmd = normString(args._[0] || "").toLowerCase();
   if (!cmd || ["-h", "--help", "help"].includes(cmd)) {
     usage();
@@ -322,7 +444,18 @@ async function main() {
   throw new Error(`Unknown command: ${cmd}`);
 }
 
-main().catch((err) => {
-  console.error(`[bosun-swebench] ${err.message}`);
-  process.exit(1);
-});
+const isDirectRun = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+  } catch {
+    return false;
+  }
+})();
+
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error(`[bosun-swebench] ${err.message}`);
+    process.exit(1);
+  });
+}

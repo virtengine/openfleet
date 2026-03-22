@@ -137,6 +137,23 @@ function normaliseStatus(raw) {
   return STATUS_MAP[key] || "todo";
 }
 
+function resolveCreateTaskInput(projectIdOrTaskData, taskDataArg = {}) {
+  const payloadOnlyCall =
+    projectIdOrTaskData &&
+    typeof projectIdOrTaskData === "object" &&
+    !Array.isArray(projectIdOrTaskData);
+  const rawTaskData = payloadOnlyCall ? projectIdOrTaskData : (taskDataArg || {});
+  const projectId = payloadOnlyCall
+    ? rawTaskData?.projectId ?? rawTaskData?.project_id
+    : projectIdOrTaskData;
+  const {
+    projectId: _ignoredProjectId,
+    project_id: _ignoredProjectIdSnake,
+    ...taskData
+  } = rawTaskData || {};
+  return { projectId, taskData };
+}
+
 const STATUS_LABEL_KEYS = new Set([
   "draft",
   "todo",
@@ -912,6 +929,15 @@ class InternalAdapter {
     if (typeof patch.workspace === "string") updates.workspace = patch.workspace;
     if (typeof patch.repository === "string") updates.repository = patch.repository;
     if (Array.isArray(patch.repositories)) updates.repositories = patch.repositories;
+    if (hasOwnField(patch, "workflowRuns")) updates.workflowRuns = patch.workflowRuns;
+    if (hasOwnField(patch, "workflowHistory")) updates.workflowHistory = patch.workflowHistory;
+    if (hasOwnField(patch, "workflows")) updates.workflows = patch.workflows;
+    if (hasOwnField(patch, "cooldownUntil")) {
+      updates.cooldownUntil = normalizeTaskStringField(patch.cooldownUntil);
+    }
+    if (hasOwnField(patch, "blockedReason")) {
+      updates.blockedReason = normalizeTaskStringField(patch.blockedReason);
+    }
     if (typeof patch.branchName === "string") {
       updates.branchName = patch.branchName.trim() || null;
     }
@@ -950,6 +976,7 @@ class InternalAdapter {
       }
     }
     const current = getInternalTask(normalizedId);
+    const replaceMeta = patch.replaceMeta === true;
     if (baseBranch) {
       updates.baseBranch = baseBranch;
     }
@@ -967,7 +994,7 @@ class InternalAdapter {
     if (hasOwnField(patch, "dueDate") || dueDate) updates.dueDate = dueDate;
     if (patch.meta && typeof patch.meta === "object") {
       updates.meta = {
-        ...(current?.meta || {}),
+        ...(replaceMeta ? {} : (current?.meta || {})),
         ...patch.meta,
         ...((assigneeProvided || assignee || assignees.length > 0)
           ? {
@@ -998,7 +1025,11 @@ class InternalAdapter {
     return this._normalizeTask(updated);
   }
 
-  async createTask(projectId, taskData = {}) {
+  async createTask(projectIdOrTaskData, taskDataArg = {}) {
+    const { projectId, taskData } = resolveCreateTaskInput(
+      projectIdOrTaskData,
+      taskDataArg,
+    );
     const id = String(taskData.id || randomUUID());
     const tags = normalizeTags(taskData.tags || taskData.labels || []);
     const draft = Boolean(taskData.draft || taskData.status === "draft");
@@ -1015,6 +1046,9 @@ class InternalAdapter {
       taskData.parentTaskId ?? taskData.meta?.parentTaskId,
     );
     const dueDate = normalizeTaskStringField(taskData.dueDate ?? taskData.meta?.dueDate);
+    const blockedReason = normalizeTaskStringField(
+      taskData.blockedReason ?? taskData.meta?.blockedReason,
+    );
     const created = addInternalTask({
       id,
       title: taskData.title || "Untitled task",
@@ -1026,6 +1060,7 @@ class InternalAdapter {
       storyPoints,
       parentTaskId,
       dueDate,
+      blockedReason,
       priority: taskData.priority || null,
       tags,
       draft,
@@ -1059,6 +1094,7 @@ class InternalAdapter {
         ...(storyPoints != null ? { storyPoints } : {}),
         ...(parentTaskId ? { parentTaskId } : {}),
         ...(dueDate ? { dueDate } : {}),
+        ...(blockedReason ? { blockedReason } : {}),
         ...(taskData.workspace ? { workspace: taskData.workspace } : {}),
         ...(taskData.repository || taskData.repo
           ? { repository: taskData.repository || taskData.repo }
@@ -1536,7 +1572,11 @@ class VKAdapter {
     return this._normaliseTask(task);
   }
 
-  async createTask(projectId, taskData) {
+  async createTask(projectIdOrTaskData, taskDataArg = {}) {
+    const { projectId, taskData } = resolveCreateTaskInput(
+      projectIdOrTaskData,
+      taskDataArg,
+    );
     const fetchVk = await this._getFetchVk();
     const tags = normalizeTags(taskData?.tags || taskData?.labels || []);
     const draft = Boolean(taskData?.draft || taskData?.status === "draft");
@@ -3602,7 +3642,8 @@ class GitHubIssuesAdapter {
     return result?.data?.convertProjectV2DraftIssueItemToIssue?.issue || null;
   }
 
-  async createTask(_projectId, taskData) {
+  async createTask(projectIdOrTaskData, taskDataArg = {}) {
+    const { taskData } = resolveCreateTaskInput(projectIdOrTaskData, taskDataArg);
     const normalizedTitle = String(taskData?.title || "").trim();
     if (!normalizedTitle) {
       throw new Error("[kanban] github createTask requires non-empty title");
@@ -5402,7 +5443,11 @@ class JiraAdapter {
     return this.getTask(issueKey);
   }
 
-  async createTask(projectId, taskData = {}) {
+  async createTask(projectIdOrTaskData, taskDataArg = {}) {
+    const { projectId, taskData } = resolveCreateTaskInput(
+      projectIdOrTaskData,
+      taskDataArg,
+    );
     const projectKey = this._normalizeProjectKey(projectId);
     if (!projectKey) {
       throw new Error(
@@ -6067,12 +6112,16 @@ export async function updateTask(taskId, patch) {
   return adapter.getTask(taskId);
 }
 
-export async function createTask(projectId, taskData) {
+export async function createTask(projectIdOrTaskData, taskDataArg = {}) {
+  const { projectId, taskData } = resolveCreateTaskInput(
+    projectIdOrTaskData,
+    taskDataArg,
+  );
   const result = await getKanbanAdapter().createTask(projectId, taskData);
   emitKanbanEvent("task.created", {
-    projectId,
+    projectId: projectId ?? result?.projectId ?? result?.project_id ?? null,
     taskId: result?.id || null,
-    title: taskData?.title || null,
+    title: taskData?.title ?? result?.title ?? null,
   });
   return result;
 }

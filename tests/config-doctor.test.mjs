@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   runConfigDoctor,
   formatConfigDoctorReport,
@@ -70,6 +73,55 @@ describe("config-doctor", () => {
         if (value === undefined) delete process.env[key];
         else process.env[key] = value;
       }
+    }
+  });
+
+  it("warns when WORKFLOW.md exists but workflow contract steps are not enabled", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "config-doctor-workflow-contract-"));
+    const workflowDir = join(repoRoot, ".bosun", "workflows");
+    mkdirSync(workflowDir, { recursive: true });
+    writeFileSync(join(repoRoot, "WORKFLOW.md"), [
+      "terminalStates: [done]",
+      "forbiddenPatterns: [git push --force]",
+    ].join("\n"));
+    writeFileSync(join(workflowDir, "task-lifecycle.json"), JSON.stringify({
+      id: "wf-1",
+      enabled: true,
+      nodes: [
+        { id: "prompt", type: "action.build_task_prompt", config: {} },
+      ],
+    }, null, 2));
+
+    try {
+      const result = runConfigDoctor({ repoRoot, configDir: repoRoot });
+      expect(result.warnings.some((issue) => issue.code === "WORKFLOW_CONTRACT_STEP_DISABLED")).toBe(true);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not warn when an enabled workflow includes both workflow contract steps", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "config-doctor-workflow-enabled-"));
+    const workflowDir = join(repoRoot, ".bosun", "workflows");
+    mkdirSync(workflowDir, { recursive: true });
+    writeFileSync(join(repoRoot, "WORKFLOW.md"), [
+      "terminalStates: [done]",
+      "forbiddenPatterns: [git push --force]",
+    ].join("\n"));
+    writeFileSync(join(workflowDir, "task-lifecycle.json"), JSON.stringify({
+      id: "wf-1",
+      enabled: true,
+      nodes: [
+        { id: "read", type: "read-workflow-contract", config: {} },
+        { id: "validate", type: "workflow-contract-validation", config: {} },
+      ],
+    }, null, 2));
+
+    try {
+      const result = runConfigDoctor({ repoRoot, configDir: repoRoot });
+      expect(result.warnings.some((issue) => issue.code === "WORKFLOW_CONTRACT_STEP_DISABLED")).toBe(false);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
     }
   });
 
