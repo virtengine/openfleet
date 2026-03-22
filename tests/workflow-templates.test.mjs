@@ -1526,4 +1526,20 @@ describe("template category coverage", () => {
       expect(typeof val.order).toBe("number");
     }
   });
+  it("template validator allowlist covers shared runtime inputs", async () => {
+    const { spawnSync } = await import("node:child_process");
+    const result = spawnSync(process.execPath, ["tests/sandbox/validate-template-nodes.mjs"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    });
+
+    const output = `${result.stdout}${result.stderr}`;
+
+    expect(result.status).toBe(0);
+    expect(output).not.toContain('[template-task-fullstack]');
+    expect(output).not.toContain('{{attemptId}}');
+    expect(output).not.toContain('{{taskJson}}');
+    expect(output).not.toContain('{{projectId}}');
+  });
 });
+

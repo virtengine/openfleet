@@ -28,18 +28,22 @@ const WELL_KNOWN_INPUTS = new Set([
   "tagName", "releaseBranch", "commitSha", "repoOwner", "repoName",
   // Task management
   "taskId", "taskTitle", "taskDescription", "worktreePath", "toStatus",
+  "attemptId", "taskJson", "projectId",
   // Agent
   "sessionId", "agentId", "executor", "prompt",
+  "resolvedSdk", "resolvedModel", "agentProfile",
+  "taskTimeoutMs", "maxRetries", "maxContinues",
   // Incident / error
-  "incidentId", "severity", "errorType",
+  "incidentId", "severity", "errorType", "incidentCategory",
   // CI/CD
-  "environment", "deployUrl",
+  "environment", "deployUrl", "_runId",
   // Batch
   "batchSize", "maxConcurrent",
   // Meeting
   "meetingId",
   // Generic
   "sprintNumber", "taskCount",
+  "scanOutput", "lastSyncErrors", "pullCount", "pushCount", "conflictCount",
   // Data variables set by set_variable nodes (prefixed $)
   "ctx", "data", "node",
 ]);
@@ -143,3 +147,4 @@ if (violations.length) {
 } else {
   console.log(`\n✅ All integrity checks passed — ${templateCount} templates are well-formed.`);
 }
+
