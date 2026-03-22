@@ -236,6 +236,7 @@
     "infra/stream-resilience.mjs",
     "infra/sync-engine.mjs",
     "infra/test-runtime.mjs",
+    "infra/worktree-recovery-state.mjs",
     "infra/tracing.mjs",
     "infra/tui-bridge.mjs",
     "infra/update-check.mjs",

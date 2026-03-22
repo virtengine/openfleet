@@ -134,6 +134,10 @@ import {
   selectCoordinator,
 } from "../infra/presence.mjs";
 import {
+  normalizeWorktreeRecoveryState,
+  readWorktreeRecoveryState,
+} from "../infra/worktree-recovery-state.mjs";
+import {
   loadWorkspaceRegistry,
   getLocalWorkspace,
 } from "../workspace/workspace-registry.mjs";
@@ -10925,7 +10929,13 @@ async function handleDeviceFlowPoll(req, res) {
 async function readStatusSnapshot() {
   try {
     const raw = await readFile(statusPath, "utf8");
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      parsed.worktreeRecovery = normalizeWorktreeRecoveryState(
+        parsed.worktreeRecovery || parsed.worktree_recovery || null,
+      );
+    }
+    return parsed;
   } catch {
     return null;
   }
@@ -15720,7 +15730,15 @@ async function handleApi(req, res, url) {
     try {
       const worktrees = listActiveWorktrees(repoRoot);
       const stats = await getWorktreeStats(repoRoot);
-      jsonResponse(res, 200, { ok: true, data: worktrees, stats });
+      const recovery = await readWorktreeRecoveryState(repoRoot);
+      jsonResponse(res, 200, {
+        ok: true,
+        data: worktrees,
+        stats: {
+          ...stats,
+          recovery,
+        },
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -16377,6 +16395,7 @@ async function handleApi(req, res, url) {
     try {
       const executor = uiDeps.getInternalExecutor?.();
       const status = executor?.getStatus?.() || {};
+      const worktreeRecovery = await readWorktreeRecoveryState(repoRoot);
       const data = {
         executor: {
           mode: uiDeps.getExecutorMode?.() || "internal",
@@ -16384,6 +16403,7 @@ async function handleApi(req, res, url) {
           activeSlots: status.activeSlots || 0,
           paused: executor?.isPaused?.() || false,
         },
+        worktreeRecovery,
         system: {
           uptime: process.uptime(),
           memoryMB: Math.round(process.memoryUsage.rss() / 1024 / 1024),
