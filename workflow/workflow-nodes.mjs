@@ -11653,12 +11653,16 @@ registerBuiltinNodeType("action.acquire_worktree", {
     required: ["branch", "taskId"],
   },
   async execute(node, ctx) {
-    const taskId = cfgOrCtx(node, ctx, "taskId");
-    const branch = cfgOrCtx(node, ctx, "branch");
-    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    // Outer guard: ensure we ALWAYS return structured output with recoveryNote
+    // so downstream {{acquire-worktree.recoveryNote}} templates never stay literal.
+    let taskId, branch, repoRoot, baseBranch;
+    try {
+    taskId = cfgOrCtx(node, ctx, "taskId");
+    branch = cfgOrCtx(node, ctx, "branch");
+    repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
     const baseBranchRaw = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
     const defaultTargetBranch = cfgOrCtx(node, ctx, "defaultTargetBranch", "origin/main");
-    const baseBranch = pickGitRef(baseBranchRaw, defaultTargetBranch, "origin/main", "main");
+    baseBranch = pickGitRef(baseBranchRaw, defaultTargetBranch, "origin/main", "main");
     const fetchTimeout = node.config?.fetchTimeout ?? 30000;
     const worktreeTimeout = node.config?.worktreeTimeout ?? 60000;
     const recoveryState = {
@@ -12016,6 +12020,171 @@ registerBuiltinNodeType("action.acquire_worktree", {
         recoveryNote: retryable || !retryAt ? "" : ` — blocked until ${retryAt}`,
       };
     }
+    } catch (outerErr) {
+      // Outer catch: guard throws, cfgOrCtx errors, or any uncaught path.
+      // Always return structured output so {{acquire-worktree.recoveryNote}} resolves.
+      const errorMessage = String(outerErr?.message || outerErr || "acquire_worktree_outer_failure");
+      ctx.log(node.id, `Worktree acquisition outer error: ${errorMessage}`);
+      return {
+        success: false,
+        error: errorMessage,
+        branch: branch || "",
+        baseBranch: baseBranch || "",
+        retryable: true,
+        failureKind: "acquire_outer_error",
+        recordedAt: new Date().toISOString(),
+        autoRecoverDelayMs: 0,
+        retryAt: null,
+        blockedReason: errorMessage,
+        recoveryNote: "",
+      };
+    }
+  },
+});
+
+// ── action.recover_worktree ─────────────────────────────────────────────────
+
+registerBuiltinNodeType("action.recover_worktree", {
+  describe: () =>
+    "Clean up a broken worktree so a fresh acquire can succeed. " +
+    "Removes the directory, prunes git worktree list, and resets context data.",
+  schema: {
+    type: "object",
+    properties: {
+      worktreePath: { type: "string", description: "Path of the broken worktree" },
+      branch: { type: "string", description: "Branch that was being used" },
+      repoRoot: { type: "string", description: "Repository root" },
+      taskId: { type: "string", description: "Owning task ID" },
+    },
+  },
+  execute: async (_config, ctx) => {
+    const worktreePath = cfgOrCtx(_config, ctx, "worktreePath") ||
+      ctx.getNodeOutput("acquire-worktree")?.worktreePath || "";
+    const branch = cfgOrCtx(_config, ctx, "branch") ||
+      ctx.getNodeOutput("acquire-worktree")?.branch || "";
+    const repoRoot = cfgOrCtx(_config, ctx, "repoRoot") ||
+      ctx.getNodeOutput("acquire-worktree")?.repoRoot ||
+      ctx.data?.repoRoot || process.cwd();
+    const taskId = cfgOrCtx(_config, ctx, "taskId") ||
+      ctx.getNodeOutput("acquire-worktree")?.taskId ||
+      ctx.data?.taskId || "";
+
+    const cleaned = [];
+    try {
+      // 1. Force-remove via git worktree remove
+      if (worktreePath && existsSync(worktreePath)) {
+        try {
+          execSync(`git worktree remove --force "${worktreePath}"`, {
+            cwd: repoRoot, timeout: 30000, stdio: "pipe",
+          });
+          cleaned.push("git-worktree-remove");
+        } catch { /* may already be gone */ }
+      }
+      // 2. Remove the directory itself if still present
+      if (worktreePath && existsSync(worktreePath)) {
+        rmSync(worktreePath, { recursive: true, force: true });
+        cleaned.push("rmSync-dir");
+      }
+      // 3. Resolve and remove the linked gitdir entry
+      try {
+        const gitdir = resolveGitDirForWorktree(worktreePath, repoRoot);
+        if (gitdir && existsSync(gitdir)) {
+          rmSync(gitdir, { recursive: true, force: true });
+          cleaned.push("rmSync-gitdir");
+        }
+      } catch { /* best-effort */ }
+      // 4. Prune stale worktree references
+      try {
+        execSync("git worktree prune", { cwd: repoRoot, timeout: 15000, stdio: "pipe" });
+        cleaned.push("git-worktree-prune");
+      } catch { /* best-effort */ }
+      // 5. Fix any git config corruption left behind
+      try {
+        fixGitConfigCorruption(repoRoot);
+        cleaned.push("fix-git-config");
+      } catch { /* best-effort */ }
+      // 6. Reset context data so retry starts fresh
+      if (ctx.data) {
+        delete ctx.data.worktreePath;
+        delete ctx.data.worktreeDir;
+        cleaned.push("ctx-data-reset");
+      }
+
+      return { success: true, cleaned, worktreePath, taskId, branch };
+    } catch (err) {
+      const errorMessage =
+        String(err?.message || err || "recover_worktree_failed");
+      return { success: false, error: errorMessage, cleaned, worktreePath, taskId, branch };
+    }
+  },
+});
+
+// ── action.sweep_task_worktrees ─────────────────────────────────────────────
+
+registerBuiltinNodeType("action.sweep_task_worktrees", {
+  describe: () =>
+    "Sweep stale or orphan worktrees for a completed/failed task. " +
+    "If taskId is given, only removes worktrees belonging to that task; " +
+    "otherwise removes all managed worktrees older than maxAgeMs.",
+  schema: {
+    type: "object",
+    properties: {
+      repoRoot: { type: "string", description: "Repository root" },
+      taskId: { type: "string", description: "Task ID whose worktrees to remove" },
+      maxAgeMs: { type: "number", default: 43200000, description: "Max age in ms (default 12h)" },
+    },
+  },
+  execute: async (_config, ctx) => {
+    const repoRoot = cfgOrCtx(_config, ctx, "repoRoot") ||
+      ctx.data?.repoRoot || process.cwd();
+    const taskId = cfgOrCtx(_config, ctx, "taskId") ||
+      ctx.data?.taskId || "";
+    const maxAgeMs = Number(cfgOrCtx(_config, ctx, "maxAgeMs")) || 43200000;
+
+    const { readdirSync, statSync } = await import("node:fs");
+    const wtBase = resolve(repoRoot, ".bosun", "worktrees");
+    const removed = [];
+    const errors = [];
+    let scanned = 0;
+
+    if (!existsSync(wtBase)) {
+      return { success: true, removed, scanned, errors, taskId };
+    }
+
+    const now = Date.now();
+    for (const entry of readdirSync(wtBase)) {
+      const entryPath = resolve(wtBase, entry);
+      try {
+        const st = statSync(entryPath);
+        if (!st.isDirectory()) continue;
+        scanned++;
+
+        const belongsToTask = taskId && isManagedBosunWorktree(entryPath) &&
+          entry.includes(taskId.replace(/[^a-zA-Z0-9]/g, "-").slice(0, 30));
+        const isStale = (now - st.mtimeMs) > maxAgeMs;
+
+        if (belongsToTask || (!taskId && isStale)) {
+          try {
+            execSync(`git worktree remove --force "${entryPath}"`, {
+              cwd: repoRoot, timeout: 30000, stdio: "pipe",
+            });
+          } catch { /* may not be registered */ }
+          if (existsSync(entryPath)) {
+            rmSync(entryPath, { recursive: true, force: true });
+          }
+          removed.push(entry);
+        }
+      } catch (err) {
+        errors.push({ entry, error: String(err?.message || err) });
+      }
+    }
+
+    // Prune any dangling references
+    try {
+      execSync("git worktree prune", { cwd: repoRoot, timeout: 15000, stdio: "pipe" });
+    } catch { /* best-effort */ }
+
+    return { success: true, removed, scanned, errors, taskId };
   },
 });
 
@@ -12083,6 +12252,81 @@ registerBuiltinNodeType("action.release_worktree", {
   },
 });
 
+registerBuiltinNodeType("action.recover_worktree", {
+  describe: () =>
+    "Recover a failed task worktree by releasing any managed worktree for the task so acquisition can retry cleanly.",
+  schema: {
+    type: "object",
+    properties: {
+      worktreePath: { type: "string", description: "Worktree path to release if known" },
+      repoRoot: { type: "string", description: "Repository root" },
+      taskId: { type: "string", description: "Task ID (owner)" },
+      prune: { type: "boolean", default: true, description: "Run git worktree prune after recovery" },
+      removeTimeout: { type: "number", default: 30000, description: "Timeout for removal (ms)" },
+    },
+  },
+  async execute(node, ctx) {
+    const worktreePath = cfgOrCtx(node, ctx, "worktreePath") || ctx.data?.worktreePath || "";
+    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "";
+    const removeTimeout = Number(node.config?.removeTimeout ?? 30000);
+    const shouldPrune = node.config?.prune !== false;
+
+    const releaseNode = {
+      ...node,
+      config: {
+        ...(node.config || {}),
+        worktreePath,
+        repoRoot,
+        taskId,
+        removeTimeout,
+        prune: shouldPrune,
+      },
+    };
+    const result = await getNodeType("action.release_worktree")?.execute?.(releaseNode, ctx);
+    ctx.data.worktreePath = "";
+    return {
+      success: result?.success !== false,
+      recovered: true,
+      worktreePath,
+      released: result?.released === true,
+      skipped: result?.skipped === true,
+      warning: result?.warning,
+    };
+  },
+});
+
+registerBuiltinNodeType("action.sweep_task_worktrees", {
+  describe: () =>
+    "Sweep stale managed task worktrees for a task by pruning git worktree metadata.",
+  schema: {
+    type: "object",
+    properties: {
+      repoRoot: { type: "string", description: "Repository root" },
+      taskId: { type: "string", description: "Task ID (owner)" },
+      timeout: { type: "number", default: 15000, description: "Timeout for git worktree prune (ms)" },
+    },
+  },
+  async execute(node, ctx) {
+    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "";
+    const timeout = Number(node.config?.timeout ?? 15000);
+    try {
+      execGitArgsSync(["worktree", "prune"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        timeout,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      fixGitConfigCorruption(repoRoot);
+      ctx.log(node.id, `Swept task worktrees for ${taskId || "(unknown task)"}`);
+      return { success: true, taskId, swept: true };
+    } catch (err) {
+      ctx.log(node.id, `Task worktree sweep warning: ${err.message}`);
+      return { success: true, taskId, swept: false, warning: err.message };
+    }
+  },
+});
 const readWorkflowContractHandler = {
   describe: () =>
     "Read a project WORKFLOW.md runtime contract and stage it for session-start prompt injection.",

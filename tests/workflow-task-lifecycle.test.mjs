@@ -2986,7 +2986,18 @@ describe("template-task-lifecycle", () => {
 
   it("worktree-failed path releases claim and slot", () => {
     const t = getTemplate("template-task-lifecycle");
-    expect(t.edges.find((e) => e.source === "worktree-ok" && e.target === "release-claim-wt-failed")).toBeDefined();
+    // Auto-recovery path: worktree-ok → wt-retry-eligible → recover → retry → retry-wt-ok
+    expect(t.edges.find((e) => e.source === "worktree-ok" && e.target === "wt-retry-eligible")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "wt-retry-eligible" && e.target === "recover-worktree")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "recover-worktree" && e.target === "retry-acquire-wt")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "retry-acquire-wt" && e.target === "retry-wt-ok")).toBeDefined();
+    // Retry success rejoins main flow
+    expect(t.edges.find((e) => e.source === "retry-wt-ok" && e.target === "resolve-executor")).toBeDefined();
+    // Retry failure falls through to original failure path
+    expect(t.edges.find((e) => e.source === "retry-wt-ok" && e.target === "release-claim-wt-failed")).toBeDefined();
+    // Non-retryable goes directly to failure
+    expect(t.edges.find((e) => e.source === "wt-retry-eligible" && e.target === "release-claim-wt-failed")).toBeDefined();
+    // Original failure path still intact
     expect(t.edges.find((e) => e.source === "release-claim-wt-failed" && e.target === "wt-failure-blocking")).toBeDefined();
     expect(t.edges.find((e) => e.source === "wt-failure-blocking" && e.target === "set-blocked-wt-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "wt-failure-blocking" && e.target === "set-todo-wt-failed")).toBeDefined();
