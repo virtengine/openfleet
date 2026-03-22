@@ -1629,7 +1629,7 @@ function getWorkflowStoragePaths(workspaceInput = "") {
   let useMirrorRoot = false;
   let mirrorRoot = "";
   const configDir = resolveUiConfigDir();
-  if (configDir) {
+  if (configDir && root !== repoRoot) {
     const workspaceId = basename(root);
     const repoName = basename(repoRoot);
     mirrorRoot = resolve(configDir, "workspaces", workspaceId, repoName, ".bosun");
