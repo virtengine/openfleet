@@ -1192,10 +1192,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     : userMessage;
   const toolContract = buildPrimaryToolCapabilityContract(options);
   const architectEditorFrame = buildArchitectEditorFrame(
-    {
-      ...options,
-      executionRole: inferExecutionRole(options, effectiveMode),
-    },
+    options,
     effectiveMode,
   );
   const messageWithToolContract = [
