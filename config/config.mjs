@@ -1754,6 +1754,10 @@ export function loadConfig(argv = process.argv, options = {}) {
     `http://127.0.0.1:${vkRecoveryPort}`;
   const vkPublicUrl = process.env.VK_PUBLIC_URL || process.env.VK_WEB_URL || "";
   const vkTaskUrlTemplate = process.env.VK_TASK_URL_TEMPLATE || "";
+  const tracingEndpoint =
+    process.env.BOSUN_OTEL_ENDPOINT || fileConfig?.tracing?.endpoint || null;
+  const tracingEnabled = fileConfig?.tracing?.enabled ?? Boolean(tracingEndpoint);
+  const tracingSampleRate = Number(fileConfig?.tracing?.sampleRate ?? 1);
   const vkRecoveryCooldownMin = Number(
     process.env.VK_RECOVERY_COOLDOWN_MIN || "10",
   );
@@ -2069,6 +2073,20 @@ export function loadConfig(argv = process.argv, options = {}) {
     // Voice assistant
     voice: Object.freeze(configData.voice || {}),
 
+    // OpenTelemetry tracing
+    tracing: Object.freeze({
+      enabled:
+        typeof configData.tracing?.enabled === "boolean"
+          ? configData.tracing.enabled
+          : Boolean(configData.tracing?.endpoint || process.env.BOSUN_OTEL_ENDPOINT || ""),
+      endpoint:
+        configData.tracing?.endpoint || process.env.BOSUN_OTEL_ENDPOINT || "",
+      sampleRate:
+        Number.isFinite(Number(configData.tracing?.sampleRate))
+          ? Number(configData.tracing.sampleRate)
+          : 1.0,
+    }),
+
     // Merge Strategy
     codexAnalyzeMergeStrategy:
       codexEnabled &&
@@ -2086,6 +2104,11 @@ export function loadConfig(argv = process.argv, options = {}) {
     vkEndpointUrl,
     vkPublicUrl,
     vkTaskUrlTemplate,
+    tracing: {
+      enabled: tracingEnabled,
+      endpoint: tracingEndpoint,
+      sampleRate: Number.isFinite(tracingSampleRate) ? tracingSampleRate : 1,
+    },
     vkRecoveryCooldownMin,
     vkRuntimeRequired,
     vkSpawnEnabled,
@@ -2260,3 +2283,6 @@ export {
   resolveAgentRepoRoot,
 };
 export default loadConfig;
+
+
+

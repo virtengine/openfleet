@@ -1,293 +1,573 @@
 /**
- * OpenTelemetry Tracing for Bosun Agent Observability
+ * OpenTelemetry tracing helpers for Bosun orchestration.
  *
- * Provides industry-standard tracing for:
- * - Agent sessions
- * - Workflow executions
- * - Task lifecycle
- * - Tool calls
- *
- * @module tracing
+ * Tracing stays external to agent prompts/context. When disabled, helpers
+ * degrade to no-op wrappers so there is no agent token impact.
  */
 
-import { existsSync, mkdirSync, appendFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { AsyncLocalStorage } from "node:async_hooks";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const TRACE_DIR = resolve(__dirname, "..", ".cache", "traces");
+const DEFAULT_SERVICE_NAME = "bosun";
+const DEFAULT_SERVICE_VERSION = process.env.npm_package_version || "0.42.0";
+const TRACE_ID_BYTES = 16;
+const SPAN_ID_BYTES = 8;
 
-const DEFAULT_CONFIG = {
-	enabled: process.env.OTEL_ENABLED === "true",
-	serviceName: process.env.OTEL_SERVICE_NAME || "bosun",
-	exporter: process.env.OTEL_EXPORTER || "console",
-	endpoint: process.env.OTEL_EXPORTER_ENDPOINT || "http://localhost:4318/v1/traces",
-	traceRatio: parseFloat(process.env.OTEL_TRACE_RATIO) || 1.0,
-	consoleExport: process.env.OTEL_CONSOLE_EXPORT === "true",
-	fileExport: process.env.OTEL_FILE_EXPORT === "true",
-	filePath: process.env.OTEL_FILE_PATH || resolve(TRACE_DIR, "traces.jsonl"),
-};
+const contextStore = new AsyncLocalStorage();
 
-let _config = { ...DEFAULT_CONFIG };
-let _tracer = null;
-let _spans = new Map();
-let _spanIdCounter = 0;
+const NOOP_METER = Object.freeze({
+  createHistogram() {
+    return { record() {} };
+  },
+  createCounter() {
+    return { add() {} };
+  },
+  createUpDownCounter() {
+    return { add() {} };
+  },
+});
 
-function generateSpanId() {
-	return `span-${++_spanIdCounter}-${Date.now()}`;
+function randomId(bytes = 8) {
+  let value = "";
+  while (value.length < bytes * 2) {
+    value += Math.random().toString(16).slice(2);
+  }
+  return value.slice(0, bytes * 2);
 }
 
-function generateTraceId() {
-	return `trace-${Date.now()}-${Math.random().toString(36).slice(2, 15)}`;
+function nowHrTime() {
+  return process.hrtime.bigint();
 }
 
-function initTracing(config = {}) {
-	_config = { ..._config, ...config };
-
-	if (!_config.enabled) {
-		console.log("[tracing] OpenTelemetry tracing disabled");
-		return null;
-	}
-
-	try {
-		mkdirSync(TRACE_DIR, { recursive: true });
-	} catch { /* best effort */ }
-
-	console.log(`[tracing] Initialized with exporter: ${_config.exporter}`);
-	_tracer = {
-		serviceName: _config.serviceName,
-		startTime: Date.now(),
-		spans: _spans,
-	};
-
-	return _tracer;
+function durationMs(startTime) {
+  return Number(process.hrtime.bigint() - startTime) / 1_000_000;
 }
 
-function shouldTrace() {
-	if (!_config.enabled) return false;
-	return Math.random() < _config.traceRatio;
+function omitUndefined(object) {
+  return Object.fromEntries(
+    Object.entries(object).filter(([, value]) => value !== undefined && value !== null && value !== ""),
+  );
 }
 
-function startSpan(name, attributes = {}, parentSpanId = null) {
-	if (!shouldTrace()) return null;
-
-	const span = {
-		name,
-		traceId: generateTraceId(),
-		spanId: generateSpanId(),
-		parentSpanId,
-		attributes: { ...attributes },
-		startTime: Date.now(),
-		endTime: null,
-		status: "ok",
-		events: [],
-	};
-
-	_spans.set(span.spanId, span);
-	return span;
+function inferProtocol(endpoint) {
+  if (typeof endpoint !== "string" || endpoint.length === 0) {
+    return "otlp-http";
+  }
+  return endpoint.startsWith("http") ? "otlp-http" : "otlp-grpc";
 }
 
-function endSpan(spanId, status = "ok", error = null) {
-	const span = _spans.get(spanId);
-	if (!span) return;
+function createMetricStore() {
+  const counters = new Map();
+  const gauges = new Map();
+  const histograms = new Map();
 
-	span.endTime = Date.now();
-	span.durationMs = span.endTime - span.startTime;
-	span.status = status;
-
-	if (error) {
-		span.status = "error";
-		span.attributes.error = true;
-		span.attributes["error.message"] = error.message || String(error);
-		span.attributes["error.stack"] = error.stack || "";
-	}
-
-	exportSpan(span);
-	return span;
+  return {
+    counters,
+    gauges,
+    histograms,
+    meter: {
+      createCounter(name) {
+        return {
+          add(value, attributes = {}) {
+            const bucket = counters.get(name) || [];
+            bucket.push({ value, attributes });
+            counters.set(name, bucket);
+          },
+        };
+      },
+      createUpDownCounter(name) {
+        return {
+          add(value, attributes = {}) {
+            const bucket = gauges.get(name) || [];
+            bucket.push({ value, attributes });
+            gauges.set(name, bucket);
+          },
+        };
+      },
+      createHistogram(name) {
+        return {
+          record(value, attributes = {}) {
+            const bucket = histograms.get(name) || [];
+            bucket.push({ value, attributes });
+            histograms.set(name, bucket);
+          },
+        };
+      },
+    },
+  };
 }
 
-function addSpanEvent(spanId, name, attributes = {}) {
-	const span = _spans.get(spanId);
-	if (!span) return;
-
-	span.events.push({
-		name,
-		time: Date.now(),
-		attributes,
-	});
+function createNoopState() {
+  return {
+    enabled: false,
+    endpoint: null,
+    sampleRate: 0,
+    serviceName: DEFAULT_SERVICE_NAME,
+    serviceVersion: DEFAULT_SERVICE_VERSION,
+    exporter: null,
+    meter: NOOP_METER,
+    metrics: createMetricStore(),
+    provider: null,
+    tracer: null,
+    sdk: null,
+    api: null,
+    statusCodes: null,
+    spanKind: null,
+    activeSpans: new Map(),
+    finishedSpans: [],
+  };
 }
 
-function setSpanAttribute(spanId, key, value) {
-	const span = _spans.get(spanId);
-	if (!span) return;
+let tracingState = createNoopState();
+let metricInstruments = null;
 
-	span.attributes[key] = value;
+function clampSampleRate(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 1;
+  return Math.min(1, Math.max(0, numeric));
 }
 
-function exportSpan(span) {
-	if (_config.consoleExport || _config.exporter === "console") {
-		console.log(
-			`[tracing] ${span.name} ${span.spanId.slice(0, 8)} ${span.durationMs}ms [${span.status}]`,
-		);
-	}
-
-	if (_config.fileExport || _config.exporter === "file") {
-		try {
-			const line = JSON.stringify({
-				name: span.name,
-				traceId: span.traceId,
-				spanId: span.spanId,
-				parentSpanId: span.parentSpanId,
-				startTime: new Date(span.startTime).toISOString(),
-				endTime: new Date(span.endTime).toISOString(),
-				durationMs: span.durationMs,
-				status: span.status,
-				attributes: span.attributes,
-				events: span.events,
-			});
-			appendFileSync(_config.filePath, line + "\n", "utf8");
-		} catch { /* best effort */ }
-	}
-
-	if (_config.exporter === "otlp" || _config.exporter === "http") {
-		exportToOtlp(span);
-	}
+function getCurrentContext() {
+  return contextStore.getStore() || null;
 }
 
-async function exportToOtlp(span) {
-	try {
-		const payload = {
-			resourceSpans: [{
-				resource: {
-					attributes: [
-						{ key: "service.name", value: { stringValue: _config.serviceName } },
-					],
-				},
-				scopeSpans: [{
-					spans: [{
-						name: span.name,
-						traceId: span.traceId,
-						spanId: span.spanId,
-						parentSpanId: span.parentSpanId || undefined,
-						startTimeUnixNano: span.startTime * 1_000_000,
-						endTimeUnixNano: span.endTime * 1_000_000,
-						status: { code: span.status === "error" ? 2 : 1 },
-						attributes: Object.entries(span.attributes).map(([key, value]) => ({
-							key,
-							value: { stringValue: String(value) },
-						})),
-					}],
-				}],
-			}],
-		};
-
-		await fetch(_config.endpoint, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(payload),
-		}).catch(() => {});
-	} catch { /* best effort */ }
+function ensureMetricInstruments() {
+  const meter = tracingState.meter || NOOP_METER;
+  metricInstruments = {
+    taskDuration: meter.createHistogram("bosun.task.duration"),
+    taskTokensTotal: meter.createCounter("bosun.task.tokens.total"),
+    taskCostUsd: meter.createCounter("bosun.task.cost.usd"),
+    agentSessionsActive: meter.createUpDownCounter("bosun.agent.sessions.active"),
+    agentErrors: meter.createCounter("bosun.agent.errors"),
+    agentInterventions: meter.createCounter("bosun.agent.interventions"),
+  };
 }
 
-function getActiveSpans() {
-	return Array.from(_spans.values()).filter((s) => !s.endTime);
+function recordMetric(name, type, value, attributes = {}) {
+  if (!metricInstruments) return;
+  const instrument = metricInstruments[name];
+  if (!instrument) return;
+  if (type === "histogram") {
+    instrument.record(value, attributes);
+    return;
+  }
+  instrument.add(value, attributes);
 }
 
-function getSpan(spanId) {
-	return _spans.get(spanId);
+function createLocalSpan(name, attributes = {}) {
+  const parent = getCurrentContext();
+  const traceId = parent?.traceId || randomId(TRACE_ID_BYTES);
+  const spanId = randomId(SPAN_ID_BYTES);
+  return {
+    name,
+    traceId,
+    spanId,
+    parentSpanId: parent?.spanId || null,
+    startTime: nowHrTime(),
+    endTime: null,
+    durationMs: null,
+    attributes: { ...attributes },
+    status: { code: "OK" },
+    events: [],
+    exceptions: [],
+    otelSpan: null,
+  };
 }
 
-function clearSpans() {
-	_spans.clear();
+function attachOtelAttributes(otelSpan, attributes = {}) {
+  if (!otelSpan || typeof otelSpan.setAttributes !== "function") return;
+  const normalized = omitUndefined(attributes);
+  if (Object.keys(normalized).length > 0) {
+    otelSpan.setAttributes(normalized);
+  }
 }
 
-function flush() {
-	for (const span of _spans.values()) {
-		if (!span.endTime) {
-			endSpan(span.spanId, "ok");
-		}
-	}
+function syncSpanContext(span) {
+  const spanContext = span?.otelSpan?.spanContext?.();
+  if (!spanContext) return;
+  span.traceId = spanContext.traceId || span.traceId;
+  span.spanId = spanContext.spanId || span.spanId;
 }
 
-function getTracer() {
-	return _tracer;
+function finalizeLocalSpan(span) {
+  span.endTime = nowHrTime();
+  span.durationMs = durationMs(span.startTime);
+  tracingState.activeSpans.delete(span.spanId);
+  tracingState.finishedSpans.push({
+    ...span,
+    attributes: { ...span.attributes },
+    events: [...span.events],
+    exceptions: [...span.exceptions],
+    status: { ...span.status },
+  });
 }
 
-function wrapFunction(fn, name, attributes = {}) {
-	return function (...args) {
-		const span = startSpan(name, attributes);
-		try {
-			const result = fn.apply(this, args);
-			if (result && typeof result.then === "function") {
-				return result
-					.then((res) => {
-						endSpan(span?.spanId, "ok");
-						return res;
-					})
-					.catch((err) => {
-						endSpan(span?.spanId, "error", err);
-						throw err;
-					});
-			}
-			endSpan(span?.spanId, "ok");
-			return result;
-		} catch (err) {
-			endSpan(span?.spanId, "error", err);
-			throw err;
-		}
-	};
+async function loadOtelBindings() {
+  const [api, sdkNode, exporterTraceHttp, exporterMetricsHttp, resources, semantic] = await Promise.all([
+    import("@opentelemetry/api"),
+    import("@opentelemetry/sdk-node"),
+    import("@opentelemetry/exporter-trace-otlp-http"),
+    import("@opentelemetry/exporter-metrics-otlp-http"),
+    import("@opentelemetry/resources"),
+    import("@opentelemetry/semantic-conventions"),
+  ]);
+
+  return {
+    api,
+    NodeSDK: sdkNode.NodeSDK,
+    OTLPTraceExporter: exporterTraceHttp.OTLPTraceExporter,
+    OTLPMetricExporter: exporterMetricsHttp.OTLPMetricExporter,
+    resourceFromAttributes:
+      resources.resourceFromAttributes ||
+      ((attributes) => new resources.Resource(attributes)),
+    semantic,
+  };
 }
 
-async function wrapAsyncFunction(fn, name, attributes = {}) {
-	return async function (...args) {
-		const span = startSpan(name, attributes);
-		try {
-			const result = await fn.apply(this, args);
-			endSpan(span?.spanId, "ok");
-			return result;
-		} catch (err) {
-			endSpan(span?.spanId, "error", err);
-			throw err;
-		}
-	};
+export async function setupTracing(endpointOrConfig = null) {
+  const inputConfig =
+    typeof endpointOrConfig === "string"
+      ? { endpoint: endpointOrConfig }
+      : (endpointOrConfig ?? {});
+
+  const endpoint = inputConfig.endpoint || process.env.BOSUN_OTEL_ENDPOINT || null;
+  const enabled = inputConfig.enabled ?? Boolean(endpoint);
+  const sampleRate = Number(inputConfig.sampleRate ?? 1);
+
+  if (tracingState.sdk?.shutdown) {
+    try {
+      await tracingState.sdk.shutdown();
+    } catch {
+    }
+  }
+
+  if (!enabled || !endpoint) {
+    tracingState = createNoopState();
+    ensureMetricInstruments();
+    return { enabled: false, endpoint: null, sampleRate: 0 };
+  }
+
+  const serviceName = inputConfig.serviceName || DEFAULT_SERVICE_NAME;
+  const serviceVersion = inputConfig.serviceVersion || DEFAULT_SERVICE_VERSION;
+  const resolvedSampleRate = Number.isFinite(sampleRate) ? sampleRate : 1;
+  const metrics = createMetricStore();
+
+  let sdk = null;
+  let tracer = null;
+  let api = null;
+  let statusCodes = null;
+  let spanKind = null;
+  const exporter = {
+    protocol: inferProtocol(endpoint),
+    processor: "batch",
+  };
+
+  try {
+    const otel = await loadOtelBindings();
+    api = otel.api;
+    statusCodes = otel.api.SpanStatusCode;
+    spanKind = otel.api.SpanKind;
+    const resource = otel.resourceFromAttributes({
+      [otel.semantic.SEMRESATTRS_SERVICE_NAME || "service.name"]: serviceName,
+      [otel.semantic.SEMRESATTRS_SERVICE_VERSION || "service.version"]: serviceVersion,
+    });
+
+    sdk = new otel.NodeSDK({
+      resource,
+      traceExporter: new otel.OTLPTraceExporter({ url: endpoint }),
+      metricReader: undefined,
+    });
+
+    if (typeof sdk.start === "function") {
+      await sdk.start();
+    }
+
+    tracer = otel.api.trace.getTracer(serviceName, serviceVersion);
+  } catch {
+    sdk = null;
+    tracer = null;
+    api = null;
+    statusCodes = null;
+    spanKind = null;
+  }
+
+  tracingState = {
+    enabled: true,
+    endpoint,
+    sampleRate: resolvedSampleRate,
+    serviceName,
+    serviceVersion,
+    exporter,
+    meter: metrics.meter,
+    metrics,
+    provider: sdk,
+    tracer,
+    sdk,
+    api,
+    statusCodes,
+    spanKind,
+    activeSpans: new Map(),
+    finishedSpans: [],
+  };
+  ensureMetricInstruments();
+
+  return {
+    enabled: true,
+    endpoint,
+    sampleRate: resolvedSampleRate,
+    serviceName,
+    serviceVersion,
+    exporter,
+  };
 }
 
-function createAgentSpan(agentId, sessionId, type = "agent") {
-	return startSpan(`agent.${type}`, {
-		"agent.id": agentId,
-		"session.id": sessionId,
-		"agent.type": type,
-	});
+export function getTracingState() {
+  return {
+    enabled: tracingState.enabled,
+    endpoint: tracingState.endpoint,
+    sampleRate: tracingState.sampleRate,
+    serviceName: tracingState.serviceName,
+    serviceVersion: tracingState.serviceVersion,
+    exporter: tracingState.exporter,
+  };
 }
 
-function createWorkflowSpan(workflowId, runId) {
-	return startSpan(`workflow.${workflowId}`, {
-		"workflow.id": workflowId,
-		"workflow.run.id": runId,
-	});
+export function getFinishedSpans() {
+  return [...tracingState.finishedSpans];
 }
 
-function createTaskSpan(taskId, taskTitle) {
-	return startSpan(`task.${taskId}`, {
-		"task.id": taskId,
-		"task.title": taskTitle,
-	});
+export function getMetricSnapshot() {
+  return {
+    counters: new Map(tracingState.metrics.counters),
+    gauges: new Map(tracingState.metrics.gauges),
+    histograms: new Map(tracingState.metrics.histograms),
+  };
 }
 
-export {
-	initTracing,
-	startSpan,
-	endSpan,
-	addSpanEvent,
-	setSpanAttribute,
-	getActiveSpans,
-	getSpan,
-	clearSpans,
-	flush,
-	getTracer,
-	wrapFunction,
-	wrapAsyncFunction,
-	createAgentSpan,
-	createWorkflowSpan,
-	createTaskSpan,
-};
+export async function shutdownTracing() {
+  if (tracingState.sdk?.shutdown) {
+    try {
+      await tracingState.sdk.shutdown();
+    } catch {
+    }
+  }
+  tracingState = createNoopState();
+  metricInstruments = null;
+  ensureMetricInstruments();
+}
+
+export function resetTracingForTests() {
+  tracingState = createNoopState();
+  metricInstruments = null;
+  ensureMetricInstruments();
+}
+
+export function addSpanEvent(name, attributes = {}) {
+  const current = getCurrentContext();
+  if (!current) return;
+  const normalized = omitUndefined(attributes);
+  current.events.push({ name, attributes: normalized, at: Date.now() });
+  if (current.otelSpan?.addEvent) {
+    current.otelSpan.addEvent(name, normalized);
+  }
+}
+
+export function recordIntervention(type, attributes = {}) {
+  recordMetric("agentInterventions", "counter", 1, {
+    "bosun.intervention.type": type,
+    ...attributes,
+  });
+}
+
+async function withSpan(name, attributes, fn, hooks = {}) {
+  if (!tracingState.enabled) {
+    return fn();
+  }
+
+  const span = createLocalSpan(name, omitUndefined(attributes));
+  const parent = getCurrentContext();
+  const otelOptions = { attributes: span.attributes };
+  if (tracingState.spanKind && name === "bosun.llm.call") {
+    otelOptions.kind = tracingState.spanKind.CLIENT;
+  }
+
+  if (tracingState.tracer?.startSpan) {
+    const parentContext = parent?.otelSpan && tracingState.api?.trace?.setSpan
+      ? tracingState.api.trace.setSpan(tracingState.api.context.active(), parent.otelSpan)
+      : undefined;
+    span.otelSpan = tracingState.tracer.startSpan(name, otelOptions, parentContext);
+    syncSpanContext(span);
+  }
+
+  tracingState.activeSpans.set(span.spanId, span);
+
+  return contextStore.run(span, async () => {
+    try {
+      hooks.onStart?.(span);
+      const result = await fn(span);
+      hooks.onSuccess?.(span, result);
+      span.status = { code: "OK" };
+      if (span.otelSpan?.setStatus) {
+        span.otelSpan.setStatus({
+          code: tracingState.statusCodes?.OK ?? 1,
+        });
+      }
+      attachOtelAttributes(span.otelSpan, span.attributes);
+      return result;
+    } catch (error) {
+      span.status = { code: "ERROR" };
+      const exception = {
+        message: error?.message || String(error),
+        stack: error?.stack || "",
+      };
+      span.exceptions.push(exception);
+      if (span.otelSpan?.recordException) {
+        span.otelSpan.recordException(error);
+      }
+      if (span.otelSpan?.setStatus) {
+        span.otelSpan.setStatus({
+          code: tracingState.statusCodes?.ERROR ?? 2,
+          message: exception.message,
+        });
+      }
+      hooks.onError?.(span, error);
+      throw error;
+    } finally {
+      hooks.onFinally?.(span);
+      attachOtelAttributes(span.otelSpan, span.attributes);
+      if (span.otelSpan?.end) {
+        span.otelSpan.end();
+      }
+      finalizeLocalSpan(span);
+    }
+  });
+}
+
+export async function traceTaskExecution(task = {}, fn) {
+  return withSpan(
+    "bosun.task.execute",
+    {
+      "bosun.task.id": task.taskId || task.id,
+      "bosun.task.title": task.title,
+      "bosun.task.priority": task.priority,
+      "bosun.task.assignee": task.assignee,
+      "bosun.agent.sdk": task.sdk,
+      "llm.model": task.model,
+      "git.branch": task.branch,
+    },
+    fn,
+    {
+      onSuccess(span, result) {
+        const inputTokens = Number(result?.inputTokens || result?.tokens?.input || 0);
+        const outputTokens = Number(result?.outputTokens || result?.tokens?.output || 0);
+        const totalTokens = Number(result?.totalTokens || inputTokens + outputTokens || 0);
+        const costUsd = Number(result?.costUsd || result?.cost?.usd || 0);
+        const metricAttributes = {
+          "bosun.task.id": span.attributes["bosun.task.id"],
+          "llm.model": span.attributes["llm.model"],
+          "trace.span_id": span.spanId,
+          "trace.trace_id": span.traceId,
+        };
+        if (totalTokens > 0) {
+          recordMetric("taskTokensTotal", "counter", totalTokens, metricAttributes);
+        }
+        if (costUsd > 0) {
+          recordMetric("taskCostUsd", "counter", costUsd, metricAttributes);
+        }
+      },
+      onError(span, error) {
+        recordMetric("agentErrors", "counter", 1, {
+          "bosun.error.type": error?.name || "Error",
+          "trace.span_id": span.spanId,
+          "trace.trace_id": span.traceId,
+        });
+      },
+      onFinally(span) {
+        const metricAttributes = {
+          "bosun.task.id": span.attributes["bosun.task.id"],
+          "llm.model": span.attributes["llm.model"],
+          "trace.span_id": span.spanId,
+          "trace.trace_id": span.traceId,
+        };
+        recordMetric("taskDuration", "histogram", span.durationMs ?? 0, metricAttributes);
+      },
+    },
+  );
+}
+
+export async function traceAgentSession(session = {}, fn) {
+  return withSpan(
+    "bosun.agent.session",
+    {
+      "bosun.session.id": session.sessionId,
+      "bosun.agent.sdk": session.sdk,
+      "bosun.thread.key": session.threadKey,
+      "bosun.session.start_time": session.startTime,
+      "bosun.tokens.budget": session.tokensBudget,
+    },
+    fn,
+    {
+      onStart(span) {
+        recordMetric("agentSessionsActive", "gauge", 1, {
+          "bosun.session.id": span.attributes["bosun.session.id"],
+          "trace.span_id": span.spanId,
+          "trace.trace_id": span.traceId,
+        });
+      },
+      onFinally(span) {
+        recordMetric("agentSessionsActive", "gauge", -1, {
+          "bosun.session.id": span.attributes["bosun.session.id"],
+          "trace.span_id": span.spanId,
+          "trace.trace_id": span.traceId,
+        });
+      },
+    },
+  );
+}
+
+export async function traceToolCall(tool = {}, fn) {
+  return withSpan(
+    "bosun.tool.call",
+    {
+      "bosun.tool.name": tool.toolName,
+      "bosun.tool.tokens_used": tool.tokensUsed,
+    },
+    async (span) => {
+      const startedAt = nowHrTime();
+      const result = await fn(span);
+      span.attributes["bosun.tool.success"] = result?.success ?? true;
+      span.attributes["bosun.tool.duration_ms"] = durationMs(startedAt);
+      if (result?.error) {
+        span.attributes["bosun.tool.error"] = result.error;
+      }
+      return result;
+    },
+  );
+}
+
+export async function traceLLMCall(call = {}, fn) {
+  return withSpan(
+    "bosun.llm.call",
+    {
+      "llm.model": call.model,
+      "llm.provider": call.provider,
+      "llm.input_tokens": call.inputTokens,
+      "llm.output_tokens": call.outputTokens,
+      "llm.cost_usd": call.costUsd,
+      "llm.latency_ms": call.latency,
+    },
+    async (span) => {
+      const startedAt = nowHrTime();
+      const result = await fn(span);
+      const inputTokens = Number(result?.inputTokens ?? call.inputTokens ?? 0);
+      const outputTokens = Number(result?.outputTokens ?? call.outputTokens ?? 0);
+      const costUsd = Number(result?.costUsd ?? call.costUsd ?? 0);
+      span.attributes["llm.input_tokens"] = inputTokens;
+      span.attributes["llm.output_tokens"] = outputTokens;
+      span.attributes["llm.cost_usd"] = costUsd;
+      span.attributes["llm.latency_ms"] = Number(result?.latency ?? call.latency ?? durationMs(startedAt));
+      return result;
+    },
+  );
+}
+
+ensureMetricInstruments();
