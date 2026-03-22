@@ -316,6 +316,22 @@ export function buildTraceTimelineBlocks(messages = []) {
       if (nextType === "tool_call" || nextType === "tool_result" || nextType === "tool_output" || nextType === "error" || nextType === "stream_error") {
         break;
       }
+      const itemType = next?.meta?.itemType;
+      if (itemType === "file_change") {
+        const entry = buildTimelineEntry(next);
+        blocks.push({
+          key: `patch_result:${entry.id}`,
+          phase: entry.phase || "patch_result",
+          tone: entry.tone,
+          title: entry.title,
+          summary: entry.title,
+          chips: entry.chips,
+          entries: [entry],
+          hasError: false,
+        });
+        index += 1;
+        continue;
+      }
       thinkingEntries.push(buildTimelineEntry(next, "thinking"));
       index += 1;
     }
