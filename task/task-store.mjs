@@ -5,7 +5,7 @@
  * Provides an in-memory cache with auto-persist on every mutation.
  */
 
-import { resolve, dirname, basename } from "node:path";
+import { resolve, dirname, basename, posix as posixPath } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
@@ -194,6 +194,18 @@ const ALLOWED_STATE_TRANSITIONS = Object.freeze({
   blocked: new Set(["backlog", "inprogress", "cancelled", "paused"]),
 });
 
+function createWorkspaceStorageCollisionError(kind, canonicalKey, existingRaw, incomingRaw) {
+  const err = new Error(
+    `${kind} key collision after normalization: "${existingRaw}" conflicts with "${incomingRaw}" (canonical="${canonicalKey}")`,
+  );
+  err.code = "TASK_STORE_KEY_COLLISION";
+  err.kind = kind;
+  err.canonicalKey = canonicalKey;
+  err.existingRaw = existingRaw;
+  err.incomingRaw = incomingRaw;
+  return err;
+}
+
 // ---------------------------------------------------------------------------
 // In-memory state
 // ---------------------------------------------------------------------------
@@ -301,6 +313,41 @@ function normalizeTaskStatus(rawStatus) {
   if (value === "completed") return "done";
   if (value === "canceled") return "cancelled";
   return value;
+}
+
+export function normalizeWorkspaceStorageKey(rawKey) {
+  const value = String(rawKey ?? "").trim();
+  if (!value) return "";
+  const unifiedSeparators = value.replace(/[\\]+/g, "/");
+  let normalized = posixPath.normalize(unifiedSeparators);
+  if (normalized === ".") return "";
+  normalized = normalized.replace(/^\.\/+/, "");
+  if (normalized.length > 1 && normalized.endsWith("/")) {
+    normalized = normalized.slice(0, -1);
+  }
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+export function normalizeWorkspaceStorageKeys(rawKeys, options = {}) {
+  const kind = String(options.kind || "workspace-rooted storage").trim();
+  const values = Array.isArray(rawKeys) ? rawKeys : [rawKeys];
+  const seen = new Map();
+  const normalized = [];
+  for (const value of values) {
+    const raw = String(value ?? "").trim();
+    if (!raw) continue;
+    const canonical = normalizeWorkspaceStorageKey(raw);
+    if (!canonical) continue;
+    const existingRaw = seen.get(canonical);
+    if (existingRaw && existingRaw !== raw) {
+      throw createWorkspaceStorageCollisionError(kind, canonical, existingRaw, raw);
+    }
+    if (!existingRaw) {
+      seen.set(canonical, raw);
+      normalized.push(canonical);
+    }
+  }
+  return normalized;
 }
 
 function normalizeLifecycleState(rawStatus) {
@@ -540,6 +587,16 @@ function validateTaskTransition(currentStatus, nextStatus, options = {}) {
 
 function normalizeTaskStructure(rawTask = {}) {
   const base = defaultTask(rawTask);
+  const taskId = String(base?.id || rawTask?.id || "").trim() || "<unknown-task>";
+  const workspaceKey = normalizeWorkspaceStorageKey(base.workspace);
+  const repositoryKey = normalizeWorkspaceStorageKey(base.repository);
+  const repositoryKeys = normalizeWorkspaceStorageKeys(base.repositories || [], {
+    kind: `task:${taskId}:repositories`,
+  });
+  const scopedRepositoryKeys = normalizeWorkspaceStorageKeys(
+    [repositoryKey, ...repositoryKeys],
+    { kind: `task:${taskId}:workspace-rooted` },
+  );
   const normalized = {
     ...base,
     status: normalizeTaskStatus(base.status),
@@ -590,6 +647,9 @@ function normalizeTaskStructure(rawTask = {}) {
       : 2,
     sprintId: normalizeSprintId(base.sprintId),
     sprintOrder: normalizeSprintOrder(base.sprintOrder),
+    workspace: workspaceKey || null,
+    repository: repositoryKey || null,
+    repositories: scopedRepositoryKeys,
   };
   if (normalized.status === "draft") {
     normalized.draft = true;
