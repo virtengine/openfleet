@@ -11461,19 +11461,18 @@ registerBuiltinNodeType("action.acquire_worktree", {
         payload.error ? `error=${payload.error}` : "",
       ].filter(Boolean).join(" ");
       ctx.log(node.id, `[worktree-recovery] ${details}`);
-      await recordWorktreeRecoveryEvent(repoRoot, payload);
+      try {
+        await recordWorktreeRecoveryEvent(repoRoot, payload);
+      } catch (err) {
+        ctx.log(
+          node.id,
+          `[worktree-recovery] failed to persist recovery event: ${
+            err && err.message ? err.message : String(err)
+          }`,
+        );
+      }
     };
-
-        try {
-          await recordWorktreeRecoveryEvent(repoRoot, payload);
-        } catch (err) {
-          ctx.log(
-            node.id,
-            `[worktree-recovery] failed to persist recovery event: ${
-              err && err.message ? err.message : String(err)
-            }`,
-          );
-        }
+    try {
       // Ensure base branch ref is fresh
       const baseBranchShort = baseBranch.replace(/^origin\//, "");
       if (!shouldSkipGitRefreshForTests()) {
