@@ -1,5 +1,5 @@
 const FILE_PATH_PATTERN =
-  /([A-Za-z0-9_./-]+\.(?:js|mjs|cjs|ts|tsx|jsx|json|md|mdx|css|scss|less|html|yml|yaml|toml|env|lock|go|rs|py|sh|ps1|psm1|txt|sql|xml|csv))/g;
+  /((?:[A-Za-z]:)?[A-Za-z0-9_./\\-]+\.(?:js|mjs|cjs|ts|tsx|jsx|json|md|mdx|css|scss|less|html|yml|yaml|toml|env|lock|go|rs|py|sh|ps1|psm1|txt|sql|xml|csv))/g;
 
 const EDIT_TOOL_HINTS = [
   "apply_patch",
@@ -50,7 +50,7 @@ function normalizeFilePath(raw) {
   while (text.endsWith("`") || text.endsWith("'") || text.endsWith("\"")) {
     text = text.slice(0, -1);
   }
-  if (!text || text.startsWith("..")) return "";
+  if (!text || text.startsWith("..") || /^[a-z]+:\/\//i.test(text)) return "";
   return text.split("\\").join("/");
 }
 
@@ -98,10 +98,10 @@ function classifyToolCall(toolName, content) {
   }
 
   if (tool === "command_execution") {
-    if (/\b(apply_patch|sed\s+-i|perl\s+-i|tee\s+|cat\s+>)/.test(firstLine)) {
+    if (/\b(apply_patch|sed\s+-i|perl\s+-i|tee\s+|cat\s+>|set-content|add-content|out-file)\b/.test(firstLine)) {
       return "patch_result";
     }
-    if (/\b(rg|grep|cat|sed|head|tail|ls|find|stat|git show|git diff)\b/.test(firstLine)) {
+    if (/\b(rg|grep|cat|sed|head|tail|ls|find|stat|git show|git diff|get-content|gc|type|select-string|dir|get-childitem)\b/.test(firstLine)) {
       return "file_exploration";
     }
   }

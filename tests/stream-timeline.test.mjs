@@ -102,6 +102,38 @@ describe("stream timeline helpers", () => {
     expect(blocks[0].entries.map((entry) => entry.phase)).toEqual(["tool_call", "error"]);
   });
 
+  it("classifies PowerShell file reads as file exploration and normalizes Windows paths", () => {
+    const blocks = buildTraceTimelineBlocks([
+      {
+        type: "tool_call",
+        content:
+          "Get-Content C:\\repo\\bosun\\ui\\components\\chat-view.js [completed, exit=0]",
+        meta: { toolName: "command_execution" },
+        timestamp: "2026-03-20T01:00:06.500Z",
+      },
+    ]);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].phase).toBe("file_exploration");
+    expect(blocks[0].chips).toContain("completed");
+    expect(blocks[0].chips).toContain("exit=0");
+    expect(blocks[0].chips).toContain("C:/repo/bosun/ui/components/chat-view.js");
+  });
+
+  it("ignores URL-like paths when extracting file chips", () => {
+    const blocks = buildTraceTimelineBlocks([
+      {
+        type: "tool_call",
+        content: "read_file(https://example.com/ui/components/chat-view.js)",
+        meta: { toolName: "read_file" },
+        timestamp: "2026-03-20T01:00:06.750Z",
+      },
+    ]);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].chips).not.toContain("https://example.com/ui/components/chat-view.js");
+  });
+
   it("emits file_change events as standalone patch blocks between thinking groups", () => {
     const blocks = buildTraceTimelineBlocks([
       {
