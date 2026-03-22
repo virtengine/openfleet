@@ -167,17 +167,6 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
         applySessionSnapshot(sessions, Date.now());
       }),
 
-      wsBridge.on("retry-queue-updated", (payload) => {
-        if (payload && typeof payload === "object") {
-          applyRetryQueue(payload);
-          return;
-        }
-        void refreshData();
-      }),
-      wsBridge.on("retry:update", (payload) => {
-        if (payload && typeof payload === "object") {
-          applyRetryQueue(payload);
-          return;
         }
         void refreshData();
       }),
