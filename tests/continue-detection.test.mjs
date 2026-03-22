@@ -276,7 +276,7 @@ describe("idle detection integration", () => {
 
     // Simulate agent going idle
     const session = tracker.getSession("task-1");
-    session.lastActivityAt = Date.now() - 100; // > 50ms threshold
+    session.lastActivityAt = Date.now() - 80; // between idle=50ms and stalled=100ms thresholds
 
     // Should now be idle with continue recommendation
     progress = tracker.getProgressStatus("task-1");
