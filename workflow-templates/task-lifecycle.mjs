@@ -470,9 +470,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     }, { x: 850, y: 1350, outputs: ["yes", "no"] }),
 
     // ── CLEANUP: Sweep task worktrees at end of lifecycle ────────────────
-    node("sweep-task-wts", "action.recover_worktree", "Sweep Task WTs", {
+    node("sweep-task-wts", "action.sweep_task_worktrees", "Sweep Task WTs", {
       repoRoot: "{{repoRoot}}",
-      branch: "{{branch}}",
       taskId: "{{taskId}}",
     }, { x: 200, y: 3090 }),
   ],
