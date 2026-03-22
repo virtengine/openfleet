@@ -147,6 +147,8 @@ const MAX_ERROR_LENGTH = 1000;
 const MAX_TASK_TIMELINE = 300;
 const MAX_TASK_COMMENTS = 200;
 const MAX_WORKFLOW_RUN_LINKS = 200;
+const MAX_TASK_RUN_STEPS = 120;
+const MAX_TASK_RUNS = 20;
 const ATOMIC_RENAME_FALLBACK_CODES = new Set(["EPERM", "EACCES", "EBUSY", "EXDEV"]);
 const TERMINAL_TASK_STATUSES = new Set(["done", "cancelled"]);
 const SPRINT_ORDER_MODES = new Set(["parallel", "sequential"]);
@@ -411,6 +413,106 @@ function normalizeWorkflowRunLinks(rawRuns) {
   return normalized.slice(-MAX_WORKFLOW_RUN_LINKS);
 }
 
+function summarizeTrajectoryStepText(value, maxLength = 160) {
+  const text = String(value ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (!text) return null;
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+}
+
+function buildTrajectoryStepSummary(step = {}) {
+  const type = String(step?.type || "event").trim().toLowerCase();
+  const payload = step?.payload && typeof step.payload === "object" ? step.payload : {};
+  const event = step?.event && typeof step.event === "object" ? step.event : {};
+
+  if (type === "thread") {
+    const resumed = payload?.resumed === true || event?.resumed === true;
+    const sdk = String(payload?.sdk || event?.sdk || "agent").trim() || "agent";
+    return resumed ? `Resumed ${sdk} session.` : `Started ${sdk} session.`;
+  }
+  if (type === "assistant") {
+    return summarizeTrajectoryStepText(
+      payload?.summary || payload?.message || payload?.content || event?.summary || event?.content || "Assistant responded.",
+    ) || "Assistant responded.";
+  }
+  if (type === "user") {
+    return summarizeTrajectoryStepText(
+      payload?.summary || payload?.message || payload?.content || event?.summary || event?.content || "User prompt recorded.",
+    ) || "User prompt recorded.";
+  }
+  if (type === "tool_call") {
+    const toolName = String(payload?.toolName || payload?.tool || event?.toolName || event?.tool || "tool").trim() || "tool";
+    return `Called ${toolName}.`;
+  }
+  if (type === "tool_result") {
+    const toolName = String(payload?.toolName || payload?.tool || event?.toolName || event?.tool || "tool").trim() || "tool";
+    const status = String(payload?.status || event?.status || "ok").trim().toLowerCase();
+    return status === "error" || status === "failed" ? `${toolName} returned an error.` : `${toolName} completed.`;
+  }
+  if (type === "reasoning") {
+    return summarizeTrajectoryStepText(payload?.summary || payload?.text || event?.summary || event?.text || "Reasoning updated.") || "Reasoning updated.";
+  }
+  if (type === "status") {
+    return summarizeTrajectoryStepText(payload?.summary || payload?.message || event?.summary || event?.message || "Run status changed.") || "Run status changed.";
+  }
+  return summarizeTrajectoryStepText(
+    step?.summary || payload?.summary || payload?.message || event?.summary || event?.message || "Run event recorded.",
+  ) || "Run event recorded.";
+}
+
+function normalizeTaskRunStep(step = {}, index = 0) {
+  return {
+    id: String(step?.id || `step-${Date.now()}-${index}-${Math.random().toString(16).slice(2, 8)}`),
+    at: String(step?.at || step?.timestamp || now()),
+    type: String(step?.type || "event"),
+    summary: summarizeTrajectoryStepText(step?.summary || buildTrajectoryStepSummary(step)) || "Run event recorded.",
+    payload: step?.payload && typeof step.payload === "object" ? { ...step.payload } : null,
+    event: step?.event && typeof step.event === "object" ? { ...step.event } : null,
+  };
+}
+
+function normalizeTaskRunSteps(rawSteps) {
+  const values = Array.isArray(rawSteps) ? rawSteps : [];
+  const normalized = values.map((step, index) => normalizeTaskRunStep(step, index)).filter(Boolean);
+  if (normalized.length <= MAX_TASK_RUN_STEPS) return normalized;
+  return normalized.slice(-MAX_TASK_RUN_STEPS);
+}
+
+function normalizeTaskRuns(rawRuns) {
+  const values = Array.isArray(rawRuns) ? rawRuns : [];
+  const normalized = [];
+  for (const entry of values) {
+    if (!entry || typeof entry !== "object") continue;
+    const runId = String(entry.runId || entry.id || "").trim();
+    if (!runId) continue;
+    normalized.push({
+      runId,
+      startedAt: String(entry.startedAt || entry.createdAt || now()),
+      endedAt: entry.endedAt != null ? String(entry.endedAt) : null,
+      status: entry.status != null ? String(entry.status) : "running",
+      taskKey: entry.taskKey != null ? String(entry.taskKey) : null,
+      sdk: entry.sdk != null ? String(entry.sdk) : null,
+      threadId: entry.threadId != null ? String(entry.threadId) : null,
+      resumeThreadId: entry.resumeThreadId != null ? String(entry.resumeThreadId) : null,
+      replayable: entry.replayable !== false,
+      outcome: entry.outcome != null ? String(entry.outcome) : null,
+      summary: summarizeTrajectoryStepText(entry.summary || entry.title || "") || null,
+      steps: normalizeTaskRunSteps(entry.steps),
+      meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
+    });
+  }
+  if (normalized.length <= MAX_TASK_RUNS) return normalized;
+  return normalized.slice(-MAX_TASK_RUNS);
+}
+
 function validateTaskTransition(currentStatus, nextStatus, options = {}) {
   const fromStatus = normalizeTaskStatus(currentStatus);
   const toStatus = normalizeTaskStatus(nextStatus);
@@ -474,6 +576,13 @@ function normalizeTaskStructure(rawTask = {}) {
         ? base.workflowRuns
         : Array.isArray(base.meta?.workflowRuns)
           ? base.meta.workflowRuns
+          : [],
+    ),
+    runs: normalizeTaskRuns(
+      Array.isArray(base.runs)
+        ? base.runs
+        : Array.isArray(base.meta?.runs)
+          ? base.meta.runs
           : [],
     ),
     stateVersion: Number.isFinite(Number(base.stateVersion))
@@ -556,6 +665,7 @@ function defaultTask(overrides = {}) {
     comments: [],
     timeline: [],
     workflowRuns: [],
+    runs: [],
     links: { branches: [], prs: [], workflows: [] },
     stateVersion: 2,
 
@@ -1262,6 +1372,10 @@ export function updateTask(taskId, updates) {
       task.workflowRuns = normalizeWorkflowRunLinks(value);
       continue;
     }
+    if (key === "runs") {
+      task.runs = normalizeTaskRuns(value);
+      continue;
+    }
     if (key === "assignees") { task.assignees = uniqueStringList(value); continue; }
     if (key === "watchers") { task.watchers = uniqueStringList(value); continue; }
     if (key === "childTaskIds") { task.childTaskIds = uniqueStringList(value); continue; }
@@ -1639,6 +1753,25 @@ export function appendTaskTimelineEvent(taskId, event = {}) {
   markTaskTouched(task, event?.source || "task-store");
   saveStore();
   return normalizedEvent;
+}
+
+export function getTaskRuns(taskId) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return [];
+  return Array.isArray(task.runs) ? [...task.runs] : [];
+}
+
+export function appendTaskRun(taskId, run = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return null;
+  const nextRun = normalizeTaskRuns([run])[0] || null;
+  if (!nextRun) return null;
+  task.runs = normalizeTaskRuns([...(Array.isArray(task.runs) ? task.runs : []), nextRun]);
+  markTaskTouched(task, run?.source || "task-run");
+  saveStore();
+  return nextRun;
 }
 
 export function addTaskComment(taskId, comment = {}) {
