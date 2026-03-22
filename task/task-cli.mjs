@@ -865,6 +865,7 @@ function readRepoAreaLocksFromRuntimeState() {
       areas,
     };
   } catch (err) {
+    rethrowKeyCollision(err);
     console.warn(`${TAG} failed to read executor lock state: ${err.message}`);
     return null;
   }
