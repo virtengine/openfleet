@@ -15,6 +15,14 @@ function normalizeProvider(provider) {
   return String(provider || "").trim().toLowerCase();
 }
 
+function normalizeEnvValue(value) {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return "";
+  const lowered = normalized.toLowerCase();
+  if (lowered === "undefined" || lowered === "null") return "";
+  return normalized;
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -102,7 +110,7 @@ export function resolveVoiceOAuthToken(provider, forceReload = false) {
   if (!normalizedProvider) return null;
 
   const envToken = getProviderEnvCandidates(normalizedProvider)
-    .map((token) => String(token || "").trim())
+    .map((token) => normalizeEnvValue(token))
     .find(Boolean);
   if (envToken) {
     return {
@@ -212,11 +220,8 @@ function normalizeScopeList(scopes) {
 }
 
 function envOrDefault(name, fallback = "") {
-  const raw = process.env[name];
-  const value = String(raw ?? "").trim();
+  const value = normalizeEnvValue(process.env[name]);
   if (!value) return fallback;
-  const normalized = value.toLowerCase();
-  if (normalized === "undefined" || normalized === "null") return fallback;
   return value;
 }
 
