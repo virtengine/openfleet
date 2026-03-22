@@ -1128,6 +1128,43 @@ function ensureBaseBranchAvailable(repoRoot, baseBranch, defaultTargetBranch) {
     env: sanitizeGitEnv(),
   });
   if (localCheck.status === 0) {
+    // Local branch exists — fetch + fast-forward it so it isn't stale.
+    // Without this, branches created from a stale local `main` will be
+    // behind `origin/main` and their PRs will have avoidable conflicts.
+    try {
+      spawnSync("git", ["fetch", "origin", branch, "--quiet"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        timeout: 15_000,
+        env: sanitizeGitEnv(),
+      });
+      // Only fast-forward when the local branch is a strict ancestor of
+      // the remote — avoids data loss on diverged branches and avoids the
+      // "cannot force update the current branch" error when the branch is
+      // checked out in the main worktree.
+      const mergeBaseRes = spawnSync(
+        "git",
+        ["merge-base", "--is-ancestor", branch, `origin/${branch}`],
+        { cwd: repoRoot, encoding: "utf8", timeout: 8000, env: sanitizeGitEnv() },
+      );
+      if (mergeBaseRes.status === 0) {
+        // Safe fast-forward via update-ref (works even when the branch is
+        // checked out in another worktree).
+        const remoteHead = spawnSync(
+          "git", ["rev-parse", `origin/${branch}`],
+          { cwd: repoRoot, encoding: "utf8", timeout: 5000, env: sanitizeGitEnv() },
+        );
+        const sha = (remoteHead.stdout || "").trim();
+        if (sha && remoteHead.status === 0) {
+          spawnSync(
+            "git", ["update-ref", `refs/heads/${branch}`, sha],
+            { cwd: repoRoot, encoding: "utf8", timeout: 5000, env: sanitizeGitEnv() },
+          );
+        }
+      }
+    } catch {
+      // Best-effort: offline is OK, stale is better than crashing.
+    }
     return branch;
   }
 

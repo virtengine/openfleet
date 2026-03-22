@@ -695,6 +695,28 @@ class WorktreeManager {
       // May already exist
     }
 
+    // Fetch the base branch so the tracking ref is up-to-date before we
+    // create a worktree from it.  Without this, `origin/main` (or whatever
+    // baseBranch points at) can be stale and PRs end up with avoidable
+    // conflicts because they're rooted on an old commit.
+    if (opts.baseBranch) {
+      const fetchRef = String(opts.baseBranch).replace(/^origin\//, "");
+      if (fetchRef) {
+        const fetchRes = gitSync(
+          ["fetch", "origin", fetchRef, "--no-tags", "--quiet"],
+          this.repoRoot,
+          { timeout: 15_000 },
+        );
+        if (fetchRes.status !== 0) {
+          console.warn(
+            `${TAG} best-effort fetch of origin/${fetchRef} failed (offline?): ${
+              (fetchRes.stderr || "").trim()
+            }`,
+          );
+        }
+      }
+    }
+
     // Build git worktree add command
     const args = ["worktree", "add", worktreePath];
     // Avoid a guaranteed "branch already exists" failure when rerunning tasks:
