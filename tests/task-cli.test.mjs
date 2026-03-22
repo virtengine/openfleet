@@ -6,6 +6,10 @@ import { randomUUID } from "node:crypto";
 
 const mockExistsSync = vi.hoisted(() => vi.fn());
 const mockReadFileSync = vi.hoisted(() => vi.fn());
+const mockStatSync = vi.hoisted(() => vi.fn());
+const mockConfigureTaskStore = vi.hoisted(() => vi.fn());
+const mockLoadStore = vi.hoisted(() => vi.fn());
+const mockGetStats = vi.hoisted(() => vi.fn());
 
 vi.mock("node:fs", async () => {
   const actual = await vi.importActual("node:fs");
