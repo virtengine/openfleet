@@ -382,7 +382,7 @@ function collectDiffForRange(worktreePath, candidate, options = {}) {
   const statFiles =
     tryNumstat(worktreePath, range, options.timeoutMs) ||
     tryStat(worktreePath, range, options.timeoutMs) ||
-    null;
+    [];
 
   const combined = buildCombinedFiles(statFiles, patchFiles?.files || []);
   if (!combined.length) return null;
@@ -527,6 +527,8 @@ function tryPatch(cwd, range, timeoutMs, contextLines = 3) {
 }
 
 function buildCombinedFiles(statFiles = [], patchFiles = []) {
+  const normalizedStatFiles = Array.isArray(statFiles) ? statFiles : [];
+  const normalizedPatchFiles = Array.isArray(patchFiles) ? patchFiles : [];
   const byKey = new Map();
 
   const upsert = (file) => {
@@ -559,8 +561,8 @@ function buildCombinedFiles(statFiles = [], patchFiles = []) {
     }
   };
 
-  for (const patchFile of patchFiles) upsert(patchFile);
-  for (const statFile of statFiles) upsert(statFile);
+  for (const patchFile of normalizedPatchFiles) upsert(patchFile);
+  for (const statFile of normalizedStatFiles) upsert(statFile);
 
   const unique = [];
   const seen = new Set();

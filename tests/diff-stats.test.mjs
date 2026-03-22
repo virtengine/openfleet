@@ -44,7 +44,7 @@ describe("diff-stats", () => {
         "+console.log(value + 1);",
         "+console.log('done');",
         " export default value;",
-      ].join("\\n"));
+      ].join("\n"));
 
       expect(files).toHaveLength(1);
       expect(files[0].filename).toBe("src/example.js");
@@ -80,7 +80,7 @@ describe("diff-stats", () => {
         "@@ -1 +1 @@",
         "-export const name = 'old';",
         "+export const name = 'new';",
-      ].join("\\n"));
+      ].join("\n"));
 
       expect(files).toHaveLength(1);
       expect(files[0].status).toBe("renamed");

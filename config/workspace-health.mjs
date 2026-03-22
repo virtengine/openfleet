@@ -6,7 +6,10 @@ import { homedir } from "node:os";
 export function normalizeWorkspaceHealthPath(value) {
   const trimmed = String(value || "").trim();
   if (!trimmed) return "";
-  const normalized = resolve(trimmed).replace(/\\/g, "/");
+  const isWindowsDrivePath = /^[A-Za-z]:[\\/]/.test(trimmed);
+  const isUncPath = trimmed.startsWith("\\\\");
+  const normalized = (isWindowsDrivePath || isUncPath ? trimmed : resolve(trimmed))
+    .replace(/\\/g, "/");
   if (/^[A-Z]:/.test(normalized)) {
     return normalized[0].toLowerCase() + normalized.slice(1);
   }
