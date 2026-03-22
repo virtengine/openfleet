@@ -10332,6 +10332,7 @@ async function ensureWeeklyReportStateLoaded() {
     weeklyReportLastSentAt = null;
     weeklyReportStateLoaded = false;
     weeklyReportStateLoaded = false;
+    weeklyReportStateLoaded = false;
   }
 }
 
