@@ -417,7 +417,7 @@ export function getSessionRuntimeState(session, options = {}) {
   if (ageMs >= SESSION_RUNTIME_STALE_WINDOW_MS || !Number.isFinite(ageMs)) {
     return buildRuntimeState("stale", { source: "recency", ageMs });
   }
-  return buildRuntimeState("idle", { source: "recency", ageMs });
+  return buildRuntimeState("idle", { source: "recency", ageMs, isLive: false });
 }
 
 export function resolveSessionWorkspaceHint(session, fallback = "active") {
