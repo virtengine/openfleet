@@ -207,7 +207,7 @@ describe("task-cli taskStats repo area lock state", () => {
   it("resolves active workspace store path using canonical workspace/repository keys", async () => {
     process.env.BOSUN_HOME = resolve(tmpdir(), "bosun-home");
     const runtimePayload = {};
-    const expectedStorePathFragment = ".bosun/.cache/kanban-state.json";
+    const expectedStorePathFragment = "/workspaces/virtengine-gh/bosun/.bosun/.cache/kanban-state.json";
 
     mockExistsSync.mockImplementation((filePath) => {
       const value = String(filePath || "").replace(/\\/g, "/");
@@ -493,4 +493,5 @@ describe("task-cli taskStats repo area lock state", () => {
     logSpy.mockRestore();
   });
 });
+
 

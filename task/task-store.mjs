@@ -325,7 +325,7 @@ export function normalizeWorkspaceStorageKey(rawKey) {
   if (normalized.length > 1 && normalized.endsWith("/")) {
     normalized = normalized.slice(0, -1);
   }
-  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  return normalized.toLowerCase();
 }
 
 export function normalizeWorkspaceStorageKeys(rawKeys, options = {}) {
@@ -3035,3 +3035,4 @@ export function getStaleInReviewTasks(maxAgeMs) {
     (t) => t.status === "inreview" && t.lastActivityAt < cutoff,
   );
 }
+
