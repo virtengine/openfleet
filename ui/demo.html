@@ -4574,12 +4574,6 @@
         }
         return { ok: true, attachments };
       }
-      if (route.match(/^\/api\/sessions\/[^/]+\/pause$/)) {
-        const sid = route.split('/')[3];
-        const ses = STATE.sessions.find(s => s.id === sid);
-        if (ses) ses.status = 'paused';
-        return { ok: true, session: ses || null };
-      }
       if (route.match(/^\/api\/sessions\/[^/]+\/resume$/)) {
         const sid = route.split('/')[3];
         const ses = STATE.sessions.find(s => s.id === sid);

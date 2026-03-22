@@ -123,3 +123,24 @@ describe("session-insights", () => {
     expect(insights.activityDiff.totalFiles).toBe(1);
   });
 });
+
+
+describe("session insights replay summaries", () => {
+  it("derives replay trajectory and short steps from tool activity", () => {
+    const insights = buildSessionInsights({
+      messages: [
+        { type: "tool_call", timestamp: "2026-03-20T10:00:00.000Z", content: "cat task/task-executor.mjs", meta: { toolName: "command_execution" } },
+        { type: "tool_result", timestamp: "2026-03-20T10:00:01.000Z", content: "file contents" },
+        { type: "tool_call", timestamp: "2026-03-20T10:00:02.000Z", content: "*** Update File: task/task-executor.mjs", meta: { toolName: "apply_patch" } },
+        { type: "agent_message", role: "assistant", timestamp: "2026-03-20T10:00:03.000Z", content: "Patched the executor" },
+      ],
+    });
+
+    expect(insights.replay).toBeTruthy();
+    expect(insights.replay.trajectory).toHaveLength(4);
+    expect(insights.replay.steps.some((step) => step.label.includes("Inspected task/task-executor.mjs"))).toBe(true);
+    expect(insights.replay.steps.some((step) => step.label.includes("Edited task/task-executor.mjs"))).toBe(true);
+    expect(insights.replay.resumeHint).toContain("Edited");
+    expect(insights.replay.overview).toContain("Edited 1 file");
+  });
+});

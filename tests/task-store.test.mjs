@@ -816,3 +816,154 @@ describe("task-store comment handling", () => {
     });
   });
 });
+
+describe("task-store agent trajectory summaries", () => {
+  it("records replayable trajectory metadata for agent attempts", async () => {
+    const dir = makeTempDir("task-store-trajectory-");
+    const storePath = join(dir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({ id: "traj-1", title: "Replay me", status: "todo" });
+    ts.recordAgentAttempt("traj-1", {
+      output: JSON.stringify({
+        sessionId: "sess-123",
+        cwd: "/tmp/worktree",
+        prompt: "continue from previous checkpoint",
+        steps: [
+          { type: "tool", title: "Open config" },
+          { type: "tool", title: "Patch summary renderer" },
+          { type: "message", summary: "Validated the failure path" },
+        ],
+      }),
+      error: "rate limit reached while validating",
+      hasCommits: false,
+    });
+
+    const task = ts.getTask("traj-1");
+    const attemptEvent = task.timeline.at(-1);
+
+    expect(attemptEvent.type).toBe("agent.attempt");
+    expect(attemptEvent.payload).toMatchObject({
+      attempt: 1,
+      hasCommits: false,
+      replayable: true,
+      sessionId: "sess-123",
+      cwd: "/tmp/worktree",
+    });
+    expect(attemptEvent.payload.trajectory).toEqual([
+      "Open config",
+      "Patch summary renderer",
+      "Validated the failure path",
+    ]);
+  });
+
+  it("stores a concise Lakeview-style summary for long agent attempts", async () => {
+    const dir = makeTempDir("task-store-step-summary-");
+    const storePath = join(dir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({ id: "traj-2", title: "Summarize me", status: "todo" });
+    ts.recordAgentAttempt("traj-2", {
+      output: JSON.stringify({
+        steps: [
+          { title: "Inspect executor" },
+          { title: "Add persistence hook" },
+          { title: "Run targeted tests" },
+          { title: "Prepare resume checkpoint" },
+        ],
+      }),
+      hasCommits: true,
+    });
+
+    const task = ts.getTask("traj-2");
+    const attemptEvent = task.timeline.at(-1);
+
+    expect(attemptEvent.message).toBe(
+      "Inspect executor → Add persistence hook → Run targeted tests → Prepare resume checkpoint",
+    );
+    expect(task.lastAgentOutput).toContain("Prepare resume checkpoint");
+  });
+});
+
+describe("task-store replayable trajectory metadata", () => {
+  it("captures replay metadata and short step summaries from agent output", async () => {
+    const dir = makeTempDir("task-store-replay-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+    ts.addTask({ id: "replay-1", title: "Replay me", status: "inprogress" });
+
+    ts.recordAgentAttempt("replay-1", {
+      output: JSON.stringify({
+        sessionId: "sess-123",
+        cwd: "C:/repo/worktree",
+        prompt: "Continue from last failure and finish the fix",
+        trajectory: [
+          { title: "Inspect failing tests" },
+          { summary: "Patch parser edge case" },
+          { message: "Run targeted tests" },
+        ],
+      }),
+      hasCommits: false,
+    });
+
+    const task = ts.getTask("replay-1");
+    expect(task.meta.latestReplay).toMatchObject({
+      replayable: true,
+      sessionId: "sess-123",
+      cwd: "C:/repo/worktree",
+      prompt: "Continue from last failure and finish the fix",
+    });
+    expect(task.meta.latestReplay.steps).toHaveLength(3);
+    expect(task.meta.latestStepSummary).toContain("Inspect failing tests");
+    expect(task.meta.latestStepSummary).toContain("Patch parser edge case");
+    expect(task.meta.resumePrompt).toBe("Continue from last failure and finish the fix");
+    expect(task.meta.resumeSessionId).toBe("sess-123");
+    expect(task.meta.resumeCwd).toBe("C:/repo/worktree");
+
+    const timeline = ts.getTaskTimeline("replay-1");
+    expect(timeline.at(-1)?.payload).toMatchObject({
+      replayable: true,
+      sessionId: "sess-123",
+      shortSummary: expect.stringContaining("Inspect failing tests"),
+    });
+  });
+
+  it("keeps a bounded replay history for repeated attempts", async () => {
+    const dir = makeTempDir("task-store-replay-history-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+    ts.addTask({ id: "replay-2", title: "History", status: "inprogress" });
+
+    for (let i = 0; i < 7; i++) {
+      ts.recordAgentAttempt("replay-2", {
+        output: JSON.stringify({
+          sessionId: `sess-${i}`,
+          prompt: `resume prompt ${i}`,
+          trajectory: [`step ${i}`],
+        }),
+      });
+    }
+
+    const task = ts.getTask("replay-2");
+    expect(Array.isArray(task.meta.replays)).toBe(true);
+    expect(task.meta.replays).toHaveLength(5);
+    expect(task.meta.replays[0].sessionId).toBe("sess-2");
+    expect(task.meta.replays.at(-1).sessionId).toBe("sess-6");
+  });
+});

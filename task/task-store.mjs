@@ -386,6 +386,121 @@ function normalizeTimelineEvents(rawEvents) {
   return normalized.slice(-MAX_TASK_TIMELINE);
 }
 
+function toReplaySummaryText(value) {
+  const text = String(value || "").trim();
+  return text ? truncate(text, 160) : null;
+}
+
+function extractAttemptTrajectory(output) {
+  if (typeof output !== "string") return null;
+  const trimmed = output.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  const sessionId = toReplaySummaryText(parsed?.sessionId || parsed?.session_id);
+  const cwd = toReplaySummaryText(parsed?.cwd || parsed?.worktree || parsed?.workspace);
+  const prompt = toReplaySummaryText(parsed?.prompt || parsed?.resumePrompt || parsed?.resume_prompt);
+  const rawSteps = Array.isArray(parsed?.steps)
+    ? parsed.steps
+    : Array.isArray(parsed?.trajectory)
+      ? parsed.trajectory
+      : [];
+  const trajectory = rawSteps
+    .map((step) => {
+      if (typeof step === "string") return toReplaySummaryText(step);
+      if (!step || typeof step !== "object") return null;
+      return toReplaySummaryText(step.summary || step.title || step.message || step.name || step.action);
+    })
+    .filter(Boolean)
+    .slice(0, 12);
+  if (!sessionId && !cwd && !prompt && trajectory.length === 0) return null;
+  return {
+    replayable: Boolean(sessionId || cwd || prompt),
+    sessionId,
+    cwd,
+    prompt,
+    trajectory,
+    stepSummary: trajectory.length ? truncate(trajectory.join(" → "), 400) : null,
+  };
+}
+function normalizeReplayStep(step, index = 0) {
+  if (typeof step === "string") {
+    const summary = toReplaySummaryText(step);
+    if (!summary) return null;
+    return {
+      index,
+      kind: "message",
+      title: summary,
+      summary,
+      status: null,
+      at: null,
+      payload: null,
+    };
+  }
+  if (!step || typeof step !== "object") return null;
+  const summary = toReplaySummaryText(
+    step.summary || step.title || step.message || step.name || step.action,
+  );
+  if (!summary) return null;
+  const kind = toReplaySummaryText(step.kind || step.type) || "message";
+  const title = toReplaySummaryText(step.title || step.name || step.action) || summary;
+  const status = toReplaySummaryText(step.status);
+  const at = toReplaySummaryText(step.at || step.timestamp);
+  const payload = step.payload && typeof step.payload === "object"
+    ? { ...step.payload }
+    : null;
+  return {
+    index,
+    kind,
+    title,
+    summary,
+    status,
+    at,
+    payload,
+  };
+}
+
+function buildReplayRecordFromAttempt(output, meta = {}) {
+  const trajectoryMeta = extractAttemptTrajectory(output);
+  if (!trajectoryMeta) return null;
+  const steps = (Array.isArray(trajectoryMeta.trajectory) ? trajectoryMeta.trajectory : [])
+    .map((step, index) => normalizeReplayStep(step, index))
+    .filter(Boolean)
+    .slice(0, 24);
+  const replay = {
+    replayable: Boolean(trajectoryMeta.replayable),
+    sessionId: trajectoryMeta.sessionId,
+    cwd: trajectoryMeta.cwd,
+    prompt: trajectoryMeta.prompt,
+    stepSummary: trajectoryMeta.stepSummary,
+    steps,
+    capturedAt: now(),
+    source: toReplaySummaryText(meta.source) || "agent.attempt",
+  };
+  return replay;
+}
+
+function buildShortStepSummary(replay, fallbackError = null) {
+  const steps = Array.isArray(replay?.steps) ? replay.steps : [];
+  if (steps.length > 0) {
+    return truncate(
+      steps
+        .slice(0, 5)
+        .map((step) => step.summary || step.title)
+        .filter(Boolean)
+        .join(" → "),
+      280,
+    );
+  }
+  if (replay?.stepSummary) return truncate(replay.stepSummary, 280);
+  if (fallbackError) return truncate(String(fallbackError), 280);
+  return null;
+}
+
 function normalizeWorkflowRunLinks(rawRuns) {
   const values = Array.isArray(rawRuns) ? rawRuns : [];
   const normalized = [];
@@ -2528,15 +2643,39 @@ export function recordAgentAttempt(taskId, { output, error, hasCommits } = {}) {
     task.consecutiveNoCommits = (task.consecutiveNoCommits || 0) + 1;
   }
 
+  const replay = buildReplayRecordFromAttempt(output, { source: "agent.attempt" });
+  const attemptSummary = buildShortStepSummary(replay, error);
+
+  task.meta = task.meta && typeof task.meta === "object" ? { ...task.meta } : {};
+  if (replay) {
+    task.meta.latestReplay = replay;
+    const existingReplays = Array.isArray(task.meta.replays) ? task.meta.replays : [];
+    task.meta.replays = [...existingReplays, replay].slice(-5);
+    task.meta.resumePrompt = replay.prompt || task.meta.resumePrompt || null;
+    task.meta.resumeSessionId = replay.sessionId || task.meta.resumeSessionId || null;
+    task.meta.resumeCwd = replay.cwd || task.meta.resumeCwd || null;
+    task.meta.latestStepSummary = attemptSummary || task.meta.latestStepSummary || null;
+  }
+
   task.syncDirty = true;
   pushTaskTimeline(task, {
     type: "agent.attempt",
     source: "agent",
     status: task.status,
-    message: error ? `Agent attempt failed: ${truncate(error, 160)}` : "Agent attempt recorded",
+    message: attemptSummary || (error ? `Agent attempt failed: ${truncate(error, 160)}` : "Agent attempt recorded"),
     payload: {
       hasCommits: Boolean(hasCommits),
       attempt: task.agentAttempts,
+      ...(replay
+        ? {
+            replayable: Boolean(replay.replayable),
+            sessionId: replay.sessionId,
+            cwd: replay.cwd,
+            prompt: replay.prompt,
+            trajectory: replay.steps.map((step) => step.summary || step.title).filter(Boolean),
+            shortSummary: attemptSummary,
+          }
+        : {}),
     },
   });
   saveStore();
@@ -2841,3 +2980,7 @@ export function getStaleInReviewTasks(maxAgeMs) {
     (t) => t.status === "inreview" && t.lastActivityAt < cutoff,
   );
 }
+
+
+
+

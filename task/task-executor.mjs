@@ -2321,6 +2321,15 @@ class TaskExecutor {
       sendTelegram: null,
       agentPrompts: {},
       workflowOwnsTaskLifecycle: true,
+      heavyRunnerPolicy: {
+        enabled: false,
+        commandPatterns: [/\b(npm\s+(run\s+build|test)|pnpm\s+(build|test)|yarn\s+(build|test)|pre-push|prepush|git\s+diff)\b/i],
+        rolePatterns: [/\b(validation|validate|build|test|pre-push|prepush|diff)\b/i],
+        maxRetries: 2,
+      },
+      acquireRunnerLease: null,
+      releaseRunnerLease: null,
+      execHeavyValidation: null,
     };
 
     const merged = { ...defaults, ...options };
@@ -2368,6 +2377,17 @@ class TaskExecutor {
     this.onTaskFailed = merged.onTaskFailed;
     this.sendTelegram = merged.sendTelegram;
     this.workflowOwnsTaskLifecycle = merged.workflowOwnsTaskLifecycle === true;
+    this.heavyRunnerPolicy = merged.heavyRunnerPolicy && typeof merged.heavyRunnerPolicy === "object"
+      ? {
+          enabled: merged.heavyRunnerPolicy.enabled === true,
+          commandPatterns: Array.isArray(merged.heavyRunnerPolicy.commandPatterns) ? merged.heavyRunnerPolicy.commandPatterns : [],
+          rolePatterns: Array.isArray(merged.heavyRunnerPolicy.rolePatterns) ? merged.heavyRunnerPolicy.rolePatterns : [],
+          maxRetries: Math.max(1, Number(merged.heavyRunnerPolicy.maxRetries || 2)),
+        }
+      : { enabled: false, commandPatterns: [], rolePatterns: [], maxRetries: 2 };
+    this.acquireRunnerLease = typeof merged.acquireRunnerLease === "function" ? merged.acquireRunnerLease : null;
+    this.releaseRunnerLease = typeof merged.releaseRunnerLease === "function" ? merged.releaseRunnerLease : null;
+    this.execHeavyValidation = typeof merged.execHeavyValidation === "function" ? merged.execHeavyValidation : null;
     this._agentPrompts =
       merged.agentPrompts && typeof merged.agentPrompts === "object"
         ? merged.agentPrompts
@@ -4181,46 +4201,11 @@ class TaskExecutor {
 
   _readActiveWorkflowTaskIds() {
     const taskIds = new Set();
-    if (!this.workflowRunsDir) return taskIds;
-    const activeRunsPath = resolve(this.workflowRunsDir, WORKFLOW_ACTIVE_RUNS_INDEX);
-    if (!existsSync(activeRunsPath)) return taskIds;
-    let activeRuns = [];
-    try {
-      const parsed = JSON.parse(readFileSync(activeRunsPath, "utf8"));
-      activeRuns = Array.isArray(parsed)
-        ? parsed
-        : Array.isArray(parsed?.runs)
-          ? parsed.runs
-          : [];
-    } catch {
-      return taskIds;
-    }
+    if (!this.workflowExecutionLedger) return taskIds;
+    const activeRuns = this.workflowExecutionLedger.listActiveRunSummaries({ includeGraphs: false });
     for (const entry of activeRuns) {
-      const directTaskId = normalizeTaskIdKey(
-        entry?.taskId || entry?.activeTaskId,
-      );
-      if (directTaskId) {
-        taskIds.add(directTaskId);
-        continue;
-      }
-      const runId = String(entry?.runId || "").trim();
-      if (!runId) continue;
-      const detailPath = resolve(this.workflowRunsDir, `${runId}.json`);
-      if (!existsSync(detailPath)) continue;
-      try {
-        const detail = JSON.parse(readFileSync(detailPath, "utf8"));
-        const detailTaskId = normalizeTaskIdKey(
-          detail?.data?.taskId ||
-            detail?.data?.activeTaskId ||
-            detail?.inputData?.taskId ||
-            detail?.inputData?.activeTaskId,
-        );
-        if (detailTaskId) {
-          taskIds.add(detailTaskId);
-        }
-      } catch {
-        /* best effort */
-      }
+      const directTaskId = normalizeTaskIdKey(entry?.taskId);
+      if (directTaskId) taskIds.add(directTaskId);
     }
     return taskIds;
   }
@@ -5272,12 +5257,31 @@ class TaskExecutor {
     });
   }
 
+  _shouldOffloadHeavyRunner(agent, input) {
+    if (!this.heavyRunnerPolicy?.enabled) return false;
+    if (agent?.heavy === true || agent?.isolated === true) return true;
+    const role = String(agent?.role || agent?.name || agent?.id || "");
+    const command = String(agent?.command || input?.command || "");
+    return this.heavyRunnerPolicy.rolePatterns.some((pattern) => pattern.test(role)) ||
+      this.heavyRunnerPolicy.commandPatterns.some((pattern) => pattern.test(command));
+  }
+
   async _runExecutionPipelineAgent(agent, input, context) {
-    return runExecutionPipelineAgent(agent, input, context, {
-      execWithRetry,
-      repoRoot: this.repoRoot || process.cwd(),
-      timeoutMs: this.timeoutMs || 0,
-    });
+    const shouldOffload = this._shouldOffloadHeavyRunner(agent, input);
+    return runExecutionPipelineAgent(
+      shouldOffload ? { ...agent, heavy: true, runnerRetries: agent?.runnerRetries || this.heavyRunnerPolicy.maxRetries } : agent,
+      input,
+      context,
+      {
+        execWithRetry,
+        repoRoot: this.repoRoot || process.cwd(),
+        timeoutMs: this.timeoutMs || 0,
+        acquireRunnerLease: this.acquireRunnerLease,
+        releaseRunnerLease: this.releaseRunnerLease,
+        execHeavyValidation: this.execHeavyValidation,
+        runnerRetries: this.heavyRunnerPolicy.maxRetries,
+      },
+    );
   }
 
   // ── Task Execution ────────────────────────────────────────────────────────
@@ -5825,6 +5829,19 @@ export function loadExecutorOptionsFromConfig() {
       process.env.VK_TARGET_BRANCH ||
       "origin/main",
     agentPrompts: config.agentPrompts || {},
+    heavyRunnerPolicy: {
+      enabled: ["1", "true", "yes", "on"].includes(String(process.env.INTERNAL_EXECUTOR_HEAVY_RUNNER_ENABLED || configExec.heavyRunnerPolicy?.enabled || "").trim().toLowerCase()),
+      commandPatterns: Array.isArray(configExec.heavyRunnerPolicy?.commandPatterns)
+        ? configExec.heavyRunnerPolicy.commandPatterns.map((pattern) => new RegExp(pattern, "i"))
+        : [/\b(npm\s+(run\s+build|test)|pnpm\s+(build|test)|yarn\s+(build|test)|pre-push|prepush|git\s+diff)\b/i],
+      rolePatterns: Array.isArray(configExec.heavyRunnerPolicy?.rolePatterns)
+        ? configExec.heavyRunnerPolicy.rolePatterns.map((pattern) => new RegExp(pattern, "i"))
+        : [/\b(validation|validate|build|test|pre-push|prepush|diff)\b/i],
+      maxRetries: Number(process.env.INTERNAL_EXECUTOR_HEAVY_RUNNER_MAX_RETRIES || configExec.heavyRunnerPolicy?.maxRetries || 2),
+    },
+    heavyRunner: configExec.heavyRunner && typeof configExec.heavyRunner === "object"
+      ? { ...configExec.heavyRunner }
+      : {},
   };
 }
 
@@ -5892,3 +5909,4 @@ export function isExecutorDisabled() {
 
 export { TaskExecutor };
 export default TaskExecutor;
+

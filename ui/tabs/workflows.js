@@ -54,6 +54,7 @@ const workflowRunsTotal = signal(0);
 const workflowRunsHasMore = signal(false);
 const workflowRunsNextOffset = signal(0);
 const workflowRunsLoadingMore = signal(false);
+const workflowRunsInitialLoading = signal(false);
 const workflowRunsScopeId = signal(null);
 const selectedRunId = signal(null);
 const selectedRunDetail = signal(null);
@@ -65,8 +66,32 @@ const draggingNode = signal(null);
 const connectingFrom = signal(null);
 const viewMode = signal("list"); // "list" | "canvas" | "runs" | "code"
 const WORKFLOW_RUN_PAGE_SIZE = 50;
-const WORKFLOW_RUN_MAX_FETCH = 5000;
+const WORKFLOW_RUN_MAX_FETCH = 10000;
 const WORKFLOW_LIVE_POLL_MS = 3000;
+const copilotActionStatus = signal(null);
+const copilotActionResult = signal(null);
+
+function normalizeNodeActionIntent(actionId) {
+  const safe = String(actionId || "").trim().toLowerCase();
+  return safe.replace(/_/g, "-");
+}
+
+function buildNodeActionTitle(prefix, nodeId, actionLabel) {
+  const safeNodeId = String(nodeId || "node").trim() || "node";
+  const safeLabel = String(actionLabel || "Node Action").trim() || "Node Action";
+  return `${prefix}: ${safeLabel} · ${safeNodeId}`;
+}
+
+function summarizeNodeActionResult(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const result = payload.result && typeof payload.result === "object" ? payload.result : null;
+  const context = payload.context && typeof payload.context === "object" ? payload.context : null;
+  const title = String(result?.title || context?.title || payload.title || "Action result").trim() || "Action result";
+  const status = String(result?.status || payload.status || "ready").trim() || "ready";
+  const summary = String(result?.summary || payload.summary || payload.description || "Context prepared and sent to copilot.").trim() || "Context prepared and sent to copilot.";
+  const recommendation = String(result?.recommendation || "").trim();
+  return { title, status, summary, recommendation };
+}
 const WORKFLOW_LIVE_WS_BATCH_MS = 90;
 const NODE_COMPLETION_FLASH_MS = 1400;
 const NODE_RUNNING_HINT_MS = 500;
@@ -76,6 +101,13 @@ const NODE_HEADER = WORKFLOW_NODE_HEADER_HEIGHT;
 const NODE_HEADER_H = WORKFLOW_NODE_HEADER_HEIGHT;
 const workflowRunsLimit = signal(WORKFLOW_RUN_PAGE_SIZE);
 
+const WORKFLOW_NODE_COPILOT_ACTION_PRESETS = Object.freeze([
+  { id: "explain", label: "Explain Node", icon: "bot", intent: "explain" },
+  { id: "fix", label: "Fix Node", icon: "settings", intent: "fix" },
+  { id: "retry", label: "Retry Node", icon: "refresh", intent: "retry" },
+  { id: "generate-test", label: "Generate Test", icon: "sparkles", intent: "generate-test" },
+  { id: "summarize-output", label: "Summarize Output", icon: "list", intent: "summarize-output" },
+]);
 // ── Execute Dialog state ──────────────────────────────────────────────────
 const executeDialogOpen = signal(false);
 const executeDialogWorkflow = signal(null);   // full workflow def
@@ -96,6 +128,42 @@ const workflowsLoading = signal(false);
 const templatesLoading = signal(false);
 const nodeTypesLoading = signal(false);
 
+function renderWorkflowOpsNotifications(run) {
+  const entries = [
+    ...(Array.isArray(run?.notifications) ? run.notifications : []),
+    ...(Array.isArray(run?.alerts) ? run.alerts : []),
+    ...(Array.isArray(run?.detail?.notifications) ? run.detail.notifications : []),
+  ].filter(Boolean).slice(0, 5);
+  if (!entries.length) {
+    return html`<div style="font-size:12px;color:var(--color-text-secondary,#8b95a5);">No notifications captured for this run.</div>`;
+  }
+  return html`${entries.map((entry, index) => html`
+    <div key=${entry.id || entry.message || index} style="padding:8px 10px;border:1px solid var(--color-border,#2a3040);border-radius:10px;background:var(--color-bg-secondary,#1a1f2e);">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#93c5fd;">${String(entry.severity || entry.type || 'notice')}</div>
+      <div style="font-size:12px;color:var(--color-text,#e5e7eb);margin-top:4px;">${String(entry.message || entry.label || entry.summary || 'Run notification')}</div>
+    </div>
+  `)}`;
+}
+
+function renderWorkflowOpsActivity(run) {
+  const entries = [
+    ...(Array.isArray(run?.detail?.logs) ? run.detail.logs : []),
+    ...(Array.isArray(run?.ledger?.events) ? run.ledger.events : []),
+  ].filter(Boolean).slice(-6).reverse();
+  if (!entries.length) {
+    return html`<div style="font-size:12px;color:var(--color-text-secondary,#8b95a5);">Activity feed will populate as nodes execute.</div>`;
+  }
+  return html`${entries.map((entry, index) => html`
+    <div key=${entry.id || entry.timestamp || index} style="padding:8px 10px;border-bottom:1px solid var(--color-border,#2a3040);">
+      <div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--color-text-secondary,#94a3b8);">
+        <span>${String(entry.type || entry.level || 'activity').replaceAll('_',' ')}</span>
+        <span>${entry.timestamp ? formatRelative(entry.timestamp) : 'recent'}</span>
+      </div>
+      <div style="font-size:12px;color:var(--color-text,#e5e7eb);margin-top:4px;">${String(entry.message || entry.label || entry.summary || 'Run activity')}</div>
+    </div>
+  `)}`;
+}
+
 function getWorkflowNameById(workflowId) {
   const id = String(workflowId || "").trim();
   if (!id) return "";
@@ -108,6 +176,7 @@ function resetWorkflowRunsState(scopeWorkflowId = null) {
   workflowRunsHasMore.value = false;
   workflowRunsNextOffset.value = 0;
   workflowRunsLoadingMore.value = false;
+  workflowRunsInitialLoading.value = false;
   workflowRunsScopeId.value = scopeWorkflowId ? String(scopeWorkflowId) : null;
   workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE;
 }
@@ -574,16 +643,20 @@ function buildRunNodeCopilotPrompt(run, nodeId, opts = {}) {
   ].join("\n");
 }
 
-async function fetchWorkflowCopilotPrompt(endpoint, fetchOptions = {}) {
+async function fetchWorkflowCopilotContext(endpoint, fetchOptions = {}) {
   const safeEndpoint = String(endpoint || "").trim();
   if (!safeEndpoint) return null;
   try {
-    const data = await apiFetch(safeEndpoint, fetchOptions);
-    const prompt = String(data?.prompt || "").trim();
-    return prompt || null;
+    return await apiFetch(safeEndpoint, fetchOptions);
   } catch {
     return null;
   }
+}
+
+async function fetchWorkflowCopilotPrompt(endpoint, fetchOptions = {}) {
+  const data = await fetchWorkflowCopilotContext(endpoint, fetchOptions);
+  const prompt = String(data?.prompt || "").trim();
+  return prompt || null;
 }
 
 async function startWorkflowCopilotSession({
@@ -593,10 +666,135 @@ async function startWorkflowCopilotSession({
   title = "",
   successToast = "",
 } = {}) {
-  const prompt = await fetchWorkflowCopilotPrompt(endpoint, fetchOptions) || String(fallbackPrompt || "").trim();
-  return openWorkflowCopilotChat(prompt, { title, successToast });
+  const data = await fetchWorkflowCopilotContext(endpoint, fetchOptions);
+  const prompt = String(data?.prompt || "").trim() || String(fallbackPrompt || "").trim();
+  const sessionId = await openWorkflowCopilotChat(prompt, { title, successToast });
+  return {
+    sessionId,
+    prompt,
+    context: data?.context || null,
+    presets: Array.isArray(data?.presets) ? data.presets : [],
+  };
 }
 
+async function openWorkflowNodeAction({ workflowId, workflow, nodeId, actionId, titlePrefix = "Workflow node actions" }) {
+  const safeWorkflowId = String(workflowId || workflow?.id || "").trim();
+  const safeNodeId = String(nodeId || "").trim();
+  const normalizedActionId = normalizeNodeActionIntent(actionId || "explain");
+  const preset = WORKFLOW_NODE_COPILOT_ACTION_PRESETS.find((entry) => entry.id === normalizedActionId) || WORKFLOW_NODE_COPILOT_ACTION_PRESETS[0];
+  if (!safeWorkflowId || !safeNodeId) {
+    showToast("Workflow node action requires a selected node", "error");
+    return null;
+  }
+  copilotActionStatus.value = {
+    scope: "workflow-node",
+    nodeId: safeNodeId,
+    actionId: normalizedActionId,
+    state: "loading",
+    label: preset.label,
+    message: `Preparing ${preset.label.toLowerCase()} context…`,
+  };
+  copilotActionResult.value = null;
+  try {
+    const data = await apiFetch(`/api/workflows/${encodeURIComponent(safeWorkflowId)}/copilot-context`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workflow, nodeId: safeNodeId, actionId: normalizedActionId, intent: normalizedActionId }),
+    });
+    if (!data?.ok) {
+      throw new Error(data?.error || "Workflow node action failed");
+    }
+    copilotActionStatus.value = {
+      scope: "workflow-node",
+      nodeId: safeNodeId,
+      actionId: normalizedActionId,
+      state: "ready",
+      label: preset.label,
+      message: `${preset.label} context ready`,
+    };
+    copilotActionResult.value = summarizeNodeActionResult(data);
+    return openWorkflowCopilotChat(String(data.prompt || "").trim(), {
+      title: buildNodeActionTitle(titlePrefix, safeNodeId, preset.label),
+      successToast: `Opened ${preset.label.toLowerCase()} chat`,
+    });
+  } catch (err) {
+    copilotActionStatus.value = {
+      scope: "workflow-node",
+      nodeId: safeNodeId,
+      actionId: normalizedActionId,
+      state: "error",
+      label: preset.label,
+      message: err.message || "Unable to prepare action",
+    };
+    copilotActionResult.value = {
+      title: "Action result",
+      status: "error",
+      summary: err.message || "Unable to prepare action",
+      recommendation: "Review workflow context and retry.",
+    };
+    showToast(`Failed to start node action: ${err.message || "Unknown error"}`, "error");
+    return null;
+  }
+}
+
+async function openRunNodeAction({ runId, run, workflow, nodeId, actionId, titlePrefix = "Workflow node actions" }) {
+  const safeRunId = String(runId || run?.runId || "").trim();
+  const safeNodeId = String(nodeId || "").trim();
+  const normalizedActionId = normalizeNodeActionIntent(actionId || "explain");
+  const preset = WORKFLOW_NODE_COPILOT_ACTION_PRESETS.find((entry) => entry.id === normalizedActionId) || WORKFLOW_NODE_COPILOT_ACTION_PRESETS[0];
+  if (!safeRunId || !safeNodeId) {
+    showToast("Run node action requires a selected node", "error");
+    return null;
+  }
+  copilotActionStatus.value = {
+    scope: "run-node",
+    runId: safeRunId,
+    nodeId: safeNodeId,
+    actionId: normalizedActionId,
+    state: "loading",
+    label: preset.label,
+    message: `Preparing ${preset.label.toLowerCase()} context…`,
+  };
+  copilotActionResult.value = null;
+  try {
+    const data = await apiFetch(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/copilot-context?nodeId=${encodeURIComponent(safeNodeId)}&intent=${encodeURIComponent(normalizedActionId)}&actionId=${encodeURIComponent(normalizedActionId)}`);
+    if (!data?.ok) {
+      throw new Error(data?.error || "Run node action failed");
+    }
+    copilotActionStatus.value = {
+      scope: "run-node",
+      runId: safeRunId,
+      nodeId: safeNodeId,
+      actionId: normalizedActionId,
+      state: "ready",
+      label: preset.label,
+      message: `${preset.label} context ready`,
+    };
+    copilotActionResult.value = summarizeNodeActionResult(data);
+    return openWorkflowCopilotChat(String(data.prompt || "").trim(), {
+      title: buildNodeActionTitle(titlePrefix, safeNodeId, preset.label),
+      successToast: `Opened ${preset.label.toLowerCase()} chat`,
+    });
+  } catch (err) {
+    copilotActionStatus.value = {
+      scope: "run-node",
+      runId: safeRunId,
+      nodeId: safeNodeId,
+      actionId: normalizedActionId,
+      state: "error",
+      label: preset.label,
+      message: err.message || "Unable to prepare action",
+    };
+    copilotActionResult.value = {
+      title: "Action result",
+      status: "error",
+      summary: err.message || "Unable to prepare action",
+      recommendation: "Inspect node evidence and retry.",
+    };
+    showToast(`Failed to start run node action: ${err.message || "Unknown error"}`, "error");
+    return null;
+  }
+}
 async function openWorkflowCopilotChat(prompt, opts = {}) {
   const content = String(prompt || "").trim();
   if (!content) {
@@ -1764,7 +1962,11 @@ async function loadRuns(workflowId, opts = {}) {
     const baseUrl = scopedWorkflowId
       ? `/api/workflows/${scopedWorkflowId}/runs`
       : "/api/workflows/runs";
-    if (append) workflowRunsLoadingMore.value = true;
+    if (append) {
+      workflowRunsLoadingMore.value = true;
+    } else {
+      workflowRunsInitialLoading.value = true;
+    }
     const data = await apiFetch(`${baseUrl}?limit=${limit}&offset=${offset}`);
     if (data?.runs) {
       const pageRuns = Array.isArray(data.runs) ? data.runs : [];
@@ -1785,6 +1987,7 @@ async function loadRuns(workflowId, opts = {}) {
     console.error("[workflows] Failed to load runs:", err);
   } finally {
     workflowRunsLoadingMore.value = false;
+    workflowRunsInitialLoading.value = false;
   }
 }
 
@@ -2051,6 +2254,8 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const normalizeNodesForCanvas = useCallback((nodeList = []) => (
     (Array.isArray(nodeList) ? nodeList : []).map((node) => ensureNodePortMetadata(node))
   ), [ensureNodePortMetadata]);
+  const [copilotActionStatus, setCopilotActionStatus] = useState("");
+  const [copilotActionResult, setCopilotActionResult] = useState(null);
   const createWorkflowSnapshotForCopilot = useCallback(() => ({
     ...(workflow || {}),
     nodes: normalizeNodesForCanvas(nodesRef.current || []),
@@ -2088,6 +2293,54 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       title,
       successToast,
     });
+  }, [createWorkflowSnapshotForCopilot, nodeTypeMap, workflow]);
+  const runWorkflowNodeCopilotAction = useCallback(async ({
+    actionId = "explain",
+    nodeId = "",
+  } = {}) => {
+    const snapshot = createWorkflowSnapshotForCopilot();
+    const safeWorkflowId = String(snapshot?.id || workflow?.id || "").trim();
+    const safeNodeId = String(nodeId || "").trim();
+    if (!safeNodeId) return null;
+    const preset = WORKFLOW_NODE_COPILOT_ACTION_PRESETS.find((entry) => entry.id === actionId)
+      || WORKFLOW_NODE_COPILOT_ACTION_PRESETS[0];
+    setCopilotActionStatus(`Running ${preset.label}…`);
+    setCopilotActionResult(null);
+    try {
+      const result = await startWorkflowCopilotSession({
+        endpoint: `/api/workflows/${encodeURIComponent(safeWorkflowId)}/copilot-context`,
+        fetchOptions: {
+          method: "POST",
+          body: JSON.stringify({
+            actionId: preset.id,
+            nodeId: safeNodeId,
+            workflow: snapshot,
+          }),
+        },
+        fallbackPrompt: buildWorkflowNodePrompt(
+          snapshot,
+          (snapshot.nodes || []).find((entry) => String(entry?.id || "").trim() === safeNodeId) || null,
+          nodeTypeMap,
+        ),
+        title: `${preset.label} · ${safeNodeId}`,
+        successToast: `${preset.label} started`,
+      });
+      setCopilotActionStatus(`${preset.label} ready`);
+      setCopilotActionResult({
+        actionId: preset.id,
+        label: preset.label,
+        sessionId: result?.sessionId || null,
+        prompt: result?.prompt || "",
+        context: result?.context || null,
+      });
+      return result;
+    } catch (err) {
+      const message = err?.message || "Unknown error";
+      setCopilotActionStatus(`${preset.label} failed`);
+      setCopilotActionResult({ actionId: preset.id, label: preset.label, error: message });
+      showToast(`Failed to run ${preset.label}: ${message}`, "error");
+      return null;
+    }
   }, [createWorkflowSnapshotForCopilot, nodeTypeMap, workflow]);
   useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds; }, [selectedNodeIds]);
   useEffect(() => {
@@ -3162,7 +3415,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         <${Button}
           variant="outlined"
           size="small"
-          onClick=${() => openWorkflowCopilotFromCanvas({
+          onClick=${() => openWorkflowNodeAction({ workflowId: workflow?.id, workflow,
             intent: "explain",
             title: `Explain workflow ${workflow?.name || workflow?.id || ""}`.trim(),
             successToast: "Opened workflow explanation chat",
@@ -3714,8 +3967,8 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
             onClick=${() => {
               const node = nodes.find((entry) => entry.id === contextMenu.nodeId) || null;
               setContextMenu(null);
-              openWorkflowCopilotFromCanvas({
-                intent: "node",
+              openWorkflowNodeAction({ workflowId: workflow?.id, workflow,
+                actionId: "explain",
                 nodeId: contextMenu.nodeId,
                 title: `Ask Bosun about node ${node?.label || contextMenu.nodeId}`.trim(),
                 successToast: "Opened node copilot chat",
@@ -3753,12 +4006,22 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
           inlineFieldKeys=${inlineDescriptors.map((field) => field.key)}
           onUpdate=${(config) => updateNodeConfig(editingNode, config)}
           onUpdateLabel=${(label) => updateNodeLabel(editingNode, label)}
-          onAskBosun=${() => openWorkflowCopilotFromCanvas({
-            intent: "node",
+          onAskBosun=${() => openWorkflowNodeAction({
+            workflowId: workflow?.id,
+            workflow,
+            actionId: "explain",
             nodeId: editingNode,
-            title: `Ask Bosun about node ${editingNodeDef?.label || editingNode}`.trim(),
-            successToast: "Opened node copilot chat",
+            titlePrefix: "Ask Bosun About Node",
           })}
+          onRunCopilotAction=${(actionId) => openWorkflowNodeAction({
+            workflowId: workflow?.id,
+            workflow,
+            actionId,
+            nodeId: editingNode,
+            titlePrefix: "Workflow node actions",
+          })}
+          copilotActionStatus=${copilotActionStatus.value}
+          copilotActionResult=${copilotActionResult.value}
           onClose=${() => setEditingNode(null)}
           onDelete=${() => deleteNode(editingNode)}
         />
@@ -4170,7 +4433,7 @@ function WorkflowAgentLibraryPicker({ config, onUpdate }) {
  *  Node Config Editor (right side panel)
  * ═══════════════════════════════════════════════════════════════ */
 
-function NodeConfigEditor({ node, nodeTypes: types, inlineFieldKeys = [], onUpdate, onUpdateLabel, onAskBosun, onClose, onDelete }) {
+function NodeConfigEditor({ node, nodeTypes: types, inlineFieldKeys = [], onUpdate, onUpdateLabel, onAskBosun, onRunCopilotAction, copilotActionStatus = "", copilotActionResult = null, onClose, onDelete }) {
   if (!node) return null;
 
   const meta = getNodeMeta(node.type);
@@ -4222,6 +4485,38 @@ function NodeConfigEditor({ node, nodeTypes: types, inlineFieldKeys = [], onUpda
           ${typeInfo.description}
         </div>
       `}
+      ${typeof onRunCopilotAction === "function" && html`
+        <div style="display: grid; gap: 8px; margin-bottom: 12px;">
+          <div style="font-size: 12px; font-weight: 600; color: #a78bfa;">Workflow node actions</div>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+            ${WORKFLOW_NODE_COPILOT_ACTION_PRESETS.map((preset) => html`
+              <${Button}
+                key=${preset.id}
+                onClick=${() => onRunCopilotAction(preset.id)}
+                variant=${preset.id === "fix" ? "contained" : "outlined"}
+                color=${preset.id === "fix" ? "error" : preset.id === "retry" ? "warning" : "primary"}
+                size="small"
+                sx=${{ textTransform: "none" }}
+              >
+                <span class="btn-icon">${resolveIcon(preset.icon)}</span>
+                ${preset.label}
+              <//>
+            `)}
+          </div>
+          ${copilotActionStatus?.nodeId === node.id && html`
+            <div style="font-size: 12px; color: var(--color-text-secondary, #94a3b8); background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 8px 10px;">
+              <b>${copilotActionStatus.label || "Action"}:</b> ${copilotActionStatus.message || copilotActionStatus.state || "ready"}
+            </div>
+          `}
+          ${copilotActionResult?.status && copilotActionStatus?.nodeId === node.id && html`
+            <div style="font-size: 12px; color: #d1d5db; background: #111827; border: 1px solid #374151; border-radius: 8px; padding: 8px 10px;">
+              <div style="font-weight: 600; margin-bottom: 4px;">Action result</div>
+              <div><b>${copilotActionResult.title}:</b> ${copilotActionResult.summary}</div>
+              ${copilotActionResult.recommendation ? html`<div style="margin-top: 4px;"><b>Recommendation:</b> ${copilotActionResult.recommendation}</div>` : ""}
+            </div>
+          `}
+        </div>
+      `}
       ${typeof onAskBosun === "function" && html`
         <${Button}
           onClick=${onAskBosun}
@@ -4230,7 +4525,7 @@ function NodeConfigEditor({ node, nodeTypes: types, inlineFieldKeys = [], onUpda
           sx=${{ width: "100%", marginBottom: "12px", textTransform: "none" }}
         >
           <span class="btn-icon">${resolveIcon("bot")}</span>
-          Ask Bosun About This Node
+          Explain Node
         <//>
       `}
 
@@ -4335,6 +4630,24 @@ function NodeConfigEditor({ node, nodeTypes: types, inlineFieldKeys = [], onUpda
                 ${p.label}
               <//>
             `)}
+          </div>
+
+          <div class="workflow-run-detail-panel inspector-panel" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+              <span class="wf-badge" style="background:#38bdf820; color:#7dd3fc;">Activity Feed</span>
+              <span class="wf-badge" style="background:#0f172a; color:#cbd5e1;">persistent</span>
+            </div>
+            ${renderWorkflowOpsActivity(selectedRun)}
+          </div>
+
+          <div class="workflow-run-detail-panel inspector-panel" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+              <span class="wf-badge" style="background:#f59e0b24; color:#fbbf24;">Notifications</span>
+              <span class="wf-badge" style="background:#0f172a; color:#cbd5e1;">run detail panel</span>
+            </div>
+            <div style="display:grid; gap:8px;">
+              ${renderWorkflowOpsNotifications(selectedRun)}
+            </div>
           </div>
         </div>
       `}
@@ -5186,6 +5499,7 @@ function RunHistoryView() {
   const totalRuns = Number(workflowRunsTotal.value || runs.length);
   const hasMoreRuns = workflowRunsHasMore.value === true;
   const loadingMoreRuns = workflowRunsLoadingMore.value === true;
+  const loadingInitialRuns = workflowRunsInitialLoading.value === true;
   const selectedRun = selectedRunDetail.value;
   const scopedWorkflowId = String(workflowRunsScopeId.value || "").trim();
   const scopedWorkflowName = scopedWorkflowId ? getWorkflowNameById(scopedWorkflowId) : "";
@@ -5197,7 +5511,8 @@ function RunHistoryView() {
   const [workflowFilter, setWorkflowFilter] = useState("all");
   const [triggerFilter, setTriggerFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
-  const normalizedSearch = String(searchQuery || "").trim().toLowerCase();
+   const [copilotActionStatus, setCopilotActionStatus] = useState("");
+  const [copilotActionResult, setCopilotActionResult] = useState(null); const normalizedSearch = String(searchQuery || "").trim().toLowerCase();
 
   useEffect(() => {
     const timer = setInterval(() => setNowTick(Date.now()), 1000);
@@ -5240,6 +5555,15 @@ function RunHistoryView() {
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
   }, [runs, workflows.value]);
 
+  const openRunNodeCopilotAction = useCallback(async (run, nodeId, actionId = "explain", workflow = null) => {
+    return openRunNodeAction({
+      run,
+      workflow,
+      nodeId,
+      actionId,
+      titlePrefix: "Workflow node actions",
+    });
+  }, []);
   const filteredRuns = useMemo(() => {
     return runs.filter((run) => {
       const runStatus = String(run?.status || "unknown");
@@ -5576,27 +5900,20 @@ function RunHistoryView() {
                   </div>
                 `}
                 <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px;">
-                  <${Button}
-                    variant="outlined"
-                    size="small"
-                    onClick=${() => openRunNodeCopilot(selectedRun, nodeId, "node", currentWorkflow)}
-                  >
-                    <span class="btn-icon">${resolveIcon("bot")}</span>
-                    Ask Bosun About This Node
-                  <//>
-                  ${String(nodeStatus || "").trim().toLowerCase() === "failed" && html`
+                  ${NODE_COPILOT_ACTION_PRESETS.filter((preset) => preset.id !== "fix" || String(nodeStatus || "").trim().toLowerCase() === "failed").map((preset) => html`
                     <${Button}
-                      variant="contained"
+                      key=${preset.id}
+                      variant=${preset.id === "fix" ? "contained" : "outlined"}
                       size="small"
-                      color="error"
-                      onClick=${() => openRunNodeCopilot(selectedRun, nodeId, "fix", currentWorkflow)}
+                      color=${preset.id === "fix" ? "error" : preset.id === "retry" ? "warning" : "primary"}
+                      onClick=${() => openRunNodeAction({ run: selectedRun, workflow: currentWorkflow, nodeId, actionId: preset.id })}
                     >
-                      <span class="btn-icon">${resolveIcon("settings")}</span>
-                      Fix This Node
+                      <span class="btn-icon">${resolveIcon(preset.icon)}</span>
+                      ${preset.label}
                     <//>
-                  `}
+                  `)}
                 </div>
-                <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(nodeOutput)}</pre>
+                ${copilotActionStatus.value?.nodeId === nodeId && (copilotActionStatus.value || copilotActionResult.value) && html`<div style="margin-top:8px; padding:8px; border:1px solid #1f2937; border-radius:6px; background:#0f172a;"><div style="font-size:11px; color:#93c5fd; margin-bottom:4px;">${copilotActionStatus.value?.message || "Action ready"}</div>${copilotActionResult.value?.summary && html`<div style="font-size:11px; color:#c9d1d9; margin-bottom:4px;">${copilotActionResult.value.summary}</div>`}${copilotActionResult.value?.recommendation && html`<div style="font-size:11px; color:#86efac; margin-bottom:4px;">${copilotActionResult.value.recommendation}</div>`}${copilotActionResult.value?.patch && html`<pre style="margin-top:6px; white-space: pre-wrap; word-break: break-word; font-size: 10px; color: #cbd5e1; background: #020617; border-radius: 6px; padding: 8px;">${safePrettyJson(copilotActionResult.value.patch)}</pre>`}</div>`}<pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(nodeOutput)}</pre>
               </details>
             `;
           })}
@@ -5726,7 +6043,11 @@ function RunHistoryView() {
         <span class="wf-runs-count">${totalRuns} total</span>
       </div>
 
-      ${runs.length === 0 && html`
+      ${loadingInitialRuns && runs.length === 0 && html`
+        <div style="text-align: center; padding: 40px; opacity: 0.6;">Loading workflow runs...</div>
+      `}
+
+      ${!loadingInitialRuns && runs.length === 0 && html`
         <div style="text-align: center; padding: 40px; opacity: 0.5;">No workflow runs yet</div>
       `}
 
@@ -6270,3 +6591,16 @@ export function WorkflowsTab() {
     </div>
   `;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+

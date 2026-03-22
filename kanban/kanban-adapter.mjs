@@ -887,6 +887,44 @@ class InternalAdapter {
       options && typeof options === "object" && options.source
         ? String(options.source)
         : "orchestrator";
+    const current = getInternalTask(normalizedId);
+    const hasOwnOption = (key) => Object.prototype.hasOwnProperty.call(options || {}, key);
+    const toPositiveInt = (value) => {
+      if (value == null || value === "") return null;
+      const parsed = Number.parseInt(String(value), 10);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    };
+    const mergedPrNumber = toPositiveInt(
+      current?.meta?.mergedPrNumber ?? current?.meta?.prMergeFinalizedPrNumber,
+    );
+    const mergedPrUrl = normalizeTaskStringField(
+      current?.meta?.mergedPrUrl ?? current?.meta?.prMergeFinalizedPrUrl,
+    );
+    const effectivePrNumber =
+      toPositiveInt(options?.prNumber) ?? toPositiveInt(current?.prNumber);
+    const effectivePrUrl =
+      (typeof options?.prUrl === "string" ? options.prUrl.trim() : "") ||
+      String(current?.prUrl || "").trim();
+    const mergeFinalizedAt = normalizeTaskStringField(
+      current?.meta?.prMergeFinalizedAt ?? current?.meta?.mergeFinalizedAt,
+    );
+    const isAutomatedReopenSource =
+      source === "workflow" ||
+      source === "lifecycle" ||
+      source === "orchestrator" ||
+      source.startsWith("review-");
+    const targetsMergedPr =
+      (mergedPrNumber != null && effectivePrNumber != null && mergedPrNumber === effectivePrNumber) ||
+      Boolean(mergedPrUrl && effectivePrUrl && mergedPrUrl === effectivePrUrl);
+    if (
+      current &&
+      normalizedStatus !== "done" &&
+      mergeFinalizedAt &&
+      isAutomatedReopenSource &&
+      targetsMergedPr
+    ) {
+      return this._normalizeTask(current);
+    }
     const updated = setInternalTaskStatus(
       normalizedId,
       normalizedStatus,
@@ -906,6 +944,12 @@ class InternalAdapter {
     if (branchName) linkagePatch.branchName = branchName;
     if (prUrl) linkagePatch.prUrl = prUrl;
     if (Number.isFinite(prNumber) && prNumber > 0) linkagePatch.prNumber = prNumber;
+    if (hasOwnOption("cooldownUntil")) {
+      linkagePatch.cooldownUntil = normalizeTaskStringField(options?.cooldownUntil);
+    }
+    if (hasOwnOption("blockedReason")) {
+      linkagePatch.blockedReason = normalizeTaskStringField(options?.blockedReason);
+    }
     if (Object.keys(linkagePatch).length > 0) {
       const patched = patchInternalTask(normalizedId, linkagePatch);
       if (patched) return this._normalizeTask(patched);
@@ -1010,12 +1054,6 @@ class InternalAdapter {
         ...(typeof patch.repository === "string" ? { repository: patch.repository } : {}),
         ...(Array.isArray(patch.repositories) ? { repositories: patch.repositories } : {}),
         ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
-      };
-    } else if (baseBranch) {
-      updates.meta = {
-        ...(current?.meta || {}),
-        base_branch: baseBranch,
-        baseBranch,
       };
     }
     const updated = patchInternalTask(normalizedId, updates);
@@ -6117,7 +6155,10 @@ export async function createTask(projectIdOrTaskData, taskDataArg = {}) {
     projectIdOrTaskData,
     taskDataArg,
   );
-  const result = await getKanbanAdapter().createTask(projectId, taskData);
+  const result = await getKanbanAdapter().createTask(
+    projectId,
+    taskData,
+  );
   emitKanbanEvent("task.created", {
     projectId: projectId ?? result?.projectId ?? result?.project_id ?? null,
     taskId: result?.id || null,
@@ -6198,3 +6239,4 @@ export async function unmarkTaskIgnored(taskId) {
   );
   return false;
 }
+

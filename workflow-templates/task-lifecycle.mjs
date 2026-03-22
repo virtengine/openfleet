@@ -94,6 +94,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     node("allocate-slot", "action.allocate_slot", "Allocate Slot", {
       taskId: "{{taskId}}",
       taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
       branch: "{{branch}}",
       baseBranch: "{{baseBranch}}",
     }, { x: 400, y: 310 }),
@@ -102,6 +104,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     node("claim-task", "action.claim_task", "Claim Task", {
       taskId: "{{taskId}}",
       taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
       ttlMinutes: "{{claimTtlMinutes}}",
       renewIntervalMs: "{{claimRenewIntervalMs}}",
       branch: "{{branch}}",
@@ -117,6 +121,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       taskId: "{{taskId}}",
       status: "inprogress",
       taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
     }, { x: 300, y: 700 }),
 
     // ── Acquire worktree ─────────────────────────────────────────────────
@@ -137,6 +143,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     node("resolve-executor", "action.resolve_executor", "Resolve Executor", {
       taskId: "{{taskId}}",
       taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
       taskDescription: "{{taskDescription}}",
       repoRoot: "{{repoRoot}}",
       workspace: "{{workspace}}",
@@ -164,6 +172,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     node("build-prompt", "action.build_task_prompt", "Build Prompt", {
       taskId: "{{taskId}}",
       taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
       taskDescription: "{{taskDescription}}",
       branch: "{{branch}}",
       baseBranch: "{{baseBranch}}",
@@ -235,6 +245,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       taskId: "{{taskId}}",
       status: "todo",
       taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
     }, { x: 300, y: 2130 }),
     // ── SUCCESS PATH: Push branch (with rebase + empty-diff guard) ───────
     node("push-branch", "action.push_branch", "Push Branch", {
@@ -272,6 +284,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       taskId: "{{taskId}}",
       status: "inreview",
       taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
     }, { x: 0, y: 2390 }),
 
     node("handoff-pr-progressor", "action.execute_workflow", "Handoff PR Progressor", {
@@ -280,6 +294,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       input: {
         taskId: "{{taskId}}",
         taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
         branch: "{{branch}}",
         baseBranch: "{{baseBranch}}",
         prNumber: "{{$ctx.getNodeOutput('create-pr')?.prNumber ?? $data?.prNumber ?? null}}",
@@ -305,6 +321,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       taskId: "{{taskId}}",
       status: "todo",
       taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
     }, { x: 350, y: 2130 }),
 
     // ── PUSH FAILED PATH: Set status → todo ──────────────────────────────
@@ -312,6 +330,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       taskId: "{{taskId}}",
       status: "todo",
       taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
     }, { x: 180, y: 2260 }),
 
     // ── CLAIM STOLEN PATH: Log ───────────────────────────────────────────
@@ -334,6 +354,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       taskId: "{{taskId}}",
       status: "inreview",
       taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
     }, { x: 250, y: 2000 }),
 
     node("handoff-pr-progressor-stolen", "action.execute_workflow", "Handoff PR Progressor (Recovered)", {
@@ -342,6 +364,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       input: {
         taskId: "{{taskId}}",
         taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
         branch: "{{branch}}",
         baseBranch: "{{baseBranch}}",
         prNumber: "{{$ctx.getNodeOutput('create-pr-retry')?.prNumber ?? $data?.prNumber ?? null}}",
@@ -365,6 +389,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       taskId: "{{taskId}}",
       status: "todo",
       taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
     }, { x: 550, y: 2130 }),
 
     node("join-outcomes", "flow.join", "Join Outcome Paths", {
@@ -413,6 +439,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       taskId: "{{taskId}}",
       status: "blocked",
       taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
     }, { x: 470, y: 1350 }),
     
     node("annotate-blocked-wt-failed", "action.bosun_function", "Annotate Blocked (WT Fail)", {
@@ -431,6 +459,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       taskId: "{{taskId}}",
       status: "todo",
       taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
     }, { x: 730, y: 1350 }),
 
     node("release-slot-wt-failed", "action.release_slot", "Release Slot (WT Fail)", {
@@ -587,6 +617,8 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     node("allocate-slot", "action.allocate_slot", "Allocate Slot", {
       taskId: "{{taskId}}",
       taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
       branch: "{{branch}}",
       baseBranch: "{{defaultTargetBranch}}",
     }, { x: 400, y: 310 }),
@@ -595,6 +627,8 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     node("claim", "action.claim_task", "Claim Task", {
       taskId: "{{taskId}}",
       taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
     }, { x: 400, y: 440 }),
 
     // ── Claim check ──────────────────────────────────────────────────────
@@ -620,6 +654,8 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     node("resolve", "action.resolve_executor", "Resolve SDK", {
       taskId: "{{taskId}}",
       taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
       taskDescription: "{{taskDescription}}",
       repoRoot: "{{repoRoot}}",
       workspace: "{{workspace}}",
@@ -645,6 +681,8 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     // ── Build prompt ─────────────────────────────────────────────────────
     node("prompt", "action.build_task_prompt", "Build Prompt", {
       taskTitle: "{{taskTitle}}",
+      blockedReason: "{{acquire-worktree.blockedReason}}",
+      cooldownUntil: "{{acquire-worktree.retryAt}}",
       taskDescription: "{{taskDescription}}",
       worktreePath: "{{worktreePath}}",
       repoRoot: "{{repoRoot}}",

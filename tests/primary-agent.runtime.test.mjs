@@ -145,6 +145,22 @@ describe("primary-agent runtime safeguards", () => {
     });
   });
 
+  it("routes architect mode through codex with architect framing", async () => {
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    await primaryAgent.initPrimaryAgent("codex-sdk");
+
+    await primaryAgent.execPrimaryPrompt("design the refactor", {
+      mode: "architect",
+      sessionId: "session-architect",
+    });
+
+    expect(mockExecCodexPrompt).toHaveBeenCalledWith(
+      expect.stringContaining("[MODE: architect]"),
+      expect.objectContaining({ sessionId: "session-architect" }),
+    );
+  });
+
   it("uses dryRun codex config checks at runtime by default", async () => {
     vi.resetModules();
     const primaryAgent = await import("../agent/primary-agent.mjs");

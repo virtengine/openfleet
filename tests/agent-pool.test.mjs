@@ -278,8 +278,7 @@ let getPoolSdkName,
   execWithRetry,
   invalidateThreadAsync,
   getThreadRecord,
-  clearThreadRegistry,
-  ensureThreadRegistryLoaded;
+  clearThreadRegistry,`n  ensureThreadRegistryLoaded;`nlet buildCodexPromptEnvelope,`n  buildCodexPrimer;
 
 beforeEach(async () => {
   saveEnv();
@@ -1139,8 +1138,7 @@ describe("launchEphemeralThread", () => {
 // 4. launchOrResumeThread
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("launchOrResumeThread", () => {
-  it("applies configured monitor-monitor minimum timeout bound", async () => {
+describe("launchOrResumeThread", () => {`n  it("applies configured monitor-monitor minimum timeout bound", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
     process.env.OPENAI_API_KEY = "test-key";
     process.env.COPILOT_SDK_DISABLED = "1";
@@ -1733,3 +1731,8 @@ describe("resolution and launch integration", () => {
   });
 });
 }
+
+
+
+
+

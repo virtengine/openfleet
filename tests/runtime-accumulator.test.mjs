@@ -128,6 +128,7 @@ describe("runtime-accumulator", () => {
         inputTokens: 200,
         outputTokens: 100,
         status: "completed",
+        insights: { replay: { overview: "Edited 2 files", resumeHint: "Edited server/ui-server.mjs", steps: [{ index: 1, label: "Edited server/ui-server.mjs" }] } },
       });
       unsubscribe();
 
@@ -156,4 +157,33 @@ describe("runtime-accumulator", () => {
       rmSync(cacheDir, { recursive: true, force: true });
     }
   });
+});
+
+
+it("preserves session insights in completed session snapshots", () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "bosun-runtime-accumulator-insights-"));
+  try {
+    _resetRuntimeAccumulatorForTests({ cacheDir });
+    addCompletedSession({
+      id: "task-insights-session-1",
+      sessionId: "task-insights-session-1",
+      sessionKey: "task-insights:session-1",
+      taskId: "task-insights",
+      taskTitle: "Insights persistence",
+      startedAt: 1_000,
+      endedAt: 2_000,
+      durationMs: 1_000,
+      tokenCount: 25,
+      inputTokens: 20,
+      outputTokens: 5,
+      status: "completed",
+      insights: { replay: { overview: "Edited 1 file", resumeHint: "Edited task/task-executor.mjs", steps: [{ index: 1, label: "Edited task/task-executor.mjs" }] } },
+    });
+
+    const sessions = getCompletedSessions(10);
+    expect(sessions[0].insights?.replay?.resumeHint).toBe("Edited task/task-executor.mjs");
+  } finally {
+    _resetRuntimeAccumulatorForTests();
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
 });

@@ -129,6 +129,14 @@ function resolveCommandKind(commandLine = "", output = "") {
   if (/\bvitest\b/.test(lower)) return { family: "test", runner: "vitest" };
   if (/\bjest\b/.test(lower)) return { family: "test", runner: "jest" };
   if (/\bgo\s+test\b/.test(lower)) return { family: "test", runner: "go-test" };
+  if (/\b(rg|ripgrep|grep|git\s+grep|findstr|select-string|sift|ag|ack|fd)\b/.test(lower)) return { family: "search", runner: "search" };
+  if (/\b(?:npm|pnpm|yarn|bun|pip|pip3|poetry|composer|bundle)\s+(?:install|add|remove|update|upgrade|ci|audit|dedupe|prune)\b/.test(lower)) {
+    return { family: "package-manager", runner: "package-manager" };
+  }
+  if (/\b(?:docker|kubectl)\s+logs?\b|\bjournalctl\b|\btail\b/.test(lower)) return { family: "logs", runner: "logs" };
+  if (/\b(?:kubectl|helm|vercel|netlify|flyctl|terraform|pulumi|serverless|sst|aws|gcloud|az)\b/.test(lower) && /\b(deploy|apply|release|publish|rollout|up|status)\b/.test(lower)) {
+    return { family: "deploy", runner: "deploy" };
+  }
   const outputLines = getDiagnosticLines(output);
   const hasVitestFailureLine = outputLines.some((line) => {
     const trimmed = line.trimStart().toLowerCase();
@@ -148,11 +156,10 @@ function resolveCommandKind(commandLine = "", output = "") {
   }
   if (/\bgit\s+diff\b/.test(lower)) return { family: "git", runner: "git-diff" };
   if (/\bgit\s+status\b/.test(lower)) return { family: "git", runner: "git-status" };
-  if (/\bgit\s+(show|log|grep|rebase|merge|pull|push)\b/.test(lower)) return { family: "git", runner: "git" };
-  if (/\b(test|build|compile|lint|typecheck|msbuild|tsc|cargo|mvn|gradle)\b/.test(lower)) return { family: "build", runner: "build" };
+  if (/\bgit\s+(show|log|grep|rebase|merge|pull|push|commit|checkout|branch)\b/.test(lower)) return { family: "git", runner: "git" };
+  if (/\b(test|build|compile|lint|typecheck|msbuild|tsc|cargo|mvn|gradle|make|cmake|bazel|nx|turbo)\b/.test(lower)) return { family: "build", runner: "build" };
   return { family: "generic", runner: "generic" };
 }
-
 function countRegex(text, regex) {
   const matches = String(text || "").match(regex);
   return Array.isArray(matches) ? matches.length : 0;
@@ -401,11 +408,16 @@ export async function analyzeCommandDiagnostic(payload = {}) {
     case "git-status":
       parsed = parseGitOutput(text, runner, commandLine);
       break;
+    case "package-manager":
+    case "deploy":
+    case "logs":
+    case "search":
+      parsed = parseGeneric(text);
+      break;
     default:
       parsed = parseGeneric(text);
       break;
   }
-
   const failedTargets = uniqueValues(parsed.failedTargets || []);
   const fileAnchors = extractFileRefs(text, 10);
   const insufficientSignal =
@@ -429,7 +441,17 @@ export async function analyzeCommandDiagnostic(payload = {}) {
   const deltaSummary = deltaParts.join(", ");
   const suggestedRerun = parsed.rerunCommand || null;
   const hint = deriveHint({ family, runner, text, exitCode, insufficientSignal });
-
+  const policyDefaults = family === "test"
+    ? { budgetPolicy: "inline+delta", retrievalMode: "inline" }
+    : family === "package-manager"
+      ? { budgetPolicy: "summary", retrievalMode: "artifact" }
+      : family === "deploy"
+        ? { budgetPolicy: "artifact+summary", retrievalMode: "artifact" }
+        : family === "logs"
+          ? { budgetPolicy: "summary", retrievalMode: "artifact" }
+          : family === "search"
+            ? { budgetPolicy: "inline", retrievalMode: "inline" }
+            : { budgetPolicy: "summary", retrievalMode: "artifact" };
   state.records[commandKey] = {
     updatedAt: new Date().toISOString(),
     family,
@@ -456,5 +478,9 @@ export async function analyzeCommandDiagnostic(payload = {}) {
     newTargets: delta?.introduced || [],
     suggestedRerun,
     hint,
+    budgetPolicy: policyDefaults.budgetPolicy,
+    retrievalMode: policyDefaults.retrievalMode,
   };
 }
+
+

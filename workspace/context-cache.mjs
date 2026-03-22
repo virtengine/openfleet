@@ -601,19 +601,46 @@ function isLikelyStructuredOutput(text, item) {
   );
 }
 
+
 function classifyLiveFamily(commandFamily, item) {
   const cmd = String(commandFamily || "");
   const full = `${cmd} ${extractCommandLine(item)}`.toLowerCase();
   if (["grep", "rg", "find", "findstr", "select-string", "ag", "ack", "sift", "fd", "where", "which", "ls", "dir", "tree", "gci", "get-childitem"].includes(cmd) || /git\s+grep\b/.test(full)) return "search";
   if (cmd === "git") return "git";
-  if (["go", "pytest", "cargo", "gradle", "maven", "mvn", "javac", "tsc", "jest", "vitest", "deno", "bun", "make", "cmake", "bazel", "buck", "nx", "turbo", "rush", "dotnet", "msbuild", "xunit", "nunit", "ctest"].includes(cmd)) return "build";
-  if (["npm", "pnpm", "yarn", "node", "python", "python3", "pip", "pip3", "poetry", "composer", "bundle", "npx"].includes(cmd)) {
-    return /test|build|install|lint|run|pytest|jest|vitest|mocha|ava|unittest|coverage|compile/.test(full) ? "build" : "generic";
-  }
   if (["journalctl", "tail", "get-content"].includes(cmd)) return "logs";
   if (["docker", "kubectl"].includes(cmd) && /logs?\b|tail\b|follow\b|-f\b/.test(full)) return "logs";
+  if (/\b(dotnet\s+test|pytest|vitest|jest|go\s+test|ctest|xunit|nunit)\b/.test(full) || ["pytest", "jest", "vitest", "xunit", "nunit", "ctest"].includes(cmd)) return "test";
+  if (["npm", "pnpm", "yarn"].includes(cmd) && /\b(install|add|ci|remove|update|upgrade|audit)\b/.test(full)) return "package-manager";
+  if (/\b(kubectl\s+(apply|rollout|set|scale|delete)|helm\s+(install|upgrade|rollback|uninstall)|terraform\s+(apply|destroy)|ansible-playbook\b|docker\s+(compose\s+up|stack\s+deploy))/.test(full)) return "deploy";
+  if (["go", "cargo", "gradle", "maven", "mvn", "javac", "tsc", "deno", "bun", "make", "cmake", "bazel", "buck", "nx", "turbo", "rush", "dotnet", "msbuild"].includes(cmd)) return "build";
+  if (["node", "python", "python3", "pip", "pip3", "poetry", "composer", "bundle", "npx"].includes(cmd)) {
+    if (/test|pytest|jest|vitest|mocha|ava|unittest|coverage/.test(full)) return "test";
+    if (/install|add|remove|update|upgrade|audit/.test(full)) return "package-manager";
+    if (/build|lint|run|compile|typecheck/.test(full)) return "build";
+  }
   if (["docker", "kubectl", "helm", "terraform", "ansible", "ansible-playbook", "systemctl"].includes(cmd)) return "ops";
   return "generic";
+}
+function resolveFamilyBudgetPolicy(family, { lineCount = 0, originalChars = 0, exitCode = 0 } = {}) {
+  const large = lineCount >= 120 || originalChars >= 6000;
+  switch (family) {
+    case "search":
+      return { budgetPolicy: large ? "inline+artifact" : "inline", retrievalMode: large ? "artifact" : "inline", reasoning: large ? "search output is match-dense, so keep hits inline and cache the full listing" : "search output is small enough to keep inline" };
+    case "test":
+      return { budgetPolicy: exitCode === 0 && large ? "summary+delta" : "inline+delta", retrievalMode: "inline", reasoning: "test output benefits from stable failure deltas and focused inline excerpts" };
+    case "build":
+      return { budgetPolicy: large ? "summary+artifact" : "inline+summary", retrievalMode: large ? "artifact" : "inline", reasoning: "build logs are noisy, so preserve errors inline and move bulky compiler chatter to cache" };
+    case "git":
+      return { budgetPolicy: large ? "delta+artifact" : "inline+delta", retrievalMode: large ? "artifact" : "inline", reasoning: "git output is best represented as file/status deltas with retrievable full diff when needed" };
+    case "logs":
+      return { budgetPolicy: large ? "tail+artifact" : "tail+inline", retrievalMode: large ? "artifact" : "inline", reasoning: "logs favor latest error windows and a cached full stream" };
+    case "package-manager":
+      return { budgetPolicy: "summary", retrievalMode: "artifact", reasoning: "package manager output is repetitive; keep install/audit summaries inline and cache the churn" };
+    case "deploy":
+      return { budgetPolicy: "artifact+summary", retrievalMode: "artifact", reasoning: "deploy output is rollout-heavy, so keep state transitions inline and cache the full rollout trace" };
+    default:
+      return { budgetPolicy: large ? "summary+artifact" : "inline", retrievalMode: large ? "artifact" : "inline", reasoning: large ? "generic large output is summarized with full retrieval preserved" : "generic output remains inline" };
+  }
 }
 
 function collectSignalIndices(lines, predicate, radius = 0, limit = Infinity) {
@@ -834,6 +861,102 @@ function renderGenericSignalExcerptText(item, logRef, opts) {
     .trimEnd();
 }
 
+function resolveBudgetPolicy(family, originalText = "", compactedText = "", diagnostic = null, toolLogId = null) {
+  const originalChars = String(originalText || "").length;
+  const compactedChars = String(compactedText || "").length;
+  const hasArtifact = Number.isFinite(Number(toolLogId)) && Number(toolLogId) > 0;
+  const decision = family === "test"
+    ? "inline"
+    : family === "package-manager" || family === "deploy"
+      ? "artifact"
+      : compactedChars > 0 && compactedChars < originalChars
+        ? "summary"
+        : hasArtifact
+          ? "artifact"
+          : "inline";
+  const budgetPolicy = family === "test"
+    ? "inline+delta"
+    : family === "package-manager"
+      ? "summary"
+      : family === "deploy"
+        ? "artifact+summary"
+        : decision;
+  const retrievalMode = family === "test"
+    ? "inline"
+    : hasArtifact
+      ? "artifact"
+      : "inline";
+  const reason = diagnostic?.insufficientSignal
+    ? "large output with weak signal; keep compact summary and cached artifact"
+    : family === "package-manager"
+      ? "install/update logs are repetitive; surface key summaries and cache the full artifact"
+      : family === "deploy"
+        ? "rollout output is timeline-heavy; keep outcome summary inline and artifactize the transcript"
+        : family === "test"
+          ? "tests benefit from inline failing targets and delta summaries"
+          : family === "git"
+            ? "git output is diff-heavy; retain stable deltas and cache the full patch"
+            : family === "search"
+              ? "search output is match-dense; keep representative hits inline"
+              : family === "build"
+                ? "build output is noisy; surface errors/warnings and omit low-signal lines"
+                : family === "logs"
+                  ? "logs are repetitive; preserve recent error windows and cache the remainder"
+                  : "generic signal-first budget applied";
+  return { family, decision, budgetPolicy, retrievalMode, reason, originalChars, compactedChars, toolLogId: toolLogId || null };
+}
+
+function buildContextEnvelope({ item, family = null, commandFamily = null, diagnostic = null, toolLogId = null, compactedText = "" } = {}) {
+  const evidenceFamily = family || item?._liveCompactionFamily || classifyLiveFamily(extractCommandFamily(item), item);
+  const evidenceCommandFamily = commandFamily || item?._liveCompactionCommandFamily || extractCommandFamily(item);
+  const originalText = getItemText(item);
+  const budgetPolicy = resolveBudgetPolicy(evidenceFamily, originalText, compactedText || originalText, diagnostic, toolLogId);
+  return {
+    evidence: {
+      family: evidenceFamily,
+      commandFamily: evidenceCommandFamily,
+      command: extractCommandLine(item) || extractToolName(item),
+      summary: diagnostic?.summary || "",
+      deltaSummary: diagnostic?.deltaSummary || "",
+      insufficientSignal: diagnostic?.insufficientSignal === true,
+    },
+    budgetPolicy,
+    retrieval: {
+      mode: budgetPolicy.retrievalMode,
+      toolLogId: toolLogId || null,
+      command: toolLogId ? `bosun --tool-log ${toolLogId}` : null,
+    },
+  };
+}
+
+function attachContextEnvelope(item, { family = null, commandFamily = null, diagnostic = null, toolLogId = null, compactedText = "" } = {}) {
+  if (!item || typeof item !== "object") return item;
+  const budget = buildBudgetEnvelope({ family, commandFamily, diagnostic, compactedText, item });
+  return {
+    ...item,
+    _contextEnvelope: {
+      ...buildContextEnvelope({ item, family, commandFamily, diagnostic, toolLogId, compactedText }),
+      budget,
+    },
+  };
+}
+
+function buildBudgetEnvelope({ family = null, commandFamily = null, diagnostic = null, compactedText = "", item = null } = {}) {
+  const lineCount = String(compactedText || getItemText(item) || "").split(/\r?\n/).length;
+  const originalChars = Number(item?._liveCompactionOriginalChars ?? item?._originalChars ?? 0) || String(getItemText(item) || "").length;
+  const budget = resolveFamilyBudgetPolicy(family || classifyLiveFamily(commandFamily, item), {
+    lineCount,
+    originalChars,
+    exitCode: Number(item?.exit_code ?? item?.exitCode ?? 0),
+  });
+  return {
+    family: family || null,
+    commandFamily: commandFamily || null,
+    budgetPolicy: diagnostic?.budgetPolicy || budget.budgetPolicy,
+    retrievalMode: diagnostic?.retrievalMode || budget.retrievalMode,
+    reasoning: diagnostic?.budgetReason || budget.reasoning,
+  };
+}
 function appendCommandDiagnosticFooter(baseText, diagnostic, opts) {
   if (!diagnostic || typeof diagnostic !== "object") return baseText;
   const { renderCommandDiagnosticFooter } = diagnostic._helpers || {};
@@ -1012,17 +1135,25 @@ async function compactStandaloneToolItem(
       compactedItem._commandDiagnostics = diagnostic;
       setItemText(compactedItem, appendCommandDiagnosticFooter(getItemText(compactedItem), diagnostic, opts));
     }
+    const compactedText = getItemText(compactedItem);
+    const gitWithEnvelope = attachContextEnvelope(compactedItem, {
+      family: "git",
+      commandFamily: extractCommandFamily(item),
+      diagnostic,
+      toolLogId: logId,
+      compactedText,
+    });
     recordShreddingEvent({
       originalChars: existingText.length,
-      compressedChars: getItemText(compactedItem).length,
-      savedChars: Math.max(0, existingText.length - getItemText(compactedItem).length),
-      savedPct: Math.max(0, Math.round(((existingText.length - getItemText(compactedItem).length) / Math.max(1, existingText.length)) * 100)),
+      compressedChars: compactedText.length,
+      savedChars: Math.max(0, existingText.length - compactedText.length),
+      savedPct: Math.max(0, Math.round(((existingText.length - compactedText.length) / Math.max(1, existingText.length)) * 100)),
       agentType: agentType || null,
       stage: "live_tool_compaction",
       compactionFamily: "git",
       commandFamily: extractCommandFamily(item),
     });
-    return compactedItem;
+    return gitWithEnvelope;
   }
 
   const analysis = analyzeLiveToolOutput(item, opts);
@@ -1045,17 +1176,25 @@ async function compactStandaloneToolItem(
         opts,
       ),
     );
+    const compactedText = getItemText(compactedItem);
+    const envelopeItem = attachContextEnvelope(compactedItem, {
+      family: analysis.family,
+      commandFamily: analysis.commandFamily,
+      diagnostic,
+      toolLogId: logId,
+      compactedText,
+    });
     recordShreddingEvent({
       originalChars: analysis.originalText.length,
-      compressedChars: getItemText(compactedItem).length,
-      savedChars: Math.max(0, analysis.originalText.length - getItemText(compactedItem).length),
+      compressedChars: compactedText.length,
+      savedChars: Math.max(0, analysis.originalText.length - compactedText.length),
       savedPct: analysis.savedPct,
       agentType: agentType || null,
       stage: "live_tool_compaction",
       compactionFamily: analysis.family,
       commandFamily: analysis.commandFamily,
     });
-    return compactedItem;
+    return envelopeItem;
   }
 
   const logId = await writeToCache(item, extractToolName(item), extractArgsPreview(item));
@@ -1080,6 +1219,13 @@ async function compactStandaloneToolItem(
   if (!compactedText || compactedText.length >= existingText.length) {
     return item;
   }
+  const genericEnvelopeItem = attachContextEnvelope(compactedItem, {
+    family: "generic",
+    commandFamily: extractCommandFamily(item),
+    diagnostic,
+    toolLogId: logId,
+    compactedText,
+  });
   recordShreddingEvent({
     originalChars: existingText.length,
     compressedChars: compactedText.length,
@@ -1090,9 +1236,8 @@ async function compactStandaloneToolItem(
     compactionFamily: "generic",
     commandFamily: extractCommandFamily(item),
   });
-  return compactedItem;
+  return genericEnvelopeItem;
 }
-
 async function maybeCompactLiveToolOutputs(items, opts = {}, { contextUsagePct = null, force = false, agentType = null } = {}) {
   if (!Array.isArray(items) || items.length === 0) return items;
   let changed = false;
@@ -1113,6 +1258,27 @@ async function maybeCompactLiveToolOutputs(items, opts = {}, { contextUsagePct =
   return changed ? nextItems : items;
 }
 
+export function buildCommandContextEnvelope(compacted = {}, payload = {}) {
+  const diagnostics = compacted.commandDiagnostics || null;
+  return {
+    summary: compacted.text || "",
+    commandFamily: compacted.commandFamily || null,
+    compactionFamily: compacted.compactionFamily || null,
+    budgetPolicy: diagnostics?.budgetPolicy || null,
+    retrievalMode: diagnostics?.retrievalMode || null,
+    retrieveCommand: compacted.retrieveCommand || null,
+    toolLogId: compacted.toolLogId || null,
+    diagnostics,
+    decisionTrace: {
+      excerpted: compacted.compacted === true,
+      reason: diagnostics?.insufficientSignal
+        ? "low-signal"
+        : diagnostics?.budgetPolicy || (compacted.compacted ? "compacted" : "inline"),
+      originalChars: compacted.originalChars ?? String(payload.output || payload.stdout || "").length,
+      compactedChars: compacted.compactedChars ?? String(compacted.text || "").length,
+    },
+  };
+}
 export async function compactCommandOutputPayload(
   payload = {},
   {
@@ -1170,17 +1336,34 @@ export async function compactCommandOutputPayload(
   const compactedItem = compactedItems[0] || syntheticItem;
   const compactedText = String(getItemText(compactedItem) || combinedText).trim();
   const toolLogId = compactedItem?._cachedLogId || null;
-  const commandDiagnostics = compactedItem?._commandDiagnostics || null;
+  let commandDiagnostics = compactedItem?._commandDiagnostics || null;
+  const envelope = compactedItem?._contextEnvelope || buildContextEnvelope({
+    item: compactedItem || syntheticItem,
+    family: compactedItem?._liveCompactionFamily || classifyLiveFamily(extractCommandFamily(syntheticItem), syntheticItem),
+    commandFamily: compactedItem?._liveCompactionCommandFamily || extractCommandFamily(syntheticItem),
+    diagnostic: commandDiagnostics,
+    toolLogId,
+    compactedText,
+  });
+  if (commandDiagnostics) {
+    commandDiagnostics = {
+      ...commandDiagnostics,
+      budgetPolicy: envelope.budgetPolicy?.budgetPolicy || envelope.budgetPolicy?.decision || null,
+      retrievalMode: envelope.retrieval?.mode || null,
+      reason: envelope.budgetPolicy?.reason || "",
+    };
+    if (compactedItem && typeof compactedItem === "object") compactedItem._commandDiagnostics = commandDiagnostics;
+  }
 
   return {
     text: compactedText,
     compacted: compactedText.length < combinedText.length,
     originalChars: combinedText.length,
     compactedChars: compactedText.length,
-    item: compactedItem,
+    item: compactedItem && !compactedItem._contextEnvelope ? { ...compactedItem, _contextEnvelope: envelope } : compactedItem,
     toolLogId,
     retrieveCommand: toolLogId ? `bosun --tool-log ${toolLogId}` : null,
-    compactionFamily: compactedItem?._liveCompactionFamily || null,
+    compactionFamily: compactedItem?._liveCompactionFamily || envelope.evidence?.family || null,
     commandFamily: compactedItem?._liveCompactionCommandFamily || extractCommandFamily(syntheticItem),
     commandDiagnostics,
   };
@@ -2830,3 +3013,10 @@ export async function maybeCompressSessionItems(
 
   return compressedItems;
 }
+
+
+
+
+
+
+

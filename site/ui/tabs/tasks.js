@@ -139,6 +139,46 @@ function statusChipColor(status) {
   return "default";
 }
 
+function renderOperationsFeed(entries = [], emptyLabel = "No activity recorded yet.") {
+  const safeEntries = Array.isArray(entries) ? entries.filter(Boolean).slice(0, 8) : [];
+  if (!safeEntries.length) {
+    return html`<div class="inspector-empty">${emptyLabel}</div>`;
+  }
+  return html`
+    <div class="task-operations-feed" data-testid="task-operations-feed">
+      ${safeEntries.map((entry, index) => html`
+        <div key=${entry.id || entry.timestamp || index} class="task-operations-feed-item">
+          <div class="task-operations-feed-meta">
+            <span class="task-operations-feed-type">${String(entry.type || entry.level || "activity").replaceAll("_", " ")}</span>
+            <span>${entry.timestamp ? formatRelative(entry.timestamp) : "just now"}</span>
+          </div>
+          <div class="task-operations-feed-label">${String(entry.label || entry.message || entry.summary || "Activity captured.")}</div>
+        </div>
+      `)}
+    </div>
+  `;
+}
+
+function renderOperationsNotifications(task) {
+  const notifications = [
+    ...(Array.isArray(task?.notifications) ? task.notifications : []),
+    ...(Array.isArray(task?.alerts) ? task.alerts : []),
+  ].filter(Boolean).slice(0, 4);
+  if (!notifications.length) {
+    return html`<div class="inspector-empty">Notifications will appear when runs need attention.</div>`;
+  }
+  return html`
+    <div class="task-operations-notifications" data-testid="task-operations-notifications">
+      ${notifications.map((entry, index) => html`
+        <div key=${entry.id || entry.message || index} class="task-operations-notification">
+          <span class="wf-badge">${String(entry.severity || entry.type || "notice")}</span>
+          <div>${String(entry.message || entry.label || entry.summary || "Run notification")}</div>
+        </div>
+      `)}
+    </div>
+  `;
+}
+
 /* ─── Status chip definitions ─── */
 const STATUS_CHIPS = [
   { value: "all", label: "All" },
@@ -3685,6 +3725,26 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
 
       ${/* ── RIGHT: Sidebar ── */ ""}
       <div class="task-detail-sidebar">
+          <div class="jira-panel">
+            <div class="task-section-title">Operations Pulse</div>
+            <div class="task-detail-grid" style="display:grid;gap:10px;">
+              <div class="inspector-panel">
+                <div class="inspector-subtitle">Activity Feed</div>
+                ${renderOperationsFeed(historyEntries, "No task activity yet.")}
+              </div>
+              <div class="inspector-panel">
+                <div class="inspector-subtitle">Notifications</div>
+                ${renderOperationsNotifications(task)}
+              </div>
+              <div class="inspector-panel">
+                <div class="inspector-subtitle">Workflow Run Detail</div>
+                ${workflowRuns.length > 0
+                  ? html`<div class="task-run-persistent-panel">Persistent run detail panel keeps the latest workflow context docked while editing this task.</div>`
+                  : html`<div class="inspector-empty">Run detail will pin here after the first workflow execution.</div>`}
+              </div>
+            </div>
+          </div>
+
 
         ${/* Status */ ""}
         <div class="task-sidebar-field">

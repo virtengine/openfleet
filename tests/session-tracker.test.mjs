@@ -358,6 +358,71 @@ describe("session-tracker", () => {
       const summary = tracker.getMessageSummary("nonexistent");
       expect(summary).toContain("no session messages recorded");
     });
+
+    it("builds replayable trajectories with compact step summaries", () => {
+      tracker.startSession("task-1", "Replay Test");
+      tracker.recordEvent("task-1", {
+        type: "item.completed",
+        item: { type: "reasoning", text: "Inspecting failing session state" },
+      });
+      tracker.recordEvent("task-1", {
+        type: "item.completed",
+        item: { type: "function_call", name: "read_file", arguments: "src/app.mjs" },
+      });
+      tracker.recordEvent("task-1", {
+        type: "item.completed",
+        item: {
+          type: "command_execution",
+          command: "npm test -- tests/session-tracker.test.mjs",
+          aggregated_output: "1 failing",
+          status: "completed",
+          exit_code: 1,
+        },
+      });
+      tracker.recordEvent("task-1", {
+        type: "item.completed",
+        item: { type: "agent_message", text: "Patched summary generation and replay support" },
+      });
+
+      const session = tracker.getSessionMessages("task-1");
+
+      expect(session?.trajectory).toEqual(
+        expect.objectContaining({
+          version: 1,
+          replayable: true,
+          steps: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "system",
+              summary: "Inspecting failing session state",
+            }),
+            expect.objectContaining({
+              kind: "tool_call",
+              title: "read_file",
+            }),
+            expect.objectContaining({
+              kind: "command",
+              summary: expect.stringContaining("npm test"),
+            }),
+            expect.objectContaining({
+              kind: "agent_message",
+              summary: "Patched summary generation and replay support",
+            }),
+          ]),
+        }),
+      );
+      expect(session?.runSummary).toEqual(
+        expect.objectContaining({
+          headline: "Patched summary generation and replay support",
+          latestStatus: "active",
+          steps: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "command",
+              text: expect.stringContaining("npm test"),
+            }),
+          ]),
+        }),
+      );
+    });
   });
 
   describe("isSessionIdle", () => {
@@ -470,6 +535,23 @@ describe("session-tracker", () => {
         expect(session?.insights?.totals?.toolCalls).toBe(1);
         expect(session?.insights?.contextWindow?.percent).toBe(38);
         expect(listed?.insights?.contextWindow?.usedTokens).toBe(103200);
+        expect(session?.trajectory?.replayable).toBe(true);
+        expect(Array.isArray(session?.trajectory?.steps)).toBe(true);
+        expect(session?.replay).toEqual(
+          expect.objectContaining({
+            trajectory: expect.any(Array),
+            steps: expect.any(Array),
+            resumeHint: expect.any(String),
+          }),
+        );
+        expect(session?.shortSteps).toEqual(session?.runSummary?.steps);
+        expect(session?.resumeHint).toBe(session?.replay?.resumeHint);
+        expect(session?.runSummary).toEqual(
+          expect.objectContaining({
+            steps: expect.any(Array),
+            latestStatus: expect.any(String),
+          }),
+        );
 
         reloadedTracker.destroy();
       } finally {
@@ -478,3 +560,4 @@ describe("session-tracker", () => {
     });
   });
 });
+

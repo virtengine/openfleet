@@ -98,6 +98,9 @@ function normalizeExecutorEntry(entry, index = 0, total = 1) {
     codexProfile,
     provider,
     providerConfig,
+    capabilities: Array.isArray(entry.capabilities)
+      ? [...new Set(entry.capabilities.map((value) => String(value || "").trim()).filter(Boolean))]
+      : [],
   };
 }
 
@@ -345,6 +348,31 @@ export class ExecutorScheduler {
     return result;
   }
 
+  nextForTask(task = {}, workspaceId) {
+    const kind = String(task?.kind || task?.type || "").trim().toLowerCase();
+    const available = this._getAvailable();
+    if (!available.length) {
+      return this.next(workspaceId);
+    }
+
+    const heavyKinds = new Set(["build", "test", "validation", "diff", "pre-push", "heavy"]);
+    const isHeavy = heavyKinds.has(kind);
+    const matchesCapability = (executor, capability) => Array.isArray(executor?.capabilities) && executor.capabilities.some((value) => String(value || "").trim().toLowerCase() === capability);
+
+    if (isHeavy) {
+      const heavyExecutor = available.find((executor) =>
+        matchesCapability(executor, kind) || matchesCapability(executor, "heavy") || matchesCapability(executor, "validation")
+      );
+      if (heavyExecutor) return heavyExecutor;
+    } else if (kind) {
+      const lightExecutor = available.find((executor) =>
+        matchesCapability(executor, kind) || matchesCapability(executor, "light") || matchesCapability(executor, "chat") || matchesCapability(executor, "plan")
+      );
+      if (lightExecutor) return lightExecutor;
+    }
+
+    return this.next(workspaceId);
+  }
   /** Get the next executor based on distribution strategy */
   next(workspaceId) {
     // Check workspace slot availability before selecting
@@ -490,4 +518,6 @@ export class ExecutorScheduler {
     return available[available.length - 1];
   }
 }
+
+
 

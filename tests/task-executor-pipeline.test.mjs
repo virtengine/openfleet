@@ -111,4 +111,175 @@ describe("task executor pipeline helpers", () => {
     expect(result.ok).toBe(true);
     expect(result.outputs).toHaveLength(2);
   });
+  it("offloads heavy validation stages through an isolated runner lease", async () => {
+    const acquireRunnerLease = vi.fn(async () => ({
+      leaseId: "lease-1",
+      runnerKind: "container",
+      workspacePath: "/tmp/runner",
+    }));
+    const releaseRunnerLease = vi.fn(async () => {});
+    const execHeavyValidation = vi.fn(async () => ({
+      success: true,
+      output: "npm test ok",
+      sdk: "codex",
+      exitCode: 0,
+      compact: {
+        summary: "npm test ok",
+        retrievalCommand: "bosun artifacts get artifact://lease-1/stdout",
+      },
+      artifacts: [
+        {
+          id: "stdout",
+          kind: "log",
+          uri: "artifact://lease-1/stdout",
+          label: "Full stdout",
+        },
+      ],
+    }));
+
+    const result = await runExecutionPipelineAgent(
+      {
+        id: "validate",
+        role: "validation",
+        sdk: "codex",
+        heavy: true,
+        command: "npm test",
+      },
+      { taskId: "task-1", summary: "run validation" },
+      {
+        stageIndex: 0,
+        runId: "run-1",
+        options: { id: "task-1-single", metadata: { mode: "single" } },
+        signal: null,
+      },
+      {
+        execWithRetry: vi.fn(),
+        acquireRunnerLease,
+        releaseRunnerLease,
+        execHeavyValidation,
+        repoRoot: "C:/repo",
+        timeoutMs: 1000,
+      },
+    );
+
+    expect(acquireRunnerLease).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskKey: "task-1-single-validate-1",
+        taskId: "task-1",
+        purpose: "validation",
+      }),
+    );
+    expect(execHeavyValidation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lease: expect.objectContaining({ leaseId: "lease-1" }),
+        agent: expect.objectContaining({ id: "validate" }),
+        input: expect.objectContaining({ taskId: "task-1" }),
+      }),
+    );
+    expect(releaseRunnerLease).toHaveBeenCalledWith(
+      expect.objectContaining({ leaseId: "lease-1", status: "completed" }),
+    );
+    expect(result.output).toEqual(
+      expect.objectContaining({
+        text: "npm test ok",
+        compact: expect.objectContaining({
+          summary: "npm test ok",
+          retrievalCommand: "bosun artifacts get artifact://lease-1/stdout",
+        }),
+        artifacts: [
+          expect.objectContaining({ uri: "artifact://lease-1/stdout" }),
+        ],
+      }),
+    );
+    expect(result.meta).toEqual(
+      expect.objectContaining({
+        taskKey: "task-1-single-validate-1",
+        executionMode: "isolated-runner",
+        leaseId: "lease-1",
+      }),
+    );
+  });
+
+  it("surfaces lease failures as blocked evidence and skips silent fallback", async () => {
+    const acquireRunnerLease = vi.fn(async () => {
+      throw new Error("runner pool unavailable");
+    });
+    const execWithRetry = vi.fn(async () => ({
+      success: true,
+      output: "should not run",
+      sdk: "codex",
+    }));
+
+    await expect(
+      runExecutionPipelineAgent(
+        {
+          id: "build",
+          role: "build",
+          heavy: true,
+          command: "npm run build",
+        },
+        { taskId: "task-2", summary: "run build" },
+        {
+          stageIndex: 1,
+          runId: "run-2",
+          options: { id: "task-2-single", metadata: { mode: "single" } },
+          signal: null,
+        },
+        {
+          execWithRetry,
+          acquireRunnerLease,
+          repoRoot: "C:/repo",
+        },
+      ),
+    ).rejects.toThrow(/blocked evidence/i);
+
+    expect(execWithRetry).not.toHaveBeenCalled();
+  });
+
+  it("retries isolated heavy validation once before surfacing blocked evidence", async () => {
+    const acquireRunnerLease = vi
+      .fn()
+      .mockResolvedValueOnce({ leaseId: "lease-a" })
+      .mockResolvedValueOnce({ leaseId: "lease-b" });
+    const releaseRunnerLease = vi.fn(async () => {});
+    const execHeavyValidation = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("sandbox boot failed"))
+      .mockResolvedValueOnce({
+        success: true,
+        output: "build ok",
+        sdk: "codex",
+        compact: { summary: "build ok", retrievalCommand: "bosun artifacts get artifact://lease-b/build" },
+        artifacts: [{ id: "build-log", uri: "artifact://lease-b/build", kind: "log" }],
+      });
+
+    const result = await runExecutionPipelineAgent(
+      { id: "build", role: "build", heavy: true, command: "npm run build", runnerRetries: 2 },
+      { taskId: "task-3", summary: "run build" },
+      {
+        stageIndex: 0,
+        runId: "run-3",
+        options: { id: "task-3-single", metadata: { mode: "single" } },
+        signal: null,
+      },
+      {
+        execWithRetry: vi.fn(),
+        acquireRunnerLease,
+        releaseRunnerLease,
+        execHeavyValidation,
+        repoRoot: "C:/repo",
+      },
+    );
+
+    expect(acquireRunnerLease).toHaveBeenCalledTimes(2);
+    expect(execHeavyValidation).toHaveBeenCalledTimes(2);
+    expect(releaseRunnerLease).toHaveBeenCalledWith(
+      expect.objectContaining({ leaseId: "lease-a", status: "failed" }),
+    );
+    expect(releaseRunnerLease).toHaveBeenCalledWith(
+      expect.objectContaining({ leaseId: "lease-b", status: "completed" }),
+    );
+    expect(result.output.compact.summary).toBe("build ok");
+  });
 });
+

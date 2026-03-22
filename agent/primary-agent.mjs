@@ -66,9 +66,10 @@ import {
   createSession as createGeminiSession,
 } from "../shell/gemini-shell.mjs";
 import { getModelsForExecutor, normalizeExecutorKey } from "../task/task-complexity.mjs";
+import { generateRepoMap } from "./repo-map.mjs";
 
 /** Valid agent interaction modes */
-const CORE_MODES = ["ask", "agent", "plan", "web", "instant"];
+const CORE_MODES = ["ask", "agent", "plan", "architect", "editor", "web", "instant"];
 /** Custom modes loaded from library */
 const _customModes = new Map();
 
@@ -76,8 +77,9 @@ const MODE_ALIASES = Object.freeze({
   code: "agent",
   implement: "agent",
   execute: "agent",
-  architect: "plan",
+  architect: "architect",
   design: "plan",
+  editor: "editor",
   chat: "ask",
   question: "ask",
   fast: "instant",
@@ -100,10 +102,31 @@ const MODE_PREFIXES = {
   ask: "[MODE: ask] Respond briefly and directly. Avoid using tools unless absolutely necessary. Do not make code changes.\n\n",
   agent: "",
   plan: "[MODE: plan] Create a detailed plan for the following request but do NOT execute it. Outline the steps, files involved, and approach without making any changes.\n\n",
+  architect: "[MODE: architect] Use the repo map and compact structural context to plan large changes, then continue through implementation and validation phases.\n\n",
+  editor: "[MODE: editor] Execute the approved implementation directly, using repo map context to stay focused and validate results.\n\n",
   web: "[MODE: web] Respond in a concise, web-assistant style. Prioritize immediate answers and lightweight checks. Avoid code edits and long-running operations unless explicitly requested.\n\n",
   instant: "[MODE: instant] Respond immediately with the fastest useful answer. Keep it short, avoid deep tool use, and do not make code changes unless explicitly requested.\n\n",
 };
 
+
+function shouldAttachRepoMap(mode, options = {}) {
+  if (typeof options.repoMap === "string") return options.repoMap.trim().length > 0;
+  return mode === "architect" || mode === "editor";
+}
+
+function resolveRepoMapForPrompt(mode, options = {}) {
+  if (typeof options.repoMap === "string") {
+    return options.repoMap.trim() || null;
+  }
+  if (!shouldAttachRepoMap(mode, options)) return null;
+  try {
+    const rootDir = resolveRepoRoot(options.cwd || process.cwd());
+    return generateRepoMap(rootDir);
+  } catch (error) {
+    console.warn(`[primary-agent] repo map generation failed: ${error?.message || error}`);
+    return null;
+  }
+}
 const MODE_EXEC_POLICIES = Object.freeze({
   web: {
     timeoutMs: Number(process.env.PRIMARY_AGENT_WEB_TIMEOUT_MS) || 2 * 60 * 1000,
@@ -1067,6 +1090,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     .filter(Boolean)
     .join("\n\n");
   const framedMessage = modePrefix ? modePrefix + messageWithToolContract : messageWithToolContract;
+  const repoMap = resolveRepoMapForPrompt(effectiveMode, options);
 
   // Record user message (original, without mode prefix)
   tracker.recordEvent(sessionId, {
@@ -1087,6 +1111,8 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
       model: effectiveModel,
       sdk: mapAdapterToPoolSdk(activeAdapter.name),
       sessionType,
+      repoMap,
+      mode: effectiveMode,
     });
     const pooledText =
       typeof pooled === "string"
@@ -1174,7 +1200,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
         }
       }
       const result = await withTimeout(
-        adapter.exec(framedMessage, { ...options, sessionId, model: effectiveModel, abortController: timeoutAbort }),
+        adapter.exec(framedMessage, { ...options, sessionId, model: effectiveModel, abortController: timeoutAbort, repoMap, mode: effectiveMode }),
         timeoutMs,
         `${adapterName}.exec`,
         timeoutAbort,
@@ -1243,7 +1269,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
               }
             }
             const retryResult = await withTimeout(
-              adapter.exec(framedMessage, { ...options, sessionId, model: effectiveModel, abortController: timeoutAbort }),
+              adapter.exec(framedMessage, { ...options, sessionId, model: effectiveModel, abortController: timeoutAbort, repoMap, mode: effectiveMode }),
               timeoutMs,
               `${adapterName}.exec.retry`,
               timeoutAbort,
@@ -1538,3 +1564,5 @@ export async function execSdkCommand(command, args = "", adapterName, options = 
   }
   return adapter.execSdkCommand(cmd, args, options);
 }
+
+

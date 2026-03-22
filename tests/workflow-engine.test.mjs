@@ -16,12 +16,9 @@ import {
   getNodeType,
 } from "../workflow/workflow-nodes.mjs";
 import { _resetSingleton as resetSessionTracker, getSessionTracker } from "../infra/session-tracker.mjs";
-
 // ── Helpers ─────────────────────────────────────────────────────────────────
-
 let tmpDir;
 let engine;
-
 function makeTmpEngine(services = {}) {
   tmpDir = mkdtempSync(join(tmpdir(), "wf-engine-test-"));
   engine = new WorkflowEngine({
@@ -31,7 +28,6 @@ function makeTmpEngine(services = {}) {
   });
   return engine;
 }
-
 function makeSimpleWorkflow(nodes, edges, opts = {}) {
   return {
     id: opts.id || "test-wf-" + Math.random().toString(36).slice(2, 8),
@@ -43,7 +39,6 @@ function makeSimpleWorkflow(nodes, edges, opts = {}) {
     variables: opts.variables || {},
   };
 }
-
 function makeIsolatedGitEnv(extra = {}) {
   const env = { ...process.env, ...extra };
   for (const key of [
@@ -59,16 +54,13 @@ function makeIsolatedGitEnv(extra = {}) {
   }
   return env;
 }
-
 function execGit(command, options = {}) {
   return execSync(command, {
     ...options,
     env: makeIsolatedGitEnv(options.env),
   });
 }
-
 // ── WorkflowContext Tests ───────────────────────────────────────────────────
-
 describe("WorkflowContext", () => {
   it("initializes with data and tracks node outputs", () => {
     const ctx = new WorkflowContext({ foo: "bar" });
@@ -78,7 +70,6 @@ describe("WorkflowContext", () => {
     expect(ctx.logs).toEqual([]);
     expect(ctx.errors).toEqual([]);
   });
-
   it("tracks retry attempts", () => {
     const ctx = new WorkflowContext();
     expect(ctx.getRetryCount("node-1")).toBe(0);
@@ -87,26 +78,21 @@ describe("WorkflowContext", () => {
     expect(ctx.getRetryCount("node-1")).toBe(2);
     expect(ctx.getRetryCount("node-2")).toBe(0);
   });
-
   it("fork() creates independent clone with upstream data", () => {
     const ctx = new WorkflowContext({ shared: "original" });
     ctx.setNodeOutput("upstream-1", { result: 42 });
     ctx.variables.v1 = "hello";
-
     const forked = ctx.fork({ item: "apple", _loopIndex: 0 });
-
     expect(forked.data.shared).toBe("original");
     expect(forked.data.item).toBe("apple");
     expect(forked.data._loopIndex).toBe(0);
     expect(forked.variables.v1).toBe("hello");
     // Can access upstream node outputs
     expect(forked.getNodeOutput("upstream-1")).toEqual({ result: 42 });
-
     // Mutations on forked do NOT affect original
     forked.data.shared = "mutated";
     expect(ctx.data.shared).toBe("original");
   });
-
   it("toJSON() includes retryAttempts", () => {
     const ctx = new WorkflowContext();
     ctx.incrementRetry("n1");
@@ -116,7 +102,6 @@ describe("WorkflowContext", () => {
     expect(json.nodeOutputs).toBeDefined();
     expect(json.nodeStatuses).toBeDefined();
   });
-
   it("resolve() interpolates templates from data and node outputs", () => {
     const ctx = new WorkflowContext({ name: "Alice" });
     ctx.setNodeOutput("step1", { count: 5 });
@@ -125,7 +110,6 @@ describe("WorkflowContext", () => {
     expect(ctx.resolve("{{missing}}")).toBe("{{missing}}");
     expect(ctx.resolve(42)).toBe(42); // Non-strings pass through
   });
-
   it("resolve() interpolates node outputs with hyphenated node IDs", () => {
     const ctx = new WorkflowContext();
     ctx.setNodeOutput("materialize-tasks", { createdCount: 3, skippedCount: 2 });
@@ -134,7 +118,6 @@ describe("WorkflowContext", () => {
     ).toBe("Created 3 tasks (skipped 2).");
     expect(ctx.resolve("{{materialize-tasks.createdCount}}")).toBe(3);
   });
-
   it("resolve() preserves raw value types for exact placeholders", () => {
     const ctx = new WorkflowContext({
       maxRetries: 3,
@@ -148,15 +131,12 @@ describe("WorkflowContext", () => {
     expect(ctx.resolve("retries={{maxRetries}}")).toBe("retries=3");
   });
 });
-
 // ── Engine Retry Tests ──────────────────────────────────────────────────────
-
 describe("WorkflowEngine - retry logic", () => {
   beforeEach(() => { makeTmpEngine(); });
   afterEach(() => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
-
   it("retries a failing node up to maxRetries then fails", async () => {
     let callCount = 0;
     registerNodeType("test.flaky_always_fail", {
@@ -167,7 +147,6 @@ describe("WorkflowEngine - retry logic", () => {
         throw new Error("always fails");
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -175,7 +154,6 @@ describe("WorkflowEngine - retry logic", () => {
       ],
       [{ id: "e1", source: "trigger", target: "flaky" }]
     );
-
     engine.save(wf);
     const result = await engine.execute(wf.id, {});
     // 1 initial attempt + 2 retries = 3 total calls
@@ -183,7 +161,6 @@ describe("WorkflowEngine - retry logic", () => {
     // execute() returns a WorkflowContext — check errors array for failure
     expect(result.errors.length).toBeGreaterThan(0);
   });
-
   it("resolves templates inside array config values before node execution", async () => {
     registerNodeType("test.capture_config", {
       describe: () => "Capture resolved config",
@@ -192,7 +169,6 @@ describe("WorkflowEngine - retry logic", () => {
         return { config: node.config };
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -211,7 +187,6 @@ describe("WorkflowEngine - retry logic", () => {
       [{ id: "e1", source: "trigger", target: "capture" }],
       { variables: { v1: 7, flag: true } },
     );
-
     engine.save(wf);
     const ctx = await engine.execute(wf.id, {});
     const output = ctx.getNodeOutput("capture");
@@ -220,7 +195,6 @@ describe("WorkflowEngine - retry logic", () => {
       { name: "two", enabled: true },
     ]);
   });
-
   it("resolves edge condition templates from workflow variables", async () => {
     const reached = [];
     registerNodeType("test.record_branch", {
@@ -231,7 +205,6 @@ describe("WorkflowEngine - retry logic", () => {
         return { ok: true };
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -244,13 +217,11 @@ describe("WorkflowEngine - retry logic", () => {
       ],
       { variables: { shouldRun: true } },
     );
-
     engine.save(wf);
     const ctx = await engine.execute(wf.id, {});
     expect(ctx.errors).toEqual([]);
     expect(reached).toEqual(["true-branch"]);
   });
-
   it("supports exact-placeholder boolean edge conditions", async () => {
     const reached = [];
     registerNodeType("test.record_flagged", {
@@ -261,7 +232,6 @@ describe("WorkflowEngine - retry logic", () => {
         return { ok: true };
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -270,13 +240,11 @@ describe("WorkflowEngine - retry logic", () => {
       [{ id: "e1", source: "trigger", target: "branch", condition: "{{enabled}}" }],
       { variables: { enabled: true } },
     );
-
     engine.save(wf);
     const ctx = await engine.execute(wf.id, {});
     expect(ctx.errors).toEqual([]);
     expect(reached).toEqual(["branch"]);
   });
-
   it("propagates skipped branch dependencies so converging false-path nodes can still run", async () => {
     const reached = [];
     registerNodeType("test.record_path", {
@@ -287,7 +255,6 @@ describe("WorkflowEngine - retry logic", () => {
         return { ok: true };
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -300,15 +267,12 @@ describe("WorkflowEngine - retry logic", () => {
         { id: "e3", source: "skipped-branch", target: "converge" },
       ],
     );
-
     engine.save(wf);
     const ctx = await engine.execute(wf.id, {});
-
     expect(ctx.errors).toEqual([]);
     expect(ctx.getNodeStatus("skipped-branch")).toBe("skipped");
     expect(reached).toEqual(["converge"]);
   });
-
   it("retries then succeeds on second attempt", async () => {
     let callCount = 0;
     registerNodeType("test.flaky_second_try", {
@@ -320,7 +284,6 @@ describe("WorkflowEngine - retry logic", () => {
         return { ok: true };
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -328,13 +291,11 @@ describe("WorkflowEngine - retry logic", () => {
       ],
       [{ id: "e1", source: "trigger", target: "retry-node" }]
     );
-
     engine.save(wf);
     const result = await engine.execute(wf.id, {});
     expect(callCount).toBe(2);
     expect(result.errors.length).toBe(0);
   });
-
   it("skips retry when retryable is false", async () => {
     let callCount = 0;
     registerNodeType("test.no_retry", {
@@ -345,7 +306,6 @@ describe("WorkflowEngine - retry logic", () => {
         throw new Error("no retry");
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -353,13 +313,11 @@ describe("WorkflowEngine - retry logic", () => {
       ],
       [{ id: "e1", source: "trigger", target: "fail" }]
     );
-
     engine.save(wf);
     const result = await engine.execute(wf.id, {});
     expect(callCount).toBe(1);
     expect(result.errors.length).toBeGreaterThan(0);
   });
-
   it("emits node:retry events", async () => {
     let retryEvents = [];
     let callCount = 0;
@@ -372,7 +330,6 @@ describe("WorkflowEngine - retry logic", () => {
         return { ok: true };
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -380,7 +337,6 @@ describe("WorkflowEngine - retry logic", () => {
       ],
       [{ id: "e1", source: "trigger", target: "retry-node" }]
     );
-
     engine.save(wf);
     engine.on("node:retry", (ev) => retryEvents.push(ev));
     await engine.execute(wf.id, {});
@@ -389,15 +345,12 @@ describe("WorkflowEngine - retry logic", () => {
     expect(retryEvents[1].attempt).toBe(2);
   });
 });
-
 // ── Engine Loop Iteration Tests ─────────────────────────────────────────────
-
 describe("WorkflowEngine - loop.for_each", () => {
   beforeEach(() => { makeTmpEngine(); });
   afterEach(() => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
-
   it("actually iterates downstream nodes per item", async () => {
     const executed = [];
     registerNodeType("test.collect_item", {
@@ -409,7 +362,6 @@ describe("WorkflowEngine - loop.for_each", () => {
         return { collected: item };
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -421,13 +373,11 @@ describe("WorkflowEngine - loop.for_each", () => {
         { id: "e2", source: "loop", target: "collect" },
       ]
     );
-
     engine.save(wf);
     const result = await engine.execute(wf.id, {});
     expect(result.errors.length).toBe(0);
     expect(executed).toEqual(["a", "b", "c"]);
   });
-
   it("emits loop:iteration events", async () => {
     const iterations = [];
     registerNodeType("test.noop_loop", {
@@ -435,7 +385,6 @@ describe("WorkflowEngine - loop.for_each", () => {
       schema: { type: "object", properties: {} },
       async execute() { return { ok: true }; },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -447,7 +396,6 @@ describe("WorkflowEngine - loop.for_each", () => {
         { id: "e2", source: "loop", target: "body" },
       ]
     );
-
     engine.save(wf);
     engine.on("loop:iteration", (ev) => iterations.push(ev));
     await engine.execute(wf.id, {});
@@ -455,7 +403,6 @@ describe("WorkflowEngine - loop.for_each", () => {
     expect(iterations[0]).toEqual({ nodeId: "loop", index: 0, total: 2 });
     expect(iterations[1]).toEqual({ nodeId: "loop", index: 1, total: 2 });
   });
-
   it("returns totalItems alongside count for batch summary templates", async () => {
     const wf = makeSimpleWorkflow(
       [
@@ -464,7 +411,6 @@ describe("WorkflowEngine - loop.for_each", () => {
       ],
       [{ id: "e1", source: "trigger", target: "loop" }],
     );
-
     engine.save(wf);
     const ctx = await engine.execute(wf.id, {});
     expect(ctx.errors).toEqual([]);
@@ -476,13 +422,11 @@ describe("WorkflowEngine - loop.for_each", () => {
     });
   });
 });
-
 describe("WorkflowEngine - source port routing", () => {
   beforeEach(() => { makeTmpEngine(); });
   afterEach(() => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
-
   it("routes only the selected switch port", async () => {
     const visited = [];
     registerNodeType("test.capture_port", {
@@ -493,7 +437,6 @@ describe("WorkflowEngine - source port routing", () => {
         return { ok: true };
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -518,13 +461,11 @@ describe("WorkflowEngine - source port routing", () => {
         { id: "e3", source: "switch", target: "right", sourcePort: "right-port" },
       ],
     );
-
     engine.save(wf);
     const result = await engine.execute(wf.id, {});
     expect(result.errors).toEqual([]);
     expect(visited).toEqual(["left"]);
   });
-
   it("keeps shared downstream nodes runnable when one conditional edge is false", async () => {
     const visited = [];
     registerNodeType("test.capture_multi_edge", {
@@ -535,7 +476,6 @@ describe("WorkflowEngine - source port routing", () => {
         return { ok: true };
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -549,7 +489,6 @@ describe("WorkflowEngine - source port routing", () => {
       ],
       { name: "Conditional Convergence Workflow" },
     );
-
     engine.save(wf);
     const result = await engine.execute(wf.id, {});
     expect(result.errors).toEqual([]);
@@ -557,15 +496,12 @@ describe("WorkflowEngine - source port routing", () => {
     expect(result.getNodeStatus("shared")).toBe(NodeStatus.COMPLETED);
   });
 });
-
 // ── Run History / Detail Tests ──────────────────────────────────────────────
-
 describe("WorkflowEngine - run history details", () => {
   beforeEach(() => { makeTmpEngine(); });
   afterEach(() => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
-
   it("persists rich summary metadata and exposes detailed run payload", async () => {
     const wf = makeSimpleWorkflow(
       [
@@ -575,10 +511,8 @@ describe("WorkflowEngine - run history details", () => {
       [{ id: "e1", source: "trigger", target: "log" }],
       { name: "History Detail Workflow" }
     );
-
     engine.save(wf);
     await engine.execute(wf.id, {});
-
     const history = engine.getRunHistory(wf.id, 5);
     expect(history.length).toBeGreaterThan(0);
     const latest = history[0];
@@ -591,7 +525,6 @@ describe("WorkflowEngine - run history details", () => {
     expect(typeof latest.activeNodeCount).toBe("number");
     expect(latest.isStuck).toBe(false);
     expect(latest.stuckMs).toBe(0);
-
     const run = engine.getRunDetail(latest.runId);
     expect(run).toBeTruthy();
     expect(run.workflowId).toBe(wf.id);
@@ -607,7 +540,93 @@ describe("WorkflowEngine - run history details", () => {
     expect(run.ledger?.events?.some((event) => event.eventType === "node.completed")).toBe(true);
     expect(run.ledger?.events?.some((event) => event.eventType === "run.end")).toBe(true);
   });
-
+  it("rebuilds a replayable child run graph from ledger state after restart", async () => {
+    const childWorkflow = makeSimpleWorkflow(
+      [
+        { id: "child-trigger", type: "trigger.manual", label: "Start Child", config: {} },
+        { id: "child-log", type: "notify.log", label: "Child Log", config: { message: "child" } },
+      ],
+      [{ id: "child-edge", source: "child-trigger", target: "child-log" }],
+      { id: "wf-child-ledger", name: "Child Ledger Workflow" },
+    );
+    const parentWorkflow = makeSimpleWorkflow(
+      [
+        { id: "parent-trigger", type: "trigger.manual", label: "Start Parent", config: {} },
+        {
+          id: "invoke-child",
+          type: "action.execute_workflow",
+          label: "Invoke Child",
+          config: { workflowId: childWorkflow.id, outputVariable: "childSummary" },
+        },
+      ],
+      [{ id: "parent-edge", source: "parent-trigger", target: "invoke-child" }],
+      { id: "wf-parent-ledger", name: "Parent Ledger Workflow" },
+    );
+    engine.save(childWorkflow);
+    engine.save(parentWorkflow);
+    const parentCtx = await engine.execute(parentWorkflow.id, { payload: "graph" });
+    const childRunId = parentCtx.getNodeOutput("invoke-child")?.runId;
+    expect(typeof childRunId).toBe("string");
+    const restarted = new WorkflowEngine({
+      workflowDir: join(tmpDir, "workflows"),
+      runsDir: join(tmpDir, "runs"),
+    });
+    const graph = restarted.getRunExecutionGraph(parentCtx.id);
+    expect(graph).toBeTruthy();
+    expect(graph.rootRunId).toBe(parentCtx.id);
+    expect(Array.isArray(graph.runs)).toBe(true);
+    expect(graph.runs.map((entry) => entry.runId)).toContain(parentCtx.id);
+    expect(graph.runs.map((entry) => entry.runId)).toContain(childRunId);
+    expect(graph.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ parentRunId: parentCtx.id, childRunId }),
+      ]),
+    );
+    expect(graph.childrenByRunId[parentCtx.id]).toContain(childRunId);
+    expect(graph.byRunId[childRunId]?.parentRunId).toBe(parentCtx.id);
+  });
+  it("derives duplicate and recovery signals from ledger-backed lineage", async () => {
+    registerNodeType("test.fail_once_for_duplicate_signal", {
+      describe: () => "Fails once for retry lineage tests",
+      schema: { type: "object", properties: {} },
+      async execute(node, ctx) {
+        if (!ctx.data.__failedOnce) {
+          ctx.data.__failedOnce = true;
+          throw new Error("first attempt fails");
+        }
+        return { ok: true, nodeId: node.id };
+      },
+    });
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "flaky", type: "test.fail_once_for_duplicate_signal", label: "Flaky", config: { maxRetries: 0 } },
+      ],
+      [{ id: "edge", source: "trigger", target: "flaky" }],
+      { id: "wf-ledger-lineage", name: "Ledger Lineage Workflow" },
+    );
+    engine.save(wf);
+    const firstCtx = await engine.execute(wf.id, {});
+    expect(firstCtx.errors.length).toBeGreaterThan(0);
+    const retried = await engine.retryRun(firstCtx.id, { mode: "from_scratch" });
+    const restarted = new WorkflowEngine({
+      workflowDir: join(tmpDir, "workflows"),
+      runsDir: join(tmpDir, "runs"),
+    });
+    const lineage = restarted.getRunLineage(retried.retryRunId);
+    expect(lineage.rootRunId).toBe(firstCtx.id);
+    expect(lineage.recoveryAttempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ runId: retried.retryRunId, retryOf: firstCtx.id, retryMode: "from_scratch" }),
+      ]),
+    );
+    expect(lineage.duplicateCandidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ runId: firstCtx.id }),
+        expect.objectContaining({ runId: retried.retryRunId }),
+      ]),
+    );
+  });
   it("stores issue-advisor and DAGState failure context for continuation", async () => {
     registerNodeType("test.always_fail_for_dag", {
       describe: () => "Fails for DAGState coverage",
@@ -616,7 +635,6 @@ describe("WorkflowEngine - run history details", () => {
         throw new Error("validation step failed");
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -625,11 +643,9 @@ describe("WorkflowEngine - run history details", () => {
       [{ id: "e1", source: "trigger", target: "fail" }],
       { name: "Issue Advisor Workflow" },
     );
-
     engine.save(wf);
     const ctx = await engine.execute(wf.id, {});
     expect(ctx.errors.length).toBeGreaterThan(0);
-
     const detail = engine.getRunDetail(ctx.id);
     expect(detail?.status).toBe(WorkflowStatus.FAILED);
     expect(detail?.detail?.dagState?.counts?.failed).toBe(1);
@@ -637,7 +653,6 @@ describe("WorkflowEngine - run history details", () => {
     expect(detail?.detail?.issueAdvisor?.failedNodes?.[0]?.nodeId).toBe("fail");
     expect(detail?.detail?.issueAdvisor?.summary).toContain("Fail Step");
   });
-
   it("returns retry options with an issue-advisor recommendation", async () => {
     registerNodeType("test.fail_for_retry_options", {
       describe: () => "Completes once then fails",
@@ -647,7 +662,6 @@ describe("WorkflowEngine - run history details", () => {
         return { ok: true };
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -660,17 +674,14 @@ describe("WorkflowEngine - run history details", () => {
       ],
       { id: "wf-retry-options", name: "Retry Options Workflow" },
     );
-
     engine.save(wf);
     const failedCtx = await engine.execute(wf.id, {});
     const retryOptions = engine.getRetryOptions(failedCtx.id);
-
     expect(retryOptions?.recommendedMode).toBe("from_scratch");
     expect(retryOptions?.recommendedReason).toBe("issue_advisor.replan_from_failed");
     expect(retryOptions?.failedNodes).toContain("fail");
     expect(retryOptions?.options?.find((entry) => entry.mode === "from_scratch")?.recommended).toBe(true);
   });
-
   it("uses issue-advisor guidance to escalate first auto-retry attempt to from_scratch", async () => {
     registerNodeType("test.auto_retry_replan_step", {
       describe: () => "Succeeds once then fails",
@@ -682,7 +693,6 @@ describe("WorkflowEngine - run history details", () => {
         return { ok: true };
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -695,18 +705,14 @@ describe("WorkflowEngine - run history details", () => {
       ],
       { id: "wf-auto-retry-replan", name: "Auto Retry Replan" },
     );
-
     engine.save(wf);
     const failedCtx = await engine.execute(wf.id, {});
     expect(failedCtx.errors.length).toBeGreaterThan(0);
-
     const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({
       retryRunId: "retry-1",
       ctx: { errors: [] },
     });
-
     await engine._autoRetryLoop(failedCtx.id, wf.id, {}, { maxAttempts: 1, cooldownMs: 0 }, {});
-
     expect(retrySpy).toHaveBeenCalledWith(
       failedCtx.id,
       expect.objectContaining({
@@ -715,37 +721,31 @@ describe("WorkflowEngine - run history details", () => {
       }),
     );
   });
-
   it("returns runs in descending order and null for unknown run details", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
       [],
       { name: "Ordering Workflow" }
     );
-
     engine.save(wf);
     await engine.execute(wf.id, { run: 1 });
     await new Promise((resolve) => setTimeout(resolve, 5));
     await engine.execute(wf.id, { run: 2 });
-
     const history = engine.getRunHistory(wf.id, 10);
     expect(history.length).toBeGreaterThanOrEqual(2);
     expect(history[0].startedAt).toBeGreaterThanOrEqual(history[1].startedAt);
     expect(engine.getRunDetail("does-not-exist")).toBeNull();
   });
-
   it("returns paginated run history metadata without dropping total counts", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
       [],
       { name: "Paged History Workflow" },
     );
-
     engine.save(wf);
     await engine.execute(wf.id, { run: 1 });
     await engine.execute(wf.id, { run: 2 });
     await engine.execute(wf.id, { run: 3 });
-
     const page = engine.getRunHistoryPage(wf.id, { offset: 1, limit: 1 });
     expect(page.total).toBeGreaterThanOrEqual(3);
     expect(page.offset).toBe(1);
@@ -762,15 +762,12 @@ describe("WorkflowEngine - run history details", () => {
       [],
       { name: "Global Paged History Workflow" },
     );
-
     engine.save(wf);
     for (let i = 0; i < 35; i += 1) {
       await engine.execute(wf.id, { run: i + 1 });
     }
-
     const all = engine.getRunHistory();
     expect(all.length).toBeGreaterThanOrEqual(35);
-
     const page = engine.getRunHistoryPage(null, { offset: 20, limit: 10 });
     expect(page.total).toBeGreaterThanOrEqual(35);
     expect(page.offset).toBe(20);
@@ -780,7 +777,6 @@ describe("WorkflowEngine - run history details", () => {
     expect(page.hasMore).toBe(true);
     expect(page.nextOffset).toBe(30);
   });
-
   it("includes active runs in history and exposes live run detail while executing", async () => {
     const prevThreshold = process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS;
     process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS = "20";
@@ -789,7 +785,6 @@ describe("WorkflowEngine - run history details", () => {
       const blocker = new Promise((resolve) => { releaseRun = resolve; });
       let nodeEntered;
       const nodeStarted = new Promise((resolve) => { nodeEntered = resolve; });
-
       registerNodeType("test.long_running", {
         describe: () => "Long running node for active-run visibility",
         schema: { type: "object", properties: {} },
@@ -800,7 +795,6 @@ describe("WorkflowEngine - run history details", () => {
           return { ok: true };
         },
       });
-
       const wf = makeSimpleWorkflow(
         [
           { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -809,14 +803,12 @@ describe("WorkflowEngine - run history details", () => {
         [{ id: "e1", source: "trigger", target: "wait" }],
         { name: "Active Run Visibility Workflow" },
       );
-
       engine.save(wf);
       const runPromise = engine.execute(wf.id, {});
       // Wait for the long-running node to actually start, then wait beyond
       // the stuck threshold (20ms) so isStuck is true when we query history
       await nodeStarted;
       await new Promise((resolve) => setTimeout(resolve, 30));
-
       const history = engine.getRunHistory(wf.id, 10);
       const active = history.find((entry) => entry.status === WorkflowStatus.RUNNING);
       expect(active).toBeTruthy();
@@ -826,7 +818,6 @@ describe("WorkflowEngine - run history details", () => {
       expect(typeof active.duration).toBe("number");
       expect(active.isStuck).toBe(true);
       expect(active.stuckMs).toBeGreaterThanOrEqual(20);
-
       const detail = engine.getRunDetail(active.runId);
       expect(detail).toBeTruthy();
       expect(detail.status).toBe(WorkflowStatus.RUNNING);
@@ -834,10 +825,8 @@ describe("WorkflowEngine - run history details", () => {
       expect(detail.detail.endedAt).toBeNull();
       expect(Array.isArray(detail.detail.logs)).toBe(true);
       expect(Array.isArray(detail.detail.nodeStatusEvents)).toBe(true);
-
       releaseRun();
       await runPromise;
-
       const latest = engine.getRunHistory(wf.id, 1)[0];
       expect(latest.status).toBe(WorkflowStatus.COMPLETED);
       expect(latest.isStuck).toBe(false);
@@ -847,24 +836,19 @@ describe("WorkflowEngine - run history details", () => {
     }
   });
 
-
   it("skips checkpoint writes once a run is no longer active", async () => {
     const runId = "run-inactive-checkpoint";
     const runsDir = join(tmpDir, "runs");
     const detailPath = join(runsDir, `${runId}.json`);
-
     const ctx = new WorkflowContext(runId, {
       _workflowId: "wf-checkpoint-skip",
       _workflowName: "Checkpoint Skip",
     });
-
     // Simulate a debounced checkpoint firing for a run that was already removed.
     engine._checkpointRun(ctx);
-
     await new Promise((resolve) => setTimeout(resolve, 700));
     expect(existsSync(detailPath)).toBe(false);
   });
-
   it("reclassifies stale RUNNING index entries as interrupted on startup recovery", () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
@@ -872,7 +856,6 @@ describe("WorkflowEngine - run history details", () => {
       { id: "wf-interrupted-index", name: "Interrupted Index Workflow" },
     );
     engine.save(wf);
-
     const runsDir = join(tmpDir, "runs");
     const runId = "run-interrupted-index";
     writeFileSync(
@@ -904,9 +887,7 @@ describe("WorkflowEngine - run history details", () => {
       "utf8",
     );
     writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
-
     engine._detectInterruptedRuns();
-
     const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
     const recovered = index.runs.find((entry) => entry.runId === runId);
     expect(recovered).toBeTruthy();
@@ -914,7 +895,6 @@ describe("WorkflowEngine - run history details", () => {
     expect(recovered.resumable).toBe(true);
     expect(typeof recovered.interruptedAt).toBe("number");
   });
-
   it("hydrates orphan running detail files into paused resumable index entries", () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
@@ -922,7 +902,6 @@ describe("WorkflowEngine - run history details", () => {
       { id: "wf-interrupted-orphan", name: "Interrupted Orphan Workflow" },
     );
     engine.save(wf);
-
     const runsDir = join(tmpDir, "runs");
     const runId = "run-interrupted-orphan";
     writeFileSync(join(runsDir, "index.json"), JSON.stringify({ runs: [] }, null, 2), "utf8");
@@ -941,9 +920,7 @@ describe("WorkflowEngine - run history details", () => {
       "utf8",
     );
     writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
-
     engine._detectInterruptedRuns();
-
     const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
     const recovered = index.runs.find((entry) => entry.runId === runId);
     expect(recovered).toBeTruthy();
@@ -954,19 +931,168 @@ describe("WorkflowEngine - run history details", () => {
     expect(recovered.activeNodeCount).toBe(0);
   });
 
-  it("does not resume an interrupted task run when a newer run already exists for the same task", async () => {
+  it("preserves durable approval waiting state in run detail summaries", () => {
+    const ctx = new WorkflowContext({
+      _workflowId: "wf-approval-wait",
+      _workflowName: "Approval Wait Workflow",
+      _approval: {
+        status: "waiting",
+        checkpointId: "approval-checkpoint-1",
+        scope: "workflow",
+        requestedAt: 111,
+        requestedBy: "agent/session-1",
+        prompt: "Approve deploy?",
+        callbackToken: "token-123",
+      },
+    });
+    ctx.id = "run-approval-wait";
+    ctx.setNodeStatus("approve", NodeStatus.WAITING);
+    const detail = engine._serializeRunContext(ctx, true);
+    const summary = engine._buildSummaryFromDetail({
+      runId: ctx.id,
+      workflowId: "wf-approval-wait",
+      workflowName: "Approval Wait Workflow",
+      status: WorkflowStatus.PAUSED,
+      detail,
+    });
+    expect(detail.data._approval).toEqual(expect.objectContaining({
+      status: "waiting",
+      checkpointId: "approval-checkpoint-1",
+      callbackToken: "token-123",
+    }));
+    expect(summary.status).toBe(WorkflowStatus.PAUSED);
+    expect(summary.activeNodeCount).toBe(0);
+    expect(summary.approvalStatus).toBe("waiting");
+    expect(summary.approvalCheckpointId).toBe("approval-checkpoint-1");
+    expect(summary.approvalRequestedAt).toBe(111);
+  });
+  it("updates persisted approval state idempotently when the same callback decision is applied twice", () => {
+    const runId = "run-approval-idempotent";
+    const detailPath = join(tmpDir, "runs", `${runId}.json`);
+    writeFileSync(
+      detailPath,
+      JSON.stringify({
+        id: runId,
+        startedAt: 1,
+        endedAt: null,
+        data: {
+          _workflowId: "wf-approval-idempotent",
+          _workflowName: "Approval Idempotent Workflow",
+          _approval: {
+            status: "waiting",
+            checkpointId: "approval-checkpoint-1",
+            callbackToken: "token-123",
+          },
+        },
+        nodeStatuses: { approve: NodeStatus.WAITING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    const first = engine.recordApprovalDecision(runId, {
+      checkpointId: "approval-checkpoint-1",
+      callbackToken: "token-123",
+      decision: "approved",
+      decidedAt: 222,
+      decidedBy: "user-1",
+    });
+    const second = engine.recordApprovalDecision(runId, {
+      checkpointId: "approval-checkpoint-1",
+      callbackToken: "token-123",
+      decision: "approved",
+      decidedAt: 333,
+      decidedBy: "user-2",
+    });
+    expect(first).toEqual(expect.objectContaining({ applied: true, duplicate: false }));
+    expect(second).toEqual(expect.objectContaining({ applied: true, duplicate: true }));
+    const persisted = JSON.parse(readFileSync(detailPath, "utf8"));
+    expect(persisted.data._approval).toEqual(expect.objectContaining({
+      status: "approved",
+      checkpointId: "approval-checkpoint-1",
+      callbackToken: "token-123",
+      decision: "approved",
+      decidedAt: 222,
+      decidedBy: "user-1",
+    }));
+  });
+  it("resumes interrupted approval-paused runs with approval metadata intact", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-approval-resume", name: "Approval Resume Workflow" },
+    );
+    engine.save(wf);
+    const runsDir = join(tmpDir, "runs");
+    const interruptedRunId = "run-approval-paused";
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [{
+          runId: interruptedRunId,
+          workflowId: wf.id,
+          workflowName: wf.name,
+          status: WorkflowStatus.PAUSED,
+          startedAt: 1000,
+          endedAt: null,
+          resumable: true,
+          approvalStatus: "approved",
+          approvalCheckpointId: "approval-checkpoint-1",
+        }],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${interruptedRunId}.json`),
+      JSON.stringify({
+        id: interruptedRunId,
+        startedAt: 1000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          _approval: {
+            status: "approved",
+            checkpointId: "approval-checkpoint-1",
+            callbackToken: "token-123",
+            decision: "approved",
+            decidedAt: 222,
+            decidedBy: "user-1",
+          },
+        },
+        nodeStatuses: { approve: NodeStatus.WAITING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
+    await engine.resumeInterruptedRuns();
+    expect(retrySpy).toHaveBeenCalledWith(
+      interruptedRunId,
+      expect.objectContaining({
+        mode: "from_scratch",
+        approval: expect.objectContaining({
+          status: "approved",
+          checkpointId: "approval-checkpoint-1",
+          decision: "approved",
+        }),
+      }),
+    );
+  });  it("does not resume an interrupted task run when a newer run already exists for the same task", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
       [],
       { id: "wf-resume-superseded", name: "Resume Superseded Workflow" },
     );
     engine.save(wf);
-
     const runsDir = join(tmpDir, "runs");
     const interruptedRunId = "run-interrupted-older";
     const newerRunId = "run-newer-active";
     const taskId = "task-shared-1";
-
     writeFileSync(
       join(runsDir, "index.json"),
       JSON.stringify({
@@ -1029,20 +1155,15 @@ describe("WorkflowEngine - run history details", () => {
       "utf8",
     );
     writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
-
     const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
-
     await engine.resumeInterruptedRuns();
-
     expect(retrySpy).not.toHaveBeenCalled();
-
     const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
     const interrupted = index.runs.find((entry) => entry.runId === interruptedRunId);
     expect(interrupted).toBeTruthy();
     expect(interrupted.resumable).toBe(false);
     expect(interrupted.resumeResult).toBe("duplicate_task_run");
   });
-
   it("refreshes migrated task-lifecycle defaults when retrying an interrupted run", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
@@ -1058,10 +1179,8 @@ describe("WorkflowEngine - run history details", () => {
       installedFrom: "template-task-lifecycle",
     };
     engine.save(wf);
-
     const runsDir = join(tmpDir, "runs");
     const interruptedRunId = "run-stale-quality-gate";
-
     writeFileSync(
       join(runsDir, "index.json"),
       JSON.stringify({
@@ -1099,19 +1218,14 @@ describe("WorkflowEngine - run history details", () => {
       "utf8",
     );
     writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
-
     const executeDagSpy = vi.spyOn(engine, "_executeDag").mockResolvedValue();
-
     const { retryRunId } = await engine.retryRun(interruptedRunId, { mode: "from_failed" });
-
     expect(executeDagSpy).toHaveBeenCalledTimes(1);
     const resumedCtx = executeDagSpy.mock.calls[0][3];
     expect(resumedCtx.data.prePrValidationCommand).toBe("auto");
-
     const resumedRun = engine.getRunDetail(retryRunId);
     expect(resumedRun?.detail?.data?.prePrValidationCommand).toBe("auto");
   });
-
   it("resumes interrupted runs from_scratch when issue-advisor requests replanning", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
@@ -1119,10 +1233,8 @@ describe("WorkflowEngine - run history details", () => {
       { id: "wf-resume-replan", name: "Resume Replan Workflow" },
     );
     engine.save(wf);
-
     const runsDir = join(tmpDir, "runs");
     const interruptedRunId = "run-interrupted-replan";
-
     writeFileSync(
       join(runsDir, "index.json"),
       JSON.stringify({
@@ -1168,11 +1280,8 @@ describe("WorkflowEngine - run history details", () => {
       "utf8",
     );
     writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
-
     const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
-
     await engine.resumeInterruptedRuns();
-
     expect(retrySpy).toHaveBeenCalledWith(
       interruptedRunId,
       expect.objectContaining({
@@ -1182,19 +1291,168 @@ describe("WorkflowEngine - run history details", () => {
     );
   });
 
-  it("does not resume an interrupted task run when a newer run already exists for the same task", async () => {
+  it("preserves durable approval waiting state in run detail summaries", () => {
+    const ctx = new WorkflowContext({
+      _workflowId: "wf-approval-wait",
+      _workflowName: "Approval Wait Workflow",
+      _approval: {
+        status: "waiting",
+        checkpointId: "approval-checkpoint-1",
+        scope: "workflow",
+        requestedAt: 111,
+        requestedBy: "agent/session-1",
+        prompt: "Approve deploy?",
+        callbackToken: "token-123",
+      },
+    });
+    ctx.id = "run-approval-wait";
+    ctx.setNodeStatus("approve", NodeStatus.WAITING);
+    const detail = engine._serializeRunContext(ctx, true);
+    const summary = engine._buildSummaryFromDetail({
+      runId: ctx.id,
+      workflowId: "wf-approval-wait",
+      workflowName: "Approval Wait Workflow",
+      status: WorkflowStatus.PAUSED,
+      detail,
+    });
+    expect(detail.data._approval).toEqual(expect.objectContaining({
+      status: "waiting",
+      checkpointId: "approval-checkpoint-1",
+      callbackToken: "token-123",
+    }));
+    expect(summary.status).toBe(WorkflowStatus.PAUSED);
+    expect(summary.activeNodeCount).toBe(0);
+    expect(summary.approvalStatus).toBe("waiting");
+    expect(summary.approvalCheckpointId).toBe("approval-checkpoint-1");
+    expect(summary.approvalRequestedAt).toBe(111);
+  });
+  it("updates persisted approval state idempotently when the same callback decision is applied twice", () => {
+    const runId = "run-approval-idempotent";
+    const detailPath = join(tmpDir, "runs", `${runId}.json`);
+    writeFileSync(
+      detailPath,
+      JSON.stringify({
+        id: runId,
+        startedAt: 1,
+        endedAt: null,
+        data: {
+          _workflowId: "wf-approval-idempotent",
+          _workflowName: "Approval Idempotent Workflow",
+          _approval: {
+            status: "waiting",
+            checkpointId: "approval-checkpoint-1",
+            callbackToken: "token-123",
+          },
+        },
+        nodeStatuses: { approve: NodeStatus.WAITING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    const first = engine.recordApprovalDecision(runId, {
+      checkpointId: "approval-checkpoint-1",
+      callbackToken: "token-123",
+      decision: "approved",
+      decidedAt: 222,
+      decidedBy: "user-1",
+    });
+    const second = engine.recordApprovalDecision(runId, {
+      checkpointId: "approval-checkpoint-1",
+      callbackToken: "token-123",
+      decision: "approved",
+      decidedAt: 333,
+      decidedBy: "user-2",
+    });
+    expect(first).toEqual(expect.objectContaining({ applied: true, duplicate: false }));
+    expect(second).toEqual(expect.objectContaining({ applied: true, duplicate: true }));
+    const persisted = JSON.parse(readFileSync(detailPath, "utf8"));
+    expect(persisted.data._approval).toEqual(expect.objectContaining({
+      status: "approved",
+      checkpointId: "approval-checkpoint-1",
+      callbackToken: "token-123",
+      decision: "approved",
+      decidedAt: 222,
+      decidedBy: "user-1",
+    }));
+  });
+  it("resumes interrupted approval-paused runs with approval metadata intact", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-approval-resume", name: "Approval Resume Workflow" },
+    );
+    engine.save(wf);
+    const runsDir = join(tmpDir, "runs");
+    const interruptedRunId = "run-approval-paused";
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [{
+          runId: interruptedRunId,
+          workflowId: wf.id,
+          workflowName: wf.name,
+          status: WorkflowStatus.PAUSED,
+          startedAt: 1000,
+          endedAt: null,
+          resumable: true,
+          approvalStatus: "approved",
+          approvalCheckpointId: "approval-checkpoint-1",
+        }],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${interruptedRunId}.json`),
+      JSON.stringify({
+        id: interruptedRunId,
+        startedAt: 1000,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          _approval: {
+            status: "approved",
+            checkpointId: "approval-checkpoint-1",
+            callbackToken: "token-123",
+            decision: "approved",
+            decidedAt: 222,
+            decidedBy: "user-1",
+          },
+        },
+        nodeStatuses: { approve: NodeStatus.WAITING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
+    await engine.resumeInterruptedRuns();
+    expect(retrySpy).toHaveBeenCalledWith(
+      interruptedRunId,
+      expect.objectContaining({
+        mode: "from_scratch",
+        approval: expect.objectContaining({
+          status: "approved",
+          checkpointId: "approval-checkpoint-1",
+          decision: "approved",
+        }),
+      }),
+    );
+  });  it("does not resume an interrupted task run when a newer run already exists for the same task", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
       [],
       { id: "wf-resume-superseded", name: "Resume Superseded Workflow" },
     );
     engine.save(wf);
-
     const runsDir = join(tmpDir, "runs");
     const interruptedRunId = "run-interrupted-older";
     const newerRunId = "run-newer-active";
     const taskId = "task-shared-1";
-
     writeFileSync(
       join(runsDir, "index.json"),
       JSON.stringify({
@@ -1257,20 +1515,15 @@ describe("WorkflowEngine - run history details", () => {
       "utf8",
     );
     writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
-
     const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
-
     await engine.resumeInterruptedRuns();
-
     expect(retrySpy).not.toHaveBeenCalled();
-
     const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
     const interrupted = index.runs.find((entry) => entry.runId === interruptedRunId);
     expect(interrupted).toBeTruthy();
     expect(interrupted.resumable).toBe(false);
     expect(interrupted.resumeResult).toBe("duplicate_task_run");
   });
-
   it("refreshes migrated task-lifecycle defaults when retrying an interrupted run", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
@@ -1286,10 +1539,8 @@ describe("WorkflowEngine - run history details", () => {
       installedFrom: "template-task-lifecycle",
     };
     engine.save(wf);
-
     const runsDir = join(tmpDir, "runs");
     const interruptedRunId = "run-stale-quality-gate";
-
     writeFileSync(
       join(runsDir, "index.json"),
       JSON.stringify({
@@ -1327,19 +1578,14 @@ describe("WorkflowEngine - run history details", () => {
       "utf8",
     );
     writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
-
     const executeDagSpy = vi.spyOn(engine, "_executeDag").mockResolvedValue();
-
     const { retryRunId } = await engine.retryRun(interruptedRunId, { mode: "from_failed" });
-
     expect(executeDagSpy).toHaveBeenCalledTimes(1);
     const resumedCtx = executeDagSpy.mock.calls[0][3];
     expect(resumedCtx.data.prePrValidationCommand).toBe("auto");
-
     const resumedRun = engine.getRunDetail(retryRunId);
     expect(resumedRun?.detail?.data?.prePrValidationCommand).toBe("auto");
   });
-
   it("refreshes migrated task-lifecycle defaults for fresh task-lifecycle executions", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
@@ -1359,15 +1605,11 @@ describe("WorkflowEngine - run history details", () => {
       },
     };
     engine.save(wf);
-
     const ctx = await engine.execute(wf.id, {});
-
     expect(ctx.data.prePrValidationCommand).toBe("auto");
-
     const persisted = engine.getRunDetail(ctx.id);
     expect(persisted?.detail?.data?.prePrValidationCommand).toBe("auto");
   });
-
   it("hydrates missing history entries from run detail files when index is truncated", () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
@@ -1375,7 +1617,6 @@ describe("WorkflowEngine - run history details", () => {
       { id: "wf-hydrate-history", name: "Hydrate History Workflow" },
     );
     engine.save(wf);
-
     const runsDir = join(tmpDir, "runs");
     const indexedRunId = "run-indexed";
     writeFileSync(
@@ -1399,7 +1640,6 @@ describe("WorkflowEngine - run history details", () => {
       }, null, 2),
       "utf8",
     );
-
     const detailRuns = [
       { runId: "run-hydrate-1", startedAt: 1000 },
       { runId: "run-hydrate-2", startedAt: 2000 },
@@ -1421,13 +1661,11 @@ describe("WorkflowEngine - run history details", () => {
         "utf8",
       );
     }
-
     const history = engine.getRunHistory(wf.id, 5);
     const runIds = history.map((run) => run.runId);
     expect(runIds).toContain(indexedRunId);
     expect(runIds).toContain("run-hydrate-1");
     expect(runIds).toContain("run-hydrate-2");
-
     const reloadedIndex = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
     const reloadedIds = (reloadedIndex.runs || []).map((run) => run.runId);
     expect(reloadedIds).toContain("run-hydrate-1");
@@ -1438,7 +1676,6 @@ describe("WorkflowEngine - run history details", () => {
     const blocker = new Promise((resolve) => { releaseRun = resolve; });
     let nodeEntered;
     const nodeStarted = new Promise((resolve) => { nodeEntered = resolve; });
-
     registerNodeType("test.cancellable", {
       describe: () => "Cancellable long-running node",
       schema: { type: "object", properties: {} },
@@ -1449,7 +1686,6 @@ describe("WorkflowEngine - run history details", () => {
         return { ok: true };
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -1458,50 +1694,39 @@ describe("WorkflowEngine - run history details", () => {
       [{ id: "e1", source: "trigger", target: "wait" }],
       { name: "Cancellable Workflow" },
     );
-
     engine.save(wf);
     const runPromise = engine.execute(wf.id, {});
     await nodeStarted;
-
     const history = engine.getRunHistory(wf.id, 10);
     const active = history.find((entry) => entry.status === WorkflowStatus.RUNNING);
     expect(active).toBeTruthy();
-
     const cancelResult = engine.cancelRun(active.runId, { reason: "test-stop" });
     expect(cancelResult.ok).toBe(true);
     expect(cancelResult.cancelRequested).toBe(true);
-
     releaseRun();
     await runPromise;
-
     const latest = engine.getRunHistory(wf.id, 1)[0];
     expect(latest.status).toBe(WorkflowStatus.CANCELLED);
-
     const detail = engine.getRunDetail(latest.runId);
     expect(detail.status).toBe(WorkflowStatus.CANCELLED);
     expect(String(detail?.detail?.data?._workflowTerminalMessage || "")).toContain("test-stop");
   });
-
 });
 // ── Node Type Tests ─────────────────────────────────────────────────────────
-
 describe("New node types", () => {
   it("trigger.anomaly matches by type and severity", async () => {
     const handler = getNodeType("trigger.anomaly");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({
       anomalyType: "stuck_agent",
       severity: "high",
       agentId: "codex-1",
     });
-
     const node = { id: "t1", type: "trigger.anomaly", config: { anomalyType: "stuck_agent", minSeverity: "medium" } };
     const result = await handler.execute(node, ctx);
     expect(result.triggered).toBe(true);
     expect(result.anomalyType).toBe("stuck_agent");
   });
-
   it("trigger.anomaly rejects low severity when minSeverity is high", async () => {
     const handler = getNodeType("trigger.anomaly");
     const ctx = new WorkflowContext({ anomalyType: "stuck_agent", severity: "low" });
@@ -1509,23 +1734,19 @@ describe("New node types", () => {
     const result = await handler.execute(node, ctx);
     expect(result.triggered).toBe(false);
   });
-
   it("trigger.anomaly filters by agent regex", async () => {
     const handler = getNodeType("trigger.anomaly");
     const ctx = new WorkflowContext({ anomalyType: "error_spike", severity: "critical", agentId: "frontend-agent-1" });
     const node = { id: "t1", type: "trigger.anomaly", config: { agentFilter: "frontend" } };
     const result = await handler.execute(node, ctx);
     expect(result.triggered).toBe(true);
-
     const node2 = { id: "t2", type: "trigger.anomaly", config: { agentFilter: "backend" } };
     const result2 = await handler.execute(node2, ctx);
     expect(result2.triggered).toBe(false);
   });
-
   it("trigger.meeting.wake_phrase matches transcript payload with session and role filters", async () => {
     const handler = getNodeType("trigger.meeting.wake_phrase");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({
       sessionId: "meeting-123",
       role: "user",
@@ -1545,7 +1766,6 @@ describe("New node types", () => {
     expect(result.matchedField).toBe("content");
     expect(result.wakePhrase).toBe("bosun wake");
   });
-
   it("trigger.meeting.wake_phrase soft-fails invalid regex mode", async () => {
     const handler = getNodeType("trigger.meeting.wake_phrase");
     const ctx = new WorkflowContext({
@@ -1565,28 +1785,23 @@ describe("New node types", () => {
     expect(result.triggered).toBe(false);
     expect(result.reason).toBe("invalid_regex");
   });
-
   it("trigger.scheduled_once resolves relative time expressions", async () => {
     const handler = getNodeType("trigger.scheduled_once");
     const ctx = new WorkflowContext({});
-
     // Already past
     const node = { id: "t1", type: "trigger.scheduled_once", config: { runAt: new Date(Date.now() - 1000).toISOString() } };
     const result = await handler.execute(node, ctx);
     expect(result.triggered).toBe(true);
     expect(result.remainingMs).toBe(0);
-
     // Future
     const node2 = { id: "t2", type: "trigger.scheduled_once", config: { runAt: "+30m" } };
     const result2 = await handler.execute(node2, ctx);
     expect(result2.triggered).toBe(false);
     expect(result2.remainingMs).toBeGreaterThan(0);
   });
-
   it("action.delay supports seconds, minutes, hours", async () => {
     const handler = getNodeType("action.delay");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({});
     // Use very small values for fast test
     const node = { id: "d1", type: "action.delay", config: { ms: 10, reason: "test" } };
@@ -1594,11 +1809,9 @@ describe("New node types", () => {
     expect(result.waited).toBeGreaterThanOrEqual(10);
     expect(result.reason).toBe("test");
   });
-
   it("action.delay supports legacy durationMs/message aliases", async () => {
     const handler = getNodeType("action.delay");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({});
     const node = {
       id: "d2",
@@ -1609,11 +1822,9 @@ describe("New node types", () => {
     expect(result.waited).toBeGreaterThanOrEqual(10);
     expect(result.reason).toBe("legacy");
   });
-
   it("flow.gate opens on condition", async () => {
     const handler = getNodeType("flow.gate");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({ ready: true });
     const engine = { emit: vi.fn() };
     const node = {
@@ -1626,7 +1837,6 @@ describe("New node types", () => {
     expect(result.mode).toBe("condition");
     expect(result.waited).toBeLessThan(1000);
   });
-
   it("flow.gate timeout mode waits then proceeds", async () => {
     const handler = getNodeType("flow.gate");
     const ctx = new WorkflowContext({});
@@ -1640,11 +1850,9 @@ describe("New node types", () => {
     expect(result.gateOpened).toBe(true);
     expect(result.waited).toBe(50);
   });
-
   it("flow.join reports joined=true when all listed sources are completed/skipped", async () => {
     const handler = getNodeType("flow.join");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({});
     ctx.setNodeStatus("branch-a", NodeStatus.COMPLETED);
     ctx.setNodeStatus("branch-b", NodeStatus.SKIPPED);
@@ -1661,11 +1869,9 @@ describe("New node types", () => {
     expect(result.arrivedCount).toBe(2);
     expect(result.pendingSources).toEqual([]);
   });
-
   it("flow.end returns explicit terminal signal", async () => {
     const handler = getNodeType("flow.end");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({ taskId: "TASK-1" });
     const node = {
       id: "end-1",
@@ -1681,19 +1887,16 @@ describe("New node types", () => {
     expect(result.status).toBe("failed");
     expect(result.output).toEqual({ taskId: "TASK-1" });
   });
-
   it("flow.universal and flow.universial dispatch to child workflows", async () => {
     const canonical = getNodeType("flow.universal");
     const typoAlias = getNodeType("flow.universial");
     expect(canonical).toBeDefined();
     expect(typoAlias).toBeDefined();
-
     const ctx = new WorkflowContext({ _workflowId: "parent-wf", taskId: "TASK-42" });
     const mockEngine = {
       execute: vi.fn(async () => new WorkflowContext({ ok: true })),
       get: vi.fn(() => ({ id: "template-task-archiver" })),
     };
-
     const node = {
       id: "universal-1",
       type: "flow.universial",
@@ -1703,7 +1906,6 @@ describe("New node types", () => {
         inheritContext: true,
       },
     };
-
     const result = await typoAlias.execute(node, ctx, mockEngine);
     expect(result.success).toBe(true);
     expect(result.mode).toBe("sync");
@@ -1723,11 +1925,9 @@ describe("New node types", () => {
     );
     expect(canonical).toBe(typoAlias);
   });
-
   it("flow.universal dispatch mode accepts synchronous engine return values", async () => {
     const handler = getNodeType("flow.universal");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({ _workflowId: "parent-wf", taskId: "TASK-42" });
     const mockEngine = {
       execute: vi.fn(() => new WorkflowContext({ ok: true })),
@@ -1742,7 +1942,6 @@ describe("New node types", () => {
         inheritContext: true,
       },
     };
-
     const result = await handler.execute(node, ctx, mockEngine);
     expect(result).toMatchObject({
       success: true,
@@ -1752,7 +1951,6 @@ describe("New node types", () => {
     });
     expect(mockEngine.execute).toHaveBeenCalledTimes(1);
   });
-
   it("flow.end hard-stops remaining nodes and marks run as failed", async () => {
     const testEngine = makeTmpEngine();
     const wf = makeSimpleWorkflow(
@@ -1767,24 +1965,20 @@ describe("New node types", () => {
       ],
       { id: "wf-end-hard-stop", name: "WF End Hard Stop" },
     );
-
     testEngine.save(wf);
     const ctx = await testEngine.execute(wf.id, {});
     expect(ctx.getNodeStatus("end-fail")).toBe(NodeStatus.COMPLETED);
     expect(ctx.getNodeStatus("after-end")).toBe(NodeStatus.SKIPPED);
     expect(ctx.data._workflowTerminalStatus).toBe(WorkflowStatus.FAILED);
-
     const detail = testEngine.getRunDetail(ctx.id);
     expect(detail?.status).toBe(WorkflowStatus.FAILED);
   });
 });
-
 describe("action.execute_workflow", () => {
   beforeEach(() => { makeTmpEngine(); });
   afterEach(() => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
-
   it("sync mode executes child workflow with resolved input and stores summary output", async () => {
     const childWorkflow = makeSimpleWorkflow(
       [
@@ -1815,10 +2009,8 @@ describe("action.execute_workflow", () => {
       [{ id: "e1", source: "trigger", target: "invoke-child" }],
       { id: "parent-sync-wf", name: "Parent Sync Workflow" },
     );
-
     engine.save(childWorkflow);
     engine.save(parentWorkflow);
-
     const parentCtx = await engine.execute(parentWorkflow.id, {
       targetWorkflowId: childWorkflow.id,
       payload: "payload-value",
@@ -1826,7 +2018,6 @@ describe("action.execute_workflow", () => {
       sharedValue: "inherit-me",
       ignoredValue: "do-not-inherit",
     });
-
     expect(parentCtx.errors).toEqual([]);
     const output = parentCtx.getNodeOutput("invoke-child");
     expect(output).toMatchObject({
@@ -1839,7 +2030,6 @@ describe("action.execute_workflow", () => {
     });
     expect(typeof output.runId).toBe("string");
     expect(parentCtx.data.childSummary).toEqual(output);
-
     const childDetail = engine.getRunDetail(output.runId);
     expect(childDetail).toBeTruthy();
     expect(childDetail.workflowId).toBe(childWorkflow.id);
@@ -1853,7 +2043,6 @@ describe("action.execute_workflow", () => {
     expect(childDetail.ledger?.parentRunId).toBe(parentCtx.id);
     expect(childDetail.ledger?.rootRunId).toBe(parentCtx.id);
   });
-
   it("sync mode resolves installed template aliases via metadata.installedFrom", async () => {
     const childWorkflow = makeSimpleWorkflow(
       [
@@ -1866,7 +2055,6 @@ describe("action.execute_workflow", () => {
       ...(childWorkflow.metadata || {}),
       installedFrom: "template-installed-child",
     };
-
     const parentWorkflow = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start Parent", config: {} },
@@ -1883,14 +2071,10 @@ describe("action.execute_workflow", () => {
       [{ id: "e1", source: "trigger", target: "invoke-child" }],
       { id: "parent-template-alias", name: "Parent Template Alias Workflow" },
     );
-
     engine.save(childWorkflow);
     engine.save(parentWorkflow);
-
     expect(engine.get("template-installed-child")?.id).toBe(childWorkflow.id);
-
     const parentCtx = await engine.execute(parentWorkflow.id, {});
-
     expect(parentCtx.errors).toEqual([]);
     const output = parentCtx.getNodeOutput("invoke-child");
     expect(output).toMatchObject({
@@ -1902,17 +2086,14 @@ describe("action.execute_workflow", () => {
       errorCount: 0,
     });
     expect(parentCtx.data.childSummary).toEqual(output);
-
     const childDetail = engine.getRunDetail(output.runId);
     expect(childDetail).toBeTruthy();
     expect(childDetail.workflowId).toBe("template-installed-child");
     expect(engine.get(childDetail.workflowId)?.id).toBe(childWorkflow.id);
   });
-
   it("dispatch mode queues child workflow without waiting for completion", async () => {
     const handler = getNodeType("action.execute_workflow");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({ _workflowId: "parent-dispatch-wf" });
     let releaseChild;
     const childRunPromise = new Promise((resolve) => {
@@ -1931,7 +2112,6 @@ describe("action.execute_workflow", () => {
         outputVariable: "dispatchSummary",
       },
     };
-
     try {
       const result = await handler.execute(node, ctx, mockEngine);
       expect(result).toMatchObject({
@@ -1959,11 +2139,9 @@ describe("action.execute_workflow", () => {
       await childRunPromise;
     }
   });
-
   it("dispatch mode accepts synchronous engine return values", async () => {
     const handler = getNodeType("action.execute_workflow");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({ _workflowId: "parent-dispatch-wf" });
     const mockEngine = {
       execute: vi.fn(() => new WorkflowContext({ ok: true })),
@@ -1978,7 +2156,6 @@ describe("action.execute_workflow", () => {
         outputVariable: "dispatchSummary",
       },
     };
-
     const result = await handler.execute(node, ctx, mockEngine);
     expect(result).toMatchObject({
       success: true,
@@ -1989,11 +2166,9 @@ describe("action.execute_workflow", () => {
     expect(ctx.data.dispatchSummary).toEqual(result);
     expect(mockEngine.execute).toHaveBeenCalledTimes(1);
   });
-
   it("blocks recursive workflow loops unless allowRecursive is true", async () => {
     const handler = getNodeType("action.execute_workflow");
     expect(handler).toBeDefined();
-
     const recursiveCtx = new WorkflowContext({
       _workflowId: "wf-current",
       _workflowStack: ["wf-root", "wf-current"],
@@ -2007,12 +2182,10 @@ describe("action.execute_workflow", () => {
       type: "action.execute_workflow",
       config: { workflowId: "wf-root" },
     };
-
     await expect(handler.execute(recursiveNode, recursiveCtx, blockingEngine))
       .rejects
       .toThrow(/recursive workflow call blocked/i);
     expect(blockingEngine.execute).not.toHaveBeenCalled();
-
     const allowEngine = {
       execute: vi.fn().mockResolvedValue(new WorkflowContext({})),
       get: vi.fn().mockReturnValue({ id: "wf-root" }),
@@ -2022,24 +2195,19 @@ describe("action.execute_workflow", () => {
       type: "action.execute_workflow",
       config: { workflowId: "wf-root", allowRecursive: true, failOnChildError: false },
     };
-
     const allowedResult = await handler.execute(allowedNode, recursiveCtx, allowEngine);
     expect(allowEngine.execute).toHaveBeenCalledTimes(1);
     expect(allowedResult.success).toBe(true);
   });
-
   it("sync mode honors failOnChildError", async () => {
     const handler = getNodeType("action.execute_workflow");
     expect(handler).toBeDefined();
-
     const failedChildCtx = new WorkflowContext({});
     failedChildCtx.error("child-node", new Error("child exploded"));
-
     const mockEngine = {
       execute: vi.fn().mockResolvedValue(failedChildCtx),
       get: vi.fn().mockReturnValue({ id: "child-failing-wf" }),
     };
-
     const throwingNode = {
       id: "throw-on-child-fail",
       type: "action.execute_workflow",
@@ -2048,7 +2216,6 @@ describe("action.execute_workflow", () => {
     await expect(
       handler.execute(throwingNode, new WorkflowContext({ _workflowId: "parent-wf" }), mockEngine),
     ).rejects.toThrow(/child workflow "child-failing-wf" failed/i);
-
     const softFailNode = {
       id: "soft-child-fail",
       type: "action.execute_workflow",
@@ -2076,13 +2243,11 @@ describe("action.execute_workflow", () => {
     expect(softCtx.data.childResult).toEqual(softResult);
   });
 });
-
 describe("action.inline_workflow and executeDefinition", () => {
   beforeEach(() => { makeTmpEngine(); });
   afterEach(() => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
-
   it("executeDefinition runs an ephemeral workflow without saving it", async () => {
     const inlineDefinition = {
       name: "Ephemeral Inline Workflow",
@@ -2117,18 +2282,15 @@ describe("action.inline_workflow and executeDefinition", () => {
         { id: "e2", source: "set-reply", target: "finish" },
       ],
     };
-
     const ctx = await engine.executeDefinition(inlineDefinition, { message: "hello" }, {
       inlineWorkflowId: "inline:ephemeral-test",
     });
-
     expect(ctx.errors).toEqual([]);
     expect(ctx.data.reply).toBe("hello");
     expect(engine.get("inline:ephemeral-test")).toBeNull();
     const detail = engine.getRunDetail(ctx.id);
     expect(detail?.workflowId).toBe("inline:ephemeral-test");
   });
-
   it("sync mode executes embedded workflows and unwraps flow.end output", async () => {
     const parentWorkflow = makeSimpleWorkflow(
       [
@@ -2173,15 +2335,12 @@ describe("action.inline_workflow and executeDefinition", () => {
       [{ id: "e1", source: "trigger", target: "inline-child" }],
       { id: "parent-inline-sync", name: "Parent Inline Sync" },
     );
-
     engine.save(parentWorkflow);
-
     const parentCtx = await engine.execute(parentWorkflow.id, {
       payload: "payload-value",
       sharedValue: "inherit-me",
       ignoredValue: "do-not-inherit",
     });
-
     expect(parentCtx.errors).toEqual([]);
     const output = parentCtx.getNodeOutput("inline-child");
     expect(output).toMatchObject({
@@ -2194,7 +2353,6 @@ describe("action.inline_workflow and executeDefinition", () => {
     });
     expect(typeof output.runId).toBe("string");
     expect(parentCtx.data.inlineSummary).toEqual(output);
-
     const childDetail = engine.getRunDetail(output.runId);
     expect(childDetail?.detail?.data?.payload).toBe("payload-value");
     expect(childDetail?.detail?.data?.sharedValue).toBe("inherit-me");
@@ -2204,11 +2362,9 @@ describe("action.inline_workflow and executeDefinition", () => {
     expect(childDetail?.ledger?.parentRunId).toBe(parentCtx.id);
     expect(childDetail?.ledger?.rootRunId).toBe(parentCtx.id);
   });
-
   it("dispatch mode queues embedded workflows without waiting for completion", async () => {
     const handler = getNodeType("action.inline_workflow");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({ _workflowId: "parent-inline-dispatch" });
     let releaseChild;
     const childRunPromise = new Promise((resolve) => {
@@ -2231,7 +2387,6 @@ describe("action.inline_workflow and executeDefinition", () => {
         },
       },
     };
-
     try {
       const result = await handler.execute(node, ctx, mockEngine);
       expect(result).toMatchObject({
@@ -2254,15 +2409,12 @@ describe("action.inline_workflow and executeDefinition", () => {
     }
   });
 });
-
 // ── Session Chaining Tests ──────────────────────────────────────────────────
-
 describe("meeting workflow nodes", () => {
   beforeEach(() => { makeTmpEngine(); });
   afterEach(() => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
-
   it("executes meeting.start -> meeting.send -> meeting.transcript -> meeting.finalize with service wiring", async () => {
     const meetingService = {
       startMeeting: vi.fn(async (opts = {}) => ({
@@ -2302,7 +2454,6 @@ describe("meeting workflow nodes", () => {
       })),
     };
     engine.services.meeting = meetingService;
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -2349,7 +2500,6 @@ describe("meeting workflow nodes", () => {
       ],
       { id: "meeting-nodes-wf", name: "Meeting Node Flow" },
     );
-
     engine.save(wf);
     const ctx = await engine.execute(wf.id, {
       meetingId: "meeting-123",
@@ -2357,7 +2507,6 @@ describe("meeting workflow nodes", () => {
       openingMessage: "Please summarize this meeting.",
       finalNote: "Workflow archived meeting session.",
     });
-
     expect(ctx.errors).toEqual([]);
     expect(ctx.getNodeOutput("start")).toMatchObject({
       success: true,
@@ -2379,7 +2528,6 @@ describe("meeting workflow nodes", () => {
       sessionId: "meeting-123",
       status: "archived",
     });
-
     expect(meetingService.startMeeting).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "meeting-123",
@@ -2403,11 +2551,9 @@ describe("meeting workflow nodes", () => {
       }),
     );
   });
-
   it("meeting.vision forwards frame analysis options and stores summary in context", async () => {
     const handler = getNodeType("meeting.vision");
     expect(handler).toBeDefined();
-
     const analyzeMeetingFrame = vi.fn(async (sessionId) => ({
       ok: true,
       sessionId,
@@ -2445,7 +2591,6 @@ describe("meeting workflow nodes", () => {
         },
       },
     };
-
     const result = await handler.execute(node, ctx, mockEngine);
     expect(result).toMatchObject({
       success: true,
@@ -2476,11 +2621,9 @@ describe("meeting workflow nodes", () => {
       "Presenter is showing CI failures in terminal output.",
     );
   });
-
   it("meeting.send returns soft failure when failOnError=false", async () => {
     const handler = getNodeType("meeting.send");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({ meetingSessionId: "meeting-soft-fail" });
     const engineWithFailure = {
       services: {
@@ -2499,7 +2642,6 @@ describe("meeting workflow nodes", () => {
         failOnError: false,
       },
     };
-
     const result = await handler.execute(node, ctx, engineWithFailure);
     expect(result).toMatchObject({
       success: false,
@@ -2507,13 +2649,11 @@ describe("meeting workflow nodes", () => {
     });
   });
 });
-
 describe("WorkflowEngine trigger evaluation", () => {
   beforeEach(() => { makeTmpEngine(); });
   afterEach(() => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
-
   it("includes trigger.meeting.wake_phrase for meeting transcript events", async () => {
     const wf = makeSimpleWorkflow(
       [
@@ -2529,9 +2669,7 @@ describe("WorkflowEngine trigger evaluation", () => {
       [],
       { id: "wake-trigger-workflow", name: "Wake Trigger Workflow" },
     );
-
     engine.save(wf);
-
     const hits = await engine.evaluateTriggers("meeting.transcript", {
       sessionId: "meeting-1",
       role: "user",
@@ -2542,7 +2680,6 @@ describe("WorkflowEngine trigger evaluation", () => {
       workflowId: "wake-trigger-workflow",
       triggeredBy: "wake-trigger",
     });
-
     const nonMeetingHits = await engine.evaluateTriggers("task.completed", {
       sessionId: "meeting-1",
       role: "user",
@@ -2550,7 +2687,6 @@ describe("WorkflowEngine trigger evaluation", () => {
     });
     expect(nonMeetingHits).toHaveLength(0);
   });
-
   it("evaluateScheduleTriggers fires workflows whose interval has elapsed", () => {
     const wf = makeSimpleWorkflow(
       [
@@ -2571,7 +2707,6 @@ describe("WorkflowEngine trigger evaluation", () => {
       { id: "sched-wf", name: "Scheduled Workflow" },
     );
     engine.save(wf);
-
     // No previous runs → should trigger
     const hits = engine.evaluateScheduleTriggers();
     expect(hits).toHaveLength(1);
@@ -2580,7 +2715,6 @@ describe("WorkflowEngine trigger evaluation", () => {
       triggeredBy: "sched-trigger",
     });
   });
-
   it("evaluateScheduleTriggers resolves templated schedule interval from workflow variables", async () => {
     const wf = makeSimpleWorkflow(
       [
@@ -2599,7 +2733,6 @@ describe("WorkflowEngine trigger evaluation", () => {
       },
     );
     engine.save(wf);
-
     await engine.execute("sched-wf-templated-interval");
     const indexPath = join(engine.runsDir, "index.json");
     const index = JSON.parse(readFileSync(indexPath, "utf8"));
@@ -2607,7 +2740,6 @@ describe("WorkflowEngine trigger evaluation", () => {
     expect(run).toBeTruthy();
     run.startedAt = Date.now() - 10 * 60 * 1000; // 10 minutes ago
     writeFileSync(indexPath, JSON.stringify(index, null, 2), "utf8");
-
     const hits = engine.evaluateScheduleTriggers();
     expect(hits.some((h) => h.workflowId === "sched-wf-templated-interval")).toBe(true);
   });
@@ -2625,7 +2757,6 @@ describe("WorkflowEngine trigger evaluation", () => {
       { id: "task-poll-wf", name: "Task Poll Workflow" },
     );
     engine.save(wf);
-
     const hits = engine.evaluateScheduleTriggers();
     expect(hits).toHaveLength(1);
     expect(hits[0]).toMatchObject({
@@ -2633,7 +2764,6 @@ describe("WorkflowEngine trigger evaluation", () => {
       triggeredBy: "task-trigger",
     });
   });
-
   it("evaluateScheduleTriggers uses pollIntervalMs for trigger.task_available", async () => {
     const wf = makeSimpleWorkflow(
       [
@@ -2648,7 +2778,6 @@ describe("WorkflowEngine trigger evaluation", () => {
       { id: "task-poll-interval-wf", name: "Task Poll Interval Workflow" },
     );
     engine.save(wf);
-
     await engine.execute("task-poll-interval-wf");
     const hits = engine.evaluateScheduleTriggers();
     expect(hits.some((h) => h.workflowId === "task-poll-interval-wf")).toBe(false);
@@ -2661,7 +2790,6 @@ describe("WorkflowEngine trigger evaluation", () => {
         throw new Error("downstream should not execute when trigger is false");
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         {
@@ -2681,7 +2809,6 @@ describe("WorkflowEngine trigger evaluation", () => {
       { id: "task-low-skip-wf", name: "Task Low Skip Workflow" },
     );
     engine.save(wf);
-
     const run = await engine.execute("task-low-skip-wf", { todoCount: 10 });
     expect(run.errors).toHaveLength(0);
     expect(run.getNodeStatus("low-trigger")).toBe(NodeStatus.COMPLETED);
@@ -2704,24 +2831,20 @@ describe("WorkflowEngine trigger evaluation", () => {
       variables: {},
     };
     engine.save(wf);
-
     const hits = engine.evaluateScheduleTriggers();
     expect(hits.some((h) => h.workflowId === "sched-disabled")).toBe(false);
   });
 });
-
 describe("Session chaining - action.run_agent", () => {
   beforeEach(() => {
     resetSessionTracker({ persistDir: null });
   });
-
   afterEach(() => {
     resetSessionTracker({ persistDir: null });
   });
   it("propagates threadId to context and streams agent events into run logs", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
     const launchEphemeralThread = vi.fn().mockImplementation(
       async (_prompt, _cwd, _timeoutMs, extra) => {
@@ -2749,14 +2872,12 @@ describe("Session chaining - action.run_agent", () => {
         },
       },
     };
-
     const node = {
       id: "a1",
       type: "action.run_agent",
       config: { prompt: "Test prompt", autoRecover: false, failOnError: true },
     };
     const result = await handler.execute(node, ctx, mockEngine);
-
     expect(result.threadId).toBe("thread-abc-123");
     expect(result.sessionId).toBe("thread-abc-123");
     expect(ctx.data.sessionId).toBe("thread-abc-123");
@@ -2772,14 +2893,12 @@ describe("Session chaining - action.run_agent", () => {
     expect(runLogText).toMatch(/Tool call: apply_patch/);
     expect(runLogText).toMatch(/Agent: Implemented the requested changes\./);
   });
-
   it("fails fast in strict cache anchor mode when system prompt includes task markers", async () => {
     const previous = process.env.BOSUN_CACHE_ANCHOR_MODE;
     process.env.BOSUN_CACHE_ANCHOR_MODE = "strict";
     try {
       const handler = getNodeType("action.run_agent");
       expect(handler).toBeDefined();
-
       const ctx = new WorkflowContext({
         taskId: "STRICT-42",
         taskTitle: "Strict title",
@@ -2808,7 +2927,6 @@ describe("Session chaining - action.run_agent", () => {
           autoRecover: false,
         },
       };
-
       await expect(handler.execute(node, ctx, mockEngine)).rejects.toThrow(
         /BOSUN_CACHE_ANCHOR_MODE=strict/,
       );
@@ -2818,11 +2936,9 @@ describe("Session chaining - action.run_agent", () => {
       else process.env.BOSUN_CACHE_ANCHOR_MODE = previous;
     }
   });
-
   it("resolves templated timeoutMs before launching agent", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({
       worktreePath: "/tmp/test",
       taskTimeoutMs: 21600000,
@@ -2841,7 +2957,6 @@ describe("Session chaining - action.run_agent", () => {
         },
       },
     };
-
     const node = {
       id: "a-timeout",
       type: "action.run_agent",
@@ -2851,22 +2966,18 @@ describe("Session chaining - action.run_agent", () => {
         autoRecover: false,
       },
     };
-
     const result = await handler.execute(node, ctx, mockEngine);
     expect(result.success).toBe(true);
     expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
     expect(launchEphemeralThread.mock.calls[0][2]).toBe(21600000);
   });
-
   it("propagates threadId to context from execWithRetry", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
   });
-
   it("ignores noisy delta stream events while keeping meaningful agent updates", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
     const launchEphemeralThread = vi.fn().mockImplementation(
       async (_prompt, _cwd, _timeoutMs, extra) => {
@@ -2889,21 +3000,17 @@ describe("Session chaining - action.run_agent", () => {
         },
       },
     };
-
     const node = { id: "a-delta", type: "action.run_agent", config: { prompt: "delta test" } };
     const result = await handler.execute(node, ctx, mockEngine);
-
     expect(result.success).toBe(true);
     expect(result.threadId).toBe("thread-delta-filter");
     const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
     expect(runLogText).not.toContain("assistant.reasoning_delta");
     expect(runLogText).toMatch(/Agent: Added regression coverage\./);
   });
-
   it("condenses noisy assistant events into narrative summaries", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
     const launchEphemeralThread = vi.fn().mockImplementation(
       async (_prompt, _cwd, _timeoutMs, extra) => {
@@ -2979,7 +3086,6 @@ describe("Session chaining - action.run_agent", () => {
         };
       },
     );
-
     const mockEngine = {
       services: {
         agentPool: {
@@ -2987,14 +3093,12 @@ describe("Session chaining - action.run_agent", () => {
         },
       },
     };
-
     const node = {
       id: "a2",
       type: "action.run_agent",
       config: { prompt: "parse noisy logs", maxRetainedEvents: 20 },
     };
     const result = await handler.execute(node, ctx, mockEngine);
-
     expect(result.summary).toMatch(/Indexed \d+ code references/);
     expect(result.narrative).toContain("Thought process:");
     expect(result.narrative).toContain("Actions:");
@@ -3010,17 +3114,14 @@ describe("Session chaining - action.run_agent", () => {
     expect(result.itemCount).toBe(4);
     expect(result.omittedItemCount).toBe(0);
     expect(result.threadId).toBe("thread-noise-test");
-
     const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
     expect(runLogText).toMatch(/Agent detail: Indexed/);
     expect(runLogText).toMatch(/Agent requested tools: view, find/);
     expect(runLogText).toMatch(/Usage:/);
   });
-
   it("propagates threadId to context from execWithRetry when autoRecover=true", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
     const mockEngine = {
       services: {
@@ -3047,7 +3148,6 @@ describe("Session chaining - action.run_agent", () => {
     };
     const node = { id: "a1b", type: "action.run_agent", config: { prompt: "Test prompt", autoRecover: true } };
     const result = await handler.execute(node, ctx, mockEngine);
-
     expect(result.threadId).toBe("thread-abc-123");
     expect(result.sessionId).toBe("thread-abc-123");
     expect(ctx.data.sessionId).toBe("thread-abc-123");
@@ -3062,14 +3162,14 @@ describe("Session chaining - action.run_agent", () => {
       }),
     );
   });
-
   it("creates and completes task sessions for task-backed agent runs", async () => {
     const handler = getNodeType("action.run_agent");
     const ctx = new WorkflowContext({
       worktreePath: "/tmp/test",
+      repoRoot: "/tmp/workspace-root",
       taskId: "TASK-SESSION-1",
       task: { id: "TASK-SESSION-1", title: "Task-backed run", branchName: "feat/task-session" },
-      workspaceId: "virtengine-gh",
+      _workspaceId: "virtengine-gh",
     });
     const execWithRetry = vi.fn().mockImplementation(async (_prompt, opts) => {
       opts?.onEvent?.({
@@ -3092,10 +3192,8 @@ describe("Session chaining - action.run_agent", () => {
         },
       },
     };
-
     const node = { id: "task-agent", type: "action.run_agent", config: { prompt: "Do task work", autoRecover: true } };
     const result = await handler.execute(node, ctx, mockEngine);
-
     expect(result.success).toBe(true);
     expect(execWithRetry).toHaveBeenCalledTimes(1);
     expect(execWithRetry.mock.calls[0][1]).toEqual(
@@ -3105,18 +3203,16 @@ describe("Session chaining - action.run_agent", () => {
         systemPrompt: expect.any(String),
       }),
     );
-
     const tracker = getSessionTracker();
     const session = tracker.getSessionById("TASK-SESSION-1");
     expect(session).toBeTruthy();
     expect(session.type).toBe("task");
     expect(session.status).toBe("completed");
     expect(session.metadata.workspaceId).toBe("virtengine-gh");
-    expect(session.metadata.workspaceDir).toBe("/tmp/test");
+    expect(session.metadata.workspaceDir).toBe("/tmp/workspace-root");
     expect(session.metadata.branch).toBe("feat/task-session");
     expect((session.messages || []).some((msg) => String(msg.content || "").includes("Task run completed."))).toBe(true);
   });
-
   it("throws when agent execution returns success=false when failOnError=true", async () => {
     const handler = getNodeType("action.run_agent");
     const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
@@ -3137,7 +3233,6 @@ describe("Session chaining - action.run_agent", () => {
     };
     await expect(handler.execute(node, ctx, mockEngine)).rejects.toThrow(/agent crashed/i);
   });
-
   it("continues existing session before retrying fresh", async () => {
     const handler = getNodeType("action.run_agent");
     const ctx = new WorkflowContext({
@@ -3176,6 +3271,52 @@ describe("Session chaining - action.run_agent", () => {
     expect(result.threadId).toBe("thread-existing-1");
     expect(continueSession).toHaveBeenCalledTimes(1);
     expect(execWithRetry).not.toHaveBeenCalled();
+  });
+  it("hydrates persisted run history up to the configured retention on load", () => {
+    const workflowDir = mkdtempSync(join(tmpdir(), "wf-hydrate-workflows-"));
+    const runsDir = mkdtempSync(join(tmpdir(), "wf-hydrate-runs-"));
+    const previous = process.env.WORKFLOW_MAX_PERSISTED_RUNS;
+    process.env.WORKFLOW_MAX_PERSISTED_RUNS = "10000";
+    try {
+      writeFileSync(resolve(workflowDir, "wf.json"), JSON.stringify({
+        id: "wf-hydrate",
+        name: "Hydrate",
+        nodes: [],
+        edges: [],
+      }, null, 2));
+      const indexedRuns = [];
+      for (let i = 0; i < 2000; i += 1) {
+        indexedRuns.push({
+          runId: String(i) + "-indexed",
+          workflowId: "wf-hydrate",
+          workflowName: "Hydrate",
+          status: "completed",
+          startedAt: i + 1,
+        });
+      }
+      writeFileSync(resolve(runsDir, "index.json"), JSON.stringify({ runs: indexedRuns }, null, 2));
+      for (let i = 2000; i < 2500; i += 1) {
+        writeFileSync(resolve(runsDir, String(i) + ".json"), JSON.stringify({
+          status: "completed",
+          startedAt: i + 1,
+          endedAt: i + 2,
+          data: { _workflowId: "wf-hydrate", _workflowName: "Hydrate" },
+          nodeStatuses: {},
+          errors: [],
+        }, null, 2));
+      }
+      const engine = new WorkflowEngine({ workflowDir, runsDir, detectInterruptedRuns: false });
+      engine.load();
+      const page = engine.getRunHistoryPage(null, { offset: 0, limit: 3000 });
+      expect(page.total).toBe(2500);
+      expect(page.runs).toHaveLength(2500);
+      expect(engine._readRunIndex()).toHaveLength(2500);
+    } finally {
+      if (previous === undefined) delete process.env.WORKFLOW_MAX_PERSISTED_RUNS;
+      else process.env.WORKFLOW_MAX_PERSISTED_RUNS = previous;
+      rmSync(workflowDir, { recursive: true, force: true });
+      rmSync(runsDir, { recursive: true, force: true });
+    }
   });
 
   it("skips continuing a stored session from a different run_agent node", async () => {
@@ -3216,9 +3357,7 @@ describe("Session chaining - action.run_agent", () => {
       type: "action.run_agent",
       config: { prompt: "Implement work", continueOnSession: true },
     };
-
     const result = await handler.execute(node, ctx, mockEngine);
-
     expect(result.success).toBe(true);
     expect(result.threadId).toBe("thread-implement-1");
     expect(continueSession).not.toHaveBeenCalled();
@@ -3227,11 +3366,9 @@ describe("Session chaining - action.run_agent", () => {
     expect(execWithRetry.mock.calls[0][1].taskKey).toContain(":run-agent-implement");
     expect(ctx.data._agentSessionNodeId).toBe("run-agent-implement");
   });
-
   it("runs multi-candidate selector mode when candidateCount > 1 and restores selected branch", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
-
     const repoDir = mkdtempSync(join(tmpdir(), "wf-agent-candidates-"));
     try {
       execGit("git init", { cwd: repoDir, stdio: "ignore" });
@@ -3241,7 +3378,6 @@ describe("Session chaining - action.run_agent", () => {
       execGit("git add README.md", { cwd: repoDir, stdio: "ignore" });
       execGit('git commit -m "base"', { cwd: repoDir, stdio: "ignore" });
       execGit("git checkout -b feature/candidate-test", { cwd: repoDir, stdio: "ignore" });
-
       let runCount = 0;
       const launchEphemeralThread = vi.fn().mockImplementation(async (_prompt, runCwd) => {
         runCount += 1;
@@ -3266,7 +3402,6 @@ describe("Session chaining - action.run_agent", () => {
           },
         },
       };
-
       const ctx = new WorkflowContext({
         worktreePath: repoDir,
         taskId: "task-candidate-mode",
@@ -3283,7 +3418,6 @@ describe("Session chaining - action.run_agent", () => {
         },
       };
       const result = await handler.execute(node, ctx, mockEngine);
-
       expect(launchEphemeralThread).toHaveBeenCalledTimes(2);
       expect(result.success).toBe(true);
       expect(result.threadId).toBe("thread-2");
@@ -3294,7 +3428,6 @@ describe("Session chaining - action.run_agent", () => {
       });
       expect(Array.isArray(result.candidates)).toBe(true);
       expect(result.candidates.length).toBe(2);
-
       const currentBranch = execGit("git rev-parse --abbrev-ref HEAD", {
         cwd: repoDir,
         encoding: "utf8",
@@ -3313,11 +3446,9 @@ describe("Session chaining - action.run_agent", () => {
       }
     }
   }, 60000);
-
   it("delegates using full trigger.task_assigned semantics", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({
       taskId: "TASK-DELEGATE-1",
       taskTitle: "Add API endpoint",
@@ -3328,7 +3459,6 @@ describe("Session chaining - action.run_agent", () => {
         tags: ["backend", "api"],
       },
     });
-
     const execute = vi.fn().mockResolvedValue({ errors: [] });
     const launchEphemeralThread = vi.fn();
     const mockEngine = {
@@ -3371,13 +3501,11 @@ describe("Session chaining - action.run_agent", () => {
         },
       },
     };
-
     const node = {
       id: "delegated-agent",
       type: "action.run_agent",
       config: { prompt: "Handle task" },
     };
-
     const result = await handler.execute(node, ctx, mockEngine);
     expect(result).toMatchObject({
       success: true,
@@ -3402,15 +3530,14 @@ describe("Session chaining - action.run_agent", () => {
     );
     expect(launchEphemeralThread).not.toHaveBeenCalled();
   });
-
   it("records delegated runs in session tracker for task visibility", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({
       taskId: "TASK-DELEGATE-SESSION",
-      taskTitle: "Backend migration",
-      workspaceId: "virtengine-gh",
+      repoRoot: "/tmp/delegated-workspace",
+      _workspaceId: "virtengine-gh",
+
       task: {
         id: "TASK-DELEGATE-SESSION",
         title: "Backend migration",
@@ -3418,7 +3545,6 @@ describe("Session chaining - action.run_agent", () => {
         branchName: "feat/backend-migration",
       },
     });
-
     const mockEngine = {
       list: vi.fn().mockReturnValue([
         {
@@ -3445,40 +3571,34 @@ describe("Session chaining - action.run_agent", () => {
         },
       },
     };
-
     const node = {
       id: "delegated-session-node",
       type: "action.run_agent",
       config: { prompt: "Handle task via delegated workflow" },
     };
-
     const result = await handler.execute(node, ctx, mockEngine);
     expect(result.success).toBe(true);
     expect(result.delegated).toBe(true);
-
     const tracker = getSessionTracker();
     const session = tracker.getSessionById("TASK-DELEGATE-SESSION");
     expect(session).toBeTruthy();
     expect(session.type).toBe("task");
     expect(session.status).toBe("completed");
     expect(session.metadata.workspaceId).toBe("virtengine-gh");
+    expect(session.metadata.workspaceDir).toBe("/tmp/delegated-workspace");
     expect(session.metadata.branch).toBe("feat/backend-migration");
-
     const messages = Array.isArray(session.messages) ? session.messages : [];
     expect(messages.some((msg) => String(msg?.content || "").includes("Delegating to agent workflow"))).toBe(true);
     expect(messages.some((msg) => String(msg?.content || "").includes("Backend Agent\" completed"))).toBe(true);
   });
-
   it("does not delegate agent workflows when task context is missing", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
-
     const ctx = new WorkflowContext({
       eventType: "schedule-poll",
       taskId: "",
       taskTitle: "",
     });
-
     const execute = vi.fn().mockResolvedValue({ errors: [] });
     const launchEphemeralThread = vi.fn().mockResolvedValue({
       success: true,
@@ -3510,15 +3630,12 @@ describe("Session chaining - action.run_agent", () => {
         },
       },
     };
-
     const node = {
       id: "generic-agent",
       type: "action.run_agent",
       config: { prompt: "Generic non-task run", autoRecover: false },
     };
-
     const result = await handler.execute(node, ctx, mockEngine);
-
     expect(result.success).toBe(true);
     expect(result.delegated).not.toBe(true);
     expect(execute).not.toHaveBeenCalled();
@@ -3527,7 +3644,6 @@ describe("Session chaining - action.run_agent", () => {
   it("trigger.task_assigned applies agentType, taskPattern, and filter together", async () => {
     const trigger = getNodeType("trigger.task_assigned");
     expect(trigger).toBeDefined();
-
     const node = {
       id: "trigger-assigned",
       type: "trigger.task_assigned",
@@ -3537,7 +3653,6 @@ describe("Session chaining - action.run_agent", () => {
         filter: "task.tags?.includes('backend')",
       },
     };
-
     const matchingCtx = new WorkflowContext({
       eventType: "task.assigned",
       taskTitle: "Build API endpoint",
@@ -3546,7 +3661,6 @@ describe("Session chaining - action.run_agent", () => {
     });
     const matchingResult = await trigger.execute(node, matchingCtx);
     expect(matchingResult.triggered).toBe(true);
-
     const agentMismatchCtx = new WorkflowContext({
       eventType: "task.assigned",
       taskTitle: "Build API endpoint",
@@ -3557,18 +3671,15 @@ describe("Session chaining - action.run_agent", () => {
     expect(agentMismatchResult.triggered).toBe(false);
   });
 });
-
 describe("trigger.pr_event normalization", () => {
   it("treats ready_for_review and synchronize aliases as opened", async () => {
     const trigger = getNodeType("trigger.pr_event");
     expect(trigger).toBeDefined();
-
     const node = {
       id: "pr-trigger",
       type: "trigger.pr_event",
       config: { event: "opened" },
     };
-
     const readyCtx = new WorkflowContext({
       eventType: "pr.ready_for_review",
       prEvent: "ready_for_review",
@@ -3577,7 +3688,6 @@ describe("trigger.pr_event normalization", () => {
     const readyResult = await trigger.execute(node, readyCtx);
     expect(readyResult.triggered).toBe(true);
     expect(readyResult.prEvent).toBe("opened");
-
     const syncCtx = new WorkflowContext({
       eventType: "pr.synchronize",
       prEvent: "synchronize",
@@ -3587,17 +3697,14 @@ describe("trigger.pr_event normalization", () => {
     expect(syncResult.triggered).toBe(true);
     expect(syncResult.prEvent).toBe("opened");
   });
-
   it("supports config.events list for merge strategy triggers", async () => {
     const trigger = getNodeType("trigger.pr_event");
     expect(trigger).toBeDefined();
-
     const node = {
       id: "pr-trigger-events",
       type: "trigger.pr_event",
       config: { events: ["review_requested", "approved", "opened"] },
     };
-
     const approvedCtx = new WorkflowContext({
       eventType: "pr.approved",
       prEvent: "approved",
@@ -3605,7 +3712,6 @@ describe("trigger.pr_event normalization", () => {
     });
     const approvedResult = await trigger.execute(node, approvedCtx);
     expect(approvedResult.triggered).toBe(true);
-
     const mergedCtx = new WorkflowContext({
       eventType: "pr.merged",
       prEvent: "merged",
@@ -3615,11 +3721,9 @@ describe("trigger.pr_event normalization", () => {
     expect(mergedResult.triggered).toBe(false);
   });
 });
-
 it("agent.run_planner streams planner events and propagates threadId", async () => {
   const handler = getNodeType("agent.run_planner");
   expect(handler).toBeDefined();
-
   const ctx = new WorkflowContext({});
   const launchEphemeralThread = vi.fn().mockImplementation(
     async (_prompt, _cwd, _timeoutMs, extra) => {
@@ -3654,7 +3758,6 @@ it("agent.run_planner streams planner events and propagates threadId", async () 
       },
     },
   };
-
   const node = {
     id: "planner-1",
     type: "agent.run_planner",
@@ -3665,7 +3768,6 @@ it("agent.run_planner streams planner events and propagates threadId", async () 
     },
   };
   const result = await handler.execute(node, ctx, mockEngine);
-
   expect(result.success).toBe(true);
   expect(result.taskCount).toBe(3);
   expect(result.threadId).toBe("planner-thread-123");
@@ -3683,11 +3785,9 @@ it("agent.run_planner streams planner events and propagates threadId", async () 
   expect(runLogText).toMatch(/Agent: Generated 3 tasks\./);
   expect(runLogText).toMatch(/Planner completed: success=true streamEvents=3/);
   });
-
 it("agent.run_planner appends output requirements to explicit prompts and honors templated taskCount", async () => {
   const handler = getNodeType("agent.run_planner");
   expect(handler).toBeDefined();
-
   const ctx = new WorkflowContext({
     taskCount: 10,
     prompt: "Analyze reliability gaps in the repo.",
@@ -3709,7 +3809,6 @@ it("agent.run_planner appends output requirements to explicit prompts and honors
       },
     },
   };
-
   const node = {
     id: "planner-explicit",
     type: "agent.run_planner",
@@ -3719,21 +3818,17 @@ it("agent.run_planner appends output requirements to explicit prompts and honors
     },
   };
   const result = await handler.execute(node, ctx, mockEngine);
-
   expect(result.success).toBe(true);
   expect(result.taskCount).toBe(10);
   expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
-
   const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
   expect(sentPrompt).toContain("Analyze reliability gaps in the repo.");
   expect(sentPrompt).toContain("Generate exactly 10 new tasks.");
   expect(sentPrompt).toContain("single fenced JSON block");
 });
-
 it("agent.run_planner appends planner feedback context from workflow data", async () => {
   const handler = getNodeType("agent.run_planner");
   expect(handler).toBeDefined();
-
   const ctx = new WorkflowContext({
     _plannerFeedback: "Previous run skipped high-risk tasks in workflow area.",
   });
@@ -3754,7 +3849,6 @@ it("agent.run_planner appends planner feedback context from workflow data", asyn
       },
     },
   };
-
   const node = {
     id: "planner-feedback",
     type: "agent.run_planner",
@@ -3762,7 +3856,6 @@ it("agent.run_planner appends planner feedback context from workflow data", asyn
       taskCount: 2,
     },
   };
-
   await handler.execute(node, ctx, mockEngine);
   const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
   expect(sentPrompt).toContain("Planner feedback context:");
@@ -3771,7 +3864,6 @@ it("agent.run_planner appends planner feedback context from workflow data", asyn
 it("agent.run_planner fails immediately when planner dependencies are unavailable", async () => {
   const handler = getNodeType("agent.run_planner");
   expect(handler).toBeDefined();
-
   const ctx = new WorkflowContext({});
   const node = {
     id: "planner-missing-deps",
@@ -3780,17 +3872,14 @@ it("agent.run_planner fails immediately when planner dependencies are unavailabl
       taskCount: 3,
     },
   };
-
   await expect(handler.execute(node, ctx, { services: {} })).resolves.toMatchObject({
     success: false,
     error: expect.stringMatching(/Agent pool or planner prompt not available/i),
   });
 });
-
 it("action.materialize_planner_tasks parses fenced JSON and creates tasks", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
-
   const ctx = new WorkflowContext({});
   ctx.setNodeOutput("run-planner", {
     output: [
@@ -3805,7 +3894,6 @@ it("action.materialize_planner_tasks parses fenced JSON and creates tasks", asyn
       "```",
     ].join("\n"),
   });
-
   const createTask = vi
     .fn(async function createTaskAdapter(projectId, taskData) {
       if (projectId && taskData) {
@@ -3824,7 +3912,6 @@ it("action.materialize_planner_tasks parses fenced JSON and creates tasks", asyn
       },
     },
   };
-
   const node = {
     id: "materialize",
     type: "action.materialize_planner_tasks",
@@ -3838,7 +3925,6 @@ it("action.materialize_planner_tasks parses fenced JSON and creates tasks", asyn
     },
   };
   const result = await handler.execute(node, ctx, mockEngine);
-
   expect(result.success).toBe(true);
   expect(result.parsedCount).toBe(2);
   expect(result.createdCount).toBe(1);
@@ -3865,11 +3951,9 @@ it("action.materialize_planner_tasks parses fenced JSON and creates tasks", asyn
     }),
   }));
 });
-
 it("action.materialize_planner_tasks fails when all parsed tasks are skipped and minCreated is not met", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
-
   const ctx = new WorkflowContext({});
   ctx.setNodeOutput("run-planner", {
     output: [
@@ -3882,7 +3966,6 @@ it("action.materialize_planner_tasks fails when all parsed tasks are skipped and
       "```",
     ].join("\n"),
   });
-
   const createTask = vi.fn();
   const listTasks = vi.fn().mockResolvedValue([
     { id: "existing-1", title: "[m] fix(workflow): duplicate only" },
@@ -3895,7 +3978,6 @@ it("action.materialize_planner_tasks fails when all parsed tasks are skipped and
       },
     },
   };
-
   const node = {
     id: "materialize",
     type: "action.materialize_planner_tasks",
@@ -3907,18 +3989,15 @@ it("action.materialize_planner_tasks fails when all parsed tasks are skipped and
       minCreated: 1,
     },
   };
-
   await expect(handler.execute(node, ctx, mockEngine)).rejects.toThrow(
     /created 0 tasks/i,
   );
   expect(listTasks).toHaveBeenCalledTimes(1);
   expect(createTask).not.toHaveBeenCalled();
 });
-
 it("action.materialize_planner_tasks passes two args to createTask even with default-param adapters", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
-
   const ctx = new WorkflowContext({});
   ctx.setNodeOutput("run-planner", {
     output: [
@@ -3931,7 +4010,6 @@ it("action.materialize_planner_tasks passes two args to createTask even with def
       "```",
     ].join("\n"),
   });
-
   const createTask = vi.fn(async function createTaskAdapter(projectId, taskData = {}) {
     if (typeof taskData?.title !== "string" || !taskData.title.trim()) {
       throw new Error("missing title payload");
@@ -3945,7 +4023,6 @@ it("action.materialize_planner_tasks passes two args to createTask even with def
       },
     },
   };
-
   const node = {
     id: "materialize",
     type: "action.materialize_planner_tasks",
@@ -3957,7 +4034,6 @@ it("action.materialize_planner_tasks passes two args to createTask even with def
       minCreated: 1,
     },
   };
-
   const result = await handler.execute(node, ctx, mockEngine);
   expect(result.success).toBe(true);
   expect(result.createdCount).toBe(1);
@@ -3970,11 +4046,9 @@ it("action.materialize_planner_tasks passes two args to createTask even with def
     draft: true,
   }));
 });
-
 it("action.materialize_planner_tasks supports payload-only createTask adapters", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
-
   const ctx = new WorkflowContext({});
   ctx.setNodeOutput("run-planner", {
     output: [
@@ -3987,7 +4061,6 @@ it("action.materialize_planner_tasks supports payload-only createTask adapters",
       "```",
     ].join("\n"),
   });
-
   let payloadOnlyCreateCalls = 0;
   let payloadOnlyCreateArg = null;
   const createTask = async function createTaskPayloadOnly(taskData = {}) {
@@ -4001,7 +4074,6 @@ it("action.materialize_planner_tasks supports payload-only createTask adapters",
     }
     return { id: "task-payload-only-1" };
   };
-
   const mockEngine = {
     services: {
       kanban: {
@@ -4009,7 +4081,6 @@ it("action.materialize_planner_tasks supports payload-only createTask adapters",
       },
     },
   };
-
   const node = {
     id: "materialize-payload-only",
     type: "action.materialize_planner_tasks",
@@ -4022,7 +4093,6 @@ it("action.materialize_planner_tasks supports payload-only createTask adapters",
       minCreated: 1,
     },
   };
-
   const result = await handler.execute(node, ctx, mockEngine);
   expect(result.success).toBe(true);
   expect(result.createdCount).toBe(1);
@@ -4033,11 +4103,9 @@ it("action.materialize_planner_tasks supports payload-only createTask adapters",
     projectId: "proj-payload",
   }));
 });
-
 it("action.materialize_planner_tasks applies workspace defaults from workflow context when planner output omits them", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
-
   const ctx = new WorkflowContext({
     workspaceId: "workspace-alpha",
     _targetRepo: "repo-alpha",
@@ -4053,7 +4121,6 @@ it("action.materialize_planner_tasks applies workspace defaults from workflow co
       "```",
     ].join("\n"),
   });
-
   const createTask = vi.fn(async () => ({ id: "task-defaults-1" }));
   const mockEngine = {
     services: {
@@ -4062,7 +4129,6 @@ it("action.materialize_planner_tasks applies workspace defaults from workflow co
       },
     },
   };
-
   const node = {
     id: "materialize",
     type: "action.materialize_planner_tasks",
@@ -4074,7 +4140,6 @@ it("action.materialize_planner_tasks applies workspace defaults from workflow co
       minCreated: 1,
     },
   };
-
   const result = await handler.execute(node, ctx, mockEngine);
   expect(result.success).toBe(true);
   expect(result.createdCount).toBe(1);
@@ -4088,16 +4153,13 @@ it("action.materialize_planner_tasks applies workspace defaults from workflow co
     }),
   }));
 });
-
 it("action.materialize_planner_tasks fails loudly when planner output has no parseable tasks", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
-
   const ctx = new WorkflowContext({});
   ctx.setNodeOutput("run-planner", {
     output: "I could not generate tasks in JSON format this run.",
   });
-
   const mockEngine = {
     services: {
       kanban: {
@@ -4105,7 +4167,6 @@ it("action.materialize_planner_tasks fails loudly when planner output has no par
       },
     },
   };
-
   const node = {
     id: "materialize",
     type: "action.materialize_planner_tasks",
@@ -4114,23 +4175,19 @@ it("action.materialize_planner_tasks fails loudly when planner output has no par
       failOnZero: true,
     },
   };
-
   await expect(handler.execute(node, ctx, mockEngine)).rejects.toThrow(
     /did not include parseable tasks/i,
   );
 });
-
 it("action.materialize_planner_tasks surfaces upstream planner errors when no output exists", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
-
   const ctx = new WorkflowContext({});
   ctx.setNodeOutput("run-planner", {
     success: false,
     error: "Agent pool or planner prompt not available",
     output: "",
   });
-
   const node = {
     id: "materialize-upstream-error",
     type: "action.materialize_planner_tasks",
@@ -4139,16 +4196,13 @@ it("action.materialize_planner_tasks surfaces upstream planner errors when no ou
       failOnZero: true,
     },
   };
-
   await expect(handler.execute(node, ctx, { services: {} })).rejects.toThrow(
     /did not include parseable tasks/i,
   );
 });
-
 it("action.materialize_planner_tasks enforces planner quality gates and persists planner metadata", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
-
   const ctx = new WorkflowContext({});
   ctx.setNodeOutput("run-planner", {
     output: [
@@ -4165,7 +4219,6 @@ it("action.materialize_planner_tasks enforces planner quality gates and persists
       "```",
     ].join("\n"),
   });
-
   const createTask = vi.fn(async () => ({ id: "task-quality-1" }));
   const listTasks = vi.fn().mockResolvedValue([
     { id: "existing-1", title: "existing workflow task", status: "todo", meta: { repo_areas: ["workflow"] } },
@@ -4178,7 +4231,6 @@ it("action.materialize_planner_tasks enforces planner quality gates and persists
       },
     },
   };
-
   const node = {
     id: "materialize-quality",
     type: "action.materialize_planner_tasks",
@@ -4193,7 +4245,6 @@ it("action.materialize_planner_tasks enforces planner quality gates and persists
       maxConcurrentRepoAreaTasks: 1,
     },
   };
-
   const result = await handler.execute(node, ctx, mockEngine);
   expect(result.success).toBe(true);
   expect(result.createdCount).toBe(1);
@@ -4222,11 +4273,9 @@ it("action.materialize_planner_tasks enforces planner quality gates and persists
     }),
   }));
 });
-
 it("action.materialize_planner_tasks reorders candidates using replayed executor feedback priors", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
-
   const ctx = new WorkflowContext({});
   ctx.setNodeOutput("run-planner", {
     output: [
@@ -4240,7 +4289,6 @@ it("action.materialize_planner_tasks reorders candidates using replayed executor
       "```",
     ].join("\n"),
   });
-
   const createTask = vi
     .fn()
     .mockResolvedValueOnce({ id: "task-rank-1" })
@@ -4274,7 +4322,6 @@ it("action.materialize_planner_tasks reorders candidates using replayed executor
       meta: { repo_areas: ["workflow"] },
     },
   ]);
-
   const mockEngine = {
     services: {
       kanban: {
@@ -4283,7 +4330,6 @@ it("action.materialize_planner_tasks reorders candidates using replayed executor
       },
     },
   };
-
   const node = {
     id: "materialize-ranked",
     type: "action.materialize_planner_tasks",
@@ -4297,7 +4343,6 @@ it("action.materialize_planner_tasks reorders candidates using replayed executor
       feedbackSignalScale: 0.2,
     },
   };
-
   const result = await handler.execute(node, ctx, mockEngine);
   expect(result.success).toBe(true);
   expect(result.createdCount).toBe(2);
@@ -4308,11 +4353,9 @@ it("action.materialize_planner_tasks reorders candidates using replayed executor
   ]);
   expect(result.rankedTasks?.[0]?.title).toBe("[m] chore(workflow): stable follow-up");
 });
-
 it("action.materialize_planner_tasks reorders candidates from planner feedback replay when historical rows lack signals", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
-
   const ctx = new WorkflowContext({
     _plannerFeedback: {
       rankingSignals: {
@@ -4363,7 +4406,6 @@ it("action.materialize_planner_tasks reorders candidates from planner feedback r
       "```",
     ].join("\n"),
   });
-
   const createTask = vi
     .fn()
     .mockResolvedValueOnce({ id: "task-feedback-rank-1" })
@@ -4376,7 +4418,6 @@ it("action.materialize_planner_tasks reorders candidates from planner feedback r
       meta: { repo_areas: ["workflow"] },
     },
   ]);
-
   const node = {
     id: "materialize-feedback-ranked",
     type: "action.materialize_planner_tasks",
@@ -4390,7 +4431,6 @@ it("action.materialize_planner_tasks reorders candidates from planner feedback r
       feedbackSignalScale: 0.2,
     },
   };
-
   const result = await handler.execute(node, ctx, {
     services: {
       kanban: {
@@ -4406,11 +4446,9 @@ it("action.materialize_planner_tasks reorders candidates from planner feedback r
     "[m] fix(workflow): repeat offender",
   ]);
 });
-
 it("action.materialize_planner_tasks avoids over-penalizing patterns after transient failures recover", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
-
   const ctx = new WorkflowContext({});
   ctx.setNodeOutput("run-planner", {
     output: [
@@ -4424,7 +4462,6 @@ it("action.materialize_planner_tasks avoids over-penalizing patterns after trans
       "```",
     ].join("\n"),
   });
-
   const createTask = vi
     .fn()
     .mockResolvedValueOnce({ id: "task-recovered-1" })
@@ -4458,7 +4495,6 @@ it("action.materialize_planner_tasks avoids over-penalizing patterns after trans
       meta: { repo_areas: ["workflow"] },
     },
   ]);
-
   const result = await handler.execute(
     {
       id: "materialize-recovered",
@@ -4483,7 +4519,6 @@ it("action.materialize_planner_tasks avoids over-penalizing patterns after trans
       },
     },
   );
-
   expect(result.success).toBe(true);
   const createdTitles = createTask.mock.calls.map((call) => call?.[1]?.title);
   expect(createdTitles).toEqual([
@@ -4496,11 +4531,9 @@ describe("WorkflowEngine singleton services", () => {
   beforeEach(() => {
     resetWorkflowEngine();
   });
-
   afterEach(() => {
     resetWorkflowEngine();
   });
-
   it("merges injected services when getWorkflowEngine is called after initialization", () => {
     const first = getWorkflowEngine({
       services: {
@@ -4509,20 +4542,17 @@ describe("WorkflowEngine singleton services", () => {
     });
     expect(first.services.kanban).toBeDefined();
     expect(first.services.agentPool).toBeUndefined();
-
     const second = getWorkflowEngine({
       services: {
         agentPool: { launchEphemeralThread: async () => ({ success: true, output: "" }) },
         prompts: { planner: "Planner prompt" },
       },
     });
-
     expect(second).toBe(first);
     expect(second.services.kanban).toBeDefined();
     expect(second.services.agentPool).toBeDefined();
     expect(second.services.prompts?.planner).toBe("Planner prompt");
   }, 20000);
-
   it("reinitializes the singleton when explicit workflow directories change", () => {
     const workflowDirA = join(tmpDir, "singleton-workflows-a");
     const runsDirA = join(tmpDir, "singleton-runs-a");
@@ -4530,7 +4560,6 @@ describe("WorkflowEngine singleton services", () => {
     const workflowDirB = join(tmpDir, "singleton-workflows-b");
     const runsDirB = join(tmpDir, "singleton-runs-b");
     const configDirB = join(tmpDir, "singleton-config-b");
-
     const first = getWorkflowEngine({
       workflowDir: workflowDirA,
       runsDir: runsDirA,
@@ -4547,7 +4576,6 @@ describe("WorkflowEngine singleton services", () => {
         agentPool: { launchEphemeralThread: async () => ({ success: true, output: "" }) },
       },
     });
-
     expect(second).not.toBe(first);
     expect(second.workflowDir).toBe(resolve(workflowDirB));
     expect(second.runsDir).toBe(resolve(runsDirB));
@@ -4555,19 +4583,14 @@ describe("WorkflowEngine singleton services", () => {
     expect(second.services.agentPool).toBeDefined();
   });
 });
-
 // ── Anomaly Detector Integration Tests ──────────────────────────────────────
-
 describe("Anomaly → Workflow bridge", () => {
   it("wrapAnomalyCallback fires workflow triggers", async () => {
     const { wrapAnomalyCallback, setWorkflowEngine } = await import("../infra/anomaly-detector.mjs");
-
     const mockEvaluate = vi.fn();
     setWorkflowEngine({ evaluateTriggers: mockEvaluate });
-
     const originalCb = vi.fn();
     const wrapped = wrapAnomalyCallback(originalCb);
-
     const anomaly = {
       type: "stuck_agent",
       severity: "high",
@@ -4578,12 +4601,9 @@ describe("Anomaly → Workflow bridge", () => {
       taskTitle: "Fix the bug",
       data: { foo: "bar" },
     };
-
     wrapped(anomaly);
-
     // Original callback still called
     expect(originalCb).toHaveBeenCalledWith(anomaly);
-
     // Workflow engine gets trigger
     expect(mockEvaluate).toHaveBeenCalledTimes(1);
     expect(mockEvaluate).toHaveBeenCalledWith("anomaly", expect.objectContaining({
@@ -4591,41 +4611,32 @@ describe("Anomaly → Workflow bridge", () => {
       severity: "high",
       agentId: "proc-123",
     }));
-
     // Clean up
     setWorkflowEngine(null);
   });
 });
-
 // ── Template Dedup Tests ────────────────────────────────────────────────────
-
 describe("Template dedup on install", () => {
   beforeEach(() => { makeTmpEngine(); });
   afterEach(() => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
-
   it("rejects installing a template that is already installed", async () => {
     const { installTemplate } = await import("../workflow/workflow-templates.mjs");
-
     // Install once - should succeed
     const wf = installTemplate("template-pr-merge-strategy", engine);
     expect(wf).toBeDefined();
     expect(wf.metadata.installedFrom).toBe("template-pr-merge-strategy");
-
     // Install again - should throw
     expect(() => installTemplate("template-pr-merge-strategy", engine)).toThrow(/already installed/i);
   });
 });
-
 // ── Retry Backoff Configuration Tests ───────────────────────────────────────
-
 describe("WorkflowEngine - configurable retry backoff", () => {
   beforeEach(() => { makeTmpEngine(); });
   afterEach(() => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
-
   it("uses custom retryDelayMs for backoff base", async () => {
     const backoffs = [];
     let callCount = 0;
@@ -4637,7 +4648,6 @@ describe("WorkflowEngine - configurable retry backoff", () => {
         throw new Error("fail");
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -4645,20 +4655,17 @@ describe("WorkflowEngine - configurable retry backoff", () => {
       ],
       [{ id: "e1", source: "trigger", target: "node" }]
     );
-
     engine.save(wf);
     engine.on("node:retry", (ev) => backoffs.push(ev.backoffMs));
     const start = Date.now();
     await engine.execute(wf.id, {});
     const elapsed = Date.now() - start;
-
     expect(callCount).toBe(3);
     // With retryDelayMs=0, backoff should be 0ms (0*2^0=0, 0*2^1=0)
     expect(backoffs).toEqual([0, 0]);
     // Total time should be well under 100ms (no 1s+ delays)
     expect(elapsed).toBeLessThan(500);
   });
-
   it("defaults to 1000ms base when retryDelayMs not set", async () => {
     const backoffs = [];
     let callCount = 0;
@@ -4670,7 +4677,6 @@ describe("WorkflowEngine - configurable retry backoff", () => {
         throw new Error("fail");
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -4678,25 +4684,20 @@ describe("WorkflowEngine - configurable retry backoff", () => {
       ],
       [{ id: "e1", source: "trigger", target: "node" }]
     );
-
     engine.save(wf);
     engine.on("node:retry", (ev) => backoffs.push(ev.backoffMs));
     await engine.execute(wf.id, {});
-
     expect(callCount).toBe(2);
     // Default backoff = 1000 * 2^0 = 1000ms
     expect(backoffs).toEqual([1000]);
   });
 });
-
 // ── Timer Cleanup Tests ─────────────────────────────────────────────────────
-
 describe("WorkflowEngine - timeout timer cleanup", () => {
   beforeEach(() => { makeTmpEngine(); });
   afterEach(() => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
-
   it("does not leak timers when node completes before timeout", async () => {
     registerNodeType("test.fast_node", {
       describe: () => "Completes instantly",
@@ -4705,7 +4706,6 @@ describe("WorkflowEngine - timeout timer cleanup", () => {
         return { fast: true };
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -4713,7 +4713,6 @@ describe("WorkflowEngine - timeout timer cleanup", () => {
       ],
       [{ id: "e1", source: "trigger", target: "fast" }]
     );
-
     engine.save(wf);
     // If timers leaked, the 60s timeout timer would keep the process alive.
     // We verify it completes quickly.
@@ -4724,7 +4723,6 @@ describe("WorkflowEngine - timeout timer cleanup", () => {
     const output = result.getNodeOutput("fast");
     expect(output.fast).toBe(true);
   });
-
   it("honors timeoutMs from node config", async () => {
     registerNodeType("test.slow_node_for_timeout_ms", {
       describe: () => "Sleeps long enough to trigger timeoutMs",
@@ -4734,7 +4732,6 @@ describe("WorkflowEngine - timeout timer cleanup", () => {
         return { done: true };
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -4747,26 +4744,21 @@ describe("WorkflowEngine - timeout timer cleanup", () => {
       ],
       [{ id: "e1", source: "trigger", target: "slow" }]
     );
-
     engine.save(wf);
     const result = await engine.execute(wf.id, {});
     expect(result.errors.length).toBeGreaterThan(0);
     expect(String(result.errors[0]?.error || "")).toContain("timed out after 1000ms");
   });
 });
-
 // ── Concurrency & Scalability ──────────────────────────────────────────────
-
 describe("Concurrency limiter", () => {
   beforeEach(() => {
     engine = makeTmpEngine();
     engine.load();
   });
-
   afterEach(() => {
     if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
   });
-
   it("getConcurrencyStats returns defaults", () => {
     const stats = engine.getConcurrencyStats();
     expect(stats.activeRuns).toBe(0);
@@ -4774,7 +4766,6 @@ describe("Concurrency limiter", () => {
     expect(stats.maxConcurrentRuns).toBeGreaterThanOrEqual(1);
     expect(stats.maxConcurrentBranches).toBeGreaterThanOrEqual(1);
   });
-
   it("tracks activeRuns count during execution", async () => {
     let capturedStats = null;
     if (!getNodeType("test.capture_stats")) {
@@ -4787,7 +4778,6 @@ describe("Concurrency limiter", () => {
         },
       });
     }
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -4795,13 +4785,11 @@ describe("Concurrency limiter", () => {
       ],
       [{ id: "e1", source: "trigger", target: "stats" }]
     );
-
     engine.save(wf);
     await engine.execute(wf.id, {});
     expect(capturedStats).toBeDefined();
     expect(capturedStats.activeRuns).toBe(1);
   });
-
   it("concurrent runs track correctly", async () => {
     let maxSeen = 0;
     if (!getNodeType("test.concurrent_track")) {
@@ -4817,7 +4805,6 @@ describe("Concurrency limiter", () => {
         },
       });
     }
-
     const wfs = [];
     for (let i = 0; i < 4; i++) {
       const wf = makeSimpleWorkflow(
@@ -4831,7 +4818,6 @@ describe("Concurrency limiter", () => {
       engine.save(wf);
       wfs.push(wf);
     }
-
     // Launch all 4 concurrently
     const results = await Promise.all(wfs.map((wf) => engine.execute(wf.id, {})));
     for (const r of results) {
@@ -4844,16 +4830,13 @@ describe("Concurrency limiter", () => {
   });
 });
 
-
 describe("WorkflowEngine task traceability hooks", () => {
   beforeEach(() => {
     makeTmpEngine();
   });
-
   afterEach(() => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
-
   it("does not emit task trace events when task context is absent", async () => {
     registerNodeType("test.trace.no_task", {
       describe: () => "No task trace node",
@@ -4862,7 +4845,6 @@ describe("WorkflowEngine task traceability hooks", () => {
         return { ok: true };
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -4872,23 +4854,19 @@ describe("WorkflowEngine task traceability hooks", () => {
       { id: "wf-task-trace-no-task" },
     );
     engine.save(wf);
-
     const collected = [];
     const unsubscribe = engine.registerTaskTraceHook((event) => {
       collected.push(event);
     });
     const emitted = [];
     engine.on("task:trace", (event) => emitted.push(event));
-
     const ctx = await engine.execute(wf.id, {});
     unsubscribe();
-
     expect(ctx.errors).toEqual([]);
     expect(collected).toHaveLength(0);
     expect(emitted).toHaveLength(0);
     expect(Array.isArray(ctx.data._taskWorkflowEvents)).toBe(false);
   });
-
   it("collects task-linked run and node trace summaries when taskId exists", async () => {
     registerNodeType("test.trace.with_task", {
       describe: () => "Task trace node",
@@ -4897,7 +4875,6 @@ describe("WorkflowEngine task traceability hooks", () => {
         return { ok: true, message: "completed traced node" };
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -4907,17 +4884,14 @@ describe("WorkflowEngine task traceability hooks", () => {
       { id: "wf-task-trace-with-task" },
     );
     engine.save(wf);
-
     const collected = [];
     engine.registerTaskTraceHook((event) => {
       collected.push(event);
     });
-
     const ctx = await engine.execute(wf.id, {
       taskId: "TASK-TRACE-1",
       taskTitle: "Trace this task",
     });
-
     expect(ctx.errors).toEqual([]);
     expect(collected.length).toBeGreaterThanOrEqual(4);
     expect(collected.every((event) => event.taskId === "TASK-TRACE-1")).toBe(true);
@@ -4925,19 +4899,16 @@ describe("WorkflowEngine task traceability hooks", () => {
     expect(collected.some((event) => event.eventType === "workflow.node.start")).toBe(true);
     expect(collected.some((event) => event.eventType === "workflow.node.complete")).toBe(true);
     expect(collected.some((event) => event.eventType === "workflow.run.end")).toBe(true);
-
     expect(Array.isArray(ctx.data._taskWorkflowEvents)).toBe(true);
     expect(ctx.data._taskWorkflowEvents.length).toBe(collected.length);
     expect(ctx.data._taskWorkflowEvents[0].runId).toBe(ctx.id);
   });
-
   it("derives task context from action.create_task output for downstream traceability", async () => {
     const createTask = vi.fn(async (_projectId, taskData) => ({
       id: "TASK-CREATED-42",
       title: taskData?.title || "Generated task",
       status: taskData?.status || "todo",
     }));
-
     const traceEvents = [];
     engine = makeTmpEngine({
       kanban: { createTask },
@@ -4945,7 +4916,6 @@ describe("WorkflowEngine task traceability hooks", () => {
         traceEvents.push(event);
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -4964,37 +4934,30 @@ describe("WorkflowEngine task traceability hooks", () => {
       { id: "wf-task-trace-create-task" },
     );
     engine.save(wf);
-
     const ctx = await engine.execute(wf.id, {});
-
     expect(ctx.errors).toEqual([]);
     expect(createTask).toHaveBeenCalledTimes(1);
     expect(ctx.data.taskId).toBe("TASK-CREATED-42");
     expect(ctx.data.taskTitle).toBe("Auto-created task");
-
     const nodeComplete = traceEvents.find((event) =>
       event.eventType === "workflow.node.complete" && event.nodeId === "create",
     );
     expect(nodeComplete).toBeDefined();
     expect(nodeComplete.taskId).toBe("TASK-CREATED-42");
     expect(nodeComplete.summary).toContain("taskId");
-
     const runEnd = traceEvents.find((event) => event.eventType === "workflow.run.end");
     expect(runEnd).toBeDefined();
     expect(runEnd.taskId).toBe("TASK-CREATED-42");
   });
 });
 
-
 describe("WorkflowEngine.getTaskTraceEvents", () => {
   beforeEach(() => {
     makeTmpEngine();
   });
-
   afterEach(() => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
-
   it("returns cloned task trace events from persisted run detail", async () => {
     registerNodeType("test.trace.fetch_events", {
       describe: () => "Fetch task trace events",
@@ -5003,7 +4966,6 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
         return { ok: true };
       },
     });
-
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
@@ -5013,16 +4975,344 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
       { id: "wf-task-trace-readback" },
     );
     engine.save(wf);
-
     const ctx = await engine.execute(wf.id, { taskId: "TASK-TRACE-READBACK" });
     const events = engine.getTaskTraceEvents(ctx.id);
-
     expect(Array.isArray(events)).toBe(true);
     expect(events.length).toBeGreaterThan(0);
     expect(events.every((event) => event.taskId === "TASK-TRACE-READBACK")).toBe(true);
-
     events[0].taskId = "mutated";
     const reread = engine.getTaskTraceEvents(ctx.id);
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });
+
+describe("ledger-backed run graph helpers", () => {
+  beforeEach(() => makeTmpEngine());
+  afterEach(() => { try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ } });
+  it("exposes graph, diff, and duplicate queries through the engine", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "n1", type: "action.set_variable", label: "Node 1", config: { name: "value", value: 1 } }],
+      [],
+    );
+    engine.save(wf);
+    const first = await engine.execute(wf.id, { _dedupeKey: "task:xyz" });
+    const second = await engine.execute(wf.id, { _dedupeKey: "task:xyz" });
+    const graph = engine.getRunLedgerGraph(first.id);
+    const diff = engine.diffRunLedgers(first.id, second.id);
+    const summaries = engine.listRunSummaries({ dedupKey: "task:xyz" });
+    expect(graph?.rootRunId).toBe(first.id);
+    expect(diff?.beforeRunId).toBe(first.id);
+    expect(summaries[0]?.runId).toBe(second.id);
+    expect(summaries.map((entry) => entry.runId)).toEqual(expect.arrayContaining([first.id, second.id]));
+  });
+  it("persists DAGState replan history and preserves completed nodes on retry", async () => {
+    let shouldFailValidation = true;
+    registerNodeType("test.replan_prepare", {
+      describe: () => "Prepare state",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        return { artifact: "prepared" };
+      },
+    });
+    registerNodeType("test.replan_validate", {
+      describe: () => "Validation gate",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        if (shouldFailValidation) {
+          throw Object.assign(new Error("Validation failed midway"), {
+            outputSuggestedRerun: "spawn_fix_step",
+            outputDiagnostics: {
+              source: "validation",
+              findings: [{ code: "test_failure", summary: "Validation failed midway" }],
+              suggestedRerun: "spawn_fix_step",
+            },
+          });
+        }
+        return { ok: true, validated: true };
+      },
+    });
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "prepare", type: "test.replan_prepare", label: "Prepare", config: {} },
+        { id: "validate", type: "test.replan_validate", label: "Validate", config: {} },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "prepare" },
+        { id: "e2", source: "prepare", target: "validate" },
+      ],
+    );
+    engine.save(wf);
+    const firstCtx = await engine.execute(wf.id, {});
+    expect(firstCtx.errors.length).toBeGreaterThan(0);
+    expect(firstCtx.data?._dagState?.replanHistory ?? []).toHaveLength(1);
+    expect(firstCtx.data?._issueAdvisor?.recommendedAction).toBe("spawn_fix_step");
+    const retryOptions = engine.getRetryOptions(firstCtx.id);
+    expect(retryOptions.options.map((entry) => entry.mode)).toContain("replan_subgraph");
+    expect(retryOptions.recommendedAction).toBe("spawn_fix_step");
+    shouldFailValidation = false;
+    const retried = await engine.retryRun(firstCtx.id, { mode: "from_failed" });
+    const retryDag = retried.ctx.data?._dagState;
+    expect(retryDag?.nodes?.prepare?.status).toBe("completed");
+    expect(retryDag?.nodes?.prepare?.evidence?.outputSummary).toBeTruthy();
+    expect(Array.isArray(retryDag?.replanHistory)).toBe(true);
+    expect(retryDag.replanHistory.some((entry) => entry?.decision === "spawn_fix_step")).toBe(true);
+    expect(retried.ctx.data?._issueAdvisor?.recommendedAction).toBe("continue");
+    const persisted = engine.getRunDetail(retried.retryRunId);
+    expect(persisted?.detail?.dagState?.nodes?.prepare?.status).toBe("completed");
+    expect(Array.isArray(persisted?.detail?.dagState?.replanHistory)).toBe(true);
+  }, 15000);
+});
+
+describe("WorkflowEngine - durable approval checkpoints", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+  it("persists waiting approval state for ask_user runs", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "approval",
+          type: "action.ask_user",
+          label: "Approval",
+          config: {
+            question: "Ship it?",
+            options: ["approve", "reject"],
+            variable: "approvalDecision",
+          },
+        },
+      ],
+      [{ id: "e1", source: "trigger", target: "approval" }],
+    );
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+    const runId = ctx.id;
+    const detailPath = join(tmpDir, "runs", `${runId}.json`);
+    const indexPath = join(tmpDir, "runs", "index.json");
+    expect(ctx.getNodeStatus("approval")).toBe(NodeStatus.WAITING);
+    expect(ctx.data._pendingQuestion).toMatchObject({
+      question: "Ship it?",
+      options: ["approve", "reject"],
+    });
+    expect(existsSync(detailPath)).toBe(true);
+    const detail = JSON.parse(readFileSync(detailPath, "utf8"));
+    expect(detail.nodeStatuses?.approval).toBe(NodeStatus.WAITING);
+    expect(detail.data?._pendingQuestion?.question).toBe("Ship it?");
+    const index = JSON.parse(readFileSync(indexPath, "utf8"));
+    const summary = index.runs.find((entry) => entry.runId === runId);
+    expect(summary?.status).toBe(WorkflowStatus.PAUSED);
+    expect(summary?.resumable).toBe(true);
+  });
+  it("resumes interrupted ask_user runs after approval input is written durably", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "approval",
+          type: "action.ask_user",
+          label: "Approval",
+          config: {
+            question: "Proceed?",
+            options: ["approve", "reject"],
+            variable: "approvalDecision",
+          },
+        },
+        {
+          id: "after",
+          type: "test.capture_config",
+          label: "After approval",
+          config: {
+            decision: "{{approvalDecision}}",
+          },
+        },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "approval" },
+        { id: "e2", source: "approval", target: "after" },
+      ],
+    );
+    registerNodeType("test.capture_config", {
+      describe: () => "Capture resolved config",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        return { config: node.config };
+      },
+    });
+    engine.save(wf);
+    const pausedCtx = await engine.execute(wf.id, {});
+    const runId = pausedCtx.id;
+    const detailPath = join(tmpDir, "runs", `${runId}.json`);
+    const persisted = JSON.parse(readFileSync(detailPath, "utf8"));
+    persisted.data.approvalDecision = "approve";
+    persisted.data._pendingQuestion.response = "approve";
+    persisted.nodeStatuses.approval = NodeStatus.COMPLETED;
+    writeFileSync(detailPath, JSON.stringify(persisted, null, 2), "utf8");
+    const resumedEvents = [];
+    const resumedEngine = new WorkflowEngine({
+      workflowDir: join(tmpDir, "workflows"),
+      runsDir: join(tmpDir, "runs"),
+      onTaskWorkflowEvent: (event) => resumedEvents.push(event),
+    });
+    resumedEngine.load();
+    await resumedEngine.resumeInterruptedRuns();
+    const index = JSON.parse(readFileSync(join(tmpDir, "runs", "index.json"), "utf8"));
+    const resumedRun = index.runs.find((entry) => entry.runId === runId);
+    expect(resumedRun?.status).toBe(WorkflowStatus.COMPLETED);
+    const finalDetail = JSON.parse(readFileSync(detailPath, "utf8"));
+    expect(finalDetail.nodeStatuses?.approval).toBe(NodeStatus.COMPLETED);
+    expect(finalDetail.nodeStatuses?.after).toBe(NodeStatus.COMPLETED);
+    expect(finalDetail.nodeOutputs?.after?.config?.decision).toBe("approve");
+    expect(resumedEvents.some((event) => event?.type === "workflow.run.resume")).toBe(true);
+  });
+});
+describe("WorkflowEngine - approval checkpoints", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+  it("stores durable approval wait state and resumes after approval", async () => {
+    registerNodeType("test.approval_gate", {
+      async execute(node, ctx, runtime) {
+        return runtime.waitForApproval(ctx, node, {
+          checkpointId: "approve-release",
+          summary: "Release approval required",
+          requestedBy: "workflow-test",
+          metadata: { scope: "release" },
+        });
+      },
+    });
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "gate", type: "test.approval_gate", label: "Approval Gate", config: {} },
+      ],
+      [],
+      { id: "wf-approval-durable", name: "Approval Durable Workflow" },
+    );
+    engine.save(wf);
+    const runPromise = engine.execute(wf.id, { taskId: "task-approval-1" }, { force: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const history = engine.getRunHistory(wf.id, 10);
+    expect(history).toHaveLength(1);
+    const runId = history[0].runId;
+    const detailWhileWaiting = engine.getRunDetail(runId);
+    expect(detailWhileWaiting.status).toBe(WorkflowStatus.RUNNING);
+    expect(detailWhileWaiting.detail.nodeStatuses.gate).toBe(NodeStatus.WAITING);
+    expect(detailWhileWaiting.detail.data._approval).toMatchObject({
+      status: "waiting",
+      checkpointId: "approve-release",
+      summary: "Release approval required",
+    });
+    const ledgerWhileWaiting = detailWhileWaiting.ledger;
+    expect(ledgerWhileWaiting?.events.some((event) => event.eventType === "approval.requested")).toBe(true);
+    const resume = await engine.resolveApproval(runId, {
+      checkpointId: "approve-release",
+      decision: "approved",
+      actor: "tester",
+      callbackId: "cb-1",
+      payload: { note: "ship it" },
+    });
+    expect(resume).toMatchObject({ ok: true, duplicate: false, resumed: true });
+    const completedCtx = await runPromise;
+    expect(completedCtx.getNodeStatus("gate")).toBe(NodeStatus.COMPLETED);
+    expect(completedCtx.getNodeOutput("gate")).toMatchObject({
+      approved: true,
+      decision: "approved",
+      callbackId: "cb-1",
+    });
+    const finalDetail = engine.getRunDetail(runId);
+    expect(finalDetail.detail.data._approval).toMatchObject({
+      status: "approved",
+      callbackId: "cb-1",
+      actor: "tester",
+    });
+    expect(finalDetail.ledger?.events.some((event) => event.eventType === "approval.resolved")).toBe(true);
+  });
+  it("handles duplicate approval callbacks idempotently", async () => {
+    registerNodeType("test.approval_gate_idempotent", {
+      async execute(node, ctx, runtime) {
+        return runtime.waitForApproval(ctx, node, {
+          checkpointId: "checkpoint-dup",
+          summary: "Need one approval",
+        });
+      },
+    });
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "gate", type: "test.approval_gate_idempotent", label: "Approval Gate", config: {} },
+      ],
+      [],
+      { id: "wf-approval-idempotent", name: "Approval Idempotent Workflow" },
+    );
+    engine.save(wf);
+    const runPromise = engine.execute(wf.id, {}, { force: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const runId = engine.getRunHistory(wf.id, 10)[0].runId;
+    const first = await engine.resolveApproval(runId, {
+      checkpointId: "checkpoint-dup",
+      decision: "approved",
+      actor: "tester",
+      callbackId: "cb-same",
+    });
+    const second = await engine.resolveApproval(runId, {
+      checkpointId: "checkpoint-dup",
+      decision: "approved",
+      actor: "tester",
+      callbackId: "cb-same",
+    });
+    expect(first).toMatchObject({ ok: true, duplicate: false });
+    expect(second).toMatchObject({ ok: true, duplicate: true });
+    await runPromise;
+    const detail = engine.getRunDetail(runId);
+    const resolvedEvents = detail.ledger.events.filter((event) => event.eventType === "approval.resolved");
+    expect(resolvedEvents).toHaveLength(1);
+  });
+  it("re-hydrates waiting approvals as paused resumable runs after restart detection", () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "gate", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-approval-restart", name: "Approval Restart Workflow" },
+    );
+    engine.save(wf);
+    const runsDir = join(tmpDir, "runs");
+    const runId = "run-approval-waiting";
+    writeFileSync(join(runsDir, "index.json"), JSON.stringify({ runs: [] }, null, 2), "utf8");
+    writeFileSync(
+      join(runsDir, `${runId}.json`),
+      JSON.stringify({
+        id: runId,
+        startedAt: 1,
+        endedAt: null,
+        data: {
+          _workflowId: wf.id,
+          _workflowName: wf.name,
+          _approval: {
+            status: "waiting",
+            checkpointId: "approve-restart",
+            summary: "Awaiting operator approval",
+          },
+        },
+        nodeStatuses: { gate: NodeStatus.WAITING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+    engine._detectInterruptedRuns();
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const recovered = index.runs.find((entry) => entry.runId === runId);
+    expect(recovered).toBeTruthy();
+    expect(recovered.status).toBe(WorkflowStatus.PAUSED);
+    expect(recovered.resumable).toBe(true);
+    expect(recovered.resumeResult || null).toBe(null);
+    expect(recovered.pendingApproval).toMatchObject({
+      status: "waiting",
+      checkpointId: "approve-restart",
+    });
+  });
+});
+
+

@@ -16,7 +16,7 @@ vi.mock("node:fs", async () => {
   };
 });
 
-const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await vi.importActual("node:fs");
+const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await vi.importActual("node:fs");
 
 import {
   addTask,
@@ -111,6 +111,111 @@ describe("task CLI store persistence", () => {
   });
 });
 
+describe("task CLI repo-root store precedence", () => {
+  it("prefers the explicit repo-root store over the active workspace store", () => {
+    const repoRoot = mkdtempSync(resolve(tmpdir(), "bosun-task-cli-repo-root-"));
+    tempDirs.push(repoRoot);
+    const configDir = resolve(repoRoot, ".bosun");
+    const repoStorePath = resolve(configDir, ".cache", "kanban-state.json");
+    const workspaceStorePath = resolve(
+      configDir,
+      "workspaces",
+      "virtengine-gh",
+      "bosun",
+      ".bosun",
+      ".cache",
+      "kanban-state.json",
+    );
+
+    mkdirSync(configDir, { recursive: true });
+    mkdirSync(resolve(repoStorePath, ".."), { recursive: true });
+    mkdirSync(resolve(workspaceStorePath, ".."), { recursive: true });
+
+    writeFileSync(
+      resolve(configDir, "bosun.config.json"),
+      JSON.stringify({
+        activeWorkspace: "virtengine-gh",
+        workspacesDir: resolve(configDir, "workspaces"),
+        workspaces: [
+          {
+            id: "virtengine-gh",
+            activeRepo: "bosun",
+            repos: [{ name: "bosun", slug: "virtengine/bosun", primary: true }],
+          },
+        ],
+      }),
+      "utf8",
+    );
+    writeFileSync(
+      repoStorePath,
+      JSON.stringify({
+        tasks: {
+          "repo-task": {
+            id: "repo-task",
+            title: "Repo-local task",
+            status: "inprogress",
+            createdAt: "2026-03-22T00:00:00.000Z",
+          },
+        },
+      }),
+      "utf8",
+    );
+    writeFileSync(
+      workspaceStorePath,
+      JSON.stringify({
+        tasks: {
+          "workspace-task": {
+            id: "workspace-task",
+            title: "Workspace task",
+            status: "inprogress",
+            createdAt: "2026-03-22T00:00:00.000Z",
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const env = { ...process.env };
+    delete env.BOSUN_STORE_PATH;
+    delete env.BOSUN_HOME;
+    delete env.BOSUN_DIR;
+    delete env.REPO_ROOT;
+    delete env.VITEST;
+    delete env.VITEST_POOL_ID;
+    delete env.VITEST_WORKER_ID;
+    delete env.NODE_ENV;
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        "cli.mjs",
+        "task",
+        "list",
+        "--status",
+        "inprogress",
+        "--json",
+        "--config-dir",
+        configDir,
+        "--repo-root",
+        repoRoot,
+      ],
+      {
+        cwd: process.cwd(),
+        env,
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(0);
+    const payloadLines = String(result.stdout || "")
+      .split(/\r?\n/)
+      .filter((line) => line.trim() && !line.startsWith("[task-store]"));
+    const tasks = JSON.parse(payloadLines.join("\n"));
+    expect(tasks).toEqual([
+      expect.objectContaining({ id: "repo-task", title: "Repo-local task", status: "inprogress" }),
+    ]);
+  });
+});
 describe("task-cli taskStats repo area lock state", () => {
   it("surfaces adaptive repo-area lock state from runtime payload", async () => {
     const storePath = makeTempStorePath();
@@ -338,4 +443,6 @@ describe("task-cli taskStats repo area lock state", () => {
     logSpy.mockRestore();
   });
 });
+
+
 

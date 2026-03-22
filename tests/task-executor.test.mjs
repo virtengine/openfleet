@@ -173,6 +173,8 @@ const ENV_KEYS = [
   "PROJECT_REQUIREMENTS_PROFILE",
   "PROJECT_REQUIREMENTS_NOTES",
   "BOSUN_COAUTHOR_MODE",
+  "INTERNAL_EXECUTOR_HEAVY_RUNNER_ENABLED",
+  "INTERNAL_EXECUTOR_HEAVY_RUNNER_MAX_RETRIES",
 ];
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -268,6 +270,54 @@ describe("task-executor", () => {
       expect(ex.workflowOwnsTaskLifecycle).toBe(true);
     });
   });
+
+
+    it("tracks heavy runner policy defaults", () => {
+      const ex = new TaskExecutor();
+      expect(ex.heavyRunnerPolicy).toEqual(
+        expect.objectContaining({
+          enabled: false,
+          maxRetries: 2,
+        }),
+      );
+      expect(typeof ex._shouldOffloadHeavyRunner).toBe("function");
+    });
+
+    it("offloads heavyweight validation stages while keeping lightweight planning local", async () => {
+      const acquireRunnerLease = vi.fn(async () => ({ leaseId: "lease-1" }));
+      const releaseRunnerLease = vi.fn(async () => {});
+      const execHeavyValidation = vi.fn(async () => ({
+        success: true,
+        output: "remote build ok",
+        sdk: "codex",
+        compact: { summary: "remote build ok", retrievalCommand: "bosun artifacts get artifact://lease-1/build" },
+        artifacts: [{ id: "build-log", uri: "artifact://lease-1/build", kind: "log" }],
+      }));
+      const ex = new TaskExecutor({
+        repoRoot: "C:/repo",
+        heavyRunnerPolicy: { enabled: true, maxRetries: 2 },
+        acquireRunnerLease,
+        releaseRunnerLease,
+        execHeavyValidation,
+      });
+
+      const heavy = await ex._runExecutionPipelineAgent(
+        { id: "build", role: "build", command: "npm run build" },
+        { taskId: "task-1", summary: "validate" },
+        { stageIndex: 0, options: { id: "pipeline-1", metadata: { mode: "single" } } },
+      );
+      const light = await ex._runExecutionPipelineAgent(
+        { id: "planner", role: "plan" },
+        { taskId: "task-1", summary: "think" },
+        { stageIndex: 1, options: { id: "pipeline-1", metadata: { mode: "single" } } },
+      );
+
+      expect(acquireRunnerLease).toHaveBeenCalledTimes(1);
+      expect(execHeavyValidation).toHaveBeenCalledTimes(1);
+      expect(heavy.meta).toEqual(expect.objectContaining({ executionMode: "isolated-runner" }));
+      expect(light.meta).toEqual(expect.objectContaining({ sdk: "codex" }));
+      expect(execWithRetry).toHaveBeenCalledTimes(1);
+    });
 
   // ────────────────────────────────────────────────────────────────────────
   // getStatus
@@ -1926,3 +1976,5 @@ describe("legacy method stubs", () => {
   // [LEGACY TESTS REMOVED] — All execution pipeline tests have been replaced
   // by comprehensive workflow node tests in tests/workflow-task-lifecycle.test.mjs
 });
+
+

@@ -11,312 +11,91 @@
  *   - Git-conflict-safe appending (append to dedicated section)
  *   - Rate limiting to prevent spam
  *   - Entry validation before write
- *   - Persistent scoped memory retrieval for team/workspace/session/run
  *
  * Knowledge entries are appended to a `## Agent Learnings` section at the
- * bottom of the target file (default: AGENTS.md) and indexed in a persistent
- * JSON registry for lightweight retrieval during later runs.
+ * bottom of the target file (default: AGENTS.md).
  */
 
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, basename } from "node:path";
 import crypto from "node:crypto";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const DEFAULT_SECTION_HEADER = "## Agent Learnings";
 const DEFAULT_TARGET_FILE = "AGENTS.md";
-const DEFAULT_REGISTRY_FILE = ".cache/bosun/persistent-memory.json";
 const ENTRY_SEPARATOR = "\n---\n";
-const MAX_ENTRY_LENGTH = 2000;
-const MIN_ENTRY_LENGTH = 20;
-const RATE_LIMIT_MS = 30_000;
-const DEFAULT_BRIEFING_LIMIT = 4;
-const REGISTRY_VERSION = "1.0.0";
-const MEMORY_SCOPE_PRIORITY = {
-  run: 4,
-  session: 3,
-  workspace: 2,
-  team: 1,
-};
-const MEMORY_SCOPES = new Set(Object.keys(MEMORY_SCOPE_PRIORITY));
+const MAX_ENTRY_LENGTH = 2000; // chars
+const MIN_ENTRY_LENGTH = 20; // chars
+const RATE_LIMIT_MS = 30_000; // 30s between entries from same agent
 
 // ── State ────────────────────────────────────────────────────────────────────
 
 const knowledgeState = {
   repoRoot: null,
   targetFile: DEFAULT_TARGET_FILE,
-  registryFile: DEFAULT_REGISTRY_FILE,
   sectionHeader: DEFAULT_SECTION_HEADER,
   entriesWritten: 0,
   lastWriteAt: null,
-  lastWriteByAgent: new Map(),
-  entryHashes: new Set(),
+  entryHashes: new Set(), // dedup
 };
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-function normalizeText(value) {
-  return String(value ?? "").trim();
-}
-
-function normalizeNullable(value) {
-  const text = normalizeText(value);
-  return text || null;
-}
-
-function normalizeScopeLevel(value) {
-  const raw = normalizeText(value).toLowerCase();
-  if (!raw) return "workspace";
-  return MEMORY_SCOPES.has(raw) ? raw : "workspace";
-}
-
-function getScopeIdentifier(entry, scopeLevel = entry?.scopeLevel) {
-  const normalizedScope = normalizeScopeLevel(scopeLevel);
-  if (normalizedScope === "team") return normalizeNullable(entry?.teamId);
-  if (normalizedScope === "workspace") return normalizeNullable(entry?.workspaceId);
-  if (normalizedScope === "session") return normalizeNullable(entry?.sessionId);
-  if (normalizedScope === "run") return normalizeNullable(entry?.runId);
-  return null;
-}
-
-function truncateInline(text, maxLength = 220) {
-  const normalized = normalizeText(text).replace(/\s+/g, " ");
-  if (normalized.length <= maxLength) return normalized;
-  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
-}
-
-function tokenize(text) {
-  return Array.from(
-    new Set(
-      normalizeText(text)
-        .toLowerCase()
-        .split(/[^a-z0-9]+/i)
-        .map((token) => token.trim())
-        .filter((token) => token.length >= 3),
-    ),
-  );
-}
-
-function getRegistryPath(repoRoot = knowledgeState.repoRoot || process.cwd()) {
-  return resolve(repoRoot, knowledgeState.registryFile || DEFAULT_REGISTRY_FILE);
-}
-
-async function ensureParentDir(filePath) {
-  await mkdir(dirname(filePath), { recursive: true });
-}
-
-function createEmptyRegistry() {
-  return {
-    version: REGISTRY_VERSION,
-    updatedAt: new Date().toISOString(),
-    entries: [],
-  };
-}
-
-function serializeEntry(entry) {
-  const normalizedScopeLevel = normalizeScopeLevel(entry?.scopeLevel);
-  const normalizedEntry = {
-    content: normalizeText(entry?.content),
-    scope: normalizeNullable(entry?.scope),
-    agentId: normalizeText(entry?.agentId || "unknown"),
-    agentType: normalizeText(entry?.agentType || "codex"),
-    category: normalizeText(entry?.category || "pattern"),
-    taskRef: normalizeNullable(entry?.taskRef),
-    timestamp: normalizeText(entry?.timestamp) || new Date().toISOString(),
-    scopeLevel: normalizedScopeLevel,
-    teamId: normalizeNullable(entry?.teamId),
-    workspaceId: normalizeNullable(entry?.workspaceId),
-    sessionId: normalizeNullable(entry?.sessionId),
-    runId: normalizeNullable(entry?.runId),
-    tags: Array.isArray(entry?.tags)
-      ? entry.tags.map((tag) => normalizeText(tag)).filter(Boolean)
-      : [],
-  };
-  if (!getScopeIdentifier(normalizedEntry, normalizedScopeLevel) && normalizedScopeLevel === "workspace") {
-    normalizedEntry.workspaceId = "default";
-  }
-  normalizedEntry.hash =
-    normalizeText(entry?.hash) ||
-    hashEntry(normalizedEntry.content, normalizedEntry.scope, normalizedEntry);
-  return normalizedEntry;
-}
-
-function normalizeRegistryEntry(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const entry = serializeEntry(raw);
-  if (!entry.content) return null;
-  if (!getScopeIdentifier(entry, entry.scopeLevel)) return null;
-  return entry;
-}
-
-async function loadRegistryEntries(repoRoot = knowledgeState.repoRoot || process.cwd()) {
-  const registryPath = getRegistryPath(repoRoot);
-  if (!existsSync(registryPath)) return createEmptyRegistry();
-
-  try {
-    const raw = JSON.parse(await readFile(registryPath, "utf8"));
-    const entries = Array.isArray(raw?.entries)
-      ? raw.entries.map((entry) => normalizeRegistryEntry(entry)).filter(Boolean)
-      : [];
-    return {
-      version: normalizeText(raw?.version) || REGISTRY_VERSION,
-      updatedAt: normalizeText(raw?.updatedAt) || new Date().toISOString(),
-      entries,
-    };
-  } catch {
-    return createEmptyRegistry();
-  }
-}
-
-async function saveRegistryEntries(repoRoot, registry) {
-  const registryPath = getRegistryPath(repoRoot);
-  await ensureParentDir(registryPath);
-  const payload = {
-    version: REGISTRY_VERSION,
-    updatedAt: new Date().toISOString(),
-    entries: Array.isArray(registry?.entries)
-      ? registry.entries.map((entry) => serializeEntry(entry))
-      : [],
-  };
-  await writeFile(registryPath, JSON.stringify(payload, null, 2), "utf8");
-}
-
-async function ensureEntryHashesLoaded() {
-  knowledgeState.entryHashes.clear();
-  const registry = await loadRegistryEntries(knowledgeState.repoRoot || process.cwd());
-  for (const entry of registry.entries) {
-    if (entry?.hash) knowledgeState.entryHashes.add(entry.hash);
-  }
-
-  if (knowledgeState.entryHashes.size > 0) return;
-
-  const filePath = resolve(knowledgeState.repoRoot || process.cwd(), knowledgeState.targetFile);
-  if (!existsSync(filePath)) return;
-
-  try {
-    const content = await readFile(filePath, "utf8");
-    const sectionIdx = content.indexOf(knowledgeState.sectionHeader);
-    if (sectionIdx === -1) return;
-    const sectionContent = content.slice(sectionIdx);
-    const entries = sectionContent.split(/^### /m).slice(1);
-    for (const block of entries) {
-      const lines = block.split("\n");
-      const contentLines = lines.filter(
-        (line) =>
-          !line.startsWith(">") &&
-          !line.startsWith("###") &&
-          !line.startsWith("---") &&
-          line.trim().length > 0,
-      );
-      const entryContent = contentLines.join(" ").trim();
-      if (!entryContent) continue;
-      const scopeMatch = lines[0]?.match(/\(([^)]+)\)/);
-      const hash = hashEntry(entryContent, scopeMatch?.[1] || null, {
-        scopeLevel: "workspace",
-      });
-      knowledgeState.entryHashes.add(hash);
-    }
-  } catch {
-    // best-effort fallback only
-  }
-}
-
-function buildSearchText(entry) {
-  return [
-    entry.content,
-    entry.scope,
-    entry.category,
-    entry.taskRef,
-    entry.agentId,
-    entry.teamId,
-    entry.workspaceId,
-    entry.sessionId,
-    entry.runId,
-    ...(Array.isArray(entry.tags) ? entry.tags : []),
-  ]
-    .filter(Boolean)
-    .join(" ");
-}
-
-function isEntryVisibleForContext(entry, context) {
-  const scopeLevel = normalizeScopeLevel(entry?.scopeLevel);
-  if (scopeLevel === "team") {
-    return Boolean(entry.teamId) && normalizeNullable(entry.teamId) === normalizeNullable(context.teamId);
-  }
-  if (scopeLevel === "workspace") {
-    return Boolean(entry.workspaceId) && normalizeNullable(entry.workspaceId) === normalizeNullable(context.workspaceId);
-  }
-  if (scopeLevel === "session") {
-    return Boolean(entry.sessionId) && normalizeNullable(entry.sessionId) === normalizeNullable(context.sessionId);
-  }
-  if (scopeLevel === "run") {
-    return Boolean(entry.runId) && normalizeNullable(entry.runId) === normalizeNullable(context.runId);
-  }
-  return false;
-}
-
-function scoreEntry(entry, queryTokens, context) {
-  const scopeLevel = normalizeScopeLevel(entry?.scopeLevel);
-  const priority = MEMORY_SCOPE_PRIORITY[scopeLevel] || 0;
-  const haystack = tokenize(buildSearchText(entry));
-  const tokenSet = new Set(haystack);
-  let score = priority * 100;
-
-  for (const token of queryTokens) {
-    if (tokenSet.has(token)) score += 25;
-  }
-
-  if (entry.taskRef && context.taskId && normalizeText(entry.taskRef) === normalizeText(context.taskId)) {
-    score += 50;
-  }
-
-  const timestampMs = Date.parse(entry.timestamp || "") || 0;
-  score += Math.floor(timestampMs / 1000 / 60 / 60 / 24);
-  return score;
-}
 
 // ── Initialization ───────────────────────────────────────────────────────────
 
+/**
+ * Initialize the shared knowledge system.
+ *
+ * @param {object} opts
+ * @param {string} opts.repoRoot - Git repository root
+ * @param {string} [opts.targetFile] - File to append to (default: AGENTS.md)
+ * @param {string} [opts.sectionHeader] - Markdown section header for learnings
+ */
 export function initSharedKnowledge(opts = {}) {
   knowledgeState.repoRoot = opts.repoRoot || process.cwd();
   knowledgeState.targetFile = opts.targetFile || DEFAULT_TARGET_FILE;
-  knowledgeState.registryFile = opts.registryFile || DEFAULT_REGISTRY_FILE;
   knowledgeState.sectionHeader = opts.sectionHeader || DEFAULT_SECTION_HEADER;
-  knowledgeState.entriesWritten = 0;
-  knowledgeState.lastWriteAt = null;
-  knowledgeState.lastWriteByAgent = new Map();
-  knowledgeState.entryHashes = new Set();
 }
 
 // ── Entry Format ─────────────────────────────────────────────────────────────
 
+/**
+ * Build a knowledge entry object.
+ *
+ * @param {object} opts
+ * @param {string} opts.content - The actual learning / insight
+ * @param {string} [opts.scope] - Area of the codebase (e.g., "veid", "market")
+ * @param {string} [opts.agentId] - Instance/agent identifier
+ * @param {string} [opts.agentType] - "codex" | "copilot" | "human"
+ * @param {string} [opts.category] - "pattern" | "gotcha" | "perf" | "security" | "convention"
+ * @param {string} [opts.taskRef] - VK task ID or branch name reference
+ * @returns {object} entry
+ */
 export function buildKnowledgeEntry(opts = {}) {
-  const entry = {
-    content: normalizeText(opts.content),
-    scope: normalizeNullable(opts.scope),
-    agentId: normalizeText(opts.agentId || "unknown"),
-    agentType: normalizeText(opts.agentType || "codex"),
-    category: normalizeText(opts.category || "pattern"),
-    taskRef: normalizeNullable(opts.taskRef),
+  const {
+    content,
+    scope = null,
+    agentId = "unknown",
+    agentType = "codex",
+    category = "pattern",
+    taskRef = null,
+  } = opts;
+
+  return {
+    content: String(content || "").trim(),
+    scope,
+    agentId,
+    agentType,
+    category,
+    taskRef,
     timestamp: new Date().toISOString(),
-    scopeLevel: normalizeScopeLevel(opts.scopeLevel),
-    teamId: normalizeNullable(opts.teamId),
-    workspaceId: normalizeNullable(opts.workspaceId),
-    sessionId: normalizeNullable(opts.sessionId),
-    runId: normalizeNullable(opts.runId),
-    tags: Array.isArray(opts.tags)
-      ? opts.tags.map((tag) => normalizeText(tag)).filter(Boolean)
-      : [],
+    hash: hashEntry(content, scope),
   };
-  if (!getScopeIdentifier(entry, entry.scopeLevel) && entry.scopeLevel === "workspace") {
-    entry.workspaceId = "default";
-  }
-  entry.hash = hashEntry(entry.content, entry.scope, entry);
-  return entry;
 }
 
+/**
+ * Format a knowledge entry as Markdown for appending to file.
+ */
 export function formatEntryAsMarkdown(entry) {
   const lines = [];
   const datePart =
@@ -324,16 +103,10 @@ export function formatEntryAsMarkdown(entry) {
   const scopePart = entry.scope ? ` (${entry.scope})` : "";
   const catPart = entry.category ? `[${entry.category}]` : "";
   const taskPart = entry.taskRef ? ` • ref: \`${entry.taskRef}\`` : "";
-  const scopeLevel = normalizeScopeLevel(entry.scopeLevel);
-  const scopeId = getScopeIdentifier(entry, scopeLevel) || "unknown";
 
   lines.push(`### ${catPart}${scopePart} — ${datePart}${taskPart}`);
   lines.push("");
   lines.push(`> **Agent:** ${entry.agentId} (${entry.agentType})`);
-  lines.push(`> **Memory Scope:** ${scopeLevel}:${scopeId}`);
-  if (Array.isArray(entry.tags) && entry.tags.length > 0) {
-    lines.push(`> **Tags:** ${entry.tags.join(", ")}`);
-  }
   lines.push("");
   lines.push(entry.content);
   lines.push("");
@@ -343,12 +116,16 @@ export function formatEntryAsMarkdown(entry) {
 
 // ── Validation ───────────────────────────────────────────────────────────────
 
+/**
+ * Validate a knowledge entry before writing.
+ * Returns { valid: boolean, reason?: string }.
+ */
 export function validateEntry(entry) {
   if (!entry || typeof entry !== "object") {
     return { valid: false, reason: "entry must be an object" };
   }
 
-  const content = normalizeText(entry.content);
+  const content = String(entry.content || "").trim();
   if (content.length < MIN_ENTRY_LENGTH) {
     return {
       valid: false,
@@ -362,17 +139,19 @@ export function validateEntry(entry) {
     };
   }
 
+  // Check for obviously low-value entries
   const lowValuePatterns = [
     /^(ok|done|yes|no|maybe|test|todo|fixme|hack)$/i,
-    /^[^a-zA-Z]*$/,
-    /(.)\1{20,}/,
+    /^[^a-zA-Z]*$/, // no letters at all
+    /(.)\1{20,}/, // 20+ repeated chars
   ];
-  for (const pattern of lowValuePatterns) {
-    if (pattern.test(content)) {
+  for (const pat of lowValuePatterns) {
+    if (pat.test(content)) {
       return { valid: false, reason: "entry appears to be low-value or noise" };
     }
   }
 
+  // Validate category
   const validCategories = [
     "pattern",
     "gotcha",
@@ -389,54 +168,83 @@ export function validateEntry(entry) {
     };
   }
 
-  const scopeLevel = normalizeScopeLevel(entry.scopeLevel);
-  if (!MEMORY_SCOPES.has(scopeLevel)) {
-    return { valid: false, reason: "invalid scopeLevel" };
-  }
-
-  if (!getScopeIdentifier(entry, scopeLevel)) {
-    return {
-      valid: false,
-      reason: `missing scope identifier for ${scopeLevel} memory`,
-    };
-  }
-
   return { valid: true };
 }
 
 // ── Deduplication ────────────────────────────────────────────────────────────
 
-function hashEntry(content, scope, entry = {}) {
-  const scopeLevel = normalizeScopeLevel(entry.scopeLevel);
-  const data = [
-    normalizeText(scope),
-    normalizeText(content).toLowerCase(),
-    scopeLevel,
-    normalizeText(entry.teamId).toLowerCase(),
-    normalizeText(entry.workspaceId).toLowerCase(),
-    normalizeText(entry.sessionId).toLowerCase(),
-    normalizeText(entry.runId).toLowerCase(),
-  ].join("|");
+function hashEntry(content, scope) {
+  const data = `${scope || ""}|${String(content || "")
+    .trim()
+    .toLowerCase()}`;
   return crypto.createHash("sha256").update(data).digest("hex").slice(0, 16);
 }
 
+/**
+ * Check if an entry with this content already exists (in-memory dedup).
+ */
 export function isDuplicate(entry) {
   return knowledgeState.entryHashes.has(entry.hash);
 }
 
+/**
+ * Load existing entry hashes from the target file for dedup.
+ */
+async function loadExistingHashes() {
+  const filePath = resolve(knowledgeState.repoRoot, knowledgeState.targetFile);
+  if (!existsSync(filePath)) return;
+
+  try {
+    const content = await readFile(filePath, "utf8");
+    // Extract content blocks from Agent Learnings section
+    const sectionIdx = content.indexOf(knowledgeState.sectionHeader);
+    if (sectionIdx === -1) return;
+
+    const sectionContent = content.slice(sectionIdx);
+    // Parse each learning entry (between ### headers)
+    const entries = sectionContent.split(/^### /m).slice(1);
+    for (const block of entries) {
+      // Extract the content after the metadata lines
+      const lines = block.split("\n");
+      const contentLines = lines.filter(
+        (l) =>
+          !l.startsWith(">") &&
+          !l.startsWith("###") &&
+          !l.startsWith("---") &&
+          l.trim().length > 0,
+      );
+      const entryContent = contentLines.join(" ").trim();
+      if (entryContent) {
+        // Extract scope from header if present
+        const scopeMatch = lines[0]?.match(/\(([^)]+)\)/);
+        const scope = scopeMatch?.[1] || null;
+        const hash = hashEntry(entryContent, scope);
+        knowledgeState.entryHashes.add(hash);
+      }
+    }
+  } catch {
+    // file read error — skip
+  }
+}
+
 // ── Write ────────────────────────────────────────────────────────────────────
 
+/**
+ * Append a knowledge entry to the target file.
+ *
+ * @param {object} entry - From buildKnowledgeEntry()
+ * @returns {object} { success: boolean, reason?: string }
+ */
 export async function appendKnowledgeEntry(entry) {
-  const normalizedEntry = serializeEntry(entry);
-  const validation = validateEntry(normalizedEntry);
+  // Validate
+  const validation = validateEntry(entry);
   if (!validation.valid) {
     return { success: false, reason: validation.reason };
   }
 
-  const agentId = normalizeText(normalizedEntry.agentId || "unknown");
-  const lastWriteForAgent = knowledgeState.lastWriteByAgent.get(agentId) || 0;
-  if (lastWriteForAgent) {
-    const elapsed = Date.now() - lastWriteForAgent;
+  // Rate limit
+  if (knowledgeState.lastWriteAt) {
+    const elapsed = Date.now() - knowledgeState.lastWriteAt;
     if (elapsed < RATE_LIMIT_MS) {
       return {
         success: false,
@@ -445,23 +253,27 @@ export async function appendKnowledgeEntry(entry) {
     }
   }
 
-  await ensureEntryHashesLoaded();
-  if (isDuplicate(normalizedEntry)) {
+  // Dedup check
+  await loadExistingHashes();
+  if (isDuplicate(entry)) {
     return { success: false, reason: "duplicate entry — already recorded" };
   }
 
-  const markdown = formatEntryAsMarkdown(normalizedEntry);
-  const filePath = resolve(knowledgeState.repoRoot || process.cwd(), knowledgeState.targetFile);
+  // Format
+  const markdown = formatEntryAsMarkdown(entry);
 
+  // Append to file
+  const filePath = resolve(knowledgeState.repoRoot, knowledgeState.targetFile);
   try {
-    await ensureParentDir(filePath);
     let content = "";
     if (existsSync(filePath)) {
       content = await readFile(filePath, "utf8");
     }
 
+    // Find or create the section
     const sectionIdx = content.indexOf(knowledgeState.sectionHeader);
     if (sectionIdx === -1) {
+      // Append section at end of file
       const newContent =
         content.trimEnd() +
         "\n\n" +
@@ -471,10 +283,16 @@ export async function appendKnowledgeEntry(entry) {
         ENTRY_SEPARATOR;
       await writeFile(filePath, newContent, "utf8");
     } else {
-      const afterSection = content.slice(sectionIdx + knowledgeState.sectionHeader.length);
+      // Append at end of existing section (before any next ## header or EOF)
+
+      const afterSection = content.slice(
+        sectionIdx + knowledgeState.sectionHeader.length,
+      );
+      // Find next top-level heading (## but not ###)
       const nextSectionMatch = afterSection.match(/\n## [^#]/);
       if (nextSectionMatch) {
         const insertPos =
+
           sectionIdx +
           knowledgeState.sectionHeader.length +
           nextSectionMatch.index;
@@ -486,6 +304,7 @@ export async function appendKnowledgeEntry(entry) {
           "utf8",
         );
       } else {
+        // Append at end of file
         await writeFile(
           filePath,
           content.trimEnd() + "\n\n" + markdown + ENTRY_SEPARATOR,
@@ -494,29 +313,25 @@ export async function appendKnowledgeEntry(entry) {
       }
     }
 
-    const registry = await loadRegistryEntries(knowledgeState.repoRoot || process.cwd());
-    registry.entries.push(normalizedEntry);
-    await saveRegistryEntries(knowledgeState.repoRoot || process.cwd(), registry);
-
-    knowledgeState.entryHashes.add(normalizedEntry.hash);
+    // Track
+    knowledgeState.entryHashes.add(entry.hash);
     knowledgeState.entriesWritten++;
     knowledgeState.lastWriteAt = Date.now();
-    knowledgeState.lastWriteByAgent.set(agentId, knowledgeState.lastWriteAt);
 
-    return {
-      success: true,
-      hash: normalizedEntry.hash,
-      registryPath: getRegistryPath(knowledgeState.repoRoot || process.cwd()),
-    };
+    return { success: true, hash: entry.hash };
   } catch (err) {
     return { success: false, reason: `write error: ${err.message}` };
   }
 }
 
-// ── Read / Retrieve ──────────────────────────────────────────────────────────
+// ── Read ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Read all knowledge entries from the target file.
+ * Returns structured entries, not raw markdown.
+ */
 export async function readKnowledgeEntries() {
-  const filePath = resolve(knowledgeState.repoRoot || process.cwd(), knowledgeState.targetFile);
+  const filePath = resolve(knowledgeState.repoRoot, knowledgeState.targetFile);
   if (!existsSync(filePath)) return [];
 
   try {
@@ -524,9 +339,11 @@ export async function readKnowledgeEntries() {
     const sectionIdx = content.indexOf(knowledgeState.sectionHeader);
     if (sectionIdx === -1) return [];
 
+
     const sectionContent = content.slice(
       sectionIdx + knowledgeState.sectionHeader.length,
     );
+    // Find next top-level heading
     const nextSectionMatch = sectionContent.match(/\n## [^#]/);
     const relevantContent = nextSectionMatch
       ? sectionContent.slice(0, nextSectionMatch.index)
@@ -538,25 +355,25 @@ export async function readKnowledgeEntries() {
     for (const block of blocks) {
       const lines = block.split("\n");
       const header = lines[0] || "";
+
+      // Parse header: [category](scope) — date • ref: `taskRef`
       const catMatch = header.match(/^\[([^\]]+)\]/);
       const scopeMatch = header.match(/\(([^)]+)\)/);
       const dateMatch = header.match(/(\d{4}-\d{2}-\d{2})/);
       const refMatch = header.match(/ref: `([^`]+)`/);
-      const agentLine = lines.find((line) => line.startsWith("> **Agent:**"));
+
+      // Parse agent line
+      const agentLine = lines.find((l) => l.startsWith("> **Agent:**"));
       const agentMatch = agentLine?.match(/\*\*Agent:\*\* ([^ ]+) \(([^)]+)\)/);
-      const memoryScopeLine = lines.find((line) => line.startsWith("> **Memory Scope:**"));
-      const memoryScopeMatch = memoryScopeLine?.match(/\*\*Memory Scope:\*\* ([^:]+):(.+)/);
-      const tagsLine = lines.find((line) => line.startsWith("> **Tags:**"));
-      const tags = tagsLine
-        ? tagsLine.replace(/^> \*\*Tags:\*\* /, "").split(",").map((tag) => normalizeText(tag)).filter(Boolean)
-        : [];
+
+      // Extract content
 
       const contentLines = lines
         .filter(
-          (line) =>
-            !line.startsWith(">") && line.trim().length > 0 && !line.startsWith("---"),
+          (l) =>
+            !l.startsWith(">") && l.trim().length > 0 && !l.startsWith("---"),
         )
-        .slice(1);
+        .slice(1); // skip header line
 
       entries.push({
         category: catMatch?.[1] || "unknown",
@@ -565,9 +382,6 @@ export async function readKnowledgeEntries() {
         taskRef: refMatch?.[1] || null,
         agentId: agentMatch?.[1] || "unknown",
         agentType: agentMatch?.[2] || "unknown",
-        scopeLevel: normalizeScopeLevel(memoryScopeMatch?.[1] || "workspace"),
-        scopeId: normalizeNullable(memoryScopeMatch?.[2]),
-        tags,
         content: contentLines.join("\n").trim(),
       });
     }
@@ -578,87 +392,19 @@ export async function readKnowledgeEntries() {
   }
 }
 
-export async function retrieveKnowledgeEntries(options = {}) {
-  const repoRoot = options.repoRoot || knowledgeState.repoRoot || process.cwd();
-  const registry = await loadRegistryEntries(repoRoot);
-  const context = {
-    teamId: normalizeNullable(options.teamId),
-    workspaceId: normalizeNullable(options.workspaceId),
-    sessionId: normalizeNullable(options.sessionId),
-    runId: normalizeNullable(options.runId),
-    taskId: normalizeNullable(options.taskId),
-  };
-  const queryTokens = tokenize(
-    [
-      options.query,
-      options.taskTitle,
-      options.taskDescription,
-    ]
-      .filter(Boolean)
-      .join(" "),
-  );
-  const limit = Math.max(1, Number(options.limit) || DEFAULT_BRIEFING_LIMIT);
-
-  return registry.entries
-    .filter((entry) => isEntryVisibleForContext(entry, context))
-    .map((entry) => ({
-      ...entry,
-      score: scoreEntry(entry, queryTokens, context),
-    }))
-    .sort((left, right) => {
-      const scopeDelta =
-        (MEMORY_SCOPE_PRIORITY[right.scopeLevel] || 0) -
-        (MEMORY_SCOPE_PRIORITY[left.scopeLevel] || 0);
-      if (scopeDelta !== 0) return scopeDelta;
-      if (right.score !== left.score) return right.score - left.score;
-      return (Date.parse(right.timestamp || "") || 0) - (Date.parse(left.timestamp || "") || 0);
-    })
-    .slice(0, limit);
-}
-
-export function formatKnowledgeBriefing(entries, options = {}) {
-  const list = Array.isArray(entries) ? entries.filter(Boolean) : [];
-  if (list.length === 0) return "";
-  const maxEntries = Math.max(1, Number(options.maxEntries) || DEFAULT_BRIEFING_LIMIT);
-  const header = normalizeText(options.header) || "## Persistent Memory Briefing";
-  const lines = [
-    header,
-    "Use these retrieved memories only when relevant. Narrower scopes override broader ones.",
-    "",
-  ];
-
-  for (const entry of list.slice(0, maxEntries)) {
-    const scopeLevel = normalizeScopeLevel(entry.scopeLevel);
-    const topic = entry.scope ? ` (${entry.scope})` : "";
-    const scopeId = getScopeIdentifier(entry, scopeLevel) || "unknown";
-    const taskPart = entry.taskRef ? ` • ref: \`${entry.taskRef}\`` : "";
-    lines.push(
-      `- [${scopeLevel}]${topic} ${truncateInline(entry.content)} • scope=${scopeId}${taskPart}`,
-    );
-  }
-
-  return lines.join("\n").trim();
-}
-
 // ── Getters ──────────────────────────────────────────────────────────────────
 
 export function getKnowledgeState() {
-  return {
-    ...knowledgeState,
-    entryHashes: knowledgeState.entryHashes.size,
-    lastWriteByAgent: knowledgeState.lastWriteByAgent.size,
-  };
+  return { ...knowledgeState, entryHashes: knowledgeState.entryHashes.size };
 }
 
 export function formatKnowledgeSummary() {
   return [
     `:u1f4da: Shared Knowledge: ${knowledgeState.entriesWritten} entries written this session`,
     `Target: ${knowledgeState.targetFile}`,
-    `Registry: ${knowledgeState.registryFile}`,
     `Dedup cache: ${knowledgeState.entryHashes.size} hashes`,
     knowledgeState.lastWriteAt
       ? `Last write: ${new Date(knowledgeState.lastWriteAt).toISOString()}`
       : "No writes this session",
   ].join("\n");
 }
-

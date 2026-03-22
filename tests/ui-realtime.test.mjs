@@ -13,7 +13,6 @@ describe("telegram mini app realtime wiring", () => {
     expect(source).toContain("/api/tasks/edit");
     expect(source).toContain("broadcastUiEvent");
     expect(source).toContain("retry-queue-updated");
-    expect(source).toContain("sessions:update");
   });
 
   it("frontend modules contain websocket and realtime logic", () => {

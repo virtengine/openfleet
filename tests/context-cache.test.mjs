@@ -180,6 +180,39 @@ describe("context-cache", () => {
       expect(retrieved.entry.item.aggregated_output).toBe(fullOutput);
     });
 
+    it("assigns stable search family and diagnostics to rg-style output", async () => {
+      const result = await contextCache.compactCommandOutputPayload({
+        command: "rg",
+        args: ["TODO", "src"],
+        output: Array.from({ length: 120 }, (_, i) =>           `src/file${i}.mjs:${i + 1}: TODO improve signal extraction`).join("\n"),
+      });
+
+      expect(result.compacted).toBe(true);
+      expect(result.compactionFamily).toBe("search");
+      expect(result.commandDiagnostics?.family).toBe("search");
+    });
+
+    it("uses retrievable artifacts for noisy builds and exposes inspection metadata", async () => {
+      const output = [
+        ...Array.from({ length: 60 }, (_, i) => `src/File${i}.cs(${i + 1},1): warning CS0168: variable declared but never used`),
+        "Build FAILED.",
+        "src/Program.cs(42,13): error CS1002: ; expected",
+      ].join("\n");
+
+      const result = await contextCache.compactCommandOutputPayload({
+        command: "dotnet",
+        args: ["build"],
+        output,
+        exitCode: 1,
+      });
+
+      expect(result.compacted).toBe(true);
+      expect(result.compactionFamily).toBe("build");
+      expect(result.commandDiagnostics?.family).toBe("build");
+      expect(result.retrieveCommand).toMatch(/^bosun --tool-log /);
+      expect(result.item?._cachedLogId).toBeDefined();
+    });
+
     it("immediately caps other high-volume git history outputs", async () => {
       const fullOutput = makeLargeGitOutput(1500);
       const cases = [
@@ -1137,6 +1170,125 @@ describe("live tool compaction", () => {
     expect(compacted.commandDiagnostics?.insufficientSignal).toBe(true);
     expect(compacted.text).toContain("Signal coverage: low");
     expect(compacted.text).toContain("Hint: Signal coverage is low.");
+  });
+
+  it("classifies package manager install output separately and prefers summary budget", async () => {
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    const compacted = await cacheModule.compactCommandOutputPayload({
+      command: "npm install",
+      output: [
+        ...Array.from({ length: 220 }, (_, i) => `added dep-${i}@1.0.${i % 7}`),
+        "found 2 vulnerabilities (1 moderate, 1 high)",
+        "run `npm audit fix` to fix them, or `npm audit` for details",
+      ].join("\n"),
+      exitCode: 0,
+    });
+
+    expect(compacted.compactionFamily).toBe("package-manager");
+    expect(compacted.commandDiagnostics?.budgetPolicy).toBe("summary");
+    expect(compacted.commandDiagnostics?.retrievalMode).toBe("artifact");
+    expect(compacted.item?._contextEnvelope?.evidence?.family).toBe("package-manager");
+    expect(compacted.item?._contextEnvelope?.budgetPolicy?.reason).toContain("install/update logs are repetitive");
+    expect(compacted.text).toContain("vulnerabilities");
+  });
+
+  it("classifies test runs separately from build runs and emits delta-friendly summaries", async () => {
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    const compacted = await cacheModule.compactCommandOutputPayload({
+      command: "dotnet test tests/Bosun.Tests/Bosun.Tests.csproj",
+      output: [
+        ...Array.from({ length: 140 }, (_, i) => `Passed Example.Test${i} [${10 + (i % 5)} ms]`),
+        "Failed Bosun.Tests.RouterTests.PackageInstallBudgetPolicy [22 ms]",
+        "Error Message:",
+        " Assert.Equal() Failure",
+        "Expected: summary",
+        "Actual:   inline",
+      ].join("\n"),
+      exitCode: 1,
+    });
+
+    expect(compacted.compactionFamily).toBe("test");
+    expect(compacted.commandDiagnostics?.budgetPolicy).toBe("inline+delta");
+    expect(compacted.commandDiagnostics?.retrievalMode).toBe("inline");
+    expect(compacted.item?._contextEnvelope?.retrieval?.mode).toBe("inline");
+    expect(compacted.text).toContain("PackageInstallBudgetPolicy");
+  });
+
+  it("classifies deploy output and prefers artifact retrieval for large rollouts", async () => {
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    const compacted = await cacheModule.compactCommandOutputPayload({
+      command: "kubectl rollout status deployment/bosun --namespace prod",
+      output: [
+        ...Array.from({ length: 260 }, (_, i) => `Waiting for deployment \"bosun\" rollout to finish: ${i} of 12 updated replicas are available...`),
+        "deployment \"bosun\" successfully rolled out",
+      ].join("\n"),
+      exitCode: 0,
+    });
+
+    expect(compacted.compactionFamily).toBe("deploy");
+    expect(compacted.commandDiagnostics?.budgetPolicy).toBe("artifact+summary");
+    expect(compacted.commandDiagnostics?.retrievalMode).toBe("artifact");
+    expect(compacted.item?._contextEnvelope?.budgetPolicy?.reason).toContain("rollout output is timeline-heavy");
+    expect(compacted.text).toContain("successfully rolled out");
+  });
+
+  it("classifies git diff output with stable artifact-backed summaries", async () => {
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    const compacted = await cacheModule.compactCommandOutputPayload({
+      command: "git diff -- src/router.mjs",
+      output: [
+        ...Array.from({ length: 220 }, (_, i) => `+ changed line ${i} ${"x".repeat(30)}`),
+        "diff --git a/src/router.mjs b/src/router.mjs",
+        "@@ -41,6 +41,8 @@ export function routeCommand() {",
+        "+  budgetPolicy: 'summary',",
+        "+  retrievalMode: 'artifact',",
+      ].join("\n"),
+      exitCode: 0,
+    });
+
+    expect(compacted.compactionFamily).toBe("git");
+    expect(compacted.commandDiagnostics?.budgetPolicy).toMatch(/summary|artifact/);
+    expect(compacted.item?._contextEnvelope?.evidence?.family).toBe("git");
+    expect(compacted.item?._contextEnvelope?.budgetPolicy?.reason).toContain("git output is diff-heavy");
+    expect(compacted.retrieveCommand).toContain("bosun --tool-log");
+  });
+
+  it("classifies search output with representative inline hits and artifact retrieval", async () => {
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    const compacted = await cacheModule.compactCommandOutputPayload({
+      command: "rg budgetPolicy src tests",
+      output: [
+        ...Array.from({ length: 220 }, (_, i) => `src/file${i % 7}.mjs:${i + 1}: budgetPolicy marker ${"y".repeat(18)}`),
+        "tests/context-cache.test.mjs:1208: expect(compacted.commandDiagnostics?.budgetPolicy).toBe('inline+delta');",
+      ].join("\n"),
+      exitCode: 0,
+    });
+
+    expect(compacted.compactionFamily).toBe("search");
+    expect(compacted.item?._contextEnvelope?.evidence?.family).toBe("search");
+    expect(compacted.item?._contextEnvelope?.budgetPolicy?.reason).toContain("search output is match-dense");
+    expect(compacted.text).toContain("tests/context-cache.test.mjs");
+  });
+
+  it("exposes operator-facing decision traces for workflow envelopes", async () => {
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    const compacted = await cacheModule.compactCommandOutputPayload({
+      command: "npm install",
+      output: [
+        ...Array.from({ length: 180 }, (_, i) => `added dep-${i}@1.2.${i % 9}`),
+        "found 1 high severity vulnerability",
+      ].join("\n"),
+      exitCode: 0,
+    });
+    const envelope = cacheModule.buildCommandContextEnvelope(compacted, { output: compacted.text });
+
+    expect(envelope.commandFamily).toBe("npm");
+    expect(envelope.compactionFamily).toBe("package-manager");
+    expect(envelope.budgetPolicy).toBe("summary");
+    expect(envelope.retrievalMode).toBe("artifact");
+    expect(envelope.decisionTrace.excerpted).toBe(true);
+    expect(envelope.decisionTrace.reason).toBe("summary");
+    expect(envelope.decisionTrace.originalChars).toBeGreaterThan(envelope.decisionTrace.compactedChars);
   });
 });
 

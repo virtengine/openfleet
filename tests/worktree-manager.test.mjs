@@ -9,15 +9,15 @@ vi.mock("node:child_process", () => ({
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal();
-    return {
-      ...actual,
-      existsSync: vi.fn(() => false),
-      mkdirSync: vi.fn(),
-      symlinkSync: vi.fn(),
-      writeFileSync: vi.fn(),
-      readFileSync: vi.fn(() => "{}"),
-    };
-  });
+  return {
+    ...actual,
+    existsSync: vi.fn(() => false),
+    mkdirSync: vi.fn(),
+    symlinkSync: vi.fn(),
+    writeFileSync: vi.fn(),
+    readFileSync: vi.fn(() => "{}"),
+  };
+});
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal();

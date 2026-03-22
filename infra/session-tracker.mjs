@@ -6,7 +6,7 @@
  * tool calls/results.
  *
  * Supports disk persistence: each session is stored as a JSON file in
- * `logs/sessions/<sessionId>.json` and auto-loaded on init.
+ * `.bosun/logs/sessions/<sessionId>.json` and auto-loaded on init.
  *
  * @module session-tracker
  */
@@ -18,6 +18,104 @@ import { fileURLToPath } from "node:url";
 import { buildSessionInsights } from "../lib/session-insights.mjs";
 import { isTestRuntime } from "./test-runtime.mjs";
 import { addCompletedSession } from "./runtime-accumulator.mjs";
+
+const TRAJECTORY_VERSION = 1;
+const MAX_TRAJECTORY_STEPS = 400;
+const MAX_RUN_SUMMARY_STEPS = 12;
+
+function clampText(value, max = 240) {
+  const text = String(value || "").trim().replace(/\s+/g, " ");
+  if (!text) return "";
+  return text.length > max ? `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…` : text;
+}
+
+function inferStepKind(message = {}) {
+  if (message?.meta?.toolName === "command_execution") return "command";
+  if (message?.type === "tool_call") return "tool_call";
+  if (message?.type === "tool_result") return "tool_result";
+  if (message?.type === "error") return "error";
+  if (message?.type === "agent_message") return "agent_message";
+  if (message?.type === "system") {
+    const itemType = String(message?.meta?.itemType || "").trim().toLowerCase();
+    if (itemType === "reasoning") return "reasoning";
+    if (itemType === "todo_list") return "plan";
+    return "system";
+  }
+  return String(message?.type || message?.role || "system").trim().toLowerCase() || "system";
+}
+
+function extractStepTitle(message = {}, kind = inferStepKind(message)) {
+  if (kind === "tool_call" || kind === "command") {
+    return clampText(message?.meta?.toolName || message?.content || "", 80);
+  }
+  if (kind === "tool_result") return "Tool result";
+  if (kind === "reasoning") return "Reasoning";
+  if (kind === "agent_message") return "Agent response";
+  if (kind === "plan") return "Plan update";
+  if (kind === "error") return "Error";
+  return clampText(kind.replace(/_/g, " "), 80) || "Event";
+}
+
+function buildTrajectoryStep(message = {}, index = 0) {
+  const kind = inferStepKind(message);
+  const content = clampText(message?.content || "", 240);
+  const toolName = String(message?.meta?.toolName || "").trim();
+  const step = {
+    id: message?.id || "step-" + (index + 1),
+    index,
+    kind,
+    title: extractStepTitle(message, kind),
+    summary: content,
+    text: content,
+    timestamp: message?.timestamp || new Date().toISOString(),
+  };
+  if (toolName) step.toolName = toolName;
+  if (kind === "command") {
+    const exitCode = Number(message?.meta?.exitCode);
+    step.exitCode = Number.isFinite(exitCode) ? exitCode : null;
+    step.command = content;
+  }
+  return step;
+}
+
+function buildSessionTrajectory(session = {}) {
+  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  const steps = messages
+    .map((message, index) => buildTrajectoryStep(message, index))
+    .filter((step) => Boolean(step.summary || step.title))
+    .slice(-MAX_TRAJECTORY_STEPS);
+  return {
+    version: TRAJECTORY_VERSION,
+    replayable: true,
+    totalSteps: steps.length,
+    generatedAt: new Date().toISOString(),
+    steps,
+  };
+}
+
+function buildRunSummary(session = {}) {
+  const trajectory = session?.trajectory?.steps?.length ? session.trajectory : buildSessionTrajectory(session);
+  const significantSteps = trajectory.steps.filter((step) =>
+    ["reasoning", "tool_call", "command", "error", "agent_message", "plan"].includes(step.kind),
+  );
+  const summarySteps = significantSteps.slice(-MAX_RUN_SUMMARY_STEPS).map((step) => ({
+    kind: step.kind,
+    title: step.title,
+    text: step.summary,
+    timestamp: step.timestamp,
+    exitCode: step.exitCode ?? undefined,
+  }));
+  const reversed = [...trajectory.steps].reverse();
+  const lastAgentMessage = reversed.find((step) => step.kind === "agent_message" && step.summary);
+  const lastError = reversed.find((step) => step.kind === "error" && step.summary);
+  const latestSummaryStep = summarySteps.length ? summarySteps[summarySteps.length - 1] : null;
+  return {
+    headline: lastAgentMessage?.summary || lastError?.summary || latestSummaryStep?.text || "No summary available",
+    latestStatus: String(session?.status || "active"),
+    steps: summarySteps,
+    updatedAt: new Date().toISOString(),
+  };
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WORKSPACE_MIRROR_MARKER = `${sep}.bosun${sep}workspaces${sep}`.toLowerCase();
@@ -33,7 +131,7 @@ function resolveSessionTrackerSourceRepoRoot(startDir = __dirname) {
 }
 
 const SESSION_TRACKER_REPO_ROOT = resolveSessionTrackerSourceRepoRoot(__dirname);
-const SESSIONS_DIR = resolve(SESSION_TRACKER_REPO_ROOT, "logs", "sessions");
+const SESSIONS_DIR = resolve(SESSION_TRACKER_REPO_ROOT, ".bosun", "logs", "sessions");
 
 const TAG = "[session-tracker]";
 
@@ -264,6 +362,8 @@ export class SessionTracker {
       lastActivityAt: Date.now(),
       metadata: {},
       insights: buildSessionInsights({ messages: [] }),
+      trajectory: { version: TRAJECTORY_VERSION, replayable: true, totalSteps: 0, generatedAt: new Date().toISOString(), steps: [] },
+      runSummary: { headline: "No summary available", latestStatus: "active", steps: [], updatedAt: new Date().toISOString() },
     });
     const session = this.#sessions.get(taskId);
     this.#markDirty(taskId);
@@ -319,6 +419,11 @@ export class SessionTracker {
       if (Number.isFinite(maxMessages) && maxMessages > 0) {
         while (session.messages.length > maxMessages) session.messages.shift();
       }
+      session.trajectory = buildSessionTrajectory(session);
+      session.runSummary = buildRunSummary(session);
+      session.insights = buildSessionInsights(session);
+      this.#markDirty(taskId);
+      return;
       this.#refreshDerivedState(session);
       this.#markDirty(taskId);
       emitSessionEvent(session, msg);
@@ -352,6 +457,11 @@ export class SessionTracker {
       if (Number.isFinite(maxMessages) && maxMessages > 0) {
         while (session.messages.length > maxMessages) session.messages.shift();
       }
+      session.trajectory = buildSessionTrajectory(session);
+      session.runSummary = buildRunSummary(session);
+      session.insights = buildSessionInsights(session);
+      this.#markDirty(taskId);
+      return;
       this.#refreshDerivedState(session);
       this.#markDirty(taskId);
       emitSessionEvent(session, msg);
@@ -678,7 +788,34 @@ export class SessionTracker {
   getSessionMessages(sessionId) {
     const session = this.#sessions.get(sessionId);
     if (!session) return null;
-    return { ...session };
+    const trajectory = session.trajectory?.steps?.length ? session.trajectory : buildSessionTrajectory(session);
+    const runSummary = buildRunSummary({ ...session, trajectory });
+    const replay = {
+      ...(session.insights?.replay && typeof session.insights.replay === "object"
+        ? session.insights.replay
+        : {}),
+      trajectory: trajectory.steps,
+      steps: Array.isArray(runSummary?.steps) ? runSummary.steps : [],
+      resumeHint:
+        (Array.isArray(runSummary?.steps) && runSummary.steps.length
+          ? String(runSummary.steps[runSummary.steps.length - 1]?.text || "").trim()
+          : "") ||
+        session.insights?.replay?.resumeHint ||
+        runSummary?.headline ||
+        null,
+      overview:
+        session.insights?.replay?.overview ||
+        runSummary?.headline ||
+        null,
+    };
+    return {
+      ...session,
+      trajectory,
+      runSummary,
+      replay,
+      shortSteps: Array.isArray(runSummary?.steps) ? runSummary.steps : [],
+      resumeHint: replay.resumeHint || null,
+    };
   }
 
   /**
@@ -887,6 +1024,8 @@ export class SessionTracker {
         lastActivityAt: lastActive || Date.now(),
         metadata: data.metadata || {},
         insights: data.insights || buildSessionInsights({ messages: data.messages || [] }),
+        trajectory: data.trajectory || buildSessionTrajectory({ messages: data.messages || [] }),
+        runSummary: data.runSummary || buildRunSummary({ messages: data.messages || [], status }),
       });
     }
   }
@@ -1052,6 +1191,8 @@ export class SessionTracker {
           messages: session.messages || [],
           metadata: session.metadata || {},
           insights: session.insights || null,
+          trajectory: session.trajectory || buildSessionTrajectory(session),
+          runSummary: session.runSummary || buildRunSummary(session),
         };
         writeFileSync(filePath, JSON.stringify(data, null, 2));
       } catch (err) {
@@ -1692,7 +1833,7 @@ export function createSessionTracker(options) {
 /**
  * Reset the singleton so the next `getSessionTracker()` call creates a fresh
  * instance.  Intended **only** for tests — prevents test-created sessions from
- * leaking into the real `logs/sessions/` directory on disk.
+ * leaking into the real `.bosun/logs/sessions/` directory on disk.
  *
  * @param {Object} [nextOptions] — options forwarded to the *next* singleton
  *   creation.  Pass `{ persistDir: null }` to disable disk writes entirely.
@@ -1708,3 +1849,9 @@ export function _resetSingleton(nextOptions) {
     _instance = new SessionTracker(nextOptions);
   }
 }
+
+
+
+
+
+

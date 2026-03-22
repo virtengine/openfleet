@@ -471,3 +471,97 @@ export function cleanupOrphanedContainers() {
     /* no orphans or runtime not available */
   }
 }
+
+function truncateLines(text, maxLines = 12) {
+  const lines = String(text || "").split(/\r?\n/).filter((line) => line.length > 0);
+  return lines.slice(0, maxLines).join("\n");
+}
+
+export function classifyRunnerTask(task = {}) {
+  const command = String(task.command || task.cmd || "").toLowerCase();
+  const label = String(task.label || task.kind || "").toLowerCase();
+  const combined = `${command} ${label}`;
+  let kind = "light";
+  if (/(^|\s)(npm|pnpm|yarn)\s+test|\bvitest\b|\bjest\b|\bpytest\b|\bgo test\b|\bcargo test\b/.test(combined)) {
+    kind = "test";
+  } else if (/(^|\s)(npm|pnpm|yarn)\s+run\s+build|(^|\s)(npm|pnpm|yarn)\s+build|\btsc\b|\bwebpack\b|\brollup\b/.test(combined)) {
+    kind = "build";
+  } else if (/pre-push/.test(combined)) {
+    kind = "pre-push";
+  } else if (/\bdiff\b/.test(combined)) {
+    kind = "diff";
+  } else if (/validation|lint|check/.test(combined)) {
+    kind = "validation";
+  }
+  const heavy = kind !== "light";
+  return { kind, heavy, command: String(task.command || task.cmd || "") };
+}
+
+export function buildRunnerRetrievalCommands(artifactPointers = []) {
+  return artifactPointers.map((artifact) => {
+    const path = String(artifact?.path || artifact?.uri || "").trim();
+    const name = String(artifact?.name || path || "artifact").trim();
+    return path ? `Get-Content ${path}    # retrieve ${name}` : `echo missing artifact path for ${name}`;
+  });
+}
+
+export function compactRunnerResult(result = {}) {
+  const kind = String(result.kind || "validation");
+  const status = String(result.status || "unknown");
+  const artifactPointers = Array.isArray(result.artifactPointers) ? result.artifactPointers : [];
+  const stdoutPreview = truncateLines(result.stdout, 8);
+  const stderrPreview = truncateLines(result.stderr, 8);
+  return {
+    ...result,
+    artifactPointers,
+    stdoutPreview,
+    stderrPreview,
+    retrievalCommands: buildRunnerRetrievalCommands(artifactPointers),
+    summary: `${kind} ${status}${stdoutPreview ? ` | stdout: ${stdoutPreview}` : ""}${stderrPreview ? ` | stderr: ${stderrPreview}` : ""}`,
+  };
+}
+
+export async function runWithHeavyRunnerLease(options = {}, hooks = {}) {
+  const maxAttempts = Math.max(1, Number(options.maxAttempts || 2));
+  const task = classifyRunnerTask(options);
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let lease = null;
+    try {
+      lease = hooks.acquireLease ? await hooks.acquireLease({ ...options, task, attempt }) : { id: `local-${attempt}` };
+      const execute = hooks.execute || (async () => ({
+        status: "passed",
+        kind: task.kind,
+        stdout: "",
+        stderr: "",
+        artifactPointers: [],
+        leaseId: lease?.id || null,
+      }));
+      const result = await execute({ ...options, task, lease, attempt });
+      const compacted = compactRunnerResult({ ...result, kind: result?.kind || task.kind, leaseId: lease?.id || result?.leaseId || null });
+      if (hooks.releaseLease && lease) {
+        await hooks.releaseLease({ lease, result: compacted, attempt });
+      }
+      return compacted;
+    } catch (error) {
+      lastError = error;
+      if (hooks.releaseLease && lease) {
+        try {
+          await hooks.releaseLease({ lease, error, attempt });
+        } catch {
+        }
+      }
+    }
+  }
+
+  return {
+    status: "blocked",
+    kind: task.kind,
+    heavy: task.heavy,
+    blockedReason: String(lastError?.message || lastError || "runner lease failed"),
+    artifactPointers: [],
+    retrievalCommands: [],
+    summary: `blocked: ${String(lastError?.message || lastError || "runner lease failed")}`,
+  };
+}

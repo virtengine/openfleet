@@ -41,13 +41,6 @@ import { readBenchmarkModeState, taskMatchesBenchmarkMode } from "../bench/bench
 import { getSessionTracker } from "../infra/session-tracker.mjs";
 import { recordWorktreeRecoveryEvent } from "../infra/worktree-recovery-state.mjs";
 import {
-  appendKnowledgeEntry,
-  buildKnowledgeEntry,
-  formatKnowledgeBriefing,
-  initSharedKnowledge,
-  retrieveKnowledgeEntries,
-} from "../workspace/shared-knowledge.mjs";
-import {
   buildWorkflowContractPromptBlock,
   loadWorkflowContract,
   validateWorkflowContract,
@@ -58,6 +51,7 @@ import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity, normalizeBaseBranch } from "../git/git-safety.mjs";
 import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../git/git-commit-helpers.mjs";
 import { getGitHubToken, invalidateTokenType } from "../github/github-auth-manager.mjs";
+import { createRunnerPool, shouldOffloadHeavyRun, classifyHeavyRun } from "./runner-pool.mjs";
 import {
   CUSTOM_NODE_DIR_NAME,
   ensureCustomWorkflowNodesLoaded,
@@ -66,6 +60,11 @@ import {
   startCustomNodeDiscovery,
   stopCustomNodeDiscovery,
 } from "./workflow-nodes/custom-loader.mjs";
+
+import {
+  ensureWorkflowOntologyPacksLoaded,
+} from "./workflow-ontology-packs.mjs";
+
 
 // CLAUDE:SUMMARY — workflow-nodes
 // Registers built-in workflow node types and shared prompt/runtime actions for Bosun workflows.
@@ -2525,6 +2524,20 @@ registerBuiltinNodeType("action.run_agent", {
         trackedTaskId ||
         "",
     ).trim();
+    const trackedWorkspaceId = String(
+      ctx.data?._workspaceId ||
+        ctx.data?.workspaceId ||
+        ctx.data?.activeWorkspace ||
+        ctx.data?.workspace ||
+        "",
+    ).trim() || undefined;
+    const trackedWorkspaceDir = String(
+      ctx.data?.repoRoot ||
+        ctx.data?.workspaceDir ||
+        ctx.data?.rootDir ||
+        cwd ||
+        "",
+    ).trim() || undefined;
     const agentProfileId = String(
       ctx.resolve(node.config?.agentProfile || ctx.data?.agentProfile || ""),
     ).trim();
@@ -2657,8 +2670,8 @@ registerBuiltinNodeType("action.run_agent", {
                 taskId: trackedTaskId,
                 metadata: {
                   title: trackedTaskTitle || trackedTaskId,
-                  workspaceId: String(ctx.data?.workspaceId || ctx.data?.activeWorkspace || "").trim() || undefined,
-                  workspaceDir: String(cwd || "").trim() || undefined,
+                  workspaceId: trackedWorkspaceId,
+                  workspaceDir: trackedWorkspaceDir,
                   branch:
                     String(
                       ctx.data?.branch ||
@@ -2844,8 +2857,8 @@ registerBuiltinNodeType("action.run_agent", {
               taskId: trackedTaskId,
               metadata: {
                 title: trackedTaskTitle || trackedTaskId,
-                workspaceId: String(ctx.data?.workspaceId || ctx.data?.activeWorkspace || "").trim() || undefined,
-                workspaceDir: String(cwd || "").trim() || undefined,
+                workspaceId: trackedWorkspaceId,
+                workspaceDir: trackedWorkspaceDir,
                 branch:
                   String(
                     ctx.data?.branch ||
@@ -3290,13 +3303,21 @@ registerBuiltinNodeType("action.run_command", {
         enum: ["test", "build", "lint", "syntaxCheck", "qualityGate"],
         description: "Optional auto-resolution category when command is set to 'auto'",
       },
+      heavyRun: { type: "boolean", default: false, description: "Prefer isolated runner pool for heavyweight validation commands" },
+      heavyType: {
+        type: "string",
+        enum: ["build", "test", "validation", "diff", "pre-push"],
+        description: "Explicit heavy runner classification used by the scheduler and lease broker",
+      },
+      leaseRetries: { type: "number", default: 0, description: "Number of lease acquisition retries before surfacing blocked evidence" },
+      leaseRetryDelayMs: { type: "number", default: 250, description: "Delay between lease acquisition retries" },
       captureOutput: { type: "boolean", default: true },
       parseJson: { type: "boolean", default: false, description: "Parse JSON output automatically" },
       failOnError: { type: "boolean", default: false, description: "Throw on non-zero exit status (enables workflow retries)" },
     },
     required: ["command"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const resolvedCommand = ctx.resolve(node.config?.command || "");
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     const commandType = typeof node.config?.commandType === "string" ? node.config.commandType.trim() : "";
@@ -3333,11 +3354,11 @@ registerBuiltinNodeType("action.run_command", {
       try {
         return JSON.parse(trimmed);
       } catch {
-        const lines = String(trimmed)
+        const rows = String(trimmed)
           .split(/\r?\n/)
           .map((line) => line.trim())
           .filter(Boolean);
-        const candidate = lines.length > 0 ? lines[lines.length - 1] : trimmed;
+        const candidate = rows.length > 0 ? rows[rows.length - 1] : trimmed;
         try {
           return JSON.parse(candidate);
         } catch {
@@ -3364,6 +3385,135 @@ registerBuiltinNodeType("action.run_command", {
     }
     ctx.log(node.id, `Running: ${usedArgv ? `${command} ${commandArgs.join(" ")}`.trim() : command}`);
     const startedAt = Date.now();
+    const isHeavyRun = shouldOffloadHeavyRun(node.config);
+    const heavyType = classifyHeavyRun(node.config);
+    const runnerPool = engine?.services?.runnerPool || createRunnerPool({ workspaceRoot: autoCommandRoot || cwd });
+
+    const finishCompactedResult = async ({ success, output = "", stderr = "", exitCode = 0, error = "", artifacts = [], leaseId = null, leaseAttempts = 1 }) => {
+      const parsedOutput = parseOutput(output);
+      const normalizedArtifacts = Array.isArray(artifacts) ? artifacts : [];
+      const artifactRetrievalCommands = normalizedArtifacts
+        .map((artifact) => String(artifact?.retrieveCommand || "").trim())
+        .filter(Boolean);
+      if (success && (shouldParseJson || typeof parsedOutput !== "string")) {
+        return {
+          success,
+          exitCode,
+          output: parsedOutput,
+          executionMode: isHeavyRun ? "isolated" : "local",
+          runnerLeaseId: leaseId,
+          runnerLeaseAttempts: leaseAttempts,
+          artifacts: normalizedArtifacts,
+          artifactRetrievalCommands,
+        };
+      }
+      const compacted = await compactWorkflowCommandResult({
+        command,
+        args: commandArgs,
+        output: typeof parsedOutput === "string" ? parsedOutput : JSON.stringify(parsedOutput),
+        stderr,
+        exitCode,
+        durationMs: Date.now() - startedAt,
+      });
+      return {
+        success,
+        exitCode,
+        error,
+        executionMode: isHeavyRun ? "isolated" : "local",
+        runnerLeaseId: leaseId,
+        runnerLeaseAttempts: leaseAttempts,
+        artifacts: normalizedArtifacts,
+        artifactRetrievalCommands,
+        primaryRetrievalCommand:
+          artifactRetrievalCommands[0] || compacted.retrieveCommand || null,
+        ...compacted,
+      };
+    };
+
+    if (isHeavyRun) {
+      const configuredRetries = Number(node.config?.leaseRetries ?? 0);
+      const maxAttempts = Number.isFinite(configuredRetries)
+        ? Math.max(1, Math.trunc(configuredRetries) + 1)
+        : 1;
+      const configuredRetryDelay = Number(node.config?.leaseRetryDelayMs ?? 250);
+      const retryDelayMs = Number.isFinite(configuredRetryDelay)
+        ? Math.max(0, Math.trunc(configuredRetryDelay))
+        : 250;
+      let lastError = null;
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        let lease = null;
+        try {
+          lease = await runnerPool.acquireLease({
+            heavyType,
+            workflowRunId: ctx.id,
+            workflowId: ctx.data?._workflowId || null,
+            taskId: ctx.data?.taskId || null,
+            nodeId: node.id,
+            cwd,
+            command,
+            args: commandArgs,
+          });
+          const leaseId = String(lease?.id || "").trim() || null;
+          const runResult = await lease.runCommand({
+            command: usedArgv ? [command, ...commandArgs].join(" ") : command,
+            cwd,
+            env: commandEnv,
+            timeoutMs: timeout,
+            artifacts: [],
+          });
+          if (lease && typeof lease.release === "function") {
+            try { await lease.release(); } catch { }
+          }
+          const exitCode = Number.isFinite(Number(runResult?.exitCode)) ? Number(runResult.exitCode) : 0;
+          const output = String(runResult?.stdout || "");
+          const stderr = String(runResult?.stderr || "");
+          return await finishCompactedResult({
+            success: exitCode === 0,
+            output,
+            stderr,
+            exitCode,
+            error: exitCode === 0 ? "" : (stderr || output || "Heavy runner command failed"),
+            artifacts: Array.isArray(runResult?.artifacts) ? runResult.artifacts : [],
+            leaseId,
+            leaseAttempts: attempt,
+          });
+        } catch (err) {
+          lastError = err;
+          if (lease && typeof lease.release === "function") {
+            try { await lease.release(); } catch { }
+          }
+          if (attempt < maxAttempts && retryDelayMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+            continue;
+          }
+        }
+      }
+      const blockedReason = String(lastError?.message || lastError || "isolated runner unavailable");
+      const blockedResult = await finishCompactedResult({
+        success: false,
+        output: "",
+        stderr: blockedReason,
+        exitCode: null,
+        error: blockedReason,
+        artifacts: [],
+        leaseId: null,
+        leaseAttempts: maxAttempts,
+      });
+      return {
+        ...blockedResult,
+        blocked: true,
+        blockedReason,
+        blockedEvidence: {
+          category: "runner_lease",
+          heavyType,
+          command,
+          attempts: maxAttempts,
+          message: blockedReason,
+        },
+      };
+    }
+
     try {
       const output = usedArgv
         ? execFileSync(command, commandArgs, {
@@ -3383,35 +3533,17 @@ registerBuiltinNodeType("action.run_command", {
             env: commandEnv,
           });
       ctx.log(node.id, `Command succeeded`);
-      const parsedOutput = parseOutput(output);
-      if (shouldParseJson || typeof parsedOutput !== "string") {
-        return { success: true, output: parsedOutput, exitCode: 0 };
-      }
-      const compacted = await compactWorkflowCommandResult({
-        command,
-        args: commandArgs,
-        output: parsedOutput,
-        exitCode: 0,
-        durationMs: Date.now() - startedAt,
-      });
-      return { success: true, exitCode: 0, ...compacted };
+      return await finishCompactedResult({ success: true, output, exitCode: 0 });
     } catch (err) {
       const output = err.stdout?.toString() || "";
       const stderr = err.stderr?.toString() || "";
-      const compacted = await compactWorkflowCommandResult({
-        command,
-        args: commandArgs,
+      const result = await finishCompactedResult({
+        success: false,
         output,
         stderr,
         exitCode: err.status,
-        durationMs: Date.now() - startedAt,
-      });
-      const result = {
-        success: false,
-        exitCode: err.status,
         error: err.message,
-        ...compacted,
-      };
+      });
       if (node.config?.failOnError) {
         const reason = trimLogText(result.output || stderr || output || err.message, 400) || err.message;
         throw new Error(reason);
@@ -4379,6 +4511,8 @@ registerBuiltinNodeType("action.update_task_status", {
       status: { type: "string", enum: ["todo", "inprogress", "inreview", "done", "blocked", "archived"] },
       taskTitle: { type: "string", description: "Optional task title for downstream event payloads" },
       previousStatus: { type: "string", description: "Optional explicit previous status" },
+      blockedReason: { type: "string", description: "Optional blocked reason to persist with status changes" },
+      cooldownUntil: { type: "string", description: "Optional cooldown timestamp to persist with status changes" },
       workflowEvent: { type: "string", description: "Optional follow-up workflow event to emit after status update" },
       workflowData: { type: "object", description: "Additional payload for workflowEvent" },
       workflowDedupKey: { type: "string", description: "Optional dedup key for workflowEvent dispatch" },
@@ -4396,11 +4530,15 @@ registerBuiltinNodeType("action.update_task_status", {
         : null;
     const taskTitle = ctx.resolve(node.config?.taskTitle || "");
     const previousStatus = ctx.resolve(node.config?.previousStatus || "");
+    const blockedReason = ctx.resolve(node.config?.blockedReason || "");
+    const cooldownUntil = ctx.resolve(node.config?.cooldownUntil || "");
     const workflowDedupKey = ctx.resolve(node.config?.workflowDedupKey || "");
     const updateOptions = {};
     updateOptions.source = "workflow";
     if (taskTitle) updateOptions.taskTitle = taskTitle;
     if (previousStatus) updateOptions.previousStatus = previousStatus;
+    if (blockedReason) updateOptions.blockedReason = blockedReason;
+    if (cooldownUntil) updateOptions.cooldownUntil = cooldownUntil;
     if (workflowEvent) updateOptions.workflowEvent = workflowEvent;
     if (workflowData) updateOptions.workflowData = workflowData;
     if (workflowDedupKey) updateOptions.workflowDedupKey = workflowDedupKey;
@@ -9837,8 +9975,11 @@ let _configMod = null;
 let _gitSafetyMod = null;
 let _diffStatsMod = null;
 let _sharedStateManagerMod = null;
+let _presenceMod = null;
 const SHARED_STATE_ACTIVE_STALE_THRESHOLD_MS =
   Number(process.env.SHARED_STATE_STALE_THRESHOLD_MS) || 300_000;
+const TASK_CLAIM_ACTIVE_STALE_THRESHOLD_MS =
+  Number(process.env.TASK_CLAIM_OWNER_STALE_TTL_MS) || 600_000;
 const TERMINAL_SHARED_STATE_STATUSES = new Set([
   "complete",
   "completed",
@@ -9856,6 +9997,10 @@ async function ensureSharedStateManagerMod() {
     _sharedStateManagerMod = await import("../workspace/shared-state-manager.mjs");
   }
   return _sharedStateManagerMod;
+}
+async function ensurePresenceMod() {
+  if (!_presenceMod) _presenceMod = await import("../infra/presence.mjs");
+  return _presenceMod;
 }
 function pickTaskString(...values) {
   for (const value of values) {
@@ -9958,6 +10103,57 @@ async function ensureTaskClaimsInitialized(ctx, claims, explicitRepoRoot = "") {
   }
   await _taskClaimsInitPromise;
 }
+function isLocalProcessAlive(pid) {
+  const normalizedPid = Number(pid);
+  if (!Number.isFinite(normalizedPid) || normalizedPid <= 0) return false;
+  try {
+    process.kill(Math.trunc(normalizedPid), 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function getActivePresenceInstanceIds(repoRoot) {
+  try {
+    const presence = await ensurePresenceMod();
+    if (typeof presence?.initPresence === "function") {
+      await presence.initPresence({ repoRoot });
+    }
+    if (typeof presence?.listActiveInstances !== "function") {
+      return new Set();
+    }
+    return new Set(
+      presence.listActiveInstances({ ttlMs: TASK_CLAIM_ACTIVE_STALE_THRESHOLD_MS })
+        .map((entry) => pickTaskString(entry?.instance_id, entry?.instanceId))
+        .filter(Boolean),
+    );
+  } catch {
+    return new Set();
+  }
+}
+function isClaimOwnershipActive(claim, activePresenceInstanceIds = new Set(), now = Date.now()) {
+  if (!claim || typeof claim !== "object") return false;
+  const taskId = pickTaskString(claim?.task_id, claim?.taskId);
+  if (!taskId) return false;
+  const expiresAtMs = Date.parse(pickTaskString(claim?.expires_at, claim?.expiresAt));
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= now) return false;
+  const instanceId = pickTaskString(claim?.instance_id, claim?.instanceId);
+  if (!instanceId) return false;
+  if (activePresenceInstanceIds.size > 0) {
+    return activePresenceInstanceIds.has(instanceId);
+  }
+  const heartbeatMs = Date.parse(pickTaskString(claim?.renewed_at, claim?.renewedAt, claim?.claimed_at, claim?.claimedAt));
+  if (Number.isFinite(heartbeatMs) && now - heartbeatMs > TASK_CLAIM_ACTIVE_STALE_THRESHOLD_MS) {
+    return false;
+  }
+  const claimHost = pickTaskString(claim?.metadata?.host).toLowerCase();
+  const localHost = pickTaskString(process.env.COMPUTERNAME, process.env.HOSTNAME).toLowerCase();
+  const claimPid = Number(claim?.metadata?.pid);
+  if (claimHost && localHost && claimHost === localHost && Number.isFinite(claimPid) && claimPid > 0) {
+    return isLocalProcessAlive(claimPid);
+  }
+  return true;
+}
 function isSharedStateOwnershipActive(state, now = Date.now()) {
   if (!state || typeof state !== "object") return false;
   const ownerId = pickTaskString(state.ownerId, state.owner_id);
@@ -9982,14 +10178,19 @@ async function getPersistedOwnedTaskIds(node, ctx) {
     || requestedRepoRoot
     || process.cwd();
   const activeTaskIds = new Set();
+  const activeOwnerIds = await getActivePresenceInstanceIds(repoRoot);
+  const now = Date.now();
   try {
     const claims = await ensureTaskClaimsMod();
     await ensureTaskClaimsInitialized(ctx, claims, repoRoot);
     if (typeof claims.listClaims === "function") {
       const persistedClaims = await claims.listClaims();
       for (const claim of persistedClaims || []) {
+        if (!isClaimOwnershipActive(claim, activeOwnerIds, now)) continue;
         const taskId = pickTaskString(claim?.task_id, claim?.taskId);
+        const ownerId = pickTaskString(claim?.instance_id, claim?.instanceId);
         if (taskId) activeTaskIds.add(taskId);
+        if (ownerId) activeOwnerIds.add(ownerId);
       }
     }
   } catch (err) {
@@ -9999,13 +10200,13 @@ async function getPersistedOwnedTaskIds(node, ctx) {
     const sharedStateManager = await ensureSharedStateManagerMod();
     if (typeof sharedStateManager.getAllSharedStates === "function") {
       const sharedStates = await sharedStateManager.getAllSharedStates(repoRoot);
-      const now = Date.now();
       for (const [rawTaskId, state] of Object.entries(sharedStates || {})) {
         const taskId = pickTaskString(state?.taskId, state?.task_id, rawTaskId);
         if (!taskId) continue;
-        if (isSharedStateOwnershipActive(state, now)) {
-          activeTaskIds.add(taskId);
-        }
+        const ownerId = pickTaskString(state?.ownerId, state?.owner_id);
+        if (!isSharedStateOwnershipActive(state, now)) continue;
+        if (activeOwnerIds.size > 0 && ownerId && !activeOwnerIds.has(ownerId)) continue;
+        activeTaskIds.add(taskId);
       }
     }
   } catch (err) {
@@ -11490,14 +11691,28 @@ registerBuiltinNodeType("action.acquire_worktree", {
     if (!taskId) throw new Error("action.acquire_worktree: taskId is required");
     ctx.data.baseBranch = baseBranch;
 
-    // Non-git directory — agent spawns directly
+    // Missing git metadata is a hard runtime incident for task lifecycle work.
     const isGit = existsSync(resolve(repoRoot, ".git"));
     if (!isGit) {
-      ctx.data.worktreePath = repoRoot;
-      ctx.data._worktreeCreated = false;
-      ctx.data._worktreeManaged = false;
-      ctx.log(node.id, `Non-git directory — using ${repoRoot} directly`);
-      return { success: true, worktreePath: repoRoot, created: false, noGit: true };
+      const recordedAt = new Date().toISOString();
+      const autoRecoverDelayMs = getNonRetryableWorktreeRecoveryMs();
+      const retryAt = new Date(Date.now() + autoRecoverDelayMs).toISOString();
+      const blockedReason =
+        "Repository root is missing .git; restore the source checkout or point Bosun at a valid git clone.";
+      ctx.log(node.id, `Worktree acquisition failed: repository root is not a git checkout: ${repoRoot}`);
+      return {
+        success: false,
+        error: `Repository root is not a git checkout: ${repoRoot}`,
+        branch,
+        baseBranch,
+        retryable: false,
+        failureKind: "repo_root_not_git",
+        recordedAt,
+        autoRecoverDelayMs,
+        retryAt,
+        blockedReason,
+        recoveryNote: ` — blocked until ${retryAt}`,
+      };
     }
 
     try {
@@ -12034,11 +12249,6 @@ registerBuiltinNodeType("action.build_task_prompt", {
       includeComments: { type: "boolean", default: true },
       includeGitContext: { type: "boolean", default: true },
       includeStatusEndpoint: { type: "boolean", default: true },
-      includeMemory: { type: "boolean", default: true },
-      teamId: { type: "string" },
-      workspaceId: { type: "string" },
-      sessionId: { type: "string" },
-      runId: { type: "string" },
       promptTemplate: { type: "string", description: "Custom template (overrides)" },
     },
     required: ["taskTitle"],
@@ -12057,7 +12267,6 @@ registerBuiltinNodeType("action.build_task_prompt", {
     const includeComments = node.config?.includeComments !== false;
     const includeGitContext = node.config?.includeGitContext !== false;
     const includeStatusEndpoint = node.config?.includeStatusEndpoint !== false;
-    const includeMemory = node.config?.includeMemory !== false;
     ctx.data._taskIncludeContext = includeComments;
     const customTemplate = cfgOrCtx(node, ctx, "promptTemplate");
     const taskPayload =
@@ -12182,39 +12391,6 @@ registerBuiltinNodeType("action.build_task_prompt", {
     );
     const primaryRepository = pickFirstString(repository, normalizedRepoSlug);
     const allowedRepositories = normalizeStringArray(repositories, primaryRepository);
-    const memoryTeamId = pickFirstString(
-      resolvePromptValue("teamId"),
-      taskPayload?.teamId,
-      taskMeta?.teamId,
-      process.env.BOSUN_TEAM_ID,
-      process.env.BOSUN_TEAM,
-      normalizedRepoSlug,
-    );
-    const memoryWorkspaceId = pickFirstString(
-      resolvePromptValue("workspaceId"),
-      taskPayload?.workspaceId,
-      taskMeta?.workspaceId,
-      workspace,
-      ctx.data?._workspaceId,
-      process.env.BOSUN_WORKSPACE_ID,
-      process.env.BOSUN_WORKSPACE,
-    );
-    const memorySessionId = pickFirstString(
-      resolvePromptValue("sessionId"),
-      taskPayload?.sessionId,
-      taskMeta?.sessionId,
-      ctx.data?.sessionId,
-      process.env.BOSUN_SESSION_ID,
-    );
-    const memoryRunId = pickFirstString(
-      resolvePromptValue("runId"),
-      taskPayload?.runId,
-      taskMeta?.runId,
-      ctx.data?.runId,
-      ctx.id,
-      ctx.id,
-      process.env.BOSUN_RUN_ID,
-    );
     const matchedSkills = findRelevantSkills(
       normalizedRepoRoot,
       normalizedTaskTitle,
@@ -12274,23 +12450,6 @@ registerBuiltinNodeType("action.build_task_prompt", {
         "Follow the task details and project instructions provided in the user message.",
         "Be concise, rigorous, and complete tasks end-to-end with verified results.",
       ].join("\n");
-
-    const stripPromptMemorySection = (content, docName) => {
-      const text = String(content || "");
-      if (!text) return "";
-      if (!/AGENTS\.md$/i.test(String(docName || ""))) return text;
-      const learningsHeaderRe = /^## Agent Learnings\s*$/im;
-      const sectionMatch = learningsHeaderRe.exec(text);
-      if (!sectionMatch) return text;
-      const sectionStart = sectionMatch.index;
-      const headerLength = sectionMatch[0].length;
-      const before = text.slice(0, sectionStart).trimEnd();
-      const afterSection = text.slice(sectionStart + headerLength);
-      const nextSectionMatch = /^##\s+/m.exec(afterSection);
-      if (!nextSectionMatch) return before;
-      const afterIndex = sectionStart + headerLength + nextSectionMatch.index;
-      return `${before}\n\n${text.slice(afterIndex).trimStart()}`.trim();
-    };
 
     const cacheAnchorMarkers = collectCacheAnchorMarkers(
       {
@@ -12463,10 +12622,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
           if (loaded.has(doc)) continue;
           try {
             if (existsSync(fullPath)) {
-              const content = stripPromptMemorySection(
-                readFileSync(fullPath, "utf8"),
-                doc,
-              ).trim();
+              const content = readFileSync(fullPath, "utf8").trim();
               if (content && content.length > 10) {
                 loaded.add(doc);
                 userParts.push(`## ${doc}`);
@@ -12476,39 +12632,6 @@ registerBuiltinNodeType("action.build_task_prompt", {
             }
           } catch { /* best-effort */ }
         }
-      }
-    }
-
-    if (includeMemory) {
-      try {
-        const retrievedMemory = await retrieveKnowledgeEntries({
-          repoRoot: normalizedRepoRoot,
-          teamId: memoryTeamId,
-          workspaceId: memoryWorkspaceId,
-          sessionId: memorySessionId,
-          runId: memoryRunId,
-          taskId: normalizedTaskId,
-          taskTitle: normalizedTaskTitle,
-          taskDescription: normalizedTaskDescription,
-          query: [
-            normalizedTaskTitle,
-            normalizedTaskDescription,
-            normalizedRetryReason,
-          ]
-            .filter(Boolean)
-            .join(" "),
-          limit: 4,
-        });
-        const memoryBriefing = formatKnowledgeBriefing(retrievedMemory, {
-          maxEntries: 4,
-        });
-        if (memoryBriefing) {
-          userParts.push(memoryBriefing);
-          userParts.push("");
-          ctx.data._taskRetrievedMemory = retrievedMemory;
-        }
-      } catch (err) {
-        ctx.log(node.id, `Persistent memory retrieval failed (non-fatal): ${err.message}`);
       }
     }
 
@@ -12629,218 +12752,6 @@ registerBuiltinNodeType("action.build_task_prompt", {
       systemLength: systemPrompt.length,
       cacheAnchorMode: strictCacheAnchoring ? "strict" : "default",
     };
-  },
-});
-
-
-registerBuiltinNodeType("action.persist_memory", {
-  describe: () =>
-    "Persist a scoped team/workspace/session/run memory entry for later prompt retrieval.",
-  schema: {
-    type: "object",
-    properties: {
-      content: { type: "string", description: "The durable lesson or memory to store." },
-      scope: { type: "string", description: "Optional topical scope such as testing or auth." },
-      category: { type: "string", default: "pattern" },
-      scopeLevel: {
-        type: "string",
-        enum: ["team", "workspace", "session", "run"],
-        default: "workspace",
-      },
-      tags: {
-        anyOf: [
-          { type: "array", items: { type: "string" } },
-          { type: "string" },
-        ],
-      },
-      taskId: { type: "string" },
-      repoRoot: { type: "string" },
-      targetFile: { type: "string", description: "Knowledge markdown file (defaults to AGENTS.md)." },
-      registryFile: { type: "string", description: "Persistent registry JSON path." },
-      agentId: { type: "string" },
-      agentType: { type: "string", default: "workflow" },
-      teamId: { type: "string" },
-      workspaceId: { type: "string" },
-      sessionId: { type: "string" },
-      runId: { type: "string" },
-    },
-    required: ["content"],
-  },
-  async execute(node, ctx) {
-    const TASK_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
-    const TASK_TEMPLATE_INLINE_PLACEHOLDER_RE = /\{\{\s*[\w.-]+\s*\}\}/g;
-    const normalizeString = (value) => {
-      if (value == null) return "";
-      const text = String(value).trim();
-      if (!text) return "";
-      if (TASK_TEMPLATE_PLACEHOLDER_RE.test(text)) return "";
-      return text
-        .replace(TASK_TEMPLATE_INLINE_PLACEHOLDER_RE, " ")
-        .replace(/[ 	]{2,}/g, " ")
-        .trim();
-    };
-    const pickFirstString = (...values) => {
-      for (const value of values) {
-        const normalized = normalizeString(value);
-        if (normalized) return normalized;
-      }
-      return "";
-    };
-    const normalizeStringArray = (...values) => {
-      const out = [];
-      const seen = new Set();
-      const append = (value) => {
-        const normalized = normalizeString(value);
-        if (!normalized) return;
-        const key = normalized.toLowerCase();
-        if (seen.has(key)) return;
-        seen.add(key);
-        out.push(normalized);
-      };
-      for (const value of values) {
-        if (Array.isArray(value)) {
-          for (const item of value) append(item);
-        } else if (typeof value === "string" && value.includes(",")) {
-          for (const item of value.split(",")) append(item);
-        } else {
-          append(value);
-        }
-      }
-      return out;
-    };
-    const resolveValue = (key) => {
-      if (Object.prototype.hasOwnProperty.call(node.config || {}, key)) {
-        const resolved = ctx.resolve(node.config[key]);
-        if (resolved != null && resolved !== "") return resolved;
-      }
-      const ctxValue = ctx.data?.[key];
-      if (ctxValue != null && ctxValue !== "") return ctxValue;
-      return null;
-    };
-
-    const taskPayload =
-      ctx.data?.task && typeof ctx.data.task === "object"
-        ? ctx.data.task
-        : null;
-    const taskMeta =
-      taskPayload?.meta && typeof taskPayload.meta === "object"
-        ? taskPayload.meta
-        : null;
-    const repoRoot = pickFirstString(resolveValue("repoRoot"), process.cwd()) || process.cwd();
-    const repoSlug = pickFirstString(
-      resolveValue("repoSlug"),
-      taskPayload?.repository,
-      taskPayload?.repo,
-      taskMeta?.repository,
-    );
-    const workspace = pickFirstString(
-      resolveValue("workspace"),
-      taskPayload?.workspace,
-      taskMeta?.workspace,
-    );
-    const taskId = pickFirstString(
-      resolveValue("taskId"),
-      taskPayload?.id,
-      taskPayload?.taskId,
-      taskMeta?.taskId,
-    );
-    const entry = buildKnowledgeEntry({
-      content: pickFirstString(resolveValue("content")),
-      scope: pickFirstString(resolveValue("scope")),
-      category: pickFirstString(resolveValue("category"), "pattern") || "pattern",
-      taskRef: taskId || null,
-      scopeLevel: pickFirstString(resolveValue("scopeLevel"), "workspace") || "workspace",
-      teamId: pickFirstString(
-        resolveValue("teamId"),
-        taskPayload?.teamId,
-        taskMeta?.teamId,
-        process.env.BOSUN_TEAM_ID,
-        process.env.BOSUN_TEAM,
-        repoSlug,
-      ),
-      workspaceId: pickFirstString(
-        resolveValue("workspaceId"),
-        taskPayload?.workspaceId,
-        taskMeta?.workspaceId,
-        workspace,
-        ctx.data?._workspaceId,
-        process.env.BOSUN_WORKSPACE_ID,
-        process.env.BOSUN_WORKSPACE,
-      ),
-      sessionId: pickFirstString(
-        resolveValue("sessionId"),
-        taskPayload?.sessionId,
-        taskMeta?.sessionId,
-        ctx.data?.sessionId,
-        process.env.BOSUN_SESSION_ID,
-      ),
-      runId: pickFirstString(
-        resolveValue("runId"),
-        taskPayload?.runId,
-        taskMeta?.runId,
-        ctx.data?.runId,
-        ctx.id,
-        process.env.BOSUN_RUN_ID,
-      ),
-      agentId: pickFirstString(resolveValue("agentId"), `workflow:${node.id}`) || `workflow:${node.id}`,
-      agentType: pickFirstString(resolveValue("agentType"), "workflow") || "workflow",
-      tags: normalizeStringArray(resolveValue("tags")),
-    });
-
-    try {
-      const initOpts = {
-        repoRoot,
-        targetFile: pickFirstString(resolveValue("targetFile"), "AGENTS.md") || "AGENTS.md",
-      };
-      const registryFile = pickFirstString(resolveValue("registryFile"));
-      if (registryFile) initOpts.registryFile = registryFile;
-      initSharedKnowledge(initOpts);
-
-      const result = await appendKnowledgeEntry(entry);
-      if (!result.success) {
-        const nonFatal = /duplicate entry|rate limited/i.test(String(result.reason || ""));
-        ctx.log(node.id, `Persistent memory ${nonFatal ? "skipped" : "failed"}: ${result.reason}`);
-        if (nonFatal) {
-          return {
-            success: true,
-            persisted: false,
-            skipped: true,
-            reason: result.reason,
-            entry,
-            scopeLevel: entry.scopeLevel,
-          };
-        }
-        return {
-          success: false,
-          persisted: false,
-          error: result.reason,
-          reason: result.reason,
-          entry,
-          scopeLevel: entry.scopeLevel,
-        };
-      }
-
-      ctx.data._lastPersistedMemory = entry;
-      ctx.data._lastPersistedMemoryResult = result;
-      ctx.log(node.id, `Persistent memory stored at ${entry.scopeLevel} scope`);
-      return {
-        success: true,
-        persisted: true,
-        entry,
-        hash: result.hash || entry.hash,
-        registryPath: result.registryPath || null,
-        scopeLevel: entry.scopeLevel,
-      };
-    } catch (err) {
-      ctx.log(node.id, `Persistent memory error: ${err.message}`);
-      return {
-        success: false,
-        persisted: false,
-        error: err.message,
-        entry,
-        scopeLevel: entry.scopeLevel,
-      };
-    }
   },
 });
 
@@ -13661,7 +13572,10 @@ export {
 
 export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   if (!customLoadPromise || options.forceReload) {
-    customLoadPromise = ensureCustomWorkflowNodesLoaded(options);
+    customLoadPromise = Promise.all([
+      ensureCustomWorkflowNodesLoaded(options),
+      ensureWorkflowOntologyPacksLoaded(options),
+    ]);
   }
   await customLoadPromise;
   if (!customDiscoveryStarted) {
@@ -13670,3 +13584,8 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
+
+
+
+
+

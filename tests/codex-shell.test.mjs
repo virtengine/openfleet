@@ -65,6 +65,8 @@ vi.mock("node:fs/promises", () => ({
 const {
   execCodexPrompt,
   resetThread,
+  buildCodexPromptEnvelope,
+  buildCodexPrimer,
 } = await import("../shell/codex-shell.mjs");
 const { resolveCodexProfileRuntime } = await import("../shell/codex-model-profiles.mjs");
 
@@ -108,6 +110,59 @@ function restoreEnv() {
 }
 
 describe("codex-shell stream safeguards", () => {
+
+  it("builds architect mode prompt envelopes with repo map context", () => {
+    const envelope = buildCodexPromptEnvelope("Refactor the auth flow", {
+      mode: "architect",
+      repoMap: "src/app.mjs -> src/auth.mjs",
+      statusData: { branch: "feature/auth" },
+    });
+
+    expect(envelope.isAskMode).toBe(false);
+    expect(envelope.executionMode).toBe("architect");
+    expect(envelope.prompt).toContain("[Orchestrator Status]");
+    expect(envelope.prompt).toContain("[Repo Map]");
+    expect(envelope.prompt).toContain("ARCHITECT MODE");
+    expect(envelope.prompt).toContain("planning phase");
+    expect(envelope.prompt).toContain("implementation phase");
+    expect(envelope.prompt).toContain("validation phase");
+    expect(envelope.prompt).toContain("compact structural context");
+  });
+
+  it("builds editor mode prompt envelopes with execution framing", () => {
+    const envelope = buildCodexPromptEnvelope("Apply the planned patch", {
+      mode: "editor",
+      repoMap: "tests/auth.test.mjs -> shell/codex-shell.mjs",
+    });
+
+    expect(envelope.isAskMode).toBe(false);
+    expect(envelope.executionMode).toBe("editor");
+    expect(envelope.prompt).toContain("[Repo Map]");
+    expect(envelope.prompt).toContain("EDITOR MODE");
+    expect(envelope.prompt).toContain("Implement the approved plan");
+    expect(envelope.prompt).toContain("Do NOT re-plan the whole task");
+    expect(envelope.prompt).toContain("YOUR TASK — EXECUTE NOW");
+  });
+
+  it("keeps ask mode envelopes lightweight", () => {
+    const envelope = buildCodexPromptEnvelope("[MODE: ask] what does this file do?", {
+      mode: "ask",
+      repoMap: "shell/codex-shell.mjs",
+    });
+
+    expect(envelope.isAskMode).toBe(true);
+    expect(envelope.executionMode).toBe("ask");
+    expect(envelope.prompt).toBe("[MODE: ask] what does this file do?");
+    expect(buildCodexPrimer({ isAskMode: true, executionMode: "ask" })).toContain("helpful AI assistant");
+  });
+
+  it("uses architect primer for new architect threads", () => {
+    const primer = buildCodexPrimer({ isAskMode: false, executionMode: "architect" });
+
+    expect(primer).toContain("AUTONOMOUS AI CODING ARCHITECT");
+    expect(primer).toContain("repo map");
+    expect(primer).toContain("editor phase");
+  });
   beforeEach(async () => {
     saveEnv();
     mockCodexCtor.mockReset();
@@ -290,6 +345,9 @@ describe("codex-shell stream safeguards", () => {
     expect(mockCodexCtor).toHaveBeenCalledTimes(1);
     expect(mockCodexCtor).toHaveBeenLastCalledWith(expect.objectContaining({
       config: expect.objectContaining({
+        features: expect.objectContaining({
+          remote_models: false,
+        }),
         model_provider: "azure",
         model: "gpt-5.4",
         model_providers: expect.objectContaining({
@@ -299,6 +357,38 @@ describe("codex-shell stream safeguards", () => {
             wire_api: "responses",
           }),
         }),
+      }),
+    }));
+  });
+
+  it("disables remote model discovery during Azure SDK pre-load", async () => {
+    delete process.env.AZURE_OPENAI_API_KEY;
+    const {
+      initCodexShell: freshInitCodexShell,
+      resetThread: freshResetThread,
+      resolveCodexProfileRuntime: freshResolveCodexProfileRuntime,
+    } = await loadFreshCodexShell();
+
+    await freshResetThread();
+    freshResolveCodexProfileRuntime.mockReturnValue({
+      env: {
+        OPENAI_BASE_URL: "https://example-resource.openai.azure.com/openai/v1",
+        OPENAI_API_KEY: "azure-key",
+        CODEX_MODEL: "gpt-5.4",
+      },
+    });
+
+    await freshInitCodexShell();
+
+    expect(process.env.OPENAI_BASE_URL).toBeUndefined();
+    expect(process.env.AZURE_OPENAI_API_KEY).toBe("azure-key");
+    expect(mockCodexCtor).toHaveBeenCalledTimes(1);
+    expect(mockCodexCtor).toHaveBeenLastCalledWith(expect.objectContaining({
+      config: expect.objectContaining({
+        features: expect.objectContaining({
+          remote_models: false,
+        }),
+        model_provider: "azure",
       }),
     }));
   });

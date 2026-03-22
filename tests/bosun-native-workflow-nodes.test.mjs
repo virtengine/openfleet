@@ -1233,3 +1233,93 @@ describe("cross-node data piping", () => {
     expect(invokeOutput.workflowId).toBe("chain-child-wf");
   });
 });
+
+describe("action.command heavy runner parity", () => {
+  afterEach(() => {
+    if (tmpDir) {
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
+    }
+  });
+
+  it("returns artifact retrieval commands for isolated heavy runs", async () => {
+    const handler = getNodeType("action.command");
+    const engine = makeTmpEngine({
+      runnerPool: {
+        acquireLease: vi.fn(async () => ({
+          id: "lease-1",
+          runCommand: vi.fn(async () => ({
+            exitCode: 0,
+            stdout: "build ok\nsummary",
+            stderr: "",
+            artifacts: [
+              {
+                name: "build-log",
+                path: "/tmp/build.log",
+                retrieveCommand: "bosun artifacts get artifact://lease-1/build-log",
+              },
+            ],
+          })),
+          release: vi.fn(async () => true),
+        })),
+      },
+    });
+    const ctx = new WorkflowContext({ repoRoot: makeTmpDir() });
+    ctx.log = vi.fn();
+    const node = {
+      id: "cmd-1",
+      type: "action.command",
+      config: {
+        command: "npm run build",
+        commandType: "build",
+        cwd: "{{repoRoot}}",
+      },
+    };
+
+    const result = await handler.execute(node, ctx, engine);
+
+    expect(result.success).toBe(true);
+    expect(result.executionMode).toBe("isolated");
+    expect(result.artifacts).toHaveLength(1);
+    expect(result.artifactRetrievalCommands).toEqual([
+      "bosun artifacts get artifact://lease-1/build-log",
+    ]);
+    expect(result.primaryRetrievalCommand).toBe(
+      "bosun artifacts get artifact://lease-1/build-log",
+    );
+  });
+
+  it("surfaces blocked evidence when isolated runner leasing fails", async () => {
+    const handler = getNodeType("action.command");
+    const engine = makeTmpEngine({
+      runnerPool: {
+        acquireLease: vi.fn(async () => {
+          throw new Error("runner unavailable");
+        }),
+      },
+    });
+    const ctx = new WorkflowContext({ repoRoot: makeTmpDir() });
+    ctx.log = vi.fn();
+    const node = {
+      id: "cmd-2",
+      type: "action.command",
+      config: {
+        command: "npm test",
+        commandType: "test",
+        cwd: "{{repoRoot}}",
+        leaseRetries: 1,
+      },
+    };
+
+    const result = await handler.execute(node, ctx, engine);
+
+    expect(result.success).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.blockedReason).toContain("runner unavailable");
+    expect(result.blockedEvidence).toEqual(
+      expect.objectContaining({
+        category: "runner_lease",
+        heavyType: "test",
+      }),
+    );
+  });
+});

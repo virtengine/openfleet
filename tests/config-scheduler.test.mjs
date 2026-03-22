@@ -231,3 +231,55 @@ describe("ExecutorScheduler summary and status", () => {
     expect(summary[1].status).toBe("active");
   });
 });
+
+describe("ExecutorScheduler heavy runner policy", () => {
+  const makeHeavyAwareScheduler = () =>
+    new ExecutorScheduler({
+      executors: [
+        {
+          name: "main",
+          executor: "CODEX",
+          variant: "DEFAULT",
+          weight: 100,
+          role: "primary",
+          enabled: true,
+          capabilities: ["chat", "plan", "light"],
+        },
+        {
+          name: "heavy-runner",
+          executor: "CODEX",
+          variant: "DEFAULT",
+          weight: 100,
+          role: "backup",
+          enabled: true,
+          capabilities: ["build", "test", "validation", "diff", "pre-push", "heavy"],
+        },
+      ],
+      distribution: "primary-only",
+      failover: baseFailover,
+    });
+
+  it("keeps lightweight work on the primary executor", () => {
+    const scheduler = makeHeavyAwareScheduler();
+
+    expect(scheduler.nextForTask({ kind: "chat" }).name).toBe("main");
+    expect(scheduler.nextForTask({ kind: "plan" }).name).toBe("main");
+  });
+
+  it("offloads heavy validation work to the heavy runner pool", () => {
+    const scheduler = makeHeavyAwareScheduler();
+
+    expect(scheduler.nextForTask({ kind: "build" }).name).toBe("heavy-runner");
+    expect(scheduler.nextForTask({ kind: "test" }).name).toBe("heavy-runner");
+    expect(scheduler.nextForTask({ kind: "pre-push" }).name).toBe("heavy-runner");
+  });
+
+  it("falls back to the primary executor when no heavy runner is available", () => {
+    const scheduler = makeHeavyAwareScheduler();
+    scheduler.recordFailure("heavy-runner");
+    scheduler.recordFailure("heavy-runner");
+    scheduler.recordFailure("heavy-runner");
+
+    expect(scheduler.nextForTask({ kind: "validation" }).name).toBe("main");
+  });
+});

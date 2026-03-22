@@ -65,11 +65,13 @@ function buildModelsProbeRequest({ apiKey = "", baseUrl = "" } = {}) {
       else headers.Authorization = `Bearer ${apiKey}`;
     }
 
-    if (lowerPath.endsWith("/models")) {
+    if (isAzure && (lowerPath === "/openai/v1" || lowerPath.startsWith("/openai/v1/"))) {
+      parsed.pathname = "/openai/v1/models";
+      parsed.search = "";
       return { endpoint: parsed.toString(), headers };
     }
 
-    if (isAzure && (lowerPath === "/openai/v1" || lowerPath.startsWith("/openai/v1/"))) {
+    if (isAzure && lowerPath === "/openai/v1/models") {
       parsed.pathname = "/openai/v1/models";
       parsed.search = "";
       return { endpoint: parsed.toString(), headers };
@@ -79,6 +81,10 @@ function buildModelsProbeRequest({ apiKey = "", baseUrl = "" } = {}) {
       parsed.pathname = "/openai/models";
       parsed.search = "";
       parsed.searchParams.set("api-version", "2024-10-21");
+      return { endpoint: parsed.toString(), headers };
+    }
+
+    if (lowerPath.endsWith("/models")) {
       return { endpoint: parsed.toString(), headers };
     }
 

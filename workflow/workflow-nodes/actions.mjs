@@ -52,13 +52,6 @@ import { getSessionTracker } from "../../infra/session-tracker.mjs";
 import { recordWorktreeRecoveryEvent } from "../../infra/worktree-recovery-state.mjs";
 import { normalizeBaseBranch } from "../../git/git-safety.mjs";
 import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../../git/git-commit-helpers.mjs";
-import {
-  appendKnowledgeEntry,
-  buildKnowledgeEntry,
-  formatKnowledgeBriefing,
-  initSharedKnowledge,
-  retrieveKnowledgeEntries,
-} from "../../workspace/shared-knowledge.mjs";
 import { fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
 
 import {
@@ -1149,17 +1142,41 @@ registerNodeType("action.run_command", {
             stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
             env: commandEnv,
           });
-      ctx.log(node.id, `Command succeeded`);
-      return { success: true, output: parseOutput(output), exitCode: 0 };
+      const envelope = buildCommandContextEnvelope({
+        command,
+        args: commandArgs,
+        stdout: typeof output === "string" ? output : "",
+        stderr: "",
+        exitCode: 0,
+      });
+      ctx.log(node.id, `Command succeeded [family=${envelope.family} policy=${envelope.budgetPolicy.name} retrieval=${envelope.decision.retrieval}]`);
+      return {
+        success: true,
+        output: parseOutput(output),
+        exitCode: 0,
+        commandContext: envelope,
+        promptContext: envelope.promptContext,
+        artifacts: envelope.artifacts,
+      };
     } catch (err) {
       const output = err.stdout?.toString() || "";
       const stderr = err.stderr?.toString() || "";
+      const envelope = buildCommandContextEnvelope({
+        command,
+        args: commandArgs,
+        stdout: output,
+        stderr,
+        exitCode: Number(err.status ?? 1),
+      });
       const result = {
         success: false,
         output: parseOutput(output),
         stderr,
         exitCode: err.status,
         error: err.message,
+        commandContext: envelope,
+        promptContext: envelope.promptContext,
+        artifacts: envelope.artifacts,
       };
       if (node.config?.failOnError) {
         const reason = trimLogText(stderr || output || err.message, 400) || err.message;
@@ -3232,21 +3249,71 @@ registerNodeType("action.ask_user", {
       await engine.services.telegram.sendMessage(undefined, `:help: **Workflow Question**\n\n${question}${optionsText}`);
     }
 
-    // Store question for UI polling
-    ctx.data._pendingQuestion = { question, options, askedAt: Date.now(), timeout };
-
-    // In real implementation, this would await a response
-    // For now, return the question for the UI to handle
+    // Store question for UI polling / durable approval resume
     const varName = node.config?.variable || "userResponse";
-    const response = ctx.data[varName] || null;
+    const existingPending = ctx.data?._pendingQuestion && typeof ctx.data._pendingQuestion === "object"
+      ? ctx.data._pendingQuestion
+      : null;
+    const response = ctx.data[varName] ?? existingPending?.response ?? null;
+    const approvalId = String(existingPending?.approvalId || `approval:${ctx.id}:${node.id}`).trim();
+
+    if (response != null && response !== "") {
+      ctx.data[varName] = response;
+      ctx.data._pendingQuestion = {
+        ...(existingPending || {}),
+        question,
+        options,
+        timeout,
+        variable: varName,
+        channel,
+        approvalId,
+        response,
+        status: "approved",
+        resolvedAt: existingPending?.resolvedAt || Date.now(),
+      };
+      return {
+        asked: true,
+        question,
+        options,
+        response,
+        variable: varName,
+        channel,
+        approved: true,
+        approvalRequest: { approvalId, status: "approved" },
+      };
+    }
+
+    ctx.data._pendingQuestion = {
+      ...(existingPending || {}),
+      question,
+      options,
+      askedAt: existingPending?.askedAt || Date.now(),
+      timeout,
+      variable: varName,
+      channel,
+      approvalId,
+      status: "waiting",
+    };
 
     return {
       asked: true,
       question,
       options,
-      response,
+      response: null,
       variable: varName,
       channel,
+      waiting: true,
+      _waitForApproval: true,
+      waitReason: "approval_required",
+      approvalRequest: {
+        approvalId,
+        question,
+        options,
+        channel,
+        timeoutMs: timeout,
+        variable: varName,
+        status: "waiting",
+      },
     };
   },
 });
@@ -4645,14 +4712,28 @@ registerNodeType("action.acquire_worktree", {
     if (!branch) throw new Error("action.acquire_worktree: branch is required");
     if (!taskId) throw new Error("action.acquire_worktree: taskId is required");
 
-    // Non-git directory — agent spawns directly
+    // Missing git metadata is a hard runtime incident for task lifecycle work.
     const isGit = existsSync(resolve(repoRoot, ".git"));
     if (!isGit) {
-      ctx.data.worktreePath = repoRoot;
-      ctx.data._worktreeCreated = false;
-      ctx.data._worktreeManaged = false;
-      ctx.log(node.id, `Non-git directory — using ${repoRoot} directly`);
-      return { success: true, worktreePath: repoRoot, created: false, noGit: true };
+      const recordedAt = new Date().toISOString();
+      const autoRecoverDelayMs = getNonRetryableWorktreeRecoveryMs();
+      const retryAt = new Date(Date.now() + autoRecoverDelayMs).toISOString();
+      const blockedReason =
+        "Repository root is missing .git; restore the source checkout or point Bosun at a valid git clone.";
+      ctx.log(node.id, `Worktree acquisition failed: repository root is not a git checkout: ${repoRoot}`);
+      return {
+        success: false,
+        error: `Repository root is not a git checkout: ${repoRoot}`,
+        branch,
+        baseBranch,
+        retryable: false,
+        failureKind: "repo_root_not_git",
+        recordedAt,
+        autoRecoverDelayMs,
+        retryAt,
+        blockedReason,
+        recoveryNote: ` — blocked until ${retryAt}`,
+      };
     }
 
     try {
@@ -4980,11 +5061,6 @@ registerNodeType("action.build_task_prompt", {
       includeComments: { type: "boolean", default: true },
       includeGitContext: { type: "boolean", default: true },
       includeStatusEndpoint: { type: "boolean", default: true },
-      includeMemory: { type: "boolean", default: true },
-      teamId: { type: "string" },
-      workspaceId: { type: "string" },
-      sessionId: { type: "string" },
-      runId: { type: "string" },
       promptTemplate: { type: "string", description: "Custom template (overrides)" },
     },
     required: ["taskTitle"],
@@ -5003,7 +5079,6 @@ registerNodeType("action.build_task_prompt", {
     const includeComments = node.config?.includeComments !== false;
     const includeGitContext = node.config?.includeGitContext !== false;
     const includeStatusEndpoint = node.config?.includeStatusEndpoint !== false;
-    const includeMemory = node.config?.includeMemory !== false;
     ctx.data._taskIncludeContext = includeComments;
     const customTemplate = cfgOrCtx(node, ctx, "promptTemplate");
     const taskPayload =
@@ -5128,38 +5203,6 @@ registerNodeType("action.build_task_prompt", {
     );
     const primaryRepository = pickFirstString(repository, normalizedRepoSlug);
     const allowedRepositories = normalizeStringArray(repositories, primaryRepository);
-    const memoryTeamId = pickFirstString(
-      resolvePromptValue("teamId"),
-      taskPayload?.teamId,
-      taskMeta?.teamId,
-      process.env.BOSUN_TEAM_ID,
-      process.env.BOSUN_TEAM,
-      normalizedRepoSlug,
-    );
-    const memoryWorkspaceId = pickFirstString(
-      resolvePromptValue("workspaceId"),
-      taskPayload?.workspaceId,
-      taskMeta?.workspaceId,
-      workspace,
-      ctx.data?._workspaceId,
-      process.env.BOSUN_WORKSPACE_ID,
-      process.env.BOSUN_WORKSPACE,
-    );
-    const memorySessionId = pickFirstString(
-      resolvePromptValue("sessionId"),
-      taskPayload?.sessionId,
-      taskMeta?.sessionId,
-      ctx.data?.sessionId,
-      process.env.BOSUN_SESSION_ID,
-    );
-    const memoryRunId = pickFirstString(
-      resolvePromptValue("runId"),
-      taskPayload?.runId,
-      taskMeta?.runId,
-      ctx.data?.runId,
-      ctx.id,
-      process.env.BOSUN_RUN_ID,
-    );
     const matchedSkills = findRelevantSkills(
       normalizedRepoRoot,
       normalizedTaskTitle,
@@ -5301,22 +5344,6 @@ registerNodeType("action.build_task_prompt", {
     }
 
     const userParts = [];
-    const stripPromptMemorySection = (content, docName) => {
-      const text = String(content || "");
-      if (!text) return "";
-      if (!/AGENTS\.md$/i.test(String(docName || ""))) return text;
-      const learningsHeaderRe = /^## Agent Learnings\s*$/im;
-      const sectionMatch = learningsHeaderRe.exec(text);
-      if (!sectionMatch) return text;
-      const sectionStart = sectionMatch.index;
-      const headerLength = sectionMatch[0].length;
-      const before = text.slice(0, sectionStart).trimEnd();
-      const afterSection = text.slice(sectionStart + headerLength);
-      const nextSectionMatch = /^##\s+/m.exec(afterSection);
-      if (!nextSectionMatch) return before;
-      const afterIndex = sectionStart + headerLength + nextSectionMatch.index;
-      return `${before}\n\n${text.slice(afterIndex).trimStart()}`.trim();
-    };
 
     // Header
     userParts.push(`# Task: ${normalizedTaskTitle}`);
@@ -5400,10 +5427,7 @@ registerNodeType("action.build_task_prompt", {
           if (loaded.has(doc)) continue;
           try {
             if (existsSync(fullPath)) {
-              const content = stripPromptMemorySection(
-                readFileSync(fullPath, "utf8"),
-                doc,
-              ).trim();
+              const content = readFileSync(fullPath, "utf8").trim();
               if (content && content.length > 10) {
                 loaded.add(doc);
                 userParts.push(`## ${doc}`);
@@ -5413,39 +5437,6 @@ registerNodeType("action.build_task_prompt", {
             }
           } catch { /* best-effort */ }
         }
-      }
-    }
-
-    if (includeMemory) {
-      try {
-        const retrievedMemory = await retrieveKnowledgeEntries({
-          repoRoot: normalizedRepoRoot,
-          teamId: memoryTeamId,
-          workspaceId: memoryWorkspaceId,
-          sessionId: memorySessionId,
-          runId: memoryRunId,
-          taskId: normalizedTaskId,
-          taskTitle: normalizedTaskTitle,
-          taskDescription: normalizedTaskDescription,
-          query: [
-            normalizedTaskTitle,
-            normalizedTaskDescription,
-            normalizedRetryReason,
-          ]
-            .filter(Boolean)
-            .join(" "),
-          limit: 4,
-        });
-        const memoryBriefing = formatKnowledgeBriefing(retrievedMemory, {
-          maxEntries: 4,
-        });
-        if (memoryBriefing) {
-          userParts.push(memoryBriefing);
-          userParts.push("");
-          ctx.data._taskRetrievedMemory = retrievedMemory;
-        }
-      } catch (err) {
-        ctx.log(node.id, `Persistent memory retrieval failed (non-fatal): ${err.message}`);
       }
     }
 
@@ -5545,218 +5536,6 @@ registerNodeType("action.build_task_prompt", {
       systemLength: systemPrompt.length,
       cacheAnchorMode: strictCacheAnchoring ? "strict" : "default",
     };
-  },
-});
-
-
-registerNodeType("action.persist_memory", {
-  describe: () =>
-    "Persist a scoped team/workspace/session/run memory entry for later prompt retrieval.",
-  schema: {
-    type: "object",
-    properties: {
-      content: { type: "string", description: "The durable lesson or memory to store." },
-      scope: { type: "string", description: "Optional topical scope such as testing or auth." },
-      category: { type: "string", default: "pattern" },
-      scopeLevel: {
-        type: "string",
-        enum: ["team", "workspace", "session", "run"],
-        default: "workspace",
-      },
-      tags: {
-        anyOf: [
-          { type: "array", items: { type: "string" } },
-          { type: "string" },
-        ],
-      },
-      taskId: { type: "string" },
-      repoRoot: { type: "string" },
-      targetFile: { type: "string", description: "Knowledge markdown file (defaults to AGENTS.md)." },
-      registryFile: { type: "string", description: "Persistent registry JSON path." },
-      agentId: { type: "string" },
-      agentType: { type: "string", default: "workflow" },
-      teamId: { type: "string" },
-      workspaceId: { type: "string" },
-      sessionId: { type: "string" },
-      runId: { type: "string" },
-    },
-    required: ["content"],
-  },
-  async execute(node, ctx) {
-    const TASK_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
-    const TASK_TEMPLATE_INLINE_PLACEHOLDER_RE = /\{\{\s*[\w.-]+\s*\}\}/g;
-    const normalizeString = (value) => {
-      if (value == null) return "";
-      const text = String(value).trim();
-      if (!text) return "";
-      if (TASK_TEMPLATE_PLACEHOLDER_RE.test(text)) return "";
-      return text
-        .replace(TASK_TEMPLATE_INLINE_PLACEHOLDER_RE, " ")
-        .replace(/[ 	]{2,}/g, " ")
-        .trim();
-    };
-    const pickFirstString = (...values) => {
-      for (const value of values) {
-        const normalized = normalizeString(value);
-        if (normalized) return normalized;
-      }
-      return "";
-    };
-    const normalizeStringArray = (...values) => {
-      const out = [];
-      const seen = new Set();
-      const append = (value) => {
-        const normalized = normalizeString(value);
-        if (!normalized) return;
-        const key = normalized.toLowerCase();
-        if (seen.has(key)) return;
-        seen.add(key);
-        out.push(normalized);
-      };
-      for (const value of values) {
-        if (Array.isArray(value)) {
-          for (const item of value) append(item);
-        } else if (typeof value === "string" && value.includes(",")) {
-          for (const item of value.split(",")) append(item);
-        } else {
-          append(value);
-        }
-      }
-      return out;
-    };
-    const resolveValue = (key) => {
-      if (Object.prototype.hasOwnProperty.call(node.config || {}, key)) {
-        const resolved = ctx.resolve(node.config[key]);
-        if (resolved != null && resolved !== "") return resolved;
-      }
-      const ctxValue = ctx.data?.[key];
-      if (ctxValue != null && ctxValue !== "") return ctxValue;
-      return null;
-    };
-
-    const taskPayload =
-      ctx.data?.task && typeof ctx.data.task === "object"
-        ? ctx.data.task
-        : null;
-    const taskMeta =
-      taskPayload?.meta && typeof taskPayload.meta === "object"
-        ? taskPayload.meta
-        : null;
-    const repoRoot = pickFirstString(resolveValue("repoRoot"), process.cwd()) || process.cwd();
-    const repoSlug = pickFirstString(
-      resolveValue("repoSlug"),
-      taskPayload?.repository,
-      taskPayload?.repo,
-      taskMeta?.repository,
-    );
-    const workspace = pickFirstString(
-      resolveValue("workspace"),
-      taskPayload?.workspace,
-      taskMeta?.workspace,
-    );
-    const taskId = pickFirstString(
-      resolveValue("taskId"),
-      taskPayload?.id,
-      taskPayload?.taskId,
-      taskMeta?.taskId,
-    );
-    const entry = buildKnowledgeEntry({
-      content: pickFirstString(resolveValue("content")),
-      scope: pickFirstString(resolveValue("scope")),
-      category: pickFirstString(resolveValue("category"), "pattern") || "pattern",
-      taskRef: taskId || null,
-      scopeLevel: pickFirstString(resolveValue("scopeLevel"), "workspace") || "workspace",
-      teamId: pickFirstString(
-        resolveValue("teamId"),
-        taskPayload?.teamId,
-        taskMeta?.teamId,
-        process.env.BOSUN_TEAM_ID,
-        process.env.BOSUN_TEAM,
-        repoSlug,
-      ),
-      workspaceId: pickFirstString(
-        resolveValue("workspaceId"),
-        taskPayload?.workspaceId,
-        taskMeta?.workspaceId,
-        workspace,
-        ctx.data?._workspaceId,
-        process.env.BOSUN_WORKSPACE_ID,
-        process.env.BOSUN_WORKSPACE,
-      ),
-      sessionId: pickFirstString(
-        resolveValue("sessionId"),
-        taskPayload?.sessionId,
-        taskMeta?.sessionId,
-        ctx.data?.sessionId,
-        process.env.BOSUN_SESSION_ID,
-      ),
-      runId: pickFirstString(
-        resolveValue("runId"),
-        taskPayload?.runId,
-        taskMeta?.runId,
-        ctx.data?.runId,
-        ctx.id,
-        process.env.BOSUN_RUN_ID,
-      ),
-      agentId: pickFirstString(resolveValue("agentId"), `workflow:${node.id}`) || `workflow:${node.id}`,
-      agentType: pickFirstString(resolveValue("agentType"), "workflow") || "workflow",
-      tags: normalizeStringArray(resolveValue("tags")),
-    });
-
-    try {
-      const initOpts = {
-        repoRoot,
-        targetFile: pickFirstString(resolveValue("targetFile"), "AGENTS.md") || "AGENTS.md",
-      };
-      const registryFile = pickFirstString(resolveValue("registryFile"));
-      if (registryFile) initOpts.registryFile = registryFile;
-      initSharedKnowledge(initOpts);
-
-      const result = await appendKnowledgeEntry(entry);
-      if (!result.success) {
-        const nonFatal = /duplicate entry|rate limited/i.test(String(result.reason || ""));
-        ctx.log(node.id, `Persistent memory ${nonFatal ? "skipped" : "failed"}: ${result.reason}`);
-        if (nonFatal) {
-          return {
-            success: true,
-            persisted: false,
-            skipped: true,
-            reason: result.reason,
-            entry,
-            scopeLevel: entry.scopeLevel,
-          };
-        }
-        return {
-          success: false,
-          persisted: false,
-          error: result.reason,
-          reason: result.reason,
-          entry,
-          scopeLevel: entry.scopeLevel,
-        };
-      }
-
-      ctx.data._lastPersistedMemory = entry;
-      ctx.data._lastPersistedMemoryResult = result;
-      ctx.log(node.id, `Persistent memory stored at ${entry.scopeLevel} scope`);
-      return {
-        success: true,
-        persisted: true,
-        entry,
-        hash: result.hash || entry.hash,
-        registryPath: result.registryPath || null,
-        scopeLevel: entry.scopeLevel,
-      };
-    } catch (err) {
-      ctx.log(node.id, `Persistent memory error: ${err.message}`);
-      return {
-        success: false,
-        persisted: false,
-        error: err.message,
-        entry,
-        scopeLevel: entry.scopeLevel,
-      };
-    }
   },
 });
 
@@ -6189,3 +5968,4 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 //  Export all registered types for introspection
 // ═══════════════════════════════════════════════════════════════════════════
+

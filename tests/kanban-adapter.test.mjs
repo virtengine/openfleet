@@ -1311,6 +1311,15 @@ describe("kanban-adapter internal backend", () => {
     expect(updatedWithLinkage.prNumber).toBe(321);
     expect(updatedWithLinkage.prUrl).toBe("https://example.test/pr/321");
 
+    const blocked = await adapter.updateTaskStatus(created.id, "blocked", {
+      blockedReason: "Managed worktree refresh conflict detected",
+      cooldownUntil: "2026-03-22T00:15:00.000Z",
+      source: "workflow",
+    });
+    expect(blocked.status).toBe("blocked");
+    expect(blocked.blockedReason).toBe("Managed worktree refresh conflict detected");
+    expect(blocked.cooldownUntil).toBe("2026-03-22T00:15:00.000Z");
+
     const patchedLinkage = await adapter.updateTask(created.id, {
       branchName: "feature/internal-linkage-v2",
       prNumber: 654,
@@ -1329,6 +1338,36 @@ describe("kanban-adapter internal backend", () => {
     const deleted = await adapter.deleteTask(created.id);
     expect(deleted).toBe(true);
     expect(removeTask(created.id)).toBe(false);
+  });
+
+  it("does not reopen a merge-finalized task for the same merged PR", async () => {
+    const adapter = getKanbanAdapter();
+    addTask({
+      id: "internal-merged-1",
+      title: "Merged task",
+      status: "done",
+      prNumber: 321,
+      prUrl: "https://example.test/pr/321",
+      meta: {
+        prMergeFinalizedAt: "2026-03-22T00:00:00.000Z",
+        mergedPrNumber: 321,
+        mergedPrUrl: "https://example.test/pr/321",
+      },
+    });
+
+    const unchanged = await adapter.updateTaskStatus("internal-merged-1", "todo", {
+      source: "workflow",
+      prNumber: 321,
+      prUrl: "https://example.test/pr/321",
+    });
+    expect(unchanged.status).toBe("done");
+
+    const reopened = await adapter.updateTaskStatus("internal-merged-1", "todo", {
+      source: "workflow",
+      prNumber: 654,
+      prUrl: "https://example.test/pr/654",
+    });
+    expect(reopened.status).toBe("todo");
   });
 
   it("exposes internal timeline and workflow tracking fields on task detail", async () => {

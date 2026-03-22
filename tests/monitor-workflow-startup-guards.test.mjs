@@ -294,3 +294,30 @@ describe("shared-state-manager registry repair", () => {
     expect(ssmSource).not.toContain('"[SharedStateManager] Invalid registry structure, resetting"');
   });
 });
+
+
+describe("monitor merged-pr ambiguity guards", () => {
+  const monitorSource = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
+
+  it("skips merged-pr auto-finalization when stale branch metadata points at a different task id", () => {
+    expect(monitorSource).toContain("function taskIdMatchesBranchPrefix(taskId, branchName)");
+    expect(monitorSource).toContain("countPendingBranchLinks(pending)");
+    expect(monitorSource).toContain("branch linkage ${branch} points to a different task id — skipping auto-finalization");
+    expect(monitorSource).toContain("skipping branch-based PR recovery");
+  });
+
+  it("repairs historical duplicate PR linkages that previously inflated done counts", () => {
+    expect(monitorSource).toContain("async function repairAmbiguousMergedPrLinkages(tasks = [], summary = {})");
+    expect(monitorSource).toContain("review reconcile: repairing ambiguous PR linkage for ${taskId}; branch ${branch} belongs to ${canonicalTask.id}");
+    expect(monitorSource).toContain("review-reconcile-ambiguous-pr-link");
+    expect(monitorSource).toContain("clearedAmbiguousLinkage");
+    expect(monitorSource).toContain("repairedAmbiguous");
+  });
+
+  it("stamps merge-finalization metadata so merged tasks cannot be auto-reopened by the same PR", () => {
+    expect(monitorSource).toContain("prMergeFinalizedAt: mergedAt || new Date().toISOString()");
+    expect(monitorSource).toContain('prMergeFinalizedBy: "review-merge-reconcile"');
+    expect(monitorSource).toContain("mergedPrNumber: prNumber || null");
+    expect(monitorSource).toContain("mergedPrUrl: prUrl || null");
+  });
+});

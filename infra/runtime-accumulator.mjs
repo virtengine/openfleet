@@ -141,6 +141,7 @@ function normalizeCompletedSession(session = {}) {
 		outputTokens,
 		costUsd,
 		recordedAt: String(session.recordedAt || new Date().toISOString()),
+		insights: session.insights && typeof session.insights === "object" ? { ...session.insights } : null,
 	};
 }
 
@@ -153,6 +154,11 @@ function cloneLifetimeTotals(totals) {
 	return { ...totals };
 }
 
+function cloneCompletedSession(record) {
+	if (!record) return null;
+	return { ...record, insights: record.insights && typeof record.insights === "object" ? { ...record.insights } : null };
+}
+
 function applyCompletedSessionRecord(record) {
 	if (!record?.taskId) return null;
 	const dedupKey = buildSessionDedupKey(record);
@@ -161,7 +167,7 @@ function applyCompletedSessionRecord(record) {
 	}
 	_seenSessionKeys.add(dedupKey);
 
-	_state.completedSessions.push({ ...record });
+	_state.completedSessions.push(cloneCompletedSession(record));
 	if (_state.completedSessions.length > MAX_COMPLETED_SESSIONS) {
 		_state.completedSessions = _state.completedSessions.slice(-MAX_COMPLETED_SESSIONS);
 	}
@@ -406,7 +412,7 @@ export function getCompletedSessions(limit = 100) {
 	loadState();
 	return _state.completedSessions
 		.slice(-Math.max(0, Number(limit) || 0))
-		.map((entry) => ({ ...entry }));
+		.map((entry) => cloneCompletedSession(entry));
 }
 
 export function getTaskLifetimeTotals(taskId) {

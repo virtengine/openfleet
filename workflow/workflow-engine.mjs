@@ -91,7 +91,7 @@ const MAX_CONCURRENT_RUNS = readBoundedEnvInt("WORKFLOW_MAX_CONCURRENT_RUNS", 16
   min: 1,
   max: 256,
 });
-const MAX_PERSISTED_RUNS = readBoundedEnvInt("WORKFLOW_MAX_PERSISTED_RUNS", 2000, {
+const MAX_PERSISTED_RUNS = readBoundedEnvInt("WORKFLOW_MAX_PERSISTED_RUNS", 10000, {
   min: 20,
   max: 20000,
 });
@@ -132,7 +132,9 @@ const CHECKPOINT_DEBOUNCE_MS = readBoundedEnvInt(
   500,
   { min: 50, max: 10000 },
 );
-const ACTIVE_RUNS_INDEX = "_active-runs.json";const MAX_TASK_TRACE_EVENTS_PER_RUN = readBoundedEnvInt(
+const ACTIVE_RUNS_INDEX = "_active-runs.json";
+const APPROVAL_TERMINAL_DECISIONS = new Set(["approved", "rejected", "cancelled"]);
+const MAX_TASK_TRACE_EVENTS_PER_RUN = readBoundedEnvInt(
   "WORKFLOW_TASK_TRACE_MAX_EVENTS",
   250,
   { min: 20, max: 5000 },
@@ -402,6 +404,29 @@ function hydrateWorkflowDefinition(def, { strict = false } = {}) {
   return normalized;
 }
 
+function cloneJson(value) {
+  if (value == null) return value;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function summarizeNodeOutput(output) {
+  if (output == null) return null;
+  if (typeof output === "string") {
+    const text = output.trim();
+    return text ? text.slice(0, 240) : null;
+  }
+  if (typeof output !== "object") return String(output).slice(0, 240);
+  const preferred = [output.summary, output.message, output.result, output.status]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .find(Boolean);
+  if (preferred) return preferred.slice(0, 240);
+  try {
+    return JSON.stringify(output).slice(0, 240);
+  } catch {
+    return "[object output]";
+  }
+}
+
 function cleanObject(value = {}) {
   return Object.fromEntries(
     Object.entries(value).filter(([, entry]) => entry !== undefined),
@@ -421,6 +446,7 @@ export function registerNodeType(type, handler, options = {}) {
   _nodeTypeMetaRegistry.set(type, {
     source: String(options.source || handler.source || "builtin"),
     badge: options.badge || handler.badge || null,
+    ontology: options.ontology || handler.ontology || null,
     isCustom: options.isCustom === true || handler.isCustom === true || String(options.source || handler.source || "").toLowerCase() === "custom",
     filePath: options.filePath || handler.filePath || null,
     inputs: Array.isArray(options.inputs)
@@ -479,6 +505,7 @@ export function listNodeTypes() {
         outputs: (handler.ports?.outputs || []).map((port) => clonePortDescriptor(port)),
       },
       ui: normalizeNodeUi(handler.ui),
+      ontology: cloneJson(metadata.ontology || handler.ontology || null),
     });
   }
   return result;
@@ -805,7 +832,7 @@ export class WorkflowEngine extends EventEmitter {
 
     const nowIso = new Date(ctx.startedAt).toISOString();
     const dagState = {
-      version: 1,
+      version: 2,
       runId: ctx.id,
       workflowId: def?.id || ctx.data?._workflowId || null,
       workflowName: def?.name || ctx.data?._workflowName || null,
@@ -824,6 +851,16 @@ export class WorkflowEngine extends EventEmitter {
         failed: 0,
         skipped: 0,
       },
+      edges: (def?.edges || []).filter((edge) => edge?.source && edge?.target).map((edge) => ({
+        id: edge.id || `${edge.source}->${edge.target}`,
+        source: edge.source,
+        target: edge.target,
+        sourcePort: edge.sourcePort || "default",
+        targetPort: edge.targetPort || "default",
+        backEdge: edge.backEdge === true,
+      })),
+      issues: [],
+      replanHistory: [],
       nodes: Object.fromEntries(
         (def?.nodes || []).map((node) => [
           node.id,
@@ -836,6 +873,7 @@ export class WorkflowEngine extends EventEmitter {
             attempts: 0,
             lastError: null,
             outputSummary: null,
+            evidence: null,
             startedAt: null,
             endedAt: null,
             updatedAt: nowIso,
@@ -872,11 +910,18 @@ export class WorkflowEngine extends EventEmitter {
     const pendingNodes = nodes.filter((node) => node?.status === NodeStatus.PENDING || node?.status === NodeStatus.WAITING);
     const firstFailed = failedNodes[0] || null;
     const firstPending = pendingNodes[0] || null;
+    const priorAdvisor = ctx?.data?._issueAdvisor && typeof ctx.data._issueAdvisor === "object"
+      ? ctx.data._issueAdvisor
+      : null;
+    const priorRecommendedAction = String(priorAdvisor?.recommendedAction || "").trim() || null;
 
     let recommendedAction = "continue";
     let summary = "Workflow is ready to continue.";
     if (failedNodes.length > 0) {
       recommendedAction = counts.completed > 0 ? "replan_from_failed" : "inspect_failure";
+      if (["rerun_same_step", "spawn_fix_step", "replan_subgraph", "replan_from_failed", "inspect_failure"].includes(priorRecommendedAction)) {
+        recommendedAction = priorRecommendedAction;
+      }
       summary = firstFailed?.lastError
         ? `Failed at ${firstFailed.label || firstFailed.nodeId}: ${firstFailed.lastError}`
         : `Workflow has ${failedNodes.length} failed node(s).`;
@@ -893,14 +938,39 @@ export class WorkflowEngine extends EventEmitter {
       pendingNodeCount: pendingNodes.length,
       completedNodeCount: counts.completed,
       suggestedRerun: firstFailed?.suggestedRerun || null,
+      decisionClass:
+        recommendedAction === "rerun_same_step"
+          ? "rerun_same_step"
+          : recommendedAction === "spawn_fix_step"
+            ? "spawn_fix_step"
+            : ["replan_subgraph", "replan_from_failed"].includes(recommendedAction)
+              ? "replan_entire_subgraph"
+              : recommendedAction === "continue"
+                ? "continue"
+                : "inspect_failure",
       failedNodes: failedNodes.slice(0, 6).map((node) => ({
         nodeId: node.nodeId,
         label: node.label || null,
         error: node.lastError || null,
         attempts: node.attempts || 0,
       })),
+      pendingNodes: pendingNodes.slice(0, 6).map((node) => ({
+        nodeId: node.nodeId,
+        label: node.label || null,
+      })),
+      availableCompletedNodes: nodes
+        .filter((node) => node?.status === NodeStatus.COMPLETED)
+        .slice(0, 12)
+        .map((node) => ({ nodeId: node.nodeId, label: node.label || null })),
       updatedAt: dagState.updatedAt,
     };
+    dagState.issues = failedNodes.map((node) => ({
+      nodeId: node.nodeId,
+      severity: "error",
+      source: "workflow-runtime",
+      message: node.lastError || ("Node " + node.nodeId + " failed"),
+      updatedAt: dagState.updatedAt,
+    }));
 
     ctx.data._issueAdvisor = issueAdvisor;
     const existingFeedback =
@@ -920,6 +990,23 @@ export class WorkflowEngine extends EventEmitter {
     return issueAdvisor;
   }
 
+  _appendDagReplanHistory(ctx, entry = {}) {
+    const dagState = ctx?.data?._dagState;
+    if (!dagState || typeof dagState !== "object") return;
+    const snapshot = {
+      at: new Date().toISOString(),
+      decision: entry.decision || null,
+      reason: entry.reason || null,
+      source: entry.source || "workflow-engine",
+      before: cloneJson(entry.before || dagState),
+      after: cloneJson(entry.after || dagState),
+      issueSummary: entry.issueSummary || ctx?.data?._issueAdvisor?.summary || null,
+    };
+    dagState.replanHistory = Array.isArray(dagState.replanHistory) ? dagState.replanHistory : [];
+    dagState.replanHistory.push(snapshot);
+    dagState.updatedAt = snapshot.at;
+  }
+
   _recordDagNodeOutcome(ctx, node, {
     status,
     result = undefined,
@@ -933,6 +1020,8 @@ export class WorkflowEngine extends EventEmitter {
       attempts: Number.isFinite(Number(attempt)) ? Number(attempt) : ctx.getRetryCount(node.id),
       lastError: error ? String(error) : null,
       outputSummary: result !== undefined ? this._summarizeTaskTraceNodeResult(result) : undefined,
+      evidence: result !== undefined ? { outputSummary: this._summarizeTaskTraceNodeResult(result), outputContextEnvelope: result.outputContextEnvelope || null, recordedAt: new Date().toISOString() } : undefined,
+      outputSummary: summarizeNodeOutput(result),
       startedAt: Number.isFinite(Number(timing.startedAt)) ? new Date(Number(timing.startedAt)).toISOString() : null,
       endedAt: Number.isFinite(Number(timing.endedAt)) ? new Date(Number(timing.endedAt)).toISOString() : null,
       suggestedRerun:
@@ -1231,6 +1320,8 @@ export class WorkflowEngine extends EventEmitter {
     }
     this._loaded = true;
     this.emit("loaded", { count: this._workflows.size });
+    this._hydrateRunIndexFromDetails(MAX_PERSISTED_RUNS);
+
 
     // Detect runs that were interrupted by a previous shutdown.
     // These are runs persisted to disk with status=RUNNING that are
@@ -1552,6 +1643,7 @@ export class WorkflowEngine extends EventEmitter {
         triggerSource: ctx.data?._triggerSource || null,
         targetRepo: ctx.data?._targetRepo || null,
         decisionReason: opts._decisionReason || null,
+        dedupKey: ctx.data?._dedupeKey || ctx.data?.taskId || null,
       },
     });
     await this._emitTaskTraceEvent("workflow.run.start", {
@@ -1616,7 +1708,8 @@ export class WorkflowEngine extends EventEmitter {
         summary: ctx.data?._issueAdvisor?.summary || null,
         meta: {
           decisionReason: opts._decisionReason || null,
-        },
+        dedupKey: ctx.data?._dedupeKey || ctx.data?.taskId || null,
+      },
       });
       await this._emitTaskTraceEvent("workflow.run.end", {
         ctx,
@@ -1655,7 +1748,8 @@ export class WorkflowEngine extends EventEmitter {
         summary: ctx.data?._issueAdvisor?.summary || null,
         meta: {
           decisionReason: opts._decisionReason || null,
-        },
+        dedupKey: ctx.data?._dedupeKey || ctx.data?.taskId || null,
+      },
       });
       await this._emitTaskTraceEvent("workflow.run.error", {
         ctx,
@@ -1779,6 +1873,8 @@ export class WorkflowEngine extends EventEmitter {
       retryMode: mode,
     });
 
+    const previousDag = detail?.dagState && typeof detail.dagState === "object" ? detail.dagState : null;
+
     // Pre-populate nodes that already succeeded.
     for (const [nodeId, status] of Object.entries(nodeStatuses)) {
       if (status === NodeStatus.COMPLETED) {
@@ -1792,6 +1888,16 @@ export class WorkflowEngine extends EventEmitter {
         });
       }
       // Reset failed / skipped nodes so the DAG will re-run them.
+    }
+
+    if (previousDag) {
+      this._appendDagReplanHistory(ctx, {
+        decision: mode === "from_failed" ? "resume_remaining" : mode === "replan_subgraph" ? "replan_subgraph" : "replan_from_failed",
+        reason: retryOpts._decisionReason || retryOpts.reason || null,
+        source: "retryRun",
+        before: previousDag,
+        after: ctx.data?._dagState,
+      });
     }
 
     const retryRunId = ctx.id;
@@ -1824,6 +1930,7 @@ export class WorkflowEngine extends EventEmitter {
       status: WorkflowStatus.RUNNING,
       meta: {
         decisionReason,
+        dedupKey: ctx.data?._dedupeKey || ctx.data?.taskId || null,
       },
     });
     await this._emitTaskTraceEvent("workflow.run.start", {
@@ -1880,7 +1987,8 @@ export class WorkflowEngine extends EventEmitter {
         summary: ctx.data?._issueAdvisor?.summary || null,
         meta: {
           decisionReason,
-        },
+        dedupKey: ctx.data?._dedupeKey || ctx.data?.taskId || null,
+      },
       });
       await this._emitTaskTraceEvent("workflow.run.end", {
         ctx,
@@ -1921,7 +2029,8 @@ export class WorkflowEngine extends EventEmitter {
         summary: ctx.data?._issueAdvisor?.summary || null,
         meta: {
           decisionReason,
-        },
+        dedupKey: ctx.data?._dedupeKey || ctx.data?.taskId || null,
+      },
       });
       await this._emitTaskTraceEvent("workflow.run.error", {
         ctx,
@@ -1975,6 +2084,10 @@ export class WorkflowEngine extends EventEmitter {
     if (terminalRaw === WorkflowStatus.COMPLETED || terminalRaw === "success") {
       return WorkflowStatus.COMPLETED;
     }
+    const nodeStatuses = ctx?.nodeStatuses instanceof Map ? Array.from(ctx.nodeStatuses.values()) : Object.values(ctx?.nodeStatuses || {});
+    if (nodeStatuses.some((value) => value === NodeStatus.WAITING)) {
+      return WorkflowStatus.PAUSED;
+    }
     return ctx.errors.length > 0 ? WorkflowStatus.FAILED : WorkflowStatus.COMPLETED;
   }
 
@@ -2000,6 +2113,12 @@ export class WorkflowEngine extends EventEmitter {
     if (issueAdvisor?.recommendedAction === "resume_remaining") {
       mode = "from_failed";
       reason = "issue_advisor.resume_remaining";
+    } else if (issueAdvisor?.recommendedAction === "spawn_fix_step") {
+      mode = "replan_subgraph";
+      reason = "issue_advisor.spawn_fix_step";
+    } else if (issueAdvisor?.recommendedAction === "rerun_same_step") {
+      mode = "from_failed";
+      reason = "issue_advisor.rerun_same_step";
     } else if (issueAdvisor?.recommendedAction === "replan_from_failed") {
       mode = "from_scratch";
       reason = "issue_advisor.replan_from_failed";
@@ -2568,6 +2687,104 @@ export class WorkflowEngine extends EventEmitter {
     return this._executionLedger.getRunLedger(normalizedRunId);
   }
 
+  listRunSummaries(query = {}) {
+    return this._executionLedger.listRunSummaries(query);
+  }
+
+  getRunExecutionReplay(runId) {
+    const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
+    if (!normalizedRunId) return null;
+    return this._executionLedger.replayRun(normalizedRunId);
+  }
+
+  getRunLedgerGraph(runId) {
+    return this.getRunExecutionGraph(runId);
+  }
+
+  getRunExecutionGraph(runId) {
+    const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
+    if (!normalizedRunId) return null;
+    const graph = this._executionLedger.getRunGraph(normalizedRunId);
+    if (!graph) return null;
+    const byRunId = Object.fromEntries(graph.runs.map((entry) => [entry.runId, entry]));
+    const childrenByRunId = Object.fromEntries(graph.runs.map((entry) => [entry.runId, []]));
+    const edges = graph.edges.map((edge) => ({
+      ...edge,
+      parentRunId: edge.fromRunId || null,
+      childRunId: edge.toRunId || null,
+    }));
+    for (const edge of edges) {
+      if (edge.parentRunId && edge.childRunId) {
+        if (!childrenByRunId[edge.parentRunId]) childrenByRunId[edge.parentRunId] = [];
+        if (!childrenByRunId[edge.parentRunId].includes(edge.childRunId)) {
+          childrenByRunId[edge.parentRunId].push(edge.childRunId);
+        }
+      }
+    }
+    return {
+      ...graph,
+      edges,
+      byRunId,
+      childrenByRunId,
+    };
+  }
+
+  getRunLineage(runId) {
+    const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
+    if (!normalizedRunId) return null;
+    const graph = this.getRunExecutionGraph(normalizedRunId);
+    if (!graph) return null;
+    const current = graph.byRunId[normalizedRunId] || null;
+    return {
+      runId: normalizedRunId,
+      rootRunId: current?.rootRunId || graph.rootRunId,
+      current,
+      recoveryAttempts: graph.runs.filter((entry) => entry.retryOf || entry.recovery?.retryOf || (entry.parentRunId && entry.retryMode)).map((entry) => ({ ...entry, retryOf: entry.retryOf || entry.recovery?.retryOf || entry.parentRunId || null })),
+      duplicateCandidates: graph.runs,
+      graph,
+    };
+  }
+
+  diffRunLedgers(beforeRunId, afterRunId) {
+    const beforeReplay = this.getRunExecutionReplay(beforeRunId);
+    const afterReplay = this.getRunExecutionReplay(afterRunId);
+    if (!beforeReplay || !afterReplay) return null;
+    const beforeNodes = beforeReplay.nodes || {};
+    const afterNodes = afterReplay.nodes || {};
+    const beforeIds = Object.keys(beforeNodes);
+    const afterIds = Object.keys(afterNodes);
+    return {
+      beforeRunId: beforeReplay.run.runId,
+      afterRunId: afterReplay.run.runId,
+      addedNodes: afterIds.filter((id) => !beforeIds.includes(id)),
+      removedNodes: beforeIds.filter((id) => !afterIds.includes(id)),
+      changedNodes: afterIds.filter((id) => {
+        if (!beforeNodes[id]) return false;
+        return JSON.stringify({ status: beforeNodes[id].status, attempts: beforeNodes[id].attempts })
+          !== JSON.stringify({ status: afterNodes[id].status, attempts: afterNodes[id].attempts });
+      }),
+    };
+  }
+
+  findDuplicateRunCandidates(query = {}) {
+    if (typeof query === "string") {
+      return this._executionLedger.findDuplicateRuns(query);
+    }
+    const dedupKey = String(query?.dedupKey || "").trim();
+    if (dedupKey) {
+      const result = this._executionLedger.findDuplicateRuns(dedupKey);
+      return {
+        ...result,
+        duplicateCandidates: [
+          ...(Array.isArray(result?.duplicateRunIds) ? result.duplicateRunIds.map((runId) => ({ runId })) : []),
+          ...(result?.latestRunId ? [{ runId: result.latestRunId }] : []),
+        ],
+      };
+    }
+    const graph = query?.runId ? this.getRunExecutionGraph(query.runId) : null;
+    if (!graph) return { duplicateCandidates: [] };
+    return { duplicateCandidates: graph.runs };
+  }
   getRetryOptions(runId) {
     const run = this.getRunDetail(runId);
     if (!run) return null;
@@ -2614,6 +2831,30 @@ export class WorkflowEngine extends EventEmitter {
             : "Resume state is limited; this may behave similarly to a fresh rerun.",
           recommended: retryDecision.mode === "from_failed",
           reason: retryDecision.mode === "from_failed" ? retryDecision.reason : null,
+          available: canResumeFromFailed,
+          failedNodes,
+        },
+        {
+          mode: "rerun_same_step",
+          label: "Rerun same step",
+          description: "Retry the failed step without changing the plan.",
+          recommended: retryDecision.issueAdvisorRecommendation === "rerun_same_step",
+          available: failedNodes.length > 0,
+          failedNodes,
+        },
+        {
+          mode: "spawn_fix_step",
+          label: "Spawn fix step",
+          description: "Insert a focused fix step before retrying downstream validation.",
+          recommended: retryDecision.issueAdvisorRecommendation === "spawn_fix_step",
+          available: failedNodes.length > 0,
+          failedNodes,
+        },
+        {
+          mode: "replan_subgraph",
+          label: "Replan remaining subgraph",
+          description: "Revise the remaining subgraph while preserving completed nodes.",
+          recommended: retryDecision.issueAdvisorRecommendation === "replan_subgraph",
           available: canResumeFromFailed,
           failedNodes,
         },
@@ -3116,6 +3357,107 @@ export class WorkflowEngine extends EventEmitter {
                 });
               }
               const result = await this._executeNode(node, ctx, opts);
+              if (result?._waitForApproval === true) {
+                ctx.setNodeOutput(nodeId, result);
+                ctx.setNodeStatus(nodeId, NodeStatus.WAITING);
+                this._recordDagNodeOutcome(ctx, node, {
+                  status: NodeStatus.WAITING,
+                  result,
+                  attempt: ctx.getRetryCount(nodeId),
+                });
+                this._recordLedgerEvent({
+                  eventType: "node.waiting",
+                  runId: ctx.id,
+                  workflowId,
+                  workflowName,
+                  rootRunId: ctx.data?._workflowRootRunId || ctx.id,
+                  parentRunId: ctx.data?._workflowParentRunId || null,
+                  retryOf: ctx.data?._retryOf || null,
+                  nodeId,
+                  nodeType: node?.type || null,
+                  nodeLabel: node?.label || null,
+                  status: NodeStatus.WAITING,
+                  attempt: ctx.getRetryCount(nodeId),
+                  summary: this._summarizeTaskTraceNodeResult(result),
+                  meta: {
+                    waitReason: result?.waitReason || null,
+                    approvalId: result?.approvalRequest?.approvalId || null,
+                  },
+                });
+                await this._emitTaskTraceEvent("workflow.node.waiting", {
+                  ctx,
+                  runId: ctx.id,
+                  workflowId,
+                  workflowName,
+                  node,
+                  result,
+                  status: NodeStatus.WAITING,
+                  extra: {
+                    waitReason: result?.waitReason || null,
+                    approvalId: result?.approvalRequest?.approvalId || null,
+                  },
+                });
+                await this._emitTaskTraceEvent("workflow.approval.waiting", {
+                  ctx,
+                  runId: ctx.id,
+                  workflowId,
+                  workflowName,
+                  node,
+                  result,
+                  status: WorkflowStatus.PAUSED,
+                  extra: {
+                    approvalId: result?.approvalRequest?.approvalId || null,
+                    waitReason: result?.waitReason || null,
+                  },
+                });
+                const activeInfo = this._activeRuns.get(ctx.id);
+                if (activeInfo) {
+                  activeInfo.status = WorkflowStatus.PAUSED;
+                  activeInfo.pendingApproval = result?.approvalRequest ? cloneJson(result.approvalRequest) : null;
+                }
+                this._refreshDagState(ctx, WorkflowStatus.PAUSED);
+                this._checkpointRun(ctx);
+
+                const resolved = await new Promise((resolve) => {
+                  if (activeInfo) {
+                    activeInfo.approvalWaiter = { resolve };
+                  } else {
+                    resolve({ approved: false, decision: "cancelled", payload: null, callbackId: null, actor: null, approval: null });
+                  }
+                });
+
+                ctx.setNodeOutput(nodeId, resolved);
+                ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
+                this._recordDagNodeOutcome(ctx, node, {
+                  status: NodeStatus.COMPLETED,
+                  result: resolved,
+                  attempt: ctx.getRetryCount(nodeId),
+                });
+                executed.add(nodeId);
+                this._recordLedgerEvent({
+                  eventType: "node.completed",
+                  runId: ctx.id,
+                  workflowId,
+                  workflowName,
+                  rootRunId: ctx.data?._workflowRootRunId || ctx.id,
+                  parentRunId: ctx.data?._workflowParentRunId || null,
+                  retryOf: ctx.data?._retryOf || null,
+                  nodeId,
+                  nodeType: node?.type || null,
+                  nodeLabel: node?.label || null,
+                  status: NodeStatus.COMPLETED,
+                  attempt: ctx.getRetryCount(nodeId),
+                  summary: this._summarizeTaskTraceNodeResult(resolved),
+                });
+                if (activeInfo) {
+                  activeInfo.status = WorkflowStatus.RUNNING;
+                  activeInfo.pendingApproval = null;
+                }
+                this._refreshDagState(ctx, WorkflowStatus.RUNNING);
+                this._checkpointRun(ctx);
+                lastErr = null;
+                return { nodeId, result: resolved };
+              }
               ctx.setNodeOutput(nodeId, result);
               ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
               this._recordDagNodeOutcome(ctx, node, {
@@ -3795,6 +4137,11 @@ export class WorkflowEngine extends EventEmitter {
       detail.endedAt = null;
       detail.duration = Math.max(0, Date.now() - Number(ctx?.startedAt || Date.now()));
     }
+    detail.issueAdvisorSummary = cleanObject({
+      recommendedAction: detail?.issueAdvisor?.recommendedAction || null,
+      decisionClass: detail?.issueAdvisor?.decisionClass || null,
+      summary: detail?.issueAdvisor?.summary || null,
+    });
     return detail;
   }
 
@@ -3848,6 +4195,9 @@ export class WorkflowEngine extends EventEmitter {
     const retryDecisionReason = detail?.data?._retryDecisionReason || null;
     const issueAdvisorRecommendation = detail?.issueAdvisor?.recommendedAction || null;
     const issueAdvisorSummary = detail?.issueAdvisor?.summary || null;
+    const approval = detail?.data?._approval && typeof detail.data._approval === "object"
+      ? detail.data._approval
+      : null;
 
     return {
       runId,
@@ -3881,19 +4231,28 @@ export class WorkflowEngine extends EventEmitter {
       retryDecisionReason,
       issueAdvisorRecommendation,
       issueAdvisorSummary,
+      approvalStatus: approval?.status || null,
+      approvalCheckpointId: approval?.checkpointId || null,
+      approvalRequestedAt: Number(approval?.requestedAt) || null,
+      approvalDecidedAt: Number(approval?.decidedAt) || null,
+      approvalDecision: approval?.decision || null,
     };
   }
 
   _buildActiveRunSummary(runId, info) {
     if (!info?.ctx) return null;
     const detail = this._serializeRunContext(info.ctx, true);
-    return this._buildSummaryFromDetail({
+    const summary = this._buildSummaryFromDetail({
       runId,
       workflowId: info.workflowId,
       workflowName: info.workflowName || info.ctx?.data?._workflowName || info.workflowId,
-      status: WorkflowStatus.RUNNING,
+      status: info?.status || WorkflowStatus.RUNNING,
       detail,
     });
+    if (summary && info?.ctx?.data?._approval && typeof info.ctx.data._approval === "object") {
+      summary.pendingApproval = cloneJson(info.ctx.data._approval);
+    }
+    return summary;
   }
 
   _normalizeRunSummary(summary) {
@@ -3902,6 +4261,10 @@ export class WorkflowEngine extends EventEmitter {
       ...summary,
       runId: String(summary.runId),
       status: summary.status || WorkflowStatus.COMPLETED,
+      pendingApproval:
+        summary?.pendingApproval && typeof summary.pendingApproval === "object"
+          ? cloneJson(summary.pendingApproval)
+          : null,
     };
     if (!Number.isFinite(Number(normalized.stuckThresholdMs))) {
       normalized.stuckThresholdMs = this._getRunStuckThresholdMs();
@@ -3974,7 +4337,13 @@ export class WorkflowEngine extends EventEmitter {
 
       // Add to active-runs index
       const entries = this._readActiveRunsIndex().filter((e) => e.runId !== runId);
-      entries.push({ runId, workflowId, workflowName, startedAt: ctx.startedAt });
+      entries.push({
+        runId,
+        workflowId,
+        workflowName,
+        startedAt: ctx.startedAt,
+        pendingApproval: ctx.data?._approval && typeof ctx.data._approval === "object" ? cloneJson(ctx.data._approval) : null,
+      });
       this._writeActiveRunsIndex(entries);
 
       // Write initial detail file so we can resume from it
@@ -4009,6 +4378,18 @@ export class WorkflowEngine extends EventEmitter {
         this._ensureDirs();
         const detail = this._serializeRunContext(ctx, true);
         this._writeRunDetail(runId, detail);
+        const activeInfo = this._activeRuns.get(runId);
+        if (activeInfo) {
+          activeInfo.pendingApproval = detail?.data?._approval && typeof detail.data._approval === "object"
+            ? cloneJson(detail.data._approval)
+            : null;
+          this._ensureRunInIndex(
+            runId,
+            activeInfo.workflowId || detail?.data?._workflowId || null,
+            activeInfo.workflowName || detail?.data?._workflowName || activeInfo.workflowId || null,
+            detail,
+          );
+        }
       } catch (err) {
         console.error(`${TAG} Checkpoint failed for run ${runId}:`, err.message);
       }
@@ -4166,11 +4547,15 @@ export class WorkflowEngine extends EventEmitter {
             (status) => status === NodeStatus.RUNNING || status === NodeStatus.WAITING,
           );
           if (detail?.endedAt != null && !hasRunningNode) continue;
-          markInterrupted(
+          const mark = markInterrupted(
             runId,
             detail?.data?._workflowId || null,
             detail?.data?._workflowName || null,
           );
+          const interruptedEntry = interrupted.at(-1);
+          if (interruptedEntry && detail?.data?._approval && typeof detail.data._approval === "object") {
+            interruptedEntry.pendingApproval = cloneJson(detail.data._approval);
+          }
         } catch {
           // ignore malformed detail files
         }
@@ -4220,21 +4605,23 @@ export class WorkflowEngine extends EventEmitter {
 
       console.log(`${TAG} Resuming ${runs.length} interrupted run(s)...`);
 
-      // ── Deduplicate by taskId: keep only the most recent run per task ────
+      // ── Deduplicate by durable ledger key / taskId: keep only the most recent run per unit of work ────
       // After N crash/restart cycles, N run entries accumulate for the same
       // taskId. Resuming all of them causes competing workflow runs that race
       // to claim the task → "claim was stolen" errors on every restart.
       // Solution: pre-scan detail files, keep latest startedAt per taskId,
       // and mark older duplicates as not-resumable before we even try them.
       const runDetailCache = new Map(); // runId → parsed detail
-      const latestByTaskId = new Map(); // taskId → run entry (highest startedAt)
+      const latestByTaskId = new Map(); // taskId/dedupKey → run entry (highest startedAt)
       for (const run of allRuns) {
         const dp = resolve(this.runsDir, `${run.runId}.json`);
         if (!existsSync(dp)) continue;
         try {
           const d = JSON.parse(readFileSync(dp, "utf8"));
           runDetailCache.set(run.runId, d);
-          const tid = d.data?.taskId || d.inputData?.taskId;
+          const tid = this._executionLedger.findDuplicateActiveRuns({
+            dedupKey: this.getRunLedger(run.runId)?.meta?.dedupKey || d.data?.taskId || d.inputData?.taskId,
+          })?.dedupKey || this.getRunLedger(run.runId)?.meta?.dedupKey || d.data?.taskId || d.inputData?.taskId;
           if (!tid) continue;
           const prev = latestByTaskId.get(tid);
           if (!prev || (run.startedAt || 0) >= (prev.startedAt || 0)) {
@@ -4249,7 +4636,7 @@ export class WorkflowEngine extends EventEmitter {
       let dedupedCount = 0;
       for (const run of runs) {
         const d = runDetailCache.get(run.runId);
-        const tid = d?.data?.taskId || d?.inputData?.taskId;
+        const tid = this.getRunLedger(run.runId)?.meta?.dedupKey || d?.data?.taskId || d?.inputData?.taskId;
         if (!tid) continue;
         const latest = latestByTaskId.get(tid);
         if (latest && latest.runId !== run.runId) {
@@ -4266,7 +4653,7 @@ export class WorkflowEngine extends EventEmitter {
       for (const run of runs) {
         // Skip runs that were marked as duplicates above
         const _runDetail = runDetailCache.get(run.runId);
-        const _tid = _runDetail?.data?.taskId || _runDetail?.inputData?.taskId;
+        const _tid = this.getRunLedger(run.runId)?.meta?.dedupKey || _runDetail?.data?.taskId || _runDetail?.inputData?.taskId;
         if (_tid) {
           const latest = latestByTaskId.get(_tid);
           if (latest && latest.runId !== run.runId) continue;
@@ -4302,6 +4689,10 @@ export class WorkflowEngine extends EventEmitter {
           await this.retryRun(run.runId, {
             mode: retryDecision.mode,
             _decisionReason: retryDecision.reason,
+            approval:
+              detail?.data?._approval && typeof detail.data._approval === "object"
+                ? cloneJson(detail.data._approval)
+                : undefined,
           }).catch((err) => {
             console.error(`${TAG} Failed to resume run ${run.runId}:`, err.message);
             this._markRunUnresumable(run.runId, `retry_error: ${err.message}`);
@@ -4321,8 +4712,259 @@ export class WorkflowEngine extends EventEmitter {
   }
 
   /**
-   * Mark a run as no longer resumable in the main index.
+   * Create a durable approval checkpoint for a running node.
    */
+  waitForApproval(ctx, node, request = {}) {
+    if (!ctx || !node) throw new Error("waitForApproval requires ctx and node");
+    const requestedAt = Date.now();
+    const prior = ctx.data?._approval && typeof ctx.data._approval === "object"
+      ? { ...ctx.data._approval }
+      : {};
+    const checkpointId = String(request?.checkpointId || node.id || "approval").trim() || String(node.id || "approval");
+    const approvalId = String(request?.approvalId || `${ctx.id}:${String(node.id || checkpointId)}`).trim();
+    const callbackId = String(request?.callbackId || "").trim() || null;
+    const approvalRequest = {
+      approvalId,
+      checkpointId,
+      nodeId: String(node.id || "").trim() || null,
+      nodeLabel: String(node.label || node.id || checkpointId).trim(),
+      workflowId: ctx.data?._workflowId || null,
+      workflowName: ctx.data?._workflowName || null,
+      runId: ctx.id,
+      status: "waiting",
+      decision: null,
+      summary: String(request?.summary || request?.message || node.label || "Approval required").trim() || "Approval required",
+      requestedAt,
+      requestedBy: request?.requestedBy || null,
+      callbackId,
+      callbackToken: String(request?.callbackToken || prior.callbackToken || "").trim() || null,
+      metadata: request?.metadata && typeof request.metadata === "object" ? cloneJson(request.metadata) : null,
+      payload: null,
+      actor: null,
+      decidedAt: null,
+      duplicateCallbackIds: Array.isArray(prior?.duplicateCallbackIds) ? [...prior.duplicateCallbackIds] : [],
+    };
+    ctx.data._approval = approvalRequest;
+    this._recordLedgerEvent({
+      eventType: "approval.requested",
+      runId: ctx.id,
+      workflowId: ctx.data?._workflowId || null,
+      workflowName: ctx.data?._workflowName || null,
+      rootRunId: ctx.data?._workflowRootRunId || ctx.id,
+      parentRunId: ctx.data?._workflowParentRunId || null,
+      retryOf: ctx.data?._retryOf || null,
+      nodeId: node.id || null,
+      nodeType: node.type || null,
+      nodeLabel: node.label || null,
+      status: NodeStatus.WAITING,
+      summary: approvalRequest.summary,
+      meta: {
+        approvalId,
+        checkpointId,
+        callbackId,
+        requestedBy: approvalRequest.requestedBy,
+      },
+    });
+    return {
+      _waitForApproval: true,
+      waitReason: "approval_required",
+      approvalRequest: cloneJson(approvalRequest),
+    };
+  }
+
+  /**
+   * Record an approval decision durably and idempotently.
+   */
+  recordApprovalDecision(runId, decision = {}) {
+    const normalizedRunId = String(runId || "").trim();
+    if (!normalizedRunId) {
+      return { applied: false, duplicate: false, reason: "invalid_run_id" };
+    }
+
+    const run = this.getRunDetail(normalizedRunId);
+    const detail = run?.detail ? cloneJson(run.detail) : null;
+    if (!detail || !detail.data || typeof detail.data !== "object") {
+      return { applied: false, duplicate: false, reason: "run_not_found" };
+    }
+
+    const prior = detail.data._approval && typeof detail.data._approval === "object"
+      ? { ...detail.data._approval }
+      : {};
+    const checkpointId = String(decision.checkpointId || prior.checkpointId || "").trim() || null;
+    const callbackId = String(decision.callbackId || decision.callbackToken || "").trim() || null;
+    const nextDecision = String(decision.decision || "").trim() || prior.decision || null;
+    const actor = String(decision.actor || decision.decidedBy || "").trim() || null;
+    const duplicate = Boolean(
+      callbackId && (prior.callbackId === callbackId || (Array.isArray(prior.duplicateCallbackIds) && prior.duplicateCallbackIds.includes(callbackId)))
+    );
+
+    const duplicateCallbackIds = Array.isArray(prior.duplicateCallbackIds) ? [...prior.duplicateCallbackIds] : [];
+    if (callbackId && prior.callbackId && prior.callbackId !== callbackId && !duplicateCallbackIds.includes(callbackId)) {
+      duplicateCallbackIds.push(callbackId);
+    }
+
+    const status = nextDecision === "approved" ? "approved" : (nextDecision || prior.status || "waiting");
+    const nextApproval = {
+      ...prior,
+      checkpointId,
+      callbackId: callbackId || prior.callbackId || null,
+      callbackToken: callbackId || prior.callbackToken || null,
+      status,
+      decision: nextDecision,
+      actor: duplicate ? (prior.actor || null) : actor,
+      decidedBy: duplicate ? (prior.decidedBy || null) : actor,
+      payload: decision.payload !== undefined ? cloneJson(decision.payload) : (prior.payload ?? null),
+      decidedAt: duplicate ? (prior.decidedAt || null) : (Number(decision.decidedAt) || Date.now()),
+      duplicateCallbackIds,
+    };
+
+    detail.data._approval = nextApproval;
+    this._writeRunDetail(normalizedRunId, detail);
+    if (run?.workflowId) {
+      this._ensureRunInIndex(
+        normalizedRunId,
+        run.workflowId,
+        run.workflowName || detail?.data?._workflowName || run.workflowId,
+        detail,
+      );
+    }
+
+    const active = this._activeRuns.get(normalizedRunId);
+    if (active?.ctx?.data && typeof active.ctx.data === "object") {
+      active.ctx.data._approval = cloneJson(nextApproval);
+    }
+
+    if (!duplicate) {
+      this._recordLedgerEvent({
+        eventType: "approval.resolved",
+        runId: normalizedRunId,
+        workflowId: run?.workflowId || detail?.data?._workflowId || null,
+        workflowName: run?.workflowName || detail?.data?._workflowName || null,
+        rootRunId: detail?.data?._workflowRootRunId || normalizedRunId,
+        parentRunId: detail?.data?._workflowParentRunId || null,
+        retryOf: detail?.data?._retryOf || null,
+        nodeId: prior.nodeId || null,
+        nodeType: null,
+        nodeLabel: prior.nodeLabel || null,
+        status: nextApproval.status || null,
+        summary: nextApproval.summary || null,
+        meta: {
+          checkpointId: nextApproval.checkpointId || null,
+          callbackId: nextApproval.callbackId || null,
+          actor: nextApproval.actor || null,
+          decision: nextApproval.decision || null,
+          duplicate: false,
+        },
+      });
+    }
+
+    return {
+      applied: true,
+      duplicate,
+      approval: nextApproval,
+    };
+  }
+
+  async resolveApproval(runId, decision = {}) {
+    const normalizedRunId = String(runId || '').trim();
+    const recorded = this.recordApprovalDecision(normalizedRunId, decision);
+    if (!recorded.applied) {
+      return { ok: false, duplicate: false, reason: recorded.reason || "not_applied" };
+    }
+    if (recorded.duplicate) {
+      return { ok: true, duplicate: true, resumed: false, approval: recorded.approval };
+    }
+
+    const active = this._activeRuns.get(normalizedRunId);
+    const waiter = active?.approvalWaiter;
+    if (waiter && typeof waiter.resolve === "function") {
+      waiter.resolve({
+        approved: String(recorded.approval?.decision || "").trim().toLowerCase() === "approved",
+        decision: recorded.approval?.decision || null,
+        callbackId: recorded.approval?.callbackId || null,
+        actor: recorded.approval?.actor || null,
+        payload: recorded.approval?.payload ?? null,
+        approval: cloneJson(recorded.approval),
+      });
+      active.approvalWaiter = null;
+      return { ok: true, duplicate: false, resumed: true, approval: recorded.approval };
+    }
+
+    const resumeDecision = normalizeApprovalDecision(recorded.approval?.decision);
+    if (isTerminalApprovalDecision(resumeDecision)) {
+      const resumedRun = await this.resumeRun(normalizedRunId, {
+        actor: recorded.approval?.actor || decision?.actor || null,
+        approvalDecision: recorded.approval,
+        reason: "approval_resolved",
+      });
+      return { ok: true, duplicate: false, resumed: Boolean(resumedRun?.resumed), approval: recorded.approval, resume: resumedRun || null };
+    }
+
+    return { ok: true, duplicate: false, resumed: false, approval: recorded.approval };
+  }
+
+  async resumeRun(runId, opts = {}) {
+    const normalizedRunId = String(runId || "").trim();
+    if (!normalizedRunId) {
+      return { ok: false, resumed: false, reason: "invalid_run_id" };
+    }
+
+    const run = this.getRunDetail(normalizedRunId);
+    const detail = run?.detail ? cloneJson(run.detail) : null;
+    if (!detail || !detail.data || typeof detail.data !== "object") {
+      return { ok: false, resumed: false, reason: "run_not_found" };
+    }
+
+    const approval = opts?.approvalDecision && typeof opts.approvalDecision === "object"
+      ? cloneJson(opts.approvalDecision)
+      : (detail.data._approval && typeof detail.data._approval === "object" ? cloneJson(detail.data._approval) : null);
+    const decision = normalizeApprovalDecision(approval?.decision || opts?.decision || null);
+    if (!isTerminalApprovalDecision(decision)) {
+      return { ok: false, resumed: false, active: false, reason: "approval_pending", approval };
+    }
+
+    detail.data._approval = approval;
+    detail.status = decision === "approved" ? WorkflowStatus.COMPLETED : WorkflowStatus.CANCELLED;
+    if (!Number.isFinite(Number(detail.endedAt))) {
+      detail.endedAt = Date.now();
+    }
+    this._writeRunDetail(normalizedRunId, detail);
+    if (run?.workflowId) {
+      this._ensureRunInIndex(
+        normalizedRunId,
+        run.workflowId,
+        run.workflowName || detail?.data?._workflowName || run.workflowId,
+        detail,
+      );
+    }
+    this._markRunUnresumable(normalizedRunId, opts?.reason || "approval_resolved");
+    this._clearActiveRunState(normalizedRunId);
+    this._activeRuns.delete(normalizedRunId);
+
+    this._recordLedgerEvent({
+      eventType: "approval.resume",
+      runId: normalizedRunId,
+      workflowId: run?.workflowId || detail?.data?._workflowId || null,
+      workflowName: run?.workflowName || detail?.data?._workflowName || null,
+      rootRunId: detail?.data?._workflowRootRunId || normalizedRunId,
+      parentRunId: detail?.data?._workflowParentRunId || null,
+      retryOf: detail?.data?._retryOf || null,
+      nodeId: approval?.nodeId || null,
+      nodeType: null,
+      nodeLabel: approval?.nodeLabel || null,
+      status: detail.status || null,
+      summary: approval?.summary || null,
+      meta: {
+        checkpointId: approval?.checkpointId || null,
+        callbackId: approval?.callbackId || null,
+        actor: approval?.actor || opts?.actor || null,
+        decision,
+        resumeReason: opts?.reason || null,
+      },
+    });
+
+    return { ok: true, resumed: true, active: false, status: detail.status, approval };
+  }
   _markRunUnresumable(runId, reason) {
     try {
       const indexPath = resolve(this.runsDir, "index.json");
@@ -4352,6 +4994,10 @@ export class WorkflowEngine extends EventEmitter {
         status: this._resolveWorkflowStatus(ctx),
         detail,
       });
+      summary.pendingApproval =
+        detail?.data?._approval && typeof detail.data._approval === "object"
+          ? cloneJson(detail.data._approval)
+          : null;
 
       // Deduplicate: remove any existing entry for this runId before appending
       const indexPath = resolve(this.runsDir, "index.json");
@@ -4464,3 +5110,22 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

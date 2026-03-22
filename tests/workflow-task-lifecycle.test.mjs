@@ -145,7 +145,6 @@ describe("task lifecycle node type registration", () => {
     "read-workflow-contract",
     "workflow-contract-validation",
     "action.build_task_prompt",
-    "action.persist_memory",
     "action.detect_new_commits",
     "action.push_branch",
   ];
@@ -674,6 +673,62 @@ describe("trigger.task_available", () => {
           taskId: "claimed-task",
           claimToken,
           instanceId: "wf-test-instance",
+        });
+      }
+      try { rmSync(repoRoot, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  });
+
+  it("ignores persisted ownership when the recorded claim owner pid is dead", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "wf-task-stale-claim-filter-"));
+    const { initTaskClaims, claimTask, releaseTask } = await import("../task/task-claims.mjs");
+    let claimToken = "";
+    try {
+      await initTaskClaims({ repoRoot });
+      const claimResult = await claimTask({
+        taskId: "stale-claim-task",
+        instanceId: "wf-dead-instance",
+        metadata: {
+          host: process.env.COMPUTERNAME || process.env.HOSTNAME || "localhost",
+          pid: 999999,
+        },
+      });
+      expect(claimResult.success).toBe(true);
+      claimToken = claimResult.token || "";
+
+      const nt = getNodeType("trigger.task_available");
+      const listTasks = vi.fn().mockResolvedValue([
+        { id: "stale-claim-task", title: "Recovered task", status: "todo" },
+        { id: "ready-task", title: "Ready", status: "todo" },
+      ]);
+      const ctx = makeCtx({
+        activeSlotCount: 0,
+        repoRoot,
+      });
+      const node = makeNode("trigger.task_available", {
+        maxParallel: 1,
+        status: "todo",
+      });
+
+      const result = await nt.execute(node, ctx, {
+        services: {
+          kanban: {
+            listTasks,
+          },
+        },
+      });
+
+      expect(result.triggered).toBe(true);
+      expect(result.persistedOwnershipFilteredCount || 0).toBe(0);
+      expect(result.selectedTaskId).toBe("stale-claim-task");
+      expect(result.tasks.some((task) => task.id === "stale-claim-task")).toBe(true);
+    } finally {
+      if (claimToken) {
+        await releaseTask({
+          taskId: "stale-claim-task",
+          claimToken,
+          instanceId: "wf-dead-instance",
+          force: true,
         });
       }
       try { rmSync(repoRoot, { recursive: true, force: true }); } catch { /* ok */ }
@@ -1370,6 +1425,30 @@ describe("action.acquire_worktree", () => {
     expect(existsSync(result.worktreePath)).toBe(true);
   });
 
+  it("returns a non-retryable block when repoRoot is missing .git", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const nonGitDir = mkdtempSync(join(tmpdir(), "wf-acquire-nongit-"));
+    try {
+      const ctx = makeCtx({});
+      const node = makeNode("action.acquire_worktree", {
+        repoRoot: nonGitDir,
+        taskId: "missing-git-1",
+        branch: "task/missing-git-1",
+        baseBranch: "main",
+        fetchTimeout: 5000,
+        worktreeTimeout: 10000,
+      });
+
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(false);
+      expect(result.retryable).toBe(false);
+      expect(result.failureKind).toBe("repo_root_not_git");
+      expect(result.blockedReason).toMatch(/missing \.git/i);
+    } finally {
+      try { rmSync(nonGitDir, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  });
+
   it("marks reused worktrees as managed for cleanup", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const ctx1 = makeCtx({});
@@ -1674,7 +1753,7 @@ describe("action.acquire_worktree", () => {
     }
   }, 20000);
 
-  it("returns a non-retryable failure when an existing task branch conflicts with the latest base", async () => {
+  it("recreates an attached existing branch worktree when refresh cleanup removes the checkout", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const branch = "task/recreate-conflict-behind";
     const remoteDir = mkdtempSync(join(tmpdir(), "wf-acquire-origin-"));
@@ -2195,176 +2274,6 @@ describe("action.build_task_prompt", () => {
     } finally {
       if (prev === undefined) delete process.env.BOSUN_CACHE_ANCHOR_MODE;
       else process.env.BOSUN_CACHE_ANCHOR_MODE = prev;
-    }
-  });
-
-  it("injects scoped persistent memory into the user prompt only", async () => {
-    const repoRoot = mkdtempSync(join(tmpdir(), "prompt-memory-"));
-    try {
-      const {
-        initSharedKnowledge,
-        buildKnowledgeEntry,
-        appendKnowledgeEntry,
-      } = await import("../workspace/shared-knowledge.mjs");
-
-      initSharedKnowledge({ repoRoot, targetFile: "AGENTS.md" });
-
-      const memories = [
-        buildKnowledgeEntry({
-          content: "Workspace memory: flaky login tests need a DB fixture reset.",
-          scope: "testing",
-          scopeLevel: "workspace",
-          teamId: "team-a",
-          workspaceId: "workspace-1",
-          sessionId: "session-0",
-          runId: "run-0",
-          agentId: "agent-workspace",
-        }),
-        buildKnowledgeEntry({
-          content: "Team memory: prefer deterministic waits in browser tests.",
-          scope: "testing",
-          scopeLevel: "team",
-          teamId: "team-a",
-          workspaceId: "workspace-0",
-          sessionId: "session-0",
-          runId: "run-0",
-          agentId: "agent-team",
-        }),
-        buildKnowledgeEntry({
-          content: "Workspace memory: payments smoke tests require a sandbox token.",
-          scope: "testing",
-          scopeLevel: "workspace",
-          teamId: "team-a",
-          workspaceId: "workspace-2",
-          sessionId: "session-2",
-          runId: "run-2",
-          agentId: "agent-other-workspace",
-        }),
-      ];
-
-      for (const memory of memories) {
-        const appendResult = await appendKnowledgeEntry(memory);
-        expect(appendResult.success).toBe(true);
-      }
-
-      const nt = getNodeType("action.build_task_prompt");
-      const ctx = makeCtx({});
-      const node = makeNode("action.build_task_prompt", {
-        taskId: "MEM-1",
-        taskTitle: "Stabilize flaky login retries",
-        taskDescription: "Reset fixtures between browser retries.",
-        repoRoot,
-        worktreePath: join(repoRoot, ".bosun", "worktrees", "task-1"),
-        includeMemory: true,
-        teamId: "team-a",
-        workspaceId: "workspace-1",
-        sessionId: "session-1",
-        runId: "run-1",
-      });
-
-      const result = await nt.execute(node, ctx);
-      const userPrompt = result.userPrompt || result.prompt;
-
-      expect(userPrompt).toContain("## Persistent Memory Briefing");
-      expect(userPrompt).toContain("flaky login tests need a DB fixture reset");
-      expect(userPrompt).toContain("prefer deterministic waits in browser tests");
-      expect(userPrompt).not.toContain("payments smoke tests require a sandbox token");
-      expect(result.systemPrompt).not.toContain("## Persistent Memory Briefing");
-      expect(result.systemPrompt).not.toContain("DB fixture reset");
-    } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
-    }
-  });
-});
-
-
-describe("action.persist_memory", () => {
-  it("stores scoped memory for later retrieval and prompt injection", async () => {
-    const repoRoot = mkdtempSync(join(tmpdir(), "persist-memory-node-"));
-    try {
-      const persistNodeType = getNodeType("action.persist_memory");
-      const promptNodeType = getNodeType("action.build_task_prompt");
-      const persistCtx = makeCtx({
-        repoRoot,
-        repoSlug: "virtengine/bosun",
-        workspace: repoRoot,
-        _workspaceId: "workspace-1",
-        sessionId: "session-1",
-        runId: "run-1",
-        task: {
-          id: "MEM-2",
-          title: "Stabilize login retries",
-          description: "Reset browser fixtures between retries.",
-          workspace: repoRoot,
-          repository: "virtengine/bosun",
-          meta: {
-            teamId: "team-a",
-            workspaceId: "workspace-1",
-            sessionId: "session-1",
-            runId: "run-1",
-          },
-        },
-      });
-      const persistNode = makeNode("action.persist_memory", {
-        content: "Workspace memory: seed auth fixtures before browser login retries.",
-        scope: "testing",
-        scopeLevel: "workspace",
-        teamId: "team-a",
-        workspaceId: "workspace-1",
-        sessionId: "session-1",
-        runId: "run-1",
-        repoRoot,
-      });
-
-      const persistResult = await persistNodeType.execute(persistNode, persistCtx);
-      expect(persistResult.success).toBe(true);
-      expect(persistResult.persisted).toBe(true);
-      expect(persistResult.scopeLevel).toBe("workspace");
-
-      const { retrieveKnowledgeEntries } = await import("../workspace/shared-knowledge.mjs");
-      const retrieved = await retrieveKnowledgeEntries({
-        repoRoot,
-        teamId: "team-a",
-        workspaceId: "workspace-1",
-        sessionId: "session-99",
-        runId: "run-99",
-        query: "browser login fixtures retries",
-        limit: 10,
-      });
-      expect(retrieved.some((entry) => entry.content.includes("seed auth fixtures"))).toBe(true);
-
-      const hidden = await retrieveKnowledgeEntries({
-        repoRoot,
-        teamId: "team-a",
-        workspaceId: "workspace-2",
-        sessionId: "session-99",
-        runId: "run-99",
-        query: "browser login fixtures retries",
-        limit: 10,
-      });
-      expect(hidden.some((entry) => entry.content.includes("seed auth fixtures"))).toBe(false);
-
-      const promptCtx = makeCtx({});
-      const promptNode = makeNode("action.build_task_prompt", {
-        taskId: "MEM-3",
-        taskTitle: "Fix flaky login retries",
-        taskDescription: "Browser login keeps flaking until auth fixtures are reset.",
-        repoRoot,
-        worktreePath: join(repoRoot, ".bosun", "worktrees", "task-2"),
-        includeMemory: true,
-        teamId: "team-a",
-        workspaceId: "workspace-1",
-        sessionId: "session-2",
-        runId: "run-2",
-      });
-
-      const promptResult = await promptNodeType.execute(promptNode, promptCtx);
-      const userPrompt = promptResult.userPrompt || promptResult.prompt;
-      expect(userPrompt).toContain("## Persistent Memory Briefing");
-      expect(userPrompt).toContain("seed auth fixtures before browser login retries");
-      expect(promptResult.systemPrompt).not.toContain("seed auth fixtures");
-    } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
     }
   });
 });
@@ -3222,3 +3131,5 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
+
+

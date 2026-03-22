@@ -88,6 +88,17 @@ function isAzureOpenAIBaseUrl(value) {
   }
 }
 
+function buildCodexFeatureFlags({ isAzure = false } = {}) {
+  return {
+    child_agents_md: true,
+    multi_agent: true,
+    memories: true,
+    undo: true,
+    steer: true,
+    ...(isAzure ? { remote_models: false } : {}),
+  };
+}
+
 function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env) {
   const resolved = resolveCodexProfileRuntime(envInput);
   const { env: resolvedEnv, configProvider } = resolved;
@@ -130,6 +141,7 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env) {
   return {
     env,
     config,
+    featureFlags: buildCodexFeatureFlags({ isAzure }),
     providerName,
     streamIdleTimeoutMs: streamProviderOverrides.stream_idle_timeout_ms,
   };
@@ -446,6 +458,71 @@ async function loadSession(sessionId) {
 
 // ── Thread Management ────────────────────────────────────────────────────────
 
+const DEFAULT_EXECUTION_MODE = "editor";
+
+function normalizeExecutionMode(mode, userMessage = "") {
+  const explicit = String(mode || "").trim().toLowerCase();
+  if (["ask", "architect", "editor"].includes(explicit)) return explicit;
+  const detected = String(userMessage || "")
+    .match(/^\[MODE:\s*(ask|architect|editor)\]/i)?.[1]?.toLowerCase();
+  if (detected) return detected;
+  return DEFAULT_EXECUTION_MODE;
+}
+
+function buildRepoMapSection(repoMap) {
+  const text = String(repoMap || "").trim();
+  if (!text) return "";
+  return `[Repo Map]\n${text}\n\n`;
+}
+
+function buildExecutionModeInstructions(executionMode) {
+  if (executionMode === "architect") {
+    return [
+      "[ARCHITECT MODE]",
+      "Use the compact structural context from the repo map before expanding into file reads.",
+      "Work in three phases: planning phase, implementation phase, validation phase.",
+      "First produce a concrete implementation plan, then carry out the implementation, then validate the changes.",
+      "When the repo map is sufficient, avoid reading unrelated files until needed.",
+      "If you delegate or hand off, produce precise instructions for the editor phase.",
+    ].join("\n");
+  }
+  if (executionMode === "editor") {
+    return [
+      "[EDITOR MODE]",
+      "Implement the approved plan using the repo map as compact structural context.",
+      "Do NOT re-plan the whole task unless the evidence forces a correction.",
+      "Make the smallest coherent set of code and test changes, then validate them.",
+    ].join("\n");
+  }
+  return "";
+}
+
+export function buildCodexPromptEnvelope(userMessage, options = {}) {
+  const { statusData = null, mode = null, repoMap = null } = options;
+  const executionMode = normalizeExecutionMode(mode, userMessage);
+  const isAskMode = executionMode === "ask";
+  if (isAskMode) {
+    return { executionMode, isAskMode, prompt: userMessage };
+  }
+
+  const statusPrefix = statusData
+    ? `[Orchestrator Status]\n\`\`\`json\n${JSON.stringify(statusData, null, 2).slice(0, 2000)}\n\`\`\`\n\n`
+    : "";
+  const repoMapSection = buildRepoMapSection(repoMap);
+  const modeInstructions = buildExecutionModeInstructions(executionMode);
+  const prompt = `${statusPrefix}${repoMapSection}${modeInstructions}\n\n# YOUR TASK — EXECUTE NOW\n\n${userMessage}\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files selectively, run commands when needed, produce detailed output, and complete the user's request end-to-end.${TOOL_OUTPUT_GUARDRAIL}`;
+  return { executionMode, isAskMode, prompt };
+}
+
+export function buildCodexPrimer({ isAskMode = false, executionMode = DEFAULT_EXECUTION_MODE } = {}) {
+  if (isAskMode) {
+    return "You are a helpful AI assistant deployed inside the bosun orchestrator. Answer the user's questions concisely. Only use tools when explicitly asked to.";
+  }
+  if (executionMode === "architect") {
+    return `${SYSTEM_PROMPT}\n\nYou are operating as an AUTONOMOUS AI CODING ARCHITECT. Use any provided repo map as compact structural context, create a strong plan before editing, and produce clear editor phase instructions before and during implementation.`;
+  }
+  return SYSTEM_PROMPT;
+}
 const SYSTEM_PROMPT = `# AGENT DIRECTIVE — EXECUTE IMMEDIATELY
 
 You are an autonomous AI coding agent deployed inside bosun.
@@ -521,13 +598,7 @@ async function getThread() {
 
     codexInstance = new Cls({
       config: {
-        features: {
-          child_agents_md: true,
-          multi_agent: true,
-          memories: true,
-          undo: true,
-          steer: true,
-        },
+        features: runtime.featureFlags,
         ...runtime.config,
       },
     });
@@ -833,21 +904,14 @@ export async function execCodexPrompt(userMessage, options = {}) {
     // instructs the agent to run commands and read files.  The mode is
     // either passed explicitly or detected from the MODE prefix that
     // primary-agent.mjs prepends.
-    const isAskMode =
-      mode === "ask" || /^\[MODE:\s*ask\]/i.test(userMessage);
-
-    // Build the user prompt with optional status context (built once, reused across retries)
-    let prompt = userMessage;
-    if (statusData && !isAskMode) {
-      const statusSnippet = JSON.stringify(statusData, null, 2).slice(0, 2000);
-      prompt = `[Orchestrator Status]\n\`\`\`json\n${statusSnippet}\n\`\`\`\n\n# YOUR TASK — EXECUTE NOW\n\n${userMessage}\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output.${TOOL_OUTPUT_GUARDRAIL}`;
-    } else if (isAskMode) {
-      // Ask mode — pass through without executor framing.  The mode
-      // prefix from primary-agent already tells the model to be brief.
-      prompt = userMessage;
-    } else {
-      prompt = `${userMessage}\n\n\n# YOUR TASK — EXECUTE NOW\n\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output & complete the user's request E2E.${TOOL_OUTPUT_GUARDRAIL}`;
-    }
+    const repoMap = options.repoMap ?? null;
+    const envelope = buildCodexPromptEnvelope(userMessage, {
+      statusData,
+      mode,
+      repoMap,
+    });
+    const { isAskMode, executionMode } = envelope;
+    let prompt = envelope.prompt;
     // Sanitize & size-guard once — prevents invalid_request_error from oversized
     // bodies (BytePositionInLine > 80 000) or unescaped control characters.
     let safePrompt = sanitizeAndTruncatePrompt(prompt);
@@ -868,10 +932,8 @@ export async function execCodexPrompt(userMessage, options = {}) {
       if (threadNeedsPriming) {
         // Ask mode gets a lightweight primer — no heavy executor directives
         // that contradict the "don't use tools" instruction.
-        const primer = isAskMode
-          ? "You are a helpful AI assistant deployed inside the bosun orchestrator. " +
-            "Answer the user's questions concisely. Only use tools when explicitly asked to."
-          : SYSTEM_PROMPT;
+        const primer = buildCodexPrimer({ isAskMode, executionMode });
+
         attemptPrompt = sanitizeAndTruncatePrompt(
           primer + "\n\n---\n\n" + prompt,
         );
@@ -1192,15 +1254,14 @@ export async function initCodexShell() {
   // Pre-load SDK
   const Cls = await loadCodexSdk();
   if (Cls) {
+    const runtime = buildCodexSdkRuntime({}, process.env);
+    Object.assign(process.env, runtime.env);
+    delete process.env.OPENAI_BASE_URL;
+
     codexInstance = new Cls({
       config: {
-        features: {
-          child_agents_md: true,
-          multi_agent: true,
-          memories: true,
-          undo: true,
-          steer: true,
-        },
+        features: runtime.featureFlags,
+        ...runtime.config,
       },
     });
     console.log("[codex-shell] initialised with Codex SDK (sub-agent features enabled)");
@@ -1210,3 +1271,7 @@ export async function initCodexShell() {
     );
   }
 }
+
+
+
+

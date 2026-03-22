@@ -1,311 +1,195 @@
-import React from "react";
-import htm from "htm";
+import React, { useEffect, useMemo, useState } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
-
+import Table from "ink-table";
 import {
-  buildOsc52CopySequence,
-  formatRetryQueueCountdown,
-  projectSessionRow,
-  reconcileSessionEntries,
-} from "./agents-screen-helpers.mjs";
+	buildAgentsViewModel,
+	buildKillConfirmationLabel,
+	buildOsc52Sequence,
+	buildSessionCommand,
+	selectNextIndex,
+} from "./agents-helpers.mjs";
 
-const html = htm.bind(React.createElement);
-const FIXED_TABLE_WIDTH = 2 + 8 + 12 + 8 + 10 + 12 + 14 + 7;
-
-function pad(text, width, align = "left") {
-  const value = String(text || "");
-  if (width <= 0) return "";
-  if (value.length >= width) return value.slice(0, width);
-  if (align === "right") return `${" ".repeat(width - value.length)}${value}`;
-  return `${value}${" ".repeat(width - value.length)}`;
+function truncate(value, width) {
+	const text = String(value ?? "-");
+	if (width <= 0) return "";
+	if (text.length <= width) return text.padEnd(width, " ");
+	if (width === 1) return "…";
+	return `${text.slice(0, width - 1)}…`;
 }
 
-function renderCell(value, width, { color, inverse, dimColor, align = "left" } = {}) {
-  return html`
-    <${Box} width=${width}>
-      <${Text} color=${color} inverse=${inverse} dimColor=${dimColor}>
-        ${pad(value, width, align)}
-      <//>
-    <//>
-  `;
+function writeOsc52(stdout, value) {
+	if (!stdout || !value) return;
+	stdout.write(buildOsc52Sequence(value));
 }
 
-function describeSelection(session) {
-  return String(session?.id || "").slice(0, 8) || "session";
+function SessionTable({ sessions, selectedIndex, eventWidth }) {
+	if (sessions.length <= 0) {
+		return React.createElement(Text, { dimColor: true }, "No live sessions.");
+	}
+
+	const rows = sessions.map((session, index) => ({
+		STATUS: `${index === selectedIndex ? ">" : " "}${session.statusDot}`,
+		ID: session.idShort,
+		STAGE: String(session.stageText).trimEnd(),
+		PID: String(session.pidText).trimEnd(),
+		"AGE/TURN": String(session.ageTurn).trimEnd(),
+		TOKENS: String(session.tokensText).trimEnd(),
+		SESSION: String(session.sessionText).trimEnd(),
+		EVENT: truncate(session.eventText, eventWidth).trimEnd(),
+	}));
+
+	return React.createElement(Table, {
+		data: rows,
+		columns: [
+			{
+				key: "STATUS",
+				render: (value, rowIndex) =>
+					React.createElement(Text, {
+						color: sessions[rowIndex]?.statusColor,
+						dimColor: sessions[rowIndex]?.isCompleted,
+						inverse: rowIndex === selectedIndex,
+					}, value),
+			},
+			{ key: "ID" },
+			{ key: "STAGE" },
+			{ key: "PID" },
+			{ key: "AGE/TURN" },
+			{ key: "TOKENS" },
+			{ key: "SESSION" },
+			{ key: "EVENT" },
+		],
+	});
 }
 
-function sessionActionPath(sessionId, action) {
-  return `/api/sessions/${encodeURIComponent(String(sessionId || "").trim())}/${action}?workspace=all`;
+function BackoffRow({ entry }) {
+	return React.createElement(
+		Box,
+		null,
+		React.createElement(Text, { dimColor: true }, "• "),
+		React.createElement(Text, null, entry.id),
+		React.createElement(Text, { dimColor: true }, `  attempt ${entry.attempt}  retry in ${entry.countdown}`),
+	);
 }
 
-async function fetchJson(host, port, path, init) {
-  const response = await fetch(`http://${host}:${port}${path}`, init);
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || payload?.ok === false) {
-    throw new Error(payload?.error || `Request failed: ${response.status}`);
-  }
-  return payload;
-}
+export {
+	buildAgentsViewModel,
+	buildKillConfirmationLabel,
+	buildOsc52Sequence,
+	buildSessionCommand,
+	selectNextIndex,
+} from "./agents-helpers.mjs";
 
-function summarizeDiff(diffPayload) {
-  const diff = diffPayload?.diff || {};
-  const files = Array.isArray(diff.files) ? diff.files : [];
-  return {
-    summary: String(diffPayload?.summary || diff.formatted || "").trim() || "(no diff summary)",
-    files: files.slice(0, 12).map((file) => ({
-      name: file.filename || file.path || "unknown",
-      additions: Number(file.additions || 0),
-      deletions: Number(file.deletions || 0),
-    })),
-  };
-}
+export default function AgentsScreen({ sessions = [], stats = {}, wsBridge, onOpenLogs, onOpenDiff, onOpenDetail, refreshMs = 1000 }) {
+	const { stdout } = useStdout();
+	const [selectedIndex, setSelectedIndex] = useState(0);
+	const [confirmKill, setConfirmKill] = useState(false);
+	const [backoffCollapsed, setBackoffCollapsed] = useState(false);
+	const [tick, setTick] = useState(Date.now());
+	const [liveSessions, setLiveSessions] = useState(() => sessions);
+	const [backoffQueue, setBackoffQueue] = useState(() => stats?.retryQueue ?? stats?.backoffQueue ?? []);
 
-function sessionMessagesToLogLines(sessionPayload) {
-  const messages = Array.isArray(sessionPayload?.session?.messages)
-    ? sessionPayload.session.messages
-    : [];
-  return messages.slice(-40).map((message) => {
-    const ts = String(message.timestamp || "").replace("T", " ").replace("Z", "");
-    const role = String(message.role || message.type || "event").padEnd(10, " ");
-    const content = String(message.content || "").replace(/\s+/g, " ").trim();
-    return `${ts}  ${role}  ${content}`;
-  });
-}
+	useEffect(() => setLiveSessions(sessions), [sessions]);
+	useEffect(() => setBackoffQueue(stats?.retryQueue ?? stats?.backoffQueue ?? []), [stats]);
 
-function detailLines(sessionPayload) {
-  const session = sessionPayload?.session || {};
-  return [
-    `ID        ${session.id || "-"}`,
-    `Status    ${session.status || "-"}`,
-    `Type      ${session.type || "-"}`,
-    `Workspace ${session.metadata?.workspaceId || session.workspaceId || "-"}`,
-    `Path      ${session.metadata?.workspaceDir || session.workspaceDir || "-"}`,
-    `Model     ${session.metadata?.model || session.model || "-"}`,
-    `Agent     ${session.metadata?.agent || session.agent || "-"}`,
-    `Turns     ${session.turnCount || 0}`,
-    `Messages  ${Array.isArray(session.messages) ? session.messages.length : 0}`,
-  ];
-}
+	useEffect(() => {
+		if (!wsBridge?.on) return undefined;
+		const unsubscribeSessions = wsBridge.on("sessions:update", (payload) => {
+			if (Array.isArray(payload)) setLiveSessions(payload);
+			else if (Array.isArray(payload?.sessions)) setLiveSessions(payload.sessions);
+			setTick(Date.now());
+		});
+		const unsubscribeRetry = wsBridge.on("retry:update", (payload) => {
+			if (Array.isArray(payload)) setBackoffQueue(payload);
+			else if (Array.isArray(payload?.backoffQueue)) setBackoffQueue(payload.backoffQueue);
+			else if (Array.isArray(payload?.retryQueue)) setBackoffQueue(payload.retryQueue);
+			setTick(Date.now());
+		});
+		return () => {
+			unsubscribeSessions?.();
+			unsubscribeRetry?.();
+		};
+	}, [wsBridge]);
 
-export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080 }) {
-  const resolvedHost = wsBridge?.host || host;
-  const resolvedPort = wsBridge?.port || port;
-  const { stdout } = useStdout();
-  const liveSessionsRef = React.useRef([]);
-  const [entries, setEntries] = React.useState([]);
-  const [retryQueue, setRetryQueue] = React.useState({ count: 0, items: [] });
-  const [selectedId, setSelectedId] = React.useState("");
-  const [showBackoff, setShowBackoff] = React.useState(true);
-  const [detailView, setDetailView] = React.useState(null);
-  const [logLines, setLogLines] = React.useState([]);
-  const [diffView, setDiffView] = React.useState(null);
-  const [confirmKill, setConfirmKill] = React.useState(false);
-  const [statusLine, setStatusLine] = React.useState("");
-  const [clockMs, setClockMs] = React.useState(Date.now());
+	useEffect(() => {
+		const timer = setInterval(() => setTick(Date.now()), refreshMs);
+		return () => clearInterval(timer);
+	}, [refreshMs]);
 
-  const applyRetryQueue = React.useCallback((payload) => {
-    setRetryQueue({
-      count: Number(payload?.count || 0),
-      items: Array.isArray(payload?.items) ? payload.items : [],
-    });
-  }, []);
+	const viewModel = useMemo(() => buildAgentsViewModel({ sessions: liveSessions, backoffQueue, now: tick }), [liveSessions, backoffQueue, tick]);
+	useEffect(() => setSelectedIndex((current) => selectNextIndex(current, 0, viewModel.sessions.length)), [viewModel.sessions.length]);
 
-  const applySessionSnapshot = React.useCallback((incomingSessions, now = Date.now()) => {
-    liveSessionsRef.current = Array.isArray(incomingSessions) ? incomingSessions : [];
-    setClockMs(now);
-    setEntries((previous) => {
-      const nextEntries = reconcileSessionEntries(previous, liveSessionsRef.current, now);
-      setSelectedId((current) => {
-        if (current && nextEntries.some((entry) => entry.id === current)) return current;
-        return nextEntries[0]?.id || "";
-      });
-      return nextEntries;
-    });
-  }, []);
+	const currentSession = viewModel.sessions[selectedIndex] ?? null;
+	const eventWidth = Math.max(24, (stdout?.columns || 120) - 90);
+	const sendAction = (type, payload) => {
+		if (typeof wsBridge?.send === "function") wsBridge.send(type, payload);
+	};
 
-  const refreshData = React.useCallback(async () => {
-    try {
-      const [sessionsPayload, retryPayload] = await Promise.all([
-        fetchJson(resolvedHost, resolvedPort, "/api/sessions?workspace=all"),
-        fetchJson(resolvedHost, resolvedPort, "/api/retry-queue"),
-      ]);
-      const now = Date.now();
-      applyRetryQueue(retryPayload);
-      applySessionSnapshot(sessionsPayload.sessions || [], now);
-    } catch (error) {
-      setStatusLine(error.message || String(error));
-    }
-  }, [applyRetryQueue, applySessionSnapshot, resolvedHost, resolvedPort]);
+	useInput((input, key) => {
+		const lower = String(input || "").toLowerCase();
+		if (confirmKill) {
+			if (lower === "y" && currentSession) {
+				const command = buildSessionCommand("kill", currentSession);
+				sendAction(command.type, command.payload);
+				setConfirmKill(false);
+				return;
+			}
+			if (key.escape || lower === "n" || key.return) {
+				setConfirmKill(false);
+				return;
+			}
+		}
+		if (key.upArrow) return setSelectedIndex((current) => selectNextIndex(current, -1, viewModel.sessions.length));
+		if (key.downArrow) return setSelectedIndex((current) => selectNextIndex(current, 1, viewModel.sessions.length));
+		if (lower === "b") return setBackoffCollapsed((current) => !current);
+		if (!currentSession) return;
+		if (lower === "k") return setConfirmKill(true);
+		if (lower === "p") {
+			const command = buildSessionCommand("pause", currentSession);
+			return sendAction(command.type, command.payload);
+		}
+		if (lower === "r") {
+			const command = buildSessionCommand("resume", currentSession);
+			return sendAction(command.type, command.payload);
+		}
+		if (lower === "l") {
+			onOpenLogs?.(currentSession.sessionId ?? currentSession.id);
+			const command = buildSessionCommand("logs", currentSession);
+			return sendAction(command.type, command.payload);
+		}
+		if (lower === "d") {
+			onOpenDiff?.(currentSession);
+			const command = buildSessionCommand("diff", currentSession);
+			return sendAction(command.type, command.payload);
+		}
+		if (lower === "c") return writeOsc52(stdout ?? process.stdout, currentSession.id ?? currentSession.sessionId);
+		if (key.return) {
+			onOpenDetail?.(currentSession);
+			const command = buildSessionCommand("detail", currentSession);
+			return sendAction(command.type, command.payload);
+		}
+	});
 
-  React.useEffect(() => {
-    let active = true;
-    const load = async () => {
-      if (!active) return;
-      await refreshData();
-    };
-    void load();
-    const intervalId = setInterval(() => {
-      const now = Date.now();
-      setClockMs(now);
-      setEntries((previous) => reconcileSessionEntries(previous, liveSessionsRef.current, now));
-    }, 1000);
-    return () => {
-      active = false;
-      clearInterval(intervalId);
-    };
-  }, [refreshData]);
-
-  React.useEffect(() => {
-    if (!wsBridge || typeof wsBridge.on !== "function") return undefined;
-    const handlers = [
-      wsBridge.on("sessions:update", (payload) => {
-        const sessions = Array.isArray(payload?.sessions)
-          ? payload.sessions
-          : Array.isArray(payload)
-            ? payload
-            : [];
-        applySessionSnapshot(sessions, Date.now());
-      }),
-
-      if (selectedSession?.id) {
-        stdout.write(buildOsc52CopySequence(selectedSession.id));
-        setStatusLine(`Copied ${selectedSession.id}`);
-      }
-      return;
-    }
-    if (input === "b" || input === "B") {
-      setShowBackoff((current) => !current);
-      return;
-    }
-    if (key.escape) {
-      setDetailView(null);
-      setLogLines([]);
-      setDiffView(null);
-      setConfirmKill(false);
-    }
-  });
-
-  const eventWidth = Math.max(12, (stdout?.columns || 120) - FIXED_TABLE_WIDTH);
-  const backoffMessageWidth = Math.max(20, (stdout?.columns || 120) - 34);
-
-  return html`
-    <${Box} flexDirection="column" paddingY=${1}>
-      <${Box} borderStyle="single" paddingX=${1}>
-        ${renderCell("", 2, {})}
-        ${renderCell("ID", 8, { dimColor: true })}
-        ${renderCell("STAGE", 12, { dimColor: true })}
-        ${renderCell("PID", 8, { dimColor: true })}
-        ${renderCell("AGE/TURN", 10, { dimColor: true })}
-        ${renderCell("TOKENS", 12, { dimColor: true })}
-        ${renderCell("SESSION", 14, { dimColor: true })}
-        ${renderCell("EVENT", eventWidth, { dimColor: true })}
-      <//>
-      ${(entries.length ? entries : [{ id: "empty", session: null }]).map((entry) => {
-        if (!entry.session) {
-          return html`
-            <${Box} key="empty" paddingX=${1}>
-              <${Text} dimColor>No sessions<//>
-            <//>
-          `;
-        }
-        const row = projectSessionRow(entry.session, clockMs, eventWidth);
-        const selected = entry.id === selectedSession?.id;
-        return html`
-          <${Box} key=${entry.id} paddingX=${1}>
-            ${renderCell(row.statusDot, 2, {
-              color: row.statusColor,
-              inverse: selected,
-              dimColor: row.isDimmed || entry.isRetained,
-            })}
-            ${renderCell(row.idText, 8, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
-            ${renderCell(row.stageText, 12, {
-              inverse: selected,
-              color: row.statusColor,
-              dimColor: row.isDimmed || entry.isRetained,
-            })}
-            ${renderCell(row.pidText, 8, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
-            ${renderCell(row.ageTurnText, 10, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
-            ${renderCell(row.tokensText, 12, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
-            ${renderCell(row.sessionText, 14, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
-            ${renderCell(row.eventText, eventWidth, { inverse: selected, dimColor: row.isDimmed || entry.isRetained })}
-          <//>
-        `;
-      })}
-
-      <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
-        <${Text} bold>
-          Backoff queue (${retryQueue.count || 0}) ${showBackoff ? "[B to collapse]" : "[B to expand]"}
-        <//>
-        ${showBackoff
-          ? (retryQueue.items || []).slice(0, 6).map((item, index) => html`
-              <${Text} key=${item.taskId || item.id || index} wrap="truncate-end">
-                ${pad(String(item.taskTitle || item.taskId || item.id || `item-${index}`), 16)}
-                ${pad(formatRetryQueueCountdown(item, clockMs), 16)}
-                ${pad(String(item.lastError || item.error || item.reason || "-"), backoffMessageWidth)}
-              <//>
-            `)
-          : null}
-        ${showBackoff && !(retryQueue.items || []).length
-          ? html`<${Text} dimColor>No tasks cooling down<//>`
-          : null}
-      <//>
-
-      ${confirmKill && selectedSession
-        ? html`
-            <${Box} marginTop=${1}>
-              <${Text} color="red">Kill ${describeSelection(selectedSession)}? [y/N]<//>
-            <//>
-          `
-        : null}
-
-      ${detailView
-        ? html`
-            <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
-              <${Text} bold>Detail<//>
-              ${detailView.map((line) => html`<${Text} key=${line}>${line}<//>`)}
-            <//>
-          `
-        : null}
-
-      ${logLines.length
-        ? html`
-            <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
-              <${Text} bold>Logs<//>
-              ${logLines.map((line, index) => html`
-                <${Text} key=${index} wrap="truncate-end">${line}<//>
-              `)}
-            <//>
-          `
-        : null}
-
-      ${diffView
-        ? html`
-            <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
-              <${Text} bold>Diff<//>
-              <${Text}>${diffView.summary}<//>
-              ${diffView.files.length
-                ? diffView.files.map((file) => html`
-                    <${Text} key=${file.name}>
-                      ${file.name}  +${file.additions}  -${file.deletions}
-                    <//>
-                  `)
-                : html`<${Text} dimColor>No changed files<//>`}
-            <//>
-          `
-        : null}
-
-      <${Box} marginTop=${1} borderStyle="single" paddingX=${1}>
-        <${Text} dimColor>
-          [K]ill session  [P]ause  [R]esume  [L]ogs  [D]iff  [C]opy ID  [Enter] Detail
-        <//>
-      <//>
-      ${statusLine
-        ? html`
-            <${Box} marginTop=${1}>
-              <${Text} color="yellow">${statusLine}<//>
-            <//>
-          `
-        : null}
-    <//>
-  `;
+	return React.createElement(
+		Box,
+		{ flexDirection: "column" },
+		React.createElement(Text, { bold: true }, "Agents"),
+		React.createElement(SessionTable, { sessions: viewModel.sessions, selectedIndex, eventWidth }),
+		React.createElement(
+			Box,
+			{ flexDirection: "column", marginTop: 1 },
+			React.createElement(Text, { bold: true }, `Backoff queue${backoffCollapsed ? " (collapsed)" : ""}`),
+			...(backoffCollapsed
+				? [React.createElement(Text, { key: "backoff-collapsed", dimColor: true }, "Press [B] to expand.")]
+				: viewModel.backoffQueue.length > 0
+					? viewModel.backoffQueue.map((entry, index) => React.createElement(BackoffRow, { key: `${entry.id}-${entry.attempt}-${index}`, entry }))
+					: [React.createElement(Text, { key: "backoff-empty", dimColor: true }, "No queued retries.")]),
+		),
+		React.createElement(
+			Box,
+			{ marginTop: 1 },
+			confirmKill
+				? React.createElement(Text, { color: "yellow" }, buildKillConfirmationLabel(currentSession))
+				: React.createElement(Text, { dimColor: true }, "[K]ill session | [P]ause | [R]esume | [L]ogs | [D]iff | [C]opy ID | [Enter] Detail — [B] Backoff"),
+		),
+	);
 }

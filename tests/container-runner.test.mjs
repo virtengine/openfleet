@@ -15,7 +15,7 @@ describe("container-runner", () => {
         "isContainerEnabled",
         "getContainerStatus",
         "checkContainerRuntime",
-        "ensureContainerRuntime",
+        "ensureContainerRuntime",`r`n        "classifyRunnerTask",`r`n        "compactRunnerResult",`r`n        "buildRunnerRetrievalCommands",`r`n        "runWithHeavyRunnerLease",`r`n        "classifyRunnerTask",`r`n        "compactRunnerResult",`r`n        "buildRunnerRetrievalCommands",`r`n        "runWithHeavyRunnerLease",
         "runInContainer",
         "stopAllContainers",
         "cleanupOrphanedContainers",
@@ -171,4 +171,52 @@ describe("container-runner", () => {
       expect(source).toContain("new Map()");
     });
   });
+
+  describe("heavy runner helpers", () => {
+    it("classifies heavyweight commands for offloading", async () => {
+      const mod = await import("../infra/container-runner.mjs");
+
+      expect(mod.classifyRunnerTask({ command: "npm test", label: "unit test" }).heavy).toBe(true);
+      expect(mod.classifyRunnerTask({ command: "npm run build", label: "build" }).kind).toBe("build");
+      expect(mod.classifyRunnerTask({ command: "echo hi", label: "chat helper" }).heavy).toBe(false);
+    });
+
+    it("compacts runner results while preserving artifact pointers", async () => {
+      const mod = await import("../infra/container-runner.mjs");
+      const result = mod.compactRunnerResult({
+        status: "passed",
+        kind: "test",
+        stdout: "line1\nline2\nline3",
+        stderr: "warn1\nwarn2",
+        artifactPointers: [
+          { name: "junit.xml", path: "/tmp/artifacts/junit.xml" },
+        ],
+      });
+
+      expect(result.summary).toContain("test");
+      expect(result.artifactPointers).toHaveLength(1);
+      expect(result.retrievalCommands[0]).toContain("junit.xml");
+    });
+
+    it("surfaces lease failures as blocked evidence", async () => {
+      const mod = await import("../infra/container-runner.mjs");
+
+      const result = await mod.runWithHeavyRunnerLease(
+        {
+          command: "npm test",
+          workspacePath: process.cwd(),
+          maxAttempts: 1,
+        },
+        {
+          acquireLease: async () => {
+            throw new Error("runner unavailable");
+          },
+        },
+      );
+
+      expect(result.status).toBe("blocked");
+      expect(result.blockedReason).toContain("runner unavailable");
+    });
+  });
 });
+

@@ -101,6 +101,7 @@ import {
 } from "./container-runner.mjs";
 import { ensureCodexConfig, printConfigSummary } from "../shell/codex-config.mjs";
 import { RestartController } from "./restart-controller.mjs";
+import { createRunnerPool } from "./runner-pool.mjs";
 
 import { assessTask, quickAssess } from "../task/task-assessment.mjs";
 import {
@@ -6814,6 +6815,16 @@ async function checkMergedPRsAndUpdateTasks() {
     skippedByWorkflowReplacement: false,
   };
   try {
+    const allTrackedTasks = [
+      ...(getInternalTasksByStatus("draft") || []),
+      ...(getInternalTasksByStatus("todo") || []),
+      ...(getInternalTasksByStatus("inprogress") || []),
+      ...(getInternalTasksByStatus("inreview") || []),
+      ...(getInternalTasksByStatus("done") || []),
+      ...(getInternalTasksByStatus("blocked") || []),
+    ];
+    await repairAmbiguousMergedPrLinkages(allTrackedTasks, summary);
+
     const pendingReview = Array.isArray(getTasksPendingReview())
       ? getTasksPendingReview()
       : [];
@@ -6837,6 +6848,7 @@ async function checkMergedPRsAndUpdateTasks() {
       pendingById.set(id, task);
     }
     const pending = [...pendingById.values()];
+    const pendingBranchCounts = countPendingBranchLinks(pending);
     if (pending.length === 0) {
       return summary;
     }
@@ -6867,9 +6879,23 @@ async function checkMergedPRsAndUpdateTasks() {
       }
 
       const resolvedRepoSlug = resolveTaskRepoSlug(task, { prUrl, prNumber });
+      const branch = String(task?.branchName || task?.branch || "").trim();
+      if (branch && !taskIdMatchesBranchPrefix(taskId, branch)) {
+        console.warn(
+          `[monitor] review reconcile: task ${taskId} branch linkage ${branch} points to a different task id — skipping auto-finalization`,
+        );
+        summary.skippedAmbiguous = (summary.skippedAmbiguous || 0) + 1;
+        continue;
+      }
       if (!prNumber) {
-        const branch = String(task?.branchName || task?.branch || "").trim();
         if (branch) {
+          if ((pendingBranchCounts.get(branch) || 0) > 1) {
+            console.warn(
+              `[monitor] review reconcile: task ${taskId} has ambiguous branch linkage ${branch} shared by ${pendingBranchCounts.get(branch)} task(s) — skipping branch-based PR recovery`,
+            );
+            summary.skippedAmbiguous = (summary.skippedAmbiguous || 0) + 1;
+            continue;
+          }
           let existingPr = await findExistingPrForBranchInRepo(
             branch,
             resolvedRepoSlug,
@@ -6927,6 +6953,10 @@ async function checkMergedPRsAndUpdateTasks() {
         console.warn(`[monitor] review reconcile: setInternalTaskStatus failed for ${taskId}: ${internalErr?.message?.slice(0, 200)}`);
       }
       try {
+        const existingMeta =
+          task?.meta && typeof task.meta === "object"
+            ? task.meta
+            : {};
         updateInternalTask(taskId, {
           prNumber,
           prUrl,
@@ -6934,6 +6964,13 @@ async function checkMergedPRsAndUpdateTasks() {
             normalizeRepoSlugCandidate(task?.repository) ||
             resolvedRepoSlug ||
             undefined,
+          meta: {
+            ...existingMeta,
+            prMergeFinalizedAt: mergedAt || new Date().toISOString(),
+            prMergeFinalizedBy: "review-merge-reconcile",
+            mergedPrNumber: prNumber || null,
+            mergedPrUrl: prUrl || null,
+          },
         });
       } catch (metaErr) {
         console.warn(`[monitor] review reconcile: updateInternalTask failed for ${taskId}: ${metaErr?.message?.slice(0, 200)}`);
@@ -7964,6 +8001,161 @@ function parsePositivePrNumber(value) {
 function extractPrNumberFromUrl(prUrl) {
   const raw = String(prUrl || "");
   return parsePositivePrNumber(parsePrNumberFromUrl(raw));
+}
+
+function normalizeTaskIdForBranchComparison(taskId) {
+  return String(taskId || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^0-9a-f]/g, "");
+}
+
+function extractTaskIdPrefixFromBranch(branchName) {
+  const raw = String(branchName || "").trim().toLowerCase();
+  if (!raw.startsWith("task/")) return "";
+  const match = raw.match(/^task\/([0-9a-f]{8,32})/i);
+  return match?.[1] ? String(match[1]).toLowerCase() : "";
+}
+
+function taskIdMatchesBranchPrefix(taskId, branchName) {
+  const branchPrefix = extractTaskIdPrefixFromBranch(branchName);
+  if (!branchPrefix) return true;
+  const normalizedTaskId = normalizeTaskIdForBranchComparison(taskId);
+  return normalizedTaskId.startsWith(branchPrefix);
+}
+
+function countPendingBranchLinks(tasks = []) {
+  const counts = new Map();
+  for (const task of tasks) {
+    const branch = String(task?.branchName || task?.branch || "").trim();
+    if (!branch) continue;
+    counts.set(branch, (counts.get(branch) || 0) + 1);
+  }
+  return counts;
+}
+
+function getLatestTaskStatusSource(task) {
+  const history = Array.isArray(task?.statusHistory) ? task.statusHistory : [];
+  const latest = history.length > 0 ? history[history.length - 1] : null;
+  return String(latest?.source || "").trim().toLowerCase();
+}
+
+function countAllBranchLinks(tasks = []) {
+  const counts = new Map();
+  for (const task of tasks) {
+    const branch = String(task?.branchName || task?.branch || "").trim();
+    if (!branch) continue;
+    counts.set(branch, (counts.get(branch) || 0) + 1);
+  }
+  return counts;
+}
+
+function groupTasksByPrBranchLink(tasks = []) {
+  const groups = new Map();
+  for (const task of tasks) {
+    const branch = String(task?.branchName || task?.branch || "").trim();
+    const prNumber =
+      parsePositivePrNumber(task?.prNumber) ||
+      parsePositivePrNumber(task?.pr_number) ||
+      extractPrNumberFromUrl(task?.prUrl || task?.pr_url || "");
+    if (!branch || !prNumber) continue;
+    const key = `${branch}#${prNumber}`;
+    const bucket = groups.get(key) || [];
+    bucket.push(task);
+    groups.set(key, bucket);
+  }
+  return groups;
+}
+
+async function repairAmbiguousMergedPrLinkages(tasks = [], summary = {}) {
+  const branchCounts = countAllBranchLinks(tasks);
+  const grouped = groupTasksByPrBranchLink(tasks);
+  const repairSummary = summary;
+
+  for (const [key, group] of grouped.entries()) {
+    if (!Array.isArray(group) || group.length <= 1) continue;
+    const [branch] = key.split("#");
+    if (!branch) continue;
+    if ((branchCounts.get(branch) || 0) <= 1) continue;
+
+    const canonicalMatches = group.filter((task) => taskIdMatchesBranchPrefix(task?.id, branch));
+    if (canonicalMatches.length !== 1) {
+      console.warn(
+        `[monitor] review reconcile: ambiguous merged PR linkage ${key} has ${canonicalMatches.length} canonical candidates — skipping repair`,
+      );
+      repairSummary.skippedAmbiguous = (repairSummary.skippedAmbiguous || 0) + group.length;
+      continue;
+    }
+
+    const canonicalTask = canonicalMatches[0];
+    for (const task of group) {
+      const taskId = String(task?.id || "").trim();
+      if (!taskId || taskId === canonicalTask.id) continue;
+      if (taskIdMatchesBranchPrefix(taskId, branch)) continue;
+
+      const taskStatus = String(task?.status || "").trim().toLowerCase();
+      const latestSource = getLatestTaskStatusSource(task);
+      const shouldResetToTodo = (
+        taskStatus === "done" ||
+        taskStatus === "inreview" ||
+        latestSource === "review-merge-reconcile" ||
+        latestSource === "external"
+      );
+      console.warn(
+        `[monitor] review reconcile: repairing ambiguous PR linkage for ${taskId}; branch ${branch} belongs to ${canonicalTask.id}`,
+      );
+      try {
+        const existingMeta =
+          task?.meta && typeof task.meta === "object"
+            ? { ...task.meta }
+            : {};
+        delete existingMeta.prMergeFinalizedAt;
+        delete existingMeta.prMergeFinalizedBy;
+        delete existingMeta.mergedPrNumber;
+        delete existingMeta.mergedPrUrl;
+        delete existingMeta.mergeFinalizedAt;
+        updateInternalTask(taskId, {
+          branchName: null,
+          prNumber: null,
+          prUrl: null,
+          reviewStatus: null,
+          reviewIssues: null,
+          reviewedAt: null,
+          meta: existingMeta,
+        });
+      } catch (metaErr) {
+        console.warn(`[monitor] review reconcile: failed to clear ambiguous linkage for ${taskId}: ${metaErr?.message?.slice(0, 200)}`);
+      }
+
+      if (shouldResetToTodo) {
+        try {
+          setInternalTaskStatus(taskId, "todo", "review-reconcile-ambiguous-pr-link");
+        } catch (internalErr) {
+          console.warn(`[monitor] review reconcile: failed to reset ambiguous task ${taskId}: ${internalErr?.message?.slice(0, 200)}`);
+        }
+        try {
+          await updateTaskStatus(taskId, "todo", {
+            source: "review-reconcile-ambiguous-pr-link",
+            bypassWorkflowOwnership: true,
+            workflowData: {
+              prNumber: null,
+              prUrl: null,
+              repository: task?.repository || null,
+            },
+          });
+        } catch (reconcileErr) {
+          console.warn(
+            `[monitor] review reconcile: failed to sync ambiguous task ${taskId} reset: ${reconcileErr?.message?.slice(0, 200)}`,
+          );
+        }
+        repairSummary.repairedAmbiguous = (repairSummary.repairedAmbiguous || 0) + 1;
+      } else {
+        repairSummary.clearedAmbiguousLinkage = (repairSummary.clearedAmbiguousLinkage || 0) + 1;
+      }
+    }
+  }
+
+  return repairSummary;
 }
 
 function normalizeRepoSlugCandidate(value) {
@@ -15245,6 +15437,12 @@ if (isExecutorDisabled()) {
             "workflow-runs",
           )
         : null;
+    const heavyRunnerPool = createRunnerPool({
+      workspaceRoot: repoRoot,
+      ...(config.internalExecutor?.heavyRunner && typeof config.internalExecutor.heavyRunner === "object"
+        ? config.internalExecutor.heavyRunner
+        : {}),
+    });
     const execOpts = {
       ...internalExecutorConfig,
       repoRoot,
@@ -15256,6 +15454,86 @@ if (isExecutorDisabled()) {
         telegramToken && telegramChatId
           ? (msg) => void sendTelegramMessage(msg)
           : null,
+      acquireRunnerLease: async (request = {}) => {
+        const lease = await heavyRunnerPool.acquireLease(request);
+        return {
+          leaseId: lease?.id || null,
+          mode: lease?.mode || "local",
+          taskId: request?.taskId || null,
+          purpose: request?.purpose || null,
+          runCommand: typeof lease?.runCommand === "function" ? lease.runCommand.bind(lease) : null,
+          release: typeof lease?.release === "function" ? lease.release.bind(lease) : null,
+        };
+      },
+      releaseRunnerLease: async (lease = {}) => {
+        if (typeof lease?.release === "function") {
+          await lease.release(lease);
+        }
+        return true;
+      },
+      execHeavyValidation: async ({ lease, agent, input, repoRoot: runnerRepoRoot, timeoutMs }) => {
+        if (typeof lease?.runCommand !== "function") {
+          return { success: false, error: "runner lease missing runCommand" };
+        }
+        const command = String(agent?.command || input?.command || "").trim();
+        if (!command) {
+          return { success: false, error: "heavy validation command is required" };
+        }
+        const runResult = await lease.runCommand({
+          command,
+          cwd: runnerRepoRoot || repoRoot,
+          timeoutMs: Number(timeoutMs || 0) || undefined,
+          artifacts: [
+            {
+              name: "stdout",
+              fileName: "stdout.log",
+              content: "",
+              retrieveCommand: lease?.leaseId
+                ? `bosun artifacts get artifact://${lease.leaseId}/stdout`
+                : "",
+            },
+            {
+              name: "stderr",
+              fileName: "stderr.log",
+              content: "",
+              retrieveCommand: lease?.leaseId
+                ? `bosun artifacts get artifact://${lease.leaseId}/stderr`
+                : "",
+            },
+          ],
+        });
+        const stdout = String(runResult?.stdout || "");
+        const stderr = String(runResult?.stderr || "");
+        const exitCode = Number.isFinite(runResult?.exitCode) ? runResult.exitCode : 1;
+        const summary = [stdout.trim(), stderr.trim()].filter(Boolean).join("\n").trim() || `command exited ${exitCode}`;
+        const compact = {
+          summary,
+          retrievalCommand: lease?.leaseId ? `bosun artifacts get artifact://${lease.leaseId}/stdout` : null,
+          stderrRetrievalCommand: lease?.leaseId ? `bosun artifacts get artifact://${lease.leaseId}/stderr` : null,
+          exitCode,
+        };
+        const artifacts = [
+          { id: "stdout", uri: lease?.leaseId ? `artifact://${lease.leaseId}/stdout` : null, kind: "log", label: "stdout" },
+          { id: "stderr", uri: lease?.leaseId ? `artifact://${lease.leaseId}/stderr` : null, kind: "log", label: "stderr" },
+          ...(Array.isArray(runResult?.artifacts) ? runResult.artifacts.map((artifact, index) => ({
+            id: artifact?.id || artifact?.name || `artifact-${index + 1}`,
+            uri: artifact?.uri || null,
+            kind: artifact?.kind || "artifact",
+            label: artifact?.name || artifact?.id || `artifact-${index + 1}`,
+            path: artifact?.path || null,
+            retrieveCommand: artifact?.retrieveCommand || artifact?.retrieve_command || null,
+          })) : []),
+        ].filter((artifact) => artifact?.uri || artifact?.path || artifact?.retrieveCommand);
+        return {
+          success: exitCode === 0,
+          output: summary,
+          error: exitCode === 0 ? null : summary,
+          sdk: agent?.sdk || internalExecutorConfig.sdk || "codex",
+          compact,
+          artifacts,
+          exitCode,
+        };
+      },
       onTaskStarted: (task, slot) => {
         const agentId =
           Number.isFinite(slot?.agentInstanceId) && slot.agentInstanceId > 0

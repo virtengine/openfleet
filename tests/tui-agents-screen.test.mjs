@@ -1,124 +1,228 @@
-import { describe, expect, it } from "vitest";
+import React from "react";
+import { describe, expect, it, vi } from "vitest";
 
 import {
-  SESSION_RETENTION_MS,
-  buildOsc52CopySequence,
-  formatRetryQueueCountdown,
-  projectSessionRow,
-  reconcileSessionEntries,
-} from "../tui/screens/agents-screen-helpers.mjs";
+	buildAgentsViewModel,
+	buildKillConfirmationLabel,
+	buildOsc52Sequence,
+	buildSessionCommand,
+	getStatusColor,
+	pruneCompletedSessions,
+	selectNextIndex,
+} from "../tui/screens/agents-helpers.mjs";
 
 describe("tui agents screen helpers", () => {
-  it("retains completed sessions for 10 seconds after they disappear from the live snapshot", () => {
-    const startedAt = "2026-03-21T00:00:00.000Z";
-    const completedAt = "2026-03-21T00:00:05.000Z";
-    const initialNow = Date.parse("2026-03-21T00:00:06.000Z");
-    const doneSession = {
-      id: "session-done",
-      status: "completed",
-      title: "Done session",
-      lastActiveAt: completedAt,
-      createdAt: startedAt,
-    };
-    const activeSession = {
-      id: "session-active",
-      status: "active",
-      title: "Active session",
-      lastActiveAt: "2026-03-21T00:00:06.000Z",
-      createdAt: "2026-03-21T00:00:06.000Z",
-    };
+	it("sorts newest sessions first and keeps completed entries briefly", () => {
+		const now = Date.parse("2026-03-22T12:00:10.000Z");
+		vi.useFakeTimers();
+		vi.setSystemTime(now);
 
-    const first = reconcileSessionEntries([], [doneSession, activeSession], initialNow);
-    expect(first.map((entry) => entry.id)).toEqual(["session-active", "session-done"]);
+		const sessions = [
+			{
+				id: "session-old",
+				status: "active",
+				startedAt: "2026-03-22T12:00:00.000Z",
+			},
+			{
+				id: "session-new",
+				status: "running",
+				startedAt: "2026-03-22T12:00:09.000Z",
+			},
+			{
+				id: "session-done",
+				status: "completed",
+				startedAt: "2026-03-22T11:59:00.000Z",
+				endedAt: "2026-03-22T12:00:05.000Z",
+			},
+		];
 
-    const retained = reconcileSessionEntries(
-      first,
-      [activeSession],
-      initialNow + SESSION_RETENTION_MS - 1,
-    );
-    expect(retained.map((entry) => entry.id)).toEqual(["session-active", "session-done"]);
-    expect(retained.find((entry) => entry.id === "session-done")?.isRetained).toBe(true);
+		expect(pruneCompletedSessions(sessions, now).map((item) => item.id)).toEqual([
+			"session-old",
+			"session-new",
+			"session-done",
+		]);
 
-    const expired = reconcileSessionEntries(
-      retained,
-      [activeSession],
-      initialNow + SESSION_RETENTION_MS + 1,
-    );
-    expect(expired.map((entry) => entry.id)).toEqual(["session-active"]);
-  });
+		const rows = buildAgentsViewModel({ sessions, now });
+		expect(rows.sessions.map((item) => item.id)).toEqual([
+			"session-new",
+			"session-old",
+			"session-done",
+		]);
+		expect(rows.sessions[2].isCompleted).toBe(true);
 
-  it("projects display columns from session telemetry and truncates the event preview", () => {
-    const row = projectSessionRow(
-      {
-        id: "12345678-1234-1234-1234-1234567890ab",
-        status: "stalled",
-        recommendation: "continue",
-        title: "Investigate model failure",
-        turnCount: 7,
-        lastActiveAt: "2026-03-21T00:10:00.000Z",
-        createdAt: "2026-03-21T00:00:00.000Z",
-        elapsedMs: 610000,
-        lastMessage:
-          "This is a long event payload that should be truncated before it blows out the table width.",
-        insights: {
-          contextWindow: {
-            usedTokens: 103200,
-            totalTokens: 272000,
-            percent: 38,
-          },
-        },
-        metadata: {
-          pid: 734,
-        },
-      },
-      Date.parse("2026-03-21T00:10:10.000Z"),
-      32,
-    );
+		vi.setSystemTime(Date.parse("2026-03-22T12:00:16.000Z"));
+		expect(pruneCompletedSessions(sessions, Date.now()).map((item) => item.id)).toEqual([
+			"session-old",
+			"session-new",
+		]);
 
-    expect(row.statusColor).toBe("red");
-    expect(row.stageText.trim()).toBe("stalled");
-    expect(row.pidText.trim()).toBe("734");
-    expect(row.ageTurnText.trim()).toBe("10m/7");
-    expect(row.tokensText.trim()).toBe("103.2K/272K");
-    expect(row.sessionText.trim()).toBe("Investigate mo");
-    expect(row.eventText.endsWith("…")).toBe(true);
-  });
+		vi.useRealTimers();
+	});
 
-  it("formats retry queue countdowns with attempts", () => {
-    const text = formatRetryQueueCountdown(
-      {
-        taskId: "task-123",
-        retryCount: 3,
-        nextRetryAt: "2026-03-21T00:00:12.000Z",
-      },
-      Date.parse("2026-03-21T00:00:10.000Z"),
-    );
+	it("maps task states to expected status colors", () => {
+		expect(getStatusColor("running")).toBe("green");
+		expect(getStatusColor("todo")).toBe("yellow");
+		expect(getStatusColor("queued")).toBe("yellow");
+		expect(getStatusColor("error")).toBe("red");
+		expect(getStatusColor("stuck")).toBe("red");
+		expect(getStatusColor("rework")).toBe("magenta");
+		expect(getStatusColor("paused")).toBe("gray");
+	});
 
-    expect(text).toContain("attempt 3");
-    expect(text).toContain("2s");
-  });
+	it("clamps keyboard navigation to available rows", () => {
+		expect(selectNextIndex(0, -1, 3)).toBe(0);
+		expect(selectNextIndex(0, 1, 3)).toBe(1);
+		expect(selectNextIndex(2, 1, 3)).toBe(2);
+		expect(selectNextIndex(5, 1, 0)).toBe(0);
+	});
 
-  it("keeps age advancing from the session start time when elapsedMs is stale", () => {
-    const row = projectSessionRow(
-      {
-        id: "age-check",
-        status: "active",
-        title: "Age check",
-        turnCount: 2,
-        createdAt: "2026-03-21T00:00:00.000Z",
-        lastActiveAt: "2026-03-21T00:00:05.000Z",
-        elapsedMs: 5_000,
-      },
-      Date.parse("2026-03-21T00:02:00.000Z"),
-      24,
-    );
+	it("formats backoff queue countdowns and attempts", () => {
+		const now = Date.parse("2026-03-22T12:00:00.000Z");
+		const rows = buildAgentsViewModel({
+			sessions: [],
+			backoffQueue: [
+				{
+					taskId: "TASK-123",
+					attempt: 3,
+					nextRetryAt: "2026-03-22T12:00:12.000Z",
+				},
+			],
+			now,
+		});
 
-    expect(row.ageTurnText.trim()).toBe("2m/2");
-  });
+		expect(rows.backoffQueue).toEqual([
+			{
+				attempt: 3,
+				countdown: "12s",
+				id: "TASK-123",
+			},
+		]);
+	});
 
-  it("builds an OSC 52 clipboard sequence", () => {
-    const value = buildOsc52CopySequence("MT-734");
-    expect(value.startsWith("\u001b]52;c;")).toBe(true);
-    expect(value.endsWith("\u0007")).toBe(true);
-  });
+	it("builds OSC 52 clipboard payloads", () => {
+		const sequence = buildOsc52Sequence("123e4567-e89b-12d3-a456-426614174000");
+		expect(sequence.startsWith("\u001B]52;c;")).toBe(true);
+		expect(sequence.endsWith("\u0007")).toBe(true);
+	});
+
+	it("builds explicit kill confirmation labels from the selected row", () => {
+		expect(buildKillConfirmationLabel({ id: "MT-734-long-session-id" })).toBe(
+			"Kill MT-734-l? [y/N]"
+		);
+		expect(buildKillConfirmationLabel({ id: "MT-734" })).toBe("Kill MT-734? [y/N]");
+	});
+
+	it("creates session commands for inline actions", () => {
+		const session = {
+			id: "123e4567-e89b-12d3-a456-426614174000",
+			sessionId: "sess-42",
+			pid: 456,
+			turn: 7,
+		};
+
+		expect(buildSessionCommand("kill", session)).toEqual({
+			type: "session:kill",
+			payload: {
+				id: "123e4567-e89b-12d3-a456-426614174000",
+				pid: 456,
+				sessionId: "sess-42",
+				turn: 7,
+			},
+		});
+
+		expect(buildSessionCommand("pause", session)).toEqual({
+			type: "session:pause",
+			payload: {
+				id: "123e4567-e89b-12d3-a456-426614174000",
+				pid: 456,
+				sessionId: "sess-42",
+				turn: 7,
+			},
+		});
+
+		expect(buildSessionCommand("resume", session)).toEqual({
+			type: "session:resume",
+			payload: {
+				id: "123e4567-e89b-12d3-a456-426614174000",
+				pid: 456,
+				sessionId: "sess-42",
+				turn: 7,
+			},
+		});
+
+		expect(buildSessionCommand("copy", session)).toEqual({
+			type: "session:copy",
+			payload: {
+				id: "123e4567-e89b-12d3-a456-426614174000",
+				pid: 456,
+				sessionId: "sess-42",
+				turn: 7,
+			},
+		});
+	});
+	it("prefers kanban stage colors while displaying stage verbatim", () => {
+		const rows = buildAgentsViewModel({
+			sessions: [
+				{
+					id: "MT-9000",
+					status: "active",
+					stage: "rework",
+					startedAt: "2026-03-22T12:00:00.000Z",
+				},
+			],
+			now: Date.parse("2026-03-22T12:00:05.000Z"),
+		});
+
+		expect(rows.sessions[0].stageText.trim()).toBe("rework");
+		expect(rows.sessions[0].statusColor).toBe("magenta");
+	});
+	it("keeps newest sessions first while using current retry stats shape", () => {
+		const now = Date.parse("2026-03-22T12:00:05.000Z");
+		const rows = buildAgentsViewModel({
+			sessions: [
+				{
+					id: "MT-1000-older",
+					status: "running",
+					stage: "queued",
+					startedAt: "2026-03-22T12:00:01.000Z",
+					tokens: 1000,
+					event: "older event",
+				},
+				{
+					id: "MT-1001-newer",
+					status: "active",
+					stage: "running",
+					startedAt: "2026-03-22T12:00:04.000Z",
+					tokens: 2500,
+					event: "newer event",
+				},
+			],
+			backoffQueue: [
+				{
+					id: "TASK-999",
+					retryAttempt: 2,
+					retryAt: "2026-03-22T12:00:09.000Z",
+				},
+			],
+			now,
+		});
+
+		expect(rows.sessions.map((row) => row.id)).toEqual(["MT-1001-newer", "MT-1000-older"]);
+		expect(rows.sessions[0].stageText.trim()).toBe("running");
+		expect(rows.sessions[0].tokensText.trim()).toBe("2,500");
+		expect(rows.sessions[0].eventText).toBe("newer event");
+		expect(rows.backoffQueue).toEqual([
+			{
+				attempt: 2,
+				countdown: "4s",
+				id: "TASK-999",
+			},
+		]);
+	});
 });
+
+
+
+
+
+

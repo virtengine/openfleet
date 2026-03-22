@@ -112,7 +112,6 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/git/branch-detail", // Real git branch detail
   "/api/project-sync/metrics", // Real project sync metrics
   "/api/settings/update",   // Alias for /api/config/update
-  "/api/tasks/diff",        // Task diff relies on live git/task state, not demo fixtures
   "/api/github/app/config", // GitHub App config — server-only (reads env vars + key files)
   "/api/github/device/start", // Device Flow initiation — server-only (calls GitHub API)
   "/api/github/device/poll",  // Device Flow polling — server-only (calls GitHub API)

@@ -1042,6 +1042,26 @@ describe("workflow setup profiles", () => {
     expect(logNode?.config?.message).toContain("{{batchResult.successCount}}/{{batchResult.totalItems}}");
   });
 
+  it("reads batch loop items from node outputs instead of mustache strings", () => {
+    const batchProcessor = getTemplate("template-task-batch-processor");
+    const batchPr = getTemplate("template-task-batch-pr");
+    const processorLoop = batchProcessor?.nodes?.find((node) => node.id === "dispatch-tasks");
+    const batchPrLoop = batchPr?.nodes?.find((node) => node.id === "for-each-task");
+
+    expect(processorLoop?.config?.items).toBe("$ctx.getNodeOutput('query-tasks')?.output || []");
+    expect(batchPrLoop?.config?.items).toBe("$ctx.getNodeOutput('query-tasks')?.output || []");
+  });
+
+  it("treats coordinator condition outputs as booleans across runtime shapes", () => {
+    const batchProcessor = getTemplate("template-task-batch-processor");
+    const coordinatorEdge = batchProcessor?.edges?.find(
+      (edge) => edge.source === "check-coordinator" && edge.target === "query-tasks",
+    );
+
+    expect(coordinatorEdge?.condition)
+      .toBe("$output === true || $output?.result === true || $output?.value === true || result === true || result?.result === true || result?.value === true");
+  });
+
   it("exposes built-in setup profiles with template selections", () => {
     const profiles = listWorkflowSetupProfiles();
     const ids = profiles.map((profile) => profile.id);
@@ -1527,3 +1547,4 @@ describe("template category coverage", () => {
     }
   });
 });
+
