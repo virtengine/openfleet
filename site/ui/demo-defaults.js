@@ -17892,7 +17892,7 @@
           "label": "Process Each Task",
           "config": {
             "items": "$ctx.getNodeOutput('query-tasks')?.output || []",
-            "itemVariable": "task",
+            "variable": "task",
             "indexVariable": "idx",
             "maxConcurrent": "{{maxConcurrent}}"
           },
@@ -37834,7 +37834,7 @@
           "label": "Process Each Task",
           "config": {
             "items": "$ctx.getNodeOutput('query-tasks')?.output || []",
-            "itemVariable": "task",
+            "variable": "task",
             "indexVariable": "idx",
             "maxConcurrent": "{{maxConcurrent}}"
           },
