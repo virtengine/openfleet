@@ -1192,10 +1192,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     : userMessage;
   const toolContract = buildPrimaryToolCapabilityContract(options);
   const messageWithToolContract = [selectedProfile.block, toolContract, messageWithAttachments]
-    .filter(Boolean)
-    .join("\n\n");
-  const framedMessage = modePrefix ? modePrefix + messageWithToolContract : messageWithToolContract;
-
+    options,
   // Record user message (original, without mode prefix)
   tracker.recordEvent(sessionId, {
     role: "user",
