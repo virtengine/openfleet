@@ -2165,9 +2165,17 @@ export class WorkflowEngine extends EventEmitter {
           status: NodeStatus.COMPLETED,
           result: nodeOutputs[nodeId],
         });
+      } else if (status) {
+        focusNodeIds.push(nodeId);
       }
       // Reset failed / skipped nodes so the DAG will re-run them.
     }
+
+    this._recordDagRevision(ctx, {
+      reason: "retry_resume",
+      sourceRunId: runId,
+      preservedCompletedNodeIds,
+    });
 
     this._recordDagRevision(ctx, {
       reason: mode === "from_failed" ? "retry_replan_from_failed" : `retry_${mode}`,
