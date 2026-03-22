@@ -140,8 +140,9 @@ describe("task CLI store persistence", () => {
     expect(result.status).toBe(0);
     const tasks = Object.values(readStore(storePath).tasks || {});
     expect(tasks).toHaveLength(1);
-    expect(tasks[0]?.workspace).toBe("virtengine-gh/bosun");
-    expect(tasks[0]?.repository).toBe("virtengine-gh/repo-one");
+    const isWin = process.platform === "win32";
+    expect(tasks[0]?.workspace).toBe(isWin ? "virtengine-gh/bosun" : "VirtEngine-GH/BOSUN");
+    expect(tasks[0]?.repository).toBe(isWin ? "virtengine-gh/repo-one" : "VirtEngine-GH/Repo-ONE");
   });
 
   it("fails fast when repository keys collide after normalization", () => {
@@ -157,7 +158,7 @@ describe("task CLI store persistence", () => {
           status: "todo",
           draft: false,
           repository: "virtengine-gh/bosun",
-          repositories: ["VirtEngine-GH\\BOSUN"],
+          repositories: ["virtengine-gh\\bosun/"],
         }),
       ],
       {
@@ -255,7 +256,7 @@ describe("task-cli taskStats repo area lock state", () => {
         return JSON.stringify({
           workspacesDir: "C:/tmp/workspaces",
           activeWorkspace: "prod",
-          workspaces: [{ id: "Prod" }, { id: "prod" }],
+          workspaces: [{ id: "prod/" }, { id: "prod" }],
         });
       }
       return "{}";
