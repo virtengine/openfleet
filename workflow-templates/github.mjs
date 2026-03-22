@@ -102,7 +102,7 @@ Respond with JSON: { "action": "<choice>", "reason": "<why>", "message": "<optio
     }, { x: 400, y: 520, outputs: ["merge", "prompt-agent", "close", "retry", "escalate", "wait-for-ci", "default"] }),
 
     node("do-merge", "action.run_command", "Auto-Merge PR", {
-      command: "gh pr merge {{prNumber}} --auto --squash",
+      command: "gh pr merge {{prNumber}} --auto --merge",
       failOnError: true,
       maxRetries: "{{maxRetries}}",
       retryDelayMs: 30000,
@@ -680,6 +680,303 @@ Omit empty sections. Include contributor attribution. Be concise.`,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  Bosun PR Progressor
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
+  id: "template-bosun-pr-progressor",
+  name: "Bosun PR Progressor",
+  description:
+    "Direct per-PR progression workflow for bosun-managed tasks. Runs immediately " +
+    "after PR handoff, evaluates a single PR, retries simple CI failures, " +
+    "dispatches focused repair when needed, and performs the first merge-review pass " +
+    "without waiting for the periodic watchdog.",
+  category: "github",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.workflow_call",
+  variables: {
+    mergeMethod: "merge",
+    labelNeedsFix: "bosun-needs-fix",
+    labelNeedsReview: "bosun-needs-human-review",
+    suspiciousDeletionRatio: 3,
+    minDestructiveDeletions: 500,
+  },
+  nodes: [
+    node("trigger", "trigger.workflow_call", "PR Handoff", {
+      inputs: {
+        taskId: { type: "string", required: false },
+        taskTitle: { type: "string", required: false },
+        branch: { type: "string", required: false },
+        baseBranch: { type: "string", required: false, default: "main" },
+        prNumber: { type: "number", required: false },
+        prUrl: { type: "string", required: false },
+        repo: { type: "string", required: false },
+      },
+    }, { x: 400, y: 50 }),
+
+    node("normalize-context", "action.set_variable", "Normalize PR Context", {
+      key: "prProgressContext",
+      value:
+        "(() => {" +
+        "  const prOut = $ctx.getNodeOutput('create-pr') || $ctx.getNodeOutput('create-pr-retry') || {};" +
+        "  const prUrl = String($data?.prUrl || prOut?.prUrl || prOut?.url || '').trim();" +
+        "  const repoMatch = prUrl.match(/github\\.com\\/([^/]+\\/[^/?#]+)/i);" +
+        "  const repo = String($data?.repo || (repoMatch ? repoMatch[1] : '')).trim();" +
+        "  const rawPrNumber = $data?.prNumber ?? prOut?.prNumber ?? null;" +
+        "  const parsedPrNumber = Number.parseInt(String(rawPrNumber || ''), 10);" +
+        "  return {" +
+        "    taskId: String($data?.taskId || '').trim() || null," +
+        "    taskTitle: String($data?.taskTitle || '').trim() || null," +
+        "    repo: repo || null," +
+        "    branch: String($data?.branch || prOut?.branch || '').trim() || null," +
+        "    baseBranch: String($data?.baseBranch || prOut?.base || 'main').trim() || 'main'," +
+        "    prNumber: Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null," +
+        "    prUrl: prUrl || null," +
+        "  };" +
+        "})()",
+      isExpression: true,
+    }, { x: 400, y: 180 }),
+
+    node("has-pr-target", "condition.expression", "Has PR Target?", {
+      expression:
+        "Boolean($data?.prProgressContext?.prNumber && ($data?.prProgressContext?.repo || $data?.prProgressContext?.prUrl))",
+    }, { x: 400, y: 300 }),
+
+    node("inspect-pr", "action.run_command", "Inspect Single PR", {
+      command: [
+        "node -e \"",
+        "const {execFileSync}=require('child_process');",
+        "const ctx=(()=>{try{return JSON.parse(String(process.env.BOSUN_PR_CONTEXT||'{}'))}catch{return {}}})();",
+        "const repo=String(ctx.repo||'').trim();",
+        "const branch=String(ctx.branch||'').trim();",
+        "const baseBranch=String(ctx.baseBranch||'main').trim()||'main';",
+        "const rawNumber=String(ctx.prNumber||'').trim();",
+        "const prNumber=Number.parseInt(rawNumber,10);",
+        "if(!repo||!Number.isFinite(prNumber)||prNumber<=0){",
+        "  console.log(JSON.stringify({success:false,classification:'missing',reason:'missing_repo_or_pr',repo,prNumber:Number.isFinite(prNumber)?prNumber:null,branch,baseBranch}));",
+        "  process.exit(0);",
+        "}",
+        "function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
+        "const raw=gh(['pr','view',String(prNumber),'--repo',repo,'--json','number,title,url,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup']);",
+        "const pr=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})();",
+        "const checks=Array.isArray(pr.statusCheckRollup)?pr.statusCheckRollup:[];",
+        "const failStates=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']);",
+        "const pendingStates=new Set(['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED']);",
+        "const conflictMergeables=new Set(['CONFLICTING','DIRTY','UNKNOWN']);",
+        "const failedCheckNames=checks.filter((c)=>{const s=String(c?.state||'').toUpperCase();const b=String(c?.bucket||'').toUpperCase();return failStates.has(s)||b==='FAIL';}).map((c)=>String(c?.name||c?.context||c?.workflowName||'').trim()).filter(Boolean);",
+        "const hasFailure=checks.some((c)=>{const s=String(c?.state||'').toUpperCase();const b=String(c?.bucket||'').toUpperCase();return failStates.has(s)||b==='FAIL';});",
+        "const hasPending=checks.some((c)=>pendingStates.has(String(c?.state||'').toUpperCase()));",
+        "let classification='ready';",
+        "let reason='ready_for_review';",
+        "let ciKicked=false;",
+        "if(pr?.isDraft===true){classification='draft';reason='draft_pr';}",
+        "else if(conflictMergeables.has(String(pr?.mergeable||'').toUpperCase())){classification='conflict';reason='merge_conflict';}",
+        "else if(hasFailure){classification='ci_failure';reason='ci_failed';}",
+        "else if(hasPending){classification='pending';reason='ci_pending';}",
+        "else if(checks.length===0 && branch){",
+        "  try{gh(['workflow','run','ci.yaml','--repo',repo,'--ref',branch]);ciKicked=true;classification='pending';reason='ci_kicked';}",
+        "  catch{classification='ready';reason='ready_without_checks';}",
+        "}",
+        "console.log(JSON.stringify({success:true,repo,prNumber,url:String(pr?.url||ctx.prUrl||''),branch:String(pr?.headRefName||branch||''),baseBranch:String(pr?.baseRefName||baseBranch||'main'),title:String(pr?.title||ctx.taskTitle||''),classification,reason,ciKicked,hasFailure,hasPending,failedCheckNames}));",
+        "\"",
+      ].join(" "),
+      continueOnError: true,
+      failOnError: false,
+      env: {
+        BOSUN_PR_CONTEXT:
+          "{{$data?.prProgressContext ? JSON.stringify($data.prProgressContext) : '{}'}}",
+      },
+    }, { x: 400, y: 430 }),
+
+    node("fix-needed", "condition.expression", "Needs Repair?", {
+      expression:
+        "(()=>{try{" +
+        "const d=JSON.parse($ctx.getNodeOutput('inspect-pr')?.output||'{}');" +
+        "return d?.classification==='ci_failure' || d?.classification==='conflict';" +
+        "}catch{return false;}})()",
+    }, { x: 220, y: 560 }),
+
+    node("programmatic-fix", "action.run_command", "Repair Attempt", {
+      command: [
+        "node -e \"",
+        "const {execFileSync}=require('child_process');",
+        "const data=(()=>{try{return JSON.parse(String(process.env.BOSUN_PR_INSPECT||'{}'))}catch{return {}}})();",
+        "const repo=String(data.repo||'').trim();",
+        "const branch=String(data.branch||'').trim();",
+        "const prNumber=Number.parseInt(String(data.prNumber||''),10);",
+        "const classification=String(data.classification||'').trim();",
+        "const failedCheckNames=Array.isArray(data.failedCheckNames)?data.failedCheckNames:[];",
+        "const labelFix=String('{{labelNeedsFix}}'||'bosun-needs-fix');",
+        "const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']);",
+        "const MAX_AUTO_RERUN_ATTEMPT=1;",
+        "function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
+        "function normalizeRun(run){if(!run||typeof run!=='object')return null;return {databaseId:Number(run.databaseId||0)||null,attempt:Number(run.attempt||0)||0,conclusion:String(run.conclusion||''),status:String(run.status||''),workflowName:String(run.workflowName||run.name||''),displayTitle:String(run.displayTitle||run.name||''),url:String(run.url||''),createdAt:String(run.createdAt||''),updatedAt:String(run.updatedAt||'')}}",
+        "function normalizeJob(job){if(!job||typeof job!=='object')return null;const steps=Array.isArray(job.steps)?job.steps:[];return {databaseId:Number(job.databaseId||0)||null,name:String(job.name||''),status:String(job.status||''),conclusion:String(job.conclusion||''),url:String(job.url||''),failedSteps:steps.filter((step)=>FAIL_STATES.has(String(step?.conclusion||step?.status||'').toUpperCase())).map((step)=>({name:String(step?.name||''),number:Number(step?.number||0)||null,status:String(step?.status||''),conclusion:String(step?.conclusion||'')})).filter((step)=>step.name).slice(0,10)}}",
+        "function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;}",
+        "function collectCiDiagnostics(run){const info={failedRun:normalizeRun(run),failedJobs:[],failedLogExcerpt:'',diagnosticsError:''};const runId=Number(run?.databaseId||0)||0;if(!runId)return info;try{const viewRaw=gh(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']);const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();info.failedRun=normalizeRun({...run,...view});const jobs=Array.isArray(view.jobs)?view.jobs:[];info.failedJobs=jobs.map(normalizeJob).filter((job)=>job&&(FAIL_STATES.has(String(job.conclusion||'').toUpperCase())||job.failedSteps.length>0)).slice(0,10);}catch(e){info.diagnosticsError=String(e?.message||e);}try{info.failedLogExcerpt=truncateText(gh(['run','view',String(runId),'--repo',repo,'--log-failed']),6000);}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}return info;}",
+        "if(repo&&Number.isFinite(prNumber)&&prNumber>0){",
+        "  try{gh(['pr','edit',String(prNumber),'--repo',repo,'--add-label',labelFix]);}catch{}",
+        "}",
+        "if(classification==='ci_failure'&&repo&&branch){",
+        "  try{",
+        "    const listRaw=gh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt','--limit','8']);",
+        "    const runs=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();",
+        "    const failed=(Array.isArray(runs)?runs:[]).find((r)=>FAIL_STATES.has(String(r?.conclusion||'').toUpperCase()));",
+        "    const failedRun=normalizeRun(failed);",
+        "    if(failedRun?.databaseId&&failedRun.attempt<=MAX_AUTO_RERUN_ATTEMPT){gh(['run','rerun',String(failedRun.databaseId),'--repo',repo]);console.log(JSON.stringify({success:true,rerunRequested:true,needsAgent:false,reason:'rerun_requested',failedCheckNames,failedRun}));process.exit(0);}",
+        "    if(failedRun?.databaseId){const diagnostics=collectCiDiagnostics(failedRun);console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'auto_rerun_limit_reached',failedCheckNames,rerunAttempts:failedRun.attempt||0,...diagnostics}));process.exit(0);}",
+        "    console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'no_rerunnable_failed_run_found',failedCheckNames,recentRuns:(Array.isArray(runs)?runs:[]).map(normalizeRun).filter(Boolean).slice(0,5)}));",
+        "    process.exit(0);",
+        "  }catch(e){",
+        "    console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'ci_rerun_failed',failedCheckNames,error:String(e?.message||e)}));",
+        "    process.exit(0);",
+        "  }",
+        "}",
+        "console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:classification==='conflict'?'merge_conflict_requires_code_resolution':'repair_required',failedCheckNames}));",
+        "\"",
+      ].join(" "),
+      continueOnError: true,
+      failOnError: false,
+      env: {
+        BOSUN_PR_INSPECT:
+          "{{$ctx.getNodeOutput('inspect-pr')?.output || '{}'}}",
+      },
+    }, { x: 220, y: 690 }),
+
+    node("fix-agent-needed", "condition.expression", "Needs Fix Agent?", {
+      expression:
+        "(()=>{try{" +
+        "const d=JSON.parse($ctx.getNodeOutput('programmatic-fix')?.output||'{}');" +
+        "return d?.needsAgent===true;" +
+        "}catch{return false;}})()",
+    }, { x: 220, y: 820 }),
+
+    node("dispatch-fix-agent", "action.run_agent", "Dispatch Focused Fix Agent", {
+      prompt:
+        "You are a Bosun PR repair fallback agent working one PR only.\n\n" +
+        "PR context:\n{{$ctx.getNodeOutput('inspect-pr')?.output}}\n\n" +
+        "Repair attempt output:\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\n" +
+        "Rules:\n" +
+        "- Only fix this PR's CI or merge-conflict issue.\n" +
+        "- Do not merge, approve, or close the PR.\n" +
+        "- Keep the patch minimal and scoped to the reported failure.\n" +
+        "- If you repair the PR, remove the bosun-needs-fix label.\n",
+      sdk: "auto",
+      timeoutMs: 1_800_000,
+      maxRetries: 2,
+      retryDelayMs: 30_000,
+      continueOnError: true,
+    }, { x: 220, y: 950 }),
+
+    node("review-needed", "condition.expression", "Ready For Review?", {
+      expression:
+        "(()=>{try{" +
+        "const d=JSON.parse($ctx.getNodeOutput('inspect-pr')?.output||'{}');" +
+        "return d?.classification==='ready';" +
+        "}catch{return false;}})()",
+    }, { x: 620, y: 560 }),
+
+    node("programmatic-review", "action.run_command", "Review Gate: Merge Single PR", {
+      command: [
+        "node -e \"",
+        "const {execFileSync}=require('child_process');",
+        "const pr=(()=>{try{return JSON.parse(String(process.env.BOSUN_PR_INSPECT||'{}'))}catch{return {}}})();",
+        "const repo=String(pr.repo||'').trim();",
+        "const n=String(pr.prNumber||'').trim();",
+        "const ratio=Number('{{suspiciousDeletionRatio}}')||3;",
+        "const minDel=Number('{{minDestructiveDeletions}}')||500;",
+        "const labelReview=String('{{labelNeedsReview}}'||'bosun-needs-human-review');",
+        "const method=String('{{mergeMethod}}'||'merge').toLowerCase();",
+        "function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
+        "if(!repo||!n){console.log(JSON.stringify({mergedCount:0,heldCount:0,skippedCount:1,skipped:[{repo,number:n,reason:'missing_repo_or_pr'}]}));process.exit(0);}",
+        "try{",
+        "  const viewRaw=gh(['pr','view',n,'--repo',repo,'--json','number,title,additions,deletions,changedFiles,isDraft']);",
+        "  const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();",
+        "  if(view?.isDraft===true){console.log(JSON.stringify({mergedCount:0,heldCount:0,skippedCount:1,skipped:[{repo,number:n,reason:'draft'}]}));process.exit(0);}",
+        "  const add=Number(view?.additions||0);",
+        "  const del=Number(view?.deletions||0);",
+        "  const changed=Number(view?.changedFiles||0);",
+        "  const destructive=(del>(add*ratio))&&(del>minDel);",
+        "  const tooWide=changed>250;",
+        "  if(destructive||tooWide){",
+        "    gh(['pr','edit',n,'--repo',repo,'--add-label',labelReview]);",
+        "    gh(['pr','comment',n,'--repo',repo,'--body',':warning: Bosun held this PR for human review due to suspicious diff footprint.']);",
+        "    console.log(JSON.stringify({mergedCount:0,heldCount:1,skippedCount:0,held:[{repo,number:n,reason:destructive?'destructive_diff':'changed_files_too_large',additions:add,deletions:del,changedFiles:changed}]}));",
+        "    process.exit(0);",
+        "  }",
+        "  const checksRaw=gh(['pr','checks',n,'--repo',repo,'--json','name,state,bucket']);",
+        "  const checks=(()=>{try{return JSON.parse(checksRaw||'[]')}catch{return []}})();",
+        "  const hasFailure=(Array.isArray(checks)?checks:[]).some((x)=>{const s=String(x?.state||'').toUpperCase();const b=String(x?.bucket||'').toUpperCase();return ['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE'].includes(s)||b==='FAIL';});",
+        "  const hasPending=(Array.isArray(checks)?checks:[]).some((x)=>['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED'].includes(String(x?.state||'').toUpperCase()));",
+        "  if(hasFailure){console.log(JSON.stringify({mergedCount:0,heldCount:0,skippedCount:1,skipped:[{repo,number:n,reason:'ci_failed'}]}));process.exit(0);}",
+        "  if(hasPending){console.log(JSON.stringify({mergedCount:0,heldCount:0,skippedCount:1,skipped:[{repo,number:n,reason:'ci_pending'}]}));process.exit(0);}",
+        "  const mergeArgs=['pr','merge',n,'--repo',repo,'--delete-branch'];",
+        "  if(method==='rebase') mergeArgs.push('--rebase');",
+        "  else if(method==='merge') mergeArgs.push('--merge');",
+        "  else mergeArgs.push('--squash');",
+        "  try{gh(mergeArgs);}catch(directErr){mergeArgs.push('--auto');gh(mergeArgs);}",
+        "  console.log(JSON.stringify({mergedCount:1,heldCount:0,skippedCount:0,merged:[{repo,number:n,title:String(view?.title||'')}] }));",
+        "}catch(e){",
+        "  console.log(JSON.stringify({mergedCount:0,heldCount:1,skippedCount:0,held:[{repo,number:n,reason:'merge_attempt_failed',error:String(e?.message||e)}]}));",
+        "}",
+        "\"",
+      ].join(" "),
+      continueOnError: true,
+      failOnError: false,
+      env: {
+        BOSUN_PR_INSPECT:
+          "{{$ctx.getNodeOutput('inspect-pr')?.output || '{}'}}",
+      },
+    }, { x: 620, y: 690 }),
+
+    node("log-deferred", "notify.log", "Deferred", {
+      message:
+        "Bosun PR Progressor deferred PR #{{prProgressContext.prNumber}}: {{$ctx.getNodeOutput('inspect-pr')?.output || '{}'}}",
+      level: "info",
+    }, { x: 620, y: 820 }),
+
+    node("log-missing", "notify.log", "Missing PR Context", {
+      message: "Bosun PR Progressor skipped: missing PR context for task {{taskId}}",
+      level: "warn",
+    }, { x: 400, y: 560 }),
+
+    node("notify-complete", "notify.log", "Log Outcome", {
+      message:
+        "Bosun PR Progressor finished for task {{taskId}} / PR {{prProgressContext.prNumber}}",
+      level: "info",
+    }, { x: 400, y: 1090 }),
+  ],
+  edges: [
+    edge("trigger", "normalize-context"),
+    edge("normalize-context", "has-pr-target"),
+    edge("has-pr-target", "inspect-pr", { condition: "$output?.result === true" }),
+    edge("has-pr-target", "log-missing", { condition: "$output?.result !== true" }),
+    edge("inspect-pr", "fix-needed"),
+    edge("fix-needed", "programmatic-fix", { condition: "$output?.result === true" }),
+    edge("fix-needed", "review-needed", { condition: "$output?.result !== true" }),
+    edge("programmatic-fix", "fix-agent-needed"),
+    edge("fix-agent-needed", "dispatch-fix-agent", { condition: "$output?.result === true" }),
+    edge("fix-agent-needed", "notify-complete", { condition: "$output?.result !== true" }),
+    edge("dispatch-fix-agent", "notify-complete"),
+    edge("review-needed", "programmatic-review", { condition: "$output?.result === true" }),
+    edge("review-needed", "log-deferred", { condition: "$output?.result !== true" }),
+    edge("programmatic-review", "notify-complete"),
+    edge("log-deferred", "notify-complete"),
+    edge("log-missing", "notify-complete"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-03-13T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["github", "pr", "handoff", "progression", "event-driven"],
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  Bosun PR Watchdog
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -697,9 +994,11 @@ resetLayout();
  *   2. Merge any PR whose CI checks are all passing (not draft, not pending).
  *   3. Label any PR whose CI checks have failures with `bosun-needs-fix` and
  *      dispatch a repair agent to fix the branch.
+ *   4. Route CodeQL/code-scanning failures through a dedicated security repair
+ *      branch so security findings are fixed instead of treated as generic CI.
  *
  * Disable:  set `enabled: false` in your bosun config, or delete the workflow.
- * Interval: default 5 min — change `intervalMs` / `cron` variables.
+ * Interval: default 90s — change `intervalMs`.
  */
 export const BOSUN_PR_WATCHDOG_TEMPLATE = {
   id: "template-bosun-pr-watchdog",
@@ -716,23 +1015,23 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
   recommended: true,
   trigger: "trigger.schedule",
   variables: {
-    mergeMethod:        "squash",                   // squash | merge | rebase
+    mergeMethod:        "merge",                    // merge | squash | rebase
     labelNeedsFix:      "bosun-needs-fix",           // applied to CI failures and conflicts
     labelNeedsReview:   "bosun-needs-human-review",  // applied when review agent flags a suspicious diff
     // auto: active workspace repos from bosun.config.json (fallback current repo)
     // all/current/<owner/repo>/comma,list also supported.
     repoScope:          "auto",
     maxPrs:             25,
-    intervalMs:         300_000,                    // 5 minutes
+    intervalMs:         90_000,                     // 90 seconds
     // Merge-safety thresholds checked by the review agent:
     // If net deletions > additions × ratio AND deletions > minDestructiveDeletions → HOLD
     suspiciousDeletionRatio: 3,    // e.g. deletes 3× more lines than it adds
     minDestructiveDeletions: 500,  // absolute floor — small PRs are fine even if net negative
+    autoApplySuggestions:   true,  // auto-commit review suggestions before merge
   },
   nodes: [
-    node("trigger", "trigger.schedule", "Poll Every 5 min", {
+    node("trigger", "trigger.schedule", "Poll Every 90s", {
       intervalMs: "{{intervalMs}}",
-      cron: "*/5 * * * *",
     }, { x: 400, y: 50 }),
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -743,8 +1042,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
       // Fetches all open bosun-attached PRs with every field needed for
       // classification. Runs one list call per target repo (auto-discovered
       // from bosun.config.json workspaces by default), then:
-      //   • Classifies each PR into: ready | conflict | ci_failure | pending | draft
-      //   • Labels conflict/ci_failure PRs with bosun-needs-fix (skips if already present)
+      //   • Classifies each PR into: ready | conflict | security_failure | ci_failure | pending | draft
+      //   • Labels conflict/security_failure/ci_failure PRs with bosun-needs-fix (skips if already present)
       //   • Outputs a JSON summary used by all downstream nodes/agents
       // Total gh API calls this node makes: R list calls + N edits
       // (R = target repos, N = newly-broken PRs needing fix label).
@@ -760,6 +1059,10 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']);",
         "const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']);",
         "const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']);",
+        "const SECURITY_CHECK_RE=/(^|[^a-z])(codeql|code scanning|security|sarif|codacy)([^a-z]|$)/i;",
+        "function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();}",
+        "function isFailedCheck(check){return FAIL_STATES.has(check?.conclusion||check?.state||'');}",
+        "function isSecurityCheckName(name){return SECURITY_CHECK_RE.test(String(name||''));}",
         "function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];}",
         "function configPath(){",
         "  const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();",
@@ -829,13 +1132,17 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "    repoErrors.push({repo:repo||'current',error:String(e?.message||e)});",
         "  }",
         "}",
-        "const readyCandidates=[],conflicts=[],ciFailures=[],pending=[],drafted=[];",
-        "let newlyLabeled=0;",
+        "const readyCandidates=[],conflicts=[],securityFailures=[],ciFailures=[],pending=[],drafted=[];",
+        "let newlyLabeled=0,staleLabelCleared=0,ciKicked=0;",
         "for(const pr of prs){",
         "  const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);",
         "  const hasFixLabel=labels.includes(LABEL_FIX);",
         "  const checks=pr.statusCheckRollup||[];",
-        "  const hasFail=checks.some(c=>FAIL_STATES.has(c.conclusion||c.state||''));",
+        "  const failedChecks=checks.filter(isFailedCheck);",
+        "  const failedCheckNames=failedChecks.map(readCheckName).filter(Boolean);",
+        "  const securityCheckNames=failedCheckNames.filter(isSecurityCheckName);",
+        "  const hasFail=failedChecks.length>0;",
+        "  const hasSecurityFail=securityCheckNames.length>0;",
         "  const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));",
         "  const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());",
         "  const isDraft=pr.isDraft===true;",
@@ -847,15 +1154,34 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "      try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}",
         "      catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}",
         "    }",
+        "  } else if(hasSecurityFail){",
+        "    securityFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,securityCheckNames});",
+        "    if(!hasFixLabel){",
+        "      try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}",
+        "      catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}",
+        "    }",
         "  } else if(hasFail){",
-        "    ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url});",
+        "    ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url,failedCheckNames});",
         "    if(!hasFixLabel){",
         "      try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}",
         "      catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}",
         "    }",
-        "  } else if(checks.length>0&&!hasFixLabel){",
-        "    if(hasPend) pending.push({n:pr.number,repo});",
-        "    readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});",
+        "  } else {",
+        "    if(hasFixLabel&&!hasPend){",
+        "      try{",
+        "        const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];",
+        "        if(repo)rmArgs.push('--repo',repo);",
+        "        execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});",
+        "        staleLabelCleared++;",
+        "      }catch(e){process.stderr.write('stale-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}",
+        "    } else if(checks.length>0&&!hasFixLabel){",
+        "      if(hasPend) pending.push({n:pr.number,repo});",
+        "      readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});",
+        "    }",
+        "    if(checks.length===0&&repo&&pr.headRefName&&!isDraft){",
+        "      try{execFileSync('gh',['workflow','run','ci.yaml','--repo',repo,'--ref',pr.headRefName],{encoding:'utf8',stdio:['pipe','pipe','pipe']});ciKicked++;}",
+        "      catch{}",
+        "    }",
         "  }",
         "}",
         "console.log(JSON.stringify({",
@@ -864,11 +1190,14 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  repoErrors,",
         "  readyCandidates,",
         "  conflicts,",
+        "  securityFailures,",
         "  ciFailures,",
         "  pending:pending.length,",
         "  drafted:drafted.length,",
         "  newlyLabeled,",
-        "  fixNeeded:conflicts.length+ciFailures.length",
+        "  staleLabelCleared,",
+        "  ciKicked,",
+        "  fixNeeded:conflicts.length+securityFailures.length+ciFailures.length",
         "}));",
         "\"",
       ].join(" "),
@@ -887,8 +1216,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     }, { x: 400, y: 370 }),
 
     // ─────────────────────────────────────────────────────────────────────────
-    // STEP 2a: Fix path — dispatch ONE agent for all conflicts + CI failures.
-    // The agent handles rebase/conflict-resolution AND CI lint/test fixes.
+    // STEP 2a: Fix path — route security failures separately, then dispatch
+    // the generic agent path for conflicts + non-security CI failures.
     // ─────────────────────────────────────────────────────────────────────────
     node("fix-needed", "condition.expression", "Fix Needed?", {
       expression:
@@ -897,6 +1226,105 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "return (JSON.parse(o||'{}').fixNeeded||0)>0;" +
         "}catch(e){return false;}})()",
     }, { x: 200, y: 530 }),
+
+    node("security-fix-needed", "condition.expression", "Security Fix Needed?", {
+      expression:
+        "(()=>{try{" +
+        "const o=$ctx.getNodeOutput('fetch-and-classify')?.output;" +
+        "return (JSON.parse(o||'{}').securityFailures||[]).length>0;" +
+        "}catch(e){return false;}})()",
+    }, { x: 120, y: 640 }),
+
+    node("programmatic-security-fix", "action.run_command", "Collect Security Alerts", {
+      command: [
+        "node -e \"",
+        "const {execFileSync}=require('child_process');",
+        "const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||'');",
+        "const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})();",
+        "const securityFailures=Array.isArray(payload.securityFailures)?payload.securityFailures:[];",
+        "const needsAgent=[];",
+        "let alertsFetched=0;",
+        "function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
+        "function compactAlert(alert){",
+        "  const instance=alert?.most_recent_instance||{};",
+        "  const location=instance?.location||{};",
+        "  const rule=alert?.rule||{};",
+        "  const tool=alert?.tool||{};",
+        "  return {",
+        "    number: alert?.number ?? null,",
+        "    state: String(alert?.state||''),",
+        "    ruleId: String(rule?.id||alert?.rule_id||''),",
+        "    ruleName: String(rule?.name||alert?.rule_name||''),",
+        "    severity: String(rule?.severity||alert?.severity||''),",
+        "    securitySeverity: String(rule?.security_severity_level||alert?.security_severity_level||''),",
+        "    tool: String(tool?.name||alert?.tool_name||''),",
+        "    path: String(location?.path||''),",
+        "    startLine: Number(location?.start_line||0)||null,",
+        "    url: String(alert?.html_url||''),",
+        "  };",
+        "}",
+        "for(const item of securityFailures){",
+        "  const repo=String(item?.repo||'').trim();",
+        "  const branch=String(item?.branch||'').trim();",
+        "  const n=String(item?.n||'').trim();",
+        "  const securityCheckNames=Array.isArray(item?.securityCheckNames)?item.securityCheckNames:[];",
+        "  if(!repo||!branch){needsAgent.push({repo,number:n,branch,reason:'missing_repo_or_branch',securityCheckNames,alerts:[]});continue;}",
+        "  let alerts=[];",
+        "  let fetchError='';",
+        "  try{",
+        "    const alertsRaw=gh(['api','--method','GET','repos/'+repo+'/code-scanning/alerts','--raw-field','state=open','--raw-field','per_page=20','--raw-field','ref=refs/heads/'+branch]);",
+        "    const parsed=(()=>{try{return JSON.parse(alertsRaw||'[]')}catch{return []}})();",
+        "    alerts=(Array.isArray(parsed)?parsed:[]).map(compactAlert).filter(a=>a.ruleId||a.ruleName||a.path).slice(0,10);",
+        "    if(alerts.length>0) alertsFetched++;",
+        "  }catch(e){fetchError=String(e?.message||e);}",
+        "  needsAgent.push({repo,number:n,branch,base:String(item?.base||'').trim(),url:String(item?.url||''),title:String(item?.title||''),reason:'security_code_scanning_failure',securityCheckNames,failedCheckNames:Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[],alerts,fetchError});",
+        "}",
+        "console.log(JSON.stringify({securityFailureCount:securityFailures.length,alertsFetched,needsAgentCount:needsAgent.length,needsAgent}));",
+        "\"",
+      ].join(" "),
+      continueOnError: true,
+      failOnError: false,
+      env: {
+        BOSUN_FETCH_AND_CLASSIFY:
+          "{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}",
+      },
+    }, { x: 120, y: 750 }),
+
+    node("security-agent-needed", "condition.expression", "Needs Security Agent?", {
+      expression:
+        "(()=>{try{" +
+        "const o=$ctx.getNodeOutput('programmatic-security-fix')?.output;" +
+        "return (JSON.parse(o||'{}').needsAgentCount||0)>0;" +
+        "}catch(e){return false;}})()",
+    }, { x: 120, y: 860 }),
+
+    node("dispatch-security-fix-agent", "action.run_agent", "Dispatch Security Fix Agent", {
+      prompt:
+        "You are a Bosun PR security remediation agent. Work only the PRs in this JSON:\n\n" +
+        "{{$ctx.getNodeOutput('programmatic-security-fix')?.output}}\n\n" +
+        "Each item represents a bosun-attached PR blocked by CodeQL or GitHub code scanning.\n" +
+        "Use the supplied alert data and failing security check names to make the smallest safe code change that resolves the finding.\n" +
+        "For each repaired PR: check out the branch, fix only the reported code-scanning issue, run targeted validation, push the branch, and remove bosun-needs-fix after success.\n\n" +
+        "STRICT RULES:\n" +
+        "- Only fix the listed code-scanning or CodeQL findings.\n" +
+        "- No unrelated refactors, dependency churn, merges, approvals, or PR closure.\n" +
+        "- If alert fetch failed, inspect the PR checks and relevant source to resolve the security failure directly.\n" +
+        "- Do NOT touch PRs that are not bosun-attached.",
+      sdk: "auto",
+      timeoutMs: 1_800_000,
+      maxRetries: 2,
+      retryDelayMs: 30_000,
+      continueOnError: true,
+    }, { x: 120, y: 970 }),
+
+    node("generic-fix-needed", "condition.expression", "Generic Fix Needed?", {
+      expression:
+        "(()=>{try{" +
+        "const o=$ctx.getNodeOutput('fetch-and-classify')?.output;" +
+        "const d=JSON.parse(o||'{}');" +
+        "return ((d.conflicts||[]).length+(d.ciFailures||[]).length)>0;" +
+        "}catch(e){return false;}})()",
+    }, { x: 280, y: 640 }),
 
     node("programmatic-fix", "action.run_command", "Programmatic Fix Pass", {
       command: [
@@ -908,22 +1336,35 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "const conflicts=Array.isArray(payload.conflicts)?payload.conflicts:[];",
         "const needsAgent=[];",
         "let rerunRequested=0;",
+        "const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']);",
+        "const MAX_AUTO_RERUN_ATTEMPT=1;",
         "function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
+        "function normalizeRun(run){if(!run||typeof run!=='object')return null;return {databaseId:Number(run.databaseId||0)||null,attempt:Number(run.attempt||0)||0,conclusion:String(run.conclusion||''),status:String(run.status||''),workflowName:String(run.workflowName||run.name||''),displayTitle:String(run.displayTitle||run.name||''),url:String(run.url||''),createdAt:String(run.createdAt||''),updatedAt:String(run.updatedAt||'')}}",
+        "function normalizeJob(job){if(!job||typeof job!=='object')return null;const steps=Array.isArray(job.steps)?job.steps:[];return {databaseId:Number(job.databaseId||0)||null,name:String(job.name||''),status:String(job.status||''),conclusion:String(job.conclusion||''),url:String(job.url||''),failedSteps:steps.filter((step)=>FAIL_STATES.has(String(step?.conclusion||step?.status||'').toUpperCase())).map((step)=>({name:String(step?.name||''),number:Number(step?.number||0)||null,status:String(step?.status||''),conclusion:String(step?.conclusion||'')})).filter((step)=>step.name).slice(0,10)}}",
+        "function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;}",
+        "function collectCiDiagnostics(repo,run){const info={failedRun:normalizeRun(run),failedJobs:[],failedLogExcerpt:'',diagnosticsError:''};const runId=Number(run?.databaseId||0)||0;if(!runId)return info;try{const viewRaw=runGh(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']);const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();info.failedRun=normalizeRun({...run,...view});const jobs=Array.isArray(view.jobs)?view.jobs:[];info.failedJobs=jobs.map(normalizeJob).filter((job)=>job&&(FAIL_STATES.has(String(job.conclusion||'').toUpperCase())||job.failedSteps.length>0)).slice(0,10);}catch(e){info.diagnosticsError=String(e?.message||e);}try{info.failedLogExcerpt=truncateText(runGh(['run','view',String(runId),'--repo',repo,'--log-failed']),6000);}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}return info;}",
         "for(const item of ciFailures){",
         "  const repo=String(item?.repo||'').trim();",
         "  const branch=String(item?.branch||'').trim();",
         "  const n=String(item?.n||'').trim();",
-        "  if(!repo||!branch){needsAgent.push({repo,number:n,reason:'missing_repo_or_branch'});continue;}",
+        "  const failedCheckNames=Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[];",
+        "  const url=String(item?.url||'').trim();",
+        "  const title=String(item?.title||'').trim();",
+        "  if(!repo||!branch){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'missing_repo_or_branch'});continue;}",
+        "  let runs=[];",
         "  try{",
-        "    const listRaw=runGh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,conclusion,status','--limit','8']);",
-        "    const runs=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();",
-        "    const failed=(Array.isArray(runs)?runs:[]).find((r)=>{",
-        "      const c=String(r?.conclusion||'').toUpperCase();",
-        "      return c==='FAILURE'||c==='ERROR'||c==='TIMED_OUT'||c==='CANCELLED';",
-        "    });",
-        "    if(failed?.databaseId){runGh(['run','rerun',String(failed.databaseId),'--repo',repo]);rerunRequested++;}",
-        "    else{needsAgent.push({repo,number:n,reason:'no_rerunnable_failed_run_found'});}",
-        "  }catch(e){needsAgent.push({repo,number:n,reason:'ci_rerun_failed',error:String(e?.message||e)});}",
+        "    const listRaw=runGh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt','--limit','8']);",
+        "    const parsedRuns=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();",
+        "    runs=Array.isArray(parsedRuns)?parsedRuns:[];",
+        "  }catch(e){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'ci_run_listing_failed',error:String(e?.message||e)});continue;}",
+        "  const failed=runs.find((r)=>FAIL_STATES.has(String(r?.conclusion||'').toUpperCase()));",
+        "  const failedRun=normalizeRun(failed);",
+        "  if(failedRun?.databaseId&&failedRun.attempt<=MAX_AUTO_RERUN_ATTEMPT){",
+        "    try{runGh(['run','rerun',String(failedRun.databaseId),'--repo',repo]);rerunRequested++;continue;}",
+        "    catch(e){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'ci_rerun_failed',error:String(e?.message||e),...collectCiDiagnostics(repo,failedRun)});continue;}",
+        "  }",
+        "  if(failedRun?.databaseId){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'auto_rerun_limit_reached',rerunAttempts:failedRun.attempt||0,...collectCiDiagnostics(repo,failedRun)});continue;}",
+        "  needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'no_rerunnable_failed_run_found',recentRuns:runs.map(normalizeRun).filter(Boolean).slice(0,5)});",
         "}",
         "for(const item of conflicts){",
         "  needsAgent.push({repo:String(item?.repo||'').trim(),number:String(item?.n||'').trim(),branch:String(item?.branch||'').trim(),base:String(item?.base||'').trim(),reason:'merge_conflict_requires_code_resolution'});",
@@ -935,9 +1376,9 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
       failOnError: false,
       env: {
         BOSUN_FETCH_AND_CLASSIFY:
-          "(()=>{const r=$ctx.getNodeOutput('fetch-and-classify');return r&&r.success!==false?String(r.output||'{}'):'{}';})()",
+          "{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}",
       },
-    }, { x: 200, y: 640 }),
+    }, { x: 280, y: 750 }),
 
     node("fix-agent-needed", "condition.expression", "Needs Agent Fix?", {
       expression:
@@ -945,7 +1386,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "const o=$ctx.getNodeOutput('programmatic-fix')?.output;" +
         "return (JSON.parse(o||'{}').needsAgentCount||0)>0;" +
         "}catch(e){return false;}})()",
-    }, { x: 200, y: 750 }),
+    }, { x: 280, y: 860 }),
 
     node("dispatch-fix-agent", "action.run_agent", "Dispatch Fix Agent (Fallback)", {
       prompt:
@@ -953,7 +1394,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "Only work unresolved items from this JSON:\n\n" +
         "{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\n" +
         "For conflict items: rebase/merge branch onto base, resolve conflicts, run tests, push with --force-with-lease if needed.\n" +
-        "For CI-failure items: inspect failed logs, apply minimal fix, commit and push.\n" +
+        "For CI-failure items: start from failedCheckNames, failedRun, failedJobs, and failedLogExcerpt to identify the actual failing workflow step, then apply the minimal fix, commit, and push.\n" +
         "After successful repair remove bosun-needs-fix label.\n\n" +
         "STRICT RULES:\n" +
         "- Fix only CI/conflict issues. No scope creep.\n" +
@@ -964,7 +1405,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
       maxRetries: 2,
       retryDelayMs: 30_000,
       continueOnError: true,
-    }, { x: 200, y: 860 }),
+    }, { x: 280, y: 970 }),
 
     // ─────────────────────────────────────────────────────────────────────────
     // STEP 2b: Review gate — MANDATORY before any merge.
@@ -989,7 +1430,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "const ratio=Number('{{suspiciousDeletionRatio}}')||3;",
         "const minDel=Number('{{minDestructiveDeletions}}')||500;",
         "const labelReview=String('{{labelNeedsReview}}'||'bosun-needs-human-review');",
-        "const method=String('{{mergeMethod}}'||'squash').toLowerCase();",
+        "const method=String('{{mergeMethod}}'||'merge').toLowerCase();",
         "const merged=[]; const held=[]; const skipped=[];",
         "function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
         "for(const c of candidates){",
@@ -1011,20 +1452,39 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "      held.push({repo,number:n,reason:destructive?'destructive_diff':'changed_files_too_large',additions:add,deletions:del,changedFiles:changed});",
         "      continue;",
         "    }",
-        "    const checksRaw=gh(['pr','checks',n,'--repo',repo,'--json','name,state,conclusion']);",
+        "    const checksRaw=gh(['pr','checks',n,'--repo',repo,'--json','name,state,bucket']);",
         "    const checks=(()=>{try{return JSON.parse(checksRaw||'[]')}catch{return []}})();",
         "    const hasFailure=(Array.isArray(checks)?checks:[]).some((x)=>{",
-        "      const c=String(x?.conclusion||'').toUpperCase();",
         "      const s=String(x?.state||'').toUpperCase();",
-        "      return ['FAILURE','ERROR','TIMED_OUT','CANCELLED'].includes(c) || ['STARTUP_FAILURE'].includes(s);",
+        "      const b=String(x?.bucket||'').toUpperCase();",
+        "      return ['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE'].includes(s) || b==='FAIL';",
+        "    });",
+        "    const hasPending=(Array.isArray(checks)?checks:[]).some((x)=>{",
+        "      const s=String(x?.state||'').toUpperCase();",
+        "      return ['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED'].includes(s);",
         "    });",
         "    if(hasFailure){skipped.push({repo,number:n,reason:'ci_failed'});continue;}",
+        "    if(hasPending){skipped.push({repo,number:n,reason:'ci_pending'});continue;}",
+        "    if(!Array.isArray(checks)||checks.length===0){skipped.push({repo,number:n,reason:'no_checks_yet'});continue;}",
+        "    const doApplySuggestions=String('{{autoApplySuggestions}}'||'true')==='true'&&process.env.BOSUN_AUTO_APPLY_SUGGESTIONS!=='false';",
+        "    if(doApplySuggestions){",
+        "      try{",
+        "        const toolPath=require('path').resolve(process.cwd(),'tools','apply-pr-suggestions.mjs');",
+        "        if(require('fs').existsSync(toolPath)){",
+        "          const sugOut=execFileSync('node',[toolPath,'--owner',repo.split('/')[0],'--repo',repo.split('/')[1],n,'--json'],{encoding:'utf8',timeout:60000,stdio:['pipe','pipe','pipe']});",
+        "          const sugRes=(()=>{try{return JSON.parse(sugOut)}catch{return null}})();",
+        "          if(sugRes?.commitSha){console.error('[watchdog] auto-applied '+sugRes.applied+' suggestion(s) on PR #'+n+' → '+sugRes.commitSha.slice(0,8));skipped.push({repo,number:n,reason:'suggestions_applied_awaiting_ci'});continue;}",
+        "        }",
+        "      }catch(sugErr){console.error('[watchdog] suggestion auto-apply skipped for PR #'+n+': '+String(sugErr?.message||sugErr).slice(0,120));}",
+        "    }",
         "    const mergeArgs=['pr','merge',n,'--repo',repo,'--delete-branch'];",
-        "    mergeArgs.push('--auto');",
         "    if(method==='rebase') mergeArgs.push('--rebase');",
         "    else if(method==='merge') mergeArgs.push('--merge');",
         "    else mergeArgs.push('--squash');",
-        "    gh(mergeArgs);",
+        "    try{gh(mergeArgs);}catch(directErr){",
+        "      mergeArgs.push('--auto');",
+        "      gh(mergeArgs);",
+        "    }",
         "    merged.push({repo,number:n,title:String(view?.title||'')});",
         "  }catch(e){",
         "    held.push({repo,number:n,reason:'merge_attempt_failed',error:String(e?.message||e)});",
@@ -1037,30 +1497,69 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
       failOnError: false,
       env: {
         BOSUN_FETCH_AND_CLASSIFY:
-          "(()=>{const r=$ctx.getNodeOutput('fetch-and-classify');return r&&r.success!==false?String(r.output||'{}'):'{}';})()",
+          "{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}",
       },
     }, { x: 600, y: 700 }),
 
-    node("notify", "notify.telegram", "Watchdog Report", {
+    node("notify", "notify.log", "Watchdog Report", {
       message:
-        ":bug: Bosun PR Watchdog cycle complete — " +
-        "fix-dispatched: {{fixNeeded}} | candidates-reviewed: {{readyCandidates}}",
-      silent: true,
+        "Bosun PR Watchdog cycle complete — see live digest/status board for streaming updates",
+      level: "info",
     }, { x: 400, y: 900 }),
 
     node("no-prs", "notify.log", "No Bosun PRs Open", {
       message: "Bosun PR Watchdog: no open bosun-attached PRs found — idle",
       level: "info",
     }, { x: 700, y: 370 }),
+
+    // ── Sweep: delete remote branches for already-merged PRs ────────────
+    // Squash merges leave orphan branches because --auto defers deletion.
+    // This node runs after the merge gate and prunes any lingering heads.
+    node("cleanup-merged-branches", "action.run_command", "Prune Merged Branches", {
+      command: [
+        "node -e \"",
+        "const {execFileSync}=require('child_process');",
+        "function gh(a){return execFileSync('gh',a,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
+        "const repos=String(process.env.BOSUN_REPO_LIST||'').split(',').map(s=>s.trim()).filter(Boolean);",
+        "let deleted=0;",
+        "for(const repo of repos){",
+        "  try{",
+        "    const raw=gh(['pr','list','--repo',repo,'--state','merged','--label','bosun-attached','--json','number,headRefName','--limit','50']);",
+        "    const prs=(()=>{try{return JSON.parse(raw||'[]')}catch{return []}})();",
+        "    for(const pr of prs){",
+        "      const branch=String(pr?.headRefName||'').trim();",
+        "      if(!branch||branch==='main'||branch==='master')continue;",
+        "      try{gh(['api','repos/'+repo+'/git/refs/heads/'+branch,'--method','DELETE','--silent']);deleted++;}catch(e){}",
+        "    }",
+        "  }catch(e){}",
+        "}",
+        "console.log(JSON.stringify({deletedBranches:deleted}));",
+        "\"",
+      ].join(" "),
+      continueOnError: true,
+      failOnError: false,
+      env: {
+        BOSUN_REPO_LIST:
+          "{{$ctx.getNodeOutput('fetch-and-classify')?.output ? (()=>{try{const o=JSON.parse($ctx.getNodeOutput('fetch-and-classify').output);return [...new Set([...(o.fixCandidates||[]),...(o.readyCandidates||[])].map(c=>c.repo).filter(Boolean))].join(',')}catch{return ''}})() : ''}}",
+      },
+    }, { x: 400, y: 1020 }),
   ],
   edges: [
     edge("trigger",          "fetch-and-classify"),
     edge("fetch-and-classify","has-prs"),
     edge("has-prs",          "fix-needed",      { condition: "$output?.result === true" }),
     edge("has-prs",          "no-prs",          { condition: "$output?.result !== true" }),
-    // Fix path (conflicts + CI failures)
-    edge("fix-needed",       "programmatic-fix",{ condition: "$output?.result === true" }),
-    edge("fix-needed",       "review-needed",   { condition: "$output?.result !== true" }),
+    // Fix path (security failures, then conflicts + non-security CI failures)
+    edge("fix-needed",       "security-fix-needed", { condition: "$output?.result === true" }),
+    edge("fix-needed",       "review-needed",       { condition: "$output?.result !== true" }),
+    edge("security-fix-needed","programmatic-security-fix", { condition: "$output?.result === true" }),
+    edge("security-fix-needed","generic-fix-needed",       { condition: "$output?.result !== true" }),
+    edge("programmatic-security-fix", "security-agent-needed"),
+    edge("security-agent-needed", "dispatch-security-fix-agent", { condition: "$output?.result === true" }),
+    edge("security-agent-needed", "generic-fix-needed",         { condition: "$output?.result !== true" }),
+    edge("dispatch-security-fix-agent", "generic-fix-needed"),
+    edge("generic-fix-needed", "programmatic-fix", { condition: "$output?.result === true" }),
+    edge("generic-fix-needed", "review-needed",    { condition: "$output?.result !== true" }),
     edge("programmatic-fix", "fix-agent-needed"),
     edge("fix-agent-needed", "dispatch-fix-agent", { condition: "$output?.result === true" }),
     edge("fix-agent-needed", "review-needed",      { condition: "$output?.result !== true" }),
@@ -1069,6 +1568,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     edge("review-needed",    "programmatic-review", { condition: "$output?.result === true" }),
     edge("review-needed",    "notify",          { condition: "$output?.result !== true" }),
     edge("programmatic-review","notify"),
+    // Post-merge cleanup
+    edge("notify",           "cleanup-merged-branches"),
   ],
   metadata: {
     author: "bosun",
@@ -1122,6 +1623,8 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
     node("fetch-pr-state", "action.run_command", "Fetch Bosun PR State", {
       command: [
         "node -e \"",
+        "const fs=require('fs');",
+        "const path=require('path');",
         "const {execFileSync}=require('child_process');",
         "const hours=Number('{{lookbackHours}}')||24;",
         "const repoScope=String('{{repoScope}}'||'auto').trim();",
@@ -1130,18 +1633,79 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "  try{const o=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return o?JSON.parse(o):[];}",
         "  catch{return [];}",
         "}",
-        "const merged=ghJson(['pr','list','--state','merged','--label','bosun-attached','--json','number,title,body,headRefName,mergedAt','--limit','50']);",
-        "const open=ghJson(['pr','list','--state','open','--label','bosun-attached','--json','number,title,body,headRefName,isDraft','--limit','50']);",
+        "function configPath(){",
+        "  const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();",
+        "  return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json');",
+        "}",
+        "function collectReposFromConfig(){",
+        "  const repos=[];",
+        "  try{",
+        "    const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));",
+        "    const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];",
+        "    if(workspaces.length>0){",
+        "      const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();",
+        "      const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;",
+        "      const wsList=activeWs?[activeWs]:workspaces;",
+        "      for(const ws of wsList){",
+        "        for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){",
+        "          const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();",
+        "          if(slug) repos.push(slug);",
+        "        }",
+        "      }",
+        "    }",
+        "    if(repos.length===0){",
+        "      for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){",
+        "        const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();",
+        "        if(slug) repos.push(slug);",
+        "      }",
+        "    }",
+        "  }catch{}",
+        "  return repos;",
+        "}",
+        "function resolveRepoTargets(){",
+        "  if(repoScope&&repoScope!=='auto'&&repoScope!=='all'&&repoScope!=='current'){",
+        "    return [...new Set(repoScope.split(',').map(v=>v.trim()).filter(Boolean))];",
+        "  }",
+        "  if(repoScope==='current') return [''];",
+        "  const fromConfig=collectReposFromConfig();",
+        "  if(fromConfig.length>0) return [...new Set(fromConfig)];",
+        "  const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();",
+        "  if(envRepo) return [envRepo];",
+        "  return [''];",
+        "}",
+        "function parseRepoFromUrl(url){",
+        "  const raw=String(url||'');",
+        "  const marker='github.com/';",
+        "  const idx=raw.toLowerCase().indexOf(marker);",
+        "  if(idx<0) return '';",
+        "  const tail=raw.slice(idx+marker.length).split('/');",
+        "  if(tail.length<2) return '';",
+        "  const owner=String(tail[0]||'').trim();",
+        "  const repo=String(tail[1]||'').trim();",
+        "  return owner&&repo?(owner+'/'+repo):'';",
+        "}",
         "function extractTaskId(pr){",
         "  const src=String((pr.body||'')+'\\n'+(pr.title||''));",
         "  const m=src.match(/(?:Bosun-Task|VE-Task|Task-ID|task[_-]?id)[:\\s]+([a-zA-Z0-9_-]{4,64})/i);",
         "  return m?m[1].trim():null;",
         "}",
+        "const repoTargets=resolveRepoTargets();",
+        "const merged=[];",
+        "const open=[];",
+        "for(const target of repoTargets){",
+        "  const repo=String(target||'').trim();",
+        "  const mergedArgs=['pr','list','--state','merged','--label','bosun-attached','--json','number,title,body,headRefName,mergedAt,url','--limit','50'];",
+        "  const openArgs=['pr','list','--state','open','--label','bosun-attached','--json','number,title,body,headRefName,isDraft,url','--limit','50'];",
+        "  if(repo){ mergedArgs.push('--repo',repo); openArgs.push('--repo',repo); }",
+        "  for(const pr of ghJson(mergedArgs)){ merged.push({...pr,__repo:repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim()}); }",
+        "  for(const pr of ghJson(openArgs)){ open.push({...pr,__repo:repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim()}); }",
+        "}",
         "const recentMerged=merged.filter(p=>!p.mergedAt||new Date(p.mergedAt)>=new Date(since));",
         "console.log(JSON.stringify({",
         "  repoScope,",
-        "  merged:recentMerged.map(p=>({n:p.number,title:p.title,branch:p.headRefName,taskId:extractTaskId(p)})),",
-        "  open:open.filter(p=>!p.isDraft).map(p=>({n:p.number,title:p.title,branch:p.headRefName,taskId:extractTaskId(p)})),",
+        "  reposScanned: repoTargets.length,",
+        "  merged:recentMerged.map(p=>({n:p.number,repo:p.__repo||'',title:p.title,branch:p.headRefName,taskId:extractTaskId(p)})),",
+        "  open:open.filter(p=>!p.isDraft).map(p=>({n:p.number,repo:p.__repo||'',title:p.title,branch:p.headRefName,taskId:extractTaskId(p)})),",
         "}));",
         "\"",
       ].join(" "),
@@ -1167,33 +1731,61 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "const merged=Array.isArray(data.merged)?data.merged:[];",
         "const open=Array.isArray(data.open)?data.open:[];",
         "const updates=[]; const unresolved=[];",
+        "const maxBuffer=25*1024*1024;",
+        "const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':'';",
         "const taskCli=['task-cli.mjs','task/task-cli.mjs'].find(p=>fs.existsSync(p))||'';",
-        "if(!taskCli){",
-        "  console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_cli_missing'}],needsAgent:true}));",
+        "const taskRunner=cliPath?'cli':(taskCli?'task-cli':'');",
+        "if(!taskRunner){",
+        "  console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_command_missing'}],needsAgent:true}));",
         "  process.exit(0);",
         "}",
-        "function runTask(args){return execFileSync('node',[taskCli,...args],{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
-        "function getTaskStatus(id){",
-        "  try{const raw=runTask(['get',id,'--json']);return JSON.parse(raw||'{}')?.status||null;}catch{return null;}",
+        "function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();}",
+        "function parseJsonObject(raw){const txt=String(raw||'').trim();if(!txt)return null;try{return JSON.parse(txt);}catch{}const lines=txt.split(/\\r?\\n/);for(let start=0;start<lines.length;start++){const token=lines[start].trim();if(!(token==='['||token==='{'||token.startsWith('[{')||token.startsWith('{\"')||token.startsWith('[\"')))continue;const candidate=lines.slice(start).join('\\n').trim();try{return JSON.parse(candidate);}catch{}}const compact=lines.map(s=>s.trim()).filter(Boolean);for(let i=compact.length-1;i>=0;i--){const line=compact[i];if(!(line.startsWith('{')||line.startsWith('[')))continue;try{return JSON.parse(line);}catch{}}const start=txt.indexOf('{');const end=txt.lastIndexOf('}');if(start>=0&&end>start){try{return JSON.parse(txt.slice(start,end+1));}catch{}}return null;}",
+        "let taskListCache=null;",
+        "function normalizeRepo(value){return String(value||'').trim().toLowerCase();}",
+        "function listTasks(){",
+        "  if(Array.isArray(taskListCache)) return taskListCache;",
+        "  try{const raw=runTask(['list','--json']);const tasks=parseJsonObject(raw);taskListCache=Array.isArray(tasks)?tasks:[];return taskListCache;}catch{taskListCache=[];return taskListCache;}",
+        "}",
+        "function resolveTaskId(item){",
+        "  const explicit=String(item?.taskId||'').trim();",
+        "  if(explicit) return explicit;",
+        "  const branch=String(item?.branch||'').trim();",
+        "  if(!branch) return '';",
+        "  const repo=normalizeRepo(item?.repo);",
+        "  const matches=listTasks().filter((task)=>{",
+        "    const taskBranch=String(task?.branchName||'').trim();",
+        "    if(taskBranch!==branch) return false;",
+        "    const taskRepo=normalizeRepo(task?.repository||'');",
+        "    if(!repo || !taskRepo) return true;",
+        "    return taskRepo===repo;",
+        "  });",
+        "  if(matches.length===1) return String(matches[0]?.id||'').trim();",
+        "  const exactRepo=matches.find((task)=>normalizeRepo(task?.repository||'')===repo);",
+        "  return exactRepo?String(exactRepo?.id||'').trim():'';",
+        "}",
+        "function getTaskSnapshot(id){",
+        "  try{const raw=runTask(['get',id,'--json']);const task=parseJsonObject(raw);return {status:task?.status||null,reviewStatus:task?.reviewStatus||null};}catch{return {status:null,reviewStatus:null};}",
         "}",
         "for(const item of merged){",
-        "  const id=String(item?.taskId||'').trim();",
-        "  if(!id) continue;",
+        "  const id=resolveTaskId(item);",
+        "  if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'done',reason:'task_lookup_failed'});continue;}",
         "  try{runTask(['update',id,'--status','done']);updates.push({taskId:id,status:'done'});}catch(e){unresolved.push({taskId:id,status:'done',error:String(e?.message||e)});}",
         "}",
         "for(const item of open){",
-        "  const id=String(item?.taskId||'').trim();",
-        "  if(!id) continue;",
-        "  try{const current=getTaskStatus(id);if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview'});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});}",
+        "  const id=resolveTaskId(item);",
+        "  if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'inreview',reason:'task_lookup_failed'});continue;}",
+        "  try{const snap=getTaskSnapshot(id);const current=String(snap?.status||'').trim().toLowerCase();const review=String(snap?.reviewStatus||'').toLowerCase();if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview',fromStatus:current||null,reviewStatus:review||null});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});}",
         "}",
-        "console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:unresolved.length>0}));",
+        "const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim());",
+        "console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:actionableUnresolved.length>0}));",
         "\"",
       ].join(" "),
       continueOnError: true,
       failOnError: false,
       env: {
         BOSUN_FETCH_PR_STATE:
-          "(()=>{const r=$ctx.getNodeOutput('fetch-pr-state');return r&&r.success!==false?String(r.output||'{}'):'{}';})()",
+          "{{$ctx.getNodeOutput('fetch-pr-state')?.output || '{}'}}",
       },
     }, { x: 400, y: 530 }),
 
@@ -1202,7 +1794,8 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "(()=>{try{" +
         "const raw=$ctx.getNodeOutput('sync-programmatic')?.output||'{}';" +
         "const d=JSON.parse(raw);" +
-        "return d?.needsAgent===true || (Array.isArray(d?.unresolved)&&d.unresolved.length>0);" +
+        "const actionable=Array.isArray(d?.unresolved)?d.unresolved.some((item)=>String(item?.taskId||'').trim()):false;" +
+        "return d?.needsAgent===true || actionable;" +
         "}catch{return true;}})()",
     }, { x: 400, y: 615 }),
 
@@ -1501,4 +2094,3 @@ export const SDK_CONFLICT_RESOLVER_TEMPLATE = {
     },
   },
 };
-

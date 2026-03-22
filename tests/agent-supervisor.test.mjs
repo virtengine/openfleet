@@ -140,6 +140,7 @@ describe("agent-supervisor", () => {
         error: "ECONNREFUSED 127.0.0.1:443",
       });
       expect(result.situation).toBe(SITUATION.API_ERROR);
+      expect(result.intervention).toBe(INTERVENTION.CONTINUE_SIGNAL);
     });
 
     it("detects token_overflow", () => {
@@ -282,6 +283,38 @@ describe("agent-supervisor", () => {
         expect(r.intervention).toBe(INTERVENTION.NONE);
       }
     });
+
+    it("uses continue-first recovery with cooldowns for repeated api_error", async () => {
+      const first = supervisor.assess("task-api", { error: "500 Internal Server Error" });
+      expect(first.intervention).toBe(INTERVENTION.CONTINUE_SIGNAL);
+      await supervisor.intervene("task-api", first);
+      expect(mockSendContinue).toHaveBeenCalledWith("task-api");
+
+      const cooling = supervisor.assess("task-api", { error: "500 Internal Server Error" });
+      expect(cooling.intervention).toBe(INTERVENTION.COOLDOWN);
+
+      vi.advanceTimersByTime(3 * 60_000 + 1);
+      const second = supervisor.assess("task-api", { error: "500 Internal Server Error" });
+      expect(second.intervention).toBe(INTERVENTION.CONTINUE_SIGNAL);
+      await supervisor.intervene("task-api", second);
+
+      vi.advanceTimersByTime(5 * 60_000 + 1);
+      const third = supervisor.assess("task-api", { error: "500 Internal Server Error" });
+      expect(third.intervention).toBe(INTERVENTION.CONTINUE_SIGNAL);
+      await supervisor.intervene("task-api", third);
+
+      vi.advanceTimersByTime(5 * 60_000 + 1);
+      const fourth = supervisor.assess("task-api", { error: "500 Internal Server Error" });
+      expect(fourth.intervention).toBe(INTERVENTION.FORCE_NEW_THREAD);
+    });
+
+    it("resets api_error recovery when the error signature changes", async () => {
+      const first = supervisor.assess("task-api-reset", { error: "500 Internal Server Error" });
+      await supervisor.intervene("task-api-reset", first);
+
+      const changed = supervisor.assess("task-api-reset", { error: "502 Bad Gateway upstream" });
+      expect(changed.intervention).toBe(INTERVENTION.CONTINUE_SIGNAL);
+    });
   });
 
   // ── Recovery Prompts ────────────────────────────────────────────────
@@ -365,6 +398,16 @@ describe("agent-supervisor", () => {
         situation: SITUATION.IDLE_HARD,
       });
       expect(mockSendContinue).toHaveBeenCalledWith("task-1");
+    });
+
+    it("records api_error continue cooldown state", async () => {
+      const decision = supervisor.assess("task-api-intervene", {
+        error: "500 Internal Server Error",
+      });
+      await supervisor.intervene("task-api-intervene", decision);
+      const diagnostics = supervisor.getTaskDiagnostics("task-api-intervene");
+      expect(diagnostics.apiErrorRecovery.continueAttempts).toBe(1);
+      expect(diagnostics.apiErrorRecovery.cooldownRemainingMs).toBeGreaterThan(0);
     });
 
     it("dispatches INJECT_PROMPT", async () => {

@@ -1,242 +1,443 @@
-/**
- * workflow-contract.mjs — Per-project WORKFLOW.md runtime contract support
- *
- * Allows projects to define a WORKFLOW.md file that specifies:
- * - Allowed workflow templates
- * - Required checks before workflow execution
- * - Environment variables and secrets
- * - Timeout and retry policies
- *
- * Usage:
- *   WORKFLOW.md in project root:
- *   ```markdown
- *   # Bosun Workflow Contract
- *
- *   # Allowed workflow templates
- *   allowed:
- *     - ci-cd
- *     - security
- *     - task-lifecycle
- *
- *   # Required checks before execution
- *   requires:
- *     - ci: passing
- *     - pr: approved
- *
- *   # Environment variables required
- *   env:
- *     - DEPLOY_BUCKET
- *     - API_KEY
- *
- *   # Timeout overrides (ms)
- *   timeout: 300000
- *   retryLimit: 3
- *   ```
- *
- * @module workflow-contract
- */
-
 import { existsSync, readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+export const WORKFLOW_CONTRACT_FILENAME = "WORKFLOW.md";
+export const REQUIRED_WORKFLOW_CONTRACT_FIELDS = Object.freeze([
+  "terminalStates",
+  "forbiddenPatterns",
+]);
 
-const DEFAULT_CONTRACT = {
-	allowed: null,
-	requires: [],
-	env: [],
-	timeout: null,
-	retryLimit: null,
-	enabled: false,
-};
+const DEFAULT_WORKFLOW_CONTRACT = Object.freeze({
+  exists: false,
+  found: false,
+  enabled: false,
+  path: "",
+  projectRoot: "",
+  content: "",
+  raw: "",
+  projectDescription: "",
+  terminalStates: Object.freeze([]),
+  forbiddenPatterns: Object.freeze([]),
+  preferredTools: Object.freeze([]),
+  preferredModel: "",
+  escalationContact: "",
+  escalationPaths: Object.freeze([]),
+  rules: Object.freeze([]),
+  sections: Object.freeze({}),
+});
 
-let _contractCache = new Map();
+const KEY_ALIASES = Object.freeze({
+  projectdescription: "projectDescription",
+  project_description: "projectDescription",
+  description: "projectDescription",
+  terminalstates: "terminalStates",
+  terminal_states: "terminalStates",
+  forbiddenpatterns: "forbiddenPatterns",
+  forbidden_patterns: "forbiddenPatterns",
+  preferredtools: "preferredTools",
+  preferred_tools: "preferredTools",
+  preferredmodel: "preferredModel",
+  preferred_model: "preferredModel",
+  escalationcontact: "escalationContact",
+  escalation_contact: "escalationContact",
+  escalationpaths: "escalationPaths",
+  escalation_paths: "escalationPaths",
+  rules: "rules",
+});
 
-function parseContractMarkdown(content) {
-	if (!content || typeof content !== "string") {
-		return { ...DEFAULT_CONTRACT };
-	}
+const LIST_FIELDS = new Set(["terminalStates", "forbiddenPatterns", "preferredTools", "escalationPaths", "rules"]);
+const TEXT_FIELDS = new Set([
+  "projectDescription",
+  "preferredModel",
+  "escalationContact",
+]);
 
-	const lines = content.split("\n");
-	const contract = {
-		allowed: null,
-		requires: [],
-		env: [],
-		timeout: null,
-		retryLimit: null,
-		enabled: true,
-	};
+let contractCache = new Map();
 
-	let inAllowed = false;
-	for (const line of lines) {
-		const trimmed = line.trim();
-
-		if (trimmed === "# Allowed workflow templates" || trimmed === "## allowed") {
-			inAllowed = true;
-			continue;
-		}
-		if (inAllowed && trimmed.startsWith("- ")) {
-			contract.allowed = contract.allowed || [];
-			contract.allowed.push(trimmed.slice(2).trim());
-		}
-		if (inAllowed && !trimmed.startsWith("-") && trimmed !== "") {
-			inAllowed = false;
-		}
-
-		if (trimmed.startsWith("requires:")) {
-			const reqs = trimmed.slice(9).trim();
-			if (reqs) {
-				contract.requires.push(...reqs.split(",").map((r) => r.trim()));
-			}
-		}
-
-		if (trimmed.startsWith("env:")) {
-			const envs = trimmed.slice(4).trim();
-			if (envs) {
-				contract.env.push(...envs.split(",").map((e) => e.trim()));
-			}
-		}
-
-		if (trimmed.startsWith("timeout:")) {
-			const val = trimmed.slice(8).trim();
-			contract.timeout = parseInt(val, 10) || null;
-		}
-
-		if (trimmed.startsWith("retryLimit:") || trimmed.startsWith("retry_limit:")) {
-			const val = trimmed.includes(":")
-				? trimmed.slice(trimmed.indexOf(":") + 1).trim()
-				: trimmed.slice(11).trim();
-			contract.retryLimit = parseInt(val, 10) || null;
-		}
-	}
-
-	return contract;
+function createEmptyContract(projectRoot = "") {
+  return {
+    ...DEFAULT_WORKFLOW_CONTRACT,
+    projectRoot,
+    terminalStates: [],
+    forbiddenPatterns: [],
+    preferredTools: [],
+    escalationPaths: [],
+    rules: [],
+    sections: {},
+  };
 }
 
-function loadContractForProject(projectPath) {
-	if (_contractCache.has(projectPath)) {
-		return _contractCache.get(projectPath);
-	}
-
-	const workflowMdPath = resolve(projectPath, "WORKFLOW.md");
-
-	if (!existsSync(workflowMdPath)) {
-		const result = { ...DEFAULT_CONTRACT };
-		_contractCache.set(projectPath, result);
-		return result;
-	}
-
-	try {
-		const content = readFileSync(workflowMdPath, "utf8");
-		const result = parseContractMarkdown(content);
-		_contractCache.set(projectPath, result);
-		return result;
-	} catch (err) {
-		console.warn(`[workflow-contract] failed to load ${workflowMdPath}: ${err.message}`);
-		return { ...DEFAULT_CONTRACT };
-	}
+function hydrateCompatShape(contract) {
+  const normalized = contract || createEmptyContract();
+  normalized.found = normalized.exists === true;
+  normalized.raw = normalized.content || "";
+  normalized.parsed = {
+    projectDescription: normalized.projectDescription || "",
+    terminalStates: [...(normalized.terminalStates || [])],
+    forbiddenPatterns: [...(normalized.forbiddenPatterns || [])],
+    preferredTools: [...(normalized.preferredTools || [])],
+    preferredModel: normalized.preferredModel || "",
+    escalationContact: normalized.escalationContact || "",
+    escalationPaths: [...(normalized.escalationPaths || [])],
+    rules: [...(normalized.rules || [])],
+  };
+  return normalized;
 }
 
-export function getWorkflowContract(projectPath) {
-	return loadContractForProject(projectPath);
+function normalizeContractKey(rawKey = "") {
+  const trimmed = String(rawKey || "").trim();
+  if (!trimmed) return "";
+  const compact = trimmed.replace(/[\s-]+/g, "_").replace(/[^A-Za-z0-9_]/g, "").toLowerCase();
+  return KEY_ALIASES[compact] || "";
 }
 
-export function isWorkflowAllowed(projectPath, workflowId) {
-	const contract = getWorkflowContract(projectPath);
-
-	if (!contract.enabled) {
-		return { allowed: true, reason: null };
-	}
-
-	if (!contract.allowed || contract.allowed.length === 0) {
-		return { allowed: true, reason: null };
-	}
-
-	const allowed = contract.allowed.some(
-		(allowed) =>
-			allowed === workflowId ||
-			allowed === workflowId.replace(/^template-/, "") ||
-			workflowId.startsWith(allowed),
-	);
-
-	return {
-		allowed,
-		reason: allowed ? null : `Workflow "${workflowId}" not in allowed list: ${contract.allowed.join(", ")}`,
-	};
+function normalizeHeadingKey(rawHeading = "") {
+  return normalizeContractKey(String(rawHeading || "").replace(/^#+\s*/, ""));
 }
 
-export function checkRequiredChecks(projectPath) {
-	const contract = getWorkflowContract(projectPath);
-
-	if (!contract.enabled || contract.requires.length === 0) {
-		return { satisfied: true, missing: [] };
-	}
-
-	const missing = [];
-
-	for (const req of contract.requires) {
-		const [checkType, expectedStatus] = req.split(":").map((s) => s.trim());
-
-		if (checkType === "ci") {
-			missing.push({ type: "ci", status: expectedStatus, message: "CI status check not implemented" });
-		} else if (checkType === "pr") {
-			missing.push({ type: "pr", status: expectedStatus, message: "PR status check not implemented" });
-		} else if (checkType === "secret" || checkType === "env") {
-			const envVar = expectedStatus;
-			if (!process.env[envVar]) {
-				missing.push({ type: "env", var: envVar, message: `Required env var not set: ${envVar}` });
-			}
-		}
-	}
-
-	return {
-		satisfied: missing.length === 0,
-		missing,
-	};
+function stripWrappingQuotes(value = "") {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
 }
 
-export function getContractTimeout(projectPath, defaultTimeout = 300000) {
-	const contract = getWorkflowContract(projectPath);
-	return contract.timeout || defaultTimeout;
+function parseInlineList(rawValue = "") {
+  const trimmed = String(rawValue || "").trim();
+  if (!trimmed) return [];
+
+  const normalized = trimmed.startsWith("[") && trimmed.endsWith("]")
+    ? trimmed.slice(1, -1)
+    : trimmed;
+
+  return normalized
+    .split(",")
+    .map((entry) => stripWrappingQuotes(entry))
+    .filter(Boolean);
 }
 
-export function getContractRetryLimit(projectPath, defaultLimit = 3) {
-	const contract = getWorkflowContract(projectPath);
-	return contract.retryLimit || defaultLimit;
+function dedupeStrings(values = []) {
+  const out = [];
+  const seen = new Set();
+  for (const rawValue of values) {
+    const value = stripWrappingQuotes(rawValue);
+    if (!value) continue;
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
 }
 
-export function validateContract(projectPath) {
-	const contract = getWorkflowContract(projectPath);
-	const issues = [];
-
-	if (contract.enabled && contract.env.length > 0) {
-		for (const envVar of contract.env) {
-			if (!process.env[envVar]) {
-				issues.push({ type: "env", var: envVar, severity: "error", message: `Required env var not set: ${envVar}` });
-			}
-		}
-	}
-
-	return {
-		valid: issues.length === 0,
-		issues,
-		contract,
-	};
+function appendListValues(contract, key, values = []) {
+  if (!LIST_FIELDS.has(key)) return;
+  contract[key] = dedupeStrings([...(contract[key] || []), ...values]);
 }
 
-export function clearContractCache(projectPath) {
-	if (projectPath) {
-		_contractCache.delete(projectPath);
-	} else {
-		_contractCache.clear();
-	}
+function appendTextValue(contract, key, value = "") {
+  if (!TEXT_FIELDS.has(key)) return;
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return;
+  contract[key] = contract[key]
+    ? `${contract[key]}\n${trimmed}`
+    : trimmed;
 }
 
-export function listAllowedWorkflows(projectPath) {
-	const contract = getWorkflowContract(projectPath);
-	if (!contract.enabled || !contract.allowed) {
-		return null;
-	}
-	return contract.allowed;
+function storeSectionValue(contract, key) {
+  if (!key) return;
+  if (LIST_FIELDS.has(key)) {
+    contract.sections[key] = [...(contract[key] || [])];
+    return;
+  }
+  if (TEXT_FIELDS.has(key)) {
+    contract.sections[key] = contract[key] || "";
+  }
+}
+
+function finalizeCollector(contract, collector) {
+  if (!collector?.key) return;
+  const key = collector.key;
+  if (LIST_FIELDS.has(key)) {
+    appendListValues(contract, key, collector.items || []);
+  } else if (TEXT_FIELDS.has(key)) {
+    const text = (collector.lines || [])
+      .map((line) => String(line || "").trim())
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+    appendTextValue(contract, key, text);
+  }
+  storeSectionValue(contract, key);
+}
+
+function parseMarkdownHeadingLine(trimmedLine = "") {
+  const line = String(trimmedLine || "");
+  if (!line || line[0] !== "#") return null;
+  let depth = 0;
+  while (depth < line.length && depth < 6 && line[depth] === "#") depth += 1;
+  if (depth < 1 || depth > 6) return null;
+  if (line[depth] !== " ") return null;
+  return line.slice(depth + 1);
+}
+
+function isAsciiLetter(char) {
+  if (!char) return false;
+  const code = char.charCodeAt(0);
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
+function isContractFieldKeyChar(char) {
+  if (!char) return false;
+  if (char === " " || char === "_" || char === "-") return true;
+  const code = char.charCodeAt(0);
+  return (
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    (code >= 48 && code <= 57)
+  );
+}
+
+function parseContractFieldLine(rawLine = "") {
+  const line = String(rawLine || "");
+  const trimmedStart = line.trimStart();
+  if (!trimmedStart || !isAsciiLetter(trimmedStart[0])) return null;
+  let idx = 1;
+  while (idx < trimmedStart.length) {
+    const ch = trimmedStart[idx];
+    if (ch === ":") break;
+    if (!isContractFieldKeyChar(ch)) return null;
+    idx += 1;
+  }
+  if (trimmedStart[idx] !== ":") return null;
+  const key = trimmedStart.slice(0, idx).trimEnd();
+  if (!key) return null;
+  return {
+    key,
+    value: trimmedStart.slice(idx + 1).trimStart(),
+  };
+}
+
+function parseMarkdownBulletLine(rawLine = "") {
+  const line = String(rawLine || "");
+  const trimmedStart = line.trimStart();
+  if (!trimmedStart) return null;
+  const marker = trimmedStart[0];
+  if (marker !== "-" && marker !== "*") return null;
+  const separator = trimmedStart[1];
+  if (separator !== " " && separator !== "\t") return null;
+  return trimmedStart.slice(2).trimStart();
+}
+
+export function parseWorkflowContractMarkdown(content = "", projectRoot = "") {
+  const contract = createEmptyContract(projectRoot);
+  const source = String(content || "");
+  contract.content = source.trim();
+  contract.enabled = contract.content.length > 0;
+  if (!contract.enabled) return contract;
+
+  const lines = source.split(/\r?\n/);
+  let inFence = false;
+  let collector = null;
+
+  for (const rawLine of lines) {
+    const line = String(rawLine || "");
+    const trimmed = line.trim();
+
+    if (/^```/.test(trimmed)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+
+    const headingText = parseMarkdownHeadingLine(trimmed);
+    if (headingText !== null) {
+      finalizeCollector(contract, collector);
+      collector = null;
+      const headingKey = normalizeHeadingKey(headingText);
+      if (headingKey) {
+        collector = LIST_FIELDS.has(headingKey)
+          ? { key: headingKey, items: [] }
+          : { key: headingKey, lines: [] };
+      }
+      continue;
+    }
+
+    const fieldMatch = parseContractFieldLine(line);
+    if (fieldMatch) {
+      finalizeCollector(contract, collector);
+      collector = null;
+
+      const key = normalizeContractKey(fieldMatch.key);
+      if (!key) continue;
+
+      const rawValue = String(fieldMatch.value || "").trim();
+      if (LIST_FIELDS.has(key)) {
+        if (rawValue) {
+          appendListValues(contract, key, parseInlineList(rawValue));
+          storeSectionValue(contract, key);
+        } else {
+          collector = { key, items: [] };
+        }
+        continue;
+      }
+
+      if (TEXT_FIELDS.has(key)) {
+        if (rawValue) {
+          appendTextValue(contract, key, stripWrappingQuotes(rawValue));
+          storeSectionValue(contract, key);
+        } else {
+          collector = { key, lines: [] };
+        }
+      }
+      continue;
+    }
+
+    if (!collector) continue;
+
+    if (LIST_FIELDS.has(collector.key)) {
+      const bulletText = parseMarkdownBulletLine(line);
+      if (bulletText !== null) {
+        collector.items.push(stripWrappingQuotes(bulletText));
+        continue;
+      }
+      if (!trimmed) continue;
+      finalizeCollector(contract, collector);
+      collector = null;
+      continue;
+    }
+
+    if (TEXT_FIELDS.has(collector.key)) {
+      if (!trimmed) {
+        if ((collector.lines || []).length > 0) collector.lines.push("");
+        continue;
+      }
+      collector.lines.push(trimmed);
+    }
+  }
+
+  finalizeCollector(contract, collector);
+  contract.projectDescription = String(contract.projectDescription || "").trim();
+  contract.preferredModel = String(contract.preferredModel || "").trim();
+  contract.escalationContact = String(contract.escalationContact || "").trim();
+  contract.terminalStates = dedupeStrings(contract.terminalStates);
+  contract.forbiddenPatterns = dedupeStrings(contract.forbiddenPatterns);
+  contract.preferredTools = dedupeStrings(contract.preferredTools);
+  contract.escalationPaths = dedupeStrings(contract.escalationPaths);
+  contract.rules = dedupeStrings(contract.rules);
+  storeSectionValue(contract, "projectDescription");
+  storeSectionValue(contract, "preferredTools");
+  storeSectionValue(contract, "preferredModel");
+  storeSectionValue(contract, "escalationContact");
+  storeSectionValue(contract, "escalationPaths");
+  storeSectionValue(contract, "rules");
+  return hydrateCompatShape(contract);
+}
+
+export function loadWorkflowContract(projectRoot = process.cwd(), options = {}) {
+  const normalizedRoot = resolve(projectRoot || process.cwd());
+  const workflowMdPath = resolve(normalizedRoot, WORKFLOW_CONTRACT_FILENAME);
+  const useCache = options.useCache !== false;
+
+  if (useCache && contractCache.has(normalizedRoot)) {
+    return contractCache.get(normalizedRoot);
+  }
+
+  if (!existsSync(workflowMdPath)) {
+    const empty = {
+      ...createEmptyContract(normalizedRoot),
+      path: workflowMdPath,
+    };
+    hydrateCompatShape(empty);
+    if (useCache) contractCache.set(normalizedRoot, empty);
+    return empty;
+  }
+
+  const content = readFileSync(workflowMdPath, "utf8");
+  const contract = parseWorkflowContractMarkdown(content, normalizedRoot);
+  contract.exists = true;
+  contract.found = true;
+  contract.enabled = true;
+  contract.path = workflowMdPath;
+  contract.raw = contract.content;
+  hydrateCompatShape(contract);
+  if (useCache) contractCache.set(normalizedRoot, contract);
+  return contract;
+}
+
+export function validateWorkflowContract(input) {
+  const contract = typeof input === "string"
+    ? loadWorkflowContract(input, { useCache: false })
+    : { ...createEmptyContract(input?.projectRoot || ""), ...(input || {}) };
+
+  const errors = [];
+  if (!contract.exists && !contract.enabled) {
+    return { valid: true, errors, contract };
+  }
+
+  for (const field of REQUIRED_WORKFLOW_CONTRACT_FIELDS) {
+    const values = Array.isArray(contract[field]) ? contract[field] : [];
+    if (values.length === 0) {
+      const hint = field === "terminalStates"
+        ? "Add `terminalStates: [done]` or a `## Terminal States` section."
+        : "Add `forbiddenPatterns:` with at least one disallowed shell pattern.";
+      errors.push({
+        field,
+        message: `WORKFLOW.md is missing required field \`${field}\`. ${hint}`,
+      });
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    contract,
+  };
+}
+
+export function buildWorkflowContractPromptBlock(input) {
+  const contract = typeof input === "string"
+    ? loadWorkflowContract(input)
+    : input;
+
+  if (!contract?.exists || !contract?.content) return "";
+
+  const lines = [
+    "## WORKFLOW.md Contract",
+    `- **Source:** ${contract.path}`,
+    "- **Behavior:** Treat this file as a project-specific runtime contract.",
+    "",
+    contract.content.trim(),
+  ];
+
+  return lines.join("\n").trim();
+}
+
+export function clearWorkflowContractCache(projectRoot) {
+  if (!projectRoot) {
+    contractCache.clear();
+    return;
+  }
+  contractCache.delete(resolve(projectRoot));
+}
+
+export function getWorkflowContract(projectRoot) {
+  return loadWorkflowContract(projectRoot);
+}
+
+export function clearContractCache(projectRoot) {
+  clearWorkflowContractCache(projectRoot);
+}
+
+export function hasWorkflowContract(projectRoot) {
+  return loadWorkflowContract(projectRoot).exists;
+}
+
+export function validateContract(projectRoot) {
+  return validateWorkflowContract(projectRoot);
 }

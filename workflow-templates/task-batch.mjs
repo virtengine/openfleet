@@ -16,7 +16,9 @@
  *         → loop.for_each (fan-out, maxConcurrent tasks at a time)
  *           → sub-workflow: template-task-lifecycle per task
  *         → action.set_variable (record batch results)
- *           → notify.log (summary)
+ *           → condition.expression (any failures?)
+ *             → notify.telegram (failure alert)
+ *             → notify.log (summary)
  */
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
@@ -35,8 +37,9 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
     "using the Task Lifecycle sub-workflow. Automatically picks up tasks " +
     "when backlog drops below threshold, fans out execution across " +
     "available slots, and reports batch results.",
-  category: "lifecycle",
+  category: "task-execution",
   enabled: true,
+  core: true,
   recommended: true,
   trigger: "trigger.task_available",
   variables: {
@@ -50,7 +53,7 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
     // ── Trigger: Tasks available for processing ──────────────────────────
     node("trigger", "trigger.task_available", "Tasks Available?", {
       maxParallel: "{{maxConcurrent}}",
-      pollIntervalMs: 60000,
+      pollIntervalMs: 15000,
       status: "{{pollStatus}}",
     }, { x: 400, y: 50 }),
 
@@ -63,7 +66,18 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
     node("query-tasks", "action.run_command", "Query Task Backlog", {
       command: "node",
       args: ["-e", `
-        import("./kanban-adapter.mjs")
+        const fs = require("node:fs");
+        const path = require("node:path");
+        const { pathToFileURL } = require("node:url");
+        const cwd = process.cwd();
+        const mirrorMarker = (path.sep + ".bosun" + path.sep + "workspaces" + path.sep).toLowerCase();
+        let repoRoot = cwd;
+        if (cwd.toLowerCase().includes(mirrorMarker)) {
+          const sourceRepoRoot = path.resolve(cwd, "..", "..", "..", "..");
+          if (fs.existsSync(path.join(sourceRepoRoot, "kanban", "kanban-adapter.mjs"))) repoRoot = sourceRepoRoot;
+        }
+        const kanbanModuleUrl = pathToFileURL(path.join(repoRoot, "kanban", "kanban-adapter.mjs")).href;
+        import(kanbanModuleUrl)
           .then(k => k.listTasks(undefined, { status: "todo" }))
           .then(tasks => {
             const filtered = (tasks || []).filter((task) => {
@@ -90,7 +104,7 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
 
     // ── Fan-out: dispatch each task to the lifecycle workflow ─────────────
     node("dispatch-tasks", "loop.for_each", "Dispatch Tasks", {
-      items: "{{queryResult}}",
+      items: "{{query-tasks.output}}",
       itemVariable: "currentTask",
       indexVariable: "taskIndex",
       maxConcurrent: "{{maxConcurrent}}",
@@ -109,11 +123,19 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
       value: "{{dispatch-tasks}}",
     }, { x: 400, y: 570 }),
 
-    // ── Notify on completion ─────────────────────────────────────────────
-    node("notify-complete", "notify.telegram", "Batch Summary", {
-      channel: "{{notifyChannel}}",
-      message: "Task batch completed: {{batchResult.successCount}}/{{batchResult.totalItems}} succeeded",
+    node("has-batch-failures", "condition.expression", "Any Batch Failures?", {
+      expression: "Number($data?.batchResult?.failCount || 0) > 0",
     }, { x: 400, y: 700 }),
+
+    node("notify-failures", "notify.telegram", "Batch Failure Alert", {
+      channel: "{{notifyChannel}}",
+      message: "Task batch needs attention: {{batchResult.failCount}} failed out of {{batchResult.totalItems}} ({{batchResult.successCount}} succeeded)",
+    }, { x: 220, y: 830 }),
+
+    node("log-summary", "notify.log", "Batch Summary", {
+      message: "Task batch completed: {{batchResult.successCount}}/{{batchResult.totalItems}} succeeded ({{batchResult.failCount}} failed)",
+      level: "info",
+    }, { x: 580, y: 830 }),
   ],
   edges: [
     edge("trigger", "check-coordinator"),
@@ -121,7 +143,9 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
     edge("query-tasks", "dispatch-tasks"),
     edge("dispatch-tasks", "join-dispatch"),
     edge("join-dispatch", "record-results"),
-    edge("record-results", "notify-complete"),
+    edge("record-results", "has-batch-failures"),
+    edge("has-batch-failures", "notify-failures", { condition: "$output?.result === true" }),
+    edge("has-batch-failures", "log-summary", { condition: "$output?.result !== true" }),
   ],
   metadata: {
     author: "bosun",
@@ -145,7 +169,7 @@ export const TASK_BATCH_PR_TEMPLATE = {
     "Simplified batch processor that picks todo tasks, runs the agent on " +
     "each, and creates pull requests for any that produce commits. Ideal " +
     "for autonomous mode where tasks should flow straight to PRs.",
-  category: "lifecycle",
+  category: "task-execution",
   enabled: true,
   recommended: false,
   trigger: "trigger.task_available",
@@ -155,13 +179,12 @@ export const TASK_BATCH_PR_TEMPLATE = {
     maxBatchSize: 5,
     defaultBaseBranch: "main",
     draftPR: true,
-    notifyChannel: "telegram",
   },
   nodes: [
     // ── Trigger ──────────────────────────────────────────────────────────
     node("trigger", "trigger.task_available", "Tasks Available?", {
       maxParallel: "{{maxConcurrent}}",
-      pollIntervalMs: 60000,
+      pollIntervalMs: 15000,
       status: "{{pollStatus}}",
     }, { x: 400, y: 50 }),
 
@@ -169,7 +192,18 @@ export const TASK_BATCH_PR_TEMPLATE = {
     node("query-tasks", "action.run_command", "List Todo Tasks", {
       command: "node",
       args: ["-e", `
-        import("./kanban-adapter.mjs")
+        const fs = require("node:fs");
+        const path = require("node:path");
+        const { pathToFileURL } = require("node:url");
+        const cwd = process.cwd();
+        const mirrorMarker = (path.sep + ".bosun" + path.sep + "workspaces" + path.sep).toLowerCase();
+        let repoRoot = cwd;
+        if (cwd.toLowerCase().includes(mirrorMarker)) {
+          const sourceRepoRoot = path.resolve(cwd, "..", "..", "..", "..");
+          if (fs.existsSync(path.join(sourceRepoRoot, "kanban", "kanban-adapter.mjs"))) repoRoot = sourceRepoRoot;
+        }
+        const kanbanModuleUrl = pathToFileURL(path.join(repoRoot, "kanban", "kanban-adapter.mjs")).href;
+        import(kanbanModuleUrl)
           .then(k => k.listTasks(undefined, { status: "todo" }))
           .then(tasks => {
             const filtered = (tasks || []).filter((task) => {
@@ -194,7 +228,7 @@ export const TASK_BATCH_PR_TEMPLATE = {
 
     // ── Fan-out: per-task agent + PR ─────────────────────────────────────
     node("for-each-task", "loop.for_each", "Process Each Task", {
-      items: "{{queryResult}}",
+      items: "{{query-tasks.output}}",
       itemVariable: "task",
       indexVariable: "idx",
       maxConcurrent: "{{maxConcurrent}}",
@@ -240,16 +274,30 @@ export const TASK_BATCH_PR_TEMPLATE = {
       status: "inreview",
     }, { x: 400, y: 1090 }),
 
-    node("join-batch-outcomes", "flow.join", "Join Batch Outcomes", {
-      mode: "all",
-      sourceNodeIds: ["detect-commits", "set-inreview"],
-      includeSkipped: true,
+    node("handoff-pr-progressor", "action.execute_workflow", "Dispatch PR Progressor", {
+      workflowId: "template-bosun-pr-progressor",
+      mode: "dispatch",
+      input: {
+        taskId: "{{task.taskId}}",
+        taskTitle: "{{task.taskTitle}}",
+        branch: "{{task.branch}}",
+        baseBranch: "{{defaultBaseBranch}}",
+        prNumber: "{{$ctx.getNodeOutput('create-pr')?.prNumber ?? null}}",
+        prUrl: "{{$ctx.getNodeOutput('create-pr')?.prUrl || ''}}",
+        repo: "{{$ctx.getNodeOutput('create-pr')?.repoSlug || $data?.repo || $data?.repoSlug || $data?.repository || ''}}",
+      },
     }, { x: 400, y: 1160 }),
 
+    node("join-batch-outcomes", "flow.join", "Join Batch Outcomes", {
+      mode: "all",
+      sourceNodeIds: ["detect-commits", "handoff-pr-progressor"],
+      includeSkipped: true,
+    }, { x: 400, y: 1230 }),
+
     // ── Batch complete notification ──────────────────────────────────────
-    node("notify", "notify.telegram", "Batch Complete", {
-      channel: "{{notifyChannel}}",
+    node("notify", "notify.log", "Batch Complete", {
       message: "Task batch PR pipeline complete",
+      level: "info",
     }, { x: 400, y: 1220 }),
   ],
   edges: [
@@ -262,7 +310,8 @@ export const TASK_BATCH_PR_TEMPLATE = {
     edge("push-branch", "create-pr"),
     edge("create-pr", "set-inreview"),
     edge("detect-commits", "join-batch-outcomes", { condition: "result.hasNewCommits !== true" }),
-    edge("set-inreview", "join-batch-outcomes"),
+    edge("set-inreview", "handoff-pr-progressor"),
+    edge("handoff-pr-progressor", "join-batch-outcomes"),
     edge("join-batch-outcomes", "notify"),
   ],
   metadata: {
@@ -271,5 +320,6 @@ export const TASK_BATCH_PR_TEMPLATE = {
     createdAt: "2026-03-15T00:00:00Z",
     templateVersion: "1.0.0",
     tags: ["task", "batch", "pr", "agent", "autonomous"],
+    requiredTemplates: ["template-bosun-pr-progressor"],
   },
 };

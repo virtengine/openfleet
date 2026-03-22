@@ -827,7 +827,7 @@ function launchCodexExec(prompt, cwd, timeoutMs) {
         try {
           const parsed = new URL(baseUrl);
           const host = String(parsed.hostname || "").toLowerCase();
-          return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+          return host === "openai.azure.com" || host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com");
         } catch {
           return false;
         }

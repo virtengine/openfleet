@@ -395,6 +395,39 @@ describe("github-oauth-portal", () => {
     expect(events).toContain("mention");
   });
 
+  it("POST /webhook emits github:pull_request_review on review submitted", async () => {
+    const result = await portal.startOAuthPortal({ port: 0, host: "127.0.0.1", quiet: true });
+    server = result.server;
+    baseUrl = result.url;
+
+    const events = [];
+    result.webhookEvents.on("github:pull_request_review", (event) => {
+      events.push(`review:${event.action}`);
+    });
+
+    const body = JSON.stringify({
+      action: "submitted",
+      review: { user: { login: "some-user" }, state: "approved" },
+      pull_request: { number: 99 },
+      repository: { full_name: "test/repo" },
+    });
+    const sig = signBody(WEBHOOK_SECRET, body);
+
+    await fetch(`${baseUrl}/webhook`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-GitHub-Event": "pull_request_review",
+        "X-Hub-Signature-256": sig,
+      },
+      body,
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(events).toContain("review:submitted");
+  });
+
   // ── 404 ───────────────────────────────────────────────────────────────────
 
   it("unknown route returns 404", async () => {

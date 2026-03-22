@@ -1,16 +1,20 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Architecture — Bosun Docs</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+    rel="stylesheet" />
   <link rel="stylesheet" href="../css/main.css" />
   <link rel="stylesheet" href="../css/docs.css" />
   <link rel="icon" type="image/png" href="../favicon.png" />
 </head>
+
 <body>
 
   <div class="docs-sidebar-backdrop"></div>
@@ -34,6 +38,7 @@
         <ul class="sidebar-nav">
           <li><a href="./">Overview</a></li>
           <li><a href="getting-started.html">Quick Start</a></li>
+          <li><a href="installation.html">Installation &amp; Deployment</a></li>
           <li><a href="configuration.html">Configuration</a></li>
         </ul>
       </div>
@@ -68,21 +73,60 @@
 
       <table>
         <thead>
-          <tr><th>Module</th><th>Role</th></tr>
+          <tr>
+            <th>Module</th>
+            <th>Role</th>
+          </tr>
         </thead>
         <tbody>
-          <tr><td><code>cli.mjs</code></td><td>Main CLI entrypoint and runtime command router.</td></tr>
-          <tr><td><code>setup.mjs</code></td><td>Setup flow entrypoint.</td></tr>
-          <tr><td><code>infra/</code></td><td>Monitor loop, restart logic, maintenance, presence, sessions, runtime plumbing.</td></tr>
-          <tr><td><code>workflow/</code></td><td>Workflow engine, node implementations, adapters, and execution helpers.</td></tr>
-          <tr><td><code>workflow-templates/</code></td><td>Template library for lifecycle, review, maintenance, recovery, and orchestration flows.</td></tr>
-          <tr><td><code>task/</code></td><td>Task lifecycle, task CLI, execution ownership, claims, and archive behavior.</td></tr>
-          <tr><td><code>server/</code></td><td>Mini App backend, setup server, and related HTTP endpoints.</td></tr>
-          <tr><td><code>ui/</code></td><td>Mini App frontend and shared browser assets.</td></tr>
-          <tr><td><code>telegram/</code></td><td>Bot, sentinel, chat integration, and notification surfaces.</td></tr>
-          <tr><td><code>workspace/</code></td><td>Workspace registry, context indexing, worktree and shared-state support.</td></tr>
-          <tr><td><code>agent/</code> and <code>shell/</code></td><td>Executor integrations, prompts, hooks, transport layers, and fleet coordination.</td></tr>
-          <tr><td><code>github/</code> and <code>kanban/</code></td><td>GitHub auth/webhooks and board-adapter logic including Vibe-Kanban bridging.</td></tr>
+          <tr>
+            <td><code>cli.mjs</code></td>
+            <td>Main CLI entrypoint and runtime command router.</td>
+          </tr>
+          <tr>
+            <td><code>setup.mjs</code></td>
+            <td>Setup flow entrypoint.</td>
+          </tr>
+          <tr>
+            <td><code>infra/</code></td>
+            <td>Monitor loop, restart logic, maintenance, presence, sessions, runtime plumbing.</td>
+          </tr>
+          <tr>
+            <td><code>workflow/</code></td>
+            <td>Workflow engine, node implementations, adapters, and execution helpers.</td>
+          </tr>
+          <tr>
+            <td><code>workflow-templates/</code></td>
+            <td>Template library for lifecycle, review, maintenance, recovery, and orchestration flows.</td>
+          </tr>
+          <tr>
+            <td><code>task/</code></td>
+            <td>Task lifecycle, task CLI, execution ownership, claims, and archive behavior.</td>
+          </tr>
+          <tr>
+            <td><code>server/</code></td>
+            <td>Mini App backend, setup server, and related HTTP endpoints.</td>
+          </tr>
+          <tr>
+            <td><code>ui/</code></td>
+            <td>Mini App frontend and shared browser assets.</td>
+          </tr>
+          <tr>
+            <td><code>telegram/</code></td>
+            <td>Bot, sentinel, chat integration, and notification surfaces.</td>
+          </tr>
+          <tr>
+            <td><code>workspace/</code></td>
+            <td>Workspace registry, context indexing, worktree and shared-state support.</td>
+          </tr>
+          <tr>
+            <td><code>agent/</code> and <code>shell/</code></td>
+            <td>Executor integrations, prompts, hooks, transport layers, and fleet coordination.</td>
+          </tr>
+          <tr>
+            <td><code>github/</code> and <code>kanban/</code></td>
+            <td>GitHub auth/webhooks and board-adapter logic including Vibe-Kanban bridging.</td>
+          </tr>
         </tbody>
       </table>
 
@@ -114,29 +158,52 @@ infra/monitor.mjs
 
       <p>
         Current Bosun development emphasizes workflow-first lifecycle ownership.
-        That means task execution, review, PR management, and repair paths increasingly live in reusable workflow templates
+        That means task execution, review, PR management, and repair paths increasingly live in reusable workflow
+        templates
         rather than ad hoc legacy runtime branches.
       </p>
 
       <ul>
         <li><code>workflow/</code> contains execution primitives and nodes.</li>
         <li><code>workflow-templates/</code> contains high-level lifecycle templates.</li>
-        <li><code>task/</code> and <code>infra/</code> remain the runtime owners for persistence and orchestration around those flows.</li>
+        <li><code>task/</code> and <code>infra/</code> remain the runtime owners for persistence and orchestration
+          around those flows.</li>
       </ul>
 
       <h2 id="surfaces">Operator surfaces</h2>
 
       <table>
         <thead>
-          <tr><th>Surface</th><th>Current backing modules</th></tr>
+          <tr>
+            <th>Surface</th>
+            <th>Current backing modules</th>
+          </tr>
         </thead>
         <tbody>
-          <tr><td><strong>CLI</strong></td><td><code>cli.mjs</code>, <code>task/task-cli.mjs</code>, related companion binaries</td></tr>
-          <tr><td><strong>Mini App</strong></td><td><code>server/ui-server.mjs</code> + <code>ui/</code></td></tr>
-          <tr><td><strong>Setup portal</strong></td><td><code>server/setup-web-server.mjs</code> + setup flow</td></tr>
-          <tr><td><strong>Telegram</strong></td><td><code>telegram/telegram-bot.mjs</code>, <code>telegram/telegram-sentinel.mjs</code></td></tr>
-          <tr><td><strong>Desktop portal</strong></td><td><code>desktop/</code> plus CLI desktop entry flags</td></tr>
-          <tr><td><strong>Voice</strong></td><td><code>voice/</code> and UI voice modules</td></tr>
+          <tr>
+            <td><strong>CLI</strong></td>
+            <td><code>cli.mjs</code>, <code>task/task-cli.mjs</code>, related companion binaries</td>
+          </tr>
+          <tr>
+            <td><strong>Mini App</strong></td>
+            <td><code>server/ui-server.mjs</code> + <code>ui/</code></td>
+          </tr>
+          <tr>
+            <td><strong>Setup portal</strong></td>
+            <td><code>server/setup-web-server.mjs</code> + setup flow</td>
+          </tr>
+          <tr>
+            <td><strong>Telegram</strong></td>
+            <td><code>telegram/telegram-bot.mjs</code>, <code>telegram/telegram-sentinel.mjs</code></td>
+          </tr>
+          <tr>
+            <td><strong>Desktop portal</strong></td>
+            <td><code>desktop/</code> plus CLI desktop entry flags</td>
+          </tr>
+          <tr>
+            <td><strong>Voice</strong></td>
+            <td><code>voice/</code> and UI voice modules</td>
+          </tr>
         </tbody>
       </table>
 
@@ -180,4 +247,5 @@ infra/monitor.mjs
   <script src="../js/analytics.js"></script>
   <script src="../js/main.js"></script>
 </body>
+
 </html>

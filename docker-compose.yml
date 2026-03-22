@@ -1,0 +1,44 @@
+# ── Bosun Docker Compose ──────────────────────────────────────────────────────
+# Quick start:  docker compose up -d
+# Logs:         docker compose logs -f bosun
+# Stop:         docker compose down
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+  bosun:
+    build: .
+    image: bosun:latest
+    container_name: bosun
+    restart: unless-stopped
+    ports:
+      - "${BOSUN_PORT:-3080}:3080"
+    volumes:
+      # Persistent data (config, state, logs, caches)
+      - bosun-data:/data
+      # Optional: mount a local workspace for repo access
+      # - /path/to/your/repos:/workspace:rw
+    environment:
+      - BOSUN_DOCKER=1
+      - BOSUN_HOME=/data
+      - BOSUN_DIR=/data
+      # ── Required: set these before first run ──
+      # - TELEGRAM_BOT_TOKEN=
+      # - TELEGRAM_CHAT_ID=
+      # ── AI provider (at least one required) ──
+      # - OPENAI_API_KEY=
+      # - ANTHROPIC_API_KEY=
+      # - GEMINI_API_KEY=
+      # ── Optional ──
+      # - BOSUN_API_KEY=your-secret-key-here  # API key for external clients (Electron app, CLI)
+      # - GITHUB_TOKEN=
+      # - BOSUN_PORT=3080
+    healthcheck:
+      test: ["CMD-SHELL", "curl -ksf https://localhost:3080/healthz || curl -sf http://localhost:3080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  bosun-data:
+    driver: local

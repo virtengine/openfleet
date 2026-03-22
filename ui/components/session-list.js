@@ -8,8 +8,20 @@ import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import htm from "htm";
 import { signal, computed, effect } from "@preact/signals";
 import { apiFetch, onWsMessage } from "../modules/api.js";
-import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
-import { formatRelative, truncate } from "../modules/utils.js";
+import {
+  buildSessionApiPath,
+  createSessionLoadMeta,
+  deriveSessionStaleReason,
+  formatSessionFreshnessTimestamp,
+  getSessionLifecycleState,
+  getSessionManualRetryState,
+  getSessionRecencyTimestamp,
+  getSessionRuntimeState,
+  markSessionLoadFailure,
+  markSessionLoadSuccess,
+  resolveSessionWorkspaceHint,
+} from "../modules/session-api.js";
+import { formatDate, formatRelative, truncate } from "../modules/utils.js";
 import { resolveIcon } from "../modules/icon-utils.js";
 import {
   List, ListItem, ListItemButton, ListItemText, ListItemIcon,
@@ -37,6 +49,8 @@ export const selectedSessionId = signal(readPersistedSelectedSessionId());
 export const sessionMessages = signal([]);
 export const sessionMessagesSessionId = signal("");
 export const sessionsError = signal(null);
+export const sessionsLoading = signal(false);
+export const sessionLoadMeta = signal(createSessionLoadMeta());
 /** Pagination metadata from the last loadSessionMessages call */
 export const sessionPagination = signal(null);
 
@@ -61,6 +75,25 @@ let _wsListenerReady = false;
 
 /** Track the last filter used so createSession can reload with the same filter */
 let _lastLoadFilter = {};
+let _sessionRetryTimer = null;
+
+function clearSessionRetryTimer() {
+  if (_sessionRetryTimer) {
+    clearTimeout(_sessionRetryTimer);
+    _sessionRetryTimer = null;
+  }
+}
+
+function scheduleSessionRetry(meta) {
+  clearSessionRetryTimer();
+  const nextRetryAt = Date.parse(String(meta?.nextRetryAt || ""));
+  if (!Number.isFinite(nextRetryAt)) return;
+  const delayMs = Math.max(0, nextRetryAt - Date.now());
+  _sessionRetryTimer = setTimeout(() => {
+    _sessionRetryTimer = null;
+    loadSessions(_lastLoadFilter, { source: "retry" }).catch(() => {});
+  }, delayMs);
+}
 
 function sessionPath(id, action = "") {
   const session = (sessionsData.peek() || []).find((entry) => entry?.id === id) || null;
@@ -72,7 +105,7 @@ function sessionPath(id, action = "") {
 }
 
 /* ─── Data loaders ─── */
-export async function loadSessions(filter = {}) {
+export async function loadSessions(filter = {}, _opts = {}) {
   const normalizedFilter = {
     ...(filter && typeof filter === "object" ? filter : {}),
   };
@@ -80,6 +113,7 @@ export async function loadSessions(filter = {}) {
     normalizedFilter.workspace = "active";
   }
   _lastLoadFilter = normalizedFilter;
+  sessionsLoading.value = true;
   try {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(normalizedFilter)) {
@@ -96,9 +130,26 @@ export async function loadSessions(filter = {}) {
         selectedSessionId.value = null;
       }
     }
+    clearSessionRetryTimer();
+    const responseMeta = createSessionLoadMeta({
+      ...sessionLoadMeta.peek(),
+      ...(res?.loadMeta && typeof res.loadMeta === "object" ? res.loadMeta : {}),
+    });
+    sessionLoadMeta.value = markSessionLoadSuccess(
+      responseMeta,
+      responseMeta.lastSuccessAt || Date.now(),
+    );
     sessionsError.value = null;
-  } catch {
-    sessionsError.value = "unavailable";
+  } catch (error) {
+    const nextMeta = markSessionLoadFailure(sessionLoadMeta.peek(), Date.now(), {
+      staleReason: deriveSessionStaleReason(error),
+    });
+    sessionLoadMeta.value = nextMeta;
+    scheduleSessionRetry(nextMeta);
+    const hasCachedData = Array.isArray(sessionsData.peek()) && sessionsData.peek().length > 0;
+    sessionsError.value = hasCachedData || Boolean(nextMeta.lastSuccessAt) ? null : "unavailable";
+  } finally {
+    sessionsLoading.value = false;
   }
 }
 
@@ -460,19 +511,22 @@ export function initSessionWsListener() {
  */
 export async function createSession(options = {}) {
   const type = options?.type || "manual";
+  const allowReuseFresh = options?.reuseFresh !== false;
 
   // Duplicate prevention: if a fresh empty session of same type exists, reuse it
   const existing = sessionsData.value || [];
-  const fresh = existing.find(
-    (s) =>
-      s.type === type &&
-      s.status === "active" &&
-      (s.turnCount || 0) === 0 &&
-      (!s.preview || s.preview.trim() === ""),
-  );
-  if (fresh) {
-    selectedSessionId.value = fresh.id;
-    return { ok: true, session: fresh };
+  if (allowReuseFresh) {
+    const fresh = existing.find(
+      (s) =>
+        s.type === type &&
+        getSessionLifecycleState(s).isActive &&
+        (s.turnCount || 0) === 0 &&
+        (!s.preview || s.preview.trim() === ""),
+    );
+    if (fresh) {
+      selectedSessionId.value = fresh.id;
+      return { ok: true, session: fresh };
+    }
   }
 
   try {
@@ -532,14 +586,12 @@ export async function resumeSession(id) {
 }
 
 /* ─── Helpers ─── */
-const STATUS_COLOR_MAP = {
-  running: "var(--accent)",
-  active: "var(--accent)",
-  paused: "var(--text-hint)",
-  completed: "var(--color-done)",
-  done: "var(--color-done)",
+const STATUS_TONE_COLOR_MAP = {
+  success: "var(--color-done)",
+  info: "var(--accent)",
+  warning: "var(--color-warning)",
   error: "var(--color-error)",
-  archived: "var(--text-hint)",
+  default: "var(--text-hint)",
 };
 
 export const SESSION_VIEW_FILTER = Object.freeze({
@@ -556,12 +608,11 @@ function normalizeSessionViewFilter(value) {
 }
 
 function getSessionStatusKey(session) {
-  return String(session?.status || "idle").trim().toLowerCase();
+  return getSessionLifecycleState(session).key;
 }
 
 function isActiveSession(session) {
-  const status = getSessionStatusKey(session);
-  return status === "active" || status === "running";
+  return getSessionLifecycleState(session).isActive;
 }
 
 function isHistoricSession(session) {
@@ -593,11 +644,25 @@ function SwipeableSessionItem({
 
   const title = s.title || s.taskId || "Untitled";
   const isArchived = s.status === "archived";
-  const isCompleted = s.status === "completed";
-  const statusKey = String(s.status || "idle").toLowerCase().replace(/\s+/g, "-");
-  const typeLabel = (s.type || "session").toUpperCase();
-  const dotColor = STATUS_COLOR_MAP[statusKey] || "var(--text-hint)";
-  const preview = s.lastMessage && !isArchived ? truncate(s.lastMessage, 50) : "";
+
+  const lifecycleState = getSessionLifecycleState(s);
+  const runtimeState = getSessionRuntimeState(s);
+  const recencyAt = getSessionRecencyTimestamp(s);
+  const typeLabel = String(s.type || "session").trim().replace(/[-_]+/g, " ");
+  const typeSummary = typeLabel
+    ? typeLabel.charAt(0).toUpperCase() + typeLabel.slice(1)
+    : "Session";
+  const dotColor = STATUS_TONE_COLOR_MAP[runtimeState.tone] || STATUS_TONE_COLOR_MAP[lifecycleState.tone] || "var(--text-hint)";
+  const preview = s.lastMessage && !isArchived ? truncate(s.lastMessage, 36) : "";
+  const metaSummary = [
+    `Type: ${typeSummary}`,
+    `Lifecycle: ${lifecycleState.label}`,
+    `Runtime: ${runtimeState.label}`,
+    preview || "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const freshnessLabel = recencyAt ? formatRelative(recencyAt) : "unknown";
 
   /* ── Touch / pointer swipe handling ── */
   function onPointerDown(e) {
@@ -804,7 +869,7 @@ function SwipeableSessionItem({
             : html`
                 <${ListItemText}
                   primary=${truncate(title, 32)}
-                  secondary=${preview || null}
+                  secondary=${metaSummary}
                   primaryTypographyProps=${{
                     variant: "body2",
                     fontWeight: isSelected ? 600 : 400,
@@ -817,14 +882,8 @@ function SwipeableSessionItem({
                 />
               `}
           <${Stack} direction="row" spacing=${0.5} alignItems="center" sx=${{ ml: "auto", flexShrink: 0, pl: 1 }}>
-            <${Chip}
-              label=${typeLabel}
-              size="small"
-              variant="outlined"
-              sx=${{ fontSize: "0.65rem", height: 18, "& .MuiChip-label": { px: 0.5 } }}
-            />
             <${Typography} variant="caption" color="text.secondary" noWrap>
-              ${formatRelative(s.updatedAt || s.createdAt)}
+              Freshness: ${freshnessLabel}
             </${Typography}>
             <${Tooltip} title="Actions">
               <${IconButton}
@@ -865,7 +924,11 @@ export function SessionList({
     normalizeSessionViewFilter(sessionView),
   );
   const allSessions = sessionsData.value || [];
+  const loadMeta = sessionLoadMeta.value || createSessionLoadMeta();
+  const isLoadingSessions = sessionsLoading.value === true;
   const error = sessionsError.value;
+  const showStaleBanner = Boolean(loadMeta.stale && (loadMeta.lastSuccessAt || allSessions.length > 0));
+  const [retryCountdownNow, setRetryCountdownNow] = useState(() => Date.now());
   const hasSearch = search.trim().length > 0;
   const resolvedSessionView =
     typeof onSessionViewChange === "function"
@@ -879,6 +942,14 @@ export function SessionList({
       setUncontrolledSessionView(normalized);
     }
   }, [onSessionViewChange, sessionView, uncontrolledSessionView]);
+
+  useEffect(() => {
+    if (!showStaleBanner || !loadMeta.nextRetryAt || loadMeta.retriesExhausted) return undefined;
+    const interval = setInterval(() => {
+      setRetryCountdownNow(Date.now());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [showStaleBanner, loadMeta.nextRetryAt, loadMeta.retriesExhausted]);
 
   const setSessionView = useCallback(
     (nextFilter) => {
@@ -952,8 +1023,14 @@ export function SessionList({
   );
 
   const handleRetry = useCallback(() => {
+    const manualRetryState = getSessionManualRetryState(sessionLoadMeta.peek(), {
+      now: Date.now(),
+      isLoading: sessionsLoading.peek() === true,
+    });
+    if (manualRetryState.disabled) return;
+    clearSessionRetryTimer();
     sessionsError.value = null;
-    loadSessions(_lastLoadFilter);
+    loadSessions(_lastLoadFilter, { source: "manual-retry" });
   }, []);
 
   const handleCreateSession = useCallback(() => {
@@ -1055,14 +1132,14 @@ export function SessionList({
   const emptyTitle = hasSearch
     ? "No matching sessions"
     : resolvedSessionView === SESSION_VIEW_FILTER.active
-      ? "No active sessions"
+      ? "No lifecycle-active sessions"
       : resolvedSessionView === SESSION_VIEW_FILTER.historic
         ? "No historic sessions"
         : "No sessions yet";
   const emptyHint = hasSearch
     ? "Try a different keyword or clear the search."
     : resolvedSessionView === SESSION_VIEW_FILTER.active
-      ? "Start a new session or switch to All."
+      ? "Start a new session or switch to All lifecycle states."
       : resolvedSessionView === SESSION_VIEW_FILTER.historic
         ? "Historic sessions appear after they finish."
         : "Create a session to get started.";
@@ -1089,7 +1166,34 @@ export function SessionList({
     `;
   }
 
-  if (error) {
+  const nextRetryMs = Date.parse(String(loadMeta.nextRetryAt || ""));
+  const retrySeconds =
+    Number.isFinite(nextRetryMs) && !loadMeta.retriesExhausted
+      ? Math.max(0, Math.ceil((nextRetryMs - retryCountdownNow) / 1000))
+      : 0;
+  const retryAttemptDisplay = Math.min(loadMeta.retryAttempt || 0, loadMeta.maxAttempts || 0);
+  const manualRetryState = getSessionManualRetryState(loadMeta, {
+    now: retryCountdownNow,
+    isLoading: isLoadingSessions,
+  });
+  const lastSuccessLabel = formatSessionFreshnessTimestamp(loadMeta.lastSuccessAt, {
+    formatRelative,
+    formatDate,
+  });
+  const staleReasonLabel =
+    loadMeta.staleReasonLabel || loadMeta.staleReasonMeta?.label || "Refresh request failed";
+  const staleReasonText =
+    loadMeta.staleReason || "Last refresh failed before new session data could be loaded.";
+  const staleReasonSummary = staleReasonText
+    ? `${staleReasonLabel}: ${staleReasonText}`
+    : staleReasonLabel;
+  const manualRetryReasonText =
+    manualRetryState.reason ||
+    (manualRetryState.disabled && retrySeconds > 0
+      ? "Manual retry is disabled while automatic backoff is active."
+      : "");
+
+  if (error && !showStaleBanner) {
     return html`
       <${Paper} elevation=${0} sx=${{ height: "100%", display: "flex", flexDirection: "column" }}>
         <${Box} sx=${{ p: 1.5, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1100,8 +1204,13 @@ export function SessionList({
           <${Alert} severity="error" variant="outlined" sx=${{ mb: 1 }}>
             Sessions not available
           </${Alert}>
-          <${Button} variant="outlined" size="small" onClick=${handleRetry}>
-            Retry
+          <${Button}
+            variant="outlined"
+            size="small"
+            onClick=${handleRetry}
+            disabled=${manualRetryState.disabled}
+          >
+            ${manualRetryState.label || "Retry now"}
           </${Button}>
         </${Box}>
       </${Paper}>
@@ -1143,6 +1252,51 @@ export function SessionList({
         </${Stack}>
       </${Box}>
 
+      ${showStaleBanner &&
+      html`
+        <${Box} sx=${{ px: 1.5, pb: 1 }}>
+          <${Alert}
+            severity="warning"
+            variant="outlined"
+            action=${html`
+              <${Button}
+                size="small"
+                color="warning"
+                onClick=${handleRetry}
+                disabled=${manualRetryState.disabled}
+              >
+                ${manualRetryState.label || "Retry now"}
+              </${Button}>
+            `}
+          >
+            <${Typography} variant="body2" sx=${{ fontWeight: 600 }}>
+              Session list is showing stale data.
+            </${Typography}>
+            <${Typography} variant="caption" component="div">
+              Last successful refresh: ${lastSuccessLabel}
+            </${Typography}>
+            <${Typography} variant="caption" component="div">
+              Freshness: cached data is being shown until the next successful refresh.
+            </${Typography}>
+            <${Typography} variant="caption" component="div">
+              Reason: ${staleReasonSummary}
+            </${Typography}>
+            <${Typography} variant="caption" component="div">
+              ${loadMeta.retriesExhausted
+                ? `Automatic retries stopped after ${loadMeta.maxAttempts} attempts.`
+                : `Retry ${retryAttemptDisplay}/${loadMeta.maxAttempts} in ${retrySeconds}s.`}
+            </${Typography}>
+            ${manualRetryReasonText
+              ? html`
+                  <${Typography} variant="caption" component="div">
+                    ${manualRetryReasonText}
+                  </${Typography}>
+                `
+              : null}
+          </${Alert}>
+        </${Box}>
+      `}
+
       <!-- Search bar -->
       <${Box} sx=${{ px: 1.5, pb: 1 }}>
         <${TextField}
@@ -1175,7 +1329,7 @@ export function SessionList({
           clickable
         />
         <${Chip}
-          label=${`Active (${activeCount})`}
+          label=${`Lifecycle Active (${activeCount})`}
           size="small"
           variant=${resolvedSessionView === SESSION_VIEW_FILTER.active ? "filled" : "outlined"}
           color=${resolvedSessionView === SESSION_VIEW_FILTER.active ? "primary" : "default"}
@@ -1201,7 +1355,7 @@ export function SessionList({
           html`
             <${ListItem} disablePadding sx=${{ px: 1.5, pt: 1.5, pb: 0.5 }}>
               <${Typography} variant="overline" color="text.secondary" sx=${{ fontSize: "0.65rem", letterSpacing: 1 }}>
-                Active Sessions
+                Lifecycle Active
               </${Typography}>
             </${ListItem}>
             ${active.map(renderSessionItem)}
@@ -1298,3 +1452,4 @@ export function SessionList({
     </${Paper}>
   `;
 }
+

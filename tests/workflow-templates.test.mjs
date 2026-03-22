@@ -10,10 +10,12 @@ import {
   listWorkflowSetupProfiles,
   getWorkflowSetupProfile,
   resolveWorkflowTemplateIds,
+  resolveWorkflowTemplateConfig,
   normalizeTemplateOverridesById,
   applyWorkflowTemplateState,
   updateWorkflowFromTemplate,
   reconcileInstalledTemplates,
+  relayoutInstalledTemplateWorkflows,
   installTemplate,
   installTemplateSet,
 } from "../workflow/workflow-templates.mjs";
@@ -195,6 +197,32 @@ function ensureExperimentalWorkflowNodeTypesRegistered() {
       };
     },
   });
+
+  registerIfMissing("action.inline_workflow", {
+    describe: () => "Execute an inline child workflow",
+    schema: {
+      type: "object",
+      properties: {
+        workflow: { type: "object" },
+        mode: { type: "string" },
+        input: { type: "object" },
+        inheritContext: { type: "boolean" },
+        includeKeys: { type: "array" },
+        outputVariable: { type: "string" },
+        failOnChildError: { type: "boolean" },
+      },
+      required: ["workflow"],
+    },
+    async execute(node, ctx) {
+      const workflowId = String(node.config?.workflow?.id || `inline:${ctx.id}:${node.id}`);
+      return {
+        success: true,
+        status: node.config?.mode === "dispatch" ? "dispatched" : "completed",
+        workflowId,
+        runId: `inline-${ctx.id}`,
+      };
+    },
+  });
 }
 
 // ── Template Structural Validation ──────────────────────────────────────────
@@ -245,6 +273,20 @@ describe("workflow-templates", () => {
         expect(n.position, `${t.id}/${n.id} → missing position`).toBeDefined();
         expect(typeof n.position.x).toBe("number");
         expect(typeof n.position.y).toBe("number");
+      }
+    }
+  });
+
+  it("template node positions do not overlap within the same workflow", () => {
+    for (const t of WORKFLOW_TEMPLATES) {
+      const seenPositions = new Set();
+      for (const n of t.nodes) {
+        const key = `${n.position.x}:${n.position.y}`;
+        expect(
+          seenPositions.has(key),
+          `${t.id}/${n.id} overlaps another node at ${key}`,
+        ).toBe(false);
+        seenPositions.add(key);
       }
     }
   });
@@ -313,11 +355,17 @@ describe("workflow-templates", () => {
     expect(planner).toBeDefined();
 
     expect(planner.variables?.taskCount).toBe(5);
+    expect(planner.variables?.failureCooldownMinutes).toBe(30);
     expect(planner.variables?.prompt).toBe("");
     expect(typeof planner.variables?.plannerContext).toBe("string");
 
     const trigger = planner.nodes.find((n) => n.id === "trigger");
     expect(trigger?.config?.threshold).toBe("{{minTodoCount}}");
+
+    const dedupNode = planner.nodes.find((n) => n.id === "check-dedup");
+    expect(dedupNode?.config?.expression).toContain("_lastPlannerRun");
+    expect(dedupNode?.config?.expression).toContain("_lastPlannerFailureAt");
+    expect(dedupNode?.config?.expression).toContain("failureCooldownMinutes");
 
     const runPlanner = planner.nodes.find((n) => n.id === "run-planner");
     expect(runPlanner?.config?.taskCount).toBe("{{taskCount}}");
@@ -336,8 +384,14 @@ describe("workflow-templates", () => {
     const edgeToCheck = planner.edges.find(
       (e) => e.source === "materialize-tasks" && e.target === "check-result",
     );
+    const failCooldownNode = planner.nodes.find((n) => n.id === "set-timestamp-fail");
+    expect(failCooldownNode?.config?.key).toBe("_lastPlannerFailureAt");
+    const edgeToFailCooldown = planner.edges.find(
+      (e) => e.source === "notify-fail" && e.target === "set-timestamp-fail",
+    );
     expect(edgeToMaterialize).toBeDefined();
     expect(edgeToCheck).toBeDefined();
+    expect(edgeToFailCooldown).toBeDefined();
   });
 
   it("meeting subworkflow chain template includes meeting and child workflow nodes", () => {
@@ -388,6 +442,19 @@ describe("workflow-templates", () => {
     expect(template?.variables?.maxFollowupTasks).toBe(4);
     expect(template?.variables?.createFollowupTasks).toBe(true);
 
+    const taskNode = template.nodes.find((n) => n.id === "task-metrics");
+    expect(taskNode?.type).toBe("action.bosun_cli");
+    expect(taskNode?.config?.subcommand).toBe("task list");
+    expect(taskNode?.config?.args).toContain("--json");
+
+    const summaryNode = template.nodes.find((n) => n.id === "summarize-fitness-metrics");
+    expect(summaryNode?.type).toBe("action.set_variable");
+    expect(summaryNode?.config?.key).toBe("fitnessSummary");
+
+    const latestArtifactNode = template.nodes.find((n) => n.id === "persist-fitness-summary");
+    expect(latestArtifactNode?.type).toBe("action.write_file");
+    expect(latestArtifactNode?.config?.path).toBe(".bosun/workflow-runs/weekly-fitness-summary.latest.json");
+
     const evaluateNode = template.nodes.find((n) => n.id === "evaluate-fitness");
     expect(evaluateNode?.type).toBe("action.run_agent");
     const prompt = String(evaluateNode?.config?.prompt || "").toLowerCase();
@@ -396,10 +463,17 @@ describe("workflow-templates", () => {
     expect(prompt).toContain("merge success");
     expect(prompt).toContain("reopened tasks");
     expect(prompt).toContain("debt growth");
+    expect(prompt).toContain("confidence");
+    expect(prompt).toContain("weekly fitness json");
 
     const materializeNode = template.nodes.find((n) => n.id === "materialize-followups");
     expect(materializeNode?.type).toBe("action.materialize_planner_tasks");
     expect(materializeNode?.config?.maxTasks).toBe("{{maxFollowupTasks}}");
+
+    const artifactEdge = template.edges.find(
+      (e) => e.source === "persist-fitness-summary" && e.target === "evaluate-fitness",
+    );
+    expect(artifactEdge).toBeDefined();
 
     const createFlowEdge = template.edges.find(
       (e) => e.source === "has-followups" && e.target === "build-followup-json",
@@ -407,24 +481,70 @@ describe("workflow-templates", () => {
     expect(createFlowEdge).toBeDefined();
   });
 
-  it("backend agent template keeps backend/api trigger filter", () => {
+  it("backend agent template triggers on task_assigned without restrictive filter", () => {
     const template = getTemplate("template-backend-agent");
     expect(template).toBeDefined();
 
     const triggerNode = template.nodes.find((n) => n.id === "trigger");
     expect(triggerNode?.type).toBe("trigger.task_assigned");
-    expect(triggerNode?.config?.filter).toBe("task.tags?.some(t => t === 'backend' || t === 'api')");
+    // No restrictive filter — triggers on any assigned task (language-agnostic)
+    expect(triggerNode?.config?.filter).toBeUndefined();
   });
 
-  it("task lifecycle template passes resolved executor outputs into run-agent", () => {
+  it("agent templates only advance to inreview after a real PR is linked", () => {
+    const backendTemplate = getTemplate("template-backend-agent");
+    expect(backendTemplate).toBeDefined();
+    const backendGate = backendTemplate.nodes.find((n) => n.id === "main-pr-ok");
+    const backendRetryGate = backendTemplate.nodes.find((n) => n.id === "retry-pr-ok");
+    expect(backendGate?.config?.expression).toContain("prNumber");
+    expect(backendGate?.config?.expression).toContain("prUrl");
+    expect(backendGate?.config?.expression).not.toContain("success === true");
+    expect(backendRetryGate?.config?.expression).toContain("prNumber");
+    expect(backendRetryGate?.config?.expression).toContain("prUrl");
+    expect(backendRetryGate?.config?.expression).not.toContain("success === true");
+  });
+
+  it("task lifecycle template passes resolved executor outputs into run-agent phases", () => {
     const template = getTemplate("template-task-lifecycle");
     expect(template).toBeDefined();
 
-    const runAgent = template.nodes.find((n) => n.id === "run-agent");
-    expect(runAgent?.type).toBe("action.run_agent");
-    expect(runAgent?.config?.sdk).toBe("{{resolvedSdk}}");
-    expect(runAgent?.config?.model).toBe("{{resolvedModel}}");
-    expect(runAgent?.config?.agentProfile).toBe("{{agentProfile}}");
+    for (const phaseNodeId of ["run-agent-plan", "run-agent-tests", "run-agent-implement"]) {
+      const runAgent = template.nodes.find((n) => n.id === phaseNodeId);
+      expect(runAgent?.type).toBe("action.run_agent");
+      expect(runAgent?.config?.sdk).toBe("{{resolvedSdk}}");
+      expect(runAgent?.config?.model).toBe("{{resolvedModel}}");
+      expect(runAgent?.config?.agentProfile).toBe("{{agentProfile}}");
+    }
+  });
+
+  it("continuation loop template exposes configurable turn/stuck controls", () => {
+    const template = getTemplate("template-continuation-loop");
+    expect(template).toBeDefined();
+    expect(template?.trigger).toBe("trigger.manual");
+
+    expect(template?.variables?.maxTurns).toBe(8);
+    expect(template?.variables?.terminalStates).toEqual(["done", "cancelled"]);
+    expect(template?.variables?.stuckThresholdMs).toBe(300000);
+    expect(template?.variables?.maxStuckAutoRetries).toBe(1);
+    expect(template?.variables?.onStuck).toBe("escalate");
+
+    const emitNode = template?.nodes?.find((n) => n.id === "emit-stuck");
+    expect(emitNode?.type).toBe("action.emit_event");
+    expect(emitNode?.config?.eventType).toBe("session-stuck");
+    expect(emitNode?.config?.payload).toMatchObject({
+      stuckRetryCount: "{{stuckRetryCount}}",
+      maxStuckAutoRetries: "{{maxStuckAutoRetries}}",
+    });
+
+    const routeNode = template?.nodes?.find((n) => n.id === "stuck-route");
+    expect(routeNode?.type).toBe("condition.switch");
+    expect(routeNode?.config?.cases?.retry).toBe("retry");
+    expect(routeNode?.config?.cases?.escalate).toBe("escalate");
+    expect(routeNode?.config?.cases?.pause).toBe("pause");
+
+    const retryBudget = template?.nodes?.find((n) => n.id === "stuck-retry-budget");
+    expect(retryBudget?.type).toBe("condition.expression");
+    expect(retryBudget?.config?.expression).toContain("maxStuckAutoRetries");
   });
 
   it("pr merge strategy template listens to review, approval, and opened aliases", () => {
@@ -435,6 +555,67 @@ describe("workflow-templates", () => {
     expect(triggerNode?.type).toBe("trigger.pr_event");
     expect(triggerNode?.config?.event).toBe("review_requested");
     expect(triggerNode?.config?.events).toEqual(["review_requested", "approved", "opened"]);
+  });
+
+  it("continuation loop template includes stuck handling and terminal-state exits", () => {
+    const template = getTemplate("template-continuation-loop");
+    expect(template).toBeDefined();
+    expect(template?.trigger).toBe("trigger.manual");
+    expect(template?.variables?.onStuck).toBe("escalate");
+    expect(template?.variables?.terminalStates).toEqual(["done", "cancelled"]);
+
+    const pollTask = template.nodes.find((n) => n.id === "poll-task");
+    const captureProgress = template.nodes.find((n) => n.id === "capture-progress");
+    const deriveSignature = template.nodes.find((n) => n.id === "derive-signature");
+    const resetStuckRetries = template.nodes.find((n) => n.id === "reset-stuck-retry-count");
+    const stuckSwitch = template.nodes.find((n) => n.id === "stuck-route");
+    const stuckRetryBudget = template.nodes.find((n) => n.id === "stuck-retry-budget");
+    const incrementStuckRetries = template.nodes.find((n) => n.id === "increment-stuck-retry-count");
+    const endTerminal = template.nodes.find((n) => n.id === "end-terminal");
+    const endMaxTurns = template.nodes.find((n) => n.id === "end-max-turns");
+    const stuckEvent = template.nodes.find((n) => n.id === "emit-stuck");
+    const stuckRetry = template.nodes.find((n) => n.id === "stuck-retry");
+
+    expect(pollTask?.type).toBe("action.bosun_function");
+    expect(pollTask?.config?.function).toBe("tasks.get");
+    expect(stuckSwitch?.type).toBe("condition.switch");
+    expect(stuckEvent?.type).toBe("action.emit_event");
+    expect(endTerminal?.type).toBe("flow.end");
+    expect(endMaxTurns?.type).toBe("flow.end");
+    expect(captureProgress?.config?.command).toContain("git status --porcelain=v1");
+    expect(captureProgress?.config?.command).toContain("statusDigest");
+    expect(deriveSignature?.config?.value).toContain("statusDigest");
+    expect(resetStuckRetries?.config?.value).toContain("stuckRetryCount");
+    expect(stuckRetryBudget?.config?.expression).toContain("maxStuckAutoRetries");
+    expect(incrementStuckRetries?.config?.value).toContain("stuckRetryCount");
+    expect(stuckRetry?.config?.prompt).toContain("lastAgentOutput");
+
+    const loopBackEdge = template.edges.find(
+      (e) => e.source === "increment-turn" && e.target === "poll-task",
+    );
+    expect(loopBackEdge?.backEdge).toBe(true);
+
+    const retryRoute = template.edges.find(
+      (e) => e.source === "stuck-route" && e.target === "stuck-retry-budget",
+    );
+    expect(retryRoute).toBeDefined();
+  });
+
+  it("error recovery template forwards analysis into retry and repair handoff", () => {
+    const template = getTemplate("template-error-recovery");
+    expect(template).toBeDefined();
+
+    const analyzeError = template.nodes.find((n) => n.id === "analyze-error");
+    const retryTask = template.nodes.find((n) => n.id === "retry-task");
+    const escalate = template.nodes.find((n) => n.id === "escalate");
+    const chainRepair = template.nodes.find((n) => n.id === "chain-repair");
+
+    expect(analyzeError?.config?.prompt).toContain("Retry attempt");
+    expect(analyzeError?.config?.prompt).toContain("Worktree");
+    expect(retryTask?.config?.prompt).toContain("recoveryAnalysis");
+    expect(escalate?.config?.message).toContain("Recovery analysis");
+    expect(chainRepair?.config?.input).toContain("recoveryAnalysis");
+    expect(chainRepair?.config?.input).toContain("retryResult");
   });
 });
 
@@ -556,6 +737,53 @@ describe("template API functions", () => {
     }
   });
 
+  it("agent session monitor resolves session tracker from the source repo even from a workspace mirror", () => {
+    const template = getTemplate("template-agent-session-monitor");
+    const listNode = template.nodes.find((n) => n.id === "list-sessions");
+    const healthNode = template.nodes.find((n) => n.id === "check-health");
+    const hasActiveNode = template.nodes.find((n) => n.id === "has-active");
+    const hasIssuesNode = template.nodes.find((n) => n.id === "has-issues");
+    const evaluate = (expression, outputs, data = {}) => {
+      const fn = new Function("$ctx", "$data", `return (${expression});`);
+      return fn({
+        getNodeOutput(nodeId) {
+          return outputs[nodeId] ?? null;
+        },
+      }, data);
+    };
+    const noisyPrefix = "[session-tracker] initialized (maxMessages=300)\n";
+
+    expect(listNode?.config?.command).toContain("session-tracker.mjs");
+    expect(listNode?.config?.command).toContain("pathToFileURL");
+    expect(listNode?.config?.command).toContain(".bosun");
+    expect(listNode?.config?.command).toContain("workspaces");
+    expect(listNode?.config?.command).not.toContain("import('./infra/session-tracker.mjs')");
+    expect(listNode?.config?.command).not.toContain("bosun agent list");
+    expect(healthNode?.config?.command).toContain("session-tracker.mjs");
+    expect(healthNode?.config?.command).toContain("path.resolve(cwd, '..', '..', '..', '..')");
+    expect(healthNode?.config?.command).not.toContain("bosun agent health");
+    expect(hasActiveNode?.config?.expression).toContain("JSON.parse");
+    expect(hasIssuesNode?.config?.expression).toContain("JSON.parse");
+    expect(hasIssuesNode?.config?.expression).toContain("idleMs");
+    expect(
+      evaluate(hasActiveNode?.config?.expression, {
+        "list-sessions": {
+          output: `${noisyPrefix}[{"status":"active","idleMs":42,"tokenPercent":null}]`,
+        },
+      }),
+    ).toBe(true);
+    expect(
+      evaluate(hasIssuesNode?.config?.expression, {
+        "check-health": {
+          output: `${noisyPrefix}[{"status":"idle","idleMs":700000,"tokenPercent":null}]`,
+        },
+      }, {
+        maxIdleMs: 600000,
+        maxTokenPercent: 85,
+      }),
+    ).toBe(true);
+  });
+
   it("installTemplate creates a new workflow with unique ID", () => {
     const result = installTemplate("template-error-recovery", engine);
     expect(result.id).not.toBe("template-error-recovery");
@@ -601,6 +829,50 @@ describe("template drift + update behavior", () => {
     expect(wf.metadata.templateState.updateAvailable).toBe(false);
   });
 
+  it("does not treat node position-only changes as template customization", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    wf.nodes[0].position = {
+      x: Number(wf.nodes?.[0]?.position?.x || 0) + 123,
+      y: Number(wf.nodes?.[0]?.position?.y || 0) + 77,
+    };
+    applyWorkflowTemplateState(wf);
+
+    expect(wf.metadata.templateState.isCustomized).toBe(false);
+    expect(wf.metadata.templateState.updateAvailable).toBe(false);
+  });
+
+  it("does not treat derived node port metadata as template customization", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    wf.nodes[0].inputs = ["manual"];
+    wf.nodes[0].outputs = ["result"];
+    applyWorkflowTemplateState(wf);
+
+    expect(wf.metadata.templateState.isCustomized).toBe(false);
+    expect(wf.metadata.templateState.updateAvailable).toBe(false);
+  });
+
+  it("does not treat canvas input/output aliases as template customization", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    const targetNode = wf.nodes.find((node) => Array.isArray(node.inputPorts) || Array.isArray(node.outputPorts));
+
+    expect(targetNode).toBeDefined();
+
+    if (Array.isArray(targetNode.inputPorts)) {
+      targetNode.inputs = structuredClone(targetNode.inputPorts);
+    }
+    if (Array.isArray(targetNode.outputPorts)) {
+      targetNode.outputs = structuredClone(targetNode.outputPorts);
+    }
+
+    applyWorkflowTemplateState(wf);
+
+    expect(wf.metadata.templateState.isCustomized).toBe(false);
+    expect(wf.metadata.templateState.updateAvailable).toBe(false);
+  });
+
   it("auto-updates unmodified workflows when template version drift is detected", () => {
     const installed = installTemplate("template-error-recovery", engine);
     const wf = engine.get(installed.id);
@@ -613,6 +885,25 @@ describe("template drift + update behavior", () => {
     expect(result.autoUpdated).toBe(1);
 
     const refreshed = engine.get(installed.id);
+    expect(refreshed.metadata.templateState.updateAvailable).toBe(false);
+    expect(refreshed.metadata.templateState.isCustomized).toBe(false);
+  });
+
+  it("migrates legacy task-lifecycle pre-PR validation defaults during auto-update", () => {
+    const installed = installTemplate("template-task-lifecycle", engine);
+    const wf = engine.get(installed.id);
+    wf.variables.prePrValidationCommand = "npm run prepush:check";
+    wf.metadata.templateState.installedTemplateFingerprint = "0000-outdated";
+    wf.metadata.templateState.installedTemplateVersion = "0000-outdated";
+    wf.metadata.templateState.isCustomized = false;
+    wf.metadata.templateState.updateAvailable = true;
+    engine.save(wf);
+
+    const result = reconcileInstalledTemplates(engine, { autoUpdateUnmodified: true });
+    expect(result.autoUpdated).toBe(1);
+
+    const refreshed = engine.get(installed.id);
+    expect(refreshed.variables.prePrValidationCommand).toBe("auto");
     expect(refreshed.metadata.templateState.updateAvailable).toBe(false);
     expect(refreshed.metadata.templateState.isCustomized).toBe(false);
   });
@@ -633,6 +924,26 @@ describe("template drift + update behavior", () => {
     expect(result.updateAvailable.some((entry) => entry.workflowId === wf.id)).toBe(true);
   });
 
+  it("force-updates customized workflows for selected template ids even without updateAvailable", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    wf.variables.customNote = "edited";
+    applyWorkflowTemplateState(wf);
+    wf.metadata.templateState.updateAvailable = false;
+    engine.save(wf);
+
+    const result = reconcileInstalledTemplates(engine, {
+      autoUpdateUnmodified: true,
+      forceUpdateTemplateIds: ["template-error-recovery"],
+    });
+    expect(result.autoUpdated).toBe(1);
+    expect(result.forceUpdated).toEqual([wf.id]);
+
+    const refreshed = engine.get(wf.id);
+    expect(refreshed.metadata.templateState.updateAvailable).toBe(false);
+    expect(refreshed.metadata.templateState.isCustomized).toBe(false);
+  });
+
   it("supports copy update mode for customized workflows", () => {
     const installed = installTemplate("template-error-recovery", engine);
     const wf = engine.get(installed.id);
@@ -645,6 +956,41 @@ describe("template drift + update behavior", () => {
     expect(copied.name).toContain("(Updated)");
     expect(copied.metadata.templateState.updateAvailable).toBe(false);
     expect(copied.metadata.templateState.isCustomized).toBe(false);
+  });
+
+  it("re-lays out installed template-backed workflows without marking them customized", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    wf.nodes.forEach((node, index) => {
+      node.position = { x: 40, y: 40 + index };
+    });
+    engine.save(wf);
+
+    const result = relayoutInstalledTemplateWorkflows(engine, { workflowId: wf.id });
+    const refreshed = engine.get(wf.id);
+    const uniquePositions = new Set(refreshed.nodes.map((node) => `${node.position.x}:${node.position.y}`));
+
+    expect(result.updated).toBe(1);
+    expect(uniquePositions.size).toBe(refreshed.nodes.length);
+    expect(refreshed.metadata.templateState.isCustomized).toBe(false);
+    expect(refreshed.metadata.templateState.updateAvailable).toBe(false);
+  });
+
+  it("re-lays out template-backed workflows when addressed by template id alias", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    wf.nodes.forEach((node) => {
+      node.position = { x: 25, y: 25 };
+    });
+    engine.save(wf);
+
+    const result = relayoutInstalledTemplateWorkflows(engine, { workflowId: "template-error-recovery" });
+    const refreshed = engine.get(installed.id);
+    const uniquePositions = new Set(refreshed.nodes.map((node) => `${node.position.x}:${node.position.y}`));
+
+    expect(result.updated).toBe(1);
+    expect(result.updatedWorkflowIds).toEqual([installed.id]);
+    expect(uniquePositions.size).toBe(refreshed.nodes.length);
   });
 });
 
@@ -672,6 +1018,8 @@ describe("workflow setup profiles", () => {
     ];
 
     for (const script of queryScripts) {
+      expect(script).toContain("const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();");
+      expect(script).toContain('path.join(repoRoot, "kanban", "kanban-adapter.mjs")');
       expect(script).toContain("const filtered = (tasks || []).filter((task) => {");
       expect(script).toContain('const repository = typeof task?.repository === "string" ? task.repository.trim() : "";');
       expect(script).toContain('const workspace = typeof task?.workspace === "string" ? task.workspace.trim() : "";');
@@ -679,13 +1027,19 @@ describe("workflow setup profiles", () => {
     }
   });
 
-  it("wires batch summary notifications to the loop fan-out output", () => {
+  it("alerts Telegram only for failed batch items and logs the routine summary", () => {
     const batchProcessor = getTemplate("template-task-batch-processor");
     const recordNode = batchProcessor?.nodes?.find((node) => node.id === "record-results");
-    const notifyNode = batchProcessor?.nodes?.find((node) => node.id === "notify-complete");
+    const failureGate = batchProcessor?.nodes?.find((node) => node.id === "has-batch-failures");
+    const notifyNode = batchProcessor?.nodes?.find((node) => node.id === "notify-failures");
+    const logNode = batchProcessor?.nodes?.find((node) => node.id === "log-summary");
 
     expect(recordNode?.config?.value).toBe("{{dispatch-tasks}}");
-    expect(notifyNode?.config?.message).toContain("{{batchResult.successCount}}/{{batchResult.totalItems}}");
+    expect(failureGate?.config?.expression).toContain("batchResult?.failCount");
+    expect(notifyNode?.type).toBe("notify.telegram");
+    expect(notifyNode?.config?.message).toContain("{{batchResult.failCount}}");
+    expect(logNode?.type).toBe("notify.log");
+    expect(logNode?.config?.message).toContain("{{batchResult.successCount}}/{{batchResult.totalItems}}");
   });
 
   it("exposes built-in setup profiles with template selections", () => {
@@ -721,6 +1075,47 @@ describe("workflow setup profiles", () => {
     const resolved = resolveWorkflowTemplateIds({ profileId: "workflowFirst" });
     expect(resolved).toContain("template-task-lifecycle");
     expect(resolved).toContain("template-task-batch-processor");
+  });
+
+  it("resolves typed workflows into template ids and overrides", () => {
+    const resolved = resolveWorkflowTemplateIds({
+      profileId: "manual",
+      workflows: [
+        {
+          type: "continuation-loop",
+          enabled: true,
+          maxTurns: "6",
+          terminalStates: "done,cancelled",
+          onStuck: "pause",
+        },
+      ],
+    });
+
+    expect(resolved).toContain("template-continuation-loop");
+
+    const config = resolveWorkflowTemplateConfig([
+      {
+        type: "continuation-loop",
+        enabled: true,
+        worktreePath: "/tmp/worktree/task-1",
+        maxTurns: "6",
+        terminalStates: "done,cancelled",
+        onStuck: "pause",
+        sdk: "copilot",
+        model: "claude-opus-4.6",
+        timeoutMs: "900000",
+      },
+    ]);
+    expect(config.templateIds).toEqual(["template-continuation-loop"]);
+    expect(config.overridesById["template-continuation-loop"]).toEqual({
+      worktreePath: "/tmp/worktree/task-1",
+      maxTurns: 6,
+      terminalStates: ["done", "cancelled"],
+      onStuck: "pause",
+      sdk: "copilot",
+      model: "claude-opus-4.6",
+      timeoutMs: 900000,
+    });
   });
 
   it("resolves explicit template lists and filters unknown IDs", () => {
@@ -774,24 +1169,27 @@ describe("installTemplateSet", () => {
       "template-task-planner",
       "template-nope",
     ]);
-    // error-recovery auto-installs task-repair-worktree (grouped flow).
-    // installTemplateSet sees the child as already installed → skips it.
-    // So installed=2 (error-recovery, task-planner), skipped=1 (task-repair-worktree), errors=1.
+    // error-recovery auto-installs task-repair-worktree, which now in turn
+    // requires the direct PR progressor. installTemplateSet reports those
+    // required children as skipped because they are installed via recursion.
+    // So installed=2 (error-recovery, task-planner), skipped=2
+    // (task-repair-worktree, bosun-pr-progressor), errors=1.
     expect(result.installed.length).toBe(2);
-    expect(result.skipped.length).toBe(1);
+    expect(result.skipped.length).toBe(2);
     expect(result.errors.length).toBe(1);
     expect(result.errors[0].id).toBe("template-nope");
-    // Verify all 3 valid templates are actually present in the engine
+    // Verify all 4 valid templates are actually present in the engine
     const all = engine.list();
-    expect(all.length).toBe(3);
+    expect(all.length).toBe(4);
 
     const second = installTemplateSet(engine, [
       "template-error-recovery",
       "template-task-planner",
     ]);
     expect(second.installed.length).toBe(0);
-    // error-recovery expands to include task-repair-worktree, so 3 skipped
-    expect(second.skipped.length).toBe(3);
+    // error-recovery expands to include task-repair-worktree and the PR
+    // progressor, so 4 templates are already present on the second install.
+    expect(second.skipped.length).toBe(4);
   });
 });
 
@@ -906,10 +1304,147 @@ describe("github template CLI compatibility", () => {
     const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
     const fetchNode = watchdogTemplate.nodes.find((n) => n.id === "fetch-and-classify");
     const reviewNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-review");
+    const notifyNode = watchdogTemplate.nodes.find((n) => n.id === "notify");
+    const triggerNode = watchdogTemplate.nodes.find((n) => n.id === "trigger");
 
     expect(fetchNode?.config?.command).toContain("pendingChecks:hasPend");
     expect(reviewNode?.config?.command).toContain("mergeArgs.push('--auto')");
     expect(reviewNode?.config?.command).toContain("reason:'ci_failed'");
+    expect(reviewNode?.config?.command).toContain("reason:'ci_pending'");
+    expect(reviewNode?.config?.command).toContain("--json','name,state,bucket'");
+    expect(reviewNode?.config?.command).not.toContain("name,state,conclusion");
+    expect(notifyNode?.type).toBe("notify.log");
+    expect(notifyNode?.config?.message).not.toContain("{{fixNeeded}}");
+    expect(notifyNode?.config?.message).not.toContain("{{readyCandidates}}");
+    expect(triggerNode?.config?.intervalMs).toBe("{{intervalMs}}");
+    expect(triggerNode?.config?.cron).toBeUndefined();
+  });
+
+  it("PR watchdog routes CodeQL-style failures through a dedicated security repair branch", () => {
+    const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
+    const fetchNode = watchdogTemplate.nodes.find((n) => n.id === "fetch-and-classify");
+    const securityNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-security-fix");
+    const securityAgentNode = watchdogTemplate.nodes.find((n) => n.id === "dispatch-security-fix-agent");
+
+    expect(fetchNode?.config?.command).toContain("SECURITY_CHECK_RE");
+    expect(fetchNode?.config?.command).toContain("securityFailures");
+    expect(fetchNode?.config?.command).toContain("securityCheckNames");
+    expect(fetchNode?.config?.command).toContain("fixNeeded:conflicts.length+securityFailures.length+ciFailures.length");
+
+    expect(securityNode?.config?.command).toContain("/code-scanning/alerts");
+    expect(securityNode?.config?.command).toContain("reason:'security_code_scanning_failure'");
+    expect(securityAgentNode?.config?.prompt).toContain("CodeQL or GitHub code scanning");
+    expect(securityAgentNode?.config?.prompt).toContain("Only fix the listed code-scanning or CodeQL findings");
+
+    expect(watchdogTemplate.edges.find((e) => e.source === "fix-needed" && e.target === "security-fix-needed")).toBeDefined();
+    expect(watchdogTemplate.edges.find((e) => e.source === "security-agent-needed" && e.target === "dispatch-security-fix-agent")).toBeDefined();
+    expect(watchdogTemplate.edges.find((e) => e.source === "dispatch-security-fix-agent" && e.target === "generic-fix-needed")).toBeDefined();
+  });
+
+  it("PR watchdog enriches generic CI fallback with run diagnostics and bounded reruns", () => {
+    const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
+    const fixNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-fix");
+    const fixAgentNode = watchdogTemplate.nodes.find((n) => n.id === "dispatch-fix-agent");
+    const command = fixNode?.config?.command || "";
+
+    expect(command).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
+    expect(command).toContain("databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt");
+    expect(command).toContain("runGh(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs'])");
+    expect(command).toContain("runGh(['run','view',String(runId),'--repo',repo,'--log-failed'])");
+    expect(command).toContain("reason:'auto_rerun_limit_reached'");
+    expect(command).toContain("failedLogExcerpt");
+    expect(command).toContain("failedJobs");
+
+    expect(fixAgentNode?.config?.prompt).toContain("failedCheckNames, failedRun, failedJobs, and failedLogExcerpt");
+  });
+
+  it("PR progressor is registered as the immediate single-PR handoff workflow", () => {
+    const progressorTemplate = getTemplate("template-bosun-pr-progressor");
+    expect(progressorTemplate).toBeDefined();
+    expect(progressorTemplate.trigger).toBe("trigger.workflow_call");
+
+    const inspectNode = progressorTemplate.nodes.find((n) => n.id === "inspect-pr");
+    const fixNode = progressorTemplate.nodes.find((n) => n.id === "programmatic-fix");
+    const reviewNode = progressorTemplate.nodes.find((n) => n.id === "programmatic-review");
+    expect(inspectNode?.config?.command).toContain("gh(['pr','view'");
+    expect(inspectNode?.config?.command).toContain("failedCheckNames");
+    expect(fixNode?.config?.command).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
+    expect(fixNode?.config?.command).toContain("--log-failed");
+    expect(fixNode?.config?.command).toContain("reason:'auto_rerun_limit_reached'");
+    expect(reviewNode?.config?.command).toContain("mergeArgs=['pr','merge'");
+  });
+
+  it("task lifecycle and repair templates directly dispatch the PR progressor after inreview transitions", () => {
+    const lifecycleTemplate = getTemplate("template-task-lifecycle");
+    const finalizationTemplate = getTemplate("template-task-finalization-guard");
+    const repairTemplate = getTemplate("template-task-repair-worktree");
+    const batchPrTemplate = getTemplate("template-task-batch-pr");
+
+    const lifecycleHandoff = lifecycleTemplate.nodes.find((n) => n.id === "handoff-pr-progressor");
+    const lifecycleRecoveredHandoff = lifecycleTemplate.nodes.find((n) => n.id === "handoff-pr-progressor-stolen");
+    const finalizationHandoff = finalizationTemplate.nodes.find((n) => n.id === "handoff-pr-progressor");
+    const repairHandoff = repairTemplate.nodes.find((n) => n.id === "handoff-pr-progressor");
+    const batchHandoff = batchPrTemplate.nodes.find((n) => n.id === "handoff-pr-progressor");
+
+    expect(lifecycleHandoff?.type).toBe("action.execute_workflow");
+    expect(lifecycleRecoveredHandoff?.config?.workflowId).toBe("template-bosun-pr-progressor");
+    expect(finalizationHandoff?.config?.mode).toBe("dispatch");
+    expect(repairHandoff?.config?.workflowId).toBe("template-bosun-pr-progressor");
+    expect(batchHandoff?.config?.workflowId).toBe("template-bosun-pr-progressor");
+
+    expect(lifecycleTemplate.edges.find((e) => e.source === "set-inreview" && e.target === "handoff-pr-progressor")).toBeDefined();
+    expect(lifecycleTemplate.edges.find((e) => e.source === "handoff-pr-progressor" && e.target === "log-success")).toBeDefined();
+    expect(lifecycleTemplate.edges.find((e) => e.source === "set-inreview-stolen" && e.target === "handoff-pr-progressor-stolen")).toBeDefined();
+    expect(finalizationTemplate.edges.find((e) => e.source === "mark-inreview" && e.target === "handoff-pr-progressor")).toBeDefined();
+    expect(repairTemplate.edges.find((e) => e.source === "mark-inreview" && e.target === "handoff-pr-progressor")).toBeDefined();
+    expect(batchPrTemplate.edges.find((e) => e.source === "set-inreview" && e.target === "handoff-pr-progressor")).toBeDefined();
+  });
+
+  it("PR watchdog and GitHub sync pass node outputs via template interpolation env vars", () => {
+    const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
+    const syncTemplate = getTemplate("template-github-kanban-sync");
+
+    const watchdogFixNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-fix");
+    const watchdogSecurityNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-security-fix");
+    const watchdogReviewNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-review");
+    const fetchNode = syncTemplate.nodes.find((n) => n.id === "fetch-pr-state");
+    const syncNode = syncTemplate.nodes.find((n) => n.id === "sync-programmatic");
+    const fetchCommand = fetchNode?.config?.command || "";
+    const syncCommand = syncNode?.config?.command || "";
+
+    expect(watchdogFixNode?.config?.env?.BOSUN_FETCH_AND_CLASSIFY)
+      .toBe("{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}");
+    expect(watchdogSecurityNode?.config?.env?.BOSUN_FETCH_AND_CLASSIFY)
+      .toBe("{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}");
+    expect(watchdogReviewNode?.config?.env?.BOSUN_FETCH_AND_CLASSIFY)
+      .toBe("{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}");
+    expect(syncNode?.config?.env?.BOSUN_FETCH_PR_STATE)
+      .toBe("{{$ctx.getNodeOutput('fetch-pr-state')?.output || '{}'}}");
+    expect(fetchCommand).toContain("function collectReposFromConfig(){");
+    expect(fetchCommand).toContain("const repoTargets=resolveRepoTargets();");
+    expect(fetchCommand).toContain("if(repo){ mergedArgs.push('--repo',repo); openArgs.push('--repo',repo); }");
+    expect(fetchCommand).toContain("reposScanned: repoTargets.length");
+    expect(fetchCommand).toContain("repo:p.__repo||''");
+    expect(syncCommand).toContain("const maxBuffer=25*1024*1024;");
+    expect(syncCommand).toContain("const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':'';");
+    expect(syncCommand).toContain("const taskRunner=cliPath?'cli':(taskCli?'task-cli':'');");
+    expect(syncCommand).toContain("['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']");
+    expect(syncCommand).toContain("reviewStatus");
+    expect(syncCommand).toContain("runTask(['update',id,'--status','inreview'])");
+    expect(syncCommand).toContain("parseJsonObject(raw)");
+    expect(syncCommand).toContain(String.raw`const candidate=lines.slice(start).join('\n').trim();`);
+    expect(syncCommand).toContain("token==='['||token==='{'");
+    expect(syncCommand).toContain("const task=parseJsonObject(raw)");
+    expect(syncCommand).toContain("function listTasks(){");
+    expect(syncCommand).toContain("function resolveTaskId(item){");
+    expect(syncCommand).toContain("const taskBranch=String(task?.branchName||'').trim();");
+    expect(syncCommand).toContain("task_lookup_failed");
+    expect(syncCommand).toContain("const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||\'\').trim());");
+    expect(syncCommand).not.toContain("current==='todo'||current==='inprogress'");
+
+    const syncAgentNeededNode = syncTemplate.nodes.find((n) => n.id === "sync-agent-needed");
+    expect(syncAgentNeededNode?.config?.expression)
+      .toContain("d.unresolved.some((item)=>String(item?.taskId||\'\').trim())");
   });
 });
 

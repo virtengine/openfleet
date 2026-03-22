@@ -26,19 +26,13 @@ import {
 } from "../agent/agent-prompts.mjs";
 import { resolveAgentRepoRoot, resolveRepoLocalBosunDir } from "./repo-root.mjs";
 import { applyAllCompatibility } from "../compat.mjs";
-import {
-  normalizeExecutorKey,
-  getModelsForExecutor,
-  MODEL_ALIASES,
-} from "../task/task-complexity.mjs";
+import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
+import { CONFIG_FILES } from "./config-file-names.mjs";
+import { ExecutorScheduler, loadExecutorConfig } from "./executor-config.mjs";
+import { normalizePipelineWorkflows } from "../workflow/pipeline-workflows.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const CONFIG_FILES = [
-  "bosun.config.json",
-  ".bosun.json",
-  "bosun.json",
-];
 
 function hasSetupMarkers(dir) {
   const markers = [".env", ...CONFIG_FILES];
@@ -133,7 +127,11 @@ function resolveConfigDir(repoRoot) {
   const repoLocalConfigDir = resolveRepoLocalBosunDir(repoRoot);
   if (repoLocalConfigDir) return repoLocalConfigDir;
 
-  // 3. Platform-aware user home
+  // 3. Tests must not fall through to the user's real global Bosun home.
+  const sandbox = ensureTestRuntimeSandbox();
+  if (sandbox?.configDir) return sandbox.configDir;
+
+  // 4. Platform-aware user home
   const preferWindowsDirs =
     process.platform === "win32" && !isWslInteropRuntime();
   const baseDir = preferWindowsDirs
@@ -460,100 +458,6 @@ function isEnvEnabled(value, defaultValue = false) {
   return parseEnvBoolean(value, defaultValue);
 }
 
-function parseListValue(value) {
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => String(item || "").trim())
-      .filter(Boolean);
-  }
-  return String(value || "")
-    .split(/[,|]/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function inferExecutorModelsFromVariant(executor, variant) {
-  const normalizedExecutor = normalizeExecutorKey(executor);
-  if (!normalizedExecutor) return [];
-  const normalizedVariant = String(variant || "DEFAULT")
-    .trim()
-    .toUpperCase();
-  if (!normalizedVariant || normalizedVariant === "DEFAULT") return [];
-
-  const known = getModelsForExecutor(normalizedExecutor);
-  const inferred = known.filter((model) => {
-    const alias = MODEL_ALIASES[model];
-    return (
-      String(alias?.variant || "")
-        .trim()
-        .toUpperCase() === normalizedVariant
-    );
-  });
-  if (inferred.length > 0) return inferred;
-
-  // Fallback for variants encoded as model slug with underscores.
-  const slugGuess = normalizedVariant.toLowerCase().replaceAll("_", "-");
-  if (known.includes(slugGuess)) return [slugGuess];
-
-  return [];
-}
-
-function normalizeExecutorModels(executor, models, variant = "DEFAULT") {
-  const normalizedExecutor = normalizeExecutorKey(executor);
-  if (!normalizedExecutor) return [];
-  const input = parseListValue(models);
-  const known = new Set(getModelsForExecutor(normalizedExecutor));
-  if (input.length === 0) {
-    const inferred = inferExecutorModelsFromVariant(
-      normalizedExecutor,
-      variant,
-    );
-    return inferred.length > 0 ? inferred : [...known];
-  }
-  // Preserve custom/deployment slugs in addition to known models so user-provided
-  // model routing survives normalization (for example Azure deployment names).
-  return [...new Set(input.filter(Boolean))];
-}
-
-function normalizeExecutorEntry(entry, index = 0, total = 1) {
-  if (!entry || typeof entry !== "object") return null;
-  const executorType = String(entry.executor || "").trim().toUpperCase();
-  if (!executorType) return null;
-  const variant = String(entry.variant || "DEFAULT").trim() || "DEFAULT";
-  const normalized = normalizeExecutorKey(executorType) || "codex";
-  const weight = Number(entry.weight);
-  const safeWeight = Number.isFinite(weight) ? weight : Math.floor(100 / Math.max(1, total));
-  const role =
-    String(entry.role || "").trim() ||
-    (index === 0 ? "primary" : index === 1 ? "backup" : `executor-${index + 1}`);
-  const name =
-    String(entry.name || "").trim() ||
-    `${normalized}-${String(variant || "default").toLowerCase()}`;
-  const models = normalizeExecutorModels(executorType, entry.models, variant);
-  const codexProfile = String(
-    entry.codexProfile || entry.modelProfile || "",
-  ).trim();
-
-  // Provider configuration for the executor (e.g. opencode with specific provider)
-  const provider = String(entry.provider || "").trim() || null;
-  const providerConfig = entry.providerConfig && typeof entry.providerConfig === "object"
-    ? { ...entry.providerConfig }
-    : null;
-
-  return {
-    name,
-    executor: executorType,
-    variant,
-    weight: safeWeight,
-    role,
-    enabled: entry.enabled !== false,
-    models,
-    codexProfile,
-    provider,
-    providerConfig,
-  };
-}
-
 function buildDefaultTriggerTemplates() {
   return [
     {
@@ -630,6 +534,162 @@ function resolveTriggerSystemConfig(configData, defaults) {
   });
 }
 
+function toBoundedInt(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  const rounded = Math.trunc(parsed);
+  return Math.min(max, Math.max(min, rounded));
+}
+
+const WORKTREE_BOOTSTRAP_STACK_IDS = Object.freeze([
+  "node",
+  "python",
+  "go",
+  "rust",
+  "java",
+  "dotnet",
+  "ruby",
+  "php",
+  "make",
+]);
+
+function normalizeStringListConfig(value) {
+  const source = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/\r?\n|,/)
+      : [];
+  const values = [];
+  for (const entry of source) {
+    const normalized = String(entry || "").trim();
+    if (!normalized || values.includes(normalized)) continue;
+    values.push(normalized);
+  }
+  return values;
+}
+
+function freezeNestedStringListMap(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : {};
+  const normalized = {};
+  for (const [rawKey, rawValue] of Object.entries(source)) {
+    const key = String(rawKey || "").trim().toLowerCase();
+    if (!key) continue;
+    const values = normalizeStringListConfig(rawValue);
+    if (values.length === 0) continue;
+    normalized[key] = Object.freeze(values);
+  }
+  return Object.freeze(normalized);
+}
+
+function resolveWorktreeBootstrapConfig(configData = {}) {
+  const raw = configData.worktreeBootstrap && typeof configData.worktreeBootstrap === "object"
+    ? configData.worktreeBootstrap
+    : {};
+  const commandsByStack = {
+    ...freezeNestedStringListMap(raw.commandsByStack),
+  };
+  for (const stackId of WORKTREE_BOOTSTRAP_STACK_IDS) {
+    const envName = `WORKTREE_BOOTSTRAP_${stackId.toUpperCase()}_COMMAND`;
+    const envValues = normalizeStringListConfig(process.env[envName]);
+    if (envValues.length > 0) {
+      commandsByStack[stackId] = Object.freeze(envValues);
+    }
+  }
+  return Object.freeze({
+    enabled: isEnvEnabled(
+      process.env.WORKTREE_BOOTSTRAP_ENABLED ?? raw.enabled,
+      false,
+    ),
+    linkSharedPaths: isEnvEnabled(
+      process.env.WORKTREE_BOOTSTRAP_LINK_SHARED_PATHS ?? raw.linkSharedPaths,
+      true,
+    ),
+    commandTimeoutMs: toBoundedInt(
+      process.env.WORKTREE_BOOTSTRAP_COMMAND_TIMEOUT_MS ?? raw.commandTimeoutMs,
+      10 * 60 * 1000,
+      1000,
+      60 * 60 * 1000,
+    ),
+    commandsByStack: Object.freeze(commandsByStack),
+    sharedPathsByStack: freezeNestedStringListMap(raw.sharedPathsByStack),
+  });
+}
+
+function normalizeStatusList(rawStates) {
+  const source = Array.isArray(rawStates)
+    ? rawStates
+    : String(rawStates || "").split(",");
+  const values = [];
+  for (const raw of source) {
+    const normalized = String(raw || "").trim().toLowerCase();
+    if (!normalized || values.includes(normalized)) continue;
+    values.push(normalized);
+  }
+  return values.length > 0 ? values : ["done", "cancelled"];
+}
+
+function resolveWorkflowConfig(configData = {}) {
+  const rawWorkflows = configData?.workflows;
+  const rawEntries = Array.isArray(rawWorkflows) ? rawWorkflows : [];
+  const normalized = [];
+
+  for (const rawEntry of rawEntries) {
+    if (!rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) continue;
+    const type = String(rawEntry.type || "").trim().toLowerCase();
+    if (!type) continue;
+
+    const entryBase = {
+      type,
+      enabled: rawEntry.enabled !== false,
+      name: String(rawEntry.name || "").trim() || null,
+    };
+
+    if (type !== "continuation-loop") {
+      normalized.push(Object.freeze(entryBase));
+      continue;
+    }
+
+    const onStuckRaw = String(rawEntry.onStuck || "escalate").trim().toLowerCase();
+    const onStuck = ["retry", "escalate", "pause"].includes(onStuckRaw)
+      ? onStuckRaw
+      : "escalate";
+
+    normalized.push(Object.freeze({
+      ...entryBase,
+      taskId: String(rawEntry.taskId || "").trim(),
+      worktreePath: String(rawEntry.worktreePath || "").trim(),
+      maxTurns: toBoundedInt(rawEntry.maxTurns, 8, 1, 1000),
+      pollIntervalMs: toBoundedInt(rawEntry.pollIntervalMs, 30000, 1000, 3600000),
+      terminalStates: normalizeStatusList(rawEntry.terminalStates),
+      stuckThresholdMs: toBoundedInt(rawEntry.stuckThresholdMs, 300000, 1000, 86400000),
+      onStuck,
+      continuePrompt: String(rawEntry.continuePrompt || "").trim(),
+      retryPrompt: String(rawEntry.retryPrompt || "").trim(),
+      sdk: String(rawEntry.sdk || "auto").trim() || "auto",
+      model: String(rawEntry.model || "").trim(),
+      timeoutMs: toBoundedInt(rawEntry.timeoutMs, 1800000, 1000, 21600000),
+    }));
+  }
+
+  // Support declarative pipeline workflow maps while keeping backward-compatible
+  // array semantics for continuation-loop style entries.
+  if (rawWorkflows && typeof rawWorkflows === "object" && !Array.isArray(rawWorkflows)) {
+    const namedWorkflows = normalizePipelineWorkflows(rawWorkflows);
+    for (const [workflowName, workflowDefinition] of Object.entries(namedWorkflows)) {
+      Object.defineProperty(normalized, workflowName, {
+        value: workflowDefinition,
+        enumerable: true,
+        configurable: false,
+        writable: false,
+      });
+    }
+  }
+
+  return Object.freeze(normalized);
+}
+
 // ── Git helpers ──────────────────────────────────────────────────────────────
 
 function detectRepoSlug(repoRoot = "") {
@@ -651,9 +711,15 @@ function detectRepoSlug(repoRoot = "") {
   const direct = tryResolve(process.cwd());
   if (direct) return direct;
 
-  // Fall back to detected repo root if provided (or detectable)
-  const root = repoRoot || detectRepoRoot();
-  if (root) {
+  // Fall back to detected repo root if provided
+  if (repoRoot) {
+    const viaRoot = tryResolve(repoRoot);
+    if (viaRoot) return viaRoot;
+  }
+
+  // Last resort — use cached detectRepoRoot (avoids redundant subprocess calls)
+  const root = detectRepoRoot();
+  if (root && root !== process.cwd()) {
     const viaRoot = tryResolve(root);
     if (viaRoot) return viaRoot;
   }
@@ -661,7 +727,16 @@ function detectRepoSlug(repoRoot = "") {
   return null;
 }
 
+let _detectRepoRootCache = null;
+
 function detectRepoRoot() {
+  if (_detectRepoRootCache) return _detectRepoRootCache;
+  const result = _detectRepoRootUncached();
+  _detectRepoRootCache = result;
+  return result;
+}
+
+function _detectRepoRootUncached() {
   const gitExecOptions = {
     encoding: "utf8",
     stdio: ["pipe", "pipe", "ignore"],
@@ -674,43 +749,8 @@ function detectRepoRoot() {
     if (existsSync(envRoot)) return envRoot;
   }
 
-  // 2. Try git from cwd
-  try {
-    const gitRoot = execSync("git rev-parse --show-toplevel", {
-      ...gitExecOptions,
-    }).trim();
-    if (gitRoot) return gitRoot;
-  } catch {
-    // not in a git repo from cwd
-  }
-
-  // 3. Bosun package directory may be inside a repo (common: scripts/bosun/ within a project)
-  try {
-    const gitRoot = execSync("git rev-parse --show-toplevel", {
-      cwd: __dirname,
-      ...gitExecOptions,
-    }).trim();
-    if (gitRoot) return gitRoot;
-  } catch {
-    // bosun installed standalone, not in a repo
-  }
-
-  // 4. Module root detection — when bosun is installed as a standalone npm package,
-  //    use the module root directory as a stable base for config resolution.
-  const moduleRoot = detectBosunModuleRoot();
-  if (moduleRoot && moduleRoot !== process.cwd()) {
-    try {
-      const gitRoot = execSync("git rev-parse --show-toplevel", {
-        cwd: moduleRoot,
-        ...gitExecOptions,
-      }).trim();
-      if (gitRoot) return gitRoot;
-    } catch {
-      // module root is not inside a git repo
-    }
-  }
-
-  // 5. Check bosun config for workspace repos
+  // 2. Check bosun config for workspace repos FIRST — this is the primary
+  //    source of truth and works regardless of whether cwd is inside a git repo.
   const configDirs = getConfigSearchDirs();
   let fallbackRepo = null;
   for (const cfgName of CONFIG_FILES) {
@@ -732,11 +772,45 @@ function detectRepoRoot() {
   }
   if (fallbackRepo) return fallbackRepo;
 
-  // 6. Final fallback — warn and return cwd.
-  // git repo (e.g. when the daemon spawns with cwd=homedir), but returning
-  // null would crash downstream callers like resolve(repoRoot).  The warning
-  // helps diagnose "not a git repository" errors from child processes.
-  console.warn("[config] detectRepoRoot: no git repository found — falling back to cwd:", process.cwd());
+  // 3. Try git from cwd
+  try {
+    const gitRoot = execSync("git rev-parse --show-toplevel", {
+      ...gitExecOptions,
+    }).trim();
+    if (gitRoot) return gitRoot;
+  } catch {
+    // not in a git repo from cwd
+  }
+
+  // 4. Bosun package directory may be inside a repo (common: scripts/bosun/ within a project)
+  try {
+    const gitRoot = execSync("git rev-parse --show-toplevel", {
+      cwd: __dirname,
+      ...gitExecOptions,
+    }).trim();
+    if (gitRoot) return gitRoot;
+  } catch {
+    // bosun installed standalone, not in a repo
+  }
+
+  // 5. Module root detection — when bosun is installed as a standalone npm package,
+  //    use the module root directory as a stable base for config resolution.
+  const moduleRoot = detectBosunModuleRoot();
+  if (moduleRoot && moduleRoot !== process.cwd()) {
+    try {
+      const gitRoot = execSync("git rev-parse --show-toplevel", {
+        cwd: moduleRoot,
+        ...gitExecOptions,
+      }).trim();
+      if (gitRoot) return gitRoot;
+    } catch {
+      // module root is not inside a git repo
+    }
+  }
+
+  // 6. Final fallback — return cwd silently. The config system resolves
+  //    repos from BOSUN_HOME workspaces, so a missing git repo in cwd is
+  //    expected for globally-installed usage and daemon spawns.
   return process.cwd();
 }
 
@@ -773,55 +847,6 @@ function detectRepoRoot() {
  *   "distribution": "weighted"      // "weighted" | "round-robin" | "primary-only"
  * }
  */
-
-const DEFAULT_EXECUTORS = {
-  executors: [
-    {
-      name: "codex-default",
-      executor: "CODEX",
-      variant: "DEFAULT",
-      weight: 100,
-      role: "primary",
-      enabled: true,
-    },
-  ],
-  failover: {
-    strategy: "next-in-line",
-    maxRetries: 3,
-    cooldownMinutes: 5,
-    disableOnConsecutiveFailures: 3,
-  },
-  distribution: "primary-only",
-};
-
-function parseExecutorsFromEnv() {
-  // EXECUTORS=CODEX:DEFAULT:100:gpt-5.2-codex|gpt-5.1-codex-mini
-  const raw = process.env.EXECUTORS;
-  if (!raw) return null;
-  const entries = raw.split(",").map((e) => e.trim());
-  const executors = [];
-  const roles = ["primary", "backup", "tertiary"];
-  for (let i = 0; i < entries.length; i++) {
-    const parts = entries[i].split(":");
-    if (parts.length < 2) continue;
-    const executorType = parts[0].toUpperCase();
-    const models = normalizeExecutorModels(
-      executorType,
-      parts[3] || "",
-      parts[1] || "DEFAULT",
-    );
-    executors.push({
-      name: `${parts[0].toLowerCase()}-${parts[1].toLowerCase()}`,
-      executor: executorType,
-      variant: parts[1],
-      weight: parts[2] ? Number(parts[2]) : Math.floor(100 / entries.length),
-      role: roles[i] || `executor-${i + 1}`,
-      enabled: true,
-      models,
-    });
-  }
-  return executors.length ? executors : null;
-}
 
 function normalizePrimaryAgent(value) {
   const raw = String(value || "")
@@ -881,249 +906,6 @@ function normalizeProjectRequirementsProfile(value) {
     return profile;
   }
   return "feature";
-}
-
-function findExecutorMetadataMatch(entry, candidates, index = 0) {
-  const entryExecutor = normalizeExecutorKey(entry?.executor);
-  const entryVariant = String(entry?.variant || "DEFAULT")
-    .trim()
-    .toUpperCase();
-  const entryRole = String(entry?.role || "")
-    .trim()
-    .toLowerCase();
-
-  const exact = candidates.find((candidate) =>
-    normalizeExecutorKey(candidate?.executor) === entryExecutor &&
-    String(candidate?.variant || "DEFAULT").trim().toUpperCase() === entryVariant &&
-    String(candidate?.role || "").trim().toLowerCase() === entryRole
-  );
-  if (exact) return exact;
-
-  const byExecutorAndVariant = candidates.find((candidate) =>
-    normalizeExecutorKey(candidate?.executor) === entryExecutor &&
-    String(candidate?.variant || "DEFAULT").trim().toUpperCase() === entryVariant
-  );
-  if (byExecutorAndVariant) return byExecutorAndVariant;
-
-  return candidates[index] || null;
-}
-
-function loadExecutorConfig(configDir, configData) {
-  // 1. Try env var
-  const fromEnv = parseExecutorsFromEnv();
-
-  // 2. Try config file
-  let fromFile = null;
-  if (configData && typeof configData === "object") {
-    fromFile = configData.executors ? configData : null;
-  }
-  if (!fromFile) {
-    for (const name of CONFIG_FILES) {
-      const p = resolve(configDir, name);
-      if (existsSync(p)) {
-        try {
-          const raw = JSON.parse(readFileSync(p, "utf8"));
-          fromFile = raw.executors ? raw : null;
-          break;
-        } catch {
-          /* invalid JSON — skip */
-        }
-      }
-    }
-  }
-
-  const baseExecutors =
-    fromEnv || fromFile?.executors || DEFAULT_EXECUTORS.executors;
-  const executors = (Array.isArray(baseExecutors) ? baseExecutors : [])
-    .map((entry, index, arr) => normalizeExecutorEntry(entry, index, arr.length))
-    .filter(Boolean);
-
-  // Preserve file-defined metadata (for example codexProfile) even when
-  // execution topology comes from EXECUTORS env.
-  if (fromEnv && Array.isArray(fromFile?.executors) && executors.length > 0) {
-    const fileExecutors = fromFile.executors
-      .map((entry, index, arr) => normalizeExecutorEntry(entry, index, arr.length))
-      .filter(Boolean);
-
-    for (let index = 0; index < executors.length; index++) {
-      const current = executors[index];
-      const match = findExecutorMetadataMatch(current, fileExecutors, index);
-      if (!match) continue;
-      const merged = { ...current };
-      if (typeof match.name === "string" && match.name.trim()) {
-        merged.name = match.name.trim();
-      }
-      if (typeof match.enabled === "boolean") {
-        merged.enabled = match.enabled;
-      }
-      if (Array.isArray(match.models) && match.models.length > 0) {
-        merged.models = [...new Set(match.models)];
-      }
-      if (match.codexProfile) {
-        merged.codexProfile = match.codexProfile;
-      }
-      executors[index] = {
-        ...merged,
-      };
-    }
-  }
-  const failover = fromFile?.failover || {
-    strategy:
-      process.env.FAILOVER_STRATEGY || DEFAULT_EXECUTORS.failover.strategy,
-    maxRetries: Number(
-      process.env.FAILOVER_MAX_RETRIES || DEFAULT_EXECUTORS.failover.maxRetries,
-    ),
-    cooldownMinutes: Number(
-      process.env.FAILOVER_COOLDOWN_MIN ||
-        DEFAULT_EXECUTORS.failover.cooldownMinutes,
-    ),
-    disableOnConsecutiveFailures: Number(
-      process.env.FAILOVER_DISABLE_AFTER ||
-        DEFAULT_EXECUTORS.failover.disableOnConsecutiveFailures,
-    ),
-  };
-  const distribution =
-    fromFile?.distribution ||
-    process.env.EXECUTOR_DISTRIBUTION ||
-    DEFAULT_EXECUTORS.distribution;
-
-  return { executors, failover, distribution };
-}
-
-// ── Executor Scheduler ───────────────────────────────────────────────────────
-
-class ExecutorScheduler {
-  constructor(config) {
-    this.executors = config.executors.filter((e) => e.enabled !== false);
-    this.failover = config.failover;
-    this.distribution = config.distribution;
-    this._roundRobinIndex = 0;
-    this._failureCounts = new Map(); // name → consecutive failures
-    this._disabledUntil = new Map(); // name → timestamp
-  }
-
-  /** Get the next executor based on distribution strategy */
-  next() {
-    const available = this._getAvailable();
-    if (!available.length) {
-      // All disabled — reset and use primary
-      this._disabledUntil.clear();
-      this._failureCounts.clear();
-      return this.executors[0];
-    }
-
-    switch (this.distribution) {
-      case "round-robin":
-        return this._roundRobin(available);
-      case "primary-only":
-        return available[0];
-      case "weighted":
-      default:
-        return this._weightedSelect(available);
-    }
-  }
-
-  /** Report a failure for an executor */
-  recordFailure(executorName) {
-    const count = (this._failureCounts.get(executorName) || 0) + 1;
-    this._failureCounts.set(executorName, count);
-    if (count >= this.failover.disableOnConsecutiveFailures) {
-      const until = Date.now() + this.failover.cooldownMinutes * 60 * 1000;
-      this._disabledUntil.set(executorName, until);
-      this._failureCounts.set(executorName, 0);
-    }
-  }
-
-  /** Report a success for an executor */
-  recordSuccess(executorName) {
-    this._failureCounts.set(executorName, 0);
-    this._disabledUntil.delete(executorName);
-  }
-
-  /** Get failover executor when current one fails */
-  getFailover(currentName) {
-    const available = this._getAvailable().filter(
-      (e) => e.name !== currentName,
-    );
-    if (!available.length) return null;
-
-    switch (this.failover.strategy) {
-      case "weighted-random":
-        return this._weightedSelect(available);
-      case "round-robin":
-        return available[0];
-      case "next-in-line":
-      default: {
-        // Find the next one by role priority
-        const roleOrder = [
-          "primary",
-          "backup",
-          "tertiary",
-          ...Array.from({ length: 20 }, (_, i) => `executor-${i + 1}`),
-        ];
-        available.sort(
-          (a, b) => roleOrder.indexOf(a.role) - roleOrder.indexOf(b.role),
-        );
-        return available[0];
-      }
-    }
-  }
-
-  /** Get summary for display */
-  getSummary() {
-    const total = this.executors.reduce((s, e) => s + e.weight, 0);
-    return this.executors.map((e) => {
-      const pct = total > 0 ? Math.round((e.weight / total) * 100) : 0;
-      const disabled = this._isDisabled(e.name);
-      return {
-        ...e,
-        percentage: pct,
-        status: disabled ? "cooldown" : e.enabled ? "active" : "disabled",
-        consecutiveFailures: this._failureCounts.get(e.name) || 0,
-      };
-    });
-  }
-
-  /** Format a display string like "COPILOT ⇄ CODEX (50/50)" */
-  toDisplayString() {
-    const summary = this.getSummary().filter((e) => e.status === "active");
-    if (!summary.length) return "No executors available";
-    return summary
-      .map((e) => `${e.executor}:${e.variant}(${e.percentage}%)`)
-      .join(" ⇄ ");
-  }
-
-  _getAvailable() {
-    return this.executors.filter(
-      (e) => e.enabled !== false && !this._isDisabled(e.name),
-    );
-  }
-
-  _isDisabled(name) {
-    const until = this._disabledUntil.get(name);
-    if (!until) return false;
-    if (Date.now() >= until) {
-      this._disabledUntil.delete(name);
-      return false;
-    }
-    return true;
-  }
-
-  _roundRobin(available) {
-    const idx = this._roundRobinIndex % available.length;
-    this._roundRobinIndex++;
-    return available[idx];
-  }
-
-  _weightedSelect(available) {
-    const totalWeight = available.reduce((s, e) => s + (e.weight || 1), 0);
-    let r = Math.random() * totalWeight;
-    for (const e of available) {
-      r -= e.weight || 1;
-      if (r <= 0) return e;
-    }
-    return available[available.length - 1];
-  }
 }
 
 // ── Multi-Repo Support ───────────────────────────────────────────────────────
@@ -1303,6 +1085,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     process.env.BOSUN_LOAD_REPO_ENV_WITH_EXPLICIT_CONFIG,
     false,
   );
+  const envOverride = reloadEnv || !isEnvEnabled(process.env.BOSUN_ENV_NO_OVERRIDE, false);
   let detectedRepoRoot = "";
   const getFallbackRepoRoot = () => {
     if (normalizedRepoRootOverride) return normalizedRepoRootOverride;
@@ -1311,9 +1094,22 @@ export function loadConfig(argv = process.argv, options = {}) {
   };
 
   // Determine config directory (where bosun stores its config)
-  const configDir =
+  let configDir =
     explicitConfigDirRaw ||
     resolveConfigDir(normalizedRepoRootOverride);
+
+  // If BOSUN_HOME/BOSUN_DIR is declared in the repo-local .env, load that first
+  // and then pivot into the explicit config dir before reading config files.
+  if (!hasExplicitConfigDir) {
+    loadDotEnv(configDir, { override: envOverride });
+    const envConfigDirRaw = process.env.BOSUN_HOME || process.env.BOSUN_DIR || "";
+    if (String(envConfigDirRaw).trim()) {
+      const resolvedEnvConfigDir = resolve(envConfigDirRaw);
+      if (resolvedEnvConfigDir !== resolve(configDir)) {
+        configDir = resolvedEnvConfigDir;
+      }
+    }
+  }
 
   const configFile = loadConfigFile(configDir);
   let configData = configFile.data || {};
@@ -1374,7 +1170,6 @@ export function loadConfig(argv = process.argv, options = {}) {
   // for Bosun-specific configuration, so it should override any stale shell
   // env vars.  Users who want shell vars to take precedence can use profiles
   // or set BOSUN_ENV_NO_OVERRIDE=1.
-  const envOverride = reloadEnv || !isEnvEnabled(process.env.BOSUN_ENV_NO_OVERRIDE, false);
   loadDotEnv(configDir, { override: envOverride });
 
   const shouldLoadRepoEnv =
@@ -1436,7 +1231,10 @@ export function loadConfig(argv = process.argv, options = {}) {
   {
     const selPath = selectedRepository?.path || "";
     const selHasGit = selPath && existsSync(resolve(selPath, ".git"));
-    repoRoot = (selHasGit ? selPath : null) || getFallbackRepoRoot();
+    repoRoot =
+      explicitRepoRoot ||
+      (selHasGit ? selPath : null) ||
+      getFallbackRepoRoot();
   }
 
   if (
@@ -1528,7 +1326,7 @@ export function loadConfig(argv = process.argv, options = {}) {
 
   // ── Timing ───────────────────────────────────────────────
   const restartDelayMs = Number(
-    cli["restart-delay"] || process.env.RESTART_DELAY_MS || "10000",
+    cli["restart-delay"] || process.env.RESTART_DELAY_MS || "180000",
   );
   const maxRestarts = Number(
     cli["max-restarts"] || process.env.MAX_RESTARTS || "0",
@@ -1862,6 +1660,17 @@ export function loadConfig(argv = process.argv, options = {}) {
         internalExecutorConfig.maxRetries ||
         2,
     ),
+    retryReviewThreshold: Number(
+      process.env.INTERNAL_EXECUTOR_RETRY_REVIEW_THRESHOLD ||
+        internalExecutorConfig.retryReviewThreshold ||
+        internalExecutorConfig.maxRetries ||
+        3,
+    ),
+    retryDelayMs: Number(
+      process.env.INTERNAL_EXECUTOR_RETRY_DELAY_MS ||
+        internalExecutorConfig.retryDelayMs ||
+        15000,
+    ),
     autoCreatePr: internalExecutorConfig.autoCreatePr !== false,
     projectId:
       process.env.INTERNAL_EXECUTOR_PROJECT_ID ||
@@ -2004,6 +1813,15 @@ export function loadConfig(argv = process.argv, options = {}) {
     configData,
     triggerSystemDefaults,
   );
+  const workflows = resolveWorkflowConfig(configData);
+  const workflowWorktreeRecoveryCooldownMin = toBoundedInt(
+    process.env.WORKFLOW_WORKTREE_RECOVERY_COOLDOWN_MIN ??
+      configData.workflowWorktreeRecoveryCooldownMin,
+    15,
+    1,
+    1440,
+  );
+  const worktreeBootstrap = resolveWorktreeBootstrapConfig(configData);
 
   // ── GitHub Reconciler ───────────────────────────────────
   const ghReconcileEnabled = isEnvEnabled(
@@ -2087,6 +1905,21 @@ export function loadConfig(argv = process.argv, options = {}) {
     autoRebaseOnMerge,
     assessWithSdk,
   });
+
+  const workflowDefaults =
+    configData.workflowDefaults && typeof configData.workflowDefaults === "object"
+      ? {
+          ...configData.workflowDefaults,
+          templates: Array.isArray(configData.workflowDefaults.templates)
+            ? [...configData.workflowDefaults.templates]
+            : configData.workflowDefaults.templates,
+          templateOverridesById:
+            configData.workflowDefaults.templateOverridesById &&
+            typeof configData.workflowDefaults.templateOverridesById === "object"
+              ? { ...configData.workflowDefaults.templateOverridesById }
+              : {},
+        }
+      : {};
 
   // ── Fleet Coordination ─────────────────────────────────────
   // Multi-workstation collaboration: when 2+ bosun instances share
@@ -2270,6 +2103,9 @@ export function loadConfig(argv = process.argv, options = {}) {
     telegramVerbosity,
 
     triggerSystem,
+    workflows,
+  workflowWorktreeRecoveryCooldownMin,
+    worktreeBootstrap,
 
     // GitHub Reconciler
     githubReconcile: {
@@ -2291,6 +2127,10 @@ export function loadConfig(argv = process.argv, options = {}) {
     // Fleet Coordination
     fleet,
 
+    // Workflow template defaults + opt-in typed workflow entries
+    workflowDefaults: Object.freeze(workflowDefaults),
+    workflows,
+
     // Paths
     statusPath,
     telegramPollLockPath,
@@ -2306,6 +2146,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     workspacesDir,
     activeWorkspace,
     agentRepoRoot,
+    workflows,
 
     // Agent prompts
     agentPrompts,
@@ -2419,4 +2260,3 @@ export {
   resolveAgentRepoRoot,
 };
 export default loadConfig;
-

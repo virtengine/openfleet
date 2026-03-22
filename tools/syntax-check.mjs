@@ -51,14 +51,30 @@ function validateModuleSyntax(filePath) {
   new vm.SourceTextModule(source, { identifier: filePath });
 }
 
+function validateBrowserModuleSyntax(filePath) {
+  const source = readFileSync(filePath, "utf8");
+  const mod = new vm.SourceTextModule(source, { identifier: filePath });
+  let hasTLA = false;
+  const tlaProp = mod.hasTopLevelAwait;
+  if (typeof tlaProp === "function") {
+    hasTLA = !!tlaProp.call(mod);
+  } else if (typeof tlaProp === "boolean") {
+    hasTLA = tlaProp;
+  }
+  if (hasTLA) {
+    throw new Error(
+      "Top-level await is not allowed in browser-served modules because embedded WebViews can fail with 'Unexpected reserved word'.",
+    );
+  }
+}
+
 /**
  * Parse a JS file using the Module compiler.
  * Catches syntax errors such as unterminated statements or bad tokens.
  * UI files use ES module syntax (import/export) via browser importmaps.
  */
 function validateScriptSyntax(filePath) {
-  const source = readFileSync(filePath, "utf8");
-  new vm.SourceTextModule(source, { identifier: filePath });
+  validateBrowserModuleSyntax(filePath);
 }
 
 async function main() {
@@ -87,14 +103,17 @@ async function main() {
     process.exit(1);
   }
 
-  // ── Phase 2: Parse-check UI JavaScript files ──────────────────────────
-  // These are classic scripts (not ESM modules) loaded via importmap in the
-  // browser.  We use vm.Script to catch syntax errors.
-  const uiDir = resolve(process.cwd(), "ui");
-  const uiFiles = listJsFilesRecursive(uiDir);
+  // ── Phase 2: Parse-check browser JavaScript files ─────────────────────
+  // These files are loaded directly in the browser via import maps. Keep
+  // them free of syntax that older embedded WebViews reject at parse time.
+  const browserRoots = [
+    resolve(process.cwd(), "ui"),
+    resolve(process.cwd(), "site", "ui"),
+  ];
+  const browserFiles = [...new Set(browserRoots.flatMap((dir) => listJsFilesRecursive(dir)))];
   let uiFailed = false;
 
-  for (const filePath of uiFiles) {
+  for (const filePath of browserFiles) {
     try {
       validateScriptSyntax(filePath);
     } catch (error) {
@@ -110,7 +129,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`Syntax OK: ${files.length} modules + ${uiFiles.length} UI files checked`);
+  console.log(`Syntax OK: ${files.length} modules + ${browserFiles.length} browser files checked`);
 }
 
 main().catch((error) => {

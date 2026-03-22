@@ -44,6 +44,7 @@ import { ICONS } from "../modules/icons.js";
 import {
   cloneValue,
   formatRelative,
+  formatDuration,
   truncate,
   formatBytes,
   debounce,
@@ -51,6 +52,12 @@ import {
   exportAsJSON,
   countChangedFields,
 } from "../modules/utils.js";
+import { navigateTo } from "../modules/router.js";
+import {
+  loadSessions,
+  loadSessionMessages,
+  selectedSessionId,
+} from "../components/session-list.js";
 import {
   Modal,
   SaveDiscardBar,
@@ -65,6 +72,7 @@ import {
 } from "../components/forms.js";
 import { KanbanBoard } from "../components/kanban-board.js";
 import { VoiceMicButton, VoiceMicButtonInline } from "../modules/voice.js";
+import { openWorkflowRunsView } from "./workflows.js";
 import {
   workspaces as managedWorkspaces,
   activeWorkspaceId,
@@ -139,7 +147,7 @@ const STATUS_CHIPS = [
   { value: "inprogress", label: "Active" },
   { value: "inreview", label: "Review" },
   { value: "done", label: "Done" },
-  { value: "error", label: "Error" },
+  { value: "blocked", label: "Blocked" },
 ];
 
 const PRIORITY_CHIPS = [
@@ -163,7 +171,7 @@ const SNAPSHOT_STATUS_MAP = {
   Active: "inprogress",
   Review: "inreview",
   Done: "done",
-  Errors: "error",
+  Blocked: "blocked",
 };
 
 const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3, "": 4 };
@@ -1063,6 +1071,89 @@ function buildTaskHistoryEntries(task) {
     .slice(0, 40);
 }
 
+function pickTaskWorkflowSessionId(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  for (const value of [
+    entry.sessionId,
+    entry.primarySessionId,
+    entry.threadId,
+    entry.agentSessionId,
+    entry.meta?.sessionId,
+    entry.meta?.threadId,
+  ]) {
+    const normalized = String(value || "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+export function normalizeTaskWorkflowRunEntry(entry) {
+  if (entry == null) return null;
+  if (typeof entry === "string") {
+    const workflowId = String(entry || "").trim();
+    return workflowId
+      ? {
+          workflowId,
+          workflowName: "",
+          workflowLabel: workflowId,
+          runId: "",
+          status: "",
+          outcome: "",
+          result: "",
+          summary: "",
+          timestamp: null,
+          startedAt: null,
+          endedAt: null,
+          duration: null,
+          sessionId: "",
+          primarySessionId: "",
+          hasRunLink: false,
+          hasSessionLink: false,
+          url: "",
+          nodeId: "",
+          meta: {},
+        }
+      : null;
+  }
+  const workflowId = String(entry.workflowId || entry.id || entry.templateId || "").trim();
+  const workflowName = String(entry.workflowName || entry.name || "").trim();
+  const runId = String(entry.runId || entry.executionId || entry.attemptId || "").trim();
+  const status = String(entry.status || "").trim();
+  const outcome = String(entry.outcome || "").trim();
+  const summary = String(entry.summary || entry.message || entry.reason || "").trim();
+  const result = summary || String(entry.result || "").trim();
+  const startedAt = entry.startedAt || entry.createdAt || null;
+  const endedAt = entry.endedAt || entry.completedAt || entry.timestamp || null;
+  const timestamp = endedAt || startedAt || null;
+  const duration = Number.isFinite(Number(entry.duration))
+    ? Number(entry.duration)
+    : (startedAt && endedAt
+        ? Math.max(0, new Date(endedAt).getTime() - new Date(startedAt).getTime())
+        : null);
+  const sessionId = pickTaskWorkflowSessionId(entry);
+  return {
+    workflowId,
+    workflowName,
+    workflowLabel: workflowName || workflowId || "workflow",
+    runId,
+    status,
+    outcome,
+    result,
+    summary,
+    timestamp,
+    startedAt,
+    endedAt,
+    duration,
+    sessionId,
+    primarySessionId: String(entry.primarySessionId || sessionId).trim(),
+    hasRunLink: Boolean(runId),
+    hasSessionLink: Boolean(sessionId),
+    url: String(entry.url || "").trim(),
+    nodeId: String(entry.nodeId || "").trim(),
+    meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
+  };
+}
+
 function buildTaskWorkflowRuns(task) {
   const rows = getTaskCollectionValues(task, [
     "workflowRuns",
@@ -1070,19 +1161,7 @@ function buildTaskWorkflowRuns(task) {
     "workflows",
   ]);
   return rows
-    .map((entry) => {
-      if (entry == null) return null;
-      if (typeof entry === "string") {
-        return { workflowId: entry, runId: "", status: "", result: "", timestamp: null };
-      }
-      return {
-        workflowId: String(entry.workflowId || entry.id || entry.templateId || "").trim(),
-        runId: String(entry.runId || entry.executionId || entry.attemptId || "").trim(),
-        status: String(entry.status || entry.outcome || entry.result || "").trim(),
-        result: String(entry.summary || entry.message || entry.reason || "").trim(),
-        timestamp: entry.timestamp || entry.completedAt || entry.createdAt || null,
-      };
-    })
+    .map((entry) => normalizeTaskWorkflowRunEntry(entry))
     .filter((entry) => entry && (entry.workflowId || entry.runId || entry.status || entry.result))
     .sort((a, b) => {
       const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
@@ -1090,6 +1169,56 @@ function buildTaskWorkflowRuns(task) {
       return tb - ta;
     })
     .slice(0, 30);
+}
+
+export function buildTaskWorkflowRunMetaLine(run) {
+  const parts = [];
+  const label = String(run?.workflowLabel || run?.workflowName || run?.workflowId || "workflow").trim();
+  if (label) parts.push(label);
+  if (run?.runId) parts.push(`run ${run.runId}`);
+  if (run?.timestamp) parts.push(formatRelative(run.timestamp));
+  if (Number.isFinite(Number(run?.duration)) && Number(run.duration) > 0) {
+    parts.push(formatDuration(Number(run.duration)));
+  }
+  return parts.join(" · ");
+}
+
+export function buildTaskWorkflowRunStatusLine(run) {
+  const parts = [];
+  const status = String(run?.status || "").trim();
+  const outcome = String(run?.outcome || "").trim();
+  const summary = String(run?.summary || run?.result || "").trim();
+  if (status) parts.push(status);
+  if (outcome && outcome !== status) parts.push(outcome);
+  if (summary && summary !== status && summary !== outcome) parts.push(summary);
+  return parts.join(" · ") || "No status summary";
+}
+
+export async function openTaskWorkflowRun(run, deps = {}) {
+  const navigate = deps.navigateTo || navigateTo;
+  const openRuns = deps.openWorkflowRunsView || openWorkflowRunsView;
+  const workflowId = String(run?.workflowId || "").trim();
+  const runId = String(run?.runId || "").trim();
+  if (!runId) return false;
+  const navigated = navigate("workflows");
+  if (navigated === false) return false;
+  openRuns(workflowId, runId);
+  return true;
+}
+
+export async function openTaskWorkflowAgentHistory(run, deps = {}) {
+  const navigate = deps.navigateTo || navigateTo;
+  const loadAllSessions = deps.loadSessions || loadSessions;
+  const loadMessages = deps.loadSessionMessages || loadSessionMessages;
+  const selectedStore = deps.selectedSessionId || selectedSessionId;
+  const sessionId = pickTaskWorkflowSessionId(run);
+  if (!sessionId) return false;
+  const navigated = navigate("agents");
+  if (navigated === false) return false;
+  await loadAllSessions({ type: "task", workspace: "all" });
+  selectedStore.value = sessionId;
+  await loadMessages(sessionId, { limit: 50 });
+  return true;
 }
 
 function buildTaskRelatedLinks(task) {
@@ -1239,6 +1368,7 @@ export function StartTaskModal({
   task,
   defaultSdk = "auto",
   allowTaskIdInput = false,
+  presentation = "modal",
   onClose,
   onStart,
 }) {
@@ -1312,20 +1442,11 @@ export function StartTaskModal({
 
   const resetToInitial = useCallback(() => {
     const base = initialSnapshotRef.current || {};
-    setTitle(base.title || "");
-    setDescription(base.description || "");
-    setBaseBranch(base.baseBranch || "");
-    setPriority(base.priority || "medium");
-    setTaskType(base.taskType || "task");
-    setEpicId(base.epicId || "");
-    setStoryPoints(base.storyPoints || "");
-    setSelectedSprintId(base.sprintId || "");
-    setSprintOrderInput(base.sprintOrder || "");
-    setDependenciesInput(base.dependenciesInput || "");
-    setTagsInput(base.tagsInput || "");
-    setDraft(Boolean(base.draft));
+    setSdk(base.sdk || "auto");
+    setModel(base.model || "");
+    setTaskIdInput(base.taskIdInput || task?.id || "");
     showToast("Changes discarded", "info");
-  }, []);
+  }, [task?.id]);
 
   const handleStart = async ({ closeAfterStart = true } = {}) => {
     if (starting) return;
@@ -2406,6 +2527,100 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.workflowHistory,
     task?.workflows,
   ]);
+
+  // ── Execution Plan state ──────────────────────────────────────────────────
+  const [executionPlan, setExecutionPlan] = useState(null);
+  const [executionPlanLoading, setExecutionPlanLoading] = useState(false);
+  const [expandedNodes, setExpandedNodes] = useState({});
+  const [expandedStages, setExpandedStages] = useState({});
+  const [dryRunLoading, setDryRunLoading] = useState(false);
+  const [dryRunResults, setDryRunResults] = useState(null);
+  const [fullScreen, setFullScreen] = useState(false);
+  const [activeTab, setActiveTab] = useState("details");
+
+  const fetchExecutionPlan = useCallback((mode = "resolve") => {
+    if (!task?.id) return;
+    if (mode === "resolve") { setExecutionPlan(null); setExecutionPlanLoading(true); }
+    else { setDryRunLoading(true); }
+    const wsParam = typeof window !== "undefined" && window.__bosunWorkspaceId ? `&workspace=${encodeURIComponent(window.__bosunWorkspaceId)}` : "";
+    fetch(`/api/tasks/execution-plan?taskId=${encodeURIComponent(task.id)}${wsParam}&mode=${mode}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.ok) {
+          if (mode === "resolve") setExecutionPlan(data);
+          else { setExecutionPlan(data); setDryRunResults(data.dryRunResults || null); }
+        }
+      })
+      .catch(() => {})
+      .finally(() => { setExecutionPlanLoading(false); setDryRunLoading(false); });
+  }, [task?.id]);
+
+  useEffect(() => { fetchExecutionPlan("resolve"); }, [task?.id]);
+
+  const handleOpenWorkflowRun = useCallback(async (run) => {
+    try {
+      await openTaskWorkflowRun(run);
+    } catch {
+      showToast("Unable to open workflow run", "error");
+    }
+  }, []);
+  const handleOpenWorkflowAgentHistory = useCallback(async (run) => {
+    try {
+      await openTaskWorkflowAgentHistory(run);
+    } catch {
+      showToast("Unable to open linked agent session", "error");
+    }
+  }, []);
+  const renderWorkflowActivityCard = useCallback((run, key) => {
+    const metaLine = buildTaskWorkflowRunMetaLine(run);
+    const statusLine = buildTaskWorkflowRunStatusLine(run);
+    return html`
+      <div
+        class="task-comment-item task-workflow-run-card"
+        key=${key}
+        data-clickable=${run.hasRunLink ? "true" : "false"}
+        role=${run.hasRunLink ? "button" : undefined}
+        tabIndex=${run.hasRunLink ? 0 : undefined}
+        onClick=${run.hasRunLink ? () => { void handleOpenWorkflowRun(run); } : undefined}
+        onKeyDown=${run.hasRunLink
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                void handleOpenWorkflowRun(run);
+              }
+            }
+          : undefined}
+      >
+        <div class="task-workflow-run-head">
+          <div style="min-width:0;flex:1;">
+            <div class="task-comment-meta">${metaLine || "workflow"}</div>
+            <div class="task-comment-body">${statusLine}</div>
+            ${run.nodeId ? html`<div class="task-comment-meta">Node: ${run.nodeId}</div>` : null}
+          </div>
+          <div class="task-workflow-run-actions" onClick=${(event) => event.stopPropagation()}>
+            ${run.hasRunLink ? html`
+              <${Button} variant="outlined" size="small" onClick=${() => { void handleOpenWorkflowRun(run); }}>
+                Open Run
+              <//>
+            ` : null}
+            ${run.hasSessionLink ? html`
+              <${Button} variant="text" size="small" onClick=${() => { void handleOpenWorkflowAgentHistory(run); }}>
+                Agent History
+              <//>
+            ` : null}
+          </div>
+        </div>
+      </div>
+    `;
+  }, [handleOpenWorkflowRun, handleOpenWorkflowAgentHistory]);
+
+  const toggleNodeExpand = useCallback((stageIdx, nodeId) => {
+    setExpandedNodes((prev) => ({ ...prev, [`${stageIdx}-${nodeId}`]: !prev[`${stageIdx}-${nodeId}`] }));
+  }, []);
+  const toggleStageExpand = useCallback((stageIdx) => {
+    setExpandedStages((prev) => ({ ...prev, [stageIdx]: !prev[stageIdx] }));
+  }, []);
+
   const relatedLinks = useMemo(() => buildTaskRelatedLinks(task), [
     task?.id,
     task?.branch,
@@ -2420,6 +2635,21 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.assignees,
     task?.meta,
   ]);
+  const canStartInfo = task?.canStart || task?.meta?.canStart || null;
+  const blockedContext = task?.blockedContext || task?.meta?.blockedContext || null;
+  const blockedBy = Array.isArray(blockedContext?.blockedBy)
+    ? blockedContext.blockedBy
+    : Array.isArray(canStartInfo?.blockedBy)
+      ? canStartInfo.blockedBy
+      : [];
+  const blockedEvidence = [
+    ...(Array.isArray(blockedContext?.timelineEvidence)
+      ? blockedContext.timelineEvidence.map((entry) => ({ ...entry, kind: "timeline" }))
+      : []),
+    ...(Array.isArray(blockedContext?.logEvidence)
+      ? blockedContext.logEvidence.map((entry) => ({ ...entry, kind: "log" }))
+      : []),
+  ].slice(0, 6);
 
   const currentDependencyIds = useMemo(() => normalizeDependencyInput(dependenciesInput), [dependenciesInput]);
   const taskCatalogOptions = useMemo(() => (taskCatalog || []).filter((entry) => toText(entry?.id) && toText(entry?.id) !== toText(task?.id)), [taskCatalog, task?.id]);
@@ -2995,6 +3225,22 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     }
   };
 
+  const handleUnblock = async () => {
+    if (!task?.id) return;
+    haptic("medium");
+    try {
+      await apiFetch("/api/tasks/unblock", {
+        method: "POST",
+        body: JSON.stringify({ taskId: task.id, status: "todo" }),
+      });
+      showToast("Task moved back to todo", "success");
+      onClose();
+      scheduleRefresh(150);
+        } catch {
+      showToast("Failed to move task back to todo", "error");
+    }
+  };
+
   const handleManualToggle = async (next) => {
     if (!task?.id || manualBusy) return;
     if (next) {
@@ -3055,9 +3301,11 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     <${Modal}
       title=${task?.title || "Task Detail"}
       onClose=${onClose}
-      contentClassName=${"modal-content-wide task-detail-modal-jira" + (presentation === "side-sheet" ? " task-detail-side-sheet" : "")}
-      layout=${presentation === "side-sheet" ? "side-sheet" : "sheet"}
-      resizable=${presentation === "side-sheet"}
+      contentClassName=${fullScreen
+        ? "task-detail-fullscreen"
+        : "modal-content-wide task-detail-modal-jira" + (presentation === "side-sheet" ? " task-detail-side-sheet" : "")}
+      layout=${fullScreen ? "sheet" : (presentation === "side-sheet" ? "side-sheet" : "sheet")}
+      resizable=${!fullScreen && presentation === "side-sheet"}
       widthStorageKey="tasks.task-detail.width"
       defaultWidth=${900}
       unsavedChanges=${changeCount}
@@ -3068,71 +3316,1112 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       }}
       activeOperationLabel=${activeOperationLabel}
     >
-      <div class="task-modal-summary jira-task-summary">
-        <div class="task-modal-id" style="user-select:all">ID: ${task?.id}</div>
-        <div class="task-modal-badges">
-          <${Badge} status=${task?.status} text=${task?.status} />
-          ${task?.priority &&
-          html`<${Badge} status=${task.priority} text=${task.priority} />`}
-          ${manualOverride && html`<${Badge} status="warning" text="manual" />`}
+      ${/* ── Breadcrumb ── */ ""}
+      <div class="task-detail-breadcrumb">
+        <span>Tasks</span>
+        <span>/</span>
+        <span style="color:var(--color-text);font-weight:500;user-select:all;">${task?.id?.slice(0, 8) || "New"}</span>
+        ${task?.priority && html`<span class="task-priority-dot" data-priority=${task.priority}></span>`}
+        ${manualOverride && html`<span class="exec-plan-badge" style="background:#fbbf2420;color:#fbbf24;">MANUAL</span>`}
+      </div>
+
+      ${/* ── Title + Actions ── */ ""}
+      <div class="task-detail-title-area" style="display:flex;gap:12px;align-items:flex-start;">
+        <div style="flex:1;min-width:0;">
+          <input class="task-detail-title-input" value=${title} onInput=${(e) => setTitle(e.target.value)} placeholder="Task title" />
         </div>
-        ${canDispatch &&
-        html`
-          <div class="task-modal-actions">
+        <div style="display:flex;gap:6px;align-items:center;padding-top:6px;flex-shrink:0;">
+          <button class="task-status-btn" data-status=${status}>
+            ${(status || "todo").toUpperCase()}
+          </button>
+          ${canDispatch && html`
             <${Button} variant="contained" size="small" onClick=${handleStart}>
-              ${iconText(":play: Dispatch Task")}
+              ${iconText(":play: Dispatch")}
             <//>
-          </div>
-        `}
-      </div>
-
-
-      <div class="modal-form-span">
-        <div class="task-comments-block jira-panel" style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--bg-surface)">
-          <div class="task-attachments-title">Tracking Overview</div>
-          <div class="task-comments-list" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;">
-            <div class="task-comment-item">
-              <div class="task-comment-meta">Assigned Agents</div>
-              <div class="task-comment-body">${taskAgents.length ? taskAgents.join(" · ") : "No agent assignment recorded."}</div>
-            </div>
-            <div class="task-comment-item">
-              <div class="task-comment-meta">Workflow Runs</div>
-              <div class="task-comment-body">${workflowRuns.length ? `${workflowRuns.length} linked runs` : "No workflow runs linked yet."}</div>
-            </div>
-            <div class="task-comment-item">
-              <div class="task-comment-meta">Timeline Events</div>
-              <div class="task-comment-body">${historyEntries.length ? `${historyEntries.length} recorded entries` : "No timeline history yet."}</div>
-            </div>
-            <div class="task-comment-item">
-              <div class="task-comment-meta">Branch / PR</div>
-              <div class="task-comment-body">${relatedLinks.length ? relatedLinks.map((item) => `${item.kind}: ${item.value}`).join(" · ") : "No branch or PR links recorded."}</div>
-            </div>
-          </div>
+          `}
+          <button class="task-action-icon-btn"
+            onClick=${() => setFullScreen(!fullScreen)}
+            title=${fullScreen ? "Exit fullscreen" : "Fullscreen"}>
+            ${fullScreen ? "⊟" : "⊞"}
+          </button>
         </div>
       </div>
 
-      ${workflowRuns.length > 0 && html`
-        <div class="task-comments-block modal-form-span jira-panel">
-          <div class="task-attachments-title">Workflow Activity</div>
-          <div class="task-comments-list">
-            ${workflowRuns.map((run, index) => html`
-              <div class="task-comment-item" key=${`workflow-${index}`}>
-                <div class="task-comment-meta">
-                  ${run.workflowId || "workflow"}
-                  ${run.runId ? ` · run ${run.runId}` : ""}
-                  ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
+      ${/* ── Tab Bar (Jira style) ── */ ""}
+      <div class="task-tab-bar">
+        <button class="task-tab-btn" data-active=${activeTab === "details"} onClick=${() => setActiveTab("details")}>
+          ${"✎"} Details
+        </button>
+        <button class="task-tab-btn" data-active=${activeTab === "execution"} onClick=${() => setActiveTab("execution")}>
+          ${"▶️"} Execution Plan
+          ${executionPlan?.stageCount > 0 && html`<span class="task-tab-count">${executionPlan.stageCount}</span>`}
+        </button>
+        <button class="task-tab-btn" data-active=${activeTab === "history"} onClick=${() => setActiveTab("history")}>
+          ${"⏱"} History
+          ${historyEntries.length > 0 && html`<span class="task-tab-count">${historyEntries.length}</span>`}
+        </button>
+      </div>
+
+      ${/* ── Content Body ───────────────────────────────────────────── */ ""}
+      <div style="padding:${fullScreen ? '20px 24px' : '0'};">
+
+      ${/* ── DETAILS TAB — Two-column Jira layout ─────────────────── */ ""}
+      ${activeTab === "details" && html`<div class="task-detail-columns">
+
+      ${/* ── LEFT: Main Content ── */ ""}
+      <div class="task-detail-main">
+
+        ${(task?.status === "blocked" || canStartInfo?.canStart === false) && html`
+          <div class="task-section">
+            <div class="task-section-title">
+              ${task?.status === "blocked" ? "Blocked Diagnostics" : "Start Readiness"}
+              ${blockedContext?.workflowRunCount > 0 && html`<span class="task-tab-count">${blockedContext.workflowRunCount}</span>`}
+            </div>
+            <div class="task-section-body">
+              <div class="task-blocked-banner" data-category=${blockedContext?.category || "guard"}>
+                <div class="task-blocked-banner-title">
+                  ${blockedContext?.headline || "This task cannot start yet."}
                 </div>
-                <div class="task-comment-body">${run.status || run.result || "No status summary"}</div>
-                ${run.result && run.status && run.result !== run.status && html`
-                  <div class="task-comment-body">${run.result}</div>
+                <div class="task-blocked-banner-copy">
+                  ${blockedContext?.summary || blockedContext?.reason || "Bosun is holding this task until the blocking condition is resolved."}
+                </div>
+                ${blockedContext?.recommendation && html`
+                  <div class="task-blocked-banner-copy">${blockedContext.recommendation}</div>
                 `}
               </div>
-            `)}
+
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:12px;">
+                ${blockedContext?.workflowRunCount > 0 && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Workflow runs</div>
+                    <div class="task-comment-body">${blockedContext.workflowRunCount.toLocaleString("en-US")}</div>
+                  </div>
+                `}
+                ${blockedContext?.prePrValidationFailureCount > 0 && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Validation loops</div>
+                    <div class="task-comment-body">${blockedContext.prePrValidationFailureCount.toLocaleString("en-US")} pre-PR validation failures</div>
+                  </div>
+                `}
+                ${blockedContext?.worktreeFailureCount > 0 && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Worktree failures</div>
+                    <div class="task-comment-body">${blockedContext.worktreeFailureCount.toLocaleString("en-US")} acquisition failures</div>
+                  </div>
+                `}
+                ${blockedBy.length > 0 && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Blocking tasks</div>
+                    <div class="task-comment-body">${blockedBy.length.toLocaleString("en-US")} unresolved dependencies</div>
+                  </div>
+                `}
+              </div>
+
+              ${blockedBy.length > 0 && html`
+                <div class="task-comments-list" style=${{ marginTop: "12px" }}>
+                  ${blockedBy.map((entry, index) => html`
+                    <div class="task-comment-item" key=${`blocked-by-${index}`}>
+                      <div class="task-comment-meta">${entry.taskId || "dependency"}</div>
+                      <div class="task-comment-body">${entry.reason || "Not ready yet"}</div>
+                    </div>
+                  `)}
+                </div>
+              `}
+
+              ${blockedEvidence.length > 0 && html`
+                <div class="task-comments-list" style=${{ marginTop: "12px" }}>
+                  ${blockedEvidence.map((entry, index) => html`
+                    <div class="task-comment-item" key=${`blocked-evidence-${index}`}>
+                      <div class="task-comment-meta">
+                        ${entry.kind === "log" ? entry.source || "monitor log" : entry.source || "timeline"}
+                        ${entry.timestamp ? ` · ${formatRelative(entry.timestamp)}` : ""}
+                      </div>
+                      <div class="task-comment-body">${entry.message}</div>
+                    </div>
+                  `)}
+                </div>
+              `}
+            </div>
+          </div>
+        `}
+
+        ${/* Description */ ""}
+        <div class="task-section">
+          <div class="task-section-title">Description</div>
+          <div class="task-section-body">
+            <div class="textarea-with-mic" style="position:relative">
+              <${TextField} multiline rows=${4} size="small" placeholder="Add a description..." value=${description} onInput=${(e) => setDescription(e.target.value)} style=${{ paddingRight: "36px" }} fullWidth />
+              <${VoiceMicButton}
+                onTranscript=${(t) => setDescription((prev) => (prev ? prev + " " + t : t))}
+                disabled=${saving || rewriting}
+                size="sm"
+                className="textarea-mic-btn"
+              />
+            </div>
+            <div style="display:flex;gap:6px;margin-top:8px;">
+              <${Tooltip} title="Use AI to expand and improve this task description">
+                <${Button}
+                  variant="text" size="small"
+                  style=${{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", padding: "5px 10px", opacity: !title.trim() ? 0.45 : 1 }}
+                  disabled=${!title.trim() || rewriting || saving}
+                  onClick=${async () => {
+                    if (!title.trim() || rewriting) return;
+                    setRewriting(true);
+                    haptic("medium");
+                    try {
+                      const res = await apiFetch("/api/tasks/rewrite", {
+                        method: "POST",
+                        body: JSON.stringify({ title: title.trim(), description: description.trim() }),
+                      });
+                      if (res?.data) {
+                        if (res.data.title) setTitle(res.data.title);
+                        if (res.data.description) setDescription(res.data.description);
+                        showToast("Task description improved", "success");
+                        haptic("medium");
+                      }
+                    } catch { /* toast via apiFetch */ }
+                    setRewriting(false);
+                  }}
+                >
+                  ${rewriting
+                    ? html`<span style="display:inline-block;animation:spin 0.8s linear infinite">${"⏱"}</span> Improving…`
+                    : html`${iconText(":star: Improve with AI")}`
+                  }
+                <//>
+              <//>
+            </div>
           </div>
         </div>
-      `}
 
-      ${historyEntries.length > 0 && html`
+        ${/* Attachments */ ""}
+        <div class="task-section" onPaste=${handleAttachmentPaste}>
+          <div class="task-section-title">
+            Attachments
+            <span class="task-tab-count">${attachments.length}</span>
+            <span style="margin-left:auto;">
+              <${Button}
+                variant="text" size="small"
+                type="button"
+                onClick=${() => attachmentInputRef.current && attachmentInputRef.current.click()}
+                disabled=${uploadingAttachment}
+              >
+                Upload
+              <//>
+            </span>
+          </div>
+          <div class="task-section-body">
+            <input
+              ref=${attachmentInputRef}
+              type="file"
+              multiple
+              style="display:none"
+              onChange=${handleAttachmentPick}
+            />
+            ${attachments.length === 0 && !uploadingAttachment && html`
+              <div class="meta-text">No attachments uploaded.</div>
+            `}
+            ${uploadingAttachment && html`
+              <div class="meta-text">Uploading attachments...</div>
+            `}
+            ${attachments.length > 0 && html`
+              <div class="task-attachments-list">
+                ${attachments.map((att, index) => {
+                  const name = att.name || att.filename || "attachment";
+                  const url = att.url || att.filePath || att.path || "";
+                  const size = att.size ? formatBytes(att.size) : "";
+                  const isImage = isImageAttachment(att);
+                  return html`
+                    <div class="task-attachment-item" key=${att.id || `${name}-${index}`}>
+                      ${isImage && url
+                        ? html`<img class="task-attachment-thumb" src=${url} alt=${name} />`
+                        : html`<span class="task-attachment-icon">${"🔗"}</span>`}
+                      <div class="task-attachment-meta">
+                        ${url
+                          ? html`<a class="task-attachment-name" href=${url} target="_blank" rel="noopener">${name}</a>`
+                          : html`<span class="task-attachment-name">${name}</span>`}
+                        <div class="task-attachment-sub">
+                          ${(att.kind || "file")}${size ? ` · ${size}` : ""}
+                        </div>
+                      </div>
+                    </div>
+                  `;
+                })}
+              </div>
+            `}
+          </div>
+        </div>
+
+        ${/* Subtasks */ ""}
+        <div class="task-section">
+          <div class="task-section-title">
+            Subtasks
+            ${subtasks.length > 0 && html`<span class="task-tab-count">${subtasks.length}</span>`}
+            <span style="margin-left:auto;">
+              <${Button}
+                variant="text"
+                size="small"
+                onClick=${loadSubtasks}
+                disabled=${subtasksLoading || creatingSubtask}
+              >
+                ${subtasksLoading ? "Refreshing…" : "Refresh"}
+              <//>
+            </span>
+          </div>
+          <div class="task-section-body">
+            <div class="task-comment-composer" style=${{ marginBottom: "8px" }}>
+              <${TextField}
+                size="small"
+                placeholder="Create subtask summary"
+                value=${subtaskTitle}
+                onInput=${(e) => setSubtaskTitle(e.target.value)}
+                fullWidth
+              />
+              <${Button}
+                variant="contained"
+                size="small"
+                disabled=${creatingSubtask || !sanitizeTaskText(subtaskTitle || "").trim()}
+                onClick=${handleCreateSubtask}
+              >
+                ${creatingSubtask ? "Creating…" : "Add"}
+              <//>
+            </div>
+            <div class="task-comments-list">
+              ${!subtasksLoading && !subtasks.length && html`<div class="meta-text">No subtasks yet.</div>`}
+              ${subtasks.map((subtask) => html`
+                <div class="task-comment-item" key=${subtask.id}>
+                  <div class="task-comment-meta">
+                    <span style="user-select:all">${subtask.id}</span>
+                    ${subtask.status ? ` · ${subtask.status}` : ""}
+                    ${subtask.storyPoints ? ` · ${subtask.storyPoints} pts` : ""}
+                  </div>
+                  <div class="task-comment-body">${subtask.title}</div>
+                  ${subtask.assignee && html`<div class="task-comment-meta">Assignee: ${subtask.assignee}</div>`}
+                </div>
+              `)}
+            </div>
+          </div>
+        </div>
+
+        ${/* Comments & Updates */ ""}
+        <div class="task-section">
+          <div class="task-section-title">
+            Comments & Updates
+            ${comments.length > 0 && html`<span class="task-tab-count">${comments.length}</span>`}
+          </div>
+          <div class="task-section-body">
+            <div class="task-comments-list">
+              ${comments.length > 0
+                ? comments.map((comment, index) => html`
+                  <div class="task-comment-item" key=${comment.id || `comment-${index}`}>
+                    <div class="task-comment-meta">
+                      ${comment.author ? `@${comment.author}` : "comment"}
+                      ${comment.createdAt ? ` · ${formatRelative(comment.createdAt)}` : ""}
+                    </div>
+                    <div class="task-comment-body">${comment.body}</div>
+                  </div>
+                `)
+                : html`<div class="meta-text">No comments yet. Add one below.</div>`}
+            </div>
+            <div class="task-comment-composer" style=${{ marginTop: "10px" }}>
+              <${TextField}
+                multiline
+                rows=${2}
+                size="small"
+                placeholder="Add a comment or status update..."
+                value=${commentDraft}
+                onInput=${(e) => setCommentDraft(e.target.value)}
+                fullWidth
+              />
+              <${Button}
+                variant="contained"
+                size="small"
+                disabled=${postingComment || !sanitizeTaskText(commentDraft || "").trim()}
+                onClick=${handlePostComment}
+              >
+                ${postingComment ? "Posting…" : "Post Comment"}
+              <//>
+            </div>
+          </div>
+        </div>
+
+        ${/* Tracking Overview */ ""}
+        <div class="task-section">
+          <div class="task-section-title">Tracking Overview</div>
+          <div class="task-section-body">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Assigned Agents</div>
+                <div class="task-comment-body">${taskAgents.length ? taskAgents.join(" · ") : "No agent assignment recorded."}</div>
+              </div>
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Workflow Runs</div>
+                <div class="task-comment-body">${workflowRuns.length ? `${workflowRuns.length} linked runs` : "No workflow runs linked yet."}</div>
+              </div>
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Timeline Events</div>
+                <div class="task-comment-body">${historyEntries.length ? `${historyEntries.length} recorded entries` : "No timeline history yet."}</div>
+              </div>
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Branch / PR</div>
+                <div class="task-comment-body">${relatedLinks.length ? relatedLinks.map((item) => `${item.kind}: ${item.value}`).join(" · ") : "No branch or PR links recorded."}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        ${/* Workflow Activity */ ""}
+        ${workflowRuns.length > 0 && html`
+          <div class="task-section">
+            <div class="task-section-title">Workflow Activity</div>
+            <div class="task-section-body">
+              <div class="task-comments-list">
+                ${workflowRuns.map((run, index) => renderWorkflowActivityCard(run, `workflow-${index}`))}
+              </div>
+            </div>
+          </div>
+        `}
+
+      </div>
+
+      ${/* ── RIGHT: Sidebar ── */ ""}
+      <div class="task-detail-sidebar">
+
+        ${/* Status */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Status</div>
+          <div class="task-sidebar-value">
+            <${Select}
+              size="small"
+              value=${status}
+              onChange=${(e) => {
+                const next = e.target.value;
+                setStatus(next);
+                if (next === "draft") setDraft(true);
+                else if (draft) setDraft(false);
+              }}
+              fullWidth
+            >
+              ${["draft", "todo", "inprogress", "inreview", "blocked", "done", "cancelled"].map(
+                (s) => html`<${MenuItem} value=${s}>${s}</${MenuItem}>`,
+              )}
+            </${Select}>
+          </div>
+        </div>
+
+        ${/* Priority */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Priority</div>
+          <div class="task-sidebar-value">
+            <${Select}
+              size="small"
+              value=${priority}
+              onChange=${(e) => setPriority(e.target.value)}
+              fullWidth
+            >
+              <${MenuItem} value="">No priority</${MenuItem}>
+              ${["low", "medium", "high", "critical"].map(
+                (p) => html`<${MenuItem} value=${p}>${p}</${MenuItem}>`,
+              )}
+            </${Select}>
+          </div>
+        </div>
+
+        ${/* Assignee */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Assignee</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="Assignee"
+              value=${assignee}
+              onInput=${(e) => setAssignee(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Assignees */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Assignees</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="alice, bob"
+              value=${assigneesInput}
+              onInput=${(e) => setAssigneesInput(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Sprint */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Sprint</div>
+          <div class="task-sidebar-value">
+            <div style="display:flex;gap:6px;">
+              <${Select}
+                size="small"
+                value=${selectedSprintId}
+                onChange=${(e) => setSelectedSprintId(e.target.value)}
+                style=${{ flex: 1 }}
+              >
+                <${MenuItem} value="">No sprint</${MenuItem}>
+                ${sprintOptions.map((sprint) => html`
+                  <${MenuItem} key=${sprint.id} value=${sprint.id}>${sprint.label}</${MenuItem}>
+                `)}
+              </${Select}>
+              <${TextField}
+                size="small"
+                type="number"
+                placeholder="#"
+                value=${sprintOrderInput}
+                onInput=${(e) => setSprintOrderInput(e.target.value)}
+                inputProps=${{ min: 1, step: 1 }}
+                style=${{ width: "60px" }}
+              />
+            </div>
+          </div>
+        </div>
+
+        ${/* Story Points */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Story Points</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              type="number"
+              placeholder="Points"
+              value=${storyPoints}
+              onInput=${(e) => setStoryPoints(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Due Date */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Due Date</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              type="date"
+              value=${dueDate}
+              onInput=${(e) => setDueDate(e.target.value)}
+              InputLabelProps=${{ shrink: true }}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Epic */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Epic</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="Epic"
+              value=${epicId}
+              onInput=${(e) => setEpicId(e.target.value)}
+              fullWidth
+            />
+            ${epicCatalog.length > 0 && html`
+              <div class="tag-row" style=${{ marginTop: "6px" }}>
+                ${epicCatalog.slice(0, 6).map((entry) => html`<button type="button" class="tag-chip task-structure-chip ${epicId === entry.id ? "task-structure-chip-active" : ""}" style="font-size:10px;" onClick=${() => setEpicId(entry.id)}>${entry.label}</button>`)}
+              </div>
+            `}
+          </div>
+        </div>
+
+        ${/* Parent Task */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Parent Task</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="Parent task ID"
+              value=${parentTaskId}
+              onInput=${(e) => setParentTaskId(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Tags */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Tags</div>
+          <div class="task-sidebar-value">
+            <${TextField} size="small" variant="outlined" placeholder="Tags (comma-separated)" value=${tagsInput} onInput=${(e) => setTagsInput(e.target.value)} fullWidth />
+            ${normalizeTagInput(tagsInput).length > 0 && html`
+              <div class="tag-row" style=${{ marginTop: "4px" }}>
+                ${normalizeTagInput(tagsInput).map(
+                  (tag) => html`<span class="tag-chip">#${tag}</span>`,
+                )}
+              </div>
+            `}
+          </div>
+        </div>
+
+        ${/* Workspace & Repository */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Workspace</div>
+          <div class="task-sidebar-value">
+            <${Select}
+              size="small"
+              value=${workspaceId}
+              onChange=${(e) => setWorkspaceId(e.target.value)}
+              fullWidth
+            >
+              <${MenuItem} value="">Active workspace</${MenuItem}>
+              ${workspaceOptions.map(
+                (ws) => html`<${MenuItem} value=${ws.id}>${ws.name || ws.id}</${MenuItem}>`,
+              )}
+            </${Select}>
+          </div>
+        </div>
+
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Repository</div>
+          <div class="task-sidebar-value">
+            <${Select}
+              size="small"
+              value=${repository}
+              onChange=${(e) => setRepository(e.target.value)}
+              disabled=${!repositoryOptions.length}
+              fullWidth
+            >
+              <${MenuItem} value="">
+                ${repositoryOptions.length ? "Auto repository" : "No repos in workspace"}
+              </${MenuItem}>
+              ${repositoryOptions.map(
+                (repo) =>
+                  html`<${MenuItem} value=${repo.slug}>${repo.name}${repo.primary ? " (Primary)" : ""}</${MenuItem}>`,
+              )}
+            </${Select}>
+          </div>
+        </div>
+
+        ${/* Base Branch */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Base Branch</div>
+          <div class="task-sidebar-value">
+            <${TextField} size="small" variant="outlined" placeholder="e.g. feature/xyz" value=${baseBranch} onInput=${(e) => setBaseBranch(e.target.value)} fullWidth />
+          </div>
+        </div>
+
+        ${/* Draft toggle */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Draft</div>
+          <div class="task-sidebar-value">
+            <${Toggle}
+              label="Keep in backlog"
+              checked=${draft}
+              onChange=${(next) => {
+                setDraft(next);
+                if (next) setStatus("draft");
+                else if (status === "draft") setStatus("todo");
+              }}
+            />
+          </div>
+        </div>
+
+        ${/* Manual Override toggle */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Manual</div>
+          <div class="task-sidebar-value">
+            <${Toggle}
+              label="Exclude from automation"
+              checked=${manualOverride}
+              disabled=${manualBusy || !task?.id}
+              onChange=${handleManualToggle}
+            />
+            ${manualOverride && html`
+              <${TextField} size="small" variant="outlined" placeholder="Reason (optional)" value=${manualReason} disabled=${manualBusy} onInput=${(e) => setManualReason(e.target.value)} fullWidth style=${{ marginTop: "6px" }} />
+              <div class="meta-text" style=${{ marginTop: "4px" }}>Bosun will skip this task until cleared.</div>
+            `}
+          </div>
+        </div>
+
+        ${/* Dependencies */ ""}
+        <div class="task-sidebar-field" style="flex-direction:column;gap:6px;">
+          <div class="task-sidebar-label" style="width:auto;">Dependencies</div>
+          <div class="task-sidebar-value">
+            ${currentEpicEntry && html`<div class="meta-text" style=${{ marginBottom: "6px" }}>Epic: ${currentEpicEntry.label} · ${currentEpicEntry.taskCount} tasks</div>`}
+            <${TextField}
+              multiline
+              rows=${2}
+              size="small"
+              placeholder="Dependency task IDs (comma or newline separated)"
+              value=${dependenciesInput}
+              onInput=${(e) => setDependenciesInput(e.target.value)}
+              fullWidth
+            />
+            ${currentDependencyIds.length > 0 && html`
+              <div class="tag-row" style=${{ marginTop: "6px" }}>
+                ${currentDependencyIds.map((depId) => html`<button type="button" class="tag-chip task-structure-chip" onClick=${() => handleDependencyChipRemove(depId)} title="Remove dependency">${depId} ×</button>`)}
+              </div>
+            `}
+            ${dependencySuggestions.length > 0 && html`
+              <div style=${{ marginTop: "6px" }}>
+                <div class="meta-text" style=${{ marginBottom: "4px" }}>Quick add</div>
+                <div class="tag-row">
+                  ${dependencySuggestions.map((entry) => html`<button type="button" class="tag-chip task-structure-chip task-structure-chip-muted" onClick=${() => handleDependencyChipAdd(entry.id)}>${entry.id}: ${truncate(entry.title || entry.id, 20)}</button>`)}
+                </div>
+              </div>
+            `}
+            <div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap;">
+              <${Button} variant="outlined" size="small" disabled=${savingDependencies} onClick=${handleSaveDependencies}>
+                ${savingDependencies ? "Saving…" : "Save Deps"}
+              <//>
+              <${Button} variant="outlined" size="small" disabled=${savingSprint || !selectedSprintId} onClick=${handleSaveSprintAssignment}>
+                ${savingSprint ? "Saving…" : "Save Sprint"}
+              <//>
+              <${Button} variant="text" size="small" disabled=${savingSprint} onClick=${() => handleSprintOrderNudge(-1)}>↑<//>
+              <${Button} variant="text" size="small" disabled=${savingSprint} onClick=${() => handleSprintOrderNudge(1)}>↓<//>
+            </div>
+            ${dependencyFeedback && html`<span class="meta-text">${dependencyFeedback}</span>`}
+          </div>
+        </div>
+
+        ${/* Meta info */ ""}
+        ${task?.meta?.triggerTemplate?.id && html`
+          <div class="task-sidebar-field">
+            <div class="task-sidebar-label">Trigger</div>
+            <div class="task-sidebar-value" style="font-size:11px;opacity:0.7;">${task.meta.triggerTemplate.id}</div>
+          </div>
+        `}
+        ${(task?.meta?.execution?.sdk || task?.meta?.execution?.model) && html`
+          <div class="task-sidebar-field">
+            <div class="task-sidebar-label">Exec Override</div>
+            <div class="task-sidebar-value" style="font-size:11px;opacity:0.7;">
+              ${task?.meta?.execution?.sdk || "auto"}${task?.meta?.execution?.model ? ` · ${task.meta.execution.model}` : ""}
+            </div>
+          </div>
+        `}
+        ${task?.branch && html`
+          <div class="task-sidebar-field">
+            <div class="task-sidebar-label">Branch</div>
+            <div class="task-sidebar-value" style="font-size:11px;user-select:all;word-break:break-all;">${task.branch}</div>
+          </div>
+        `}
+
+        ${/* Timestamps */ ""}
+        <div class="task-timestamps">
+          ${task?.created_at && html`<div class="task-timestamp-row">Created ${new Date(task.created_at).toLocaleString()}</div>`}
+          ${task?.updated_at && html`<div class="task-timestamp-row">Updated ${formatRelative(task.updated_at)}</div>`}
+        </div>
+
+        ${/* Save bar */ ""}
+        <div class="task-save-bar">
+          <${SaveDiscardBar}
+            dirty=${hasUnsaved}
+            message=${unsavedChangesMessage(changeCount)}
+            saveLabel="Save Changes"
+            discardLabel="Discard"
+            onSave=${() => {
+              void handleSave({ closeAfterSave: false });
+            }}
+            onDiscard=${handleDiscardChanges}
+            saving=${saving}
+            disabled=${Boolean(activeOperationLabel && !saving)}
+          />
+        </div>
+
+        <div style="display:flex;gap:4px;flex-wrap:wrap;">
+          ${(task?.status === "error" || task?.status === "cancelled") && html`
+            <${Button} variant="contained" size="small" onClick=${handleRetry}>↻ Retry<//>
+          `}
+          ${task?.status === "blocked" && html`
+            <${Button} variant="contained" size="small" onClick=${handleUnblock}>↺ Move To Todo<//>
+          `}
+          <${Button}
+            variant="outlined" size="small"
+            onClick=${() => { void handleSave({ closeAfterSave: true }); }}
+            disabled=${saving}
+          >
+            ${saving ? "Saving…" : iconText(":save: Save")}
+          <//>
+          <${Button} variant="text" size="small" onClick=${() => handleStatusUpdate("inreview")}>→ Review<//>
+          <${Button} variant="text" size="small" onClick=${() => handleStatusUpdate("done")}>${iconText("✓ Done")}<//>
+          ${task?.status !== "cancelled" && html`
+            <${Button}
+              variant="text" size="small"
+              style=${{ color: "var(--color-error)" }}
+              onClick=${handleCancel}
+            >
+              ${iconText("✕ Cancel")}
+            <//>
+          `}
+          ${task?.id && html`
+            <${Button}
+              variant="text" size="small"
+              onClick=${() => {
+                haptic();
+                sendCommandToChat("/logs " + task.id);
+              }}
+            >
+              ${iconText(":file: Logs")}
+            <//>
+          `}
+        </div>
+
+      </div>
+
+      </div>`}
+
+      ${/* ── EXECUTION TAB ─────────────────────────────────────────────── */ ""}
+      ${activeTab === "execution" && html`<div style="display:contents;">
+
+      ${/* ── Execution Plan Visualization (Premium) ─────────────────────── */ ""}
+      <div class="exec-plan-stage" style="margin:0 0 14px;">
+        <div class="exec-plan-stage-header" style="background:transparent;border-bottom:none;padding:12px 16px;">
+          <span style="font-weight:700;font-size:0.9em;flex:1;">▶️ Execution Plan</span>
+          ${executionPlanLoading && html`<span style="font-size:0.8em;opacity:0.6;">Loading…</span>`}
+          ${executionPlan && html`<span style="font-size:0.8em;opacity:0.6;">${executionPlan.stageCount || 0} workflows · ${executionPlan.agentRunTotal || 0} agent runs</span>`}
+          ${executionPlan?.validationIssues?.length > 0 && html`
+            <span class="exec-plan-badge" style="background:#ef444420;color:#f87171;">
+              ${executionPlan.validationIssues.filter((v) => v.level === "error").length} errors
+            </span>
+          `}
+        </div>
+        <div class="exec-plan-stage-body">
+          ${/* ── Action buttons ── */ ""}
+          <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center;">
+            <button style="padding:6px 14px;border-radius:6px;border:1px solid var(--border-color,#444);background:var(--color-bg-secondary,#1a1f2e);color:var(--color-text,#e0e0e0);font-size:0.8em;cursor:pointer;"
+              onClick=${() => fetchExecutionPlan("resolve")} disabled=${executionPlanLoading}>
+              🔄 Refresh Plan
+            </button>
+            <button style="padding:6px 14px;border-radius:6px;border:1px solid #3b82f660;background:#3b82f620;color:#60a5fa;font-size:0.8em;cursor:pointer;font-weight:600;"
+              onClick=${() => fetchExecutionPlan("dry-run")} disabled=${dryRunLoading || executionPlanLoading}>
+              ${dryRunLoading ? "Simulating…" : "▶️ Dry Run Simulation"}
+            </button>
+            ${executionPlan?.mode === "dry-run" && html`
+              <span style="font-size:0.8em;color:#10b981;font-weight:600;">✓ Dry-run complete</span>
+            `}
+          </div>
+
+            ${/* ── Validation Issues ── */ ""}
+            ${executionPlan?.validationIssues?.length > 0 && html`
+              <div style="margin-bottom:10px;border:1px solid #ef444440;border-radius:6px;padding:8px;background:#ef444410;">
+                <div style="font-weight:600;font-size:0.8em;color:#f87171;margin-bottom:4px;">⚠️ Validation Issues</div>
+                ${executionPlan.validationIssues.map((issue, ii) => html`
+                  <div key=${`vi-${ii}`} style="font-size:0.75em;padding:2px 0;display:flex;gap:4px;align-items:start;">
+                    <span style="color:${issue.level === 'error' ? '#f87171' : '#fbbf24'};flex-shrink:0;">${issue.level === "error" ? "✗" : "⚠"}</span>
+                    <span><strong>${issue.workflowName}:</strong> ${issue.message}</span>
+                  </div>
+                `)}
+              </div>
+            `}
+
+            ${!executionPlan && !executionPlanLoading && html`
+              <div style="opacity:0.6;font-size:0.85em;padding:8px;">No execution plan data available.</div>
+            `}
+
+            ${/* ── Workflow Stages (Enhanced) ── */ ""}
+            ${executionPlan?.stages?.map((stage, si) => {
+              const matchColors = {
+                task_assigned: { bg: "#3b82f620", color: "#60a5fa", label: "Task Match" },
+                polling: { bg: "#6b728020", color: "#9ca3af", label: "Lifecycle" },
+                pr_event: { bg: "#8b5cf620", color: "#a78bfa", label: "PR Event" },
+                schedule: { bg: "#06b6d420", color: "#22d3ee", label: "Scheduled" },
+                event: { bg: "#f5932020", color: "#fb923c", label: "Event" },
+                anomaly: { bg: "#ef444420", color: "#f87171", label: "Anomaly" },
+                webhook: { bg: "#84cc1620", color: "#a3e635", label: "Webhook" },
+                manual: { bg: "#6b728020", color: "#d1d5db", label: "Manual" },
+                workflow_call: { bg: "#14b8a620", color: "#2dd4bf", label: "Sub-call" },
+              };
+              const mc = matchColors[stage.matchType] || { bg: "#33333320", color: "#888", label: stage.matchType };
+
+              return html`
+              <div key=${`stage-${si}`} class="exec-plan-stage">
+                <div class="exec-plan-stage-header" onClick=${() => toggleStageExpand(si)}>
+                  <span style="font-size:0.8em;opacity:0.5;">${expandedStages[si] !== false ? "▾" : "▸"}</span>
+                  ${stage.core ? html`<span class="exec-plan-badge" style="background:#8b5cf620;color:#a78bfa;">CORE</span>` : ""}
+                  <strong style="font-size:0.9em;flex:1;">${stage.workflowName}</strong>
+                  <span class="exec-plan-badge" style="background:${mc.bg};color:${mc.color};">${mc.label}</span>
+                  <span style="font-size:0.75em;opacity:0.5;">${stage.nodeCount} nodes · ${stage.agentRunCount} agents</span>
+                  <span style="font-size:0.65em;opacity:0.35;text-transform:uppercase;">${stage.category || ""}</span>
+                </div>
+
+                ${expandedStages[si] !== false && html`
+                  <div class="exec-plan-stage-body">
+                    ${stage.description ? html`<div style="font-size:0.8em;opacity:0.6;margin-bottom:10px;">${stage.description}</div>` : ""}
+
+                    ${/* ── Node Pipeline ── */ ""}
+                    <div style="display:flex;flex-direction:column;gap:0;">
+                      ${(stage.nodes || []).map((nd, ni) => {
+                        const isExpanded = expandedNodes[`${si}-${nd.id}`];
+                        const nodeColor = nd.isAgentRun ? "#3b82f6"
+                          : nd.isTrigger ? "#eab308"
+                          : nd.isCondition ? "#8b5cf6"
+                          : nd.isCommand || nd.isValidation ? "#22c55e"
+                          : nd.isStatusUpdate ? "#ef4444"
+                          : nd.isPromptBuilder ? "#f59e0b"
+                          : nd.isCreatePr || nd.isPushBranch ? "#06b6d4"
+                          : nd.isSubWorkflow ? "#14b8a6"
+                          : nd.isNotify ? "#64748b"
+                          : "#6b7280";
+                        const hasIssue = nd.expressionValid === false || !nd.typeRegistered || (nd.unresolvedVars?.length > 0);
+                        const dryRunNode = dryRunResults?.find((dr) => dr.workflowId === stage.workflowId)?.nodes?.find((dn) => dn.id === nd.id);
+
+                        return html`
+                          <div key=${`n-${ni}`}>
+                            ${ni > 0 && html`<div class="exec-plan-connector"></div>`}
+                            <div class="exec-plan-node" style="border-color:${hasIssue ? '#ef4444' : nodeColor + '40'};">
+                              <div class="exec-plan-node-header" onClick=${() => toggleNodeExpand(si, nd.id)}>
+                                <span style="width:22px;height:22px;border-radius:6px;background:${nodeColor}20;color:${nodeColor};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;">${ni + 1}</span>
+                                <span style="font-size:0.7em;color:${nodeColor};opacity:0.8;min-width:70px;font-weight:500;">${nd.type.split(".").pop()}</span>
+                                <strong style="flex:1;font-size:0.85em;">${nd.label}</strong>
+                                ${hasIssue ? html`<span style="color:#ef4444;font-size:0.7em;">✗</span>` : ""}
+
+                                ${/* Agent badges */ ""}
+                                ${nd.isAgentRun && nd.resolvedAgent ? html`
+                                  <span class="exec-plan-skill-tag" style="background:${nodeColor}15;color:${nodeColor};border-color:${nodeColor}30;">
+                                    🤖 ${nd.resolvedAgent} ${nd.confidence ? `(${Math.round(nd.confidence * 100)}%)` : ""}
+                                  </span>
+                                ` : ""}
+                                ${nd.isAgentRun && !nd.resolvedAgent && nd.resolveMode === "library" ? html`
+                                  <span class="exec-plan-badge" style="background:#f59e0b20;color:#fbbf24;">Auto-Resolve</span>
+                                ` : ""}
+
+                                ${/* Context flow chips */ ""}
+                                ${nd.contextPreview?.hasTaskPrompt ? html`<span class="exec-plan-context-chip">TaskPrompt</span>` : ""}
+                                ${nd.contextPreview?.hasPreviousOutput ? html`<span class="exec-plan-context-chip" style="background:#8b5cf615;color:#a78bfa;border-color:#8b5cf630;">PrevOutput</span>` : ""}
+
+                                ${/* Status indicators */ ""}
+                                ${nd.isStatusUpdate ? html`<span class="exec-plan-badge" style="background:#ef444420;color:#fca5a5;">→ ${nd.targetStatus}</span>` : ""}
+                                ${nd.isCommand ? html`<span style="font-size:0.65em;font-family:monospace;opacity:0.5;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${nd.commandResolved || nd.commandRaw}</span>` : ""}
+                                ${nd.isPromptBuilder ? html`<span class="exec-plan-badge" style="background:#f59e0b20;color:#fbbf24;">Builds TaskPrompt</span>` : ""}
+                                ${nd.isCreatePr ? html`<span class="exec-plan-badge" style="background:#06b6d420;color:#22d3ee;">Creates PR</span>` : ""}
+
+                                ${dryRunNode ? html`<span style="font-size:0.65em;color:${dryRunNode.status === 'simulated' || dryRunNode.status === 'COMPLETED' ? '#10b981' : '#fbbf24'};">● ${dryRunNode.status}</span>` : ""}
+                                <span style="font-size:0.65em;opacity:0.3;">${isExpanded ? "▾" : "▸"}</span>
+                              </div>
+
+                              ${isExpanded && html`
+                                <div class="exec-plan-node-body">
+                                  ${/* ── Inputs from previous nodes ── */ ""}
+                                  ${nd.inputsFrom?.length > 0 ? html`
+                                    <div style="margin-bottom:8px;padding:6px 8px;background:var(--bg-surface,#0d1117);border-radius:6px;border:1px solid var(--border-color,#333);">
+                                      <div style="font-size:0.85em;opacity:0.6;margin-bottom:4px;font-weight:600;">Inputs From:</div>
+                                      <div style="display:flex;flex-wrap:wrap;gap:4px;">
+                                        ${nd.inputsFrom.map((inp) => html`
+                                          <span class="exec-plan-context-chip" style="background:#3b82f610;color:#60a5fa;border-color:#3b82f625;">
+                                            ${inp.nodeLabel} ${inp.port ? `[${inp.port}]` : ""} ${inp.condition ? `if: ${inp.condition.slice(0, 30)}` : ""}
+                                          </span>
+                                        `)}
+                                      </div>
+                                    </div>
+                                  ` : ""}
+
+                                  <div style="display:grid;grid-template-columns:auto 1fr;gap:3px 12px;align-items:start;">
+                                    <span style="opacity:0.5;">Type:</span>
+                                    <span style="font-family:monospace;">${nd.type}${!nd.typeRegistered ? html` <span style="color:#ef4444;">✗ unregistered</span>` : ""}</span>
+
+                                    ${nd.isTrigger && nd.taskPattern ? html`
+                                      <span style="opacity:0.5;">Pattern:</span>
+                                      <span style="font-family:monospace;">${nd.taskPattern} ${nd.patternMatches === true ? html`<span style="color:#10b981;">✓ matches</span>` : nd.patternMatches === false ? html`<span style="color:#ef4444;">✗ no match</span>` : ""}</span>
+                                    ` : ""}
+
+                                    ${nd.isTrigger && nd.prEvents ? html`
+                                      <span style="opacity:0.5;">PR Events:</span>
+                                      <span>${nd.prEvents.join(", ")}</span>
+                                    ` : ""}
+
+                                    ${nd.isTrigger && nd.eventTypes?.length > 0 ? html`
+                                      <span style="opacity:0.5;">Event Types:</span>
+                                      <span>${nd.eventTypes.join(", ")}</span>
+                                    ` : ""}
+
+                                    ${nd.isTrigger && nd.intervalMs ? html`
+                                      <span style="opacity:0.5;">Interval:</span>
+                                      <span>${Math.round(nd.intervalMs / 60000)}min</span>
+                                    ` : ""}
+
+                                    ${nd.isCondition && nd.expression ? html`
+                                      <span style="opacity:0.5;">Expression:</span>
+                                      <span style="font-family:monospace;word-break:break-all;">${nd.expression}${nd.expressionValid === false ? html` <span style="color:#ef4444;">✗ ${nd.expressionError}</span>` : html` <span style="color:#10b981;">✓</span>`}</span>
+                                    ` : ""}
+                                    ${nd.isCondition && nd.cases ? html`
+                                      <span style="opacity:0.5;">Cases:</span>
+                                      <span>${nd.cases.join(", ")}</span>
+                                    ` : ""}
+
+                                    ${nd.isAgentRun ? html`
+                                      <span style="opacity:0.5;">SDK:</span><span>${nd.sdk || "auto"}</span>
+                                      <span style="opacity:0.5;">Model:</span><span>${nd.model || "auto"}</span>
+                                      <span style="opacity:0.5;">Timeout:</span><span>${Math.round((nd.timeoutMs || 3600000) / 60000)}min</span>
+                                      <span style="opacity:0.5;">Retries:</span><span>${nd.maxRetries ?? 2} retries, ${nd.maxContinues ?? 2} continues</span>
+                                      <span style="opacity:0.5;">Resolve:</span><span style="font-weight:500;color:${nd.resolveMode === 'library' ? '#f59e0b' : '#60a5fa'};">${nd.resolveMode || "manual"}${nd.resolveMode === "library" ? " (auto)" : ""}</span>
+                                      <span style="opacity:0.5;">CWD:</span><span style="font-family:monospace;">${nd.cwd || "auto"}</span>
+                                    ` : ""}
+
+                                    ${nd.isCommand ? html`
+                                      <span style="opacity:0.5;">Command:</span>
+                                      <span style="font-family:monospace;word-break:break-all;">${nd.commandResolved || nd.commandRaw}</span>
+                                      <span style="opacity:0.5;">CWD:</span><span style="font-family:monospace;">${nd.commandCwd}</span>
+                                      <span style="opacity:0.5;">Timeout:</span><span>${Math.round((nd.commandTimeout || 300000) / 1000)}s</span>
+                                      <span style="opacity:0.5;">Fail on error:</span><span>${nd.failOnError ? "Yes" : "No"}</span>
+                                    ` : ""}
+
+                                    ${nd.isResolveExecutor ? html`
+                                      <span style="opacity:0.5;">SDK Override:</span><span>${nd.sdkOverride || "auto"}</span>
+                                      <span style="opacity:0.5;">Model Override:</span><span>${nd.modelOverride || "auto"}</span>
+                                    ` : ""}
+
+                                    ${nd.isSubWorkflow ? html`
+                                      <span style="opacity:0.5;">Sub-workflow:</span><span style="font-family:monospace;">${nd.targetWorkflowId || "—"}</span>
+                                      <span style="opacity:0.5;">Inherit ctx:</span><span>${nd.inheritContext ? "Yes" : "No"}</span>
+                                    ` : ""}
+
+                                    ${nd.isValidation ? html`
+                                      <span style="opacity:0.5;">${nd.validationType} cmd:</span>
+                                      <span style="font-family:monospace;">${nd.commandResolved || nd.commandRaw || "auto-detect"}</span>
+                                    ` : ""}
+
+                                    ${nd.isPromptBuilder ? html`
+                                      <span style="opacity:0.5;">Output:</span><span>${"{{TaskPrompt}}"}</span>
+                                      <span style="opacity:0.5;">Include Skills:</span><span>${nd.includeSkills !== false ? "Yes" : "No"}</span>
+                                      <span style="opacity:0.5;">Include Agent Instructions:</span><span>${nd.includeAgentInstructions !== false ? "Yes" : "No"}</span>
+                                    ` : ""}
+
+                                    ${nd.isCreatePr ? html`
+                                      <span style="opacity:0.5;">PR Title:</span><span>${nd.prTitle || "auto"}</span>
+                                      <span style="opacity:0.5;">Base Branch:</span><span>${nd.prBaseBranch || "main"}</span>
+                                    ` : ""}
+
+                                    ${nd.joinMode ? html`
+                                      <span style="opacity:0.5;">Join mode:</span><span>${nd.joinMode}</span>
+                                    ` : ""}
+
+                                    ${nd.isNotify && nd.logMessage ? html`
+                                      <span style="opacity:0.5;">Message:</span><span>${nd.logMessage}</span>
+                                    ` : ""}
+
+                                    ${nd.unresolvedVars?.length > 0 ? html`
+                                      <span style="opacity:0.5;color:#fbbf24;">Unresolved:</span>
+                                      <span style="color:#fbbf24;">${nd.unresolvedVars.map((v) => `{{${v}}}`).join(", ")}</span>
+                                    ` : ""}
+                                  </div>
+
+                                  ${/* ── Agent: Context Preview ── */ ""}
+                                  ${nd.isAgentRun && nd.contextPreview ? html`
+                                    <div style="margin-top:8px;padding:6px 8px;background:#1a1a2e;border-radius:6px;border:1px solid #333;">
+                                      <div style="font-size:0.85em;opacity:0.6;margin-bottom:4px;font-weight:600;">🔗 Context Injected:</div>
+                                      <div style="display:flex;flex-wrap:wrap;gap:4px;">
+                                        ${nd.contextPreview.hasTaskPrompt ? html`<span class="exec-plan-context-chip">Task Prompt (built by build_task_prompt)</span>` : ""}
+                                        ${nd.contextPreview.hasPreviousOutput ? html`<span class="exec-plan-context-chip" style="background:#8b5cf615;color:#a78bfa;border-color:#8b5cf630;">Previous Agent Output</span>` : ""}
+                                        ${nd.contextPreview.hasWorktreePath ? html`<span class="exec-plan-context-chip" style="background:#22c55e15;color:#4ade80;border-color:#22c55e30;">Worktree Path</span>` : ""}
+                                        ${nd.contextPreview.hasBranchName ? html`<span class="exec-plan-context-chip" style="background:#06b6d415;color:#22d3ee;border-color:#06b6d430;">Branch Name</span>` : ""}
+                                        ${nd.contextPreview.hasPrUrl ? html`<span class="exec-plan-context-chip" style="background:#8b5cf615;color:#c4b5fd;border-color:#8b5cf630;">PR Link</span>` : ""}
+                                        ${nd.includeTaskContext ? html`<span class="exec-plan-context-chip" style="background:#f59e0b15;color:#fbbf24;border-color:#f59e0b30;">Full Task Context</span>` : ""}
+                                        ${(nd.contextPreview.injectedVariables || []).map((v) => html`
+                                          <span class="exec-plan-context-chip" style="background:#64748b15;color:#94a3b8;border-color:#64748b30;">${"{{" + v + "}}"}</span>
+                                        `)}
+                                      </div>
+                                    </div>
+                                  ` : ""}
+
+                                  ${/* ── Agent: resolved skills with descriptions ── */ ""}
+                                  ${nd.isAgentRun && nd.resolvedSkills?.length > 0 ? html`
+                                    <div style="margin-top:8px;padding:8px;background:var(--bg-surface,#0d1117);border-radius:6px;border:1px solid var(--border-color,#333);">
+                                      <div style="font-size:0.85em;opacity:0.6;margin-bottom:6px;font-weight:600;">⭐ Resolved Skills (${nd.resolvedSkills.length}):</div>
+                                      ${nd.resolvedSkills.map((sk) => html`
+                                        <div style="display:flex;gap:8px;padding:4px 0;align-items:start;border-bottom:1px solid var(--border-color,#222);">
+                                          <span class="exec-plan-skill-tag">${sk.name} ${sk.score ? `${Math.round(sk.score * 100)}%` : ""}</span>
+                                          ${sk.source ? html`<span style="opacity:0.35;font-size:0.85em;">(${sk.source})</span>` : ""}
+                                          ${sk.description ? html`<span style="opacity:0.5;font-size:0.85em;flex:1;">${sk.description.slice(0, 120)}${sk.description.length > 120 ? "…" : ""}</span>` : ""}
+                                        </div>
+                                      `)}
+                                    </div>
+                                  ` : ""}
+
+                                  ${/* ── Agent: resolved tools ── */ ""}
+                                  ${nd.isAgentRun && nd.resolvedTools && (nd.resolvedTools.builtin?.length > 0 || nd.resolvedTools.mcp?.length > 0) ? html`
+                                    <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
+                                      <span style="opacity:0.6;font-size:0.85em;">🔧 Tools:</span>
+                                      ${[...(nd.resolvedTools.builtin || []), ...(nd.resolvedTools.mcp || [])].map((t) => html`
+                                        <span style="padding:1px 6px;border-radius:4px;font-size:0.75em;background:#22c55e10;color:#4ade80;border:1px solid #22c55e25;">${t}</span>
+                                      `)}
+                                    </div>
+                                  ` : ""}
+
+                                  ${/* ── Agent: alternatives ── */ ""}
+                                  ${nd.isAgentRun && nd.alternatives?.length > 0 ? html`
+                                    <div style="margin-top:6px;opacity:0.5;font-size:0.85em;">
+                                      <span>Alternatives: ${nd.alternatives.map((a) => `${a.name} (${Math.round((a.confidence || 0) * 100)}%)`).join(", ")}</span>
+                                    </div>
+                                  ` : ""}
+
+                                  ${/* ── Agent: prompt preview ── */ ""}
+                                  ${nd.isAgentRun && nd.promptResolved ? html`
+                                    <details style="margin-top:8px;">
+                                      <summary style="cursor:pointer;opacity:0.6;font-size:0.85em;font-weight:500;">Prompt Preview (${nd.promptResolved.length} chars)</summary>
+                                      <pre style="margin-top:4px;padding:8px;background:#00000030;border-radius:6px;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto;font-size:0.8em;line-height:1.5;">${nd.promptResolved.slice(0, 3000)}${nd.promptResolved.length > 3000 ? "\n…(truncated)" : ""}</pre>
+                                    </details>
+                                  ` : ""}
+                                </div>
+                              `}
+                            </div>
+                          </div>
+                        `;
+                      })}
+                    </div>
+
+                    ${/* ── Edge routing ── */ ""}
+                    ${stage.edges?.some((e) => e.condition || e.sourcePort || e.isBackEdge) && html`
+                      <details style="margin-top:10px;">
+                        <summary style="cursor:pointer;font-size:0.8em;opacity:0.5;font-weight:500;">Edge Routing (${stage.edges.length} edges)</summary>
+                        <div style="margin-top:6px;font-size:0.75em;font-family:monospace;">
+                          ${stage.edges.filter((e) => e.condition || e.sourcePort || e.isBackEdge).map((e) => html`
+                            <div style="padding:3px 0;display:flex;gap:6px;align-items:center;">
+                              <span>${e.source}</span>
+                              <span style="opacity:0.3;">→</span>
+                              <span>${e.target}</span>
+                              ${e.sourcePort ? html`<span style="color:#a78bfa;">[${e.sourcePort}]</span>` : ""}
+                              ${e.condition ? html`<span style="opacity:0.5;color:${e.conditionValid === false ? '#ef4444' : '#4ade80'};">${e.condition.length > 60 ? e.condition.slice(0, 60) + "…" : e.condition}</span>` : ""}
+                              ${e.isBackEdge ? html`<span style="color:#fbbf24;">↩ loop</span>` : ""}
+                              ${e.conditionValid === false ? html`<span style="color:#ef4444;">✗ ${e.conditionError}</span>` : ""}
+                            </div>
+                          `)}
+                        </div>
+                      </details>
+                    `}
+                  </div>
+                `}
+              </div>
+            `;})}
+
+            ${/* ── Dry-run results summary ── */ ""}
+            ${dryRunResults && html`
+              <div style="margin-top:10px;border:1px solid #10b98140;border-radius:8px;padding:10px;background:#10b98110;">
+                <div style="font-weight:600;font-size:0.85em;color:#10b981;margin-bottom:6px;">✓ Dry-Run Simulation Results</div>
+                ${dryRunResults.map((dr) => html`
+                  <div style="font-size:0.8em;padding:3px 0;display:flex;gap:8px;align-items:center;">
+                    <span style="font-weight:500;">${dr.workflowName}</span>
+                    <span class="exec-plan-badge" style="background:${dr.status === 'completed' ? '#10b98120' : dr.status === 'error' ? '#ef444420' : '#fbbf2420'};color:${dr.status === 'completed' ? '#10b981' : dr.status === 'error' ? '#ef4444' : '#fbbf24'};">
+                      ${dr.status}
+                    </span>
+                    ${dr.error ? html`<span style="color:#ef4444;font-size:0.9em;">${dr.error}</span>` : ""}
+                    ${dr.nodes?.length > 0 ? html`<span style="opacity:0.5;">(${dr.nodes.length} nodes simulated)</span>` : ""}
+                  </div>
+                `)}
+              </div>
+            `}
+        </div>
+      </div>
+
+      </div>`}
+
+      ${/* ── HISTORY TAB ─────────────────────────────────────────────────── */ ""}
+      ${activeTab === "history" && html`<div style="display:contents;">
+
+      ${historyEntries.length > 0 ? html`
         <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">History Timeline</div>
           <div class="task-comments-list">
@@ -3147,7 +4436,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             `)}
           </div>
         </div>
-      `}
+      ` : ""}
 
       ${relatedLinks.length > 0 && html`
         <div class="task-comments-block modal-form-span jira-panel">
@@ -3165,502 +4454,25 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             `)}
           </div>
         </div>
-      `}        <div class="flex-col gap-md modal-form-grid jira-task-layout">
-        <div class="input-with-mic modal-form-span">
-          <${TextField} size="small" variant="outlined" placeholder="Title" value=${title} onInput=${(e) => setTitle(e.target.value)} fullWidth />
-          <${VoiceMicButtonInline}
-            onTranscript=${(t) => setTitle((prev) => (prev ? prev + " " + t : t))}
-            disabled=${saving || rewriting}
-          />
-        </div>
-        <div class="textarea-with-mic modal-form-span" style="position:relative">
-          <${TextField} multiline rows=${5} size="small" placeholder="Description" value=${description} onInput=${(e) => setDescription(e.target.value)} style=${{ paddingRight: "36px" }} fullWidth />
-          <${VoiceMicButton}
-            onTranscript=${(t) => setDescription((prev) => (prev ? prev + " " + t : t))}
-            disabled=${saving || rewriting}
-            size="sm"
-            className="textarea-mic-btn"
-          />
-        </div>
-        <div
-          class="task-attachments-block modal-form-span jira-panel"
-          onPaste=${handleAttachmentPaste}
-        >
-          <div class="task-attachments-header">
-            <div class="task-attachments-title">Attachments</div>
-            <div class="task-attachments-actions">
-              <${Button}
-                variant="text" size="small"
-                type="button"
-                onClick=${() => attachmentInputRef.current && attachmentInputRef.current.click()}
-                disabled=${uploadingAttachment}
-              >
-                Upload
-              <//>
-            </div>
-          </div>
-          <input
-            ref=${attachmentInputRef}
-            type="file"
-            multiple
-            style="display:none"
-            onChange=${handleAttachmentPick}
-          />
-          ${attachments.length === 0 && !uploadingAttachment && html`
-            <div class="meta-text">No attachments uploaded.</div>
-          `}
-          ${uploadingAttachment && html`
-            <div class="meta-text">Uploading attachments...</div>
-          `}
-          ${attachments.length > 0 && html`
-            <div class="task-attachments-list">
-              ${attachments.map((att, index) => {
-                const name = att.name || att.filename || "attachment";
-                const url = att.url || att.filePath || att.path || "";
-                const size = att.size ? formatBytes(att.size) : "";
-                const isImage = isImageAttachment(att);
-                return html`
-                  <div class="task-attachment-item" key=${att.id || `${name}-${index}`}>
-                    ${isImage && url
-                      ? html`<img class="task-attachment-thumb" src=${url} alt=${name} />`
-                      : html`<span class="task-attachment-icon">${resolveIcon(":link:")}</span>`}
-                    <div class="task-attachment-meta">
-                      ${url
-                        ? html`<a class="task-attachment-name" href=${url} target="_blank" rel="noopener">${name}</a>`
-                        : html`<span class="task-attachment-name">${name}</span>`}
-                      <div class="task-attachment-sub">
-                        ${(att.kind || "file")}${size ? ` · ${size}` : ""}
-                      </div>
-                    </div>
-                  </div>
-                `;
-              })}
-            </div>
-          `}
-        </div>
-                <div class="task-comments-block modal-form-span jira-panel">
-          <div class="task-attachments-title">Comments & Updates</div>
-          <div class="task-comments-list">
-            ${comments.length > 0
-              ? comments.map((comment, index) => html`
-                <div class="task-comment-item" key=${comment.id || `comment-${index}`}>
-                  <div class="task-comment-meta">
-                    ${comment.author ? `@${comment.author}` : "comment"}
-                    ${comment.createdAt ? ` · ${formatRelative(comment.createdAt)}` : ""}
-                  </div>
-                  <div class="task-comment-body">${comment.body}</div>
-                </div>
-              `)
-              : html`<div class="meta-text">No comments yet. Add one below.</div>`}
-          </div>
-          <div class="task-comment-composer">
-            <${TextField}
-              multiline
-              rows=${2}
-              size="small"
-              placeholder="Add a comment or status update..."
-              value=${commentDraft}
-              onInput=${(e) => setCommentDraft(e.target.value)}
-              fullWidth
-            />
-            <${Button}
-              variant="contained"
-              size="small"
-              disabled=${postingComment || !sanitizeTaskText(commentDraft || "").trim()}
-              onClick=${handlePostComment}
-            >
-              ${postingComment ? "Posting…" : "Post Comment"}
-            <//>
-          </div>
-        </div>
-        <div class="task-comments-block modal-form-span jira-subtasks-panel">
-          <div class="task-attachments-header">
-            <div class="task-attachments-title">Subtasks</div>
-            <div class="task-attachments-actions">
-              <${Button}
-                variant="text"
-                size="small"
-                onClick=${loadSubtasks}
-                disabled=${subtasksLoading || creatingSubtask}
-              >
-                ${subtasksLoading ? "Refreshing…" : "Refresh"}
-              <//>
-            </div>
-          </div>
-          <div class="task-comment-composer" style=${{ marginTop: "8px" }}>
-            <${TextField}
-              size="small"
-              placeholder="Create subtask summary"
-              value=${subtaskTitle}
-              onInput=${(e) => setSubtaskTitle(e.target.value)}
-              fullWidth
-            />
-            <${Button}
-              variant="contained"
-              size="small"
-              disabled=${creatingSubtask || !sanitizeTaskText(subtaskTitle || "").trim()}
-              onClick=${handleCreateSubtask}
-            >
-              ${creatingSubtask ? "Creating…" : "Add"}
-            <//>
-          </div>
-          <div class="task-comments-list" style=${{ marginTop: "8px" }}>
-            ${!subtasksLoading && !subtasks.length && html`<div class="meta-text">No subtasks yet.</div>`}
-            ${subtasks.map((subtask) => html`
-              <div class="task-comment-item" key=${subtask.id}>
-                <div class="task-comment-meta">
-                  <span style="user-select:all">${subtask.id}</span>
-                  ${subtask.status ? ` · ${subtask.status}` : ""}
-                  ${subtask.storyPoints ? ` · ${subtask.storyPoints} pts` : ""}
-                </div>
-                <div class="task-comment-body">${subtask.title}</div>
-                ${subtask.assignee && html`<div class="task-comment-meta">Assignee: ${subtask.assignee}</div>`}
-              </div>
-            `)}
-          </div>
-        </div>
+      `}
+
+      ${/* workflow activity in history tab too */ ""}
+      ${workflowRuns.length > 0 && html`
         <div class="task-comments-block modal-form-span jira-panel">
-          <div class="task-attachments-title">Dependencies & Sprint Wiring</div>
-          ${currentEpicEntry && html`<div class="meta-text" style=${{ marginBottom: "8px" }}>Epic: ${currentEpicEntry.label} · ${currentEpicEntry.taskCount} tasks</div>`}
-          <${TextField}
-            multiline
-            rows=${2}
-            size="small"
-            placeholder="Dependency task IDs (comma or newline separated)"
-            value=${dependenciesInput}
-            onInput=${(e) => setDependenciesInput(e.target.value)}
-            fullWidth
-          />
-          ${currentDependencyIds.length > 0 && html`
-            <div class="tag-row" style=${{ marginTop: "8px" }}>
-              ${currentDependencyIds.map((depId) => html`<button type="button" class="tag-chip task-structure-chip" onClick=${() => handleDependencyChipRemove(depId)} title="Remove dependency">${depId} ×</button>`)}
-            </div>
-          `}
-          ${dependencySuggestions.length > 0 && html`
-            <div style=${{ marginTop: "8px" }}>
-              <div class="meta-text" style=${{ marginBottom: "6px" }}>Quick add dependencies</div>
-              <div class="tag-row">
-                ${dependencySuggestions.map((entry) => html`<button type="button" class="tag-chip task-structure-chip task-structure-chip-muted" onClick=${() => handleDependencyChipAdd(entry.id)}>${entry.id}: ${truncate(entry.title || entry.id, 26)}</button>`)}
-              </div>
-            </div>
-          `}
-          <div class="input-row" style=${{ marginTop: "8px" }}>
-            <${Select}
-              size="small"
-              value=${selectedSprintId}
-              onChange=${(e) => setSelectedSprintId(e.target.value)}
-            >
-              <${MenuItem} value="">No sprint</${MenuItem}>
-              ${sprintOptions.map((sprint) => html`
-                <${MenuItem} key=${sprint.id} value=${sprint.id}>${sprint.label}</${MenuItem}>
-              `)}
-            </${Select}>
-            <${TextField}
-              size="small"
-              type="number"
-              placeholder="Sprint order"
-              value=${sprintOrderInput}
-              onInput=${(e) => setSprintOrderInput(e.target.value)}
-              inputProps=${{ min: 1, step: 1 }}
-            />
+          <div class="task-attachments-title">Workflow Activity</div>
+          <div class="task-comments-list">
+            ${workflowRuns.map((run, index) => renderWorkflowActivityCard(run, `wf-hist-${index}`))}
           </div>
-          <div class="btn-row" style=${{ marginTop: "8px", flexWrap: "wrap" }}>
-            <${Button} variant="outlined" size="small" disabled=${savingDependencies} onClick=${handleSaveDependencies}>
-              ${savingDependencies ? "Saving…" : "Save Dependencies"}
-            <//>
-            <${Button} variant="outlined" size="small" disabled=${savingSprint || !selectedSprintId} onClick=${handleSaveSprintAssignment}>
-              ${savingSprint ? "Saving…" : "Save Sprint Assignment"}
-            <//>
-            <${Button} variant="text" size="small" disabled=${savingSprint} onClick=${() => handleSprintOrderNudge(-1)}>↑ Earlier</${Button}>
-            <${Button} variant="text" size="small" disabled=${savingSprint} onClick=${() => handleSprintOrderNudge(1)}>↓ Later</${Button}>
-            ${dependencyFeedback && html`<span class="meta-text">${dependencyFeedback}</span>`}
-          </div>
-          ${epicCatalog.length > 0 && html`
-            <div style=${{ marginTop: "10px" }}>
-              <div class="meta-text" style=${{ marginBottom: "6px" }}>Epic shortcuts</div>
-              <div class="tag-row">
-                ${epicCatalog.slice(0, 12).map((entry) => html`<button type="button" class="tag-chip task-structure-chip ${epicId === entry.id ? "task-structure-chip-active" : ""}" onClick=${() => setEpicId(entry.id)}>${entry.label}</button>`)}
-              </div>
-            </div>
-          `}
         </div>
-        <${Tooltip} title="Use AI to expand and improve this task description"><${Button}
-          variant="text" size="small"
-          style=${{ display: "flex", alignItems: "center", gap: "6px", alignSelf: "flex-start", fontSize: "12px", padding: "5px 10px", opacity: !title.trim() ? 0.45 : 1 }}
-          disabled=${!title.trim() || rewriting || saving}
-          onClick=${async () => {
-            if (!title.trim() || rewriting) return;
-            setRewriting(true);
-            haptic("medium");
-            try {
-              const res = await apiFetch("/api/tasks/rewrite", {
-                method: "POST",
-                body: JSON.stringify({ title: title.trim(), description: description.trim() }),
-              });
-              if (res?.data) {
-                if (res.data.title) setTitle(res.data.title);
-                if (res.data.description) setDescription(res.data.description);
-                showToast("Task description improved", "success");
-                haptic("medium");
-              }
-            } catch { /* toast via apiFetch */ }
-            setRewriting(false);
-          }}
-        >
-          ${rewriting
-            ? html`<span style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon(":clock:")}</span> Improving…`
-            : html`${iconText(":star: Improve with AI")}`
-          }
-        <//><//> 
-        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Base branch (optional, e.g. feature/xyz)" value=${baseBranch} onInput=${(e) => setBaseBranch(e.target.value)} fullWidth />        <div class="modal-form-span jira-meta-grid">
-          <${TextField}
-            size="small"
-            variant="outlined"
-            label="Assignee"
-            value=${assignee}
-            onInput=${(e) => setAssignee(e.target.value)}
-            fullWidth
-          />
-          <${TextField}
-            size="small"
-            variant="outlined"
-            label="Assignees"
-            placeholder="alice, bob"
-            value=${assigneesInput}
-            onInput=${(e) => setAssigneesInput(e.target.value)}
-            fullWidth
-          />
-          <${TextField}
-            size="small"
-            variant="outlined"
-            label="Epic"
-            value=${epicId}
-            onInput=${(e) => setEpicId(e.target.value)}
-            fullWidth
-          />
-          <${TextField}
-            size="small"
-            variant="outlined"
-            type="number"
-            label="Story Points"
-            value=${storyPoints}
-            onInput=${(e) => setStoryPoints(e.target.value)}
-            fullWidth
-          />
-          <${TextField}
-            size="small"
-            variant="outlined"
-            type="date"
-            label="Due Date"
-            value=${dueDate}
-            onInput=${(e) => setDueDate(e.target.value)}
-            InputLabelProps=${{ shrink: true }}
-            fullWidth
-          />
-          <${TextField}
-            size="small"
-            variant="outlined"
-            label="Parent Task"
-            value=${parentTaskId}
-            onInput=${(e) => setParentTaskId(e.target.value)}
-            fullWidth
-          />
-        </div>
-        <div class="input-row modal-form-span">
-          <${Select}
-            size="small"
-            value=${workspaceId}
-            onChange=${(e) => setWorkspaceId(e.target.value)}
-          >
-            <${MenuItem} value="">Active workspace</${MenuItem}>
-            ${workspaceOptions.map(
-              (ws) => html`<${MenuItem} value=${ws.id}>${ws.name || ws.id}</${MenuItem}>`,
-            )}
-          </${Select}>
-          <${Select}
-            size="small"
-            value=${repository}
-            onChange=${(e) => setRepository(e.target.value)}
-            disabled=${!repositoryOptions.length}
-          >
-            <${MenuItem} value="">
-              ${repositoryOptions.length ? "Auto repository" : "No repos in workspace"}
-            </${MenuItem}>
-            ${repositoryOptions.map(
-              (repo) =>
-                html`<${MenuItem} value=${repo.slug}>${repo.name}${repo.primary ? " (Primary)" : ""}</${MenuItem}>`,
-            )}
-          </${Select}>
-        </div>
-        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Tags (comma-separated)" value=${tagsInput} onInput=${(e) => setTagsInput(e.target.value)} fullWidth />
-        ${normalizeTagInput(tagsInput).length > 0 &&
-        html`
-          <div class="tag-row modal-form-span">
-            ${normalizeTagInput(tagsInput).map(
-              (tag) => html`<span class="tag-chip">#${tag}</span>`,
-            )}
-          </div>
-        `}
+      `}
 
-        <div class="input-row modal-form-span">
-          <${Select}
-            size="small"
-            value=${status}
-            onChange=${(e) => {
-              const next = e.target.value;
-              setStatus(next);
-              if (next === "draft") setDraft(true);
-              else if (draft) setDraft(false);
-            }}
-          >
-            ${["draft", "todo", "inprogress", "inreview", "done", "cancelled"].map(
-              (s) => html`<${MenuItem} value=${s}>${s}</${MenuItem}>`,
-            )}
-          </${Select}>
-          <${Select}
-            size="small"
-            value=${priority}
-            onChange=${(e) => setPriority(e.target.value)}
-          >
-            <${MenuItem} value="">No priority</${MenuItem}>
-            ${["low", "medium", "high", "critical"].map(
-              (p) => html`<${MenuItem} value=${p}>${p}</${MenuItem}>`,
-            )}
-          </${Select}>
-        </div>
-        <div class="modal-form-span">
-          <${Toggle}
-            label="Draft (keep in backlog)"
-            checked=${draft}
-            onChange=${(next) => {
-              setDraft(next);
-              if (next) setStatus("draft");
-              else if (status === "draft") setStatus("todo");
-            }}
-          />
-        </div>
-        <div class="modal-form-span">
-          <${Toggle}
-            label="Manual takeover (exclude from automation)"
-            checked=${manualOverride}
-            disabled=${manualBusy || !task?.id}
-            onChange=${handleManualToggle}
-          />
-        </div>
-        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Manual reason (optional)" value=${manualReason} disabled=${manualBusy} onInput=${(e) => setManualReason(e.target.value)} fullWidth />
-        ${manualOverride &&
-        html`
-          <div class="modal-form-span">
-            <div class="meta-text">
-              Bosun will skip this task until manual takeover is cleared.
-            </div>
-            ${manualReason &&
-            html`<div class="meta-text">Reason: ${manualReason}</div>`}
-          </div>
-        `}
+      ${historyEntries.length === 0 && workflowRuns.length === 0 && relatedLinks.length === 0 ? html`
+        <div style="padding:24px;text-align:center;opacity:0.5;font-size:0.9em;">No history, workflow runs, or links recorded yet.</div>
+      ` : ""}
 
-        ${task?.created_at &&
-        html`
-          <div class="meta-text modal-form-span">
-            Created: ${new Date(task.created_at).toLocaleString()}
-          </div>
-        `}
-        ${task?.updated_at &&
-        html`
-          <div class="meta-text modal-form-span">
-            Updated: ${formatRelative(task.updated_at)}
-          </div>
-        `}
-        ${task?.meta?.triggerTemplate?.id &&
-        html`
-          <div class="meta-text modal-form-span">
-            Trigger Template: ${task.meta.triggerTemplate.id}
-          </div>
-        `}
-        ${(task?.meta?.execution?.sdk || task?.meta?.execution?.model) &&
-        html`
-          <div class="meta-text modal-form-span">
-            Execution Override:
-            ${task?.meta?.execution?.sdk || "auto"}
-            ${task?.meta?.execution?.model
-              ? html` · ${task.meta.execution.model}`
-              : ""}
-          </div>
-        `}
-        ${task?.assignee &&
-        html` <div class="meta-text modal-form-span">Assignee: ${task.assignee}</div> `}
-        ${task?.branch &&
-        html`
-          <div class="meta-text modal-form-span" style="user-select:all">
-            Branch: ${task.branch}
-          </div>
-        `}
+      </div>`}
 
-        <${SaveDiscardBar}
-          dirty=${hasUnsaved}
-          message=${unsavedChangesMessage(changeCount)}
-          saveLabel="Save Changes"
-          discardLabel="Discard"
-          onSave=${() => {
-            void handleSave({ closeAfterSave: false });
-          }}
-          onDiscard=${handleDiscardChanges}
-          saving=${saving}
-          disabled=${Boolean(activeOperationLabel && !saving)}
-        />
 
-        <div class="btn-row modal-form-span">
-          ${(task?.status === "error" || task?.status === "cancelled") &&
-          html`
-            <${Button} variant="contained" size="small" onClick=${handleRetry}>
-              ↻ Retry
-            <//>
-          `}
-          <${Button}
-            variant="outlined" size="small"
-            onClick=${() => {
-              void handleSave({ closeAfterSave: true });
-            }}
-            disabled=${saving}
-          >
-            ${saving ? "Saving…" : iconText(":save: Save")}
-          <//>
-          <${Button}
-            variant="text" size="small"
-            onClick=${() => handleStatusUpdate("inreview")}
-          >
-            → Review
-          <//>
-          <${Button}
-            variant="text" size="small"
-            onClick=${() => handleStatusUpdate("done")}
-          >
-            ${iconText("✓ Done")}
-          <//>
-          ${task?.status !== "cancelled" &&
-          html`
-            <${Button}
-              variant="text" size="small"
-              style=${{ color: "var(--color-error)" }}
-              onClick=${handleCancel}
-            >
-              ${iconText("✕ Cancel")}
-            <//>
-          `}
-        </div>
-
-        ${task?.id &&
-        html`
-          <${Button}
-            variant="text" size="small"
-            onClick=${() => {
-              haptic();
-              sendCommandToChat("/logs " + task.id);
-            }}
-          >
-            ${iconText(":file: View Agent Logs")}
-          <//>
-        `}
       </div>
     <//>
   `;
@@ -3897,25 +4709,6 @@ function DagGraphSection({
     }
     if (node?.taskId) onOpenTask?.(node.taskId);
   }, [isWireMode, onActivateNode, onCreateEdge, onOpenTask, wireSourceId, nodeById, wiringBusy]);
-
-  const handleEdgeClick = useCallback((edge, event) => {
-    event?.stopPropagation?.();
-    if (!isWireMode || typeof onDeleteEdge !== "function") return;
-    setSelectedEdgeKey((current) => current === edge.key ? "" : edge.key);
-    setWireSourceId("");
-  }, [isWireMode, onDeleteEdge]);
-
-  const handleDeleteSelectedEdge = useCallback(async () => {
-    if (!selectedEdge || typeof onDeleteEdge !== "function") return;
-    setWiringBusy(true);
-    try {
-      await onDeleteEdge(selectedEdge);
-      setSelectedEdgeKey("");
-    } finally {
-      setWiringBusy(false);
-    }
-  }, [onDeleteEdge, selectedEdge]);
-
   const commitWireConnection = useCallback(async (sourceId, targetId) => {
     if (!isWireMode || typeof onCreateEdge !== "function") return;
     if (!sourceId || !targetId || sourceId === targetId || wiringBusy) {
@@ -3939,6 +4732,99 @@ function DagGraphSection({
       setWiringBusy(false);
     }
   }, [isWireMode, nodeById, onCreateEdge, wiringBusy]);
+
+  const handleWireNodePointerDown = useCallback((node, event) => {
+    if (!isWireMode || wiringBusy) return;
+    const sourceId = String(node?.id || "").trim();
+    if (!sourceId) return;
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+
+    if (typeof wireDragCleanupRef.current === "function") {
+      wireDragCleanupRef.current();
+      wireDragCleanupRef.current = null;
+    }
+
+    const dragState = {
+      sourceId,
+      startX: Number(event?.clientX || 0),
+      startY: Number(event?.clientY || 0),
+      dragging: false,
+    };
+
+    const handleMove = (moveEvent) => {
+      const nextX = Number(moveEvent?.clientX || 0);
+      const nextY = Number(moveEvent?.clientY || 0);
+      if (!dragState.dragging) {
+        const deltaX = nextX - dragState.startX;
+        const deltaY = nextY - dragState.startY;
+        if (Math.hypot(deltaX, deltaY) < 6) return;
+        dragState.dragging = true;
+        setWireSourceId(sourceId);
+        setSelectedEdgeKey("");
+        setWireHoverId("");
+        wireHoverIdRef.current = "";
+        setWireDrag({ sourceId, clientX: nextX, clientY: nextY });
+        return;
+      }
+      setWireDrag((current) => current
+        ? { ...current, clientX: nextX, clientY: nextY }
+        : current);
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+      window.removeEventListener("pointercancel", handleCancel);
+    };
+
+    const finishWire = async () => {
+      const targetId = wireHoverIdRef.current;
+      setWireDrag(null);
+      await commitWireConnection(sourceId, targetId);
+    };
+
+    const handleUp = async (upEvent) => {
+      cleanup();
+      wireDragCleanupRef.current = null;
+      if (dragState.dragging) {
+        await finishWire();
+        return;
+      }
+      await handleNodeClick(node, upEvent);
+    };
+
+    const handleCancel = () => {
+      cleanup();
+      wireDragCleanupRef.current = null;
+      setWireDrag(null);
+      setWireHoverId("");
+      wireHoverIdRef.current = "";
+    };
+
+    wireDragCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    window.addEventListener("pointercancel", handleCancel);
+  }, [commitWireConnection, handleNodeClick, isWireMode, wiringBusy]);
+
+  const handleEdgeClick = useCallback((edge, event) => {
+    event?.stopPropagation?.();
+    if (!isWireMode || typeof onDeleteEdge !== "function") return;
+    setSelectedEdgeKey((current) => current === edge.key ? "" : edge.key);
+    setWireSourceId("");
+  }, [isWireMode, onDeleteEdge]);
+
+  const handleDeleteSelectedEdge = useCallback(async () => {
+    if (!selectedEdge || typeof onDeleteEdge !== "function") return;
+    setWiringBusy(true);
+    try {
+      await onDeleteEdge(selectedEdge);
+      setSelectedEdgeKey("");
+    } finally {
+      setWiringBusy(false);
+    }
+  }, [onDeleteEdge, selectedEdge]);
 
   const beginWireDrag = useCallback((node, event) => {
     if (!isWireMode || typeof onCreateEdge !== "function" || wiringBusy) return;
@@ -4007,7 +4893,7 @@ function DagGraphSection({
         <div>
           <div style=${{ fontWeight: "700" }}>${title || "Task DAG"}</div>
           ${description ? html`<div class="meta-text">${description}</div>` : null}
-          <div class="meta-text">Drag to pan · wheel to zoom · click node to ${isWireMode ? "wire edges" : "open task"}.</div>
+          <div class="meta-text">Drag to pan · wheel to zoom · ${isWireMode ? "drag from one node to another, or click source then target, to wire edges" : "click node to open task"}.</div>
         </div>
         <div class="task-dag-controls">
           <${Button} size="small" variant="outlined" onClick=${() => setZoom((z) => Math.max(DAG_MIN_ZOOM, z * 0.9))}>-</${Button}>
@@ -4082,7 +4968,10 @@ function DagGraphSection({
                 <g
                   key=${node.id}
                   class=${`dag-node ${selected ? "dag-node-selected" : ""} ${hoverTarget ? "dag-node-hover-target" : ""} ${highlighted ? "dag-node-highlighted" : ""}`}
-                  onPointerDown=${(event) => event.stopPropagation()}
+                  onPointerDown=${(event) => {
+                    event.stopPropagation();
+                    if (isWireMode) handleWireNodePointerDown(node, event);
+                  }}
                   onPointerEnter=${() => {
                     if (!wireDrag || String(node.id) === String(wireDrag.sourceId)) return;
                     wireHoverIdRef.current = String(node.id);
@@ -4093,8 +4982,8 @@ function DagGraphSection({
                     wireHoverIdRef.current = "";
                     setWireHoverId("");
                   }}
-                  onClick=${(event) => handleNodeClick(node, event)}
-                  style=${{ cursor: isWireMode || node.taskId ? "pointer" : "default" }}
+                  onClick=${isWireMode ? undefined : (event) => handleNodeClick(node, event)}
+                  style=${{ cursor: isWireMode ? "crosshair" : node.taskId ? "pointer" : "default" }}
                 >
                   <rect
                     x=${pos.x}
@@ -4124,7 +5013,7 @@ function DagGraphSection({
                       fill=${selected ? "var(--accent)" : "var(--bg-canvas, #0f1115)"}
                       stroke="var(--accent)"
                       stroke-width="2"
-                      onPointerDown=${(event) => beginWireDrag(node, event)}
+                      onPointerDown=${(event) => handleWireNodePointerDown(node, event)}
                     />
                   ` : null}
                   ${Number.isFinite(node.order) && html`<text x=${pos.x + pos.width - 16} y=${pos.y + 22} text-anchor="end" fill="var(--text-muted)" font-size="11">#${node.order}</text>`}
@@ -4166,6 +5055,8 @@ export function TasksTab() {
   const [dagAllTasks, setDagAllTasks] = useState([]);
   const [dagEpicDependencies, setDagEpicDependencies] = useState([]);
   const [dagFocusMode, setDagFocusMode] = useState("all");
+  const [dagOrganizeFeedback, setDagOrganizeFeedback] = useState("");
+  const [dagOrganizeSuggestions, setDagOrganizeSuggestions] = useState([]);
   const [showCreateSprint, setShowCreateSprint] = useState(false);
   const [editingSprint, setEditingSprint] = useState(null);
   const [createSeed, setCreateSeed] = useState(null);
@@ -4235,7 +5126,7 @@ export function TasksTab() {
   const isList = !isKanban && !isDag;
   const viewModeInitRef = useRef(false);
   const hasMoreKanbanPages = isKanban && page + 1 < totalPages;
-  const boardColumnTotals = tasksStatusCounts?.value || { draft: 0, backlog: 0, inProgress: 0, inReview: 0, done: 0 };
+  const boardColumnTotals = tasksStatusCounts?.value || { draft: 0, backlog: 0, blocked: 0, inProgress: 0, inReview: 0, done: 0 };
   const boardTotalTasks = Number(tasksTotal?.value || 0);
   const dagTaskCatalog = dagAllTasks.length ? dagAllTasks : tasks;
   const dagPlanningState = useMemo(() => buildDagPlanningState({
@@ -4277,6 +5168,14 @@ export function TasksTab() {
     { id: "execution", label: "Running & review", count: dagPlanningState.counts.execution },
     { id: "ready", label: "Ready next", count: dagPlanningState.counts.ready },
   ];
+  const dagOrganizeSummary = useMemo(() => {
+    if (dagOrganizeFeedback) return dagOrganizeFeedback;
+    return "Run Auto Wire to rewrite sprint order, add inferred dependencies, and surface any cleanup suggestions that still need review.";
+  }, [dagOrganizeFeedback]);
+  const dagSelectedSprintLabel = useMemo(() => {
+    if (dagSelectedSprint === "all") return "all sprints";
+    return dagSprints.find((entry) => entry.id === dagSelectedSprint)?.label || dagSelectedSprint;
+  }, [dagSelectedSprint, dagSprints]);
 
   const loadMoreKanbanTasks = useCallback(async () => {
     if (!isKanban || kanbanLoadingMore || isSearching) return;
@@ -4480,6 +5379,11 @@ export function TasksTab() {
   }, []);
 
   useEffect(() => {
+    setDagOrganizeFeedback("");
+    setDagOrganizeSuggestions([]);
+  }, [dagSelectedSprint]);
+
+  useEffect(() => {
     if (isCompact) {
       setFiltersOpen(false);
       setActionsOpen(false);
@@ -4522,7 +5426,7 @@ export function TasksTab() {
       active: 0,
       review: 0,
       done: 0,
-      error: 0,
+      blocked: 0,
       draft: 0,
     };
     for (const task of tasks) {
@@ -4534,7 +5438,7 @@ export function TasksTab() {
       } else if (["done", "completed", "closed", "merged", "cancelled"].includes(status)) {
         counts.done += 1;
       } else if (["error", "blocked", "failed"].includes(status)) {
-        counts.error += 1;
+        counts.blocked += 1;
       } else if (["draft"].includes(status)) {
         counts.draft += 1;
       } else {
@@ -4546,7 +5450,7 @@ export function TasksTab() {
       { label: "Active", value: counts.active, color: "var(--color-inprogress)" },
       { label: "Review", value: counts.review, color: "var(--color-inreview)" },
       { label: "Done", value: counts.done, color: "var(--color-done)" },
-      { label: "Errors", value: counts.error, color: "var(--color-error)" },
+      { label: "Blocked", value: counts.blocked, color: "var(--color-error)" },
     ];
   }, [tasks]);
 
@@ -4741,24 +5645,89 @@ export function TasksTab() {
       setDagError("Failed to update sprint execution mode.");
     }
   }, [dagSelectedSprint, loadDagViews]);
+
+  const persistSprintTaskOrder = useCallback(async (sprintId, orderedTasks) => {
+    await Promise.all(orderedTasks.map((entry, index) => apiFetch(
+      "/api/tasks/sprints/" + encodeURIComponent(sprintId) + "/tasks",
+      {
+        method: "POST",
+        body: JSON.stringify({ taskId: entry.id, sprintOrder: index + 1 }),
+      },
+    )));
+  }, []);
+
   const handleNudgeSprintTaskOrder = useCallback(async (taskId, delta) => {
     const task = dagTaskCatalog.find((entry) => toText(entry?.id) === toText(taskId));
     const sprintId = toText(getTaskSprintId(task));
     if (!task?.id || !sprintId) return;
-    const currentOrder = Number(getTaskSprintOrder(task) || 1);
-    const nextOrder = Math.max(1, (Number.isFinite(currentOrder) ? currentOrder : 1) + delta);
+    const sprintQueue = dagSprintQueue
+      .filter((entry) => toText(getTaskSprintId(entry)) === sprintId)
+      .sort((left, right) => {
+        const leftOrder = Number(getTaskSprintOrder(left) || Number.MAX_SAFE_INTEGER);
+        const rightOrder = Number(getTaskSprintOrder(right) || Number.MAX_SAFE_INTEGER);
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+        return String(left?.title || left?.id || "").localeCompare(String(right?.title || right?.id || ""));
+      });
+    const currentIndex = sprintQueue.findIndex((entry) => toText(entry?.id) === toText(taskId));
+    const nextIndex = currentIndex + delta;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= sprintQueue.length) return;
+    const reordered = [...sprintQueue];
+    const [movedTask] = reordered.splice(currentIndex, 1);
+    reordered.splice(nextIndex, 0, movedTask);
     try {
-      await apiFetch(
-        "/api/tasks/sprints/" + encodeURIComponent(sprintId) + "/tasks",
-        {
-          method: "POST",
-          body: JSON.stringify({ taskId: task.id, sprintOrder: nextOrder }),
-        },
-      );
-      showToast("Sprint order updated", "success");
+      await persistSprintTaskOrder(sprintId, reordered);
+      showToast("Sprint queue reordered", "success");
       await loadDagViews();
     } catch {
       setDagError("Failed to update sprint task order.");
+    }
+  }, [dagSprintQueue, dagTaskCatalog, loadDagViews, persistSprintTaskOrder]);
+
+  const handleApplyDagSuggestion = useCallback(async (entry) => {
+    const suggestionType = toText(entry?.type);
+    if (suggestionType !== "missing_sequential_dependency") return;
+
+    const dependencyTaskId = toText(entry?.dependencyTaskId);
+    const taskId = toText(entry?.taskId);
+    if (!dependencyTaskId || !taskId || dependencyTaskId === taskId) return;
+
+    haptic("medium");
+    setDagLoading(true);
+    setDagError("");
+    try {
+      const task = dagTaskCatalog.find((candidate) => toText(candidate?.id) === taskId);
+      const existing = normalizeDependencyInput(getTaskDependencyIds(task));
+      if (existing.includes(dependencyTaskId)) {
+        setDagOrganizeSuggestions((current) => current.filter((candidate) => !(
+          toText(candidate?.type) === suggestionType &&
+          toText(candidate?.taskId) === taskId &&
+          toText(candidate?.dependencyTaskId) === dependencyTaskId
+        )));
+        setDagOrganizeFeedback(`Dependency ${dependencyTaskId} -> ${taskId} is already present.`);
+        showToast("Dependency already exists", "info");
+        return;
+      }
+
+      await apiFetch("/api/tasks/dependencies", {
+        method: "PUT",
+        body: JSON.stringify({
+          taskId,
+          dependencies: normalizeDependencyInput([...existing, dependencyTaskId]),
+        }),
+      });
+
+      setDagOrganizeSuggestions((current) => current.filter((candidate) => !(
+        toText(candidate?.type) === suggestionType &&
+        toText(candidate?.taskId) === taskId &&
+        toText(candidate?.dependencyTaskId) === dependencyTaskId
+      )));
+      setDagOrganizeFeedback(`Applied sequential dependency ${dependencyTaskId} -> ${taskId}.`);
+      showToast(`Applied dependency: ${dependencyTaskId} -> ${taskId}`, "success");
+      await loadDagViews();
+    } catch (error) {
+      setDagError(error?.message || "Failed to apply organizer suggestion.");
+    } finally {
+      setDagLoading(false);
     }
   }, [dagTaskCatalog, loadDagViews]);
 
@@ -5507,7 +6476,7 @@ export function TasksTab() {
       }
     </style>
 
-    ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} hasMoreTasks=${hasMoreKanbanPages} loadingMoreTasks=${kanbanLoadingMore} onLoadMoreTasks=${loadMoreKanbanTasks} columnTotals=${boardColumnTotals} totalTasks=${boardTotalTasks} />`}
+    ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} hasMoreTasks=${hasMoreKanbanPages} loadingMoreTasks=${kanbanLoadingMore} onLoadMoreTasks=${loadMoreKanbanTasks} columnTotals=${boardColumnTotals} totalTasks=${boardTotalTasks} workspaceId=${activeWorkspaceId.value || ""} />`}
 
     ${isDag && html`
       <div class="task-dag-shell">
@@ -5537,7 +6506,7 @@ export function TasksTab() {
               </${ToggleButtonGroup}>
             </div>
             <div class="meta-text" style=${{ marginTop: "6px" }}>
-              ${dagInteractionMode === "wire" ? "Click source then target to add edges." : "Click any node to open the Jira-style side panel."}
+              ${dagInteractionMode === "wire" ? "Drag from a source node to a target node to add edges, or click source then target for rapid multi-wiring." : "Click any node to open the Jira-style side panel."}
             </div>
           </div>
           <div class="tasks-filter-section">
@@ -5550,6 +6519,46 @@ export function TasksTab() {
                 <${MenuItem} value="parallel">Mode: parallel</${MenuItem}>
                 <${MenuItem} value="sequential">Mode: sequential</${MenuItem}>
               </${Select}>
+            </div>
+          </div>
+          <div class="tasks-filter-section">
+            <div class="tasks-filter-title">Organizer review</div>
+            <div class="meta-text" style=${{ marginTop: "6px" }}>
+              ${dagOrganizeSummary}
+            </div>
+            ${dagOrganizeSuggestions.length > 0 && html`
+              <div class="meta-text" style=${{ marginTop: "4px" }}>
+                Showing ${Math.min(dagOrganizeSuggestions.length, 6)} of ${dagOrganizeSuggestions.length} suggestion${dagOrganizeSuggestions.length === 1 ? "" : "s"} for ${dagSelectedSprintLabel}.
+              </div>
+            `}
+            <div class="task-dag-sidebar-list" style=${{ marginTop: "8px" }}>
+              ${dagOrganizeSuggestions.slice(0, 6).map((entry) => {
+                const suggestionType = toText(entry?.type, "dependency_update");
+                const suggestionLabel = suggestionType === "missing_sequential_dependency"
+                  ? "Sequential gap"
+                  : suggestionType === "redundant_transitive_dependency"
+                    ? "Redundant edge"
+                    : "Dependency suggestion";
+                const taskId = toText(entry?.taskId);
+                const dependencyTaskId = toText(entry?.dependencyTaskId);
+                return html`
+                  <div class="task-dag-sidebar-card">
+                    <div class="task-dag-sidebar-card-main">
+                      <strong>${suggestionLabel}</strong>
+                      <span class="meta-text">${truncate(toText(entry?.message, "Dependency rewrite suggested."), 120)}</span>
+                      <span class="meta-text">${dependencyTaskId ? `${dependencyTaskId} -> ` : ""}${taskId || "task"}</span>
+                    </div>
+                    <div class="task-dag-sidebar-card-actions">
+                      ${suggestionType === "missing_sequential_dependency" && dependencyTaskId && taskId
+                        ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => handleApplyDagSuggestion(entry)}>apply</button>`
+                        : null}
+                      ${dependencyTaskId ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => openDetail(dependencyTaskId)}>dep</button>` : null}
+                      ${taskId ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => openDetail(taskId)}>task</button>` : null}
+                    </div>
+                  </div>
+                `;
+              })}
+              ${dagOrganizeSuggestions.length === 0 ? html`<div class="meta-text">No pending organizer suggestions for this scope.</div>` : null}
             </div>
           </div>
           <div class="tasks-filter-section">
@@ -6445,33 +7454,3 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     <//>
   `;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -384,7 +384,9 @@ export function getAppId() {
 
 // ── OAuth state persistence ───────────────────────────────────────────────────
 
-const AUTH_STATE_PATH = join(homedir(), ".bosun", "github-auth-state.json");
+function getAuthStatePath() {
+  return join(homedir(), ".bosun", "github-auth-state.json");
+}
 
 /**
  * Saves OAuth user token state to ~/.bosun/github-auth-state.json.
@@ -392,11 +394,12 @@ const AUTH_STATE_PATH = join(homedir(), ".bosun", "github-auth-state.json");
  * @param {{ user: object, accessToken: string, tokenType: string, scope: string, savedAt: string, installationIds: number[] }} state
  */
 export function saveOAuthState(state) {
-  const dir = dirname(AUTH_STATE_PATH);
+  const authStatePath = getAuthStatePath();
+  const dir = dirname(authStatePath);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  writeFileSync(AUTH_STATE_PATH, JSON.stringify(state, null, 2), "utf8");
+  writeFileSync(authStatePath, JSON.stringify(state, null, 2), "utf8");
 }
 
 /**
@@ -407,8 +410,9 @@ export function saveOAuthState(state) {
  */
 export function loadOAuthState() {
   try {
-    if (!existsSync(AUTH_STATE_PATH)) return null;
-    const raw = readFileSync(AUTH_STATE_PATH, "utf8");
+    const authStatePath = getAuthStatePath();
+    if (!existsSync(authStatePath)) return null;
+    const raw = readFileSync(authStatePath, "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null) return null;
     return parsed;

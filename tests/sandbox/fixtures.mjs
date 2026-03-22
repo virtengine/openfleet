@@ -275,6 +275,7 @@ export const TEMPLATE_FIXTURES = {
   "template-pr-conflict-resolver":         { scenario: scenarios.conflictPR(55),   inputVars: { prNumber: 55,  branch: "feat/conflicts" } },
   "template-stale-pr-reaper":              { scenario: scenarios.stalePRs(),        inputVars: {} },
   "template-release-drafter":              { scenario: scenarios.releaseReady(),    inputVars: { tagName: "v1.1.0" } },
+  "template-bosun-pr-progressor":          { scenario: scenarios.greenPR(60),      inputVars: { taskId: "TASK-PR-1", taskTitle: "Progress PR", prNumber: 60, prUrl: "https://github.com/virtengine/bosun/pull/60", repo: "virtengine/bosun", branch: "feat/pr-progress", baseBranch: "main" } },
   "template-bosun-pr-watchdog":            { scenario: scenarios.greenPR(60),      inputVars: { prNumber: 60 } },
   "template-github-kanban-sync":           { scenario: scenarios.kanbanState(),     inputVars: {} },
   "template-sdk-conflict-resolver":        { scenario: scenarios.conflictPR(70),   inputVars: { prNumber: 70, branch: "fix/sdk-conflict" } },
@@ -307,6 +308,7 @@ export const TEMPLATE_FIXTURES = {
   "template-dependency-audit":            { scenario: scenarios.securityAudit(),   inputVars: {} },
   "template-secret-scanner":             { scenario: scenarios.securityAudit(),   inputVars: {} },
   "template-code-quality-striker":       { scenario: scenarios.greenPR(202),      inputVars: {} },
+  "template-continuation-loop":         { scenario: scenarios.kanbanState(),     inputVars: { taskId: "TASK-1", worktreePath: "/tmp/wt/task-1", pollIntervalMs: 1, maxTurns: 1, stuckThresholdMs: 1, onStuck: "pause", terminalStates: ["done", "cancelled"] } },
   "template-task-lifecycle":              { scenario: scenarios.greenPR(98),      inputVars: { taskId: "TASK-7", worktreePath: "/tmp/wt/task-7", branch: "feat/task-7", baseBranch: "main", prNumber: 98 } },
   "template-ve-orchestrator-lite":        { scenario: scenarios.kanbanState(),     inputVars: { maxConcurrent: 2 } },
   "template-task-batch-processor":        { scenario: scenarios.kanbanState(),     inputVars: { batchSize: 3 } },
@@ -319,6 +321,7 @@ export const TEMPLATE_FIXTURES = {
   "template-agent-execution-pipeline":   { scenario: scenarios.greenPR(201),      inputVars: { taskId: "TASK-10", taskTitle: "Coverage test task", taskDescription: "Implement coverage improvements.", branch: "feat/pipeline-test", baseBranch: "origin/main", worktreePath: "/tmp/wt-pipeline-test", sessionId: "session-coverage-1", defaultSdk: "auto", finalizationWorkflow: "template-health-check" } },
   "template-flow-control-suite":         { scenario: scenarios.kanbanState(),     inputVars: { subWorkflowId: "template-health-check", maxLoopIterations: 1 } },
   "template-workflow-composition":       { scenario: scenarios.kanbanState(),     inputVars: { childWorkflowId: "template-health-check", inputPayload: "{}" } },
+  "template-inline-workflow-composition": { scenario: scenarios.kanbanState(),     inputVars: { inputPayload: "{\"steps\":[\"lint\",\"test\",\"build\"],\"strict\":true}", defaultStageOwner: "bosun" } },
   "template-git-health-pipeline":        { scenario: scenarios.kanbanState(),     inputVars: { cleanupWorkflow: "template-health-check", churnThreshold: "10" } },
   "template-bosun-tool-pipeline":        { scenario: scenarios.kanbanState(),     inputVars: { targetTool: "list-todos", toolArgs: "" } },
   "template-mcp-to-bosun-bridge":        { scenario: scenarios.kanbanState(),     inputVars: { mcpServer: "github", mcpTool: "list_pull_requests", mcpInput: "{}", processingWorkflow: "" } },
@@ -326,6 +329,11 @@ export const TEMPLATE_FIXTURES = {
   "template-mcp-tool-chain":             { scenario: scenarios.kanbanState(),     inputVars: { mcpServer: "github", toolName: "list_pull_requests", toolInput: "{}" } },
   "template-mcp-github-pr-monitor":      { scenario: scenarios.kanbanState(),     inputVars: { owner: "virtengine", repo: "bosun", checkInterval: "*/30 * * * *", prThreshold: "5" } },
   "template-mcp-cross-server-pipeline":  { scenario: scenarios.kanbanState(),     inputVars: { githubOwner: "virtengine", githubRepo: "bosun" } },
+  "template-task-fullstack":             { scenario: scenarios.greenPR(210),      inputVars: { taskId: "TASK-FS-1", worktreePath: "/tmp/wt/fullstack", branch: "feat/fullstack", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
+  "template-task-backend":               { scenario: scenarios.greenPR(211),      inputVars: { taskId: "TASK-BE-1", worktreePath: "/tmp/wt/backend", branch: "feat/backend", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
+  "template-task-frontend":              { scenario: scenarios.greenPR(212),      inputVars: { taskId: "TASK-FE-1", worktreePath: "/tmp/wt/frontend", branch: "feat/frontend", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
+  "template-task-debug":                 { scenario: scenarios.greenPR(213),      inputVars: { taskId: "TASK-DBG-1", worktreePath: "/tmp/wt/debug", branch: "fix/debug", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 3, maxContinues: 4, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
+  "template-task-cicd":                  { scenario: scenarios.cicdDeploy(),      inputVars: { taskId: "TASK-CI-1", worktreePath: "/tmp/wt/cicd", branch: "feat/cicd", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
+  "template-task-design":                { scenario: scenarios.greenPR(214),      inputVars: { taskId: "TASK-DS-1", worktreePath: "/tmp/wt/design", branch: "feat/design", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
 };
-
 

@@ -35,6 +35,18 @@ describe("monitor lock command-line classification", () => {
     const cmd = "python -m http.server 18432";
     expect(classifyMonitorCommandLine(cmd)).toBe("other");
   });
+
+  it("classifies monitor.mjs sub-command invocation as other (not daemon)", () => {
+    const cmd =
+      "C:/nvm4w/nodejs/node.exe C:/Users/user/AppData/Local/nvm/v24.11.1/node_modules/bosun/infra/monitor.mjs agent list --json --active";
+    expect(classifyMonitorCommandLine(cmd)).toBe("other");
+  });
+
+  it("classifies monitor.mjs with only flag args as monitor (daemon mode)", () => {
+    const cmd =
+      "C:/nvm4w/nodejs/node.exe C:/Users/user/AppData/Local/nvm/v24.11.1/node_modules/bosun/infra/monitor.mjs --daemon-child";
+    expect(classifyMonitorCommandLine(cmd)).toBe("monitor");
+  });
 });
 
 describe("unknown lock owner fallback", () => {

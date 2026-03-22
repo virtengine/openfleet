@@ -1,5 +1,6 @@
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -89,6 +90,12 @@ function defaultLogPaths() {
   };
 }
 
+export function getWeeklyReportStatePath(options = {}) {
+  if (options?.statePath) return resolve(String(options.statePath));
+  const repoRoot = resolveRepoRoot();
+  return resolve(repoRoot, ".cache", "agent-work-logs", "weekly-report-state.json");
+}
+
 async function defaultLoadMetrics() {
   const { metricsPath } = defaultLogPaths();
   return await readJsonlFile(metricsPath);
@@ -97,6 +104,44 @@ async function defaultLoadMetrics() {
 async function defaultLoadErrors() {
   const { errorsPath } = defaultLogPaths();
   return await readJsonlFile(errorsPath);
+}
+
+export async function readWeeklyReportScheduleState(options = {}) {
+  const statePath = getWeeklyReportStatePath(options);
+  try {
+    const raw = await readFile(statePath, "utf8");
+    const parsed = JSON.parse(raw);
+    const lastSentAt = String(parsed?.lastSentAt || "").trim();
+    if (!lastSentAt) {
+      return { statePath, lastSentAt: null };
+    }
+    const lastSentMs = Date.parse(lastSentAt);
+    return {
+      statePath,
+      lastSentAt: Number.isFinite(lastSentMs) ? new Date(lastSentMs).toISOString() : null,
+    };
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      return { statePath, lastSentAt: null };
+    }
+    return { statePath, lastSentAt: null };
+  }
+}
+
+export async function writeWeeklyReportScheduleState(lastSentAt, options = {}) {
+  const statePath = getWeeklyReportStatePath(options);
+  const normalized = String(lastSentAt || "").trim();
+  const lastSentMs = Date.parse(normalized);
+  const payload = {
+    lastSentAt: Number.isFinite(lastSentMs) ? new Date(lastSentMs).toISOString() : null,
+    updatedAt: new Date().toISOString(),
+  };
+  await mkdir(dirname(statePath), { recursive: true });
+  await writeFile(statePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  return {
+    statePath,
+    lastSentAt: payload.lastSentAt,
+  };
 }
 
 export function buildWeeklyAgentWorkSummary(options = {}) {
@@ -359,4 +404,45 @@ export function shouldSendWeeklyReport(options = {}) {
     return true;
   }
   return lastSentMs < scheduledThisWeek.getTime();
+}
+
+export async function runWeeklyAgentWorkReportCli(options = {}) {
+  const argv = Array.isArray(options.argv) ? options.argv : process.argv.slice(2);
+  const stdout = options.stdout || process.stdout;
+  const stderr = options.stderr || process.stderr;
+  const rawDays = String(argv[0] || "").trim();
+  const parsedDays = Number.parseInt(rawDays, 10);
+  const days = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : undefined;
+
+  try {
+    const report = await generateWeeklyAgentWorkReport({
+      ...(days ? { days } : {}),
+      ...(options.now ? { now: options.now } : {}),
+      ...(typeof options.loadMetrics === "function"
+        ? { loadMetrics: options.loadMetrics }
+        : {}),
+      ...(typeof options.loadErrors === "function"
+        ? { loadErrors: options.loadErrors }
+        : {}),
+    });
+    stdout.write(`${report.text}\n`);
+    if (Array.isArray(report.warnings) && report.warnings.length > 0) {
+      stderr.write(`Warnings: ${report.warnings.join(" | ")}\n`);
+    }
+    return 0;
+  } catch (err) {
+    stderr.write(`Failed to generate weekly agent work report: ${err?.message || err}\n`);
+    return 1;
+  }
+}
+
+const isDirectRun =
+  process.argv[1] &&
+  fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+
+if (isDirectRun) {
+  const exitCode = await runWeeklyAgentWorkReportCli();
+  if (exitCode !== 0) {
+    process.exitCode = exitCode;
+  }
 }

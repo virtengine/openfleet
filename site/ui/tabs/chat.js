@@ -50,7 +50,13 @@ import {
 import { routeParams, setRouteParams } from "../modules/router.js";
 import { ChatView } from "../components/chat-view.js";
 import { apiFetch } from "../modules/api.js";
-import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
+import {
+  buildSessionApiPath,
+  getSessionLifecycleState,
+  getSessionRecencyTimestamp,
+  getSessionRuntimeState,
+  resolveSessionWorkspaceHint,
+} from "../modules/session-api.js";
 import { showToast } from "../modules/state.js";
 import { VoiceMicButton, requestVoiceModeOpen } from "../modules/voice.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
@@ -551,7 +557,7 @@ export function ChatTab() {
         if (selectedSessionId.value || sessions.length === 0) return;
         const next =
           sessions.find(
-            (s) => s.status === "active" || s.status === "running",
+            (s) => getSessionLifecycleState(s).isActive,
           ) || sessions[0];
         if (next?.id) selectedSessionId.value = next.id;
       } catch (err) {
@@ -1058,7 +1064,16 @@ export function ChatTab() {
     });
   }, [resolveWorkspaceForSessionId]);
   const sessionTitle = activeSession?.title || activeSession?.taskId || "Session";
-  const sessionMeta = [activeSession?.type, activeSession?.status]
+  const sessionLifecycle = getSessionLifecycleState(activeSession);
+  const sessionRuntime = getSessionRuntimeState(activeSession);
+  const sessionFreshnessAt = getSessionRecencyTimestamp(activeSession);
+  const sessionFreshnessLabel = sessionFreshnessAt ? new Date(sessionFreshnessAt).toLocaleString() : "unknown";
+  const sessionMeta = [
+    activeSession?.type,
+    `Lifecycle: ${sessionLifecycle.label}`,
+    `Runtime: ${sessionRuntime.label}`,
+    `Freshness: ${sessionFreshnessLabel}`,
+  ]
     .filter(Boolean)
     .join(" · ");
 
@@ -1313,7 +1328,7 @@ export function ChatTab() {
                       ${focusMode ? "Exit Focus" : "Focus"}
                     <//>
                   `}
-                  ${activeSession?.status === "archived"
+                  ${sessionLifecycle.key === "archived"
                     ? html`
                         <${Button}
                           variant="text"

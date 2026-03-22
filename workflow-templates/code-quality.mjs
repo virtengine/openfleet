@@ -34,7 +34,7 @@ export const CODE_QUALITY_STRIKER_TEMPLATE = {
   trigger: "trigger.schedule",
   variables: {
     sessionTimeoutMs: 5400000,       // 90 minutes hard cap
-    branch: "chore/code-quality-striker-{{_runId}}",
+    branch: "chore/code-quality-striker",
     baseBranch: "main",
     sessionLogPath: ".bosun-monitor/code-quality-striker.md",
     maxFilesPerSession: 6,           // keep PRs reviewable; prevents mega-diffs
@@ -42,6 +42,8 @@ export const CODE_QUALITY_STRIKER_TEMPLATE = {
     testCommand: "npm test",
     buildCommand: "npm run build",
     syntaxCheckCommand: "node --check",
+    lintCommand: "",
+    sourceExtensions: ".mjs,.js,.ts,.tsx,.py,.go,.rs,.java,.cs,.rb,.php",
   },
   nodes: [
     // ── 1. Schedule trigger ────────────────────────────────────────────────
@@ -62,9 +64,10 @@ export const CODE_QUALITY_STRIKER_TEMPLATE = {
 
     // ── 3. Identify refactoring candidates ─────────────────────────────────
     node("scan-candidates", "action.run_command", "Scan Large Files", {
-      // List .mjs/.js source files outside node_modules/.cache sorted by size.
+      // List source files outside node_modules/.cache sorted by size.
+      // Uses configurable sourceExtensions to support any language.
       // Output: newline-separated relative paths.
-      command: "node -e \"const{readdirSync,statSync}=require('fs');const{join,relative}=require('path');const base=process.cwd();function walk(d){const out=[];for(const f of readdirSync(d,{withFileTypes:true})){if(f.name==='node_modules'||f.name==='.cache'||f.name==='.git'||f.name==='worktrees')continue;const p=join(d,f.name);if(f.isDirectory())out.push(...walk(p));else if(/\\.(mjs|js)$/.test(f.name)){const s=statSync(p);out.push({p,kb:Math.round(s.size/1024)})}}return out}const files=walk(base).filter(x=>x.kb>={{minFileSizeKb}}).sort((a,b)=>b.kb-a.kb).slice(0,20);console.log(files.map(x=>x.kb+'kb\\t'+relative(base,x.p)).join('\\n'))\"",
+      command: "node -e \"const{readdirSync,statSync}=require('fs');const{join,relative}=require('path');const base=process.cwd();const exts=new Set('{{sourceExtensions}}'.split(',').map(e=>e.trim()));function walk(d){const out=[];for(const f of readdirSync(d,{withFileTypes:true})){if(f.name==='node_modules'||f.name==='.cache'||f.name==='.git'||f.name==='worktrees'||f.name==='__pycache__'||f.name==='.venv'||f.name==='target'||f.name==='vendor'||f.name==='dist'||f.name==='build')continue;const p=join(d,f.name);if(f.isDirectory())out.push(...walk(p));else{const ext='.'+f.name.split('.').pop();if(exts.has(ext)){const s=statSync(p);out.push({p,kb:Math.round(s.size/1024)})}}}return out}const files=walk(base).filter(x=>x.kb>={{minFileSizeKb}}).sort((a,b)=>b.kb-a.kb).slice(0,20);console.log(files.map(x=>x.kb+'kb\\t'+relative(base,x.p)).join('\\n'))\"",
       continueOnError: true,
     }, { x: 400, y: 310 }),
 
@@ -163,11 +166,14 @@ Run ALL of the following in order. Do not commit if any fail:
 # 1. Syntax check every file you touched
 {{syntaxCheckCommand}} <file1> <file2> ...
 
-# 2. Full test suite — must be 0 failures, 0 unexpected skips
-npm test
+# 2. Lint check (if configured)
+{{lintCommand}}
 
-# 3. Build — must pass clean
-npm run build
+# 3. Full test suite — must be 0 failures, 0 unexpected skips
+{{testCommand}}
+
+# 4. Build — must pass clean
+{{buildCommand}}
 \`\`\`
 
 If tests fail, **revert your change** (\`git checkout -- <file>\`) and either:
@@ -178,7 +184,7 @@ If tests fail, **revert your change** (\`git checkout -- <file>\`) and either:
 
 ### Step 5 — Commit, push, and open the PR
 
-Branch name: \`chore/code-quality-striker-{{_runId}}\`
+Branch name: \`{{branch}}\`
 Base branch: \`{{baseBranch}}\`
 
 Commit message format:
@@ -197,16 +203,16 @@ PR body template:
 \`\`\`markdown
 ## Code Quality Pass
 
-**Session**: code-quality-striker {{_runId}}
+**Session**: {{branch}}
 **Scope**: structural refactor only — zero functional changes
 
 ### Changes
 - <bullet per extracted module or dedup>
 
 ### Validation
-- \`node --check\` passed on all touched files
-- \`npm test\` passed (N tests)
-- \`npm run build\` passed
+- \`{{syntaxCheckCommand}}\` passed on all touched files
+- \`{{testCommand}}\` passed (N tests)
+- \`{{buildCommand}}\` passed
 
 ### Why
 <one sentence: "X was Y lines with Z responsibilities; split to improve
@@ -225,9 +231,9 @@ exact format (create the file if it does not exist):
 - Files changed: <comma-separated list>
 - Strategy: <what split/dedup/cleanup was performed and why>
 - Validation evidence:
-  - \`node --check\` passed on all touched files
-  - \`npm test\` passed (N tests)
-  - \`npm run build\` passed
+  - \`{{syntaxCheckCommand}}\` passed on all touched files
+  - \`{{testCommand}}\` passed (N tests)
+  - \`{{buildCommand}}\` passed
 - PR: #<number> — \`<branch name>\`
 \`\`\`
 
@@ -244,11 +250,11 @@ A small, clean, tested PR is always better than nothing.`,
     }, { x: 400, y: 450 }),
 
     // ── 5. Verify tests pass ───────────────────────────────────────────────
-    node("verify-tests", "validation.tests", "Verify — npm test", {
+    node("verify-tests", "validation.tests", "Verify — Tests", {
       command: "{{testCommand}}",
     }, { x: 200, y: 610 }),
 
-    node("verify-build", "validation.build", "Verify — npm run build", {
+    node("verify-build", "validation.build", "Verify — Build", {
       command: "{{buildCommand}}",
       zeroWarnings: false,
     }, { x: 600, y: 610 }),
@@ -260,7 +266,7 @@ A small, clean, tested PR is always better than nothing.`,
 
     // ── 7a. Create PR ──────────────────────────────────────────────────────
     node("create-pr", "action.create_pr", "Open Quality PR", {
-      title: "refactor: code quality pass {{_runId}}",
+      title: "refactor: code quality pass",
       body: "Automated code-quality session. Structural refactor only — zero functional changes. See `.bosun-monitor/code-quality-striker.md` for session details.",
       branch: "{{branch}}",
       baseBranch: "{{baseBranch}}",
@@ -268,17 +274,17 @@ A small, clean, tested PR is always better than nothing.`,
     }, { x: 200, y: 890 }),
 
     node("notify-success", "notify.telegram", "Notify PR Opened", {
-      message: ":check: Code quality striker session complete.\nPR opened: **{{branch}}**\nRun ID: `{{_runId}}`",
+      message: ":check: Code quality striker session complete.\nPR opened: **{{branch}}**",
       silent: true,
     }, { x: 200, y: 1030 }),
 
     // ── 7b. Validation failed — notify and abort ───────────────────────────
     node("notify-failure", "notify.telegram", "Notify — Validation Failed", {
-      message: ":alert: Code quality striker **validation failed** for run `{{_runId}}`.\n\nThe agent produced changes that broke tests or build. No PR was created.\nCheck `.bosun-monitor/code-quality-striker.md` for details.",
+      message: ":alert: Code quality striker **validation failed**.\n\nThe agent produced changes that broke tests or build. No PR was created.\nCheck `.bosun-monitor/code-quality-striker.md` for details.",
     }, { x: 600, y: 890 }),
 
     node("log-failure", "notify.log", "Log Failure", {
-      message: "Code quality striker run {{_runId}} failed validation — no PR created.",
+      message: "Code quality striker validation failed — no PR created.",
       level: "warn",
     }, { x: 600, y: 1030 }),
   ],

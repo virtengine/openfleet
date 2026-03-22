@@ -46,12 +46,30 @@ export const ERROR_RECOVERY_TEMPLATE = {
     }, { x: 400, y: 180 }),
 
     node("analyze-error", "action.run_agent", "Analyze Failure", {
-      prompt: "Analyze the following error and suggest a fix:\n\n{{lastError}}\n\nTask: {{taskTitle}}",
+      prompt:
+        "Analyze the following task failure and suggest the most likely minimal fix.\n\n" +
+        "Task: {{taskTitle}} ({{taskId}})\n" +
+        "Retry attempt: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n" +
+        "Branch: {{branch}}\n" +
+        "Base branch: {{baseBranch}}\n" +
+        "Worktree: {{worktreePath}}\n\n" +
+        "Last error:\n{{lastError}}",
       timeoutMs: 300000,
     }, { x: 200, y: 330 }),
 
     node("retry-task", "action.run_agent", "Retry Task", {
-      prompt: "{{taskExecutorRetryPrompt}}",
+      prompt:
+        "{{taskExecutorRetryPrompt}}\n\n" +
+        "Failure context:\n" +
+        "- taskId: {{taskId}}\n" +
+        "- taskTitle: {{taskTitle}}\n" +
+        "- branch: {{branch}}\n" +
+        "- baseBranch: {{baseBranch}}\n" +
+        "- worktreePath: {{worktreePath}}\n" +
+        "- retryCount: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n" +
+        "- lastError: {{lastError}}\n" +
+        "- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n\n" +
+        "Use the analysis to choose a different approach if the previous attempt failed.",
       timeoutMs: 3600000,
       failOnError: true,
       maxRetries: "{{maxRetries}}",
@@ -69,13 +87,17 @@ export const ERROR_RECOVERY_TEMPLATE = {
     }, { x: 90, y: 760 }),
 
     node("escalate", "notify.telegram", "Escalate to Human", {
-      message: ":alert: Task **{{taskTitle}}** failed after {{maxRetries}} attempts. Manual intervention needed.\n\nLast error: {{lastError}}",
+      message:
+        ":alert: Task **{{taskTitle}}** failed after {{maxRetries}} attempts. Manual intervention needed.\n\n" +
+        "Last error: {{lastError}}\n\n" +
+        "Recovery analysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}",
     }, { x: 600, y: 620 }),
 
     node("chain-repair", "action.execute_workflow", "Trigger Repair Workflow", {
       workflowId: "template-task-repair-worktree",
       mode: "dispatch",
-      input: "({taskId: $data?.taskId, taskTitle: $data?.taskTitle, worktreePath: $data?.worktreePath, branch: $data?.branch, baseBranch: $data?.baseBranch, error: $data?.lastError})",
+      input:
+        "(() => { const analysisRaw = String($ctx.getNodeOutput('analyze-error')?.output || '').trim(); const retryOutputRaw = String($ctx.getNodeOutput('retry-task')?.output || '').trim(); const retryErrorRaw = String($ctx.getNodeOutput('retry-task')?.error || '').trim(); const truncate = (value, limit = 2000) => value.length > limit ? `${value.slice(0, limit)}...` : value; const diagnostics = [String($data?.lastError || '').trim(), analysisRaw ? `Recovery analysis:\n${truncate(analysisRaw)}` : '', retryOutputRaw ? `Retry output:\n${truncate(retryOutputRaw)}` : '', retryErrorRaw ? `Retry error:\n${truncate(retryErrorRaw)}` : ''].filter(Boolean).join('\n\n'); return { taskId: $data?.taskId, taskTitle: $data?.taskTitle, worktreePath: $data?.worktreePath, branch: $data?.branch, baseBranch: $data?.baseBranch, error: diagnostics || String($data?.lastError || ''), recoveryAnalysis: truncate(analysisRaw), retryResult: { success: $ctx.getNodeOutput('retry-task')?.success === true, output: truncate(retryOutputRaw), error: truncate(retryErrorRaw) } }; })()",
     }, { x: 400, y: 760 }),
   ],
   edges: [
@@ -92,7 +114,7 @@ export const ERROR_RECOVERY_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2025-02-24T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.1.0",
     tags: ["error", "recovery", "autofix"],
     requiredTemplates: ["template-task-repair-worktree"],
     replaces: {
@@ -200,7 +222,7 @@ export const ANOMALY_WATCHDOG_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2025-02-25T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["anomaly", "watchdog", "death-loop", "stall", "reliability"],
     replaces: {
       module: "anomaly-detector.mjs",
@@ -289,7 +311,7 @@ export const WORKSPACE_HYGIENE_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2025-02-25T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["maintenance", "cleanup", "worktree", "hygiene"],
     replaces: {
       module: "maintenance.mjs",
@@ -368,7 +390,7 @@ export const HEALTH_CHECK_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2025-02-25T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["health", "config", "doctor", "monitoring"],
     replaces: {
       module: "config-doctor.mjs",
@@ -458,6 +480,20 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
       },
     }, { x: 240, y: 900 }),
 
+    node("handoff-pr-progressor", "action.execute_workflow", "Dispatch PR Progressor", {
+      workflowId: "template-bosun-pr-progressor",
+      mode: "dispatch",
+      input: {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+        prNumber: "{{$data?.prNumber ?? $ctx.getNodeOutput('create-pr')?.prNumber ?? null}}",
+        prUrl: "{{$data?.prUrl || $ctx.getNodeOutput('create-pr')?.prUrl || ''}}",
+        repo: "{{$data?.repo || $data?.repoSlug || $data?.repository || $ctx.getNodeOutput('create-pr')?.repoSlug || ''}}",
+      },
+    }, { x: 240, y: 1040 }),
+
     node("mark-todo-failed", "action.update_task_status", "Mark Todo (Checks Failed)", {
       taskId: "{{taskId}}",
       status: "todo",
@@ -485,17 +521,25 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
         baseBranch: "{{baseBranch}}",
       },
     }, { x: 620, y: 330 }),
+    node("has-pr-missing-context", "condition.expression", "PR Linked Without Worktree?", {
+      expression: "Boolean($data?.prNumber || $data?.prUrl)",
+    }, { x: 620, y: 450, outputs: ["yes", "no"] }),
+
+    node("notify-skip-missing-context", "notify.log", "Skip Missing Context With PR", {
+      message: "Task {{taskId}} finalization skipped quality gate: missing worktree context but PR linkage exists",
+      level: "warn",
+    }, { x: 620, y: 560 }),
 
     node("notify-pass", "notify.log", "Log Finalization Success", {
       message: "Task {{taskId}} finalization passed — moved to inreview",
       level: "info",
-    }, { x: 240, y: 1040 }),
+    }, { x: 240, y: 1180 }),
 
     node("chain-archiver", "flow.universal", "Queue Archival", {
       workflowId: "template-task-archiver",
       mode: "dispatch",
       input: "({taskId: $data?.taskId, taskTitle: $data?.taskTitle, completedAt: new Date().toISOString(), taskJson: JSON.stringify($data?.task || {id: $data?.taskId, title: $data?.taskTitle})})",
-    }, { x: 240, y: 1180 }),
+    }, { x: 240, y: 1320 }),
 
     node("end-success", "flow.end", "End Success", {
       status: "completed",
@@ -505,7 +549,7 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
         taskId: "{{taskId}}",
         taskTitle: "{{taskTitle}}",
       },
-    }, { x: 240, y: 1310 }),
+    }, { x: 240, y: 1450 }),
 
     node("notify-fail", "notify.telegram", "Notify Finalization Failure", {
       message: ":alert: Task finalization failed for **{{taskTitle}}** ({{taskId}}). Repair workflow handoff triggered.",
@@ -524,7 +568,9 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
   edges: [
     edge("trigger", "has-worktree"),
     edge("has-worktree", "run-finalization", { condition: "$output?.result === true" }),
-    edge("has-worktree", "mark-todo-missing", { condition: "$output?.result !== true" }),
+    edge("has-worktree", "has-pr-missing-context", { condition: "$output?.result !== true" }),
+    edge("has-pr-missing-context", "notify-skip-missing-context", { condition: "$output?.result === true", port: "yes" }),
+    edge("has-pr-missing-context", "mark-todo-missing", { condition: "$output?.result !== true", port: "no" }),
     edge("run-finalization", "checks-passed"),
     edge("checks-passed", "has-pr", { condition: "$output?.result === true" }),
     edge("checks-passed", "mark-todo-failed", { condition: "$output?.result !== true" }),
@@ -533,7 +579,9 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
     edge("create-pr", "create-pr-success"),
     edge("create-pr-success", "mark-inreview", { condition: "$output?.result === true", port: "yes" }),
     edge("create-pr-success", "mark-todo-failed", { condition: "$output?.result !== true", port: "no" }),
-    edge("mark-inreview", "notify-pass"),
+    edge("mark-inreview", "handoff-pr-progressor"),
+    edge("handoff-pr-progressor", "notify-pass"),
+    edge("notify-skip-missing-context", "end-success"),
     edge("notify-pass", "chain-archiver"),
     edge("chain-archiver", "end-success"),
     edge("mark-todo-failed", "notify-fail"),
@@ -544,9 +592,9 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2026-02-26T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["finalization", "quality-gate", "prepush", "handoff", "reliability"],
-    requiredTemplates: ["template-task-archiver"],
+    requiredTemplates: ["template-task-archiver", "template-bosun-pr-progressor"],
     replaces: {
       module: "task-executor.mjs",
       functions: ["_handleTaskResult finalization gate"],
@@ -648,6 +696,20 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
       },
     }, { x: 250, y: 1020 }),
 
+    node("handoff-pr-progressor", "action.execute_workflow", "Dispatch PR Progressor", {
+      workflowId: "template-bosun-pr-progressor",
+      mode: "dispatch",
+      input: {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+        prNumber: "{{$data?.prNumber ?? $ctx.getNodeOutput('create-pr')?.prNumber ?? null}}",
+        prUrl: "{{$data?.prUrl || $ctx.getNodeOutput('create-pr')?.prUrl || ''}}",
+        repo: "{{$data?.repo || $data?.repoSlug || $data?.repository || $ctx.getNodeOutput('create-pr')?.repoSlug || ''}}",
+      },
+    }, { x: 250, y: 1160 }),
+
     node("mark-todo", "action.update_task_status", "Mark Todo (Repair Failed)", {
       taskId: "{{taskId}}",
       status: "todo",
@@ -665,7 +727,7 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
     node("notify-success", "notify.telegram", "Notify Repair Success", {
       message: ":check: Repair workflow recovered **{{taskTitle}}** ({{taskId}}) and moved it to inreview.",
       silent: true,
-    }, { x: 250, y: 1160 }),
+    }, { x: 250, y: 1300 }),
 
     node("notify-escalate", "notify.telegram", "Escalate Repair Failure", {
       message: ":alert: Repair workflow could not recover **{{taskTitle}}** ({{taskId}}). Manual intervention required.",
@@ -689,7 +751,8 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
     edge("create-pr", "create-pr-success"),
     edge("create-pr-success", "mark-inreview", { condition: "$output?.result === true", port: "yes" }),
     edge("create-pr-success", "mark-todo", { condition: "$output?.result !== true", port: "no" }),
-    edge("mark-inreview", "notify-success"),
+    edge("mark-inreview", "handoff-pr-progressor"),
+    edge("handoff-pr-progressor", "notify-success"),
     edge("mark-todo", "notify-escalate"),
     edge("no-worktree", "notify-escalate"),
   ],
@@ -697,8 +760,9 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2026-02-26T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["repair", "recovery", "worktree", "resilience", "automation"],
+    requiredTemplates: ["template-bosun-pr-progressor"],
     replaces: {
       module: "task-executor.mjs",
       functions: ["retry/escalation recovery path"],
@@ -794,7 +858,7 @@ export const TASK_ORPHAN_WORKTREE_RECOVERY_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2026-03-04T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["orphan", "recovery", "worktree", "lifecycle", "reliability"],
     replaces: {
       module: "task-executor.mjs",
@@ -884,7 +948,7 @@ export const TASK_STATUS_TRANSITION_MANAGER_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2026-02-27T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["task", "status", "lifecycle", "workflow-owned"],
     replaces: {
       module: "task-executor.mjs",
@@ -1024,7 +1088,7 @@ Be conservative — prefer safe mitigations over aggressive fixes.`,
     author: "bosun",
     version: 1,
     createdAt: "2025-02-25T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["incident", "response", "detection", "escalation", "reliability"],
     replaces: {
       module: "error-detector.mjs",
@@ -1155,7 +1219,7 @@ export const TASK_ARCHIVER_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2025-06-01T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["archive", "cleanup", "task", "maintenance", "reliability"],
     replaces: {
       module: "task-archiver.mjs",
@@ -1311,7 +1375,7 @@ export const SYNC_ENGINE_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2025-06-01T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.0.1",
     tags: ["sync", "kanban", "github", "vk", "jira", "bidirectional"],
     replaces: {
       module: "sync-engine.mjs",

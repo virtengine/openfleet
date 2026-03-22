@@ -21,6 +21,8 @@ import {
   List, ListItem, ListItemText, ListItemIcon,
   ListItemSecondaryAction, Divider, Tooltip, Alert,
   Menu, MenuItem,
+  ToggleButton, ToggleButtonGroup,
+  Slider, Collapse,
 } from "@mui/material";
 
 const html = htm.bind(h);
@@ -145,6 +147,35 @@ async function scanDisk() {
   if (res?.ok) await loadWorkspaces();
   return res;
 }
+
+// ─── API helpers for workspace state management ────────────
+
+async function setWorkspaceState(workspaceId, state) {
+  const res = await apiFetch("/api/workspaces/state", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ workspaceId, state }),
+  });
+  if (res?.ok) await loadWorkspaces();
+  return res;
+}
+
+async function setWorkspaceExecutors(workspaceId, executors) {
+  const res = await apiFetch("/api/workspaces/executors", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ workspaceId, ...executors }),
+  });
+  if (res?.ok) await loadWorkspaces();
+  return res;
+}
+
+// State display helpers
+const STATE_CONFIG = {
+  active:   { icon: "●", color: "#10b981", label: "Active",   desc: "Workflows running, executors available" },
+  paused:   { icon: "◐", color: "#f59e0b", label: "Paused",   desc: "In-flight tasks finish, no new starts" },
+  disabled: { icon: "○", color: "#71717a", label: "Disabled", desc: "Fully off — no workflows, no executors" },
+};
 
 // ─── Confirm dialog helper ─────────────────────────────────
 function ConfirmBar({ message, onConfirm, onCancel, loading }) {
@@ -318,6 +349,207 @@ function AddRepoForm({ workspaceId }) {
 }
 
 // ─── Single workspace card in the management panel ─────────
+// ─── Workspace state toggle ─────────────────────────────────
+function WorkspaceStateToggle({ ws, compact = false }) {
+  const [saving, setSaving] = useState(false);
+  const currentState = ws.state || "active";
+
+  const handleChange = useCallback(async (_e, newState) => {
+    if (!newState || newState === currentState) return;
+    setSaving(true);
+    haptic("medium");
+    try {
+      await setWorkspaceState(ws.id, newState);
+    } catch (e) {
+      console.warn("[ws-manager] state change error:", e);
+    } finally {
+      setSaving(false);
+    }
+  }, [ws.id, currentState]);
+
+  if (compact) {
+    const cfg = STATE_CONFIG[currentState];
+    return html`
+      <${Tooltip} title="${cfg.label}: ${cfg.desc}">
+        <span style="color: ${cfg.color}; font-size: 14px; cursor: default;">${cfg.icon}</span>
+      <//>
+    `;
+  }
+
+  return html`
+    <${Stack} direction="row" spacing=${1} alignItems="center">
+      <${ToggleButtonGroup}
+        value=${currentState}
+        exclusive
+        onChange=${handleChange}
+        size="small"
+        disabled=${saving}
+        sx=${{ height: 30 }}
+      >
+        ${Object.entries(STATE_CONFIG).map(([key, cfg]) => html`
+          <${ToggleButton}
+            key=${key}
+            value=${key}
+            sx=${{
+              px: 1.2,
+              py: 0.3,
+              fontSize: "11px",
+              textTransform: "none",
+              fontWeight: currentState === key ? 600 : 400,
+              color: currentState === key ? cfg.color : "text.secondary",
+              borderColor: currentState === key ? cfg.color : undefined,
+              "&.Mui-selected": {
+                backgroundColor: cfg.color + "18",
+                color: cfg.color,
+                borderColor: cfg.color + "60",
+                "&:hover": { backgroundColor: cfg.color + "28" },
+              },
+            }}
+          >
+            <${Tooltip} title=${cfg.desc}>
+              <span>${cfg.icon} ${cfg.label}</span>
+            <//>
+          <//>
+        `)}
+      <//>
+      ${saving && html`<${CircularProgress} size=${14} />`}
+    <//>
+  `;
+}
+
+// ─── Executor config panel (collapsible) ────────────────────
+function ExecutorConfigPanel({ ws }) {
+  const [expanded, setExpanded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const execs = ws.executors || {};
+  const [maxConcurrent, setMaxConcurrent] = useState(execs.maxConcurrent || 3);
+  const [pool, setPool] = useState(execs.pool || "shared");
+  const [weight, setWeight] = useState(execs.weight || 1.0);
+
+  useEffect(() => {
+    const e = ws.executors || {};
+    setMaxConcurrent(e.maxConcurrent || 3);
+    setPool(e.pool || "shared");
+    setWeight(e.weight || 1.0);
+  }, [ws.executors?.maxConcurrent, ws.executors?.pool, ws.executors?.weight]);
+
+  const handleSave = useCallback(async () => {
+    setSaving(true);
+    haptic("medium");
+    try {
+      await setWorkspaceExecutors(ws.id, { maxConcurrent, pool, weight });
+    } catch (e) {
+      console.warn("[ws-manager] executor config error:", e);
+    } finally {
+      setSaving(false);
+    }
+  }, [ws.id, maxConcurrent, pool, weight]);
+
+  const hasChanges = maxConcurrent !== (execs.maxConcurrent || 3)
+    || pool !== (execs.pool || "shared")
+    || weight !== (execs.weight || 1.0);
+
+  return html`
+    <${Box} sx=${{ mt: 0.5 }}>
+      <${Button}
+        size="small"
+        variant="text"
+        onClick=${() => { haptic("light"); setExpanded(!expanded); }}
+        sx=${{ textTransform: "none", fontSize: "11px", color: "text.secondary", px: 0.5 }}
+      >
+        ⚙️ Executors ${expanded ? "▾" : "▸"}
+        ${!expanded && html`
+          <${Chip}
+            label="${execs.maxConcurrent || 3} slots · ${execs.pool || "shared"}"
+            size="small"
+            variant="outlined"
+            sx=${{ ml: 0.5, height: 18, fontSize: "10px" }}
+          />
+        `}
+      <//>
+
+      <${Collapse} in=${expanded}>
+        <${Stack} spacing=${1.5} sx=${{ pt: 1, pb: 0.5, px: 0.5 }}>
+          <!-- Max concurrent executors -->
+          <${Box}>
+            <${Typography} variant="caption" color="text.secondary" sx=${{ mb: 0.5, display: "block" }}>
+              Max Concurrent Executors: ${maxConcurrent}
+            <//>
+            <${Slider}
+              value=${maxConcurrent}
+              onChange=${(_e, v) => setMaxConcurrent(v)}
+              min=${1}
+              max=${10}
+              step=${1}
+              marks=${[
+                { value: 1, label: "1" },
+                { value: 3, label: "3" },
+                { value: 5, label: "5" },
+                { value: 10, label: "10" },
+              ]}
+              size="small"
+              sx=${{ maxWidth: 240 }}
+            />
+          <//>
+
+          <!-- Pool mode -->
+          <${Stack} direction="row" spacing=${1} alignItems="center">
+            <${Typography} variant="caption" color="text.secondary">Pool:<//>
+            <${ToggleButtonGroup}
+              value=${pool}
+              exclusive
+              onChange=${(_e, v) => { if (v) setPool(v); }}
+              size="small"
+              sx=${{ height: 26 }}
+            >
+              <${ToggleButton} value="shared" sx=${{ px: 1, fontSize: "11px", textTransform: "none" }}>
+                <${Tooltip} title="Shares executor capacity across workspaces">
+                  <span>Shared</span>
+                <//>
+              <//>
+              <${ToggleButton} value="dedicated" sx=${{ px: 1, fontSize: "11px", textTransform: "none" }}>
+                <${Tooltip} title="Dedicated executor pool — isolated from other workspaces">
+                  <span>Dedicated</span>
+                <//>
+              <//>
+            <//>
+          <//>
+
+          <!-- Weight (only for shared pool) -->
+          ${pool === "shared" && html`
+            <${Box}>
+              <${Typography} variant="caption" color="text.secondary" sx=${{ mb: 0.5, display: "block" }}>
+                Priority Weight: ${weight.toFixed(1)}×
+              <//>
+              <${Slider}
+                value=${weight}
+                onChange=${(_e, v) => setWeight(v)}
+                min=${0.1}
+                max=${5.0}
+                step=${0.1}
+                size="small"
+                sx=${{ maxWidth: 200 }}
+              />
+            <//>
+          `}
+
+          <!-- Save button -->
+          ${hasChanges && html`
+            <${Button}
+              size="small"
+              variant="contained"
+              onClick=${handleSave}
+              disabled=${saving}
+              startIcon=${saving ? html`<${CircularProgress} size=${14} />` : null}
+              sx=${{ alignSelf: "flex-start", textTransform: "none", fontSize: "12px" }}
+            >${saving ? "Saving…" : "Save Executor Config"}<//>
+          `}
+        <//>
+      <//>
+    <//>
+  `;
+}
+
 function WorkspaceCard({ ws }) {
   const isActive = ws.id === activeWorkspaceId.value;
   const [pulling, setPulling] = useState(false);
@@ -378,6 +610,14 @@ function WorkspaceCard({ ws }) {
             `}
           <//>
         <//>
+
+        <!-- State toggle row -->
+        <${Box} sx=${{ mt: 1.5, mb: 0.5 }}>
+          <${WorkspaceStateToggle} ws=${ws} />
+        <//>
+
+        <!-- Executor config -->
+        <${ExecutorConfigPanel} ws=${ws} />
       <//>
 
       <${CardActions} sx=${{ justifyContent: "flex-end", pt: 0.5 }}>

@@ -26,11 +26,17 @@
  * append or patch well-known sections rather than rewriting the whole file.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve, dirname, parse, isAbsolute } from "node:path";
-import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
+import {
+  CONFIG_PATH,
+  ensureTrustedProjects,
+  getConfigPath,
+  readCodexConfig,
+  writeCodexConfig,
+} from "./codex-config-file.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -50,9 +56,6 @@ function getVibeKanbanVersion() {
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
-
-const CODEX_DIR = resolve(homedir(), ".codex");
-const CONFIG_PATH = resolve(CODEX_DIR, "config.toml");
 
 /** Minimum recommended stream idle timeout (ms) for complex agentic tasks. */
 const MIN_STREAM_IDLE_TIMEOUT_MS = 300_000; // 5 minutes
@@ -101,20 +104,6 @@ function buildDefaultAgentSdkBlock(primary = "codex") {
   ].join("\n");
 }
 
-/**
- * @deprecated No longer used — max_threads is now managed under [agent_sdk].
- * The [agents] section in Codex CLI uses serde(flatten) to parse all keys
- * as agent role names, so bare scalar keys like max_threads = 12 cause:
- *   "invalid length 1, expected struct AgentRoleToml with 2 elements"
- * Kept only for migration removal of stale [agents] sections.
- */
-const buildAgentsBlock = (_maxThreads) =>
-  [
-    "",
-    "# ── Agent roles (added by bosun) ──",
-    AGENTS_HEADER,
-    "",
-  ].join("\n");
 
 // ── Feature Flags ────────────────────────────────────────────────────────────
 
@@ -205,6 +194,133 @@ function resolveAgentMaxThreads(envOverrides = process.env) {
  *
  * Also migrates any stale max_threads from [agents] if found.
  */
+function findSectionRange(toml, header) {
+  const headerIdx = toml.indexOf(header);
+  if (headerIdx === -1) return null;
+  const afterHeader = headerIdx + header.length;
+  const nextSection = toml.indexOf("\n[", afterHeader);
+  const sectionEnd = nextSection === -1 ? toml.length : nextSection;
+  return {
+    headerIdx,
+    afterHeader,
+    sectionEnd,
+    section: toml.substring(afterHeader, sectionEnd),
+  };
+}
+
+function stripStaleAgentsMaxThreads(section) {
+  const staleRegex = /^[ \t]*#[^\n]*max.*threads[^\n]*\n?|^[ \t]*max_threads\s*=\s*\d+[^\n]*\n?/gm;
+  if (!staleRegex.test(section)) {
+    return { section, changed: false };
+  }
+  return {
+    section: section.replace(staleRegex, ""),
+    changed: true,
+  };
+}
+
+function sectionHasOnlyComments(section) {
+  const remaining = String(section || "").trim();
+  return !remaining || remaining.split(/\r?\n/).every((line) => {
+    const trimmed = String(line || "").trim();
+    return !trimmed || trimmed.startsWith("#");
+  });
+}
+
+function removeStaleAgentsMaxThreads(toml) {
+  let nextToml = toml;
+  const agentsSection = findSectionRange(nextToml, AGENTS_HEADER);
+  if (!agentsSection) {
+    return { toml: nextToml, changed: false };
+  }
+
+  const strippedSection = stripStaleAgentsMaxThreads(agentsSection.section);
+  if (!strippedSection.changed) {
+    return { toml: nextToml, changed: false };
+  }
+
+  nextToml =
+    nextToml.substring(0, agentsSection.afterHeader) +
+    strippedSection.section +
+    nextToml.substring(agentsSection.sectionEnd);
+
+  const updatedAgentsSection = findSectionRange(nextToml, AGENTS_HEADER);
+  if (!updatedAgentsSection) {
+    return { toml: nextToml, changed: true };
+  }
+
+  if (!sectionHasOnlyComments(updatedAgentsSection.section)) {
+    return { toml: nextToml, changed: true };
+  }
+
+  const lineStart = nextToml.lastIndexOf("\n", updatedAgentsSection.headerIdx);
+  const removeFrom = lineStart === -1 ? updatedAgentsSection.headerIdx : lineStart;
+  return {
+    toml: nextToml.substring(0, removeFrom) + nextToml.substring(updatedAgentsSection.sectionEnd),
+    changed: true,
+  };
+}
+function resolveAgentSdkSectionRange(toml) {
+  const sdkIdx = toml.indexOf(AGENT_SDK_HEADER);
+  if (sdkIdx === -1) return null;
+  const afterSdkHeader = sdkIdx + AGENT_SDK_HEADER.length;
+  const capsIdx = toml.indexOf(AGENT_SDK_CAPS_HEADER, afterSdkHeader);
+  const nextSectionIdx = toml.indexOf("\n[", afterSdkHeader);
+  let sdkSectionEnd;
+  if (capsIdx !== -1 && (nextSectionIdx === -1 || capsIdx <= nextSectionIdx)) {
+    sdkSectionEnd = capsIdx;
+  } else {
+    sdkSectionEnd = nextSectionIdx === -1 ? toml.length : nextSectionIdx;
+  }
+  return { afterSdkHeader, sdkSectionEnd };
+}
+
+function upsertAgentSdkMaxThreads(toml, desired, overwrite) {
+  const sdkRange = resolveAgentSdkSectionRange(toml);
+  if (!sdkRange) {
+    return {
+      toml,
+      changed: true,
+      existing: null,
+      added: true,
+      updated: false,
+    };
+  }
+
+  let sdkSection = toml.substring(sdkRange.afterSdkHeader, sdkRange.sdkSectionEnd);
+  const maxThreadsRegex = /^max_threads\s*=\s*(\d+)/m;
+  const match = sdkSection.match(maxThreadsRegex);
+  if (match) {
+    const existing = parsePositiveInt(match[1]);
+    if (!overwrite || existing === desired) {
+      return {
+        toml,
+        changed: false,
+        existing,
+        added: false,
+        updated: false,
+      };
+    }
+    sdkSection = sdkSection.replace(maxThreadsRegex, `max_threads = ${desired}`);
+    return {
+      toml: toml.substring(0, sdkRange.afterSdkHeader) + sdkSection + toml.substring(sdkRange.sdkSectionEnd),
+      changed: true,
+      existing,
+      added: false,
+      updated: true,
+    };
+  }
+
+  sdkSection = sdkSection.trimEnd() + `\nmax_threads = ${desired}\n`;
+  return {
+    toml: toml.substring(0, sdkRange.afterSdkHeader) + sdkSection + toml.substring(sdkRange.sdkSectionEnd),
+    changed: true,
+    existing: null,
+    added: true,
+    updated: false,
+  };
+}
+
 export function ensureAgentMaxThreads(
   toml,
   { maxThreads, overwrite = false } = {},
@@ -226,88 +342,18 @@ export function ensureAgentMaxThreads(
   }
   result.applied = desired;
 
-  // ── Migration: remove stale max_threads from [agents] section ──
-  const agentsIdx = toml.indexOf(AGENTS_HEADER);
-  if (agentsIdx !== -1) {
-    const afterAgentsHeader = agentsIdx + AGENTS_HEADER.length;
-    const nextAgentsSection = toml.indexOf("\n[", afterAgentsHeader);
-    const agentsSectionEnd = nextAgentsSection === -1 ? toml.length : nextAgentsSection;
-    const agentsSection = toml.substring(afterAgentsHeader, agentsSectionEnd);
-    const staleRegex = /^[ \t]*#[^\n]*max.*threads[^\n]*\n?|^[ \t]*max_threads\s*=\s*\d+[^\n]*\n?/gm;
-    if (staleRegex.test(agentsSection)) {
-      const cleaned = agentsSection.replace(staleRegex, "");
-      toml = toml.substring(0, afterAgentsHeader) + cleaned + toml.substring(agentsSectionEnd);
-      result.changed = true;
-    }
-    // If [agents] section is now empty (only whitespace/comments about agents),
-    // remove the whole section to avoid confusing Codex CLI
-    const updatedAgentsIdx = toml.indexOf(AGENTS_HEADER);
-    if (updatedAgentsIdx !== -1) {
-      const afterUpdated = updatedAgentsIdx + AGENTS_HEADER.length;
-      const nextUpdated = toml.indexOf("\n[", afterUpdated);
-      const endUpdated = nextUpdated === -1 ? toml.length : nextUpdated;
-      const remaining = toml.substring(afterUpdated, endUpdated).trim();
-      // If only whitespace or the bosun comment header remains, remove entire section
-      if (!remaining || remaining.split(/\r?\n/).every((line) => {
-        const trimmed = String(line || "").trim();
-        return !trimmed || trimmed.startsWith("#");
-      })) {
-        // Remove from the line before [agents] header to section end
-        const lineStart = toml.lastIndexOf("\n", updatedAgentsIdx);
-        const removeFrom = lineStart === -1 ? updatedAgentsIdx : lineStart;
-        toml = toml.substring(0, removeFrom) + toml.substring(endUpdated);
-        result.changed = true;
-      }
-    }
-  }
+  const migratedAgents = removeStaleAgentsMaxThreads(toml);
+  toml = migratedAgents.toml;
+  result.changed = migratedAgents.changed;
 
-  // ── Place max_threads under [agent_sdk] ──
-  const sdkIdx = toml.indexOf(AGENT_SDK_HEADER);
-  if (sdkIdx === -1) {
-    // No [agent_sdk] section yet — it will be created by ensureCodexConfig;
-    // the DEFAULT_AGENT_SDK_BLOCK already includes max_threads.
-    result.changed = true;
-    result.added = true;
-    return result;
-  }
-
-  const afterSdkHeader = sdkIdx + AGENT_SDK_HEADER.length;
-  // Find the end of [agent_sdk] — either [agent_sdk.capabilities] or the next section
-  const capsIdx = toml.indexOf(AGENT_SDK_CAPS_HEADER, afterSdkHeader);
-  const nextSectionIdx = toml.indexOf("\n[", afterSdkHeader);
-  // Use the capabilities sub-section boundary or next top-level section
-  let sdkSectionEnd;
-  if (capsIdx !== -1 && (nextSectionIdx === -1 || capsIdx <= nextSectionIdx)) {
-    sdkSectionEnd = capsIdx;
-  } else {
-    sdkSectionEnd = nextSectionIdx === -1 ? toml.length : nextSectionIdx;
-  }
-
-  let sdkSection = toml.substring(afterSdkHeader, sdkSectionEnd);
-
-  const maxThreadsRegex = /^max_threads\s*=\s*(\d+)/m;
-  const match = sdkSection.match(maxThreadsRegex);
-  if (match) {
-    result.existing = parsePositiveInt(match[1]);
-    if (overwrite && result.existing !== desired) {
-      sdkSection = sdkSection.replace(maxThreadsRegex, `max_threads = ${desired}`);
-      result.changed = true;
-      result.updated = true;
-    }
-  } else {
-    // Add max_threads right after [agent_sdk] header, before other keys
-    sdkSection = sdkSection.trimEnd() + `\nmax_threads = ${desired}\n`;
-    result.changed = true;
-    result.added = true;
-  }
-
-  if (result.changed) {
-    result.toml = toml.substring(0, afterSdkHeader) + sdkSection + toml.substring(sdkSectionEnd);
-  }
-
+  const agentSdkUpdate = upsertAgentSdkMaxThreads(toml, desired, overwrite);
+  result.toml = agentSdkUpdate.toml;
+  result.existing = agentSdkUpdate.existing;
+  result.added = agentSdkUpdate.added;
+  result.updated = agentSdkUpdate.updated;
+  result.changed = result.changed || agentSdkUpdate.changed;
   return result;
 }
-
 /**
  * Check whether config has a [features] section.
  */
@@ -711,6 +757,20 @@ export function buildSandboxWorkspaceWrite(options = {}) {
   if (desiredRoots.length === 0) {
     return "";
   }
+  return buildSandboxWorkspaceWriteBlock({
+    desiredRoots,
+    networkAccess,
+    excludeTmpdirEnvVar,
+    excludeSlashTmp,
+  });
+}
+
+function buildSandboxWorkspaceWriteBlock({
+  desiredRoots,
+  networkAccess,
+  excludeTmpdirEnvVar,
+  excludeSlashTmp,
+}) {
   return [
     "",
     "# ── Workspace-write sandbox defaults (added by bosun) ──",
@@ -721,6 +781,66 @@ export function buildSandboxWorkspaceWrite(options = {}) {
     `writable_roots = ${formatTomlArray(desiredRoots)}`,
     "",
   ].join("\n");
+}
+
+function findTomlSection(toml, header) {
+  const headerIdx = toml.indexOf(header);
+  if (headerIdx === -1) return null;
+  const afterHeader = headerIdx + header.length;
+  const nextSection = toml.indexOf("\n[", afterHeader);
+  const sectionEnd = nextSection === -1 ? toml.length : nextSection;
+  return {
+    headerIdx,
+    afterHeader,
+    sectionEnd,
+    section: toml.substring(afterHeader, sectionEnd),
+  };
+}
+
+function ensureSandboxWorkspaceFlags(section, flags) {
+  let nextSection = section;
+  let changed = false;
+  for (const [key, value] of Object.entries(flags)) {
+    const keyRegex = new RegExp(`^${escapeRegex(key)}\\s*=`, "m");
+    if (keyRegex.test(nextSection)) continue;
+    nextSection = nextSection.trimEnd() + `\n${key} = ${value}\n`;
+    changed = true;
+  }
+  return { section: nextSection, changed };
+}
+
+function mergeSandboxWorkspaceRoots(section, desiredRoots, repoRoot) {
+  const rootsRegex = /^writable_roots\s*=\s*(\[[^\]]*\])\s*$/m;
+  const match = section.match(rootsRegex);
+  if (!match) {
+    if (desiredRoots.length === 0) {
+      return { section, changed: false, rootsAdded: [] };
+    }
+    return {
+      section: section.trimEnd() + `\nwritable_roots = ${formatTomlArray(desiredRoots)}\n`,
+      changed: true,
+      rootsAdded: desiredRoots,
+    };
+  }
+
+  const existingRoots = parseTomlArrayLiteral(match[1]);
+  const validExisting = existingRoots.filter((root) => root === "/tmp" || existsSync(root));
+  const merged = normalizeWritableRoots(validExisting, { repoRoot, validateExistence: true });
+  const rootsAdded = [];
+  for (const root of desiredRoots) {
+    if (merged.includes(root)) continue;
+    merged.push(root);
+    rootsAdded.push(root);
+  }
+
+  let changed = existingRoots.some((root) => root !== "/tmp" && !existsSync(root));
+  const formatted = formatTomlArray(merged);
+  if (formatted !== match[1]) {
+    section = section.replace(rootsRegex, `writable_roots = ${formatted}`);
+    changed = true;
+  }
+
+  return { section, changed, rootsAdded };
 }
 
 export function ensureSandboxWorkspaceWrite(toml, options = {}) {
@@ -738,124 +858,86 @@ export function ensureSandboxWorkspaceWrite(toml, options = {}) {
     if (desiredRoots.length === 0) {
       return { toml, changed: false, added: false, rootsAdded: [] };
     }
-    const block = [
-      "",
-      "# ── Workspace-write sandbox defaults (added by bosun) ──",
-      "[sandbox_workspace_write]",
-      `network_access = ${networkAccess}`,
-      `exclude_tmpdir_env_var = ${excludeTmpdirEnvVar}`,
-      `exclude_slash_tmp = ${excludeSlashTmp}`,
-      `writable_roots = ${formatTomlArray(desiredRoots)}`,
-      "",
-    ].join("\n");
     return {
-      toml: toml.trimEnd() + "\n" + block,
+      toml: toml.trimEnd() + "\n" + buildSandboxWorkspaceWriteBlock({
+        desiredRoots,
+        networkAccess,
+        excludeTmpdirEnvVar,
+        excludeSlashTmp,
+      }),
       changed: true,
       added: true,
       rootsAdded: desiredRoots,
     };
   }
 
-  const header = "[sandbox_workspace_write]";
-  const headerIdx = toml.indexOf(header);
-  if (headerIdx === -1) {
+  const sectionInfo = findTomlSection(toml, "[sandbox_workspace_write]");
+  if (!sectionInfo) {
     return { toml, changed: false, added: false, rootsAdded: [] };
   }
 
-  const afterHeader = headerIdx + header.length;
-  const nextSection = toml.indexOf("\n[", afterHeader);
-  const sectionEnd = nextSection === -1 ? toml.length : nextSection;
-  let section = toml.substring(afterHeader, sectionEnd);
-  let changed = false;
-  let rootsAdded = [];
-
-  const ensureFlag = (key, value) => {
-    const keyRegex = new RegExp(`^${escapeRegex(key)}\\s*=`, "m");
-    if (!keyRegex.test(section)) {
-      section = section.trimEnd() + `\n${key} = ${value}\n`;
-      changed = true;
-    }
-  };
-
-  ensureFlag("network_access", networkAccess);
-  ensureFlag("exclude_tmpdir_env_var", excludeTmpdirEnvVar);
-  ensureFlag("exclude_slash_tmp", excludeSlashTmp);
-
-  const rootsRegex = /^writable_roots\s*=\s*(\[[^\]]*\])\s*$/m;
-  const match = section.match(rootsRegex);
-  if (match) {
-    const existingRoots = parseTomlArrayLiteral(match[1]);
-    // Filter out stale roots that no longer exist on disk
-    const validExisting = existingRoots.filter((r) => r === "/tmp" || existsSync(r));
-    const merged = normalizeWritableRoots(validExisting, { repoRoot, validateExistence: true });
-    for (const root of desiredRoots) {
-      if (!merged.includes(root)) {
-        merged.push(root);
-        rootsAdded.push(root);
-      }
-    }
-    // Track any roots that were removed due to non-existence
-    const staleRemoved = existingRoots.filter((r) => r !== "/tmp" && !existsSync(r));
-    if (staleRemoved.length > 0) changed = true;
-    const formatted = formatTomlArray(merged);
-    if (formatted !== match[1]) {
-      section = section.replace(rootsRegex, `writable_roots = ${formatted}`);
-      changed = true;
-    }
-  } else if (desiredRoots.length > 0) {
-    section = section.trimEnd() + `\nwritable_roots = ${formatTomlArray(desiredRoots)}\n`;
-    rootsAdded = desiredRoots;
-    changed = true;
-  }
-
-  if (!changed) {
+  const flagsResult = ensureSandboxWorkspaceFlags(sectionInfo.section, {
+    network_access: networkAccess,
+    exclude_tmpdir_env_var: excludeTmpdirEnvVar,
+    exclude_slash_tmp: excludeSlashTmp,
+  });
+  const rootsResult = mergeSandboxWorkspaceRoots(flagsResult.section, desiredRoots, repoRoot);
+  if (!flagsResult.changed && !rootsResult.changed) {
     return { toml, changed: false, added: false, rootsAdded: [] };
   }
-
-  const updatedToml =
-    toml.substring(0, afterHeader) + section + toml.substring(sectionEnd);
 
   return {
-    toml: updatedToml,
+    toml:
+      toml.substring(0, sectionInfo.afterHeader) +
+      rootsResult.section +
+      toml.substring(sectionInfo.sectionEnd),
     changed: true,
     added: false,
-    rootsAdded,
+    rootsAdded: rootsResult.rootsAdded,
   };
 }
 
 /**
- * Prune writable_roots in [sandbox_workspace_write] that no longer exist on disk.
- * Returns the updated TOML and a list of removed paths.
- * @param {string} toml
- * @returns {{ toml: string, changed: boolean, removed: string[] }}
+ * Prunes non-existent entries from the `[sandbox_workspace_write]` writable_roots list.
+ *
+ * Looks up the `writable_roots` array in the `[sandbox_workspace_write]` section,
+ * checks each path on disk, and removes any roots that no longer exist. The `/tmp`
+ * root is always preserved, even if it cannot be checked reliably. Returns the
+ * updated TOML (if any change was made), a `changed` flag, and the list of roots
+ * that were removed.
+ *
+ * @param {string} toml - The full Codex TOML configuration contents.
+ * @returns {{ toml: string, changed: boolean, removed: string[] }} Result of pruning.
  */
 export function pruneStaleSandboxRoots(toml) {
   if (!hasSandboxWorkspaceWrite(toml)) {
     return { toml, changed: false, removed: [] };
   }
-  const header = "[sandbox_workspace_write]";
-  const headerIdx = toml.indexOf(header);
-  if (headerIdx === -1) return { toml, changed: false, removed: [] };
-  const afterHeader = headerIdx + header.length;
-  const nextSection = toml.indexOf("\n[", afterHeader);
-  const sectionEnd = nextSection === -1 ? toml.length : nextSection;
-  let section = toml.substring(afterHeader, sectionEnd);
+  const sectionInfo = findTomlSection(toml, "[sandbox_workspace_write]");
+  if (!sectionInfo) return { toml, changed: false, removed: [] };
 
   const rootsRegex = /^writable_roots\s*=\s*(\[[^\]]*\])\s*$/m;
-  const match = section.match(rootsRegex);
+  const match = sectionInfo.section.match(rootsRegex);
   if (!match) return { toml, changed: false, removed: [] };
 
   const existing = parseTomlArrayLiteral(match[1]);
-  const valid = existing.filter((r) => r === "/tmp" || existsSync(r));
-  const removed = existing.filter((r) => r !== "/tmp" && !existsSync(r));
+  const valid = existing.filter((root) => root === "/tmp" || existsSync(root));
+  const removed = existing.filter((root) => root !== "/tmp" && !existsSync(root));
   if (removed.length === 0) return { toml, changed: false, removed: [] };
 
-  section = section.replace(rootsRegex, `writable_roots = ${formatTomlArray(valid)}`);
-  const updatedToml =
-    toml.substring(0, afterHeader) + section + toml.substring(sectionEnd);
-  return { toml: updatedToml, changed: true, removed };
+  const nextSection = sectionInfo.section.replace(
+    rootsRegex,
+    `writable_roots = ${formatTomlArray(valid)}`,
+  );
+  return {
+    toml:
+      toml.substring(0, sectionInfo.afterHeader) +
+      nextSection +
+      toml.substring(sectionInfo.sectionEnd),
+    changed: true,
+    removed,
+  };
 }
-
 /**
  * Build the [shell_environment_policy] section.
  * Default: inherit = "all" so .NET, Go, Node etc. env vars are visible.
@@ -888,36 +970,65 @@ export function hasMicrosoftDocsMcp(toml) {
 }
 
 /**
- * Build MCP server blocks for context7 and microsoft-docs.
- * These are universally useful for documentation lookups.
+ * Build MCP server blocks for common servers: context7, sequential-thinking,
+ * playwright, and microsoft-docs. These are universally useful for
+ * documentation lookups and related tasks.
  */
-export function buildCommonMcpBlocks() {
+const COMMON_MCP_SERVER_DEFS = [
+  {
+    name: "context7",
+    headerComment: "# ── Common MCP servers (added by bosun) ──",
+    lines: [
+      "[mcp_servers.context7]",
+      "startup_timeout_sec = 120",
+      'command = "npx"',
+      'args = ["-y", "@upstash/context7-mcp"]',
+    ],
+    isPresent: hasContext7Mcp,
+  },
+  {
+    name: "sequential-thinking",
+    lines: [
+      "[mcp_servers.sequential-thinking]",
+      "startup_timeout_sec = 120",
+      'command = "npx"',
+      'args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]',
+    ],
+    isPresent: (toml) => hasNamedMcpServer(toml, "sequential-thinking"),
+  },
+  {
+    name: "playwright",
+    lines: [
+      "[mcp_servers.playwright]",
+      "startup_timeout_sec = 120",
+      'command = "npx"',
+      'args = ["-y", "@playwright/mcp@latest"]',
+    ],
+    isPresent: (toml) => hasNamedMcpServer(toml, "playwright"),
+  },
+  {
+    name: "microsoft-docs",
+    lines: [
+      "[mcp_servers.microsoft-docs]",
+      'url = "https://learn.microsoft.com/api/mcp"',
+      '# NOTE: Tool list intentionally limited to avoid Azure Responses API schema-size/parser issues.',
+      'tools = ["microsoft_docs_search", "microsoft_code_sample_search"]',
+    ],
+    isPresent: hasMicrosoftDocsMcp,
+  },
+];
+
+function buildCommonMcpBlock(definition) {
   return [
     "",
-    "# ── Common MCP servers (added by bosun) ──",
-    "[mcp_servers.context7]",
-    "startup_timeout_sec = 120",
-    'command = "npx"',
-    'args = ["-y", "@upstash/context7-mcp"]',
-    "",
-    "[mcp_servers.sequential-thinking]",
-    "startup_timeout_sec = 120",
-    'command = "npx"',
-    'args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]',
-    "",
-    "[mcp_servers.playwright]",
-    "startup_timeout_sec = 120",
-    'command = "npx"',
-    'args = ["-y", "@playwright/mcp@latest"]',
-    "",
-    "[mcp_servers.microsoft-docs]",
-    'url = "https://learn.microsoft.com/api/mcp"',
-    // microsoft_docs_fetch description alone is ~2KB and breaks the Azure
-    // Responses API JSON parser when combined with other MCP tool schemas.
-    // Keep only the two search tools which are sufficient for most use cases.
-    'tools = ["microsoft_docs_search", "microsoft_code_sample_search"]',
+    ...(definition.headerComment ? [definition.headerComment] : []),
+    ...definition.lines,
     "",
   ].join("\n");
+}
+
+export function buildCommonMcpBlocks() {
+  return COMMON_MCP_SERVER_DEFS.map(buildCommonMcpBlock).join("");
 }
 
 function hasNamedMcpServer(toml, name) {
@@ -966,28 +1077,11 @@ function stripDeprecatedSandboxPermissions(toml) {
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-/**
- * Read the current config.toml (or return empty string if it doesn't exist).
- */
-export function readCodexConfig() {
-  if (!existsSync(CONFIG_PATH)) return "";
-  return readFileSync(CONFIG_PATH, "utf8");
-}
+export { readCodexConfig };
 
-/**
- * Write the config.toml, creating ~/.codex/ if needed.
- */
-export function writeCodexConfig(content) {
-  mkdirSync(CODEX_DIR, { recursive: true });
-  writeFileSync(CONFIG_PATH, content, "utf8");
-}
+export { writeCodexConfig };
 
-/**
- * Get the path to the Codex config file.
- */
-export function getConfigPath() {
-  return CONFIG_PATH;
-}
+export { getConfigPath };
 
 /**
  * Check whether the config already has a [mcp_servers.vibe_kanban] section.
@@ -1235,9 +1329,39 @@ function buildModelProviderSection(providerName, config = {}) {
   return lines.join("\n");
 }
 
+/**
+ * Codex CLI built-in provider IDs that cannot be used in [model_providers.*].
+ * Declaring these in config.toml causes a fatal "reserved built-in provider"
+ * error on Codex CLI >=0.x (March 2026+).
+ */
+const CODEX_RESERVED_PROVIDER_IDS = new Set(["openai"]);
+
+/**
+ * Migrate legacy [model_providers.openai] sections that Bosun previously
+ * generated.  Newer Codex CLI versions reject this ID as a reserved built-in.
+ * We rename it to "openai-direct" so existing timeout / retry settings
+ * are preserved without triggering the error.
+ */
+function migrateReservedProviderIds(toml) {
+  const migrated = [];
+  for (const reserved of CODEX_RESERVED_PROVIDER_IDS) {
+    const header = `[model_providers.${reserved}]`;
+    if (toml.includes(header)) {
+      const replacement = `[model_providers.${reserved}-direct]`;
+      toml = toml.replace(header, replacement);
+      migrated.push({ from: reserved, to: `${reserved}-direct` });
+    }
+  }
+  return { toml, migrated };
+}
+
 function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
   const added = [];
   const { env: resolvedEnv, active } = resolveCodexProfileRuntime(env);
+
+  // Migrate any legacy reserved provider IDs before adding new sections
+  const migration = migrateReservedProviderIds(toml);
+  toml = migration.toml;
 
   const activeProvider = String(active?.provider || "").toLowerCase();
   const activeBaseUrl =
@@ -1251,7 +1375,7 @@ function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
       try {
         const parsed = new URL(String(activeBaseUrl || ""));
         const host = String(parsed.hostname || "").toLowerCase();
-        return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+        return host === "openai.azure.com" || host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com");
       } catch {
         return false;
       }
@@ -1269,15 +1393,11 @@ function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
     }
   }
 
-  if (!hasModelProviderSection(toml, "openai")) {
-    toml += buildModelProviderSection("openai", {
-      name: "OpenAI",
-      envKey: "OPENAI_API_KEY",
-    });
-    added.push("openai");
-  }
+  // NOTE: Do NOT add [model_providers.openai] — it is a Codex built-in.
+  // The built-in already handles OPENAI_API_KEY.  Declaring it causes:
+  //   "model_providers contains reserved built-in provider IDs: openai"
 
-  return { toml, added };
+  return { toml, added, migrated: migration.migrated };
 }
 
 /**
@@ -1327,15 +1447,189 @@ export function ensureRetrySettings(toml, providerName) {
  * @param {object}  [opts.env]     Environment overrides (defaults to process.env)
  * @param {string}  [opts.primarySdk]  Primary agent SDK: "codex", "copilot", or "claude"
  */
-export function ensureCodexConfig({
-  vkBaseUrl = "http://127.0.0.1:54089",
-  skipVk = true,
-  manageVkMcp = false,
-  dryRun = false,
-  env = process.env,
-  primarySdk,
-} = {}) {
-  const result = {
+function resolveSandboxWorkspaceOptions(env) {
+  const repoRoot =
+    env.BOSUN_AGENT_REPO_ROOT ||
+    env.REPO_ROOT ||
+    env.BOSUN_HOME ||
+    process.cwd();
+  const additionalRoots = env.BOSUN_WORKSPACES_DIR
+    ? [env.BOSUN_WORKSPACES_DIR]
+    : [];
+  return {
+    repoRoot,
+    additionalRoots,
+    writableRoots: env.CODEX_SANDBOX_WRITABLE_ROOTS,
+  };
+}
+
+function applySandboxDefaults(toml, env, result) {
+  const sandboxModeResult = ensureTopLevelSandboxMode(
+    toml,
+    env.CODEX_SANDBOX_MODE,
+  );
+  let nextToml = sandboxModeResult.toml;
+  if (sandboxModeResult.changed) {
+    result.sandboxAdded = true;
+  }
+
+  const sandboxOptions = resolveSandboxWorkspaceOptions(env);
+  const sandboxWorkspaceResult = ensureSandboxWorkspaceWrite(nextToml, sandboxOptions);
+  nextToml = sandboxWorkspaceResult.toml;
+  result.sandboxWorkspaceAdded = sandboxWorkspaceResult.added;
+  result.sandboxWorkspaceUpdated =
+    sandboxWorkspaceResult.changed && !sandboxWorkspaceResult.added;
+  result.sandboxWorkspaceRootsAdded = sandboxWorkspaceResult.rootsAdded;
+
+  const pruneResult = pruneStaleSandboxRoots(nextToml);
+  nextToml = pruneResult.toml;
+  result.sandboxStaleRootsRemoved = pruneResult.removed;
+
+  if (!hasShellEnvPolicy(nextToml)) {
+    nextToml += buildShellEnvPolicy(env.CODEX_SHELL_ENV_POLICY || "all");
+    result.shellEnvAdded = true;
+  }
+
+  return { toml: nextToml, ...sandboxOptions };
+}
+
+function normalizePrimarySdkName(primarySdk, env) {
+  const rawPrimary = String(primarySdk || env.PRIMARY_AGENT || "codex")
+    .trim()
+    .toLowerCase();
+  if (rawPrimary === "copilot" || rawPrimary.includes("copilot")) return "copilot";
+  if (rawPrimary === "claude" || rawPrimary.includes("claude")) return "claude";
+  if (rawPrimary === "codex" || rawPrimary.includes("codex")) return "codex";
+  return "codex";
+}
+
+function applyAgentSdkDefaults(toml, env, primarySdk, result) {
+  let nextToml = toml;
+  const normalizedPrimary = normalizePrimarySdkName(primarySdk, env);
+  if (!hasAgentSdkConfig(nextToml)) {
+    nextToml += buildAgentSdkBlock({ primary: normalizedPrimary });
+    result.agentSdkAdded = true;
+  }
+
+  const maxThreads = resolveAgentMaxThreads(env);
+  if (maxThreads.explicit && !maxThreads.value) {
+    result.agentMaxThreadsSkipped = String(maxThreads.raw);
+    return nextToml;
+  }
+
+  const maxThreadsResult = ensureAgentMaxThreads(nextToml, {
+    maxThreads: maxThreads.value,
+    overwrite: maxThreads.explicit,
+  });
+  nextToml = maxThreadsResult.toml;
+  if (maxThreadsResult.changed && !maxThreadsResult.skipped) {
+    result.agentMaxThreads = {
+      from: maxThreadsResult.existing,
+      to: maxThreadsResult.applied,
+      explicit: maxThreads.explicit,
+    };
+  } else if (maxThreadsResult.skipped && maxThreads.explicit) {
+    result.agentMaxThreadsSkipped = String(maxThreads.raw);
+  }
+
+  return nextToml;
+}
+
+function applyVibeKanbanDefaults(toml, { manageVkMcp, skipVk, vkBaseUrl }, result) {
+  let nextToml = toml;
+  const shouldManageGlobalVkMcp = Boolean(manageVkMcp) && !skipVk;
+  if (!shouldManageGlobalVkMcp) {
+    if (hasVibeKanbanMcp(nextToml)) {
+      nextToml = removeVibeKanbanMcp(nextToml);
+      result.vkRemoved = true;
+    }
+    return nextToml;
+  }
+
+  if (!hasVibeKanbanMcp(nextToml)) {
+    nextToml += buildVibeKanbanBlock({ vkBaseUrl });
+    result.vkAdded = true;
+    return nextToml;
+  }
+
+  const vkEnvValues = {
+    VK_BASE_URL: vkBaseUrl,
+    VK_ENDPOINT_URL: vkBaseUrl,
+  };
+  const beforeVkEnv = nextToml;
+  if (!hasVibeKanbanEnv(nextToml)) {
+    nextToml =
+      nextToml.trimEnd() +
+      "\n\n[mcp_servers.vibe_kanban.env]\n" +
+      'VK_BASE_URL = "' + vkBaseUrl + '"\n' +
+      'VK_ENDPOINT_URL = "' + vkBaseUrl + '"\n';
+  } else {
+    nextToml = updateVibeKanbanEnv(nextToml, vkEnvValues);
+  }
+  if (nextToml !== beforeVkEnv) {
+    result.vkEnvUpdated = true;
+  }
+  return nextToml;
+}
+
+function ensureCommonMcpDefaults(toml, result) {
+  let nextToml = toml;
+  for (const definition of COMMON_MCP_SERVER_DEFS) {
+    if (!definition.isPresent(nextToml)) {
+      nextToml += buildCommonMcpBlock(definition);
+      result.commonMcpAdded = true;
+    }
+  }
+
+  for (const serverName of ["context7", "sequential-thinking", "playwright"]) {
+    const timeoutResult = ensureMcpStartupTimeout(nextToml, serverName, 120);
+    nextToml = timeoutResult.toml;
+  }
+
+  return nextToml;
+}
+
+function applyModelProviderDefaults(toml, env, result) {
+  let nextToml = toml;
+  const providerResult = ensureModelProviderSectionsFromEnv(nextToml, env);
+  nextToml = providerResult.toml;
+  result.profileProvidersAdded = providerResult.added;
+
+  const timeoutAudit = auditStreamTimeouts(nextToml);
+  for (const item of timeoutAudit) {
+    if (!item.needsUpdate) continue;
+    nextToml = setStreamTimeout(nextToml, item.provider, RECOMMENDED_STREAM_IDLE_TIMEOUT_MS);
+    result.timeoutsFixed.push({
+      provider: item.provider,
+      from: item.currentValue,
+      to: RECOMMENDED_STREAM_IDLE_TIMEOUT_MS,
+    });
+  }
+
+  for (const provider of auditStreamTimeouts(nextToml).map((item) => item.provider)) {
+    const beforeRetry = nextToml;
+    nextToml = ensureRetrySettings(nextToml, provider);
+    if (nextToml !== beforeRetry) {
+      result.retriesAdded.push(provider);
+    }
+  }
+
+  return nextToml;
+}
+
+function applyTrustedProjectDefaults(repoRoot, additionalRoots, dryRun, result) {
+  const trustPaths = [repoRoot, ...additionalRoots]
+    .map((p) => String(p || "").trim())
+    .filter(Boolean)
+    .filter((p) => isAbsolute(p));
+  if (trustPaths.length > 0) {
+    const trustResult = ensureTrustedProjects(trustPaths, { dryRun });
+    result.trustedProjectsAdded = trustResult.added;
+  }
+}
+
+function createEnsureCodexConfigResult() {
+  return {
     path: CONFIG_PATH,
     created: false,
     vkAdded: false,
@@ -1358,236 +1652,75 @@ export function ensureCodexConfig({
     trustedProjectsAdded: [],
     noChanges: true,
   };
+}
 
+function initializeCodexConfigState(result) {
   const configExisted = existsSync(CONFIG_PATH);
   const originalToml = readCodexConfig();
-  let toml = stripDeprecatedSandboxPermissions(originalToml);
   if (!configExisted) {
     result.created = true;
-    toml = "";
+    return { originalToml, toml: "" };
   }
+  return {
+    originalToml,
+    toml: stripDeprecatedSandboxPermissions(originalToml),
+  };
+}
 
-  const sandboxModeResult = ensureTopLevelSandboxMode(
-    toml,
-    env.CODEX_SANDBOX_MODE,
-  );
-  toml = sandboxModeResult.toml;
-  if (sandboxModeResult.changed) {
-    result.sandboxAdded = true;
-  }
+function applyEnsureCodexConfigDefaults(toml, env, primarySdk, vibeKanbanOptions, result) {
+  const sandboxState = applySandboxDefaults(toml, env, result);
+  let nextToml = sandboxState.toml;
 
-  const repoRoot =
-    env.BOSUN_AGENT_REPO_ROOT ||
-    env.REPO_ROOT ||
-    env.BOSUN_HOME ||
-    process.cwd();
-  const additionalRoots = env.BOSUN_WORKSPACES_DIR
-    ? [env.BOSUN_WORKSPACES_DIR]
-    : [];
-  const sandboxWorkspaceResult = ensureSandboxWorkspaceWrite(toml, {
-    repoRoot,
-    additionalRoots,
-    writableRoots: env.CODEX_SANDBOX_WRITABLE_ROOTS,
-  });
-  toml = sandboxWorkspaceResult.toml;
-  result.sandboxWorkspaceAdded = sandboxWorkspaceResult.added;
-  result.sandboxWorkspaceUpdated =
-    sandboxWorkspaceResult.changed && !sandboxWorkspaceResult.added;
-  result.sandboxWorkspaceRootsAdded = sandboxWorkspaceResult.rootsAdded;
+  nextToml = applyAgentSdkDefaults(nextToml, env, primarySdk, result);
 
-  const pruneResult = pruneStaleSandboxRoots(toml);
-  toml = pruneResult.toml;
-  result.sandboxStaleRootsRemoved = pruneResult.removed;
-
-  if (!hasShellEnvPolicy(toml)) {
-    toml += buildShellEnvPolicy(env.CODEX_SHELL_ENV_POLICY || "all");
-    result.shellEnvAdded = true;
-  }
-
-  const rawPrimary = String(primarySdk || env.PRIMARY_AGENT || "codex")
-    .trim()
-    .toLowerCase();
-  const normalizedPrimary =
-    rawPrimary === "copilot" || rawPrimary.includes("copilot")
-      ? "copilot"
-      : rawPrimary === "claude" || rawPrimary.includes("claude")
-        ? "claude"
-        : rawPrimary === "codex" || rawPrimary.includes("codex")
-          ? "codex"
-          : "codex";
-  if (!hasAgentSdkConfig(toml)) {
-    toml += buildAgentSdkBlock({ primary: normalizedPrimary });
-    result.agentSdkAdded = true;
-  }
-
-  const maxThreads = resolveAgentMaxThreads(env);
-  if (maxThreads.explicit && !maxThreads.value) {
-    result.agentMaxThreadsSkipped = String(maxThreads.raw);
-  } else {
-    const maxThreadsResult = ensureAgentMaxThreads(toml, {
-      maxThreads: maxThreads.value,
-      overwrite: maxThreads.explicit,
-    });
-    toml = maxThreadsResult.toml;
-    if (maxThreadsResult.changed && !maxThreadsResult.skipped) {
-      result.agentMaxThreads = {
-        from: maxThreadsResult.existing,
-        to: maxThreadsResult.applied,
-        explicit: maxThreads.explicit,
-      };
-    } else if (maxThreadsResult.skipped && maxThreads.explicit) {
-      result.agentMaxThreadsSkipped = String(maxThreads.raw);
-    }
-  }
-
-  const featureResult = ensureFeatureFlags(toml, env);
+  const featureResult = ensureFeatureFlags(nextToml, env);
   result.featuresAdded = featureResult.added;
-  toml = featureResult.toml;
+  nextToml = featureResult.toml;
 
-  const shouldManageGlobalVkMcp = Boolean(manageVkMcp) && !skipVk;
-  if (!shouldManageGlobalVkMcp) {
-    if (hasVibeKanbanMcp(toml)) {
-      toml = removeVibeKanbanMcp(toml);
-      result.vkRemoved = true;
-    }
-  } else if (!hasVibeKanbanMcp(toml)) {
-    toml += buildVibeKanbanBlock({ vkBaseUrl });
-    result.vkAdded = true;
-  } else {
-    const vkEnvValues = {
-      VK_BASE_URL: vkBaseUrl,
-      VK_ENDPOINT_URL: vkBaseUrl,
-    };
-    const beforeVkEnv = toml;
-    if (!hasVibeKanbanEnv(toml)) {
-      toml =
-        toml.trimEnd() +
-        "\n\n[mcp_servers.vibe_kanban.env]\n" +
-        `VK_BASE_URL = "${vkBaseUrl}"\n` +
-        `VK_ENDPOINT_URL = "${vkBaseUrl}"\n`;
-    } else {
-      toml = updateVibeKanbanEnv(toml, vkEnvValues);
-    }
-    if (toml !== beforeVkEnv) {
-      result.vkEnvUpdated = true;
-    }
-  }
+  nextToml = applyVibeKanbanDefaults(nextToml, vibeKanbanOptions, result);
+  nextToml = ensureCommonMcpDefaults(nextToml, result);
+  nextToml = applyModelProviderDefaults(nextToml, env, result);
 
-  const commonMcpBlocks = [
-    {
-      present: hasContext7Mcp(toml),
-      block: [
-        "",
-        "# ── Common MCP servers (added by bosun) ──",
-        "[mcp_servers.context7]",
-        "startup_timeout_sec = 120",
-        'command = "npx"',
-        'args = ["-y", "@upstash/context7-mcp"]',
-        "",
-      ].join("\n"),
-    },
-    {
-      present: hasNamedMcpServer(toml, "sequential-thinking"),
-      block: [
-        "",
-        "[mcp_servers.sequential-thinking]",
-        "startup_timeout_sec = 120",
-        'command = "npx"',
-        'args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]',
-        "",
-      ].join("\n"),
-    },
-    {
-      present: hasNamedMcpServer(toml, "playwright"),
-      block: [
-        "",
-        "[mcp_servers.playwright]",
-        "startup_timeout_sec = 120",
-        'command = "npx"',
-        'args = ["-y", "@playwright/mcp@latest"]',
-        "",
-      ].join("\n"),
-    },
-    {
-      present: hasMicrosoftDocsMcp(toml),
-      block: [
-        "",
-        "[mcp_servers.microsoft-docs]",
-        'url = "https://learn.microsoft.com/api/mcp"',
-        'tools = ["microsoft_docs_search", "microsoft_code_sample_search"]',
-        "",
-      ].join("\n"),
-    },
-  ];
-  for (const item of commonMcpBlocks) {
-    if (item.present) continue;
-    toml += item.block;
-    result.commonMcpAdded = true;
-  }
+  return { sandboxState, toml: nextToml };
+}
 
-  for (const serverName of ["context7", "sequential-thinking", "playwright"]) {
-    const timeoutResult = ensureMcpStartupTimeout(toml, serverName, 120);
-    toml = timeoutResult.toml;
-  }
-
-  const providerResult = ensureModelProviderSectionsFromEnv(toml, env);
-  toml = providerResult.toml;
-  result.profileProvidersAdded = providerResult.added;
-
-  const timeoutAudit = auditStreamTimeouts(toml);
-  for (const item of timeoutAudit) {
-    if (!item.needsUpdate) continue;
-    toml = setStreamTimeout(toml, item.provider, RECOMMENDED_STREAM_IDLE_TIMEOUT_MS);
-    result.timeoutsFixed.push({
-      provider: item.provider,
-      from: item.currentValue,
-      to: RECOMMENDED_STREAM_IDLE_TIMEOUT_MS,
-    });
-  }
-
-  const providers = auditStreamTimeouts(toml).map((item) => item.provider);
-  for (const provider of providers) {
-    const beforeRetry = toml;
-    toml = ensureRetrySettings(toml, provider);
-    if (toml !== beforeRetry) {
-      result.retriesAdded.push(provider);
-    }
-  }
-
+function persistCodexConfigIfChanged(toml, originalToml, dryRun, result) {
   const changed = toml !== originalToml;
   result.noChanges = !result.created && !changed;
-
   if (!dryRun && (result.created || changed)) {
     writeCodexConfig(toml);
   }
+}
 
-  // Keep project-level .codex/config.toml files active by trusting the
-  // current execution roots in the global user config. Without this, Codex CLI
-  // warns that project config is disabled and ignores repo-scoped settings.
-  const trustPaths = [repoRoot, ...additionalRoots]
-    .map((p) => String(p || "").trim())
-    .filter(Boolean)
-    .filter((p) => isAbsolute(p));
-  if (trustPaths.length > 0) {
-    const trustResult = ensureTrustedProjects(trustPaths, { dryRun });
-    result.trustedProjectsAdded = trustResult.added;
-  }
+export function ensureCodexConfig({
+  vkBaseUrl = "http://127.0.0.1:54089",
+  skipVk = true,
+  manageVkMcp = false,
+  dryRun = false,
+  env = process.env,
+  primarySdk,
+} = {}) {
+  const result = createEnsureCodexConfigResult();
+  const { originalToml, toml: initialToml } = initializeCodexConfigState(result);
+  const { sandboxState, toml } = applyEnsureCodexConfigDefaults(
+    initialToml,
+    env,
+    primarySdk,
+    { manageVkMcp, skipVk, vkBaseUrl },
+    result,
+  );
 
+  persistCodexConfigIfChanged(toml, originalToml, dryRun, result);
+  applyTrustedProjectDefaults(
+    sandboxState.repoRoot,
+    sandboxState.additionalRoots,
+    dryRun,
+    result,
+  );
   return result;
 }
 
-/**
- * Print a human-friendly summary of what ensureCodexConfig() did.
- * @param {object} result  Return value from ensureCodexConfig()
- * @param {(msg: string) => void} [log]  Logger (default: console.log)
- */
-export function printConfigSummary(result, log = console.log) {
-  if (result.noChanges) {
-    log("  :check: Codex CLI config is already up to date");
-    log(`     ${result.path}`);
-    return;
-  }
-
+function logConfigSummaryHeader(result, log) {
   if (result.created) {
     log("  :edit: Created new Codex CLI config");
   }
@@ -1614,7 +1747,9 @@ export function printConfigSummary(result, log = console.log) {
       : `${result.featuresAdded.length} feature flags`;
     log(`  :check: Added feature flags: ${key}`);
   }
+}
 
+function logSandboxSummary(result, log) {
   if (result.sandboxAdded) {
     log("  :check: Added sandbox permissions (disk-full-write-access)");
   }
@@ -1643,7 +1778,9 @@ export function printConfigSummary(result, log = console.log) {
   if (result.shellEnvAdded) {
     log("  :check: Added shell environment policy (inherit=all)");
   }
+}
 
+function logAgentSdkSummary(result, log) {
   if (result.agentMaxThreads) {
     const fromLabel =
       result.agentMaxThreads.from === null
@@ -1657,7 +1794,9 @@ export function printConfigSummary(result, log = console.log) {
       `  :alert: Skipped agents.max_threads (invalid value: ${result.agentMaxThreadsSkipped})`,
     );
   }
+}
 
+function logProviderSummary(result, log) {
   if (result.commonMcpAdded) {
     log(
       "  :check: Added common MCP servers (context7, sequential-thinking, playwright, microsoft-docs)",
@@ -1682,179 +1821,27 @@ export function printConfigSummary(result, log = console.log) {
   for (const p of result.retriesAdded) {
     log(`  :check: Added retry settings to [${p}]`);
   }
+}
 
+/**
+ * Print a human-friendly summary of what ensureCodexConfig() did.
+ * @param {object} result  Return value from ensureCodexConfig()
+ * @param {(msg: string) => void} [log]  Logger (default: console.log)
+ */
+export function printConfigSummary(result, log = console.log) {
+  if (result.noChanges) {
+    log("  :check: Codex CLI config is already up to date");
+    log(`     ${result.path}`);
+    return;
+  }
+
+  logConfigSummaryHeader(result, log);
+  logSandboxSummary(result, log);
+  logAgentSdkSummary(result, log);
+  logProviderSummary(result, log);
   log(`     Config: ${result.path}`);
 }
-
-// ── Trusted Projects ─────────────────────────────────────────────────────────
-
-/**
- * Escape a string for use inside a double-quoted TOML basic string.
- * Handles backslashes (Windows paths) and double-quote characters.
- */
-function tomlEscapeStr(s) {
-  return String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-/**
- * Format an array of strings as a TOML array literal, correctly escaping
- * backslashes so Windows paths are stored faithfully.
- *
- * Example output:  ["C:\\Users\\jon\\bosun", "/home/jon/bosun"]
- */
-function formatTomlArrayEscaped(values) {
-  return `[${values.map((v) => `"${tomlEscapeStr(v)}"`).join(", ")}]`;
-}
-
-function toWindowsNamespacePath(pathValue) {
-  const value = String(pathValue || "").trim();
-  if (!value) return null;
-  if (value.startsWith("\\\\?\\")) return value;
-  const drivePath = toWindowsDrivePath(value);
-  if (drivePath) return `\\\\?\\${drivePath}`;
-  return null;
-}
-
-function toWindowsDrivePath(pathValue) {
-  const raw = String(pathValue || "").trim();
-  if (!raw) return null;
-  let value = raw.replace(/\//g, "\\");
-  if (value.startsWith("\\\\?\\")) value = value.slice(4);
-  if (/^[a-zA-Z]:\\/.test(value)) return value;
-  const wslMatch = raw.match(/^\/mnt\/([a-zA-Z])\/(.+)$/);
-  if (wslMatch) {
-    const drive = wslMatch[1].toUpperCase();
-    const rest = wslMatch[2].replace(/\//g, "\\");
-    return `${drive}:\\${rest}`;
-  }
-  return null;
-}
-
-function normalizeTrustedPathForCompare(pathValue) {
-  const trimTrailingPathSeparators = (value) => {
-    let out = String(value || "");
-    while (out.endsWith("/") || out.endsWith("\\")) out = out.slice(0, -1);
-    return out;
-  };
-  const raw = String(pathValue || "").trim();
-  if (!raw) return "";
-  const windowsDrivePath = toWindowsDrivePath(raw);
-  if (windowsDrivePath) {
-    return trimTrailingPathSeparators(windowsDrivePath).toLowerCase();
-  }
-  if (process.platform === "win32") {
-    let normalized = raw.replace(/\//g, "\\");
-    if (normalized.startsWith("\\\\?\\UNC\\")) {
-      normalized = "\\\\" + normalized.slice(8);
-    } else if (normalized.startsWith("\\\\?\\")) {
-      normalized = normalized.slice(4);
-    }
-    normalized = trimTrailingPathSeparators(normalized);
-    return normalized.toLowerCase();
-  }
-  return trimTrailingPathSeparators(resolve(raw));
-}
-
-function buildTrustedPathVariants(pathValue) {
-  const base = resolve(pathValue);
-  const variants = [base];
-  const namespaced = toWindowsNamespacePath(base);
-  if (namespaced && namespaced !== base) variants.push(namespaced);
-  return variants;
-}
-
-/**
- * Parse a TOML basic-string array literal, unescaping backslash sequences.
- */
-function parseTomlArrayLiteralEscaped(raw) {
-  if (!raw) return [];
-  const inner = raw.trim().replace(/^\[/, "").replace(/\]$/, "");
-  if (!inner.trim()) return [];
-  // Split on commas that are NOT inside quotes
-  const items = [];
-  let buf = "";
-  let inStr = false;
-  for (let i = 0; i < inner.length; i++) {
-    const ch = inner[i];
-    if (ch === "\\" && inStr) { buf += ch + (inner[++i] || ""); continue; }
-    if (ch === '"') { inStr = !inStr; buf += ch; continue; }
-    if (ch === "," && !inStr) { items.push(buf.trim()); buf = ""; continue; }
-    buf += ch;
-  }
-  if (buf.trim()) items.push(buf.trim());
-  return items
-    .map((item) => item.replace(/^"(.*)"$/s, "$1"))              // strip outer quotes
-    .map((item) => item.replace(/\\(["\\])/g, "$1"))             // unescape \" and \\
-    .filter(Boolean);
-}
-
-/**
- * Ensure the given directory paths are listed in the `trusted_projects`
- * top-level key in ~/.codex/config.toml.
- *
- * Codex refuses to load a per-project .codex/config.toml unless the project
- * directory appears in this list — producing warnings like:
- *   ":alert: Project config.toml files are disabled … add <dir> as a trusted project"
- *
- * Paths are stored as-is (forward or back slashes preserved) with proper TOML
- * escaping so Windows paths survive round-trips through the file.
- *
- * @param {string[]} paths   Absolute directories to trust (e.g. [bosunHome])
- * @param {{ dryRun?: boolean }} [opts]
- * @returns {{ added: string[], already: string[], path: string }}
- */
-export function ensureTrustedProjects(paths, { dryRun = false } = {}) {
-  const result = { added: [], already: [], path: CONFIG_PATH };
-  const desired = (paths || [])
-    .flatMap((p) => buildTrustedPathVariants(p))
-    .filter(Boolean);
-  if (desired.length === 0) return result;
-
-  let toml = readCodexConfig() || "";
-
-  // Parse existing trusted_projects (multi-line arrays may span lines)
-  const existingMatch = toml.match(/^trusted_projects\s*=\s*(\[[^\]]*\])/m);
-  const existing = existingMatch ? parseTomlArrayLiteralEscaped(existingMatch[1]) : [];
-  const existingNormalized = new Set(
-    existing.map((p) => normalizeTrustedPathForCompare(p)).filter(Boolean),
-  );
-
-  let changed = false;
-  for (const p of desired) {
-    const normalized = normalizeTrustedPathForCompare(p);
-    if (!normalized) continue;
-    if (existingNormalized.has(normalized)) {
-      result.already.push(p);
-    } else {
-      existing.push(p);
-      existingNormalized.add(normalized);
-      result.added.push(p);
-      changed = true;
-    }
-  }
-
-  if (!changed) return result;
-  if (dryRun) return result;
-
-  const newLine = `trusted_projects = ${formatTomlArrayEscaped(existing)}`;
-
-  if (existingMatch) {
-    toml = toml.replace(/^trusted_projects\s*=\s*\[[^\]]*\]/m, newLine);
-  } else {
-    // Insert before the first section header (or at top if no sections)
-    const firstSection = toml.search(/^\[/m);
-    if (firstSection === -1) {
-      toml = `${newLine}\n${toml}`;
-    } else {
-      toml = `${toml.slice(0, firstSection)}${newLine}\n\n${toml.slice(firstSection)}`;
-    }
-  }
-
-  mkdirSync(CODEX_DIR, { recursive: true });
-  writeFileSync(CONFIG_PATH, toml, "utf8");
-  return result;
-}
-
+export { ensureTrustedProjects };
 // ── Internal Helpers ─────────────────────────────────────────────────────────
 
 function escapeRegex(str) {
@@ -1866,3 +1853,5 @@ function parseBoolEnv(value) {
   if (["0", "false", "no", "off", "n"].includes(raw)) return false;
   return true;
 }
+
+

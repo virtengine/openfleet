@@ -177,6 +177,28 @@ describe("voice-auth-manager OAuth", () => {
     }
   });
 
+  it("treats literal undefined/null OAuth access token env vars as unset", async () => {
+    const prevOpenAi = process.env.OPENAI_OAUTH_ACCESS_TOKEN;
+    const prevAnthropic = process.env.ANTHROPIC_ACCESS_TOKEN;
+    const prevGemini = process.env.GEMINI_ACCESS_TOKEN;
+    try {
+      process.env.OPENAI_OAUTH_ACCESS_TOKEN = "undefined";
+      process.env.ANTHROPIC_ACCESS_TOKEN = "null";
+      process.env.GEMINI_ACCESS_TOKEN = " undefined ";
+
+      expect(mod.resolveVoiceOAuthToken("openai")).toBeNull();
+      expect(mod.resolveVoiceOAuthToken("claude")).toBeNull();
+      expect(mod.resolveVoiceOAuthToken("gemini")).toBeNull();
+    } finally {
+      if (prevOpenAi === undefined) delete process.env.OPENAI_OAUTH_ACCESS_TOKEN;
+      else process.env.OPENAI_OAUTH_ACCESS_TOKEN = prevOpenAi;
+      if (prevAnthropic === undefined) delete process.env.ANTHROPIC_ACCESS_TOKEN;
+      else process.env.ANTHROPIC_ACCESS_TOKEN = prevAnthropic;
+      if (prevGemini === undefined) delete process.env.GEMINI_ACCESS_TOKEN;
+      else process.env.GEMINI_ACCESS_TOKEN = prevGemini;
+    }
+  });
+
   it("Claude authUrl does NOT contain openid scope", () => {
     const { authUrl } = mod.startClaudeLogin();
     const params = new URLSearchParams(new URL(authUrl).search);

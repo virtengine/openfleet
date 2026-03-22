@@ -147,7 +147,7 @@ export const DEFAULT_SHREDDING_CONFIG = Object.freeze({
   userMsgFullTurns: 1,     // only the current turn keeps the full user prompt
 
   // ── Live command/tool compaction ─────────────────────────────
-  liveToolCompactionEnabled: false,
+  liveToolCompactionEnabled: true,
   liveToolCompactionMode: "auto",
   liveToolCompactionMinChars: 4000,
   liveToolCompactionTargetChars: 1800,

@@ -717,6 +717,8 @@ describe("action.web_search", () => {
             query: "test query for validation",
             maxResults: 3,
             engine: "fetch",
+            // Ensure deterministic, fast failure in CI/offline environments.
+            apiUrl: "http://127.0.0.1:1/unreachable-search-endpoint",
           },
         },
       ],
@@ -746,6 +748,8 @@ describe("action.web_search", () => {
             query: "{{searchTerm}} proof verification",
             maxResults: 1,
             engine: "fetch",
+            // Avoid external network flakiness while still exercising template resolution.
+            apiUrl: "http://127.0.0.1:1/unreachable-search-endpoint",
           },
         },
       ],
@@ -757,6 +761,124 @@ describe("action.web_search", () => {
     const result = await engine.execute(wf.id, {});
     const searchOutput = result.getNodeOutput("search");
     expect(searchOutput.query).toBe("Riemann hypothesis proof verification");
+  });
+
+  it("decodes HTML entities only once when flattening web results", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (url) => {
+      const parsedUrl = new URL(String(url));
+      if (parsedUrl.hostname === "api.duckduckgo.com") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              RelatedTopics: [
+                {
+                  Text: "Encoded result",
+                  FirstURL: "https://example.com/encoded",
+                },
+              ],
+            };
+          },
+        };
+      }
+
+      return {
+        ok: true,
+        async text() {
+          return '<article><p>&amp;lt;safe&amp;gt; &amp;amp; sound</p></article>';
+        },
+      };
+    });
+
+    try {
+      const wf = makeWorkflow(
+        [
+          { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+          {
+            id: "search",
+            type: "action.web_search",
+            label: "Search",
+            config: {
+              query: "encoded result",
+              maxResults: 1,
+              engine: "fetch",
+              extractContent: true,
+            },
+          },
+        ],
+        [{ id: "e1", source: "trigger", target: "search" }],
+      );
+
+      engine.save(wf);
+      const result = await engine.execute(wf.id, {});
+      const searchOutput = result.getNodeOutput("search");
+      expect(searchOutput.results?.[0]?.content).toContain("&lt;safe&gt; &amp; sound");
+      expect(searchOutput.results?.[0]?.content).not.toContain("<safe>");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("extracts plain text content without preserving script or style payloads", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (url) => {
+      const parsedUrl = new URL(String(url));
+      if (parsedUrl.hostname === "api.duckduckgo.com") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              RelatedTopics: [
+                {
+                  Text: "Example result",
+                  FirstURL: "https://example.com/article",
+                },
+              ],
+            };
+          },
+        };
+      }
+
+      return {
+        ok: true,
+        async text() {
+          return '<html><body><h1>Headline</h1><script >alert(1)</script><style>body{color:red}</style><p>Body &amp; copy</p></body></html>';
+        },
+      };
+    });
+
+    try {
+      const wf = makeWorkflow(
+        [
+          { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+          {
+            id: "search",
+            type: "action.web_search",
+            label: "Search",
+            config: {
+              query: "safe extraction",
+              maxResults: 1,
+              engine: "fetch",
+              extractContent: true,
+            },
+          },
+        ],
+        [{ id: "e1", source: "trigger", target: "search" }],
+      );
+
+      engine.save(wf);
+      const result = await engine.execute(wf.id, {});
+      const searchOutput = result.getNodeOutput("search");
+      expect(searchOutput.results[0].content).toContain("Headline");
+      expect(searchOutput.results[0].content).toContain("Body & copy");
+      expect(searchOutput.results[0].content).not.toContain("alert(1)");
+      expect(searchOutput.results[0].content).not.toContain("color:red");
+      expect(searchOutput.results[0].content).not.toContain("<script");
+      expect(searchOutput.results[0].content).not.toContain("<style");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 
@@ -917,3 +1039,5 @@ describe("Edge helper backEdge support", () => {
     expect(e.label).toBeUndefined();
   });
 });
+
+

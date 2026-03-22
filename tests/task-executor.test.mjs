@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import os from "node:os";
+import { resolve } from "node:path";
 
 // ── Mocks ───────────────────────────────────────────────────────────────────
 
@@ -50,10 +52,15 @@ vi.mock("../workspace/worktree-manager.mjs", () => {
   };
 });
 
+vi.mock("../workspace/shared-state-manager.mjs", () => ({
+  getSharedState: vi.fn(() => Promise.resolve(null)),
+}));
+
 vi.mock("../task/task-claims.mjs", () => ({
   initTaskClaims: vi.fn(() => Promise.resolve()),
   claimTask: vi.fn(() => Promise.resolve({ success: true, token: "claim-1" })),
   renewClaim: vi.fn(() => Promise.resolve({ success: true })),
+  getClaim: vi.fn(() => Promise.resolve(null)),
   releaseTask: vi.fn(() => Promise.resolve({ success: true })),
 }));
 
@@ -121,9 +128,11 @@ import {
   invalidateThread,
 } from "../agent/agent-pool.mjs";
 import { acquireWorktree, releaseWorktree } from "../workspace/worktree-manager.mjs";
+import { getSharedState } from "../workspace/shared-state-manager.mjs";
 import {
   claimTask,
   renewClaim,
+  getClaim,
   releaseTask as releaseTaskClaim,
 } from "../task/task-claims.mjs";
 import { initPresence, getPresenceState } from "../infra/presence.mjs";
@@ -172,6 +181,7 @@ describe("task-executor", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     for (const key of ENV_KEYS) delete process.env[key];
+    getSharedState.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -596,7 +606,6 @@ describe("task-executor", () => {
       expect(infra.adaptiveReasons).toContain("historical_merge_latency");
       expect(infra.telemetryMergeLatencyMs).toBeGreaterThanOrEqual(slowLatencyMs);
     });
-
     it("tracks repo area wait time once a blocked task is later selected", () => {
       const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 1 });
       const now = Date.now();
@@ -645,6 +654,19 @@ describe("task-executor", () => {
             maxWaitMs: 1500,
           }),
         ]),
+      );
+      expect(ex.getStatus().repoAreaLocks.contention).toEqual(
+        expect.objectContaining({
+          events: 1,
+          recent: expect.arrayContaining([
+            expect.objectContaining({
+              area: "infra",
+              waitMs: 1500,
+              resolutionReason: "selected",
+              taskId: "t1",
+            }),
+          ]),
+        }),
       );
     });
 
@@ -696,6 +718,51 @@ describe("task-executor", () => {
             maxStarvationCycles: 3,
           }),
         ]),
+      );
+    });
+
+    it("emits contention diagnostics when a waiting task is dequeued", () => {
+      const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 1 });
+      const now = Date.now();
+      ex._activeSlots.set("active-1", {
+        taskId: "active-1",
+        repoAreas: ["infra"],
+        attempt: 1,
+        startedAt: now - 2_000,
+        status: "running",
+      });
+
+      vi.spyOn(Date, "now")
+        .mockReturnValueOnce(now)
+        .mockReturnValueOnce(now + 800)
+        .mockReturnValue(now + 800);
+
+      expect(
+        ex._selectTasksForBaseBranchLimit([{ id: "t1", repo_areas: ["infra"] }], 1),
+      ).toEqual([]);
+
+      ex._activeSlots.clear();
+      const selected = ex._selectTasksForBaseBranchLimit(
+        [{ id: "t2", repo_areas: ["workflow"] }],
+        1,
+      );
+
+      expect(selected.map((task) => task.id)).toEqual(["t2"]);
+      expect(ex.getStatus().repoAreaLocks.contention).toEqual(
+        expect.objectContaining({
+          events: 1,
+          byReason: expect.objectContaining({
+            dequeued: 1,
+          }),
+          recent: expect.arrayContaining([
+            expect.objectContaining({
+              area: "infra",
+              waitMs: 800,
+              resolutionReason: "dequeued",
+              taskId: "t1",
+            }),
+          ]),
+        }),
       );
     });
 
@@ -774,6 +841,98 @@ describe("task-executor", () => {
       );
     });
 
+    it("records cross-cycle lock conflicts and wait metrics in a synthetic multi-agent simulation", () => {
+      const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 2 });
+      const now = Date.now();
+      ex._activeSlots.set("active-infra-1", {
+        taskId: "active-infra-1",
+        repoAreas: ["infra"],
+        attempt: 2,
+        startedAt: now - 3 * 60 * 60 * 1000,
+        status: "running",
+      });
+      ex._activeSlots.set("active-infra-2", {
+        taskId: "active-infra-2",
+        repoAreas: ["infra"],
+        attempt: 1,
+        startedAt: now - 2 * 60 * 60 * 1000,
+        status: "running",
+      });
+
+      let tick = now;
+      vi.spyOn(Date, "now").mockImplementation(() => {
+        tick += 300;
+        return tick;
+      });
+
+      const cycle1 = ex._selectTasksForBaseBranchLimit(
+        [
+          { id: "infra-latent", repo_areas: ["infra"] },
+          { id: "workflow-task-1", repo_areas: ["workflow"] },
+          { id: "server-task-1", repo_areas: ["server"] },
+        ],
+        2,
+      );
+      const cycle2 = ex._selectTasksForBaseBranchLimit(
+        [
+          { id: "infra-latent", repo_areas: ["infra"] },
+          { id: "workflow-task-2", repo_areas: ["workflow"] },
+          { id: "server-task-2", repo_areas: ["server"] },
+        ],
+        2,
+      );
+
+      ex._activeSlots.delete("active-infra-1");
+      ex._activeSlots.delete("active-infra-2");
+
+      const cycle3 = ex._selectTasksForBaseBranchLimit(
+        [
+          { id: "infra-latent", repo_areas: ["infra"] },
+          { id: "server-task-3", repo_areas: ["server"] },
+        ],
+        2,
+      );
+      const cycle4 = ex._selectTasksForBaseBranchLimit(
+        [{ id: "infra-fast", repo_areas: ["infra"] }],
+        1,
+      );
+
+      const selectedCount = cycle1.length + cycle2.length + cycle3.length + cycle4.length;
+      expect(selectedCount).toBeGreaterThanOrEqual(6);
+
+      const status = ex.getStatus().repoAreaLocks;
+      const infra = status.areas.find((item) => item.area === "infra");
+      expect(infra).toBeDefined();
+      expect(infra).toEqual(
+        expect.objectContaining({
+          conflicts: expect.any(Number),
+          blockedDispatches: expect.any(Number),
+          waitSamples: 1,
+          averageWaitMs: expect.any(Number),
+        }),
+      );
+      expect(infra.conflicts).toBeGreaterThanOrEqual(2);
+      expect(infra.blockedDispatches).toBeGreaterThanOrEqual(2);
+      expect(infra.averageWaitMs).toBeGreaterThan(0);
+
+      expect(status.totals).toEqual(
+        expect.objectContaining({
+          dispatchCycles: 4,
+          conflictEvents: expect.any(Number),
+        }),
+      );
+      expect(status.totals.conflictEvents).toBeGreaterThanOrEqual(2);
+      expect(status.lastDispatch.cycle).toBe(4);
+      expect(status.dispatch.recent).toHaveLength(4);
+      expect(status.dispatch.recent.some((entry) => Number(entry?.conflictEvents || 0) > 0)).toBe(true);
+      expect(
+        status.dispatch.recent.some((entry) =>
+          Array.isArray(entry?.areaLimits?.infra?.adaptiveReasons) &&
+          entry.areaLimits.infra.adaptiveReasons.includes("active_failure_rate")
+        ),
+      ).toBe(true);
+    });
+
     it("persists repo area lock metrics and dispatch cycles to runtime state", () => {
       const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 1 });
       ex._activeSlots.set("active-1", {
@@ -787,10 +946,13 @@ describe("task-executor", () => {
       expect(
         ex._selectTasksForBaseBranchLimit([{ id: "t1", repo_areas: ["infra"] }], 1),
       ).toEqual([]);
+      ex.noteRepoAreaOutcome({ id: "t1", repo_areas: ["infra"] }, { status: "failed" });
 
-      const runtimeWriteCall = writeFileSync.mock.calls.find(([filePath]) =>
-        String(filePath || "").includes("task-executor-runtime.json"),
-      );
+      const runtimeWriteCall = writeFileSync.mock.calls
+        .filter(([filePath]) =>
+          String(filePath || "").includes("task-executor-runtime.json"),
+        )
+        .at(-1);
       expect(runtimeWriteCall).toBeDefined();
       const runtimePayload = JSON.parse(runtimeWriteCall[1]);
       expect(runtimePayload.repoAreaDispatchCycles).toBe(1);
@@ -819,6 +981,16 @@ describe("task-executor", () => {
           blockedDispatches: 1,
           conflicts: 1,
         }),
+      );
+      expect(runtimePayload.repoAreaContentionEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            area: "infra",
+            waitMs: expect.any(Number),
+            resolutionReason: "abandoned",
+            taskId: "t1",
+          }),
+        ]),
       );
       expect(runtimePayload.repoAreaLockStatus).toEqual(
         expect.objectContaining({
@@ -948,6 +1120,7 @@ describe("task-executor", () => {
       expect(ex._running).toBe(true);
       // workflowOwnsTaskLifecycle defaults to true — no poll timer
       expect(ex._pollTimer).toBeNull();
+      expect(ex._recoveryTimer).not.toBeNull();
       ex._running = false;
     });
 
@@ -956,8 +1129,10 @@ describe("task-executor", () => {
       ex.start();
       expect(ex._running).toBe(true);
       expect(ex._pollTimer).not.toBeNull();
+      expect(ex._recoveryTimer).not.toBeNull();
       ex._running = false;
       clearInterval(ex._pollTimer);
+      clearInterval(ex._recoveryTimer);
     });
 
     it("start() waits for thread registry load before in-progress recovery", async () => {
@@ -984,6 +1159,7 @@ describe("task-executor", () => {
 
       ex._running = false;
       clearInterval(ex._pollTimer);
+      clearInterval(ex._recoveryTimer);
     });
 
     it("stop() sets _running to false and clears poll timer", async () => {
@@ -997,6 +1173,7 @@ describe("task-executor", () => {
 
       expect(ex._running).toBe(false);
       expect(ex._pollTimer).toBeNull();
+      expect(ex._recoveryTimer).toBeNull();
     });
 
     it("stop() waits for active slots gracefully", async () => {
@@ -1026,7 +1203,7 @@ describe("task-executor", () => {
 
   describe("in-progress recovery", () => {
     it("resumes fresh in-progress tasks on startup recovery", async () => {
-      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: false });
       ex._running = true;
       const executeSpy = vi
         .spyOn(ex, "executeTask")
@@ -1051,7 +1228,7 @@ describe("task-executor", () => {
     });
 
     it("moves stale in-progress tasks back to todo when no resumable thread exists", async () => {
-      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: false });
       ex._running = true;
       const executeSpy = vi
         .spyOn(ex, "executeTask")
@@ -1079,7 +1256,7 @@ describe("task-executor", () => {
     });
 
     it("resets unstarted in-progress tasks beyond slot capacity so backlog can flow", async () => {
-      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 1 });
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 1, workflowOwnsTaskLifecycle: false });
       ex._running = true;
       const executeSpy = vi
         .spyOn(ex, "executeTask")
@@ -1130,6 +1307,225 @@ describe("task-executor", () => {
       );
     });
 
+    it("does not reset fresh unstarted tasks owned by another live executor claim", async () => {
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: false });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+      const freshTs = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "claimed-unstarted-1",
+          title: "Claimed but not locally threaded",
+          status: "inprogress",
+          updated_at: freshTs,
+          agentAttempts: 0,
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+      getSharedState.mockResolvedValueOnce({
+        ownerId: "remote-instance-1",
+        ownerHeartbeat: new Date().toISOString(),
+      });
+      getClaim.mockResolvedValueOnce({
+        instance_id: "remote-instance-1",
+        metadata: {
+          host: "remote-host",
+          pid: 4242,
+        },
+      });
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "claimed-unstarted-1",
+        "todo",
+        expect.objectContaining({ source: "task-executor-recovery-unstarted" }),
+      );
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
+
+    it("does not reset fresh workflow-owned tasks when an active workflow run exists", async () => {
+      const ex = new TaskExecutor({
+        projectId: "proj-1",
+        maxParallel: 2,
+        workflowOwnsTaskLifecycle: true,
+        workflowRunsDir: "/workflow-runs",
+      });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "wf-owned-1",
+          title: "Workflow-owned active run",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+          agentAttempts: 0,
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+      existsSync.mockImplementation((targetPath) =>
+        [
+          resolve("/workflow-runs", "_active-runs.json"),
+          resolve("/workflow-runs", "run-1.json"),
+        ].includes(targetPath),
+      );
+      readFileSync.mockImplementation((targetPath) => {
+        if (targetPath === resolve("/workflow-runs", "_active-runs.json")) {
+          return JSON.stringify([{ runId: "run-1" }]);
+        }
+        if (targetPath === resolve("/workflow-runs", "run-1.json")) {
+          return JSON.stringify({ data: { taskId: "wf-owned-1" } });
+        }
+        return "";
+      });
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "wf-owned-1",
+        "todo",
+        expect.objectContaining({
+          source: "task-executor-recovery-missing-workflow-run",
+        }),
+      );
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
+
+    it("resets fresh workflow-owned tasks when no active workflow run or claim exists", async () => {
+      const ex = new TaskExecutor({
+        projectId: "proj-1",
+        maxParallel: 2,
+        workflowOwnsTaskLifecycle: true,
+        workflowRunsDir: "/workflow-runs",
+      });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "wf-ownerless-1",
+          title: "Workflow-owned ownerless task",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+          agentAttempts: 0,
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+      existsSync.mockImplementation(
+        (targetPath) => targetPath === resolve("/workflow-runs", "_active-runs.json"),
+      );
+      readFileSync.mockImplementation((targetPath) => {
+        if (targetPath === resolve("/workflow-runs", "_active-runs.json")) {
+          return JSON.stringify([]);
+        }
+        return "";
+      });
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "wf-ownerless-1",
+        "todo",
+        expect.objectContaining({
+          source: "task-executor-recovery-missing-workflow-run",
+        }),
+      );
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
+
+    it("resets workflow-owned tasks whose shared-state claim is stale and no thread is alive", async () => {
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: true });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "wf-stale-claim-1",
+          title: "Workflow-owned stale claim",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+          agentAttempts: 1,
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+      getSharedState.mockResolvedValueOnce({
+        ownerId: "wf-deadbeef",
+        ownerHeartbeat: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+      });
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "wf-stale-claim-1",
+        "todo",
+        expect.objectContaining({
+          source: "task-executor-recovery-stale-workflow-claim",
+        }),
+      );
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
+
+    it("resets workflow-owned tasks when a fresh shared-state claim belongs to a dead local pid", async () => {
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: true });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+      const killSpy = vi
+        .spyOn(process, "kill")
+        .mockImplementation(() => {
+          throw new Error("ESRCH");
+        });
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "wf-dead-pid-1",
+          title: "Workflow-owned dead local claim",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+          agentAttempts: 1,
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+      getSharedState.mockResolvedValueOnce({
+        ownerId: "wf-live-heartbeat",
+        ownerHeartbeat: new Date().toISOString(),
+      });
+      getClaim.mockResolvedValueOnce({
+        instance_id: "wf-live-heartbeat",
+        metadata: {
+          host: os.hostname(),
+          pid: 987654,
+        },
+      });
+      getPresenceState.mockReturnValue({
+        instance_id: "presence-instance-1",
+        coordinator_priority: 100,
+      });
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(killSpy).toHaveBeenCalledWith(987654, 0);
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "wf-dead-pid-1",
+        "todo",
+        expect.objectContaining({
+          source: "task-executor-recovery-stale-workflow-claim",
+        }),
+      );
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
+
     it("does not resume in-progress tasks already blocked for no-commit thrash", async () => {
       const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
       ex._running = true;
@@ -1159,7 +1555,7 @@ describe("task-executor", () => {
     });
 
     it("still resumes in-progress tasks when no-commit count is below block threshold", async () => {
-      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: false });
       ex._running = true;
       ex._noCommitCounts.set("resume-2", 2);
       const executeSpy = vi
@@ -1257,6 +1653,31 @@ describe("task-executor", () => {
       expect(ex._slotRuntimeState.has("blocked-err-1")).toBe(false);
       expect(executeSpy).not.toHaveBeenCalled();
     });
+
+    it("clears persisted anti-thrash state when manually reset", async () => {
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
+      const saveSpy = vi.spyOn(ex, "_saveNoCommitState").mockImplementation(() => {});
+
+      ex._noCommitCounts.set("throttle-1", 3);
+      ex._skipUntil.set("throttle-1", Date.now() + 60_000);
+      ex._taskCooldowns.set("throttle-1", Date.now());
+      ex._idleContinueCounts.set("throttle-1", 2);
+      ex._repoAreaBlockedTasks.set("throttle-1", {
+        blockedAt: Date.now(),
+        lastObservedWaitMs: 1000,
+        areas: ["ui"],
+      });
+
+      const changed = ex.resetTaskThrottleState("throttle-1");
+
+      expect(changed).toBe(true);
+      expect(ex._noCommitCounts.has("throttle-1")).toBe(false);
+      expect(ex._skipUntil.has("throttle-1")).toBe(false);
+      expect(ex._taskCooldowns.has("throttle-1")).toBe(false);
+      expect(ex._idleContinueCounts.has("throttle-1")).toBe(false);
+      expect(ex._repoAreaBlockedTasks.has("throttle-1")).toBe(false);
+      expect(saveSpy).toHaveBeenCalledTimes(1);
+    });
   });
 
   // ────────────────────────────────────────────────────────────────────────
@@ -1284,7 +1705,7 @@ describe("task-executor", () => {
       loadConfig.mockReturnValue({});
       const opts = loadExecutorOptionsFromConfig();
       expect(opts.mode).toBe("internal");
-      expect(opts.maxParallel).toBe(3);
+      expect(opts.maxParallel).toBe(5);
       expect(opts.sdk).toBe("auto");
       expect(opts.maxRetries).toBe(2);
     });
@@ -1376,7 +1797,7 @@ describe("task-executor", () => {
 
       const opts = loadExecutorOptionsFromConfig();
       expect(opts.mode).toBe("internal");
-      expect(opts.maxParallel).toBe(3);
+      expect(opts.maxParallel).toBe(5);
     });
   });
 
@@ -1563,9 +1984,32 @@ describe("task-executor", () => {
   // Legacy stubs — verify gutted methods return expected no-op values
   // ────────────────────────────────────────────────────────────────────────
 
-  describe("legacy method stubs", () => {
-    it("executeTask returns legacy_removed stub", async () => {
-      const ex = new TaskExecutor();
+describe("legacy method stubs", () => {
+    it("executeTask dispatches workflow-owned lifecycle via onTaskStarted hook", async () => {
+      const onTaskStarted = vi.fn();
+      const ex = new TaskExecutor({ onTaskStarted, workflowOwnsTaskLifecycle: true });
+      const result = await ex.executeTask({ id: "test-1", title: "Test" });
+      expect(result).toMatchObject({
+        queued: false,
+        started: true,
+        dispatched: true,
+        mode: "workflow-owned",
+        taskId: "test-1",
+      });
+      expect(onTaskStarted).toHaveBeenCalledTimes(1);
+      const [taskArg, slotArg] = onTaskStarted.mock.calls[0];
+      expect(taskArg).toMatchObject({ id: "test-1", title: "Test" });
+      expect(slotArg).toMatchObject({
+        taskId: "test-1",
+        taskTitle: "Test",
+        sdk: "auto",
+        status: "running",
+        attempt: 1,
+      });
+    });
+
+    it("executeTask returns legacy_removed stub when workflow lifecycle ownership is disabled", async () => {
+      const ex = new TaskExecutor({ workflowOwnsTaskLifecycle: false });
       const result = await ex.executeTask({ id: "test-1", title: "Test" });
       expect(result).toEqual({ skipped: true, reason: "legacy_removed" });
     });

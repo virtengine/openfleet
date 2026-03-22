@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   applyNonBlockingSetupEnvDefaults,
   applyTelegramMiniAppSetupEnv,
+  buildModelsProbeRequest,
+  handleTelegramChatIdLookup,
   normalizeRepoConfigEntry,
   normalizeTelegramUiPort,
   normalizeWorkflowTemplateOverrides,
@@ -106,9 +108,110 @@ describe("setup web server telegram defaults", () => {
 
     expect(envMap.TELEGRAM_UI_TUNNEL).toBe("named");
   });
+
+  it("discovers and deduplicates Telegram chats from updates", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async () => ({
+      ok: true,
+      json: async () => ({
+        result: [
+          { message: { chat: { id: 123, type: "private", username: "alice" } } },
+          { channel_post: { chat: { id: -1001, type: "supergroup", title: "Ops" } } },
+          { edited_message: { chat: { id: 123, type: "private", username: "alice" } } },
+        ],
+      }),
+    });
+
+    try {
+      const result = await handleTelegramChatIdLookup({ token: "123456:abc-token" });
+      expect(result).toMatchObject({ ok: true, status: 200, message: null });
+      expect(result.chats).toEqual([
+        { id: 123, type: "private", title: "", username: "alice" },
+        { id: -1001, type: "supergroup", title: "Ops", username: "" },
+      ]);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("returns instructional message when Telegram updates are empty", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async () => ({
+      ok: true,
+      json: async () => ({ result: [] }),
+    });
+
+    try {
+      const result = await handleTelegramChatIdLookup({ token: "123456:abc-token" });
+      expect(result).toMatchObject({ ok: true, status: 200, chats: [] });
+      expect(result.message).toContain("Send a message to the bot first");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
 });
 
 describe("setup web server non-blocking env defaults", () => {
+  it("builds Azure model probes with the Azure models path and api-key header", () => {
+    const result = buildModelsProbeRequest({
+      apiKey: "azure-secret",
+      baseUrl: "https://example-resource.openai.azure.com/",
+    });
+
+    expect(result).toEqual({
+      endpoint: "https://example-resource.openai.azure.com/openai/models?api-version=2024-10-21",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": "azure-secret",
+      },
+    });
+  });
+
+  it("preserves Azure v1 model routes without forcing the legacy api-version query", () => {
+    const result = buildModelsProbeRequest({
+      apiKey: "azure-secret",
+      baseUrl: "https://example-resource.openai.azure.com/openai/v1/chat/completions?api-version=2024-10-21",
+    });
+
+    expect(result).toEqual({
+      endpoint: "https://example-resource.openai.azure.com/openai/v1/models",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": "azure-secret",
+      },
+    });
+  });
+
+  it("normalizes Azure deployment endpoints to a stable models probe api-version", () => {
+    const result = buildModelsProbeRequest({
+      apiKey: "azure-secret",
+      baseUrl: "https://example-resource.openai.azure.com/openai/deployments/gpt-4.1/chat/completions?api-version=2025-01-01-preview",
+    });
+
+    expect(result).toEqual({
+      endpoint: "https://example-resource.openai.azure.com/openai/models?api-version=2024-10-21",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": "azure-secret",
+      },
+    });
+  });
+
+  it("normalizes OpenAI-compatible v1 paths when building model probes", () => {
+    const result = buildModelsProbeRequest({
+      apiKey: "compat-secret",
+      baseUrl: "https://gateway.example.com/proxy/v1/chat/completions?foo=bar",
+    });
+
+    expect(result).toEqual({
+      endpoint: "https://gateway.example.com/proxy/v1/models",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer compat-secret",
+      },
+    });
+  });
+
   it("backfills safe defaults when setup payload omits values", () => {
     const envMap = {};
     applyNonBlockingSetupEnvDefaults(envMap, {}, {});

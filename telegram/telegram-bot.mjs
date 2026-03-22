@@ -1125,7 +1125,14 @@ let agentChatId = null; // latest chat where an agent is running
 // ── Sticky UI menu state (keep /menu accessible at bottom) ─────────────────
 const stickyMenuState = new Map();
 const stickyMenuTimers = new Map();
+const stickyMenuDiagnostics = new Map();
 const STICKY_MENU_BUMP_MS = 600;
+const callbackActionDeduper = new Map();
+const CALLBACK_ACTION_DEDUPE_MS = Math.max(
+  150,
+  Number(process.env.TELEGRAM_CALLBACK_ACTION_DEDUPE_MS || "1200") || 1200,
+);
+let stickyMenuSessionCounter = 0;
 
 // ── Queues ──────────────────────────────────────────────────────────────────
 
@@ -1377,10 +1384,198 @@ export function isAgentActive() {
   return activeAgentSessions.size > 0;
 }
 
+export function __resetStickyMenuStateForTest() {
+  for (const timer of stickyMenuTimers.values()) {
+    clearTimeout(timer);
+  }
+  stickyMenuTimers.clear();
+  stickyMenuState.clear();
+  stickyMenuDiagnostics.clear();
+  callbackActionDeduper.clear();
+  uiInputRequests.clear();
+  stickyMenuSessionCounter = 0;
+}
+
+export const __stickyMenuTestApi = {
+  setStickyMenuState,
+  getStickyMenuDiagnostics,
+  recoverStickyMenuContextFromCallback,
+  dedupeMenuCallbackAction,
+  resetStickyMenuContext,
+};
+
 function setStickyMenuState(chatId, patch) {
-  if (!chatId) return;
+  if (!chatId) return null;
+  const now = Date.now();
   const current = stickyMenuState.get(chatId) || {};
-  stickyMenuState.set(chatId, { ...current, ...patch });
+  const next = { ...current, ...patch };
+  const rotatesSession = Boolean(
+    next.enabled
+      && (
+        !current.enabled
+        || !current.sessionId
+        || patch?.sessionReset === true
+        || (
+          patch?.messageId != null
+          && String(patch.messageId) !== String(current.messageId || "")
+        )
+      ),
+  );
+  if (rotatesSession) {
+    stickyMenuSessionCounter += 1;
+    next.sessionId = `sticky-${now.toString(36)}-${stickyMenuSessionCounter.toString(36)}`;
+    next.sessionStartedAtMs = now;
+  } else if (next.enabled) {
+    next.sessionId = current.sessionId || next.sessionId || null;
+    next.sessionStartedAtMs = current.sessionStartedAtMs || next.sessionStartedAtMs || now;
+  }
+  delete next.sessionReset;
+  next.updatedAtMs = now;
+  stickyMenuState.set(chatId, next);
+  const currentDiag = stickyMenuDiagnostics.get(chatId) || { recoveryCount: 0, resetCount: 0 };
+  stickyMenuDiagnostics.set(chatId, {
+    ...currentDiag,
+    chatId,
+    lastSessionId: next.sessionId || currentDiag.lastSessionId || null,
+    lastSessionStartedAtMs:
+      next.sessionStartedAtMs || currentDiag.lastSessionStartedAtMs || null,
+    lastSessionUpdatedAtMs: now,
+    lastMode: next.mode || currentDiag.lastMode || null,
+    lastScreenId: next.screenId || currentDiag.lastScreenId || null,
+    lastMessageId: next.messageId || currentDiag.lastMessageId || null,
+  });
+  return next;
+}
+
+function getStickyMenuLeaseAgeMs(state, now = Date.now()) {
+  const startedAtMs = Number(state?.sessionStartedAtMs || 0);
+  if (!startedAtMs) return null;
+  return Math.max(0, now - startedAtMs);
+}
+
+function getStickyMenuDiagnostics(chatId, now = Date.now()) {
+  const key = String(chatId || "");
+  const state = stickyMenuState.get(key) || null;
+  const history = stickyMenuDiagnostics.get(key) || {};
+  const startedAtMs = state?.sessionStartedAtMs || history.lastSessionStartedAtMs || null;
+  return {
+    chatId: key,
+    enabled: Boolean(state?.enabled),
+    mode: state?.mode || history.lastMode || null,
+    screenId: state?.screenId || history.lastScreenId || null,
+    messageId: state?.messageId || history.lastMessageId || null,
+    sessionId: state?.sessionId || history.lastSessionId || null,
+    leaseAgeMs: startedAtMs ? Math.max(0, now - startedAtMs) : null,
+    updatedAgeMs: state?.updatedAtMs ? Math.max(0, now - state.updatedAtMs) : null,
+    recoveryCount: history.recoveryCount || 0,
+    lastRecovery: history.lastRecovery || null,
+    lastDedupe: history.lastDedupe || null,
+    resetCount: history.resetCount || 0,
+    lastReset: history.lastReset || null,
+  };
+}
+
+function clearCallbackActionDeduperForChat(chatId) {
+  const prefix = `${String(chatId || "")}|`;
+  for (const key of callbackActionDeduper.keys()) {
+    if (key.startsWith(prefix)) {
+      callbackActionDeduper.delete(key);
+    }
+  }
+}
+
+function resetStickyMenuContext(chatId, options = {}) {
+  const key = String(chatId || "");
+  if (!key) {
+    return { applied: false, reason: String(options.reason || "operator") };
+  }
+  const now = Date.now();
+  const before = getStickyMenuDiagnostics(key, now);
+  clearStickyMenuTimer(key);
+  stickyMenuState.delete(key);
+  clearCallbackActionDeduperForChat(key);
+  clearPendingUiInput(key);
+  const currentDiag = stickyMenuDiagnostics.get(key) || { recoveryCount: 0, resetCount: 0 };
+  const reset = {
+    applied: Boolean(before.sessionId || before.messageId || before.lastDedupe),
+    reason: String(options.reason || "operator"),
+    atMs: now,
+    previousSessionId: before.sessionId || null,
+    previousLeaseAgeMs: before.leaseAgeMs,
+    previousMode: before.mode || null,
+    previousMessageId: before.messageId || null,
+  };
+  stickyMenuDiagnostics.set(key, {
+    ...currentDiag,
+    chatId: key,
+    resetCount: (currentDiag.resetCount || 0) + 1,
+    lastReset: reset,
+  });
+  return {
+    ...reset,
+    diagnostics: getStickyMenuDiagnostics(key, now),
+  };
+}
+
+function formatStickyMenuDiagnosticsMessage(chatId) {
+  const diagnostics = getStickyMenuDiagnostics(chatId);
+  const lines = [
+    ":mag: Sticky menu diagnostics",
+    `Chat: ${diagnostics.chatId || "unknown"}`,
+    `State: ${diagnostics.enabled ? "active" : "idle"}`,
+    `Session: ${diagnostics.sessionId || "none"}`,
+    `Lease age: ${diagnostics.leaseAgeMs != null ? formatDurationMs(diagnostics.leaseAgeMs) : "n/a"}`,
+    `Screen: ${diagnostics.screenId || "n/a"}`,
+    `Message: ${diagnostics.messageId || "n/a"}`,
+    `Recoveries: ${diagnostics.recoveryCount || 0}`,
+    `Resets: ${diagnostics.resetCount || 0}`,
+  ];
+  if (diagnostics.lastRecovery) {
+    lines.push(
+      `Last recovery: ${diagnostics.lastRecovery.reason || "callback"} • ${diagnostics.lastRecovery.sessionId || "no-session"}`,
+    );
+  }
+  if (diagnostics.lastDedupe) {
+    const age = diagnostics.lastDedupe.ageMs != null
+      ? `${diagnostics.lastDedupe.ageMs}ms`
+      : "first-seen";
+    lines.push(
+      `Last callback: ${diagnostics.lastDedupe.decision || "accepted"} • ${diagnostics.lastDedupe.data || "n/a"} • ${age}`,
+    );
+  }
+  if (diagnostics.lastReset) {
+    lines.push(
+      `Last reset: ${diagnostics.lastReset.reason || "operator"} • ${diagnostics.lastReset.previousSessionId || "no-session"}`,
+    );
+  }
+  lines.push("Use /menu reset to clear only this chat's sticky-menu lease.");
+  return lines.join("\n");
+}
+
+function formatStickyMenuResetMessage(reset) {
+  const session = reset?.previousSessionId || "none";
+  const age = reset?.previousLeaseAgeMs != null
+    ? formatDurationMs(reset.previousLeaseAgeMs)
+    : "n/a";
+  return [
+    ":broom: Sticky menu reset applied.",
+    `Reason: ${reset?.reason || "operator"}`,
+    `Previous session: ${session}`,
+    `Previous lease age: ${age}`,
+    "This only cleared sticky-menu state for the current chat.",
+  ].join("\n");
+}
+
+function logTelegramStructured(event, payload = {}) {
+  try {
+    console.log(`[telegram-bot] ${JSON.stringify({
+      event,
+      at: new Date().toISOString(),
+      ...payload,
+    })}`);
+  } catch {
+    console.log(`[telegram-bot] ${event}`);
+  }
 }
 
 function clearStickyMenuTimer(chatId) {
@@ -1394,6 +1589,134 @@ function clearStickyMenuTimer(chatId) {
 function isStickyMenuInteractive(chatId) {
   if (!chatId) return false;
   return stickyMenuState.get(chatId)?.mode === "interactive";
+}
+
+function isMenuCallbackData(data) {
+  if (typeof data !== "string") return false;
+  return data.startsWith("ui:") || data.startsWith("cb:");
+}
+
+function shouldRecoverStickyFromCallback(query) {
+  const data = String(query?.data || "");
+  if (!isMenuCallbackData(data)) return false;
+  const messageId = query?.message?.message_id;
+  const chatId = String(query?.message?.chat?.id || "");
+  if (!chatId || !messageId) return false;
+  const current = stickyMenuState.get(chatId);
+  if (current?.enabled && current?.messageId) return false;
+  return true;
+}
+
+function recoverStickyMenuContextFromCallback(query, reason = "callback") {
+  if (!shouldRecoverStickyFromCallback(query)) {
+    return { recovered: false, diagnostics: getStickyMenuDiagnostics(query?.message?.chat?.id || "") };
+  }
+  const chatId = String(query.message.chat.id || "");
+  const messageId = query.message.message_id;
+  const data = String(query.data || "");
+  const now = Date.now();
+  const prev = stickyMenuState.get(chatId) || {};
+  const screenId = prev.screenId || "home";
+  const params = prev.params || {};
+  const mode = data === "cb:dismiss" || data === "ui:cancel"
+    ? "interactive"
+    : "menu";
+  const nextState = setStickyMenuState(chatId, {
+    enabled: true,
+    messageId,
+    screenId,
+    params,
+    mode,
+    restoreScreenId: prev.restoreScreenId || screenId,
+    restoreParams: prev.restoreParams || params,
+  });
+  const currentDiag = stickyMenuDiagnostics.get(chatId) || { recoveryCount: 0, resetCount: 0 };
+  const recovery = {
+    reason,
+    atMs: now,
+    data,
+    messageId,
+    mode,
+    sessionId: nextState?.sessionId || null,
+    leaseAgeMs: getStickyMenuLeaseAgeMs(nextState, now),
+  };
+  stickyMenuDiagnostics.set(chatId, {
+    ...currentDiag,
+    chatId,
+    recoveryCount: (currentDiag.recoveryCount || 0) + 1,
+    lastRecovery: recovery,
+  });
+  logTelegramStructured("sticky_menu.context_recovered", {
+    reason,
+    chatId,
+    messageId,
+    mode,
+    data,
+    sessionId: recovery.sessionId,
+    leaseAgeMs: recovery.leaseAgeMs,
+  });
+  return {
+    recovered: true,
+    diagnostics: getStickyMenuDiagnostics(chatId, now),
+  };
+}
+
+function pruneCallbackActionDeduper(now = Date.now()) {
+  for (const [key, entry] of callbackActionDeduper.entries()) {
+    if (!entry || now - entry.atMs > CALLBACK_ACTION_DEDUPE_MS) {
+      callbackActionDeduper.delete(key);
+    }
+  }
+}
+
+function dedupeMenuCallbackAction({
+  chatId,
+  fromId,
+  messageId,
+  data,
+  callbackId,
+}) {
+  if (!isMenuCallbackData(data)) return { duplicate: false };
+  const now = Date.now();
+  const keyChatId = String(chatId || "");
+  pruneCallbackActionDeduper(now);
+  const key = [
+    keyChatId,
+    String(fromId || ""),
+    String(messageId || ""),
+    String(data || ""),
+  ].join("|");
+  const prev = callbackActionDeduper.get(key);
+  callbackActionDeduper.set(key, {
+    atMs: now,
+    callbackId: String(callbackId || ""),
+  });
+  const ageMs = prev ? now - prev.atMs : null;
+  const duplicate = Boolean(
+    prev
+    && String(prev.callbackId || "") !== String(callbackId || "")
+    && ageMs <= CALLBACK_ACTION_DEDUPE_MS
+  );
+  const diagnostics = getStickyMenuDiagnostics(keyChatId, now);
+  const dedupe = {
+    duplicate,
+    decision: duplicate ? "deduped" : "accepted",
+    key,
+    ageMs,
+    data: String(data || ""),
+    callbackId: String(callbackId || ""),
+    messageId: String(messageId || ""),
+    fromId: String(fromId || ""),
+    sessionId: diagnostics.sessionId || null,
+    leaseAgeMs: diagnostics.leaseAgeMs,
+  };
+  const currentDiag = stickyMenuDiagnostics.get(keyChatId) || { recoveryCount: 0, resetCount: 0 };
+  stickyMenuDiagnostics.set(keyChatId, {
+    ...currentDiag,
+    chatId: keyChatId,
+    lastDedupe: dedupe,
+  });
+  return dedupe;
 }
 
 function getStickyMenuRestoreTarget(chatId) {
@@ -2607,6 +2930,7 @@ async function handleCallbackQuery(query) {
   const fromId = String(query.from?.id || "");
   const data = query.data || "";
   const callbackId = query.id;
+  const messageId = query.message?.message_id || null;
 
   // Security: only accept from configured chat/user allow-list
   if (!isAuthorizedTelegramActor(chatId, fromId)) {
@@ -2614,10 +2938,36 @@ async function handleCallbackQuery(query) {
     return;
   }
 
+  const recovery = recoverStickyMenuContextFromCallback(query, "reconnect");
+
+  const dedupe = dedupeMenuCallbackAction({
+    chatId,
+    fromId,
+    messageId,
+    data,
+    callbackId,
+  });
+  if (dedupe.duplicate) {
+    logTelegramStructured("sticky_menu.callback_deduped", {
+      chatId,
+      fromId,
+      messageId,
+      data,
+      ageMs: dedupe.ageMs,
+      sessionId: dedupe.sessionId,
+      leaseAgeMs: dedupe.leaseAgeMs,
+    });
+    await answerCallbackQuery(callbackId, "Already processing... Use /menu diag if stuck.");
+    return;
+  }
+
   console.log(`[telegram-bot] callback: "${data}" from chat ${chatId}`);
 
   // Always acknowledge the callback to dismiss loading indicator
-  await answerCallbackQuery(callbackId);
+  await answerCallbackQuery(
+    callbackId,
+    recovery?.recovered ? "Recovered sticky menu context." : undefined,
+  );
 
   if (data.startsWith("ui:")) {
     await handleUiAction({
@@ -6211,6 +6561,10 @@ Object.assign(UI_SCREENS, {
           uiButton(":server: Background", uiGoAction("background")),
           uiButton(":close: Stop", uiCmdAction("/stop")),
         ],
+        [
+          uiButton(":mag: Menu Diag", uiCmdAction("/menu diag")),
+          uiButton(":broom: Reset Menu", uiCmdAction("/menu reset")),
+        ],
         uiNavRow("home"),
       ]),
   },
@@ -6878,7 +7232,28 @@ async function cmdVideoCall(chatId, args = "") {
   await cmdCall(chatId, normalized ? `video ${normalized}` : "video");
 }
 
-async function cmdMenu(chatId) {
+async function cmdMenu(chatId, args = "") {
+  const action = String(args || "").trim().toLowerCase();
+  if (["diag", "diagnostics", "lease", "session"].includes(action)) {
+    await sendReply(chatId, formatStickyMenuDiagnosticsMessage(chatId));
+    return;
+  }
+  if (action === "reset") {
+    const reset = resetStickyMenuContext(chatId, { reason: "operator" });
+    logTelegramStructured("sticky_menu.reset_applied", {
+      chatId,
+      reason: reset.reason,
+      previousSessionId: reset.previousSessionId,
+      previousLeaseAgeMs: reset.previousLeaseAgeMs,
+    });
+    await sendReply(chatId, formatStickyMenuResetMessage(reset));
+    syncUiUrlsFromServer();
+    if (telegramApiReachable !== false) {
+      safeDetach("menu-button-refresh", refreshMenuButton);
+    }
+    await showUiScreen(chatId, null, "home", {}, { sticky: true });
+    return;
+  }
   syncUiUrlsFromServer();
   if (telegramApiReachable !== false) {
     safeDetach("menu-button-refresh", refreshMenuButton);
@@ -11705,3 +12080,4 @@ export function stopStatusFileWriter() {
     _statusWriterTimer = null;
   }
 }
+

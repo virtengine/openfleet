@@ -1804,6 +1804,13 @@ function isFleetEntryActive(entry) {
   return status === "active" || status === "running" || status === "busy" || status === "inprogress";
 }
 
+function resolveFleetEntrySessionId(entry) {
+  const sessionId = String(entry?.session?.id || "").trim();
+  if (sessionId) return sessionId;
+  if (entry?.isTaskFallback || entry?.slot?.synthetic) return "";
+  return String(entry?.slot?.sessionId || "").trim();
+}
+
 function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, onForceStop }) {
   const [detailTab, setDetailTab] = useState("stream");
   const [sessionScope, setSessionScope] = useState("active");
@@ -1855,7 +1862,7 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
           branch: task?.branchName || task?.branch || task?.meta?.branchName || "",
           baseBranch: task?.baseBranch || task?.meta?.baseBranch || null,
           status: task?.status || task?.runtimeSnapshot?.state || "idle",
-          sessionId: String(task?.id || task?.taskId || "").trim(),
+          sessionId: "",
           startedAt:
             task?.lastActivityAt ||
             task?.updatedAt ||
@@ -1958,7 +1965,7 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
     visibleEntries.find((entry) => entry.key === selectedEntryKey)
     || visibleEntries[0]
     || null;
-  const sessionId = selectedEntry?.session?.id || null;
+  const sessionId = resolveFleetEntrySessionId(selectedEntry) || null;
   const contextId = sessionId || selectedEntry?.slot?.taskId || null;
 
   useEffect(() => {

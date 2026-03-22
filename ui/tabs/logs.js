@@ -237,6 +237,16 @@ export function LogsTab() {
     loadLogs();
   }, [isMobile]);
 
+  useEffect(() => {
+    const timer = setInterval(() => {
+      loadLogs({ force: true });
+      if (agentLogFile?.value) {
+        loadAgentLogTailData({ force: true });
+      }
+    }, 3000);
+    return () => clearInterval(timer);
+  }, []);
+
   const branchFileDetails = useMemo(() => {
     if (!branchDetail) return [];
     if (Array.isArray(branchDetail.filesChanged) && branchDetail.filesChanged.length) {

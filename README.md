@@ -12,7 +12,7 @@ _The name "Bosun" comes from "boatswain", the ship's officer responsible for coo
 _That maps directly to the Bosun project: it does not replace the captain or crew, it orchestrates the work. Our Bosun plans tasks, routes them to the right executors, enforces operational checks, and keeps humans in control while the system keeps delivery moving. Autonomous engineering with you in control of the operation._
 
 <p align="center">
-  <a href="https://bosun.engineer">Website</a> · <a href="https://bosun.engineer/docs/">Docs</a> · <a href="https://github.com/virtengine/bosun?tab=readme-ov-file#bosun">GitHub</a> · <a href="https://www.npmjs.com/package/bosun">npm</a> · <a href="https://github.com/virtengine/bosun/issues">Issues</a>
+  <a href="https://bosun.engineer">Website</a> · <a href="https://bosun.engineer/docs/">Docs</a> · <a href="https://github.com/virtengine/bosun?tab=readme-ov-file#bosun">GitHub</a> · <a href="https://www.npmjs.com/package/bosun">npm</a> · <a href="https://hub.docker.com/r/virtengine/bosun">Docker Hub</a> · <a href="https://github.com/virtengine/bosun/issues">Issues</a>
 </p>
 
 <p align="center">
@@ -40,6 +40,28 @@ First run launches setup automatically. You can also run setup directly:
 ```bash
 bosun --setup
 ```
+
+### Docker quick start
+
+Run Bosun with no local Node.js install — pull from Docker Hub:
+
+```bash
+docker run -d --name bosun -p 3080:3080 \
+  -v bosun-data:/data \
+  -e BOSUN_API_KEY=your-secret-key \
+  virtengine/bosun:latest
+```
+
+Or build from the cloned repo:
+
+```bash
+git clone https://github.com/virtengine/bosun.git && cd bosun
+docker compose up -d
+```
+
+Open `https://localhost:3080` to start the setup wizard.
+
+> **All installation options** — npm, source, Docker Hub, docker-compose, Electron desktop — are documented in [`INSTALL.md`](INSTALL.md) and on [bosun.engineer/docs/installation](https://bosun.engineer/docs/installation.html).
 
 Requires:
 
@@ -122,6 +144,8 @@ Set `primaryAgent` in `.bosun/bosun.config.json` or choose an executor preset du
 - `bosun --daemon --sentinel` starts daemon + sentinel together (recommended for unattended operation).
 - `bosun --terminate` is the clean reset command when you suspect stale/ghost processes.
 
+Telegram operators can pull the weekly agent work summary with `/weekly [days]` or `/report weekly [days]`. To post it automatically once per week, set `TELEGRAM_WEEKLY_REPORT_ENABLED=true` together with `TELEGRAM_WEEKLY_REPORT_DAY`, `TELEGRAM_WEEKLY_REPORT_HOUR`, and optional `TELEGRAM_WEEKLY_REPORT_DAYS`.
+
 ## Documentation
 
 **Published docs (website):** https://bosun.engineer/docs/
@@ -149,6 +173,26 @@ Bosun enforces a strict quality pipeline in both local hooks and CI:
 - **Demo load smoke test** runs in `npm test` and blocks push if `site/index.html` or `site/ui/demo.html` fails to load required assets.
 - **Prepublish checks** validate package contents and release readiness.
 
+### Codebase annotation audit
+
+Use `bosun audit` to generate and validate repo-level annotations that help future agents navigate the codebase without extra runtime context:
+
+```bash
+# Coverage report for supported source files
+bosun audit scan
+
+# Add missing file summaries and risky-function warnings
+bosun audit generate
+bosun audit warn
+
+# Rebuild lean manifests and the file responsibility index
+bosun audit manifest
+bosun audit index
+bosun audit trim
+
+# CI-safe conformity gate
+bosun audit --ci
+```
 
 Notes:
 
