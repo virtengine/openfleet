@@ -33,10 +33,22 @@ describe("chat session regressions", () => {
 
   it("retries inspector full-session fetches against workspace=all when scoped lookups 404", () => {
     const source = read("ui/app.js");
-    expect(source).toContain("const fallbackSessionPath = buildSessionApiPath(sessionId, \"\", {");
-    expect(source).toContain('workspace: "all"');
-    expect(source).toContain("errorText.includes(\"session not found\") || errorText.includes(\"request failed (404)\")");
-    expect(source).toContain("res = await apiFetch(fallbackSessionPath, { _silent: true });");
+    const siteSource = read("site/ui/app.js");
+    expect(source).toContain("createSessionFetchWithFallback");
+    expect(siteSource).toContain("createSessionFetchWithFallback");
+    expect(source).toContain("classifySessionFetchError");
+    expect(siteSource).toContain("classifySessionFetchError");
+    expect(source).toContain("fallbackPath: fallbackSessionPath");
+    expect(siteSource).toContain("fallbackPath: fallbackSessionPath");
+  });
+
+  it("shares loadSessionMessages fallback logic between app and site session lists", () => {
+    const source = read("ui/components/session-list.js");
+    const siteSource = read("site/ui/components/session-list.js");
+    expect(source).toContain("createSessionFetchWithFallback");
+    expect(siteSource).toContain("createSessionFetchWithFallback");
+    expect(source).toContain("classifySessionFetchError");
+    expect(siteSource).toContain("classifySessionFetchError");
   });
 
   it("exposes workspace metadata in session summaries for UI routing", () => {

@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  classifySessionFetchError as classifySharedSessionFetchError,
+  createSessionFetchWithFallback as createSharedSessionFetchWithFallback,
+} from "../lib/session-fetch-fallback.mjs";
+
+import {
   formatSessionFreshnessTimestamp,
   getSessionManualRetryState,
   getSessionLifecycleState,
   getSessionRecencyTimestamp,
   getSessionRuntimeState,
   buildSessionApiPath,
+  classifySessionFetchError,
+  createSessionFetchWithFallback,
   createSessionLoadMeta,
   getSessionRetryDelayMs,
   markSessionLoadFailure,
@@ -28,6 +35,89 @@ describe("session api workspace routing", () => {
 
   it("falls back to all when session metadata is absent", () => {
     expect(resolveSessionWorkspaceHint(null, "all")).toBe("all");
+  });
+
+
+  it("classifies 404-style session fetch failures without masking unknown errors", () => {
+    expect(classifySessionFetchError(new Error('{"error":"Session not found"}')).kind).toBe("not_found");
+    expect(classifySessionFetchError(new Error("Request failed (404)")).kind).toBe("not_found");
+    expect(classifySessionFetchError(new Error('{"status":404,"error":"Missing session"}')).kind).toBe("not_found");
+    expect(classifySessionFetchError(new Error('{"error":"Database offline"}')).kind).toBe("unknown");
+    expect(classifySessionFetchError(new Error("boom")).kind).toBe("unknown");
+  });
+
+  it("keeps app and shared fallback classification behavior identical", () => {
+    const cases = [
+      new Error('{"error":"Session not found"}'),
+      new Error("Request failed (404)"),
+      new Error('{"status":404,"error":"Missing session"}'),
+      new Error('{"error":"Database offline"}'),
+      new Error("boom"),
+    ];
+    for (const error of cases) {
+      expect(classifySessionFetchError(error)).toEqual(classifySharedSessionFetchError(error));
+    }
+  });
+
+  it("retries full-session fetches against workspace=all only for 404-style failures", async () => {
+    const calls = [];
+    const fetchWithFallback = createSessionFetchWithFallback({
+      fetcher: async (path) => {
+        calls.push(path);
+        if (calls.length === 1) {
+          throw new Error('{"error":"Session not found"}');
+        }
+        return { session: { id: "abc123" } };
+      },
+    });
+
+    const result = await fetchWithFallback({
+      primaryPath: "/api/sessions/abc123?workspace=current&full=1",
+      fallbackPath: "/api/sessions/abc123?workspace=all&full=1",
+    });
+
+    expect(result.session.id).toBe("abc123");
+    expect(calls).toEqual([
+      "/api/sessions/abc123?workspace=current&full=1",
+      "/api/sessions/abc123?workspace=all&full=1",
+    ]);
+  });
+
+  it("preserves unknown failures without retrying fallback fetches", async () => {
+    const fetchWithFallback = createSessionFetchWithFallback({
+      fetcher: async () => {
+        throw new Error('{"error":"Database offline"}');
+      },
+    });
+
+    await expect(
+      fetchWithFallback({
+        primaryPath: "/api/sessions/abc123?workspace=current&full=1",
+        fallbackPath: "/api/sessions/abc123?workspace=all&full=1",
+      }),
+    ).rejects.toThrow("Database offline");
+  });
+
+  it("preserves navigation state across fallback flow", async () => {
+    const calls = [];
+    const request = {
+      primaryPath: "/api/sessions/abc123?workspace=current&full=1&view=chat&nav=thread-7",
+      fallbackPath: "/api/sessions/abc123?workspace=all&full=1&view=chat&nav=thread-7",
+    };
+    const fetchWithFallback = createSharedSessionFetchWithFallback({
+      fetcher: async (path) => {
+        calls.push(path);
+        if (calls.length === 1) {
+          throw new Error('{"error":"Session not found"}');
+        }
+        return { session: { id: "abc123" } };
+      },
+    });
+
+    await fetchWithFallback(request);
+    expect(calls).toEqual([request.primaryPath, request.fallbackPath]);
+    expect(calls[1]).toContain("view=chat");
+    expect(calls[1]).toContain("nav=thread-7");
   });
 
   it("formats freshness labels with relative and absolute timestamps", () => {

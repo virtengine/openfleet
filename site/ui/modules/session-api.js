@@ -1,3 +1,10 @@
+import {
+  classifySessionFetchError,
+  createSessionFetchWithFallback,
+} from "../../../lib/session-fetch-fallback.mjs";
+
+export { classifySessionFetchError, createSessionFetchWithFallback };
+
 /*
  * Session API path helpers.
  * Keeps workspace scoping explicit for /api/sessions/:id routes.

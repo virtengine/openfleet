@@ -20,6 +20,8 @@ import {
   markSessionLoadFailure,
   markSessionLoadSuccess,
   resolveSessionWorkspaceHint,
+  classifySessionFetchError,
+  createSessionFetchWithFallback,
 } from "../modules/session-api.js";
 import { formatDate, formatRelative, truncate } from "../modules/utils.js";
 import { resolveIcon } from "../modules/icon-utils.js";
@@ -70,6 +72,9 @@ effect(() => {
 
 const DEFAULT_SESSION_PAGE_SIZE = 50;
 const MAX_SESSION_PAGE_SIZE = 200;
+
+const isScopedSessionNotFound = (error) =>
+  classifySessionFetchError(error)?.kind === "not_found";
 
 let _wsListenerReady = false;
 
@@ -163,26 +168,6 @@ function _bindSessionStore(targetId, messages, pagination) {
 export async function loadSessionMessages(id, opts = {}) {
   const targetSessionId = String(id || "").trim();
   if (!targetSessionId) return { ok: false, error: "invalid" };
-  const parseApiError = (err) => {
-    const raw = String(err?.message || "").trim();
-    if (!raw) return "";
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed.error === "string") {
-        return String(parsed.error).trim();
-      }
-    } catch {
-      // Not a JSON API error body.
-    }
-    return raw;
-  };
-  const isScopedSessionNotFound = (err) => {
-    const message = parseApiError(err).toLowerCase();
-    return (
-      message.includes("session not found") ||
-      message.includes("request failed (404)")
-    );
-  };
   const buildMessagesUrl = (path, limit, offset) => {
     try {
       const parsed = new URL(path, globalThis.location?.origin || "http://localhost");
@@ -200,10 +185,6 @@ export async function loadSessionMessages(id, opts = {}) {
       return `${path}${join}${parts.join("&")}`;
     }
   };
-  const fetchSessionAtPath = async (path, limit, offset) => {
-    const url = buildMessagesUrl(path, limit, offset);
-    return apiFetch(url, { _silent: true });
-  };
   try {
     const baseUrl = sessionPath(targetSessionId);
     if (!baseUrl) return { ok: false, error: "invalid" };
@@ -212,24 +193,23 @@ export async function loadSessionMessages(id, opts = {}) {
       Number.isFinite(requestedLimit) && requestedLimit > 0
         ? Math.min(Math.floor(requestedLimit), MAX_SESSION_PAGE_SIZE)
         : DEFAULT_SESSION_PAGE_SIZE;
+    const fetchSessionAtPath = async (path) => {
+      const url = buildMessagesUrl(path, limit, opts.offset);
+      return apiFetch(url, { _silent: true });
+    };
     const fallbackUrl = buildSessionApiPath(id, "", { workspace: "all" });
-    let res;
-    try {
-      res = await fetchSessionAtPath(baseUrl, limit, opts.offset);
-    } catch (err) {
-      const shouldRetryAll =
-        Boolean(fallbackUrl) &&
-        fallbackUrl !== baseUrl &&
-        isScopedSessionNotFound(err);
-      if (!shouldRetryAll) throw err;
-      res = await fetchSessionAtPath(fallbackUrl, limit, opts.offset);
-    }
+    const fetchSessionWithFallback = createSessionFetchWithFallback({
+      fetcher: fetchSessionAtPath,
+    });
+    const res = await fetchSessionWithFallback({
+      primaryPath: baseUrl,
+      fallbackPath: fallbackUrl,
+    });
     if (res?.session) {
       const normalized = dedupeMessages(res.session.messages || []);
       const sameBoundSession =
         String(sessionMessagesSessionId.value || "") === targetSessionId;
       if (opts.prepend && sameBoundSession && sessionMessages.value?.length) {
-        // Prepend older messages (loading history on scroll up)
         const merged = dedupeMessages([...normalized, ...sessionMessages.value]);
         _bindSessionStore(targetSessionId, merged, res.pagination || null);
       } else {

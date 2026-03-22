@@ -280,6 +280,8 @@ import {
   getSessionRecencyTimestamp,
   getSessionRuntimeState,
   resolveSessionWorkspaceHint,
+  classifySessionFetchError,
+  createSessionFetchWithFallback,
 } from "./modules/session-api.js";
 import { buildSessionInsights, formatCompactCount } from "./modules/session-insights.js";
 import { VeTheme, CssBaseline, AppBar, Toolbar, Tabs, Tab, Drawer, Box, IconButton, Typography, Chip, Badge, BottomNavigation, BottomNavigationAction, Tooltip, Avatar, Stack, Paper, CircularProgress, Button, Divider, Menu, MenuItem, Fab, Snackbar, Alert } from "./modules/mui.js";
@@ -1046,18 +1048,14 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
           }
           return;
         }
-        let res;
-        try {
-          res = await apiFetch(fullSessionPath, { _silent: true });
-        } catch (err) {
-          const errorText = String(err?.message || "").toLowerCase();
-          const shouldRetryAll =
-            Boolean(fallbackSessionPath) &&
-            fallbackSessionPath !== fullSessionPath &&
-            (errorText.includes("session not found") || errorText.includes("request failed (404)"));
-          if (!shouldRetryAll) throw err;
-          res = await apiFetch(fallbackSessionPath, { _silent: true });
-        }
+        const fetchSessionWithFallback = createSessionFetchWithFallback({
+          fetcher: (path) => apiFetch(path, { _silent: true }),
+        });
+        const res = await fetchSessionWithFallback({
+          primaryPath: fullSessionPath,
+          fallbackPath: fallbackSessionPath,
+          classifyError: classifySessionFetchError,
+        });
         if (!active) return;
         const nextInsights = buildSessionInsights(res?.session || null);
         setInsights(nextInsights);
