@@ -10147,7 +10147,7 @@ function isClaimOwnershipActive(claim, activePresenceInstanceIds = new Set(), no
     return false;
   }
   const claimHost = pickTaskString(claim?.metadata?.host).toLowerCase();
-  const localHost = pickTaskString(process.env.COMPUTERNAME, process.env.HOSTNAME).toLowerCase();
+  const localHost = pickTaskString(process.env.COMPUTERNAME, process.env.HOSTNAME, "localhost").toLowerCase();
   const claimPid = Number(claim?.metadata?.pid);
   if (claimHost && localHost && claimHost === localHost && Number.isFinite(claimPid) && claimPid > 0) {
     return isLocalProcessAlive(claimPid);
@@ -10178,6 +10178,7 @@ async function getPersistedOwnedTaskIds(node, ctx) {
     || requestedRepoRoot
     || process.cwd();
   const activeTaskIds = new Set();
+  const deadClaimTaskIds = new Set();
   const activeOwnerIds = await getActivePresenceInstanceIds(repoRoot);
   const now = Date.now();
   try {
@@ -10186,7 +10187,11 @@ async function getPersistedOwnedTaskIds(node, ctx) {
     if (typeof claims.listClaims === "function") {
       const persistedClaims = await claims.listClaims();
       for (const claim of persistedClaims || []) {
-        if (!isClaimOwnershipActive(claim, activeOwnerIds, now)) continue;
+        if (!isClaimOwnershipActive(claim, activeOwnerIds, now)) {
+          const deadId = pickTaskString(claim?.task_id, claim?.taskId);
+          if (deadId) deadClaimTaskIds.add(deadId);
+          continue;
+        }
         const taskId = pickTaskString(claim?.task_id, claim?.taskId);
         const ownerId = pickTaskString(claim?.instance_id, claim?.instanceId);
         if (taskId) activeTaskIds.add(taskId);
@@ -10203,6 +10208,7 @@ async function getPersistedOwnedTaskIds(node, ctx) {
       for (const [rawTaskId, state] of Object.entries(sharedStates || {})) {
         const taskId = pickTaskString(state?.taskId, state?.task_id, rawTaskId);
         if (!taskId) continue;
+        if (deadClaimTaskIds.has(taskId)) continue;
         const ownerId = pickTaskString(state?.ownerId, state?.owner_id);
         if (!isSharedStateOwnershipActive(state, now)) continue;
         if (activeOwnerIds.size > 0 && ownerId && !activeOwnerIds.has(ownerId)) continue;
