@@ -10319,17 +10319,18 @@ async function sendTelegramMessage(text, options = {}) {
 
 async function ensureWeeklyReportStateLoaded() {
   if (weeklyReportStateLoaded) return;
-  weeklyReportStateLoaded = true;
   try {
     const state = await readWeeklyReportScheduleState({
       statePath: weeklyReportStatePath,
     });
     weeklyReportLastSentAt = state?.lastSentAt || null;
+    weeklyReportStateLoaded = true;
   } catch (err) {
     console.warn(
       `[monitor] failed loading weekly report state from ${weeklyReportStatePath}: ${err?.message || err}`,
     );
     weeklyReportLastSentAt = null;
+    weeklyReportStateLoaded = false;
   }
 }
 

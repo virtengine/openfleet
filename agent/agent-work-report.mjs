@@ -124,7 +124,9 @@ export async function readWeeklyReportScheduleState(options = {}) {
     if (err?.code === "ENOENT") {
       return { statePath, lastSentAt: null };
     }
-    return { statePath, lastSentAt: null };
+    const message = `Failed to read weekly report schedule state from ${statePath}: ${err?.message || err}`;
+    // Preserve the original error as the cause when supported.
+    throw new Error(message, { cause: err });
   }
 }
 
