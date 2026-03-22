@@ -43,6 +43,53 @@ const DEFAULT_EXECUTOR_RUNTIME_STATE_FILE = resolve(
 );
 const REPO_AREA_SLOW_MERGE_LATENCY_MS = 4 * 60 * 60 * 1000;
 const REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS = 8 * 60 * 60 * 1000;
+const TASK_STATS_FIELDS = Object.freeze([
+  "draft",
+  "todo",
+  "inprogress",
+  "inreview",
+  "done",
+  "blocked",
+  "total",
+]);
+
+function validateTaskStatsShape(rawStats) {
+  if (!rawStats || typeof rawStats !== "object" || Array.isArray(rawStats)) {
+    throw new TypeError(
+      "Invalid task stats at taskStats: expected an object with draft, todo, inprogress, inreview, done, blocked, and total counters.",
+    );
+  }
+
+  const keys = Object.keys(rawStats);
+  const missingFields = TASK_STATS_FIELDS.filter((field) => !keys.includes(field));
+  if (missingFields.length > 0) {
+    const [field] = missingFields;
+    throw new TypeError(
+      `Invalid task stats at taskStats.${field}: missing required field.`,
+    );
+  }
+
+  const extraFields = keys.filter((field) => !TASK_STATS_FIELDS.includes(field));
+  if (extraFields.length > 0) {
+    const [field] = extraFields;
+    throw new TypeError(
+      `Invalid task stats at taskStats.${field}: unexpected field.`,
+    );
+  }
+
+  for (const field of TASK_STATS_FIELDS) {
+    const value = rawStats[field];
+    if (!Number.isInteger(value) || value < 0) {
+      throw new TypeError(
+        `Invalid task stats at taskStats.${field}: expected a non-negative integer, received ${JSON.stringify(value)}.`,
+      );
+    }
+  }
+
+  return Object.freeze(
+    Object.fromEntries(TASK_STATS_FIELDS.map((field) => [field, rawStats[field]])),
+  );
+}
 
 // ── Store helpers ─────────────────────────────────────────────────────────────
 
@@ -486,9 +533,10 @@ export async function taskDelete(id) {
  * Get aggregate task statistics.
  * @returns {object} Stats object
  */
+
 export async function taskStats() {
   const store = await initStore();
-  const stats = store.getStats();
+  const stats = validateTaskStatsShape(store.getStats());
   return {
     ...stats,
     repoAreaLocks: readRepoAreaLocksFromRuntimeState(),
@@ -1748,4 +1796,9 @@ if (process.argv[1] && resolve(process.argv[1]) === __filename) {
     process.exit(1);
   });
 }
+
+
+
+
+
 
