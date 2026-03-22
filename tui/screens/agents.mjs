@@ -167,17 +167,6 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
         applySessionSnapshot(sessions, Date.now());
       }),
 
-      setSelectedId(entries[nextIndex]?.id || "");
-      return;
-    }
-    if (key.downArrow) {
-      const nextIndex = Math.min(entries.length - 1, selectedIndex + 1);
-      setSelectedId(entries[nextIndex]?.id || "");
-      return;
-    }
-    if (key.return) {
-      void openDetail();
-      return;
     }
     if (input === "k" || input === "K") {
       if (selectedSession?.id) setConfirmKill(true);
