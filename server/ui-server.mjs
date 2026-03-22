@@ -4646,6 +4646,10 @@ let sessionListenerAttached = false;
 let sessionStateListenerAttached = false;
 let activeSessionListenerAttached = false;
 let sessionAccumulatorListenerAttached = false;
+let removeSessionEventListener = null;
+let removeSessionStateListener = null;
+let removeActiveSessionListener = null;
+let removeSessionAccumulatorListener = null;
 /** @type {ReturnType<typeof setInterval>|null} */
 let wsHeartbeatTimer = null;
 let tuiStatsEmitter = null;
@@ -4706,35 +4710,6 @@ async function resolveVoiceRelay() {
 let _fallbackExecPrimaryPrompt = null;
 /** Track in-flight chat turns so /api/sessions/:id/stop can abort them. */
 const sessionRunAbortControllers = new Map();
-let _activeSessions = [];
-
-function getLiveSessionSnapshot({ includeHidden = false } = {}) {
-  const tracker = getSessionTracker();
-  let sessions = tracker.listAllSessions();
-  if (!includeHidden) {
-    sessions = sessions.filter((session) => {
-      const detailed = tracker.getSessionById(session.id) || session;
-      return !shouldHideSessionFromDefaultList(detailed);
-    });
-  }
-  return sessions;
-}
-
-function broadcastSessionsSnapshot(sessions = getLiveSessionSnapshot()) {
-  const normalized = Array.isArray(sessions) ? sessions : [];
-  broadcastUiEvent(["sessions", "tui"], "sessions:update", {
-    sessions: normalized,
-  });
-}
-
-function updateActiveSessions(sessions) {
-  _activeSessions = Array.isArray(sessions) ? sessions : [];
-  broadcastSessionsSnapshot(_activeSessions);
-  for (const session of _activeSessions) {
-    broadcastUiEvent(["sessions", "tui"], "session:update", session);
-  }
-}
-
 async function resolveExecPrimaryPrompt() {
   if (typeof uiDeps.execPrimaryPrompt === "function") return uiDeps.execPrimaryPrompt;
   if (_fallbackExecPrimaryPrompt) return _fallbackExecPrimaryPrompt;
@@ -9236,6 +9211,7 @@ function buildCurrentTuiMonitorStats() {
     uptimeMs: runtimeStats?.startedAt ? Date.now() - Number(runtimeStats.startedAt) : process.uptime() * 1000,
   });
 }
+
 function normalizeWorkflowNodeStatus(status) {
   const normalized = String(status || "").trim().toLowerCase();
   if (normalized === "completed" || normalized === "success") return "success";
@@ -9877,7 +9853,10 @@ function startLogStream(socket, logType, query) {
 
       if (size <= streamState.offset) return;
 
-
+      // Read only new bytes
+      const readLen = Math.min(size - streamState.offset, 512_000);
+      const handle = await open(filePath, "r");
+      try {
         const buffer = Buffer.alloc(readLen);
         await handle.read(buffer, 0, readLen, streamState.offset);
         streamState.offset += readLen;
@@ -9885,6 +9864,7 @@ function startLogStream(socket, logType, query) {
         const lines = text.split("\n").filter(Boolean);
         if (lines.length > 0) {
           sendWsMessage(socket, { type: "log-lines", lines });
+
         }
       } finally {
         await handle.close();
@@ -11091,9 +11071,9 @@ async function tailFile(filePath, lineCount, maxBytes = 1_000_000) {
   };
 }
 
-async function readJsonlTail(filePath, maxLines = 2000) {
+async function readJsonlTail(filePath, maxLines = 2000, maxBytes = 1_000_000) {
   if (!existsSync(filePath)) return [];
-  const tail = await tailFile(filePath, maxLines);
+  const tail = await tailFile(filePath, maxLines, maxBytes);
   return (tail.lines || [])
     .map((line) => {
       try {
@@ -11167,7 +11147,7 @@ async function readCompletedSessionEntries(maxLines = 100_000) {
       }
     } catch { /* stat failed, skip */ }
   }
-  const entries = await readJsonlTail(sessionLogPath, maxLines);
+  const entries = await readJsonlTail(sessionLogPath, maxLines, 50_000_000);
   return {
     sessionLogPath,
     entries: entries.filter((entry) => String(entry?.type || "completed_session") === "completed_session"),
@@ -11311,7 +11291,7 @@ async function buildUsageAnalytics(days) {
   const streamPath = resolve(logDir, "agent-work-stream.jsonl");
   const [{ entries: completedSessions }, events] = await Promise.all([
     readCompletedSessionEntries(100_000),
-    readJsonlTail(streamPath, 100_000),
+    readJsonlTail(streamPath, 100_000, 50_000_000),
   ]);
 
   const cutoff = days ? Date.now() - days * 24 * 60 * 60 * 1000 : 0;
@@ -15670,25 +15650,42 @@ async function handleApi(req, res, url) {
       const days = Number(url.searchParams.get("days") || "7");
       const logDir = resolveAgentWorkLogDir();
       const metricsPath = resolve(logDir, "agent-metrics.jsonl");
-      const metrics = await readJsonlTail(metricsPath, 3000);
+      const metrics = await readJsonlTail(metricsPath, 100_000, 50_000_000);
       const summary = summarizeTelemetry(metrics, days) || {};
-      const runtimeStats = getRuntimeStats();
-      const completedSessions = getCompletedSessions(10_000);
-      const lifetimeTotals = completedSessions.reduce(
+
+      // Read lifetime totals from the full JSONL log (not the capped in-memory state)
+      // so the count is accurate even when sessions exceed the in-memory cap.
+      const { entries: allSessions } = await readCompletedSessionEntries(200_000);
+      const lifetimeTotals = allSessions.reduce(
         (acc, session) => {
           acc.attemptsCount += 1;
           acc.tokenCount += Number(session?.tokenCount || 0);
           acc.inputTokens += Number(session?.inputTokens || 0);
           acc.outputTokens += Number(session?.outputTokens || 0);
+          acc.durationMs += Math.max(0, Number(session?.durationMs || 0));
           return acc;
         },
-        { attemptsCount: 0, tokenCount: 0, inputTokens: 0, outputTokens: 0 },
+        { attemptsCount: 0, tokenCount: 0, inputTokens: 0, outputTokens: 0, durationMs: 0 },
       );
-      summary.runtimeMs = Number(runtimeStats?.runtimeMs || 0);
-      summary.lifetimeTotals = {
-        ...lifetimeTotals,
-        durationMs: summary.runtimeMs,
-      };
+
+      // Supplement token counts from agent-metrics.jsonl which has actual LLM usage data
+      // (prompt_tokens, completion_tokens, total_tokens) that the session log may lack.
+      if (lifetimeTotals.tokenCount <= 0 && metrics.length > 0) {
+        let metricsTokens = 0;
+        let metricsInputTokens = 0;
+        let metricsOutputTokens = 0;
+        for (const m of metrics) {
+          const met = m?.metrics || m;
+          metricsTokens += Number(met?.total_tokens || 0);
+          metricsInputTokens += Number(met?.prompt_tokens || 0);
+          metricsOutputTokens += Number(met?.completion_tokens || 0);
+        }
+        lifetimeTotals.tokenCount = metricsTokens;
+        lifetimeTotals.inputTokens = metricsInputTokens;
+        lifetimeTotals.outputTokens = metricsOutputTokens;
+      }
+
+      summary.lifetimeTotals = lifetimeTotals;
       jsonResponse(res, 200, { ok: true, data: summary });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -19058,7 +19055,6 @@ async function handleApi(req, res, url) {
       });
       jsonResponse(res, 200, { ok: true, session: { id: session.id, type: session.type, status: session.status, metadata: session.metadata } });
       broadcastUiEvent(["sessions"], "invalidate", { reason: "session-created", sessionId: id });
-      broadcastSessionsSnapshot();
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -19209,7 +19205,6 @@ async function handleApi(req, res, url) {
           reason: wasRunning ? "session-stop-requested" : "session-stop-noop",
           sessionId,
         });
-        broadcastSessionsSnapshot();
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
@@ -19262,7 +19257,6 @@ async function handleApi(req, res, url) {
           // Respond immediately so the UI doesn't block on agent execution
           jsonResponse(res, 200, { ok: true, messageId });
           broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
-          broadcastSessionsSnapshot();
 
           // Build an onEvent callback so intermediate SDK events (thinking,
           // tool calls, code edits, etc.) are streamed to the UI in real-time
@@ -19314,7 +19308,6 @@ async function handleApi(req, res, url) {
             // sessions from staying "active" forever and causing session bloat.
             tracker.updateSessionStatus(sessionId, "completed");
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
-            broadcastSessionsSnapshot();
           }).catch((execErr) => {
             const wasAborted =
               abortController.signal.aborted ||
@@ -19332,7 +19325,6 @@ async function handleApi(req, res, url) {
                 reason: "agent-stopped",
                 sessionId,
               });
-              broadcastSessionsSnapshot();
               return;
             }
             // Record error as system message so user sees feedback
@@ -19344,7 +19336,6 @@ async function handleApi(req, res, url) {
             });
             tracker.updateSessionStatus(sessionId, "failed");
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-error", sessionId });
-            broadcastSessionsSnapshot();
           }).finally(() => {
             // Clear only if this turn still owns the session abort controller.
             if (sessionRunAbortControllers.get(sessionId) === abortController) {
@@ -19371,7 +19362,6 @@ async function handleApi(req, res, url) {
           });
           jsonResponse(res, 200, { ok: true, messageId, warning: "no_agent_available" });
           broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
-          broadcastSessionsSnapshot();
         }
       } catch (err) {
         console.error("[ui-server] session message failed for %s: %s", String(sessionId), String(err?.message || err || "unknown"));
@@ -19411,7 +19401,6 @@ async function handleApi(req, res, url) {
           reason: "session-message-edited",
           sessionId,
         });
-        broadcastSessionsSnapshot();
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
@@ -19431,24 +19420,6 @@ async function handleApi(req, res, url) {
           reason: "session-archived",
           sessionId,
         });
-        broadcastSessionsSnapshot();
-      } catch (err) {
-        jsonResponse(res, 500, { ok: false, error: err.message });
-      }
-      return;
-    }
-
-    if (action === "pause" && req.method === "POST") {
-      try {
-        const session = getScopedSession();
-        if (!session) {
-          jsonResponse(res, 404, { ok: false, error: "Session not found" });
-          return;
-        }
-        tracker.updateSessionStatus(sessionId, "paused");
-        jsonResponse(res, 200, { ok: true });
-        broadcastUiEvent(["sessions"], "invalidate", { reason: "session-paused", sessionId });
-        broadcastSessionsSnapshot();
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
@@ -19465,7 +19436,6 @@ async function handleApi(req, res, url) {
         tracker.updateSessionStatus(sessionId, "active");
         jsonResponse(res, 200, { ok: true });
         broadcastUiEvent(["sessions"], "invalidate", { reason: "session-resumed", sessionId });
-        broadcastSessionsSnapshot();
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
@@ -19485,7 +19455,6 @@ async function handleApi(req, res, url) {
           reason: "session-deleted",
           sessionId,
         });
-        broadcastSessionsSnapshot();
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
@@ -19508,7 +19477,6 @@ async function handleApi(req, res, url) {
         tracker.renameSession(sessionId, title);
         jsonResponse(res, 200, { ok: true });
         broadcastUiEvent(["sessions"], "invalidate", { reason: "session-renamed", sessionId });
-        broadcastSessionsSnapshot();
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
@@ -21270,19 +21238,19 @@ export async function startTelegramUiServer(options = {}) {
     wsServer = new WebSocketServer({ noServer: true });
     if (!sessionListenerAttached) {
       sessionListenerAttached = true;
-      addSessionEventListener((payload) => {
+      removeSessionEventListener = addSessionEventListener((payload) => {
         broadcastSessionMessage(payload);
       });
     }
     if (!sessionStateListenerAttached) {
       sessionStateListenerAttached = true;
-      addSessionStateListener((payload) => {
+      removeSessionStateListener = addSessionStateListener((payload) => {
         broadcastTuiSessionsSnapshot(payload?.reason || payload?.event?.reason || "updated", payload || {});
       });
     }
     if (!activeSessionListenerAttached) {
       activeSessionListenerAttached = true;
-      addActiveSessionListener((sessions, detail = {}) => {
+      removeActiveSessionListener = addActiveSessionListener((sessions, detail = {}) => {
         const snapshot = getCurrentSessionSnapshot();
         broadcastCanonicalEvent(["sessions", "tui"], "sessions:update", snapshot);
         if (detail?.taskKey) {
@@ -21308,7 +21276,7 @@ export async function startTelegramUiServer(options = {}) {
     }
     if (!sessionAccumulatorListenerAttached) {
       sessionAccumulatorListenerAttached = true;
-      addSessionAccumulationListener((payload) => {
+      removeSessionAccumulatorListener = addSessionAccumulationListener((payload) => {
         broadcastUiEvent(["tasks", "overview", "telemetry", "sessions"], "invalidate", {
           reason: "session-accumulated",
           taskId: payload?.taskId || null,
@@ -21358,7 +21326,12 @@ export async function startTelegramUiServer(options = {}) {
     }
     globalThis.__bosun_setRetryQueueData = setRetryQueueData;
 
-
+    // Session tracking
+    let _activeSessions = [];
+    function updateActiveSessions(sessions) {
+      _activeSessions = sessions || [];
+      broadcastTuiSessionsSnapshot("active-sessions", { sessions: _activeSessions });
+    }
 
     // Task CRUD events
     function broadcastTaskEvent(type, task) {
@@ -21887,7 +21860,18 @@ export function stopTelegramUiServer() {
   stopWsHeartbeat();
   tuiStatsEmitter?.stop?.();
   tuiStatsEmitter = null;
-  _activeSessions = [];
+  removeSessionEventListener?.();
+  removeSessionEventListener = null;
+  sessionListenerAttached = false;
+  removeSessionStateListener?.();
+  removeSessionStateListener = null;
+  sessionStateListenerAttached = false;
+  removeActiveSessionListener?.();
+  removeActiveSessionListener = null;
+  activeSessionListenerAttached = false;
+  removeSessionAccumulatorListener?.();
+  removeSessionAccumulatorListener = null;
+  sessionAccumulatorListenerAttached = false;
   // Clear injected configDir so it does not leak between server lifecycles
   // (tests start/stop servers repeatedly with different config directories).
   delete uiDeps.configDir;
@@ -21925,4 +21909,3 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
-
