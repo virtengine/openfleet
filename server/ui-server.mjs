@@ -9177,6 +9177,10 @@ function buildCurrentTuiMonitorStats() {
   const status = executor?.getStatus?.() || {};
   const slots = Array.isArray(status?.slots) ? status.slots : [];
   const runtimeStats = getRuntimeStats() || {};
+  const runtimeExport = exportRuntimeData();
+  const injectedStats = uiDeps.getTuiMonitorStats?.() || {};
+  const tokensIn = (runtimeExport?.sessions || []).reduce((sum, session) => sum + Number(session?.inputTokens || 0), 0);
+  const tokensOut = (runtimeExport?.sessions || []).reduce((sum, session) => sum + Number(session?.outputTokens || 0), 0);
 
   const pickNumericStat = (...candidates) => {
     for (const candidate of candidates) {
