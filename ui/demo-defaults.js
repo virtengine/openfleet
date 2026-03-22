@@ -17891,8 +17891,8 @@
           "type": "loop.for_each",
           "label": "Process Each Task",
           "config": {
-            "items": "{{query-tasks.output}}",
-            "itemVariable": "task",
+            "items": "$ctx.getNodeOutput('query-tasks')?.output || []",
+            "variable": "task",
             "indexVariable": "idx",
             "maxConcurrent": "{{maxConcurrent}}"
           },
@@ -18245,11 +18245,12 @@
           "type": "loop.for_each",
           "label": "Dispatch Tasks",
           "config": {
-            "items": "{{query-tasks.output}}",
+            "items": "$ctx.getNodeOutput('query-tasks')?.output || []",
             "itemVariable": "currentTask",
             "indexVariable": "taskIndex",
             "maxConcurrent": "{{maxConcurrent}}",
-            "workflowId": "{{subWorkflow}}"
+            "workflowId": "{{subWorkflow}}",
+            "mode": "dispatch"
           },
           "position": {
             "x": 400,
@@ -18354,7 +18355,7 @@
           "source": "check-coordinator",
           "target": "query-tasks",
           "sourcePort": "default",
-          "condition": "result.result === true"
+          "condition": "$output === true || $output?.result === true || $output?.value === true"
         },
         {
           "id": "query-tasks->dispatch-tasks",
@@ -19495,10 +19496,11 @@
         },
         {
           "id": "sweep-task-wts",
-          "type": "action.sweep_task_worktrees",
+          "type": "action.recover_worktree",
           "label": "Sweep Task WTs",
           "config": {
             "repoRoot": "{{repoRoot}}",
+            "branch": "{{branch}}",
             "taskId": "{{taskId}}"
           },
           "position": {
@@ -37831,8 +37833,8 @@
           "type": "loop.for_each",
           "label": "Process Each Task",
           "config": {
-            "items": "{{query-tasks.output}}",
-            "itemVariable": "task",
+            "items": "$ctx.getNodeOutput('query-tasks')?.output || []",
+            "variable": "task",
             "indexVariable": "idx",
             "maxConcurrent": "{{maxConcurrent}}"
           },
@@ -38173,11 +38175,12 @@
           "type": "loop.for_each",
           "label": "Dispatch Tasks",
           "config": {
-            "items": "{{query-tasks.output}}",
+            "items": "$ctx.getNodeOutput('query-tasks')?.output || []",
             "itemVariable": "currentTask",
             "indexVariable": "taskIndex",
             "maxConcurrent": "{{maxConcurrent}}",
-            "workflowId": "{{subWorkflow}}"
+            "workflowId": "{{subWorkflow}}",
+            "mode": "dispatch"
           },
           "position": {
             "x": 400,
@@ -38282,7 +38285,7 @@
           "source": "check-coordinator",
           "target": "query-tasks",
           "sourcePort": "default",
-          "condition": "result.result === true"
+          "condition": "$output === true || $output?.result === true || $output?.value === true"
         },
         {
           "id": "query-tasks->dispatch-tasks",
@@ -39393,10 +39396,11 @@
         },
         {
           "id": "sweep-task-wts",
-          "type": "action.sweep_task_worktrees",
+          "type": "action.recover_worktree",
           "label": "Sweep Task WTs",
           "config": {
             "repoRoot": "{{repoRoot}}",
+            "branch": "{{branch}}",
             "taskId": "{{taskId}}"
           },
           "position": {
