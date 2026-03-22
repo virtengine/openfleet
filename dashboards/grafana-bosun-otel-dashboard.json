@@ -1,0 +1,53 @@
+{
+  "$schema": "https://grafana.com/schemas/dashboard/v2.json",
+  "title": "Bosun OpenTelemetry Overview",
+  "tags": ["bosun", "opentelemetry", "agents"],
+  "timezone": "browser",
+  "panels": [
+    {
+      "title": "Task Throughput",
+      "type": "timeseries",
+      "targets": [{ "expr": "sum(rate(bosun_task_duration_count[5m]))" }]
+    },
+    {
+      "title": "Task Success Rate",
+      "type": "stat",
+      "targets": [{ "expr": "sum(rate(bosun_task_duration_count{status=\"ok\"}[5m])) / sum(rate(bosun_task_duration_count[5m]))" }]
+    },
+    {
+      "title": "Average Task Duration",
+      "type": "timeseries",
+      "targets": [{ "expr": "histogram_quantile(0.5, sum(rate(bosun_task_duration_bucket[5m])) by (le))" }]
+    },
+    {
+      "title": "Token Usage By Model",
+      "type": "timeseries",
+      "targets": [{ "expr": "sum by (model) (rate(bosun_task_tokens_total[5m]))" }]
+    },
+    {
+      "title": "Cost By Model / SDK",
+      "type": "timeseries",
+      "targets": [{ "expr": "sum by (model, sdk) (rate(bosun_task_cost_usd[5m]))" }]
+    },
+    {
+      "title": "Error Rate By Type",
+      "type": "timeseries",
+      "targets": [{ "expr": "sum by (error_type) (rate(bosun_agent_errors[5m]))" }]
+    },
+    {
+      "title": "Intervention Frequency",
+      "type": "timeseries",
+      "targets": [{ "expr": "sum by (intervention_type) (rate(bosun_agent_interventions[5m]))" }]
+    },
+    {
+      "title": "Active Agent Sessions",
+      "type": "stat",
+      "targets": [{ "expr": "bosun_agent_sessions_active" }]
+    },
+    {
+      "title": "Multi-Agent Waterfall",
+      "type": "traces",
+      "targets": [{ "queryType": "traceql", "query": "{ resource.service.name = \"bosun\" }" }]
+    }
+  ]
+}

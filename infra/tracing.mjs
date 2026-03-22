@@ -456,9 +456,11 @@ export async function traceAgentSession(sessionOrId, attributesOrFn, maybeFn) {
   state.activeSessionCount += 1;
   state.metricsState.activeSessions = state.activeSessionCount;
   return withSpan("bosun.agent.session", options, async (spanCtx) => {
+    spanCtx.addEvent("session.lifecycle.start", { sessionId, taskId: taskId || undefined });
     try {
       return await fn(spanCtx);
     } finally {
+      spanCtx.addEvent("session.lifecycle.end", { sessionId, taskId: taskId || undefined });
       state.activeSessionCount = Math.max(0, state.activeSessionCount - 1);
       state.metricsState.activeSessions = state.activeSessionCount;
     }
@@ -628,6 +630,10 @@ export function recordAgentError(errorType = "Error", attributes = {}) {
 }
 
 export function recordAgentIntervention(interventionType = "unknown", attributes = {}) {
+  const taskId = String(attributes.taskId || "").trim();
+  if (taskId) {
+    recordEventOnTaskSpan(taskId, "agent.intervention", { interventionType, ...attributes });
+  }
   state.instruments?.agentInterventions.add(
     1,
     coerceAttributes({ interventionType, ...attributes }),
@@ -644,3 +650,5 @@ export function getTracingState() {
     metrics: state.metricsState,
   };
 }
+
+

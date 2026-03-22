@@ -54,5 +54,30 @@ describe("loadConfig tracing", () => {
     const config = loadConfig(["node", "bosun", "--config-dir", rootDir]);
     expect(config.tracing.sampleRate).toBe(1);
   });
-});
 
+  it("preserves explicit disabled state when no endpoint is configured", () => {
+    rootDir = mkdtempSync(join(tmpdir(), "bosun-tracing-config-"));
+    writeFileSync(join(rootDir, "bosun.config.json"), JSON.stringify({ tracing: { enabled: false } }));
+
+    const config = loadConfig(["node", "bosun", "--config-dir", rootDir]);
+    expect(config.tracing.enabled).toBe(false);
+    expect(config.tracing.endpoint).toBe("");
+  });
+
+  it("loads metrics endpoint alongside trace endpoint", () => {
+    rootDir = mkdtempSync(join(tmpdir(), "bosun-tracing-config-"));
+    writeFileSync(
+      join(rootDir, "bosun.config.json"),
+      JSON.stringify({
+        tracing: {
+          enabled: true,
+          endpoint: "http://localhost:4318/v1/traces",
+          metricsEndpoint: "http://localhost:4318/v1/metrics",
+        },
+      }),
+    );
+
+    const config = loadConfig(["node", "bosun", "--config-dir", rootDir]);
+    expect(config.tracing.metricsEndpoint).toBe("http://localhost:4318/v1/metrics");
+  });
+});
