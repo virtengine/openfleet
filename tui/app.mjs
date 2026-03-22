@@ -141,6 +141,13 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
           unsubscribe();
         }
       });
+
+    return () => {
+      retryUnsubscribes.forEach((unsubscribe) => {
+        if (typeof unsubscribe === "function") {
+          unsubscribe();
+        }
+      });
       bridge.disconnect();
     };
   }, [host, port]);

@@ -167,17 +167,6 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
         applySessionSnapshot(sessions, Date.now());
       }),
 
-
-  const openDetail = React.useCallback(async () => {
-    if (!selectedSession?.id) return;
-    const payload = await fetchJson(
-      resolvedHost,
-      resolvedPort,
-      `/api/sessions/${encodeURIComponent(selectedSession.id)}?workspace=all&full=1`,
-    );
-    setDetailView(detailLines(payload));
-    setLogLines([]);
-    setDiffView(null);
     setStatusLine("");
   }, [resolvedHost, resolvedPort, selectedSession]);
 
