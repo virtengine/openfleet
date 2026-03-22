@@ -5463,7 +5463,7 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(Array.isArray(replanRevision.graphAfter?.nodes)).toBe(true);
     expect(Array.isArray(replanRevision.graphAfter?.edges)).toBe(true);
     expect(replanRevision.graphAfter?.edges?.[0]?.source).toBe("trigger");
-    expect(retriedRun.detail.issueAdvisor.recommendedAction).toBe("resume_remaining");
+    expect(retriedRun.detail.issueAdvisor.recommendedAction).toBe("continue");
   });
 
   it("distinguishes rerun, fix-step, and subgraph replan retry decisions", () => {
