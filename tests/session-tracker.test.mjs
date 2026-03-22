@@ -2,7 +2,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, beforeEach } from "vitest";
-import { _test, createSessionTracker, SessionTracker } from "../infra/session-tracker.mjs";
+import {
+  _test,
+  addSessionStateListener,
+  createSessionTracker,
+  SessionTracker,
+} from "../infra/session-tracker.mjs";
 
 describe("session-tracker", () => {
   /** @type {SessionTracker} */
@@ -63,6 +68,25 @@ describe("session-tracker", () => {
 
     it("returns null for non-existent session", () => {
       expect(tracker.getSession("nonexistent")).toBeNull();
+    });
+    it("emits state listener payloads for lifecycle changes", () => {
+      const events = [];
+      const unsubscribe = addSessionStateListener((payload) => events.push(payload));
+
+      tracker.startSession("task-1", "Test Task");
+      tracker.updateSessionStatus("task-1", "completed");
+      tracker.renameSession("task-1", "Renamed Task");
+      tracker.endSession("task-1", "completed");
+      unsubscribe();
+
+      expect(events.map((event) => event.reason)).toEqual([
+        "session-created",
+        "session-status",
+        "session-renamed",
+        "session-ended",
+      ]);
+      expect(events.every((event) => event.event?.kind === "state")).toBe(true);
+      expect(events[0]?.session?.taskId).toBe("task-1");
     });
   });
 

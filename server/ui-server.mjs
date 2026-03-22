@@ -44,6 +44,7 @@ import {
 } from "../kanban/kanban-adapter.mjs";
 
 import {
+  addActiveSessionListener,
   getActiveThreads,
   launchEphemeralThread,
   launchOrResumeThread,
@@ -159,10 +160,12 @@ import {
 import {
   getSessionTracker,
   addSessionEventListener,
+  addSessionStateListener,
 } from "../infra/session-tracker.mjs";
 import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import {
   addSessionAccumulationListener,
+  exportRuntimeData,
   getCompletedSessions,
   getRuntimeStats,
   getTaskLifetimeTotals,
@@ -210,6 +213,17 @@ import {
   mergeTaskAttachments,
 } from "../task/task-attachments.mjs";
 import { getVisionSessionState } from "../voice/vision-session-state.mjs";
+import {
+  buildLogStreamPayload,
+  buildMonitorStatsPayload,
+  buildSessionEventPayload,
+  buildSessionsUpdatePayload,
+  buildTasksUpdatePayload,
+  buildWorkflowStatusPayload,
+  createTuiStatsEmitter,
+  persistCompatibleTuiAuthToken,
+  resolveTuiAuthToken,
+} from "../infra/tui-bridge.mjs";
 
 const TASK_STORE_MODULE_PATH = "../task/task-store.mjs";
 const TASK_STORE_START_GUARD_EXPORTS = [
@@ -4882,14 +4896,22 @@ let _browserOpened = false;
 const AUTO_OPEN_MARKER_FILE = "ui-auto-open.json";
 const UI_INSTANCE_LOCK_FILE = "ui-server.instance.lock.json";
 const UI_SESSION_TOKEN_FILE = "ui-session-token.json";
+const TUI_SESSION_TOKEN_FILE = "ui-token";
 const UI_LAST_PORT_FILE = "ui-last-port.json";
 const DEFAULT_AUTO_OPEN_COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12h
 const DEFAULT_SESSION_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const wsClients = new Set();
 let sessionListenerAttached = false;
+let sessionStateListenerAttached = false;
+let activeSessionListenerAttached = false;
 let sessionAccumulatorListenerAttached = false;
+let removeSessionEventListener = null;
+let removeSessionStateListener = null;
+let removeActiveSessionListener = null;
+let removeSessionAccumulatorListener = null;
 /** @type {ReturnType<typeof setInterval>|null} */
 let wsHeartbeatTimer = null;
+let tuiStatsEmitter = null;
 const WORKFLOW_WS_BATCH_MS = 80;
 const workflowWsBatchByKey = new Map();
 const workflowEngineListenerCleanup = new WeakMap();
@@ -5277,6 +5299,17 @@ function isValidSessionToken(token) {
 }
 
 function readPersistedSessionToken() {
+  const envToken = resolveTuiAuthToken({ env: process.env, configDir: resolveUiConfigDir() });
+  if (isValidSessionToken(envToken)) return envToken;
+  try {
+    const plainTokenPath = resolveUiCachePath(TUI_SESSION_TOKEN_FILE);
+    if (existsSync(plainTokenPath)) {
+      const plainToken = String(readFileSync(plainTokenPath, "utf8") || "").trim();
+      if (isValidSessionToken(plainToken)) return plainToken;
+    }
+  } catch {
+    // best effort
+  }
   try {
     const tokenPath = resolveUiCachePath(UI_SESSION_TOKEN_FILE);
     if (!existsSync(tokenPath)) return "";
@@ -5294,6 +5327,7 @@ function readPersistedSessionToken() {
 
 function persistSessionToken(token) {
   if (!isValidSessionToken(token)) return;
+  process.env.BOSUN_UI_TOKEN = token;
   try {
     const tokenPath = resolveUiCachePath(UI_SESSION_TOKEN_FILE);
     writeFileSync(
@@ -5309,6 +5343,7 @@ function persistSessionToken(token) {
       ),
       "utf8",
     );
+    persistCompatibleTuiAuthToken(token, { configDir: resolveUiConfigDir() });
   } catch {
     // best effort
   }
@@ -5328,6 +5363,7 @@ function ensureSessionToken() {
   const persisted = readPersistedSessionToken();
   if (persisted) {
     sessionToken = persisted;
+    persistSessionToken(sessionToken);
     return sessionToken;
   }
   sessionToken = randomBytes(32).toString("hex");
@@ -9383,6 +9419,87 @@ function sendWsMessage(socket, payload) {
   }
 }
 
+function broadcastCanonicalEvent(channels, type, payload = {}) {
+  const required = new Set(Array.isArray(channels) ? channels : [channels]);
+  const message = {
+    type,
+    channels: Array.from(required),
+    payload,
+    ts: Date.now(),
+  };
+  for (const socket of wsClients) {
+    const subscribed = socket.__channels || new Set(["*"]);
+    const shouldSend = subscribed.has("*") || Array.from(required).some((channel) => subscribed.has(channel));
+    if (shouldSend) sendWsMessage(socket, message);
+  }
+}
+
+function getCurrentSessionSnapshot() {
+  try {
+    const tracker = getSessionTracker();
+    return buildSessionsUpdatePayload(tracker?.listAllSessions?.() || []);
+  } catch {
+    return [];
+  }
+}
+
+function broadcastTuiSessionsSnapshot(reason = "updated", detail = {}) {
+  broadcastCanonicalEvent(["sessions", "tui"], "sessions:update", getCurrentSessionSnapshot());
+  const sessionEvent = buildSessionEventPayload({
+    sessionId: detail?.sessionId || detail?.session?.id || detail?.threadId || detail?.taskKey || "",
+    taskId: detail?.taskId || detail?.session?.taskId || detail?.taskKey || "",
+    session: detail?.session || detail,
+    event: {
+      kind: "state",
+      reason,
+      ...(detail && typeof detail === "object" ? detail : {}),
+    },
+  });
+  if (sessionEvent.sessionId && sessionEvent.taskId) {
+    broadcastCanonicalEvent(["sessions", "tui"], "session:event", sessionEvent);
+  }
+}
+
+function buildCurrentTuiMonitorStats() {
+  const executor = uiDeps.getInternalExecutor?.() || null;
+  const injectedStats = uiDeps.getTuiMonitorStats?.() || {};
+  const status = executor?.getStatus?.() || {};
+  const slots = Array.isArray(status?.slots) ? status.slots : [];
+  const runtimeStats = getRuntimeStats() || {};
+  const runtimeSessions = Array.isArray(runtimeStats?.sessions) ? runtimeStats.sessions : [];
+
+  const pickNumericStat = (...candidates) => {
+    for (const candidate of candidates) {
+      if (candidate == null) continue;
+      const numeric = Number(candidate);
+      if (Number.isFinite(numeric)) {
+        return numeric;
+      }
+    }
+    return 0;
+  };
+  const tokensIn = pickNumericStat(injectedStats?.tokensIn, runtimeStats?.totalInputTokens);
+  const tokensOut = pickNumericStat(injectedStats?.tokensOut, runtimeStats?.totalOutputTokens);
+
+  return buildMonitorStatsPayload({
+    agentPool: {
+      activeAgents: pickNumericStat(status?.activeSlots, slots.length, injectedStats?.activeAgents),
+      maxAgents: pickNumericStat(status?.maxParallel, injectedStats?.maxAgents),
+      tokensIn: pickNumericStat(injectedStats?.tokensIn, tokensIn),
+      tokensOut: pickNumericStat(injectedStats?.tokensOut, tokensOut),
+      throughputTps: injectedStats?.throughputTps,
+      rateLimits: injectedStats?.rateLimits || {},
+    },
+    runtimeStats: {
+      ...runtimeStats,
+      sessions: runtimeSessions,
+      totalInputTokens: tokensIn,
+      totalOutputTokens: tokensOut,
+    },
+    uptimeMs: runtimeStats?.startedAt ? Date.now() - Number(runtimeStats.startedAt) : process.uptime() * 1000,
+  });
+}
+
 function normalizeWorkflowNodeStatus(status) {
   const normalized = String(status || "").trim().toLowerCase();
   if (normalized === "completed" || normalized === "success") return "success";
@@ -9566,6 +9683,13 @@ function attachWorkflowEngineLiveBridge(engine) {
   };
 
   listen("run:start", (payload) => {
+    broadcastCanonicalEvent(["workflows", "tui"], "workflow:status", buildWorkflowStatusPayload({
+      ...payload,
+      workflowName: payload.name || payload.workflowName || null,
+      eventType: "run:start",
+      status: "running",
+      timestamp: Date.now(),
+    }));
     queueWorkflowWsEvent({
       kind: "run",
       workflowId: payload.workflowId,
@@ -9577,6 +9701,14 @@ function attachWorkflowEngineLiveBridge(engine) {
     });
   });
   listen("run:end", (payload) => {
+    broadcastCanonicalEvent(["workflows", "tui"], "workflow:status", buildWorkflowStatusPayload({
+      ...payload,
+      workflowName: payload.workflowName || payload.name || null,
+      eventType: "run:end",
+      durationMs: Number(payload.duration) || null,
+      status: String(payload.status || "").trim().toLowerCase() || "completed",
+      timestamp: Date.now(),
+    }));
     queueWorkflowWsEvent({
       kind: "run",
       workflowId: payload.workflowId,
@@ -9589,6 +9721,13 @@ function attachWorkflowEngineLiveBridge(engine) {
     });
   });
   listen("run:error", (payload) => {
+    broadcastCanonicalEvent(["workflows", "tui"], "workflow:status", buildWorkflowStatusPayload({
+      ...payload,
+      workflowName: payload.workflowName || payload.name || null,
+      eventType: "run:error",
+      status: "failed",
+      timestamp: Date.now(),
+    }));
     queueWorkflowWsEvent({
       kind: "run",
       workflowId: payload.workflowId,
@@ -9626,6 +9765,13 @@ function attachWorkflowEngineLiveBridge(engine) {
     });
   });
   listen("node:complete", (payload) => {
+    broadcastCanonicalEvent(["workflows", "tui"], "workflow:status", buildWorkflowStatusPayload({
+      ...payload,
+      workflowName: payload.workflowName || null,
+      eventType: "node:complete",
+      status: "success",
+      timestamp: Date.now(),
+    }));
     const preview = buildWorkflowNodeOutputPreview(payload.nodeType, payload.output);
     queueWorkflowWsEvent({
       kind: "node",
@@ -9696,21 +9842,13 @@ function attachWorkflowEngineLiveBridge(engine) {
 }
 
 function broadcastUiEvent(channels, type, payload = {}) {
-  const required = new Set(Array.isArray(channels) ? channels : [channels]);
-  const message = {
-    type,
-    channels: Array.from(required),
-    payload,
-    ts: Date.now(),
-  };
-  for (const socket of wsClients) {
-    const subscribed = socket.__channels || new Set(["*"]);
-    const shouldSend =
-      subscribed.has("*") ||
-      Array.from(required).some((channel) => subscribed.has(channel));
-    if (shouldSend) {
-      sendWsMessage(socket, message);
-    }
+  const required = Array.isArray(channels) ? channels : [channels];
+  broadcastCanonicalEvent(required, type, payload);
+  if (required.includes("sessions") && type !== "sessions:update" && type !== "session:event") {
+    broadcastTuiSessionsSnapshot(type, payload);
+  }
+  if (required.includes("tasks") && type !== "tasks:update") {
+    broadcastCanonicalEvent(["tasks", "tui"], "tasks:update", buildTasksUpdatePayload(payload, { sourceEvent: type }));
   }
 }
 
@@ -9731,6 +9869,20 @@ function broadcastSessionMessage(payload) {
       sendWsMessage(socket, message);
     }
   }
+
+  const sessionEvent = buildSessionEventPayload({
+    sessionId: payload?.sessionId || payload?.session?.id || payload?.taskId || "",
+    taskId: payload?.taskId || payload?.session?.taskId || payload?.sessionId || "",
+    session: payload?.session || {},
+    event: {
+      kind: "message",
+      message: payload?.message ?? null,
+    },
+  });
+  if (sessionEvent.sessionId && sessionEvent.taskId) {
+    broadcastCanonicalEvent(["sessions", "tui"], "session:event", sessionEvent);
+  }
+  broadcastCanonicalEvent(["sessions", "tui"], "sessions:update", getCurrentSessionSnapshot());
 }
 
 async function collectUiStats() {
@@ -9986,7 +10138,6 @@ function startLogStream(socket, logType, query) {
         // File was truncated/rotated — reset
         streamState.offset = 0;
       }
-
       if (size <= streamState.offset) return;
 
       // Read only new bytes
@@ -21447,13 +21598,45 @@ export async function startTelegramUiServer(options = {}) {
     wsServer = new WebSocketServer({ noServer: true });
     if (!sessionListenerAttached) {
       sessionListenerAttached = true;
-      addSessionEventListener((payload) => {
+      removeSessionEventListener = addSessionEventListener((payload) => {
         broadcastSessionMessage(payload);
+      });
+    }
+    if (!sessionStateListenerAttached) {
+      sessionStateListenerAttached = true;
+      removeSessionStateListener = addSessionStateListener((payload) => {
+        broadcastTuiSessionsSnapshot(payload?.reason || payload?.event?.reason || "updated", payload || {});
+      });
+    }
+    if (!activeSessionListenerAttached) {
+      activeSessionListenerAttached = true;
+      removeActiveSessionListener = addActiveSessionListener((sessions, detail = {}) => {
+        const snapshot = getCurrentSessionSnapshot();
+        broadcastCanonicalEvent(["sessions", "tui"], "sessions:update", snapshot);
+        if (detail?.taskKey) {
+          const session = snapshot.find((entry) => String(entry?.taskId || entry?.id || "").trim() === String(detail.taskKey || "").trim()) || {
+            id: String(detail.taskKey || "").trim(),
+            taskId: String(detail.taskKey || "").trim(),
+            type: "task",
+            status: "active",
+            lastActiveAt: new Date().toISOString(),
+            turnCount: 0,
+          };
+          broadcastCanonicalEvent(["sessions", "tui"], "session:event", buildSessionEventPayload({
+            sessionId: session?.id || detail.taskKey,
+            taskId: session?.taskId || detail.taskKey,
+            session,
+            event: {
+              kind: "state",
+              reason: detail?.reason || "update",
+            },
+          }));
+        }
       });
     }
     if (!sessionAccumulatorListenerAttached) {
       sessionAccumulatorListenerAttached = true;
-      addSessionAccumulationListener((payload) => {
+      removeSessionAccumulatorListener = addSessionAccumulationListener((payload) => {
         broadcastUiEvent(["tasks", "overview", "telemetry", "sessions"], "invalidate", {
           reason: "session-accumulated",
           taskId: payload?.taskId || null,
@@ -21463,22 +21646,16 @@ export async function startTelegramUiServer(options = {}) {
       });
     }
 
-    // Periodic stats broadcast for TUI
-    let statsBroadcastInterval = null;
-    function startStatsBroadcast() {
-      if (statsBroadcastInterval) return;
-      const intervalMs = Number(process.env.BOSUN_STATS_BROADCAST_MS) || 2000;
-      statsBroadcastInterval = setInterval(async () => {
-        try {
-          const stats = await collectUiStats();
-          broadcastUiEvent(["stats", "tui"], "stats", stats);
-        } catch (err) {
-          // best effort
-        }
-      }, intervalMs);
-      statsBroadcastInterval.unref?.();
-    }
-    startStatsBroadcast();
+    tuiStatsEmitter?.stop?.();
+    tuiStatsEmitter = createTuiStatsEmitter({
+      intervalMs: Number(process.env.BOSUN_STATS_BROADCAST_MS) || 2000,
+      getPayload: () => buildCurrentTuiMonitorStats(),
+      emit: (stats) => {
+        broadcastCanonicalEvent(["monitor", "stats", "tui"], "monitor:stats", stats);
+        broadcastUiEvent(["stats", "tui"], "stats", stats);
+      },
+    });
+    tuiStatsEmitter.start();
 
     // Retry queue tracking
     let _retryQueue = { count: 0, items: [] };
@@ -21509,6 +21686,13 @@ export async function startTelegramUiServer(options = {}) {
     }
     globalThis.__bosun_setRetryQueueData = setRetryQueueData;
 
+    // Session tracking
+    let _activeSessions = [];
+    function updateActiveSessions(sessions) {
+      _activeSessions = sessions || [];
+      broadcastTuiSessionsSnapshot("active-sessions", { sessions: _activeSessions });
+    }
+
     // Task CRUD events
     function broadcastTaskEvent(type, task) {
       broadcastUiEvent(["tasks", "tui"], type, task);
@@ -21530,9 +21714,13 @@ export async function startTelegramUiServer(options = {}) {
       sendWsMessage(socket, {
         type: "sessions:update",
         channels: ["sessions", "tui"],
-        payload: {
-          sessions: _activeSessions.length ? _activeSessions : getLiveSessionSnapshot(),
-        },
+        payload: getCurrentSessionSnapshot(),
+        ts: Date.now(),
+      });
+      sendWsMessage(socket, {
+        type: "monitor:stats",
+        channels: ["monitor", "stats", "tui"],
+        payload: buildCurrentTuiMonitorStats(),
         ts: Date.now(),
       });
 
@@ -22034,6 +22222,20 @@ export function stopTelegramUiServer() {
   // Clear injected configDir so it does not leak between server lifecycles
   // (tests start/stop servers repeatedly with different config directories).
   delete uiDeps.configDir;
+  tuiStatsEmitter?.stop?.();
+  tuiStatsEmitter = null;
+  removeSessionEventListener?.();
+  removeSessionEventListener = null;
+  sessionListenerAttached = false;
+  removeSessionStateListener?.();
+  removeSessionStateListener = null;
+  sessionStateListenerAttached = false;
+  removeActiveSessionListener?.();
+  removeActiveSessionListener = null;
+  activeSessionListenerAttached = false;
+  removeSessionAccumulatorListener?.();
+  removeSessionAccumulatorListener = null;
+  sessionAccumulatorListenerAttached = false;
   for (const socket of wsClients) {
     try {
       stopLogStream(socket);

@@ -5,7 +5,8 @@
  *   - Task Planner (recommended)
  *   - Task Replenish (Scheduled)
  *   - Nightly Report
- *   - Sprint Retrospective`r`n *   - Weekly Fitness Summary
+ *   - Sprint Retrospective
+ *   - Weekly Fitness Summary
  */
 
 import { node, edge, resetLayout } from "./_helpers.mjs";

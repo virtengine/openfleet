@@ -43,6 +43,7 @@ import {
 } from "../infra/test-runtime.mjs";
 import { getTemplate } from "./workflow-templates.mjs";
 import { WorkflowExecutionLedger } from "./execution-ledger.mjs";
+import { buildWorkflowStatusPayload } from "../infra/tui-bridge.mjs";
 
 // Lazy-loaded workspace manager for workspace-aware scheduling
 let _workspaceManagerMod = null;
@@ -783,6 +784,12 @@ export class WorkflowEngine extends EventEmitter {
     // Lazy-load workspace manager for schedule evaluation
     void ensureWorkspaceManager().catch(() => {});
   }
+  _emitWorkflowStatus(payload = {}) {
+    const event = buildWorkflowStatusPayload(payload);
+    if (!event.runId || !event.workflowId || !event.eventType) return;
+    this.emit("workflow:status", event);
+  }
+
 
   _initializeDagState(def, ctx, extra = {}) {
     const dependencyMap = new Map();
@@ -1386,6 +1393,7 @@ export class WorkflowEngine extends EventEmitter {
 
   // ── Execution ─────────────────────────────────────────────────────────
 
+
   /**
    * Execute a workflow with given input data.
    * @param {string} workflowId
@@ -1520,6 +1528,16 @@ export class WorkflowEngine extends EventEmitter {
     this._persistActiveRunState(runId, workflowId, def.name, ctx);
 
     this.emit("run:start", { runId, workflowId, name: def.name });
+    this._emitWorkflowStatus({
+      runId,
+      workflowId,
+      workflowName: def.name,
+      eventType: "run:start",
+      status: WorkflowStatus.RUNNING,
+      meta: {
+        triggerSource: ctx.data?._triggerSource || null,
+      },
+    });
     this._recordLedgerEvent({
       eventType: "run.start",
       runId,
@@ -1560,7 +1578,30 @@ export class WorkflowEngine extends EventEmitter {
       const status = this._resolveWorkflowStatus(ctx);
       this._activeRuns.get(runId).status = status;
       this._refreshDagState(ctx, status);
+      const terminalError = Array.isArray(ctx.errors) && ctx.errors.length
+        ? String(ctx.errors[ctx.errors.length - 1]?.error || "").trim()
+        : "";
+      if (status === WorkflowStatus.FAILED && terminalError) {
+        this.emit("run:error", { runId, workflowId, error: terminalError });
+        this._emitWorkflowStatus({
+          runId,
+          workflowId,
+          workflowName: def.name,
+          eventType: "run:error",
+          status: WorkflowStatus.FAILED,
+          error: terminalError,
+          durationMs: Date.now() - ctx.startedAt,
+        });
+      }
       this.emit("run:end", { runId, workflowId, status, duration: Date.now() - ctx.startedAt });
+      this._emitWorkflowStatus({
+        runId,
+        workflowId,
+        workflowName: def.name,
+        eventType: "run:end",
+        status,
+        durationMs: Date.now() - ctx.startedAt,
+      });
       this._recordLedgerEvent({
         eventType: "run.end",
         runId,
@@ -1590,6 +1631,15 @@ export class WorkflowEngine extends EventEmitter {
       this._activeRuns.get(runId).status = WorkflowStatus.FAILED;
       this._refreshDagState(ctx, WorkflowStatus.FAILED);
       this.emit("run:error", { runId, workflowId, error: err.message });
+      this._emitWorkflowStatus({
+        runId,
+        workflowId,
+        workflowName: def.name,
+        eventType: "run:error",
+        status: WorkflowStatus.FAILED,
+        error: err.message,
+        durationMs: Date.now() - ctx.startedAt,
+      });
       this._recordLedgerEvent({
         eventType: "run.error",
         runId,
@@ -1754,6 +1804,14 @@ export class WorkflowEngine extends EventEmitter {
     });
     this._persistActiveRunState(retryRunId, workflowId, def.name, ctx);
     this.emit("run:start", { runId: retryRunId, workflowId, name: def.name, retryOf: runId, mode });
+    this._emitWorkflowStatus({
+      runId: retryRunId,
+      workflowId,
+      workflowName: def.name,
+      eventType: "run:start",
+      status: WorkflowStatus.RUNNING,
+      meta: { retryOf: runId, mode },
+    });
     this._recordLedgerEvent({
       eventType: "run.start",
       runId: retryRunId,
@@ -1799,6 +1857,15 @@ export class WorkflowEngine extends EventEmitter {
         retryOf: runId,
         mode,
       });
+      this._emitWorkflowStatus({
+        runId: retryRunId,
+        workflowId,
+        workflowName: def.name,
+        eventType: "run:end",
+        status,
+        durationMs: Date.now() - ctx.startedAt,
+        meta: { retryOf: runId, mode },
+      });
       this._recordLedgerEvent({
         eventType: "run.end",
         runId: retryRunId,
@@ -1829,6 +1896,16 @@ export class WorkflowEngine extends EventEmitter {
       this._activeRuns.get(retryRunId).status = WorkflowStatus.FAILED;
       this._refreshDagState(ctx, WorkflowStatus.FAILED);
       this.emit("run:error", { runId: retryRunId, workflowId, error: err.message, retryOf: runId });
+      this._emitWorkflowStatus({
+        runId: retryRunId,
+        workflowId,
+        workflowName: def.name,
+        eventType: "run:error",
+        status: WorkflowStatus.FAILED,
+        error: err.message,
+        durationMs: Date.now() - ctx.startedAt,
+        meta: { retryOf: runId, mode },
+      });
       this._recordLedgerEvent({
         eventType: "run.error",
         runId: retryRunId,
@@ -2716,6 +2793,14 @@ export class WorkflowEngine extends EventEmitter {
       status: WorkflowStatus.RUNNING,
     });
     this.emit("run:start", { runId: retryRunId, workflowId, name: def.name, restoredFrom: snapshotId });
+    this._emitWorkflowStatus({
+      runId: retryRunId,
+      workflowId,
+      workflowName: def.name,
+      eventType: "run:start",
+      status: WorkflowStatus.RUNNING,
+      meta: { restoredFrom: snapshotId },
+    });
 
     try {
       const adjacency = this._buildAdjacency(def);
@@ -3052,6 +3137,17 @@ export class WorkflowEngine extends EventEmitter {
               emitNodeEvent("node:complete", node, {
                 status: NodeStatus.COMPLETED,
                 output: result,
+              });
+              this._emitWorkflowStatus({
+                runId: ctx.id,
+                workflowId,
+                workflowName,
+                eventType: "node:complete",
+                status: NodeStatus.COMPLETED,
+                nodeId,
+                nodeType: node?.type || null,
+                nodeLabel: node?.label || null,
+                meta: { attempt: ctx.getRetryCount(nodeId) },
               });
               this._recordLedgerEvent({
                 eventType: "node.completed",
