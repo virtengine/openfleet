@@ -175,6 +175,9 @@ function coerceAttributes(attributes = {}) {
 }
 
 async function loadOpenTelemetry() {
+  // In Vitest, skip the real OpenTelemetry SDK so that spans are captured in
+  // the in-memory testSpans array via the fallback test tracer.
+  if (process.env.VITEST) return null;
   try {
     const api = await import("@opentelemetry/api");
     const resources = await import("@opentelemetry/resources");
@@ -398,12 +401,18 @@ function maybeRecordTaskMetrics(attributes = {}) {
   if (costUsd > 0) state.instruments?.taskCostUsd.add(costUsd, coerceAttributes(attributes));
 }
 
-export async function traceTaskExecution(attributesOrTaskId, maybeFn) {
-  const attributes =
-    typeof attributesOrTaskId === "string"
-      ? { taskId: attributesOrTaskId }
-      : (attributesOrTaskId || {});
-  const fn = typeof attributesOrTaskId === "function" ? attributesOrTaskId : maybeFn;
+export async function traceTaskExecution(attributesOrTaskId, attributesOrFn, maybeFn) {
+  // Support both (attributes, fn) and (taskId, attributes, fn) call forms.
+  let attributes;
+  let fn;
+  if (typeof attributesOrTaskId === "string") {
+    const extraAttrs = typeof attributesOrFn === "object" && attributesOrFn !== null ? attributesOrFn : {};
+    attributes = { taskId: attributesOrTaskId, ...extraAttrs };
+    fn = typeof maybeFn === "function" ? maybeFn : null;
+  } else {
+    attributes = attributesOrTaskId || {};
+    fn = typeof attributesOrFn === "function" ? attributesOrFn : null;
+  }
   const taskId = String(attributes.taskId || attributes.id || "unknown");
   const spanAttributes = coerceAttributes({
     "bosun.task.id": taskId,

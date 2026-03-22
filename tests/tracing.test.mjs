@@ -103,7 +103,7 @@ describe("infra/tracing", () => {
   });
 
   it("creates a grafana dashboard template artifact", async () => {
-    expect(existsSync("grafana/bosun-otel-dashboard.json")).toBe(true);
+    expect(existsSync("dashboards/grafana-bosun-otel-dashboard.json")).toBe(true);
   });
 
   it("records task, agent, tool, and llm spans with metrics", async () => {

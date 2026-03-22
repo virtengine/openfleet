@@ -593,16 +593,26 @@ function resolveTracingConfig(configData = {}) {
   const raw = configData.tracing && typeof configData.tracing === "object"
     ? configData.tracing
     : {};
+  const endpointFromEnv = process.env.BOSUN_OTEL_ENDPOINT !== undefined;
   const endpoint = String(
     process.env.BOSUN_OTEL_ENDPOINT ?? raw.endpoint ?? "",
   ).trim();
+  // When BOSUN_OTEL_ENDPOINT is set via env, it implies enabled=true unless
+  // BOSUN_OTEL_ENABLED is explicitly set to false — don't let a file-level
+  // `enabled: false` suppress the env-level endpoint override.
+  const enabledValue = endpointFromEnv
+    ? process.env.BOSUN_OTEL_ENABLED
+    : (process.env.BOSUN_OTEL_ENABLED ?? raw.enabled);
   const enabled = endpoint.length > 0
-    ? isEnvEnabled(process.env.BOSUN_OTEL_ENABLED ?? raw.enabled, true)
-    : isEnvEnabled(process.env.BOSUN_OTEL_ENABLED ?? raw.enabled, false);
+    ? isEnvEnabled(enabledValue, true)
+    : isEnvEnabled(enabledValue, false);
   return Object.freeze({
     enabled,
     endpoint,
     sampleRate: clampNumber(process.env.BOSUN_OTEL_SAMPLE_RATE ?? raw.sampleRate, 1, 0, 1),
+    metricsEndpoint: String(
+      process.env.BOSUN_OTEL_METRICS_ENDPOINT ?? raw.metricsEndpoint ?? endpoint,
+    ).trim(),
   });
 }
 

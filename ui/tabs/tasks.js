@@ -2589,6 +2589,65 @@ export function TaskReviewModal({ task, onClose, onStart }) {
   `;
 }
 
+
+/* ─── TaskOperationsRail ─── */
+function TaskOperationsRail({ task, workflowRuns = [], historyEntries = [], onOpenRun }) {
+  const runs = Array.isArray(workflowRuns) ? workflowRuns : [];
+  const entries = Array.isArray(historyEntries) ? historyEntries : [];
+
+  return html`
+    <div class="task-operations-rail">
+      <!-- Notifications -->
+      <div class="jira-panel task-comments-block modal-form-span">
+        <div class="task-attachments-title">Notifications</div>
+        <div class="task-comment-meta">
+          ${runs.length > 0
+            ? `${runs.length} workflow run${runs.length !== 1 ? "s" : ""} active`
+            : "No active workflow notifications"}
+        </div>
+      </div>
+
+      <!-- Run detail -->
+      <div class="jira-panel task-comments-block modal-form-span">
+        <div class="task-attachments-title">Run detail</div>
+        ${runs.length > 0 ? html`
+          <div class="task-comments-list">
+            ${runs.map((run, i) => html`
+              <div class="task-comment-item" key=${`run-${i}`}>
+                <div class="task-comment-meta">
+                  ${run.workflowName || run.workflow_name || "Workflow"}
+                  ${run.status ? html` · <span>${run.status}</span>` : ""}
+                </div>
+                ${onOpenRun && html`
+                  <button class="link-button" onClick=${() => onOpenRun(run)}>View run</button>
+                `}
+              </div>
+            `)}
+          </div>
+        ` : html`<div class="task-comment-meta">No run detail available</div>`}
+      </div>
+
+      <!-- Activity feed -->
+      <div class="jira-panel task-comments-block modal-form-span">
+        <div class="task-attachments-title">Activity feed</div>
+        ${entries.length > 0 ? html`
+          <div class="task-comments-list">
+            ${entries.slice(0, 10).map((entry, i) => html`
+              <div class="task-comment-item" key=${`activity-${i}`}>
+                <div class="task-comment-meta">
+                  ${entry.timestamp ? formatRelative(entry.timestamp) : ""}
+                  ${entry.source ? ` · ${entry.source}` : ""}
+                </div>
+                <div class="task-comment-body">${entry.label || entry.message || ""}</div>
+              </div>
+            `)}
+          </div>
+        ` : html`<div class="task-comment-meta">No activity recorded yet</div>`}
+      </div>
+    </div>
+  `;
+}
+
 /* ─── TaskDetailModal ─── */
 export function TaskDetailModal({ task, onClose, onStart, presentation = "modal", taskCatalog = [], epicCatalog = [], isHydrating = false }) {
   const [title, setTitle] = useState(sanitizeTaskText(task?.title || ""));
