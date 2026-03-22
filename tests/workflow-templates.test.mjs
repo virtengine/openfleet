@@ -1042,6 +1042,27 @@ describe("workflow setup profiles", () => {
     expect(logNode?.config?.message).toContain("{{batchResult.successCount}}/{{batchResult.totalItems}}");
   });
 
+  it("dispatches task-batch lifecycle fan-out without waiting for child completion", () => {
+    const batchProcessor = getTemplate("template-task-batch-processor");
+    const dispatchLoop = batchProcessor?.nodes?.find((node) => node.id === "dispatch-tasks");
+    const coordinatorEdge = batchProcessor?.edges?.find((edge) => edge.source === "check-coordinator" && edge.target === "query-tasks");
+
+    expect(dispatchLoop?.config?.items).toBe("$ctx.getNodeOutput('query-tasks')?.output || []");
+    expect(dispatchLoop?.config?.workflowId).toBe("{{subWorkflow}}");
+    expect(dispatchLoop?.config?.mode).toBe("dispatch");
+    expect(coordinatorEdge?.condition).toBe("$output === true || $output?.result === true || $output?.value === true");
+  });
+
+  it("uses JavaScript loop expressions for both task-batch templates", () => {
+    const batchProcessor = getTemplate("template-task-batch-processor");
+    const batchPr = getTemplate("template-task-batch-pr");
+
+    expect(batchProcessor?.nodes?.find((node) => node.id === "dispatch-tasks")?.config?.items)
+      .toBe("$ctx.getNodeOutput('query-tasks')?.output || []");
+    expect(batchPr?.nodes?.find((node) => node.id === "for-each-task")?.config?.items)
+      .toBe("$ctx.getNodeOutput('query-tasks')?.output || []");
+  });
+
   it("exposes built-in setup profiles with template selections", () => {
     const profiles = listWorkflowSetupProfiles();
     const ids = profiles.map((profile) => profile.id);
