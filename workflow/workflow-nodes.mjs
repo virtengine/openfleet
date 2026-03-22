@@ -11720,19 +11720,13 @@ registerBuiltinNodeType("action.acquire_worktree", {
       const blockedReason = retryable
         ? errorMessage
         : "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.";
-        await recordWorktreeRecoveryEvent({
-          outcome: "recreation_failed",
-          phase: "post-pull",
-          worktreePath: resolve(
-            repoRoot,
-            ".bosun",
-            "worktrees",
-            deriveManagedWorktreeDirName(taskId, branch)
-          ),
-          detectedIssues: ["refresh_conflict"],
-          detectedIssues: Array.from(recoveryState.detectedIssues.size ? recoveryState.detectedIssues : ["refresh_conflict"]),
-          error: errorMessage,
-        });
+      await recordWorktreeRecoveryEvent({
+        outcome: "recreation_failed",
+        phase: "post-pull",
+        worktreePath: recoveryState.worktreePath || resolve(repoRoot, ".bosun", "worktrees", deriveManagedWorktreeDirName(taskId, branch)),
+        detectedIssues: Array.from(recoveryState.detectedIssues.size ? recoveryState.detectedIssues : ["refresh_conflict"]),
+        error: errorMessage,
+      });
       }
       ctx.log(node.id, `Worktree acquisition failed: ${errorMessage}`);
       return {
