@@ -72,7 +72,7 @@ ADJACENCY_MAP=(
   "agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*"
   "bench/|bench-swebench*|benchmark-*|task-*"
   "config/|config-*|workspace-health*|bosun-skills*|codex-config*"
-  "telegram/|telegram-*|whatsapp-*"
+  "telegram/|telegram-*|whatsapp-*|weekly-agent-work-report*"
   "voice/|voice-*|mic-*|native-call*"
   "ui/|ui-*|stream-timeline*|workflow-canvas-utils*|static-relative*|mui-theme*|tab-swipe*|session-theme*|session-history*|demo-*|fleet-tab*|portal-ui-smoke*"
   "site/|ui-*|stream-timeline*|static-relative*|demo-*|portal-ui-smoke*"
@@ -319,3 +319,5 @@ echo "[hooks] running ${#FINAL_TEST_LIST[@]}/${TOTAL_TESTS} targeted tests…"
 node tools/vitest-runner.mjs run --config vitest.config.mjs "${FINAL_TEST_LIST[@]}"
 
 echo "[hooks] pre-push checks passed ✓"
+
+

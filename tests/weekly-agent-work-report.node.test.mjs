@@ -301,6 +301,7 @@ describe("weekly report command and scheduler wiring", () => {
   const monitorSource = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
   const envExampleSource = readFileSync(resolve(process.cwd(), ".env.example"), "utf8");
   const readmeSource = readFileSync(resolve(process.cwd(), "README.md"), "utf8");
+  const prePushHookSource = readFileSync(resolve(process.cwd(), ".githooks/pre-push"), "utf8");
 
   it("registers Telegram commands for weekly reporting", () => {
     assert.match(
@@ -343,5 +344,11 @@ describe("weekly report command and scheduler wiring", () => {
     assert.match(envExampleSource, /TELEGRAM_WEEKLY_REPORT_DAYS=7/);
     assert.match(readmeSource, /\/weekly \[days\]/);
     assert.match(readmeSource, /TELEGRAM_WEEKLY_REPORT_ENABLED=true/);
+  });
+
+  it("routes weekly report coverage through the pre-push adjacency map", () => {
+    assert.match(prePushHookSource, /infra\/\|[^\n]*weekly-agent-work-report/);
+    assert.match(prePushHookSource, /agent\/\|[^\n]*weekly-agent-work-report/);
+    assert.match(prePushHookSource, /telegram\/\|[^\n]*weekly-agent-work-report/);
   });
 });
