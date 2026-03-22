@@ -725,6 +725,15 @@ export class WorkflowContext {
       nodeInputs: { ...this._nodeInputs },
       dagState: this.data?._dagState || null,
       issueAdvisor: this.data?._issueAdvisor || null,
+      replayTrajectory: this.data?._replayTrajectory || null,
+      stepSummaries: Array.isArray(this.data?._replayTrajectory?.steps)
+        ? this.data._replayTrajectory.steps.map((s) => ({
+            nodeId: s.nodeId,
+            label: s.label,
+            status: s.status,
+            summary: s.summary,
+          }))
+        : [],
     };
   }
 }

@@ -313,6 +313,8 @@ describe("session-tracker", () => {
     });
 
     it("persists trajectory data across disk reloads", () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "bosun-session-tracker-"));
+      try {
       const persisted = new SessionTracker({ persistDir: tempDir, flushIntervalMs: 5 });
       persisted.startSession("task-2", "Persist replay test");
       persisted.recordEvent("task-2", {
@@ -337,10 +339,13 @@ describe("session-tracker", () => {
       expect(session?.summary).toEqual(
         expect.objectContaining({
           shortSteps: expect.arrayContaining([
-            expect.stringMatching(/resume the failed run/i),
+            expect.objectContaining({ summary: expect.stringMatching(/resume the failed run/i) }),
           ]),
         }),
       );
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
     });
 
     it("records Copilot message events", () => {
@@ -599,7 +604,7 @@ describe("session-tracker", () => {
         persistentTracker.flush();
         const session = persistentTracker.getSessionMessages("chat-replay");
 
-        expect(session?.trajectory?.steps).toEqual(
+        expect(session?.trajectory).toEqual(
           expect.objectContaining({
             version: 1,
             replayable: true,

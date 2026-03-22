@@ -264,6 +264,8 @@ export class SessionTracker {
       lastActivityAt: Date.now(),
       metadata: {},
       insights: buildSessionInsights({ messages: [] }),
+      trajectory: { version: 1, replayable: true, steps: [] },
+      summary: null,
     });
     const session = this.#sessions.get(taskId);
     this.#markDirty(taskId);
@@ -319,6 +321,7 @@ export class SessionTracker {
       if (Number.isFinite(maxMessages) && maxMessages > 0) {
         while (session.messages.length > maxMessages) session.messages.shift();
       }
+      this.#appendTrajectoryStep(session, event);
       this.#refreshDerivedState(session);
       this.#markDirty(taskId);
       emitSessionEvent(session, msg);
@@ -352,6 +355,7 @@ export class SessionTracker {
       if (Number.isFinite(maxMessages) && maxMessages > 0) {
         while (session.messages.length > maxMessages) session.messages.shift();
       }
+      this.#appendTrajectoryStep(session, event);
       this.#refreshDerivedState(session);
       this.#markDirty(taskId);
       emitSessionEvent(session, msg);
@@ -369,6 +373,7 @@ export class SessionTracker {
     if (Number.isFinite(maxMessages) && maxMessages > 0) {
       while (session.messages.length > maxMessages) session.messages.shift();
     }
+    this.#appendTrajectoryStep(session, event);
     this.#refreshDerivedState(session);
     this.#markDirty(taskId);
     emitSessionEvent(session, msg);
@@ -619,6 +624,8 @@ export class SessionTracker {
       metadata,
       maxMessages: resolvedMax,
       insights: buildSessionInsights({ messages: [] }),
+      trajectory: { version: 1, replayable: true, steps: [] },
+      summary: null,
     };
     this.#sessions.set(id, session);
     this.#markDirty(id);
@@ -794,6 +801,13 @@ export class SessionTracker {
    * Flush all dirty sessions to disk immediately.
    */
   flush() {
+    this.#flushDirty();
+  }
+
+  /**
+   * Flush all dirty sessions to disk immediately (alias for flush).
+   */
+  flushNow() {
     this.#flushDirty();
   }
 
@@ -1003,6 +1017,84 @@ export class SessionTracker {
     return true;
   }
 
+  #appendTrajectoryStep(session, event) {
+    if (!session) return;
+    if (!session.trajectory) {
+      session.trajectory = { version: 1, replayable: true, steps: [] };
+    }
+    const step = this.#extractTrajectoryStep(event, session);
+    if (step) {
+      session.trajectory.steps.push(step);
+    }
+  }
+
+  #extractTrajectoryStep(event, session) {
+    const ts = new Date().toISOString();
+    const id = `step-${Date.now()}-${randomToken(6)}`;
+
+    // String event
+    if (typeof event === "string") {
+      return { id, kind: "system", summary: event.trim().slice(0, 200), timestamp: ts };
+    }
+
+    // Direct message format (role/content)
+    if (event?.role && event?.content !== undefined) {
+      const content = String(event.content).slice(0, 200);
+      const timestamp = event.timestamp || ts;
+      if (event.role === "user") return { id, kind: "user_message", summary: content, timestamp };
+      if (event.role === "assistant") return { id, kind: "assistant", summary: content, timestamp };
+      return { id, kind: event.role, summary: content, timestamp };
+    }
+
+    // SDK item.started events
+    if (event?.type === "item.started" && event?.item) {
+      const item = event.item;
+      if (item.type === "command_execution") {
+        return { id, kind: "tool_call", summary: `Ran ${item.command || "unknown"}`, timestamp: ts };
+      }
+      if (item.type === "reasoning") {
+        return { id, kind: "reasoning", summary: item.text || "", timestamp: ts };
+      }
+      if (item.type === "function_call" || item.type === "mcp_tool_call") {
+        return { id, kind: "tool_call", summary: `${item.name || "call"} ${item.arguments || ""}`.trim(), timestamp: ts };
+      }
+      return null;
+    }
+
+    // SDK item.completed events
+    if (event?.type === "item.completed" && event?.item) {
+      const item = event.item;
+      if (item.type === "reasoning") {
+        return { id, kind: "reasoning", summary: item.text || "", timestamp: ts };
+      }
+      if (item.type === "function_call" || item.type === "mcp_tool_call") {
+        return { id, kind: "tool_call", summary: `${item.name || "call"} ${item.arguments || ""}`.trim(), timestamp: ts };
+      }
+      if (item.type === "command_execution") {
+        const cmd = item.command || "";
+        const hasPriorStart = (session?.trajectory?.steps || []).some(
+          (s) => s.kind === "tool_call" && s.summary === `Ran ${cmd}`,
+        );
+        if (hasPriorStart) {
+          return { id, kind: "tool_result", summary: `${cmd} (exit ${item.exit_code ?? "?"})`, timestamp: ts };
+        }
+        return { id, kind: "command", summary: cmd, timestamp: ts };
+      }
+      if (item.type === "agent_message") {
+        return { id, kind: "assistant", summary: item.text || "", timestamp: ts };
+      }
+      return null;
+    }
+
+    // Assistant message events
+    if (event?.type === "assistant.message") {
+      const content = event?.data?.content || event?.content || "";
+      return { id, kind: "agent_message", summary: content.slice(0, 200), timestamp: ts };
+    }
+
+    return null;
+  }
+
   #refreshDerivedState(session) {
     if (!session) return;
     try {
@@ -1012,6 +1104,22 @@ export class SessionTracker {
       });
     } catch {
       // Inspector insights are best-effort only.
+    }
+    try {
+      const steps = session.trajectory?.steps || [];
+      const totalSteps = steps.length;
+      const isFailed = session.status === "failed";
+      const isLong = totalSteps > 12;
+      const failedOrLongRun = isFailed || isLong;
+      const resumable = failedOrLongRun;
+      const shortSteps = steps.slice(-12).map((s) => ({ kind: s.kind, summary: s.summary }));
+      const latestStep =
+        steps.length > 0
+          ? { kind: steps[steps.length - 1].kind, summary: steps[steps.length - 1].summary }
+          : null;
+      session.summary = { failedOrLongRun, resumable, totalSteps, shortSteps, latestStep };
+    } catch {
+      // Summary computation is best-effort only.
     }
   }
 
@@ -1052,6 +1160,8 @@ export class SessionTracker {
           messages: session.messages || [],
           metadata: session.metadata || {},
           insights: session.insights || null,
+          trajectory: session.trajectory || null,
+          summary: session.summary || null,
         };
         writeFileSync(filePath, JSON.stringify(data, null, 2));
       } catch (err) {
@@ -1131,6 +1241,8 @@ export class SessionTracker {
           lastActivityAt: lastActive || Date.now(),
           metadata: data.metadata || {},
           insights: data.insights || buildSessionInsights({ messages: data.messages || [] }),
+          trajectory: data.trajectory || { version: 1, replayable: true, steps: [] },
+          summary: data.summary || null,
         });
         const restored = this.#sessions.get(id);
         if (restored && isTerminalSessionStatus(restored.status) && !restored.accumulatedAt) {
