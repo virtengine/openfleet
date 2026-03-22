@@ -139,6 +139,7 @@ describe("task lifecycle node type registration", () => {
     "read-workflow-contract",
     "workflow-contract-validation",
     "action.build_task_prompt",
+    "action.persist_memory",
     "action.detect_new_commits",
     "action.push_branch",
   ];
@@ -2128,6 +2129,176 @@ describe("action.build_task_prompt", () => {
     } finally {
       if (prev === undefined) delete process.env.BOSUN_CACHE_ANCHOR_MODE;
       else process.env.BOSUN_CACHE_ANCHOR_MODE = prev;
+    }
+  });
+
+  it("injects scoped persistent memory into the user prompt only", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "prompt-memory-"));
+    try {
+      const {
+        initSharedKnowledge,
+        buildKnowledgeEntry,
+        appendKnowledgeEntry,
+      } = await import("../workspace/shared-knowledge.mjs");
+
+      initSharedKnowledge({ repoRoot, targetFile: "AGENTS.md" });
+
+      const memories = [
+        buildKnowledgeEntry({
+          content: "Workspace memory: flaky login tests need a DB fixture reset.",
+          scope: "testing",
+          scopeLevel: "workspace",
+          teamId: "team-a",
+          workspaceId: "workspace-1",
+          sessionId: "session-0",
+          runId: "run-0",
+          agentId: "agent-workspace",
+        }),
+        buildKnowledgeEntry({
+          content: "Team memory: prefer deterministic waits in browser tests.",
+          scope: "testing",
+          scopeLevel: "team",
+          teamId: "team-a",
+          workspaceId: "workspace-0",
+          sessionId: "session-0",
+          runId: "run-0",
+          agentId: "agent-team",
+        }),
+        buildKnowledgeEntry({
+          content: "Workspace memory: payments smoke tests require a sandbox token.",
+          scope: "testing",
+          scopeLevel: "workspace",
+          teamId: "team-a",
+          workspaceId: "workspace-2",
+          sessionId: "session-2",
+          runId: "run-2",
+          agentId: "agent-other-workspace",
+        }),
+      ];
+
+      for (const memory of memories) {
+        const appendResult = await appendKnowledgeEntry(memory);
+        expect(appendResult.success).toBe(true);
+      }
+
+      const nt = getNodeType("action.build_task_prompt");
+      const ctx = makeCtx({});
+      const node = makeNode("action.build_task_prompt", {
+        taskId: "MEM-1",
+        taskTitle: "Stabilize flaky login retries",
+        taskDescription: "Reset fixtures between browser retries.",
+        repoRoot,
+        worktreePath: join(repoRoot, ".bosun", "worktrees", "task-1"),
+        includeMemory: true,
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-1",
+        runId: "run-1",
+      });
+
+      const result = await nt.execute(node, ctx);
+      const userPrompt = result.userPrompt || result.prompt;
+
+      expect(userPrompt).toContain("## Persistent Memory Briefing");
+      expect(userPrompt).toContain("flaky login tests need a DB fixture reset");
+      expect(userPrompt).toContain("prefer deterministic waits in browser tests");
+      expect(userPrompt).not.toContain("payments smoke tests require a sandbox token");
+      expect(result.systemPrompt).not.toContain("## Persistent Memory Briefing");
+      expect(result.systemPrompt).not.toContain("DB fixture reset");
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+
+describe("action.persist_memory", () => {
+  it("stores scoped memory for later retrieval and prompt injection", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "persist-memory-node-"));
+    try {
+      const persistNodeType = getNodeType("action.persist_memory");
+      const promptNodeType = getNodeType("action.build_task_prompt");
+      const persistCtx = makeCtx({
+        repoRoot,
+        repoSlug: "virtengine/bosun",
+        workspace: repoRoot,
+        _workspaceId: "workspace-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        task: {
+          id: "MEM-2",
+          title: "Stabilize login retries",
+          description: "Reset browser fixtures between retries.",
+          workspace: repoRoot,
+          repository: "virtengine/bosun",
+          meta: {
+            teamId: "team-a",
+            workspaceId: "workspace-1",
+            sessionId: "session-1",
+            runId: "run-1",
+          },
+        },
+      });
+      const persistNode = makeNode("action.persist_memory", {
+        content: "Workspace memory: seed auth fixtures before browser login retries.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        repoRoot,
+      });
+
+      const persistResult = await persistNodeType.execute(persistNode, persistCtx);
+      expect(persistResult.success).toBe(true);
+      expect(persistResult.persisted).toBe(true);
+      expect(persistResult.scopeLevel).toBe("workspace");
+
+      const { retrieveKnowledgeEntries } = await import("../workspace/shared-knowledge.mjs");
+      const retrieved = await retrieveKnowledgeEntries({
+        repoRoot,
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-99",
+        runId: "run-99",
+        query: "browser login fixtures retries",
+        limit: 10,
+      });
+      expect(retrieved.some((entry) => entry.content.includes("seed auth fixtures"))).toBe(true);
+
+      const hidden = await retrieveKnowledgeEntries({
+        repoRoot,
+        teamId: "team-a",
+        workspaceId: "workspace-2",
+        sessionId: "session-99",
+        runId: "run-99",
+        query: "browser login fixtures retries",
+        limit: 10,
+      });
+      expect(hidden.some((entry) => entry.content.includes("seed auth fixtures"))).toBe(false);
+
+      const promptCtx = makeCtx({});
+      const promptNode = makeNode("action.build_task_prompt", {
+        taskId: "MEM-3",
+        taskTitle: "Fix flaky login retries",
+        taskDescription: "Browser login keeps flaking until auth fixtures are reset.",
+        repoRoot,
+        worktreePath: join(repoRoot, ".bosun", "worktrees", "task-2"),
+        includeMemory: true,
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-2",
+        runId: "run-2",
+      });
+
+      const promptResult = await promptNodeType.execute(promptNode, promptCtx);
+      const userPrompt = promptResult.userPrompt || promptResult.prompt;
+      expect(userPrompt).toContain("## Persistent Memory Briefing");
+      expect(userPrompt).toContain("seed auth fixtures before browser login retries");
+      expect(promptResult.systemPrompt).not.toContain("seed auth fixtures");
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
     }
   });
 });
