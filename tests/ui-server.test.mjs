@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 function sanitizedGitEnv(extra = {}) {
@@ -125,6 +125,76 @@ describe("ui-server mini app", () => {
     expect(typeof mod.injectUiDependencies).toBe("function");
     expect(typeof mod.getLocalLanIp).toBe("function");
   }, 15000);
+
+  it("surfaces worktree recovery state through status, infra, and worktree endpoints", async () => {
+    const repoRoot = process.cwd();
+    const statusDir = resolve(repoRoot, ".cache");
+    const statusPath = resolve(statusDir, "ve-orchestrator-status.json");
+    const hadStatusFile = existsSync(statusPath);
+    const previousStatus = hadStatusFile ? readFileSync(statusPath, "utf8") : null;
+    mkdirSync(statusDir, { recursive: true });
+    writeFileSync(statusPath, JSON.stringify({
+      counts: { running: 0, review: 0, error: 0, manual_review: 0 },
+      worktreeRecovery: {
+        health: "degraded",
+        failureStreak: 2,
+        recentEvents: [
+          {
+            outcome: "recreation_failed",
+            reason: "poisoned_worktree",
+            branch: "task/failing-worktree",
+            taskId: "task-failing-1",
+            error: "refresh conflict",
+            timestamp: "2026-03-22T01:02:03.000Z",
+          },
+        ],
+      },
+    }, null, 2));
+
+    try {
+      const mod = await import("../server/ui-server.mjs");
+      mod.injectUiDependencies({
+        getInternalExecutor: () => ({
+          getStatus: () => ({ maxParallel: 4, activeSlots: 0, slots: [] }),
+          isPaused: () => false,
+        }),
+      });
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const status = await fetch(`http://127.0.0.1:${port}/api/status`).then((r) => r.json());
+      expect(status.ok).toBe(true);
+      expect(status.data.worktreeRecovery).toMatchObject({
+        health: "degraded",
+        failureStreak: 2,
+      });
+
+      const infra = await fetch(`http://127.0.0.1:${port}/api/infra`).then((r) => r.json());
+      expect(infra.ok).toBe(true);
+      expect(infra.data.worktreeRecovery).toMatchObject({
+        health: "degraded",
+        failureStreak: 2,
+      });
+
+      const worktrees = await fetch(`http://127.0.0.1:${port}/api/worktrees`).then((r) => r.json());
+      expect(worktrees.ok).toBe(true);
+      expect(worktrees.stats.recovery).toMatchObject({
+        health: "degraded",
+        failureStreak: 2,
+      });
+    } finally {
+      if (hadStatusFile && previousStatus != null) {
+        writeFileSync(statusPath, previousStatus, "utf8");
+      } else {
+        rmSync(statusPath, { force: true });
+      }
+    }
+  });
 
   it("getLocalLanIp returns a string", async () => {
     const mod = await import("../server/ui-server.mjs");
@@ -4085,6 +4155,5 @@ describe("ui-server mini app", () => {
   });
 
 });
-
 
 
