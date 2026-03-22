@@ -10178,6 +10178,7 @@ async function getPersistedOwnedTaskIds(node, ctx) {
     || requestedRepoRoot
     || process.cwd();
   const activeTaskIds = new Set();
+  const deadClaimTaskIds = new Set();
   const activeOwnerIds = await getActivePresenceInstanceIds(repoRoot);
   const inactiveClaimOwnerIds = new Set();
   const now = Date.now();
@@ -10187,6 +10188,12 @@ async function getPersistedOwnedTaskIds(node, ctx) {
     if (typeof claims.listClaims === "function") {
       const persistedClaims = await claims.listClaims();
       for (const claim of persistedClaims || []) {
+        if (!isClaimOwnershipActive(claim, activeOwnerIds, now)) {
+          const deadId = pickTaskString(claim?.task_id, claim?.taskId);
+          if (deadId) deadClaimTaskIds.add(deadId);
+          continue;
+        }
+        const taskId = pickTaskString(claim?.task_id, claim?.taskId);
         const ownerId = pickTaskString(claim?.instance_id, claim?.instanceId);
         if (!isClaimOwnershipActive(claim, activeOwnerIds, now)) {
           if (ownerId) inactiveClaimOwnerIds.add(ownerId);
@@ -10207,6 +10214,7 @@ async function getPersistedOwnedTaskIds(node, ctx) {
       for (const [rawTaskId, state] of Object.entries(sharedStates || {})) {
         const taskId = pickTaskString(state?.taskId, state?.task_id, rawTaskId);
         if (!taskId) continue;
+        if (deadClaimTaskIds.has(taskId)) continue;
         const ownerId = pickTaskString(state?.ownerId, state?.owner_id);
         if (!isSharedStateOwnershipActive(state, now)) continue;
         if (ownerId && inactiveClaimOwnerIds.has(ownerId)) continue;

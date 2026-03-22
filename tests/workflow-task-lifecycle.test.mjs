@@ -734,6 +734,68 @@ describe("trigger.task_available", () => {
       try { rmSync(repoRoot, { recursive: true, force: true }); } catch { /* ok */ }
     }
   });
+  it("ignores shared state for a task when its persisted claim owner pid is dead", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "wf-task-stale-shared-state-"));
+    const { initTaskClaims, claimTask, releaseTask } = await import("../task/task-claims.mjs");
+    const sharedStateManager = await import("../kanban/github-shared-state-manager.mjs");
+    let claimToken = "";
+    try {
+      await initTaskClaims({ repoRoot });
+      const claimResult = await claimTask({
+        taskId: "stale-claim-task",
+        instanceId: "wf-dead-instance",
+        metadata: {
+          host: process.env.COMPUTERNAME || process.env.HOSTNAME || "localhost",
+          pid: 999999,
+        },
+      });
+      expect(claimResult.success).toBe(true);
+      claimToken = claimResult.token || "";
+
+      await sharedStateManager.updateSharedState("stale-claim-task", {
+        ownerId: "wf-live-owner",
+        ownerHeartbeat: new Date().toISOString(),
+        attemptStatus: "in_progress",
+      }, repoRoot);
+
+      const nt = getNodeType("trigger.task_available");
+      const listTasks = vi.fn().mockResolvedValue([
+        { id: "stale-claim-task", title: "Recovered task", status: "todo" },
+        { id: "ready-task", title: "Ready", status: "todo" },
+      ]);
+      const ctx = makeCtx({
+        activeSlotCount: 0,
+        repoRoot,
+      });
+      const node = makeNode("trigger.task_available", {
+        maxParallel: 1,
+        status: "todo",
+      });
+
+      const result = await nt.execute(node, ctx, {
+        services: {
+          kanban: {
+            listTasks,
+          },
+        },
+      });
+
+      expect(result.triggered).toBe(true);
+      expect(result.persistedOwnershipFilteredCount || 0).toBe(0);
+      expect(result.selectedTaskId).toBe("stale-claim-task");
+      expect(result.tasks.some((task) => task.id === "stale-claim-task")).toBe(true);
+    } finally {
+      if (claimToken) {
+        await releaseTask({
+          taskId: "stale-claim-task",
+          claimToken,
+          instanceId: "wf-dead-instance",
+          force: true,
+        });
+      }
+      try { rmSync(repoRoot, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  });
 });
 
 //  condition.slot_available Tests
