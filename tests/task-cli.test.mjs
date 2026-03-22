@@ -207,12 +207,18 @@ describe("task-cli taskStats repo area lock state", () => {
   it("resolves active workspace store path using canonical workspace/repository keys", async () => {
     process.env.BOSUN_HOME = resolve(tmpdir(), "bosun-home");
     const runtimePayload = {};
-    const expectedStorePathFragment = "/workspaces/virtengine-gh/bosun/.bosun/.cache/kanban-state.json";
+    const workspacesDir = resolve(tmpdir(), "test-workspaces");
+    const expectedStorePath = resolve(
+      workspacesDir, "virtengine-gh", "bosun", ".bosun", ".cache", "kanban-state.json",
+    ).replace(/\\/g, "/");
+    const expectedStoreDir = resolve(
+      workspacesDir, "virtengine-gh", "bosun", ".bosun", ".cache",
+    ).replace(/\\/g, "/");
 
     mockExistsSync.mockImplementation((filePath) => {
       const value = String(filePath || "").replace(/\\/g, "/");
       if (value.endsWith("/bosun.config.json")) return true;
-      if (value.includes(expectedStorePathFragment.replace("/kanban-state.json", ""))) return true;
+      if (value.includes(expectedStoreDir)) return true;
       if (value.includes("task-executor-runtime.json")) return true;
       return false;
     });
@@ -220,12 +226,12 @@ describe("task-cli taskStats repo area lock state", () => {
       const value = String(filePath || "").replace(/\\/g, "/");
       if (value.endsWith("/bosun.config.json")) {
         return JSON.stringify({
-          workspacesDir: "C:/tmp/workspaces",
-          activeWorkspace: "VirtEngine-GH",
+          workspacesDir,
+          activeWorkspace: "virtengine-gh",
           workspaces: [
             {
               id: "virtengine-gh",
-              activeRepo: "BOSUN",
+              activeRepo: "bosun",
               repos: [{ name: "bosun", primary: true }],
             },
           ],
@@ -243,7 +249,7 @@ describe("task-cli taskStats repo area lock state", () => {
 
     const firstCall = mockConfigureTaskStore.mock.calls[0]?.[0] || {};
     const configuredPath = String(firstCall.storePath || "").replace(/\\/g, "/");
-    expect(configuredPath).toContain(expectedStorePathFragment);
+    expect(configuredPath).toBe(expectedStorePath);
   });
 
   it("fails fast when workspace ids collide after normalization", async () => {
