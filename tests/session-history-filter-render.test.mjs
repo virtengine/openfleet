@@ -24,7 +24,7 @@ for (const { relPath, source } of sourceFiles) {
         /function isHistoricSession\(session\)\s*\{\s*return !isActiveSession\(session\);\s*\}/,
       );
       expect(source).toMatch(
-        /function isActiveSession\(session\)\s*\{[\s\S]*status === "active" \|\| status === "running"/,
+        /function isActiveSession\(session\)\s*\{\s*return getSessionLifecycleState\(session\)\.isActive;\s*\}/,
       );
     });
 
