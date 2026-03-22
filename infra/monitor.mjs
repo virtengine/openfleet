@@ -13916,7 +13916,7 @@ function startSelfWatcher() {
         } catch {}
       }
     }
-    console.log(`[monitor] watching own source files (root + lib/) for self-restart: ${watchedDirs.join(", ")}`);
+    console.log(`[monitor] watching source files for self-restart: ${watchedDirs.join(", ")}`);
   } catch (err) {
     console.warn(`[monitor] self-watcher failed: ${err.message}`);
   }
