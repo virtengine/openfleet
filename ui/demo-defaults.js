@@ -18414,8 +18414,8 @@
         "workflow-first",
         "core"
       ],
-      "nodeCount": 53,
-      "edgeCount": 59,
+      "nodeCount": 58,
+      "edgeCount": 66,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -19427,6 +19427,90 @@
           "outputs": [
             "default"
           ]
+        },
+        {
+          "id": "wt-retry-eligible",
+          "type": "condition.expression",
+          "label": "Retryable WT Failure?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('acquire-worktree')?.retryable !== false"
+          },
+          "position": {
+            "x": 850,
+            "y": 960
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "recover-worktree",
+          "type": "action.recover_worktree",
+          "label": "Clean Broken WT",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "branch": "{{branch}}",
+            "taskId": "{{taskId}}"
+          },
+          "position": {
+            "x": 850,
+            "y": 1090
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-acquire-wt",
+          "type": "action.acquire_worktree",
+          "label": "Retry Acquire WT",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "branch": "{{branch}}",
+            "taskId": "{{taskId}}",
+            "baseBranch": "{{baseBranch}}",
+            "defaultTargetBranch": "{{defaultTargetBranch}}"
+          },
+          "position": {
+            "x": 850,
+            "y": 1220
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-wt-ok",
+          "type": "condition.expression",
+          "label": "Retry WT OK?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('retry-acquire-wt')?.success === true"
+          },
+          "position": {
+            "x": 850,
+            "y": 1350
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "sweep-task-wts",
+          "type": "action.sweep_task_worktrees",
+          "label": "Sweep Task WTs",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "taskId": "{{taskId}}"
+          },
+          "position": {
+            "x": 200,
+            "y": 3090
+          },
+          "outputs": [
+            "default"
+          ]
         }
       ],
       "edges": [
@@ -19740,6 +19824,12 @@
           "sourcePort": "default"
         },
         {
+          "id": "release-slot->sweep-task-wts",
+          "source": "release-slot",
+          "target": "sweep-task-wts",
+          "sourcePort": "default"
+        },
+        {
           "id": "claim-ok->release-slot-claim-failed",
           "source": "claim-ok",
           "target": "release-slot-claim-failed",
@@ -19753,8 +19843,48 @@
           "sourcePort": "default"
         },
         {
-          "id": "worktree-ok->release-claim-wt-failed",
+          "id": "worktree-ok->wt-retry-eligible",
           "source": "worktree-ok",
+          "target": "wt-retry-eligible",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "wt-retry-eligible->recover-worktree",
+          "source": "wt-retry-eligible",
+          "target": "recover-worktree",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "recover-worktree->retry-acquire-wt",
+          "source": "recover-worktree",
+          "target": "retry-acquire-wt",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-acquire-wt->retry-wt-ok",
+          "source": "retry-acquire-wt",
+          "target": "retry-wt-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-wt-ok->resolve-executor",
+          "source": "retry-wt-ok",
+          "target": "resolve-executor",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "retry-wt-ok->release-claim-wt-failed",
+          "source": "retry-wt-ok",
+          "target": "release-claim-wt-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "wt-retry-eligible->release-claim-wt-failed",
+          "source": "wt-retry-eligible",
           "target": "release-claim-wt-failed",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
@@ -38227,7 +38357,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 53,
+      "nodeCount": 58,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -39206,6 +39336,90 @@
           "outputs": [
             "default"
           ]
+        },
+        {
+          "id": "wt-retry-eligible",
+          "type": "condition.expression",
+          "label": "Retryable WT Failure?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('acquire-worktree')?.retryable !== false"
+          },
+          "position": {
+            "x": 850,
+            "y": 960
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "recover-worktree",
+          "type": "action.recover_worktree",
+          "label": "Clean Broken WT",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "branch": "{{branch}}",
+            "taskId": "{{taskId}}"
+          },
+          "position": {
+            "x": 850,
+            "y": 1090
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-acquire-wt",
+          "type": "action.acquire_worktree",
+          "label": "Retry Acquire WT",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "branch": "{{branch}}",
+            "taskId": "{{taskId}}",
+            "baseBranch": "{{baseBranch}}",
+            "defaultTargetBranch": "{{defaultTargetBranch}}"
+          },
+          "position": {
+            "x": 850,
+            "y": 1220
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-wt-ok",
+          "type": "condition.expression",
+          "label": "Retry WT OK?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('retry-acquire-wt')?.success === true"
+          },
+          "position": {
+            "x": 850,
+            "y": 1350
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "sweep-task-wts",
+          "type": "action.sweep_task_worktrees",
+          "label": "Sweep Task WTs",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "taskId": "{{taskId}}"
+          },
+          "position": {
+            "x": 200,
+            "y": 3090
+          },
+          "outputs": [
+            "default"
+          ]
         }
       ],
       "edges": [
@@ -39519,6 +39733,12 @@
           "sourcePort": "default"
         },
         {
+          "id": "release-slot->sweep-task-wts",
+          "source": "release-slot",
+          "target": "sweep-task-wts",
+          "sourcePort": "default"
+        },
+        {
           "id": "claim-ok->release-slot-claim-failed",
           "source": "claim-ok",
           "target": "release-slot-claim-failed",
@@ -39532,8 +39752,48 @@
           "sourcePort": "default"
         },
         {
-          "id": "worktree-ok->release-claim-wt-failed",
+          "id": "worktree-ok->wt-retry-eligible",
           "source": "worktree-ok",
+          "target": "wt-retry-eligible",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "wt-retry-eligible->recover-worktree",
+          "source": "wt-retry-eligible",
+          "target": "recover-worktree",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "recover-worktree->retry-acquire-wt",
+          "source": "recover-worktree",
+          "target": "retry-acquire-wt",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-acquire-wt->retry-wt-ok",
+          "source": "retry-acquire-wt",
+          "target": "retry-wt-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-wt-ok->resolve-executor",
+          "source": "retry-wt-ok",
+          "target": "resolve-executor",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "retry-wt-ok->release-claim-wt-failed",
+          "source": "retry-wt-ok",
+          "target": "release-claim-wt-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "wt-retry-eligible->release-claim-wt-failed",
+          "source": "wt-retry-eligible",
           "target": "release-claim-wt-failed",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
