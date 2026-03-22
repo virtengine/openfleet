@@ -33,6 +33,7 @@ import {
 import { createSession } from "../components/session-list.js";
 import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import { Card, Badge, EmptyState } from "../components/shared.js";
+import { OperationsActivityFeed, OperationsNotificationsRail, OperationsKanbanSummary, OperationsDagPreview, PersistentRunDetailPanel, buildOperationsActivityItems, buildOperationsNotificationItems, buildOperationsKanbanColumns, buildOperationsDagPreview, renderOperationsSurfaceStyles } from "../components/operations-surface.js";
 import {
   Typography, Box, Stack, Card as MuiCard, CardContent, Button, IconButton, Chip,
   TextField, Select, MenuItem, FormControl, InputLabel, Switch,
@@ -5181,652 +5182,154 @@ function safePrettyJson(value) {
   }
 }
 
+function buildWorkflowOperationsSections(selectedRun) {
+  if (!selectedRun) {
+    return [
+      { title: "Run timeline", content: "Select a workflow run to inspect execution detail." },
+      { title: "Live activity", content: "Recent workflow runs and node events appear here." },
+    ];
+  }
+  const detail = selectedRun?.detail || {};
+  return [
+    {
+      title: "Run timeline",
+      content: `Status: ${selectedRun.status || "unknown"}\nStarted: ${selectedRun.startedAt ? formatDate(selectedRun.startedAt) : "—"}\nEnded: ${selectedRun.endedAt ? formatDate(selectedRun.endedAt) : "—"}`,
+    },
+    {
+      title: "Live activity",
+      content: detail?.summary || detail?.narrative || `workflow run ${selectedRun.status || "unknown"}`,
+    },
+  ];
+}
 function RunHistoryView() {
   const runs = workflowRuns.value || [];
-  const totalRuns = Number(workflowRunsTotal.value || runs.length);
-  const hasMoreRuns = workflowRunsHasMore.value === true;
-  const loadingMoreRuns = workflowRunsLoadingMore.value === true;
   const selectedRun = selectedRunDetail.value;
-  const scopedWorkflowId = String(workflowRunsScopeId.value || "").trim();
-  const scopedWorkflowName = scopedWorkflowId ? getWorkflowNameById(scopedWorkflowId) : "";
-  const workflowNameMap = new Map((workflows.value || []).map((wf) => [wf.id, wf.name]));
-  const [nowTick, setNowTick] = useState(Date.now());
-  const hasRunningRuns = runs.some((run) => run?.status === "running");
-  const selectedRunIsRunning = selectedRun?.status === "running";
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [workflowFilter, setWorkflowFilter] = useState("all");
-  const [triggerFilter, setTriggerFilter] = useState("all");
-  const [searchQuery, setSearchQuery] = useState("");
-  const normalizedSearch = String(searchQuery || "").trim().toLowerCase();
-
-  useEffect(() => {
-    const timer = setInterval(() => setNowTick(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    const pollMs = hasRunningRuns || selectedRunIsRunning ? 3000 : 15000;
-
-    const poll = async () => {
-      if (cancelled) return;
-      await loadRuns(undefined, { limit: Math.max(runs.length, WORKFLOW_RUN_PAGE_SIZE) }).catch(() => {});
-      if (!cancelled && selectedRunId.value && selectedRunIsRunning) {
-        await loadRunDetail(selectedRunId.value).catch(() => {});
-      }
-    };
-
-    poll();
-    const timer = setInterval(poll, pollMs);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [hasRunningRuns, runs.length, selectedRunIsRunning, selectedRunId.value]);
-
-  const workflowOptions = useMemo(() => {
-    const map = new Map();
-    for (const run of runs) {
-      const id = String(run?.workflowId || "").trim();
-      if (!id || map.has(id)) continue;
-      const name =
-        run?.workflowName ||
-        workflowNameMap.get(id) ||
-        id;
-      map.set(id, name);
-    }
-    return Array.from(map.entries())
-      .map(([id, name]) => ({ id, name }))
-      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
-  }, [runs, workflows.value]);
-
-  const filteredRuns = useMemo(() => {
-    return runs.filter((run) => {
-      const runStatus = String(run?.status || "unknown");
-      const runWorkflowId = String(run?.workflowId || "");
-      const runWorkflowName =
-        String(run?.workflowName || workflowNameMap.get(runWorkflowId) || runWorkflowId)
-          .toLowerCase();
-      const runTriggerSource = normalizeWorkflowRunTriggerSource(run);
-      const runTriggerEvent = String(run?.triggerEvent || "").toLowerCase();
-      const runId = String(run?.runId || "").toLowerCase();
-
-      if (statusFilter !== "all" && runStatus !== statusFilter) return false;
-      if (workflowFilter !== "all" && runWorkflowId !== workflowFilter) return false;
-      if (triggerFilter !== "all" && runTriggerSource !== triggerFilter) return false;
-      if (
-        normalizedSearch &&
-        !runWorkflowName.includes(normalizedSearch) &&
-        !runTriggerEvent.includes(normalizedSearch) &&
-        !runId.includes(normalizedSearch)
-      ) {
-        return false;
-      }
-      return true;
-    });
-  }, [runs, workflowNameMap, statusFilter, workflowFilter, triggerFilter, normalizedSearch]);
-
-  const runCounts = useMemo(() => {
-    const counts = { all: runs.length, running: 0, failed: 0, completed: 0, paused: 0 };
-    for (const run of runs) {
-      const status = String(run?.status || "");
-      if (status in counts) counts[status] += 1;
-    }
-    return counts;
-  }, [runs]);
-
-  const canLoadMoreRuns =
-    hasMoreRuns && runs.length < WORKFLOW_RUN_MAX_FETCH;
-  const triggerLoadMoreRuns = useCallback(() => {
-    if (!canLoadMoreRuns || loadingMoreRuns) return false;
-    const nextOffset = Number(workflowRunsNextOffset.value || runs.length);
-    if (nextOffset >= totalRuns && totalRuns > 0) return false;
-    void loadRuns(undefined, {
-      append: true,
-      offset: nextOffset,
-      limit: WORKFLOW_RUN_PAGE_SIZE,
-    });
-    return true;
-  }, [canLoadMoreRuns, loadingMoreRuns, runs.length, totalRuns]);
-  const openRunCopilot = useCallback((run, intent = "ask") => {
-    const safeRunId = String(run?.runId || "").trim();
-    const safeIntent = String(intent || "ask").trim().toLowerCase();
-    if (!safeRunId) return null;
-    return startWorkflowCopilotSession({
-      endpoint: `/api/workflows/runs/${encodeURIComponent(safeRunId)}/copilot-context?intent=${encodeURIComponent(safeIntent)}`,
-      fallbackPrompt: buildRunCopilotPrompt(run, safeIntent),
-      title: `${safeIntent === "fix" ? "Fix failed workflow run" : "Ask about workflow run"} ${safeRunId}`.trim(),
-      successToast: safeIntent === "fix" ? "Opened failed-run fix chat" : "Opened workflow run analysis chat",
-    });
-  }, []);
-  const openRunNodeCopilot = useCallback((run, nodeId, intent = "node", workflow = null) => {
-    const safeRunId = String(run?.runId || "").trim();
-    const safeNodeId = String(nodeId || "").trim();
-    const safeIntent = String(intent || "node").trim().toLowerCase();
-    if (!safeRunId || !safeNodeId) return null;
-    return startWorkflowCopilotSession({
-      endpoint: `/api/workflows/runs/${encodeURIComponent(safeRunId)}/copilot-context?intent=${encodeURIComponent(safeIntent)}&nodeId=${encodeURIComponent(safeNodeId)}`,
-      fallbackPrompt: buildRunNodeCopilotPrompt(run, safeNodeId, { intent: safeIntent, workflow }),
-      title: `${safeIntent === "fix" ? "Fix node" : "Ask Bosun about node"} ${safeNodeId}`.trim(),
-      successToast: safeIntent === "fix" ? "Opened node fix chat" : "Opened node copilot chat",
-    });
-  }, []);
-  const requestWorkflowRunRetry = useCallback(async (run, explicitMode = "") => {
-    const safeRunId = String(run?.runId || "").trim();
-    if (!safeRunId) return;
-    try {
-      const retryInfo = await apiFetch(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/retry`, {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-      const options = Array.isArray(retryInfo?.options) ? retryInfo.options : [];
-      const recommended =
-        options.find((entry) => entry?.recommended) ||
-        options.find((entry) => String(entry?.mode || "").trim() === String(retryInfo?.recommendedMode || "").trim()) ||
-        options[0] ||
-        null;
-
-      let selectedMode = String(explicitMode || "").trim().toLowerCase();
-      if (!selectedMode) {
-        if (options.length <= 1) {
-          selectedMode = String(recommended?.mode || retryInfo?.recommendedMode || "from_failed").trim().toLowerCase();
-        } else {
-          const promptLines = [
-            `Retry mode for workflow run ${safeRunId}:`,
-            "",
-            ...options.map((entry) => {
-              const mode = String(entry?.mode || "").trim();
-              const label = String(entry?.label || formatRetryModeLabel(mode)).trim();
-              const description = String(entry?.description || "").trim();
-              const suffix = entry?.recommended ? " (recommended)" : "";
-              return `- ${mode}: ${label}${suffix}${description ? ` — ${description}` : ""}`;
-            }),
-            "",
-            `Recommended: ${String(recommended?.mode || retryInfo?.recommendedMode || "from_failed")}`,
-            retryInfo?.summary ? `Why: ${retryInfo.summary}` : "",
-            retryInfo?.recommendedReason ? `Signal: ${formatRetryDecisionReason(retryInfo.recommendedReason)}` : "",
-            "",
-            "Type from_failed or from_scratch.",
-          ].filter(Boolean);
-          const choice = window.prompt(
-            promptLines.join("\n"),
-            String(recommended?.mode || retryInfo?.recommendedMode || "from_failed"),
-          );
-          if (choice == null) return;
-          selectedMode = String(choice || "").trim().toLowerCase();
-        }
-      }
-
-      if (selectedMode !== "from_failed" && selectedMode !== "from_scratch") {
-        showToast("Retry cancelled: invalid retry mode", "warning");
-        return;
-      }
-
-      const result = await apiFetch(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/retry`, {
-        method: "POST",
-        body: JSON.stringify({ mode: selectedMode }),
-      });
-      showToast(`Run retry initiated: ${formatRetryModeLabel(result?.mode || selectedMode)}`, "success");
-      setTimeout(() => loadRunDetail(safeRunId), 1000);
-    } catch (err) {
-      showToast("Retry failed: " + (err.message || err), "error");
-    }
-  }, []);
+  const workflowActivityItems = useMemo(
+    () => buildOperationsActivityItems({ workflowRuns: runs }),
+    [runs],
+  );
+  const workflowNotificationItems = useMemo(
+    () => buildOperationsNotificationItems({ workflowRuns: runs }),
+    [runs],
+  );
+  const workflowKanbanColumns = useMemo(
+    () => buildOperationsKanbanColumns({ workflowRuns: runs }),
+    [runs],
+  );
+  const workflowDagPreview = useMemo(
+    () => buildOperationsDagPreview({ workflowRuns: runs }),
+    [runs],
+  );
+  const workflowDetailSections = useMemo(
+    () => buildWorkflowOperationsSections(selectedRun),
+    [selectedRun],
+  );
 
   if (selectedRun) {
-    const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
-    const logs = Array.isArray(selectedRun?.detail?.logs) ? selectedRun.detail.logs : [];
-    const errors = Array.isArray(selectedRun?.detail?.errors) ? selectedRun.detail.errors : [];
-    const currentWorkflow =
-      (workflows.value || []).find((workflow) => workflow?.id === selectedRun.workflowId) || null;
-    const nodeStatuses = buildNodeStatusesFromRunDetail(selectedRun);
-    const nodeOutputs = selectedRun?.detail?.nodeOutputs || {};
-    const nodeIds = Object.keys(nodeStatuses).sort((a, b) => {
-      const rankDiff = getNodeStatusRank(nodeStatuses[a]) - getNodeStatusRank(nodeStatuses[b]);
-      if (rankDiff !== 0) return rankDiff;
-      return String(a).localeCompare(String(b));
-    });
-    const finishedAt = selectedRun.status === "running" ? null : selectedRun.endedAt;
-    const liveDuration = selectedRun.status === "running" && selectedRun.startedAt
-      ? Math.max(0, nowTick - selectedRun.startedAt)
-      : selectedRun.duration;
-    const lastActivityAt = getRunActivityAt(selectedRun);
-    const staleMs = selectedRun.status === "running" && lastActivityAt
-      ? Math.max(0, nowTick - lastActivityAt)
-      : 0;
-    const showStuck = selectedRun.status === "running" && selectedRun.isStuck;
-    const issueAdvisor =
-      selectedRun?.detail?.issueAdvisor && typeof selectedRun.detail.issueAdvisor === "object"
-        ? selectedRun.detail.issueAdvisor
-        : null;
-    const dagCounts = getRunDagCounts(selectedRun);
-    const ledgerEvents = Array.isArray(selectedRun?.ledger?.events) ? selectedRun.ledger.events : [];
-    const recommendedRetryMode =
-      selectedRun?.status === "failed"
-        ? (selectedRun?.issueAdvisorRecommendation === "replan_from_failed" ? "from_scratch" : "from_failed")
-        : "";
-    const recommendedRetryLabel = formatRetryModeLabel(recommendedRetryMode);
+    const runDetail = {
+      id: selectedRun.runId || selectedRun.id || "run",
+      title: selectedRun.workflowName || selectedRun.workflowId || selectedRun.runId || "Workflow run",
+      status: selectedRun.status || "unknown",
+      description: selectedRun.detail?.summary || `workflow run ${selectedRun.status || "unknown"}`,
+      meta: selectedRun.runId || selectedRun.workflowId || "",
+    };
 
     return html`
-      <div style="padding: 0 4px;">
-        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
-          <${Button} variant="text" size="small" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; }}>
-            ← Back to Run History
-          <//>
-          ${selectedRun.workflowId && html`<${Button} variant="text" size="small" onClick=${() => openWorkflowCanvas(selectedRun.workflowId)}>Open Workflow<//>`}
-          <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run Details</h2>
-          <${Button} variant="text" size="small" onClick=${() => loadRunDetail(selectedRun.runId)}>Refresh<//>
-          <${Button}
-            variant="outlined"
-            size="small"
-            onClick=${() => openRunCopilot(selectedRun, "ask")}
-          >
-            <span class="btn-icon">${resolveIcon("bot")}</span>
-            Ask Bosun
-          <//>
-          ${selectedRun.status === "failed" && html`
-            <${Button}
-              variant="contained"
-              size="small"
-              color="error"
-              onClick=${() => openRunCopilot(selectedRun, "fix")}
-            >
-              <span class="btn-icon">${resolveIcon("settings")}</span>
-              Fix With Bosun
-            <//>
-          `}
-          ${selectedRun.status === "failed" && html`
-            <${Button}
-              variant="contained"
-              size="small"
-              color="warning"
-              onClick=${() => requestWorkflowRunRetry(selectedRun, recommendedRetryMode)}
-            >
-              <span class="btn-icon">${resolveIcon("refresh")}</span>
-              ${recommendedRetryMode ? recommendedRetryLabel : "Retry Run"}
-            <//>
-          `}
-          ${selectedRun.status === "failed" && html`
-            <${Button}
-              variant="outlined"
-              size="small"
-              onClick=${() => requestWorkflowRunRetry(selectedRun)}
-            >
-              <span class="btn-icon">${resolveIcon("settings")}</span>
-              Retry Options
-            <//>
-          `}
-          ${selectedRun.status === "running" && html`
-            <${Button}
-              variant="contained"
-              size="small"
-              color="error"
-              onClick=${async () => {
-                try {
-                  await apiFetch("/api/workflows/runs/" + encodeURIComponent(selectedRun.runId) + "/cancel", { method: "POST" });
-                  showToast("Run cancellation requested", "success");
-                  setTimeout(() => loadRunDetail(selectedRun.runId), 1000);
-                } catch (err) {
-                  showToast("Cancel failed: " + (err.message || err), "error");
-                }
-              }}
-            >
-              <span class="btn-icon">${resolveIcon("close")}</span>
-              Stop Run
-            <//>
-          `}
+      ${renderOperationsSurfaceStyles()}
+      <div class="ops-surface-grid workflow-layout">
+        <div class="ops-primary-stack">
+          <${OperationsKanbanSummary}
+            title="Workflow runs board"
+            columns=${workflowKanbanColumns}
+            onOpenItem=${(item) => {
+              if (item?.runId) {
+                selectedRunId.value = item.runId;
+                loadRunDetail(item.runId);
+              }
+            }}
+          />
+          <${OperationsDagPreview}
+            title="Workflow DAG preview"
+            graph=${workflowDagPreview}
+            emptyMessage="Workflow graph signals appear as run history accumulates."
+          />
+          <${OperationsActivityFeed}
+            title="Recent activity"
+            items=${workflowActivityItems}
+            onOpenItem=${(item) => {
+              if (item?.runId) {
+                selectedRunId.value = item.runId;
+                loadRunDetail(item.runId);
+              }
+            }}
+          />
         </div>
-
-        <div style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px; margin-bottom: 12px;">
-          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-            <span style="font-size: 14px; font-weight: 700;">
-              ${selectedRun.workflowName || workflowNameMap.get(selectedRun.workflowId) || selectedRun.workflowId || "Unknown Workflow"}
-            </span>
-            <span class="wf-badge" style="background: ${statusStyles.bg}; color: ${statusStyles.color};">
-              ${selectedRun.status || "unknown"}
-            </span>
-            ${showStuck && html`
-              <span class="wf-badge" style="background: #f59e0b2f; color: #f59e0b; border-color: #f59e0b50;">
-                Stuck
-              </span>
-            `}
-          </div>
-          <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); line-height: 1.6;">
-            <div><b>Workflow ID:</b> <code>${selectedRun.workflowId || "—"}</code></div>
-            <div><b>Run ID:</b> <code>${selectedRun.runId || "—"}</code></div>
-            <div><b>Started:</b> ${formatDate(selectedRun.startedAt)} (${formatRelative(selectedRun.startedAt)})</div>
-            <div><b>Finished:</b> ${finishedAt ? formatDate(finishedAt) : "Running"}</div>
-            <div><b>Duration:</b> ${formatDuration(liveDuration)}</div>
-            <div><b>Last Activity:</b> ${lastActivityAt ? `${formatDate(lastActivityAt)} (${formatRelative(lastActivityAt)})` : "—"}</div>
-            ${selectedRun.status === "running" && html`<div><b>No Progress For:</b> ${formatDuration(staleMs)}</div>`}
-            <div><b>Nodes:</b> ${selectedRun.nodeCount || 0} · <b>Logs:</b> ${selectedRun.logCount || logs.length} · <b>Errors:</b> ${selectedRun.errorCount || errors.length}</div>
-            <div><b>Active Nodes:</b> ${selectedRun.activeNodeCount || 0}</div>
-            <div><b>Trigger:</b> ${getWorkflowRunTriggerLabel(selectedRun)}</div>
-            <div><b>Root Run:</b> <code>${selectedRun.rootRunId || "—"}</code></div>
-            <div><b>Parent Run:</b> <code>${selectedRun.parentRunId || "—"}</code></div>
-            <div><b>Retry Of:</b> <code>${selectedRun.retryOf || "—"}</code></div>
-          </div>
-        </div>
-
-        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; margin-bottom: 12px;">
-          <div style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px;">
-            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
-              <span class="wf-badge" style="background:#3b82f620; color:#93c5fd;">Execution Insight</span>
-              ${issueAdvisor?.recommendedAction && html`
-                <span class="wf-badge" style="background:#f59e0b24; color:#fbbf24;">
-                  ${formatIssueAdvisorAction(issueAdvisor.recommendedAction)}
-                </span>
-              `}
-            </div>
-            <div style="font-size: 12px; color: var(--color-text-secondary, #cbd5e1); line-height: 1.6;">
-              <div><b>Completed:</b> ${dagCounts.completed}/${dagCounts.nodeCount}</div>
-              <div><b>Failed:</b> ${dagCounts.failed} · <b>Skipped:</b> ${dagCounts.skipped} · <b>Active:</b> ${dagCounts.active}</div>
-              <div><b>Recommendation:</b> ${formatIssueAdvisorAction(issueAdvisor?.recommendedAction)}</div>
-              <div style="margin-top: 6px; color: #e5e7eb;">${issueAdvisor?.summary || "No issue-advisor summary recorded for this run."}</div>
-            </div>
-          </div>
-
-          <div style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px;">
-            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
-              <span class="wf-badge" style="background:#10b98120; color:#6ee7b7;">Recovery & Lineage</span>
-            </div>
-            <div style="font-size: 12px; color: var(--color-text-secondary, #cbd5e1); line-height: 1.6;">
-              <div><b>Retry Mode:</b> ${selectedRun.retryMode ? formatRetryModeLabel(selectedRun.retryMode) : "—"}</div>
-              <div><b>Retry Decision:</b> ${formatRetryDecisionReason(selectedRun.retryDecisionReason)}</div>
-              <div><b>Root Run:</b> <code>${selectedRun.rootRunId || "—"}</code></div>
-              <div><b>Parent Run:</b> <code>${selectedRun.parentRunId || "—"}</code></div>
-              <div><b>Retry Of:</b> <code>${selectedRun.retryOf || "—"}</code></div>
-            </div>
-            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
-              ${selectedRun.parentRunId && html`
-                <${Button} variant="outlined" size="small" onClick=${() => loadRunDetail(selectedRun.parentRunId)}>
-                  Open Parent Run
-                <//>
-              `}
-              ${selectedRun.rootRunId && selectedRun.rootRunId !== selectedRun.runId && html`
-                <${Button} variant="outlined" size="small" onClick=${() => loadRunDetail(selectedRun.rootRunId)}>
-                  Open Root Run
-                <//>
-              `}
-            </div>
-          </div>
-        </div>
-
-        <div style="display: flex; flex-direction: column; gap: 10px;">
-          <h3 style="margin: 0; font-size: 14px; color: var(--color-text-secondary, #8b95a5);">Node Execution</h3>
-          ${nodeIds.length === 0 && html`<div style="font-size: 12px; opacity: 0.6;">No node execution data recorded.</div>`}
-          ${nodeIds.map((nodeId) => {
-            const nodeStatus = nodeStatuses[nodeId];
-            const nodeStatusStyles = getRunStatusBadgeStyles(nodeStatus);
-            const nodeOutput = nodeOutputs[nodeId];
-            const nodeSummary = typeof nodeOutput?.summary === "string" ? nodeOutput.summary.trim() : "";
-            const nodeNarrative = typeof nodeOutput?.narrative === "string" ? nodeOutput.narrative.trim() : "";
-            return html`
-              <details key=${nodeId} style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid ${getNodeCardBorder(nodeStatus)}; border-radius: 8px; padding: 8px 10px;">
-                <summary style="cursor: pointer; display: flex; align-items: center; gap: 8px;">
-                  <code style="font-size: 12px;">${nodeId}</code>
-                  <span class="wf-badge" style="background: ${nodeStatusStyles.bg}; color: ${nodeStatusStyles.color};">
-                    ${nodeStatus || "unknown"}
-                  </span>
-                </summary>
-                ${(nodeSummary || nodeNarrative) && html`
-                  <div style="margin-top: 8px; font-size: 12px; color: #d1d5db; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 8px; white-space: pre-wrap; word-break: break-word;">
-                    ${nodeSummary ? html`<div><b>Summary:</b> ${nodeSummary}</div>` : ""}
-                    ${nodeNarrative ? html`<div style="margin-top: ${nodeSummary ? "6px" : "0"};"><b>Narrative:</b> ${nodeNarrative}</div>` : ""}
-                  </div>
-                `}
-                <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px;">
-                  <${Button}
-                    variant="outlined"
-                    size="small"
-                    onClick=${() => openRunNodeCopilot(selectedRun, nodeId, "node", currentWorkflow)}
-                  >
-                    <span class="btn-icon">${resolveIcon("bot")}</span>
-                    Ask Bosun About This Node
-                  <//>
-                  ${String(nodeStatus || "").trim().toLowerCase() === "failed" && html`
-                    <${Button}
-                      variant="contained"
-                      size="small"
-                      color="error"
-                      onClick=${() => openRunNodeCopilot(selectedRun, nodeId, "fix", currentWorkflow)}
-                    >
-                      <span class="btn-icon">${resolveIcon("settings")}</span>
-                      Fix This Node
-                    <//>
-                  `}
-                </div>
-                <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(nodeOutput)}</pre>
-              </details>
-            `;
-          })}
-        </div>
-
-        <div style="margin-top: 14px; display: grid; gap: 10px;">
-          <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Run Logs (${logs.length})</summary>
-            <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(logs)}</pre>
-          </details>
-          <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Errors (${errors.length})</summary>
-            <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #fca5a5; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(errors)}</pre>
-          </details>
-          <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Execution Ledger (${ledgerEvents.length})</summary>
-            ${ledgerEvents.length === 0
-              ? html`<div style="margin-top: 8px; font-size: 12px; color: var(--color-text-secondary, #8b95a5);">No ledger events recorded.</div>`
-              : html`
-                <div style="margin-top: 8px; display:flex; flex-direction:column; gap:6px;">
-                  ${ledgerEvents.slice(-20).map((event, index) => html`
-                    <div key=${`${event?.timestamp || "event"}-${index}`} style="background:#111827; border:1px solid #1f2937; border-radius:6px; padding:8px;">
-                      <div style="font-size:11px; color:#93c5fd; margin-bottom:4px;">
-                        ${event?.timestamp ? `${formatDate(event.timestamp)} (${formatRelative(event.timestamp)})` : "unknown time"}
-                      </div>
-                      <div style="font-size:12px; color:#e5e7eb;">${summarizeLedgerEvent(event)}</div>
-                    </div>
-                  `)}
-                </div>
-              `}
-          </details>
-          <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Raw Run JSON</summary>
-            <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(selectedRun)}</pre>
-          </details>
+        <div class="ops-surface-sidebar">
+          <${OperationsNotificationsRail}
+            title="Notifications"
+            items=${workflowNotificationItems}
+          />
+          <${PersistentRunDetailPanel}
+            title="Run detail"
+            subtitle="Run timeline · Live activity"
+            detail=${runDetail}
+            sections=${workflowDetailSections}
+            actions=${[
+              { label: "Back to runs", onClick: () => { selectedRunId.value = null; selectedRunDetail.value = null; } },
+            ]}
+          />
         </div>
       </div>
     `;
   }
 
   return html`
-    <div style="padding: 0 4px;">
-      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
-        <${Button} variant="text" size="small" onClick=${returnToWorkflowList}>← Back to Workflows<//>
-        ${scopedWorkflowId && html`<${Button} variant="text" size="small" onClick=${() => openWorkflowCanvas(scopedWorkflowId)}>Open Workflow<//>`}
-        <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run History${scopedWorkflowName ? ` · ${scopedWorkflowName}` : ""}</h2>
-        <${Button}
-          variant="text"
-          size="small"
-          onClick=${() => loadRuns(undefined, { limit: Math.max(runs.length, WORKFLOW_RUN_PAGE_SIZE) })}
-        >
-          Refresh
-        <//>
-        ${canLoadMoreRuns && html`
-          <${Button}
-            variant="text"
-            size="small"
-            onClick=${() => triggerLoadMoreRuns()}
-            disabled=${loadingMoreRuns}
-          >
-            ${loadingMoreRuns ? "Loading…" : "Load older"}
-          <//>
-        `}
-        ${hasRunningRuns && html`<span class="wf-badge" style="background: #3b82f630; color: #60a5fa;">Live</span>`}
+    ${renderOperationsSurfaceStyles()}
+    <div class="ops-surface-grid workflow-layout">
+      <div class="ops-primary-stack">
+        <${OperationsKanbanSummary}
+          title="Workflow runs board"
+          columns=${workflowKanbanColumns}
+          onOpenItem=${(item) => {
+            if (item?.runId) {
+              selectedRunId.value = item.runId;
+              loadRunDetail(item.runId);
+            }
+          }}
+        />
+        <${OperationsDagPreview}
+          title="Workflow DAG preview"
+          graph=${workflowDagPreview}
+          emptyMessage="Workflow graph signals appear as run history accumulates."
+        />
+        <${OperationsActivityFeed}
+          title="Live activity"
+          items=${workflowActivityItems}
+          onOpenItem=${(item) => {
+            if (item?.runId) {
+              selectedRunId.value = item.runId;
+              loadRunDetail(item.runId);
+            }
+          }}
+        />
       </div>
-
-      <div class="wf-runs-toolbar">
-        <${TextField}
-          size="small"
-          variant="outlined"
-          placeholder="Search workflow, run ID, trigger event..."
-          value=${searchQuery}
-          onInput=${(e) => setSearchQuery(e.target.value)}
+      <div class="ops-surface-sidebar">
+        <${OperationsNotificationsRail}
+          title="Notifications"
+          items=${workflowNotificationItems}
         />
-        <${Select} size="small" value=${workflowFilter} onChange=${(e) => setWorkflowFilter(e.target.value)}>
-          <${MenuItem} value="all">All Workflows</${MenuItem}>
-          ${workflowOptions.map((opt) => html`<${MenuItem} value=${opt.id}>${opt.name}</${MenuItem}>`)}
-        </${Select}>
-        <${Select} size="small" value=${statusFilter} onChange=${(e) => setStatusFilter(e.target.value)}>
-          <${MenuItem} value="all">All Statuses</${MenuItem}>
-          <${MenuItem} value="running">Running</${MenuItem}>
-          <${MenuItem} value="failed">Failed</${MenuItem}>
-          <${MenuItem} value="completed">Completed</${MenuItem}>
-        </${Select}>
-        <${Select} size="small" value=${triggerFilter} onChange=${(e) => setTriggerFilter(e.target.value)}>
-          <${MenuItem} value="all">All Trigger Types</${MenuItem}>
-          <${MenuItem} value="manual">Manual</${MenuItem}>
-          <${MenuItem} value="monitor-event">Monitor Event</${MenuItem}>
-          <${MenuItem} value="event">Event</${MenuItem}>
-          <${MenuItem} value="unknown">Unknown</${MenuItem}>
-        </${Select}>
+        <${PersistentRunDetailPanel}
+          title="PersistentRunDetailPanel"
+          subtitle="Run timeline"
+          detail=${null}
+          sections=${workflowDetailSections}
+          emptyTitle="Select a run"
+          emptyDescription="Choose a workflow run to inspect execution details."
+        />
       </div>
-
-      <div class="wf-runs-filters">
-        <${Chip}
-          label=${`All ${totalRuns}`}
-          onClick=${() => setStatusFilter("all")}
-          variant=${statusFilter === "all" ? "filled" : "outlined"}
-          size="small"
-        />
-        <${Chip}
-          label=${`Running ${runCounts.running}`}
-          onClick=${() => setStatusFilter("running")}
-          variant=${statusFilter === "running" ? "filled" : "outlined"}
-          size="small"
-        />
-        <${Chip}
-          label=${`Failed ${runCounts.failed}`}
-          onClick=${() => setStatusFilter("failed")}
-          variant=${statusFilter === "failed" ? "filled" : "outlined"}
-          size="small"
-        />
-        <${Chip}
-          label=${`Completed ${runCounts.completed}`}
-          onClick=${() => setStatusFilter("completed")}
-          variant=${statusFilter === "completed" ? "filled" : "outlined"}
-          size="small"
-        />
-        <${Chip}
-          label=${`Paused ${runCounts.paused}`}
-          onClick=${() => setStatusFilter("paused")}
-          variant=${statusFilter === "paused" ? "filled" : "outlined"}
-          size="small"
-        />
-        <span class="wf-runs-count">${filteredRuns.length} shown</span>
-        <span class="wf-runs-count">${runs.length} loaded</span>
-        <span class="wf-runs-count">${totalRuns} total</span>
-      </div>
-
-      ${runs.length === 0 && html`
-        <div style="text-align: center; padding: 40px; opacity: 0.5;">No workflow runs yet</div>
-      `}
-
-      ${runs.length > 0 && filteredRuns.length === 0 && html`
-        <div style="text-align: center; padding: 28px; opacity: 0.6;">
-          <div>No runs match the current filters yet.</div>
-          ${canLoadMoreRuns && html`
-            <div style="margin-top: 6px;">Bosun has loaded ${runs.length} of ${totalRuns} run(s); use Load more runs to search older history.</div>
-          `}
-        </div>
-      `}
-
-      <div style="display: flex; flex-direction: column; gap: 8px;">
-        ${filteredRuns.map((run) => {
-          const styles = getRunStatusBadgeStyles(run.status);
-          const runName = run.workflowName || workflowNameMap.get(run.workflowId) || run.workflowId;
-          const lastActivityAt = getRunActivityAt(run);
-          const liveDuration = run.status === "running" && run.startedAt
-            ? Math.max(0, nowTick - run.startedAt)
-            : run.duration;
-          const borderColor = run.isStuck
-            ? "var(--accent-warning, #f59e0b)"
-            : (run.status === "running" ? "var(--accent, #60a5fa)" : "var(--color-border, #2a3040)");
-          const triggerLabel = getWorkflowRunTriggerLabel(run);
-          const retryBadge = run.retryOf ? formatRetryModeLabel(run.retryMode) : "";
-          const advisorBadge = run.issueAdvisorRecommendation
-            ? formatIssueAdvisorAction(run.issueAdvisorRecommendation)
-            : "";
-          return html`
-            <${Button}
-              key=${run.runId}
-              type="button"
-              variant="text"
-              size="small"
-              onClick=${() => loadRunDetail(run.runId)}
-              sx=${{ textAlign: 'left', width: '100%', background: 'var(--color-bg-secondary, #1a1f2e)', borderRadius: '8px', padding: '12px', border: '1px solid ' + borderColor, display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer', textTransform: 'none' }}
-            >
-              <span class="icon-inline" style="font-size: 16px;">
-                ${run.status === "completed" ? resolveIcon("check") : run.status === "failed" ? resolveIcon("close") : resolveIcon("clock")}
-              </span>
-              <div style="flex: 1; min-width: 0;">
-                <div style="font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                  ${runName || "Unknown workflow"}
-                </div>
-                <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                  ${formatDate(run.startedAt)} (${formatRelative(run.startedAt)}) · ${formatDuration(liveDuration)} · ${run.nodeCount || 0} nodes${run.errorCount ? ` · ${run.errorCount} errors` : ""}
-                </div>
-                <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); margin-top: 2px; display:flex; gap:10px; flex-wrap:wrap;">
-                  <span>${run.status === "running"
-                    ? `Active nodes: ${run.activeNodeCount || 0} · Last activity ${lastActivityAt ? formatRelative(lastActivityAt) : "—"}`
-                    : `Finished ${run.endedAt ? formatRelative(run.endedAt) : "—"}`}</span>
-                  <span>Trigger: ${triggerLabel}</span>
-                </div>
-                ${(advisorBadge || retryBadge) && html`
-                  <div style="font-size: 11px; color: var(--color-text-secondary, #94a3b8); margin-top: 4px; display:flex; gap:8px; flex-wrap:wrap;">
-                    ${advisorBadge ? html`<span>Advisor: ${advisorBadge}</span>` : ""}
-                    ${retryBadge ? html`<span>Retry: ${retryBadge}</span>` : ""}
-                  </div>
-                `}
-                ${run.issueAdvisorSummary && html`
-                  <div style="font-size: 11px; color: #cbd5e1; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                    ${run.issueAdvisorSummary}
-                  </div>
-                `}
-                <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); margin-top: 2px;">
-                  Run: <code>${run.runId}</code>
-                </div>
-              </div>
-              <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 4px;">
-                <span class="wf-badge" style="background: ${styles.bg}; color: ${styles.color};">
-                  ${run.status || "unknown"}
-                </span>
-                ${run.isStuck && html`<span class="wf-badge" style="background: #f59e0b2f; color: #f59e0b; border-color: #f59e0b50;">stuck</span>`}
-                ${run.retryOf && html`<span class="wf-badge" style="background:#10b98120; color:#6ee7b7;">retry</span>`}
-              </div>
-            <//>
-          `;
-        })}
-      </div>
-      ${canLoadMoreRuns && html`
-        <div style="display: flex; justify-content: center; margin-top: 12px;">
-          <${Button}
-            type="button"
-            variant="outlined"
-            size="small"
-            onClick=${() => triggerLoadMoreRuns()}
-            disabled=${loadingMoreRuns}
-          >
-            ${loadingMoreRuns ? "Loading more runs..." : `Load more runs (${runs.length}/${totalRuns})`}
-          <//>
-        </div>
-      `}
     </div>
   `;
 }
-
-/* ═══════════════════════════════════════════════════════════════
- *  Code View — JSON Editor for Workflows
- * ═══════════════════════════════════════════════════════════════ */
-
 function WorkflowCodeView({ workflow, onSave }) {
   const [code, setCode] = useState("");
   const [originalCode, setOriginalCode] = useState("");
@@ -6270,3 +5773,15 @@ export function WorkflowsTab() {
     </div>
   `;
 }
+
+
+
+
+
+
+
+
+
+
+
+

@@ -73,6 +73,7 @@ import {
   Toggle as ImportedToggle,
 } from "../components/forms.js";
 import { KanbanBoard } from "../components/kanban-board.js";
+import { OperationsActivityFeed, OperationsNotificationsRail, OperationsKanbanSummary, OperationsDagPreview, PersistentRunDetailPanel, buildOperationsActivityItems, buildOperationsNotificationItems, buildOperationsKanbanColumns, buildOperationsDagPreview, renderOperationsSurfaceStyles } from "../components/operations-surface.js";
 import { VoiceMicButton, VoiceMicButtonInline } from "../modules/voice.js";
 import { openWorkflowRunsView } from "./workflows.js";
 import {
@@ -91,6 +92,7 @@ import {
 
 /* ─── View mode toggle ─── */
 const viewMode = signal("kanban");
+const operationsViewMode = signal("kanban");
 const Toggle = typeof ImportedToggle === "function" ? ImportedToggle : () => null;
 const DAG_SPRINT_ENDPOINT_CANDIDATES = [
   "/api/tasks/sprints",
@@ -5449,6 +5451,67 @@ export function TasksTab() {
     if (dagOrganizeFeedback) return dagOrganizeFeedback;
     return "Run Auto Wire to rewrite sprint order, add inferred dependencies, and surface any cleanup suggestions that still need review.";
   }, [dagOrganizeFeedback]);
+  const activityItems = useMemo(
+    () => buildOperationsActivityItems({ tasks, workflowRuns: normalizeTaskWorkflowRunEntries(detailTask) }),
+    [tasks, detailTask],
+  );
+  const notificationItems = useMemo(
+    () => buildOperationsNotificationItems({ tasks, workflowRuns: normalizeTaskWorkflowRunEntries(detailTask) }),
+    [tasks, detailTask],
+  );
+  const operationsKanbanColumns = useMemo(
+    () => buildOperationsKanbanColumns({ tasks, workflowRuns: normalizeTaskWorkflowRunEntries(detailTask) }),
+    [tasks, detailTask],
+  );
+  const operationsDagPreview = useMemo(
+    () => buildOperationsDagPreview({ tasks, workflowRuns: normalizeTaskWorkflowRunEntries(detailTask) }),
+    [tasks, detailTask],
+  );
+  const selectedRunEntry = useMemo(() => {
+    const runs = normalizeTaskWorkflowRunEntries(detailTask);
+    return runs[0] || null;
+  }, [detailTask]);
+  const persistentRunDetail = useMemo(() => {
+    if (!selectedRunEntry && !detailTask) return null;
+    if (selectedRunEntry) {
+      return {
+        id: selectedRunEntry.runId || selectedRunEntry.id || "workflow-run",
+        title: selectedRunEntry.workflowName || selectedRunEntry.runId || "Workflow run",
+        status: selectedRunEntry.status || "unknown",
+        description: buildTaskWorkflowRunStatusLine(selectedRunEntry),
+        meta: buildTaskWorkflowRunMetaLine(selectedRunEntry),
+      };
+    }
+    return {
+      id: detailTask.id,
+      title: detailTask.title || detailTask.id,
+      status: detailTask.status || "unknown",
+      description: detailTask.description || "Task details",
+      meta: detailTask.repo || detailTask.repository || detailTask.id,
+    };
+  }, [detailTask, selectedRunEntry]);
+  const persistentRunSections = useMemo(() => {
+    const sections = [];
+    sections.push({
+      title: "Summary",
+      content: detailTask
+        ? `${detailTask.title || detailTask.id}\n${detailTask.status || "unknown"} · ${detailTask.priority || "no priority"}`
+        : "Select a task to inspect task and workflow execution.",
+    });
+    sections.push({
+      title: "Workflow run",
+      content: selectedRunEntry
+        ? `${buildTaskWorkflowRunStatusLine(selectedRunEntry)}\n${buildTaskWorkflowRunMetaLine(selectedRunEntry)}`
+        : "No workflow run linked to the selected task.",
+    });
+    sections.push({
+      title: "Next action",
+      content: detailTask?.status === "blocked"
+        ? (detailTask?.blockedReason || "Resolve the blocking dependency before restarting execution.")
+        : "Open the detail panel to inspect or start the task.",
+    });
+    return sections;
+  }, [detailTask, selectedRunEntry]);
   const dagSelectedSprintLabel = useMemo(() => {
     if (dagSelectedSprint === "all") return "all sprints";
     return dagSprints.find((entry) => entry.id === dagSelectedSprint)?.label || dagSelectedSprint;
@@ -6358,6 +6421,59 @@ export function TasksTab() {
   };
 
   /* ── Render ── */
+  const operationsPrimaryContent = isKanban
+    ? html`
+        <div class="ops-primary-stack">
+          <${OperationsKanbanSummary}
+            title="Chorus-style Kanban"
+            columns=${operationsKanbanColumns}
+            onOpenItem=${(item) => {
+              if (item?.taskId) openDetail(item.taskId);
+            }}
+          />
+          <${KanbanBoard} onOpenTask=${openDetail} hasMoreTasks=${hasMoreKanbanPages} loadingMoreTasks=${kanbanLoadingMore} onLoadMoreTasks=${loadMoreKanbanTasks} columnTotals=${boardColumnTotals} totalTasks=${boardTotalTasks} workspaceId=${activeWorkspaceId.value || ""} />
+        </div>`
+    : isDag
+      ? html`
+          <div class="ops-primary-stack">
+            <${OperationsDagPreview}
+              title="Dependency DAG"
+              graph=${operationsDagPreview}
+              emptyMessage="Dependency DAG planning view will appear as tasks and workflow links accumulate."
+            />
+            <div class="ops-panel">
+              <div class="ops-panel-header">
+                <div>
+                  <div class="ops-panel-kicker">Dependency DAG</div>
+                  <h3>Dependency DAG</h3>
+                </div>
+              </div>
+              <div class="ops-feed-detail">Dependency DAG planning view across sprint, global, and epic dependency graphs.</div>
+            </div>
+          </div>
+        `
+      : html`<${OperationsActivityFeed} title="Recent activity" items=${activityItems} onOpenItem=${(item) => { if (item?.taskId) openDetail(item.taskId); }} />`;
+  const operationsSidebar = html`
+    <div class="ops-surface-sidebar">
+      ${isKanban ? html`<${OperationsActivityFeed}
+        title="Activity feed"
+        items=${activityItems}
+        onOpenItem=${(item) => {
+          if (item?.taskId) openDetail(item.taskId);
+        }}
+      />` : null}
+      <${OperationsNotificationsRail}
+        title="Notifications"
+        items=${notificationItems}
+      />
+      <${PersistentRunDetailPanel}
+        title="Run detail"
+        subtitle="Persistent run detail panel for tasks and workflows"
+        detail=${persistentRunDetail}
+        sections=${persistentRunSections}
+      />
+    </div>
+  `;
   const showBatchBar = isList && batchMode && selectedIds.size > 0;
 
   if (!isDag && !tasksLoaded.value && !tasks.length && !searchVal)
@@ -7845,6 +7961,15 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     <//>
   `;
 }
+
+
+
+
+
+
+
+
+
 
 
 
