@@ -100,12 +100,19 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
       }));
     };
 
-    bridge.on("retry:update", applyRetryQueue);
-    bridge.on("retry-queue-updated", applyRetryQueue);
+    const retryUnsubscribes = [];
+
+    retryUnsubscribes.push(bridge.on("retry:update", applyRetryQueue));
+    retryUnsubscribes.push(bridge.on("retry-queue-updated", applyRetryQueue));
 
     bridge.connect();
 
     return () => {
+      retryUnsubscribes.forEach((unsubscribe) => {
+        if (typeof unsubscribe === "function") {
+          unsubscribe();
+        }
+      });
       bridge.disconnect();
     };
   }, [host, port]);
