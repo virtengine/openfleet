@@ -49,6 +49,9 @@ function canUse(feature) {
     case "cloudStorage": return check(6, 9);
     case "verticalSwipes": return check(7, 7);
     case "closingConfirmation": return check(6, 2);
+    case "showPopup": return check(6, 2);
+    case "showConfirm": return check(6, 2);
+    case "showAlert": return check(6, 2);
     case "headerColor": return check(6, 1);
     case "backgroundColor": return check(6, 1);
     case "bottomBarColor": return check(6, 1);
@@ -343,7 +346,7 @@ export function getTelegramUser() {
 export function showConfirm(message) {
   return new Promise((resolve) => {
     const tg = getTg();
-    if (!tg?.showConfirm) {
+    if (!tg?.showConfirm || !canUse("showConfirm")) {
       resolve(window.confirm(message));
       return;
     }
@@ -363,7 +366,7 @@ export function showConfirm(message) {
 export function showAlert(message) {
   return new Promise((resolve) => {
     const tg = getTg();
-    if (!tg?.showAlert) {
+    if (!tg?.showAlert || !canUse("showAlert")) {
       window.alert(message);
       resolve();
       return;
