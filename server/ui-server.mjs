@@ -9848,14 +9848,16 @@ function startLogStream(socket, logType, query) {
 
       if (size <= streamState.offset) return;
 
-
+      const readLen = Math.min(size - streamState.offset, 512_000);
+      const handle = await open(filePath, "r");
+      try {
+        const buffer = Buffer.alloc(readLen);
         await handle.read(buffer, 0, readLen, streamState.offset);
         streamState.offset += readLen;
         const text = buffer.toString("utf8");
         const lines = text.split("\n").filter(Boolean);
         if (lines.length > 0) {
           sendWsMessage(socket, { type: "log-lines", lines });
-
         }
       } finally {
         await handle.close();
