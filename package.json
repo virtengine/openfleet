@@ -204,6 +204,7 @@
     "desktop/preload.cjs",
     "desktop/preload.mjs",
     "entrypoint.mjs",
+    "lib/repo-map.mjs",
     "git/conflict-resolver.mjs",
     "git/diff-stats.mjs",
     "git/git-commit-helpers.mjs",
@@ -404,3 +405,5 @@
     "gaxios": "7.1.4"
   }
 }
+
+

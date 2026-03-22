@@ -239,6 +239,26 @@ describe("workflow-templates", () => {
     expect(Object.isFrozen(WORKFLOW_TEMPLATES)).toBe(true);
   });
 
+  it("task execution templates carry architect/editor phase framing", () => {
+    const template = getTemplate("template-task-fullstack");
+    expect(template).toBeTruthy();
+
+    const planNode = template.nodes.find((node) => node.id === "plan-architecture");
+    const backendNode = template.nodes.find((node) => node.id === "implement-backend");
+    const frontendNode = template.nodes.find((node) => node.id === "implement-frontend");
+    const verifyNode = template.nodes.find((node) => node.id === "integration-test");
+
+    expect(planNode?.config?.mode).toBe("plan");
+    expect(planNode?.config?.executionRole).toBe("architect");
+    expect(planNode?.config?.repoMapQuery).toBe("{{taskTitle}} {{taskDescription}}");
+    expect(backendNode?.config?.executionRole).toBe("editor");
+    expect(frontendNode?.config?.executionRole).toBe("editor");
+    expect(verifyNode?.config?.executionRole).toBe("editor");
+    expect(String(backendNode?.config?.architectPlan || "")).toContain("plan-architecture");
+    expect(String(frontendNode?.config?.architectPlan || "")).toContain("plan-architecture");
+    expect(String(verifyNode?.config?.architectPlan || "")).toContain("plan-architecture");
+  });
+
   it("every template has required fields", () => {
     for (const t of WORKFLOW_TEMPLATES) {
       expect(t.id).toMatch(/^template-/);
@@ -1548,3 +1568,4 @@ describe("template category coverage", () => {
     }
   });
 });
+

@@ -9,6 +9,7 @@ import { loadConfig } from "../config/config.mjs";
 import { ensureCodexConfig, printConfigSummary } from "../shell/codex-config.mjs";
 import { ensureRepoConfigs, printRepoConfigSummary } from "../config/repo-config.mjs";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
+import { buildArchitectEditorFrame } from "../lib/repo-map.mjs";
 import { getAgentToolConfig, getEffectiveTools } from "./agent-tool-config.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
 import { getEntry, getEntryContent, resolveAgentProfileLibraryMetadata } from "../infra/library-manager.mjs";
@@ -191,133 +192,9 @@ function appendAttachmentsToPrompt(message, attachments) {
   return { message: `${message}${lines.join("\n")}`, appended: true };
 }
 
-function normalizeRepoMap(repoMap) {
-  if (!repoMap || typeof repoMap !== "object") return null;
-  const root = String(repoMap.root || repoMap.repoRoot || "").trim();
-  const files = Array.isArray(repoMap.files)
-    ? repoMap.files
-        .filter((entry) => entry && typeof entry === "object")
-        .map((entry) => ({
-          path: String(entry.path || entry.file || "").trim(),
-          summary: String(entry.summary || entry.description || "").trim(),
-          symbols: Array.isArray(entry.symbols)
-            ? entry.symbols.map((symbol) => String(symbol || "").trim()).filter(Boolean)
-            : [],
-        }))
-        .filter((entry) => entry.path)
-    : [];
-  if (!root && files.length === 0) return null;
-  return { root, files };
-}
 
-function formatRepoMap(repoMap) {
-  const normalized = normalizeRepoMap(repoMap);
-  if (!normalized) return "";
-  const lines = ["## Repo Map"];
-  if (normalized.root) lines.push(`- Root: ${normalized.root}`);
-  for (const file of normalized.files) {
-    const parts = [file.path];
-    if (file.symbols.length) parts.push(`symbols: ${file.symbols.join(", ")}`);
-    if (file.summary) parts.push(file.summary);
-    lines.push(`- ${parts.join(" — ")}`);
-  }
-  return lines.join("\n");
-}
 
-function summarizePathSegment(segment) {
-  return String(segment || "")
-    .replace(/[-_]+/g, " ")
-    .replace(/\.m?js$/i, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
-function inferRepoMapEntry(pathValue) {
-  const path = String(pathValue || "").trim().replace(/\\/g, "/");
-  if (!path) return null;
-  const name = path.split("/").pop() || path;
-  const stem = summarizePathSegment(name);
-  const dir = path.includes("/") ? path.split("/").slice(0, -1).join("/") : "";
-  const dirHint = dir ? summarizePathSegment(dir.split("/").pop()) : "";
-  const symbols = [];
-  const lowerStem = stem.toLowerCase();
-  if (lowerStem) {
-    const compact = lowerStem
-      .split(" ")
-      .filter(Boolean)
-      .map((part, index) => (index === 0 ? part : part.charAt(0).toUpperCase() + part.slice(1)))
-      .join("");
-    if (compact) {
-      symbols.push(compact);
-      if (!compact.startsWith("test")) symbols.push(`test${compact.charAt(0).toUpperCase()}${compact.slice(1)}`);
-    }
-  }
-  const summaryParts = [];
-  if (dirHint) summaryParts.push(`${dirHint} module`);
-  if (stem) summaryParts.push(stem);
-  return {
-    path,
-    summary: summaryParts.join(" — "),
-    symbols: [...new Set(symbols)].slice(0, 3),
-  };
-}
-
-function deriveRepoMap(options = {}) {
-  const explicit = normalizeRepoMap(options.repoMap);
-  if (explicit) return explicit;
-  const changedFiles = Array.isArray(options.changedFiles)
-    ? options.changedFiles.map((value) => String(value || "").trim()).filter(Boolean)
-    : [];
-  if (!changedFiles.length) return null;
-  const root = String(options.repoRoot || options.cwd || resolveRepoRoot() || "").trim();
-  const files = changedFiles
-    .map((pathValue) => inferRepoMapEntry(pathValue))
-    .filter(Boolean)
-    .slice(0, Number(options.repoMapFileLimit) > 0 ? Number(options.repoMapFileLimit) : 12);
-  if (!root && files.length === 0) return null;
-  return { root, files };
-}
-
-function inferExecutionRole(options = {}, effectiveMode = "agent") {
-  const explicitRole = String(options.executionRole || "").trim().toLowerCase();
-  if (explicitRole) return explicitRole;
-  if (effectiveMode === "plan") return "architect";
-  const architectPlan = String(options.architectPlan || options.planSummary || "").trim();
-  if (architectPlan) return "editor";
-  return "";
-}
-function buildArchitectEditorFrame(options = {}, effectiveMode = "agent") {
-  const executionRole = inferExecutionRole(options, effectiveMode);
-  const repoMapBlock = formatRepoMap(deriveRepoMap(options));
-  const architectPlan = String(options.architectPlan || options.planSummary || "").trim();
-  const lines = ["## Architect/Editor Execution"];
-
-  if (executionRole === "architect") {
-    lines.push(
-      "You are the architect phase.",
-      "Do not implement code changes in this phase.",
-      "Use the repo map to produce a compact structural plan that an editor can execute and validate.",
-      "Editor handoff: include ordered implementation steps, touched files, risks, and validation guidance.",
-    );
-  } else if (executionRole === "editor") {
-    lines.push(
-      "You are the editor phase.",
-      "Implement the approved plan with focused edits and verification.",
-      "Prefer the supplied repo map over broad rediscovery unless validation reveals drift.",
-    );
-    if (architectPlan) {
-      lines.push("", "## Architect Plan", architectPlan);
-    }
-  } else {
-    return repoMapBlock;
-  }
-
-  if (repoMapBlock) {
-    lines.push("", repoMapBlock);
-  }
-
-  return lines.join("\n");
-}
 
 function summarizeContextCompressionItems(items) {
   if (!Array.isArray(items) || items.length === 0) return null;
@@ -1190,8 +1067,9 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
   const messageWithAttachments = attachments.length && !attachmentsAppended
     ? appendAttachmentsToPrompt(userMessage, attachments).message
     : userMessage;
+  const architectEditorFrame = buildArchitectEditorFrame(options, effectiveMode);
   const toolContract = buildPrimaryToolCapabilityContract(options);
-  const messageWithToolContract = [selectedProfile.block, toolContract, messageWithAttachments]
+  const messageWithToolContract = [selectedProfile.block, architectEditorFrame, toolContract, messageWithAttachments]
     .filter(Boolean)
     .join("\n\n");
   const framedMessage = modePrefix ? modePrefix + messageWithToolContract : messageWithToolContract;
@@ -1678,5 +1556,7 @@ export async function execSdkCommand(command, args = "", adapterName, options = 
   }
   return adapter.execSdkCommand(cmd, args, options);
 }
+
+
 
 

@@ -52,6 +52,7 @@ import { getSessionTracker } from "../../infra/session-tracker.mjs";
 import { recordWorktreeRecoveryEvent } from "../../infra/worktree-recovery-state.mjs";
 import { normalizeBaseBranch } from "../../git/git-safety.mjs";
 import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../../git/git-commit-helpers.mjs";
+import { buildArchitectEditorFrame } from "../../lib/repo-map.mjs";
 import {
   appendKnowledgeEntry,
   buildKnowledgeEntry,
@@ -249,6 +250,11 @@ registerNodeType("action.run_agent", {
       model: { type: "string", description: "Optional model override for the selected SDK" },
       taskId: { type: "string", description: "Optional task ID used for task metadata lookup" },
       cwd: { type: "string", description: "Working directory for the agent" },
+      mode: { type: "string", enum: ["ask", "agent", "plan", "web", "instant"], default: "agent", description: "Optional framing mode for the agent run" },
+      executionRole: { type: "string", enum: ["architect", "editor"], description: "Optional architect/editor execution role override" },
+      architectPlan: { type: "string", description: "Approved architect plan passed into editor/verify phases" },
+      repoMapQuery: { type: "string", description: "Optional query used to select a compact repo map" },
+      repoMapFileLimit: { type: "number", default: 12, description: "Maximum repo-map files to include" },
       timeoutMs: { type: "number", default: 3600000, description: "Agent timeout in ms" },
       agentProfile: { type: "string", description: "Agent profile name (e.g., 'frontend', 'backend')" },
       includeTaskContext: { type: "boolean", default: true, description: "Append task comments/attachments if available" },
@@ -302,6 +308,13 @@ registerNodeType("action.run_agent", {
     const timeoutMs = Number.isFinite(resolvedTimeout) && resolvedTimeout > 0
       ? resolvedTimeout
       : 3600000;
+    const effectiveMode = String(ctx.resolve(node.config?.mode || "agent") || "agent").trim().toLowerCase() || "agent";
+    const architectPlan = String(
+      ctx.resolve(node.config?.architectPlan || "") ||
+      ctx.data?.architectPlan ||
+      ctx.data?.planSummary ||
+      "",
+    ).trim();
     const includeTaskContext =
       node.config?.includeTaskContext !== false &&
       ctx.data?._taskIncludeContext !== false;
@@ -346,6 +359,36 @@ registerNodeType("action.run_agent", {
     const effectiveSystemPrompt = String(configuredSystemPrompt || "").trim();
     assertStableSystemPrompt(effectiveSystemPrompt);
     let finalPrompt = prompt;
+    const architectEditorFrame = buildArchitectEditorFrame({
+      executionRole: ctx.resolve(node.config?.executionRole || ""),
+      architectPlan,
+      planSummary: architectPlan,
+      repoMap: node.config?.repoMap || ctx.data?.repoMap || null,
+      repoMapFileLimit: node.config?.repoMapFileLimit,
+      repoMapQuery: ctx.resolve(node.config?.repoMapQuery || ""),
+      query: trackedTaskTitle || ctx.data?.taskDescription || prompt,
+      prompt,
+      taskTitle: trackedTaskTitle,
+      taskDescription:
+        ctx.data?.taskDescription ||
+        ctx.data?.task?.description ||
+        ctx.data?.task?.body ||
+        ctx.data?.taskDetail?.description ||
+        ctx.data?.taskInfo?.description ||
+        "",
+      changedFiles:
+        (Array.isArray(ctx.data?.changedFiles) ? ctx.data.changedFiles : null) ||
+        (Array.isArray(ctx.data?.task?.changedFiles) ? ctx.data.task.changedFiles : null) ||
+        [],
+      cwd,
+      repoRoot: ctx.data?.repoRoot || cwd,
+    }, effectiveMode);
+    if (
+      architectEditorFrame &&
+      !String(finalPrompt || "").includes("## Architect/Editor Execution")
+    ) {
+      finalPrompt = `${architectEditorFrame}\n\n${finalPrompt}`;
+    }
     const promptHasTaskContext =
       ctx.data?._taskPromptIncludesTaskContext === true ||
       String(finalPrompt || "").includes("## Task Context");
@@ -6268,3 +6311,5 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 //  Export all registered types for introspection
 // ═══════════════════════════════════════════════════════════════════════════
+
+
