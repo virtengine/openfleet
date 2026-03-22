@@ -71,7 +71,7 @@ ADJACENCY_MAP=(
   "infra/|monitor-*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*"
   "agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*"
   "bench/|bench-swebench*|benchmark-*|task-*"
-  "config/|config-*|bosun-skills*|codex-config*"
+  "config/|config-*|workspace-health*|bosun-skills*|codex-config*"
   "telegram/|telegram-*|whatsapp-*"
   "voice/|voice-*|mic-*|native-call*"
   "ui/|ui-*|stream-timeline*|workflow-canvas-utils*|static-relative*|mui-theme*|tab-swipe*|session-theme*|session-history*|demo-*|fleet-tab*|portal-ui-smoke*"
