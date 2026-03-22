@@ -466,6 +466,199 @@ export function assignTasksToWorkstations(waves, peers, taskMap = new Map()) {
   return result;
 }
 
+function normalizePlacementValue(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized || null;
+}
+
+function getPeerCapacity(peer) {
+  const raw = Number(peer?.max_parallel);
+  return Number.isFinite(raw) && raw > 0 ? raw : 1;
+}
+
+function buildPeerLoadMap(peers, existingAssignments = []) {
+  const loads = new Map();
+  for (const peer of peers || []) {
+    if (peer?.instance_id) loads.set(peer.instance_id, 0);
+  }
+  for (const item of existingAssignments || []) {
+    if (!item?.assignedTo || !loads.has(item.assignedTo)) continue;
+    loads.set(item.assignedTo, (loads.get(item.assignedTo) || 0) + 1);
+  }
+  return loads;
+}
+
+function scorePeerForTask(peer, task, currentLoad = 0) {
+  if (!peer?.instance_id) return Number.NEGATIVE_INFINITY;
+  const capacity = getPeerCapacity(peer);
+  if (currentLoad >= capacity) return Number.NEGATIVE_INFINITY;
+
+  const requiredWorkspace = normalizePlacementValue(task?.requiredWorkspace);
+  const preferredWorkspace = normalizePlacementValue(task?.preferredWorkspace);
+  const requiredHost = normalizePlacementValue(task?.requiredHost);
+  const preferredHost = normalizePlacementValue(task?.preferredHost);
+  const peerWorkspace = normalizePlacementValue(peer?.workspaceId || peer?.workspace_id);
+  const peerHost = normalizePlacementValue(peer?.host);
+
+  if (requiredWorkspace && peerWorkspace !== requiredWorkspace) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  if (requiredHost && peerHost !== requiredHost) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  let score = 0;
+  if (requiredWorkspace || requiredHost) score += 1000;
+  if (preferredWorkspace && peerWorkspace === preferredWorkspace) score += 120;
+  if (preferredHost && peerHost === preferredHost) score += 80;
+  if (task?.scope && Array.isArray(peer?.capabilities)) {
+    const scope = String(task.scope).toLowerCase();
+    if (peer.capabilities.some((entry) => String(entry).toLowerCase().includes(scope))) {
+      score += 25;
+    }
+  }
+  score += (capacity - currentLoad) / Math.max(capacity, 1);
+  return score;
+}
+
+function classifyPlacement(task, peer) {
+  const requiredWorkspace = normalizePlacementValue(task?.requiredWorkspace);
+  const preferredWorkspace = normalizePlacementValue(task?.preferredWorkspace);
+  const requiredHost = normalizePlacementValue(task?.requiredHost);
+  const preferredHost = normalizePlacementValue(task?.preferredHost);
+  const peerWorkspace = normalizePlacementValue(peer?.workspaceId || peer?.workspace_id);
+  const peerHost = normalizePlacementValue(peer?.host);
+
+  if (
+    (requiredWorkspace && peerWorkspace === requiredWorkspace) ||
+    (requiredHost && peerHost === requiredHost)
+  ) {
+    return "required";
+  }
+  if (
+    (preferredWorkspace && peerWorkspace === preferredWorkspace) ||
+    (preferredHost && peerHost === preferredHost)
+  ) {
+    return "preferred";
+  }
+  return "fallback";
+}
+
+function buildFallbackReason(task) {
+  if (task?.preferredWorkspace || task?.preferredHost) {
+    return "preferred-placement-unavailable";
+  }
+  return null;
+}
+
+function chooseBestPeer(peers, task, loads) {
+  let bestPeer = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  for (const peer of peers || []) {
+    const score = scorePeerForTask(peer, task, loads.get(peer.instance_id) || 0);
+    if (score > bestScore) {
+      bestPeer = peer;
+      bestScore = score;
+    }
+  }
+  return Number.isFinite(bestScore) && bestPeer ? bestPeer : null;
+}
+
+export function planMultiWorkspaceExecution({ tasks = [], peers = [] } = {}) {
+  if (!Array.isArray(tasks) || tasks.length === 0 || !Array.isArray(peers) || peers.length === 0) {
+    return { assignments: [], totalTasks: 0, totalPeers: Array.isArray(peers) ? peers.length : 0 };
+  }
+
+  const loads = buildPeerLoadMap(peers);
+  const assignments = [];
+
+  for (const [index, task] of tasks.entries()) {
+    const taskId = task?.id || task?.title || `task-${index + 1}`;
+    const chosenPeer = chooseBestPeer(peers, task, loads);
+    if (!chosenPeer) {
+      assignments.push({
+        taskId,
+        taskTitle: task?.title || taskId,
+        assignedTo: null,
+        assignedToLabel: null,
+        placementType: "unassigned",
+        recoveryReason: "no-compatible-peer",
+      });
+      continue;
+    }
+    loads.set(chosenPeer.instance_id, (loads.get(chosenPeer.instance_id) || 0) + 1);
+    const placementType = classifyPlacement(task, chosenPeer);
+    assignments.push({
+      taskId,
+      taskTitle: task?.title || taskId,
+      assignedTo: chosenPeer.instance_id,
+      assignedToLabel: chosenPeer.instance_label || chosenPeer.instance_id,
+      workspaceId: chosenPeer.workspaceId || chosenPeer.workspace_id || null,
+      host: chosenPeer.host || null,
+      placementType,
+      recoveryReason: buildFallbackReason(task) && placementType === "fallback"
+        ? buildFallbackReason(task)
+        : null,
+    });
+  }
+
+  return {
+    assignments,
+    totalTasks: assignments.length,
+    totalPeers: peers.length,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export function rebalancePlacementAfterPeerLoss({
+  assignments = [],
+  peers = [],
+  lostPeerIds = [],
+  tasks = [],
+} = {}) {
+  const lost = new Set((lostPeerIds || []).map((value) => String(value)));
+  const survivors = (peers || []).filter((peer) => peer?.instance_id && !lost.has(peer.instance_id));
+  const taskMap = new Map((tasks || []).map((task, index) => [task?.id || task?.title || `task-${index + 1}`, task]));
+  const survivingAssignments = (assignments || []).filter((item) => item?.assignedTo && !lost.has(item.assignedTo));
+  const loads = buildPeerLoadMap(survivors, survivingAssignments);
+  const reassigned = [];
+  const unassigned = [];
+
+  for (const assignment of assignments || []) {
+    if (!assignment?.assignedTo || !lost.has(assignment.assignedTo)) continue;
+    const task = taskMap.get(assignment.taskId) || { id: assignment.taskId, title: assignment.taskTitle };
+    const replacement = chooseBestPeer(survivors, task, loads);
+    if (!replacement) {
+      unassigned.push({
+        taskId: assignment.taskId,
+        taskTitle: assignment.taskTitle,
+        previousAssignedTo: assignment.assignedTo,
+        recoveryReason: "no-compatible-peer",
+      });
+      continue;
+    }
+    loads.set(replacement.instance_id, (loads.get(replacement.instance_id) || 0) + 1);
+    reassigned.push({
+      taskId: assignment.taskId,
+      taskTitle: assignment.taskTitle,
+      previousAssignedTo: assignment.assignedTo,
+      assignedTo: replacement.instance_id,
+      assignedToLabel: replacement.instance_label || replacement.instance_id,
+      workspaceId: replacement.workspaceId || replacement.workspace_id || null,
+      host: replacement.host || null,
+      placementType: classifyPlacement(task, replacement),
+      recoveryReason: "peer-lost",
+    });
+  }
+
+  return {
+    reassigned,
+    unassigned,
+    lostPeerIds: [...lost],
+    survivingPeerCount: survivors.length,
+  };
+}
+
 // ── Backlog Depth Calculator ─────────────────────────────────────────────────
 
 /**
@@ -854,3 +1047,4 @@ export function formatFleetSummary() {
 
   return lines.join("\n");
 }
+
