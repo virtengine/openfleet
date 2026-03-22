@@ -5184,13 +5184,16 @@ registerNodeType("action.build_task_prompt", {
       const text = String(content || "");
       if (!text) return "";
       if (!/AGENTS\.md$/i.test(String(docName || ""))) return text;
-      const sectionStart = text.search(/^## Agent Learnings\s*$/im);
-      if (sectionStart === -1) return text;
+      const learningsHeaderRe = /^## Agent Learnings\s*$/im;
+      const sectionMatch = learningsHeaderRe.exec(text);
+      if (!sectionMatch) return text;
+      const sectionStart = sectionMatch.index;
+      const headerLength = sectionMatch[0].length;
       const before = text.slice(0, sectionStart).trimEnd();
-      const afterSection = text.slice(sectionStart);
-      const nextSectionMatch = afterSection.slice("## Agent Learnings".length).match(/^##\s+/m);
+      const afterSection = text.slice(sectionStart + headerLength);
+      const nextSectionMatch = /^##\s+/m.exec(afterSection);
       if (!nextSectionMatch) return before;
-      const afterIndex = sectionStart + "## Agent Learnings".length + nextSectionMatch.index;
+      const afterIndex = sectionStart + headerLength + nextSectionMatch.index;
       return `${before}\n\n${text.slice(afterIndex).trimStart()}`.trim();
     };
 
