@@ -92,18 +92,20 @@ describe("monitor workflow startup guards", () => {
     expect(
       monitorSource.indexOf("let pollWorkflowSchedulesOnce = async () => {}"),
     ).toBeLessThan(
-      monitorSource.indexOf('void pollWorkflowSchedulesOnce("startup", { includeTaskPoll: false }).catch((err) => {'),
+      monitorSource.indexOf('"stale-dispatch-unstick"'),
     );
     expect(monitorSource).toContain('pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(');
     expect(monitorSource).toContain('const includeTaskPoll = opts?.includeTaskPoll !== false;');
     expect(monitorSource).not.toContain('_lastRunAt: Date.now()');
     expect(monitorSource).toContain('if (triggerNode?.type === "trigger.task_available" || triggerNode?.type === "trigger.task_low") {');
-    expect(monitorSource).toContain('void pollWorkflowSchedulesOnce("startup", { includeTaskPoll: false }).catch((err) => {');
-    expect(monitorSource).toContain('void pollWorkflowSchedulesOnce("startup").catch((err) => {');
+    expect(monitorSource).toContain('"stale-dispatch-unstick"');
+    expect(monitorSource).toContain('"stale-dispatch-task-poll-unstick"');
+    expect(monitorSource).toContain('throwOnError: true');
+    expect(monitorSource).toContain('requireEngine: true');
     expect(
       monitorSource.indexOf('internalTaskExecutor.start();'),
     ).toBeLessThan(
-      monitorSource.indexOf('void pollWorkflowSchedulesOnce("startup").catch((err) => {'),
+      monitorSource.indexOf('"stale-dispatch-task-poll-unstick"'),
     );
   });
 
@@ -111,8 +113,26 @@ describe("monitor workflow startup guards", () => {
     expect(
       monitorSource.indexOf('await ensureWorkflowAutomationEngine().catch(() => {});'),
     ).toBeLessThan(
-      monitorSource.indexOf('void pollWorkflowSchedulesOnce("startup", { includeTaskPoll: false }).catch((err) => {'),
+      monitorSource.indexOf('"stale-dispatch-unstick"'),
     );
+  });
+
+  it("defines bounded workflow recovery policy and structured telemetry", () => {
+    expect(monitorSource).toContain("const DEFAULT_WORKFLOW_RECOVERY_POLICY = Object.freeze({");
+    expect(monitorSource).toContain("function normalizeWorkflowRecoveryPolicy(candidate = {})");
+    expect(monitorSource).toContain("applyWorkflowRecoveryPolicy(configWorkflowRecovery, \"startup-config\")");
+    expect(monitorSource).toContain("applyWorkflowRecoveryPolicy(");
+    expect(monitorSource).toContain("emitWorkflowRecoveryTelemetry(\"policy_updated\"");
+    expect(monitorSource).toContain("emitWorkflowRecoveryTelemetry(\"attempt\"");
+    expect(monitorSource).toContain("emitWorkflowRecoveryTelemetry(\"suppressed\"");
+    expect(monitorSource).toContain("emitWorkflowRecoveryTelemetry(\"retry_scheduled\"");
+    expect(monitorSource).toContain("emitWorkflowRecoveryTelemetry(\"escalated\"");
+    expect(monitorSource).toContain("component: \"monitor.workflow-recovery\"");
+  });
+
+  it("runs workflow-history unstick through the same bounded self-healing policy", () => {
+    expect(monitorSource).toContain('"workflow-history-unstick"');
+    expect(monitorSource).toContain("engine?.resumeInterruptedRuns");
   });
 
   it("allows workflow automation init retries after transient startup failure", () => {
