@@ -12,6 +12,9 @@ describe("workflow copilot integration surfaces", () => {
     expect(workflowUiSource).toContain("Ask Bosun About Node");
     expect(workflowUiSource).toContain("Ask Bosun About This Node");
     expect(workflowUiSource).toContain("Fix This Node");
+    expect(workflowUiSource).toContain("Retry This Node");
+    expect(workflowUiSource).toContain("Generate Node Test");
+    expect(workflowUiSource).toContain("Summarize Output");
     expect(workflowUiSource).toContain("/copilot-context");
   });
 
@@ -23,6 +26,10 @@ describe("workflow copilot integration surfaces", () => {
   it("exposes server-side workflow and run copilot context builders", () => {
     expect(serverSource).toContain("function buildWorkflowCopilotContextPayload");
     expect(serverSource).toContain("function buildRunCopilotContextPayload");
+    expect(serverSource).toContain("function buildWorkflowNodeInspectorPayload");
+    expect(serverSource).toContain("WORKFLOW_NODE_ACTION_PRESETS");
+    expect(serverSource).toContain("inspector");
     expect(serverSource).toContain('action === "copilot-context"');
   });
 });
+

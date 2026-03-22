@@ -589,6 +589,16 @@ async function fetchWorkflowCopilotPrompt(endpoint, fetchOptions = {}) {
   }
 }
 
+async function fetchWorkflowCopilotContext(endpoint, fetchOptions = {}) {
+  const safeEndpoint = String(endpoint || "").trim();
+  if (!safeEndpoint) return null;
+  try {
+    return await apiFetch(safeEndpoint, fetchOptions);
+  } catch {
+    return null;
+  }
+}
+
 async function startWorkflowCopilotSession({
   endpoint = "",
   fetchOptions = {},
@@ -2012,6 +2022,8 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const [liveNodeStatuses, setLiveNodeStatuses] = useState({});
   const [liveNodeOutputPreviews, setLiveNodeOutputPreviews] = useState({});
   const [liveNodeFlashStates, setLiveNodeFlashStates] = useState({});
+  const [copilotActionStatusByKey, setCopilotActionStatusByKey] = useState({});
+  const [copilotActionResultByKey, setCopilotActionResultByKey] = useState({});
   const [liveNodeRunningHints, setLiveNodeRunningHints] = useState({});
   const [liveEdgeActivity, setLiveEdgeActivity] = useState({});
   const [liveNowTick, setLiveNowTick] = useState(Date.now());
@@ -3171,7 +3183,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
             successToast: "Opened workflow explanation chat",
           })}
         >
-          <span class="btn-icon">${resolveIcon("bot")}</span>
+          <span class="btn-icon">${resolveIcon(preset.icon)}</span>
           Explain With Bosun
         <//>
         <${Button} variant="contained" size="small" onClick=${() => openNodePalette()} sx=${{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -3718,14 +3730,14 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
               const node = nodes.find((entry) => entry.id === contextMenu.nodeId) || null;
               setContextMenu(null);
               openWorkflowCopilotFromCanvas({
-                intent: "node",
+                intent: "explain",
                 nodeId: contextMenu.nodeId,
                 title: `Ask Bosun about node ${node?.label || contextMenu.nodeId}`.trim(),
                 successToast: "Opened node copilot chat",
               });
             }}
           >
-            <span class="btn-icon">${resolveIcon("bot")}</span>
+            <span class="btn-icon">${resolveIcon(preset.icon)}</span>
             Ask Bosun About Node
           <//>
           <${MenuItem} onClick=${() => { setEditingNode(contextMenu.nodeId); setContextMenu(null); }}>
@@ -3757,10 +3769,16 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
           onUpdate=${(config) => updateNodeConfig(editingNode, config)}
           onUpdateLabel=${(label) => updateNodeLabel(editingNode, label)}
           onAskBosun=${() => openWorkflowCopilotFromCanvas({
-            intent: "node",
+            intent: "explain",
             nodeId: editingNode,
             title: `Ask Bosun about node ${editingNodeDef?.label || editingNode}`.trim(),
             successToast: "Opened node copilot chat",
+          })}
+          onNodeAction=${(intent, preset) => openWorkflowCopilotFromCanvas({
+            intent,
+            nodeId: editingNode,
+            title: `${preset?.label || "Node Action"} ${editingNodeDef?.label || editingNode}`.trim(),
+            successToast: String(preset?.successToast || "Opened node copilot chat").trim(),
           })}
           onClose=${() => setEditingNode(null)}
           onDelete=${() => deleteNode(editingNode)}
@@ -4051,6 +4069,22 @@ const COMMAND_PRESETS = {
   ],
 };
 
+const NODE_COPILOT_ACTION_PRESETS = [
+  { intent: "explain", label: "Explain Node", buttonLabel: "Ask Bosun About This Node", icon: "bot", successToast: "Opened node explanation in Bosun." },
+  { intent: "fix", label: "Fix Node", buttonLabel: "Fix This Node", icon: "settings", successToast: "Opened node fix guidance in Bosun." },
+  { intent: "retry", label: "Retry Node", buttonLabel: "Retry This Node", icon: "refresh", successToast: "Opened node retry guidance in Bosun." },
+  { intent: "generate-test", label: "Generate Node Test", buttonLabel: "Generate Node Test", icon: "beaker", successToast: "Opened node test generation in Bosun." },
+  { intent: "summarize-output", label: "Summarize Output", buttonLabel: "Summarize Output", icon: "clipboard", successToast: "Opened node output summary in Bosun." },
+];
+
+function normalizeNodeCopilotPresets(presets = []) {
+  const list = Array.isArray(presets) && presets.length ? presets : NODE_COPILOT_ACTION_PRESETS;
+  return list.map((preset) => {
+    const fallback = NODE_COPILOT_ACTION_PRESETS.find((entry) => entry.intent === String(preset?.intent || "").trim()) || {};
+    return { ...fallback, ...preset };
+  });
+}
+
 const AGENT_PROMPT_PRESETS = [
   { label: "Continue Working", icon: "play", prompt: "Continue working on the current task. Pick up where you left off. Review your previous output and continue.", category: "session" },
   { label: "Fix Errors", icon: "settings", prompt: "Fix the following errors. Do NOT introduce new issues:\n\n{{lastError}}\n\nTask: {{taskTitle}}\nFiles changed: {{changedFiles}}", category: "fix" },
@@ -4173,7 +4207,7 @@ function WorkflowAgentLibraryPicker({ config, onUpdate }) {
  *  Node Config Editor (right side panel)
  * ═══════════════════════════════════════════════════════════════ */
 
-function NodeConfigEditor({ node, nodeTypes: types, inlineFieldKeys = [], onUpdate, onUpdateLabel, onAskBosun, onClose, onDelete }) {
+function NodeConfigEditor({ node, nodeTypes: types, inlineFieldKeys = [], onUpdate, onUpdateLabel, onAskBosun, onNodeAction, onClose, onDelete }) {
   if (!node) return null;
 
   const meta = getNodeMeta(node.type);
@@ -4225,17 +4259,24 @@ function NodeConfigEditor({ node, nodeTypes: types, inlineFieldKeys = [], onUpda
           ${typeInfo.description}
         </div>
       `}
-      ${typeof onAskBosun === "function" && html`
-        <${Button}
-          onClick=${onAskBosun}
-          variant="outlined"
-          size="small"
-          sx=${{ width: "100%", marginBottom: "12px", textTransform: "none" }}
-        >
-          <span class="btn-icon">${resolveIcon("bot")}</span>
-          Ask Bosun About This Node
-        <//>
-      `}
+      <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
+        ${normalizeNodeCopilotPresets().map((preset) => html`
+          <${Button}
+            key=${preset.intent}
+            onClick=${() => (typeof onNodeAction === "function"
+              ? onNodeAction(preset.intent, preset)
+              : typeof onAskBosun === "function"
+                ? onAskBosun()
+                : null)}
+            variant=${preset.intent === "fix" ? "contained" : "outlined"}
+            size="small"
+            sx=${{ textTransform: "none" }}
+          >
+            <span class="btn-icon">${resolveIcon(preset.icon)}</span>
+            ${preset.buttonLabel}
+          <//>
+        `)}
+      </div>
 
       <!-- ═══ Smart Presets: action.run_command ═══ -->
       ${node.type === "action.run_command" && html`
@@ -5425,7 +5466,7 @@ function RunHistoryView() {
             size="small"
             onClick=${() => openRunCopilot(selectedRun, "ask")}
           >
-            <span class="btn-icon">${resolveIcon("bot")}</span>
+            <span class="btn-icon">${resolveIcon(preset.icon)}</span>
             Ask Bosun
           <//>
           ${selectedRun.status === "failed" && html`
@@ -5605,8 +5646,8 @@ function RunHistoryView() {
                     size="small"
                     onClick=${() => openRunNodeCopilot(selectedRun, nodeId, "node", currentWorkflow)}
                   >
-                    <span class="btn-icon">${resolveIcon("bot")}</span>
-                    Ask Bosun About This Node
+                    <span class="btn-icon">${resolveIcon(preset.icon)}</span>
+                    ${status === "loading" ? "Working…" : preset.buttonLabel}
                   <//>
                   ${String(nodeStatus || "").trim().toLowerCase() === "failed" && html`
                     <${Button}
@@ -6294,3 +6335,8 @@ export function WorkflowsTab() {
     </div>
   `;
 }
+
+
+
+
+

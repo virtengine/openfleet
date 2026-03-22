@@ -4246,9 +4246,115 @@ function buildWorkflowNodeCopilotPrompt(workflow = {}, node = null, wfMod = null
     "Node Config",
     formatWorkflowCopilotBlock(node?.config || {}, 3500),
     "",
+    "Workflow Metadata",
+    formatWorkflowCopilotBlock({
+      workflowId: workflow?.id,
+      workflowName: workflow?.name,
+      workflowDescription: workflow?.description,
+      workflowEnabled: workflow?.enabled,
+      workflowCore: workflow?.core,
+      workflowMetadata: workflow?.metadata || {},
+      workflowVariables: workflow?.variables || {},
+    }, 2500),
+    "",
     "Raw Node Snapshot",
     formatWorkflowCopilotBlock(node, 3500),
   ].join("\n");
+}
+
+const WORKFLOW_NODE_ACTION_PRESETS = Object.freeze([
+  Object.freeze({ intent: "explain", label: "Explain Node", resultKind: "recommendation" }),
+  Object.freeze({ intent: "fix", label: "Fix Node", resultKind: "patch" }),
+  Object.freeze({ intent: "retry", label: "Retry Node", resultKind: "recommendation" }),
+  Object.freeze({ intent: "generate-test", label: "Generate Node Test", resultKind: "patch" }),
+  Object.freeze({ intent: "summarize-output", label: "Summarize Output", resultKind: "summary" }),
+]);
+
+function getWorkflowNodeActionPreset(intent = "") {
+  const normalized = String(intent || "explain").trim().toLowerCase();
+  return WORKFLOW_NODE_ACTION_PRESETS.find((entry) => entry.intent === normalized)
+    || WORKFLOW_NODE_ACTION_PRESETS[0];
+}
+
+function summarizeRunNodeEvidence(run = {}, nodeId = "", limit = 4) {
+  const safeNodeId = String(nodeId || "").trim();
+  if (!safeNodeId) return [];
+  const outputs = run?.detail?.nodeOutputs && typeof run.detail.nodeOutputs === "object"
+    ? run.detail.nodeOutputs
+    : {};
+  const errors = Array.isArray(run?.detail?.errors) ? run.detail.errors : [];
+  const logs = Array.isArray(run?.detail?.logs) ? run.detail.logs : [];
+  const ledgerEvents = Array.isArray(run?.ledger?.events) ? run.ledger.events : [];
+  const nodeOutput = outputs[safeNodeId];
+  const relatedErrors = errors.filter((entry) => formatWorkflowCopilotBlock(entry, 400).includes(safeNodeId)).slice(-limit);
+  const relatedLogs = logs.filter((entry) => formatWorkflowCopilotBlock(entry, 300).includes(safeNodeId)).slice(-limit);
+  const relatedLedger = ledgerEvents.filter((entry) => String(entry?.nodeId || "").trim() === safeNodeId).slice(-limit);
+  return [
+    { kind: "output", value: nodeOutput ?? null },
+    { kind: "errors", value: relatedErrors },
+    { kind: "logs", value: relatedLogs },
+    { kind: "ledger", value: relatedLedger },
+  ];
+}
+
+function buildWorkflowNodeInspectorPayload({ workflow = {}, node = null, intent = "explain", run = null, nodeForensics = null, runForensics = null, wfMod = null } = {}) {
+  if (!node) return null;
+  const preset = getWorkflowNodeActionPreset(intent);
+  const graphIndex = buildWorkflowNodeGraphIndex(workflow);
+  const nodeId = String(node?.id || "").trim() || null;
+  const upstreamNodeIds = (graphIndex.incoming.get(nodeId) || []).map((edge) => String(edge?.source || edge?.from || "").trim()).filter(Boolean);
+  const upstreamInputs = upstreamNodeIds.slice(0, 8).map((sourceId) => ({
+    nodeId: sourceId,
+    output: run?.detail?.nodeOutputs?.[sourceId] ?? null,
+    status: run?.detail?.nodeStatuses?.[sourceId] ?? null,
+  }));
+  return {
+    intent: preset.intent,
+    label: preset.label,
+    resultKind: preset.resultKind,
+    node: {
+      id: nodeId,
+      label: String(node?.label || node?.name || "").trim() || null,
+      type: String(node?.type || "").trim() || null,
+      config: node?.config || {},
+      snapshot: node,
+    },
+    workflow: {
+      id: String(workflow?.id || "").trim() || null,
+      name: String(workflow?.name || workflow?.id || "").trim() || null,
+      description: String(workflow?.description || "").trim() || null,
+      metadata: workflow?.metadata || {},
+      variables: workflow?.variables || {},
+      adjacency: {
+        incoming: summarizeAdjacentWorkflowLinks(nodeId, graphIndex, "incoming"),
+        outgoing: summarizeAdjacentWorkflowLinks(nodeId, graphIndex, "outgoing"),
+      },
+      summary: {
+        nodeCount: Array.isArray(workflow?.nodes) ? workflow.nodes.length : 0,
+        edgeCount: Array.isArray(workflow?.edges) ? workflow.edges.length : 0,
+      },
+    },
+    run: run
+      ? {
+        runId: String(run?.runId || "").trim() || null,
+        status: String(run?.status || "").trim() || null,
+        startedAt: run?.startedAt || null,
+        endedAt: run?.endedAt || null,
+        nodeStatus: run?.detail?.nodeStatuses?.[nodeId] ?? null,
+        upstreamInputs,
+        recentEvidence: summarizeRunNodeEvidence(run, nodeId),
+        nodeForensics: nodeForensics || null,
+        runForensics: runForensics || null,
+      }
+      : null,
+    presets: WORKFLOW_NODE_ACTION_PRESETS,
+    prompt: buildRunNodeCopilotPrompt(
+      run || { workflowId: workflow?.id, workflowName: workflow?.name, detail: { nodeOutputs: {}, nodeStatuses: {}, errors: [], logs: [] } },
+      workflow,
+      nodeId,
+      { intent: preset.intent, forensics: nodeForensics || null, evaluation: null, retryOptions: null },
+    ) || buildWorkflowNodeCopilotPrompt(workflow, node, { wfMod }),
+  };
 }
 
 function buildWorkflowCopilotContextPayload(workflow = {}, opts = {}) {
@@ -4264,8 +4370,17 @@ function buildWorkflowCopilotContextPayload(workflow = {}, opts = {}) {
     return null;
   }
   if (node) {
+    const inspector = buildWorkflowNodeInspectorPayload({
+      workflow,
+      node,
+      intent,
+      run: opts?.run || null,
+      nodeForensics: opts?.nodeForensics || null,
+      runForensics: opts?.runForensics || null,
+      wfMod: opts?.wfMod,
+    });
     return {
-      prompt: buildWorkflowNodeCopilotPrompt(workflow, node, opts?.wfMod),
+      prompt: buildWorkflowNodeCopilotPrompt(workflow, node, { ...opts, wfMod: opts?.wfMod }),
       context: {
         scope: "workflow-node",
         intent,
@@ -4274,6 +4389,8 @@ function buildWorkflowCopilotContextPayload(workflow = {}, opts = {}) {
         nodeId,
         nodeType: String(node?.type || "").trim() || null,
       },
+      inspector,
+      presets: WORKFLOW_NODE_ACTION_PRESETS,
     };
   }
   const nodeTypeMap = buildWorkflowNodeTypeMap(opts?.wfMod);
@@ -4488,6 +4605,18 @@ function buildRunCopilotContextPayload(run = {}, opts = {}) {
   const intent = String(opts?.intent || "ask").trim().toLowerCase();
   const nodeId = String(opts?.nodeId || "").trim();
   if (nodeId) {
+    const node = Array.isArray(workflow?.nodes)
+      ? workflow.nodes.find((entry) => String(entry?.id || "").trim() === nodeId) || null
+      : null;
+    const inspector = buildWorkflowNodeInspectorPayload({
+      workflow,
+      node,
+      intent,
+      run,
+      nodeForensics: opts?.nodeForensics || null,
+      runForensics: opts?.runForensics || null,
+      wfMod: opts?.wfMod,
+    });
     const evaluation = opts?.evaluation || null;
     const retryOptions = opts?.retryOptions || null;
     return {
@@ -4511,6 +4640,8 @@ function buildRunCopilotContextPayload(run = {}, opts = {}) {
           ? evaluation.remediation.fixActions.filter((action) => String(action?.nodeId || "").trim() === nodeId)
           : [],
       },
+      inspector,
+      presets: WORKFLOW_NODE_ACTION_PRESETS,
     };
   }
   const errors = Array.isArray(run?.detail?.errors) ? run.detail.errors : [];
