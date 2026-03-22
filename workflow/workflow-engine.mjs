@@ -3191,8 +3191,8 @@ export class WorkflowEngine extends EventEmitter {
     }
 
     this._recordDagRevision(ctx, {
-      reason: mode === "from_failed" ? "retry_replan_from_failed" : `retry_${mode}`,
-      sourceRunId: runId,
+      reason: (opts.mode === "from_failed") ? "retry_replan_from_failed" : `retry_${opts.mode || "snapshot"}`,
+      sourceRunId: snapshotId,
       preservedCompletedNodeIds,
       focusNodeIds,
     });

@@ -5440,14 +5440,14 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     engine.save(wf);
     const firstCtx = await engine.execute(wf.id, {});
     expect(firstCtx.errors.length).toBeGreaterThan(0);
-    const firstRun = engine.listRuns({ workflowId: wf.id }).at(-1);
+    const firstRun = engine.getRunHistory(wf.id).at(-1);
     expect(firstRun?.detail?.dagState?.status).toBe("failed");
     expect(firstRun?.detail?.issueAdvisor?.recommendedAction).toBe("replan_from_failed");
 
     const retry = await engine.retryRun(firstRun.runId, { mode: "from_failed" });
     expect(retry.mode).toBe("from_failed");
 
-    const runs = engine.listRuns({ workflowId: wf.id });
+    const runs = engine.getRunHistory(wf.id);
     const retriedRun = runs.find((entry) => entry.runId === retry.retryRunId);
     expect(retriedRun?.detail?.dagState?.retryOf).toBe(firstRun.runId);
     expect(retriedRun?.detail?.dagState?.retryMode).toBe("from_failed");
