@@ -11424,58 +11424,48 @@ registerBuiltinNodeType("action.acquire_worktree", {
       return { success: true, worktreePath: repoRoot, created: false, noGit: true };
     }
 
-    const recoveryState = {
-      recreated: false,
-      detectedIssues: new Set(),
-      phase: null,
-      worktreePath: null,
-    };
-    const notePoisonedWorktree = (phase, worktreePath, issues = []) => {
-      recoveryState.recreated = true;
-      recoveryState.phase = phase;
-      recoveryState.worktreePath = worktreePath || recoveryState.worktreePath || null;
-      for (const issue of issues) {
-        const normalized = String(issue || "").trim();
-        if (normalized) recoveryState.detectedIssues.add(normalized);
-      }
-    };
-    const persistRecoveryEvent = async (event) => {
-      const payload = {
-        reason: "poisoned_worktree",
-        branch,
-        taskId,
-        worktreePath: event?.worktreePath || recoveryState.worktreePath || null,
-        phase: event?.phase || recoveryState.phase || null,
-        detectedIssues: event?.detectedIssues || Array.from(recoveryState.detectedIssues),
-        error: event?.error || null,
-        outcome: event?.outcome || "healthy_noop",
-        timestamp: new Date().toISOString(),
-      };
-      const details = [
-        `outcome=${payload.outcome}`,
-        `branch=${payload.branch}`,
-        payload.taskId ? `taskId=${payload.taskId}` : "",
-        payload.phase ? `phase=${payload.phase}` : "",
-        payload.worktreePath ? `path=${payload.worktreePath}` : "",
-        payload.detectedIssues.length ? `issues=${payload.detectedIssues.join(",")}` : "",
-        payload.error ? `error=${payload.error}` : "",
-      ].filter(Boolean).join(" ");
-      ctx.log(node.id, `[worktree-recovery] ${details}`);
-      await recordWorktreeRecoveryEvent(repoRoot, payload);
-    };
-
-        try {
-          await recordWorktreeRecoveryEvent(repoRoot, payload);
-        } catch (err) {
-          ctx.log(
-            node.id,
-            `[worktree-recovery] failed to persist recovery event: ${
-              err && err.message ? err.message : String(err)
-            }`,
-          );
-        }
+    try {
       // Ensure base branch ref is fresh
       const baseBranchShort = baseBranch.replace(/^origin\//, "");
+      const recoveryState = {
+        recreated: false,
+        detectedIssues: new Set(),
+        phase: null,
+        worktreePath: null,
+      };
+      const notePoisonedWorktree = (phase, worktreePath, issues = []) => {
+        recoveryState.recreated = true;
+        recoveryState.phase = phase;
+        recoveryState.worktreePath = worktreePath || recoveryState.worktreePath || null;
+        for (const issue of issues) {
+          const normalized = String(issue || "").trim();
+          if (normalized) recoveryState.detectedIssues.add(normalized);
+        }
+      };
+      const persistRecoveryEvent = async (event) => {
+        const payload = {
+          reason: "poisoned_worktree",
+          branch,
+          taskId,
+          worktreePath: event?.worktreePath || recoveryState.worktreePath || null,
+          phase: event?.phase || recoveryState.phase || null,
+          detectedIssues: event?.detectedIssues || Array.from(recoveryState.detectedIssues),
+          error: event?.error || null,
+          outcome: event?.outcome || "healthy_noop",
+          timestamp: new Date().toISOString(),
+        };
+        const details = [
+          `outcome=${payload.outcome}`,
+          `branch=${payload.branch}`,
+          payload.taskId ? `taskId=${payload.taskId}` : "",
+          payload.phase ? `phase=${payload.phase}` : "",
+          payload.worktreePath ? `path=${payload.worktreePath}` : "",
+          payload.detectedIssues.length ? `issues=${payload.detectedIssues.join(",")}` : "",
+          payload.error ? `error=${payload.error}` : "",
+        ].filter(Boolean).join(" ");
+        ctx.log(node.id, `[worktree-recovery] ${details}`);
+        await recordWorktreeRecoveryEvent(repoRoot, payload);
+      };
       if (!shouldSkipGitRefreshForTests()) {
         try {
           execGitArgsSync(["fetch", "origin", baseBranchShort, "--no-tags"], {
@@ -11721,16 +11711,11 @@ registerBuiltinNodeType("action.acquire_worktree", {
         ? errorMessage
         : "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.";
       if (!retryable) {
-        await recordWorktreeRecoveryEvent({
+        await persistRecoveryEvent({
           outcome: "recreation_failed",
-          phase: "post-pull",
-          worktreePath: resolve(
-            repoRoot,
-            ".bosun",
-            "worktrees",
-            deriveManagedWorktreeDirName(taskId, branch)
-          ),
-          detectedIssues: ["refresh_conflict"],
+          phase: recoveryState.phase || "post-pull",
+          worktreePath: recoveryState.worktreePath || resolve(repoRoot, ".bosun", "worktrees", deriveManagedWorktreeDirName(taskId, branch)),
+          detectedIssues: Array.from(recoveryState.detectedIssues.size ? recoveryState.detectedIssues : ["refresh_conflict"]),
           error: errorMessage,
         });
       }
