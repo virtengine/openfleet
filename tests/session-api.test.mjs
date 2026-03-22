@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   formatSessionFreshnessTimestamp,
   getSessionManualRetryState,
+  getSessionLifecycleState,
+  getSessionRecencyTimestamp,
+  getSessionRuntimeState,
   buildSessionApiPath,
   createSessionLoadMeta,
   getSessionRetryDelayMs,
@@ -148,3 +151,109 @@ describe("session api stale/retry metadata", () => {
   });
 });
 
+describe("session lifecycle/runtime metadata", () => {
+  it("keeps lifecycle state separate from live runtime state", () => {
+    expect(
+      getSessionLifecycleState({
+        status: "idle",
+        lifecycleStatus: "active",
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        key: "active",
+        label: "Active",
+        isActive: true,
+      }),
+    );
+
+    expect(
+      getSessionRuntimeState({
+        status: "idle",
+        lifecycleStatus: "active",
+        runtimeState: "running",
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        key: "running",
+        label: "Running",
+        isLive: true,
+        isStale: false,
+        source: "runtime",
+      }),
+    );
+  });
+
+  it("falls back to session recency when runtime state is missing", () => {
+    const now = Date.UTC(2026, 0, 2, 0, 5, 0);
+
+    expect(
+      getSessionRuntimeState(
+        {
+          lifecycleStatus: "active",
+          lastActiveAt: new Date(now - 45_000).toISOString(),
+        },
+        { now },
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        key: "recent",
+        label: "Recent",
+        isLive: false,
+        isStale: false,
+        source: "recency",
+      }),
+    );
+
+    expect(
+      getSessionRuntimeState(
+        {
+          lifecycleStatus: "active",
+          lastActiveAt: new Date(now - 11 * 60_000).toISOString(),
+        },
+        { now },
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        key: "stale",
+        label: "Stale",
+        isLive: false,
+        isStale: true,
+        source: "recency",
+      }),
+    );
+  });
+
+  it("reports non-live runtime for terminal lifecycle states", () => {
+    expect(
+      getSessionRuntimeState({
+        lifecycleStatus: "completed",
+        status: "completed",
+        lastActiveAt: "2026-01-02T00:00:00.000Z",
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        key: "stopped",
+        label: "Not live",
+        isLive: false,
+        source: "lifecycle",
+      }),
+    );
+  });
+
+  it("uses lastActiveAt before updatedAt and createdAt for session recency", () => {
+    expect(
+      getSessionRecencyTimestamp({
+        createdAt: "2026-01-01T23:59:00.000Z",
+        updatedAt: "2026-01-02T00:00:00.000Z",
+        lastActiveAt: "2026-01-02T00:01:00.000Z",
+      }),
+    ).toBe("2026-01-02T00:01:00.000Z");
+
+    expect(
+      getSessionRecencyTimestamp({
+        createdAt: "2026-01-01T23:59:00.000Z",
+        updatedAt: "2026-01-02T00:00:00.000Z",
+      }),
+    ).toBe("2026-01-02T00:00:00.000Z");
+  });
+});

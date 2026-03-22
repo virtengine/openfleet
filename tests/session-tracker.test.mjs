@@ -399,6 +399,28 @@ describe("session-tracker", () => {
       }
     });
 
+    it("preserves lifecycle status separately from runtime state in list payloads", () => {
+      vi.useFakeTimers();
+      try {
+        const timedTracker = createSessionTracker({ maxMessages: 10, idleThresholdMs: 1000, persistDir: null });
+        timedTracker.createSession({ id: "chat-runtime", type: "primary" });
+
+        vi.advanceTimersByTime(1200);
+
+        const listed = timedTracker.listAllSessions().find((entry) => entry.id === "chat-runtime");
+        expect(listed).toEqual(
+          expect.objectContaining({
+            status: "idle",
+            lifecycleStatus: "active",
+            runtimeState: "idle",
+            runtimeIsLive: true,
+          }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("stores inspector insights on sessions and reloads them from disk", () => {
       const persistDir = mkdtempSync(join(tmpdir(), "bosun-session-tracker-"));
       try {
