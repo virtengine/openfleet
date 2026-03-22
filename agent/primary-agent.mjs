@@ -8,8 +8,8 @@
 import { loadConfig } from "../config/config.mjs";
 import { ensureCodexConfig, printConfigSummary } from "../shell/codex-config.mjs";
 import { ensureRepoConfigs, printRepoConfigSummary } from "../config/repo-config.mjs";
-import { resolveRepoRoot } from '../config/repo-root.mjs';
-import { buildArchitectEditorFrame } from '../lib/repo-map.mjs';
+import { resolveRepoRoot } from "../config/repo-root.mjs";
+import { buildArchitectEditorFrame } from "../lib/repo-map.mjs";
 import { getAgentToolConfig, getEffectiveTools } from "./agent-tool-config.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
 import { getEntry, getEntryContent, resolveAgentProfileLibraryMetadata } from "../infra/library-manager.mjs";

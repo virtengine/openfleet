@@ -2641,8 +2641,7 @@ registerBuiltinNodeType("action.run_agent", {
     }, effectiveMode);
     if (
       architectEditorFrame &&
-      !String(finalPrompt || "").includes("## Architect/Editor Execution") &&
-      !String(finalPrompt || "").includes("## Repo Map")
+      !String(finalPrompt || "").includes("## Architect/Editor Execution")
     ) {
       finalPrompt = `${architectEditorFrame}\n\n${finalPrompt}`;
     }
