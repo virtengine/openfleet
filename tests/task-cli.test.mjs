@@ -248,40 +248,58 @@ describe("task-cli taskStats repo area lock state", () => {
   });
 
   it("prefers explicit REPO_ROOT store path over the active workspace mirror", async () => {
-    process.env.BOSUN_HOME = resolve(tmpdir(), "bosun-home");
-    process.env.REPO_ROOT = resolve(tmpdir(), "bosun-source-repo");
+    const originalEnv = {
+      BOSUN_HOME: process.env.BOSUN_HOME,
+      REPO_ROOT: process.env.REPO_ROOT,
+    };
 
-    mockExistsSync.mockImplementation((filePath) => {
-      const value = String(filePath || "").replace(/\\/g, "/");
-      if (value.endsWith("/bosun.config.json")) return true;
-      if (value.includes("/workspaces/virtengine-gh/bosun/.bosun/.cache")) return true;
-      return false;
-    });
-    mockReadFileSync.mockImplementation((filePath) => {
-      if (String(filePath || "").replace(/\\/g, "/").endsWith("/bosun.config.json")) {
-        return JSON.stringify({
-          workspacesDir: "C:/tmp/workspaces",
-          activeWorkspace: "virtengine-gh",
-          workspaces: [
-            {
-              id: "virtengine-gh",
-              activeRepo: "bosun",
-              repos: [{ name: "bosun", primary: true }],
-            },
-          ],
-        });
+    try {
+      process.env.BOSUN_HOME = resolve(tmpdir(), "bosun-home");
+      process.env.REPO_ROOT = resolve(tmpdir(), "bosun-source-repo");
+
+      mockExistsSync.mockImplementation((filePath) => {
+        const value = String(filePath || "").replace(/\\/g, "/");
+        if (value.endsWith("/bosun.config.json")) return true;
+        if (value.includes("/workspaces/virtengine-gh/bosun/.bosun/.cache")) return true;
+        return false;
+      });
+      mockReadFileSync.mockImplementation((filePath) => {
+        if (String(filePath || "").replace(/\\/g, "/").endsWith("/bosun.config.json")) {
+          return JSON.stringify({
+            workspacesDir: "C:/tmp/workspaces",
+            activeWorkspace: "virtengine-gh",
+            workspaces: [
+              {
+                id: "virtengine-gh",
+                activeRepo: "bosun",
+                repos: [{ name: "bosun", primary: true }],
+              },
+            ],
+          });
+        }
+        return "{}";
+      });
+
+      vi.resetModules();
+      const { taskStats } = await import("../task/task-cli.mjs");
+      await taskStats();
+
+      const firstCall = mockConfigureTaskStore.mock.calls[0]?.[0] || {};
+      const configuredPath = String(firstCall.storePath || "").replace(/\\/g, "/");
+      expect(configuredPath).toContain("/bosun-source-repo/.bosun/.cache/kanban-state.json");
+      expect(configuredPath).not.toContain("/workspaces/virtengine-gh/bosun/.bosun/.cache/kanban-state.json");
+    } finally {
+      if (originalEnv.BOSUN_HOME === undefined) {
+        delete process.env.BOSUN_HOME;
+      } else {
+        process.env.BOSUN_HOME = originalEnv.BOSUN_HOME;
       }
-      return "{}";
-    });
-
-    vi.resetModules();
-    const { taskStats } = await import("../task/task-cli.mjs");
-    await taskStats();
-
-    const firstCall = mockConfigureTaskStore.mock.calls[0]?.[0] || {};
-    const configuredPath = String(firstCall.storePath || "").replace(/\\/g, "/");
-    expect(configuredPath).toContain("/bosun-source-repo/.bosun/.cache/kanban-state.json");
-    expect(configuredPath).not.toContain("/workspaces/virtengine-gh/bosun/.bosun/.cache/kanban-state.json");
+      if (originalEnv.REPO_ROOT === undefined) {
+        delete process.env.REPO_ROOT;
+      } else {
+        process.env.REPO_ROOT = originalEnv.REPO_ROOT;
+      }
+    }
   });
 
   it("fails fast when workspace ids collide after normalization", async () => {
