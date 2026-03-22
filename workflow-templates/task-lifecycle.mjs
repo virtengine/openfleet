@@ -31,7 +31,12 @@
  *                               NO  → set todo (cooldown)
  *                           YES → log & set todo
  *                         → release-worktree → release-claim → release-slot
- *                   NO  → release-claim → set todo → release-slot → notify
+ *                   NO  → [retryable?]
+ *                         YES → recover-worktree → retry acquire
+ *                               → [retry OK?]
+ *                                  YES → rejoin main flow
+ *                                  NO  → release-claim → set todo → release-slot → notify
+ *                         NO  → release-claim → set blocked → release-slot → notify
  *             NO → release-slot → log skipped
  */
 
@@ -440,6 +445,36 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     node("notify-wt-failed", "notify.telegram", "Notify WT Failed", {
       message: "⚠️ Worktree failed for \"{{taskTitle}}\" ({{taskId}}){{acquire-worktree.recoveryNote}}",
     }, { x: 600, y: 1740 }),
+
+    // ── AUTO-RECOVERY: Retry worktree acquisition once after cleanup ─────
+    node("wt-retry-eligible", "condition.expression", "Retryable WT Failure?", {
+      expression: "$ctx.getNodeOutput('acquire-worktree')?.retryable !== false",
+    }, { x: 850, y: 960, outputs: ["yes", "no"] }),
+
+    node("recover-worktree", "action.recover_worktree", "Clean Broken WT", {
+      repoRoot: "{{repoRoot}}",
+      branch: "{{branch}}",
+      taskId: "{{taskId}}",
+    }, { x: 850, y: 1090 }),
+
+    node("retry-acquire-wt", "action.acquire_worktree", "Retry Acquire WT", {
+      repoRoot: "{{repoRoot}}",
+      branch: "{{branch}}",
+      taskId: "{{taskId}}",
+      baseBranch: "{{baseBranch}}",
+      defaultTargetBranch: "{{defaultTargetBranch}}",
+    }, { x: 850, y: 1220 }),
+
+    node("retry-wt-ok", "condition.expression", "Retry WT OK?", {
+      expression: "$ctx.getNodeOutput('retry-acquire-wt')?.success === true",
+    }, { x: 850, y: 1350, outputs: ["yes", "no"] }),
+
+    // ── CLEANUP: Sweep task worktrees at end of lifecycle ────────────────
+    node("sweep-task-wts", "action.recover_worktree", "Sweep Task WTs", {
+      repoRoot: "{{repoRoot}}",
+      branch: "{{branch}}",
+      taskId: "{{taskId}}",
+    }, { x: 200, y: 3090 }),
   ],
   edges: [
     // Main flow
@@ -504,13 +539,26 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("join-outcomes", "release-worktree"),
     edge("release-worktree", "release-claim"),
     edge("release-claim", "release-slot"),
+    edge("release-slot", "sweep-task-wts"),
 
     // Claim failed path
     edge("claim-ok", "release-slot-claim-failed", { condition: "$output?.result !== true", port: "no" }),
     edge("release-slot-claim-failed", "log-claim-failed"),
 
-    // Worktree failed path
-    edge("worktree-ok", "release-claim-wt-failed", { condition: "$output?.result !== true", port: "no" }),
+    // Worktree failed path — auto-recovery attempt first
+    edge("worktree-ok", "wt-retry-eligible", { condition: "$output?.result !== true", port: "no" }),
+
+    // Retryable: clean up broken worktree and re-acquire
+    edge("wt-retry-eligible", "recover-worktree", { condition: "$output?.result === true", port: "yes" }),
+    edge("recover-worktree", "retry-acquire-wt"),
+    edge("retry-acquire-wt", "retry-wt-ok"),
+    // Retry succeeded — rejoin main flow at resolve-executor
+    edge("retry-wt-ok", "resolve-executor", { condition: "$output?.result === true", port: "yes" }),
+    // Retry failed — fall through to original failure path
+    edge("retry-wt-ok", "release-claim-wt-failed", { condition: "$output?.result !== true", port: "no" }),
+
+    // Non-retryable: skip recovery, go directly to failure path
+    edge("wt-retry-eligible", "release-claim-wt-failed", { condition: "$output?.result !== true", port: "no" }),
     edge("release-claim-wt-failed", "wt-failure-blocking"),
     edge("wt-failure-blocking", "set-blocked-wt-failed", { condition: "$output?.result === true", port: "yes" }),
     edge("wt-failure-blocking", "set-todo-wt-failed", { condition: "$output?.result !== true", port: "no" }),
