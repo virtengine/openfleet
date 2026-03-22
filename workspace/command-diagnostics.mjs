@@ -124,7 +124,7 @@ function normalizeCommandSignature(command = "", args = []) {
 
 function resolveCommandKind(commandLine = "", output = "") {
   const lower = `${commandLine}\n${output}`.toLowerCase();
-  if (/\bdotnet\s+test\b/.test(lower)) return { family: "build", runner: "dotnet-test" };
+  if (/\bdotnet\s+test\b/.test(lower)) return { family: "test", runner: "dotnet-test" };
   if (/\b(?:python(?:3)?\s+-m\s+pytest|pytest)\b/.test(lower)) return { family: "test", runner: "pytest" };
   if (/\bvitest\b/.test(lower)) return { family: "test", runner: "vitest" };
   if (/\bjest\b/.test(lower)) return { family: "test", runner: "jest" };

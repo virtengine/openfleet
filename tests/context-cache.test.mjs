@@ -306,7 +306,7 @@ describe("context-cache", () => {
 
 
   describe("semantic live tool compaction", () => {
-    it("routes dotnet test output to the test family with stable policy metadata", async () => {
+    it("routes dotnet compiler failures to the build family with stable policy metadata", async () => {
       const output = [
         "Determining projects to restore...",
         "All projects are up-to-date for restore.",
@@ -330,11 +330,11 @@ describe("context-cache", () => {
       });
 
       expect(result._liveCompacted).toBe(true);
-      expect(result._liveCompactionFamily).toBe("test");
+      expect(result._liveCompactionFamily).toBe("build");
       expect(result._liveCompactionPolicy).toBeDefined();
-      expect(result._liveCompactionPolicy.family).toBe("test");
+      expect(result._liveCompactionPolicy.family).toBe("build");
       expect(result._liveCompactionPolicy.budget.decision).toBe("inline_summary");
-      expect(result._liveCompactionPolicy.why.join(" ")).toContain("family:test");
+      expect(result._liveCompactionPolicy.why.join(" ")).toContain("family:build");
       expect(result.aggregated_output).toContain("CS1002");
     });
 
@@ -1112,7 +1112,7 @@ describe("live tool compaction", () => {
     });
 
     expect(result[0]._liveCompacted).toBe(true);
-    expect(result[0]._liveCompactionFamily).toBe("build");
+    expect(result[0]._liveCompactionFamily).toBe("test");
     expect(result[0].aggregated_output).toContain("Failed Bosun.Tests.WorkflowContextTests.ResolveTemplates");
     expect(result[0].aggregated_output).toContain("WorkflowContextTests.cs:line 42");
     expect(result[0].aggregated_output).toContain("Suggested rerun: dotnet test --filter");
