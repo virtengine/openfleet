@@ -12198,6 +12198,22 @@ registerBuiltinNodeType("action.build_task_prompt", {
         "Be concise, rigorous, and complete tasks end-to-end with verified results.",
       ].join("\n");
 
+    const stripPromptMemorySection = (content, docName) => {
+      const text = String(content || "");
+      if (!text) return "";
+      if (!/AGENTS\.md$/i.test(String(docName || ""))) return text;
+      const learningsHeaderRe = /^## Agent Learnings\s*$/im;
+      const sectionMatch = learningsHeaderRe.exec(text);
+      if (!sectionMatch) return text;
+      const sectionStart = sectionMatch.index;
+      const headerLength = sectionMatch[0].length;
+      const before = text.slice(0, sectionStart).trimEnd();
+      const afterSection = text.slice(sectionStart + headerLength);
+      const nextSectionMatch = /^##\s+/m.exec(afterSection);
+      if (!nextSectionMatch) return before;
+      const afterIndex = sectionStart + headerLength + nextSectionMatch.index;
+      return `${before}\n\n${text.slice(afterIndex).trimStart()}`.trim();
+    };
     const cacheAnchorMarkers = collectCacheAnchorMarkers(
       {
         taskId: normalizedTaskId,
