@@ -7607,22 +7607,6 @@ function makeJsonSafe(value, options = {}) {
 }
 
 function extractSafeErrorMessage(payload) {
-  if (payload == null) return "Internal server error";
-  if (payload instanceof Error) {
-    const message = String(payload.message || "").trim();
-    if (!message || isStackLikeErrorText(message)) return "Internal server error";
-    return message;
-  }
-  if (typeof payload === "string") {
-    const message = payload.trim();
-    if (!message || isStackLikeErrorText(message)) return "Internal server error";
-    return message;
-  }
-  if (typeof payload === "object") {
-    const candidate = String(payload?.error || payload?.message || "").trim();
-    if (!candidate || isStackLikeErrorText(candidate)) return "Internal server error";
-    return candidate;
-  }
   return "Internal server error";
 }
 
