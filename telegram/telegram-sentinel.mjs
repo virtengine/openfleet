@@ -41,7 +41,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { readFile, writeFile, unlink } from "node:fs/promises";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import os from "node:os";
@@ -61,7 +61,55 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const repoRoot = resolveRepoRoot();
+
+// Resolve repo root from BOSUN_HOME config first, then fall back to git detection.
+// This avoids depending on cwd being inside a git repo (daemon/sentinel may start
+// from homedir or any arbitrary directory).
+function _resolveSentinelRepoRoot() {
+  // 1. Explicit env
+  if (process.env.REPO_ROOT) {
+    const r = resolve(process.env.REPO_ROOT);
+    if (existsSync(r)) return r;
+  }
+  // 2. Check BOSUN_HOME workspace config for a primary repo
+  const bosunDir = resolveBosunConfigDir();
+  if (bosunDir) {
+    for (const cfgName of ["bosun.config.json", ".bosun.json", "bosun.json"]) {
+      const cfgPath = resolve(bosunDir, cfgName);
+      if (!existsSync(cfgPath)) continue;
+      try {
+        const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+        // Check workspace repos
+        const workspaces = Array.isArray(cfg.workspaces) ? cfg.workspaces : [];
+        for (const ws of workspaces) {
+          const repos = ws?.repos || ws?.repositories || [];
+          if (!Array.isArray(repos)) continue;
+          for (const repo of repos) {
+            const name = typeof repo === "string" ? repo.split("/").pop() : (repo?.name || repo?.id || "");
+            if (!name) continue;
+            const wsId = ws?.id || "default";
+            const repoPath = resolve(bosunDir, "workspaces", wsId, name);
+            if (existsSync(resolve(repoPath, ".git"))) return repoPath;
+          }
+        }
+        // Check flat repositories
+        const repos = cfg.repositories || cfg.repos || [];
+        if (Array.isArray(repos)) {
+          for (const repo of repos) {
+            const repoPath = typeof repo === "string" ? repo : (repo?.path || repo?.repoRoot);
+            if (!repoPath) continue;
+            const resolved = resolve(isAbsolute(repoPath) ? repoPath : resolve(bosunDir, repoPath));
+            if (existsSync(resolve(resolved, ".git"))) return resolved;
+          }
+        }
+      } catch { /* invalid config */ }
+    }
+  }
+  // 3. Fall back to standard repo-root resolution (git detection)
+  return resolveRepoRoot();
+}
+
+const repoRoot = _resolveSentinelRepoRoot();
 const cacheDir = resolve(repoRoot, ".cache");
 
 function resolveBosunConfigDir() {
@@ -1654,8 +1702,11 @@ async function startAndWaitForMonitor(reason) {
     {
       detached: true,
       stdio: "ignore",
+      windowsHide: process.platform === "win32",
       env: spawnEnv,
-      cwd: repoRoot,
+      // Use repoRoot if it has a .git dir; otherwise use homedir so spawn
+      // never inherits a non-existent or non-repo cwd.
+      cwd: existsSync(resolve(repoRoot, ".git")) ? repoRoot : os.homedir(),
     },
   );
 

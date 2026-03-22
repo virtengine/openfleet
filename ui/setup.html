@@ -909,6 +909,9 @@ function App() {
   const [kanbanBackend, setKanbanBackend] = useState("internal");
   const [telegramToken, setTelegramToken] = useState("");
   const [telegramChatId, setTelegramChatId] = useState("");
+  const [telegramDiscoveredChats, setTelegramDiscoveredChats] = useState([]);
+  const [telegramChatLookupLoading, setTelegramChatLookupLoading] = useState(false);
+  const [telegramChatLookupMessage, setTelegramChatLookupMessage] = useState("");
   const [maxParallel, setMaxParallel] = useState(4);
   const [maxRetries, setMaxRetries] = useState(3);
   const [failoverStrategy, setFailoverStrategy] = useState("next-in-line");
@@ -1016,7 +1019,7 @@ function App() {
   const [sentinelRepairAgentEnabled, setSentinelRepairAgentEnabled] = useState(false);
   const [sentinelRepairTimeoutMin, setSentinelRepairTimeoutMin] = useState(15);
   // Daemon restart policy
-  const [daemonRestartDelayMs, setDaemonRestartDelayMs] = useState(10000);
+  const [daemonRestartDelayMs, setDaemonRestartDelayMs] = useState(180000);
   const [daemonMaxRestarts, setDaemonMaxRestarts] = useState(0);
   const [daemonMaxInstantRestarts, setDaemonMaxInstantRestarts] = useState(3);
   const [daemonInstantCrashWindowMs, setDaemonInstantCrashWindowMs] = useState(15000);
@@ -2020,7 +2023,7 @@ function App() {
       if (env.SENTINEL_REPAIR_AGENT_ENABLED) { setSentinelRepairAgentEnabled(env.SENTINEL_REPAIR_AGENT_ENABLED === "true"); envLoaded = true; }
       if (env.SENTINEL_REPAIR_TIMEOUT_MIN) { setSentinelRepairTimeoutMin(Number(env.SENTINEL_REPAIR_TIMEOUT_MIN) || 15); envLoaded = true; }
       // Daemon restart policy
-      if (env.RESTART_DELAY_MS) { setDaemonRestartDelayMs(Number(env.RESTART_DELAY_MS) || 10000); envLoaded = true; }
+      if (env.RESTART_DELAY_MS) { setDaemonRestartDelayMs(Number(env.RESTART_DELAY_MS) || 180000); envLoaded = true; }
       if (env.MAX_RESTARTS) { setDaemonMaxRestarts(Number(env.MAX_RESTARTS) || 0); envLoaded = true; }
       if (env.BOSUN_DAEMON_MAX_INSTANT_RESTARTS) { setDaemonMaxInstantRestarts(Number(env.BOSUN_DAEMON_MAX_INSTANT_RESTARTS) || 3); envLoaded = true; }
       if (env.BOSUN_DAEMON_INSTANT_CRASH_WINDOW_MS) { setDaemonInstantCrashWindowMs(Number(env.BOSUN_DAEMON_INSTANT_CRASH_WINDOW_MS) || 15000); envLoaded = true; }
@@ -2268,6 +2271,42 @@ function App() {
   const goPrev = () => setStep((s) => Math.max(s - 1, 0));
   const goTo = (idx) => {
     if (idx <= step || completedSteps.has(idx)) setStep(idx);
+  };
+
+  const discoverTelegramChatIds = async () => {
+    const token = String(telegramToken || "").trim();
+    if (!token) {
+      setTelegramDiscoveredChats([]);
+      setTelegramChatLookupMessage("Enter a Telegram bot token first.");
+      return;
+    }
+
+    setTelegramChatLookupLoading(true);
+    setTelegramChatLookupMessage("");
+    try {
+      const result = await apiPost("telegram-chat-id", { token });
+      if (!result?.ok) {
+        setTelegramDiscoveredChats([]);
+        setTelegramChatLookupMessage(result?.error || "Failed to discover Telegram chats.");
+        return;
+      }
+
+      const chats = Array.isArray(result.chats) ? result.chats : [];
+      setTelegramDiscoveredChats(chats);
+      if (chats.length === 1) {
+        setTelegramChatId(String(chats[0].id));
+        setTelegramChatLookupMessage(`Found 1 chat: ${chats[0].id}`);
+      } else if (chats.length > 1) {
+        setTelegramChatLookupMessage(`Found ${chats.length} chats. Choose the one Bosun should use.`);
+      } else {
+        setTelegramChatLookupMessage(result.message || "No chats found yet. Send a message to your bot, then try again.");
+      }
+    } catch (err) {
+      setTelegramDiscoveredChats([]);
+      setTelegramChatLookupMessage(err.message || "Failed to discover Telegram chats.");
+    } finally {
+      setTelegramChatLookupLoading(false);
+    }
   };
 
   // ── Build EXECUTORS env string ─────────────────────────────────────────────
@@ -3645,7 +3684,11 @@ function App() {
     ${telegramEnabled && html`
       <div class="form-group">
         <label>Telegram Bot Token</label>
-        <input type="password" value=${telegramToken} oninput=${(e) => setTelegramToken(e.target.value)}
+        <input type="password" value=${telegramToken} oninput=${(e) => {
+          setTelegramToken(e.target.value);
+          setTelegramDiscoveredChats([]);
+          setTelegramChatLookupMessage("");
+        }}
           placeholder="123456:ABCdefGHIjklMNO..." />
         <div class="hint">Create a bot via <a href="https://t.me/botfather" target="_blank">@BotFather</a>.</div>
       </div>
@@ -3653,7 +3696,30 @@ function App() {
         <label>Telegram Chat ID</label>
         <input type="text" value=${telegramChatId} oninput=${(e) => setTelegramChatId(e.target.value)}
           placeholder="-1001234567890" />
-        <div class="hint">Use <code style="font-family:var(--font-mono)">bosun --get-chat-id</code> to find your chat ID after the bot is running.</div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">
+          <button class="btn" type="button" onclick=${discoverTelegramChatIds}
+            disabled=${telegramChatLookupLoading || !String(telegramToken || "").trim()}>
+            ${telegramChatLookupLoading ? "Finding Chats..." : "Discover Chats"}
+          </button>
+          ${telegramDiscoveredChats.length > 1 && html`
+            <select
+              value=${telegramDiscoveredChats.some((chat) => String(chat.id) === String(telegramChatId)) ? String(telegramChatId) : ""}
+              onchange=${(e) => setTelegramChatId(e.target.value)}
+              style="min-width:260px;flex:1"
+            >
+              <option value="">Choose a discovered chat</option>
+              ${telegramDiscoveredChats.map((chat) => html`
+                <option value=${String(chat.id)}>
+                  ${`${chat.id}${chat.username ? ` · @${chat.username}` : ""}${chat.title ? ` · ${chat.title}` : ""}${chat.type ? ` · ${chat.type}` : ""}`}
+                </option>
+              `)}
+            </select>
+          `}
+        </div>
+        ${telegramChatLookupMessage && html`
+          <div class="hint" style="margin-top:8px">${telegramChatLookupMessage}</div>
+        `}
+        <div class="hint">Use Discover Chats after sending your bot a message, or run <code style="font-family:var(--font-mono)">bosun --get-chat-id</code>.</div>
       </div>
     `}
     <div class="nav-buttons">
@@ -4779,8 +4845,8 @@ function App() {
           <div class="form-group">
             <label>Restart Delay (ms)</label>
             <input type="number" value=${daemonRestartDelayMs} min="0"
-              oninput=${(e) => setDaemonRestartDelayMs(Number(e.target.value) || 10000)} />
-            <div class="hint">Delay before restarting after a crash. Default: 10 000 ms.</div>
+              oninput=${(e) => setDaemonRestartDelayMs(Number(e.target.value) || 180000)} />
+            <div class="hint">Delay before restarting after a crash. Default: 180 000 ms (180 s).</div>
           </div>
           <div class="form-group">
             <label>Max Restarts (0 = unlimited)</label>
@@ -5027,5 +5093,4 @@ render(html`<${App} />`, document.getElementById("app"));
 </body>
 <script defer src="https://cloud.umami.is/script.js" data-website-id="24c5d605-7f25-4be5-875e-25c8f3cb4059"></script>
 </html>
-
 

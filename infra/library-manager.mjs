@@ -16,10 +16,18 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync, rmSync } from "node:fs";
-import { resolve, basename, join, relative } from "node:path";
+import { resolve, basename, relative, extname, sep } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
+import { nowISO, toStringArray, uniqueStrings } from "./library-manager-utils.mjs";
+import {
+  WELL_KNOWN_AGENT_SOURCES,
+  computeWellKnownSourceTrust,
+  listWellKnownAgentSources,
+  clearWellKnownAgentSourceProbeCache,
+  probeWellKnownAgentSources,
+} from "./library-manager-well-known-sources.mjs";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -29,16 +37,222 @@ export const SKILL_DIR = ".bosun/skills";
 export const PROFILE_DIR = ".bosun/profiles";
 export const MCP_DIR = ".bosun/mcp-servers";
 export const TOOL_DIR = ".bosun/tools";
+export const HOOK_DIR = ".bosun/hooks";
 export const LIBRARY_INDEX_DIR = ".bosun/library-index";
 export const AGENT_PROFILE_INDEX = "agent-profiles.json";
 export const SKILL_ENTRY_INDEX = "skills.json";
 
 const agentProfileIndexCache = new Map();
 const skillEntryIndexCache = new Map();
-const wellKnownSourceProbeCache = new Map();
+const repoContextCache = new Map();
+
+const REPO_CONTEXT_TTL_MS = 120_000;
+
+/**
+ * Maps file extensions → domain tags used for scoring.
+ * Intentionally broad — a single file can belong to multiple domains.
+ */
+const EXT_DOMAIN_MAP = Object.freeze({
+  ".js": ["javascript", "web"],
+  ".mjs": ["javascript", "web"],
+  ".cjs": ["javascript", "web"],
+  ".jsx": ["javascript", "react", "frontend", "web"],
+  ".ts": ["typescript", "web"],
+  ".tsx": ["typescript", "react", "frontend", "web"],
+  ".vue": ["vue", "frontend", "web"],
+  ".svelte": ["svelte", "frontend", "web"],
+  ".css": ["styling", "frontend", "web"],
+  ".scss": ["styling", "frontend", "web"],
+  ".less": ["styling", "frontend", "web"],
+  ".html": ["frontend", "web"],
+  ".py": ["python"],
+  ".pyx": ["python"],
+  ".go": ["go", "backend"],
+  ".rs": ["rust", "systems"],
+  ".java": ["java", "backend"],
+  ".kt": ["kotlin", "backend"],
+  ".cs": ["csharp", "dotnet", "backend"],
+  ".fs": ["fsharp", "dotnet", "backend"],
+  ".rb": ["ruby", "backend"],
+  ".php": ["php", "backend"],
+  ".swift": ["swift", "mobile"],
+  ".m": ["objc", "mobile"],
+  ".dart": ["dart", "flutter", "mobile"],
+  ".c": ["c", "systems"],
+  ".cpp": ["cpp", "systems"],
+  ".h": ["c", "systems"],
+  ".hpp": ["cpp", "systems"],
+  ".sh": ["shell", "devops"],
+  ".bash": ["shell", "devops"],
+  ".ps1": ["powershell", "devops"],
+  ".sql": ["database", "sql"],
+  ".graphql": ["graphql", "api"],
+  ".proto": ["protobuf", "api", "grpc"],
+  ".yaml": ["config"],
+  ".yml": ["config"],
+  ".toml": ["config"],
+  ".json": ["config"],
+  ".xml": ["config"],
+  ".tf": ["terraform", "infra", "devops"],
+  ".hcl": ["terraform", "infra", "devops"],
+  ".dockerfile": ["docker", "infra", "devops"],
+  ".md": ["docs"],
+  ".mdx": ["docs"],
+  ".rst": ["docs"],
+});
+
+/**
+ * Maps special filenames (case-insensitive) → domain tags.
+ */
+const FILENAME_DOMAIN_MAP = Object.freeze({
+  "dockerfile": ["docker", "infra", "devops"],
+  "docker-compose.yml": ["docker", "infra", "devops"],
+  "docker-compose.yaml": ["docker", "infra", "devops"],
+  "makefile": ["build", "devops"],
+  "cmakelists.txt": ["cmake", "build", "cpp"],
+  "package.json": ["javascript", "node", "web"],
+  "tsconfig.json": ["typescript", "web"],
+  "requirements.txt": ["python"],
+  "pyproject.toml": ["python"],
+  "cargo.toml": ["rust", "systems"],
+  "go.mod": ["go", "backend"],
+  "gemfile": ["ruby", "backend"],
+  "composer.json": ["php", "backend"],
+  ".github/workflows": ["ci", "devops", "github"],
+  "jenkinsfile": ["ci", "devops"],
+  ".gitlab-ci.yml": ["ci", "devops"],
+});
+
+/**
+ * Maps path segments → domain tags for deeper context.
+ */
+const PATH_SEGMENT_DOMAINS = Object.freeze({
+  test: ["testing"],
+  tests: ["testing"],
+  __tests__: ["testing"],
+  spec: ["testing"],
+  e2e: ["testing", "e2e"],
+  fixtures: ["testing"],
+  src: [],
+  lib: [],
+  dist: ["build"],
+  build: ["build"],
+  docs: ["docs"],
+  scripts: ["devops", "scripting"],
+  infra: ["infra", "devops"],
+  deploy: ["infra", "devops"],
+  k8s: ["kubernetes", "infra", "devops"],
+  migrations: ["database"],
+  models: ["backend", "database"],
+  api: ["api", "backend"],
+  routes: ["api", "backend"],
+  controllers: ["api", "backend"],
+  middleware: ["backend"],
+  components: ["frontend"],
+  pages: ["frontend"],
+  hooks: ["frontend", "react"],
+  styles: ["styling", "frontend"],
+  utils: ["utility"],
+  helpers: ["utility"],
+  config: ["config"],
+});
+
+/**
+ * Maps detected stack IDs (from detectProjectStack) → skill-relevant tags.
+ */
+const STACK_DOMAIN_MAP = Object.freeze({
+  node: ["javascript", "node", "web"],
+  python: ["python"],
+  go: ["go", "backend"],
+  rust: ["rust", "systems"],
+  java: ["java", "backend"],
+  dotnet: ["csharp", "dotnet", "backend"],
+  ruby: ["ruby", "backend"],
+  php: ["php", "backend"],
+  make: ["build"],
+});
+
+/**
+ * Maps detected framework names → skill-relevant tags.
+ */
+const FRAMEWORK_DOMAIN_MAP = Object.freeze({
+  react: ["react", "frontend", "web"],
+  nextjs: ["react", "nextjs", "frontend", "web", "ssr"],
+  vue: ["vue", "frontend", "web"],
+  nuxt: ["vue", "nuxt", "frontend", "web", "ssr"],
+  svelte: ["svelte", "frontend", "web"],
+  angular: ["angular", "frontend", "web"],
+  express: ["express", "backend", "api", "web"],
+  fastify: ["fastify", "backend", "api", "web"],
+  nestjs: ["nestjs", "backend", "api", "web"],
+  electron: ["electron", "desktop"],
+  django: ["django", "python", "backend", "web"],
+  flask: ["flask", "python", "backend", "api"],
+  fastapi: ["fastapi", "python", "backend", "api"],
+  pytorch: ["pytorch", "python", "ml", "ai"],
+  tensorflow: ["tensorflow", "python", "ml", "ai"],
+  spring: ["spring", "java", "backend"],
+  rails: ["rails", "ruby", "backend", "web"],
+  laravel: ["laravel", "php", "backend", "web"],
+  gin: ["gin", "go", "backend", "api"],
+  actix: ["actix", "rust", "backend", "api"],
+  axum: ["axum", "rust", "backend", "api"],
+});
 
 /** Resource types managed by the library */
-export const RESOURCE_TYPES = Object.freeze(["prompt", "agent", "skill", "mcp", "custom-tool"]);
+export const RESOURCE_TYPES = Object.freeze(["prompt", "agent", "skill", "mcp", "custom-tool", "hook"]);
+export const AGENT_LIBRARY_CATEGORIES = Object.freeze(["task", "interactive", "voice"]);
+export const INTERACTIVE_AGENT_MODES = Object.freeze(["ask", "agent", "plan", "web", "instant", "custom", "voice"]);
+
+export function normalizeAgentProfileType(rawType, options = {}) {
+  const value = String(rawType || "").trim().toLowerCase();
+  if (value === "voice" || value === "task" || value === "chat") return value;
+  if (options?.voiceAgent === true) return "voice";
+  return "task";
+}
+
+export function normalizeAgentLibraryCategory(rawCategory, options = {}) {
+  const value = String(rawCategory || "").trim().toLowerCase();
+  if (AGENT_LIBRARY_CATEGORIES.includes(value)) return value;
+  const profileType = normalizeAgentProfileType(options?.agentType, { voiceAgent: options?.voiceAgent });
+  if (profileType === "voice") return "voice";
+  if (profileType === "chat") return "interactive";
+  return "task";
+}
+
+export function normalizeInteractiveAgentMode(rawMode, options = {}) {
+  const value = String(rawMode || "").trim().toLowerCase();
+  if (INTERACTIVE_AGENT_MODES.includes(value)) return value;
+  if (options?.agentCategory === "voice") return "voice";
+  if (options?.agentCategory === "interactive") return "agent";
+  return "";
+}
+
+export function resolveAgentProfileLibraryMetadata(entry, profile = {}) {
+  const agentType = normalizeAgentProfileType(profile?.agentType, {
+    voiceAgent: profile?.voiceAgent === true,
+  });
+  const agentCategory = normalizeAgentLibraryCategory(profile?.agentCategory, {
+    agentType,
+    voiceAgent: profile?.voiceAgent === true,
+  });
+  const interactiveMode = normalizeInteractiveAgentMode(
+    profile?.interactiveMode || profile?.chatMode,
+    { agentCategory },
+  );
+  const interactiveLabel = String(profile?.interactiveLabel || "").trim();
+  const explicitDropdown = profile?.showInChatDropdown;
+  const showInChatDropdown = agentCategory === "interactive"
+    ? explicitDropdown === true
+    : false;
+  return {
+    agentType,
+    agentCategory,
+    interactiveMode: interactiveMode || null,
+    interactiveLabel: interactiveLabel || null,
+    showInChatDropdown,
+  };
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -77,16 +291,138 @@ function getFileMtimeMs(filePath) {
   }
 }
 
+// ── Token estimation & similarity utilities ──────────────────────────────────
+
+/**
+ * Rough token estimate: ~4 chars per token (GPT-family tokenizers average 3.5–4.5).
+ * Fast O(1) — no actual tokenizer needed.
+ */
+function estimateTokenCount(text) {
+  if (!text) return 0;
+  return Math.ceil(String(text).length / 4);
+}
+
+/**
+ * Jaccard similarity on word-level unigrams. Returns 0–1.
+ * Cheap O(n) — suitable for batch comparisons.
+ */
+function jaccardSimilarity(a, b) {
+  const wordsA = new Set(String(a || "").toLowerCase().split(/\W+/).filter(Boolean));
+  const wordsB = new Set(String(b || "").toLowerCase().split(/\W+/).filter(Boolean));
+  if (wordsA.size === 0 && wordsB.size === 0) return 1;
+  if (wordsA.size === 0 || wordsB.size === 0) return 0;
+  let intersection = 0;
+  for (const w of wordsA) if (wordsB.has(w)) intersection++;
+  return intersection / (wordsA.size + wordsB.size - intersection);
+}
+
+/**
+ * Detect potential duplicates between import candidates and existing library entries.
+ * Returns a Map<relPath, { existingEntry, similarity, reason }> for candidates that
+ * appear to be duplicates of existing entries.
+ */
+function detectImportDuplicates(candidates, existingEntries) {
+  const duplicates = new Map();
+  if (!candidates?.length || !existingEntries?.length) return duplicates;
+
+  // Build lookup structures for existing entries
+  const existingByName = new Map();
+  const existingBySlug = new Map();
+  for (const entry of existingEntries) {
+    const nameLower = String(entry.name || "").toLowerCase().trim();
+    const slug = slugify(entry.name);
+    if (nameLower) {
+      if (!existingByName.has(nameLower)) existingByName.set(nameLower, []);
+      existingByName.get(nameLower).push(entry);
+    }
+    if (slug) {
+      if (!existingBySlug.has(slug)) existingBySlug.set(slug, []);
+      existingBySlug.get(slug).push(entry);
+    }
+  }
+
+  for (const candidate of candidates) {
+    const candName = String(candidate.name || "").toLowerCase().trim();
+    const candSlug = slugify(candidate.name);
+    const candDesc = String(candidate.description || "").toLowerCase().trim();
+
+    // 1. Exact name match
+    if (candName && existingByName.has(candName)) {
+      const matches = existingByName.get(candName);
+      duplicates.set(candidate.relPath, {
+        existingEntries: matches.map((e) => ({ id: e.id, name: e.name, type: e.type })),
+        similarity: 1.0,
+        reason: "exact-name",
+      });
+      continue;
+    }
+
+    // 2. Exact slug match
+    if (candSlug && existingBySlug.has(candSlug)) {
+      const matches = existingBySlug.get(candSlug);
+      duplicates.set(candidate.relPath, {
+        existingEntries: matches.map((e) => ({ id: e.id, name: e.name, type: e.type })),
+        similarity: 0.95,
+        reason: "slug-match",
+      });
+      continue;
+    }
+
+    // 3. High name+description similarity (Jaccard > 0.65)
+    let bestSim = 0;
+    let bestMatch = null;
+    for (const entry of existingEntries) {
+      const entryName = String(entry.name || "");
+      const entryDesc = String(entry.description || "");
+      const nameSim = jaccardSimilarity(candName, entryName);
+      const descSim = candDesc && entryDesc ? jaccardSimilarity(candDesc, entryDesc) : 0;
+      const combined = nameSim * 0.6 + descSim * 0.4;
+      if (combined > bestSim) {
+        bestSim = combined;
+        bestMatch = entry;
+      }
+    }
+    if (bestSim >= 0.65 && bestMatch) {
+      duplicates.set(candidate.relPath, {
+        existingEntries: [{ id: bestMatch.id, name: bestMatch.name, type: bestMatch.type }],
+        similarity: Math.round(bestSim * 100) / 100,
+        reason: "similar-content",
+      });
+    }
+  }
+
+  return duplicates;
+}
+
+/**
+ * Detect duplicates among candidates themselves (intra-import).
+ * Returns a Map<relPath, relPath[]> mapping each candidate to its duplicate peers.
+ */
+function detectIntraDuplicates(candidates) {
+  const groups = new Map();
+  if (!candidates?.length) return groups;
+  const slugMap = new Map();
+  for (const c of candidates) {
+    const slug = slugify(c.name);
+    if (!slug) continue;
+    if (!slugMap.has(slug)) slugMap.set(slug, []);
+    slugMap.get(slug).push(c.relPath);
+  }
+  for (const [, paths] of slugMap) {
+    if (paths.length < 2) continue;
+    for (const p of paths) {
+      groups.set(p, paths.filter((other) => other !== p));
+    }
+  }
+  return groups;
+}
+
 function slugify(name) {
   return String(name || "")
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
-}
-
-function nowISO() {
-  return new Date().toISOString();
 }
 
 function isSafeGitRefName(value) {
@@ -113,25 +449,6 @@ function isSafeGitRepositorySource(value) {
   } catch {
     return false;
   }
-}
-
-function toStringArray(input) {
-  if (!Array.isArray(input)) return [];
-  return input.map((item) => String(item || '').trim()).filter(Boolean);
-}
-
-function uniqueStrings(values = []) {
-  const out = [];
-  const seen = new Set();
-  for (const raw of values) {
-    const value = String(raw || '').trim();
-    if (!value) continue;
-    const key = value.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(value);
-  }
-  return out;
 }
 
 function keywordTokens(value, { minLength = 3 } = {}) {
@@ -233,10 +550,11 @@ function updateSkillEntryIndexCache(rootDir, index, manifestMtimeMs = 0) {
 function buildIndexedAgentProfile(rootDir, entry) {
   const profile = getEntryContent(rootDir, entry);
   if (!profile || typeof profile !== "object") return null;
+  const metadata = resolveAgentProfileLibraryMetadata(entry, profile);
   return {
     ...entry,
     profile,
-    agentType: String(profile?.agentType || "task").trim().toLowerCase() || "task",
+    ...metadata,
     titlePatterns: toStringArray(profile?.titlePatterns),
     scopes: toStringArray(profile?.scopes),
     tags: uniqueStrings([...(entry?.tags || []), ...toStringArray(profile?.tags)]),
@@ -256,17 +574,206 @@ function buildIndexedSkillEntry(entry) {
   };
 }
 
+// ── Repo-context signal layer ─────────────────────────────────────────────────
+
+/**
+ * Lazily import detectProjectStack to avoid circular dependencies.
+ * Falls back gracefully if the module is unavailable.
+ * @private - kept for future use when project-detection integration is complete
+ */
+let _detectProjectStack = null;
+
+/**
+ * Build a lightweight repo-context object from the workspace directory.
+ * Results are cached per repoRoot with TTL (default 120s).
+ *
+ * The context is built purely from file-system marker files (package.json,
+ * Cargo.toml, etc.) and is designed to complete in <20ms.
+ *
+ * @param {string} repoRoot
+ * @returns {{ languages: string[], frameworks: string[], domains: string[], stacks: string[] }}
+ */
+export function buildRepoContext(repoRoot) {
+  if (!repoRoot) return { languages: [], frameworks: [], domains: [], stacks: [] };
+  const key = resolve(repoRoot);
+  const cached = repoContextCache.get(key);
+  if (cached && (Date.now() - cached.ts) < REPO_CONTEXT_TTL_MS) return cached.ctx;
+
+  const ctx = _scanRepoContextFast(key);
+  repoContextCache.set(key, { ts: Date.now(), ctx });
+  return ctx;
+}
+
+const _STACK_MARKERS = [
+  { id: "node", markers: ["package.json"] },
+  { id: "python", markers: ["pyproject.toml", "setup.py", "requirements.txt", "Pipfile"] },
+  { id: "go", markers: ["go.mod"] },
+  { id: "rust", markers: ["Cargo.toml"] },
+  { id: "java", markers: ["pom.xml", "build.gradle", "build.gradle.kts"] },
+  { id: "dotnet", markers: ["*.csproj", "*.sln"] },
+  { id: "ruby", markers: ["Gemfile"] },
+  { id: "php", markers: ["composer.json"] },
+];
+
+const _FRAMEWORK_MARKERS = {
+  node: [
+    { file: "package.json", detect: (raw) => {
+      const deps = `${raw}`;
+      const found = [];
+      if (deps.includes('"react"')) found.push("react");
+      if (deps.includes('"next"')) found.push("nextjs");
+      if (deps.includes('"vue"')) found.push("vue");
+      if (deps.includes('"nuxt"')) found.push("nuxt");
+      if (deps.includes('"svelte"')) found.push("svelte");
+      if (deps.includes('"@angular/core"')) found.push("angular");
+      if (deps.includes('"express"')) found.push("express");
+      if (deps.includes('"fastify"')) found.push("fastify");
+      if (deps.includes('"@nestjs/core"')) found.push("nestjs");
+      if (deps.includes('"electron"')) found.push("electron");
+      if (deps.includes('"vitest"') || deps.includes('"jest"') || deps.includes('"mocha"')) found.push("testing");
+      return found;
+    }},
+  ],
+};
+
+function _scanRepoContextFast(rootDir) {
+  const stacks = [];
+  const frameworks = [];
+  const domains = new Set();
+
+  for (const def of _STACK_MARKERS) {
+    const found = def.markers.some((m) => {
+      if (m.includes("*")) {
+        try {
+          return readdirSync(rootDir).some((f) => f.endsWith(m.replace(/\*/g, "")));
+        } catch { return false; }
+      }
+      return existsSync(resolve(rootDir, m));
+    });
+    if (!found) continue;
+    stacks.push(def.id);
+    const stackDomains = STACK_DOMAIN_MAP[def.id];
+    if (stackDomains) for (const d of stackDomains) domains.add(d);
+  }
+
+  for (const stackId of stacks) {
+    const fmDetectors = _FRAMEWORK_MARKERS[stackId];
+    if (!fmDetectors) continue;
+    for (const det of fmDetectors) {
+      const fpath = resolve(rootDir, det.file);
+      if (!existsSync(fpath)) continue;
+      try {
+        const raw = readFileSync(fpath, "utf8").slice(0, 8192);
+        const found = det.detect(raw);
+        for (const fw of found) {
+          frameworks.push(fw);
+          const fwDomains = FRAMEWORK_DOMAIN_MAP[fw];
+          if (fwDomains) for (const d of fwDomains) domains.add(d);
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
+  const languages = uniqueStrings(stacks.flatMap((s) => STACK_DOMAIN_MAP[s] || []).filter((d) =>
+    !["web", "backend", "systems", "build"].includes(d)));
+
+  return {
+    languages: uniqueStrings(languages),
+    frameworks: uniqueStrings(frameworks),
+    domains: [...domains],
+    stacks: uniqueStrings(stacks),
+  };
+}
+
+/**
+ * Infer domain tags from a list of changed file paths.
+ * Pure computation — no I/O. Designed for <1ms on typical inputs.
+ *
+ * @param {string[]} changedFiles
+ * @returns {{ fileDomains: string[], fileLanguages: string[], testRelated: boolean }}
+ */
+export function inferFileContextSignals(changedFiles) {
+  const domains = new Set();
+  const languages = new Set();
+  let testRelated = false;
+
+  for (const filePath of changedFiles) {
+    if (!filePath) continue;
+    const normalized = String(filePath).replace(/\\/g, "/").toLowerCase();
+
+    // Extension-based domains
+    const ext = extname(normalized);
+    const extDomains = EXT_DOMAIN_MAP[ext];
+    if (extDomains) {
+      for (const d of extDomains) domains.add(d);
+      if (extDomains[0] && !["config", "docs", "styling", "web"].includes(extDomains[0])) {
+        languages.add(extDomains[0]);
+      }
+    }
+
+    // Filename-based domains (e.g. Dockerfile, Makefile)
+    const fname = basename(normalized);
+    const fnameDomains = FILENAME_DOMAIN_MAP[fname];
+    if (fnameDomains) for (const d of fnameDomains) domains.add(d);
+
+    // Path-segment domains
+    const segments = normalized.split("/");
+    for (const seg of segments) {
+      const segDomains = PATH_SEGMENT_DOMAINS[seg];
+      if (segDomains) for (const d of segDomains) domains.add(d);
+    }
+
+    // Test detection from filename patterns
+    if (/\.(test|spec|e2e)\.[a-z]+$/.test(normalized) || /__(tests|test)__/.test(normalized)) {
+      testRelated = true;
+      domains.add("testing");
+    }
+  }
+
+  return {
+    fileDomains: [...domains],
+    fileLanguages: [...languages],
+    testRelated,
+  };
+}
+
+/**
+ * Precompiled regex cache for title patterns to avoid re-compiling on every match.
+ */
+const compiledRegexCache = new Map();
+function getCompiledRegex(pattern) {
+  let re = compiledRegexCache.get(pattern);
+  if (re !== undefined) return re;
+  try {
+    re = new RegExp(pattern, "i");
+  } catch {
+    re = null;
+  }
+  compiledRegexCache.set(pattern, re);
+  return re;
+}
+
 function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
   const skillIndex = loadSkillEntryIndex(rootDir);
   const indexedSkills = Array.isArray(skillIndex?.skills) ? skillIndex.skills : [];
   const tokenMap = skillIndex?.tokenMap || {};
   const indexedById = new Map(indexedSkills.map((entry) => [entry.id, entry]));
   const profileSkillIds = toStringArray(best?.profile?.skills);
-  const textBlob = [criteria?.title, criteria?.description].filter(Boolean).join("\n");
+  const titleRaw = String(criteria?.title || "").trim();
+  const descRaw = String(criteria?.description || "").trim();
+  const textBlob = [titleRaw, descRaw].filter(Boolean).join("\n");
+
+  // Gather repo-context and file-context signals
+  const repoCtx = criteria?.repoContext || (criteria?.repoRoot ? buildRepoContext(criteria.repoRoot) : null);
+  const changedFiles = toStringArray(criteria?.changedFiles);
+  const fileSignals = changedFiles.length > 0 ? inferFileContextSignals(changedFiles) : null;
+
   const criteriaTags = uniqueStrings([
     ...toStringArray(criteria?.tags),
     ...keywordTokens(textBlob, { minLength: 4 }),
-    ...keywordTokens(toStringArray(criteria?.changedFiles).join(" "), { minLength: 3 }),
+    ...keywordTokens(changedFiles.join(" "), { minLength: 3 }),
+    ...(repoCtx ? [...repoCtx.languages, ...repoCtx.frameworks, ...repoCtx.domains] : []),
+    ...(fileSignals ? [...fileSignals.fileDomains, ...fileSignals.fileLanguages] : []),
   ]).map((value) => value.toLowerCase());
 
   const candidateIds = new Set(profileSkillIds);
@@ -275,6 +782,16 @@ function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
     if (ids.length > 128) continue;
     for (const id of ids) candidateIds.add(id);
   }
+
+  // Build domain-relevance set for bonus scoring
+  const contextDomains = new Set([
+    ...(repoCtx ? [...repoCtx.languages, ...repoCtx.frameworks, ...repoCtx.domains] : []),
+    ...(fileSignals ? [...fileSignals.fileDomains, ...fileSignals.fileLanguages] : []),
+  ].map((d) => d.toLowerCase()));
+
+  // Precompute title/description words for direct name matching
+  const titleWords = new Set(titleRaw.toLowerCase().split(/\W+/).filter((w) => w.length >= 3));
+  const descWords = new Set(descRaw.toLowerCase().split(/\W+/).filter((w) => w.length >= 3));
 
   const scored = [];
   const profileSkillSet = new Set(profileSkillIds.map((value) => value.toLowerCase()));
@@ -300,6 +817,36 @@ function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
       reasons.push(`tags:${tagHits.slice(0, 4).join(",")}`);
     }
 
+    // Signal: repo-context domain overlap → up to +4
+    if (contextDomains.size > 0) {
+      const domainHits = [...contextDomains].filter((d) => haystack.has(d));
+      if (domainHits.length > 0) {
+        const domainScore = Math.min(4, domainHits.length);
+        score += domainScore;
+        reasons.push(`domain:${domainHits.slice(0, 3).join(",")}`);
+      }
+    }
+
+    // Signal: direct task-title match → up to +8
+    // Matches skill name/description words against the task title for high-precision relevance
+    if (titleWords.size > 0) {
+      const skillNameWords = String(skill.name || "").toLowerCase().split(/\W+/).filter((w) => w.length >= 3);
+      const skillDescWords = String(skill.description || "").toLowerCase().split(/\W+/).filter((w) => w.length >= 3);
+      let titleHits = 0;
+      for (const w of skillNameWords) {
+        if (titleWords.has(w)) titleHits += 2;
+        else if (descWords.has(w)) titleHits += 1;
+      }
+      for (const w of skillDescWords) {
+        if (titleWords.has(w)) titleHits += 1;
+      }
+      if (titleHits > 0) {
+        const titleScore = Math.min(8, titleHits);
+        score += titleScore;
+        reasons.push(`title-match:${titleScore}`);
+      }
+    }
+
     if (score <= 0) continue;
     scored.push({
       ...skill,
@@ -314,9 +861,41 @@ function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
   });
 
   const skillTopN = Math.max(1, Number.parseInt(String(opts?.skillTopN ?? criteria?.skillTopN ?? 6), 10) || 6);
+  const maxSkillTokens = Number.parseInt(String(opts?.maxSkillTokens ?? criteria?.maxSkillTokens ?? ""), 10) || 0;
+
+  // Select skills: profile skills first, then top-N scored, enforce token budget if set
+  let selectedCandidates;
+  if (maxSkillTokens > 0) {
+    selectedCandidates = [];
+    let tokenBudget = maxSkillTokens;
+    // Profile skills always included first (they're explicitly assigned)
+    for (const skillId of profileSkillIds) {
+      const entry = indexedById.get(skillId);
+      if (!entry) continue;
+      const content = getEntryContent(rootDir, entry);
+      const tokens = estimateTokenCount(typeof content === "string" ? content : JSON.stringify(content || ""));
+      tokenBudget -= tokens;
+      selectedCandidates.push(entry);
+    }
+    // Then greedily add top-scored skills until budget exhausted
+    const profileSet = new Set(profileSkillIds.map((id) => id.toLowerCase()));
+    for (const candidate of scored) {
+      if (selectedCandidates.length >= skillTopN) break;
+      if (tokenBudget <= 0) break;
+      if (profileSet.has(String(candidate.id || "").toLowerCase())) continue;
+      const content = getEntryContent(rootDir, candidate);
+      const tokens = estimateTokenCount(typeof content === "string" ? content : JSON.stringify(content || ""));
+      if (tokens > tokenBudget && selectedCandidates.length > 0) continue;
+      tokenBudget -= tokens;
+      selectedCandidates.push(candidate);
+    }
+  } else {
+    selectedCandidates = scored.slice(0, skillTopN);
+  }
+
   const selectedSkillIds = uniqueStrings([
     ...profileSkillIds,
-    ...scored.slice(0, skillTopN).map((entry) => entry.id),
+    ...selectedCandidates.map((entry) => entry.id),
   ]);
   const selectedSkills = selectedSkillIds
     .map((skillId) => scored.find((entry) => entry.id === skillId) || indexedSkills.find((entry) => entry.id === skillId))
@@ -325,7 +904,8 @@ function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
   return {
     selectedSkillIds,
     selectedSkills,
-    candidates: scored.slice(0, skillTopN),
+    candidates: scored.slice(0, Math.max(skillTopN, 20)),
+    tokenBudgetUsed: maxSkillTokens > 0 ? maxSkillTokens : undefined,
   };
 }
 
@@ -603,6 +1183,10 @@ export function resolveLibraryPlan(rootDir, criteria = {}, opts = {}) {
  * @property {Object} [env]              - extra env vars for the agent
  * @property {string[]} [enabledTools]   - list of tool IDs enabled for this agent (null = all)
  * @property {string[]} [enabledMcpServers] - list of MCP server IDs enabled for this agent
+ * @property {"task"|"interactive"|"voice"} [agentCategory] - library grouping/category for the profile
+ * @property {"ask"|"agent"|"plan"|"web"|"instant"|"custom"|"voice"} [interactiveMode] - preferred manual interaction mode
+ * @property {string} [interactiveLabel] - custom label shown for manual agent type/grouping
+ * @property {boolean} [showInChatDropdown] - whether this interactive profile is shown in the chat manual-agent dropdown
  */
 
 /**
@@ -644,13 +1228,14 @@ function dirForType(rootDir, type) {
     case "agent":  return resolve(root, PROFILE_DIR);
     case "mcp":    return resolve(root, MCP_DIR);
     case "custom-tool": return resolve(root, TOOL_DIR);
+    case "hook": return resolve(root, HOOK_DIR);
     default: throw new Error(`Unknown library resource type: ${type}`);
   }
 }
 
 function extForType(type) {
   if (type === "agent" || type === "mcp") return ".json";
-  if (type === "custom-tool") return ".json"; // tools/index.json is the authoritative source
+  if (type === "custom-tool" || type === "hook") return ".json";
   return ".md";
 }
 
@@ -694,6 +1279,8 @@ export function getEntryContent(rootDir, entry) {
   if (!entry) return null;
   const dir = dirForType(rootDir, entry.type);
   const filePath = resolve(dir, entry.filename);
+  // Prevent path traversal — resolved path must stay within the type directory
+  if (!filePath.startsWith(dir + sep) && filePath !== dir) return null;
   if (!existsSync(filePath)) return null;
   try {
     const raw = readFileSync(filePath, "utf8");
@@ -742,6 +1329,10 @@ export function upsertEntry(rootDir, data, content, options = {}) {
   if (content !== undefined) {
     const dir = ensureDir(dirForType(rootDir, entry.type));
     const filePath = resolve(dir, entry.filename);
+    // Prevent path traversal — resolved path must stay within the type directory
+    if (!filePath.startsWith(dir + sep) && filePath !== dir) {
+      throw new Error(`Path traversal blocked: ${entry.filename}`);
+    }
     const body = typeof content === "object" ? JSON.stringify(content, null, 2) + "\n" : String(content);
     writeFileSync(filePath, body, "utf8");
   }
@@ -824,13 +1415,44 @@ export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
   const taskScope = extractConventionalScope(title);
   const textBlob = `${title}\n${description}`.trim();
   const textBlobLower = textBlob.toLowerCase();
+
+  // Repo-context and file-context signals
+  const repoCtx = criteria?.repoContext || (criteria?.repoRoot ? buildRepoContext(criteria.repoRoot) : null);
+  const changedFiles = toStringArray(criteria?.changedFiles);
+  const fileSignals = changedFiles.length > 0 ? inferFileContextSignals(changedFiles) : null;
+
   const criteriaTags = uniqueStrings([
     ...toStringArray(criteria?.tags),
     ...toStringArray(String(criteria?.tagsCsv || "").split(",")),
     ...keywordTokens(textBlob, { minLength: 4 }),
+    ...(repoCtx ? [...repoCtx.languages, ...repoCtx.frameworks] : []),
+    ...(fileSignals ? fileSignals.fileLanguages : []),
   ]).map((v) => v.toLowerCase());
-  const changedFiles = toStringArray(criteria?.changedFiles);
   const changedHints = keywordTokens(changedFiles.join(" "), { minLength: 3 });
+
+  // Combined domain set for profile matching
+  const contextDomains = new Set([
+    ...(repoCtx ? [...repoCtx.languages, ...repoCtx.frameworks, ...repoCtx.domains] : []),
+    ...(fileSignals ? [...fileSignals.fileDomains, ...fileSignals.fileLanguages] : []),
+  ].map((d) => d.toLowerCase()));
+
+  // Max theoretical score: 10 + 6 + 6 + 3 + 8 + 6 + 4 + 8 + 5 = 56
+  const MAX_THEORETICAL_SCORE = 56;
+
+  // Task-type detection (used by Signal 9)
+  const TASK_TYPE_PATTERNS = {
+    tdd: /\b(tdd|test.driven|write.*tests?|spec)\b/i,
+    test: /\b(test|testing|coverage|jest|vitest|pytest|spec)\b/i,
+    review: /\b(review|code.review|pr.review|audit|inspect)\b/i,
+    docs: /\b(doc|documentation|readme|changelog|api.doc)\b/i,
+    implementation: /\b(implement|build|create|develop|feat|feature|add)\b/i,
+    fix: /\b(fix|bug|patch|hotfix|repair|resolve)\b/i,
+    refactor: /\b(refactor|cleanup|reorganize|restructure|simplify)\b/i,
+    devops: /\b(ci|cd|deploy|pipeline|docker|k8s|infra|terraform)\b/i,
+  };
+  const detectedTaskTypes = Object.entries(TASK_TYPE_PATTERNS)
+    .filter(([, re]) => re.test(textBlob))
+    .map(([type]) => type);
 
   const candidates = [];
   for (const entry of profiles) {
@@ -842,60 +1464,131 @@ export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
 
     let score = 0;
     const reasons = [];
+    const breakdown = {};
 
+    // ── Signal 1: titlePattern regex match → +10 (precompiled) ──
     const patterns = toStringArray(profile.titlePatterns);
+    let titlePatternScore = 0;
     for (const pattern of patterns) {
-      try {
-        if (new RegExp(pattern, "i").test(textBlob)) {
-          score += 10;
-          reasons.push(`pattern:${pattern}`);
-          break;
-        }
-      } catch {
-        // ignore invalid regex
+      const re = getCompiledRegex(pattern);
+      if (re && re.test(textBlob)) {
+        titlePatternScore = 10;
+        reasons.push(`pattern:${pattern}`);
+        break;
       }
     }
+    score += titlePatternScore;
+    breakdown.titlePattern = titlePatternScore;
 
+    // ── Signal 2: conventional-commit scope match → +6 ──
     const scopes = toStringArray(profile.scopes).map((s) => s.toLowerCase());
+    let scopeScore = 0;
     if (taskScope && scopes.includes(taskScope)) {
-      score += 6;
+      scopeScore = 6;
       reasons.push(`scope:${taskScope}`);
     }
+    score += scopeScore;
+    breakdown.scope = scopeScore;
 
+    // ── Signal 3: tag overlap → up to +6 ──
     const profileTags = uniqueStrings([...(entry.tags || []), ...toStringArray(profile.tags)]).map((v) => v.toLowerCase());
     const tagHits = criteriaTags.filter((tag) => profileTags.includes(tag));
+    let tagScore = 0;
     if (tagHits.length > 0) {
-      const tagScore = Math.min(6, tagHits.length * 2);
-      score += tagScore;
+      tagScore = Math.min(6, tagHits.length * 2);
       reasons.push(`tags:${tagHits.slice(0, 4).join(",")}`);
     }
+    score += tagScore;
+    breakdown.tags = tagScore;
 
+    // ── Signal 4: voice-type hint → +3 ──
+    let voiceScore = 0;
     if (profileType === "voice") {
       const voiceHint = /\bvoice\b|\bcall\b|\brealtime\b/.test(textBlobLower);
       if (voiceHint) {
-        score += 3;
+        voiceScore = 3;
         reasons.push("voice-hint");
       }
     }
+    score += voiceScore;
+    breakdown.voice = voiceScore;
 
+    // ── Signal 5: changed-file path match → up to +8 ──
     const scopeHitsFromPaths = scopes.filter((scope) =>
       changedHints.includes(scope) || changedFiles.some((f) => String(f).toLowerCase().includes(`/${scope}/`) || String(f).toLowerCase().includes(`\\${scope}\\`)),
     );
+    let pathScore = 0;
     if (scopeHitsFromPaths.length > 0) {
-      const fileScore = Math.min(8, scopeHitsFromPaths.length * 2);
-      score += fileScore;
+      pathScore = Math.min(8, scopeHitsFromPaths.length * 2);
       reasons.push(`paths:${scopeHitsFromPaths.slice(0, 4).join(",")}`);
     }
+    score += pathScore;
+    breakdown.paths = pathScore;
+
+    // ── Signal 6: repo-context domain match → up to +6 ──
+    let domainScore = 0;
+    if (contextDomains.size > 0) {
+      const profileAllTags = new Set([...profileTags, ...scopes]);
+      const domainHits = [...contextDomains].filter((d) => profileAllTags.has(d));
+      if (domainHits.length > 0) {
+        domainScore = Math.min(6, domainHits.length * 2);
+        reasons.push(`repo-ctx:${domainHits.slice(0, 3).join(",")}`);
+      }
+    }
+    score += domainScore;
+    breakdown.repoCtx = domainScore;
+
+    // ── Signal 7: file-type domain match → up to +4 ──
+    let fileTypeScore = 0;
+    if (fileSignals && fileSignals.fileDomains.length > 0) {
+      const profileAllTags = new Set([...profileTags, ...scopes]);
+      const fileHits = fileSignals.fileDomains.filter((d) => profileAllTags.has(d));
+      if (fileHits.length > 0) {
+        fileTypeScore = Math.min(4, fileHits.length);
+        reasons.push(`file-type:${fileHits.slice(0, 3).join(",")}`);
+      }
+    }
+    score += fileTypeScore;
+    breakdown.fileType = fileTypeScore;
+
+    // ── Signal 8: description keyword match → up to +8 ──
+    const profileDesc = String(profile.description || "").toLowerCase();
+    let descScore = 0;
+    if (profileDesc.length > 10) {
+      const descTokens = keywordTokens(profileDesc, { minLength: 4 });
+      const titleTokens = keywordTokens(textBlob, { minLength: 4 });
+      const descHits = descTokens.filter((t) => titleTokens.includes(t));
+      if (descHits.length > 0) {
+        descScore = Math.min(8, descHits.length * 2);
+        reasons.push(`desc:${descHits.slice(0, 4).join(",")}`);
+      }
+    }
+    score += descScore;
+    breakdown.descMatch = descScore;
+
+    // ── Signal 9: task-type hint → +5 ──
+    let taskTypeScore = 0;
+    if (detectedTaskTypes.length > 0) {
+      const profileAllTags = new Set([...profileTags, ...scopes]);
+      const taskTypeHits = detectedTaskTypes.filter((t) => profileAllTags.has(t));
+      if (taskTypeHits.length > 0) {
+        taskTypeScore = 5;
+        reasons.push(`task-type:${taskTypeHits.join(",")}`);
+      }
+    }
+    score += taskTypeScore;
+    breakdown.taskType = taskTypeScore;
 
     if (score <= 0) continue;
 
-    const confidence = Math.max(0, Math.min(1, score / 24));
+    const confidence = Math.max(0, Math.min(1, score / MAX_THEORETICAL_SCORE));
     candidates.push({
       ...entry,
       agentType: profileType,
       score,
       confidence,
       reasons,
+      breakdown,
       matchedScope: taskScope,
     });
   }
@@ -931,7 +1624,10 @@ export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
       description,
       requestedAgentType,
       taskScope,
+      detectedTaskTypes,
       changedFilesCount: changedFiles.length,
+      repoContext: repoCtx || null,
+      fileSignals: fileSignals || null,
     },
   };
 }
@@ -948,300 +1644,13 @@ export function matchAgentProfile(rootDir, taskTitle) {
   return result.best || null;
 }
 
-const TRUSTED_GITHUB_OWNERS = new Set(["microsoft", "github", "azure"]);
-
-export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
-  {
-    id: "microsoft-hve-core",
-    name: "Microsoft HVE Core",
-    repoUrl: "https://github.com/microsoft/hve-core.git",
-    defaultBranch: "main",
-    description: "Core HVE agent library with domain and plugin agent templates.",
-    owner: "microsoft",
-    trustTier: "official",
-    importCoverage: "high",
-    focuses: ["core", "plugins", "platform"],
-  },
-  {
-    id: "microsoft-skills",
-    name: "Microsoft Skills",
-    repoUrl: "https://github.com/microsoft/skills.git",
-    defaultBranch: "main",
-    description: "Microsoft-maintained backend, frontend, planner, infrastructure, and scaffolder agent catalog.",
-    owner: "microsoft",
-    trustTier: "official",
-    importCoverage: "high",
-    focuses: ["backend", "frontend", "planner", "infra", "scaffolding"],
-  },
-  {
-    id: "github-copilot-sdk",
-    name: "GitHub Copilot SDK",
-    repoUrl: "https://github.com/github/copilot-sdk.git",
-    defaultBranch: "main",
-    description: "Official GitHub workflow-authoring and docs-maintenance agents for Copilot SDK projects.",
-    owner: "github",
-    trustTier: "official",
-    importCoverage: "medium",
-    focuses: ["copilot", "workflow", "docs"],
-  },
-  {
-    id: "azure-sdk-for-js",
-    name: "Azure SDK for JavaScript",
-    repoUrl: "https://github.com/Azure/azure-sdk-for-js.git",
-    defaultBranch: "main",
-    description: "Official Azure JavaScript SDK repo with agentic workflow authoring guidance and prompts.",
-    owner: "azure",
-    trustTier: "official",
-    importCoverage: "medium",
-    focuses: ["azure", "javascript", "sdk", "workflow"],
-  },
-  {
-    id: "microsoft-vscode-python-environments",
-    name: "Microsoft VS Code Python Environments",
-    repoUrl: "https://github.com/microsoft/vscode-python-environments.git",
-    defaultBranch: "main",
-    description: "Microsoft-maintained maintainer, reviewer, and documentation agents for a production VS Code extension.",
-    owner: "microsoft",
-    trustTier: "official",
-    importCoverage: "medium",
-    focuses: ["vscode", "python", "extension", "maintainer"],
-  },
-]);
-
-function clampNumber(value, min, max) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return min;
-  return Math.max(min, Math.min(max, numeric));
-}
-
-function normalizeWellKnownSource(source = {}) {
-  const repoUrl = String(source.repoUrl || "").trim();
-  const github = repoUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/.]+)(?:\.git)?$/i);
-  const owner = String(source.owner || (github?.[1] || "")).trim();
-  const repo = String(source.repo || (github?.[2] || "")).trim();
-  return {
-    ...source,
-    owner: owner || null,
-    repo: repo || null,
-    provider: source.provider || (github ? "github" : null),
-    importCoverage: String(source.importCoverage || "medium"),
-    focuses: toStringArray(source.focuses),
-  };
-}
-
-function compareWellKnownSources(a, b) {
-  const delta = Number(b?.trust?.score || 0) - Number(a?.trust?.score || 0);
-  if (delta !== 0) return delta;
-  return String(a?.name || "").localeCompare(String(b?.name || ""));
-}
-
-export function computeWellKnownSourceTrust(source, probe = {}, options = {}) {
-  const nowMs = Number(options?.nowMs || Date.now());
-  const normalized = normalizeWellKnownSource(source);
-  const reasons = [];
-  let score = 20;
-
-  if (normalized.trustTier === "official") {
-    score += 25;
-    reasons.push("official-maintainer");
-  }
-  if (TRUSTED_GITHUB_OWNERS.has(String(normalized.owner || "").toLowerCase())) {
-    score += 15;
-    reasons.push("trusted-owner");
-  }
-  if (normalized.importCoverage === "high") {
-    score += 12;
-    reasons.push("high-import-coverage");
-  } else if (normalized.importCoverage === "medium") {
-    score += 6;
-    reasons.push("import-coverage");
-  }
-  if (normalized.provider === "github") {
-    score += 4;
-    reasons.push("github-source");
-  }
-
-  const stars = Number(probe?.stars || 0);
-  if (stars >= 10000) {
-    score += 10;
-    reasons.push("popular-repo");
-  } else if (stars >= 1000) {
-    score += 6;
-    reasons.push("established-repo");
-  } else if (stars >= 100) {
-    score += 3;
-  }
-
-  const daysSincePush = Number.isFinite(probe?.daysSincePush)
-    ? Number(probe.daysSincePush)
-    : (probe?.pushedAt ? Math.max(0, (nowMs - Date.parse(probe.pushedAt)) / 86400000) : null);
-  if (daysSincePush != null) {
-    if (daysSincePush <= 45) {
-      score += 10;
-      reasons.push("recently-updated");
-    } else if (daysSincePush <= 180) {
-      score += 6;
-      reasons.push("active-updates");
-    } else if (daysSincePush <= 365) {
-      score += 2;
-    } else if (daysSincePush > 730) {
-      score -= 16;
-      reasons.push("stale-upstream");
-    }
-  }
-
-  if (probe?.reachable === true) {
-    score += 8;
-    reasons.push("remote-reachable");
-  } else if (probe?.reachable === false) {
-    score -= 28;
-    reasons.push("remote-unreachable");
-  }
-
-  if (probe?.branchExists === true) {
-    score += 6;
-    reasons.push("branch-ok");
-  } else if (probe?.branchExists === false) {
-    score -= 22;
-    reasons.push("branch-missing");
-  }
-
-  if (probe?.archived === true) {
-    score -= 45;
-    reasons.push("archived");
-  }
-  if (probe?.disabled === true) {
-    score -= 45;
-    reasons.push("disabled");
-  }
-
-  score = Math.round(clampNumber(score, 0, 100));
-  const enabled = score >= 55 && probe?.archived !== true && probe?.disabled !== true && probe?.reachable !== false && probe?.branchExists !== false;
-  const status = !enabled ? "disabled" : score >= 85 ? "healthy" : score >= 65 ? "warning" : "degraded";
-
-  return {
-    score,
-    status,
-    enabled,
-    reasons: uniqueStrings(reasons),
-  };
-}
-
-function buildWellKnownSourceResult(source, probe = null, options = {}) {
-  const normalized = normalizeWellKnownSource(source);
-  const trust = computeWellKnownSourceTrust(normalized, probe || {}, options);
-  return {
-    ...normalized,
-    trust,
-    probe: probe ? { ...probe } : null,
-    enabled: trust.enabled,
-    status: trust.status,
-  };
-}
-
-export function listWellKnownAgentSources() {
-  return WELL_KNOWN_AGENT_SOURCES
-    .map((source) => buildWellKnownSourceResult(source))
-    .sort(compareWellKnownSources);
-}
-
-export function clearWellKnownAgentSourceProbeCache() {
-  wellKnownSourceProbeCache.clear();
-}
-
-async function fetchGithubRepoProbe(source, options = {}) {
-  const normalized = normalizeWellKnownSource(source);
-  if (normalized.provider !== "github" || !normalized.owner || !normalized.repo) {
-    return { checkedAt: nowISO(), reachable: false, branchExists: false, error: "Unsupported repository provider" };
-  }
-
-  const fetchImpl = options.fetchImpl || globalThis.fetch;
-  const spawnImpl = options.spawnImpl || spawnSync;
-  const branch = String(normalized.defaultBranch || "main").trim() || "main";
-  const headers = {
-    "Accept": "application/vnd.github+json",
-    "User-Agent": "bosun-library-manager",
-  };
-  if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
-
-  let repoMeta = null;
-  let repoError = null;
-  if (typeof fetchImpl === "function") {
-    try {
-      const response = await fetchImpl(`https://api.github.com/repos/${normalized.owner}/${normalized.repo}`, { headers });
-      if (response?.ok) {
-        repoMeta = await response.json();
-      } else {
-        repoError = `GitHub API returned ${Number(response?.status || 0) || "error"}`;
-      }
-    } catch (err) {
-      repoError = err?.message || String(err);
-    }
-  } else {
-    repoError = "fetch unavailable";
-  }
-
-  let reachable = false;
-  let branchExists = false;
-  let gitError = null;
-  try {
-    const remote = spawnImpl("git", ["ls-remote", "--exit-code", "--heads", normalized.repoUrl, branch], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: Number(options.timeoutMs || 15000),
-    });
-    const stdout = String(remote?.stdout || "").trim();
-    reachable = Number(remote?.status) === 0 || stdout.length > 0;
-    branchExists = reachable && stdout.length > 0;
-    if (!reachable || !branchExists) {
-      gitError = String(remote?.stderr || remote?.stdout || "git ls-remote failed").trim() || null;
-    }
-  } catch (err) {
-    gitError = err?.message || String(err);
-  }
-
-  return {
-    checkedAt: nowISO(),
-    reachable,
-    branchExists,
-    defaultBranch: String(repoMeta?.default_branch || branch || "main"),
-    archived: repoMeta?.archived === true,
-    disabled: repoMeta?.disabled === true,
-    stars: Number(repoMeta?.stargazers_count || 0),
-    forks: Number(repoMeta?.forks_count || 0),
-    openIssues: Number(repoMeta?.open_issues_count || 0),
-    pushedAt: repoMeta?.pushed_at || null,
-    daysSincePush: repoMeta?.pushed_at ? Math.max(0, Math.round((Date.now() - Date.parse(repoMeta.pushed_at)) / 86400000)) : null,
-    apiReachable: Boolean(repoMeta),
-    importReady: reachable && branchExists && repoMeta?.archived !== true && repoMeta?.disabled !== true,
-    error: gitError || repoError || null,
-  };
-}
-
-export async function probeWellKnownAgentSources(options = {}) {
-  const nowMs = Number(options?.nowMs || Date.now());
-  const ttlMs = Math.max(1000, Number(options?.ttlMs || 30 * 60 * 1000));
-  const sourceId = String(options?.sourceId || "").trim().toLowerCase();
-  const refresh = options?.refresh === true;
-  const sources = WELL_KNOWN_AGENT_SOURCES.filter((source) => !sourceId || source.id === sourceId);
-  const results = [];
-
-  for (const source of sources) {
-    const cacheKey = source.id;
-    const cached = wellKnownSourceProbeCache.get(cacheKey) || null;
-    if (!refresh && cached && (nowMs - Number(cached.cachedAt || 0)) < ttlMs) {
-      results.push(buildWellKnownSourceResult(source, cached.probe, { nowMs }));
-      continue;
-    }
-
-    const probe = await fetchGithubRepoProbe(source, options);
-    wellKnownSourceProbeCache.set(cacheKey, { cachedAt: nowMs, probe });
-    results.push(buildWellKnownSourceResult(source, probe, { nowMs }));
-  }
-
-  return results.sort(compareWellKnownSources);
-}
-
+export {
+  WELL_KNOWN_AGENT_SOURCES,
+  computeWellKnownSourceTrust,
+  listWellKnownAgentSources,
+  clearWellKnownAgentSourceProbeCache,
+  probeWellKnownAgentSources,
+};
 function parseSimpleFrontmatter(markdown = "") {
   const text = String(markdown || "");
   if (!text.startsWith("---\n")) return { attrs: {}, body: text };
@@ -1252,7 +1661,7 @@ function parseSimpleFrontmatter(markdown = "") {
   for (const line of head) {
     const m = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
     if (!m) continue;
-    attrs[m[1].trim()] = String(m[2] || "").trim();
+    attrs[m[1].trim()] = parseTomlValue(m[2]);
   }
   const body = text.slice(end + 5).trim();
   return { attrs, body };
@@ -1293,6 +1702,59 @@ function ensureUniqueId(baseId, takenIds) {
   return id;
 }
 
+function getFrontmatterValue(attrs = {}, keys = []) {
+  if (!attrs || typeof attrs !== "object") return null;
+  for (const key of keys) {
+    if (Object.hasOwn(attrs, key)) return attrs[key];
+  }
+  const lowerMap = new Map(
+    Object.keys(attrs).map((key) => [String(key || "").toLowerCase(), attrs[key]]),
+  );
+  for (const key of keys) {
+    const hit = lowerMap.get(String(key || "").toLowerCase());
+    if (hit != null) return hit;
+  }
+  return null;
+}
+
+function normalizeImportedDescription(rawDescription, body = "") {
+  const raw = String(rawDescription || "").trim();
+  if (raw) {
+    if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+      return raw.slice(1, -1).trim();
+    }
+    return raw;
+  }
+  const fallback = String(body || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith("#"));
+  return String(fallback || "Imported library entry").trim();
+}
+
+function inferImportedEntryKind(relPath = "", fileName = "", attrs = {}) {
+  const pathLower = String(relPath || "").toLowerCase();
+  const fileLower = String(fileName || "").toLowerCase();
+  const explicitType = String(getFrontmatterValue(attrs, ["type", "kind", "resourceType"]) || "").trim().toLowerCase();
+  if (explicitType === "agent" || explicitType === "profile") return "agent";
+  if (explicitType === "skill") return "skill";
+  if (explicitType === "prompt") return "prompt";
+
+  if (/\.agent\.md$/i.test(fileLower) || /\/\.github\/agents\//i.test(pathLower)) return "agent";
+  if (
+    fileLower === "skill.md"
+    || /\.skill\.md$/i.test(fileLower)
+    || /\/\.github\/skills\//i.test(pathLower)
+    || /\/\.github\/plugins\/[^/]+\/skills\//i.test(pathLower)
+  ) return "skill";
+  if (
+    /\.prompt\.md$/i.test(fileLower)
+    || /\/prompts\//i.test(pathLower)
+    || /\/\.github\/prompts\//i.test(pathLower)
+    || fileLower === "copilot-instructions.md"
+  ) return "prompt";
+  return null;
+}
 function humanizeSlug(slug) {
   const value = String(slug || "").trim();
   if (!value) return "";
@@ -1423,6 +1885,48 @@ function parseMcpServersFromToml(tomlText, sourcePath = "") {
   }
 
   return normalized;
+}
+
+/**
+ * Parse MCP server definitions from JSON config (.mcp.json / .vscode/mcp.json).
+ * Supports the VS Code MCP JSON format: { "servers": { "<id>": { ... } } }
+ * and the flat format: { "<id>": { "command": ..., "args": [...] } }
+ */
+function parseMcpServersFromJson(jsonText, sourcePath = "") {
+  const results = [];
+  let parsed;
+  try { parsed = JSON.parse(jsonText); } catch { return results; }
+  if (!parsed || typeof parsed !== "object") return results;
+
+  const serversObj = (parsed.servers && typeof parsed.servers === "object")
+    ? parsed.servers
+    : (parsed.mcpServers && typeof parsed.mcpServers === "object")
+      ? parsed.mcpServers
+      : parsed;
+  for (const [rawId, def] of Object.entries(serversObj)) {
+    if (!def || typeof def !== "object" || Array.isArray(def)) continue;
+    const command = String(def.command || "").trim();
+    const url = String(def.url || "").trim();
+    if (!command && !url) continue;
+    const id = slugifyIdentifier(rawId.replace(/_/g, "-")) || rawId;
+    const args = toStringArray(Array.isArray(def.args) ? def.args : []);
+    const env = {};
+    if (def.env && typeof def.env === "object") {
+      for (const k of Object.keys(def.env)) env[k] = "";
+    }
+    results.push({
+      id,
+      rawId,
+      name: String(def.name || rawId).trim(),
+      transport: url ? "url" : "stdio",
+      command: command || undefined,
+      args: args.length ? args : undefined,
+      url: url || undefined,
+      env,
+      sourcePath,
+    });
+  }
+  return results;
 }
 
 function discoverLocalAgentTemplates(rootDir) {
@@ -1620,118 +2124,540 @@ export function syncAutoDiscoveredLibraryEntries(rootDir) {
   };
 }
 
-export function importAgentProfilesFromRepository(rootDir, options = {}) {
+function resolveRepositoryImportSource(options = {}) {
   const sourceId = String(options?.sourceId || "").trim().toLowerCase();
   const known = WELL_KNOWN_AGENT_SOURCES.find((source) => source.id === sourceId) || null;
   const repoUrl = String(options?.repoUrl || known?.repoUrl || "").trim();
-  if (!repoUrl) throw new Error("repoUrl or sourceId is required");
+  if (!repoUrl) throw new Error("Repository URL or source is required");
 
   const branch = String(options?.branch || known?.defaultBranch || "main").trim() || "main";
   if (!isSafeGitRepositorySource(repoUrl)) {
-    throw new Error("repoUrl must be a valid http(s)/ssh git repository URL");
+    throw new Error("URL must be a valid http(s), ssh, or git repository address");
   }
   if (!isSafeGitRefName(branch)) {
-    throw new Error("branch contains unsafe characters");
+    throw new Error("Branch name contains invalid characters");
   }
-  const maxProfiles = Math.max(1, Math.min(500, Number.parseInt(String(options?.maxProfiles || "100"), 10) || 100));
-  const importPrompts = options?.importPrompts !== false;
 
-  const cacheRoot = ensureDir(resolve(rootDir || getBosunHomeDir(), ".bosun", ".cache", "imports"));
-  const checkoutDir = resolve(cacheRoot, `import-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
+  return { sourceId, known, repoUrl, branch };
+}
+
+function createRepositoryImportCheckoutDir(prefix, repoUrl, branch) {
+  const cacheRoot = ensureDir(resolve(getBosunHomeDir(), ".cache", "imports"));
+  const checkoutDir = resolve(cacheRoot, `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
   ensureDir(checkoutDir);
 
   const clone = spawnSync("git", ["clone", "--depth", "1", "--branch", branch, "--", repoUrl, checkoutDir], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    timeout: 120_000,
   });
-  if (clone.status !== 0) {
-    rmSync(checkoutDir, { recursive: true, force: true });
-    throw new Error(String(clone.stderr || clone.stdout || "git clone failed").trim());
+  const cloneStderr = String(clone.stderr || "").trim();
+  const checkoutWarning = /clone succeeded.*checkout failed/i.test(cloneStderr);
+  if (clone.status === 0 || checkoutWarning) return checkoutDir;
+
+  rmSync(checkoutDir, { recursive: true, force: true });
+  if (/repository not found/i.test(cloneStderr)) {
+    throw new Error(`Repository not found: ${repoUrl}`);
   }
+  if (/could not read from remote/i.test(cloneStderr)) {
+    throw new Error(`Cannot access repository (may be private or require authentication): ${repoUrl}`);
+  }
+  if (/not found in upstream/i.test(cloneStderr) || /remote branch.*not found/i.test(cloneStderr)) {
+    throw new Error(`Branch "${branch}" not found in ${repoUrl}`);
+  }
+  if (clone.signal === "SIGTERM") {
+    throw new Error(`Clone timed out — repository may be too large: ${repoUrl}`);
+  }
+  throw new Error(`Failed to clone repository: ${cloneStderr || "unknown error"}`);
+}
+
+function buildImportedMarkdownCandidate(candidate) {
+  const { raw = "", attrs = {}, body = "", relPath = "", fileName = "", kind = null } = candidate || {};
+  if (!kind) return null;
+
+  const fileStem = basename(fileName, ".md");
+  const relSegments = relPath.split(/[\\/]/).filter(Boolean);
+  const parentSegment = relSegments.length > 1 ? relSegments[relSegments.length - 2] : "";
+  const fallbackNameBase = fileStem.toLowerCase() === "skill" && parentSegment ? parentSegment : fileStem;
+  const fallbackName = fallbackNameBase.replace(/\.agent$/i, "").replace(/\.skill$/i, "").replace(/\.prompt$/i, "");
+  const name = String(getFrontmatterValue(attrs, ["name", "title"]) || fallbackName.replace(/[-_.]+/g, " ")).trim();
+  const description = normalizeImportedDescription(getFrontmatterValue(attrs, ["description", "summary"]), body);
+
+  return {
+    ...candidate,
+    fileStem,
+    name,
+    description,
+  };
+}
+
+function sortImportedMarkdownCandidates(candidates = []) {
+  const rank = { agent: 0, prompt: 1, skill: 2 };
+  return candidates.sort((a, b) => {
+    const aRank = Number(rank[a.kind] ?? 99);
+    const bRank = Number(rank[b.kind] ?? 99);
+    if (aRank !== bRank) return aRank - bRank;
+    return String(a.relPath || "").localeCompare(String(b.relPath || ""));
+  });
+}
+
+function collectRepositoryImportMarkdownCandidates(checkoutDir, options = {}) {
+  const maxEntries = Math.max(
+    1,
+    Math.min(2000, Number.parseInt(String(options?.maxEntries ?? "500"), 10) || 500),
+  );
 
   const files = walkFilesRecursive(checkoutDir);
-  const candidates = files
-    .filter((fullPath) => /\.md$/i.test(fullPath))
-    .filter((fullPath) => /\.agent\.md$/i.test(fullPath) || /[\\/]\.github[\\/]agents[\\/]/i.test(fullPath));
-
-  const takenIds = new Set(listEntries(rootDir, { type: "agent" }).map((entry) => String(entry?.id || "").trim()).filter(Boolean));
-  const imported = [];
-
-  for (const fullPath of candidates.slice(0, maxProfiles)) {
-    const raw = readFileSync(fullPath, "utf8");
-    const { attrs, body } = parseSimpleFrontmatter(raw);
-    const relPath = fullPath.slice(checkoutDir.length + 1).replace(/\\/g, "/");
-    const fileName = basename(fullPath).replace(/\.md$/i, "");
-    const name = String(attrs.name || fileName.replace(/[-_.]+/g, " ")).trim();
-    const description = String(attrs.description || body.split(/\r?\n/).find((line) => line.trim()) || "Imported agent profile").trim();
-    const baseId = slugify(`${sourceId || "imported"}-${name}`) || slugify(fileName) || `imported-agent-${imported.length + 1}`;
-    const id = ensureUniqueId(baseId, takenIds);
-
-    const toolHints = parseJsonishArray(attrs.tools);
-    const keywords = keywordTokens(`${name} ${description} ${relPath}`, { minLength: 4 }).slice(0, 10);
-    const titlePatterns = uniqueStrings(keywords.slice(0, 6).map((token) => `\\b${token.replace(/[.*+?^${}()|[\\]\\]/g, "")}\\b`));
-    const scopes = uniqueStrings(relPath.split(/[\\/]/).map((segment) => slugify(segment))).filter((segment) => segment && segment !== "github" && segment !== "agents").slice(0, 6);
-    const promptId = `${id}-prompt`;
-
-    if (importPrompts && body) {
-      upsertEntry(rootDir, {
-        id: promptId,
-        type: "prompt",
-        name: `${name} Prompt`,
-        description: `Imported prompt from ${known?.name || repoUrl}`,
-        tags: uniqueStrings(["imported", "agent-prompt", sourceId || "external"]),
-        meta: {
-          sourceId: sourceId || null,
-          repoUrl,
-          branch,
+  const candidates = sortImportedMarkdownCandidates(
+    files
+      .filter((fullPath) => /\.md$/i.test(fullPath))
+      .map((fullPath) => {
+        const relPath = fullPath.slice(checkoutDir.length + 1).replace(/\\/g, "/");
+        const fileName = basename(fullPath);
+        let raw = "";
+        let parsed = { attrs: {}, body: "" };
+        try {
+          raw = readFileSync(fullPath, "utf8");
+          parsed = parseSimpleFrontmatter(raw);
+        } catch {
+          return null;
+        }
+        const kind = inferImportedEntryKind(relPath, fileName, parsed.attrs);
+        return buildImportedMarkdownCandidate({
+          fullPath,
           relPath,
-        },
-      }, body);
+          fileName,
+          raw,
+          attrs: parsed.attrs,
+          body: parsed.body,
+          kind,
+          selected: true,
+        });
+      })
+      .filter(Boolean),
+  ).slice(0, maxEntries);
+
+  return { files, candidates };
+}
+
+function listRepositoryMcpConfigFiles(checkoutDir, { includeLegacy = false } = {}) {
+  const configFiles = [
+    { path: resolve(checkoutDir, ".codex", "config.toml"), format: "toml" },
+    { path: resolve(checkoutDir, ".mcp.json"), format: "json" },
+    { path: resolve(checkoutDir, ".vscode", "mcp.json"), format: "json" },
+  ];
+
+  if (includeLegacy) {
+    configFiles.splice(2, 0, { path: resolve(checkoutDir, "mcp.json"), format: "json" });
+    configFiles.push({ path: resolve(checkoutDir, "claude_desktop_config.json"), format: "json" });
+  }
+
+  return configFiles;
+}
+
+function discoverRepositoryMcpConfigs(checkoutDir, options = {}) {
+  const discovered = [];
+  for (const { path: configPath, format } of listRepositoryMcpConfigFiles(checkoutDir, options)) {
+    if (!existsSync(configPath)) continue;
+    let raw = "";
+    try {
+      raw = readFileSync(configPath, "utf8");
+    } catch {
+      continue;
+    }
+    const relPath = relative(checkoutDir, configPath).replace(/\\/g, "/");
+    const entries = format === "toml"
+      ? parseMcpServersFromToml(raw, relPath)
+      : parseMcpServersFromJson(raw, relPath);
+    discovered.push(...entries.map((entry) => ({ ...entry, relPath, fileName: basename(configPath) })));
+  }
+  return discovered;
+}
+
+function appendRepositoryMcpImportCandidates(candidates, files, checkoutDir, byType) {
+  for (const mcp of discoverRepositoryMcpConfigs(checkoutDir, { includeLegacy: true })) {
+    candidates.push({
+      relPath: `${mcp.relPath}#${mcp.id}`,
+      fileName: mcp.fileName,
+      kind: "mcp",
+      name: mcp.name || mcp.id,
+      description: `${mcp.transport === "stdio" ? "stdio" : "url"} MCP server${mcp.command ? ": " + mcp.command : ""}`,
+      selected: true,
+    });
+    byType.mcp += 1;
+  }
+
+  const mcpSeenIds = new Set(candidates.filter((candidate) => candidate.kind === "mcp").map((candidate) => candidate.name));
+  for (const fullPath of files) {
+    const fileName = basename(fullPath);
+    if (fileName !== "package.json" && fileName !== "pyproject.toml") continue;
+    const relPath = relative(checkoutDir, fullPath).replace(/\\/g, "/");
+    if (relPath === "package.json") continue;
+    let raw = "";
+    try {
+      raw = readFileSync(fullPath, "utf8");
+    } catch {
+      continue;
     }
 
-    const profile = {
-      id,
-      name,
-      description,
-      titlePatterns: titlePatterns.length ? titlePatterns : ["\\btask\\b"],
-      scopes,
-      sdk: null,
-      model: null,
-      promptOverride: importPrompts ? promptId : null,
-      skills: [],
-      hookProfile: null,
-      env: {},
-      enabledTools: toolHints.length ? toolHints : null,
-      enabledMcpServers: [],
-      tags: uniqueStrings(["imported", sourceId || "external", ...keywords.slice(0, 4)]),
-      agentType: /voice|audio|realtime/i.test(`${name} ${description}`) ? "voice" : "task",
-      importMeta: {
-        sourceId: sourceId || null,
-        repoUrl,
-        branch,
-        relPath,
-      },
-    };
+    if (fileName === "package.json") {
+      let pkg;
+      try {
+        pkg = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+      if (!pkg || typeof pkg !== "object") continue;
+      const bin = pkg.bin;
+      if (!bin || typeof bin !== "object") continue;
+      const mcpBins = Object.entries(bin).filter(([key]) => /^mcp[-_]?server/i.test(key) || /^mcp-/i.test(key));
+      if (mcpBins.length === 0) continue;
+      for (const [cmd] of mcpBins) {
+        const id = slugifyIdentifier(cmd);
+        if (mcpSeenIds.has(cmd) || mcpSeenIds.has(id)) continue;
+        mcpSeenIds.add(cmd);
+        const name = String(pkg.mcpName || pkg.name || cmd).trim();
+        const description = String(pkg.description || "").trim();
+        candidates.push({
+          relPath: `${relPath}#${cmd}`,
+          fileName,
+          kind: "mcp",
+          name: name.startsWith("@") ? cmd : name,
+          description: description || `stdio MCP server: ${cmd}`,
+          selected: true,
+        });
+        byType.mcp += 1;
+      }
+      continue;
+    }
 
+    const scriptMatch = raw.match(/\[project\.scripts\]([\s\S]*?)(?:\n\[|\n$)/);
+    if (!scriptMatch) continue;
+    const scriptLines = scriptMatch[1].split(/\r?\n/);
+    for (const line of scriptLines) {
+      const kv = line.match(/^\s*(mcp[-_]?server[-_]?\S*)\s*=/i);
+      if (!kv) continue;
+      const cmd = kv[1].trim();
+      if (mcpSeenIds.has(cmd)) continue;
+      mcpSeenIds.add(cmd);
+      const nameMatch = raw.match(/^\s*name\s*=\s*"([^"]+)"/m);
+      const descMatch = raw.match(/^\s*description\s*=\s*"([^"]+)"/m);
+      candidates.push({
+        relPath: `${relPath}#${cmd}`,
+        fileName,
+        kind: "mcp",
+        name: nameMatch ? nameMatch[1] : cmd,
+        description: descMatch ? descMatch[1] : `stdio MCP server: ${cmd}`,
+        selected: true,
+      });
+      byType.mcp += 1;
+    }
+  }
+}
+
+export function scanRepositoryForImport(options = {}) {
+  const { sourceId, known, repoUrl, branch } = resolveRepositoryImportSource(options);
+  const maxEntries = Math.max(
+    1,
+    Math.min(
+      2000,
+      Number.parseInt(String(options?.maxEntries ?? "500"), 10) || 500,
+    ),
+  );
+
+  const checkoutDir = createRepositoryImportCheckoutDir("scan", repoUrl, branch);
+
+  try {
+    const { files, candidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, { maxEntries });
+
+    const byType = { agent: 0, prompt: 0, skill: 0, mcp: 0 };
+    for (const candidate of candidates) {
+      byType[candidate.kind] = (byType[candidate.kind] || 0) + 1;
+    }
+
+    appendRepositoryMcpImportCandidates(candidates, files, checkoutDir, byType);
+
+    const rootDir = options?.rootDir || null;
+    let duplicateMap = {};
+    let intraDuplicateMap = {};
+    if (rootDir) {
+      try {
+        const existingEntries = listEntries(rootDir);
+        const extDups = detectImportDuplicates(candidates, existingEntries);
+        for (const [relPath, info] of extDups) {
+          duplicateMap[relPath] = info;
+          const cand = candidates.find((c) => c.relPath === relPath);
+          if (cand && info.similarity >= 0.95) cand.selected = false;
+        }
+      } catch {}
+    }
+
+    const intraDups = detectIntraDuplicates(candidates);
+    for (const [relPath, peers] of intraDups) {
+      intraDuplicateMap[relPath] = peers;
+    }
+
+    return {
+      ok: true,
+      source: known ? { id: known.id, name: known.name } : { id: sourceId || "custom", name: repoUrl },
+      repoUrl,
+      branch,
+      totalCandidates: candidates.length,
+      candidatesByType: byType,
+      candidates,
+      duplicates: duplicateMap,
+      intraDuplicates: intraDuplicateMap,
+    };
+  } finally {
+    rmSync(checkoutDir, { recursive: true, force: true });
+  }
+}
+
+function importRepositoryMarkdownCandidate(rootDir, candidate, context) {
+  const { known, repoUrl, branch, sourceId, importAgents, importSkills, importPrompts, takenIds, imported, importedByType } = context;
+  const { attrs, body, relPath, fileStem, kind, name, description, raw } = candidate;
+  const keywords = keywordTokens(`${name} ${description} ${relPath}`, { minLength: 4 }).slice(0, 10);
+
+  if (kind === "prompt") {
+    if (!importPrompts) return { needsAgentIndexRefresh: false, needsSkillIndexRefresh: false };
+    const baseId = slugify(`${sourceId || "imported"}-${name}`) || slugify(fileStem) || `imported-prompt-${imported.length + 1}`;
+    const id = ensureUniqueId(baseId, takenIds);
+    const promptContent = String(body || raw || "").trim();
+    if (!promptContent) return { needsAgentIndexRefresh: false, needsSkillIndexRefresh: false };
     upsertEntry(rootDir, {
       id,
-      type: "agent",
+      type: "prompt",
       name,
-      description,
-      tags: profile.tags,
+      description: description || `Imported prompt from ${known?.name || repoUrl}`,
+      tags: uniqueStrings(["imported", "prompt", sourceId || "external", ...parseJsonishArray(getFrontmatterValue(attrs, ["tags"]))]),
       meta: {
         sourceId: sourceId || null,
         repoUrl,
         branch,
         relPath,
       },
-    }, profile, { skipIndexSync: true });
-
-    imported.push({ id, name, relPath, promptId: importPrompts ? promptId : null });
+    }, promptContent);
+    imported.push({ id, name, relPath, type: "prompt", promptId: null });
+    importedByType.prompt += 1;
+    return { needsAgentIndexRefresh: false, needsSkillIndexRefresh: false };
   }
 
-  rebuildAgentProfileIndex(rootDir);
-  rmSync(checkoutDir, { recursive: true, force: true });
+  if (kind === "skill") {
+    if (!importSkills) return { needsAgentIndexRefresh: false, needsSkillIndexRefresh: false };
+    const baseId = slugify(`${sourceId || "imported"}-${name}`) || slugify(fileStem) || `imported-skill-${imported.length + 1}`;
+    const id = ensureUniqueId(baseId, takenIds);
+    const skillContent = String(body || raw || "").trim();
+    if (!skillContent) return { needsAgentIndexRefresh: false, needsSkillIndexRefresh: false };
+    upsertEntry(rootDir, {
+      id,
+      type: "skill",
+      name,
+      description: description || "Imported skill",
+      tags: uniqueStrings(["imported", "skill", sourceId || "external", ...parseJsonishArray(getFrontmatterValue(attrs, ["tags"]))]),
+      meta: {
+        sourceId: sourceId || null,
+        repoUrl,
+        branch,
+        relPath,
+      },
+    }, skillContent, { skipIndexSync: true });
+    imported.push({ id, name, relPath, type: "skill", promptId: null });
+    importedByType.skill += 1;
+    return { needsAgentIndexRefresh: false, needsSkillIndexRefresh: true };
+  }
+
+  if (kind !== "agent" || !importAgents) {
+    return { needsAgentIndexRefresh: false, needsSkillIndexRefresh: false };
+  }
+
+  const baseId = slugify(`${sourceId || "imported"}-${name}`) || slugify(fileStem) || `imported-agent-${imported.length + 1}`;
+  const id = ensureUniqueId(baseId, takenIds);
+  const toolHints = parseJsonishArray(getFrontmatterValue(attrs, ["tools", "enabledTools"]));
+  const profileSkillHints = parseJsonishArray(getFrontmatterValue(attrs, ["skills"]));
+  const mcpHints = parseJsonishArray(getFrontmatterValue(attrs, ["enabledMcpServers", "mcpServers", "mcp"]));
+  const titlePatternHints = parseJsonishArray(getFrontmatterValue(attrs, ["titlePatterns", "title_patterns", "patterns"]));
+  const tags = uniqueStrings([
+    "imported",
+    sourceId || "external",
+    ...parseJsonishArray(getFrontmatterValue(attrs, ["tags"])),
+    ...keywords.slice(0, 4),
+  ]);
+  const pathScopes = uniqueStrings(
+    relPath
+      .split(/[\/]/)
+      .slice(0, -1)
+      .map((segment) => slugify(segment))
+      .filter((segment) => segment && segment !== "github" && segment !== "agents"),
+  ).slice(0, 6);
+  const explicitScopes = parseJsonishArray(getFrontmatterValue(attrs, ["scopes", "scope"]));
+  const scopes = uniqueStrings([...explicitScopes, ...pathScopes]).slice(0, 8);
+  const titlePatterns = uniqueStrings([
+    ...titlePatternHints,
+    ...keywordTokens(name, { minLength: 4 }).slice(0, 4).map((token) => `\\b${token.replace(/[.*+?^${}()|[\\]\\]/g, "")}\\b`),
+  ]);
+  const promptId = `${id}-prompt`;
+
+  if (importPrompts && body) {
+    upsertEntry(rootDir, {
+      id: promptId,
+      type: "prompt",
+      name: `${name} Prompt`,
+      description: `Imported prompt from ${known?.name || repoUrl}`,
+      tags: uniqueStrings(["imported", "agent-prompt", sourceId || "external"]),
+      meta: {
+        sourceId: sourceId || null,
+        repoUrl,
+        branch,
+        relPath,
+      },
+    }, body);
+    imported.push({ id: promptId, name: `${name} Prompt`, relPath, type: "prompt", promptId: null });
+    importedByType.prompt += 1;
+  }
+
+  const explicitAgentType = String(getFrontmatterValue(attrs, ["agentType", "agent_type"]) || "").trim().toLowerCase();
+  const profile = {
+    id,
+    name,
+    description,
+    titlePatterns: titlePatterns.length ? titlePatterns : ["\\btask\\b"],
+    scopes,
+    sdk: null,
+    model: null,
+    promptOverride: importPrompts && body ? promptId : null,
+    skills: profileSkillHints,
+    hookProfile: null,
+    env: {},
+    enabledTools: toolHints.length ? toolHints : null,
+    enabledMcpServers: mcpHints,
+    tags,
+    agentType: explicitAgentType || (/voice|audio|realtime/i.test(`${name} ${description}`) ? "voice" : "task"),
+    importMeta: {
+      sourceId: sourceId || null,
+      repoUrl,
+      branch,
+      relPath,
+    },
+  };
+
+  upsertEntry(rootDir, {
+    id,
+    type: "agent",
+    name,
+    description,
+    tags: profile.tags,
+    meta: {
+      sourceId: sourceId || null,
+      repoUrl,
+      branch,
+      relPath,
+    },
+  }, profile, { skipIndexSync: true });
+
+  imported.push({ id, name, relPath, type: "agent", promptId: importPrompts && body ? promptId : null });
+  importedByType.agent += 1;
+  return { needsAgentIndexRefresh: true, needsSkillIndexRefresh: false };
+}
+
+function importRepositoryMcpEntries(rootDir, checkoutDir, context) {
+  const { sourceId, repoUrl, branch, takenIds, imported, importedByType } = context;
+  for (const mcp of discoverRepositoryMcpConfigs(checkoutDir)) {
+    const baseId = slugify(`${sourceId || "imported"}-${mcp.id}`) || slugify(mcp.id) || `imported-mcp-${imported.length + 1}`;
+    const id = ensureUniqueId(baseId, takenIds);
+    const content = {
+      id,
+      name: mcp.name,
+      description: "Imported MCP server definition from " + mcp.relPath,
+      transport: mcp.transport,
+      command: mcp.transport === "stdio" ? mcp.command : undefined,
+      args: mcp.transport === "stdio" ? mcp.args : undefined,
+      url: mcp.transport === "url" ? mcp.url : undefined,
+      env: Object.keys(mcp.env || {}).length ? mcp.env : undefined,
+      source: "imported",
+      tags: ["imported", "mcp", sourceId || "external"],
+    };
+    upsertEntry(rootDir, {
+      id,
+      type: "mcp",
+      name: mcp.name,
+      description: content.description,
+      tags: uniqueStrings(["imported", "mcp", sourceId || "external"]),
+      meta: {
+        sourceId: sourceId || null,
+        repoUrl,
+        branch,
+        relPath: mcp.relPath,
+      },
+    }, content);
+    imported.push({ id, name: mcp.name, relPath: mcp.relPath, type: "mcp", promptId: null });
+    importedByType.mcp += 1;
+  }
+}
+
+export function importAgentProfilesFromRepository(rootDir, options = {}) {
+  const { sourceId, known, repoUrl, branch } = resolveRepositoryImportSource(options);
+  const importAgents = options?.importAgents !== false;
+  const importSkills = options?.importSkills !== false;
+  const importPrompts = options?.importPrompts !== false;
+  const importTools = options?.importTools !== false;
+  const includeEntries = Array.isArray(options?.includeEntries) ? new Set(options.includeEntries.map((e) => String(e || "").trim()).filter(Boolean)) : null;
+  const maxProfiles = Math.max(
+    1,
+    Math.min(
+      2000,
+      Number.parseInt(String(options?.maxEntries ?? options?.maxProfiles ?? ""), 10) ||
+        (includeEntries ? 2000 : 100),
+    ),
+  );
+
+  const checkoutDir = createRepositoryImportCheckoutDir("import", repoUrl, branch);
+  const { candidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, { maxEntries: maxProfiles });
+
+  const takenIds = new Set(
+    listEntries(rootDir).map((entry) => String(entry?.id || "").trim()).filter(Boolean),
+  );
+  const imported = [];
+  const importedByType = { agent: 0, prompt: 0, skill: 0, mcp: 0 };
+  let needsAgentIndexRefresh = false;
+  let needsSkillIndexRefresh = false;
+
+  try {
+    for (const candidate of candidates) {
+      const { relPath } = candidate;
+      if (includeEntries && !includeEntries.has(relPath)) continue;
+      const result = importRepositoryMarkdownCandidate(rootDir, candidate, {
+        known,
+        repoUrl,
+        branch,
+        sourceId,
+        importAgents,
+        importSkills,
+        importPrompts,
+        takenIds,
+        imported,
+        importedByType,
+      });
+      needsAgentIndexRefresh = needsAgentIndexRefresh || result.needsAgentIndexRefresh;
+      needsSkillIndexRefresh = needsSkillIndexRefresh || result.needsSkillIndexRefresh;
+    }
+
+    if (importTools) {
+      importRepositoryMcpEntries(rootDir, checkoutDir, {
+        sourceId,
+        repoUrl,
+        branch,
+        takenIds,
+        imported,
+        importedByType,
+      });
+    }
+  } finally {
+
+    rmSync(checkoutDir, { recursive: true, force: true });
+  }
+
+  if (needsAgentIndexRefresh) rebuildAgentProfileIndex(rootDir);
+  if (needsSkillIndexRefresh) rebuildSkillEntryIndex(rootDir);
 
   return {
     ok: true,
@@ -1739,10 +2665,10 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
     repoUrl,
     branch,
     importedCount: imported.length,
+    importedByType,
     imported,
   };
 }
-
 
 // ── Scope Auto-Detection ─────────────────────────────────────────────────────
 
@@ -2121,9 +3047,16 @@ export const BUILTIN_AGENT_PROFILES = [
     agentType: "voice",
     voiceAgent: true,
     voicePersona: "female",
-    voiceInstructions: "You are Nova, a female voice agent. Be concise, warm, and practical. Use tools for facts and execution. Keep spoken responses short and clear.",
+    voiceInstructions: "You are Nova, a female voice agent. You are NOT ChatGPT — never identify yourself as ChatGPT or any other AI assistant. Your name is Nova. Be concise, warm, and practical. Use tools for facts and execution. Keep spoken responses short and clear.",
     enabledTools: null,
     enabledMcpServers: [],
+    customModes: [
+      {
+        id: "voice-command",
+        description: "Execute voice commands with full tool access",
+        prefix: "[MODE: voice-command] Execute the user's request using available tools. Always call tools when they can answer the question.\n\n",
+      },
+    ],
   },
   {
     id: "voice-agent-male",
@@ -2141,7 +3074,7 @@ export const BUILTIN_AGENT_PROFILES = [
     agentType: "voice",
     voiceAgent: true,
     voicePersona: "male",
-    voiceInstructions: "You are Atlas, a male voice agent. Be direct and execution-oriented. Prefer actionable status updates. Use tools proactively for diagnostics.",
+    voiceInstructions: "You are Atlas, a male voice agent. You are NOT ChatGPT — never identify yourself as ChatGPT or any other AI assistant. Your name is Atlas. Be direct and execution-oriented. Prefer actionable status updates. Use tools proactively for diagnostics.",
     enabledTools: null,
     enabledMcpServers: [],
   },
@@ -2161,6 +3094,7 @@ export const BUILTIN_AGENT_PROFILES = [
     agentType: "voice",
     voiceAgent: true,
     voicePersona: "neutral",
+    voiceInstructions: "You are Bosun, a voice assistant for the VirtEngine development platform. Be helpful, concise, and professional. Use tools to answer questions and execute tasks.",
     enabledTools: null,
     enabledMcpServers: [],
   },

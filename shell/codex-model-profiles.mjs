@@ -9,6 +9,33 @@ function clean(value) {
   return String(value ?? "").trim();
 }
 
+function isAzureOpenAIBaseUrl(value) {
+  try {
+    const parsed = value instanceof URL ? value : new URL(String(value || ""));
+    const host = String(parsed.hostname || "").toLowerCase();
+    return host === "openai.azure.com" || host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com");
+  } catch {
+    return false;
+  }
+}
+
+function normalizeAzureOpenAIBaseUrl(value) {
+  const raw = clean(value);
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    if (!isAzureOpenAIBaseUrl(parsed)) {
+      return raw;
+    }
+    parsed.pathname = "/openai/v1";
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString().replace(/\/+$/, "");
+  } catch {
+    return raw;
+  }
+}
+
 function normalizeProfileName(value, fallback = DEFAULT_ACTIVE_PROFILE) {
   const raw = clean(value).toLowerCase();
   if (!raw) return fallback;
@@ -17,20 +44,6 @@ function normalizeProfileName(value, fallback = DEFAULT_ACTIVE_PROFILE) {
 
 function profilePrefix(name) {
   return `CODEX_MODEL_PROFILE_${name.toUpperCase()}_`;
-}
-
-function inferGlobalProvider(env) {
-  const baseUrl = clean(env.OPENAI_BASE_URL).toLowerCase();
-  if ((() => {
-        try {
-          const parsed = new URL(baseUrl);
-          const host = String(parsed.hostname || "").toLowerCase();
-          return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
-        } catch {
-          return false;
-        }
-      })()) return "azure";
-  return "openai";
 }
 
 function normalizeProvider(value, fallback) {
@@ -48,6 +61,17 @@ function normalizeProvider(value, fallback) {
   return fallback;
 }
 
+function hasEnvValue(env, key) {
+  return Boolean(key && clean(env?.[key]));
+}
+
+function inferProviderKindFromSection(name, section, fallback = "openai") {
+  if (isAzureOpenAIBaseUrl(section?.baseUrl)) return "azure";
+  const normalized = normalizeProvider(name, "");
+  if (normalized) return normalized;
+  return fallback;
+}
+
 function readProfileField(env, profileName, field) {
   return clean(env[`${profilePrefix(profileName)}${field}`]);
 }
@@ -57,8 +81,9 @@ function profileRecord(env, profileName, globalProvider) {
     readProfileField(env, profileName, "PROVIDER"),
     globalProvider,
   );
+  const explicitModel = readProfileField(env, profileName, "MODEL");
   const model =
-    readProfileField(env, profileName, "MODEL") ||
+    explicitModel ||
     (profileName === "xl" ? "gpt-5.3-codex" : profileName === "m" ? "gpt-5.1-codex-mini" : "");
   const baseUrl = readProfileField(env, profileName, "BASE_URL");
   const apiKey = readProfileField(env, profileName, "API_KEY");
@@ -68,6 +93,7 @@ function profileRecord(env, profileName, globalProvider) {
     name: profileName,
     provider,
     model,
+    modelIsExplicit: Boolean(explicitModel),
     baseUrl,
     apiKey,
     apiKeyEnv,
@@ -75,17 +101,99 @@ function profileRecord(env, profileName, globalProvider) {
   };
 }
 
-function readCodexConfigTopLevelModel() {
+function readCodexConfigRuntimeDefaults() {
   try {
     const configPath = resolve(homedir(), ".codex", "config.toml");
-    if (!existsSync(configPath)) return "";
+    if (!existsSync(configPath)) {
+      return { model: "", modelProvider: "", providers: {} };
+    }
     const content = readFileSync(configPath, "utf8");
     const head = content.split(/\n\[/)[0] || "";
-    const match = head.match(/^\s*model\s*=\s*"([^"]+)"/m);
-    return match ? match[1].trim() : "";
+    const modelMatch = head.match(/^\s*model\s*=\s*"([^"]+)"/m);
+    const modelProviderMatch = head.match(/^\s*model_provider\s*=\s*"([^"]+)"/m);
+    const providers = {};
+    const providerSectionRegex = /^\[model_providers\.([^\]]+)\]\s*([\s\S]*?)(?=^\[[^\]]+\]|$(?![\s\S]))/gm;
+    for (const match of content.matchAll(providerSectionRegex)) {
+      const [, rawName = "", body = ""] = match;
+      const name = clean(rawName);
+      if (!name) continue;
+      const baseUrlMatch = body.match(/^\s*base_url\s*=\s*"([^"]+)"/m);
+      const envKeyMatch = body.match(/^\s*env_key\s*=\s*"([^"]+)"/m);
+      providers[name] = {
+        name,
+        baseUrl: clean(baseUrlMatch?.[1]),
+        envKey: clean(envKeyMatch?.[1]),
+      };
+    }
+    return {
+      model: clean(modelMatch?.[1]),
+      modelProvider: clean(modelProviderMatch?.[1]),
+      providers,
+    };
   } catch {
-    return "";
+    return { model: "", modelProvider: "", providers: {} };
   }
+}
+
+function readCodexConfigTopLevelModel() {
+  return readCodexConfigRuntimeDefaults().model;
+}
+
+function selectConfigProviderForRuntime(configDefaults, env, preferredProvider = "") {
+  const providers = configDefaults?.providers || {};
+  const preferred = clean(preferredProvider).toLowerCase();
+  const entries = Object.values(providers).map((section) => ({
+    ...section,
+    provider: inferProviderKindFromSection(section.name, section, preferred || "openai"),
+  }));
+  const matchingEntries = preferred
+    ? entries.filter((section) => section.provider === preferred)
+    : entries;
+  const envBackedEntries = matchingEntries.filter(
+    (section) => !section.envKey || hasEnvValue(env, section.envKey),
+  );
+  const preferredNames = preferred === "azure"
+    ? ["azure"]
+    : preferred === "openai"
+      ? ["openai"]
+      : [];
+  const findNamed = (sections) => preferredNames
+    .map((name) => sections.find((section) => section.name === name))
+    .find(Boolean);
+
+  const configuredName = clean(configDefaults?.modelProvider);
+  if (configuredName) {
+    const configuredSection = providers[configuredName];
+    if (configuredSection) {
+      const configured = {
+        ...configuredSection,
+        provider: inferProviderKindFromSection(
+          configuredSection.name,
+          configuredSection,
+          preferred || "openai",
+        ),
+      };
+      const preferredMatches = !preferred || configured.provider === preferred;
+      if (preferredMatches && (!configured.envKey || hasEnvValue(env, configured.envKey))) {
+        return configured;
+      }
+    }
+  }
+
+  return (
+    findNamed(envBackedEntries) ||
+    envBackedEntries[0] ||
+    findNamed(matchingEntries) ||
+    matchingEntries[0] ||
+    null
+  );
+}
+
+function inferGlobalProvider(env, configDefaults = null) {
+  const baseUrl = clean(env.OPENAI_BASE_URL).toLowerCase();
+  if (isAzureOpenAIBaseUrl(baseUrl)) return "azure";
+  const configured = selectConfigProviderForRuntime(configDefaults, env);
+  return configured?.provider || "openai";
 }
 
 /**
@@ -96,6 +204,7 @@ function readCodexConfigTopLevelModel() {
  */
 export function resolveCodexProfileRuntime(envInput = process.env) {
   const sourceEnv = { ...envInput };
+  const configDefaults = readCodexConfigRuntimeDefaults();
   const activeProfile = normalizeProfileName(
     sourceEnv.CODEX_MODEL_PROFILE,
     DEFAULT_ACTIVE_PROFILE,
@@ -105,7 +214,7 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
     DEFAULT_SUBAGENT_PROFILE,
   );
 
-  const globalProvider = inferGlobalProvider(sourceEnv);
+  const globalProvider = inferGlobalProvider(sourceEnv, configDefaults);
   const active = profileRecord(sourceEnv, activeProfile, globalProvider);
   const sub = profileRecord(sourceEnv, subagentProfile, globalProvider);
 
@@ -116,24 +225,51 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
   if (active.model) {
     env.CODEX_MODEL = active.model;
   }
-  if (active.baseUrl) {
-    env.OPENAI_BASE_URL = active.baseUrl;
-  }
 
   const profileApiKey = active.apiKey;
   const resolvedProvider = active.provider || globalProvider;
+  const configProvider = selectConfigProviderForRuntime(
+    configDefaults,
+    sourceEnv,
+    resolvedProvider,
+  );
+  const runtimeBaseUrl =
+    clean(active.baseUrl) ||
+    clean(env.OPENAI_BASE_URL) ||
+    clean(configProvider?.baseUrl);
+  if (runtimeBaseUrl) {
+    const normalizedBaseUrl =
+      resolvedProvider === "azure"
+        ? normalizeAzureOpenAIBaseUrl(runtimeBaseUrl)
+        : runtimeBaseUrl;
+    env.OPENAI_BASE_URL = normalizedBaseUrl;
+    active.baseUrl = normalizedBaseUrl;
+  }
+
+  if (!profileApiKey && configProvider?.envKey && hasEnvValue(sourceEnv, configProvider.envKey)) {
+    const configuredApiKey = clean(sourceEnv[configProvider.envKey]);
+    if (resolvedProvider === "azure") {
+      env.AZURE_OPENAI_API_KEY = configuredApiKey;
+      if (!env.OPENAI_API_KEY) {
+        env.OPENAI_API_KEY = configuredApiKey;
+      }
+    } else {
+      env.OPENAI_API_KEY = configuredApiKey;
+    }
+  }
 
   // Azure deployments often differ from default model names.
   // If the env is using Azure and the model is still the default,
   // prefer the top-level ~/.codex/config.toml model when present.
-  const activeModelExplicit =
-    Boolean(readProfileField(sourceEnv, activeProfile, "MODEL")) ||
-    Boolean(clean(sourceEnv.CODEX_MODEL));
-  if (
+  // The hardcoded profile fallback (e.g. "gpt-5.3-codex" for xl) should NOT
+  // block the config.toml override — only explicit env or profile fields should.
+  const runtimeModelExplicit = Boolean(clean(sourceEnv.CODEX_MODEL));
+  const shouldPreferAzureConfigModel =
     resolvedProvider === "azure" &&
     configModel &&
-    (!activeModelExplicit || clean(env.CODEX_MODEL) === "gpt-5.3-codex")
-  ) {
+    !active.modelIsExplicit &&
+    !runtimeModelExplicit;
+  if (shouldPreferAzureConfigModel) {
     env.CODEX_MODEL = configModel;
     active.model = configModel;
   }
@@ -173,5 +309,9 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
     active,
     subagent: sub,
     provider: resolvedProvider,
+    /** The config.toml provider section selected for this runtime. */
+    configProvider: configProvider
+      ? { name: configProvider.name, envKey: configProvider.envKey, baseUrl: configProvider.baseUrl }
+      : null,
   };
 }

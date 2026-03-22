@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, basename } from "node:path";
 
 const tempDirs = [];
 const TEST_ENV_KEYS = [
@@ -12,6 +12,7 @@ const TEST_ENV_KEYS = [
   "JEST_WORKER_ID",
   "BOSUN_HOME",
   "BOSUN_DIR",
+  "REPO_ROOT",
 ];
 
 function makeTempDir(prefix) {
@@ -97,9 +98,10 @@ describe("task-store path configuration", () => {
     const homeDir = makeTempDir("ve-task-store-home-");
     try {
       process.env.VITEST = "1";
+      delete process.env.REPO_ROOT;
       process.env.BOSUN_HOME = homeDir;
 
-      const persistentPath = resolve(process.cwd(), ".bosun", ".cache", "kanban-state.json");
+      const persistentPath = resolve(homeDir, ".cache", "kanban-state.json");
       const taskStore = await loadTaskStoreModule();
 
       expect(taskStore.getStorePath()).toContain("kanban-state-vitest-");
@@ -108,14 +110,14 @@ describe("task-store path configuration", () => {
       );
       expect(taskStore.getStorePath()).not.toBe(persistentPath);
       expect(taskStore.getStorePath()).not.toContain(
-        resolve(process.cwd(), ".bosun"),
+        resolve(homeDir, ".cache"),
       );
 
       taskStore.configureTaskStore({ storePath: persistentPath });
       expect(taskStore.getStorePath()).toContain("kanban-state-vitest-");
       expect(taskStore.getStorePath()).not.toBe(persistentPath);
       expect(taskStore.getStorePath()).not.toContain(
-        resolve(process.cwd(), ".bosun"),
+        resolve(homeDir, ".cache"),
       );
     } finally {
       restoreEnv(env);
@@ -140,6 +142,26 @@ describe("task-store path configuration", () => {
         { kind: "test.workspace-keys" },
       ),
     ).toThrow(/collision/i);
+  });
+
+  it("prefers explicit REPO_ROOT over BOSUN_HOME for default store resolution", async () => {
+    const env = snapshotEnv();
+    const explicitRepoRoot = makeTempDir("ve-task-store-explicit-repo-");
+    const homeDir = makeTempDir("ve-task-store-explicit-home-");
+    try {
+      process.env.VITEST = "1";
+      process.env.REPO_ROOT = explicitRepoRoot;
+      process.env.BOSUN_HOME = homeDir;
+
+      const taskStore = await loadTaskStoreModule();
+      const storePath = String(taskStore.getStorePath() || "").toLowerCase();
+
+      expect(storePath).toContain("kanban-state-vitest-");
+      expect(storePath).toContain(basename(explicitRepoRoot).toLowerCase());
+      expect(storePath).not.toContain(basename(homeDir).toLowerCase());
+    } finally {
+      restoreEnv(env);
+    }
   });
 });
 

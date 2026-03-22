@@ -5,11 +5,53 @@
 
   "_comment_workflowFirst": "Set to true to run everything as workflows (task lifecycle, PR management, etc.)",
   "workflowFirst": false,
+  "_comment_worktreeRecoveryCooldown": "Minutes to keep a task blocked after a non-retryable worktree failure before Bosun automatically returns it to todo.",
+  "workflowWorktreeRecoveryCooldownMin": 15,
+  "_comment_worktreeBootstrap": "Optional managed-worktree bootstrap policy. Commands are per detected stack and can be overridden per repo.",
+  "worktreeBootstrap": {
+    "enabled": true,
+    "linkSharedPaths": true,
+    "commandTimeoutMs": 600000,
+    "commandsByStack": {
+      "node": ["npm install"],
+      "python": ["poetry install --no-interaction"],
+      "dotnet": ["dotnet restore"]
+    },
+    "sharedPathsByStack": {
+      "node": ["node_modules"],
+      "php": ["vendor"]
+    }
+  },
+  "workflows": [
+    {
+      "type": "continuation-loop",
+      "enabled": false,
+      "taskId": "TASK-123",
+      "maxTurns": 8,
+      "terminalStates": ["done", "cancelled"],
+      "stuckThresholdMs": 300000,
+      "onStuck": "retry"
+    }
+  ],
   "kanban": {
     "backend": "vk"
   },
   "internalExecutor": {
     "mode": "vk"
+  },
+  "workflows": {
+    "code-review": {
+      "type": "sequential",
+      "stages": ["implement", "test", "review"]
+    },
+    "parallel-search": {
+      "type": "fanout",
+      "stages": [
+        { "name": "search-codex", "sdk": "codex" },
+        { "name": "search-claude", "sdk": "claude" },
+        { "name": "search-copilot", "sdk": "copilot" }
+      ]
+    }
   },
   "auth": {
     "copilot": {

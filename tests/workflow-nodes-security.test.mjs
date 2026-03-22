@@ -63,6 +63,13 @@ describe("action.create_pr schema integrity", () => {
     expect(props.repoSlug.type).toBe("string");
   });
 
+  it("schema accepts auto-merge configuration", () => {
+    const nodeType = getNodeType("action.create_pr");
+    const props = nodeType.schema?.properties ?? {};
+    expect(props).toHaveProperty("enableAutoMerge");
+    expect(props).toHaveProperty("autoMergeMethod");
+    expect(props.autoMergeMethod.enum).toEqual(["merge", "squash", "rebase"]);
+  });
   it("schema requires 'title' but not 'base' or 'branch'", () => {
     const nodeType = getNodeType("action.create_pr");
     const required = nodeType.schema?.required ?? [];
@@ -95,7 +102,7 @@ describe("action.create_pr base-branch resolution logic", () => {
     const nodeType = getNodeType("action.create_pr");
     const result = await nodeType.execute(node, makeCtx());
     expect(result.base).toBe("develop");
-  });
+  }, 15000);
 
   it("falls back to 'baseBranch' when 'base' is absent", async () => {
     const node = makeNode("action.create_pr", {
@@ -112,6 +119,18 @@ describe("action.create_pr base-branch resolution logic", () => {
   it("falls back to 'main' when neither base nor baseBranch is set", async () => {
     const node = makeNode("action.create_pr", {
       title: "feat: add thing",
+      branch: "feat/add-thing",
+      cwd: fastFailCwd,
+    });
+    const nodeType = getNodeType("action.create_pr");
+    const result = await nodeType.execute(node, makeCtx());
+    expect(result.base).toBe("main");
+  });
+
+  it("normalizes remote-qualified base branches before gh PR calls", async () => {
+    const node = makeNode("action.create_pr", {
+      title: "feat: add thing",
+      base: "origin/main",
       branch: "feat/add-thing",
       cwd: fastFailCwd,
     });
@@ -268,7 +287,139 @@ describe("dangerous shell payload containment", () => {
     expect(Array.isArray(result.labels)).toBe(true);
     expect(result.labels).toContain("custom-label");
     expect(result.labels).toContain("bosun-attached");
+    expect(result.autoMerge?.enabled).toBe(false);
   }, 30_000);
+
+  it("returns autoMerge metadata when auto-merge is enabled in test runtime", async () => {
+    const nodeType = getNodeType("action.create_pr");
+    const node = makeNode("action.create_pr", {
+      title: "Auto-merge metadata",
+      body: "Auto-merge metadata",
+      branch: "feat/auto-merge-metadata",
+      enableAutoMerge: true,
+      autoMergeMethod: "rebase",
+    });
+
+    const result = await nodeType.execute(node, makeCtx());
+    expect(result.success).toBe(true);
+    expect(result.autoMerge?.enabled).toBe(true);
+    expect(result.autoMerge?.attempted).toBe(false);
+    expect(result.autoMerge?.reason).toBe("test_runtime_skip");
+    expect(result.autoMerge?.method).toBe("rebase");
+  });
+});
+
+describe("action.run_command env interpolation", () => {
+  it("supports argv-style commands and explicit JSON parsing", async () => {
+    const nodeType = getNodeType("action.run_command");
+    const node = makeNode("action.run_command", {
+      command: "node",
+      args: ["-e", 'process.stdout.write(JSON.stringify([{ taskId: "t-1" }]))'],
+      parseJson: true,
+    });
+
+    const result = await nodeType.execute(node, makeCtx());
+    expect(result.success).toBe(true);
+    expect(result.output).toEqual([{ taskId: "t-1" }]);
+  });
+
+  it("parses the final JSON line when commands emit prefixed logs", async () => {
+    const nodeType = getNodeType("action.run_command");
+    const node = makeNode("action.run_command", {
+      command: "node",
+      args: ["-e", 'console.log("[kanban] using internal backend"); console.log(JSON.stringify([{ taskId: "t-2" }]));'],
+      parseJson: true,
+    });
+
+    const result = await nodeType.execute(node, makeCtx());
+    expect(result.success).toBe(true);
+    expect(result.output).toEqual([{ taskId: "t-2" }]);
+  });
+
+  it("resolves template env values before executing commands", async () => {
+    const nodeType = getNodeType("action.run_command");
+    const node = makeNode("action.run_command", {
+      command: 'node -p "process.env.BOSUN_FETCH_AND_CLASSIFY"',
+      env: {
+        BOSUN_FETCH_AND_CLASSIFY: "{{payload}}",
+      },
+    });
+    const ctx = makeCtx({
+      payload: {
+        conflicts: [{ n: 241 }, { n: 243 }],
+        ciFailures: [{ n: 765 }],
+      },
+    });
+
+    const result = await nodeType.execute(node, ctx);
+    expect(result.success).toBe(true);
+    const parsed = JSON.parse(result.output);
+    expect(parsed.conflicts).toHaveLength(2);
+    expect(parsed.ciFailures).toHaveLength(1);
+  });
+
+  it("resolves expression-style env templates using $ctx node outputs", async () => {
+    const nodeType = getNodeType("action.run_command");
+    const node = makeNode("action.run_command", {
+      command: 'node -p "process.env.BOSUN_FETCH_AND_CLASSIFY"',
+      env: {
+        BOSUN_FETCH_AND_CLASSIFY: "{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}",
+      },
+    });
+    const ctx = makeCtx();
+    ctx.setNodeOutput("fetch-and-classify", {
+      output: JSON.stringify({
+        conflicts: [{ n: 246 }, { n: 245 }],
+        ciFailures: [{ n: 765 }],
+      }),
+    });
+
+    const result = await nodeType.execute(node, ctx);
+    expect(result.success).toBe(true);
+    const parsed = JSON.parse(result.output);
+    expect(parsed.conflicts).toHaveLength(2);
+    expect(parsed.ciFailures).toHaveLength(1);
+  });
+
+  it("automatically compacts large command output before storing it in workflow context", async () => {
+    const nodeType = getNodeType("action.run_command");
+    const node = makeNode("action.run_command", {
+      command: "node",
+      args: [
+        "-e",
+        "for (let i = 0; i < 260; i += 1) console.log(`noise-${i} ${'x'.repeat(18)}`); console.log('ERROR workflow reducer failed at src/runtime/handler.ts:42');",
+      ],
+    });
+
+    const result = await nodeType.execute(node, makeCtx());
+    expect(result.success).toBe(true);
+    expect(result.outputCompacted).toBe(true);
+    expect(result.rawOutputChars).toBeGreaterThan(result.compactedOutputChars);
+    expect(result.output).toContain("ERROR workflow reducer failed");
+    expect(result.output).toContain("bosun --tool-log");
+    expect(result.outputDiagnostics?.summary).toBeTruthy();
+    expect(result.outputHint || result.outputSuggestedRerun || result.outputDiagnostics?.summary).toBeTruthy();
+    expect(Array.isArray(result.items)).toBe(true);
+    expect(result.items.length).toBe(1);
+  });
+});
+
+describe("workflow validation output compaction", () => {
+  it("compacts noisy failed test output automatically", async () => {
+    const nodeType = getNodeType("validation.tests");
+    const node = makeNode("validation.tests", {
+      command:
+        "node -e \"for (let i = 0; i < 220; i += 1) console.log('ok helper-' + i + ' ' + 'x'.repeat(16)); console.log('FAIL tests/runtime/example.test.ts'); console.log('Error: expected true to be false'); process.exit(1);\"",
+    });
+
+    const result = await nodeType.execute(node, makeCtx());
+    expect(result.passed).toBe(false);
+    expect(result.outputCompacted).toBe(true);
+    expect(result.output).toContain("FAIL tests/runtime/example.test.ts");
+    expect(result.output).toContain("expected true to be false");
+    expect(result.output).toContain("bosun --tool-log");
+    expect(result.outputDiagnostics?.suggestedRerun).toContain("vitest run");
+  });
 });
 
 // -- action.git_operations Safety ----------------------------------------------

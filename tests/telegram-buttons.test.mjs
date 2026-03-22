@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 
 /**
  * Tests for Telegram inline keyboard button support added to telegram-bot.mjs.
@@ -168,6 +168,51 @@ describe("telegram-bot inline keyboards", () => {
       expect(botSource).toContain("await showStickyInteractiveMessage(chatId, `${prompt}\\n\\nSend /cancel to abort.`");
       expect(botSource).toContain("await restoreStickyMenuMessage(chatId);");
     });
+
+    it("recovers sticky context from reconnect callback updates", async () => {
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const { fileURLToPath } = await import("node:url");
+
+      const __dirname = path.resolve(
+        fileURLToPath(new URL(".", import.meta.url)),
+      );
+      const botSource = fs.readFileSync(
+        path.resolve(__dirname, "..", "telegram", "telegram-bot.mjs"),
+        "utf8",
+      );
+
+      expect(botSource).toContain("function recoverStickyMenuContextFromCallback(query, reason = \"callback\")");
+      expect(botSource).toContain("recoverStickyMenuContextFromCallback(query, \"reconnect\")");
+      expect(botSource).toContain("sticky_menu.context_recovered");
+      expect(botSource).toContain("sessionId: recovery.sessionId");
+      expect(botSource).toContain("leaseAgeMs: recovery.leaseAgeMs");
+    });
+
+    it("deduplicates rapid repeated menu callbacks", async () => {
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const { fileURLToPath } = await import("node:url");
+
+      const __dirname = path.resolve(
+        fileURLToPath(new URL(".", import.meta.url)),
+      );
+      const botSource = fs.readFileSync(
+        path.resolve(__dirname, "..", "telegram", "telegram-bot.mjs"),
+        "utf8",
+      );
+
+      expect(botSource).toContain("const callbackActionDeduper = new Map();");
+      expect(botSource).toContain("const CALLBACK_ACTION_DEDUPE_MS = Math.max(");
+      expect(botSource).toContain("function dedupeMenuCallbackAction({");
+      expect(botSource).toContain("sticky_menu.callback_deduped");
+      expect(botSource).toContain("Already processing...");
+      expect(botSource).toContain("function getStickyMenuDiagnostics(chatId, now = Date.now())");
+      expect(botSource).toContain("function resetStickyMenuContext(chatId, options = {})");
+      expect(botSource).toContain("sticky_menu.reset_applied");
+      expect(botSource).toContain("uiCmdAction(\"/menu diag\")");
+      expect(botSource).toContain("uiCmdAction(\"/menu reset\")");
+    });
   });
 
   describe("/helpfull command", () => {
@@ -186,6 +231,144 @@ describe("telegram-bot inline keyboards", () => {
 
       expect(botSource).toContain('"/helpfull"');
       expect(botSource).toContain("cmdHelpFull");
+    });
+  });
+});
+
+
+describe("telegram sticky menu diagnostics runtime", () => {
+  let stickyApi;
+  let resetStickyMenuStateForTest;
+
+  beforeEach(async () => {
+    const mod = await import("../telegram/telegram-bot.mjs");
+    stickyApi = mod.__stickyMenuTestApi;
+    resetStickyMenuStateForTest = mod.__resetStickyMenuStateForTest;
+    resetStickyMenuStateForTest();
+  });
+
+  it("records recovered sessions with a session identifier and lease age", () => {
+    stickyApi.setStickyMenuState("chat-1", {
+      screenId: "home",
+      params: { page: 2 },
+    });
+
+    const recovery = stickyApi.recoverStickyMenuContextFromCallback({
+      message: {
+        chat: { id: "chat-1" },
+        message_id: 42,
+      },
+      data: "ui:go:home",
+    }, "reconnect");
+
+    expect(recovery.recovered).toBe(true);
+    expect(recovery.diagnostics.sessionId).toMatch(/^sticky-/);
+    expect(recovery.diagnostics.leaseAgeMs).toBeGreaterThanOrEqual(0);
+    expect(recovery.diagnostics.recoveryCount).toBe(1);
+    expect(recovery.diagnostics.lastRecovery).toMatchObject({
+      reason: "reconnect",
+      messageId: 42,
+      data: "ui:go:home",
+    });
+  });
+
+  it("keeps duplicate callback handling idempotent with diagnostics", () => {
+    stickyApi.setStickyMenuState("chat-1", {
+      enabled: true,
+      messageId: 77,
+      screenId: "home",
+      params: {},
+      mode: "menu",
+    });
+
+    const first = stickyApi.dedupeMenuCallbackAction({
+      chatId: "chat-1",
+      fromId: "operator-1",
+      messageId: 77,
+      data: "ui:go:home",
+      callbackId: "cb-1",
+    });
+    const second = stickyApi.dedupeMenuCallbackAction({
+      chatId: "chat-1",
+      fromId: "operator-1",
+      messageId: 77,
+      data: "ui:go:home",
+      callbackId: "cb-2",
+    });
+    const diagnostics = stickyApi.getStickyMenuDiagnostics("chat-1");
+
+    expect(first.duplicate).toBe(false);
+    expect(first.decision).toBe("accepted");
+    expect(second.duplicate).toBe(true);
+    expect(second.decision).toBe("deduped");
+    expect(second.sessionId).toBe(diagnostics.sessionId);
+    expect(second.leaseAgeMs).toBeGreaterThanOrEqual(0);
+    expect(diagnostics.lastDedupe).toMatchObject({
+      decision: "deduped",
+      data: "ui:go:home",
+    });
+  });
+
+  it("resets only the targeted chat sticky-menu state", () => {
+    stickyApi.setStickyMenuState("chat-1", {
+      enabled: true,
+      messageId: 10,
+      screenId: "home",
+      params: {},
+      mode: "menu",
+    });
+    stickyApi.setStickyMenuState("chat-2", {
+      enabled: true,
+      messageId: 20,
+      screenId: "home",
+      params: {},
+      mode: "menu",
+    });
+
+    stickyApi.dedupeMenuCallbackAction({
+      chatId: "chat-1",
+      fromId: "operator-1",
+      messageId: 10,
+      data: "ui:go:home",
+      callbackId: "chat-1-first",
+    });
+    stickyApi.dedupeMenuCallbackAction({
+      chatId: "chat-2",
+      fromId: "operator-2",
+      messageId: 20,
+      data: "ui:go:home",
+      callbackId: "chat-2-first",
+    });
+
+    const reset = stickyApi.resetStickyMenuContext("chat-1", { reason: "operator" });
+    const chat1AfterReset = stickyApi.dedupeMenuCallbackAction({
+      chatId: "chat-1",
+      fromId: "operator-1",
+      messageId: 10,
+      data: "ui:go:home",
+      callbackId: "chat-1-second",
+    });
+    const chat2AfterReset = stickyApi.dedupeMenuCallbackAction({
+      chatId: "chat-2",
+      fromId: "operator-2",
+      messageId: 20,
+      data: "ui:go:home",
+      callbackId: "chat-2-second",
+    });
+    const diagnostics = stickyApi.getStickyMenuDiagnostics("chat-1");
+
+    expect(reset).toMatchObject({
+      applied: true,
+      reason: "operator",
+      previousMessageId: 10,
+    });
+    expect(chat1AfterReset.duplicate).toBe(false);
+    expect(chat2AfterReset.duplicate).toBe(true);
+    expect(diagnostics.enabled).toBe(false);
+    expect(diagnostics.resetCount).toBe(1);
+    expect(diagnostics.lastReset).toMatchObject({
+      reason: "operator",
+      previousMessageId: 10,
     });
   });
 });

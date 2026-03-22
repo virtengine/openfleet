@@ -187,6 +187,115 @@ describe("action.bosun_tool", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  action.build_task_prompt
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("action.build_task_prompt", () => {
+  const originalCacheAnchorMode = process.env.BOSUN_CACHE_ANCHOR_MODE;
+
+  afterEach(() => {
+    if (tmpDir) {
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+    if (originalCacheAnchorMode === undefined) {
+      delete process.env.BOSUN_CACHE_ANCHOR_MODE;
+    } else {
+      process.env.BOSUN_CACHE_ANCHOR_MODE = originalCacheAnchorMode;
+    }
+  });
+
+  it("splits user/system prompts and keeps system prompt stable across tasks", async () => {
+    process.env.BOSUN_CACHE_ANCHOR_MODE = "strict";
+    const handler = getNodeType("action.build_task_prompt");
+    const repoRoot = makeTmpDir();
+    writeFileSync(join(repoRoot, "AGENTS.md"), "Agent instructions for tests.");
+
+    const baseNode = {
+      id: "prompt-1",
+      type: "action.build_task_prompt",
+      config: {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        taskDescription: "{{taskDescription}}",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+        worktreePath: "{{worktreePath}}",
+        repoRoot: "{{repoRoot}}",
+        includeAgentsMd: false,
+        includeStatusEndpoint: false,
+      },
+    };
+
+    const ctxA = new WorkflowContext({
+      taskId: "task-abc",
+      taskTitle: "Cache anchor check",
+      taskDescription: "First task description",
+      branch: "task/cache-anchor",
+      baseBranch: "main",
+      worktreePath: join(repoRoot, ".bosun", "worktrees", "task-abc"),
+      repoRoot,
+    });
+    const resultA = await handler.execute(baseNode, ctxA);
+    const userPromptA = resultA.userPrompt || resultA.prompt;
+    const systemPromptA = resultA.systemPrompt || ctxA.data._taskSystemPrompt;
+
+    expect(userPromptA).toContain("Task ID: task-abc");
+    expect(userPromptA).toContain("## Environment");
+    expect(userPromptA).toContain("Co-authored-by: bosun-ve[bot]");
+    expect(systemPromptA).toBeTruthy();
+    expect(systemPromptA).not.toContain("task-abc");
+    expect(systemPromptA).not.toContain("Cache anchor check");
+    expect(systemPromptA).not.toContain("task/cache-anchor");
+
+    const ctxB = new WorkflowContext({
+      taskId: "task-xyz",
+      taskTitle: "Different task",
+      taskDescription: "Second task description",
+      branch: "task/different",
+      baseBranch: "main",
+      worktreePath: join(repoRoot, ".bosun", "worktrees", "task-xyz"),
+      repoRoot,
+    });
+    const resultB = await handler.execute(baseNode, ctxB);
+    const systemPromptB = resultB.systemPrompt || ctxB.data._taskSystemPrompt;
+
+    expect(systemPromptB).toBe(systemPromptA);
+  });
+
+  it("falls back to the task ID when the title is the default placeholder", async () => {
+    const handler = getNodeType("action.build_task_prompt");
+    const repoRoot = makeTmpDir();
+
+    const node = {
+      id: "prompt-untitled",
+      type: "action.build_task_prompt",
+      config: {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        taskDescription: "{{taskDescription}}",
+        includeAgentsMd: false,
+        includeStatusEndpoint: false,
+      },
+    };
+
+    const ctx = new WorkflowContext({
+      taskId: "89d82c54-c804-45f7-8018-137de0702ddb",
+      taskTitle: "Untitled task",
+      taskDescription: "Prompt body",
+      repoRoot,
+      worktreePath: join(repoRoot, ".bosun", "worktrees", "task-89d82c54"),
+    });
+
+    const result = await handler.execute(node, ctx);
+    const userPrompt = result.userPrompt || result.prompt;
+
+    expect(userPrompt).toContain("# Task: Task 89d82c54-c804-45f7-8018-137de0702ddb");
+    expect(userPrompt).toContain("Task ID: 89d82c54-c804-45f7-8018-137de0702ddb");
+    expect(userPrompt).not.toContain("# Task: Untitled task");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  action.invoke_workflow
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -556,6 +665,7 @@ describe("action.invoke_workflow", () => {
     expect(mockEngine.execute).toHaveBeenCalledWith(
       "dynamic-child-wf",
       expect.objectContaining({ _parentWorkflowId: "parent-wf" }),
+      expect.anything(),
     );
   });
 
@@ -940,6 +1050,16 @@ describe("Bosun native templates", () => {
     expect(nodeTypes).toContain("action.invoke_workflow");
   });
 
+  it("INLINE_WORKFLOW_COMPOSITION_TEMPLATE has valid structure", async () => {
+    const { INLINE_WORKFLOW_COMPOSITION_TEMPLATE } = await import("../workflow-templates/bosun-native.mjs");
+    expect(INLINE_WORKFLOW_COMPOSITION_TEMPLATE.id).toBe("template-inline-workflow-composition");
+    expect(INLINE_WORKFLOW_COMPOSITION_TEMPLATE.nodes.length).toBeGreaterThan(3);
+
+    const nodeTypes = INLINE_WORKFLOW_COMPOSITION_TEMPLATE.nodes.map((n) => n.type);
+    expect(nodeTypes).toContain("action.inline_workflow");
+    expect(nodeTypes).toContain("notify.log");
+  });
+
   it("MCP_TO_BOSUN_BRIDGE_TEMPLATE has valid structure", async () => {
     const { MCP_TO_BOSUN_BRIDGE_TEMPLATE } = await import("../workflow-templates/bosun-native.mjs");
     expect(MCP_TO_BOSUN_BRIDGE_TEMPLATE.id).toBe("template-mcp-to-bosun-bridge");
@@ -965,17 +1085,19 @@ describe("Bosun native templates", () => {
     const ids = WORKFLOW_TEMPLATES.map((t) => t.id);
     expect(ids).toContain("template-bosun-tool-pipeline");
     expect(ids).toContain("template-workflow-composition");
+    expect(ids).toContain("template-inline-workflow-composition");
     expect(ids).toContain("template-mcp-to-bosun-bridge");
     expect(ids).toContain("template-git-health-pipeline");
   });
 
   it("all template nodes reference valid registered node types", async () => {
-    const { BOSUN_TOOL_PIPELINE_TEMPLATE, WORKFLOW_COMPOSITION_TEMPLATE, MCP_TO_BOSUN_BRIDGE_TEMPLATE, GIT_HEALTH_PIPELINE_TEMPLATE } =
+    const { BOSUN_TOOL_PIPELINE_TEMPLATE, WORKFLOW_COMPOSITION_TEMPLATE, INLINE_WORKFLOW_COMPOSITION_TEMPLATE, MCP_TO_BOSUN_BRIDGE_TEMPLATE, GIT_HEALTH_PIPELINE_TEMPLATE } =
       await import("../workflow-templates/bosun-native.mjs");
 
     const templates = [
       BOSUN_TOOL_PIPELINE_TEMPLATE,
       WORKFLOW_COMPOSITION_TEMPLATE,
+      INLINE_WORKFLOW_COMPOSITION_TEMPLATE,
       MCP_TO_BOSUN_BRIDGE_TEMPLATE,
       GIT_HEALTH_PIPELINE_TEMPLATE,
     ];

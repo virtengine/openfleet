@@ -4,15 +4,25 @@
   "type": "object",
   "additionalProperties": true,
   "properties": {
-    "$schema": { "type": "string" },
-    "projectName": { "type": "string" },
+    "$schema": {
+      "type": "string"
+    },
+    "projectName": {
+      "type": "string"
+    },
     "mode": {
       "type": "string",
       "enum": ["virtengine", "generic"]
     },
-    "orchestratorScript": { "type": "string" },
-    "orchestratorArgs": { "type": "string" },
-    "logDir": { "type": "string" },
+    "orchestratorScript": {
+      "type": "string"
+    },
+    "orchestratorArgs": {
+      "type": "string"
+    },
+    "logDir": {
+      "type": "string"
+    },
     "logMaxSizeMb": {
       "type": "number",
       "description": "Max total log folder size in MB. 0 = unlimited.",
@@ -29,10 +39,18 @@
       "description": "Notification verbosity: minimal (critical+error), summary (default), detailed (everything)",
       "default": "summary"
     },
-    "watchPath": { "type": "string" },
-    "watchEnabled": { "type": "boolean" },
-    "echoLogs": { "type": "boolean" },
-    "autoFixEnabled": { "type": "boolean" },
+    "watchPath": {
+      "type": "string"
+    },
+    "watchEnabled": {
+      "type": "boolean"
+    },
+    "echoLogs": {
+      "type": "boolean"
+    },
+    "autoFixEnabled": {
+      "type": "boolean"
+    },
     "workflowFirst": {
       "type": "boolean",
       "default": false,
@@ -42,6 +60,120 @@
       "type": "boolean",
       "default": false,
       "description": "Delegate task finalization and recovery to workflow automation instead of the legacy TaskExecutor. Automatically set to true when workflowFirst is enabled."
+    },
+    "workflowWorktreeRecoveryCooldownMin": {
+      "type": "number",
+      "default": 15,
+      "description": "Minutes to keep a task blocked after a non-retryable worktree acquisition failure before Bosun returns it to todo automatically."
+    },
+    "worktreeBootstrap": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Bootstrap policy for managed worktrees, including optional shared dependency links and per-ecosystem install/restore commands.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "linkSharedPaths": {
+          "type": "boolean",
+          "default": true,
+          "description": "Link reusable dependency directories from the repo root into each managed worktree when possible."
+        },
+        "commandTimeoutMs": {
+          "type": "number",
+          "default": 600000,
+          "description": "Maximum time to allow each bootstrap command to run inside a managed worktree."
+        },
+        "commandsByStack": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "array", "items": { "type": "string" } }
+            ]
+          },
+          "description": "Override bootstrap commands by detected ecosystem id such as node, python, go, rust, java, dotnet, ruby, php, or make."
+        },
+        "sharedPathsByStack": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "array", "items": { "type": "string" } }
+            ]
+          },
+          "description": "Override reusable relative paths to link from the repo root into a managed worktree for each detected ecosystem."
+        }
+      }
+    },
+    "workflowDefaults": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "profile": {
+          "type": "string",
+          "description": "Default workflow setup profile (for example: balanced, autonomous, workflowFirst)."
+        },
+        "autoInstall": {
+          "type": "boolean",
+          "description": "Automatically install requested templates on startup."
+        },
+        "templates": {
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            { "type": "string" }
+          ],
+          "description": "Explicit template IDs to install/enable."
+        },
+        "templateOverridesById": {
+          "type": "object",
+          "additionalProperties": { "type": "object" },
+          "description": "Template variable overrides keyed by template id."
+        }
+      }
+    },
+    "workflows": {
+      "type": "array",
+      "description": "Opt-in typed workflow templates that resolve to built-in workflow definitions.",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["continuation-loop"]
+          },
+          "enabled": { "type": "boolean" },
+          "name": { "type": "string" },
+          "taskId": { "type": "string" },
+          "worktreePath": { "type": "string" },
+          "pollIntervalMs": { "type": "number" },
+          "maxTurns": { "type": "number" },
+          "terminalStates": {
+            "oneOf": [
+              { "type": "array", "items": { "type": "string" } },
+              { "type": "string" }
+            ]
+          },
+          "stuckThresholdMs": { "type": "number" },
+          "onStuck": {
+            "type": "string",
+            "enum": ["retry", "escalate", "pause"]
+          },
+          "continuePrompt": { "type": "string" },
+          "retryPrompt": { "type": "string" },
+          "sdk": { "type": "string" },
+          "model": { "type": "string" },
+          "timeoutMs": { "type": "number" },
+          "options": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Additional template variable overrides for this typed workflow entry."
+          }
+        },
+        "required": ["type"]
+      }
     },
     "interactiveShellEnabled": { "type": "boolean" },
     "shellEnabled": { "type": "boolean" },
@@ -180,8 +312,12 @@
                     "type": "string",
                     "enum": ["openai", "azure", "claude", "gemini", "fallback"]
                   },
-                  "model": { "type": "string" },
-                  "visionModel": { "type": "string" },
+                  "model": {
+                    "type": "string"
+                  },
+                  "visionModel": {
+                    "type": "string"
+                  },
                   "voiceId": {
                     "type": "string",
                     "enum": [
@@ -198,7 +334,9 @@
                       "verse"
                     ]
                   },
-                  "azureDeployment": { "type": "string" },
+                  "azureDeployment": {
+                    "type": "string"
+                  },
                   "endpointId": {
                     "type": "string",
                     "description": "ID of the voice endpoint to use for this provider slot"
@@ -347,8 +485,12 @@
                 "type": "string",
                 "description": "Model name (for openai provider)"
               },
-              "voiceId": { "type": "string" },
-              "visionModel": { "type": "string" },
+              "voiceId": {
+                "type": "string"
+              },
+              "visionModel": {
+                "type": "string"
+              },
               "role": {
                 "type": "string",
                 "enum": ["primary", "backup"],
@@ -359,7 +501,10 @@
                 "default": 100,
                 "description": "Priority weight — higher = tried first"
               },
-              "enabled": { "type": "boolean", "default": true }
+              "enabled": {
+                "type": "boolean",
+                "default": true
+              }
             }
           }
         },
@@ -376,7 +521,9 @@
         }
       }
     },
-    "vkSpawnEnabled": { "type": "boolean" },
+    "vkSpawnEnabled": {
+      "type": "boolean"
+    },
     "kanban": {
       "type": "object",
       "additionalProperties": false,
@@ -390,7 +537,9 @@
           "enum": ["internal-primary", "bidirectional"],
           "default": "internal-primary"
         },
-        "projectId": { "type": "string" },
+        "projectId": {
+          "type": "string"
+        },
         "github": {
           "type": "object",
           "additionalProperties": false,
@@ -428,14 +577,26 @@
                   "additionalProperties": false,
                   "description": "Map internal statuses to project board column names",
                   "properties": {
-                    "todo": { "type": "string", "default": "Todo" },
+                    "todo": {
+                      "type": "string",
+                      "default": "Todo"
+                    },
                     "inprogress": {
                       "type": "string",
                       "default": "In Progress"
                     },
-                    "inreview": { "type": "string", "default": "In Review" },
-                    "done": { "type": "string", "default": "Done" },
-                    "cancelled": { "type": "string", "default": "Cancelled" }
+                    "inreview": {
+                      "type": "string",
+                      "default": "In Review"
+                    },
+                    "done": {
+                      "type": "string",
+                      "default": "Done"
+                    },
+                    "cancelled": {
+                      "type": "string",
+                      "default": "Cancelled"
+                    }
                   }
                 },
                 "webhook": {
@@ -508,11 +669,26 @@
               "additionalProperties": false,
               "description": "Map internal statuses to Jira workflow status names",
               "properties": {
-                "todo": { "type": "string", "default": "To Do" },
-                "inprogress": { "type": "string", "default": "In Progress" },
-                "inreview": { "type": "string", "default": "In Review" },
-                "done": { "type": "string", "default": "Done" },
-                "cancelled": { "type": "string", "default": "Cancelled" }
+                "todo": {
+                  "type": "string",
+                  "default": "To Do"
+                },
+                "inprogress": {
+                  "type": "string",
+                  "default": "In Progress"
+                },
+                "inreview": {
+                  "type": "string",
+                  "default": "In Review"
+                },
+                "done": {
+                  "type": "string",
+                  "default": "Done"
+                },
+                "cancelled": {
+                  "type": "string",
+                  "default": "Cancelled"
+                }
               }
             },
             "labels": {
@@ -520,10 +696,22 @@
               "additionalProperties": false,
               "description": "Jira labels used to mark codex shared-state lifecycle",
               "properties": {
-                "claimed": { "type": "string", "default": "codex:claimed" },
-                "working": { "type": "string", "default": "codex:working" },
-                "stale": { "type": "string", "default": "codex:stale" },
-                "ignore": { "type": "string", "default": "codex:ignore" }
+                "claimed": {
+                  "type": "string",
+                  "default": "codex:claimed"
+                },
+                "working": {
+                  "type": "string",
+                  "default": "codex:working"
+                },
+                "stale": {
+                  "type": "string",
+                  "default": "codex:stale"
+                },
+                "ignore": {
+                  "type": "string",
+                  "default": "codex:ignore"
+                }
               }
             },
             "sharedStateFields": {
@@ -569,22 +757,37 @@
       "type": "object",
       "additionalProperties": true,
       "properties": {
-        "enabled": { "type": "boolean", "default": false },
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
         "templates": {
           "type": "array",
           "items": {
             "type": "object",
             "additionalProperties": true,
             "properties": {
-              "id": { "type": "string" },
-              "name": { "type": "string" },
-              "description": { "type": "string" },
-              "enabled": { "type": "boolean", "default": false },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean",
+                "default": false
+              },
               "action": {
                 "type": "string",
                 "enum": ["task-planner", "create-task"]
               },
-              "minIntervalMinutes": { "type": "number", "minimum": 1 },
+              "minIntervalMinutes": {
+                "type": "number",
+                "minimum": 1
+              },
               "trigger": {
                 "type": "object",
                 "additionalProperties": true,
@@ -599,13 +802,20 @@
                           "type": "string",
                           "enum": ["metric", "interval"]
                         },
-                        "metric": { "type": "string" },
+                        "metric": {
+                          "type": "string"
+                        },
                         "operator": {
                           "type": "string",
                           "enum": ["lt", "lte", "gt", "gte", "eq", "neq"]
                         },
-                        "value": { "type": ["number", "string", "boolean"] },
-                        "minutes": { "type": "number", "minimum": 1 }
+                        "value": {
+                          "type": ["number", "string", "boolean"]
+                        },
+                        "minutes": {
+                          "type": "number",
+                          "minimum": 1
+                        }
                       }
                     }
                   }
@@ -619,12 +829,25 @@
                     "type": "string",
                     "enum": ["codex-sdk", "kanban", "disabled"]
                   },
-                  "defaultTaskCount": { "type": "number", "minimum": 1 },
-                  "title": { "type": "string" },
-                  "description": { "type": "string" },
-                  "priority": { "type": "string" },
-                  "executor": { "type": "string" },
-                  "model": { "type": "string" }
+                  "defaultTaskCount": {
+                    "type": "number",
+                    "minimum": 1
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "priority": {
+                    "type": "string"
+                  },
+                  "executor": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  }
                 }
               }
             }
@@ -632,10 +855,14 @@
         },
         "defaults": {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "properties": {
-            "executor": { "type": "string" },
-            "model": { "type": "string" }
+            "executor": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            }
           }
         }
       }
@@ -672,7 +899,10 @@
                   "type": "string",
                   "description": "Repository directory name"
                 },
-                "url": { "type": "string", "description": "Git clone URL" },
+                "url": {
+                  "type": "string",
+                  "description": "Git clone URL"
+                },
                 "slug": {
                   "type": "string",
                   "description": "GitHub slug (org/repo)"
@@ -699,27 +929,41 @@
         }
       }
     },
-    "defaultRepository": { "type": "string" },
-    "repositoryDefaults": { "$ref": "#/$defs/repositoryDefaults" },
+    "defaultRepository": {
+      "type": "string"
+    },
+    "repositoryDefaults": {
+      "$ref": "#/$defs/repositoryDefaults"
+    },
     "repositories": {
       "oneOf": [
         {
           "type": "array",
-          "items": { "$ref": "#/$defs/repository" }
+          "items": {
+            "$ref": "#/$defs/repository"
+          }
         },
         {
           "type": "object",
           "additionalProperties": true,
           "properties": {
-            "default": { "type": "string" },
-            "defaults": { "$ref": "#/$defs/repositoryDefaults" },
+            "default": {
+              "type": "string"
+            },
+            "defaults": {
+              "$ref": "#/$defs/repositoryDefaults"
+            },
             "items": {
               "type": "array",
-              "items": { "$ref": "#/$defs/repository" }
+              "items": {
+                "$ref": "#/$defs/repository"
+              }
             },
             "list": {
               "type": "array",
-              "items": { "$ref": "#/$defs/repository" }
+              "items": {
+                "$ref": "#/$defs/repository"
+              }
             }
           }
         }
@@ -733,18 +977,34 @@
           "type": "string",
           "enum": ["vk", "internal", "hybrid"]
         },
-        "maxParallel": { "type": "number" },
-        "baseBranchParallelLimit": { "type": "number" },
-        "pollIntervalMs": { "type": "number" },
+        "maxParallel": {
+          "type": "number"
+        },
+        "baseBranchParallelLimit": {
+          "type": "number"
+        },
+        "pollIntervalMs": {
+          "type": "number"
+        },
         "sdk": {
           "type": "string",
           "enum": ["auto", "codex", "copilot", "claude", "gemini", "opencode"]
         },
-        "taskTimeoutMs": { "type": "number" },
-        "maxRetries": { "type": "number" },
-        "reviewAgentEnabled": { "type": "boolean" },
-        "reviewMaxConcurrent": { "type": "number" },
-        "reviewTimeoutMs": { "type": "number" },
+        "taskTimeoutMs": {
+          "type": "number"
+        },
+        "maxRetries": {
+          "type": "number"
+        },
+        "reviewAgentEnabled": {
+          "type": "boolean"
+        },
+        "reviewMaxConcurrent": {
+          "type": "number"
+        },
+        "reviewTimeoutMs": {
+          "type": "number"
+        },
         "stream": {
           "type": "object",
           "additionalProperties": false,
@@ -777,13 +1037,21 @@
         }
       }
     },
-    "profiles": { "$ref": "#/$defs/profiles" },
-    "envProfiles": { "$ref": "#/$defs/profiles" },
+    "profiles": {
+      "$ref": "#/$defs/profiles"
+    },
+    "envProfiles": {
+      "$ref": "#/$defs/profiles"
+    },
     "executors": {
       "type": "array",
-      "items": { "$ref": "#/$defs/executor" }
+      "items": {
+        "$ref": "#/$defs/executor"
+      }
     },
-    "failover": { "$ref": "#/$defs/failover" },
+    "failover": {
+      "$ref": "#/$defs/failover"
+    },
     "distribution": {
       "type": "string",
       "enum": ["weighted", "round-robin", "primary-only"]
@@ -792,29 +1060,71 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "orchestrator": { "type": "string" },
-        "planner": { "type": "string" },
-        "monitorMonitor": { "type": "string" },
-        "taskExecutor": { "type": "string" },
-        "taskExecutorRetry": { "type": "string" },
-        "taskExecutorContinueHasCommits": { "type": "string" },
-        "taskExecutorContinueHasEdits": { "type": "string" },
-        "taskExecutorContinueNoProgress": { "type": "string" },
-        "reviewer": { "type": "string" },
-        "conflictResolver": { "type": "string" },
-        "sdkConflictResolver": { "type": "string" },
-        "mergeStrategy": { "type": "string" },
-        "mergeStrategyFix": { "type": "string" },
-        "mergeStrategyReAttempt": { "type": "string" },
-        "autofixFix": { "type": "string" },
-        "autofixFallback": { "type": "string" },
-        "autofixLoop": { "type": "string" },
-        "monitorCrashFix": { "type": "string" },
-        "monitorRestartLoopFix": { "type": "string" }
+        "orchestrator": {
+          "type": "string"
+        },
+        "planner": {
+          "type": "string"
+        },
+        "monitorMonitor": {
+          "type": "string"
+        },
+        "taskExecutor": {
+          "type": "string"
+        },
+        "taskExecutorRetry": {
+          "type": "string"
+        },
+        "taskExecutorContinueHasCommits": {
+          "type": "string"
+        },
+        "taskExecutorContinueHasEdits": {
+          "type": "string"
+        },
+        "taskExecutorContinueNoProgress": {
+          "type": "string"
+        },
+        "reviewer": {
+          "type": "string"
+        },
+        "conflictResolver": {
+          "type": "string"
+        },
+        "sdkConflictResolver": {
+          "type": "string"
+        },
+        "mergeStrategy": {
+          "type": "string"
+        },
+        "mergeStrategyFix": {
+          "type": "string"
+        },
+        "mergeStrategyReAttempt": {
+          "type": "string"
+        },
+        "autofixFix": {
+          "type": "string"
+        },
+        "autofixFallback": {
+          "type": "string"
+        },
+        "autofixLoop": {
+          "type": "string"
+        },
+        "monitorCrashFix": {
+          "type": "string"
+        },
+        "monitorRestartLoopFix": {
+          "type": "string"
+        }
       }
     },
-    "hookProfiles": { "$ref": "#/$defs/hookProfiles" },
-    "agentHooks": { "$ref": "#/$defs/agentHooks" },
+    "hookProfiles": {
+      "$ref": "#/$defs/hookProfiles"
+    },
+    "agentHooks": {
+      "$ref": "#/$defs/agentHooks"
+    },
     "auth": {
       "type": "object",
       "description": "Authentication configuration for agent SDKs",
@@ -872,6 +1182,100 @@
           }
         }
       }
+    },
+    "workflows": {
+      "type": "object",
+      "description": "Declarative multi-agent pipeline workflows runnable via bosun workflow run <name>.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["sequential", "fanout", "race"]
+          },
+          "description": {
+            "type": "string"
+          },
+          "stages": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "stage": {
+                      "type": "string"
+                    },
+                    "prompt": {
+                      "type": "string"
+                    },
+                    "promptTemplate": {
+                      "type": "string"
+                    },
+                    "sdk": {
+                      "type": "string"
+                    },
+                    "model": {
+                      "type": "string"
+                    },
+                    "cwd": {
+                      "type": "string"
+                    },
+                    "timeoutMs": {
+                      "type": "number"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "agents": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "stage": {
+                      "type": "string"
+                    },
+                    "prompt": {
+                      "type": "string"
+                    },
+                    "promptTemplate": {
+                      "type": "string"
+                    },
+                    "sdk": {
+                      "type": "string"
+                    },
+                    "model": {
+                      "type": "string"
+                    },
+                    "cwd": {
+                      "type": "string"
+                    },
+                    "timeoutMs": {
+                      "type": "number"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
@@ -879,16 +1283,30 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "name": { "type": "string" },
-        "executor": { "type": "string" },
-        "variant": { "type": "string" },
+        "name": {
+          "type": "string"
+        },
+        "executor": {
+          "type": "string"
+        },
+        "variant": {
+          "type": "string"
+        },
         "models": {
           "type": "array",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
-        "weight": { "type": "number" },
-        "role": { "type": "string" },
-        "enabled": { "type": "boolean" },
+        "weight": {
+          "type": "number"
+        },
+        "role": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
         "provider": {
           "type": "string",
           "description": "AI provider for this executor (e.g. anthropic, openai, ollama, nebius, scaleway, deepinfra, qiniu, cloudflare, xiaomi, synthetic, perplexity)"
@@ -929,54 +1347,120 @@
           "type": "string",
           "enum": ["next-in-line", "weighted-random", "round-robin"]
         },
-        "maxRetries": { "type": "number" },
-        "cooldownMinutes": { "type": "number" },
-        "disableOnConsecutiveFailures": { "type": "number" }
+        "maxRetries": {
+          "type": "number"
+        },
+        "cooldownMinutes": {
+          "type": "number"
+        },
+        "disableOnConsecutiveFailures": {
+          "type": "number"
+        }
       }
     },
     "repositoryDefaults": {
       "type": "object",
       "additionalProperties": true,
       "properties": {
-        "path": { "type": "string" },
-        "slug": { "type": "string" },
-        "projectName": { "type": "string" },
-        "orchestratorScript": { "type": "string" },
-        "orchestratorArgs": { "type": "string" },
-        "logDir": { "type": "string" },
-        "watchPath": { "type": "string" },
-        "profile": { "type": "string" },
-        "envProfile": { "type": "string" },
-        "mode": { "type": "string" }
+        "path": {
+          "type": "string"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "projectName": {
+          "type": "string"
+        },
+        "orchestratorScript": {
+          "type": "string"
+        },
+        "orchestratorArgs": {
+          "type": "string"
+        },
+        "logDir": {
+          "type": "string"
+        },
+        "watchPath": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "envProfile": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        }
       }
     },
     "repository": {
       "type": "object",
       "additionalProperties": true,
       "properties": {
-        "name": { "type": "string" },
-        "id": { "type": "string" },
+        "name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
         "aliases": {
           "type": "array",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
-        "path": { "type": "string" },
-        "repoRoot": { "type": "string" },
-        "slug": { "type": "string" },
-        "repo": { "type": "string" },
-        "repoUrlBase": { "type": "string" },
-        "projectName": { "type": "string" },
-        "primary": { "type": "boolean" },
-        "orchestratorScript": { "type": "string" },
-        "orchestratorArgs": { "type": "string" },
-        "logDir": { "type": "string" },
-        "watchPath": { "type": "string" },
-        "profile": { "type": "string" },
-        "envProfile": { "type": "string" },
-        "mode": { "type": "string" },
-        "cacheDir": { "type": "string" },
-        "statusPath": { "type": "string" },
-        "telegramPollLockPath": { "type": "string" }
+        "path": {
+          "type": "string"
+        },
+        "repoRoot": {
+          "type": "string"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "repoUrlBase": {
+          "type": "string"
+        },
+        "projectName": {
+          "type": "string"
+        },
+        "primary": {
+          "type": "boolean"
+        },
+        "orchestratorScript": {
+          "type": "string"
+        },
+        "orchestratorArgs": {
+          "type": "string"
+        },
+        "logDir": {
+          "type": "string"
+        },
+        "watchPath": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "envProfile": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "cacheDir": {
+          "type": "string"
+        },
+        "statusPath": {
+          "type": "string"
+        },
+        "telegramPollLockPath": {
+          "type": "string"
+        }
       }
     },
     "profiles": {
@@ -985,19 +1469,39 @@
         "type": "object",
         "additionalProperties": true,
         "properties": {
-          "description": { "type": "string" },
+          "description": {
+            "type": "string"
+          },
           "env": {
             "type": "object",
-            "additionalProperties": { "type": "string" }
+            "additionalProperties": {
+              "type": "string"
+            }
           },
-          "envFile": { "type": "string" },
-          "envOverride": { "type": "boolean" },
-          "repository": { "type": "string" },
-          "repo": { "type": "string" },
-          "defaultRepository": { "type": "string" },
-          "overrides": { "type": "object" },
-          "config": { "type": "object" },
-          "settings": { "type": "object" }
+          "envFile": {
+            "type": "string"
+          },
+          "envOverride": {
+            "type": "boolean"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "defaultRepository": {
+            "type": "string"
+          },
+          "overrides": {
+            "type": "object"
+          },
+          "config": {
+            "type": "object"
+          },
+          "settings": {
+            "type": "object"
+          }
         }
       }
     },
@@ -1005,7 +1509,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": { "type": "boolean" },
+        "enabled": {
+          "type": "boolean"
+        },
         "profile": {
           "type": "string",
           "enum": ["strict", "balanced", "lightweight", "none"]
@@ -1017,7 +1523,9 @@
             "enum": ["codex", "claude", "copilot"]
           }
         },
-        "overwriteExisting": { "type": "boolean" }
+        "overwriteExisting": {
+          "type": "boolean"
+        }
       }
     },
     "agentHooks": {
@@ -1037,7 +1545,9 @@
         },
         "defaultServers": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "MCP server IDs attached to every agent launch by default (e.g. [\"context7\", \"microsoft-docs\"])"
         },
         "catalogOverrides": {
@@ -1045,7 +1555,9 @@
           "additionalProperties": {
             "type": "object",
             "description": "Per-server environment variable overrides",
-            "additionalProperties": { "type": "string" }
+            "additionalProperties": {
+              "type": "string"
+            }
           },
           "description": "Environment variable overrides keyed by MCP server ID"
         },
@@ -1245,19 +1757,49 @@
         },
         "liveToolCompactionAllowCommands": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["grep", "rg", "find", "git", "go", "npm", "pnpm", "yarn", "node", "python", "python3", "pytest", "docker", "kubectl", "cargo", "gradle", "maven", "mvn", "javac", "tsc", "jest", "vitest", "deno"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "grep",
+            "rg",
+            "find",
+            "git",
+            "go",
+            "npm",
+            "pnpm",
+            "yarn",
+            "node",
+            "python",
+            "python3",
+            "pytest",
+            "docker",
+            "kubectl",
+            "cargo",
+            "gradle",
+            "maven",
+            "mvn",
+            "javac",
+            "tsc",
+            "jest",
+            "vitest",
+            "deno"
+          ],
           "description": "Command or tool families eligible for live compaction."
         },
         "perType": {
           "type": "object",
           "description": "Per-interaction-type config overrides. Keys: task, manual, primary, chat, voice, flow.",
-          "additionalProperties": { "type": "object" }
+          "additionalProperties": {
+            "type": "object"
+          }
         },
         "perAgent": {
           "type": "object",
           "description": "Per-agent-SDK config overrides. Keys: codex-sdk, copilot-sdk, claude-sdk, gemini-sdk, opencode-sdk.",
-          "additionalProperties": { "type": "object" }
+          "additionalProperties": {
+            "type": "object"
+          }
         }
       }
     },
@@ -1287,4 +1829,3 @@
     }
   }
 }
-

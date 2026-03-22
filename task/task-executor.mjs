@@ -98,10 +98,16 @@ import {
   initTaskClaims,
   claimTask,
   renewClaim,
+  getClaim,
   releaseTask as releaseTaskClaim,
 } from "./task-claims.mjs";
 import { initPresence, getPresenceState } from "../infra/presence.mjs";
 import { getSharedState } from "../workspace/shared-state-manager.mjs";
+import {
+  createExecutionPipeline as createTaskExecutionPipeline,
+  runExecutionPipeline as runTaskExecutionPipeline,
+  runExecutionPipelineAgent,
+} from "./task-executor-pipeline.mjs";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -115,6 +121,8 @@ const NO_COMMIT_MAX_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 const CLAIM_CONFLICT_COMMENT_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 const REPO_AREA_SLOW_MERGE_LATENCY_MS = 4 * 60 * 60 * 1000;
 const REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS = 8 * 60 * 60 * 1000;
+const REPO_AREA_CONTENTION_EVENT_LIMIT = 60;
+const WORKFLOW_ACTIVE_RUNS_INDEX = "_active-runs.json";
 const FATAL_CLAIM_RENEW_ERRORS = new Set([
   "task_claimed_by_different_instance",
   "claim_token_mismatch",
@@ -171,6 +179,24 @@ async function transitionTaskStatus(taskId, status, options = {}) {
 function transitionInternalTaskStatus(taskId, status, source) {
   if (hasExternalTaskStatusTransitionHandler()) return null;
   return setInternalStatus(taskId, status, source);
+}
+
+function isMatchingLocalClaimProcessAlive(ownerId, claim) {
+  if (!ownerId || !claim) return null;
+  const claimInstanceId = String(claim.instance_id || claim.instanceId || "");
+  if (!claimInstanceId || claimInstanceId !== String(ownerId)) return null;
+  const claimHost = String(claim?.metadata?.host || "").trim();
+  if (!claimHost || claimHost.toLowerCase() !== os.hostname().toLowerCase()) {
+    return null;
+  }
+  const claimPid = Number(claim?.metadata?.pid);
+  if (!Number.isFinite(claimPid) || claimPid <= 0) return null;
+  try {
+    process.kill(Math.floor(claimPid), 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function parseNumberEnv(name, fallback) {
@@ -306,6 +332,11 @@ function normalizeRepoAreaTelemetryEntry(raw = {}) {
 
 function createEmptyRepoAreaTelemetryEntry() {
   return normalizeRepoAreaTelemetryEntry();
+}
+
+function normalizeRepoAreaResolutionReason(value, fallback = "resolved") {
+  const normalized = normalizeRepoAreaKey(value);
+  return normalized || fallback;
 }
 
 function averageNumbers(values = []) {
@@ -746,6 +777,8 @@ const WATCHDOG_GRACE_MS = 10 * 60_000; // 10 minutes — generous buffer, stream
 const INPROGRESS_RECOVERY_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours — agents should be resumable for a full day
 /** Unstarted in-progress tasks older than this are treated as stranded and reset to todo */
 const INPROGRESS_RECOVERY_UNSTARTED_RESET_MS = 20 * 60 * 1000;
+/** Periodic in-progress recovery cadence while executor is running */
+const INPROGRESS_RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
 
 function normalizeSelector(value) {
   return String(value || "")
@@ -820,7 +853,7 @@ const MAX_IDLE_CONTINUES = 5;
 const WATCHDOG_WARMUP_MS = 5 * 60_000; // 5 minutes warmup
 const SHARED_STATE_ENABLED = process.env.SHARED_STATE_ENABLED !== "false";
 const SHARED_STATE_STALE_THRESHOLD_MS =
-  Number(process.env.SHARED_STATE_STALE_THRESHOLD_MS) || 300_000;
+  Number(process.env.SHARED_STATE_STALE_THRESHOLD_MS) || 600_000;
 const NO_COMMIT_STATE_FILE = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "..",
@@ -2281,6 +2314,7 @@ class TaskExecutor {
       activeWorkspace: "",
       branchRouting: null,
       defaultTargetBranch: null,
+      workflowRunsDir: null,
       onTaskStarted: null,
       onTaskCompleted: null,
       onTaskFailed: null,
@@ -2324,6 +2358,11 @@ class TaskExecutor {
       merged.branchRouting?.defaultBranch ||
       process.env.VK_TARGET_BRANCH ||
       "origin/main";
+    this.workflowRunsDir =
+      typeof merged.workflowRunsDir === "string" &&
+      String(merged.workflowRunsDir).trim()
+        ? resolve(String(merged.workflowRunsDir))
+        : null;
     this.onTaskStarted = merged.onTaskStarted;
     this.onTaskCompleted = merged.onTaskCompleted;
     this.onTaskFailed = merged.onTaskFailed;
@@ -2400,6 +2439,8 @@ class TaskExecutor {
     this._pauseTimer = null;
     this._pollTimer = null;
     this._pollInProgress = false;
+    this._recoveryTimer = null;
+    this._inProgressRecoveryInFlight = false;
     this._resolvedProjectId = null;
     this._taskClaimsReady = false;
     this._taskClaimsInitPromise = null;
@@ -2502,6 +2543,8 @@ class TaskExecutor {
     this._repoAreaTaskAreas = new Map();
     /** @type {Map<string, number>} */
     this._repoAreaTaskStartedAt = new Map();
+    /** @type {Array<{ at: string, taskId: string, area: string, waitMs: number, resolutionReason: string }>} */
+    this._repoAreaContentionEvents = [];
     this._repoAreaDispatchCycles = 0;
     this._repoAreaConflictCount = 0;
 
@@ -2843,6 +2886,22 @@ class TaskExecutor {
         if (!key || !startedAt) continue;
         this._repoAreaTaskStartedAt.set(key, startedAt);
       }
+      this._repoAreaContentionEvents = Array.isArray(parsed?.repoAreaContentionEvents)
+        ? parsed.repoAreaContentionEvents
+          .slice(-REPO_AREA_CONTENTION_EVENT_LIMIT)
+          .map((event) => ({
+            at: event?.at
+              ? String(event.at)
+              : new Date().toISOString(),
+            taskId: normalizeTaskIdKey(event?.taskId) || "",
+            area: normalizeRepoAreaKey(event?.area) || "",
+            waitMs: Math.max(0, Math.trunc(Number(event?.waitMs || 0))),
+            resolutionReason: normalizeRepoAreaResolutionReason(
+              event?.resolutionReason,
+            ),
+          }))
+          .filter((event) => event.taskId && event.area)
+        : [];
       this._repoAreaDispatchHistory = Array.isArray(parsed?.repoAreaDispatchHistory)
         ? parsed.repoAreaDispatchHistory
           .slice(-20)
@@ -3050,6 +3109,9 @@ class TaskExecutor {
             repoAreaBlockedTasks: Object.fromEntries(this._repoAreaBlockedTasks),
             repoAreaTaskAreas: Object.fromEntries(this._repoAreaTaskAreas),
             repoAreaTaskStartedAt: Object.fromEntries(this._repoAreaTaskStartedAt),
+            repoAreaContentionEvents: this._repoAreaContentionEvents.slice(
+              -REPO_AREA_CONTENTION_EVENT_LIMIT,
+            ),
             repoAreaDispatchHistory: this._repoAreaDispatchHistory.slice(-20),
             repoAreaLockStatus: this._buildRepoAreaLockStatus(),
             slots,
@@ -3198,6 +3260,11 @@ class TaskExecutor {
       }
     }
 
+    this._clearRepoAreaWaitsForTask(
+      typeof taskOrTaskId === "string" ? { id: taskId, repo_areas: areas } : taskOrTaskId,
+      now,
+      "abandoned",
+    );
     this._clearRepoAreaBlockedTask(taskId);
     if (isFailure || isSuccess) {
       this._repoAreaTaskStartedAt.delete(taskId);
@@ -3382,11 +3449,9 @@ class TaskExecutor {
       }
 
       try {
-        await this._recoverInterruptedInProgressTasks();
-      } catch (err) {
-        console.warn(
-          `${TAG} in-progress recovery warning: ${err?.message || err}`,
-        );
+        await this._runInProgressRecoverySafely("startup");
+      } catch {
+        // _runInProgressRecoverySafely already logs details
       }
     };
 
@@ -3397,6 +3462,14 @@ class TaskExecutor {
       .finally(() => {
         if (!this.workflowOwnsTaskLifecycle) this._runPollLoopSafely();
       });
+
+    if (this._recoveryTimer) {
+      clearInterval(this._recoveryTimer);
+      this._recoveryTimer = null;
+    }
+    this._recoveryTimer = setInterval(() => {
+      void this._runInProgressRecoverySafely("interval");
+    }, INPROGRESS_RECOVERY_INTERVAL_MS);
 
     if (this.workflowOwnsTaskLifecycle) {
       console.log(
@@ -3428,6 +3501,10 @@ class TaskExecutor {
     if (this._pollTimer) {
       clearInterval(this._pollTimer);
       this._pollTimer = null;
+    }
+    if (this._recoveryTimer) {
+      clearInterval(this._recoveryTimer);
+      this._recoveryTimer = null;
     }
 
     // Persist runtime state before waiting so unexpected exits still recover
@@ -3849,6 +3926,9 @@ class TaskExecutor {
         .map((entry) => String(entry?.taskKey || "").trim())
         .filter(Boolean),
     );
+    const activeWorkflowTaskIds = this.workflowOwnsTaskLifecycle
+      ? this._readActiveWorkflowTaskIds()
+      : new Set();
 
     const available = Math.max(0, this.maxParallel - this._activeSlots.size);
     if (available === 0) return;
@@ -3880,19 +3960,34 @@ class TaskExecutor {
         continue;
       }
 
+      let hasStaleSharedClaim = false;
       if (SHARED_STATE_ENABLED) {
         try {
           const sharedState = await getSharedState(id, this.repoRoot);
           const ownerId = sharedState?.ownerId || null;
           const heartbeat =
             sharedState?.ownerHeartbeat || sharedState?.heartbeat || null;
-          if (
-            ownerId &&
-            ownerId !== this._instanceId &&
-            !isSharedHeartbeatStale(heartbeat, SHARED_STATE_STALE_THRESHOLD_MS)
-          ) {
-            skippedForActiveClaim++;
-            continue;
+          // Any non-stale owner (workflow run or executor instance) should
+          // block recovery re-dispatch. Removing the ownerId !== instanceId
+          // guard ensures workflow-owned tasks (wf-<uuid> owners) are also
+          // protected when action.claim_task IS used.
+          if (ownerId) {
+            const heartbeatIsFresh = !isSharedHeartbeatStale(
+              heartbeat,
+              SHARED_STATE_STALE_THRESHOLD_MS,
+            );
+            if (heartbeatIsFresh) {
+              const claim = await getClaim(id).catch(() => null);
+              const localClaimAlive = isMatchingLocalClaimProcessAlive(
+                ownerId,
+                claim,
+              );
+              if (localClaimAlive !== false) {
+                skippedForActiveClaim++;
+                continue;
+              }
+            }
+            hasStaleSharedClaim = true;
           }
         } catch {
           /* best effort */
@@ -3939,7 +4034,7 @@ class TaskExecutor {
         !hasThread &&
         attempts <= 0 &&
         ageMs > INPROGRESS_RECOVERY_UNSTARTED_RESET_MS;
-      if (isUnstartedStale) {
+      if (isUnstartedStale && !hasStaleSharedClaim) {
         try {
           await transitionTaskStatus(id, "todo", {
             source: "task-executor-recovery-unstarted",
@@ -3963,6 +4058,59 @@ class TaskExecutor {
       }
       const isFreshEnough =
         ageMs === 0 || ageMs <= INPROGRESS_RECOVERY_MAX_AGE_MS;
+      const hasWorkflowRun = activeWorkflowTaskIds.has(id);
+
+      // In workflow-owned mode, the authoritative liveness signals are the
+      // persisted workflow active-runs index, then any live executor thread,
+      // then the shared-state owner. If none of those exist, the task is
+      // ownerless and must be reset even when still "fresh".
+      if (this.workflowOwnsTaskLifecycle) {
+        if (hasWorkflowRun || hasThread) {
+          skippedForActiveClaim++;
+          continue;
+        }
+        if (hasStaleSharedClaim) {
+          try {
+            await transitionTaskStatus(id, "todo", {
+              source: "task-executor-recovery-stale-workflow-claim",
+            });
+          } catch {
+            /* best effort */
+          }
+          try {
+            transitionInternalTaskStatus(
+              id,
+              "todo",
+              "task-executor-recovery-stale-workflow-claim",
+            );
+          } catch {
+            /* best effort */
+          }
+          this._removeRuntimeSlot(id);
+          resetToTodo++;
+          continue;
+        }
+        try {
+          await transitionTaskStatus(id, "todo", {
+            source: "task-executor-recovery-missing-workflow-run",
+          });
+        } catch {
+          /* best effort */
+        }
+        try {
+          transitionInternalTaskStatus(
+            id,
+            "todo",
+            "task-executor-recovery-missing-workflow-run",
+          );
+        } catch {
+          /* best effort */
+        }
+        this._removeRuntimeSlot(id);
+        resetToTodo++;
+        continue;
+      }
+
       if (hasThread || isFreshEnough) {
         if (!internalTask) {
           try {
@@ -4031,6 +4179,52 @@ class TaskExecutor {
     }
   }
 
+  _readActiveWorkflowTaskIds() {
+    const taskIds = new Set();
+    if (!this.workflowRunsDir) return taskIds;
+    const activeRunsPath = resolve(this.workflowRunsDir, WORKFLOW_ACTIVE_RUNS_INDEX);
+    if (!existsSync(activeRunsPath)) return taskIds;
+    let activeRuns = [];
+    try {
+      const parsed = JSON.parse(readFileSync(activeRunsPath, "utf8"));
+      activeRuns = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.runs)
+          ? parsed.runs
+          : [];
+    } catch {
+      return taskIds;
+    }
+    for (const entry of activeRuns) {
+      const directTaskId = normalizeTaskIdKey(
+        entry?.taskId || entry?.activeTaskId,
+      );
+      if (directTaskId) {
+        taskIds.add(directTaskId);
+        continue;
+      }
+      const runId = String(entry?.runId || "").trim();
+      if (!runId) continue;
+      const detailPath = resolve(this.workflowRunsDir, `${runId}.json`);
+      if (!existsSync(detailPath)) continue;
+      try {
+        const detail = JSON.parse(readFileSync(detailPath, "utf8"));
+        const detailTaskId = normalizeTaskIdKey(
+          detail?.data?.taskId ||
+            detail?.data?.activeTaskId ||
+            detail?.inputData?.taskId ||
+            detail?.inputData?.activeTaskId,
+        );
+        if (detailTaskId) {
+          taskIds.add(detailTaskId);
+        }
+      } catch {
+        /* best effort */
+      }
+    }
+    return taskIds;
+  }
+
   /**
    * Returns the current executor status for monitoring / Telegram.
    * @returns {Object}
@@ -4082,6 +4276,34 @@ class TaskExecutor {
       ...this._backlogReplenishment,
       projectRequirements: { ...this._projectRequirements },
     };
+  }
+
+  resetTaskThrottleState(taskId, options = {}) {
+    const key = normalizeTaskIdKey(taskId);
+    if (!key) return false;
+
+    let changed = false;
+    if (options.clearNoCommit !== false && this._noCommitCounts.delete(key)) {
+      changed = true;
+    }
+    if (options.clearSkipUntil !== false && this._skipUntil.delete(key)) {
+      changed = true;
+    }
+    if (options.clearCooldowns !== false && this._taskCooldowns.delete(key)) {
+      changed = true;
+    }
+    if (this._idleContinueCounts.delete(key)) {
+      changed = true;
+    }
+    if (this._repoAreaBlockedTasks.has(key)) {
+      this._repoAreaBlockedTasks.delete(key);
+      changed = true;
+    }
+
+    if (changed) {
+      this._saveNoCommitState();
+    }
+    return changed;
   }
 
   setBacklogReplenishmentConfig(patch = {}) {
@@ -4353,7 +4575,30 @@ class TaskExecutor {
     });
   }
 
-  _finalizeRepoAreaWait(taskId, area, now = Date.now()) {
+  _recordRepoAreaContentionEvent(taskId, area, waitMs, resolutionReason) {
+    const normalizedTaskId = normalizeTaskIdKey(taskId);
+    const normalizedArea = normalizeRepoAreaKey(area);
+    if (!normalizedTaskId || !normalizedArea) return;
+    this._repoAreaContentionEvents.push({
+      at: new Date().toISOString(),
+      taskId: normalizedTaskId,
+      area: normalizedArea,
+      waitMs: Math.max(0, Math.trunc(Number(waitMs || 0))),
+      resolutionReason: normalizeRepoAreaResolutionReason(resolutionReason),
+    });
+    if (this._repoAreaContentionEvents.length > REPO_AREA_CONTENTION_EVENT_LIMIT) {
+      this._repoAreaContentionEvents = this._repoAreaContentionEvents.slice(
+        -REPO_AREA_CONTENTION_EVENT_LIMIT,
+      );
+    }
+  }
+
+  _finalizeRepoAreaWait(
+    taskId,
+    area,
+    now = Date.now(),
+    resolutionReason = "resolved",
+  ) {
     const key = this._makeRepoAreaWaitKey(taskId, area);
     if (!key) return 0;
     const pending = this._repoAreaPendingWaits.get(key);
@@ -4366,6 +4611,12 @@ class TaskExecutor {
       metric.waitSamples += 1;
       metric.maxWaitMs = Math.max(metric.maxWaitMs, durationMs);
     }
+    this._recordRepoAreaContentionEvent(
+      pending.taskId,
+      pending.area,
+      durationMs,
+      resolutionReason,
+    );
     return durationMs;
   }
 
@@ -4380,16 +4631,16 @@ class TaskExecutor {
         !candidateIds.has(pending.taskId) &&
         !this._activeSlots.has(pending.taskId)
       ) {
-        this._finalizeRepoAreaWait(pending.taskId, pending.area, now);
+        this._finalizeRepoAreaWait(pending.taskId, pending.area, now, "dequeued");
       }
     }
   }
 
-  _clearRepoAreaWaitsForTask(task, now = Date.now()) {
-    const taskId = normalizeTaskIdKey(task?.id || task?.task_id);
+  _clearRepoAreaWaitsForTask(task, now = Date.now(), resolutionReason = "resolved") {
+    const taskId = normalizeTaskIdKey(task?.id || task?.task_id || task?.taskId);
     if (!taskId) return;
     for (const area of this._extractTaskRepoAreas(task)) {
-      this._finalizeRepoAreaWait(taskId, area, now);
+      this._finalizeRepoAreaWait(taskId, area, now, resolutionReason);
     }
   }
 
@@ -4587,6 +4838,14 @@ class TaskExecutor {
           lastSelectedAt: metric.lastSelectedAt,
         };
       });
+    const contentionByReason = Object.create(null);
+    for (const event of this._repoAreaContentionEvents) {
+      const reason = normalizeRepoAreaResolutionReason(event?.resolutionReason);
+      contentionByReason[reason] = (contentionByReason[reason] || 0) + 1;
+    }
+    const contentionEvents = this._repoAreaContentionEvents.slice(
+      -REPO_AREA_CONTENTION_EVENT_LIMIT,
+    );
 
     return {
       enabled: Number(this.repoAreaParallelLimit || 0) > 0,
@@ -4609,6 +4868,16 @@ class TaskExecutor {
         waitMsTotal: items.reduce((sum, item) => sum + item.waitMsTotal, 0),
         waitSamples: items.reduce((sum, item) => sum + item.waitSamples, 0),
         waitingTasks: items.reduce((sum, item) => sum + item.waitingTasks, 0),
+        contentionEvents: contentionEvents.length,
+      },
+      contention: {
+        events: contentionEvents.length,
+        waitMsTotal: contentionEvents.reduce(
+          (sum, event) => sum + Math.max(0, Number(event?.waitMs || 0)),
+          0,
+        ),
+        byReason: contentionByReason,
+        recent: contentionEvents.slice(-10),
       },
       dispatch: {
         cycles: Math.max(0, Math.trunc(Number(this._repoAreaDispatchCycles || 0))),
@@ -4772,7 +5041,7 @@ class TaskExecutor {
         }
         this._rememberTaskRepoAreas(task, now);
         this._clearRepoAreaBlockedTask(task?.id || task?.task_id);
-        this._clearRepoAreaWaitsForTask(task, now);
+        this._clearRepoAreaWaitsForTask(task, now, "selected");
         for (const area of areas) {
           repoAreaCounts.set(area, (repoAreaCounts.get(area) || 0) + 1);
           const metric = this._getRepoAreaLockMetric(area);
@@ -4962,6 +5231,21 @@ class TaskExecutor {
     });
   }
 
+  async _runInProgressRecoverySafely(trigger = "interval") {
+    if (!this._running) return;
+    if (this._inProgressRecoveryInFlight) return;
+    this._inProgressRecoveryInFlight = true;
+    try {
+      await this._recoverInterruptedInProgressTasks();
+    } catch (err) {
+      console.warn(
+        `${TAG} in-progress recovery warning (${trigger}): ${err?.message || err}`,
+      );
+    } finally {
+      this._inProgressRecoveryInFlight = false;
+    }
+  }
+
   /**
    * Check kanban for todo tasks and dispatch execution.
    * Guarded against overlapping polls and slot saturation.
@@ -4970,6 +5254,30 @@ class TaskExecutor {
   async _pollLoop() {
     // [LEGACY REMOVED] Replaced by workflow node: trigger.task_available + condition.slot_available
     // See workflow-templates/task-lifecycle.mjs
+  }
+
+  createExecutionPipeline(mode = "single", agents = [], options = {}) {
+    return createTaskExecutionPipeline(mode, agents, {
+      ...options,
+      agentRunner:
+        options.agentRunner || this._runExecutionPipelineAgent.bind(this),
+    });
+  }
+
+  async runExecutionPipeline(mode, agents, input, options = {}) {
+    return await runTaskExecutionPipeline(mode, agents, input, {
+      ...options,
+      agentRunner:
+        options.agentRunner || this._runExecutionPipelineAgent.bind(this),
+    });
+  }
+
+  async _runExecutionPipelineAgent(agent, input, context) {
+    return runExecutionPipelineAgent(agent, input, context, {
+      execWithRetry,
+      repoRoot: this.repoRoot || process.cwd(),
+      timeoutMs: this.timeoutMs || 0,
+    });
   }
 
   // ── Task Execution ────────────────────────────────────────────────────────
@@ -5057,6 +5365,76 @@ class TaskExecutor {
    * @returns {Promise<void>}
    */
   async executeTask(task, options = {}) {
+    const taskId = String(task?.id || task?.task_id || "").trim();
+    if (!taskId) {
+      return { skipped: true, reason: "missing_task_id" };
+    }
+
+    // When workflow automation owns lifecycle execution, emit a synthetic
+    // "started" slot so monitor/ui hooks can dispatch trigger.task_assigned.
+    if (this.workflowOwnsTaskLifecycle) {
+      const now = Date.now();
+      const taskTitle = String(task?.title || task?.task_title || taskId).trim() || taskId;
+      const resolvedSdk = String(
+        options?.sdk ||
+          options?.executor ||
+          task?.sdk ||
+          task?.executor ||
+          this.sdk ||
+          "auto",
+      ).trim() || "auto";
+      const resolvedModel = String(
+        options?.model ||
+          task?.model ||
+          task?.modelName ||
+          "",
+      ).trim();
+      const branch = String(
+        task?.branch ||
+          task?.branchName ||
+          task?.meta?.branch ||
+          task?.meta?.branch_name ||
+          "",
+      ).trim() || `task/${taskId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "work"}`;
+      const worktreePath = String(
+        task?.worktreePath ||
+          task?.meta?.worktreePath ||
+          task?.meta?.worktree_path ||
+          "",
+      ).trim() || null;
+
+      const slot = {
+        taskId,
+        taskTitle,
+        branch,
+        worktreePath,
+        sdk: resolvedSdk,
+        model: resolvedModel || null,
+        attempt: 1,
+        startedAt: now,
+        status: "running",
+        agentInstanceId: null,
+      };
+
+      if (typeof this.onTaskStarted === "function") {
+        try {
+          await this.onTaskStarted(task, slot);
+        } catch (err) {
+          console.warn(`${TAG} onTaskStarted hook failed for "${taskTitle}": ${err?.message || err}`);
+        }
+      }
+
+      return {
+        queued: false,
+        started: true,
+        dispatched: true,
+        mode: "workflow-owned",
+        taskId,
+        sdk: resolvedSdk,
+        model: resolvedModel || null,
+      };
+    }
+
     // [LEGACY REMOVED] Replaced by workflow node: TASK_LIFECYCLE_TEMPLATE (all nodes)
     // See workflow-templates/task-lifecycle.mjs
     return { skipped: true, reason: "legacy_removed" };
@@ -5352,7 +5730,7 @@ export function loadExecutorOptionsFromConfig() {
   return {
     mode: envMode || configExec.mode || "internal",
     maxParallel: Number(
-      process.env.INTERNAL_EXECUTOR_PARALLEL || configExec.maxParallel || 3,
+      process.env.INTERNAL_EXECUTOR_PARALLEL || configExec.maxParallel || 5,
     ),
     baseBranchParallelLimit: Number(
       process.env.INTERNAL_EXECUTOR_BASE_BRANCH_PARALLEL ||

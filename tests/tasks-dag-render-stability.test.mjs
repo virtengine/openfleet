@@ -37,7 +37,10 @@ for (const { relPath, source } of files) {
     it("keeps depth normalization and drag wiring hooks in sync", () => {
       expect(source).toContain("buildDagDepthMap(");
       expect(source).toContain("buildTopologicalDepthMap(");
-      expect(source).toContain("beginWireDrag(node, event)");
+      expect(
+        source.includes("beginWireDrag(node, event)") ||
+        source.includes("handleWireNodePointerDown(node, event)"),
+      ).toBe(true);
       expect(source).toContain("onDeleteEdge=${(edge) => handleDeleteDagEdge");
     });
   });

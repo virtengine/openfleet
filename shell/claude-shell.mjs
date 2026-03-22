@@ -437,9 +437,22 @@ async function saveState() {
 }
 
 function extractTaskHeading(msg) {
-  // Prompt first line is "# TASKID — Task Title" (from _buildTaskPrompt).
+  // Prompt first line is "# Task: Task Title" (or legacy "# TASKID — Task Title").
   // Return just the task title portion, or a short fallback.
   const firstLine = msg.split(/\r?\n/)[0].replace(/^#+\s*/, '').trim();
+  if (!firstLine) return 'Execute Task';
+  const lowerLine = firstLine.toLowerCase();
+  if (lowerLine.startsWith('task')) {
+    let index = 4;
+    while (index < firstLine.length && /\s/.test(firstLine[index])) index += 1;
+    const separator = firstLine[index];
+    if (separator === ':' || separator === '-' || separator === '\u2014') {
+      index += 1;
+      while (index < firstLine.length && /\s/.test(firstLine[index])) index += 1;
+      const heading = firstLine.slice(index).trim();
+      if (heading) return heading;
+    }
+  }
   const dashIdx = firstLine.indexOf(' \u2014 ');
   const heading = dashIdx !== -1 ? firstLine.slice(dashIdx + 3).trim() : firstLine;
   return heading || 'Execute Task';

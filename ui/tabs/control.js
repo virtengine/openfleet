@@ -23,6 +23,7 @@ import { ICONS } from "../modules/icons.js";
 import { iconText as iconTextUtil } from "../modules/icon-utils.js";
 import { cloneValue, truncate } from "../modules/utils.js";
 import { SegmentedControl, Collapsible } from "../components/forms.js";
+import { SkeletonCard } from "../components/shared.js";
 
 /* ─── Command registry for autocomplete ─── */
 const CMD_REGISTRY = [

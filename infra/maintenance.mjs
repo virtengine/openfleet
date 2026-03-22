@@ -117,11 +117,15 @@ function clearBranchSyncWarning(key) {
 function logThrottledBranchSync(
   key,
   message,
-  {
+  levelOrOptions = {},
+) {
+  const options = typeof levelOrOptions === "string"
+    ? { level: levelOrOptions }
+    : (levelOrOptions || {});
+  const {
     level = "warn",
     throttleMs = BRANCH_SYNC_LOG_THROTTLE_MS,
-  } = {},
-) {
+  } = options;
   const normalizedKey = String(key || "default").trim() || "default";
   const now = Date.now();
   const state = branchSyncLogState.get(normalizedKey) || {
@@ -147,11 +151,12 @@ function logThrottledBranchSync(
       : "";
   const line = `${message}${suffix}`;
 
+  const isConsoleLogLevel = level === "info" || level === "log";
   if (level === "error") {
     console.error(line);
   } else if (level === "info") {
-    console.info(line);
-  } else if (level === "log") {
+    console.log(line);
+  } else if (isConsoleLogLevel) {
     console.log(line);
   } else {
     console.warn(line);
@@ -608,6 +613,10 @@ const MONITOR_SCRIPT_SEGMENT_RE =
 const JS_MONITOR_LAUNCHER_RE = /\b(node(?:\.exe)?|bun|tsx|deno)\b/;
 const MONITOR_EVAL_IMPORT_RE =
   /(import|require)\s*\(\s*["'`][^"'`]*monitor\.mjs[^"'`]*["'`]\s*\)/;
+// Matches `monitor.mjs` followed only by flags (--...) and then a positional word argument,
+// indicating a sub-command invocation (e.g. `monitor.mjs agent list --json`).
+// The daemon monitor only has flag args or no args after the script name.
+const MONITOR_SUBCOMMAND_RE = /monitor\.mjs(?:\s+--\S+)*\s+[^-\s]/;
 const PID_START_TIME_TOLERANCE_MS = 90_000;
 const UNKNOWN_OWNER_MONITOR_GRACE_MS = 3 * 60 * 1000;
 const MONITOR_PROCESS_STARTED_AT = new Date().toISOString();
@@ -698,7 +707,7 @@ function parsePidFile(raw) {
   return { pid: Number(text), raw: text };
 }
 
-function formatPidFileSummary(parsed) {
+export function formatPidFileSummary(parsed) {
   const pid = Number(parsed?.pid);
   if (Number.isFinite(pid) && pid > 0) return String(pid);
   const raw = String(parsed?.raw || "").replace(/\s+/g, " ").trim();
@@ -731,6 +740,12 @@ function getProcessSnapshot(pid) {
 export function classifyMonitorCommandLine(commandLine) {
   const normalized = String(commandLine || "").toLowerCase().replace(/\\/g, "/");
   if (!normalized.trim()) return "unknown";
+  // Sub-command invocations (e.g. `monitor.mjs agent list --json --active`) are helper
+  // processes, NOT the singleton daemon monitor. Detect by a positional (non-flag) word
+  // following monitor.mjs — the daemon only uses flag args (--daemon-child, --watch, …).
+  if (normalized.includes("monitor.mjs") && MONITOR_SUBCOMMAND_RE.test(normalized)) {
+    return "other";
+  }
   if (normalized.includes(MONITOR_MARKER)) return "monitor";
   if (normalized.includes("bosun") && normalized.includes("monitor.mjs")) {
     return "monitor";
@@ -1134,6 +1149,7 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           windowsHide: true,
         });
         if (statusCheck.stdout?.trim()) {
+          console.log(`[maintenance] local '${branch}' diverged (${ahead}↑ ${behind}↓) but has uncommitted changes — skipping`);
           logThrottledBranchSync(
             `sync:${branch}:diverged-dirty`,
             `[maintenance] local '${branch}' diverged (${ahead}↑ ${behind}↓) but has uncommitted changes — skipping`,
@@ -1195,6 +1211,7 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           windowsHide: true,
         });
         if (statusCheck.stdout?.trim()) {
+          console.log(`[maintenance] '${branch}' is checked out with uncommitted changes — skipping pull`);
           logThrottledBranchSync(
             `sync:${branch}:dirty-pull-skip`,
             `[maintenance] '${branch}' is checked out with uncommitted changes — skipping pull`,
@@ -1345,7 +1362,7 @@ export async function runMaintenanceSweep(opts = {}) {
 
   // Guard against core.bare=true corruption that accumulates from worktree ops
   try {
-    const repoRoot = resolve(import.meta.dirname || ".", "..", "..");
+    const repoRoot = resolve(import.meta.dirname || ".", "..");
     fixGitConfigCorruption(repoRoot);
   } catch {
     /* best-effort */
@@ -1379,4 +1396,3 @@ export async function runMaintenanceSweep(opts = {}) {
 
   return result;
 }
-

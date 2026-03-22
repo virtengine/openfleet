@@ -2,9 +2,10 @@
 /**
  * list-todos — Scan codebase for TODO/FIXME/HACK/XXX/BUG comment markers
  *
- * Usage: node list-todos.mjs [rootDir] [--json]
+ * Usage: node list-todos.mjs [rootDir] [--json] [--help]
  *   rootDir  defaults to cwd
  *   --json   emit JSON array instead of human-readable output
+ *   --help   show usage and exit without scanning
  *
  * Exit 0 always (informational tool).
  */
@@ -12,6 +13,11 @@ import { readdirSync, readFileSync } from "node:fs";
 import { resolve, relative, extname } from "node:path";
 
 const args = process.argv.slice(2);
+if (args.includes("--help") || args.includes("-h") || args.includes("help")) {
+  console.log("Usage: node list-todos.mjs [rootDir] [--json] [--help]");
+  console.log("Scans for TODO/FIXME/HACK/XXX/TEMP/BUG comment markers.");
+  process.exit(0);
+}
 const jsonMode = args.includes("--json");
 const ROOT = args.find((a) => !a.startsWith("-")) || process.cwd();
 

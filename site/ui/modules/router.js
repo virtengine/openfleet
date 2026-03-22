@@ -17,6 +17,7 @@ const tabHistory = [];
 const ROUTE_TABS = new Set([
   "dashboard",
   "tasks",
+  "benchmarks",
   "chat",
   "workflows",
   "manual-flows",
@@ -259,6 +260,7 @@ export const TAB_CONFIG = [
   { id: "library", label: "Library", icon: "book" },
   { id: "manual-flows", label: "Run Flows", icon: "zap" },
   { id: "telemetry", label: "Telemetry", icon: "chart" },
+  { id: "benchmarks", label: "Bench", icon: "chart" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
 

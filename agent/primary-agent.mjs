@@ -11,6 +11,7 @@ import { ensureRepoConfigs, printRepoConfigSummary } from "../config/repo-config
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 import { getAgentToolConfig, getEffectiveTools } from "./agent-tool-config.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
+import { getEntry, getEntryContent, resolveAgentProfileLibraryMetadata } from "../infra/library-manager.mjs";
 import { execPooledPrompt } from "./agent-pool.mjs";
 import {
   execCodexPrompt,
@@ -67,7 +68,9 @@ import {
 import { getModelsForExecutor, normalizeExecutorKey } from "../task/task-complexity.mjs";
 
 /** Valid agent interaction modes */
-const VALID_MODES = ["ask", "agent", "plan", "web", "instant"];
+const CORE_MODES = ["ask", "agent", "plan", "web", "instant"];
+/** Custom modes loaded from library */
+const _customModes = new Map();
 
 const MODE_ALIASES = Object.freeze({
   code: "agent",
@@ -116,7 +119,37 @@ function normalizeAgentMode(rawMode, fallback = "agent") {
   const normalized = String(rawMode || "").trim().toLowerCase();
   if (!normalized) return fallback;
   const mapped = MODE_ALIASES[normalized] || normalized;
-  return VALID_MODES.includes(mapped) ? mapped : fallback;
+  return getValidModes().includes(mapped) ? mapped : fallback;
+}
+
+/**
+ * Get all valid modes including dynamically registered custom modes.
+ * @returns {string[]}
+ */
+function getValidModes() {
+  return [...CORE_MODES, ..._customModes.keys()];
+}
+
+/**
+ * Get mode prefix for a given mode, including custom modes.
+ * @param {string} mode
+ * @returns {string}
+ */
+function getModePrefix(mode) {
+  if (MODE_PREFIXES[mode] !== undefined) return MODE_PREFIXES[mode];
+  const custom = _customModes.get(mode);
+  return custom?.prefix || "";
+}
+
+/**
+ * Get execution policy for a given mode, including custom modes.
+ * @param {string} mode
+ * @returns {object|null}
+ */
+function getModeExecPolicy(mode) {
+  if (MODE_EXEC_POLICIES[mode]) return MODE_EXEC_POLICIES[mode];
+  const custom = _customModes.get(mode);
+  return custom?.execPolicy || null;
 }
 
 function normalizeAttachments(input) {
@@ -156,6 +189,134 @@ function appendAttachmentsToPrompt(message, attachments) {
   if (!list.length) return { message, appended: false };
   const lines = ["", "Attachments:", ...list.map(formatAttachmentLine)];
   return { message: `${message}${lines.join("\n")}`, appended: true };
+}
+
+function normalizeRepoMap(repoMap) {
+  if (!repoMap || typeof repoMap !== "object") return null;
+  const root = String(repoMap.root || repoMap.repoRoot || "").trim();
+  const files = Array.isArray(repoMap.files)
+    ? repoMap.files
+        .filter((entry) => entry && typeof entry === "object")
+        .map((entry) => ({
+          path: String(entry.path || entry.file || "").trim(),
+          summary: String(entry.summary || entry.description || "").trim(),
+          symbols: Array.isArray(entry.symbols)
+            ? entry.symbols.map((symbol) => String(symbol || "").trim()).filter(Boolean)
+            : [],
+        }))
+        .filter((entry) => entry.path)
+    : [];
+  if (!root && files.length === 0) return null;
+  return { root, files };
+}
+
+function formatRepoMap(repoMap) {
+  const normalized = normalizeRepoMap(repoMap);
+  if (!normalized) return "";
+  const lines = ["## Repo Map"];
+  if (normalized.root) lines.push(`- Root: ${normalized.root}`);
+  for (const file of normalized.files) {
+    const parts = [file.path];
+    if (file.symbols.length) parts.push(`symbols: ${file.symbols.join(", ")}`);
+    if (file.summary) parts.push(file.summary);
+    lines.push(`- ${parts.join(" — ")}`);
+  }
+  return lines.join("\n");
+}
+
+function summarizePathSegment(segment) {
+  return String(segment || "")
+    .replace(/[-_]+/g, " ")
+    .replace(/\.m?js$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function inferRepoMapEntry(pathValue) {
+  const path = String(pathValue || "").trim().replace(/\\/g, "/");
+  if (!path) return null;
+  const name = path.split("/").pop() || path;
+  const stem = summarizePathSegment(name);
+  const dir = path.includes("/") ? path.split("/").slice(0, -1).join("/") : "";
+  const dirHint = dir ? summarizePathSegment(dir.split("/").pop()) : "";
+  const symbols = [];
+  const lowerStem = stem.toLowerCase();
+  if (lowerStem) {
+    const compact = lowerStem
+      .split(" ")
+      .filter(Boolean)
+      .map((part, index) => (index === 0 ? part : part.charAt(0).toUpperCase() + part.slice(1)))
+      .join("");
+    if (compact) {
+      symbols.push(compact);
+      if (!compact.startsWith("test")) symbols.push(`test${compact.charAt(0).toUpperCase()}${compact.slice(1)}`);
+    }
+  }
+  const summaryParts = [];
+  if (dirHint) summaryParts.push(`${dirHint} module`);
+  if (stem) summaryParts.push(stem);
+  return {
+    path,
+    summary: summaryParts.join(" — "),
+    symbols: [...new Set(symbols)].slice(0, 3),
+  };
+}
+
+function deriveRepoMap(options = {}) {
+  const explicit = normalizeRepoMap(options.repoMap);
+  if (explicit) return explicit;
+  const changedFiles = Array.isArray(options.changedFiles)
+    ? options.changedFiles.map((value) => String(value || "").trim()).filter(Boolean)
+    : [];
+  if (!changedFiles.length) return null;
+  const root = String(options.repoRoot || options.cwd || resolveRepoRoot() || "").trim();
+  const files = changedFiles
+    .map((pathValue) => inferRepoMapEntry(pathValue))
+    .filter(Boolean)
+    .slice(0, Number(options.repoMapFileLimit) > 0 ? Number(options.repoMapFileLimit) : 12);
+  if (!root && files.length === 0) return null;
+  return { root, files };
+}
+
+function inferExecutionRole(options = {}, effectiveMode = "agent") {
+  const explicitRole = String(options.executionRole || "").trim().toLowerCase();
+  if (explicitRole) return explicitRole;
+  if (effectiveMode === "plan") return "architect";
+  const architectPlan = String(options.architectPlan || options.planSummary || "").trim();
+  if (architectPlan) return "editor";
+  return "";
+}
+function buildArchitectEditorFrame(options = {}, effectiveMode = "agent") {
+  const executionRole = inferExecutionRole(options, effectiveMode);
+  const repoMapBlock = formatRepoMap(deriveRepoMap(options));
+  const architectPlan = String(options.architectPlan || options.planSummary || "").trim();
+  const lines = ["## Architect/Editor Execution"];
+
+  if (executionRole === "architect") {
+    lines.push(
+      "You are the architect phase.",
+      "Do not implement code changes in this phase.",
+      "Use the repo map to produce a compact structural plan that an editor can execute and validate.",
+      "Editor handoff: include ordered implementation steps, touched files, risks, and validation guidance.",
+    );
+  } else if (executionRole === "editor") {
+    lines.push(
+      "You are the editor phase.",
+      "Implement the approved plan with focused edits and verification.",
+      "Prefer the supplied repo map over broad rediscovery unless validation reveals drift.",
+    );
+    if (architectPlan) {
+      lines.push("", "## Architect Plan", architectPlan);
+    }
+  } else {
+    return repoMapBlock;
+  }
+
+  if (repoMapBlock) {
+    lines.push("", repoMapBlock);
+  }
+
+  return lines.join("\n");
 }
 
 function summarizeContextCompressionItems(items) {
@@ -256,6 +417,108 @@ function buildPrimaryToolCapabilityContract(options = {}) {
     "```",
     "When uncertain about tool inputs/outputs, call get_admin_help via executeToolCall first.",
   ].join("\n");
+}
+
+function toStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item || "").trim()).filter(Boolean);
+}
+
+function resolveSelectedAgentProfileContext(rootDir, agentProfileId) {
+  const id = String(agentProfileId || "").trim();
+  if (!id) return null;
+  const entry = getEntry(rootDir, id);
+  if (!entry || entry.type !== "agent") return null;
+  const profile = getEntryContent(rootDir, entry);
+  if (!profile || typeof profile !== "object") return null;
+
+  const metadata = resolveAgentProfileLibraryMetadata(entry, profile);
+  const promptEntry = profile?.promptOverride ? getEntry(rootDir, profile.promptOverride) : null;
+  const promptContent = promptEntry ? getEntryContent(rootDir, promptEntry) : null;
+  const skills = toStringArray(profile?.skills)
+    .map((skillId) => {
+      const skillEntry = getEntry(rootDir, skillId);
+      if (!skillEntry || skillEntry.type !== "skill") return null;
+      return {
+        id: skillEntry.id,
+        name: skillEntry.name || skillEntry.id,
+        content: String(getEntryContent(rootDir, skillEntry) || "").trim(),
+      };
+    })
+    .filter(Boolean);
+
+  return {
+    id: entry.id,
+    name: entry.name || entry.id,
+    description: entry.description || "",
+    profile,
+    metadata,
+    promptOverride: promptEntry
+      ? {
+        id: promptEntry.id,
+        name: promptEntry.name || promptEntry.id,
+        content: typeof promptContent === "string"
+          ? promptContent.trim()
+          : String(promptContent || "").trim(),
+      }
+      : null,
+    skills,
+  };
+}
+
+function buildPrimaryAgentProfileContract(options = {}) {
+  let rootDir = "";
+  try {
+    rootDir = String(options.cwd || resolveRepoRoot() || process.cwd()).trim();
+  } catch {
+    rootDir = String(options.cwd || process.cwd()).trim();
+  }
+  const selected = resolveSelectedAgentProfileContext(rootDir, options.agentProfileId);
+  if (!selected) return { block: "", preferredMode: "", preferredModel: "" };
+
+  const profileInstructions = String(
+    selected.profile?.instructions
+      || selected.profile?.manualInstructions
+      || selected.profile?.voiceInstructions
+      || "",
+  ).trim();
+  const summary = {
+    id: selected.id,
+    name: selected.name,
+    description: selected.description,
+    agentCategory: selected.metadata.agentCategory,
+    interactiveMode: selected.metadata.interactiveMode,
+    interactiveLabel: selected.metadata.interactiveLabel,
+    sdk: String(selected.profile?.sdk || "").trim() || null,
+    model: String(selected.profile?.model || "").trim() || null,
+    showInChatDropdown: selected.metadata.showInChatDropdown,
+    skillIds: selected.skills.map((skill) => skill.id),
+  };
+  const lines = [
+    "## Selected Agent Profile",
+    "Apply this profile consistently unless the user explicitly overrides it.",
+    "```json",
+    JSON.stringify(summary, null, 2),
+    "```",
+  ];
+  if (profileInstructions) {
+    lines.push("## Profile Instructions", profileInstructions);
+  }
+  if (selected.promptOverride?.content) {
+    lines.push(`## Prompt Override: ${selected.promptOverride.name}`, selected.promptOverride.content);
+  }
+  if (selected.skills.length > 0) {
+    lines.push("## Profile Skills");
+    for (const skill of selected.skills) {
+      if (!skill.content) continue;
+      lines.push(`### ${skill.name}`, skill.content);
+    }
+  }
+  return {
+    block: lines.join("\n\n"),
+    preferredMode: String(selected.metadata.interactiveMode || "").trim(),
+    preferredModel: String(selected.profile?.model || "").trim(),
+  };
 }
 
 const ADAPTERS = {
@@ -901,14 +1164,19 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
   if (!initialized) {
     await initPrimaryAgent();
   }
+  const selectedProfile = buildPrimaryAgentProfileContract(options);
   const sessionId =
     (options && options.sessionId ? String(options.sessionId) : "") ||
     `primary-${activeAdapter.name}`;
   const sessionType =
     (options && options.sessionType ? String(options.sessionType) : "") ||
     "primary";
-  const effectiveMode = normalizeAgentMode(options.mode || agentMode, agentMode);
-  const modePolicy = MODE_EXEC_POLICIES[effectiveMode] || null;
+  const effectiveMode = normalizeAgentMode(
+    options.mode || selectedProfile.preferredMode || agentMode,
+    agentMode,
+  );
+  const effectiveModel = options.model || selectedProfile.preferredModel || undefined;
+  const modePolicy = getModeExecPolicy(effectiveMode);
   const timeoutMs = options.timeoutMs || modePolicy?.timeoutMs || PRIMARY_EXEC_TIMEOUT_MS;
   const maxFailoverAttempts = Number.isInteger(options.maxFailoverAttempts)
     ? Math.max(0, Number(options.maxFailoverAttempts))
@@ -918,12 +1186,14 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
   const attachmentsAppended = options.attachmentsAppended === true;
 
   // Apply mode prefix (options.mode overrides the global setting for this call)
-  const modePrefix = MODE_PREFIXES[effectiveMode] || "";
+  const modePrefix = getModePrefix(effectiveMode);
   const messageWithAttachments = attachments.length && !attachmentsAppended
     ? appendAttachmentsToPrompt(userMessage, attachments).message
     : userMessage;
   const toolContract = buildPrimaryToolCapabilityContract(options);
-  const messageWithToolContract = `${toolContract}\n\n${messageWithAttachments}`;
+  const messageWithToolContract = [selectedProfile.block, toolContract, messageWithAttachments]
+    .filter(Boolean)
+    .join("\n\n");
   const framedMessage = modePrefix ? modePrefix + messageWithToolContract : messageWithToolContract;
 
   // Record user message (original, without mode prefix)
@@ -942,7 +1212,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
       onEvent: options.onEvent,
       abortController: options.abortController,
       cwd: options.cwd,
-      model: options.model,
+      model: effectiveModel,
       sdk: mapAdapterToPoolSdk(activeAdapter.name),
       sessionType,
     });
@@ -1032,7 +1302,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
         }
       }
       const result = await withTimeout(
-        adapter.exec(framedMessage, { ...options, sessionId, abortController: timeoutAbort }),
+        adapter.exec(framedMessage, { ...options, sessionId, model: effectiveModel, abortController: timeoutAbort }),
         timeoutMs,
         `${adapterName}.exec`,
         timeoutAbort,
@@ -1101,7 +1371,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
               }
             }
             const retryResult = await withTimeout(
-              adapter.exec(framedMessage, { ...options, sessionId, abortController: timeoutAbort }),
+              adapter.exec(framedMessage, { ...options, sessionId, model: effectiveModel, abortController: timeoutAbort }),
               timeoutMs,
               `${adapterName}.exec.retry`,
               timeoutAbort,
@@ -1115,6 +1385,18 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
               timestamp: new Date().toISOString(),
               _sessionType: sessionType,
             });
+            const compressionSummary = summarizeContextCompressionItems(retryResult?.items);
+            if (compressionSummary) {
+              tracker.recordEvent(sessionId, {
+                role: "system",
+                type: "system",
+                content: compressionSummary.content,
+                timestamp: new Date().toISOString(),
+                meta: {
+                  contextCompression: compressionSummary,
+                },
+              });
+            }
             clearAdapterFailureState(adapterName);
             return retryResult;
           } catch (retryErr) {
@@ -1241,8 +1523,8 @@ export function getAgentMode() {
  */
 export function setAgentMode(mode) {
   const normalized = normalizeAgentMode(mode, "");
-  if (!VALID_MODES.includes(normalized)) {
-    return { ok: false, mode: agentMode, error: `Invalid mode "${mode}". Valid: ${VALID_MODES.join(", ")}` };
+  if (!getValidModes().includes(normalized)) {
+    return { ok: false, mode: agentMode, error: `Invalid mode "${mode}". Valid: ${getValidModes().join(", ")}` };
   }
   agentMode = normalized;
   return { ok: true, mode: agentMode };
@@ -1254,8 +1536,50 @@ export function setAgentMode(mode) {
  * @returns {string}
  */
 export function applyModePrefix(userMessage) {
-  const prefix = MODE_PREFIXES[agentMode] || "";
+  const prefix = getModePrefix(agentMode);
   return prefix ? prefix + userMessage : userMessage;
+}
+
+/**
+ * Register a custom interaction mode at runtime.
+ * Core modes cannot be overridden.
+ * @param {string} id
+ * @param {{ prefix?: string, execPolicy?: object|null, toolFilter?: object|null, description?: string }} config
+ */
+export function registerCustomMode(id, config) {
+  if (!id || typeof id !== "string") return;
+  const modeId = id.trim().toLowerCase();
+  if (CORE_MODES.includes(modeId)) return;
+  _customModes.set(modeId, {
+    prefix: config.prefix || "",
+    execPolicy: config.execPolicy || null,
+    toolFilter: config.toolFilter || null,
+    description: config.description || "",
+  });
+}
+
+/**
+ * List all available modes (core + custom) with metadata.
+ * @returns {Array<{id: string, description: string, core: boolean}>}
+ */
+export function listAvailableModes() {
+  const modes = CORE_MODES.map((m) => ({
+    id: m,
+    description: MODE_PREFIXES[m]?.slice(0, 80) || "Full agentic behavior",
+    core: true,
+  }));
+  for (const [id, cfg] of _customModes) {
+    modes.push({ id, description: cfg.description, core: false });
+  }
+  return modes;
+}
+
+/**
+ * Get all registered custom modes.
+ * @returns {Array<{id: string, prefix: string, execPolicy: object|null, toolFilter: object|null, description: string}>}
+ */
+export function getCustomModes() {
+  return [..._customModes.entries()].map(([id, cfg]) => ({ id, ...cfg }));
 }
 
 /**
@@ -1354,3 +1678,5 @@ export async function execSdkCommand(command, args = "", adapterName, options = 
   }
   return adapter.execSdkCommand(cmd, args, options);
 }
+
+

@@ -24,4 +24,18 @@ describe("cli task routing", () => {
     expect(cliSource).toContain("const commandStartIndex = taskCommandIndex >= 0 ? taskCommandIndex : taskFlagIndex");
     expect(cliSource).toContain("const taskArgs = args.slice(commandStartIndex + 1)");
   });
+
+  it("routes audit subcommands before global help handling", () => {
+    const auditRoutingIndex = cliSource.indexOf("const auditFlagIndex = args.indexOf(\"--audit\")");
+    const helpRoutingIndex = cliSource.indexOf("// Handle --help");
+
+    expect(auditRoutingIndex).toBeGreaterThan(-1);
+    expect(helpRoutingIndex).toBeGreaterThan(-1);
+    expect(auditRoutingIndex).toBeLessThan(helpRoutingIndex);
+    expect(cliSource).toContain("args.indexOf(\"audit\")");
+    expect(cliSource).toContain("const auditArgs = args.slice(commandStartIndex + 1)");
+    expect(cliSource).toContain("const { runAuditCli } = await import(\"./lib/codebase-audit.mjs\")");
+    expect(cliSource).toContain("const { exitCode } = await runAuditCli(auditArgs)");
+    expect(cliSource).toContain("process.exit(exitCode)");
+  });
 });

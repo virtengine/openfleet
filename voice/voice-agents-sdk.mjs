@@ -291,10 +291,10 @@ export async function createRealtimeSession(agent, provider, config = {}, option
           turnDetection: {
             type: turnDetection,
             ...(turnDetection === "server_vad"
-              ? { threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500 }
+              ? { threshold: 0.75, prefix_padding_ms: 500, silence_duration_ms: 1200 }
               : {}),
             ...(turnDetection === "semantic_vad"
-              ? { eagerness: "medium" }
+              ? { eagerness: "low" }
               : {}),
           },
         },

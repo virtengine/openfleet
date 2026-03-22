@@ -59,7 +59,7 @@ function setupIsolatedHome(t) {
 }
 
 async function loadGithubAppAuth() {
-  const moduleUrl = new URL("../github-app-auth.mjs", import.meta.url);
+  const moduleUrl = new URL("../github/github-app-auth.mjs", import.meta.url);
   moduleImportNonce += 1;
   moduleUrl.searchParams.set("node_test", String(moduleImportNonce));
   return import(moduleUrl.href);

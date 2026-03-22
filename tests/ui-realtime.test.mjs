@@ -12,6 +12,8 @@ describe("telegram mini app realtime wiring", () => {
     expect(source).toContain("/ws");
     expect(source).toContain("/api/tasks/edit");
     expect(source).toContain("broadcastUiEvent");
+    expect(source).toContain("retry-queue-updated");
+    expect(source).toContain("sessions:update");
   });
 
   it("frontend modules contain websocket and realtime logic", () => {
@@ -30,5 +32,8 @@ describe("telegram mini app realtime wiring", () => {
     const hasModularApi = appSource.includes("modules/api");
     const hasLegacyRealtime = appSource.includes("connectRealtime");
     expect(hasModularApi || hasLegacyRealtime).toBe(true);
+
+    const stateSource = readFileSync(resolve(process.cwd(), "ui/modules/state.js"), "utf8");
+    expect(stateSource).toContain("msg?.type === \"retry-queue-updated\"");
   });
 });

@@ -31,10 +31,12 @@ const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 // ── Configuration ────────────────────────────────────────────────────────────
 
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000; // 60 min for agentic tasks (matches Azure stream timeout)
+const MAX_TIMER_DELAY_MS = 2_147_483_647; // Node.js timer clamp (2^31 - 1)
 // MAX_STREAM_RETRIES, isTransientStreamError, streamRetryDelay ← imported from ./stream-resilience.mjs
 const STATE_FILE = resolve(__dirname, "..", "logs", "codex-shell-state.json");
 const SESSIONS_DIR = resolve(__dirname, "..", "logs", "sessions");
 const MAX_PERSISTENT_TURNS = 50;
+const timeoutNormalizationWarningKey = new Set();
 
 // ── Payload safety ────────────────────────────────────────────────────────────
 // The Codex API rejects JSON bodies with malformed or oversized strings.
@@ -52,6 +54,85 @@ function parseBoundedNumber(value, fallback, min, max) {
   const num = Number(value);
   if (!Number.isFinite(num)) return fallback;
   return Math.min(Math.max(Math.trunc(num), min), max);
+}
+
+function parsePositiveTimeoutMs(value, fallback = DEFAULT_TIMEOUT_MS) {
+  const fallbackValue = Number(fallback);
+  if (!Number.isFinite(fallbackValue) || fallbackValue <= 0) {
+    throw new Error("parsePositiveTimeoutMs requires a positive finite fallback");
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallbackValue;
+  return parsed;
+}
+
+function normalizeTimeoutMs(value, { fallback = DEFAULT_TIMEOUT_MS, label = "timeoutMs" } = {}) {
+  const parsed = parsePositiveTimeoutMs(value, fallback);
+  const normalized = Math.min(parsed, MAX_TIMER_DELAY_MS);
+  if (normalized !== parsed && !timeoutNormalizationWarningKey.has(label)) {
+    timeoutNormalizationWarningKey.add(label);
+    console.warn(
+      `[codex-shell] ${label} ${parsed}ms exceeds Node.js timer max; clamped to ${MAX_TIMER_DELAY_MS}ms`,
+    );
+  }
+  return normalized;
+}
+
+function isAzureOpenAIBaseUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    const host = String(parsed.hostname || "").toLowerCase();
+    return host === "openai.azure.com" || host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com");
+  } catch {
+    return false;
+  }
+}
+
+function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env) {
+  const resolved = resolveCodexProfileRuntime(envInput);
+  const { env: resolvedEnv, configProvider } = resolved;
+  const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
+  const isAzure = isAzureOpenAIBaseUrl(baseUrl);
+  const env = { ...resolvedEnv };
+
+  delete env.OPENAI_BASE_URL;
+
+  // Use the config.toml provider section name and env_key when available,
+  // so Bosun's config override is consistent with the user's config.toml
+  // instead of hardcoding "azure" / "AZURE_OPENAI_API_KEY".
+  const providerSectionName = (isAzure && configProvider?.name) || (isAzure ? "azure" : "openai");
+  const providerEnvKey = (isAzure && configProvider?.envKey) || (isAzure ? "AZURE_OPENAI_API_KEY" : "OPENAI_API_KEY");
+
+  if (isAzure && env.OPENAI_API_KEY && !env.AZURE_OPENAI_API_KEY) {
+    env.AZURE_OPENAI_API_KEY = env.OPENAI_API_KEY;
+  }
+
+  const providerName = isAzure ? "azure" : "openai";
+  const config = {
+    model_providers: {
+      [providerSectionName]: isAzure
+        ? {
+            name: "Azure OpenAI",
+            base_url: baseUrl,
+            env_key: providerEnvKey,
+            wire_api: "responses",
+            ...streamProviderOverrides,
+          }
+        : streamProviderOverrides,
+    },
+  };
+
+  if (isAzure && env.CODEX_MODEL) {
+    config.model_provider = providerSectionName;
+    config.model = env.CODEX_MODEL;
+  }
+
+  return {
+    env,
+    config,
+    providerName,
+    streamIdleTimeoutMs: streamProviderOverrides.stream_idle_timeout_ms,
+  };
 }
 
 function getInternalExecutorStreamConfig() {
@@ -419,9 +500,6 @@ async function getThread() {
   if (activeThread) return activeThread;
   const threadOptions = buildThreadOptions();
 
-  const { env: resolvedEnv } = resolveCodexProfileRuntime(process.env);
-  Object.assign(process.env, resolvedEnv);
-
   if (!codexInstance) {
     const Cls = await loadCodexSdk();
     if (!Cls) throw new Error("Codex SDK not available");
@@ -430,23 +508,16 @@ async function getThread() {
     // even if config.toml hasn't been patched by codex-config.mjs yet.
     // This is the most reliable path for Azure/Foundry deployments where
     // dropped SSE streams ("response.failed") are the dominant failure mode.
-    const providerName = (() => {
-      try {
-        const parsed = new URL(String(resolvedEnv.OPENAI_BASE_URL || ""));
-        const host = String(parsed.hostname || "").toLowerCase();
-        return host === "openai.azure.com" || host.endsWith(".openai.azure.com")
-          ? "azure"
-          : "openai";
-      } catch {
-        return "openai";
-      }
-    })();
     const STREAM_IDLE_TIMEOUT_MS = 3_600_000; // 60 min — matches Azure max stream lifetime
     const streamProviderOverrides = {
       stream_idle_timeout_ms: STREAM_IDLE_TIMEOUT_MS,
       stream_max_retries: 15,
       request_max_retries: 6,
     };
+    const runtime = buildCodexSdkRuntime(streamProviderOverrides, process.env);
+
+    Object.assign(process.env, runtime.env);
+    delete process.env.OPENAI_BASE_URL;
 
     codexInstance = new Cls({
       config: {
@@ -457,13 +528,11 @@ async function getThread() {
           undo: true,
           steer: true,
         },
-        model_providers: {
-          [providerName]: streamProviderOverrides,
-        },
+        ...runtime.config,
       },
     });
 
-    console.log(`[codex-shell] created Codex instance (provider=${providerName}, stream_idle_timeout=${STREAM_IDLE_TIMEOUT_MS}ms, stream_max_retries=${streamProviderOverrides.stream_max_retries})`);
+    console.log(`[codex-shell] created Codex instance (provider=${runtime.providerName}, stream_idle_timeout=${runtime.streamIdleTimeoutMs}ms, stream_max_retries=${streamProviderOverrides.stream_max_retries})`);
   }
 
   const transport = resolveCodexTransport();
@@ -692,6 +761,10 @@ export async function execCodexPrompt(userMessage, options = {}) {
     mode = null,
     cwd = null,
   } = options;
+  const normalizedTimeoutMs = normalizeTimeoutMs(timeoutMs, {
+    fallback: DEFAULT_TIMEOUT_MS,
+    label: "execCodexPrompt.timeoutMs",
+  });
 
   agentSdk = resolveAgentSdkConfig({ reload: true });
   if (agentSdk.primary !== "codex") {
@@ -714,7 +787,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
   activeTurn = true;
 
   try {
-    const streamSafety = resolveCodexStreamSafety(timeoutMs);
+    const streamSafety = resolveCodexStreamSafety(normalizedTimeoutMs);
     const requestedWorkingDirectory = normalizeWorkingDirectory(cwd);
 
     if (!persistent) {
@@ -811,7 +884,10 @@ export async function execCodexPrompt(userMessage, options = {}) {
       // immediately fail.  The total wall-clock budget is still bounded by the
       // outer timeoutMs passed in.
       const controller = abortController || new AbortController();
-      const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
+      const timer = setTimeout(
+        () => controller.abort("timeout"),
+        normalizedTimeoutMs,
+      );
 
       try {
         // Use runStreamed for real-time event streaming
@@ -939,7 +1015,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
             const msg =
               reason === "user_stop"
                 ? ":close: Agent stopped by user."
-                : `:clock: Agent timed out after ${timeoutMs / 1000}s`;
+                : `:clock: Agent timed out after ${normalizedTimeoutMs / 1000}s`;
             return { finalResponse: msg, items: [], usage: null };
           }
         }

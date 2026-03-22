@@ -112,6 +112,7 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/git/branch-detail", // Real git branch detail
   "/api/project-sync/metrics", // Real project sync metrics
   "/api/settings/update",   // Alias for /api/config/update
+  "/api/tasks/diff",        // Task diff relies on live git/task state, not demo fixtures
   "/api/github/app/config", // GitHub App config — server-only (reads env vars + key files)
   "/api/github/device/start", // Device Flow initiation — server-only (calls GitHub API)
   "/api/github/device/poll",  // Device Flow polling — server-only (calls GitHub API)
@@ -163,6 +164,26 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/workflows/concurrency",
   // Telemetry — server-only
   "/api/telemetry/shredding",
+  // Project detection — server-only (requires filesystem access)
+  "/api/workflows/detect-project",
+  // Workspace management — server-only (requires filesystem + config access)
+  "/api/workspaces/state",
+  "/api/workspaces/executors",
+  "/api/workspaces/workflows",
+  // Task execution plan — server-only (requires task store + library resolver)
+  "/api/tasks/execution-plan",
+  // Agent modes — server-only (requires primary-agent runtime)
+  "/api/agent/modes",
+  // Webhook & cron management — server-only (requires webhook gateway + config dir)
+  "/api/workflows\\/:id",
+  // Hook library — server-only (requires hook-library + agent-hooks runtime)
+  "/api/hooks/catalog",
+  "/api/hooks/categories",
+  "/api/hooks/sdk-matrix",
+  "/api/hooks/entry",
+  "/api/hooks/state",
+  "/api/hooks/core",
+  "/api/hooks/defaults",
 ]);
 
 // ── Session actions intentionally skipped in demo ─────────────────────
@@ -173,6 +194,29 @@ const INTENTIONALLY_SKIPPED_ACTIONS = new Set([
   "runs",                // Workflow :id/runs action (not a session action)
   "retry",               // Workflow :id/retry action (not a session action)
   "missing_credentials", // Cloudflare DNS result value, not a session sub-action
+  // Run forensics & evaluation — server-only (requires workflow engine + evaluator)
+  "nodes",               // GET /api/workflows/runs/:id/nodes/:nodeId
+  "forensics",           // GET /api/workflows/runs/:id/forensics
+  "evaluate",            // GET /api/workflows/runs/:id/evaluate
+  "snapshot",            // POST /api/workflows/runs/:id/snapshot
+  "snapshots",           // GET /api/workflows/runs/:id/snapshots
+  "restore",             // POST /api/workflows/runs/:id/restore
+  "remediate",           // POST /api/workflows/runs/:id/remediate
+  // Code view & export — server-only (requires workflow serializer + exporter)
+  "code",                // GET/PUT /api/workflows/:id/code
+  "validate",            // POST /api/workflows/:id/code/validate
+  "export",              // GET /api/workflows/:id/export
+  "cancel",              // POST /api/workflows/runs/:id/cancel
+  // Credential management — server-only (requires credential store)
+  "credentials",         // GET/POST/PUT/DELETE /api/workflows/:id/credentials
+  // Evaluation & cron — server-only (requires evaluator / scheduler)
+  "evaluations",         // GET /api/workflows/:id/evaluations
+  "cron-preview",        // GET /api/workflows/:id/cron-preview
+  "webhook-log",         // GET /api/workflows/:id/webhook-log
+  // Session control — server-only (requires session runtime)
+  "enable",              // POST /api/sessions/:id/enable
+  "disable",             // POST /api/sessions/:id/disable
+  "initialize",          // POST /api/sessions/:id/initialize
 ]);
 
 describe("demo.html :workflow: ui-server.mjs API sync", () => {

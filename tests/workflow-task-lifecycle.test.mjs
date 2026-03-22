@@ -12,19 +12,27 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import { getNodeType } from "../workflow/workflow-nodes.mjs";
+import { clearContractCache } from "../workflow/workflow-contract.mjs";
 import {
   WorkflowEngine,
   WorkflowContext,
 } from "../workflow/workflow-engine.mjs";
 import {
+  detectProjectStack,
+  resolveAutoCommand,
+} from "../workflow/project-detection.mjs";
+import {
   getTemplate,
   installTemplate,
 } from "../workflow/workflow-templates.mjs";
+
+// CLAUDE:SUMMARY — workflow-task-lifecycle tests
+// Exercises task lifecycle workflow nodes and template wiring, including prompt assembly and cache anchoring.
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -77,6 +85,12 @@ function sanitizedGitEnv(extra = {}) {
   return env;
 }
 
+function readWorktreeRecoveryStatus(repoRoot) {
+  const statusPath = join(repoRoot, ".cache", "ve-orchestrator-status.json");
+  if (!existsSync(statusPath)) return null;
+  return JSON.parse(readFileSync(statusPath, "utf8")).worktreeRecovery || null;
+}
+
 let tmpDir;
 let engine;
 
@@ -89,6 +103,29 @@ function makeTmpEngine() {
   });
   return engine;
 }
+
+describe("project detection quality gates", () => {
+  let repoRoot;
+
+  afterEach(() => {
+    try { rmSync(repoRoot, { recursive: true, force: true }); } catch { /* ok */ }
+    repoRoot = undefined;
+  });
+
+  it("prefers repo hooks for go quality gates instead of node-only defaults", () => {
+    repoRoot = mkdtempSync(join(tmpdir(), "wf-quality-gate-"));
+    mkdirSync(join(repoRoot, ".githooks"), { recursive: true });
+    writeFileSync(join(repoRoot, "go.mod"), "module example.com/virtengine\n\ngo 1.23.0\n");
+    writeFileSync(join(repoRoot, ".githooks", "pre-push"), "#!/usr/bin/env bash\necho ok\n");
+
+    const detected = detectProjectStack(repoRoot);
+
+    expect(detected.primary?.id).toBe("go");
+    expect(detected.commands.qualityGate).toBe("bash .githooks/pre-push");
+    expect(resolveAutoCommand("auto", "qualityGate", repoRoot)).toBe("bash .githooks/pre-push");
+    expect(detected.commands.qualityGate).not.toBe("npm run prepush:check");
+  });
+});
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Node Type Registration Tests
@@ -105,7 +142,10 @@ describe("task lifecycle node type registration", () => {
     "action.resolve_executor",
     "action.acquire_worktree",
     "action.release_worktree",
+    "read-workflow-contract",
+    "workflow-contract-validation",
     "action.build_task_prompt",
+    "action.persist_memory",
     "action.detect_new_commits",
     "action.push_branch",
   ];
@@ -471,6 +511,60 @@ describe("trigger.task_available", () => {
     expect(result.blocked[0].blockingTaskIds).toEqual(["epic-b-task-1"]);
   });
 
+  it("recovers timed blocked worktree tasks back to todo before polling", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const retryAt = new Date(Date.now() - 60_000).toISOString();
+    let todoTasks = [];
+    const blockedTask = {
+      id: "blocked-worktree-task",
+      title: "Blocked WT task",
+      status: "blocked",
+      cooldownUntil: retryAt,
+      meta: {
+        autoRecovery: {
+          active: true,
+          reason: "worktree_failure",
+          retryAt,
+        },
+      },
+    };
+    const listTasks = vi.fn(async (_projectId, options = {}) => {
+      if (options.status === "blocked") return [blockedTask];
+      return todoTasks;
+    });
+    const updateTask = vi.fn(async (taskId, patch) => {
+      todoTasks = [{
+        ...blockedTask,
+        id: taskId,
+        ...patch,
+      }];
+      return todoTasks[0];
+    });
+    const ctx = makeCtx({ activeSlotCount: 0 });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      status: "todo",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: {
+          listTasks,
+          updateTask,
+        },
+      },
+    });
+
+    expect(updateTask).toHaveBeenCalledTimes(1);
+    expect(updateTask).toHaveBeenCalledWith("blocked-worktree-task", expect.objectContaining({
+      status: "todo",
+      cooldownUntil: null,
+      blockedReason: null,
+    }));
+    expect(result.triggered).toBe(true);
+    expect(result.selectedTaskId).toBe("blocked-worktree-task");
+  });
+
   it("bypasses missing-task guard by default and emits audit event", async () => {
     const nt = getNodeType("trigger.task_available");
     const listTasks = vi.fn().mockResolvedValue([
@@ -532,6 +626,58 @@ describe("trigger.task_available", () => {
     expect(result.auditEvents[0].type).toBe("start_guard_blocked");
     expect(result.auditEvents[0].reason).toBe("task_not_found");
     expect(result.auditEvents[0].strict).toBe(true);
+  });
+
+  it("filters out todo tasks that still have active persisted claim ownership", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "wf-task-claim-filter-"));
+    const { initTaskClaims, claimTask, releaseTask } = await import("../task/task-claims.mjs");
+    let claimToken = "";
+    try {
+      await initTaskClaims({ repoRoot });
+      const claimResult = await claimTask({
+        taskId: "claimed-task",
+        instanceId: "wf-test-instance",
+      });
+      expect(claimResult.success).toBe(true);
+      claimToken = claimResult.token || "";
+
+      const nt = getNodeType("trigger.task_available");
+      const listTasks = vi.fn().mockResolvedValue([
+        { id: "claimed-task", title: "Already owned", status: "todo" },
+        { id: "ready-task", title: "Ready", status: "todo" },
+      ]);
+      const ctx = makeCtx({
+        activeSlotCount: 0,
+        repoRoot,
+      });
+      const node = makeNode("trigger.task_available", {
+        maxParallel: 1,
+        status: "todo",
+      });
+
+      const result = await nt.execute(node, ctx, {
+        services: {
+          kanban: {
+            listTasks,
+          },
+        },
+      });
+
+      expect(result.triggered).toBe(true);
+      expect(result.taskCount).toBe(1);
+      expect(result.selectedTaskId).toBe("ready-task");
+      expect(result.persistedOwnershipFilteredCount).toBe(1);
+      expect(result.tasks[0].id).toBe("ready-task");
+    } finally {
+      if (claimToken) {
+        await releaseTask({
+          taskId: "claimed-task",
+          claimToken,
+          instanceId: "wf-test-instance",
+        });
+      }
+      try { rmSync(repoRoot, { recursive: true, force: true }); } catch { /* ok */ }
+    }
   });
 });
 
@@ -806,6 +952,92 @@ describe("action.resolve_executor", () => {
     expect(ctx.data.resolvedSdk).toBeDefined();
   });
 
+  it("uses configured executor defaults when no library profile matches", async () => {
+    const configMod = await import("../config/config.mjs");
+    const loadConfigSpy = vi.spyOn(configMod, "loadConfig").mockReturnValue({
+      executorConfig: {
+        executors: [
+          {
+            name: "copilot-default",
+            executor: "COPILOT",
+            variant: "DEFAULT",
+            role: "primary",
+            weight: 100,
+            enabled: true,
+            models: [],
+          },
+        ],
+      },
+      internalExecutor: { sdk: "codex" },
+      primaryAgent: "codex",
+    });
+    const saved = { ...process.env };
+    delete process.env.COPILOT_MODEL;
+    delete process.env.CLAUDE_MODEL;
+    delete process.env.CODEX_MODEL;
+
+    try {
+      const nt = getNodeType("action.resolve_executor");
+      const ctx = makeCtx({});
+      const node = makeNode("action.resolve_executor", {
+        defaultSdk: "auto",
+      });
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+      expect(result.sdk).toBe("copilot");
+      expect(ctx.data.resolvedSdk).toBe("copilot");
+    } finally {
+      loadConfigSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in saved)) delete process.env[key];
+      }
+      Object.assign(process.env, saved);
+    }
+  });
+
+  it("keeps an explicit defaultSdk from silently falling back to codex", async () => {
+    const configMod = await import("../config/config.mjs");
+    const loadConfigSpy = vi.spyOn(configMod, "loadConfig").mockReturnValue({
+      executorConfig: {
+        executors: [
+          {
+            name: "codex-default",
+            executor: "CODEX",
+            variant: "DEFAULT",
+            role: "primary",
+            weight: 100,
+            enabled: true,
+            models: [],
+          },
+        ],
+      },
+      internalExecutor: { sdk: "codex" },
+      primaryAgent: "codex",
+    });
+    const saved = { ...process.env };
+    delete process.env.COPILOT_MODEL;
+    delete process.env.CLAUDE_MODEL;
+    delete process.env.CODEX_MODEL;
+
+    try {
+      const nt = getNodeType("action.resolve_executor");
+      const ctx = makeCtx({});
+      const node = makeNode("action.resolve_executor", {
+        defaultSdk: "copilot",
+      });
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+      expect(result.sdk).toBe("copilot");
+      expect(ctx.data.resolvedSdk).toBe("copilot");
+    } finally {
+      loadConfigSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in saved)) delete process.env[key];
+      }
+      Object.assign(process.env, saved);
+    }
+  });
+
   it("applies library profile and skill resolution into context", async () => {
     const nt = getNodeType("action.resolve_executor");
     const root = mkdtempSync(join(tmpdir(), "wf-resolve-executor-library-"));
@@ -880,6 +1112,146 @@ describe("action.resolve_executor", () => {
     expect(ctx.data.resolvedAgentProfile?.id).toBe("backend-agent");
     expect(Array.isArray(ctx.data.resolvedSkillIds)).toBe(true);
     expect(ctx.data.resolvedSkillIds).toContain("background-task-execution");
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("selects dynamically scored library skills even when the profile has no static skill list", async () => {
+    const nt = getNodeType("action.resolve_executor");
+    const root = mkdtempSync(join(tmpdir(), "wf-resolve-executor-dynamic-skills-"));
+    const bosunDir = join(root, ".bosun");
+    const profilesDir = join(bosunDir, "profiles");
+    const skillsDir = join(bosunDir, "skills");
+    mkdirSync(profilesDir, { recursive: true });
+    mkdirSync(skillsDir, { recursive: true });
+
+    const now = new Date().toISOString();
+    writeFileSync(join(bosunDir, "library.json"), JSON.stringify({
+      generated: now,
+      entries: [
+        {
+          id: "backend-agent",
+          type: "agent",
+          name: "Backend Agent",
+          description: "Backend profile",
+          filename: "backend-agent.json",
+          tags: ["backend", "api", "webhook"],
+          scope: "global",
+          workspace: null,
+          meta: {},
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: "webhook-test-guidance",
+          type: "skill",
+          name: "Webhook Test Guidance",
+          description: "Testing guidance for webhook handlers and delivery retries",
+          filename: "webhook-test-guidance.md",
+          tags: ["webhook", "tests", "api"],
+          scope: "global",
+          workspace: null,
+          meta: {},
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    }, null, 2));
+    writeFileSync(
+      join(profilesDir, "backend-agent.json"),
+      JSON.stringify({
+        id: "backend-agent",
+        name: "Backend Agent",
+        description: "Backend specialist",
+        titlePatterns: [String.raw`\bwebhook\b`, String.raw`\bapi\b`],
+        scopes: ["api", "backend"],
+        tags: ["backend", "api", "webhook"],
+        skills: [],
+      }, null, 2),
+    );
+    writeFileSync(
+      join(skillsDir, "webhook-test-guidance.md"),
+      "# Skill\nFocus on webhook tests, retry semantics, and API failure cases.",
+    );
+
+    const ctx = makeCtx({
+      repoRoot: root,
+      task: {
+        tags: ["backend", "api", "tests"],
+      },
+    });
+    const node = makeNode("action.resolve_executor", {
+      taskTitle: "feat(api): add webhook delivery tests",
+      taskDescription: "Implement webhook retry behavior and update API tests for failure handling.",
+      repoRoot: root,
+      defaultSdk: "auto",
+    });
+
+    const result = await nt.execute(node, ctx);
+    expect(result.success).toBe(true);
+    expect(ctx.data.agentProfile).toBe("backend-agent");
+    expect(Array.isArray(ctx.data.resolvedSkillIds)).toBe(true);
+    expect(ctx.data.resolvedSkillIds).toContain("webhook-test-guidance");
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("does not auto-apply low-confidence profile matches", async () => {
+    const nt = getNodeType("action.resolve_executor");
+    const root = mkdtempSync(join(tmpdir(), "wf-resolve-executor-low-confidence-"));
+    const bosunDir = join(root, ".bosun");
+    const profilesDir = join(bosunDir, "profiles");
+    mkdirSync(profilesDir, { recursive: true });
+
+    const now = new Date().toISOString();
+    writeFileSync(join(bosunDir, "library.json"), JSON.stringify({
+      generated: now,
+      entries: [
+        {
+          id: "generic-agent",
+          type: "agent",
+          name: "Generic Agent",
+          description: "Broad profile with weak pattern",
+          filename: "generic-agent.json",
+          tags: ["generic"],
+          scope: "global",
+          workspace: null,
+          meta: {},
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    }, null, 2));
+    writeFileSync(
+      join(profilesDir, "generic-agent.json"),
+      JSON.stringify({
+        id: "generic-agent",
+        name: "Generic Agent",
+        description: "Broad profile",
+        titlePatterns: ["\\bwith\\b"],
+        scopes: ["generic"],
+        tags: ["generic"],
+      }, null, 2),
+    );
+
+    const ctx = makeCtx({
+      repoRoot: root,
+      task: {
+        tags: ["workflow", "automation"],
+      },
+    });
+    const node = makeNode("action.resolve_executor", {
+      taskTitle: "feat(workflow): issue-state continuation loop workflow template",
+      taskDescription: "Design continuation-loop workflow template with maxTurns and stuckDetection",
+      repoRoot: root,
+      defaultSdk: "codex",
+    });
+
+    const result = await nt.execute(node, ctx);
+    expect(result.success).toBe(true);
+    expect(result.tier).not.toBe("profile");
+    expect(ctx.data.agentProfile).toBeUndefined();
+    expect(ctx.data.resolvedAgentProfile).toBeUndefined();
 
     rmSync(root, { recursive: true, force: true });
   });
@@ -1022,7 +1394,7 @@ describe("action.acquire_worktree", () => {
     expect(second.reused).toBe(true);
     expect(ctx2.data._worktreeCreated).toBe(false);
     expect(ctx2.data._worktreeManaged).toBe(true);
-  });
+  }, 15000);
 
   it("reuses an already-attached branch worktree even when managed path naming changed", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -1107,7 +1479,289 @@ describe("action.acquire_worktree", () => {
       encoding: "utf8",
     }).trim();
     expect(isGit).toBe("true");
-  });
+
+    const topLevel = gitExec("git rev-parse --show-toplevel", {
+      cwd: second.worktreePath,
+      encoding: "utf8",
+    }).trim().replace(/\\/g, "/");
+    const expectedRoot = String(second.worktreePath).replace(/\\/g, "/");
+    expect(topLevel).toBe(expectedRoot);
+
+    const recovery = readWorktreeRecoveryStatus(repoDir);
+    expect(recovery?.health).toBe("recovered");
+    expect(recovery?.failureStreak).toBe(0);
+    expect(recovery?.recentEvents?.[0]).toMatchObject({
+      outcome: "recreated",
+      reason: "poisoned_worktree",
+      branch,
+      taskId: "recreate-invalid-1",
+    });
+  }, 15000);
+
+  it("recreates managed worktrees left in unresolved rebase state before reuse", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const branch = "task/recreate-unresolved-rebase";
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "recreate-rebase-1",
+      branch,
+      baseBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const firstCtx = makeCtx({});
+    const first = await nt.execute(node, firstCtx);
+    expect(first.success).toBe(true);
+    expect(first.created).toBe(true);
+
+    const firstGitDir = resolve(
+      first.worktreePath,
+      gitExec("git rev-parse --git-dir", {
+        cwd: first.worktreePath,
+        encoding: "utf8",
+      }).trim(),
+    );
+    mkdirSync(join(firstGitDir, "rebase-merge"), { recursive: true });
+    writeFileSync(join(firstGitDir, "rebase-merge", "head-name"), `refs/heads/${branch}\n`);
+
+    const secondCtx = makeCtx({});
+    const second = await nt.execute(node, secondCtx);
+    expect(second.success).toBe(true);
+    expect(typeof second.worktreePath).toBe("string");
+    expect(second.worktreePath.length).toBeGreaterThan(0);
+
+    const secondGitDir = resolve(
+      second.worktreePath,
+      gitExec("git rev-parse --git-dir", {
+        cwd: second.worktreePath,
+        encoding: "utf8",
+      }).trim(),
+    );
+    expect(existsSync(join(secondGitDir, "rebase-merge"))).toBe(false);
+    const isGit = gitExec("git rev-parse --is-inside-work-tree", {
+      cwd: second.worktreePath,
+      encoding: "utf8",
+    }).trim();
+    expect(isGit).toBe("true");
+    const topLevel = gitExec("git rev-parse --show-toplevel", {
+      cwd: second.worktreePath,
+      encoding: "utf8",
+    }).trim().replace(/\\/g, "/");
+    const expectedRoot = String(second.worktreePath).replace(/\\/g, "/");
+    expect(topLevel).toBe(expectedRoot);
+
+    const recovery = readWorktreeRecoveryStatus(repoDir);
+    expect(recovery?.health).toBe("recovered");
+    expect(recovery?.recentEvents?.[0]).toMatchObject({
+      outcome: "recreated",
+      reason: "poisoned_worktree",
+      branch,
+      taskId: "recreate-rebase-1",
+    });
+  }, 15000);
+
+  it("does not record recovery noise when reusing a healthy managed worktree", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const branch = "task/reuse-healthy-managed";
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "reuse-healthy-1",
+      branch,
+      baseBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const first = await nt.execute(node, makeCtx({}));
+    expect(first.success).toBe(true);
+
+    const second = await nt.execute(node, makeCtx({}));
+    expect(second.success).toBe(true);
+    expect(second.reused).toBe(true);
+
+    const recovery = readWorktreeRecoveryStatus(repoDir);
+    expect(recovery?.health).toBe("healthy");
+    expect(recovery?.failureStreak).toBe(0);
+    expect(recovery?.recentEvents || []).toEqual([]);
+  }, 15000);
+
+  it("recreates dirty managed worktrees and rebases existing task branches onto the latest base", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const branch = "task/recreate-dirty-behind";
+    const remoteDir = mkdtempSync(join(tmpdir(), "wf-acquire-origin-"));
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "recreate-dirty-1",
+      branch,
+      baseBranch: "origin/main",
+      defaultTargetBranch: "origin/main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+    const previousAllowRefresh = process.env.BOSUN_TEST_ALLOW_GIT_REFRESH;
+    process.env.BOSUN_TEST_ALLOW_GIT_REFRESH = "true";
+    try {
+      gitExec("git init --bare", { cwd: remoteDir, stdio: "ignore" });
+      gitExec(`git remote add origin "${remoteDir}"`, {
+        cwd: repoDir,
+        stdio: "ignore",
+      });
+      gitExec("git push -u origin main", { cwd: repoDir, stdio: "ignore" });
+
+      const firstCtx = makeCtx({});
+      const first = await nt.execute(node, firstCtx);
+      expect(first.success).toBe(true);
+      expect(first.created).toBe(true);
+
+      gitExec("git config --local user.email test@test.com", {
+        cwd: first.worktreePath,
+        stdio: "ignore",
+      });
+      gitExec("git config --local user.name Test", {
+        cwd: first.worktreePath,
+        stdio: "ignore",
+      });
+      writeFileSync(join(first.worktreePath, "feature.txt"), "task work\n");
+      gitExec("git add feature.txt", {
+        cwd: first.worktreePath,
+        stdio: "ignore",
+      });
+      gitExec("git commit -m task-work", {
+        cwd: first.worktreePath,
+        stdio: "ignore",
+      });
+      writeFileSync(join(first.worktreePath, "README.md"), "dirty tracked change\n");
+
+      writeFileSync(join(repoDir, "upstream.txt"), "main advanced\n");
+      gitExec("git add upstream.txt", {
+        cwd: repoDir,
+        stdio: "ignore",
+      });
+      gitExec("git commit -m upstream-advance", {
+        cwd: repoDir,
+        stdio: "ignore",
+      });
+      gitExec("git push origin main", { cwd: repoDir, stdio: "ignore" });
+
+      const secondCtx = makeCtx({});
+      const second = await nt.execute(node, secondCtx);
+      expect(second.success).toBe(true);
+
+      const status = gitExec("git status --short", {
+        cwd: second.worktreePath,
+        encoding: "utf8",
+      }).trim();
+      expect(status).toBe("");
+      expect(existsSync(join(second.worktreePath, "feature.txt"))).toBe(true);
+      expect(existsSync(join(second.worktreePath, "upstream.txt"))).toBe(true);
+
+      const counts = gitExec("git rev-list --left-right --count HEAD...origin/main", {
+        cwd: second.worktreePath,
+        encoding: "utf8",
+      }).trim();
+      const match = counts.match(/^(\d+)\s+(\d+)$/);
+      expect(match).not.toBeNull();
+      expect(Number(match[1])).toBeGreaterThan(0);
+      expect(Number(match[2])).toBe(0);
+    } finally {
+      if (previousAllowRefresh === undefined) {
+        delete process.env.BOSUN_TEST_ALLOW_GIT_REFRESH;
+      } else {
+        process.env.BOSUN_TEST_ALLOW_GIT_REFRESH = previousAllowRefresh;
+      }
+      try { rmSync(remoteDir, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  }, 20000);
+
+  it("returns a non-retryable failure when an existing task branch conflicts with the latest base", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const branch = "task/recreate-conflict-behind";
+    const remoteDir = mkdtempSync(join(tmpdir(), "wf-acquire-origin-"));
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "recreate-conflict-1",
+      branch,
+      baseBranch: "origin/main",
+      defaultTargetBranch: "origin/main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+    const previousAllowRefresh = process.env.BOSUN_TEST_ALLOW_GIT_REFRESH;
+    process.env.BOSUN_TEST_ALLOW_GIT_REFRESH = "true";
+    try {
+      gitExec("git init --bare", { cwd: remoteDir, stdio: "ignore" });
+      gitExec(`git remote add origin "${remoteDir}"`, {
+        cwd: repoDir,
+        stdio: "ignore",
+      });
+      gitExec("git push -u origin main", { cwd: repoDir, stdio: "ignore" });
+
+      const firstCtx = makeCtx({});
+      const first = await nt.execute(node, firstCtx);
+      expect(first.success).toBe(true);
+      expect(first.created).toBe(true);
+
+      gitExec("git config --local user.email test@test.com", {
+        cwd: first.worktreePath,
+        stdio: "ignore",
+      });
+      gitExec("git config --local user.name Test", {
+        cwd: first.worktreePath,
+        stdio: "ignore",
+      });
+      writeFileSync(join(first.worktreePath, "README.md"), "task branch change\n");
+      gitExec("git add README.md", {
+        cwd: first.worktreePath,
+        stdio: "ignore",
+      });
+      gitExec("git commit -m task-readme-change", {
+        cwd: first.worktreePath,
+        stdio: "ignore",
+      });
+
+      writeFileSync(join(repoDir, "README.md"), "main branch change\n");
+      gitExec("git add README.md", {
+        cwd: repoDir,
+        stdio: "ignore",
+      });
+      gitExec("git commit -m upstream-readme-change", {
+        cwd: repoDir,
+        stdio: "ignore",
+      });
+      gitExec("git push origin main", { cwd: repoDir, stdio: "ignore" });
+
+      const secondCtx = makeCtx({});
+      const second = await nt.execute(node, secondCtx);
+      expect(second.success).toBe(false);
+      expect(second.retryable).toBe(false);
+      expect(second.failureKind).toBe("branch_refresh_conflict");
+      expect(second.error).toContain("managed worktree was removed after stale refresh state");
+
+      const thirdCtx = makeCtx({});
+      const third = await nt.execute(node, thirdCtx);
+      expect(third.success).toBe(false);
+      expect(third.retryable).toBe(false);
+      expect(third.failureKind).toBe("branch_refresh_conflict");
+
+      const recovery = readWorktreeRecoveryStatus(repoDir);
+      expect(recovery?.health).toBe("degraded");
+      expect(recovery?.failureStreak).toBe(2);
+      expect(recovery?.recentEvents?.[0]).toMatchObject({
+        outcome: "recreation_failed",
+        reason: "poisoned_worktree",
+        branch,
+        taskId: "recreate-conflict-1",
+      });
+    } finally {
+      if (previousAllowRefresh === undefined) {
+        delete process.env.BOSUN_TEST_ALLOW_GIT_REFRESH;
+      } else {
+        process.env.BOSUN_TEST_ALLOW_GIT_REFRESH = previousAllowRefresh;
+      }
+      try { rmSync(remoteDir, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  }, 20000);
 
   it("enables core.longpaths before checkout", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -1186,7 +1840,13 @@ describe("action.build_task_prompt", () => {
     expect(result.prompt.length).toBeGreaterThan(50);
     expect(result.prompt).toContain("Fix the widget");
     expect(result.prompt).toContain("TASK-42");
+    expect(typeof result.systemPrompt).toBe("string");
+    expect(result.systemPrompt.length).toBeGreaterThan(50);
+    expect(result.systemPrompt).not.toContain("TASK-42");
+    expect(result.systemPrompt).not.toContain("Fix the widget");
     expect(ctx.data._taskPrompt).toBe(result.prompt);
+    expect(ctx.data._taskUserPrompt).toBe(result.prompt);
+    expect(ctx.data._taskSystemPrompt).toBe(result.systemPrompt);
   });
 
   it("includes branch and repo info", async () => {
@@ -1213,8 +1873,54 @@ describe("action.build_task_prompt", () => {
       taskDescription: "Desc",
     });
     const result = await nt.execute(node, ctx);
-    // Should have autonomous agent instructions
+    // Execution instructions live in the user prompt to preserve cache anchoring.
     expect(result.prompt).toContain("commit");
+  });
+
+  it("keeps repo instructions and tool discovery in the user prompt for cache stability", async () => {
+    const prevPort = process.env.BOSUN_AGENT_ENDPOINT_PORT;
+    process.env.BOSUN_AGENT_ENDPOINT_PORT = "19623";
+    const repoRoot = mkdtempSync(join(tmpdir(), "prompt-cache-anchor-"));
+    try {
+      writeFileSync(join(repoRoot, "AGENTS.md"), "Repo instructions marker.");
+      mkdirSync(join(repoRoot, ".github"), { recursive: true });
+      writeFileSync(
+        join(repoRoot, ".github", "copilot-instructions.md"),
+        "Copilot instructions marker.",
+      );
+      const nt = getNodeType("action.build_task_prompt");
+      const ctx = makeCtx({});
+      const node = makeNode("action.build_task_prompt", {
+        taskId: "T2b",
+        taskTitle: "Test",
+        taskDescription: "Desc",
+        worktreePath: join(repoRoot, ".bosun", "worktrees", "task-123"),
+        repoRoot,
+        includeAgentsMd: true,
+        includeStatusEndpoint: true,
+      });
+      const result = await nt.execute(node, ctx);
+      const userPrompt = result.userPrompt || result.prompt;
+      const systemPrompt = result.systemPrompt;
+
+      expect(userPrompt).toContain("Repo instructions marker.");
+      expect(userPrompt).toContain("Copilot instructions marker.");
+      expect(userPrompt).toContain("## Agent Status Endpoint");
+      expect(userPrompt).toContain("## Tool Discovery");
+      expect(userPrompt).toContain("search` -> `get_schema` -> `execute`");
+
+      expect(systemPrompt).not.toContain("Repo instructions marker.");
+      expect(systemPrompt).not.toContain("Copilot instructions marker.");
+      expect(systemPrompt).not.toContain("## Agent Status Endpoint");
+      expect(systemPrompt).not.toContain("## Tool Discovery");
+    } finally {
+      if (prevPort === undefined) {
+        delete process.env.BOSUN_AGENT_ENDPOINT_PORT;
+      } else {
+        process.env.BOSUN_AGENT_ENDPOINT_PORT = prevPort;
+      }
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
   });
 
   it("renders workspace scope contract from explicit repo metadata", async () => {
@@ -1256,6 +1962,410 @@ describe("action.build_task_prompt", () => {
     expect(result.prompt).toContain("**Workspace:** workspace-a");
     expect(result.prompt).toContain("**Primary Repository:** org/primary");
     expect(result.prompt).toContain("org/shared-lib");
+  });
+
+  it("strips unresolved template placeholders from prompt fields", async () => {
+    const nt = getNodeType("action.build_task_prompt");
+    const ctx = makeCtx({});
+    const node = makeNode("action.build_task_prompt", {
+      taskId: "T4b",
+      taskTitle: "Placeholder cleanup",
+      taskDescription: "{{taskDescription}}",
+      branch: "{{branch}}",
+      baseBranch: "{{baseBranch}}",
+      repoRoot: "{{repoRoot}}",
+      repoSlug: "{{repoSlug}}",
+      workspace: "{{workspace}}",
+      repository: "{{repository}}",
+      repositories: ["{{repository}}", "{{repositories}}"],
+    });
+    const result = await nt.execute(node, ctx);
+    expect(result.prompt).toContain("# Task: Placeholder cleanup");
+    expect(result.prompt).toContain("Task ID: T4b");
+    expect(result.prompt).not.toContain("{{taskDescription}}");
+    expect(result.prompt).not.toContain("{{repoSlug}}");
+    expect(result.prompt).not.toContain("{{workspace}}");
+    expect(result.prompt).not.toContain("## Description");
+    expect(result.prompt).not.toContain("**Workspace:**");
+    expect(result.prompt).not.toContain("**Primary Repository:**");
+    expect(result.prompt).toContain("- **Allowed Repositories:** (not declared)");
+  });
+
+  it("falls back to task payload title/description when config placeholders are unresolved", async () => {
+    const nt = getNodeType("action.build_task_prompt");
+    const ctx = makeCtx({
+      task: {
+        id: "CTX-42",
+        title: "Payload title fallback",
+        description: "Payload description fallback",
+      },
+    });
+    const node = makeNode("action.build_task_prompt", {
+      taskId: "{{taskId}}",
+      taskTitle: "{{taskTitle}}",
+      taskDescription: "{{taskDescription}}",
+    });
+    const result = await nt.execute(node, ctx);
+    expect(result.prompt).toContain("# Task: Payload title fallback");
+    expect(result.prompt).toContain("Task ID: CTX-42");
+    expect(result.prompt).toContain("Payload description fallback");
+    expect(result.prompt).not.toContain("{{taskTitle}}");
+    expect(result.prompt).not.toContain("{{taskDescription}}");
+  });
+
+  it("falls back to task id title when all title sources are unresolved", async () => {
+    const nt = getNodeType("action.build_task_prompt");
+    const ctx = makeCtx({});
+    const node = makeNode("action.build_task_prompt", {
+      taskId: "T4d",
+      taskTitle: "{{taskTitle}}",
+      taskDescription: "{{taskDescription}}",
+    });
+    const result = await nt.execute(node, ctx);
+    expect(result.prompt).toContain("# Task: Task T4d");
+    expect(result.prompt).toContain("Task ID: T4d");
+    expect(result.prompt).not.toContain("Untitled task");
+  });
+
+  it('falls back to task id title when the resolved title is "Untitled task"', async () => {
+    const nt = getNodeType("action.build_task_prompt");
+    const ctx = makeCtx({
+      task: {
+        id: "CTX-99",
+        title: "Untitled task",
+      },
+    });
+    const node = makeNode("action.build_task_prompt", {
+      taskId: "{{taskId}}",
+      taskTitle: "{{taskTitle}}",
+    });
+    const result = await nt.execute(node, ctx);
+    expect(result.prompt).toContain("# Task: Task CTX-99");
+    expect(result.prompt).toContain("Task ID: CTX-99");
+    expect(result.prompt).not.toContain("Untitled task");
+  });
+
+  it("strips unresolved template placeholders from custom prompt templates", async () => {
+    const nt = getNodeType("action.build_task_prompt");
+    const ctx = makeCtx({});
+    const node = makeNode("action.build_task_prompt", {
+      taskId: "T4c",
+      taskTitle: "Custom placeholder cleanup",
+      taskDescription: "{{taskDescription}}",
+      repoSlug: "{{repoSlug}}",
+      workspace: "{{workspace}}",
+      promptTemplate: [
+        "# Task: {{taskTitle}}",
+        "",
+        "Task ID: {{taskId}}",
+        "",
+        "## Description",
+        "{{taskDescription}}",
+        "",
+        "## Environment",
+        "- Repo: {{repoSlug}}",
+        "- Workspace: {{workspace}}",
+      ].join("\n"),
+    });
+    const result = await nt.execute(node, ctx);
+    expect(result.prompt).toContain("# Task: Custom placeholder cleanup");
+    expect(result.prompt).toContain("Task ID: T4c");
+    expect(result.prompt).not.toContain("{{taskDescription}}");
+    expect(result.prompt).not.toContain("{{repoSlug}}");
+    expect(result.prompt).not.toContain("{{workspace}}");
+  });
+
+  it("strips inline unresolved template placeholders from task fields", async () => {
+    const nt = getNodeType("action.build_task_prompt");
+    const ctx = makeCtx({});
+    const node = makeNode("action.build_task_prompt", {
+      taskId: "T4d",
+      taskTitle: "Inline placeholder cleanup",
+      taskDescription: "Investigate {{repoSlug}} placeholder leakage",
+      repoSlug: "{{repoSlug}}",
+      workspace: "workspace {{workspace}}",
+      repository: "primary {{repository}}",
+      repositories: ["shared {{repositories}}"],
+    });
+    const result = await nt.execute(node, ctx);
+    expect(result.prompt).toContain("Investigate placeholder leakage");
+    expect(result.prompt).toContain("**Workspace:** workspace");
+    expect(result.prompt).toContain("**Primary Repository:** primary");
+    expect(result.prompt).toContain("- shared");
+    expect(result.prompt).not.toContain("{{repoSlug}}");
+    expect(result.prompt).not.toContain("{{workspace}}");
+    expect(result.prompt).not.toContain("{{repository}}");
+    expect(result.prompt).not.toContain("{{repositories}}");
+  });
+
+  it("injects WORKFLOW.md content when a contract was loaded earlier in the workflow", async () => {
+    const nt = getNodeType("action.build_task_prompt");
+    const ctx = makeCtx({
+      _workflowContract: {
+        found: true,
+        path: "/tmp/project/WORKFLOW.md",
+        raw: "projectDescription: Demo\nterminalStates: [done]\nforbiddenPatterns: [git push --force]",
+        parsed: {
+          projectDescription: "Demo",
+          terminalStates: ["done"],
+          forbiddenPatterns: ["git push --force"],
+          preferredTools: [],
+          preferredModel: "",
+          escalationContact: "",
+          escalationPaths: [],
+          rules: [],
+        },
+      },
+    });
+    const node = makeNode("action.build_task_prompt", {
+      taskTitle: "Respect contract",
+      taskDescription: "Build prompt with contract",
+    });
+
+    const result = await nt.execute(node, ctx);
+
+    expect(result.prompt).toContain("## WORKFLOW.md Contract");
+    expect(result.prompt).toContain("terminalStates: [done]");
+    expect(result.prompt).toContain("forbiddenPatterns: [git push --force]");
+  });
+  it("reads WORKFLOW.md into workflow context", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "wf-contract-read-"));
+    writeFileSync(join(projectDir, "WORKFLOW.md"), [
+      "# Demo Contract",
+      "terminalStates: [done]",
+      "forbiddenPatterns:",
+      "  - git push --force",
+    ].join("\n"));
+
+    const nt = getNodeType("read-workflow-contract");
+    const ctx = makeCtx({ repoRoot: projectDir });
+    const node = makeNode("read-workflow-contract", { repoRoot: projectDir });
+    const result = await nt.execute(node, ctx);
+
+    expect(result.found).toBe(true);
+    expect(result.contract.terminalStates).toEqual(["done"]);
+    expect(result.contract.forbiddenPatterns).toEqual(["git push --force"]);
+    expect(ctx.data._workflowContract.path).toBe(join(projectDir, "WORKFLOW.md"));
+    expect(ctx.log).toHaveBeenCalled();
+
+    rmSync(projectDir, { recursive: true, force: true });
+    clearContractCache(projectDir);
+  });
+
+  it("fails fast when WORKFLOW.md is malformed", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "wf-contract-invalid-"));
+    writeFileSync(join(projectDir, "WORKFLOW.md"), [
+      "# Broken Contract",
+      "forbiddenPatterns:",
+      "  - rm -rf /",
+    ].join("\n"));
+
+    const readNode = makeNode("read-workflow-contract", { repoRoot: projectDir }, "read-contract");
+    const validateNode = makeNode("workflow-contract-validation", { repoRoot: projectDir }, "validate-contract");
+    const ctx = makeCtx({ repoRoot: projectDir });
+
+    await getNodeType("read-workflow-contract").execute(readNode, ctx);
+    await expect(getNodeType("workflow-contract-validation").execute(validateNode, ctx))
+      .rejects
+      .toThrow(/terminalStates/i);
+
+    rmSync(projectDir, { recursive: true, force: true });
+    clearContractCache(projectDir);
+  });
+
+  it("enforces strict cache anchoring by keeping task-specific markers out of system prompt", async () => {
+    const prev = process.env.BOSUN_CACHE_ANCHOR_MODE;
+    process.env.BOSUN_CACHE_ANCHOR_MODE = "strict";
+    try {
+      const nt = getNodeType("action.build_task_prompt");
+      const ctx = makeCtx({});
+      const node = makeNode("action.build_task_prompt", {
+        taskId: "STRICT-1",
+        taskTitle: "Strict cache prompt",
+        taskDescription: "Validate strict anchoring guard",
+        branch: "feat/strict-anchor",
+        worktreePath: "/tmp/wt-strict",
+      });
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+      expect(result.cacheAnchorMode).toBe("strict");
+      expect(result.systemPrompt).not.toContain("STRICT-1");
+      expect(result.systemPrompt).not.toContain("Strict cache prompt");
+      expect(result.systemPrompt).not.toContain("/tmp/wt-strict");
+    } finally {
+      if (prev === undefined) delete process.env.BOSUN_CACHE_ANCHOR_MODE;
+      else process.env.BOSUN_CACHE_ANCHOR_MODE = prev;
+    }
+  });
+
+  it("injects scoped persistent memory into the user prompt only", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "prompt-memory-"));
+    try {
+      const {
+        initSharedKnowledge,
+        buildKnowledgeEntry,
+        appendKnowledgeEntry,
+      } = await import("../workspace/shared-knowledge.mjs");
+
+      initSharedKnowledge({ repoRoot, targetFile: "AGENTS.md" });
+
+      const memories = [
+        buildKnowledgeEntry({
+          content: "Workspace memory: flaky login tests need a DB fixture reset.",
+          scope: "testing",
+          scopeLevel: "workspace",
+          teamId: "team-a",
+          workspaceId: "workspace-1",
+          sessionId: "session-0",
+          runId: "run-0",
+          agentId: "agent-workspace",
+        }),
+        buildKnowledgeEntry({
+          content: "Team memory: prefer deterministic waits in browser tests.",
+          scope: "testing",
+          scopeLevel: "team",
+          teamId: "team-a",
+          workspaceId: "workspace-0",
+          sessionId: "session-0",
+          runId: "run-0",
+          agentId: "agent-team",
+        }),
+        buildKnowledgeEntry({
+          content: "Workspace memory: payments smoke tests require a sandbox token.",
+          scope: "testing",
+          scopeLevel: "workspace",
+          teamId: "team-a",
+          workspaceId: "workspace-2",
+          sessionId: "session-2",
+          runId: "run-2",
+          agentId: "agent-other-workspace",
+        }),
+      ];
+
+      for (const memory of memories) {
+        const appendResult = await appendKnowledgeEntry(memory);
+        expect(appendResult.success).toBe(true);
+      }
+
+      const nt = getNodeType("action.build_task_prompt");
+      const ctx = makeCtx({});
+      const node = makeNode("action.build_task_prompt", {
+        taskId: "MEM-1",
+        taskTitle: "Stabilize flaky login retries",
+        taskDescription: "Reset fixtures between browser retries.",
+        repoRoot,
+        worktreePath: join(repoRoot, ".bosun", "worktrees", "task-1"),
+        includeMemory: true,
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-1",
+        runId: "run-1",
+      });
+
+      const result = await nt.execute(node, ctx);
+      const userPrompt = result.userPrompt || result.prompt;
+
+      expect(userPrompt).toContain("## Persistent Memory Briefing");
+      expect(userPrompt).toContain("flaky login tests need a DB fixture reset");
+      expect(userPrompt).toContain("prefer deterministic waits in browser tests");
+      expect(userPrompt).not.toContain("payments smoke tests require a sandbox token");
+      expect(result.systemPrompt).not.toContain("## Persistent Memory Briefing");
+      expect(result.systemPrompt).not.toContain("DB fixture reset");
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+
+describe("action.persist_memory", () => {
+  it("stores scoped memory for later retrieval and prompt injection", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "persist-memory-node-"));
+    try {
+      const persistNodeType = getNodeType("action.persist_memory");
+      const promptNodeType = getNodeType("action.build_task_prompt");
+      const persistCtx = makeCtx({
+        repoRoot,
+        repoSlug: "virtengine/bosun",
+        workspace: repoRoot,
+        _workspaceId: "workspace-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        task: {
+          id: "MEM-2",
+          title: "Stabilize login retries",
+          description: "Reset browser fixtures between retries.",
+          workspace: repoRoot,
+          repository: "virtengine/bosun",
+          meta: {
+            teamId: "team-a",
+            workspaceId: "workspace-1",
+            sessionId: "session-1",
+            runId: "run-1",
+          },
+        },
+      });
+      const persistNode = makeNode("action.persist_memory", {
+        content: "Workspace memory: seed auth fixtures before browser login retries.",
+        scope: "testing",
+        scopeLevel: "workspace",
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        repoRoot,
+      });
+
+      const persistResult = await persistNodeType.execute(persistNode, persistCtx);
+      expect(persistResult.success).toBe(true);
+      expect(persistResult.persisted).toBe(true);
+      expect(persistResult.scopeLevel).toBe("workspace");
+
+      const { retrieveKnowledgeEntries } = await import("../workspace/shared-knowledge.mjs");
+      const retrieved = await retrieveKnowledgeEntries({
+        repoRoot,
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-99",
+        runId: "run-99",
+        query: "browser login fixtures retries",
+        limit: 10,
+      });
+      expect(retrieved.some((entry) => entry.content.includes("seed auth fixtures"))).toBe(true);
+
+      const hidden = await retrieveKnowledgeEntries({
+        repoRoot,
+        teamId: "team-a",
+        workspaceId: "workspace-2",
+        sessionId: "session-99",
+        runId: "run-99",
+        query: "browser login fixtures retries",
+        limit: 10,
+      });
+      expect(hidden.some((entry) => entry.content.includes("seed auth fixtures"))).toBe(false);
+
+      const promptCtx = makeCtx({});
+      const promptNode = makeNode("action.build_task_prompt", {
+        taskId: "MEM-3",
+        taskTitle: "Fix flaky login retries",
+        taskDescription: "Browser login keeps flaking until auth fixtures are reset.",
+        repoRoot,
+        worktreePath: join(repoRoot, ".bosun", "worktrees", "task-2"),
+        includeMemory: true,
+        teamId: "team-a",
+        workspaceId: "workspace-1",
+        sessionId: "session-2",
+        runId: "run-2",
+      });
+
+      const promptResult = await promptNodeType.execute(promptNode, promptCtx);
+      const userPrompt = promptResult.userPrompt || promptResult.prompt;
+      expect(userPrompt).toContain("## Persistent Memory Briefing");
+      expect(userPrompt).toContain("seed auth fixtures before browser login retries");
+      expect(promptResult.systemPrompt).not.toContain("seed auth fixtures");
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1437,9 +2547,11 @@ describe("action.push_branch", () => {
     await expect(nt.execute(node, ctx)).rejects.toThrow("worktreePath");
   });
 
-  it("schema has rebaseBeforePush and emptyDiffGuard options", () => {
+  it("schema has push safety options including skipHooks", () => {
     const nt = getNodeType("action.push_branch");
     expect(nt.schema.properties.rebaseBeforePush).toBeDefined();
+    expect(nt.schema.properties.skipHooks).toBeDefined();
+    expect(nt.schema.properties.skipHooks.default).toBe(true);
     expect(nt.schema.properties.emptyDiffGuard).toBeDefined();
     expect(nt.schema.properties.syncMainForModuleBranch).toBeDefined();
   });
@@ -1669,6 +2781,83 @@ describe("action.update_task_status", () => {
       }),
     );
   });
+
+  it("persists PR linkage metadata from VE Orchestrator Lite pr node output", async () => {
+    const nt = getNodeType("action.update_task_status");
+    const updateTaskStatus = vi.fn().mockResolvedValue(true);
+    const updateTask = vi.fn().mockResolvedValue(true);
+    const ctx = makeCtx({
+      taskId: "task-lite-review-123",
+      taskTitle: "Lite review task",
+      branch: "task/task-lite-review-123",
+    });
+    ctx.getNodeOutput = vi.fn((id) => {
+      if (id !== "pr") return null;
+      return {
+        prNumber: 321,
+        prUrl: "https://github.com/virtengine/bosun/pull/321",
+        branch: "task/task-lite-review-123",
+      };
+    });
+    const node = makeNode("action.update_task_status", {
+      taskId: "{{taskId}}",
+      status: "inreview",
+      taskTitle: "{{taskTitle}}",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: { updateTaskStatus, updateTask },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(updateTaskStatus).toHaveBeenCalledWith(
+      "task-lite-review-123",
+      "inreview",
+      expect.objectContaining({
+        source: "workflow",
+        branchName: "task/task-lite-review-123",
+        prNumber: 321,
+        prUrl: "https://github.com/virtengine/bosun/pull/321",
+      }),
+    );
+    expect(updateTask).toHaveBeenCalledWith(
+      "task-lite-review-123",
+      expect.objectContaining({
+        branchName: "task/task-lite-review-123",
+        prNumber: 321,
+        prUrl: "https://github.com/virtengine/bosun/pull/321",
+      }),
+    );
+  });
+
+  it("allows workflows to set blocked status", async () => {
+    const nt = getNodeType("action.update_task_status");
+    const updateTaskStatus = vi.fn().mockResolvedValue(true);
+    const ctx = makeCtx({
+      taskId: "task-blocked-123",
+      taskTitle: "Blocked task",
+    });
+    const node = makeNode("action.update_task_status", {
+      taskId: "{{taskId}}",
+      status: "blocked",
+      taskTitle: "{{taskTitle}}",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: { updateTaskStatus },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(updateTaskStatus).toHaveBeenCalledWith(
+      "task-blocked-123",
+      "blocked",
+      expect.objectContaining({ source: "workflow" }),
+    );
+  });
 });
 
 describe("template-task-lifecycle", () => {
@@ -1681,7 +2870,7 @@ describe("template-task-lifecycle", () => {
     const t = getTemplate("template-task-lifecycle");
     expect(t).toBeDefined();
     expect(t.name).toBe("Task Lifecycle");
-    expect(t.category).toBe("lifecycle");
+    expect(t.category).toBe("task-execution");
     expect(t.enabled).toBe(true);
     expect(t.recommended).toBe(true);
   });
@@ -1692,10 +2881,12 @@ describe("template-task-lifecycle", () => {
     const required = [
       "trigger", "check-slots", "allocate-slot", "claim-task",
       "claim-ok", "set-inprogress", "acquire-worktree", "worktree-ok",
-      "resolve-executor", "record-head", "build-prompt", "run-agent",
+      "resolve-executor", "record-head", "read-workflow-contract",
+      "workflow-contract-validation", "build-prompt", "run-agent-plan", "run-agent-tests", "run-agent-implement",
       "claim-stolen", "detect-commits", "has-commits",
-      "push-branch", "push-ok", "create-pr", "set-inreview", "log-success",
-      "log-no-commits", "set-todo-cooldown",
+      "pre-pr-validation", "pre-pr-validation-ok", "log-validation-failed", "set-todo-validation-failed",
+      "push-branch", "push-ok", "create-pr", "set-inreview", "handoff-pr-progressor", "log-success",
+      "log-no-commits", "set-todo-cooldown", "create-pr-retry", "pr-created-stolen", "set-inreview-stolen", "handoff-pr-progressor-stolen", "log-claim-stolen-recovered",
       "release-worktree", "release-claim", "release-slot",
     ];
     for (const id of required) {
@@ -1722,12 +2913,12 @@ describe("template-task-lifecycle", () => {
     expect(resolveEdge.source).toBe("worktree-ok");
   });
 
-  it("has claim-stolen check after run-agent", () => {
+  it("has claim-stolen check after the 3-phase agent sequence", () => {
     const t = getTemplate("template-task-lifecycle");
-    const edge = t.edges.find(
-      (e) => e.source === "run-agent" && e.target === "claim-stolen",
-    );
-    expect(edge).toBeDefined();
+    expect(t.edges.find((e) => e.source === "build-prompt" && e.target === "run-agent-plan")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "run-agent-plan" && e.target === "run-agent-tests")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "run-agent-tests" && e.target === "run-agent-implement")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "run-agent-implement" && e.target === "claim-stolen")).toBeDefined();
   });
 
   it("push-branch has baseBranch and rebaseBeforePush config", () => {
@@ -1745,18 +2936,31 @@ describe("template-task-lifecycle", () => {
     const prCreated = t.nodes.find((n) => n.id === "pr-created");
 
     expect(createPr?.config?.body).toContain("Task-ID: {{taskId}}");
+    expect(createPr?.config?.enableAutoMerge).toBe("{{autoMergeOnCreate}}");
+    expect(createPr?.config?.autoMergeMethod).toBe("{{autoMergeMethod}}");
     expect(prCreated?.config?.expression).toContain("create-pr");
+    expect(prCreated?.config?.expression).toContain("prNumber");
+    expect(prCreated?.config?.expression).toContain("prUrl");
+    // handedOff without a real PR number must NOT satisfy the pr-created gate
+    expect(prCreated?.config?.expression).not.toContain("handedOff");
+    // gate requires success AND an actual PR reference
+    expect(prCreated?.config?.expression).toContain("success === true");
     expect(t.edges.find((e) => e.source === "create-pr" && e.target === "pr-created")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pr-created" && e.target === "set-inreview")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pr-created" && e.target === "set-todo-push-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "set-inreview" && e.target === "handoff-pr-progressor")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "handoff-pr-progressor" && e.target === "log-success")).toBeDefined();
   });
 
-  it("has push-ok check after push-branch", () => {
+  it("runs pre-PR validation before pushing", () => {
     const t = getTemplate("template-task-lifecycle");
-    const edge = t.edges.find(
-      (e) => e.source === "push-branch" && e.target === "push-ok",
-    );
-    expect(edge).toBeDefined();
+    expect(t.edges.find((e) => e.source === "has-commits" && e.target === "pre-pr-validation")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "pre-pr-validation" && e.target === "pre-pr-validation-ok")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "pre-pr-validation-ok" && e.target === "push-branch")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "pre-pr-validation-ok" && e.target === "log-validation-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "log-validation-failed" && e.target === "set-todo-validation-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "set-todo-validation-failed" && e.target === "join-outcomes")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "push-branch" && e.target === "push-ok")).toBeDefined();
   });
 
   it("passes repository scope metadata into build-prompt node", () => {
@@ -1774,6 +2978,7 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "log-success" && e.target === "join-outcomes")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-cooldown" && e.target === "join-outcomes")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-stolen" && e.target === "join-outcomes")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "log-claim-stolen-recovered" && e.target === "join-outcomes")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-push-failed" && e.target === "join-outcomes")).toBeDefined();
     // join-outcomes → release-worktree
     expect(t.edges.find((e) => e.source === "join-outcomes" && e.target === "release-worktree")).toBeDefined();
@@ -1781,6 +2986,26 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "release-worktree" && e.target === "release-claim")).toBeDefined();
     expect(t.edges.find((e) => e.source === "release-claim" && e.target === "release-slot")).toBeDefined();
   });
+
+  it("tries to recover PR linkage before sending a stolen claim back to todo", () => {
+    const t = getTemplate("template-task-lifecycle");
+    const retryPr = t.nodes.find((n) => n.id === "create-pr-retry");
+    const prCreatedStolen = t.nodes.find((n) => n.id === "pr-created-stolen");
+
+    expect(retryPr?.config?.body).toContain("Task-ID: {{taskId}}");
+    expect(retryPr?.config?.branch).toBe("{{branch}}");
+    expect(prCreatedStolen?.config?.expression).toContain("create-pr-retry");
+    expect(prCreatedStolen?.config?.expression).toContain("prNumber");
+    expect(prCreatedStolen?.config?.expression).toContain("prUrl");
+
+    expect(t.edges.find((e) => e.source === "claim-stolen" && e.target === "create-pr-retry")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "create-pr-retry" && e.target === "pr-created-stolen")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "pr-created-stolen" && e.target === "set-inreview-stolen")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "set-inreview-stolen" && e.target === "handoff-pr-progressor-stolen")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "handoff-pr-progressor-stolen" && e.target === "log-claim-stolen-recovered")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "pr-created-stolen" && e.target === "log-claim-stolen")).toBeDefined();
+  });
+
 
   it("claim-failed path releases slot", () => {
     const t = getTemplate("template-task-lifecycle");
@@ -1790,9 +3015,26 @@ describe("template-task-lifecycle", () => {
 
   it("worktree-failed path releases claim and slot", () => {
     const t = getTemplate("template-task-lifecycle");
-    expect(t.edges.find((e) => e.source === "worktree-ok" && e.target === "release-claim-wt-failed")).toBeDefined();
-    expect(t.edges.find((e) => e.source === "release-claim-wt-failed" && e.target === "set-todo-wt-failed")).toBeDefined();
+    // Auto-recovery path: worktree-ok → wt-retry-eligible → recover → retry → retry-wt-ok
+    expect(t.edges.find((e) => e.source === "worktree-ok" && e.target === "wt-retry-eligible")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "wt-retry-eligible" && e.target === "recover-worktree")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "recover-worktree" && e.target === "retry-acquire-wt")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "retry-acquire-wt" && e.target === "retry-wt-ok")).toBeDefined();
+    // Retry success rejoins main flow
+    expect(t.edges.find((e) => e.source === "retry-wt-ok" && e.target === "resolve-executor")).toBeDefined();
+    // Retry failure falls through to original failure path
+    expect(t.edges.find((e) => e.source === "retry-wt-ok" && e.target === "release-claim-wt-failed")).toBeDefined();
+    // Non-retryable goes directly to failure
+    expect(t.edges.find((e) => e.source === "wt-retry-eligible" && e.target === "release-claim-wt-failed")).toBeDefined();
+    // Original failure path still intact
+    expect(t.edges.find((e) => e.source === "release-claim-wt-failed" && e.target === "wt-failure-blocking")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "wt-failure-blocking" && e.target === "set-blocked-wt-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "wt-failure-blocking" && e.target === "set-todo-wt-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "set-blocked-wt-failed" && e.target === "annotate-blocked-wt-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "annotate-blocked-wt-failed" && e.target === "release-slot-wt-failed")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-wt-failed" && e.target === "release-slot-wt-failed")).toBeDefined();
+    const annotate = t.nodes.find((n) => n.id === "annotate-blocked-wt-failed");
+    expect(annotate?.type).toBe("action.bosun_function");
   });
 
   it("all edges reference valid node IDs", () => {
@@ -1817,10 +3059,23 @@ describe("template-task-lifecycle", () => {
     const t = getTemplate("template-task-lifecycle");
     expect(t.variables.maxParallel).toBe(3);
     expect(t.variables.claimTtlMinutes).toBe(180);
-    expect(t.variables.claimRenewIntervalMs).toBe(300000);
+    expect(t.variables.claimRenewIntervalMs).toBe(60000);
     expect(t.variables.taskTimeoutMs).toBe(21600000);
+    expect(t.variables.prePrValidationEnabled).toBe(true);
+    expect(t.variables.prePrValidationCommand).toBe("auto");
+    expect(t.variables.autoMergeOnCreate).toBe(false);
+    expect(t.variables.autoMergeMethod).toBe("squash");
     expect(t.variables.defaultSdk).toBe("auto");
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
+  });
+
+  it("configures pre-PR validation as a repo-aware quality gate", () => {
+    const t = getTemplate("template-task-lifecycle");
+    const validationNode = t.nodes.find((node) => node.id === "pre-pr-validation");
+
+    expect(validationNode?.config.command).toBe("{{prePrValidationCommand}}");
+    expect(validationNode?.config.commandType).toBe("qualityGate");
+    expect(validationNode?.config.cwd).toBe("{{worktreePath}}");
   });
 
   it("replaces task-executor.mjs module", () => {
@@ -1876,7 +3131,7 @@ describe("template-ve-orchestrator-lite", () => {
     const t = getTemplate("template-ve-orchestrator-lite");
     expect(t).toBeDefined();
     expect(t.name).toBe("VE Orchestrator Lite");
-    expect(t.category).toBe("lifecycle");
+    expect(t.category).toBe("task-execution");
     expect(t.enabled).toBe(true);
     expect(t.recommended).toBe(false);
   });
@@ -1941,6 +3196,16 @@ describe("template-ve-orchestrator-lite", () => {
     expect(t.edges.find((e) => e.source === "release-claim" && e.target === "release-slot")).toBeDefined();
   });
 
+  it("requires confirmed PR reference before transitioning to inreview", () => {
+    const t = getTemplate("template-ve-orchestrator-lite");
+    const prCreated = t.nodes.find((n) => n.id === "pr-created");
+    // handedOff without a real PR number must NOT satisfy the gate — tasks
+    // must have an actual prNumber or prUrl to enter inreview.
+    expect(prCreated?.config?.expression).not.toContain("handedOff");
+    expect(prCreated?.config?.expression).toContain("success === true");
+    expect(prCreated?.config?.expression).toContain("prNumber");
+  });
+
   it("claim-failed path releases slot", () => {
     const t = getTemplate("template-ve-orchestrator-lite");
     expect(t.edges.find((e) => e.source === "claim-check" && e.target === "release-slot-skip")).toBeDefined();
@@ -1968,5 +3233,3 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
-
-

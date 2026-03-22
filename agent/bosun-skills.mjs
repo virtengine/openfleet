@@ -41,9 +41,9 @@ const _SKILL_STREAM_PATH = resolve(
  *
  * @param {string} skillName
  * @param {string} [skillTitle]
- * @param {{ taskId?: string, executor?: string }} [opts]
+ * @param {{ taskId?: string, executor?: string, source?: string }} [opts]
  */
-function emitSkillInvokeEvent(skillName, skillTitle, opts = {}) {
+export function emitSkillInvokeEvent(skillName, skillTitle, opts = {}) {
   try {
     const event = {
       timestamp: new Date().toISOString(),
@@ -51,6 +51,7 @@ function emitSkillInvokeEvent(skillName, skillTitle, opts = {}) {
       data: { skill_name: skillName, skill_title: skillTitle || skillName },
       ...(opts.taskId ? { task_id: String(opts.taskId) } : {}),
       ...(opts.executor ? { executor: String(opts.executor) } : {}),
+      ...(opts.source ? { source: String(opts.source) } : {}),
     };
     mkdirSync(dirname(_SKILL_STREAM_PATH), { recursive: true });
     appendFileSync(_SKILL_STREAM_PATH, JSON.stringify(event) + "\n", "utf8");

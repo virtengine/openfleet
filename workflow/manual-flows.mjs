@@ -7,6 +7,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { executeAnnotationAudit } from "./manual-flow-audit.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -48,6 +49,7 @@ const __dirname = dirname(__filename);
  * @property {string}   [completedAt]
  * @property {Object}   [result]     — executor output
  * @property {string}   [error]
+ * @property {Object}   [metadata]
  */
 
 // ── Directories ──────────────────────────────────────────────────────────────
@@ -839,22 +841,30 @@ export function deleteFlowTemplate(templateId, rootDir) {
  * @param {string} rootDir
  * @returns {ManualFlowRun}
  */
-export function createRun(templateId, formValues, rootDir) {
+export function createRun(templateId, formValues, rootDir, opts = {}) {
   ensureDirs(rootDir);
   const template = getFlowTemplate(templateId, rootDir);
   if (!template) throw new Error(`Template not found: ${templateId}`);
 
-  // Validate required fields
+  validateRequiredManualFlowFields(template, formValues);
+  const resolved = resolveManualFlowValues(template, formValues);
+  const run = createManualFlowRunRecord(templateId, template.name, resolved, opts);
+
+  writeRunToDisk(run, rootDir);
+  return run;
+}
+
+function validateRequiredManualFlowFields(template, formValues) {
   for (const field of template.fields) {
-    if (field.required) {
-      const val = formValues[field.id];
-      if (val === undefined || val === null || val === "") {
-        throw new Error(`Required field missing: ${field.label} (${field.id})`);
-      }
+    if (!field.required) continue;
+    const value = formValues[field.id];
+    if (value === undefined || value === null || value === "") {
+      throw new Error(`Required field missing: ${field.label} (${field.id})`);
     }
   }
+}
 
-  // Apply defaults for missing optional fields
+function resolveManualFlowValues(template, formValues) {
   const resolved = {};
   for (const field of template.fields) {
     if (formValues[field.id] !== undefined && formValues[field.id] !== null) {
@@ -863,21 +873,49 @@ export function createRun(templateId, formValues, rootDir) {
       resolved[field.id] = field.defaultValue;
     }
   }
+  return resolved;
+}
 
-  const run = {
+function normalizeManualFlowRunMetadata(metadata = {}) {
+  if (!metadata || typeof metadata !== "object") return null;
+  const normalized = {};
+
+  const repository = String(
+    metadata.repository || metadata.targetRepo || metadata.repo || "",
+  ).trim();
+  if (repository) {
+    normalized.repository = repository;
+    normalized.targetRepo = repository;
+  }
+
+  const workspaceId = String(metadata.workspaceId || metadata.workspace || "").trim();
+  if (workspaceId) normalized.workspaceId = workspaceId;
+
+  const workspaceDir = String(metadata.workspaceDir || metadata.rootDir || "").trim();
+  if (workspaceDir) normalized.workspaceDir = workspaceDir;
+
+  const projectId = String(metadata.projectId || metadata.project || "").trim();
+  if (projectId) normalized.projectId = projectId;
+
+  const triggerSource = String(metadata.triggerSource || metadata.source || "").trim();
+  if (triggerSource) normalized.triggerSource = triggerSource;
+
+  return Object.keys(normalized).length > 0 ? normalized : null;
+}
+
+function createManualFlowRunRecord(templateId, templateName, formValues, opts = {}) {
+  return {
     id: `mfr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     templateId,
-    templateName: template.name,
-    formValues: resolved,
+    templateName,
+    formValues,
     status: "pending",
     startedAt: new Date().toISOString(),
     completedAt: null,
     result: null,
     error: null,
+    metadata: normalizeManualFlowRunMetadata(opts?.metadata),
   };
-
-  writeRunToDisk(run, rootDir);
-  return run;
 }
 
 /**
@@ -998,7 +1036,9 @@ export function listRuns(rootDir, opts = {}) {
  * @returns {Promise<ManualFlowRun>}
  */
 export async function executeFlow(templateId, formValues, rootDir, context = {}) {
-  const run = createRun(templateId, formValues, rootDir);
+  const run = createRun(templateId, formValues, rootDir, {
+    metadata: context?.runMetadata,
+  });
 
   try {
     startRun(run.id, rootDir);
@@ -1036,186 +1076,8 @@ export async function executeFlow(templateId, formValues, rootDir, context = {})
     return completeRun(run.id, result, rootDir);
   } catch (err) {
     console.warn("[manual-flows] execution failed for " + run.id + ": " + (err?.message || String(err)));
-    return failRun(run.id, "Execution failed", rootDir);
+    return failRun(run.id, err?.message || "Execution failed", rootDir);
   }
-}
-
-// ── Built-in Executors ───────────────────────────────────────────────────────
-
-/**
- * Execute the Codebase Annotation Audit flow.
- * Creates a Bosun task with the audit skill injected, or runs a lightweight
- * inventory inline for dry runs.
- */
-async function executeAnnotationAudit(formValues, rootDir, context) {
-  const {
-    targetDir = "",
-    fileExtensions = ".mjs, .js, .ts, .tsx, .jsx, .py",
-    skipGenerated = true,
-    phases = "all",
-    dryRun = false,
-  } = formValues;
-
-  // Parse extensions
-  const extensions = fileExtensions
-    .split(",")
-    .map((e) => e.trim())
-    .filter(Boolean);
-
-  // Build inventory inline (lightweight — no agent needed)
-  const scanRoot = targetDir ? resolve(rootDir, targetDir) : rootDir;
-  const inventory = buildInventory(scanRoot, extensions, skipGenerated, rootDir);
-
-  if (dryRun) {
-    return {
-      mode: "dry-run",
-      filesScanned: inventory.length,
-      filesNeedingSummary: inventory.filter((f) => !f.has_summary).length,
-      filesNeedingWarn: inventory.filter((f) => !f.has_warn).length,
-      phases,
-      inventory,
-    };
-  }
-
-  // For actual execution, create a task that the agent will pick up
-  if (context.taskManager && typeof context.taskManager.createTask === "function") {
-    const taskDescription = buildAuditTaskDescription(formValues, inventory);
-    const task = await context.taskManager.createTask({
-      title: `docs(audit): codebase annotation audit`,
-      description: taskDescription,
-      priority: "high",
-      labels: ["audit", "documentation", "annotation"],
-      skills: ["codebase-annotation-audit"],
-    });
-    return {
-      mode: "task-dispatched",
-      taskId: task.id || task._id,
-      filesScanned: inventory.length,
-      filesNeedingSummary: inventory.filter((f) => !f.has_summary).length,
-      phases,
-    };
-  }
-
-  // Fallback: return inventory with instructions for manual execution
-  const auditDir = resolve(rootDir, ".bosun", "audit");
-  mkdirSync(auditDir, { recursive: true });
-  writeFileSync(
-    resolve(auditDir, "inventory.json"),
-    JSON.stringify(inventory, null, 2) + "\n",
-    "utf8",
-  );
-
-  return {
-    mode: "inventory-saved",
-    inventoryPath: resolve(auditDir, "inventory.json"),
-    filesScanned: inventory.length,
-    filesNeedingSummary: inventory.filter((f) => !f.has_summary).length,
-    filesNeedingWarn: inventory.filter((f) => !f.has_warn).length,
-    phases,
-    instructions:
-      "Inventory saved. Assign a docs(audit) task to an agent with the codebase-annotation-audit skill to complete annotation.",
-  };
-}
-
-/**
- * Scan files to build an audit inventory.
- */
-function buildInventory(scanDir, extensions, skipGenerated, repoRoot) {
-  const inventory = [];
-  const GENERATED_PATTERNS = [
-    /node_modules/,
-    /\.min\.\w+$/,
-    /package-lock\.json$/,
-    /yarn\.lock$/,
-    /pnpm-lock\.yaml$/,
-    /\.next\//,
-    /dist\//,
-    /build\//,
-    /coverage\//,
-    /\.bosun-worktrees\//,
-    /\.git\//,
-  ];
-
-  function walk(dir) {
-    let entries;
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    for (const entry of entries) {
-      const fullPath = resolve(dir, entry.name);
-      const relPath = fullPath.replace(repoRoot, "").replace(/\\/g, "/").replace(/^\//, "");
-
-      if (entry.isDirectory()) {
-        if (skipGenerated && GENERATED_PATTERNS.some((p) => p.test(relPath))) continue;
-        if (entry.name.startsWith(".") && entry.name !== ".bosun") continue;
-        walk(fullPath);
-        continue;
-      }
-
-      if (!entry.isFile()) continue;
-      if (extensions.length > 0 && !extensions.some((ext) => entry.name.endsWith(ext))) continue;
-      if (skipGenerated && GENERATED_PATTERNS.some((p) => p.test(relPath))) continue;
-
-      let content = "";
-      let lines = 0;
-      let hasSummary = false;
-      let hasWarn = false;
-
-      try {
-        content = readFileSync(fullPath, "utf8");
-        lines = content.split("\n").length;
-        hasSummary = /(?:CLAUDE|BOSUN):SUMMARY/i.test(content);
-        hasWarn = /(?:CLAUDE|BOSUN):WARN/i.test(content);
-      } catch { /* unreadable */ }
-
-      const ext = entry.name.includes(".") ? entry.name.slice(entry.name.lastIndexOf(".")) : "";
-      const category = categorizeFile(relPath, ext);
-
-      inventory.push({
-        path: relPath,
-        lang: ext,
-        lines,
-        has_summary: hasSummary,
-        has_warn: hasWarn,
-        category,
-      });
-    }
-  }
-
-  walk(scanDir);
-  return inventory;
-}
-
-function categorizeFile(relPath, ext) {
-  if (/test|spec|__tests__/i.test(relPath)) return "test";
-  if (/\.config\.|tsconfig|jest\.config|webpack|vite\.config|\.env/i.test(relPath)) return "config";
-  if (/\.min\.|dist\/|build\/|generated/i.test(relPath)) return "generated";
-  if (/util|helper|lib\//i.test(relPath)) return "util";
-  return "core";
-}
-
-function buildAuditTaskDescription(formValues, inventory) {
-  const needsSummary = inventory.filter((f) => !f.has_summary).length;
-  const needsWarn = inventory.filter((f) => !f.has_warn).length;
-  return `## Codebase Annotation Audit
-
-**Phases:** ${formValues.phases || "all"}
-**Target:** ${formValues.targetDir || "(entire repo)"}
-**Extensions:** ${formValues.fileExtensions || "all source files"}
-
-### Inventory Summary
-- Total files: ${inventory.length}
-- Files needing CLAUDE:SUMMARY: ${needsSummary}
-- Files needing CLAUDE:WARN review: ${needsWarn}
-
-### Instructions
-Follow the codebase-annotation-audit skill (loaded in your skills).
-Run phases as specified above. Do NOT change any program behavior — documentation only.
-${formValues.commitMessage ? `\nCommit with: \`${formValues.commitMessage}\`` : ""}
-`;
 }
 
 /** Stub executor for skill generation flow. */
@@ -1302,28 +1164,11 @@ async function executeContextIndexFull(formValues, rootDir, _context = {}) {
 }
 
 async function executeResearchAgent(formValues, rootDir, context = {}) {
-  const problem = String(formValues?.problem || "").trim();
-  if (!problem) {
-    throw new Error("Research problem is required.");
-  }
-
-  const domain = String(formValues?.domain || "computer-science").trim() || "computer-science";
-  const maxIterationsRaw = Number(formValues?.maxIterations);
-  const maxIterations = Number.isFinite(maxIterationsRaw)
-    ? Math.min(50, Math.max(1, Math.floor(maxIterationsRaw)))
-    : 10;
-  const searchLiterature = formValues?.searchLiterature !== false;
-  const executionMode = String(formValues?.executionMode || "workflow").trim().toLowerCase();
+  const researchConfig = resolveResearchAgentConfig(formValues);
+  const { problem, domain, maxIterations, searchLiterature, executionMode } = researchConfig;
 
   if (executionMode === "task") {
-    const taskDescription =
-      `Run iterative research for the following problem:\n\n` +
-      `${problem}\n\n` +
-      `Domain: ${domain}\n` +
-      `Max iterations: ${maxIterations}\n` +
-      `Search literature first: ${searchLiterature}\n\n` +
-      `Use a generate -> verify -> revise loop. If verification identifies critical flaws, ` +
-      `regenerate from a fundamentally different approach.`;
+    const taskDescription = buildResearchTaskDescription(researchConfig);
     if (context.taskManager && typeof context.taskManager.createTask === "function") {
       const task = await context.taskManager.createTask({
         title: `research: iterative agent (${domain})`,
@@ -1340,27 +1185,18 @@ async function executeResearchAgent(formValues, rootDir, context = {}) {
         searchLiterature,
       };
     }
-    return {
-      mode: "instructions",
-      problem,
-      domain,
-      maxIterations,
-      searchLiterature,
-      instructions: "Task manager unavailable. Create a high-priority research task using the provided configuration.",
-    };
+    return buildResearchInstructionsResult(
+      researchConfig,
+      "Task manager unavailable. Create a high-priority research task using the provided configuration.",
+    );
   }
 
   const engine = context.engine;
   if (!engine || typeof engine.execute !== "function") {
-    return {
-      mode: "instructions",
-      problem,
-      domain,
-      maxIterations,
-      searchLiterature,
-      instructions:
-        "Workflow execution mode requires an active workflow engine. Retry from the Workflows launcher or switch to Task mode.",
-    };
+    return buildResearchInstructionsResult(
+      researchConfig,
+      "Workflow execution mode requires an active workflow engine. Retry from the Workflows launcher or switch to Task mode.",
+    );
   }
 
   const { installTemplate } = await import("./workflow-templates.mjs");
@@ -1369,14 +1205,7 @@ async function executeResearchAgent(formValues, rootDir, context = {}) {
     installTemplate(templateId, engine);
   }
 
-  const input = {
-    problem,
-    domain,
-    maxIterations,
-    searchLiterature,
-    _previousFeedback: "",
-    triggerSource: "manual",
-  };
+  const input = buildResearchWorkflowInput(researchConfig);
 
   Promise.resolve()
     .then(() => engine.execute(templateId, input, { force: true, triggerSource: "manual" }))
@@ -1396,30 +1225,76 @@ async function executeResearchAgent(formValues, rootDir, context = {}) {
   };
 }
 
+function resolveResearchAgentConfig(formValues) {
+  const problem = String(formValues?.problem || "").trim();
+  if (!problem) {
+    throw new Error("Research problem is required.");
+  }
+
+  const domain = String(formValues?.domain || "computer-science").trim() || "computer-science";
+  const maxIterationsRaw = Number(formValues?.maxIterations);
+  const maxIterations = Number.isFinite(maxIterationsRaw)
+    ? Math.min(50, Math.max(1, Math.floor(maxIterationsRaw)))
+    : 10;
+
+  return {
+    problem,
+    domain,
+    maxIterations,
+    searchLiterature: formValues?.searchLiterature !== false,
+    executionMode: String(formValues?.executionMode || "workflow").trim().toLowerCase(),
+  };
+}
+
+function buildResearchTaskDescription({ problem, domain, maxIterations, searchLiterature }) {
+  return (
+    `Run iterative research for the following problem:\n\n` +
+    `${problem}\n\n` +
+    `Domain: ${domain}\n` +
+    `Max iterations: ${maxIterations}\n` +
+    `Search literature first: ${searchLiterature}\n\n` +
+    `Use a generate -> verify -> revise loop. If verification identifies critical flaws, ` +
+    `regenerate from a fundamentally different approach.`
+  );
+}
+
+function buildResearchInstructionsResult({ problem, domain, maxIterations, searchLiterature }, instructions) {
+  return {
+    mode: "instructions",
+    problem,
+    domain,
+    maxIterations,
+    searchLiterature,
+    instructions,
+  };
+}
+
+function buildResearchWorkflowInput({ problem, domain, maxIterations, searchLiterature }) {
+  return {
+    problem,
+    domain,
+    maxIterations,
+    searchLiterature,
+    _previousFeedback: "",
+    triggerSource: "manual",
+  };
+}
+
 /** Executor for user-created custom templates. */
 async function executeCustomFlow(template, formValues, rootDir, context) {
-  const templateValues = {
-    ...(formValues || {}),
-    templateName: template?.name || "",
-    templateId: template?.id || "",
-    category: template?.category || "custom",
-  };
-
-  const action = template?.action && typeof template.action === "object"
-    ? template.action
-    : { kind: "task" };
+  const templateValues = buildCustomFlowTemplateValues(template, formValues, {
+    repository:
+      context?.runMetadata?.repository ||
+      context?.runMetadata?.targetRepo ||
+      "",
+    workspaceId: context?.runMetadata?.workspaceId || "",
+  });
+  const action = resolveCustomFlowAction(template);
   const actionKind = String(action?.kind || "task").trim().toLowerCase();
 
   if (context.taskManager && typeof context.taskManager.createTask === "function") {
-    const taskAction = actionKind === "task" && action?.task && typeof action.task === "object"
-      ? action.task
-      : {};
-    const taskTitleTemplate = String(taskAction?.title || "").trim();
-    const taskDescriptionTemplate = String(taskAction?.description || "").trim();
-    const taskPriority = String(taskAction?.priority || "medium").trim() || "medium";
-    const taskLabels = Array.isArray(taskAction?.labels)
-      ? taskAction.labels.map((label) => String(label || "").trim()).filter(Boolean)
-      : [];
+    const { taskTitleTemplate, taskDescriptionTemplate, taskPriority, taskLabels } =
+      resolveCustomFlowTaskConfig(actionKind, action);
 
     const renderedTitle = renderTemplateString(taskTitleTemplate, templateValues);
     const renderedDescription = renderTemplateString(taskDescriptionTemplate, templateValues);
@@ -1460,6 +1335,37 @@ async function executeCustomFlow(template, formValues, rootDir, context) {
   };
 }
 
+function buildCustomFlowTemplateValues(template, formValues, extraValues = {}) {
+  return {
+    ...(formValues || {}),
+    ...(extraValues || {}),
+    templateName: template?.name || "",
+    templateId: template?.id || "",
+    category: template?.category || "custom",
+  };
+}
+
+function resolveCustomFlowAction(template) {
+  return template?.action && typeof template.action === "object"
+    ? template.action
+    : { kind: "task" };
+}
+
+function resolveCustomFlowTaskConfig(actionKind, action) {
+  const taskAction = actionKind === "task" && action?.task && typeof action.task === "object"
+    ? action.task
+    : {};
+
+  return {
+    taskTitleTemplate: String(taskAction?.title || "").trim(),
+    taskDescriptionTemplate: String(taskAction?.description || "").trim(),
+    taskPriority: String(taskAction?.priority || "medium").trim() || "medium",
+    taskLabels: Array.isArray(taskAction?.labels)
+      ? taskAction.labels.map((label) => String(label || "").trim()).filter(Boolean)
+      : [],
+  };
+}
+
 function renderTemplateString(templateText = "", values = {}) {
   const raw = String(templateText || "");
   if (!raw) return "";
@@ -1484,4 +1390,3 @@ function writeRunToDisk(run, rootDir) {
   mkdirSync(dir, { recursive: true });
   writeFileSync(resolve(dir, `${run.id}.json`), JSON.stringify(run, null, 2) + "\n", "utf8");
 }
-

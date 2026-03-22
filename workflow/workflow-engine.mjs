@@ -34,10 +34,32 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync } from "node:fs";
-import { writeFile as writeFileAsync } from "node:fs/promises";
 import { resolve, basename, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import {
+  ensureTestRuntimeSandbox,
+  resolvePathForTestRuntime,
+} from "../infra/test-runtime.mjs";
+import { getTemplate } from "./workflow-templates.mjs";
+import { WorkflowExecutionLedger } from "./execution-ledger.mjs";
+import { buildWorkflowStatusPayload } from "../infra/tui-bridge.mjs";
+
+// Lazy-loaded workspace manager for workspace-aware scheduling
+let _workspaceManagerMod = null;
+async function ensureWorkspaceManager() {
+  if (_workspaceManagerMod) return _workspaceManagerMod;
+  try {
+    _workspaceManagerMod = await import("../workspace/workspace-manager.mjs");
+  } catch {
+    _workspaceManagerMod = null;
+  }
+  return _workspaceManagerMod;
+}
+function ensureWorkspaceManagerSync() {
+  if (_workspaceManagerMod) return _workspaceManagerMod;
+  return null;
+}
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -73,6 +95,16 @@ const MAX_PERSISTED_RUNS = readBoundedEnvInt("WORKFLOW_MAX_PERSISTED_RUNS", 2000
   min: 20,
   max: 20000,
 });
+const MAX_INTERRUPTED_ORPHAN_SCAN_FILES = readBoundedEnvInt(
+  "WORKFLOW_INTERRUPTED_ORPHAN_SCAN_MAX_FILES",
+  200,
+  { min: 0, max: 5000 },
+);
+const INTERRUPTED_ORPHAN_SCAN_WINDOW_MS = readBoundedEnvInt(
+  "WORKFLOW_INTERRUPTED_ORPHAN_SCAN_WINDOW_MS",
+  7 * 24 * 60 * 60 * 1000,
+  { min: 0, max: 90 * 24 * 60 * 60 * 1000 },
+);
 const DEFAULT_RUN_STUCK_THRESHOLD_MS = readBoundedEnvInt(
   "WORKFLOW_RUN_STUCK_THRESHOLD_MS",
   5 * 60 * 1000,
@@ -150,17 +182,258 @@ export const WorkflowStatus = Object.freeze({
 // ── Node Type Registry ──────────────────────────────────────────────────────
 
 const _nodeTypeRegistry = new Map();
+const _nodeTypeMetaRegistry = new Map();
+const _normalizedHandlerCache = new WeakMap();
 
+function clonePortDescriptor(port) {
+  if (!port || typeof port !== "object") return null;
+  return {
+    name: String(port.name || "default").trim() || "default",
+    label: String(port.label || port.name || "default").trim() || "default",
+    type: String(port.type || "Any").trim() || "Any",
+    description: String(port.description || "").trim(),
+    color: typeof port.color === "string" && port.color.trim() ? port.color.trim() : null,
+    accepts: Array.isArray(port.accepts)
+      ? Array.from(new Set(port.accepts.map((value) => String(value || "").trim()).filter(Boolean)))
+      : [],
+  };
+}
+
+function normalizePortDescriptor(port, direction, index) {
+  const fallbackName = index === 0 ? "default" : `${direction}-${index + 1}`;
+  if (typeof port === "string") {
+    return {
+      name: fallbackName,
+      label: fallbackName,
+      type: port,
+      description: "",
+      color: null,
+      accepts: [],
+    };
+  }
+
+  if (!port || typeof port !== "object") {
+    return {
+      name: fallbackName,
+      label: fallbackName,
+      type: "Any",
+      description: "",
+      color: null,
+      accepts: [],
+    };
+  }
+
+  return clonePortDescriptor({
+    ...port,
+    name: port.name || fallbackName,
+    label: port.label || port.name || fallbackName,
+    type: port.type || "Any",
+  });
+}
+
+function normalizePortList(ports, direction) {
+  if (!Array.isArray(ports)) return [];
+  return ports
+    .map((port, index) => normalizePortDescriptor(port, direction, index))
+    .filter(Boolean);
+}
+
+function normalizeNodeUi(ui = {}) {
+  const primaryFields = Array.isArray(ui?.primaryFields)
+    ? Array.from(new Set(ui.primaryFields.map((value) => String(value || "").trim()).filter(Boolean)))
+    : [];
+  return {
+    ...ui,
+    primaryFields,
+  };
+}
+
+function normalizeHandlerMetadata(handler) {
+  if (_normalizedHandlerCache.has(handler)) {
+    return _normalizedHandlerCache.get(handler);
+  }
+
+  const inputPorts = normalizePortList(handler?.inputs ?? handler?.ports?.inputs, "input");
+  const outputPorts = normalizePortList(handler?.outputs ?? handler?.ports?.outputs, "output");
+
+  const normalized = {
+    ...handler,
+    ports: {
+      inputs: inputPorts,
+      outputs: outputPorts,
+    },
+    ui: normalizeNodeUi(handler?.ui),
+  };
+  _normalizedHandlerCache.set(handler, normalized);
+  return normalized;
+}
+
+function resolveNodePorts(node) {
+  const handler = node?.type ? _nodeTypeRegistry.get(node.type) : null;
+  const handlerPorts = handler?.ports || {};
+  const inputPorts = normalizePortList(node?.inputPorts, "input");
+  const outputPorts = normalizePortList(node?.outputPorts, "output");
+
+  return {
+    inputs: inputPorts.length > 0 ? inputPorts : normalizePortList(handlerPorts.inputs, "input"),
+    outputs: outputPorts.length > 0 ? outputPorts : normalizePortList(handlerPorts.outputs, "output"),
+  };
+}
+
+function resolvePortByName(ports, requestedName, direction) {
+  if (!Array.isArray(ports) || ports.length === 0) return null;
+  const normalizedName = String(requestedName || "").trim();
+  if (!normalizedName) return ports[0];
+  const matched = ports.find((port) => port.name === normalizedName);
+  if (matched) return matched;
+  return normalizePortDescriptor({
+    name: normalizedName,
+    label: normalizedName,
+    type: "Any",
+  }, direction, 0);
+}
+
+function isWildcardPortType(type) {
+  const normalized = String(type || "").trim();
+  return normalized === "*" || normalized === "Any";
+}
+
+export function isPortConnectionCompatible(sourcePort, targetPort) {
+  if (!sourcePort || !targetPort) {
+    return { compatible: true, reason: null };
+  }
+
+  const sourceType = String(sourcePort.type || "Any").trim() || "Any";
+  const targetType = String(targetPort.type || "Any").trim() || "Any";
+  const accepted = new Set(
+    [targetType, ...(Array.isArray(targetPort.accepts) ? targetPort.accepts : [])]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  );
+
+  if (isWildcardPortType(sourceType) || isWildcardPortType(targetType) || accepted.has("*") || accepted.has("Any")) {
+    return { compatible: true, reason: null };
+  }
+
+  if (sourceType === targetType || accepted.has(sourceType)) {
+    return { compatible: true, reason: null };
+  }
+
+  return {
+    compatible: false,
+    reason: `${sourcePort.label || sourcePort.name} emits ${sourceType}, but ${targetPort.label || targetPort.name} expects ${targetType}`,
+  };
+}
+
+function getExplicitNodeOutputs(node) {
+  return Array.isArray(node?.outputs)
+    ? Array.from(new Set(node.outputs.map((value) => String(value || "").trim()).filter(Boolean)))
+    : undefined;
+}
+
+function hydrateWorkflowNode(node, nodeMap) {
+  const ports = resolveNodePorts(node);
+  const explicitOutputs = getExplicitNodeOutputs(node);
+  const nextNode = {
+    ...node,
+    inputPorts: ports.inputs.map((port) => clonePortDescriptor(port)),
+    outputPorts: ports.outputs.map((port) => clonePortDescriptor(port)),
+    ...(explicitOutputs !== undefined ? { outputs: explicitOutputs } : {}),
+  };
+  nodeMap.set(nextNode.id, nextNode);
+  return nextNode;
+}
+
+function buildPortValidationIssue(edge, sourcePort, targetPort, compatibility) {
+  return {
+    edgeId: edge.id || `${edge.source}->${edge.target}`,
+    source: edge.source,
+    target: edge.target,
+    sourcePort: sourcePort?.name || "default",
+    targetPort: targetPort?.name || "default",
+    sourceType: sourcePort?.type || null,
+    targetType: targetPort?.type || null,
+    severity: "error",
+    message: compatibility.reason,
+  };
+}
+
+function hydrateWorkflowEdge(edge, nodeMap, issues) {
+  const sourceNode = nodeMap.get(edge.source);
+  const targetNode = nodeMap.get(edge.target);
+  const sourcePorts = resolveNodePorts(sourceNode);
+  const targetPorts = resolveNodePorts(targetNode);
+  const sourcePort = resolvePortByName(sourcePorts.outputs, edge.sourcePort || "default", "output");
+  const targetPort = resolvePortByName(targetPorts.inputs, edge.targetPort || "default", "input");
+  const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
+
+  if (!compatibility.compatible) {
+    issues.push(buildPortValidationIssue(edge, sourcePort, targetPort, compatibility));
+  }
+
+  return {
+    ...edge,
+    sourcePort: sourcePort?.name || String(edge.sourcePort || "default").trim() || "default",
+    targetPort: targetPort?.name || String(edge.targetPort || "default").trim() || "default",
+    sourcePortType: sourcePort?.type || null,
+    targetPortType: targetPort?.type || null,
+  };
+}
+
+function hydrateWorkflowDefinition(def, { strict = false } = {}) {
+  const normalized = {
+    ...(def || {}),
+    nodes: Array.isArray(def?.nodes) ? def.nodes.map((node) => ({ ...node })) : [],
+    edges: Array.isArray(def?.edges) ? def.edges.map((edge) => ({ ...edge })) : [],
+    metadata: { ...(def?.metadata || {}) },
+  };
+
+  const nodeMap = new Map();
+  normalized.nodes = normalized.nodes.map((node) => hydrateWorkflowNode(node, nodeMap));
+
+  const issues = [];
+  normalized.edges = normalized.edges.map((edge) => hydrateWorkflowEdge(edge, nodeMap, issues));
+  normalized.metadata.validationIssues = issues;
+
+  if (strict && issues.length > 0) {
+    throw new Error(`Workflow port validation failed: ${issues.map((issue) => issue.message).join("; ")}`);
+  }
+
+  return normalized;
+}
+
+function cleanObject(value = {}) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry !== undefined),
+  );
+}
 /**
  * Register a node type handler.
  * @param {string} type - Node type identifier (e.g., "trigger.task_low", "action.run_agent")
  * @param {object} handler - { execute(node, context, engine), validate?(node), describe?() }
  */
-export function registerNodeType(type, handler) {
+export function registerNodeType(type, handler, options = {}) {
   if (!handler || typeof handler.execute !== "function") {
     throw new Error(`${TAG} Node type "${type}" must have an execute function`);
   }
-  _nodeTypeRegistry.set(type, handler);
+  const normalized = normalizeHandlerMetadata(handler);
+  _nodeTypeRegistry.set(type, normalized);
+  _nodeTypeMetaRegistry.set(type, {
+    source: String(options.source || handler.source || "builtin"),
+    badge: options.badge || handler.badge || null,
+    isCustom: options.isCustom === true || handler.isCustom === true || String(options.source || handler.source || "").toLowerCase() === "custom",
+    filePath: options.filePath || handler.filePath || null,
+    inputs: Array.isArray(options.inputs)
+      ? options.inputs
+      : Array.isArray(handler.inputs)
+        ? handler.inputs
+        : (normalized.ports?.inputs || []).map((port) => port?.name || "default"),
+    outputs: Array.isArray(options.outputs)
+      ? options.outputs
+      : Array.isArray(handler.outputs)
+        ? handler.outputs
+        : (normalized.ports?.outputs || []).map((port) => port?.name || "default"),
+  });
 }
 
 /**
@@ -172,6 +445,15 @@ export function getNodeType(type) {
   return _nodeTypeRegistry.get(type) || null;
 }
 
+export function getNodeTypeMeta(type) {
+  return _nodeTypeMetaRegistry.get(type) || null;
+}
+
+export function unregisterNodeType(type) {
+  _nodeTypeRegistry.delete(type);
+  _nodeTypeMetaRegistry.delete(type);
+}
+
 /**
  * List all registered node types with metadata.
  * @returns {Array<{type: string, category: string, description: string}>}
@@ -180,11 +462,23 @@ export function listNodeTypes() {
   const result = [];
   for (const [type, handler] of _nodeTypeRegistry) {
     const [category] = type.split(".");
+    const metadata = _nodeTypeMetaRegistry.get(type) || {};
     result.push({
       type,
       category,
       description: handler.describe?.() || type,
       schema: handler.schema || null,
+      source: metadata.source || "builtin",
+      badge: metadata.badge || null,
+      isCustom: metadata.isCustom === true,
+      filePath: metadata.filePath || null,
+      inputs: Array.isArray(metadata.inputs) ? [...metadata.inputs] : [],
+      outputs: Array.isArray(metadata.outputs) ? [...metadata.outputs] : [],
+      ports: {
+        inputs: (handler.ports?.inputs || []).map((port) => clonePortDescriptor(port)),
+        outputs: (handler.ports?.outputs || []).map((port) => clonePortDescriptor(port)),
+      },
+      ui: normalizeNodeUi(handler.ui),
     });
   }
   return result;
@@ -223,6 +517,7 @@ export function listNodeTypes() {
  * @property {string} [description] - What this workflow does
  * @property {string} [category] - Grouping category
  * @property {boolean} [enabled] - Whether this workflow is active
+ * @property {boolean} [core] - Core workflows cannot be disabled or deleted
  * @property {string} [trigger] - Primary trigger type
  * @property {WorkflowNode[]} nodes - All nodes in the workflow
  * @property {WorkflowEdge[]} edges - Connections between nodes
@@ -248,6 +543,8 @@ export class WorkflowContext {
     this.nodeStatusEvents = [];
     this.variables = {};
     this.retryAttempts = new Map();
+    this._nodeTimings = Object.create(null);
+    this._nodeInputs = Object.create(null);
   }
 
   /** Target repo for multi-repo workspaces (convenience accessor) */
@@ -288,6 +585,46 @@ export class WorkflowContext {
     return forked;
   }
 
+  /** Set a timing field for a node (startedAt / endedAt) */
+  setNodeTiming(nodeId, field, value) {
+    const key = String(nodeId);
+    const fieldKey = String(field);
+    if (!this._nodeTimings[key] || typeof this._nodeTimings[key] !== "object") {
+      this._nodeTimings[key] = Object.create(null);
+    }
+    this._nodeTimings[key][fieldKey] = value;
+  }
+
+  /** Get timing data for a node */
+  getNodeTiming(nodeId) {
+    return this._nodeTimings[String(nodeId)] || null;
+  }
+
+  /** Store the resolved input snapshot for a node */
+  setNodeInput(nodeId, input) {
+    this._nodeInputs[String(nodeId)] = input;
+  }
+
+  /** Get the stored input snapshot for a node */
+  getNodeInput(nodeId) {
+    return this._nodeInputs[String(nodeId)] || null;
+  }
+
+  /** Merge metadata into an existing DAGState node entry */
+  annotateDagNode(nodeId, patch = {}) {
+    const dagState = this.data?._dagState;
+    if (!dagState || typeof dagState !== "object" || !dagState.nodes || typeof dagState.nodes !== "object") {
+      return;
+    }
+    const existing = dagState.nodes[nodeId];
+    if (!existing || typeof existing !== "object") return;
+    dagState.nodes[nodeId] = {
+      ...existing,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
   /** Set output from a node */
   setNodeOutput(nodeId, output) {
     this.nodeOutputs.set(nodeId, output);
@@ -302,6 +639,11 @@ export class WorkflowContext {
   setNodeStatus(nodeId, status) {
     this.nodeStatuses.set(nodeId, status);
     this.nodeStatusEvents.push({ nodeId, status, timestamp: Date.now() });
+    const dagNode = this.data?._dagState?.nodes?.[nodeId];
+    if (dagNode && typeof dagNode === "object") {
+      dagNode.status = status;
+      dagNode.lastStatusAt = new Date().toISOString();
+    }
   }
 
   /** Get node execution status */
@@ -378,6 +720,10 @@ export class WorkflowContext {
       logs: this.logs,
       errors: this.errors,
       nodeStatusEvents: this.nodeStatusEvents,
+      nodeTimings: { ...this._nodeTimings },
+      nodeInputs: { ...this._nodeInputs },
+      dagState: this.data?._dagState || null,
+      issueAdvisor: this.data?._issueAdvisor || null,
     };
   }
 }
@@ -393,8 +739,20 @@ export class WorkflowEngine extends EventEmitter {
    */
   constructor(opts = {}) {
     super();
-    this.workflowDir = opts.workflowDir || resolve(process.cwd(), ".bosun", WORKFLOW_DIR_NAME);
-    this.runsDir = opts.runsDir || resolve(process.cwd(), ".bosun", WORKFLOW_RUNS_DIR);
+    const sandbox = ensureTestRuntimeSandbox();
+    const defaultWorkflowDir = resolve(process.cwd(), ".bosun", WORKFLOW_DIR_NAME);
+    const defaultRunsDir = resolve(process.cwd(), ".bosun", WORKFLOW_RUNS_DIR);
+    this.workflowDir = resolvePathForTestRuntime(
+      opts.workflowDir || defaultWorkflowDir,
+      defaultWorkflowDir,
+      sandbox?.workflowDir,
+    );
+    this.runsDir = resolvePathForTestRuntime(
+      opts.runsDir || defaultRunsDir,
+      defaultRunsDir,
+      sandbox?.runsDir,
+    );
+    this._configDir = opts.configDir || process.cwd();
     this.detectInterruptedRuns = opts.detectInterruptedRuns !== false;
     this.services = opts.services || {};
     this._workflows = new Map();
@@ -421,6 +779,188 @@ export class WorkflowEngine extends EventEmitter {
     this._runQueue = [];             // FIFO queue of { resolve, reject, args }
     this._runIndexCache = null;      // cached run index (invalidated on writes)
     this._runIndexCacheMtime = 0;    // mtime of the cached index file
+    this._executionLedger = new WorkflowExecutionLedger({ runsDir: this.runsDir });
+
+    // Lazy-load workspace manager for schedule evaluation
+    void ensureWorkspaceManager().catch(() => {});
+  }
+  _emitWorkflowStatus(payload = {}) {
+    const event = buildWorkflowStatusPayload(payload);
+    if (!event.runId || !event.workflowId || !event.eventType) return;
+    this.emit("workflow:status", event);
+  }
+
+
+  _initializeDagState(def, ctx, extra = {}) {
+    const dependencyMap = new Map();
+    for (const node of def?.nodes || []) {
+      dependencyMap.set(node.id, []);
+    }
+    for (const edge of def?.edges || []) {
+      if (!edge?.target || edge.backEdge === true) continue;
+      const deps = dependencyMap.get(edge.target) || [];
+      deps.push(edge.source);
+      dependencyMap.set(edge.target, deps);
+    }
+
+    const nowIso = new Date(ctx.startedAt).toISOString();
+    const dagState = {
+      version: 1,
+      runId: ctx.id,
+      workflowId: def?.id || ctx.data?._workflowId || null,
+      workflowName: def?.name || ctx.data?._workflowName || null,
+      rootRunId: extra.rootRunId || ctx.data?._workflowRootRunId || ctx.id,
+      parentRunId: extra.parentRunId || ctx.data?._workflowParentRunId || null,
+      retryOf: extra.retryOf || ctx.data?._retryOf || null,
+      retryMode: extra.retryMode || null,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      status: WorkflowStatus.RUNNING,
+      counts: {
+        total: Array.isArray(def?.nodes) ? def.nodes.length : 0,
+        pending: Array.isArray(def?.nodes) ? def.nodes.length : 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+        skipped: 0,
+      },
+      nodes: Object.fromEntries(
+        (def?.nodes || []).map((node) => [
+          node.id,
+          {
+            nodeId: node.id,
+            type: node.type,
+            label: node.label || null,
+            status: NodeStatus.PENDING,
+            dependencies: dependencyMap.get(node.id) || [],
+            attempts: 0,
+            lastError: null,
+            outputSummary: null,
+            startedAt: null,
+            endedAt: null,
+            updatedAt: nowIso,
+          },
+        ]),
+      ),
+    };
+    ctx.data._workflowRootRunId = dagState.rootRunId;
+    if (dagState.parentRunId) ctx.data._workflowParentRunId = dagState.parentRunId;
+    ctx.data._dagState = dagState;
+    this._refreshDagState(ctx, dagState.status);
+    return dagState;
+  }
+
+  _refreshDagState(ctx, status = null) {
+    const dagState = ctx?.data?._dagState;
+    if (!dagState || typeof dagState !== "object" || !dagState.nodes || typeof dagState.nodes !== "object") {
+      return null;
+    }
+    const nodes = Object.values(dagState.nodes);
+    const counts = {
+      total: nodes.length,
+      pending: nodes.filter((node) => node?.status === NodeStatus.PENDING).length,
+      running: nodes.filter((node) => node?.status === NodeStatus.RUNNING || node?.status === NodeStatus.WAITING).length,
+      completed: nodes.filter((node) => node?.status === NodeStatus.COMPLETED).length,
+      failed: nodes.filter((node) => node?.status === NodeStatus.FAILED).length,
+      skipped: nodes.filter((node) => node?.status === NodeStatus.SKIPPED).length,
+    };
+    dagState.counts = counts;
+    dagState.status = status || dagState.status || WorkflowStatus.RUNNING;
+    dagState.updatedAt = new Date().toISOString();
+
+    const failedNodes = nodes.filter((node) => node?.status === NodeStatus.FAILED);
+    const pendingNodes = nodes.filter((node) => node?.status === NodeStatus.PENDING || node?.status === NodeStatus.WAITING);
+    const firstFailed = failedNodes[0] || null;
+    const firstPending = pendingNodes[0] || null;
+
+    let recommendedAction = "continue";
+    let summary = "Workflow is ready to continue.";
+    if (failedNodes.length > 0) {
+      recommendedAction = counts.completed > 0 ? "replan_from_failed" : "inspect_failure";
+      summary = firstFailed?.lastError
+        ? `Failed at ${firstFailed.label || firstFailed.nodeId}: ${firstFailed.lastError}`
+        : `Workflow has ${failedNodes.length} failed node(s).`;
+    } else if (pendingNodes.length > 0 && counts.completed > 0) {
+      recommendedAction = "resume_remaining";
+      summary = `Resume from ${firstPending?.label || firstPending?.nodeId || "the next pending node"}.`;
+    }
+
+    const issueAdvisor = {
+      status: dagState.status,
+      summary,
+      recommendedAction,
+      failedNodeCount: failedNodes.length,
+      pendingNodeCount: pendingNodes.length,
+      completedNodeCount: counts.completed,
+      suggestedRerun: firstFailed?.suggestedRerun || null,
+      failedNodes: failedNodes.slice(0, 6).map((node) => ({
+        nodeId: node.nodeId,
+        label: node.label || null,
+        error: node.lastError || null,
+        attempts: node.attempts || 0,
+      })),
+      updatedAt: dagState.updatedAt,
+    };
+
+    ctx.data._issueAdvisor = issueAdvisor;
+    const existingFeedback =
+      ctx.data?._plannerFeedback && typeof ctx.data._plannerFeedback === "object" && !Array.isArray(ctx.data._plannerFeedback)
+        ? ctx.data._plannerFeedback
+        : {};
+    ctx.data._plannerFeedback = {
+      ...existingFeedback,
+      issueAdvisor,
+      dagStateSummary: {
+        runId: dagState.runId,
+        workflowId: dagState.workflowId,
+        status: dagState.status,
+        counts,
+      },
+    };
+    return issueAdvisor;
+  }
+
+  _recordDagNodeOutcome(ctx, node, {
+    status,
+    result = undefined,
+    error = null,
+    attempt = undefined,
+  } = {}) {
+    if (!ctx || !node?.id) return;
+    const timing = ctx.getNodeTiming(node.id) || {};
+    const nodePatch = cleanObject({
+      status,
+      attempts: Number.isFinite(Number(attempt)) ? Number(attempt) : ctx.getRetryCount(node.id),
+      lastError: error ? String(error) : null,
+      outputSummary: result !== undefined ? this._summarizeTaskTraceNodeResult(result) : undefined,
+      startedAt: Number.isFinite(Number(timing.startedAt)) ? new Date(Number(timing.startedAt)).toISOString() : null,
+      endedAt: Number.isFinite(Number(timing.endedAt)) ? new Date(Number(timing.endedAt)).toISOString() : null,
+      suggestedRerun:
+        result && typeof result === "object"
+          ? (result.outputSuggestedRerun || result.outputDiagnostics?.suggestedRerun || undefined)
+          : undefined,
+      outputHint:
+        result && typeof result === "object" && result.outputHint
+          ? String(result.outputHint)
+          : undefined,
+      outputDeltaSummary:
+        result && typeof result === "object" && result.outputDeltaSummary
+          ? String(result.outputDeltaSummary)
+          : undefined,
+    });
+    ctx.annotateDagNode(node.id, nodePatch);
+    const workflowStatus = error
+      ? WorkflowStatus.FAILED
+      : (ctx.data?._workflowTerminalStatus || WorkflowStatus.RUNNING);
+    this._refreshDagState(ctx, workflowStatus);
+  }
+
+  _recordLedgerEvent(event = {}) {
+    try {
+      this._executionLedger.appendEvent(event);
+    } catch (err) {
+      console.warn(`${TAG} execution ledger write failed: ${String(err?.message || err)}`);
+    }
   }
 
 
@@ -441,6 +981,34 @@ export class WorkflowEngine extends EventEmitter {
   _sanitizeTaskId(value) {
     const normalized = String(value ?? "").trim();
     return normalized || "";
+  }
+
+  _resolveTemplateDefaultVariable(def, key) {
+    if (!def || typeof def !== "object") return undefined;
+    if (def?.metadata?.templateState?.isCustomized === true) return undefined;
+    const templateId = String(def?.metadata?.installedFrom || "").trim();
+    if (!templateId) return undefined;
+    const template = getTemplate(templateId);
+    if (!template?.variables || typeof template.variables !== "object") return undefined;
+    return Object.prototype.hasOwnProperty.call(template.variables, key)
+      ? template.variables[key]
+      : undefined;
+  }
+
+  _applyResumeInputMigrations(def, data = {}) {
+    if (!data || typeof data !== "object") return data;
+    const next = { ...data };
+    const templateId = String(def?.metadata?.installedFrom || "").trim();
+    if (templateId === "template-task-lifecycle") {
+      const currentValue = next.prePrValidationCommand;
+      const nextDefault =
+        this._resolveTemplateDefaultVariable(def, "prePrValidationCommand")
+        ?? def?.variables?.prePrValidationCommand;
+      if (currentValue === "npm run prepush:check" && nextDefault === "auto") {
+        next.prePrValidationCommand = nextDefault;
+      }
+    }
+    return next;
   }
 
   _resolveTaskTraceContext(ctx, node = null, result = null) {
@@ -653,7 +1221,7 @@ export class WorkflowEngine extends EventEmitter {
     for (const file of files) {
       try {
         const raw = readFileSync(resolve(this.workflowDir, file), "utf8");
-        const def = JSON.parse(raw);
+        const def = hydrateWorkflowDefinition(JSON.parse(raw));
         if (def.id) {
           this._workflows.set(def.id, def);
         }
@@ -689,6 +1257,7 @@ export class WorkflowEngine extends EventEmitter {
       description: w.description,
       category: w.category,
       enabled: w.enabled !== false,
+      core: w.core === true,
       trigger: w.trigger,
       nodeCount: w.nodes?.length || 0,
       edgeCount: w.edges?.length || 0,
@@ -699,11 +1268,21 @@ export class WorkflowEngine extends EventEmitter {
   /** Get a single workflow definition */
   get(id) {
     if (!this._loaded) this.load();
-    return this._workflows.get(id) || null;
+    const workflowId = String(id || "").trim();
+    if (!workflowId) return null;
+    const exact = this._workflows.get(workflowId);
+    if (exact) return exact;
+    for (const workflow of this._workflows.values()) {
+      if (workflow?.metadata?.installedFrom === workflowId) {
+        return workflow;
+      }
+    }
+    return null;
   }
 
   /** Save (create or update) a workflow definition */
   save(def) {
+    def = hydrateWorkflowDefinition(def, { strict: true });
     if (!def.id) def.id = randomUUID();
     if (!def.metadata) def.metadata = {};
     def.metadata.updatedAt = new Date().toISOString();
@@ -711,6 +1290,16 @@ export class WorkflowEngine extends EventEmitter {
       def.metadata.createdAt = def.metadata.updatedAt;
     }
     def.metadata.version = (def.metadata.version || 0) + 1;
+
+    // Prevent disabling core workflows
+    const existing = this._workflows.get(def.id);
+    if (existing?.core === true && def.enabled === false) {
+      def.enabled = true;
+    }
+    // Preserve core flag — cannot be removed via save
+    if (existing?.core === true) {
+      def.core = true;
+    }
 
     this._ensureDirs();
     this._workflows.set(def.id, def);
@@ -760,6 +1349,10 @@ export class WorkflowEngine extends EventEmitter {
 
   /** Delete a workflow */
   delete(id) {
+    const existing = this._workflows.get(id);
+    if (existing?.core === true) {
+      throw new Error(`Cannot delete core workflow "${existing.name || id}"`);
+    }
     this._workflows.delete(id);
     const filePath = resolve(this.workflowDir, `${id}.json`);
     try {
@@ -800,6 +1393,7 @@ export class WorkflowEngine extends EventEmitter {
 
   // ── Execution ─────────────────────────────────────────────────────────
 
+
   /**
    * Execute a workflow with given input data.
    * @param {string} workflowId
@@ -837,18 +1431,89 @@ export class WorkflowEngine extends EventEmitter {
   }
 
   /**
+   * Execute an ephemeral workflow definition without saving it to the registry.
+   * Useful for inline/embedded workflow composition where the child flow should
+   * have its own run/context history but not become an installed workflow.
+   *
+   * @param {object} workflowDef
+   * @param {object} inputData
+   * @param {object} [opts]
+   * @returns {Promise<WorkflowContext>}
+   */
+  async executeDefinition(workflowDef, inputData = {}, opts = {}) {
+    const requestedId = String(workflowDef?.id || opts.inlineWorkflowId || "").trim();
+    const workflowId = requestedId || `inline:${randomUUID()}`;
+    const normalized = hydrateWorkflowDefinition({
+      enabled: true,
+      trigger: workflowDef?.trigger || "trigger.workflow_call",
+      ...workflowDef,
+      id: workflowId,
+      name: String(workflowDef?.name || opts.inlineWorkflowName || workflowId).trim() || workflowId,
+      metadata: {
+        ...(workflowDef?.metadata || {}),
+        inline: true,
+        ephemeral: true,
+        sourceNodeId: opts.sourceNodeId || workflowDef?.metadata?.sourceNodeId || null,
+      },
+    }, { strict: true });
+
+    if (normalized.enabled === false && !opts.force) {
+      throw new Error(`${TAG} Inline workflow "${normalized.name}" is disabled`);
+    }
+
+    if (this._runSlots >= MAX_CONCURRENT_RUNS) {
+      this.emit("run:queued", { workflowId: normalized.id, name: normalized.name, queueDepth: this._runQueue.length + 1 });
+      await new Promise((resolve, reject) => {
+        this._runQueue.push({ resolve, reject });
+      });
+    }
+    this._runSlots++;
+
+    try {
+      return await this._executeInner(normalized, normalized.id, inputData, {
+        ...opts,
+        force: true,
+      });
+    } finally {
+      this._runSlots--;
+      if (this._runQueue.length > 0) {
+        const next = this._runQueue.shift();
+        next.resolve();
+      }
+    }
+  }
+
+  /**
    * Inner execute logic — called only once a concurrency slot is acquired.
    * @private
    */
   async _executeInner(def, workflowId, inputData, opts) {
-
-    const ctx = new WorkflowContext({
+    const initialData = this._applyResumeInputMigrations(def, {
       ...def.variables,
       ...inputData,
+    });
+
+    const ctx = new WorkflowContext({
+      ...initialData,
       _workflowId: workflowId,
       _workflowName: def.name,
+      ...(opts._decisionReason ? { _retryDecisionReason: opts._decisionReason } : {}),
     });
     ctx.variables = { ...def.variables };
+    this._initializeDagState(def, ctx, {
+      rootRunId:
+        opts._rootRunId ||
+        initialData._workflowRootRunId ||
+        initialData._rootRunId ||
+        null,
+      parentRunId:
+        opts._parentRunId ||
+        initialData._workflowParentRunId ||
+        initialData._parentRunId ||
+        null,
+      retryOf: opts._originalRunId || initialData._retryOf || null,
+      retryMode: opts._retryMode || null,
+    });
 
     const runId = ctx.id;
     this._activeRuns.set(runId, {
@@ -863,6 +1528,32 @@ export class WorkflowEngine extends EventEmitter {
     this._persistActiveRunState(runId, workflowId, def.name, ctx);
 
     this.emit("run:start", { runId, workflowId, name: def.name });
+    this._emitWorkflowStatus({
+      runId,
+      workflowId,
+      workflowName: def.name,
+      eventType: "run:start",
+      status: WorkflowStatus.RUNNING,
+      meta: {
+        triggerSource: ctx.data?._triggerSource || null,
+      },
+    });
+    this._recordLedgerEvent({
+      eventType: "run.start",
+      runId,
+      workflowId,
+      workflowName: def.name,
+      rootRunId: ctx.data?._workflowRootRunId || runId,
+      parentRunId: ctx.data?._workflowParentRunId || null,
+      retryOf: ctx.data?._retryOf || null,
+      retryMode: opts._retryMode || null,
+      status: WorkflowStatus.RUNNING,
+      meta: {
+        triggerSource: ctx.data?._triggerSource || null,
+        targetRepo: ctx.data?._targetRepo || null,
+        decisionReason: opts._decisionReason || null,
+      },
+    });
     await this._emitTaskTraceEvent("workflow.run.start", {
       ctx,
       runId,
@@ -886,7 +1577,47 @@ export class WorkflowEngine extends EventEmitter {
 
       const status = this._resolveWorkflowStatus(ctx);
       this._activeRuns.get(runId).status = status;
+      this._refreshDagState(ctx, status);
+      const terminalError = Array.isArray(ctx.errors) && ctx.errors.length
+        ? String(ctx.errors[ctx.errors.length - 1]?.error || "").trim()
+        : "";
+      if (status === WorkflowStatus.FAILED && terminalError) {
+        this.emit("run:error", { runId, workflowId, error: terminalError });
+        this._emitWorkflowStatus({
+          runId,
+          workflowId,
+          workflowName: def.name,
+          eventType: "run:error",
+          status: WorkflowStatus.FAILED,
+          error: terminalError,
+          durationMs: Date.now() - ctx.startedAt,
+        });
+      }
       this.emit("run:end", { runId, workflowId, status, duration: Date.now() - ctx.startedAt });
+      this._emitWorkflowStatus({
+        runId,
+        workflowId,
+        workflowName: def.name,
+        eventType: "run:end",
+        status,
+        durationMs: Date.now() - ctx.startedAt,
+      });
+      this._recordLedgerEvent({
+        eventType: "run.end",
+        runId,
+        workflowId,
+        workflowName: def.name,
+        rootRunId: ctx.data?._workflowRootRunId || runId,
+        parentRunId: ctx.data?._workflowParentRunId || null,
+        retryOf: ctx.data?._retryOf || null,
+        retryMode: opts._retryMode || null,
+        status,
+        durationMs: Date.now() - ctx.startedAt,
+        summary: ctx.data?._issueAdvisor?.summary || null,
+        meta: {
+          decisionReason: opts._decisionReason || null,
+        },
+      });
       await this._emitTaskTraceEvent("workflow.run.end", {
         ctx,
         runId,
@@ -898,7 +1629,34 @@ export class WorkflowEngine extends EventEmitter {
     } catch (err) {
       ctx.error("_engine", err);
       this._activeRuns.get(runId).status = WorkflowStatus.FAILED;
+      this._refreshDagState(ctx, WorkflowStatus.FAILED);
       this.emit("run:error", { runId, workflowId, error: err.message });
+      this._emitWorkflowStatus({
+        runId,
+        workflowId,
+        workflowName: def.name,
+        eventType: "run:error",
+        status: WorkflowStatus.FAILED,
+        error: err.message,
+        durationMs: Date.now() - ctx.startedAt,
+      });
+      this._recordLedgerEvent({
+        eventType: "run.error",
+        runId,
+        workflowId,
+        workflowName: def.name,
+        rootRunId: ctx.data?._workflowRootRunId || runId,
+        parentRunId: ctx.data?._workflowParentRunId || null,
+        retryOf: ctx.data?._retryOf || null,
+        retryMode: opts._retryMode || null,
+        status: WorkflowStatus.FAILED,
+        durationMs: Date.now() - ctx.startedAt,
+        error: err.message,
+        summary: ctx.data?._issueAdvisor?.summary || null,
+        meta: {
+          decisionReason: opts._decisionReason || null,
+        },
+      });
       await this._emitTaskTraceEvent("workflow.run.error", {
         ctx,
         runId,
@@ -949,6 +1707,7 @@ export class WorkflowEngine extends EventEmitter {
    */
   async retryRun(runId, retryOpts = {}) {
     const mode = retryOpts.mode === "from_scratch" ? "from_scratch" : "from_failed";
+    const decisionReason = String(retryOpts._decisionReason || "").trim() || null;
     const originalRun = this.getRunDetail(runId);
     if (!originalRun) {
       throw new Error(`${TAG} Run "${runId}" not found — cannot retry`);
@@ -968,19 +1727,29 @@ export class WorkflowEngine extends EventEmitter {
     const originalData = { ...(originalRun.detail?.data || {}) };
     delete originalData._workflowId;
     delete originalData._workflowName;
+    const retryData = this._applyResumeInputMigrations(def, originalData);
 
     this.emit("run:retry", {
       originalRunId: runId,
       workflowId,
       mode,
       attempt: retryOpts._attempt || 1,
+      decisionReason,
     });
 
     if (mode === "from_scratch") {
-      const ctx = await this.execute(workflowId, originalData, {
+      const originalRootRunId =
+        originalRun.detail?.dagState?.rootRunId ||
+        originalRun.detail?.data?._workflowRootRunId ||
+        originalRun.runId ||
+        runId;
+      const ctx = await this.execute(workflowId, retryData, {
         ...retryOpts,
         _isRetry: true,
         _originalRunId: runId,
+        _parentRunId: runId,
+        _rootRunId: originalRootRunId,
+        _retryMode: mode,
         force: true,
       });
       return { retryRunId: ctx.id, mode, originalRunId: runId, ctx };
@@ -994,12 +1763,21 @@ export class WorkflowEngine extends EventEmitter {
     // Build a fresh context but pre-seed completed node outputs.
     const ctx = new WorkflowContext({
       ...def.variables,
-      ...originalData,
+      ...retryData,
       _workflowId: workflowId,
       _workflowName: def.name,
       _retryOf: runId,
     });
     ctx.variables = { ...def.variables };
+    this._initializeDagState(def, ctx, {
+      rootRunId:
+        originalRun.detail?.dagState?.rootRunId ||
+        originalRun.detail?.data?._workflowRootRunId ||
+        runId,
+      parentRunId: runId,
+      retryOf: runId,
+      retryMode: mode,
+    });
 
     // Pre-populate nodes that already succeeded.
     for (const [nodeId, status] of Object.entries(nodeStatuses)) {
@@ -1008,6 +1786,10 @@ export class WorkflowEngine extends EventEmitter {
         if (nodeOutputs[nodeId] !== undefined) {
           ctx.setNodeOutput(nodeId, nodeOutputs[nodeId]);
         }
+        this._recordDagNodeOutcome(ctx, { id: nodeId }, {
+          status: NodeStatus.COMPLETED,
+          result: nodeOutputs[nodeId],
+        });
       }
       // Reset failed / skipped nodes so the DAG will re-run them.
     }
@@ -1022,6 +1804,28 @@ export class WorkflowEngine extends EventEmitter {
     });
     this._persistActiveRunState(retryRunId, workflowId, def.name, ctx);
     this.emit("run:start", { runId: retryRunId, workflowId, name: def.name, retryOf: runId, mode });
+    this._emitWorkflowStatus({
+      runId: retryRunId,
+      workflowId,
+      workflowName: def.name,
+      eventType: "run:start",
+      status: WorkflowStatus.RUNNING,
+      meta: { retryOf: runId, mode },
+    });
+    this._recordLedgerEvent({
+      eventType: "run.start",
+      runId: retryRunId,
+      workflowId,
+      workflowName: def.name,
+      rootRunId: ctx.data?._workflowRootRunId || retryRunId,
+      parentRunId: runId,
+      retryOf: runId,
+      retryMode: mode,
+      status: WorkflowStatus.RUNNING,
+      meta: {
+        decisionReason,
+      },
+    });
     await this._emitTaskTraceEvent("workflow.run.start", {
       ctx,
       runId: retryRunId,
@@ -1044,6 +1848,7 @@ export class WorkflowEngine extends EventEmitter {
 
       const status = this._resolveWorkflowStatus(ctx);
       this._activeRuns.get(retryRunId).status = status;
+      this._refreshDagState(ctx, status);
       this.emit("run:end", {
         runId: retryRunId,
         workflowId,
@@ -1051,6 +1856,31 @@ export class WorkflowEngine extends EventEmitter {
         duration: Date.now() - ctx.startedAt,
         retryOf: runId,
         mode,
+      });
+      this._emitWorkflowStatus({
+        runId: retryRunId,
+        workflowId,
+        workflowName: def.name,
+        eventType: "run:end",
+        status,
+        durationMs: Date.now() - ctx.startedAt,
+        meta: { retryOf: runId, mode },
+      });
+      this._recordLedgerEvent({
+        eventType: "run.end",
+        runId: retryRunId,
+        workflowId,
+        workflowName: def.name,
+        rootRunId: ctx.data?._workflowRootRunId || retryRunId,
+        parentRunId: runId,
+        retryOf: runId,
+        retryMode: mode,
+        status,
+        durationMs: Date.now() - ctx.startedAt,
+        summary: ctx.data?._issueAdvisor?.summary || null,
+        meta: {
+          decisionReason,
+        },
       });
       await this._emitTaskTraceEvent("workflow.run.end", {
         ctx,
@@ -1064,7 +1894,35 @@ export class WorkflowEngine extends EventEmitter {
     } catch (err) {
       ctx.error("_engine", err);
       this._activeRuns.get(retryRunId).status = WorkflowStatus.FAILED;
+      this._refreshDagState(ctx, WorkflowStatus.FAILED);
       this.emit("run:error", { runId: retryRunId, workflowId, error: err.message, retryOf: runId });
+      this._emitWorkflowStatus({
+        runId: retryRunId,
+        workflowId,
+        workflowName: def.name,
+        eventType: "run:error",
+        status: WorkflowStatus.FAILED,
+        error: err.message,
+        durationMs: Date.now() - ctx.startedAt,
+        meta: { retryOf: runId, mode },
+      });
+      this._recordLedgerEvent({
+        eventType: "run.error",
+        runId: retryRunId,
+        workflowId,
+        workflowName: def.name,
+        rootRunId: ctx.data?._workflowRootRunId || retryRunId,
+        parentRunId: runId,
+        retryOf: runId,
+        retryMode: mode,
+        status: WorkflowStatus.FAILED,
+        durationMs: Date.now() - ctx.startedAt,
+        error: err.message,
+        summary: ctx.data?._issueAdvisor?.summary || null,
+        meta: {
+          decisionReason,
+        },
+      });
       await this._emitTaskTraceEvent("workflow.run.error", {
         ctx,
         runId: retryRunId,
@@ -1120,6 +1978,60 @@ export class WorkflowEngine extends EventEmitter {
     return ctx.errors.length > 0 ? WorkflowStatus.FAILED : WorkflowStatus.COMPLETED;
   }
 
+  _chooseRetryModeFromDetail(detail, options = {}) {
+    const fallbackMode = options.fallbackMode === "from_scratch"
+      ? "from_scratch"
+      : "from_failed";
+    const issueAdvisor =
+      detail?.issueAdvisor && typeof detail.issueAdvisor === "object"
+        ? detail.issueAdvisor
+        : null;
+    const dagCounts =
+      detail?.dagState?.counts && typeof detail.dagState.counts === "object"
+        ? detail.dagState.counts
+        : null;
+    const counts = dagCounts || this._countNodeStatuses(detail?.nodeStatuses || {});
+    const completedCount = Number(counts.completed ?? counts.completedCount ?? 0) || 0;
+    const failedCount = Number(counts.failed ?? counts.failedCount ?? 0) || 0;
+
+    let mode = fallbackMode;
+    let reason = `fallback:${fallbackMode}`;
+
+    if (issueAdvisor?.recommendedAction === "resume_remaining") {
+      mode = "from_failed";
+      reason = "issue_advisor.resume_remaining";
+    } else if (issueAdvisor?.recommendedAction === "replan_from_failed") {
+      mode = "from_scratch";
+      reason = "issue_advisor.replan_from_failed";
+    } else if (issueAdvisor?.recommendedAction === "inspect_failure") {
+      mode = "from_scratch";
+      reason = "issue_advisor.inspect_failure";
+    } else if (completedCount <= 0) {
+      mode = "from_scratch";
+      reason = "dag_state.no_completed_nodes";
+    } else if (failedCount > 1) {
+      mode = "from_scratch";
+      reason = "dag_state.multiple_failures";
+    } else if (completedCount > 0) {
+      mode = "from_failed";
+      reason = "dag_state.localized_resume";
+    }
+
+    return {
+      mode,
+      reason,
+      fallbackMode,
+      completedCount,
+      failedCount,
+      issueAdvisorRecommendation: issueAdvisor?.recommendedAction || null,
+      issueAdvisorSummary: issueAdvisor?.summary || null,
+    };
+  }
+
+  _chooseRetryModeForRun(runDetail, options = {}) {
+    return this._chooseRetryModeFromDetail(runDetail?.detail || {}, options);
+  }
+
   /**
    * Escalating auto-retry loop.
    *
@@ -1133,9 +2045,13 @@ export class WorkflowEngine extends EventEmitter {
    */
   async _autoRetryLoop(originalRunId, workflowId, inputData, retryConfig, baseOpts) {
     const { maxAttempts, cooldownMs } = retryConfig;
+    const originalRun = this.getRunDetail(originalRunId);
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const mode = attempt === 1 ? "from_failed" : "from_scratch";
+      const retryDecision = this._chooseRetryModeForRun(originalRun, {
+        fallbackMode: attempt === 1 ? "from_failed" : "from_scratch",
+      });
+      const mode = attempt === 1 ? retryDecision.mode : "from_scratch";
       const needsCooldown = attempt >= 3 && cooldownMs > 0;
 
       if (needsCooldown) {
@@ -1153,7 +2069,8 @@ export class WorkflowEngine extends EventEmitter {
       }
 
       console.log(
-        `${TAG} Auto-retry attempt ${attempt}/${maxAttempts} for run ${originalRunId} (mode=${mode})`,
+        `${TAG} Auto-retry attempt ${attempt}/${maxAttempts} for run ${originalRunId} ` +
+        `(mode=${mode}, reason=${retryDecision.reason})`,
       );
 
       try {
@@ -1161,6 +2078,7 @@ export class WorkflowEngine extends EventEmitter {
           mode,
           _isRetry: true,
           _attempt: attempt,
+          _decisionReason: retryDecision.reason,
         });
 
         if (!ctx.errors || ctx.errors.length === 0) {
@@ -1173,6 +2091,8 @@ export class WorkflowEngine extends EventEmitter {
             retryRunId,
             workflowId,
             attempt,
+            mode,
+            decisionReason: retryDecision.reason,
           });
           return; // Success — stop retrying
         }
@@ -1186,6 +2106,8 @@ export class WorkflowEngine extends EventEmitter {
           retryRunId,
           workflowId,
           attempt,
+          mode,
+          decisionReason: retryDecision.reason,
           errors: ctx.errors,
         });
       } catch (err) {
@@ -1197,6 +2119,8 @@ export class WorkflowEngine extends EventEmitter {
           originalRunId,
           workflowId,
           attempt,
+          mode,
+          decisionReason: retryDecision.reason,
           errors: [{ error: err.message }],
         });
       }
@@ -1289,17 +2213,44 @@ export class WorkflowEngine extends EventEmitter {
    * Unlike evaluateTriggers() (event-driven), this is polling-based and should
    * be called periodically (e.g. every 60s) by the monitor.
    *
-   * Returns an array of { workflowId, triggeredBy } for workflows whose
-   * polling interval has elapsed since their last completed run.
+   * Returns an array of { workflowId, triggeredBy, workspaceId } for workflows
+   * whose polling interval has elapsed since their last completed run.
+   *
+   * @param {{ configDir?: string }} [opts] Options for workspace-aware evaluation.
    */
-  evaluateScheduleTriggers() {
+  evaluateScheduleTriggers(opts = {}) {
     if (!this._loaded) this.load();
 
     const triggered = [];
     const runIndex = this._readRunIndex();
 
+    // Load workspace state for filtering
+    const wsMgr = ensureWorkspaceManagerSync();
+    const configDir = opts?.configDir || this._configDir || process.cwd();
+    let workspaceSummary = null;
+    if (wsMgr?.getWorkspaceStateSummary) {
+      try {
+        workspaceSummary = wsMgr.getWorkspaceStateSummary(configDir);
+      } catch { /* workspace manager not available — skip workspace filtering */ }
+    }
+
     for (const [id, def] of this._workflows) {
       if (def.enabled === false) continue;
+
+      // ── Workspace gate ──────────────────────────────────────────────
+      const wfWorkspaceId = def.workspaceId || def.workspace || null;
+      if (wfWorkspaceId && workspaceSummary) {
+        const ws = workspaceSummary.find((w) => w.id === wfWorkspaceId);
+        if (ws && !ws.isActive) {
+          continue; // workspace paused or disabled — skip
+        }
+        if (ws && wsMgr?.isWorkflowAllowedForWorkspace) {
+          const fullWs = wsMgr.getWorkspace(configDir, wfWorkspaceId);
+          if (fullWs && !wsMgr.isWorkflowAllowedForWorkspace(fullWs, id)) {
+            continue; // workflow blacklisted or not in whitelist for this workspace
+          }
+        }
+      }
 
       // Skip workflows that are already running
       const alreadyRunning = Array.from(this._activeRuns.values()).some(
@@ -1314,14 +2265,25 @@ export class WorkflowEngine extends EventEmitter {
         || n.type === "trigger.task_low",
       );
 
+      const scheduleCtx = new WorkflowContext({
+        ...(def.variables || {}),
+        ...(def.data || {}),
+      });
+
+      const resolvePositiveInterval = (rawValue, fallbackMs) => {
+        const resolved = scheduleCtx.resolve(rawValue);
+        const parsed = Number(resolved);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackMs;
+      };
+
       for (const tNode of triggerNodes) {
         let intervalMs = 3600000;
         if (tNode.type === "trigger.task_available") {
-          intervalMs = Number(tNode.config?.pollIntervalMs) || 30000;
+          intervalMs = resolvePositiveInterval(tNode.config?.pollIntervalMs, 30000);
         } else if (tNode.type === "trigger.task_low") {
-          intervalMs = Number(tNode.config?.pollIntervalMs) || 60000;
+          intervalMs = resolvePositiveInterval(tNode.config?.pollIntervalMs, 60000);
         } else {
-          intervalMs = Number(tNode.config?.intervalMs) || 3600000;
+          intervalMs = resolvePositiveInterval(tNode.config?.intervalMs, 3600000);
         }
 
         // Find the most recent completed run for this workflow
@@ -1334,7 +2296,7 @@ export class WorkflowEngine extends EventEmitter {
 
         const elapsed = Date.now() - lastRunAt;
         if (elapsed >= intervalMs) {
-          triggered.push({ workflowId: id, triggeredBy: tNode.id });
+          triggered.push({ workflowId: id, triggeredBy: tNode.id, workspaceId: wfWorkspaceId });
 
           // For scheduled_once, only fire if never run before
           if (tNode.type === "trigger.scheduled_once" && lastRunAt > 0) {
@@ -1354,9 +2316,10 @@ export class WorkflowEngine extends EventEmitter {
   }
 
   /** Get historical run logs */
-  getRunHistory(workflowId, limit = 20) {
+  getRunHistory(workflowId, limit = null) {
     const normalizedLimit = Number(limit);
-    const targetCount = Number.isFinite(normalizedLimit) && normalizedLimit > 0
+    const hasLimit = Number.isFinite(normalizedLimit) && normalizedLimit > 0;
+    const targetCount = hasLimit
       ? Math.min(MAX_PERSISTED_RUNS, Math.max(Math.floor(normalizedLimit), 200))
       : MAX_PERSISTED_RUNS;
     const persisted = this._hydrateRunIndexFromDetails(targetCount)
@@ -1368,10 +2331,34 @@ export class WorkflowEngine extends EventEmitter {
     let runs = [...active, ...persisted.filter((run) => !activeRunIds.has(run.runId))];
     if (workflowId) runs = runs.filter((r) => r.workflowId === workflowId);
     runs.sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
-    if (Number.isFinite(normalizedLimit) && normalizedLimit > 0) {
-      return runs.slice(0, normalizedLimit);
+    if (hasLimit) {
+      return runs.slice(0, Math.floor(normalizedLimit));
     }
     return runs;
+  }
+
+  getRunHistoryPage(workflowId, options = {}) {
+    const rawOffset = Number(options?.offset);
+    const rawLimit = Number(options?.limit);
+    const offset = Number.isFinite(rawOffset) && rawOffset > 0
+      ? Math.max(0, Math.floor(rawOffset))
+      : 0;
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(MAX_PERSISTED_RUNS, Math.max(1, Math.floor(rawLimit)))
+      : 20;
+    const allRuns = this.getRunHistory(workflowId);
+    const total = allRuns.length;
+    const runs = allRuns.slice(offset, offset + limit);
+    const nextOffset = offset + runs.length;
+    return {
+      runs,
+      total,
+      offset,
+      limit,
+      count: runs.length,
+      hasMore: nextOffset < total,
+      nextOffset: nextOffset < total ? nextOffset : null,
+    };
   }
 
   _hydrateRunIndexFromDetails(targetCount = MAX_PERSISTED_RUNS) {
@@ -1494,6 +2481,17 @@ export class WorkflowEngine extends EventEmitter {
       reason,
       requestedAt: active.cancelRequestedAt,
     });
+    this._recordLedgerEvent({
+      eventType: "run.cancel.requested",
+      runId: normalizedRunId,
+      workflowId: active.workflowId || null,
+      workflowName: active.workflowName || null,
+      rootRunId: active.ctx?.data?._workflowRootRunId || normalizedRunId,
+      parentRunId: active.ctx?.data?._workflowParentRunId || null,
+      retryOf: active.ctx?.data?._retryOf || null,
+      status: active.status || WorkflowStatus.RUNNING,
+      reason,
+    });
     if (active.ctx) this._checkpointRun(active.ctx);
 
     return {
@@ -1510,6 +2508,7 @@ export class WorkflowEngine extends EventEmitter {
   getRunDetail(runId) {
     const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
     if (!normalizedRunId) return null;
+    const ledger = this.getRunLedger(normalizedRunId);
 
     const activeRun = this._activeRuns.get(normalizedRunId);
     if (activeRun?.ctx) {
@@ -1518,6 +2517,7 @@ export class WorkflowEngine extends EventEmitter {
       return {
         ...summary,
         detail: this._serializeRunContext(activeRun.ctx, true),
+        ledger,
       };
     }
 
@@ -1537,7 +2537,7 @@ export class WorkflowEngine extends EventEmitter {
           status: summary.status || WorkflowStatus.COMPLETED,
           detail,
         });
-        return { ...summary, ...recomputed, detail };
+        return { ...summary, ...recomputed, detail, ledger };
       }
       const terminalRaw = String(detail?.data?._workflowTerminalStatus || "")
         .trim()
@@ -1556,10 +2556,78 @@ export class WorkflowEngine extends EventEmitter {
         status,
         detail,
       });
-      return { ...computed, detail };
+      return { ...computed, detail, ledger };
     } catch {
       return null;
     }
+  }
+
+  getRunLedger(runId) {
+    const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
+    if (!normalizedRunId) return null;
+    return this._executionLedger.getRunLedger(normalizedRunId);
+  }
+
+  getRetryOptions(runId) {
+    const run = this.getRunDetail(runId);
+    if (!run) return null;
+    const issueAdvisor =
+      run?.detail?.issueAdvisor && typeof run.detail.issueAdvisor === "object"
+        ? run.detail.issueAdvisor
+        : null;
+    const nodeStatuses =
+      run?.detail?.nodeStatuses && typeof run.detail.nodeStatuses === "object"
+        ? run.detail.nodeStatuses
+        : {};
+    const failedNodesFromAdvisor = Array.isArray(issueAdvisor?.failedNodes)
+      ? issueAdvisor.failedNodes
+          .map((entry) => String(entry?.nodeId || "").trim())
+          .filter(Boolean)
+      : [];
+    const failedNodesFromStatuses = Object.entries(nodeStatuses)
+      .filter(([, status]) => String(status || "").trim().toLowerCase() === NodeStatus.FAILED)
+      .map(([nodeId]) => String(nodeId || "").trim())
+      .filter(Boolean);
+    const failedNodes = Array.from(new Set([
+      ...failedNodesFromAdvisor,
+      ...failedNodesFromStatuses,
+    ]));
+    const retryDecision = this._chooseRetryModeForRun(run, {
+      fallbackMode: "from_failed",
+    });
+    const canResumeFromFailed = retryDecision.completedCount > 0 || failedNodes.length > 0;
+
+    return {
+      runId: run.runId,
+      status: run.status,
+      recommendedMode: retryDecision.mode,
+      recommendedReason: retryDecision.reason,
+      recommendedAction: retryDecision.issueAdvisorRecommendation,
+      summary: retryDecision.issueAdvisorSummary,
+      failedNodes,
+      options: [
+        {
+          mode: "from_failed",
+          label: "Retry from last failed step",
+          description: canResumeFromFailed
+            ? "Reuse already completed node outputs and resume remaining workflow work."
+            : "Resume state is limited; this may behave similarly to a fresh rerun.",
+          recommended: retryDecision.mode === "from_failed",
+          reason: retryDecision.mode === "from_failed" ? retryDecision.reason : null,
+          available: canResumeFromFailed,
+          failedNodes,
+        },
+        {
+          mode: "from_scratch",
+          label: "Retry from scratch",
+          description: "Re-run the workflow from the beginning with the original input data.",
+          recommended: retryDecision.mode === "from_scratch",
+          reason: retryDecision.mode === "from_scratch" ? retryDecision.reason : null,
+          available: true,
+          failedNodes,
+        },
+      ],
+    };
   }
 
 
@@ -1576,7 +2644,207 @@ export class WorkflowEngine extends EventEmitter {
       ? detail.data._taskWorkflowEvents
       : [];
     return events.map((event) => ({ ...event }));
-  }  // ── Internal DAG Execution ────────────────────────────────────────────
+  }
+
+  /**
+   * Get detailed forensics for a single node in a run.
+   * @param {string} runId
+   * @param {string} nodeId
+   * @returns {object|null}
+   */
+  getNodeForensics(runId, nodeId) {
+    const run = this.getRunDetail(runId);
+    if (!run) return null;
+    const detail = run.detail || {};
+    const nodeStatuses = detail.nodeStatuses || {};
+    if (!(nodeId in nodeStatuses)) return null;
+
+    const timings = detail.nodeTimings?.[nodeId] || {};
+    const startedAt = timings.startedAt || null;
+    const endedAt = timings.endedAt || null;
+    const durationMs = startedAt && endedAt ? Math.max(0, endedAt - startedAt) : null;
+
+    return {
+      nodeId,
+      status: nodeStatuses[nodeId] || null,
+      startedAt,
+      endedAt,
+      durationMs,
+      input: detail.nodeInputs?.[nodeId] || null,
+      output: detail.nodeOutputs?.[nodeId] || null,
+      errors: (detail.errors || []).filter((e) => e.nodeId === nodeId),
+      retryAttempts: detail.retryAttempts?.[nodeId] || 0,
+      statusEvents: (detail.nodeStatusEvents || []).filter((e) => e.nodeId === nodeId),
+    };
+  }
+
+  /**
+   * Get forensics for all nodes in a run.
+   * @param {string} runId
+   * @returns {object|null}
+   */
+  getRunForensics(runId) {
+    const run = this.getRunDetail(runId);
+    if (!run) return null;
+    const detail = run.detail || {};
+    const nodeStatuses = detail.nodeStatuses || {};
+    const nodes = {};
+    for (const nodeId of Object.keys(nodeStatuses)) {
+      nodes[nodeId] = this.getNodeForensics(runId, nodeId);
+    }
+    return {
+      runId,
+      status: run.status || null,
+      startedAt: detail.startedAt || null,
+      endedAt: detail.endedAt || null,
+      durationMs: detail.duration || null,
+      nodes,
+    };
+  }
+
+  /**
+   * Create a snapshot of a completed run for later restore.
+   * @param {string} runId
+   * @returns {{ snapshotId: string, path: string }|null}
+   */
+  createRunSnapshot(runId) {
+    const run = this.getRunDetail(runId);
+    if (!run) return null;
+    const detail = run.detail || {};
+    const workflowId = run.workflowId || detail.data?._workflowId;
+    const snapshotsDir = resolve(this.runsDir, "snapshots");
+    mkdirSync(snapshotsDir, { recursive: true });
+    const snapshotId = runId;
+    const snapshotPath = resolve(snapshotsDir, `${snapshotId}.json`);
+    const snapshot = {
+      snapshotId,
+      runId,
+      workflowId,
+      createdAt: Date.now(),
+      nodeStatuses: detail.nodeStatuses || {},
+      nodeOutputs: detail.nodeOutputs || {},
+      nodeTimings: detail.nodeTimings || {},
+      nodeInputs: detail.nodeInputs || {},
+      retryAttempts: detail.retryAttempts || {},
+      variables: detail.data || {},
+      errors: detail.errors || [],
+    };
+    writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2), "utf8");
+    return { snapshotId, path: snapshotPath };
+  }
+
+  /**
+   * Restore a run from a snapshot — creates a new execution pre-seeded
+   * with completed node state from the snapshot.
+   * @param {string} snapshotId
+   * @param {object} [opts]
+   * @param {object} [opts.variables] - Override variables
+   * @returns {Promise<object>}
+   */
+  async restoreFromSnapshot(snapshotId, opts = {}) {
+    const snapshotPath = resolve(this.runsDir, "snapshots", `${snapshotId}.json`);
+    if (!existsSync(snapshotPath)) {
+      throw new Error(`Snapshot "${snapshotId}" not found`);
+    }
+    const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8"));
+    const workflowId = snapshot.workflowId;
+    const def = this.get(workflowId);
+    if (!def) {
+      throw new Error(`Workflow "${workflowId}" no longer exists — cannot restore`);
+    }
+
+    const inputData = {
+      ...def.variables,
+      ...(snapshot.variables || {}),
+      ...(opts.variables || {}),
+      _workflowId: workflowId,
+      _workflowName: def.name,
+      _restoredFrom: snapshotId,
+    };
+
+    // Remove internal keys that should be regenerated
+    delete inputData._workflowId;
+    delete inputData._workflowName;
+
+    const ctx = new WorkflowContext(inputData);
+    ctx.data._workflowId = workflowId;
+    ctx.data._workflowName = def.name;
+    ctx.data._restoredFrom = snapshotId;
+    ctx.variables = { ...def.variables, ...(opts.variables || {}) };
+
+    // Pre-seed completed nodes from snapshot
+    const nodeStatuses = snapshot.nodeStatuses || {};
+    const nodeOutputs = snapshot.nodeOutputs || {};
+    for (const [nodeId, status] of Object.entries(nodeStatuses)) {
+      if (status === "completed") {
+        ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
+        if (nodeOutputs[nodeId] !== undefined) {
+          ctx.setNodeOutput(nodeId, nodeOutputs[nodeId]);
+        }
+      }
+    }
+
+    const retryRunId = ctx.id;
+    this._activeRuns.set(retryRunId, {
+      workflowId,
+      workflowName: def.name,
+      ctx,
+      startedAt: ctx.startedAt,
+      status: WorkflowStatus.RUNNING,
+    });
+    this.emit("run:start", { runId: retryRunId, workflowId, name: def.name, restoredFrom: snapshotId });
+    this._emitWorkflowStatus({
+      runId: retryRunId,
+      workflowId,
+      workflowName: def.name,
+      eventType: "run:start",
+      status: WorkflowStatus.RUNNING,
+      meta: { restoredFrom: snapshotId },
+    });
+
+    try {
+      const adjacency = this._buildAdjacency(def);
+      const entryNodes = this._findEntryNodes(def);
+      await this._executeDag(def, entryNodes, adjacency, ctx, opts);
+      const finalStatus = ctx.errors.length > 0 ? WorkflowStatus.FAILED : WorkflowStatus.COMPLETED;
+      this._persistRun(retryRunId, workflowId, ctx);
+      this._activeRuns.delete(retryRunId);
+      return { runId: retryRunId, snapshotId, workflowId, ctx, status: finalStatus };
+    } catch (err) {
+      this._persistRun(retryRunId, workflowId, ctx);
+      this._activeRuns.delete(retryRunId);
+      throw err;
+    }
+  }
+
+  /**
+   * List available snapshots, optionally filtered by workflowId.
+   * @param {string} [workflowId]
+   * @returns {Array<object>}
+   */
+  listSnapshots(workflowId) {
+    const snapshotsDir = resolve(this.runsDir, "snapshots");
+    if (!existsSync(snapshotsDir)) return [];
+    const files = readdirSync(snapshotsDir).filter((f) => f.endsWith(".json"));
+    const snapshots = [];
+    for (const file of files) {
+      try {
+        const data = JSON.parse(readFileSync(resolve(snapshotsDir, file), "utf8"));
+        if (workflowId && data.workflowId !== workflowId) continue;
+        snapshots.push({
+          snapshotId: data.snapshotId,
+          runId: data.runId,
+          workflowId: data.workflowId,
+          createdAt: data.createdAt,
+        });
+      } catch {
+        // skip corrupt snapshot files
+      }
+    }
+    return snapshots.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  }
+
+  // ── Internal DAG Execution ────────────────────────────────────────────
 
   _buildAdjacency(def) {
     const adj = new Map();
@@ -1623,6 +2891,61 @@ export class WorkflowEngine extends EventEmitter {
     const executed = new Set();
     const queue = [...entryNodes.map((n) => n.id)];
     const nodeMap = new Map((def.nodes || []).map((n) => [n.id, n]));
+    const workflowId = ctx?.data?._workflowId || null;
+    const workflowName = ctx?.data?._workflowName || null;
+    const emitNodeEvent = (type, node, payload = {}) => {
+      this.emit(type, {
+        runId: ctx.id,
+        workflowId,
+        workflowName,
+        nodeId: node?.id || payload?.nodeId || null,
+        nodeType: node?.type || payload?.nodeType || null,
+        nodeLabel: node?.label || payload?.nodeLabel || null,
+        ...payload,
+      });
+    };
+    const emitEdgeFlow = (edge, payload = {}) => {
+      if (!edge) return;
+      this.emit("edge:flow", {
+        runId: ctx.id,
+        workflowId,
+        workflowName,
+        edgeId: edge.id || `${edge.source}->${edge.target}`,
+        source: edge.source,
+        target: edge.target,
+        sourcePort: String(edge.sourcePort || "default").trim() || "default",
+        backEdge: edge.backEdge === true,
+        ...payload,
+      });
+    };
+    const markNodeSkipped = (nodeId, reason = "skipped", payload = {}) => {
+      const node = nodeMap.get(nodeId) || null;
+      ctx.setNodeStatus(nodeId, NodeStatus.SKIPPED);
+      this._recordDagNodeOutcome(ctx, node || { id: nodeId }, {
+        status: NodeStatus.SKIPPED,
+        error: payload?.error || null,
+      });
+      emitNodeEvent("node:skip", node, {
+        status: NodeStatus.SKIPPED,
+        reason,
+        ...payload,
+      });
+      this._recordLedgerEvent({
+        eventType: "node.skipped",
+        runId: ctx.id,
+        workflowId,
+        workflowName,
+        rootRunId: ctx.data?._workflowRootRunId || ctx.id,
+        parentRunId: ctx.data?._workflowParentRunId || null,
+        retryOf: ctx.data?._retryOf || null,
+        nodeId,
+        nodeType: node?.type || null,
+        nodeLabel: node?.label || null,
+        status: NodeStatus.SKIPPED,
+        reason,
+        meta: payload && typeof payload === "object" ? payload : undefined,
+      });
+    };
 
     // ── Resume support (retry from_failed) ──────────────────────────────
     // If nodes are already marked COMPLETED in the context (pre-seeded by
@@ -1636,8 +2959,10 @@ export class WorkflowEngine extends EventEmitter {
 
     // Track in-degree for proper scheduling (exclude back-edges)
     const inDegree = new Map();
+    const incomingSatisfiedCount = new Map();
     for (const node of def.nodes || []) {
       inDegree.set(node.id, 0);
+      incomingSatisfiedCount.set(node.id, 0);
     }
     for (const edge of def.edges || []) {
       if (!edge.backEdge) {
@@ -1683,7 +3008,7 @@ export class WorkflowEngine extends EventEmitter {
         ctx.data._workflowTerminalAt = Date.now();
         for (const [nid] of nodeMap) {
           if (!executed.has(nid)) {
-            ctx.setNodeStatus(nid, NodeStatus.SKIPPED);
+            markNodeSkipped(nid, "run-cancelled");
             executed.add(nid);
           }
         }
@@ -1705,18 +3030,39 @@ export class WorkflowEngine extends EventEmitter {
 
           const activeInfo = this._activeRuns.get(ctx.id);
           if (activeInfo?.cancelRequested) {
-            ctx.setNodeStatus(nodeId, NodeStatus.SKIPPED);
+            markNodeSkipped(nodeId, "run-cancelled");
             executed.add(nodeId);
             return { nodeId, result: null, skipped: true };
           }
 
           ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
-          this.emit("node:start", { nodeId, type: node.type, label: node.label });
+          this._recordDagNodeOutcome(ctx, node, {
+            status: NodeStatus.RUNNING,
+            attempt: ctx.getRetryCount(nodeId),
+          });
+          const isTriggerNode = node.type?.startsWith("trigger.");
+          if (!isTriggerNode) {
+            console.log(`${TAG} node:start ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
+          }
+          emitNodeEvent("node:start", node, { status: NodeStatus.RUNNING });
+          this._recordLedgerEvent({
+            eventType: "node.started",
+            runId: ctx.id,
+            workflowId,
+            workflowName,
+            rootRunId: ctx.data?._workflowRootRunId || ctx.id,
+            parentRunId: ctx.data?._workflowParentRunId || null,
+            retryOf: ctx.data?._retryOf || null,
+            nodeId,
+            nodeType: node?.type || null,
+            nodeLabel: node?.label || null,
+            status: NodeStatus.RUNNING,
+          });
           await this._emitTaskTraceEvent("workflow.node.start", {
             ctx,
             runId: ctx.id,
-            workflowId: ctx.data?._workflowId || null,
-            workflowName: ctx.data?._workflowName || null,
+            workflowId,
+            workflowName,
             node,
             status: NodeStatus.RUNNING,
           });
@@ -1746,20 +3092,84 @@ export class WorkflowEngine extends EventEmitter {
                 ctx.incrementRetry(nodeId);
                 const backoffMs = Math.min(baseRetryDelay * Math.pow(2, attempt - 1), 30000);
                 ctx.log(nodeId, `Retry ${attempt}/${maxRetries} after ${backoffMs}ms`, "warn");
-                this.emit("node:retry", { nodeId, attempt, maxRetries, backoffMs });
+                emitNodeEvent("node:retry", node, { attempt, maxRetries, backoffMs });
+                this._recordLedgerEvent({
+                  eventType: "node.retry",
+                  runId: ctx.id,
+                  workflowId,
+                  workflowName,
+                  rootRunId: ctx.data?._workflowRootRunId || ctx.id,
+                  parentRunId: ctx.data?._workflowParentRunId || null,
+                  retryOf: ctx.data?._retryOf || null,
+                  nodeId,
+                  nodeType: node?.type || null,
+                  nodeLabel: node?.label || null,
+                  status: NodeStatus.RUNNING,
+                  attempt,
+                  meta: { maxRetries, backoffMs },
+                });
                 await new Promise((r) => setTimeout(r, backoffMs));
                 ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
+                this._recordDagNodeOutcome(ctx, node, {
+                  status: NodeStatus.RUNNING,
+                  attempt: ctx.getRetryCount(nodeId),
+                });
               }
               const result = await this._executeNode(node, ctx, opts);
               ctx.setNodeOutput(nodeId, result);
               ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
+              this._recordDagNodeOutcome(ctx, node, {
+                status: NodeStatus.COMPLETED,
+                result,
+                attempt: ctx.getRetryCount(nodeId),
+              });
               executed.add(nodeId);
-              this.emit("node:complete", { nodeId, type: node.type });
+              // Quiet mode for trigger nodes: only log when they actually fire
+              if (isTriggerNode) {
+                if (result?.triggered === true) {
+                  console.log(`${TAG} trigger:fired ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
+                }
+                // triggered: false → silent (reduces noise from non-firing polls)
+              } else {
+                const resultSuffix = node.type?.startsWith("condition.") ? ` result=${JSON.stringify(result?.result ?? result)}` : "";
+                console.log(`${TAG} node:complete ${nodeId} (${node.type}) [${node.label || ""}]${resultSuffix}`);
+              }
+              emitNodeEvent("node:complete", node, {
+                status: NodeStatus.COMPLETED,
+                output: result,
+              });
+              this._emitWorkflowStatus({
+                runId: ctx.id,
+                workflowId,
+                workflowName,
+                eventType: "node:complete",
+                status: NodeStatus.COMPLETED,
+                nodeId,
+                nodeType: node?.type || null,
+                nodeLabel: node?.label || null,
+                meta: { attempt: ctx.getRetryCount(nodeId) },
+              });
+              this._recordLedgerEvent({
+                eventType: "node.completed",
+                runId: ctx.id,
+                workflowId,
+                workflowName,
+                rootRunId: ctx.data?._workflowRootRunId || ctx.id,
+                parentRunId: ctx.data?._workflowParentRunId || null,
+                retryOf: ctx.data?._retryOf || null,
+                nodeId,
+                nodeType: node?.type || null,
+                nodeLabel: node?.label || null,
+                status: NodeStatus.COMPLETED,
+                attempt: ctx.getRetryCount(nodeId),
+                durationMs: Number(ctx.getNodeTiming(nodeId)?.endedAt || 0) - Number(ctx.getNodeTiming(nodeId)?.startedAt || 0),
+                summary: this._summarizeTaskTraceNodeResult(result),
+              });
               await this._emitTaskTraceEvent("workflow.node.complete", {
                 ctx,
                 runId: ctx.id,
-                workflowId: ctx.data?._workflowId || null,
-                workflowName: ctx.data?._workflowName || null,
+                workflowId,
+                workflowName,
                 node,
                 result,
                 status: NodeStatus.COMPLETED,
@@ -1780,13 +3190,38 @@ export class WorkflowEngine extends EventEmitter {
           // All retries exhausted
           ctx.error(nodeId, lastErr);
           ctx.setNodeStatus(nodeId, NodeStatus.FAILED);
+          this._recordDagNodeOutcome(ctx, node, {
+            status: NodeStatus.FAILED,
+            error: lastErr?.message || String(lastErr),
+            attempt: ctx.getRetryCount(nodeId),
+          });
           executed.add(nodeId);
-          this.emit("node:error", { nodeId, error: lastErr.message, retries: ctx.getRetryCount(nodeId) });
+          console.warn(`${TAG} node:FAILED ${nodeId} (${node.type}) [${node.label || ""}]: ${lastErr?.message || lastErr}`);
+          emitNodeEvent("node:error", node, {
+            status: NodeStatus.FAILED,
+            error: lastErr.message,
+            retries: ctx.getRetryCount(nodeId),
+          });
+          this._recordLedgerEvent({
+            eventType: "node.failed",
+            runId: ctx.id,
+            workflowId,
+            workflowName,
+            rootRunId: ctx.data?._workflowRootRunId || ctx.id,
+            parentRunId: ctx.data?._workflowParentRunId || null,
+            retryOf: ctx.data?._retryOf || null,
+            nodeId,
+            nodeType: node?.type || null,
+            nodeLabel: node?.label || null,
+            status: NodeStatus.FAILED,
+            attempt: ctx.getRetryCount(nodeId),
+            error: lastErr?.message || String(lastErr),
+          });
           await this._emitTaskTraceEvent("workflow.node.error", {
             ctx,
             runId: ctx.id,
-            workflowId: ctx.data?._workflowId || null,
-            workflowName: ctx.data?._workflowName || null,
+            workflowId,
+            workflowName,
             node,
             status: NodeStatus.FAILED,
             error: lastErr?.message || String(lastErr),
@@ -1810,7 +3245,7 @@ export class WorkflowEngine extends EventEmitter {
           // If any node fails hard, mark remaining as skipped
           for (const [nid] of nodeMap) {
             if (!executed.has(nid)) {
-              ctx.setNodeStatus(nid, NodeStatus.SKIPPED);
+              markNodeSkipped(nid, "upstream-failed");
             }
           }
           return;
@@ -1824,7 +3259,7 @@ export class WorkflowEngine extends EventEmitter {
         ctx.data._workflowTerminalAt = Date.now();
         for (const [nid] of nodeMap) {
           if (!executed.has(nid)) {
-            ctx.setNodeStatus(nid, NodeStatus.SKIPPED);
+            markNodeSkipped(nid, "run-cancelled");
             executed.add(nid);
           }
         }
@@ -1854,7 +3289,7 @@ export class WorkflowEngine extends EventEmitter {
 
         for (const [nid] of nodeMap) {
           if (!executed.has(nid)) {
-            ctx.setNodeStatus(nid, NodeStatus.SKIPPED);
+            markNodeSkipped(nid, "workflow-ended");
             executed.add(nid);
           }
         }
@@ -1882,7 +3317,7 @@ export class WorkflowEngine extends EventEmitter {
             const newDegree = (inDegree.get(edge.target) || 1) - 1;
             inDegree.set(edge.target, newDegree);
             if (newDegree <= 0 && !executed.has(edge.target)) {
-              ctx.setNodeStatus(edge.target, NodeStatus.SKIPPED);
+              markNodeSkipped(edge.target, "trigger-not-fired", { sourceNodeId: nodeId });
               executed.add(edge.target);
             }
           }
@@ -1947,9 +3382,58 @@ export class WorkflowEngine extends EventEmitter {
           }
         }
 
+        const countForwardIncomingEdges = (targetNodeId) =>
+          (def.edges || []).filter((edge) => edge.target === targetNodeId && !edge.backEdge).length;
+
+        const propagateSkippedDependencies = (skippedNodeId) => {
+          if (countForwardIncomingEdges(skippedNodeId) > 1) return;
+          const skippedEdges = adjacency.get(skippedNodeId) || [];
+          for (const skippedEdge of skippedEdges) {
+            if (skippedEdge.backEdge) continue;
+            consumeEdgeDependency(skippedEdge.target, false, {
+              reason: "upstream-skipped",
+              payload: {
+                sourceNodeId: skippedNodeId,
+                edgeId: skippedEdge.id || `${skippedEdge.source}->${skippedEdge.target}`,
+              },
+            });
+          }
+        };
+
+        const consumeEdgeDependency = (targetNodeId, matched, skipInfo = null) => {
+          const nextDegree = (inDegree.get(targetNodeId) || 1) - 1;
+          inDegree.set(targetNodeId, nextDegree);
+          if (matched) {
+            incomingSatisfiedCount.set(
+              targetNodeId,
+              (incomingSatisfiedCount.get(targetNodeId) || 0) + 1,
+            );
+          }
+          if (nextDegree <= 0 && !executed.has(targetNodeId)) {
+            if ((incomingSatisfiedCount.get(targetNodeId) || 0) > 0) {
+              ready.add(targetNodeId);
+            } else {
+              markNodeSkipped(targetNodeId, skipInfo?.reason || "skipped", skipInfo?.payload || {});
+              executed.add(targetNodeId);
+              const skippedNode = nodeMap.get(targetNodeId);
+              console.log(`${TAG} node:SKIPPED ${targetNodeId} (${skippedNode?.type || "?"}) [${skippedNode?.label || ""}] — no satisfied edges`);
+              propagateSkippedDependencies(targetNodeId);
+            }
+          }
+        };
+
         for (const edge of edges) {
           const edgePort = String(edge?.sourcePort || "default").trim() || "default";
           if (selectedPort && edgePort !== selectedPort) {
+            if (!edge.backEdge) {
+              consumeEdgeDependency(edge.target, false, {
+                reason: "edge-port-mismatch",
+                payload: {
+                  sourceNodeId: nodeId,
+                  edgeId: edge.id || `${edge.source}->${edge.target}`,
+                },
+              });
+            }
             continue;
           }
 
@@ -1960,8 +3444,13 @@ export class WorkflowEngine extends EventEmitter {
               if (!condResult) {
                 // For back-edges, a false condition simply means "don't loop"
                 if (!edge.backEdge) {
-                  ctx.setNodeStatus(edge.target, NodeStatus.SKIPPED);
-                  executed.add(edge.target);
+                  consumeEdgeDependency(edge.target, false, {
+                    reason: "edge-condition-false",
+                    payload: {
+                      sourceNodeId: nodeId,
+                      edgeId: edge.id || `${edge.source}->${edge.target}`,
+                    },
+                  });
                 }
                 continue;
               }
@@ -1974,7 +3463,14 @@ export class WorkflowEngine extends EventEmitter {
           if (edge.backEdge) {
             const edgeKey = edge.id || `${edge.source}->${edge.target}`;
             const iterCount = (backEdgeIterations.get(edgeKey) || 0) + 1;
-            const maxIter = Number(edge.maxIterations) || MAX_BACK_EDGE_ITERATIONS;
+            // During dry-run, conditions return stub objects instead of real
+            // booleans so loop-exit expressions never fire.  Cap iterations
+            // to a small number (2) to validate the loop structure without
+            // executing hundreds of iterations.
+            const DRY_RUN_BACK_EDGE_CAP = 2;
+            const maxIter = opts.dryRun
+              ? Math.min(Number(edge.maxIterations) || MAX_BACK_EDGE_ITERATIONS, DRY_RUN_BACK_EDGE_CAP)
+              : (Number(edge.maxIterations) || MAX_BACK_EDGE_ITERATIONS);
 
             if (iterCount > maxIter) {
               ctx.log(nodeId,
@@ -1985,6 +3481,11 @@ export class WorkflowEngine extends EventEmitter {
             }
 
             backEdgeIterations.set(edgeKey, iterCount);
+            emitEdgeFlow(edge, {
+              reason: "back-edge",
+              iteration: iterCount,
+              maxIterations: maxIter,
+            });
             this.emit("loop:back_edge", {
               edgeId: edgeKey,
               source: edge.source,
@@ -2002,6 +3503,7 @@ export class WorkflowEngine extends EventEmitter {
             for (const nid of subgraph) {
               executed.delete(nid);
               ctx.setNodeStatus(nid, NodeStatus.PENDING);
+              incomingSatisfiedCount.set(nid, 0);
               // Restore in-degree for nodes in the subgraph so they schedule
               // correctly on this new iteration.
               let deg = 0;
@@ -2026,11 +3528,10 @@ export class WorkflowEngine extends EventEmitter {
           }
 
           // Decrement in-degree (forward edges only)
-          const newDegree = (inDegree.get(edge.target) || 1) - 1;
-          inDegree.set(edge.target, newDegree);
-          if (newDegree <= 0 && !executed.has(edge.target)) {
-            ready.add(edge.target);
-          }
+          emitEdgeFlow(edge, {
+            reason: selectedPort ? "selected-port" : "forward",
+          });
+          consumeEdgeDependency(edge.target, true);
         }
       }
     }
@@ -2044,6 +3545,9 @@ export class WorkflowEngine extends EventEmitter {
 
     // Resolve config templates against context
     const resolvedConfig = this._resolveConfig(node.config || {}, ctx);
+
+    // Capture resolved input snapshot for forensics
+    ctx.setNodeInput(node.id, resolvedConfig);
 
     // Dry run — skip capability checks and handler execution.
     // Services aren't needed for simulation; this keeps dry-run tests fast.
@@ -2074,6 +3578,7 @@ export class WorkflowEngine extends EventEmitter {
     // Execute with timeout — clear timer on completion to avoid resource leaks
     const timeout = resolveNodeTimeoutMs(node, resolvedConfig);
     let timer;
+    ctx.setNodeTiming(node.id, "startedAt", Date.now());
     try {
       const result = await Promise.race([
         handler.execute(
@@ -2085,7 +3590,11 @@ export class WorkflowEngine extends EventEmitter {
           timer = setTimeout(() => reject(new Error(`Node "${node.label || node.id}" timed out after ${timeout}ms`)), timeout);
         }),
       ]);
+      ctx.setNodeTiming(node.id, "endedAt", Date.now());
       return result;
+    } catch (err) {
+      ctx.setNodeTiming(node.id, "endedAt", Date.now());
+      throw err;
     } finally {
       clearTimeout(timer);
     }
@@ -2196,6 +3705,51 @@ export class WorkflowEngine extends EventEmitter {
     }
   }
 
+  _getInterruptedOrphanRunCandidates() {
+    if (!existsSync(this.runsDir)) return [];
+    if (MAX_INTERRUPTED_ORPHAN_SCAN_FILES <= 0) return [];
+
+    const cutoffMs = INTERRUPTED_ORPHAN_SCAN_WINDOW_MS > 0
+      ? Date.now() - INTERRUPTED_ORPHAN_SCAN_WINDOW_MS
+      : 0;
+    const candidates = [];
+    let totalCandidates = 0;
+
+    try {
+      for (const file of readdirSync(this.runsDir)) {
+        if (
+          extname(file) !== ".json" ||
+          file === "index.json" ||
+          file === ACTIVE_RUNS_INDEX
+        ) {
+          continue;
+        }
+        const detailPath = resolve(this.runsDir, file);
+        let mtimeMs = 0;
+        try {
+          mtimeMs = statSync(detailPath).mtimeMs || 0;
+        } catch {
+          continue;
+        }
+        if (cutoffMs > 0 && mtimeMs < cutoffMs) continue;
+        totalCandidates += 1;
+        candidates.push({ file, detailPath, mtimeMs });
+      }
+    } catch {
+      return [];
+    }
+
+    candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    if (candidates.length > MAX_INTERRUPTED_ORPHAN_SCAN_FILES) {
+      console.warn(
+        `${TAG} Orphan interrupted-run scan limited to ${MAX_INTERRUPTED_ORPHAN_SCAN_FILES} recent files ` +
+          `(${totalCandidates} candidate files in retention window)`,
+      );
+      candidates.length = MAX_INTERRUPTED_ORPHAN_SCAN_FILES;
+    }
+    return candidates;
+  }
+
   _getRunStuckThresholdMs() {
     const raw = Number(process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS);
     if (Number.isFinite(raw) && raw > 0) return raw;
@@ -2275,6 +3829,25 @@ export class WorkflowEngine extends EventEmitter {
     const triggeredBy = detail?.data?._triggeredBy || null;
     const targetRepo = detail?.data?._targetRepo || null;
     const triggerVars = detail?.data?._triggerVars || null;
+    const rootRunId =
+      detail?.dagState?.rootRunId ||
+      detail?.data?._workflowRootRunId ||
+      null;
+    const parentRunId =
+      detail?.dagState?.parentRunId ||
+      detail?.data?._workflowParentRunId ||
+      null;
+    const retryOf =
+      detail?.dagState?.retryOf ||
+      detail?.data?._retryOf ||
+      null;
+    const retryMode =
+      detail?.dagState?.retryMode ||
+      detail?.data?._retryMode ||
+      null;
+    const retryDecisionReason = detail?.data?._retryDecisionReason || null;
+    const issueAdvisorRecommendation = detail?.issueAdvisor?.recommendedAction || null;
+    const issueAdvisorSummary = detail?.issueAdvisor?.summary || null;
 
     return {
       runId,
@@ -2301,6 +3874,13 @@ export class WorkflowEngine extends EventEmitter {
       triggeredBy,
       targetRepo,
       triggerVars,
+      rootRunId,
+      parentRunId,
+      retryOf,
+      retryMode,
+      retryDecisionReason,
+      issueAdvisorRecommendation,
+      issueAdvisorSummary,
     };
   }
 
@@ -2330,6 +3910,16 @@ export class WorkflowEngine extends EventEmitter {
       normalized.activeNodeCount = 0;
     }
     if (normalized.status !== WorkflowStatus.RUNNING) {
+      normalized.activeNodeCount = 0;
+      if (!Number.isFinite(Number(normalized.endedAt))) {
+        const fallbackEndedAt = Math.max(
+          Number(normalized.interruptedAt) || 0,
+          Number(normalized.lastProgressAt) || 0,
+          Number(normalized.lastLogAt) || 0,
+          Number(normalized.startedAt) || 0,
+        );
+        normalized.endedAt = fallbackEndedAt > 0 ? fallbackEndedAt : null;
+      }
       normalized.isStuck = false;
       normalized.stuckMs = 0;
       return normalized;
@@ -2389,8 +3979,7 @@ export class WorkflowEngine extends EventEmitter {
 
       // Write initial detail file so we can resume from it
       const detail = this._serializeRunContext(ctx, true);
-      const detailPath = resolve(this.runsDir, `${runId}.json`);
-      writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
+      this._writeRunDetail(runId, detail);
 
       // Also ensure the run appears in the main index (with RUNNING status)
       // so that getRunDetail() can find it even before completion.
@@ -2414,13 +4003,12 @@ export class WorkflowEngine extends EventEmitter {
     const timer = setTimeout(() => {
       this._checkpointTimers.delete(runId);
       try {
+        // If the run has already been finalized/removed, skip writing a
+        // late checkpoint snapshot that could overwrite terminal detail.
+        if (!this._activeRuns.has(runId)) return;
         this._ensureDirs();
         const detail = this._serializeRunContext(ctx, true);
-        const detailPath = resolve(this.runsDir, `${runId}.json`);
-        // Async write — checkpoint is fire-and-forget, no need to block event loop
-        writeFileAsync(detailPath, JSON.stringify(detail, null, 2), "utf8").catch((err) => {
-          console.error(`${TAG} Checkpoint write failed for run ${runId}:`, err.message);
-        });
+        this._writeRunDetail(runId, detail);
       } catch (err) {
         console.error(`${TAG} Checkpoint failed for run ${runId}:`, err.message);
       }
@@ -2535,6 +4123,10 @@ export class WorkflowEngine extends EventEmitter {
           summary.status = WorkflowStatus.PAUSED;
           summary.resumable = canResume;
           summary.interruptedAt = now;
+          summary.activeNodeCount = 0;
+          if (!Number.isFinite(Number(summary.endedAt))) {
+            summary.endedAt = now;
+          }
           if (!canResume) summary.resumeResult = "recovery_cap_exceeded";
         }
         if (canResume && !forceResumable) resumableStaleRunsAssigned += 1;
@@ -2562,17 +4154,14 @@ export class WorkflowEngine extends EventEmitter {
       }
 
       // Tertiary source: orphan detail files with no index entry and no end marker.
-      const detailFiles = readdirSync(this.runsDir).filter((file) =>
-        extname(file) === ".json" &&
-        file !== "index.json" &&
-        file !== ACTIVE_RUNS_INDEX,
-      );
-      for (const file of detailFiles) {
-        const runId = basename(file, ".json");
+      // This is bounded to a recent subset so old archived run details cannot
+      // stall startup when workflow-runs contains thousands of historical files.
+      const orphanCandidates = this._getInterruptedOrphanRunCandidates();
+      for (const candidate of orphanCandidates) {
+        const runId = basename(candidate.file, ".json");
         if (!runId || this._activeRuns.has(runId) || runsById.has(runId)) continue;
-        const detailPath = resolve(this.runsDir, file);
         try {
-          const detail = JSON.parse(readFileSync(detailPath, "utf8"));
+          const detail = JSON.parse(readFileSync(candidate.detailPath, "utf8"));
           const hasRunningNode = Object.values(detail?.nodeStatuses || {}).some(
             (status) => status === NodeStatus.RUNNING || status === NodeStatus.WAITING,
           );
@@ -2619,7 +4208,8 @@ export class WorkflowEngine extends EventEmitter {
     this._resumingRuns = true;
 
     try {
-      const runs = this._readRunIndex().filter(
+      const allRuns = this._readRunIndex();
+      const runs = allRuns.filter(
         (r) => r.status === WorkflowStatus.PAUSED && r.resumable,
       );
 
@@ -2630,7 +4220,58 @@ export class WorkflowEngine extends EventEmitter {
 
       console.log(`${TAG} Resuming ${runs.length} interrupted run(s)...`);
 
+      // ── Deduplicate by taskId: keep only the most recent run per task ────
+      // After N crash/restart cycles, N run entries accumulate for the same
+      // taskId. Resuming all of them causes competing workflow runs that race
+      // to claim the task → "claim was stolen" errors on every restart.
+      // Solution: pre-scan detail files, keep latest startedAt per taskId,
+      // and mark older duplicates as not-resumable before we even try them.
+      const runDetailCache = new Map(); // runId → parsed detail
+      const latestByTaskId = new Map(); // taskId → run entry (highest startedAt)
+      for (const run of allRuns) {
+        const dp = resolve(this.runsDir, `${run.runId}.json`);
+        if (!existsSync(dp)) continue;
+        try {
+          const d = JSON.parse(readFileSync(dp, "utf8"));
+          runDetailCache.set(run.runId, d);
+          const tid = d.data?.taskId || d.inputData?.taskId;
+          if (!tid) continue;
+          const prev = latestByTaskId.get(tid);
+          if (!prev || (run.startedAt || 0) >= (prev.startedAt || 0)) {
+            latestByTaskId.set(tid, run);
+          }
+        } catch {
+          /* unreadable detail — handled in the main loop below */
+        }
+      }
+
+      // Mark older duplicate runs as not-resumable before entering the loop
+      let dedupedCount = 0;
       for (const run of runs) {
+        const d = runDetailCache.get(run.runId);
+        const tid = d?.data?.taskId || d?.inputData?.taskId;
+        if (!tid) continue;
+        const latest = latestByTaskId.get(tid);
+        if (latest && latest.runId !== run.runId) {
+          this._markRunUnresumable(run.runId, "duplicate_task_run");
+          dedupedCount++;
+        }
+      }
+      if (dedupedCount > 0) {
+        console.log(
+          `${TAG} Skipped ${dedupedCount} duplicate interrupted run(s) (kept latest per taskId)`,
+        );
+      }
+
+      for (const run of runs) {
+        // Skip runs that were marked as duplicates above
+        const _runDetail = runDetailCache.get(run.runId);
+        const _tid = _runDetail?.data?.taskId || _runDetail?.inputData?.taskId;
+        if (_tid) {
+          const latest = latestByTaskId.get(_tid);
+          if (latest && latest.runId !== run.runId) continue;
+        }
+
         try {
           // Check if the workflow definition still exists
           const def = this.get(run.workflowId);
@@ -2648,30 +4289,23 @@ export class WorkflowEngine extends EventEmitter {
             continue;
           }
 
-          const detail = JSON.parse(readFileSync(detailPath, "utf8"));
-          const nodeStatuses = detail.nodeStatuses || {};
-          const hasCompletedNodes = Object.values(nodeStatuses).some(
-            (s) => s === NodeStatus.COMPLETED,
-          );
+          // Reuse cached detail if available (already parsed above)
+          const detail = runDetailCache.get(run.runId) ?? JSON.parse(readFileSync(detailPath, "utf8"));
+          const retryDecision = this._chooseRetryModeFromDetail(detail, {
+            fallbackMode: "from_scratch",
+          });
 
-          if (hasCompletedNodes) {
-            // Resume from where it left off using retryRun("from_failed")
-            console.log(`${TAG} Resuming run ${run.runId} from failed/interrupted node...`);
-            await this.retryRun(run.runId, { mode: "from_failed" }).catch((err) => {
-              console.error(`${TAG} Failed to resume run ${run.runId}:`, err.message);
-              this._markRunUnresumable(run.runId, `retry_error: ${err.message}`);
-            });
-          } else {
-            // No nodes completed — re-run from scratch
-            console.log(`${TAG} Re-executing run ${run.runId} from scratch...`);
-            const originalData = detail.inputData || detail.data || {};
-            // Clean up internal metadata from data before re-executing
-            const { _workflowId, _workflowName, _retryOf, ...cleanData } = originalData;
-            await this.execute(run.workflowId, cleanData, { force: true }).catch((err) => {
-              console.error(`${TAG} Failed to re-execute run ${run.runId}:`, err.message);
-              this._markRunUnresumable(run.runId, `execute_error: ${err.message}`);
-            });
-          }
+          console.log(
+            `${TAG} Resuming run ${run.runId} via retryRun(${retryDecision.mode}) ` +
+            `[${retryDecision.reason}]...`,
+          );
+          await this.retryRun(run.runId, {
+            mode: retryDecision.mode,
+            _decisionReason: retryDecision.reason,
+          }).catch((err) => {
+            console.error(`${TAG} Failed to resume run ${run.runId}:`, err.message);
+            this._markRunUnresumable(run.runId, `retry_error: ${err.message}`);
+          });
 
           // Mark the original interrupted run as no longer resumable
           // (the retry/re-execute created a new run)
@@ -2728,11 +4362,15 @@ export class WorkflowEngine extends EventEmitter {
       writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
 
       // Save full run detail
-      const detailPath = resolve(this.runsDir, `${runId}.json`);
-      writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
+      this._writeRunDetail(runId, detail);
     } catch (err) {
       console.error(`${TAG} Failed to persist run log:`, err.message);
     }
+  }
+
+  _writeRunDetail(runId, detail) {
+    const detailPath = resolve(this.runsDir, `${runId}.json`);
+    writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
   }
 }
 
@@ -2777,7 +4415,34 @@ export function getWorkflowEngine(opts = {}) {
     _defaultEngine = new WorkflowEngine(engineOpts);
     _defaultEngine.load();
   } else if (opts && typeof opts === "object") {
-    if (opts.services && typeof opts.services === "object") {
+    const workflowDir = typeof opts.workflowDir === "string" && opts.workflowDir
+      ? resolve(opts.workflowDir)
+      : null;
+    const runsDir = typeof opts.runsDir === "string" && opts.runsDir
+      ? resolve(opts.runsDir)
+      : null;
+    const configDir = typeof opts.configDir === "string" && opts.configDir
+      ? resolve(opts.configDir)
+      : null;
+    const shouldReinitialize =
+      (workflowDir && workflowDir !== _defaultEngine.workflowDir) ||
+      (runsDir && runsDir !== _defaultEngine.runsDir) ||
+      (configDir && configDir !== resolve(_defaultEngine._configDir || process.cwd()));
+
+    if (shouldReinitialize) {
+      const engineOpts = {
+        ...opts,
+        services: mergeWorkflowServices(_defaultEngine.services, opts.services || {}),
+      };
+      if (
+        engineOpts.detectInterruptedRuns === undefined &&
+        shouldDisableDefaultInterruptedRunDetection(engineOpts)
+      ) {
+        engineOpts.detectInterruptedRuns = false;
+      }
+      _defaultEngine = new WorkflowEngine(engineOpts);
+      _defaultEngine.load();
+    } else if (opts.services && typeof opts.services === "object") {
       _defaultEngine.services = mergeWorkflowServices(
         _defaultEngine.services,
         opts.services,
@@ -2799,6 +4464,3 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
-
-
-

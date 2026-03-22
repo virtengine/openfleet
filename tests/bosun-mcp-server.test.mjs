@@ -1,0 +1,207 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { spawn } from "node:child_process";
+import { resolve } from "node:path";
+
+const repoRoot = process.cwd();
+const serverPath = resolve(repoRoot, "server", "bosun-mcp-server.mjs");
+
+function createFrameReader(stream) {
+  let buffer = "";
+  const pending = [];
+  const queue = [];
+
+  const flush = () => {
+    while (true) {
+      const separator = buffer.indexOf("\n");
+      if (separator === -1) return;
+      const line = buffer.slice(0, separator).replace(/\r$/, "");
+      buffer = buffer.slice(separator + 1);
+      if (!line.trim()) {
+        continue;
+      }
+      const parsed = JSON.parse(line);
+      if (pending.length > 0) {
+        pending.shift().resolve(parsed);
+      } else {
+        queue.push(parsed);
+      }
+    }
+  };
+
+  stream.on("data", (chunk) => {
+    buffer += chunk.toString("utf8");
+    flush();
+  });
+
+  stream.on("error", (error) => {
+    while (pending.length > 0) {
+      pending.shift().reject(error);
+    }
+  });
+
+  return {
+    next() {
+      if (queue.length > 0) {
+        return Promise.resolve(queue.shift());
+      }
+      return new Promise((resolvePromise, rejectPromise) => {
+        pending.push({ resolve: resolvePromise, reject: rejectPromise });
+      });
+    },
+  };
+}
+
+async function startMcpProcess() {
+  const child = spawn(process.execPath, [serverPath], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      TELEGRAM_UI_TUNNEL: "disabled",
+      BOSUN_MCP_DISABLE_DAEMON_DISCOVERY: "1",
+      NODE_ENV: "test",
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  const stderr = [];
+  child.stderr.on("data", (chunk) => {
+    stderr.push(chunk.toString("utf8"));
+  });
+
+  const reader = createFrameReader(child.stdout);
+  let nextId = 1;
+
+  async function sendRequest(method, params) {
+    const id = nextId++;
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+    while (true) {
+      const message = await reader.next();
+      if (message.id === id) return message;
+    }
+  }
+
+  async function initialize() {
+    const response = await sendRequest("initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "bosun-mcp-test", version: "1.0.0" },
+    });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
+    return response;
+  }
+
+  async function listTools() {
+    return sendRequest("tools/list", {});
+  }
+
+  async function callTool(name, args = {}) {
+    return sendRequest("tools/call", { name, arguments: args });
+  }
+
+  async function stop() {
+    if (!child.killed) {
+      child.kill("SIGTERM");
+    }
+    await new Promise((resolvePromise) => {
+      child.once("exit", () => resolvePromise());
+      setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* best effort */
+        }
+        resolvePromise();
+      }, 3000);
+    });
+  }
+
+  return {
+    child,
+    stderr,
+    initialize,
+    listTools,
+    callTool,
+    stop,
+  };
+}
+
+async function waitFor(predicate, timeoutMs = 4000, intervalMs = 100) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const result = await predicate();
+    if (result) return result;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, intervalMs));
+  }
+  return null;
+}
+
+afterEach(async () => {
+  const uiServerModule = await import("../server/ui-server.mjs");
+  uiServerModule.stopTelegramUiServer();
+});
+
+describe("bosun MCP server", () => {
+  it("lists the Bosun MCP tool surface over stdio", async () => {
+    const mcp = await startMcpProcess();
+    try {
+      const init = await mcp.initialize();
+      expect(init.result?.serverInfo?.name).toBe("bosun-mcp-server");
+
+      const tools = await mcp.listTools();
+      const names = (tools.result?.tools || []).map((tool) => tool.name);
+      expect(names).toContain("bosun_status");
+      expect(names).toContain("bosun_request");
+      expect(names).toContain("bosun_send_session_message");
+      expect(names).toContain("bosun_run_agent_tool");
+    } finally {
+      await mcp.stop();
+    }
+  }, 20000);
+
+  it("supports creating and reading sessions through MCP tools", async () => {
+    const mcp = await startMcpProcess();
+    try {
+      await mcp.initialize();
+
+      const created = await mcp.callTool("bosun_create_session", {
+        type: "primary",
+        prompt: "Bosun MCP smoke test",
+        mode: "agent",
+      });
+      const createdPayload = JSON.parse(created.result.content[0].text);
+      expect(createdPayload.session?.id).toBeTruthy();
+      const sessionId = createdPayload.session.id;
+
+      const sent = await mcp.callTool("bosun_send_session_message", {
+        sessionId,
+        content: "record this message",
+      });
+      const sentPayload = JSON.parse(sent.result.content[0].text);
+      expect(sentPayload.ok).toBe(true);
+
+      const fetchedPayload = await waitFor(async () => {
+        const fetched = await mcp.callTool("bosun_get_session", {
+          sessionId,
+          full: true,
+        });
+        const payload = JSON.parse(fetched.result.content[0].text);
+        if ((payload.session?.messages || []).length > 0) {
+          return payload;
+        }
+        return null;
+      });
+
+      expect(fetchedPayload).toBeTruthy();
+      expect(fetchedPayload.session?.id).toBe(sessionId);
+      expect(Array.isArray(fetchedPayload.session?.messages)).toBe(true);
+      expect(fetchedPayload.session.messages.length).toBeGreaterThan(0);
+
+      const listed = await mcp.callTool("bosun_list_sessions", {});
+      const listedPayload = JSON.parse(listed.result.content[0].text);
+      expect(Array.isArray(listedPayload.sessions)).toBe(true);
+      expect(listedPayload.sessions.some((session) => session.id === sessionId)).toBe(true);
+    } finally {
+      await mcp.stop();
+    }
+  }, 30000);
+});

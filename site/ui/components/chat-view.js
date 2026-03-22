@@ -11,13 +11,14 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } fr
 import htm from "htm";
 import { apiFetch } from "../modules/api.js";
 import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
+import { buildTraceTimelineBlocks } from "../modules/stream-timeline.js";
 import { showToast } from "../modules/state.js";
 import { formatRelative, truncate, formatBytes } from "../modules/utils.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   Paper, Typography, Box, Stack, IconButton, TextField,
   InputAdornment, Chip, CircularProgress, Skeleton, Tooltip,
-  Divider, Avatar, Button, Collapse, Alert, Fab,
+  Divider, Avatar, Button, ButtonGroup, Collapse, Alert, Fab,
 } from "@mui/material";
 import {
   sessionMessages,
@@ -58,6 +59,16 @@ const SCROLL_BOTTOM_RATIO = 0.995;
 const CHAT_PAGE_SIZE = 50;
 const SCROLL_TOP_TRIGGER_PX = 24;
 const SCROLL_TOP_REARM_PX = 80;
+const TRACE_VERBOSITY_STORAGE_KEY = "bosun.chat.traceVerbosity";
+
+const TIMELINE_PHASE_META = {
+  thinking: { label: "Thinking", color: "warning", accent: "#d97706" },
+  tool_call: { label: "Tool Call", color: "info", accent: "#0284c7" },
+  output: { label: "Output", color: "success", accent: "#16a34a" },
+  file_exploration: { label: "File Exploration", color: "primary", accent: "#2563eb" },
+  patch_result: { label: "Patch Result", color: "success", accent: "#059669" },
+  error: { label: "Error", color: "error", accent: "#dc2626" },
+};
 
 function formatAutoAction(event) {
   if (!event) return null;
@@ -343,31 +354,6 @@ function summarizeLine(text, limit = 160) {
   return compact.length > limit ? `${compact.slice(0, limit - 1)}…` : compact;
 }
 
-function describeTraceMessage(msg) {
-  const type = (msg?.type || "").toLowerCase();
-  const text = messageText(msg);
-  const firstLine = summarizeLine(text.split(/\r?\n/, 1)[0], 180);
-
-  if (type === "tool_call") {
-    const title = firstLine
-      ? /^ran\b/i.test(firstLine)
-        ? firstLine
-        : `Ran ${firstLine}`
-      : "Ran tool call";
-    return { kind: "tool", tag: "TOOL", title, text };
-  }
-
-  if (type === "tool_result" || type === "tool_output") {
-    return { kind: "result", tag: "RESULT", title: firstLine || "Tool output", text };
-  }
-
-  if (type === "error" || type === "stream_error") {
-    return { kind: "error", tag: "ERROR", title: firstLine || "Tool error", text };
-  }
-
-  return { kind: "thinking", tag: "STEP", title: firstLine || "Thinking step", text };
-}
-
 function formatMessageLine(msg) {
   const timestamp = msg?.timestamp || "";
   const kind = msg?.role || msg?.type || "message";
@@ -477,7 +463,24 @@ const ChatBubble = memo(function ChatBubble({
         : html`
             ${label ? html`<${Chip} label=${label} size="small" color=${isError ? "error" : "info"} variant="outlined" sx=${{ mb: 0.5, height: 20, fontSize: '0.6875rem' }} />` : null}
             ${showContextCompressionLabel
-              ? html`<${Chip} label="CONTEXT SUMMARIZED" size="small" color="warning" variant="outlined" sx=${{ mb: 0.5, mr: 0.5, height: 20, fontSize: '0.6875rem' }} />`
+              ? html`
+                  <${Box} sx=${{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 0.5, mb: 0.5 }}>
+                    <${Chip} label="⚡ CONTEXT SHREDDED" size="small" color="warning" variant="filled"
+                      sx=${{ height: 22, fontSize: '0.6875rem', fontWeight: 700 }} />
+                    ${contextCompression?.total
+                      ? html`<${Chip} label=${`${contextCompression.total} items compressed`}
+                          size="small" variant="outlined" color="warning"
+                          sx=${{ height: 20, fontSize: '0.625rem' }} />`
+                      : null}
+                    ${contextCompression?.counts
+                      ? Object.entries(contextCompression.counts)
+                          .filter(([, v]) => v > 0)
+                          .map(([k, v]) => html`
+                            <${Chip} label=${`${k}: ${v}`} size="small" variant="outlined"
+                              sx=${{ height: 18, fontSize: '0.5625rem', opacity: 0.8 }} />
+                          `)
+                      : null}
+                  </${Box}>`
               : null}
             ${showModelResponseLabel
               ? html`<${Chip} label="MODEL RESPONSE" size="small" color="primary" variant="outlined" sx=${{ mb: 0.5, height: 20, fontSize: '0.6875rem' }} />`
@@ -538,85 +541,222 @@ const ChatBubble = memo(function ChatBubble({
   prev.editingText === next.editingText,
 );
 
-const TraceEvent = memo(function TraceEvent({ msg }) {
-  const info = describeTraceMessage(msg);
-  const text = info.text || "";
-  const lineCount = text ? text.split(/\r?\n/).length : 0;
-  const hasBody = text.length > 0 && (lineCount > 1 || text.length > 220);
-  const longBody = lineCount > 12 || text.length > 1200;
-  const [expanded, setExpanded] = useState(() => info.kind === "error");
+function getTimelinePhaseMeta(phase) {
+  return TIMELINE_PHASE_META[phase] || TIMELINE_PHASE_META.tool_call;
+}
 
-  useEffect(() => {
-    setExpanded(info.kind === "error");
-  }, [msg]);
-
-  const chipColor = info.kind === "error" ? "error" : info.kind === "tool" ? "info" : "default";
-
+const TraceTimelineEntry = memo(function TraceTimelineEntry({ entry, verbosity = "compact", isLast = false }) {
+  const phaseMeta = getTimelinePhaseMeta(entry?.phase);
+  const detailText = verbosity === "full" ? (entry?.text || "") : summarizeLine(entry?.preview || entry?.text || "", 260);
+  const showDetail = detailText && summarizeLine(detailText, 260) !== summarizeLine(entry?.title || "", 260);
   return html`
-    <${Box} sx=${{ mb: 0.5 }}>
-      <${Chip}
-        label=${`${info.tag}: ${info.title}`}
-        size="small"
-        color=${chipColor}
-        variant="outlined"
-        onClick=${() => hasBody && setExpanded((prev) => !prev)}
-        disabled=${!hasBody}
-        icon=${hasBody ? html`<span style=${{ fontSize: '0.75rem', marginLeft: 8 }}>${expanded ? "▾" : "▸"}</span>` : null}
-        deleteIcon=${msg.timestamp ? html`<${Typography} variant="caption" color="text.secondary" sx=${{ ml: 0.5, fontSize: '0.625rem' }}>${formatRelative(msg.timestamp)}</${Typography}>` : null}
-        onDelete=${msg.timestamp ? () => {} : undefined}
-        sx=${{ maxWidth: '100%', height: 'auto', '& .MuiChip-label': { whiteSpace: 'normal', py: 0.25 }, cursor: hasBody ? 'pointer' : 'default' }}
+    <${Box} sx=${{ position: 'relative', pl: 3, pb: isLast ? 0 : 1.25 }}>
+      <${Box}
+        sx=${{
+          position: 'absolute',
+          left: 10,
+          top: 0,
+          bottom: isLast ? 22 : -6,
+          width: 2,
+          bgcolor: 'divider',
+        }}
       />
-      <${Collapse} in=${!!(hasBody && expanded)}>
-        <${Paper} variant="outlined" sx=${{ mt: 0.5, p: 1, fontSize: '0.75rem', maxHeight: 400, overflowX: 'auto', overflowY: 'auto', wordBreak: 'break-word' }}>
-          <${MessageContent} text=${text} />
-        </${Paper}>
-      </${Collapse}>
+      <${Box}
+        sx=${{
+          position: 'absolute',
+          left: 4,
+          top: 8,
+          width: 14,
+          height: 14,
+          borderRadius: '50%',
+          bgcolor: phaseMeta.accent,
+          border: '2px solid',
+          borderColor: 'background.paper',
+          boxShadow: '0 0 0 1px rgba(15,23,42,0.08)',
+        }}
+      />
+      <${Stack} spacing=${0.5}>
+        <${Stack} direction="row" spacing=${0.75} alignItems="center" sx=${{ flexWrap: 'wrap' }}>
+          <${Chip}
+            label=${phaseMeta.label}
+            size="small"
+            color=${phaseMeta.color}
+            variant="outlined"
+            sx=${{ height: 20, fontSize: '0.625rem' }}
+          />
+          <${Typography} variant="caption" sx=${{ fontWeight: 600, fontSize: '0.75rem' }}>
+            ${entry?.title || phaseMeta.label}
+          </${Typography}>
+          ${entry?.timestamp
+            ? html`<${Typography} variant="caption" color="text.secondary" sx=${{ ml: 'auto', fontSize: '0.6875rem' }}>
+                ${formatRelative(entry.timestamp)}
+              </${Typography}>`
+            : null}
+        </${Stack}>
+        ${Array.isArray(entry?.chips) && entry.chips.length
+          ? html`
+              <${Stack} direction="row" spacing=${0.5} sx=${{ flexWrap: 'wrap' }}>
+                ${entry.chips.map((chip) => html`
+                  <${Chip}
+                    key=${`${entry.id}-${chip}`}
+                    label=${chip}
+                    size="small"
+                    variant="filled"
+                    sx=${{
+                      height: 20,
+                      fontSize: '0.625rem',
+                      bgcolor: 'rgba(15,23,42,0.06)',
+                      '& .MuiChip-label': { px: 0.75 },
+                    }}
+                  />
+                `)}
+              </${Stack}>
+            `
+          : null}
+        ${showDetail
+          ? html`
+              <${Paper}
+                variant="outlined"
+                sx=${{
+                  px: 1,
+                  py: 0.75,
+                  fontSize: '0.75rem',
+                  bgcolor: entry?.tone === "error" ? 'rgba(211,47,47,0.05)' : 'rgba(15,23,42,0.02)',
+                  borderColor: entry?.tone === "error" ? 'error.light' : 'divider',
+                }}
+              >
+                <${MessageContent} text=${detailText} />
+              </${Paper}>
+            `
+          : null}
+      </${Stack}>
     </${Box}>
   `;
-}, (prev, next) => prev.msg === next.msg);
+}, (prev, next) => prev.entry === next.entry && prev.verbosity === next.verbosity && prev.isLast === next.isLast);
+
+const TraceTimelineBlock = memo(function TraceTimelineBlock({ block, verbosity = "compact", forceExpand = false }) {
+  const phaseMeta = getTimelinePhaseMeta(block?.phase);
+  const [expanded, setExpanded] = useState(() => forceExpand || verbosity === "full" || block?.hasError);
+
+  useEffect(() => {
+    setExpanded(forceExpand || verbosity === "full" || block?.hasError);
+  }, [block, forceExpand, verbosity]);
+
+  return html`
+    <${Paper}
+      variant="outlined"
+      sx=${{
+        mb: 1,
+        borderRadius: 2,
+        borderColor: block?.hasError ? 'error.main' : 'divider',
+        overflow: 'hidden',
+        boxShadow: phaseMeta.color === "primary" ? '0 0 0 1px rgba(37,99,235,0.08)' : 'none',
+      }}
+    >
+      <${Box}
+        onClick=${() => setExpanded((prev) => !prev)}
+        sx=${{
+          px: 1.25,
+          py: 0.9,
+          cursor: 'pointer',
+          userSelect: 'none',
+          bgcolor: phaseMeta.color === "primary" ? 'rgba(37,99,235,0.04)' : 'rgba(15,23,42,0.025)',
+          '&:hover': { bgcolor: phaseMeta.color === "primary" ? 'rgba(37,99,235,0.06)' : 'rgba(15,23,42,0.04)' },
+        }}
+      >
+        <${Stack} spacing=${0.75}>
+          <${Stack} direction="row" spacing=${0.75} alignItems="center" sx=${{ flexWrap: 'wrap' }}>
+            <${Chip}
+              label=${phaseMeta.label}
+              size="small"
+              color=${block?.hasError ? "error" : phaseMeta.color}
+              variant=${forceExpand || verbosity === "full" ? "filled" : "outlined"}
+              sx=${{ height: 22, fontSize: '0.6875rem' }}
+            />
+            <${Typography} variant="body2" sx=${{ flex: 1, fontWeight: 600 }}>
+              ${block?.summary || block?.title || phaseMeta.label}
+            </${Typography}>
+            <${Typography} variant="caption" color="text.secondary">
+              ${expanded ? "▾" : "▸"}
+            </${Typography}>
+          </${Stack}>
+          ${Array.isArray(block?.chips) && block.chips.length
+            ? html`
+                <${Stack} direction="row" spacing=${0.5} sx=${{ flexWrap: 'wrap' }}>
+                  ${block.chips.map((chip) => html`
+                    <${Chip}
+                      key=${`${block.key}-${chip}`}
+                      label=${chip}
+                      size="small"
+                      variant="outlined"
+                      sx=${{ height: 20, fontSize: '0.625rem' }}
+                    />
+                  `)}
+                </${Stack}>
+              `
+            : null}
+        </${Stack}>
+      </${Box}>
+      <${Collapse} in=${expanded}>
+        <${Box} sx=${{ px: 1.25, pt: 1, pb: 0.75 }}>
+          ${block.entries.map((entry, idx) => html`
+            <${TraceTimelineEntry}
+              key=${entry.id}
+              entry=${entry}
+              verbosity=${verbosity}
+              isLast=${idx === block.entries.length - 1}
+            />
+          `)}
+        </${Box}>
+      </${Collapse}>
+    </${Paper}>
+  `;
+}, (prev, next) => prev.block === next.block && prev.verbosity === next.verbosity && prev.forceExpand === next.forceExpand);
 
 /* ─── ThinkingGroup — collapses consecutive trace events into one row ─── */
-const ThinkingGroup = memo(function ThinkingGroup({ msgs, isLatest = false, isAgentActive = false }) {
-  const hasErrors = msgs.some((m) => m.type === "error" || m.type === "stream_error");
-  // Track whether user has manually toggled this group
+const ThinkingGroup = memo(function ThinkingGroup({ msgs, isLatest = false, isAgentActive = false, verbosity = "compact" }) {
+  const blocks = useMemo(() => buildTraceTimelineBlocks(msgs), [msgs]);
+  const hasErrors = blocks.some((block) => block.hasError);
   const userToggledRef = useRef(false);
-  const [expanded, setExpanded] = useState(() => hasErrors || (isLatest && isAgentActive));
+  const [expanded, setExpanded] = useState(() => hasErrors || verbosity === "full" || (isLatest && isAgentActive));
 
-  // Auto-close when this group is no longer the latest active group
   useEffect(() => {
     if (userToggledRef.current) return;
-    if (isLatest && isAgentActive) {
+    if (verbosity === "full") {
+      setExpanded(true);
+    } else if (isLatest && isAgentActive) {
       setExpanded(true);
     } else if (!isLatest) {
       setExpanded(false);
     }
-  }, [isLatest, isAgentActive]);
+  }, [isLatest, isAgentActive, verbosity]);
 
-  // Always expand on errors
   useEffect(() => {
     if (hasErrors) setExpanded(true);
-  }, [msgs.length, hasErrors]);
+  }, [blocks.length, hasErrors]);
 
-  // Reset user-toggle when group identity changes
   useEffect(() => {
     userToggledRef.current = false;
-  }, [msgs]);
+  }, [msgs, verbosity]);
 
   const handleToggle = useCallback(() => {
     userToggledRef.current = true;
     setExpanded((p) => !p);
   }, []);
 
-  const toolCount = msgs.filter((m) => m.type === "tool_call").length;
-  const stepCount = msgs.filter((m) => {
-    const t = (m.type || "").toLowerCase();
-    return !["tool_call", "tool_result", "tool_output", "error", "stream_error"].includes(t);
-  }).length;
+  const phaseCounts = blocks.reduce((acc, block) => {
+    acc[block.phase] = (acc[block.phase] || 0) + 1;
+    return acc;
+  }, {});
 
   const parts = [];
-  if (toolCount) parts.push(`${toolCount} tool call${toolCount !== 1 ? "s" : ""}`);
-  if (stepCount) parts.push(`${stepCount} step${stepCount !== 1 ? "s" : ""}`);
-  const label = parts.join(", ") || `${msgs.length} step${msgs.length !== 1 ? "s" : ""}`;
+  if (phaseCounts.thinking) parts.push(`${phaseCounts.thinking} thinking`);
+  if (phaseCounts.file_exploration) parts.push(`${phaseCounts.file_exploration} exploration${phaseCounts.file_exploration === 1 ? "" : "s"}`);
+  if (phaseCounts.patch_result) parts.push(`${phaseCounts.patch_result} patch${phaseCounts.patch_result === 1 ? "" : "es"}`);
+  if (phaseCounts.tool_call) parts.push(`${phaseCounts.tool_call} tool`);
+  if (phaseCounts.output) parts.push(`${phaseCounts.output} output${phaseCounts.output === 1 ? "" : "s"}`);
+  if (phaseCounts.error) parts.push(`${phaseCounts.error} error${phaseCounts.error === 1 ? "" : "s"}`);
+  const label = parts.join(" · ") || `${blocks.length} timeline item${blocks.length === 1 ? "" : "s"}`;
 
   return html`
     <${Paper}
@@ -632,17 +772,17 @@ const ThinkingGroup = memo(function ThinkingGroup({ msgs, isLatest = false, isAg
       <${Box}
         onClick=${handleToggle}
         sx=${{
-          display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.75,
+          display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.9,
           cursor: 'pointer', userSelect: 'none',
-          backgroundColor: 'rgba(0,0,0,0.02)',
-          '&:hover': { backgroundColor: 'rgba(0,0,0,0.04)' },
+          backgroundColor: 'rgba(15,23,42,0.025)',
+          '&:hover': { backgroundColor: 'rgba(15,23,42,0.04)' },
         }}
       >
         ${isLatest && isAgentActive
           ? html`<${CircularProgress} size=${14} thickness=${5} sx=${{ mr: 0.5 }} />`
           : null}
         <${Chip}
-          label=${isLatest && isAgentActive ? "Working…" : "Thinking"}
+          label=${isLatest && isAgentActive ? "Working…" : "Trace"}
           size="small"
           color=${isLatest && isAgentActive ? "primary" : "default"}
           variant=${isLatest && isAgentActive ? "filled" : "outlined"}
@@ -652,8 +792,15 @@ const ThinkingGroup = memo(function ThinkingGroup({ msgs, isLatest = false, isAg
         <${Typography} variant="caption" color="text.secondary">${expanded ? "▾" : "▸"}</${Typography}>
       </${Box}>
       <${Collapse} in=${expanded}>
-        <${Box} sx=${{ px: 1.5, py: 1 }}>
-          ${msgs.map((m, idx) => html`<${TraceEvent} key=${m.id || m.timestamp || idx} msg=${m} />`)}
+        <${Box} sx=${{ px: 1.25, py: 1 }}>
+          ${blocks.map((block) => html`
+            <${TraceTimelineBlock}
+              key=${block.key}
+              block=${block}
+              verbosity=${verbosity}
+              forceExpand=${verbosity === "full" || (isLatest && isAgentActive && block === blocks[blocks.length - 1])}
+            />
+          `)}
         </${Box}>
       </${Collapse}>
     </${Paper}>
@@ -661,7 +808,8 @@ const ThinkingGroup = memo(function ThinkingGroup({ msgs, isLatest = false, isAg
 }, (prev, next) =>
   prev.msgs === next.msgs &&
   prev.isLatest === next.isLatest &&
-  prev.isAgentActive === next.isAgentActive,
+  prev.isAgentActive === next.isAgentActive &&
+  prev.verbosity === next.verbosity,
 );
 
 /* ─── Chat View component ─── */
@@ -676,6 +824,13 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const [unreadCount, setUnreadCount] = useState(0);
   const [visibleCount, setVisibleCount] = useState(CHAT_PAGE_SIZE);
   const [showStreamMeta, setShowStreamMeta] = useState(false);
+  const [traceVerbosity, setTraceVerbosity] = useState(() => {
+    try {
+      return globalThis.localStorage?.getItem(TRACE_VERBOSITY_STORAGE_KEY) === "full" ? "full" : "compact";
+    } catch {
+      return "compact";
+    }
+  });
   const [pendingAttachments, setPendingAttachments] = useState([]);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [dragActive, setDragActive] = useState(false);
@@ -693,6 +848,14 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const lastMessageCount = useRef(0);
   const topLoadArmedRef = useRef(true);
   const filterKey = `${filters.tool}-${filters.result}-${filters.error}`;
+
+  useEffect(() => {
+    try {
+      globalThis.localStorage?.setItem(TRACE_VERBOSITY_STORAGE_KEY, traceVerbosity);
+    } catch {
+      // Ignore browsers that block storage in embedded contexts.
+    }
+  }, [traceVerbosity]);
 
   const isScrollPinnedToBottom = useCallback((el) => {
     if (!el) return true;
@@ -1387,6 +1550,22 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
           html`<${Chip} label="Paused" size="small" color="warning" variant="filled" sx=${{ height: 22, fontSize: '0.6875rem' }} />`}
         </${Stack}>
         <${Stack} direction="row" spacing=${0.5}>
+          <${ButtonGroup} size="small" variant="outlined" sx=${{ mr: 0.5 }}>
+            <${Button}
+              variant=${traceVerbosity === "compact" ? "contained" : "outlined"}
+              onClick=${() => setTraceVerbosity("compact")}
+              sx=${{ minWidth: 'auto', px: 1.2, fontSize: '0.6875rem' }}
+            >
+              Compact
+            </${Button}>
+            <${Button}
+              variant=${traceVerbosity === "full" ? "contained" : "outlined"}
+              onClick=${() => setTraceVerbosity("full")}
+              sx=${{ minWidth: 'auto', px: 1.2, fontSize: '0.6875rem' }}
+            >
+              Full
+            </${Button}>
+          </${ButtonGroup}>
           <${Tooltip} title="Refresh"><${IconButton} size="small" onClick=${refreshMessages}>${resolveIcon(":refresh:")}</${IconButton}></${Tooltip}>
           <${Tooltip} title=${paused ? "Resume" : "Pause"}>
             <${IconButton} size="small" onClick=${() => setPaused((prev) => !prev)}>
@@ -1409,6 +1588,22 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             </${Box}>
           </${Stack}>
           <${Stack} direction="row" spacing=${0.5}>
+            <${ButtonGroup} size="small" variant="outlined">
+              <${Button}
+                variant=${traceVerbosity === "compact" ? "contained" : "outlined"}
+                onClick=${() => setTraceVerbosity("compact")}
+                sx=${{ minWidth: 'auto', fontSize: '0.6875rem' }}
+              >
+                Compact
+              </${Button}>
+              <${Button}
+                variant=${traceVerbosity === "full" ? "contained" : "outlined"}
+                onClick=${() => setTraceVerbosity("full")}
+                sx=${{ minWidth: 'auto', fontSize: '0.6875rem' }}
+              >
+                Full
+              </${Button}>
+            </${ButtonGroup}>
             <${Button} size="small" variant="text" onClick=${refreshMessages} sx=${{ minWidth: 'auto', fontSize: '0.6875rem' }}>
               Refresh
             </${Button}>
@@ -1544,6 +1739,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
               msgs=${item.msgs}
               isLatest=${!!item.isLatest}
               isAgentActive=${statusState !== "idle" && statusState !== "paused"}
+              verbosity=${traceVerbosity}
             />`
           : html`<${ChatBubble}
               key=${item.key}

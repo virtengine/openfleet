@@ -260,6 +260,32 @@ describe("manual-flows", () => {
       const stored = JSON.parse(readFileSync(filePath, "utf8"));
       expect(stored.id).toBe(run.id);
     });
+
+    it("stores workspace and repository metadata when provided", () => {
+      const run = createRun(
+        "codebase-annotation-audit",
+        { phases: "all" },
+        testRoot,
+        {
+          metadata: {
+            repository: "bosun",
+            workspaceId: "virtengine-gh",
+            workspaceDir: testRoot,
+            projectId: "internal",
+            triggerSource: "manual-ui",
+          },
+        },
+      );
+
+      expect(run.metadata).toMatchObject({
+        repository: "bosun",
+        targetRepo: "bosun",
+        workspaceId: "virtengine-gh",
+        workspaceDir: testRoot,
+        projectId: "internal",
+        triggerSource: "manual-ui",
+      });
+    });
   });
 
   describe("startRun", () => {
@@ -540,6 +566,58 @@ describe("manual-flows", () => {
       expect(createdTask.labels).toContain("manual-flows");
     });
 
+    it("passes selected repository metadata into custom task placeholders", async () => {
+      saveFlowTemplate(
+        {
+          id: "custom-action-repo-aware",
+          name: "Custom Action Repo Aware",
+          description: "Custom task dispatch with repository context",
+          category: "custom",
+          fields: [
+            { id: "scope", label: "Scope", type: "text", required: true, defaultValue: "ui" },
+          ],
+          tags: ["custom"],
+          action: {
+            kind: "task",
+            task: {
+              title: "Investigate {{scope}} in {{repository}}",
+              description: "Workspace {{workspaceId}} / repo {{targetRepo}}",
+              priority: "medium",
+              labels: ["manual-flow", "{{repository}}"],
+            },
+          },
+        },
+        testRoot,
+      );
+
+      let createdTask = null;
+      const mockTaskManager = {
+        createTask: async (spec) => {
+          createdTask = spec;
+          return { id: "task-repo-aware" };
+        },
+      };
+
+      const run = await executeFlow(
+        "custom-action-repo-aware",
+        { scope: "flows" },
+        testRoot,
+        {
+          taskManager: mockTaskManager,
+          runMetadata: {
+            repository: "bosun",
+            workspaceId: "virtengine-gh",
+          },
+        },
+      );
+
+      expect(run.status).toBe("completed");
+      expect(createdTask.title).toContain("bosun");
+      expect(createdTask.description).toContain("virtengine-gh");
+      expect(createdTask.labels).toContain("bosun");
+      expect(run.metadata?.repository).toBe("bosun");
+    });
+
     it("executes custom template with instructions action", async () => {
       saveFlowTemplate(
         {
@@ -573,4 +651,3 @@ describe("manual-flows", () => {
     });
   });
 });
-

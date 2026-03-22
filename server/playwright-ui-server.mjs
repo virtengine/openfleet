@@ -2,18 +2,24 @@
  * Minimal static server for Playwright UI inspection.
  * Serves ui/ files with proper MIME types + mock API endpoints.
  * Proxies MUI/Emotion vendor files through esm.sh to get ESM-safe bundles.
+ * Includes WebSocket stub and E2E-test-mode HTML for Playwright E2E tests.
  */
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { resolve, extname, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { WebSocketServer } from "ws";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const uiRoot = resolve(__dirname, "..", "ui");
 const sharedLibRoot = resolve(__dirname, "..", "lib");
-const PORT = 4444;
+const PORT = Number.parseInt(String(process.env.PLAYWRIGHT_UI_PORT || "4444"), 10) || 4444;
 const ESM_CACHE_DIR = resolve(__dirname, "..", ".cache", "esm-vendor");
+const LOCAL_ESM_PATH_RE = /^\/(?:@|[a-z0-9][a-z0-9._-]*@)/i;
+const SAFE_ESM_PATH_RE = /^\/(?:@|[a-z0-9][a-z0-9._-]*@)[a-z0-9./_@%-]*$/i;
+const SAFE_ESM_SEARCH_RE = /^\?[a-z0-9._~!$&'()*+,;=:@%/-]*$/i;
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -38,13 +44,15 @@ const ESM_CDN = {
 };
 
 function normalizeEsmBody(body) {
+  body = body.replaceAll('"https://esm.sh/', '"/');
+  body = body.replaceAll("'https://esm.sh/", "'/");
   body = body.replace(
     /(import\s+(?:[^"'`]*?\s+from\s+)?["'])\/(?!\/)/g,
-    "$1https://esm.sh/",
+    "$1/",
   );
   body = body.replace(
     /(export\s+(?:\*|\{[^}]*\})\s+from\s+["'])\/(?!\/)/g,
-    "$1https://esm.sh/",
+    "$1/",
   );
   return body;
 }
@@ -52,9 +60,10 @@ function normalizeEsmBody(body) {
 async function serveEsmVendor(res, name) {
   const cdnUrl = ESM_CDN[name];
   if (!cdnUrl) return false;
+  const cacheKey = createHash("sha1").update(`${cdnUrl}|esm-local-proxy-v2`).digest("hex").slice(0, 12);
+  const cacheFile = resolve(ESM_CACHE_DIR, `${name}.${cacheKey}.js`);
 
   // Try disk cache first
-  const cacheFile = resolve(ESM_CACHE_DIR, name);
   if (existsSync(cacheFile)) {
     try {
       const cached = await readFile(cacheFile, "utf8");
@@ -92,21 +101,209 @@ async function serveEsmVendor(res, name) {
   }
 }
 
+function sanitizeEsmSearchParams(search = "") {
+  if (!search || typeof search !== "string") return "";
+  const original = search.startsWith("?") ? search.slice(1) : search;
+  if (!original) return "";
+
+  const allowedParams = new Set([
+    "target",
+    "dev",
+    "bundle",
+    "external",
+    "deps",
+    "alias",
+    "keep-names",
+    "pin"
+  ]);
+
+  const inputParams = new URLSearchParams(original);
+  const safeParams = new URLSearchParams();
+
+  for (const [key, value] of inputParams.entries()) {
+    if (allowedParams.has(key)) {
+      safeParams.append(key, value);
+    }
+  }
+
+  const serialized = safeParams.toString();
+  return serialized ? `?${serialized}` : "";
+}
+
+function buildSafeEsmProxyUrl(pathname, search = "") {
+  const normalizedPath = String(pathname || "").trim();
+  if (!SAFE_ESM_PATH_RE.test(normalizedPath)) return null;
+  const safeSearch = sanitizeEsmSearchParams(search);
+  return new URL(`${normalizedPath}${safeSearch}`, "https://esm.sh").toString();
+}
+
+async function serveEsmPassthrough(res, pathname, search = "") {
+  const upstreamUrl = buildSafeEsmProxyUrl(pathname, search);
+  if (!upstreamUrl) {
+    console.error(`[esm-proxy] Rejected nested module request ${pathname}${search}`);
+    return false;
+  }
+  try {
+    const response = await fetch(upstreamUrl, {
+      headers: { "User-Agent": "bosun-playwright-proxy/1.0" },
+    });
+    if (!response.ok) {
+      console.error(`[esm-proxy] Failed to fetch nested module ${pathname}: HTTP ${response.status}`);
+      return false;
+    }
+
+    const contentType = response.headers.get("content-type") || "application/javascript; charset=utf-8";
+    const raw = await response.text();
+    const body = contentType.includes("javascript") ? normalizeEsmBody(raw) : raw;
+
+    res.writeHead(200, { "Content-Type": contentType });
+    res.end(body);
+    return true;
+  } catch (err) {
+    console.error(`[esm-proxy] Failed to fetch nested module ${pathname}: ${err.message}`);
+    return false;
+  }
+}
+
+/** ── Mock data fixtures ─────────────────────────────────────────────── */
+
+const MOCK_WORKFLOW = {
+  id: "wf-test-001",
+  name: "E2E Test Workflow",
+  description: "A sample workflow for E2E testing",
+  nodes: [
+    { id: "n1", type: "trigger", label: "Start", x: 100, y: 100, config: {} },
+    { id: "n2", type: "action", label: "Run Task", x: 300, y: 100, config: {} },
+    { id: "n3", type: "condition", label: "Check Result", x: 500, y: 100, config: {} },
+  ],
+  edges: [
+    { id: "e1", source: "n1", target: "n2" },
+    { id: "e2", source: "n2", target: "n3" },
+  ],
+  createdAt: "2026-01-01T00:00:00Z",
+  updatedAt: "2026-01-01T00:00:00Z",
+};
+
+const MOCK_TASK = {
+  id: "task-test-001",
+  title: "E2E sample task",
+  status: "completed",
+  priority: "medium",
+  assignee: "agent-1",
+  createdAt: "2026-01-01T00:00:00Z",
+  updatedAt: "2026-01-01T00:00:00Z",
+};
+
+const MOCK_AGENT = {
+  id: "agent-1",
+  name: "Test Agent",
+  status: "idle",
+  executor: "codex",
+  uptime: 3600,
+};
+
+const MOCK_SESSION = {
+  id: "session-test-001",
+  title: "E2E test session",
+  type: "task",
+  status: "completed",
+  turnCount: 5,
+  createdAt: "2026-01-01T00:00:00Z",
+  lastActive: "2026-01-01T01:00:00Z",
+};
+
+const MOCK_WORKFLOW_RUN = {
+  id: "run-001",
+  workflowId: "wf-test-001",
+  status: "completed",
+  startedAt: "2026-01-01T00:00:00Z",
+  completedAt: "2026-01-01T00:05:00Z",
+  trigger: { type: "manual" },
+  nodeResults: {},
+};
+
+const MOCK_NODE_TYPES = [
+  { type: "trigger", label: "Trigger", category: "control", inputs: [], outputs: [{ id: "out", label: "Output" }] },
+  { type: "action", label: "Action", category: "execution", inputs: [{ id: "in", label: "Input" }], outputs: [{ id: "out", label: "Output" }] },
+  { type: "condition", label: "Condition", category: "control", inputs: [{ id: "in", label: "Input" }], outputs: [{ id: "true", label: "True" }, { id: "false", label: "False" }] },
+];
+
 /** Mock API responses so the UI doesn't error out */
 const MOCK_API = {
+  // Core
   "/api/health": { status: "ok", version: "0.0.0-test", uptime: 99 },
-  "/api/agents": [],
-  "/api/sessions": [],
-  "/api/tasks": [],
-  "/api/logs": { lines: [] },
-  "/api/config": { projectName: "test-project" },
-  "/api/telemetry": { agents: [], sessions: [] },
-  "/api/workflows": [],
-  "/api/infra": { containers: [], services: [] },
-  "/api/library": { tools: [], skills: [] },
+  "/api/status": { status: "ok", version: "0.0.0-test", uptime: 99, primaryAgent: "codex", mode: "virtengine" },
+  "/api/config": { projectName: "test-project", mode: "virtengine", kanbanBackend: "internal" },
+  "/api/settings": { VOICE_ENABLED: false, VOICE_TRANSCRIPTION_ENABLED: true, PROJECT_NAME: "test-project" },
   "/api/command": { ok: true },
   "/api/voice/config": { enabled: false },
-  "/api/dashboard": { summary: {}, agents: [], recentTasks: [] },
+
+  // Dashboard
+  "/api/dashboard": { summary: { tasksCompleted: 5, tasksInProgress: 2 }, agents: [MOCK_AGENT], recentTasks: [MOCK_TASK] },
+  "/api/health-stats": { runs: [], successRate: 1.0, avgDuration: 120 },
+  "/api/recent-commits": [],
+  "/api/project-summary": { name: "test-project", totalTasks: 10, completedTasks: 5, agents: 1 },
+  "/api/retry-queue": [],
+  "/api/executor": { primary: "codex", available: ["codex", "copilot"], running: 1 },
+
+  // Tasks
+  "/api/tasks": { tasks: [MOCK_TASK], total: 1, page: 0, pageSize: 25 },
+  "/api/tasks/sprints": [],
+  "/api/tasks/dag": { nodes: [], edges: [] },
+  "/api/tasks/dag/sprints": [],
+  "/api/tasks/dag/index": { nodes: [], edges: [] },
+  "/api/tasks/dag/global": { nodes: [], edges: [] },
+  "/api/tasks/dag/epics": { nodes: [], edges: [] },
+  "/api/tasks/graph": { nodes: [], edges: [] },
+  "/api/tasks/graph/global": { nodes: [], edges: [] },
+  "/api/tasks/dependencies": [],
+  "/api/tasks/epic-dependencies": [],
+  "/api/tasks/epics/dependencies": [],
+  "/api/tasks/dag-of-dags": { nodes: [], edges: [] },
+
+  // Workflows
+  "/api/workflows": [MOCK_WORKFLOW],
+  "/api/workflows/templates": [{ id: "tpl-1", name: "Health Check", description: "Basic health check", nodes: [], edges: [] }],
+  "/api/workflows/node-types": MOCK_NODE_TYPES,
+  "/api/workflows/runs": { runs: [MOCK_WORKFLOW_RUN], total: 1 },
+
+  // Agents / Sessions
+  "/api/agents": [MOCK_AGENT],
+  "/api/sessions": { sessions: [MOCK_SESSION], total: 1, page: 1, limit: 25 },
+
+  // Infrastructure
+  "/api/infra": { containers: [], services: [], health: "ok" },
+  "/api/worktrees": [],
+  "/api/shared-workspaces": [],
+  "/api/presence": [],
+  "/api/workspaces": [],
+  "/api/workspaces/active/repos": [],
+
+  // Logs
+  "/api/logs": { lines: ["[2026-01-01 00:00:00] System started", "[2026-01-01 00:00:01] Ready"] },
+  "/api/git/branches": [],
+  "/api/git/diff": { diff: "" },
+  "/api/agent-logs": [],
+  "/api/agent-logs/tail": { lines: [] },
+
+  // Library
+  "/api/library": { entries: [{ id: "lib-1", type: "skill", name: "Test Skill", description: "A test skill" }], total: 1 },
+
+  // Manual flows
+  "/api/manual-flows/templates": [],
+  "/api/manual-flows/runs": [],
+
+  // Telemetry
+  "/api/telemetry": { agents: [], sessions: [] },
+  "/api/telemetry/summary": { totalRuns: 10, successRate: 0.9, avgDuration: 120 },
+  "/api/telemetry/errors": [],
+  "/api/telemetry/executors": [],
+  "/api/telemetry/alerts": [],
+  "/api/telemetry/shredding": { stats: {} },
+  "/api/analytics/usage": { days: 30, dataPoints: [] },
+
+  // Benchmarks
+  "/api/benchmarks": { results: [], providers: [] },
 };
 
 const server = createServer(async (req, res) => {
@@ -121,7 +318,25 @@ const server = createServer(async (req, res) => {
   // Mock API
   if (pathname.startsWith("/api/")) {
     const key = pathname.split("?")[0];
-    const data = MOCK_API[key] ?? { ok: true };
+    let data = MOCK_API[key];
+
+    // Dynamic route matching for parameterized endpoints
+    if (data === undefined) {
+      if (/^\/api\/workflows\/runs\/[^/]+$/.test(key)) {
+        data = MOCK_WORKFLOW_RUN;
+      } else if (/^\/api\/workflows\/[^/]+\/runs$/.test(key)) {
+        data = { runs: [MOCK_WORKFLOW_RUN], total: 1 };
+      } else if (/^\/api\/workflows\/[^/]+$/.test(key)) {
+        data = MOCK_WORKFLOW;
+      } else if (/^\/api\/tasks\/[^/]+$/.test(key)) {
+        data = MOCK_TASK;
+      } else if (/^\/api\/sessions\/[^/]+$/.test(key)) {
+        data = MOCK_SESSION;
+      } else {
+        data = { ok: true };
+      }
+    }
+
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(data));
     return;
@@ -135,6 +350,11 @@ const server = createServer(async (req, res) => {
       if (served) return;
       // Fall through to static file if proxy fails
     }
+  }
+
+  if (LOCAL_ESM_PATH_RE.test(pathname)) {
+    const served = await serveEsmPassthrough(res, pathname, url.search);
+    if (served) return;
   }
 
   // Static files
@@ -151,21 +371,33 @@ const server = createServer(async (req, res) => {
     res.writeHead(403); res.end("Forbidden"); return;
   }
 
+  let isSpaFallback = false;
   if (!existsSync(filePath)) {
     // SPA fallback
     const looksLikeFile = /\.[a-z0-9]+$/i.test(pathname);
     if (!looksLikeFile) {
       filePath = resolve(uiRoot, "index.html");
+      isSpaFallback = true;
     } else {
       res.writeHead(404); res.end("Not Found"); return;
     }
   }
 
   try {
-    const data = await readFile(filePath);
+    let data = await readFile(filePath);
     const ext = extname(filePath).toLowerCase();
+    const contentType = MIME[ext] || "application/octet-stream";
+
+    // For HTML files, strip third-party embeds that are unrelated to UI boot
+    // while preserving the real production module loader path.
+    if ((ext === ".html" || isSpaFallback) && filePath.endsWith("index.html")) {
+      let html = data.toString("utf-8");
+      html = transformHtmlForE2E(html);
+      data = Buffer.from(html, "utf-8");
+    }
+
     res.writeHead(200, {
-      "Content-Type": MIME[ext] || "application/octet-stream",
+      "Content-Type": contentType,
       "Cache-Control": "no-store",
     });
     res.end(data);
@@ -174,6 +406,91 @@ const server = createServer(async (req, res) => {
   }
 });
 
+/**
+ * Transform index.html for E2E testing:
+ * 1. Preserve the real production boot path.
+ * 2. Remove unrelated third-party resources that add network flake.
+ */
+function transformHtmlForE2E(html) {
+  // Remove Telegram SDK script tag.
+  html = html.replace(
+    /<script[^>]*telegram\.org[^>]*><\/script>/,
+    "<!-- [e2e] telegram removed -->"
+  );
+
+  // Remove analytics and external font resources.
+  html = html.replace(
+    /<script[^>]*umami\.is[^>]*><\/script>/,
+    "<!-- [e2e] analytics removed -->"
+  );
+  html = html.replace(
+    /<img[^>]*umami\.is[^>]*\/>/,
+    "<!-- [e2e] analytics pixel removed -->"
+  );
+  html = html.replace(
+    /<link[^>]*fonts\.googleapis\.com[^>]*>/g,
+    "<!-- [e2e] google fonts removed -->"
+  );
+  html = html.replace(
+    /<link[^>]*fonts\.gstatic\.com[^>]*>/g,
+    "<!-- [e2e] google fonts preconnect removed -->"
+  );
+
+  return html;
+}
+
+// ── WebSocket stub ──────────────────────────────────────────────────
+// The UI app connects to /ws for live updates. Without a WS handler the
+// connection fails immediately which can cause render issues.
+const wss = new WebSocketServer({ noServer: true });
+let shuttingDown = false;
+
+function shutdownAndExit(exitCode = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  try {
+    wss.clients.forEach((client) => {
+      try {
+        client.terminate();
+      } catch {
+        /* best-effort */
+      }
+    });
+    wss.close();
+  } catch {
+    /* best-effort */
+  }
+  server.close(() => {
+    process.exit(exitCode);
+  });
+  setTimeout(() => {
+    process.exit(exitCode);
+  }, 2000).unref();
+}
+
+server.on("upgrade", (req, socket, head) => {
+  const url = new URL(req.url, `http://localhost:${PORT}`);
+  if (url.pathname === "/ws") {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit("connection", ws, req);
+      // Respond to pings from the UI
+      ws.on("message", (raw) => {
+        try {
+          const msg = JSON.parse(raw.toString());
+          if (msg.type === "ping") {
+            ws.send(JSON.stringify({ type: "pong", ts: msg.ts || Date.now() }));
+          }
+        } catch { /* ignore non-JSON */ }
+      });
+    });
+  } else {
+    socket.destroy();
+  }
+});
+
 server.listen(PORT, () => {
   console.log(`[playwright-ui-server] Serving UI at http://localhost:${PORT}`);
 });
+
+process.on("SIGINT", () => shutdownAndExit(0));
+process.on("SIGTERM", () => shutdownAndExit(0));

@@ -1,16 +1,20 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Configuration — Bosun Docs</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+    rel="stylesheet" />
   <link rel="stylesheet" href="../css/main.css" />
   <link rel="stylesheet" href="../css/docs.css" />
   <link rel="icon" type="image/png" href="../favicon.png" />
 </head>
+
 <body>
 
   <div class="docs-sidebar-backdrop"></div>
@@ -34,6 +38,7 @@
         <ul class="sidebar-nav">
           <li><a href="./">Overview</a></li>
           <li><a href="getting-started.html">Quick Start</a></li>
+          <li><a href="installation.html">Installation &amp; Deployment</a></li>
           <li><a href="configuration.html" class="active">Configuration</a></li>
         </ul>
       </div>
@@ -146,15 +151,38 @@
 
       <table>
         <thead>
-          <tr><th>Area</th><th>Current knobs</th></tr>
+          <tr>
+            <th>Area</th>
+            <th>Current knobs</th>
+          </tr>
         </thead>
         <tbody>
-          <tr><td><strong>Primary routing</strong></td><td><code>PRIMARY_AGENT</code>, <code>EXECUTOR_MODE</code>, <code>EXECUTORS</code></td></tr>
-          <tr><td><strong>SDK enable/disable</strong></td><td><code>CODEX_SDK_DISABLED</code>, <code>COPILOT_SDK_DISABLED</code>, <code>CLAUDE_SDK_DISABLED</code>, <code>GEMINI_SDK_DISABLED</code>, <code>OPENCODE_SDK_DISABLED</code></td></tr>
-          <tr><td><strong>Transport</strong></td><td><code>CODEX_TRANSPORT</code>, <code>COPILOT_TRANSPORT</code>, <code>CLAUDE_TRANSPORT</code>, <code>GEMINI_TRANSPORT</code></td></tr>
-          <tr><td><strong>OpenCode</strong></td><td><code>OPENCODE_PORT</code>, <code>OPENCODE_MODEL</code></td></tr>
-          <tr><td><strong>Failover</strong></td><td>JSON <code>failover</code> block or related env-driven routing behavior</td></tr>
-          <tr><td><strong>Complexity routing</strong></td><td><code>complexityRouting</code> in <code>bosun.config.json</code></td></tr>
+          <tr>
+            <td><strong>Primary routing</strong></td>
+            <td><code>PRIMARY_AGENT</code>, <code>EXECUTOR_MODE</code>, <code>EXECUTORS</code></td>
+          </tr>
+          <tr>
+            <td><strong>SDK enable/disable</strong></td>
+            <td><code>CODEX_SDK_DISABLED</code>, <code>COPILOT_SDK_DISABLED</code>, <code>CLAUDE_SDK_DISABLED</code>,
+              <code>GEMINI_SDK_DISABLED</code>, <code>OPENCODE_SDK_DISABLED</code></td>
+          </tr>
+          <tr>
+            <td><strong>Transport</strong></td>
+            <td><code>CODEX_TRANSPORT</code>, <code>COPILOT_TRANSPORT</code>, <code>CLAUDE_TRANSPORT</code>,
+              <code>GEMINI_TRANSPORT</code></td>
+          </tr>
+          <tr>
+            <td><strong>OpenCode</strong></td>
+            <td><code>OPENCODE_PORT</code>, <code>OPENCODE_MODEL</code></td>
+          </tr>
+          <tr>
+            <td><strong>Failover</strong></td>
+            <td>JSON <code>failover</code> block or related env-driven routing behavior</td>
+          </tr>
+          <tr>
+            <td><strong>Complexity routing</strong></td>
+            <td><code>complexityRouting</code> in <code>bosun.config.json</code></td>
+          </tr>
         </tbody>
       </table>
 
@@ -168,14 +196,36 @@ EXECUTOR_MODE=internal</code></pre>
 
       <table>
         <thead>
-          <tr><th>Feature</th><th>Key settings</th></tr>
+          <tr>
+            <th>Feature</th>
+            <th>Key settings</th>
+          </tr>
         </thead>
         <tbody>
-          <tr><td><strong>Bot</strong></td><td><code>TELEGRAM_BOT_TOKEN</code>, <code>TELEGRAM_CHAT_ID</code>, polling and batching settings</td></tr>
-          <tr><td><strong>Mini App</strong></td><td><code>TELEGRAM_MINIAPP_ENABLED</code>, <code>TELEGRAM_UI_PORT</code>, <code>TELEGRAM_UI_BASE_URL</code></td></tr>
-          <tr><td><strong>Cloudflare</strong></td><td><code>CLOUDFLARE_TUNNEL_NAME</code>, <code>CLOUDFLARE_TUNNEL_CREDENTIALS</code>, <code>CLOUDFLARE_BASE_DOMAIN</code>, <code>CLOUDFLARE_ZONE_ID</code>, <code>CLOUDFLARE_API_TOKEN</code></td></tr>
-          <tr><td><strong>Fallback auth</strong></td><td><code>TELEGRAM_UI_FALLBACK_AUTH_ENABLED</code> plus related rate-limit and lockout knobs</td></tr>
-          <tr><td><strong>Sentinel</strong></td><td><code>BOSUN_SENTINEL_AUTO_START</code>, <code>SENTINEL_AUTO_RESTART_MONITOR</code>, repair-agent settings</td></tr>
+          <tr>
+            <td><strong>Bot</strong></td>
+            <td><code>TELEGRAM_BOT_TOKEN</code>, <code>TELEGRAM_CHAT_ID</code>, polling and batching settings</td>
+          </tr>
+          <tr>
+            <td><strong>Mini App</strong></td>
+            <td><code>TELEGRAM_MINIAPP_ENABLED</code>, <code>TELEGRAM_UI_PORT</code>, <code>TELEGRAM_UI_BASE_URL</code>
+            </td>
+          </tr>
+          <tr>
+            <td><strong>Cloudflare</strong></td>
+            <td><code>CLOUDFLARE_TUNNEL_NAME</code>, <code>CLOUDFLARE_TUNNEL_CREDENTIALS</code>,
+              <code>CLOUDFLARE_BASE_DOMAIN</code>, <code>CLOUDFLARE_ZONE_ID</code>, <code>CLOUDFLARE_API_TOKEN</code>
+            </td>
+          </tr>
+          <tr>
+            <td><strong>Fallback auth</strong></td>
+            <td><code>TELEGRAM_UI_FALLBACK_AUTH_ENABLED</code> plus related rate-limit and lockout knobs</td>
+          </tr>
+          <tr>
+            <td><strong>Sentinel</strong></td>
+            <td><code>BOSUN_SENTINEL_AUTO_START</code>, <code>SENTINEL_AUTO_RESTART_MONITOR</code>, repair-agent
+              settings</td>
+          </tr>
         </tbody>
       </table>
 
@@ -187,17 +237,35 @@ TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK=false</code></pre>
 
       <h2 id="github">GitHub, Jira, and task backends</h2>
 
-      <p>Bosun can run against multiple task-board backends. The current default in <code>.env.example</code> is internal.</p>
+      <p>Bosun can run against multiple task-board backends. The current default in <code>.env.example</code> is
+        internal.</p>
 
       <table>
         <thead>
-          <tr><th>Backend</th><th>Key settings</th></tr>
+          <tr>
+            <th>Backend</th>
+            <th>Key settings</th>
+          </tr>
         </thead>
         <tbody>
-          <tr><td><strong>Internal</strong></td><td><code>KANBAN_BACKEND=internal</code></td></tr>
-          <tr><td><strong>GitHub Issues / Projects</strong></td><td><code>KANBAN_BACKEND=github</code>, <code>GITHUB_REPOSITORY</code>, <code>GITHUB_PROJECT_NUMBER</code>, OAuth/App settings</td></tr>
-          <tr><td><strong>Jira</strong></td><td><code>KANBAN_BACKEND=jira</code>, <code>JIRA_BASE_URL</code>, <code>JIRA_EMAIL</code>, <code>JIRA_API_TOKEN</code></td></tr>
-          <tr><td><strong>Vibe-Kanban runtime</strong></td><td><code>EXECUTOR_MODE=vk</code> or related hybrid/runtime settings</td></tr>
+          <tr>
+            <td><strong>Internal</strong></td>
+            <td><code>KANBAN_BACKEND=internal</code></td>
+          </tr>
+          <tr>
+            <td><strong>GitHub Issues / Projects</strong></td>
+            <td><code>KANBAN_BACKEND=github</code>, <code>GITHUB_REPOSITORY</code>, <code>GITHUB_PROJECT_NUMBER</code>,
+              OAuth/App settings</td>
+          </tr>
+          <tr>
+            <td><strong>Jira</strong></td>
+            <td><code>KANBAN_BACKEND=jira</code>, <code>JIRA_BASE_URL</code>, <code>JIRA_EMAIL</code>,
+              <code>JIRA_API_TOKEN</code></td>
+          </tr>
+          <tr>
+            <td><strong>Vibe-Kanban runtime</strong></td>
+            <td><code>EXECUTOR_MODE=vk</code> or related hybrid/runtime settings</td>
+          </tr>
         </tbody>
       </table>
 
@@ -216,13 +284,29 @@ GITHUB_PROJECT_NUMBER=3</code></pre>
 
       <table>
         <thead>
-          <tr><th>Surface</th><th>Key settings</th></tr>
+          <tr>
+            <th>Surface</th>
+            <th>Key settings</th>
+          </tr>
         </thead>
         <tbody>
-          <tr><td><strong>Containers</strong></td><td><code>CONTAINER_ENABLED</code>, <code>CONTAINER_RUNTIME</code>, <code>CONTAINER_IMAGE</code></td></tr>
-          <tr><td><strong>Voice</strong></td><td><code>VOICE_ENABLED</code>, <code>VOICE_PROVIDER</code>, <code>VOICE_MODEL</code>, <code>VOICE_DELEGATE_EXECUTOR</code></td></tr>
-          <tr><td><strong>Desktop</strong></td><td><code>BOSUN_DESKTOP_AUTO_START_DAEMON</code>, <code>BOSUN_DESKTOP_AUTO_UPDATE</code></td></tr>
-          <tr><td><strong>WhatsApp</strong></td><td>Auth is CLI-driven, with runtime delivery controlled by the Bosun channel settings</td></tr>
+          <tr>
+            <td><strong>Containers</strong></td>
+            <td><code>CONTAINER_ENABLED</code>, <code>CONTAINER_RUNTIME</code>, <code>CONTAINER_IMAGE</code></td>
+          </tr>
+          <tr>
+            <td><strong>Voice</strong></td>
+            <td><code>VOICE_ENABLED</code>, <code>VOICE_PROVIDER</code>, <code>VOICE_MODEL</code>,
+              <code>VOICE_DELEGATE_EXECUTOR</code></td>
+          </tr>
+          <tr>
+            <td><strong>Desktop</strong></td>
+            <td><code>BOSUN_DESKTOP_AUTO_START_DAEMON</code>, <code>BOSUN_DESKTOP_AUTO_UPDATE</code></td>
+          </tr>
+          <tr>
+            <td><strong>WhatsApp</strong></td>
+            <td>Auth is CLI-driven, with runtime delivery controlled by the Bosun channel settings</td>
+          </tr>
         </tbody>
       </table>
 
@@ -247,7 +331,8 @@ GITHUB_PROJECT_NUMBER=3</code></pre>
       <div class="callout callout--info">
         <p>
           This page summarizes the active config model. For the full variable list, always check
-          <code>.env.example</code> in the repo because it is more complete and changes more often than this summary page.
+          <code>.env.example</code> in the repo because it is more complete and changes more often than this summary
+          page.
         </p>
       </div>
 
@@ -268,4 +353,5 @@ GITHUB_PROJECT_NUMBER=3</code></pre>
   <script src="../js/analytics.js"></script>
   <script src="../js/main.js"></script>
 </body>
+
 </html>

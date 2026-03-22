@@ -396,3 +396,86 @@ describe("cli detectExistingMonitorLockOwner", () => {
   });
 });
 
+
+describe("cli daemon restart-storm guard", () => {
+  it("pauses auto-restart after threshold when persistent misconfiguration signals exist", () => {
+    const shouldPauseDaemonRestartStorm = compileFunction(
+      cliSource,
+      "shouldPauseDaemonRestartStorm",
+      {
+        IS_DAEMON_CHILD: true,
+        DAEMON_MISCONFIG_GUARD_ENABLED: true,
+        DAEMON_MISCONFIG_GUARD_MIN_RESTARTS: 3,
+        detectDaemonRestartStormSignals: () => ({
+          hasSignal: true,
+          reasons: ["missing_api_key", "duplicate_runtime"],
+        }),
+      },
+    );
+
+    expect(shouldPauseDaemonRestartStorm({ restartCount: 2 })).toEqual({
+      pause: false,
+      reasons: [],
+    });
+    expect(shouldPauseDaemonRestartStorm({ restartCount: 3 })).toEqual({
+      pause: true,
+      reasons: ["missing_api_key", "duplicate_runtime"],
+    });
+  });
+
+  it("does not pause when guard is disabled or not daemon-child", () => {
+    const detectStub = () => ({ hasSignal: true, reasons: ["missing_api_key"] });
+    const disabledGuard = compileFunction(cliSource, "shouldPauseDaemonRestartStorm", {
+      IS_DAEMON_CHILD: true,
+      DAEMON_MISCONFIG_GUARD_ENABLED: false,
+      DAEMON_MISCONFIG_GUARD_MIN_RESTARTS: 1,
+      detectDaemonRestartStormSignals: detectStub,
+    });
+    const nonDaemon = compileFunction(cliSource, "shouldPauseDaemonRestartStorm", {
+      IS_DAEMON_CHILD: false,
+      DAEMON_MISCONFIG_GUARD_ENABLED: true,
+      DAEMON_MISCONFIG_GUARD_MIN_RESTARTS: 1,
+      detectDaemonRestartStormSignals: detectStub,
+    });
+
+    expect(disabledGuard({ restartCount: 10 })).toEqual({ pause: false, reasons: [] });
+    expect(nonDaemon({ restartCount: 10 })).toEqual({ pause: false, reasons: [] });
+  });
+
+  it("detects known conflict and misconfiguration markers from recent monitor logs", () => {
+    const detectDaemonRestartStormSignals = compileFunction(
+      cliSource,
+      "detectDaemonRestartStormSignals",
+      {
+        __dirname: "/repo",
+        resolve: (...parts) => parts.join("/"),
+        DAEMON_MISCONFIG_LOG_SCAN_LINES: 200,
+        tailLinesFromFile: (filePath) => {
+          if (filePath.endsWith("monitor-error.log")) {
+            return [
+              "[agent-pool] primary SDK \"codex\" missing prerequisites: no API key",
+              "[task-claims] Shared state heartbeat FATAL for abc: owner_mismatch",
+            ];
+          }
+          if (filePath.endsWith("monitor.log")) {
+            return [
+              "[monitor] another bosun instance holds the lock (PID 1234) — duplicate start ignored",
+              "workspace sync sample: There is no tracking information for the current branch",
+            ];
+          }
+          return [];
+        },
+      },
+    );
+
+    expect(detectDaemonRestartStormSignals()).toEqual({
+      hasSignal: true,
+      reasons: [
+        "missing_api_key",
+        "duplicate_runtime",
+        "shared_state_owner_mismatch",
+        "workspace_git_tracking_missing",
+      ],
+    });
+  });
+});

@@ -51,8 +51,10 @@ const CACHE_TTL = {
   threads: 5000, logs: 15000, worktrees: 30000, workspaces: 30000,
   presence: 30000, config: 60000, projects: 60000, git: 20000,
   infra: 30000,
+  benchmarks: 8000,
   telemetry: 15000,
   analytics: 30000,
+  "retry-queue": 5000,
 };
 
 function _cacheKey(url) { return url; }
@@ -81,6 +83,18 @@ export function sanitizeTaskText(value) {
   return text.replace(/\s{2,}/g, " ").trim();
 }
 
+export function isPlaceholderTaskDescription(value) {
+  const text = sanitizeTaskText(value || "");
+  if (!text) return false;
+  const normalized = text.toLowerCase();
+  return (
+    TASK_TEMPLATE_PLACEHOLDER_RE.test(text) ||
+    normalized === "internal server error" ||
+    normalized === "{\"ok\":false,\"error\":\"internal server error\"}" ||
+    normalized === "{\"error\":\"internal server error\"}"
+  );
+}
+
 function synthesizeTaskDescription(task) {
   const title = sanitizeTaskText(task?.title || "");
   if (!title) {
@@ -89,21 +103,49 @@ function synthesizeTaskDescription(task) {
   return `Implementation notes for "${title}". Include scope, key files, risks, and acceptance checks before dispatch.`;
 }
 
+function normalizeTaskDiagnosticsForUi(diagnostics) {
+  if (!diagnostics || typeof diagnostics !== "object") return diagnostics;
+  const stableCause = diagnostics.stableCause && typeof diagnostics.stableCause === "object"
+    ? {
+        ...diagnostics.stableCause,
+        code: sanitizeTaskText(diagnostics.stableCause.code || ""),
+        title: sanitizeTaskText(diagnostics.stableCause.title || ""),
+        summary: sanitizeTaskText(diagnostics.stableCause.summary || ""),
+      }
+    : diagnostics.stableCause;
+  return {
+    ...diagnostics,
+    stableCause,
+    lastError: sanitizeTaskText(diagnostics.lastError || "") || null,
+    errorPattern: sanitizeTaskText(diagnostics.errorPattern || "") || null,
+    blockedReason: sanitizeTaskText(diagnostics.blockedReason || "") || null,
+  };
+}
+
 function normalizeTaskForUi(task) {
   if (!task || typeof task !== "object") return task;
   const title = sanitizeTaskText(task.title || "");
-  const description = sanitizeTaskText(task.description || "");
+  const rawDescription = sanitizeTaskText(task.description || "");
+  const description = isPlaceholderTaskDescription(rawDescription) ? "" : rawDescription;
+  const diagnostics = normalizeTaskDiagnosticsForUi(task.diagnostics);
   const meta = task.meta && typeof task.meta === "object"
     ? {
         ...task.meta,
         title: task.meta.title != null ? sanitizeTaskText(task.meta.title) : task.meta.title,
-        description: task.meta.description != null ? sanitizeTaskText(task.meta.description) : task.meta.description,
+        description:
+          task.meta.description != null
+            ? (isPlaceholderTaskDescription(task.meta.description)
+              ? ""
+              : sanitizeTaskText(task.meta.description))
+            : task.meta.description,
+        diagnostics: normalizeTaskDiagnosticsForUi(task.meta.diagnostics),
       }
     : task.meta;
   return {
     ...task,
     title,
     description: description || synthesizeTaskDescription({ ...task, title }),
+    diagnostics,
     meta,
   };
 }
@@ -151,21 +193,42 @@ export const tasksSearch = signal("");
 export const tasksSort = signal("updated");
 export const tasksTotalPages = signal(1);
 export const tasksTotal = signal(0);
-export const tasksStatusCounts = signal({ draft: 0, backlog: 0, inProgress: 0, inReview: 0, done: 0 });
+export const tasksStatusCounts = signal({ draft: 0, backlog: 0, blocked: 0, inProgress: 0, inReview: 0, done: 0 });
 
 // ── Retry Queue
 export const retryQueueData = signal({ count: 0, items: [] });
 export const retryQueueLoaded = signal(false);
 
+function normalizeRetryQueuePayload(payload) {
+  return {
+    count: Number(payload?.count || 0),
+    items: Array.isArray(payload?.items) ? payload.items : [],
+    stats: payload?.stats && typeof payload.stats === "object"
+      ? {
+          totalRetriesToday: Number(payload.stats.totalRetriesToday || 0),
+          peakRetryDepth: Number(payload.stats.peakRetryDepth || 0),
+          exhaustedTaskIds: Array.isArray(payload.stats.exhaustedTaskIds) ? payload.stats.exhaustedTaskIds : [],
+        }
+      : {
+          totalRetriesToday: 0,
+          peakRetryDepth: 0,
+          exhaustedTaskIds: [],
+        },
+  };
+}
+
 export async function loadRetryQueue() {
-  const res = await apiFetch("/api/retry-queue", { _silent: true }).catch(() => ({ ok: false, items: [], count: 0 }));
-  if (res?.ok) {
-    retryQueueData.value = { count: res.count || 0, items: res.items || [] };
-  }
+  const url = "/api/retry-queue";
+  if (_cacheFresh(url, "retry-queue")) return;
+  const res = await apiFetch(url, { _silent: true }).catch(() => ({ ok: false, items: [], count: 0, stats: null }));
+  retryQueueData.value = normalizeRetryQueuePayload(res);
+  _cacheSet(url, retryQueueData.value);
+  _markFresh("retry-queue");
   retryQueueLoaded.value = true;
 }
 
 const TASK_IGNORE_LABEL = "codex:ignore";
+const TASK_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
 const TASK_TEXT_REPLACEMENTS = [
   [/\u00D4\u00C7\u00F6/g, "-"],
   [/\u00D4\u00C7\u00A3/g, "\""],
@@ -261,6 +324,10 @@ export const usageAnalytics = signal(null);
 // ── Config (routing, regions, etc.)
 export const configData = signal(null);
 
+// ── Benchmarks
+export const benchmarksData = signal(null);
+export const benchmarksLoaded = signal(false);
+
 // ── Toasts
 export const toasts = signal([]);
 
@@ -348,61 +415,18 @@ export function shouldShowToast(toast) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
- *  EXECUTOR DEFAULTS — apply stored settings on first load
+ *  LEGACY STORED DEFAULTS MIGRATION HOOK
  * ═══════════════════════════════════════════════════════════════ */
 
 let _defaultsApplied = false;
 
 /**
- * Read stored executor defaults from CloudStorage and POST them to
- * the server if they differ from the current config.
- * Only runs once per app lifecycle (not on tab switches).
+ * Reserved for one-time client preference migrations.
+ * Executor runtime defaults now live only in Server Config.
  */
 export async function applyStoredDefaults() {
   if (_defaultsApplied) return;
   _defaultsApplied = true;
-
-  const [maxP, sdk, region] = await Promise.all([
-    _cloudGet("defaultMaxParallel"),
-    _cloudGet("defaultSdk"),
-    _cloudGet("defaultRegion"),
-  ]);
-
-  const promises = [];
-
-  if (maxP != null) {
-    const current = executorData.value;
-    const currentMax =
-      current?.data?.maxParallel ??
-      current?.maxParallel ??
-      null;
-    const isPaused = Boolean(current?.paused || current?.data?.paused);
-    if (!isPaused && currentMax !== maxP) {
-      promises.push(
-        apiFetch("/api/executor/maxparallel", {
-          method: "POST",
-          body: JSON.stringify({ maxParallel: maxP }),
-          _silent: true,
-        }).catch(() => {}),
-      );
-    }
-  }
-
-  const configUpdates = {};
-  if (sdk && sdk !== "auto") configUpdates.sdk = sdk;
-  if (region && region !== "auto") configUpdates.region = region;
-
-  if (Object.keys(configUpdates).length) {
-    promises.push(
-      apiFetch("/api/config/update", {
-        method: "POST",
-        body: JSON.stringify(configUpdates),
-        _silent: true,
-      }).catch(() => {}),
-    );
-  }
-
-  if (promises.length) await Promise.all(promises);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -554,11 +578,16 @@ export async function loadTasks(options = {}) {
   if (tasksSort.value) params.set("sort", tasksSort.value);
 
   const res = await apiFetch(`/api/tasks?${params}`, { _silent: true }).catch(
-    () => ({
-      data: [],
-      total: 0,
-      totalPages: 1,
-    }),
+    (err) => {
+      console.warn("[state] loadTasks fetch failed, keeping previous data:", err?.message || err);
+      return {
+        data: tasksData.value || [],
+        total: tasksTotal.value || 0,
+        totalPages: tasksTotalPages.value || 1,
+        statusCounts: tasksStatusCounts.value || {},
+        _fetchFailed: true,
+      };
+    },
   );
   const nextTasks = Array.isArray(res.data)
     ? res.data.map(normalizeTaskForUi)
@@ -573,6 +602,7 @@ export async function loadTasks(options = {}) {
   tasksStatusCounts.value = {
     draft: Number(res?.statusCounts?.draft || 0),
     backlog: Number(res?.statusCounts?.backlog || 0),
+    blocked: Number(res?.statusCounts?.blocked || 0),
     inProgress: Number(res?.statusCounts?.inProgress || 0),
     inReview: Number(res?.statusCounts?.inReview || 0),
     done: Number(res?.statusCounts?.done || 0),
@@ -662,9 +692,10 @@ export async function loadInfra() {
 }
 
 /** Load system logs → logsData */
-export async function loadLogs() {
+export async function loadLogs(options = {}) {
   const url = `/api/logs?lines=${logsLines.value}`;
-  if (_cacheFresh(url, "logs")) return;
+  const force = Boolean(options?.force);
+  if (!force && _cacheFresh(url, "logs")) return;
   const res = await apiFetch(url, { _silent: true }).catch(() => ({ data: null }));
   logsData.value = res.data ?? res ?? null;
   _cacheSet(url, logsData.value);
@@ -704,7 +735,7 @@ export async function loadAgentLogFileList() {
 }
 
 /** Load tail of the currently selected agent log → agentLogTail */
-export async function loadAgentLogTailData() {
+export async function loadAgentLogTailData(options = {}) {
   if (!agentLogFile.value) {
     agentLogTail.value = null;
     return;
@@ -713,10 +744,20 @@ export async function loadAgentLogTailData() {
     file: agentLogFile.value,
     lines: String(agentLogLines.value),
   });
-  const res = await apiFetch(`/api/agent-logs/tail?${params}`, {
+  const url = `/api/agent-logs/tail?${params}`;
+  if (!options?.force && _cacheFresh(url, "logs")) {
+    const cached = _cacheGet(url);
+    if (cached) {
+      agentLogTail.value = cached.data;
+      return;
+    }
+  }
+  const res = await apiFetch(url, {
     _silent: true,
   }).catch(() => ({ data: null }));
   agentLogTail.value = res.data ?? res ?? null;
+  _cacheSet(url, agentLogTail.value);
+  _markFresh("logs");
 }
 
 /**
@@ -859,14 +900,29 @@ export async function loadUsageAnalytics(days = 30) {
   }
 }
 
+export async function loadBenchmarks(providerId = "") {
+  const params = new URLSearchParams();
+  if (providerId) params.set("provider", providerId);
+  const url = params.size > 0 ? `/api/benchmarks?${params}` : "/api/benchmarks";
+  const cached = _cacheGet(url);
+  if (_cacheFresh(url, "benchmarks")) return;
+  if (cached) benchmarksData.value = cached.data;
+  const res = await apiFetch(url, { _silent: true }).catch(() => ({ ok: false }));
+  benchmarksData.value = res?.data ?? null;
+  benchmarksLoaded.value = true;
+  _cacheSet(url, benchmarksData.value);
+  _markFresh("benchmarks");
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  TAB REFRESH — map tab names to their required loaders
  * ═══════════════════════════════════════════════════════════════ */
 
 const TAB_LOADERS = {
   dashboard: () =>
-    Promise.all([loadStatus(), loadExecutor(), loadProjectSummary()]),
+    Promise.all([loadStatus(), loadExecutor(), loadProjectSummary(), loadRetryQueue()]),
   tasks: () => loadTasks(),
+  benchmarks: () => loadBenchmarks(),
   agents: () => Promise.all([loadAgents(), loadExecutor(), import("../components/session-list.js").then((m) => m.loadSessions()).catch(() => {})]),
   infra: () =>
     Promise.all([
@@ -885,6 +941,7 @@ const TAB_LOADERS = {
       loadTelemetryExecutors(),
       loadTelemetryAlerts(),
       loadUsageAnalytics(30),
+      loadRetryQueue(),
     ]),
   settings: () => Promise.all([loadStatus(), loadConfig()]),
 };
@@ -970,19 +1027,28 @@ export function scheduleRefresh(ms = 5000) {
 /* ─── WebSocket invalidation listener ─── */
 
 const WS_CHANNEL_MAP = {
-  dashboard: ["overview", "executor", "tasks", "agents"],
+  dashboard: ["overview", "executor", "tasks", "agents", "retry-queue"],
   tasks: ["tasks"],
+  benchmarks: ["benchmarks", "tasks", "executor", "workflows", "workspaces", "library"],
   agents: ["agents", "executor"],
   infra: ["worktrees", "workspaces", "presence"],
   control: ["executor", "overview"],
   logs: ["*"],
-  telemetry: ["*"],
+  marketplace: ["library"],
+  telemetry: ["*", "retry-queue"],
   settings: ["overview"],
 };
 
 /** Start listening for WS invalidation messages and auto-refreshing. */
 export function initWsInvalidationListener() {
   onWsMessage((msg) => {
+    if (msg?.type === "retry-queue-updated") {
+      retryQueueData.value = normalizeRetryQueuePayload(msg?.payload);
+      _cacheSet("/api/retry-queue", retryQueueData.value);
+      _markFresh("retry-queue");
+      retryQueueLoaded.value = true;
+      return;
+    }
     if (msg?.type !== "invalidate") return;
     const channels = Array.isArray(msg.channels) ? msg.channels : [];
     // Clear cache for invalidated channels so next fetch is fresh

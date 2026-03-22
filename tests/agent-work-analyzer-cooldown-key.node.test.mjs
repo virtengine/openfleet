@@ -27,7 +27,8 @@ test("emitAlert uses cooldown key builder and per-alert cooldown window", () => 
 });
 
 test("cooldowns hydrate from alert log on startup to survive restarts", () => {
-  assert.match(src, /const ALERT_COOLDOWN_REPLAY_MAX_BYTES = Math\.max\(/);
+  assert.match(src, /function normalizeReplayMaxBytes\(value\)/);
+  assert.match(src, /const ALERT_COOLDOWN_REPLAY_MAX_BYTES = normalizeReplayMaxBytes\(/);
   assert.match(src, /AGENT_ALERT_COOLDOWN_REPLAY_MAX_BYTES/);
   assert.match(src, /async function hydrateAlertCooldownsFromLog\(\)/);
   assert.match(src, /const maxCooldownMs = Math\.max\(/);
