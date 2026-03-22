@@ -137,6 +137,23 @@ function normaliseStatus(raw) {
   return STATUS_MAP[key] || "todo";
 }
 
+function resolveCreateTaskInput(projectIdOrTaskData, taskDataArg = {}) {
+  const payloadOnlyCall =
+    projectIdOrTaskData &&
+    typeof projectIdOrTaskData === "object" &&
+    !Array.isArray(projectIdOrTaskData);
+  const rawTaskData = payloadOnlyCall ? projectIdOrTaskData : (taskDataArg || {});
+  const projectId = payloadOnlyCall
+    ? rawTaskData?.projectId ?? rawTaskData?.project_id
+    : projectIdOrTaskData;
+  const {
+    projectId: _ignoredProjectId,
+    project_id: _ignoredProjectIdSnake,
+    ...taskData
+  } = rawTaskData || {};
+  return { projectId, taskData };
+}
+
 const STATUS_LABEL_KEYS = new Set([
   "draft",
   "todo",
@@ -1009,21 +1026,7 @@ class InternalAdapter {
   }
 
   async createTask(projectIdOrTaskData, taskDataArg = {}) {
-    function normalizeCreateTaskArgs(projectIdOrTaskDataInner, taskDataArgInner = {}) {
-      const payloadOnlyCall =
-        projectIdOrTaskDataInner &&
-        typeof projectIdOrTaskDataInner === "object" &&
-        !Array.isArray(projectIdOrTaskDataInner);
-      const taskDataNormalized = payloadOnlyCall
-        ? projectIdOrTaskDataInner
-        : (taskDataArgInner || {});
-      const projectIdNormalized = payloadOnlyCall
-        ? taskDataNormalized.projectId
-        : projectIdOrTaskDataInner;
-      return { taskData: taskDataNormalized, projectId: projectIdNormalized };
-    }
-
-    const { taskData, projectId } = normalizeCreateTaskArgs(
+    const { projectId, taskData } = resolveCreateTaskInput(
       projectIdOrTaskData,
       taskDataArg,
     );
@@ -1569,7 +1572,11 @@ class VKAdapter {
     return this._normaliseTask(task);
   }
 
-  async createTask(projectId, taskData) {
+  async createTask(projectIdOrTaskData, taskDataArg = {}) {
+    const { projectId, taskData } = resolveCreateTaskInput(
+      projectIdOrTaskData,
+      taskDataArg,
+    );
     const fetchVk = await this._getFetchVk();
     const tags = normalizeTags(taskData?.tags || taskData?.labels || []);
     const draft = Boolean(taskData?.draft || taskData?.status === "draft");
@@ -3635,7 +3642,8 @@ class GitHubIssuesAdapter {
     return result?.data?.convertProjectV2DraftIssueItemToIssue?.issue || null;
   }
 
-  async createTask(_projectId, taskData) {
+  async createTask(projectIdOrTaskData, taskDataArg = {}) {
+    const { taskData } = resolveCreateTaskInput(projectIdOrTaskData, taskDataArg);
     const normalizedTitle = String(taskData?.title || "").trim();
     if (!normalizedTitle) {
       throw new Error("[kanban] github createTask requires non-empty title");
@@ -5435,7 +5443,11 @@ class JiraAdapter {
     return this.getTask(issueKey);
   }
 
-  async createTask(projectId, taskData = {}) {
+  async createTask(projectIdOrTaskData, taskDataArg = {}) {
+    const { projectId, taskData } = resolveCreateTaskInput(
+      projectIdOrTaskData,
+      taskDataArg,
+    );
     const projectKey = this._normalizeProjectKey(projectId);
     if (!projectKey) {
       throw new Error(
@@ -6101,15 +6113,10 @@ export async function updateTask(taskId, patch) {
 }
 
 export async function createTask(projectIdOrTaskData, taskDataArg = {}) {
-  const payloadOnlyCall =
-    projectIdOrTaskData &&
-    typeof projectIdOrTaskData === "object" &&
-    !Array.isArray(projectIdOrTaskData);
-  const rawTaskData = payloadOnlyCall ? projectIdOrTaskData : (taskDataArg || {});
-  const projectId = payloadOnlyCall ? rawTaskData?.projectId : projectIdOrTaskData;
-  // Strip projectId from the payload we pass to the adapter to avoid sending both
-  // `projectId` and `project_id` in downstream requests.
-  const { projectId: _ignoredProjectId, ...taskData } = rawTaskData || {};
+  const { projectId, taskData } = resolveCreateTaskInput(
+    projectIdOrTaskData,
+    taskDataArg,
+  );
   const result = await getKanbanAdapter().createTask(projectId, taskData);
   emitKanbanEvent("task.created", {
     projectId,
@@ -6191,3 +6198,4 @@ export async function unmarkTaskIgnored(taskId) {
   );
   return false;
 }
+

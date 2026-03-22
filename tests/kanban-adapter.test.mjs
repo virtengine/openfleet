@@ -195,6 +195,33 @@ describe("kanban-adapter github backend", () => {
     expect(issueCreateCall[1]).toContain("alice");
   });
 
+  it("supports payload-only createTask calls for the github adapter", async () => {
+    process.env.GITHUB_DEFAULT_ASSIGNEE = "alice";
+    mockGh("ok");
+    mockGh("https://github.com/acme/widgets/issues/88\n");
+    mockGh(
+      JSON.stringify({
+        number: 88,
+        title: "payload-only github task",
+        body: "desc",
+        state: "open",
+        url: "https://github.com/acme/widgets/issues/88",
+        labels: [],
+        assignees: [],
+      }),
+    );
+    mockGh("[]");
+
+    const adapter = getKanbanAdapter();
+    const task = await adapter.createTask({
+      title: "payload-only github task",
+      description: "desc",
+    });
+
+    expect(task?.id).toBe("88");
+    expect(task?.taskUrl).toBe("https://github.com/acme/widgets/issues/88");
+  });
+
   it("rejects github issue creation when title is empty", async () => {
     const adapter = getKanbanAdapter();
     await expect(
@@ -723,6 +750,47 @@ describe("kanban-adapter vk backend fallback fetch", () => {
       backend: "vk",
     });
   });
+
+  it("supports payload-only createTask calls for the vk adapter", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: {
+        get: (name) =>
+          String(name || "").toLowerCase() === "content-type"
+            ? "application/json"
+            : null,
+      },
+      json: async () => ({
+        data: {
+          id: "vk-task-1",
+          title: "payload-only vk task",
+          description: "desc",
+          status: "todo",
+          project_id: "proj-1",
+        },
+      }),
+    });
+
+    const adapter = getKanbanAdapter();
+    const task = await adapter.createTask({
+      projectId: "proj-1",
+      title: "payload-only vk task",
+      description: "desc",
+      status: "todo",
+    });
+
+    expect(task).toMatchObject({
+      id: "vk-task-1",
+      title: "payload-only vk task",
+      description: "desc",
+      status: "todo",
+      projectId: "proj-1",
+      backend: "vk",
+    });
+    const request = globalThis.fetch.mock.calls.at(-1);
+    expect(request?.[1]?.body?.project_id).toBe("proj-1");
+    expect(request?.[1]?.body?.projectId).toBeUndefined();
+  });
 });
 
 describe("kanban-adapter jira backend", () => {
@@ -977,6 +1045,50 @@ describe("kanban-adapter jira backend", () => {
     expect(ignored).toBe(true);
   });
 
+  it("supports payload-only createTask calls for the jira adapter", async () => {
+    fetchWithFallbackMock.mockImplementation((url, options = {}) => {
+      const method = String(options.method || "GET").toUpperCase();
+      const text = String(url);
+      if (method === "POST" && text.endsWith("/rest/api/3/issue")) {
+        return Promise.resolve(jsonResponse({ key: "PROJ-88" }));
+      }
+      if (method === "GET" && text.includes("/issue/PROJ-88?fields=")) {
+        return Promise.resolve(
+          jsonResponse({
+            key: "PROJ-88",
+            fields: {
+              summary: "Payload-only Jira task",
+              description: "Body",
+              status: { name: "To Do", statusCategory: { key: "new" } },
+              labels: ["bosun"],
+              project: { key: "PROJ" },
+            },
+          }),
+        );
+      }
+      if (method === "GET" && text.includes("/issue/PROJ-88/comment")) {
+        return Promise.resolve(jsonResponse({ comments: [] }));
+      }
+      return Promise.resolve(jsonResponse({}));
+    });
+
+    const adapter = getKanbanAdapter();
+    const task = await adapter.createTask({
+      title: "Payload-only Jira task",
+      description: "Body",
+      status: "todo",
+    });
+
+    expect(task).toMatchObject({
+      id: "PROJ-88",
+      title: "Payload-only Jira task",
+      description: "Body",
+      status: "todo",
+      projectId: "PROJ",
+      backend: "jira",
+    });
+  });
+
   it("persists and reads shared state from Jira comments", async () => {
     fetchWithFallbackMock.mockImplementation((url, options = {}) => {
       const method = String(options.method || "GET").toUpperCase();
@@ -1194,4 +1306,5 @@ describe("kanban-adapter internal backend", () => {
     expect(viaHelper.repository).toBe("virtengine/bosun");
   });
 });
+
 
