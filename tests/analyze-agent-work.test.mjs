@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -67,13 +69,60 @@ describe("analyze-agent-work helpers", () => {
 
     expect(timeout.fingerprint).toBe("timeout");
     expect(timeout.by_executor).toEqual({ CODEX: 3 });
+    expect(timeout.by_model).toEqual({ "gpt-5.2-codex": 3 });
     expect(timeout.by_size).toEqual({ m: 3 });
     expect(timeout.by_complexity).toEqual({ medium: 3 });
+    expect(timeout.avg_task_duration_ms).toBe(60000);
 
     expect(auth.fingerprint).toBe("auth");
     expect(auth.by_executor).toEqual({ COPILOT: 2 });
+    expect(auth.by_model).toEqual({ "claude-sonnet-4.6": 2 });
     expect(auth.by_size).toEqual({ s: 2 });
     expect(auth.by_complexity).toEqual({ low: 2 });
+    expect(auth.avg_task_duration_ms).toBe(120000);
+  });
+
+  it("marks complexity as unknown when task_description is missing", () => {
+    const summary = buildErrorCorrelationSummary({
+      errors: [
+        {
+          timestamp: "2026-02-25T12:00:00.000Z",
+          task_id: "task-unknown",
+          task_title: "[s] missing description",
+          task_description: "",
+          executor: "CODEX",
+          model: "gpt-5.1-codex-mini",
+          attempt_id: "attempt-unknown",
+          data: {
+            error_fingerprint: "timeout",
+            error_message: "Timeout after 20s",
+            error_category: "timeout",
+          },
+        },
+      ],
+      metrics: [
+        {
+          timestamp: "2026-02-25T11:55:00.000Z",
+          task_id: "task-unknown",
+          task_title: "[s] missing description",
+          task_description: "",
+          executor: "CODEX",
+          model: "gpt-5.1-codex-mini",
+          metrics: { duration_ms: 45000 },
+        },
+      ],
+      windowDays: 7,
+      top: 5,
+    });
+
+    expect(summary.total_errors).toBe(1);
+    expect(summary.total_fingerprints).toBe(1);
+    expect(summary.correlations[0].by_size).toEqual({ s: 1 });
+    expect(summary.correlations[0].by_complexity).toEqual({ unknown: 1 });
+    expect(summary.correlations[0].by_model).toEqual({
+      "gpt-5.1-codex-mini": 1,
+    });
+    expect(summary.correlations[0].avg_task_duration_ms).toBe(45000);
   });
 
   it("produces a stable JSON payload shape for correlations", () => {
@@ -108,8 +157,10 @@ describe("analyze-agent-work helpers", () => {
     const first = payload.correlations[0];
     expect(Object.keys(first).sort()).toEqual(
       [
+        "avg_task_duration_ms",
         "by_complexity",
         "by_executor",
+        "by_model",
         "by_size",
         "count",
         "fingerprint",
@@ -124,9 +175,12 @@ describe("analyze-agent-work helpers", () => {
     expect(first.task_count).toBe(1);
     expect(first.first_seen).toBe("2026-02-25T11:00:00.000Z");
     expect(first.last_seen).toBe("2026-02-25T11:10:00.000Z");
+    expect(first.avg_task_duration_ms).toBe(60000);
     expect(first.by_executor[0].label).toBe("CODEX");
     expect(first.by_executor[0].count).toBe(3);
     expect(first.by_executor[0].percent).toBe(100);
+    expect(first.by_model[0].label).toBe("gpt-5.2-codex");
+    expect(first.by_model[0].count).toBe(3);
   });
 });
 
@@ -225,7 +279,7 @@ describe("analyze-agent-work JSONL fixture determinism", () => {
     const payload = buildErrorCorrelationJsonPayload(summary, { now: JSONL_NOW });
     for (const entry of payload.correlations) {
       expect(Object.keys(entry).sort()).toEqual(
-        ["by_complexity", "by_executor", "by_size", "count", "fingerprint", "first_seen", "last_seen", "sample_message", "task_count"].sort(),
+        ["avg_task_duration_ms", "by_complexity", "by_executor", "by_model", "by_size", "count", "fingerprint", "first_seen", "last_seen", "sample_message", "task_count"].sort(),
       );
     }
   });
@@ -244,5 +298,103 @@ describe("analyze-agent-work JSONL fixture determinism", () => {
     expect(fp1).toBe(fp2);
     expect(typeof fp1).toBe("string");
     expect(fp1.length).toBeGreaterThan(0);
+  });
+});
+
+describe("analyze-agent-work CLI", () => {
+  function makeCliEnv(logDir) {
+    return {
+      ...process.env,
+      AGENT_WORK_LOG_DIR: logDir,
+    };
+  }
+
+  function runCli(args, { logDir }) {
+    return execFileSync(process.execPath, ["agent/analyze-agent-work.mjs", ...args], {
+      cwd: process.cwd(),
+      env: makeCliEnv(logDir),
+      encoding: "utf8",
+    });
+  }
+
+  function makeLogDir() {
+    const baseDir = mkdtempSync(resolve(tmpdir(), "bosun-agent-work-"));
+    const logDir = resolve(baseDir, "agent-work-logs");
+    mkdirSync(logDir, { recursive: true });
+    return { baseDir, logDir };
+  }
+
+  function seedFixtureLogs(logDir) {
+    copyFileSync(
+      resolve(FIXTURE_DIR, "errors.jsonl"),
+      resolve(logDir, "agent-errors.jsonl"),
+    );
+    copyFileSync(
+      resolve(FIXTURE_DIR, "metrics.jsonl"),
+      resolve(logDir, "agent-metrics.jsonl"),
+    );
+  }
+
+  it("prints a ranked correlation report with executor and size breakdowns", () => {
+    const { baseDir, logDir } = makeLogDir();
+
+    try {
+      seedFixtureLogs(logDir);
+
+      const output = runCli(
+        ["--error-correlation", "--days", "30", "--top", "1"],
+        { logDir },
+      );
+
+      expect(output).toContain("=== Error Correlation Report ===");
+      expect(output).toContain("timeout_api");
+      expect(output).toContain("Executors:");
+      expect(output).toContain("Sizes:");
+      expect(output).not.toContain("auth_failed");
+    } finally {
+      rmSync(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  it("emits valid JSON and applies days/top filters", () => {
+    const { baseDir, logDir } = makeLogDir();
+
+    try {
+      seedFixtureLogs(logDir);
+
+      const output = runCli(
+        ["--error-correlation", "--days", "30", "--top", "2", "--json"],
+        { logDir },
+      );
+      const payload = JSON.parse(output);
+
+      expect(payload.window_days).toBe(30);
+      expect(payload.top).toBe(2);
+      expect(payload.total_errors).toBe(5);
+      expect(payload.correlations).toHaveLength(2);
+      expect(payload.correlations[0]).toHaveProperty("by_executor");
+      expect(payload.correlations[0]).toHaveProperty("by_size");
+      expect(payload.correlations[0]).toHaveProperty("by_complexity");
+      expect(
+        payload.correlations.some((entry) => entry.fingerprint === "legacy_failure"),
+      ).toBe(false);
+    } finally {
+      rmSync(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  it("exits cleanly with a no-data message when the log directory is empty", () => {
+    const { baseDir, logDir } = makeLogDir();
+
+    try {
+      const output = runCli(
+        ["--error-correlation", "--days", "30", "--top", "5"],
+        { logDir },
+      );
+
+      expect(output).toContain("No data found");
+    } finally {
+      rmSync(baseDir, { recursive: true, force: true });
+    }
   });
 });

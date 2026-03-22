@@ -21,7 +21,7 @@
 import { readFile, readdir } from "fs/promises";
 import { createReadStream, existsSync } from "fs";
 import { createInterface } from "readline";
-import { resolve, dirname } from "path";
+import { resolve, dirname, isAbsolute } from "path";
 import { fileURLToPath } from "url";
 import {
   buildErrorClusters,
@@ -44,8 +44,16 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = resolve(__dirname, "../..");
 
+function resolveAgentWorkLogDir() {
+  const configured = String(process.env.AGENT_WORK_LOG_DIR || "").trim();
+  if (!configured) {
+    return resolve(repoRoot, ".cache/agent-work-logs");
+  }
+  return isAbsolute(configured) ? configured : resolve(repoRoot, configured);
+}
+
 // ── Log Paths ───────────────────────────────────────────────────────────────
-const LOG_DIR = resolve(repoRoot, ".cache/agent-work-logs");
+const LOG_DIR = resolveAgentWorkLogDir();
 const STREAM_LOG = resolve(LOG_DIR, "agent-work-stream.jsonl");
 const ERRORS_LOG = resolve(LOG_DIR, "agent-errors.jsonl");
 const METRICS_LOG = resolve(LOG_DIR, "agent-metrics.jsonl");
@@ -339,6 +347,14 @@ function formatDistribution(counts, total, limit = 5) {
     .join(", ");
 }
 
+function formatDurationMs(durationMs) {
+  const value = Number(durationMs) || 0;
+  if (value <= 0) return "unknown";
+  if (value < 1000) return `${value.toFixed(0)}ms`;
+  if (value < 60_000) return `${(value / 1000).toFixed(1)}s`;
+  return `${(value / 60_000).toFixed(1)}m`;
+}
+
 function topN(obj, n) {
   return Object.entries(obj)
     .sort((a, b) => b[1] - a[1])
@@ -478,7 +494,7 @@ async function correlateErrors(options) {
   const errors = await loadErrors({ days: windowDays });
 
   if (errors.length === 0) {
-    const message = "No error data found";
+    const message = "No data found for selected window";
     if (useJson) {
       console.log(
         JSON.stringify(
@@ -522,9 +538,13 @@ async function correlateErrors(options) {
     console.log(
       `  Executors: ${formatDistribution(entry.by_executor, entry.count)}`,
     );
+    console.log(`  Models: ${formatDistribution(entry.by_model, entry.count)}`);
     console.log(`  Sizes: ${formatDistribution(entry.by_size, entry.count)}`);
     console.log(
       `  Complexity: ${formatDistribution(entry.by_complexity, entry.count)}`,
+    );
+    console.log(
+      `  Avg task duration: ${formatDurationMs(entry.avg_task_duration_ms)}`,
     );
     if (entry.sample_message) {
       console.log(
