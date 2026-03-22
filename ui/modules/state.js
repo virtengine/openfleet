@@ -64,6 +64,60 @@ function _cacheFresh(url, group) {
   const e = _apiCache.get(url);
   return e ? (Date.now() - e.fetchedAt) < (CACHE_TTL[group] || 10000) : false;
 }
+function mergeTaskLinkageRecords(...sources) {
+  const merged = [];
+  const indexByKey = new Map();
+  const keyFor = (record) => {
+    if (!record || typeof record !== "object") return "";
+    const branchName = String(record.branchName || "").trim().toLowerCase();
+    const prUrl = String(record.prUrl || "").trim().toLowerCase();
+    const prNumber = Number.parseInt(String(record.prNumber ?? ""), 10);
+    return [branchName, Number.isFinite(prNumber) && prNumber > 0 ? prNumber : "", prUrl].join("|");
+  };
+  for (const source of sources) {
+    const records = Array.isArray(source) ? source : [];
+    for (const record of records) {
+      if (!record || typeof record !== "object") continue;
+      const normalized = { ...record };
+      const key = keyFor(normalized);
+      if (!key) continue;
+      if (indexByKey.has(key)) {
+        const idx = indexByKey.get(key);
+        merged[idx] = { ...merged[idx], ...normalized };
+        continue;
+      }
+      indexByKey.set(key, merged.length);
+      merged.push(normalized);
+    }
+  }
+  return merged;
+}
+
+function mergeTaskRecords(existingTask, incomingTask) {
+  const merged = { ...(existingTask || {}), ...(incomingTask || {}) };
+  const existingMeta = existingTask?.meta && typeof existingTask.meta === "object" ? existingTask.meta : {};
+  const incomingMeta = incomingTask?.meta && typeof incomingTask.meta === "object" ? incomingTask.meta : {};
+  merged.meta = { ...existingMeta, ...incomingMeta };
+  const linkage = mergeTaskLinkageRecords(
+    existingTask?.prLinkage,
+    existingMeta?.prLinkage,
+    incomingTask?.prLinkage,
+    incomingMeta?.prLinkage,
+  );
+  if (linkage.length > 0) {
+    merged.prLinkage = linkage;
+    merged.meta.prLinkage = linkage;
+    const primaryLinkage = linkage[0] || null;
+    if (primaryLinkage?.branchName) merged.branchName = primaryLinkage.branchName;
+    if (primaryLinkage?.prUrl) merged.prUrl = primaryLinkage.prUrl;
+    if (Number.isFinite(primaryLinkage?.prNumber) && primaryLinkage.prNumber > 0) merged.prNumber = primaryLinkage.prNumber;
+    merged.meta.prLinkageSource = primaryLinkage?.source || incomingMeta?.prLinkageSource || existingMeta?.prLinkageSource || null;
+    merged.meta.prLinkageFreshness = primaryLinkage?.freshness || incomingMeta?.prLinkageFreshness || existingMeta?.prLinkageFreshness || null;
+    merged.meta.prLinkageUpdatedAt = primaryLinkage?.updatedAt || incomingMeta?.prLinkageUpdatedAt || existingMeta?.prLinkageUpdatedAt || null;
+  }
+  return merged;
+}
+
 function _cacheClearGroup(group) {
   for (const k of _apiCache.keys()) {
     if (k.includes(group) || group === '*') _apiCache.delete(k);
@@ -1070,3 +1124,4 @@ export function initWsInvalidationListener() {
       });
   });
 }
+

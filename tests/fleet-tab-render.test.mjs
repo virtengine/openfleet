@@ -249,3 +249,63 @@ describe("fleet entry building logic", () => {
   });
 });
 
+
+describe("kanban PR linkage rendering", () => {
+  for (const relPath of ["ui/components/kanban-board.js"]) {
+    const source = readFileSync(resolve(process.cwd(), relPath), "utf8");
+    it(`renders PR linkage source and freshness chips (${relPath})`, () => {
+      expect(source).toContain("function getTaskPrLinkage(task)");
+      expect(source).toContain("PR source:");
+      expect(source).toContain("PR freshness:");`r`n      expect(source).toContain("formatPrLinkageFreshnessLabel");
+      expect(source).toContain("Branch: ");
+    });
+  }
+
+  it("merges reload pages without duplicating PR linkage records", async () => {
+    const { tasksData, tasksPage, tasksPageSize, loadTasks } = await import("../ui/modules/state.js");
+    const originalFetch = globalThis.fetch;
+    const responses = [
+      {
+        ok: true,
+        json: async () => ({
+          data: [{
+            id: "task-1",
+            title: "Task 1",
+            prLinkage: [{ branchName: "feature/demo", prNumber: 42, prUrl: "https://example.test/pr/42", source: "workflow", freshness: "fresh", updatedAt: "2026-03-22T10:00:00.000Z" }],
+            meta: { prLinkage: [{ branchName: "feature/demo", prNumber: 42, prUrl: "https://example.test/pr/42", source: "workflow", freshness: "fresh", updatedAt: "2026-03-22T10:00:00.000Z" }] },
+          }],
+          total: 1,
+          totalPages: 1,
+          statusCounts: {},
+        }),
+      },
+      {
+        ok: true,
+        json: async () => ({
+          data: [{
+            id: "task-1",
+            title: "Task 1 refreshed",
+            meta: { prLinkage: [{ branchName: "feature/demo", prNumber: 42, prUrl: "https://example.test/pr/42", source: "auto-load", freshness: "fresh", updatedAt: "2026-03-22T10:05:00.000Z" }] },
+          }],
+          total: 1,
+          totalPages: 1,
+          statusCounts: {},
+        }),
+      },
+    ];
+    globalThis.fetch = async () => responses.shift();
+    tasksPage.value = 0;
+    tasksPageSize.value = 25;
+    tasksData.value = [];
+    try {
+      await loadTasks();
+      await loadTasks({ append: true });
+      expect(tasksData.value).toHaveLength(1);
+      expect(tasksData.value[0].meta.prLinkage).toHaveLength(1);
+      expect(tasksData.value[0].prLinkage).toHaveLength(1);
+      expect(tasksData.value[0].meta.prLinkage[0]).toMatchObject({ prNumber: 42, branchName: "feature/demo", source: "auto-load", freshness: "fresh", updatedAt: "2026-03-22T10:05:00.000Z" });`r`n      expect(tasksData.value[0].branchName).toBe("feature/demo");`r`n      expect(tasksData.value[0].prNumber).toBe(42);`r`n      expect(tasksData.value[0].prUrl).toBe("https://example.test/pr/42");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});

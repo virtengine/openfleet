@@ -673,6 +673,98 @@ function extractMarkdownLinks(text) {
   return results;
 }
 
+function normalizePrLinkageEntry(entry = {}, fallback = {}) {
+  const branchName = typeof (entry.branchName ?? fallback.branchName) === "string"
+    ? String(entry.branchName ?? fallback.branchName).trim()
+    : "";
+  const prUrl = typeof (entry.prUrl ?? fallback.prUrl) === "string"
+    ? String(entry.prUrl ?? fallback.prUrl).trim()
+    : "";
+  const parsedPrNumber = Number.parseInt(String(entry.prNumber ?? fallback.prNumber ?? ""), 10);
+  const prNumber = Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null;
+  if (!branchName && !prUrl && !prNumber) return null;
+  return {
+    branchName: branchName || null,
+    prUrl: prUrl || null,
+    prNumber,
+    source: typeof (entry.source ?? fallback.source) === "string" && String(entry.source ?? fallback.source).trim()
+      ? String(entry.source ?? fallback.source).trim()
+      : null,
+    freshness: typeof (entry.freshness ?? fallback.freshness) === "string" && String(entry.freshness ?? fallback.freshness).trim()
+      ? String(entry.freshness ?? fallback.freshness).trim()
+      : null,
+    linkedAt: typeof (entry.linkedAt ?? fallback.linkedAt) === "string" && String(entry.linkedAt ?? fallback.linkedAt).trim()
+      ? String(entry.linkedAt ?? fallback.linkedAt).trim()
+      : null,
+    updatedAt: typeof (entry.updatedAt ?? fallback.updatedAt) === "string" && String(entry.updatedAt ?? fallback.updatedAt).trim()
+      ? String(entry.updatedAt ?? fallback.updatedAt).trim()
+      : null,
+  };
+}
+
+function mergePrLinkageRecords(...sources) {
+  const merged = [];
+  const indexByKey = new Map();
+  const buildKey = (entry) => {
+    const branchName = String(entry?.branchName || "").trim().toLowerCase();
+    const prUrl = String(entry?.prUrl || "").trim().toLowerCase();
+    const prNumber = Number.isFinite(entry?.prNumber) ? entry.prNumber : "";
+    return [branchName, prNumber, prUrl].join("|");
+  };
+  for (const source of sources) {
+    const entries = Array.isArray(source) ? source : [];
+    for (const rawEntry of entries) {
+      const entry = normalizePrLinkageEntry(rawEntry);
+      if (!entry) continue;
+      const key = buildKey(entry);
+      if (!key) continue;
+      if (indexByKey.has(key)) {
+        const idx = indexByKey.get(key);
+        merged[idx] = normalizePrLinkageEntry({ ...merged[idx], ...entry }, merged[idx]);
+        continue;
+      }
+      indexByKey.set(key, merged.length);
+      merged.push(entry);
+    }
+  }
+  return merged;
+}
+
+function buildPrLinkagePatch(options = {}, currentTask = null) {
+  const branchName = typeof options?.branchName === "string" ? options.branchName.trim() : "";
+  const prUrl = typeof options?.prUrl === "string" ? options.prUrl.trim() : "";
+  const prNumber = options?.prNumber == null || options?.prNumber === ""
+    ? null
+    : Number.parseInt(String(options.prNumber), 10);
+  const source = typeof options?.source === "string" && options.source.trim() ? options.source.trim() : null;
+  const freshness = typeof options?.freshness === "string" && options.freshness.trim() ? options.freshness.trim() : null;
+  const currentMeta = currentTask?.meta && typeof currentTask.meta === "object" ? currentTask.meta : {};
+  const currentLinkage = mergePrLinkageRecords(currentTask?.prLinkage, currentMeta?.prLinkage);
+  const nextEntry = normalizePrLinkageEntry({
+    branchName,
+    prUrl,
+    prNumber: Number.isFinite(prNumber) && prNumber > 0 ? prNumber : null,
+    source,
+    freshness,
+    updatedAt: new Date().toISOString(),
+    linkedAt: currentLinkage[0]?.linkedAt || new Date().toISOString(),
+  }, currentTask || {});
+  if (!nextEntry) return {};
+  const prLinkage = mergePrLinkageRecords(currentLinkage, [nextEntry]);
+  return {
+    ...(nextEntry.branchName ? { branchName: nextEntry.branchName } : {}),
+    ...(nextEntry.prUrl ? { prUrl: nextEntry.prUrl } : {}),
+    ...(Number.isFinite(nextEntry.prNumber) && nextEntry.prNumber > 0 ? { prNumber: nextEntry.prNumber } : {}),
+    meta: {
+      ...currentMeta,
+      prLinkage,
+      prLinkageSource: nextEntry.source || currentMeta.prLinkageSource || null,
+      prLinkageFreshness: nextEntry.freshness || currentMeta.prLinkageFreshness || null,
+      prLinkageUpdatedAt: nextEntry.updatedAt || currentMeta.prLinkageUpdatedAt || null,
+    },
+  };
+}
+
 function extractAttachmentsFromText(text, meta = {}) {
   const links = extractMarkdownLinks(text);
   const attachments = [];
@@ -816,7 +908,7 @@ class InternalAdapter {
             ? task.meta.repositories
             : [],
       baseBranch,
-      branchName: task.branchName || null,
+      branchName: task.branchName || null,`r`n      prLinkage: mergePrLinkageRecords(task.prLinkage, task.meta?.prLinkage, [normalizePrLinkageEntry(task, task)]),
       prNumber: task.prNumber || null,
       prUrl: task.prUrl || null,
       taskUrl: task.taskUrl || null,
@@ -895,7 +987,7 @@ class InternalAdapter {
     if (!updated) {
       throw new Error(`[kanban] internal task not found: ${normalizedId}`);
     }
-    const linkagePatch = {};
+    const current = getInternalTask(normalizedId);`r`n    const linkagePatch = buildPrLinkagePatch(options, current);
     const branchName =
       typeof options?.branchName === "string" ? options.branchName.trim() : "";
     const prUrl = typeof options?.prUrl === "string" ? options.prUrl.trim() : "";
@@ -1018,7 +1110,7 @@ class InternalAdapter {
         baseBranch,
       };
     }
-    const updated = patchInternalTask(normalizedId, updates);
+    const directLinkage = mergePrLinkageRecords(current?.prLinkage, current?.meta?.prLinkage, patch.prLinkage, patch.meta?.prLinkage, [normalizePrLinkageEntry(patch, patch)]);`r`n    if (directLinkage.length > 0) updates.prLinkage = directLinkage;`r`n    const updated = patchInternalTask(normalizedId, updates);
     if (!updated) {
       throw new Error(`[kanban] internal task not found: ${normalizedId}`);
     }
@@ -6198,3 +6290,4 @@ export async function unmarkTaskIgnored(taskId) {
   );
   return false;
 }
+
