@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatSessionFreshnessTimestamp,
   getSessionManualRetryState,
+  getSessionListState,
   getSessionLifecycleState,
   getSessionRecencyTimestamp,
   getSessionRuntimeState,
@@ -151,6 +152,88 @@ describe("session api stale/retry metadata", () => {
   });
 });
 
+
+describe("session api request classification", () => {
+  it("classifies not-found, transient, and fatal request errors", () => {
+    expect(classifySessionRequestError(new Error("Session not found")).key).toBe("not_found");
+    expect(classifySessionRequestError(new Error("Request failed (404)")).key).toBe("not_found");
+    expect(classifySessionRequestError(new Error("Gateway timeout")).key).toBe("unavailable");
+    expect(classifySessionRequestError(new Error("Boom"))).toEqual(
+      expect.objectContaining({ key: "fatal", isNotFound: false, isTransient: false }),
+    );
+  });
+
+  it("falls back to workspace=all only for scoped not-found errors", () => {
+    expect(shouldFallbackToAllSessions(new Error("Session not found"), "/a", "/b")).toBe(true);
+    expect(shouldFallbackToAllSessions(new Error("Gateway timeout"), "/a", "/b")).toBe(false);
+    expect(shouldFallbackToAllSessions(new Error("Session not found"), "/a", "/a")).toBe(false);
+  });
+});
+describe("session api list state", () => {
+  it("classifies resilient session list states consistently", () => {
+    expect(
+      getSessionListState({
+        sessions: [],
+        error: null,
+        loadMeta: createSessionLoadMeta(),
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        key: "ready",
+        isError: false,
+        canRetry: false,
+      }),
+    );
+
+    expect(
+      getSessionListState({
+        sessions: [{ id: "s-1" }],
+        error: null,
+        loadMeta: createSessionLoadMeta({
+          stale: true,
+          lastSuccessAt: "2026-01-02T00:00:00.000Z",
+          staleReason: "Gateway timeout",
+        }),
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        key: "stale",
+        isError: false,
+        canRetry: true,
+      }),
+    );
+
+    expect(
+      getSessionListState({
+        sessions: [],
+        error: "not_found",
+        loadMeta: createSessionLoadMeta(),
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        key: "not_found",
+        isError: true,
+        canRetry: true,
+      }),
+    );
+
+    expect(
+      getSessionListState({
+        sessions: [],
+        error: { key: "unavailable" },
+        loadMeta: createSessionLoadMeta(),
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        key: "unavailable",
+        isError: true,
+        canRetry: true,
+      }),
+    );
+  });
+
+});
+
 describe("session lifecycle/runtime metadata", () => {
   it("keeps lifecycle state separate from live runtime state", () => {
     expect(
@@ -257,3 +340,4 @@ describe("session lifecycle/runtime metadata", () => {
     ).toBe("2026-01-02T00:00:00.000Z");
   });
 });
+
