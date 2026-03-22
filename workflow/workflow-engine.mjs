@@ -1143,7 +1143,11 @@ export class WorkflowEngine extends EventEmitter {
     let recommendedAction = "continue";
     let summary = "Workflow is ready to continue.";
     if (failedNodes.length > 0) {
-      recommendedAction = firstFinding?.recommendedAction || (counts.completed > 0 ? "replan_from_failed" : "inspect_failure");
+      const preferredAction = firstFinding?.recommendedAction || null;
+      recommendedAction = preferredAction;
+      if (!recommendedAction || (recommendedAction === "inspect_failure" && counts.completed > 0)) {
+        recommendedAction = counts.completed > 0 ? "replan_from_failed" : "inspect_failure";
+      }
       summary = firstFinding?.summary
         ? `Failed at ${firstFailed?.label || firstFailed?.nodeId || "a workflow step"}: ${firstFinding.summary}`
         : (firstFailed?.lastError
@@ -2717,6 +2721,7 @@ export class WorkflowEngine extends EventEmitter {
 
     let runs = [...active, ...persisted.filter((run) => !activeRunIds.has(run.runId))];
     if (workflowId) runs = runs.filter((r) => r.workflowId === workflowId);
+    runs = runs.map((run) => this.getRunDetail(run.runId) || run);
     runs.sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
     if (hasLimit) {
       return runs.slice(0, Math.floor(normalizedLimit));
@@ -3183,6 +3188,7 @@ export class WorkflowEngine extends EventEmitter {
     const focusNodeIds = [];
     for (const [nodeId, status] of Object.entries(nodeStatuses)) {
       if (status === "completed") {
+        preservedCompletedNodeIds.push(nodeId);
         ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
         if (nodeOutputs[nodeId] !== undefined) {
           ctx.setNodeOutput(nodeId, nodeOutputs[nodeId]);
@@ -3366,6 +3372,7 @@ export class WorkflowEngine extends EventEmitter {
     // If nodes are already marked COMPLETED in the context (pre-seeded by
     // retryRun), treat them as already executed so the DAG skips them and
     // begins from the first un-completed node.
+    const preservedCompletedNodeIds = [];
     for (const [nodeId, status] of ctx.nodeStatuses) {
       if (status === NodeStatus.COMPLETED) {
         preservedCompletedNodeIds.push(nodeId);
