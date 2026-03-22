@@ -51,6 +51,7 @@ export const RESEARCH_AGENT_TEMPLATE = {
     maxIterations: 10,
     problem: "",
     domain: "mathematics",
+    _previousFeedback: "",
   },
   nodes: [
     // ── Entry ─────────────────────────────────────────────────────────
@@ -237,6 +238,7 @@ export const RESEARCH_LOOP_TEMPLATE = {
     maxIterations: 10,
     problem: "",
     domain: "mathematics",
+    _previousFeedback: "",
   },
   nodes: [
     node("trigger", "trigger.manual", "Start Research", {}, { x: 400, y: 50 }),

@@ -273,6 +273,9 @@ export const TEMPLATE_FIXTURES = {
   "template-pr-merge-strategy":            { scenario: scenarios.greenPR(42),      inputVars: { prNumber: 42,  branch: "feat/login",      baseBranch: "main" } },
   "template-pr-triage":                    { scenario: scenarios.greenPR(100),     inputVars: { prNumber: 100, prTitle: "feat: dark mode", prBody: "Adds dark mode", prAuthor: "dev-user" } },
   "template-pr-conflict-resolver":         { scenario: scenarios.conflictPR(55),   inputVars: { prNumber: 55,  branch: "feat/conflicts" } },
+  "template-sub-validation-gate":          { scenario: scenarios.greenPR(42),      inputVars: {} },
+  "template-sub-validate-and-pr":          { scenario: scenarios.greenPR(42),      inputVars: {} },
+  "template-sub-pr-handoff":               { scenario: scenarios.greenPR(42),      inputVars: {} },
   "template-stale-pr-reaper":              { scenario: scenarios.stalePRs(),        inputVars: {} },
   "template-release-drafter":              { scenario: scenarios.releaseReady(),    inputVars: { tagName: "v1.1.0" } },
   "template-bosun-pr-progressor":          { scenario: scenarios.greenPR(60),      inputVars: { taskId: "TASK-PR-1", taskTitle: "Progress PR", prNumber: 60, prUrl: "https://github.com/virtengine/bosun/pull/60", repo: "virtengine/bosun", branch: "feat/pr-progress", baseBranch: "main" } },
@@ -336,4 +339,5 @@ export const TEMPLATE_FIXTURES = {
   "template-task-cicd":                  { scenario: scenarios.cicdDeploy(),      inputVars: { taskId: "TASK-CI-1", worktreePath: "/tmp/wt/cicd", branch: "feat/cicd", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
   "template-task-design":                { scenario: scenarios.greenPR(214),      inputVars: { taskId: "TASK-DS-1", worktreePath: "/tmp/wt/design", branch: "feat/design", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
 };
+
 

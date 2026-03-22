@@ -108,23 +108,38 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env) {
   }
 
   const providerName = isAzure ? "azure" : "openai";
+  const azureProviderConfig = {
+    name: "Azure OpenAI",
+    base_url: baseUrl,
+    env_key: providerEnvKey,
+    wire_api: "responses",
+    ...streamProviderOverrides,
+  };
   const config = {
     model_providers: {
       [providerSectionName]: isAzure
-        ? {
-            name: "Azure OpenAI",
-            base_url: baseUrl,
-            env_key: providerEnvKey,
-            wire_api: "responses",
-            ...streamProviderOverrides,
-          }
+        ? azureProviderConfig
         : streamProviderOverrides,
     },
+    ...(isAzure
+      ? {
+          features: {
+            remote_models: true,
+          },
+          preferred_auth_method: "apikey",
+        }
+      : {}),
   };
 
   if (isAzure && env.CODEX_MODEL) {
     config.model_provider = providerSectionName;
     config.model = env.CODEX_MODEL;
+    config.model_providers[providerSectionName] = {
+      ...azureProviderConfig,
+      query: {
+        api_version: env.OPENAI_API_VERSION || process.env.OPENAI_API_VERSION || "preview",
+      },
+    };
   }
 
   return {

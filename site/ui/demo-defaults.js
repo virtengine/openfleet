@@ -12999,7 +12999,8 @@
       "variables": {
         "maxIterations": 10,
         "problem": "",
-        "domain": "mathematics"
+        "domain": "mathematics",
+        "_previousFeedback": ""
       },
       "metadata": {
         "createdAt": "2026-03-03T00:00:00.000Z",
@@ -13286,7 +13287,8 @@
       "variables": {
         "maxIterations": 10,
         "problem": "",
-        "domain": "mathematics"
+        "domain": "mathematics",
+        "_previousFeedback": ""
       },
       "metadata": {
         "createdAt": "2026-03-03T00:00:00.000Z",
@@ -16958,7 +16960,8 @@
       "variables": {
         "topics": "[\"node.js best practices\", \"typescript generics\", \"vitest testing\"]",
         "mcpServer": "context7",
-        "mcpTool": "resolve-library-id"
+        "mcpTool": "resolve-library-id",
+        "topic": ""
       },
       "metadata": {
         "author": "virtengine",
@@ -19828,6 +19831,14 @@
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
         "maxRetries": 1,
+        "maxContinues": 0,
+        "repoRoot": "",
+        "repository": "",
+        "repositories": [],
+        "_taskPrompt": "",
+        "resolvedSdk": "auto",
+        "resolvedModel": "",
+        "agentProfile": "default",
         "protectedBranches": [
           "main",
           "master",
@@ -33063,7 +33074,8 @@
       "variables": {
         "maxIterations": 10,
         "problem": "",
-        "domain": "mathematics"
+        "domain": "mathematics",
+        "_previousFeedback": ""
       },
       "nodes": [
         {
@@ -33342,7 +33354,8 @@
       "variables": {
         "maxIterations": 10,
         "problem": "",
-        "domain": "mathematics"
+        "domain": "mathematics",
+        "_previousFeedback": ""
       },
       "nodes": [
         {
@@ -36820,7 +36833,8 @@
       "variables": {
         "topics": "[\"node.js best practices\", \"typescript generics\", \"vitest testing\"]",
         "mcpServer": "context7",
-        "mcpTool": "resolve-library-id"
+        "mcpTool": "resolve-library-id",
+        "topic": ""
       },
       "nodes": [
         {
@@ -39598,6 +39612,14 @@
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
         "maxRetries": 1,
+        "maxContinues": 0,
+        "repoRoot": "",
+        "repository": "",
+        "repositories": [],
+        "_taskPrompt": "",
+        "resolvedSdk": "auto",
+        "resolvedModel": "",
+        "agentProfile": "default",
         "protectedBranches": [
           "main",
           "master",

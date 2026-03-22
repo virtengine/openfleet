@@ -290,6 +290,9 @@ describe("codex-shell stream safeguards", () => {
     expect(mockCodexCtor).toHaveBeenCalledTimes(1);
     expect(mockCodexCtor).toHaveBeenLastCalledWith(expect.objectContaining({
       config: expect.objectContaining({
+        features: expect.objectContaining({
+          remote_models: true,
+        }),
         model_provider: "azure",
         model: "gpt-5.4",
         model_providers: expect.objectContaining({

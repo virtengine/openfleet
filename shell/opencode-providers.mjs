@@ -114,10 +114,32 @@ async function discoverViaSDK(existingClient = null) {
       ? { query: { directory } }
       : undefined;
 
+    const listProviders = async () => {
+      try {
+        return await client.provider.list(requestOptions);
+      } catch (err) {
+        if (requestOptions && isBadRequestError(err)) {
+          return client.provider.list();
+        }
+        throw err;
+      }
+    };
+
+    const listAuthMethods = async () => {
+      try {
+        return await client.provider.auth(requestOptions);
+      } catch (err) {
+        if (requestOptions && isBadRequestError(err)) {
+          return client.provider.auth();
+        }
+        throw err;
+      }
+    };
+
     // Fetch provider list + auth methods in parallel
     const [providerRes, authRes] = await Promise.all([
-      client.provider.list(requestOptions).catch(() => null),
-      client.provider.auth(requestOptions).catch(() => null),
+      listProviders().catch(() => null),
+      listAuthMethods().catch(() => null),
     ]);
 
     if (!providerRes?.data) return null;
@@ -167,6 +189,13 @@ async function discoverViaSDK(existingClient = null) {
     console.warn(`[opencode-providers] SDK discovery failed: ${err.message}`);
     return null;
   }
+}
+
+function isBadRequestError(err) {
+  const status = err?.status ?? err?.response?.status ?? err?.cause?.status;
+  if (Number(status) === 400) return true;
+  const message = String(err?.message || "");
+  return /\b400\b/.test(message) || /bad request/i.test(message);
 }
 
 // ── CLI-based discovery (fallback — no running server needed) ─────────────────

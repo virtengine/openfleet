@@ -301,6 +301,7 @@ export const MCP_ITERATIVE_RESEARCH_TEMPLATE = {
     topics: '["node.js best practices", "typescript generics", "vitest testing"]',
     mcpServer: "context7",
     mcpTool: "resolve-library-id",
+    topic: "",
   },
   nodes: [
     node("trigger", "trigger.workflow_call", "Research Request", {}),

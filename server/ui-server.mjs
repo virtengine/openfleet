@@ -2107,7 +2107,11 @@ function maybeBootstrapWorkspaceWorkflowTemplates(engine, workspaceKey, workspac
         result = _wfTemplates.installRecommendedTemplates(engine);
       }
     }
-    if (typeof _wfTemplates.reconcileInstalledTemplates === "function") {
+    if (
+      typeof _wfTemplates.reconcileInstalledTemplates === "function"
+      && engine
+      && typeof engine.list === "function"
+    ) {
       _wfTemplates.reconcileInstalledTemplates(engine, {
         autoUpdateUnmodified: true,
       });
