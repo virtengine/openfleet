@@ -308,7 +308,7 @@ All logs stored in `.cache/agent-work-logs/`:
 ### Analyze Failed Tasks
 
 ```bash
-node scripts/bosun/analyze-agent-work.mjs --task-planning --failed-only
+node agent/analyze-agent-work.mjs --task-planning --failed-only
 ```
 
 **Output:**
@@ -328,7 +328,7 @@ Root Cause Categories:
 ### Compare Executors
 
 ```bash
-node scripts/bosun/analyze-agent-work.mjs --executor-comparison CODEX COPILOT
+node agent/analyze-agent-work.mjs --executor-comparison CODEX COPILOT
 ```
 
 **Output:**
@@ -346,7 +346,7 @@ node scripts/bosun/analyze-agent-work.mjs --executor-comparison CODEX COPILOT
 ### Cluster Errors
 
 ```bash
-node scripts/bosun/analyze-agent-work.mjs --error-clustering --days 30
+node agent/analyze-agent-work.mjs --error-clustering --days 30
 ```
 
 **Output:**
@@ -365,7 +365,7 @@ context_window_exceeded: 12 occurrences across 8 tasks
 ### Correlate Error Clusters With Task Characteristics
 
 ```bash
-node scripts/bosun/analyze-agent-work.mjs --error-correlation --days 30 --top 5
+node agent/analyze-agent-work.mjs --error-correlation --days 30 --top 5
 ```
 
 **Output:**
@@ -376,13 +376,23 @@ git_push_failed
   Occurrences: 23
   Affected tasks: 15
   Executors: CODEX 14 (60.9%), COPILOT 9 (39.1%)
+  Models: gpt-5.2-codex 11 (47.8%), claude-sonnet-4.6 8 (34.8%)
   Sizes: m 10 (43.5%), s 8 (34.8%), l 5 (21.7%)
   Complexity: medium 12 (52.2%), low 7 (30.4%), high 4 (17.4%)
+  Avg task duration: 2.4m
   Sample: fatal: remote error: access denied or repository not exported...
 ```
 
+To analyze an alternate archive or fixture log set, point the CLI at a different
+log directory:
+
 ```bash
-node scripts/bosun/analyze-agent-work.mjs --error-correlation --days 30 --top 5 --json
+AGENT_WORK_LOG_DIR=/path/to/agent-work-logs \
+  node agent/analyze-agent-work.mjs --error-correlation --days 30 --top 5
+```
+
+```bash
+node agent/analyze-agent-work.mjs --error-correlation --days 30 --top 5 --json
 ```
 
 **Output:**
@@ -401,9 +411,14 @@ node scripts/bosun/analyze-agent-work.mjs --error-correlation --days 30 --top 5 
       "sample_message": "fatal: remote error: access denied or repository not exported...",
       "first_seen": "2026-01-10T08:15:22.000Z",
       "last_seen": "2026-02-08T19:42:11.000Z",
+      "avg_task_duration_ms": 144000,
       "by_executor": [
         { "label": "CODEX", "count": 14, "percent": 60.9 },
         { "label": "COPILOT", "count": 9, "percent": 39.1 }
+      ],
+      "by_model": [
+        { "label": "gpt-5.2-codex", "count": 11, "percent": 47.8 },
+        { "label": "claude-sonnet-4.6", "count": 8, "percent": 34.8 }
       ],
       "by_size": [
         { "label": "m", "count": 10, "percent": 43.5 },
@@ -417,6 +432,10 @@ node scripts/bosun/analyze-agent-work.mjs --error-correlation --days 30 --top 5 
   ]
 }
 ```
+
+If the selected log directory is empty or there are no matching records inside
+the requested window, the command exits cleanly with a `No data found for
+selected window` message instead of throwing.
 
 
 ## Real-Time Alerts
@@ -519,5 +538,3 @@ Check alert polling is running in monitor.mjs (should see log lines every 5s whe
 ---
 
 **Ready to start?** Just follow steps 1-5 above and restart bosun!
-
-
