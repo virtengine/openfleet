@@ -24,6 +24,12 @@ describe("chat session regressions", () => {
     expect(source).toContain("sessionPath(id, action = \"\")");
     expect(source).toContain("buildSessionApiPath(id, \"\", { workspace: \"all\" })");
     expect(source).toContain("isScopedSessionNotFound");
+    expect(source).toContain("function buildSessionFetchErrorState(error, meta, hasCachedData)");
+    expect(source).toContain("function isScopedSessionNotFound(error)");
+    expect(source).toContain("kind: \"not-found\"");
+    expect(source).toContain("kind: \"transient\"");
+    expect(source).toContain("kind: \"fatal\"");
+    expect(source).toContain("preserveSelection = true");
 
     const loadMessagesBlock =
       source.match(/export async function loadSessionMessages[\s\S]*?\n}\n\nfunction normalizePreview/)?.[0] || "";
@@ -37,6 +43,21 @@ describe("chat session regressions", () => {
     expect(source).toContain('workspace: "all"');
     expect(source).toContain("errorText.includes(\"session not found\") || errorText.includes(\"request failed (404)\")");
     expect(source).toContain("res = await apiFetch(fallbackSessionPath, { _silent: true });");
+    expect(source).toContain("loadSessionDetailsWithFallback");
+    expect(source).toContain("sessionListState");
+    expect(source).toContain("Session context is being recovered from another workspace scope.");
+  });
+
+  it("keeps deterministic stale and retry UI for session-list recovery", () => {
+    const source = read("ui/components/session-list.js");
+    expect(source).toContain("const errorState = sessionsError.value;");
+    expect(source).toContain("export const sessionListState = signal({");
+    expect(source).toContain("function buildSessionListState({");
+    expect(source).toContain('kind: hasCachedData ? "refreshing" : "loading"');
+    expect(source).toContain("errorState?.kind === \"fatal\"");
+    expect(source).toContain("errorState?.kind === \"not-found\"");
+    expect(source).toContain("Session list is showing stale data.");
+    expect(source).toContain('${manualRetryState.label || "Retry now"}');
   });
 
   it("exposes workspace metadata in session summaries for UI routing", () => {

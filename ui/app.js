@@ -294,6 +294,7 @@ import {
   selectedSessionId,
   sessionsData,
   initSessionWsListener,
+  loadSessionDetailsWithFallback,
 } from "./components/session-list.js";
 import {
   activeAgent,
@@ -940,6 +941,7 @@ function filterSessionsByType(allSessions, sessionType = "primary") {
 function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
   const sessionId = selectedSessionId.value;
   const session = (sessionsData.value || []).find((s) => s.id === sessionId);
+  const sessionState = sessionListState.value || { kind: "idle" };
   const isSessionTab = activeTab.value === "chat" || activeTab.value === "agents";
   const lifecycle = getSessionLifecycleState(session);
   const runtime = getSessionRuntimeState(session);
@@ -1046,18 +1048,11 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
           }
           return;
         }
-        let res;
-        try {
-          res = await apiFetch(fullSessionPath, { _silent: true });
-        } catch (err) {
-          const errorText = String(err?.message || "").toLowerCase();
-          const shouldRetryAll =
-            Boolean(fallbackSessionPath) &&
-            fallbackSessionPath !== fullSessionPath &&
-            (errorText.includes("session not found") || errorText.includes("request failed (404)"));
-          if (!shouldRetryAll) throw err;
-          res = await apiFetch(fallbackSessionPath, { _silent: true });
-        }
+        const res = await loadSessionDetailsWithFallback(
+          fullSessionPath,
+          fallbackSessionPath,
+          { _silent: true },
+        );
         if (!active) return;
         const nextInsights = buildSessionInsights(res?.session || null);
         setInsights(nextInsights);
@@ -2688,3 +2683,5 @@ const remountApp = () => {
 };
 globalThis.__veRemountApp = remountApp;
 mountApp();
+
+

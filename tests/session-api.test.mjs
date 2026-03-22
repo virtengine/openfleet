@@ -14,6 +14,7 @@ import {
   resetSessionRetryMeta,
   resolveSessionWorkspaceHint,
 } from "../ui/modules/session-api.js";
+import { __test_buildSessionListState } from "../ui/components/session-list.js";
 
 describe("session api workspace routing", () => {
   it("preserves workspace=all in session detail paths", () => {
@@ -255,5 +256,72 @@ describe("session lifecycle/runtime metadata", () => {
         updatedAt: "2026-01-02T00:00:00.000Z",
       }),
     ).toBe("2026-01-02T00:00:00.000Z");
+  });
+});
+
+describe("session list state machine", () => {
+  it("classifies transient, not-found, fatal, and recovery states deterministically", () => {
+    const staleMeta = createSessionLoadMeta({
+      stale: true,
+      lastSuccessAt: "2026-01-02T00:00:00.000Z",
+    });
+
+    expect(__test_buildSessionListState({
+      loading: true,
+      meta: createSessionLoadMeta(),
+      hasCachedData: false,
+    })).toEqual(expect.objectContaining({
+      kind: "loading",
+      preserveSelection: true,
+    }));
+
+    expect(__test_buildSessionListState({
+      loading: true,
+      meta: staleMeta,
+      hasCachedData: true,
+    })).toEqual(expect.objectContaining({
+      kind: "refreshing",
+      preserveSelection: true,
+      stale: true,
+    }));
+
+    expect(__test_buildSessionListState({
+      error: new Error('{"error":"Session not found"}'),
+      meta: staleMeta,
+      hasCachedData: true,
+    })).toEqual(expect.objectContaining({
+      kind: "not-found",
+      preserveSelection: true,
+      stale: true,
+    }));
+
+    expect(__test_buildSessionListState({
+      error: new Error("Gateway timeout"),
+      meta: staleMeta,
+      hasCachedData: true,
+    })).toEqual(expect.objectContaining({
+      kind: "transient",
+      preserveSelection: true,
+      stale: true,
+    }));
+
+    expect(__test_buildSessionListState({
+      error: new Error("ECONNREFUSED"),
+      meta: createSessionLoadMeta(),
+      hasCachedData: false,
+    })).toEqual(expect.objectContaining({
+      kind: "fatal",
+      preserveSelection: true,
+      stale: false,
+    }));
+
+    expect(__test_buildSessionListState({
+      meta: createSessionLoadMeta(),
+      hasCachedData: true,
+    })).toEqual(expect.objectContaining({
+      kind: "ready",
+      preserveSelection: true,
+      stale: false,
+    }));
   });
 });

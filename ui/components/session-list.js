@@ -104,6 +104,58 @@ function sessionPath(id, action = "") {
   return buildSessionApiPath(id, action, { workspace });
 }
 
+function parseSessionApiError(error) {
+  const raw = String(error?.message || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.error === "string") return parsed.error;
+  } catch {
+    // Not a JSON API error body.
+  }
+  return raw;
+}
+
+function isScopedSessionNotFound(error) {
+  const message = parseSessionApiError(error).toLowerCase();
+  return message.includes("session not found") || message.includes("request failed (404)");
+}
+
+function buildSessionFetchErrorState(error, meta, hasCachedData) {
+  const preserveSelection = true;
+  if (isScopedSessionNotFound(error)) {
+    return {
+      kind: "not-found",
+      message: "Selected session was not found in the current workspace.",
+      preserveSelection,
+      stale: hasCachedData || Boolean(meta?.lastSuccessAt),
+    };
+  }
+  if (hasCachedData || Boolean(meta?.lastSuccessAt)) {
+    return {
+      kind: "transient",
+      message: "Using the last successful session list while reconnecting.",
+      preserveSelection,
+      stale: true,
+    };
+  }
+  return {
+    kind: "fatal",
+    message: "Sessions not available",
+    preserveSelection,
+    stale: false,
+  };
+}
+
+export async function loadSessionDetailsWithFallback(primaryPath, fallbackPath, options = {}) {
+  try {
+    return await apiFetch(primaryPath, options);
+  } catch (err) {
+    const shouldRetryAll = Boolean(fallbackPath) && fallbackPath !== primaryPath && isScopedSessionNotFound(err);
+    if (!shouldRetryAll) throw err;
+    return apiFetch(fallbackPath, options);
+  }
+}
 /* ─── Data loaders ─── */
 export async function loadSessions(filter = {}, _opts = {}) {
   const normalizedFilter = {
@@ -126,7 +178,12 @@ export async function loadSessions(filter = {}, _opts = {}) {
       const sessionIds = new Set(
         res.sessions.map((session) => String(session?.id || "")).filter(Boolean),
       );
-      if (selectedSessionId.value && !sessionIds.has(String(selectedSessionId.value))) {
+      const errorState = sessionsError.peek();
+      if (
+        selectedSessionId.value &&
+        !sessionIds.has(String(selectedSessionId.value)) &&
+        !(errorState && errorState.preserveSelection === true)
+      ) {
         selectedSessionId.value = null;
       }
     }
@@ -147,7 +204,7 @@ export async function loadSessions(filter = {}, _opts = {}) {
     sessionLoadMeta.value = nextMeta;
     scheduleSessionRetry(nextMeta);
     const hasCachedData = Array.isArray(sessionsData.peek()) && sessionsData.peek().length > 0;
-    sessionsError.value = hasCachedData || Boolean(nextMeta.lastSuccessAt) ? null : "unavailable";
+    sessionsError.value = buildSessionFetchErrorState(error, nextMeta, hasCachedData);
   } finally {
     sessionsLoading.value = false;
   }
@@ -163,26 +220,6 @@ function _bindSessionStore(targetId, messages, pagination) {
 export async function loadSessionMessages(id, opts = {}) {
   const targetSessionId = String(id || "").trim();
   if (!targetSessionId) return { ok: false, error: "invalid" };
-  const parseApiError = (err) => {
-    const raw = String(err?.message || "").trim();
-    if (!raw) return "";
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed.error === "string") {
-        return String(parsed.error).trim();
-      }
-    } catch {
-      // Not a JSON API error body.
-    }
-    return raw;
-  };
-  const isScopedSessionNotFound = (err) => {
-    const message = parseApiError(err).toLowerCase();
-    return (
-      message.includes("session not found") ||
-      message.includes("request failed (404)")
-    );
-  };
   const buildMessagesUrl = (path, limit, offset) => {
     try {
       const parsed = new URL(path, globalThis.location?.origin || "http://localhost");
@@ -926,7 +963,7 @@ export function SessionList({
   const allSessions = sessionsData.value || [];
   const loadMeta = sessionLoadMeta.value || createSessionLoadMeta();
   const isLoadingSessions = sessionsLoading.value === true;
-  const error = sessionsError.value;
+  const errorState = sessionsError.value;
   const showStaleBanner = Boolean(loadMeta.stale && (loadMeta.lastSuccessAt || allSessions.length > 0));
   const [retryCountdownNow, setRetryCountdownNow] = useState(() => Date.now());
   const hasSearch = search.trim().length > 0;
@@ -1193,7 +1230,7 @@ export function SessionList({
       ? "Manual retry is disabled while automatic backoff is active."
       : "");
 
-  if (error && !showStaleBanner) {
+  if (errorState?.kind === "fatal" && !showStaleBanner) {
     return html`
       <${Paper} elevation=${0} sx=${{ height: "100%", display: "flex", flexDirection: "column" }}>
         <${Box} sx=${{ p: 1.5, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1202,7 +1239,7 @@ export function SessionList({
         <${Divider} />
         <${Box} sx=${{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", p: 3, gap: 1.5 }}>
           <${Alert} severity="error" variant="outlined" sx=${{ mb: 1 }}>
-            Sessions not available
+            ${errorState?.message || "Sessions not available"}
           </${Alert}>
           <${Button}
             variant="outlined"
@@ -1256,7 +1293,7 @@ export function SessionList({
       html`
         <${Box} sx=${{ px: 1.5, pb: 1 }}>
           <${Alert}
-            severity="warning"
+            severity=${errorState?.kind === "not-found" ? "info" : "warning"}
             variant="outlined"
             action=${html`
               <${Button}
@@ -1272,6 +1309,9 @@ export function SessionList({
             <${Typography} variant="body2" sx=${{ fontWeight: 600 }}>
               Session list is showing stale data.
             </${Typography}>
+            ${errorState?.kind === "not-found"
+              ? html`<${Typography} variant="caption" component="div">${errorState.message}</${Typography}>`
+              : null}
             <${Typography} variant="caption" component="div">
               Last successful refresh: ${lastSuccessLabel}
             </${Typography}>
@@ -1452,4 +1492,5 @@ export function SessionList({
     </${Paper}>
   `;
 }
+
 
