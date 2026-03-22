@@ -104,7 +104,7 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
 
     // ── Fan-out: dispatch each task to the lifecycle workflow ─────────────
     node("dispatch-tasks", "loop.for_each", "Dispatch Tasks", {
-      items: "{{query-tasks.output}}",
+      items: "$ctx.getNodeOutput('query-tasks')?.output || []",
       itemVariable: "currentTask",
       indexVariable: "taskIndex",
       maxConcurrent: "{{maxConcurrent}}",
@@ -139,7 +139,10 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
   ],
   edges: [
     edge("trigger", "check-coordinator"),
-    edge("check-coordinator", "query-tasks", { condition: "result.result === true" }),
+    edge("check-coordinator", "query-tasks", {
+      condition:
+        "$output === true || $output?.result === true || $output?.value === true || result === true || result?.result === true || result?.value === true",
+    }),
     edge("query-tasks", "dispatch-tasks"),
     edge("dispatch-tasks", "join-dispatch"),
     edge("join-dispatch", "record-results"),
@@ -228,7 +231,7 @@ export const TASK_BATCH_PR_TEMPLATE = {
 
     // ── Fan-out: per-task agent + PR ─────────────────────────────────────
     node("for-each-task", "loop.for_each", "Process Each Task", {
-      items: "{{query-tasks.output}}",
+      items: "$ctx.getNodeOutput('query-tasks')?.output || []",
       itemVariable: "task",
       indexVariable: "idx",
       maxConcurrent: "{{maxConcurrent}}",
@@ -323,3 +326,4 @@ export const TASK_BATCH_PR_TEMPLATE = {
     requiredTemplates: ["template-bosun-pr-progressor"],
   },
 };
+

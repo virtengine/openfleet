@@ -1027,19 +1027,27 @@ describe("workflow setup profiles", () => {
     }
   });
 
-  it("alerts Telegram only for failed batch items and logs the routine summary", () => {
+  it("keeps batch dispatch wired to the parsed command output and resilient coordinator results", () => {
     const batchProcessor = getTemplate("template-task-batch-processor");
+    const batchPr = getTemplate("template-task-batch-pr");
+    const dispatchNode = batchProcessor?.nodes?.find((node) => node.id === "dispatch-tasks");
+    const batchPrDispatchNode = batchPr?.nodes?.find((node) => node.id === "for-each-task");
     const recordNode = batchProcessor?.nodes?.find((node) => node.id === "record-results");
     const failureGate = batchProcessor?.nodes?.find((node) => node.id === "has-batch-failures");
     const notifyNode = batchProcessor?.nodes?.find((node) => node.id === "notify-failures");
     const logNode = batchProcessor?.nodes?.find((node) => node.id === "log-summary");
+    const coordinatorEdge = batchProcessor?.edges?.find((edge) => edge.source === "check-coordinator" && edge.target === "query-tasks");
 
+    expect(dispatchNode?.config?.items).toBe("$ctx.getNodeOutput('query-tasks')?.output || []");
+    expect(batchPrDispatchNode?.config?.items).toBe("$ctx.getNodeOutput('query-tasks')?.output || []");
     expect(recordNode?.config?.value).toBe("{{dispatch-tasks}}");
     expect(failureGate?.config?.expression).toContain("batchResult?.failCount");
     expect(notifyNode?.type).toBe("notify.telegram");
     expect(notifyNode?.config?.message).toContain("{{batchResult.failCount}}");
     expect(logNode?.type).toBe("notify.log");
     expect(logNode?.config?.message).toContain("{{batchResult.successCount}}/{{batchResult.totalItems}}");
+    expect(coordinatorEdge?.condition).toContain("$output === true");
+    expect(coordinatorEdge?.condition).toContain("result?.value === true");
   });
 
   it("exposes built-in setup profiles with template selections", () => {
@@ -1527,3 +1535,4 @@ describe("template category coverage", () => {
     }
   });
 });
+
