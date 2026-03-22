@@ -28,7 +28,9 @@ describe("vitest-runner", () => {
     const prePushHook = readFileSync(resolve(process.cwd(), ".githooks", "pre-push"), "utf8");
 
     expect(prePushHook).toContain('"workflow/|workflow-*|workflow-pipeline-primitives*|manual-flows*|mcp-workflow-adapter*|bosun-native-workflow-nodes*|meeting-workflow*|run-evaluator*|webhook-gateway*|credential-store*|cron-scheduler*"');
-    expect(prePushHook).toContain('"agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*"');
+    expect(prePushHook).toContain('"infra/|monitor-*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*|weekly-agent-work-report*"');
+    expect(prePushHook).toContain('"agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*|weekly-agent-work-report*"');
+    expect(prePushHook).toContain('"telegram/|telegram-*|whatsapp-*|weekly-agent-work-report*"');
   });
   it("finds vitest from an ancestor node_modules directory", () => {
     const root = createFixture();
@@ -98,4 +100,5 @@ describe("vitest-runner", () => {
     expect(prePushHook).not.toContain("node node_modules/vitest/vitest.mjs");
   });
 });
+
 
