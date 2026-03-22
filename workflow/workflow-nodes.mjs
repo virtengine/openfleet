@@ -11439,12 +11439,16 @@ registerBuiltinNodeType("action.acquire_worktree", {
     required: ["branch", "taskId"],
   },
   async execute(node, ctx) {
-    const taskId = cfgOrCtx(node, ctx, "taskId");
-    const branch = cfgOrCtx(node, ctx, "branch");
-    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    // Outer guard: ensure we ALWAYS return structured output with recoveryNote
+    // so downstream {{acquire-worktree.recoveryNote}} templates never stay literal.
+    let taskId, branch, repoRoot, baseBranch;
+    try {
+    taskId = cfgOrCtx(node, ctx, "taskId");
+    branch = cfgOrCtx(node, ctx, "branch");
+    repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
     const baseBranchRaw = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
     const defaultTargetBranch = cfgOrCtx(node, ctx, "defaultTargetBranch", "origin/main");
-    const baseBranch = pickGitRef(baseBranchRaw, defaultTargetBranch, "origin/main", "main");
+    baseBranch = pickGitRef(baseBranchRaw, defaultTargetBranch, "origin/main", "main");
     const fetchTimeout = node.config?.fetchTimeout ?? 30000;
     const worktreeTimeout = node.config?.worktreeTimeout ?? 60000;
     const recoveryState = {
@@ -11786,6 +11790,25 @@ registerBuiltinNodeType("action.acquire_worktree", {
         retryAt,
         blockedReason,
         recoveryNote: retryable || !retryAt ? "" : ` — blocked until ${retryAt}`,
+      };
+    }
+    } catch (outerErr) {
+      // Outer catch: guard throws, cfgOrCtx errors, or any uncaught path.
+      // Always return structured output so {{acquire-worktree.recoveryNote}} resolves.
+      const errorMessage = String(outerErr?.message || outerErr || "acquire_worktree_outer_failure");
+      ctx.log(node.id, `Worktree acquisition outer error: ${errorMessage}`);
+      return {
+        success: false,
+        error: errorMessage,
+        branch: branch || "",
+        baseBranch: baseBranch || "",
+        retryable: true,
+        failureKind: "acquire_outer_error",
+        recordedAt: new Date().toISOString(),
+        autoRecoverDelayMs: 0,
+        retryAt: null,
+        blockedReason: errorMessage,
+        recoveryNote: "",
       };
     }
   },

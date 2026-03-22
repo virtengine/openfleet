@@ -289,7 +289,8 @@ function inferExecutionRole(options = {}, effectiveMode = "agent") {
   if (architectPlan) return "editor";
   return "";
 }
-function buildArchitectEditorFrame(options = {}, executionRole = "") {
+function buildArchitectEditorFrame(options = {}, effectiveMode = "agent") {
+  const executionRole = inferExecutionRole(options, effectiveMode);
   const repoMapBlock = formatRepoMap(deriveRepoMap(options));
   const architectPlan = String(options.architectPlan || options.planSummary || "").trim();
   const lines = ["## Architect/Editor Execution"];
