@@ -167,17 +167,6 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
         applySessionSnapshot(sessions, Date.now());
       }),
 
-        }
-        void refreshData();
-      }),
-      wsBridge.on("invalidate", (payload) => {
-        const reason = String(payload?.reason || "").toLowerCase();
-        if (reason.includes("session") || reason.includes("retry")) {
-          void refreshData();
-        }
-      }),
-    ].filter(Boolean);
-    return () => {
       for (const off of handlers) {
         try {
           off?.();
