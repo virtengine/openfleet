@@ -202,6 +202,7 @@ describe("task-cli taskStats repo area lock state", () => {
     vi.doUnmock("../task/task-store.mjs");
     vi.doUnmock("node:fs");
     delete process.env.BOSUN_HOME;
+    delete process.env.REPO_ROOT;
   });
 
   it("resolves active workspace store path using canonical workspace/repository keys", async () => {
