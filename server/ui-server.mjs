@@ -17132,7 +17132,11 @@ async function handleApi(req, res, url) {
         return;
       }
       const engine = wfCtx.engine;
-      if (typeof _wfTemplates?.reconcileInstalledTemplates === "function") {
+      if (
+        typeof _wfTemplates?.reconcileInstalledTemplates === "function"
+        && engine
+        && typeof engine.list === "function"
+      ) {
         _wfTemplates.reconcileInstalledTemplates(engine, {
           autoUpdateUnmodified: true,
         });
