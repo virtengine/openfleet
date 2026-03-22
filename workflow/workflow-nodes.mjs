@@ -12087,6 +12087,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
       taskMeta?.runId,
       ctx.data?.runId,
       ctx.id,
+      ctx.id,
       process.env.BOSUN_RUN_ID,
     );
     const matchedSkills = findRelevantSkills(
@@ -12153,7 +12154,22 @@ registerBuiltinNodeType("action.build_task_prompt", {
       if (docName !== "AGENTS.md") return content;
       const marker = /(^|\n)## Agent Learnings\b/m;
       const match = marker.exec(content);
-      if (!match) return content;
+      const start = match.index;
+      const afterMarkerPos = match.index + match[0].length;
+      const rest = content.slice(afterMarkerPos);
+      const nextHeaderMatch = /(^|\n)## /m.exec(rest);
+      const before = content.slice(0, start).trimEnd();
+      if (!nextHeaderMatch) {
+        // No subsequent section; drop everything from the Agent Learnings marker onward.
+        return before;
+      }
+      // Compute the absolute position of the next header's "##".
+      const headerOffsetInRest =
+        nextHeaderMatch.index + (nextHeaderMatch[1] ? nextHeaderMatch[1].length : 0);
+      const nextHeaderPos = afterMarkerPos + headerOffsetInRest;
+      const after = content.slice(nextHeaderPos);
+      // Preserve later sections, ensuring reasonable spacing between sections.
+      return before + (after ? "\n\n" + after.replace(/^\s*/, "") : "");
       const start = match.index;
       const afterMarkerPos = match.index + match[0].length;
       const rest = content.slice(afterMarkerPos);

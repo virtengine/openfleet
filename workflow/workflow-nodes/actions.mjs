@@ -5194,6 +5194,9 @@ registerNodeType("action.build_task_prompt", {
       const nextSectionMatch = /^##\s+/m.exec(afterSection);
       if (!nextSectionMatch) return before;
       const afterIndex = sectionStart + headerLength + nextSectionMatch.index;
+      const nextSectionMatch = /^##\s+/m.exec(afterSection);
+      if (!nextSectionMatch) return before;
+      const afterIndex = sectionStart + headerLength + nextSectionMatch.index;
       return `${before}\n\n${text.slice(afterIndex).trimStart()}`.trim();
     };
 
