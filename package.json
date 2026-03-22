@@ -252,6 +252,7 @@
     "git/sdk-conflict-resolver.mjs",
     "infra/session-tracker.mjs",
     "infra/test-runtime.mjs",
+    "infra/worktree-recovery-state.mjs",
     "setup.mjs",
     "server/bosun-mcp-server.mjs",
     "server/setup-web-server.mjs",
