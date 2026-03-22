@@ -7699,12 +7699,7 @@ registerBuiltinNodeType("loop.for_each", {
           try {
             const childRunOpts = makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: subWorkflowId });
             if (mode === "dispatch") {
-              let dispatched;
-              try {
-                dispatched = Promise.resolve(engine.execute(subWorkflowId, itemData, childRunOpts));
-              } catch (err) {
-                dispatched = Promise.reject(err);
-              }
+              const dispatched = Promise.resolve(engine.execute(subWorkflowId, itemData, childRunOpts));
               dispatched
                 .then((runCtx) => {
                   const status = runCtx?.errors?.length ? "failed" : "completed";

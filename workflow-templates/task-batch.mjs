@@ -230,7 +230,7 @@ export const TASK_BATCH_PR_TEMPLATE = {
     // ── Fan-out: per-task agent + PR ─────────────────────────────────────
     node("for-each-task", "loop.for_each", "Process Each Task", {
       items: "$ctx.getNodeOutput('query-tasks')?.output || []",
-      itemVariable: "task",
+      variable: "task",
       indexVariable: "idx",
       maxConcurrent: "{{maxConcurrent}}",
     }, { x: 400, y: 310 }),
