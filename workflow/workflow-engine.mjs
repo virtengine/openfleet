@@ -66,6 +66,7 @@ function ensureWorkspaceManagerSync() {
 const TAG = "[workflow-engine]";
 const WORKFLOW_DIR_NAME = "workflows";
 const WORKFLOW_RUNS_DIR = "workflow-runs";
+const WORKFLOW_TRAJECTORIES_DIR = "trajectories";
 function readBoundedEnvInt(name, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
   const parsed = Number(process.env[name]);
   if (!Number.isFinite(parsed)) return fallback;
@@ -724,6 +725,15 @@ export class WorkflowContext {
       nodeInputs: { ...this._nodeInputs },
       dagState: this.data?._dagState || null,
       issueAdvisor: this.data?._issueAdvisor || null,
+      replayTrajectory: this.data?._replayTrajectory || null,
+      stepSummaries: Array.isArray(this.data?._replayTrajectory?.steps)
+        ? this.data._replayTrajectory.steps.map((s) => ({
+            nodeId: s.nodeId,
+            label: s.label,
+            status: s.status,
+            summary: s.summary,
+          }))
+        : [],
     };
   }
 }
@@ -920,6 +930,57 @@ export class WorkflowEngine extends EventEmitter {
     return issueAdvisor;
   }
 
+  _buildStepSummary(node, { status = null, result = undefined, error = null } = {}) {
+    const nodeId = String(node?.id || "").trim() || null;
+    const label = String(node?.label || nodeId || "step").trim();
+    const normalizedStatus = String(status || "unknown").trim().toLowerCase() || "unknown";
+    let detail = null;
+    if (error) {
+      detail = String(error).trim();
+    } else if (result !== undefined) {
+      detail = this._summarizeTaskTraceNodeResult(result);
+    }
+    if (!detail) {
+      detail = normalizedStatus === "completed"
+        ? "Step completed successfully."
+        : (normalizedStatus === "failed" ? "Step failed." : `Step ${normalizedStatus}.`);
+    }
+    return {
+      nodeId,
+      label,
+      status: normalizedStatus,
+      summary: `${label}: ${detail}`,
+    };
+  }
+
+  _appendReplayTrajectoryStep(ctx, node, { status = null, result = undefined, error = null, attempt = undefined } = {}) {
+    if (!ctx || !node?.id) return;
+    const timing = ctx.getNodeTiming(node.id) || {};
+    const outputSummary = result !== undefined ? this._summarizeTaskTraceNodeResult(result) : null;
+    const replay =
+      ctx.data?._replayTrajectory && typeof ctx.data._replayTrajectory === "object"
+        ? ctx.data._replayTrajectory
+        : { runId: ctx.id, restoredFrom: ctx.data?._restoredFrom || null, steps: [] };
+    const step = {
+      nodeId: node.id,
+      type: node.type || null,
+      label: node.label || null,
+      status: status || null,
+      attempt: Number.isFinite(Number(attempt)) ? Number(attempt) : ctx.getRetryCount(node.id),
+      startedAt: Number.isFinite(Number(timing.startedAt)) ? Number(timing.startedAt) : null,
+      endedAt: Number.isFinite(Number(timing.endedAt)) ? Number(timing.endedAt) : null,
+      input: ctx.getNodeInput(node.id) || null,
+      outputSummary,
+      error: error ? String(error) : null,
+      summary: this._buildStepSummary(node, { status, result, error }).summary,
+    };
+    replay.runId = ctx.id;
+    replay.restoredFrom = ctx.data?._restoredFrom || replay.restoredFrom || null;
+    replay.steps = Array.isArray(replay.steps) ? replay.steps.filter((entry) => entry?.nodeId !== node.id) : [];
+    replay.steps.push(step);
+    ctx.data._replayTrajectory = replay;
+  }
+
   _recordDagNodeOutcome(ctx, node, {
     status,
     result = undefined,
@@ -949,6 +1010,7 @@ export class WorkflowEngine extends EventEmitter {
           : undefined,
     });
     ctx.annotateDagNode(node.id, nodePatch);
+    this._appendReplayTrajectoryStep(ctx, node, { status, result, error, attempt });
     const workflowStatus = error
       ? WorkflowStatus.FAILED
       : (ctx.data?._workflowTerminalStatus || WorkflowStatus.RUNNING);
@@ -2713,9 +2775,16 @@ export class WorkflowEngine extends EventEmitter {
     const detail = run.detail || {};
     const workflowId = run.workflowId || detail.data?._workflowId;
     const snapshotsDir = resolve(this.runsDir, "snapshots");
+    const trajectoriesDir = resolve(this.runsDir, WORKFLOW_TRAJECTORIES_DIR);
     mkdirSync(snapshotsDir, { recursive: true });
+    mkdirSync(trajectoriesDir, { recursive: true });
     const snapshotId = runId;
     const snapshotPath = resolve(snapshotsDir, `${snapshotId}.json`);
+    const trajectoryPath = resolve(trajectoriesDir, `${snapshotId}.json`);
+    const replayTrajectory =
+      detail.replayTrajectory && typeof detail.replayTrajectory === "object"
+        ? detail.replayTrajectory
+        : { runId, restoredFrom: detail?.data?._restoredFrom || null, steps: [] };
     const snapshot = {
       snapshotId,
       runId,
@@ -2728,9 +2797,12 @@ export class WorkflowEngine extends EventEmitter {
       retryAttempts: detail.retryAttempts || {},
       variables: detail.data || {},
       errors: detail.errors || [],
+      replayTrajectory,
+      stepSummaries: detail.stepSummaries || [],
     };
     writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2), "utf8");
-    return { snapshotId, path: snapshotPath };
+    writeFileSync(trajectoryPath, JSON.stringify(replayTrajectory, null, 2), "utf8");
+    return { snapshotId, path: snapshotPath, trajectoryPath };
   }
 
   /**
@@ -2770,6 +2842,13 @@ export class WorkflowEngine extends EventEmitter {
     ctx.data._workflowId = workflowId;
     ctx.data._workflowName = def.name;
     ctx.data._restoredFrom = snapshotId;
+    ctx.data._replayTrajectory = {
+      runId: ctx.id,
+      restoredFrom: snapshotId,
+      steps: Array.isArray(snapshot.replayTrajectory?.steps)
+        ? snapshot.replayTrajectory.steps.map((step) => ({ ...step }))
+        : [],
+    };
     ctx.variables = { ...def.variables, ...(opts.variables || {}) };
 
     // Pre-seed completed nodes from snapshot
@@ -2831,11 +2910,13 @@ export class WorkflowEngine extends EventEmitter {
       try {
         const data = JSON.parse(readFileSync(resolve(snapshotsDir, file), "utf8"));
         if (workflowId && data.workflowId !== workflowId) continue;
+        const trajectoryFile = resolve(snapshotsDir, "..", WORKFLOW_TRAJECTORIES_DIR, `${data.snapshotId}.json`);
         snapshots.push({
           snapshotId: data.snapshotId,
           runId: data.runId,
           workflowId: data.workflowId,
           createdAt: data.createdAt,
+          hasTrajectory: existsSync(trajectoryFile),
         });
       } catch {
         // skip corrupt snapshot files
@@ -4464,3 +4545,4 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+
