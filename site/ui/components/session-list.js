@@ -644,7 +644,7 @@ function SwipeableSessionItem({
 
   const title = s.title || s.taskId || "Untitled";
   const isArchived = s.status === "archived";
-  const isCompleted = s.status === "completed";
+
   const lifecycleState = getSessionLifecycleState(s);
   const runtimeState = getSessionRuntimeState(s);
   const recencyAt = getSessionRecencyTimestamp(s);
