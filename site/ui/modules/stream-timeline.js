@@ -309,48 +309,42 @@ export function buildTraceTimelineBlocks(messages = []) {
       continue;
     }
 
+    const itemType = String(msg?.meta?.itemType || "").toLowerCase();
+    if (itemType === "file_change") {
+      const entry = buildTimelineEntry(msg);
+      blocks.push({
+        key: `patch_result:${entry.id}`,
+        phase: entry.phase || "patch_result",
+        tone: entry.tone,
+        title: entry.title,
+        summary: entry.title,
+        chips: entry.chips,
+        entries: [entry],
+        hasError: false,
+      });
+      index += 1;
+      continue;
+    }
+
     const thinkingEntries = [];
     while (index < list.length) {
       const next = list[index];
       const nextType = String(next?.type || "").toLowerCase();
-      if (nextType === "tool_call" || nextType === "tool_result" || nextType === "tool_output" || nextType === "error" || nextType === "stream_error") {
+      const nextItemType = String(next?.meta?.itemType || "").toLowerCase();
+      if (
+        nextType === "tool_call" ||
+        nextType === "tool_result" ||
+        nextType === "tool_output" ||
+        nextType === "error" ||
+        nextType === "stream_error" ||
+        nextItemType === "file_change"
+      ) {
         break;
-      }
-      const itemType = next?.meta?.itemType;
-      if (itemType === "file_change") {
-        const entry = buildTimelineEntry(next);
-        blocks.push({
-          key: `patch_result:${entry.id}`,
-          phase: entry.phase || "patch_result",
-          tone: entry.tone,
-          title: entry.title,
-          summary: entry.title,
-          chips: entry.chips,
-          entries: [entry],
-          hasError: false,
-        });
-        index += 1;
-        continue;
-      }
-      const itemType = next?.meta?.itemType;
-      if (itemType === "file_change") {
-        const entry = buildTimelineEntry(next);
-        blocks.push({
-          key: `patch_result:${entry.id}`,
-          phase: entry.phase || "patch_result",
-          tone: entry.tone,
-          title: entry.title,
-          summary: entry.title,
-          chips: entry.chips,
-          entries: [entry],
-          hasError: false,
-        });
-        index += 1;
-        continue;
       }
       thinkingEntries.push(buildTimelineEntry(next, "thinking"));
       index += 1;
     }
+
     if (thinkingEntries.length) {
       blocks.push(createThinkingBlock(thinkingEntries));
     }

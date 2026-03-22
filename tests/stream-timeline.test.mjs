@@ -101,4 +101,36 @@ describe("stream timeline helpers", () => {
     expect(blocks[0].hasError).toBe(true);
     expect(blocks[0].entries.map((entry) => entry.phase)).toEqual(["tool_call", "error"]);
   });
+
+  it("emits file_change events as standalone patch blocks between thinking groups", () => {
+    const blocks = buildTraceTimelineBlocks([
+      {
+        type: "system",
+        content: "Planning the edit",
+        timestamp: "2026-03-20T01:00:09.000Z",
+      },
+      {
+        type: "system",
+        content: "Updated ui/modules/stream-timeline.js",
+        meta: {
+          itemType: "file_change",
+          toolName: "apply_patch",
+        },
+        timestamp: "2026-03-20T01:00:10.000Z",
+      },
+      {
+        type: "system",
+        content: "Reviewing follow-up changes",
+        timestamp: "2026-03-20T01:00:11.000Z",
+      },
+    ]);
+
+    expect(blocks).toHaveLength(3);
+    expect(blocks.map((block) => block.phase)).toEqual([
+      "thinking",
+      "patch_result",
+      "thinking",
+    ]);
+    expect(blocks[1].chips).toContain("apply_patch");
+  });
 });
