@@ -10199,7 +10199,6 @@ async function getPersistedOwnedTaskIds(node, ctx) {
           if (ownerId) inactiveClaimOwnerIds.add(ownerId);
           continue;
         }
-        const taskId = pickTaskString(claim?.task_id, claim?.taskId);
         if (taskId) activeTaskIds.add(taskId);
         if (ownerId) activeOwnerIds.add(ownerId);
       }
