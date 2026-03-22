@@ -266,7 +266,9 @@ function deriveRepoMap(options = {}) {
   const explicit = normalizeRepoMap(options.repoMap);
   if (explicit) return explicit;
   const changedFiles = Array.isArray(options.changedFiles)
-    ? options.changedFiles.map((value) => String(value || "").trim()).filter(Boolean)
+    ? options.changedFiles
+        .map((value) => String(value || "").trim().replace(/[\r\n\x00-\x1f\x7f\u0080-\u009f\u2028\u2029]/g, ""))
+        .filter(Boolean)
     : [];
   if (!changedFiles.length) return null;
   const root = String(options.repoRoot || options.cwd || resolveRepoRoot() || "").trim();
@@ -279,15 +281,15 @@ function deriveRepoMap(options = {}) {
 }
 
 function inferExecutionRole(options = {}, effectiveMode = "agent") {
+  const VALID_ROLES = new Set(["architect", "editor"]);
   const explicitRole = String(options.executionRole || "").trim().toLowerCase();
-  if (explicitRole) return explicitRole;
+  if (explicitRole) return VALID_ROLES.has(explicitRole) ? explicitRole : "";
   if (effectiveMode === "plan") return "architect";
   const architectPlan = String(options.architectPlan || options.planSummary || "").trim();
   if (architectPlan) return "editor";
   return "";
 }
-function buildArchitectEditorFrame(options = {}, effectiveMode = "agent") {
-  const executionRole = inferExecutionRole(options, effectiveMode);
+function buildArchitectEditorFrame(options = {}, executionRole = "") {
   const repoMapBlock = formatRepoMap(deriveRepoMap(options));
   const architectPlan = String(options.architectPlan || options.planSummary || "").trim();
   const lines = ["## Architect/Editor Execution"];
@@ -1191,10 +1193,8 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     ? appendAttachmentsToPrompt(userMessage, attachments).message
     : userMessage;
   const toolContract = buildPrimaryToolCapabilityContract(options);
-  const architectEditorFrame = buildArchitectEditorFrame(
-    options,
-    effectiveMode,
-  );
+  const executionRole = inferExecutionRole(options, effectiveMode);
+  const architectEditorFrame = buildArchitectEditorFrame(options, executionRole);
   const messageWithToolContract = [
     selectedProfile.block,
     toolContract,

@@ -332,6 +332,107 @@ describe("primary-agent runtime safeguards", () => {
     expect(result.finalResponse).toBe("codex-recovered");
   });
 
+  it("injects architect framing when mode is plan", async () => {
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    await primaryAgent.initPrimaryAgent("codex-sdk");
+
+    await primaryAgent.execPrimaryPrompt("do the thing", {
+      sessionId: "session-plan",
+      mode: "plan",
+    });
+
+    const call = mockExecCodexPrompt.mock.calls[0];
+    const prompt = call[0];
+    expect(prompt).toContain("## Architect/Editor Execution");
+    expect(prompt).toContain("You are the architect phase.");
+    expect(prompt).toContain("do the thing");
+  });
+
+  it("injects repo map block when changedFiles are provided", async () => {
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    await primaryAgent.initPrimaryAgent("codex-sdk");
+
+    await primaryAgent.execPrimaryPrompt("fix the bug", {
+      sessionId: "session-repomap",
+      changedFiles: ["src/agent/primary-agent.mjs", "tests/primary-agent.runtime.test.mjs"],
+    });
+
+    const call = mockExecCodexPrompt.mock.calls[0];
+    const prompt = call[0];
+    expect(prompt).toContain("## Repo Map");
+    expect(prompt).toContain("primary-agent.mjs");
+    expect(prompt).toContain("fix the bug");
+  });
+
+  it("injects repo map block when explicit repoMap option is provided", async () => {
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    await primaryAgent.initPrimaryAgent("codex-sdk");
+
+    await primaryAgent.execPrimaryPrompt("refactor", {
+      sessionId: "session-explicit-repomap",
+      repoMap: {
+        root: "/my/project",
+        files: [{ path: "lib/utils.mjs", summary: "utility helpers", symbols: ["formatDate"] }],
+      },
+    });
+
+    const call = mockExecCodexPrompt.mock.calls[0];
+    const prompt = call[0];
+    expect(prompt).toContain("## Repo Map");
+    expect(prompt).toContain("lib/utils.mjs");
+    expect(prompt).toContain("refactor");
+  });
+
+  it("sanitizes control characters from changedFiles paths", async () => {
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    await primaryAgent.initPrimaryAgent("codex-sdk");
+
+    await primaryAgent.execPrimaryPrompt("task", {
+      sessionId: "session-sanitize",
+      changedFiles: [
+        "src/valid.mjs",
+        "evil\ninjected/path.mjs",
+        "another\x00file.mjs",
+        "carriage\rreturn.mjs",
+        "del\x7fchar.mjs",
+        "line\u2028separator.mjs",
+        "para\u2029separator.mjs",
+      ],
+    });
+
+    const call = mockExecCodexPrompt.mock.calls[0];
+    const prompt = call[0];
+    expect(prompt).toContain("src/valid.mjs");
+    // The newline in "evil\ninjected/path.mjs" should be stripped, giving "evilinjected/path.mjs"
+    expect(prompt).toContain("evilinjected/path.mjs");
+    expect(prompt).not.toContain("evil\n");
+    expect(prompt).not.toContain("\x00");
+    expect(prompt).not.toContain("\r");
+    expect(prompt).not.toContain("\x7f");
+    expect(prompt).not.toContain("\u2028");
+    expect(prompt).not.toContain("\u2029");
+  });
+
+  it("ignores unknown executionRole values and falls back to default inference", async () => {
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    await primaryAgent.initPrimaryAgent("codex-sdk");
+
+    await primaryAgent.execPrimaryPrompt("hello", {
+      sessionId: "session-badrole",
+      executionRole: "unknown-role",
+    });
+
+    const call = mockExecCodexPrompt.mock.calls[0];
+    const prompt = call[0];
+    expect(prompt).not.toContain("You are the architect phase.");
+    expect(prompt).not.toContain("You are the editor phase.");
+  });
+
   it("suppresses failover until repeated infrastructure failures", async () => {
     process.env.PRIMARY_AGENT_RECOVERY_RETRY_ATTEMPTS = "0";
     process.env.PRIMARY_AGENT_FAILOVER_CONSECUTIVE_INFRA_ERRORS = "3";
