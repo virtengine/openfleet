@@ -52,24 +52,57 @@ describe("ui-server session actions", () => {
 
     const pauseResponse = await fetch(
       `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/pause?workspace=all`,
-      { method: "POST" },
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason: "Need approval", checkpointId: `${sessionId}:approval-1` }),
+      },
     ).then((response) => response.json());
     expect(pauseResponse.ok).toBe(true);
+    expect(pauseResponse.approvalState?.status).toBe("pending");
 
-    const pausedSession = await fetch(
-      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}?workspace=all&full=1`,
+    const blockedResume = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/resume?workspace=all`,
+      { method: "POST" },
+    );
+    expect(blockedResume.status).toBe(409);
+
+    const approvalResponse = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/approval?workspace=all`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ response: true, resolvedBy: "test-user", resolutionToken: "token-1" }),
+      },
     ).then((response) => response.json());
-    expect(pausedSession.session?.status).toBe("paused");
+    expect(approvalResponse.ok).toBe(true);
+    expect(approvalResponse.duplicate).toBe(false);
+    expect(approvalResponse.approvalState?.status).toBe("approved");
 
-    const resumeResponse = await fetch(
+    const duplicateApproval = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/approval?workspace=all`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ response: true, resolvedBy: "test-user", resolutionToken: "token-1" }),
+      },
+    ).then((response) => response.json());
+    expect(duplicateApproval.ok).toBe(true);
+    expect(duplicateApproval.duplicate).toBe(true);
+    expect(duplicateApproval.approvalState?.callbackCount).toBe(2);
+
+    const resumed = await fetch(
       `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/resume?workspace=all`,
       { method: "POST" },
     ).then((response) => response.json());
-    expect(resumeResponse.ok).toBe(true);
+    expect(resumed.ok).toBe(true);
+    expect(resumed.resumedFromApproval).toBe(true);
 
     const resumedSession = await fetch(
       `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}?workspace=all&full=1`,
     ).then((response) => response.json());
     expect(resumedSession.session?.status).toBe("active");
+    expect(resumedSession.session?.approvalState?.status).toBe("approved");
   });
 });
+

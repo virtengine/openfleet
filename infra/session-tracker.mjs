@@ -58,6 +58,28 @@ function isTerminalSessionStatus(status) {
   return TERMINAL_SESSION_STATUSES.has(String(status || "").trim().toLowerCase());
 }
 
+function normalizeApprovalState(state = {}) {
+  if (!state || typeof state !== "object") return null;
+  const checkpointId = String(state.checkpointId || "").trim();
+  if (!checkpointId) return null;
+  return {
+    checkpointId,
+    status: String(state.status || "pending").trim() || "pending",
+    waiting: state.waiting !== false,
+    reason: String(state.reason || "").trim() || null,
+    requestedAt: Number.isFinite(Number(state.requestedAt)) ? Number(state.requestedAt) : Date.now(),
+    resolvedAt: Number.isFinite(Number(state.resolvedAt)) ? Number(state.resolvedAt) : null,
+    resolvedBy: String(state.resolvedBy || "").trim() || null,
+    response: state.response !== undefined ? state.response : null,
+    callbackCount: Math.max(0, Number(state.callbackCount || 0) || 0),
+    lastCallbackAt: Number.isFinite(Number(state.lastCallbackAt)) ? Number(state.lastCallbackAt) : null,
+    resolutionToken: String(state.resolutionToken || "").trim() || null,
+    telemetry: state.telemetry && typeof state.telemetry === "object"
+      ? { ...state.telemetry }
+      : {},
+  };
+}
+
 function randomToken(length = 8) {
   return randomBytes(Math.ceil(length / 2)).toString("hex").slice(0, length);
 }
@@ -617,6 +639,7 @@ export class SessionTracker {
       lastActivityAt: Date.now(),
       accumulatedAt: null,
       metadata,
+      approvalState: normalizeApprovalState(metadata?.approvalState) || null,
       maxMessages: resolvedMax,
       insights: buildSessionInsights({ messages: [] }),
     };
@@ -706,6 +729,94 @@ export class SessionTracker {
     this.#accumulateCompletedSession(session, sessionId);
     this.#markDirty(sessionId);
     emitSessionStateEvent(session, "session-status", { status });
+  }
+
+  setSessionApprovalState(sessionId, approvalState, options = {}) {
+    const session = this.#sessions.get(sessionId);
+    if (!session) return null;
+    const next = normalizeApprovalState(approvalState);
+    session.approvalState = next;
+    if (session.metadata && typeof session.metadata === "object") {
+      if (next) session.metadata.approvalState = { ...next };
+      else delete session.metadata.approvalState;
+    }
+    if (options.status) {
+      session.status = String(options.status).trim() || session.status;
+      if (session.status === "active") session.endedAt = null;
+      if (isTerminalSessionStatus(session.status)) session.endedAt = Date.now();
+    }
+    session.lastActivityAt = Date.now();
+    session.lastActiveAt = new Date().toISOString();
+    this.#refreshDerivedState(session);
+    this.#markDirty(sessionId);
+    emitSessionStateEvent(session, "session-approval-state", {
+      approvalState: next,
+      status: session.status,
+    });
+    return next ? { ...next } : null;
+  }
+
+  resolveSessionApproval(sessionId, resolution = {}) {
+    const session = this.#sessions.get(sessionId);
+    if (!session) return { ok: false, error: "Session not found" };
+    const current = normalizeApprovalState(session.approvalState || session.metadata?.approvalState);
+    if (!current) return { ok: false, error: "No pending approval" };
+
+    const response = resolution?.response !== undefined ? resolution.response : true;
+    const resolvedBy = String(resolution?.resolvedBy || "api").trim() || "api";
+    const resolutionToken = String(resolution?.resolutionToken || current.resolutionToken || "").trim() || null;
+    const now = Date.now();
+    const nextCallbackCount = current.callbackCount + 1;
+
+    if (!current.waiting || current.status !== "pending") {
+      const duplicate = {
+        ...current,
+        callbackCount: nextCallbackCount,
+        lastCallbackAt: now,
+      };
+      session.approvalState = duplicate;
+      if (session.metadata && typeof session.metadata === "object") {
+        session.metadata.approvalState = { ...duplicate };
+      }
+      this.#markDirty(sessionId);
+      emitSessionStateEvent(session, "session-approval-duplicate", {
+        approvalState: duplicate,
+        status: session.status,
+      });
+      return { ok: true, duplicate: true, approvalState: { ...duplicate } };
+    }
+
+    const next = {
+      ...current,
+      waiting: false,
+      status: "approved",
+      resolvedAt: now,
+      resolvedBy,
+      response,
+      callbackCount: nextCallbackCount,
+      lastCallbackAt: now,
+      resolutionToken,
+      telemetry: {
+        ...(current.telemetry || {}),
+        approvedAt: now,
+        approvedBy: resolvedBy,
+        duplicateCallbacks: Math.max(0, nextCallbackCount - 1),
+      },
+    };
+    session.approvalState = next;
+    if (session.metadata && typeof session.metadata === "object") {
+      session.metadata.approvalState = { ...next };
+    }
+    session.status = "paused";
+    session.lastActivityAt = now;
+    session.lastActiveAt = new Date(now).toISOString();
+    this.#refreshDerivedState(session);
+    this.#markDirty(sessionId);
+    emitSessionStateEvent(session, "session-approval-resolved", {
+      approvalState: next,
+      status: session.status,
+    });
+    return { ok: true, duplicate: false, approvalState: { ...next } };
   }
 
   /**
@@ -1658,6 +1769,14 @@ export function getSessionById(sessionId) {
   return getSessionTracker().getSessionById(sessionId);
 }
 
+export function setSessionApprovalState(sessionId, approvalState, options) {
+  return getSessionTracker().setSessionApprovalState(sessionId, approvalState, options);
+}
+
+export function resolveSessionApproval(sessionId, resolution) {
+  return getSessionTracker().resolveSessionApproval(sessionId, resolution);
+}
+
 // ── Singleton ───────────────────────────────────────────────────────────────
 
 /** @type {SessionTracker|null} */
@@ -1708,3 +1827,5 @@ export function _resetSingleton(nextOptions) {
     _instance = new SessionTracker(nextOptions);
   }
 }
+
+

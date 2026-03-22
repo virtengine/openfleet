@@ -161,6 +161,8 @@ import {
   getSessionTracker,
   addSessionEventListener,
   addSessionStateListener,
+  setSessionApprovalState,
+  resolveSessionApproval,
 } from "../infra/session-tracker.mjs";
 import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import {
@@ -19763,9 +19765,55 @@ async function handleApi(req, res, url) {
           jsonResponse(res, 404, { ok: false, error: "Session not found" });
           return;
         }
-        tracker.updateSessionStatus(sessionId, "paused");
-        jsonResponse(res, 200, { ok: true });
-        broadcastUiEvent(["sessions"], "invalidate", { reason: "session-paused", sessionId });
+        const body = await readJsonBody(req).catch(() => ({}));
+        const checkpointId = String(body?.checkpointId || `${sessionId}:approval`).trim();
+        const approvalState = setSessionApprovalState(sessionId, {
+          checkpointId,
+          status: "pending",
+          waiting: true,
+          reason: String(body?.reason || "Approval required").trim() || "Approval required",
+          requestedAt: Date.now(),
+          response: null,
+          callbackCount: 0,
+          lastCallbackAt: null,
+          resolutionToken: String(body?.resolutionToken || "").trim() || null,
+          telemetry: {
+            source: String(body?.source || "session-pause").trim() || "session-pause",
+            kind: "approval_checkpoint",
+          },
+        }, { status: "paused" });
+        jsonResponse(res, 200, { ok: true, approvalState });
+        broadcastUiEvent(["sessions", "telemetry"], "invalidate", { reason: "session-paused", sessionId, checkpointId });
+        broadcastSessionsSnapshot();
+      } catch (err) {
+        jsonResponse(res, 500, { ok: false, error: err.message });
+      }
+      return;
+    }
+
+    if (action === "approval" && req.method === "POST") {
+      try {
+        const session = getScopedSession();
+        if (!session) {
+          jsonResponse(res, 404, { ok: false, error: "Session not found" });
+          return;
+        }
+        const body = await readJsonBody(req);
+        const resolved = resolveSessionApproval(sessionId, {
+          response: body?.response,
+          resolvedBy: body?.resolvedBy || "api",
+          resolutionToken: body?.resolutionToken,
+        });
+        if (!resolved?.ok) {
+          jsonResponse(res, 400, { ok: false, error: resolved?.error || "approval failed" });
+          return;
+        }
+        jsonResponse(res, 200, { ok: true, duplicate: resolved.duplicate === true, approvalState: resolved.approvalState });
+        broadcastUiEvent(["sessions", "telemetry"], "invalidate", {
+          reason: resolved.duplicate ? "session-approval-duplicate" : "session-approval-resolved",
+          sessionId,
+          checkpointId: resolved?.approvalState?.checkpointId || null,
+        });
         broadcastSessionsSnapshot();
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
@@ -19780,9 +19828,14 @@ async function handleApi(req, res, url) {
           jsonResponse(res, 404, { ok: false, error: "Session not found" });
           return;
         }
+        const approvalState = session?.approvalState || session?.metadata?.approvalState || null;
+        if (approvalState?.checkpointId && approvalState?.status === "pending") {
+          jsonResponse(res, 409, { ok: false, error: "Approval still pending", approvalState });
+          return;
+        }
         tracker.updateSessionStatus(sessionId, "active");
-        jsonResponse(res, 200, { ok: true });
-        broadcastUiEvent(["sessions"], "invalidate", { reason: "session-resumed", sessionId });
+        jsonResponse(res, 200, { ok: true, resumedFromApproval: approvalState?.status === "approved", approvalState });
+        broadcastUiEvent(["sessions", "telemetry"], "invalidate", { reason: "session-resumed", sessionId });
         broadcastSessionsSnapshot();
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
@@ -22270,3 +22323,4 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+

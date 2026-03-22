@@ -478,3 +478,42 @@ describe("session-tracker", () => {
     });
   });
 });
+
+describe("SessionTracker approval checkpoints", () => {
+  it("persists approval state and treats duplicate callbacks idempotently", async () => {
+    const { createSessionTracker } = await import("../infra/session-tracker.mjs");
+    const tracker = createSessionTracker({ persistDir: null });
+    tracker.createSession({ id: "approval-session", type: "manual" });
+
+    tracker.setSessionApprovalState("approval-session", {
+      checkpointId: "approval-session:cp1",
+      status: "pending",
+      waiting: true,
+      reason: "Need approval",
+      requestedAt: 123,
+    }, { status: "paused" });
+
+    const first = tracker.resolveSessionApproval("approval-session", {
+      response: true,
+      resolvedBy: "tester",
+      resolutionToken: "token-a",
+    });
+    expect(first.ok).toBe(true);
+    expect(first.duplicate).toBe(false);
+    expect(first.approvalState.status).toBe("approved");
+
+    const second = tracker.resolveSessionApproval("approval-session", {
+      response: true,
+      resolvedBy: "tester",
+      resolutionToken: "token-a",
+    });
+    expect(second.ok).toBe(true);
+    expect(second.duplicate).toBe(true);
+    expect(second.approvalState.callbackCount).toBe(2);
+
+    const session = tracker.getSessionById("approval-session");
+    expect(session.approvalState.status).toBe("approved");
+    expect(session.approvalState.telemetry.duplicateCallbacks).toBe(0);
+    tracker.destroy();
+  });
+});

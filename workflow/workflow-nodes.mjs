@@ -7348,19 +7348,43 @@ registerBuiltinNodeType("flow.gate", {
       return { gateOpened: true, mode, timedOut: true, waited: timeoutMs, reason };
     }
 
-    // Manual mode or fallback: wait for external approval via context variable
+    // Manual mode or fallback: use durable waiting state so runs can pause/resume safely.
     const approvalKey = `_gate_${node.id}_approved`;
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      if (ctx.data[approvalKey] || ctx.variables[approvalKey]) {
-        return { gateOpened: true, mode: "manual", waited: Date.now() - start, reason };
-      }
-      await new Promise((r) => setTimeout(r, pollInterval));
+    if (ctx.data[approvalKey] || ctx.variables[approvalKey]) {
+      return { gateOpened: true, mode: "manual", approved: true, waited: 0, reason, approvalKey };
     }
-    if (onTimeout === "fail") {
-      throw new Error(`Manual gate timed out after ${timeoutMs}ms: ${reason}`);
-    }
-    return { gateOpened: true, mode: "manual", timedOut: true, waited: timeoutMs, reason };
+
+    const checkpointId = `${ctx.id}:${node.id}`;
+    ctx.data._workflowWait = {
+      nodeId: node.id,
+      nodeLabel: node.label || node.id,
+      checkpointId,
+      approvalKey,
+      mode: "manual",
+      reason,
+      timeoutMs,
+      onTimeout,
+      pollIntervalMs: pollInterval,
+      requestedAt: Date.now(),
+      waiting: true,
+      status: "pending",
+    };
+    ctx.annotateDagNode?.(node.id, {
+      waiting: true,
+      waitReason: reason,
+      waitCheckpointId: checkpointId,
+      approvalKey,
+    });
+    return {
+      gateOpened: false,
+      waiting: true,
+      mode: "manual",
+      reason,
+      approvalKey,
+      checkpointId,
+      timeoutMs,
+      requestedAt: ctx.data._workflowWait.requestedAt,
+    };
   },
 });
 
@@ -13914,3 +13938,4 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
+

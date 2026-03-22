@@ -1641,6 +1641,56 @@ describe("New node types", () => {
     expect(result.waited).toBe(50);
   });
 
+  it("flow.gate manual mode returns durable waiting payload instead of busy-waiting", async () => {
+    const handler = getNodeType("flow.gate");
+    const ctx = new WorkflowContext({});
+    const engine = { emit: vi.fn() };
+    const node = {
+      id: "g3",
+      type: "flow.gate",
+      label: "Manual approval",
+      config: { mode: "manual", reason: "Need human approval", timeoutMs: 60_000 },
+    };
+
+    const result = await handler.execute(node, ctx, engine);
+
+    expect(ctx.getNodeStatus("g3")).toBe(NodeStatus.WAITING);
+    expect(result).toMatchObject({
+      gateOpened: false,
+      waiting: true,
+      mode: "manual",
+      reason: "Need human approval",
+      approvalKey: "_gate_g3_approved",
+    });
+    expect(typeof result.checkpointId).toBe("string");
+    expect(result.checkpointId.length).toBeGreaterThan(5);
+    expect(engine.emit).toHaveBeenCalledWith(
+      "node:waiting",
+      expect.objectContaining({ nodeId: "g3", mode: "manual", reason: "Need human approval" }),
+    );
+  });
+
+  it("flow.gate manual mode opens immediately when approval already exists", async () => {
+    const handler = getNodeType("flow.gate");
+    const ctx = new WorkflowContext({ _gate_g4_approved: true });
+    const engine = { emit: vi.fn() };
+    const node = {
+      id: "g4",
+      type: "flow.gate",
+      label: "Manual approval",
+      config: { mode: "manual", reason: "Resume after approval", timeoutMs: 60_000 },
+    };
+
+    const result = await handler.execute(node, ctx, engine);
+
+    expect(result).toMatchObject({
+      gateOpened: true,
+      mode: "manual",
+      approved: true,
+      reason: "Resume after approval",
+    });
+  });
+
   it("flow.join reports joined=true when all listed sources are completed/skipped", async () => {
     const handler = getNodeType("flow.join");
     expect(handler).toBeDefined();
@@ -5026,3 +5076,4 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });
+

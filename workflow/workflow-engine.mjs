@@ -1975,6 +1975,10 @@ export class WorkflowEngine extends EventEmitter {
     if (terminalRaw === WorkflowStatus.COMPLETED || terminalRaw === "success") {
       return WorkflowStatus.COMPLETED;
     }
+    const nodeStatuses = Array.from(ctx?.nodeStatuses?.values?.() || []);
+    if (nodeStatuses.some((status) => status === NodeStatus.WAITING)) {
+      return WorkflowStatus.PAUSED;
+    }
     return ctx.errors.length > 0 ? WorkflowStatus.FAILED : WorkflowStatus.COMPLETED;
   }
 
@@ -3857,6 +3861,10 @@ export class WorkflowEngine extends EventEmitter {
       endedAt,
       duration,
       status: normalizedStatus,
+      waiting: detail?.data?._workflowWait?.waiting === true,
+      waitNodeId: detail?.data?._workflowWait?.nodeId || null,
+      waitCheckpointId: detail?.data?._workflowWait?.checkpointId || null,
+      waitReason: detail?.data?._workflowWait?.reason || null,
       errorCount,
       logCount,
       nodeCount: counts.nodeCount,
@@ -4464,3 +4472,4 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+
