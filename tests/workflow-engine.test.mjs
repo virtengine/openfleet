@@ -3117,6 +3117,53 @@ describe("Session chaining - action.run_agent", () => {
     expect((session.messages || []).some((msg) => String(msg.content || "").includes("Task run completed."))).toBe(true);
   });
 
+  it("prepends architect/editor framing and repo maps for workflow agent runs", async () => {
+    const handler = getNodeType("action.run_agent");
+    const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: "done",
+      sdk: "codex",
+      items: [],
+      threadId: "thread-architect-editor",
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+
+    const node = {
+      id: "run-agent-architect-editor",
+      type: "action.run_agent",
+      config: {
+        prompt: "Apply the approved plan",
+        autoRecover: false,
+        executionRole: "editor",
+        architectPlan: "1. Update prompt framing\n2. Validate runtime tests",
+        repoMap: {
+          root: "C:/repo",
+          files: [
+            { path: "agent/primary-agent.mjs", summary: "primary agent runtime", symbols: ["execPrimaryPrompt"] },
+          ],
+        },
+      },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
+    expect(sentPrompt).toContain("## Architect/Editor Execution");
+    expect(sentPrompt).toContain("You are the editor phase.");
+    expect(sentPrompt).toContain("## Architect Plan");
+    expect(sentPrompt).toContain("Root: C:/repo");
+    expect(sentPrompt).toContain("agent/primary-agent.mjs");
+    expect(sentPrompt).toContain("Apply the approved plan");
+  });
+
   it("throws when agent execution returns success=false when failOnError=true", async () => {
     const handler = getNodeType("action.run_agent");
     const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
