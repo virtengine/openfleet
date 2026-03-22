@@ -31,6 +31,22 @@
 
 import { makeAgentPipeline } from "./_helpers.mjs";
 
+function withArchitectEditorPhases(phases = []) {
+  if (!Array.isArray(phases) || phases.length === 0) return phases;
+  const planId = String(phases[0]?.id || "plan").trim() || "plan";
+  const architectPlan = `{{$ctx.getNodeOutput('${planId}')?.summary || $ctx.getNodeOutput('${planId}')?.output || ''}}`;
+  return phases.map((phase, index) => ({
+    ...phase,
+    extra: {
+      repoMapQuery: "{{taskTitle}} {{taskDescription}}",
+      ...(index === 0
+        ? { mode: "plan", executionRole: "architect" }
+        : { executionRole: "editor", architectPlan }),
+      ...(phase.extra || {}),
+    },
+  }));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  Fullstack Task Workflow
 // ═══════════════════════════════════════════════════════════════════════════
@@ -46,7 +62,7 @@ export const FULLSTACK_TASK_TEMPLATE = makeAgentPipeline({
   taskPattern: "full.?stack|end.to.end|api.*ui|server.*client|frontend.*backend|database.*component",
   tags: ["fullstack", "task-type"],
   recommended: true,
-  phases: [
+  phases: withArchitectEditorPhases([
     {
       id: "plan-architecture",
       label: "Plan Architecture",
@@ -103,7 +119,7 @@ Verify the full stack works end-to-end:
 
 Push all changes and create/update the PR.`,
     },
-  ],
+  ]),
   doneMessage: "Fullstack task completed — all layers implemented and tested.",
 });
 
@@ -122,7 +138,7 @@ export const BACKEND_TASK_TEMPLATE = makeAgentPipeline({
   taskPattern: "api|server|backend|database|model|migration|endpoint|middleware|service|graphql|rest|grpc",
   tags: ["backend", "api", "server", "task-type"],
   recommended: true,
-  phases: [
+  phases: withArchitectEditorPhases([
     {
       id: "plan",
       label: "Plan Backend",
@@ -163,7 +179,7 @@ Commit with descriptive messages.`,
 4. Push changes and create/update PR
 5. Include test results summary in PR description`,
     },
-  ],
+  ]),
   doneMessage: "Backend task completed — API/service implemented and tested.",
 });
 
@@ -182,7 +198,7 @@ export const FRONTEND_TASK_TEMPLATE = makeAgentPipeline({
   taskPattern: "frontend|ui|component|page|layout|style|css|responsive|accessibility|a11y|design.system",
   tags: ["frontend", "ui", "css", "component", "task-type"],
   recommended: true,
-  phases: [
+  phases: withArchitectEditorPhases([
     {
       id: "analyse-design",
       label: "Analyse Design",
@@ -225,7 +241,7 @@ Commit with descriptive messages.`,
 5. Verify accessibility (screen reader, keyboard)
 6. Push changes and create/update PR`,
     },
-  ],
+  ]),
   doneMessage: "Frontend task completed — UI implemented and verified.",
 });
 
@@ -245,7 +261,7 @@ export const DEBUG_TASK_TEMPLATE = makeAgentPipeline({
   tags: ["debug", "bug", "fix", "error", "task-type"],
   recommended: true,
   variables: { maxRetries: 3, maxContinues: 4 },
-  phases: [
+  phases: withArchitectEditorPhases([
     {
       id: "reproduce",
       label: "Reproduce & Analyse",
@@ -285,7 +301,7 @@ Commit fix and test together with a clear commit message.`,
 4. Confirm no regressions
 5. Push and create/update PR with root cause analysis in description`,
     },
-  ],
+  ]),
   doneMessage: "Debug task completed — bug fixed with regression test.",
 });
 
@@ -304,7 +320,7 @@ export const CICD_TASK_TEMPLATE = makeAgentPipeline({
   taskPattern: "ci|cd|pipeline|deploy|infrastructure|docker|kubernetes|k8s|terraform|github.action|build.system|release|devops",
   tags: ["ci", "cd", "pipeline", "deploy", "infrastructure", "task-type"],
   recommended: true,
-  phases: [
+  phases: withArchitectEditorPhases([
     {
       id: "plan-pipeline",
       label: "Plan Pipeline Change",
@@ -344,7 +360,7 @@ Commit changes with clear descriptions.`,
 4. Push and create/update PR
 5. Include deployment / rollback instructions in PR description`,
     },
-  ],
+  ]),
   doneMessage: "CI/CD task completed — pipeline updated and verified.",
 });
 
@@ -362,7 +378,7 @@ export const DESIGN_TASK_TEMPLATE = makeAgentPipeline({
     "the design system changes, and verifies visual output.",
   taskPattern: "design|mockup|wireframe|prototype|design.system|theme|color|typography|icon|illustration|ux",
   tags: ["design", "mockup", "wireframe", "design-system", "task-type"],
-  phases: [
+  phases: withArchitectEditorPhases([
     {
       id: "analyse-requirements",
       label: "Analyse Design Req",
@@ -401,6 +417,8 @@ Commit changes with descriptive messages.`,
 4. Check design token values are correct
 5. Push and create/update PR`,
     },
-  ],
+  ]),
   doneMessage: "Design task completed — design changes implemented and verified.",
 });
+
+
