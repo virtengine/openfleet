@@ -1041,6 +1041,14 @@ describe("workflow setup profiles", () => {
     expect(logNode?.type).toBe("notify.log");
     expect(logNode?.config?.message).toContain("{{batchResult.successCount}}/{{batchResult.totalItems}}");
   });
+  it("uses an output-shape-safe coordinator gate for batch dispatch", () => {
+    const batchProcessor = getTemplate("template-task-batch-processor");
+    const coordinatorEdge = batchProcessor?.edges?.find((edge) => edge.source === "check-coordinator" && edge.target === "query-tasks");
+
+    expect(coordinatorEdge?.condition).toBe(
+      "$output === true || $output?.result === true || $output?.value === true || result === true || result?.result === true || result?.value === true",
+    );
+  });
 
   it("exposes built-in setup profiles with template selections", () => {
     const profiles = listWorkflowSetupProfiles();
@@ -1527,3 +1535,4 @@ describe("template category coverage", () => {
     }
   });
 });
+
