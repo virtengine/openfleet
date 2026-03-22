@@ -1394,6 +1394,18 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
               timestamp: new Date().toISOString(),
               _sessionType: sessionType,
             });
+            const compressionSummary = summarizeContextCompressionItems(retryResult?.items);
+            if (compressionSummary) {
+              tracker.recordEvent(sessionId, {
+                role: "system",
+                type: "system",
+                content: compressionSummary.content,
+                timestamp: new Date().toISOString(),
+                meta: {
+                  contextCompression: compressionSummary,
+                },
+              });
+            }
             clearAdapterFailureState(adapterName);
             return retryResult;
           } catch (retryErr) {
