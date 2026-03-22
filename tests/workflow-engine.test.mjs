@@ -475,6 +475,81 @@ describe("WorkflowEngine - loop.for_each", () => {
       failCount: 0,
     });
   });
+
+  it("dispatches child workflows without waiting for completion when mode=dispatch", async () => {
+    let releaseRuns;
+    const blocker = new Promise((resolve) => {
+      releaseRuns = resolve;
+    });
+    let startedCount = 0;
+    let startedTwo;
+    const twoStarted = new Promise((resolve) => {
+      startedTwo = resolve;
+    });
+
+    registerNodeType("test.long_running_loop_child", {
+      describe: () => "Long running child node for loop dispatch mode",
+      schema: { type: "object", properties: {} },
+      async execute(node, ctx) {
+        ctx.log(node.id, "loop child entered");
+        startedCount += 1;
+        if (startedCount >= 2) startedTwo();
+        await blocker;
+        return { ok: true };
+      },
+    });
+
+    const child = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Child Start", config: {} },
+        { id: "wait", type: "test.long_running_loop_child", label: "Child Wait", config: {} },
+      ],
+      [{ id: "c1", source: "trigger", target: "wait" }],
+      { id: "child-loop-dispatch", name: "Child Loop Dispatch" },
+    );
+
+    const parent = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "loop",
+          type: "loop.for_each",
+          label: "Dispatch Items",
+          config: {
+            items: "[1,2]",
+            variable: "item",
+            workflowId: child.id,
+            mode: "dispatch",
+            maxConcurrent: 2,
+          },
+        },
+      ],
+      [{ id: "p1", source: "trigger", target: "loop" }],
+      { id: "parent-loop-dispatch", name: "Parent Loop Dispatch" },
+    );
+
+    engine.save(child);
+    engine.save(parent);
+    const ctx = await engine.execute(parent.id, {});
+    expect(ctx.errors).toEqual([]);
+    expect(ctx.getNodeOutput("loop")).toMatchObject({
+      count: 2,
+      successCount: 2,
+      failCount: 0,
+    });
+    expect(ctx.getNodeOutput("loop").results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ queued: true, mode: "dispatch", workflowId: child.id }),
+      ]),
+    );
+
+    await twoStarted;
+    const history = engine.getRunHistory(child.id, 10);
+    expect(history.filter((entry) => entry.status === WorkflowStatus.RUNNING).length).toBeGreaterThanOrEqual(2);
+
+    releaseRuns();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
 });
 
 describe("WorkflowEngine - source port routing", () => {
@@ -3117,6 +3192,53 @@ describe("Session chaining - action.run_agent", () => {
     expect((session.messages || []).some((msg) => String(msg.content || "").includes("Task run completed."))).toBe(true);
   });
 
+  it("prepends architect/editor framing and repo maps for workflow agent runs", async () => {
+    const handler = getNodeType("action.run_agent");
+    const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: "done",
+      sdk: "codex",
+      items: [],
+      threadId: "thread-architect-editor",
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+
+    const node = {
+      id: "run-agent-architect-editor",
+      type: "action.run_agent",
+      config: {
+        prompt: "Apply the approved plan",
+        autoRecover: false,
+        executionRole: "editor",
+        architectPlan: "1. Update prompt framing\n2. Validate runtime tests",
+        repoMap: {
+          root: "C:/repo",
+          files: [
+            { path: "agent/primary-agent.mjs", summary: "primary agent runtime", symbols: ["execPrimaryPrompt"] },
+          ],
+        },
+      },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
+    expect(sentPrompt).toContain("## Architect/Editor Execution");
+    expect(sentPrompt).toContain("You are the editor phase.");
+    expect(sentPrompt).toContain("## Architect Plan");
+    expect(sentPrompt).toContain("Root: C:/repo");
+    expect(sentPrompt).toContain("agent/primary-agent.mjs");
+    expect(sentPrompt).toContain("Apply the approved plan");
+  });
+
   it("throws when agent execution returns success=false when failOnError=true", async () => {
     const handler = getNodeType("action.run_agent");
     const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
@@ -5026,3 +5148,4 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });
+

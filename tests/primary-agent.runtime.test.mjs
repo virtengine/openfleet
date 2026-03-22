@@ -332,6 +332,56 @@ describe("primary-agent runtime safeguards", () => {
     expect(result.finalResponse).toBe("codex-recovered");
   });
 
+  it("prepends architect/editor framing for editor executions", async () => {
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    await primaryAgent.initPrimaryAgent("codex-sdk");
+
+    await primaryAgent.execPrimaryPrompt("hello", {
+      sessionId: "session-editor",
+      mode: "plan",
+      architectPlan: "1. Update runtime framing\n2. Verify focused tests",
+      changedFiles: ["agent/primary-agent.mjs", "tests/primary-agent.runtime.test.mjs"],
+      repoRoot: "C:/repo",
+    });
+
+    expect(mockExecCodexPrompt).toHaveBeenCalledTimes(1);
+    const [framedMessage, framedOptions] = mockExecCodexPrompt.mock.calls[0];
+    expect(framedOptions).toEqual(expect.objectContaining({ persistent: true, sessionId: "session-editor" }));
+    expect(framedMessage).toContain("[MODE: plan]");
+    expect(framedMessage).toContain("## Architect/Editor Execution");
+    expect(framedMessage).toContain("You are the architect phase.");
+    expect(framedMessage).toContain("## Repo Map");
+    expect(framedMessage).toContain("Root: C:/repo");
+    expect(framedMessage).toContain("agent/primary-agent.mjs");
+    expect(framedMessage).toContain("## Tool Capability Contract");
+    expect(framedMessage).toContain("hello");
+  });
+
+  it("prepends architect plan and repo map for editor executions", async () => {
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    await primaryAgent.initPrimaryAgent("codex-sdk");
+
+    await primaryAgent.execPrimaryPrompt("apply the approved plan", {
+      sessionId: "session-editor-apply",
+      mode: "agent",
+      architectPlan: "1. Add repo map framing\n2. Validate focused runtime tests",
+      changedFiles: ["agent/primary-agent.mjs", "tests/primary-agent.runtime.test.mjs"],
+      repoRoot: "C:/repo",
+    });
+
+    expect(mockExecCodexPrompt).toHaveBeenCalledTimes(1);
+    const [framedMessage] = mockExecCodexPrompt.mock.calls[0];
+    expect(framedMessage).toContain("## Architect/Editor Execution");
+    expect(framedMessage).toContain("You are the editor phase.");
+    expect(framedMessage).toContain("## Architect Plan");
+    expect(framedMessage).toContain("Add repo map framing");
+    expect(framedMessage).toContain("## Repo Map");
+    expect(framedMessage).toContain("tests/primary-agent.runtime.test.mjs");
+    expect(framedMessage).toContain("apply the approved plan");
+  });
+
   it("suppresses failover until repeated infrastructure failures", async () => {
     process.env.PRIMARY_AGENT_RECOVERY_RETRY_ATTEMPTS = "0";
     process.env.PRIMARY_AGENT_FAILOVER_CONSECUTIVE_INFRA_ERRORS = "3";

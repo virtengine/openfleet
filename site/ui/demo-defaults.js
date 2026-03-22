@@ -14337,7 +14337,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -14362,7 +14365,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan')?.summary || $ctx.getNodeOutput('plan')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -14387,7 +14393,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan')?.summary || $ctx.getNodeOutput('plan')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -14718,7 +14727,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -14743,7 +14755,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-pipeline')?.summary || $ctx.getNodeOutput('plan-pipeline')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -14768,7 +14783,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-pipeline')?.summary || $ctx.getNodeOutput('plan-pipeline')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -15220,7 +15238,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -15245,7 +15266,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('reproduce')?.summary || $ctx.getNodeOutput('reproduce')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -15270,7 +15294,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('reproduce')?.summary || $ctx.getNodeOutput('reproduce')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -15396,7 +15423,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -15421,7 +15451,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('analyse-requirements')?.summary || $ctx.getNodeOutput('analyse-requirements')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -15446,7 +15479,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('analyse-requirements')?.summary || $ctx.getNodeOutput('analyse-requirements')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -15756,7 +15792,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -15781,7 +15820,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('analyse-design')?.summary || $ctx.getNodeOutput('analyse-design')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -15806,7 +15848,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('analyse-design')?.summary || $ctx.getNodeOutput('analyse-design')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -15926,7 +15971,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -15951,7 +15999,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -15976,7 +16027,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -16001,7 +16055,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -17891,8 +17948,8 @@
           "type": "loop.for_each",
           "label": "Process Each Task",
           "config": {
-            "items": "{{query-tasks.output}}",
-            "itemVariable": "task",
+            "items": "$ctx.getNodeOutput('query-tasks')?.output || []",
+            "variable": "task",
             "indexVariable": "idx",
             "maxConcurrent": "{{maxConcurrent}}"
           },
@@ -18245,11 +18302,12 @@
           "type": "loop.for_each",
           "label": "Dispatch Tasks",
           "config": {
-            "items": "{{query-tasks.output}}",
+            "items": "$ctx.getNodeOutput('query-tasks')?.output || []",
             "itemVariable": "currentTask",
             "indexVariable": "taskIndex",
             "maxConcurrent": "{{maxConcurrent}}",
-            "workflowId": "{{subWorkflow}}"
+            "workflowId": "{{subWorkflow}}",
+            "mode": "dispatch"
           },
           "position": {
             "x": 400,
@@ -18354,7 +18412,7 @@
           "source": "check-coordinator",
           "target": "query-tasks",
           "sourcePort": "default",
-          "condition": "result.result === true"
+          "condition": "$output === true || $output?.result === true || $output?.value === true"
         },
         {
           "id": "query-tasks->dispatch-tasks",
@@ -18411,8 +18469,8 @@
         "workflow-first",
         "core"
       ],
-      "nodeCount": 53,
-      "edgeCount": 59,
+      "nodeCount": 59,
+      "edgeCount": 67,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -18793,6 +18851,22 @@
           "outputs": [
             "yes",
             "no"
+          ]
+        },
+        {
+          "id": "auto-commit-dirty",
+          "type": "action.auto_commit_dirty",
+          "label": "Auto Commit Dirty",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "taskId": "{{taskId}}"
+          },
+          "position": {
+            "x": 120,
+            "y": 1680
+          },
+          "outputs": [
+            "default"
           ]
         },
         {
@@ -19424,6 +19498,91 @@
           "outputs": [
             "default"
           ]
+        },
+        {
+          "id": "wt-retry-eligible",
+          "type": "condition.expression",
+          "label": "Retryable WT Failure?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('acquire-worktree')?.retryable !== false"
+          },
+          "position": {
+            "x": 850,
+            "y": 960
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "recover-worktree",
+          "type": "action.recover_worktree",
+          "label": "Clean Broken WT",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "branch": "{{branch}}",
+            "taskId": "{{taskId}}"
+          },
+          "position": {
+            "x": 850,
+            "y": 1090
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-acquire-wt",
+          "type": "action.acquire_worktree",
+          "label": "Retry Acquire WT",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "branch": "{{branch}}",
+            "taskId": "{{taskId}}",
+            "baseBranch": "{{baseBranch}}",
+            "defaultTargetBranch": "{{defaultTargetBranch}}"
+          },
+          "position": {
+            "x": 850,
+            "y": 1220
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-wt-ok",
+          "type": "condition.expression",
+          "label": "Retry WT OK?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('retry-acquire-wt')?.success === true"
+          },
+          "position": {
+            "x": 850,
+            "y": 1350
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "sweep-task-wts",
+          "type": "action.recover_worktree",
+          "label": "Sweep Task WTs",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "branch": "{{branch}}",
+            "taskId": "{{taskId}}"
+          },
+          "position": {
+            "x": 200,
+            "y": 3090
+          },
+          "outputs": [
+            "default"
+          ]
         }
       ],
       "edges": [
@@ -19527,11 +19686,17 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->detect-commits",
+          "id": "claim-stolen->auto-commit-dirty",
           "source": "claim-stolen",
-          "target": "detect-commits",
+          "target": "auto-commit-dirty",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
+        },
+        {
+          "id": "auto-commit-dirty->detect-commits",
+          "source": "auto-commit-dirty",
+          "target": "detect-commits",
+          "sourcePort": "default"
         },
         {
           "id": "detect-commits->has-commits",
@@ -19737,6 +19902,12 @@
           "sourcePort": "default"
         },
         {
+          "id": "release-slot->sweep-task-wts",
+          "source": "release-slot",
+          "target": "sweep-task-wts",
+          "sourcePort": "default"
+        },
+        {
           "id": "claim-ok->release-slot-claim-failed",
           "source": "claim-ok",
           "target": "release-slot-claim-failed",
@@ -19750,8 +19921,48 @@
           "sourcePort": "default"
         },
         {
-          "id": "worktree-ok->release-claim-wt-failed",
+          "id": "worktree-ok->wt-retry-eligible",
           "source": "worktree-ok",
+          "target": "wt-retry-eligible",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "wt-retry-eligible->recover-worktree",
+          "source": "wt-retry-eligible",
+          "target": "recover-worktree",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "recover-worktree->retry-acquire-wt",
+          "source": "recover-worktree",
+          "target": "retry-acquire-wt",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-acquire-wt->retry-wt-ok",
+          "source": "retry-acquire-wt",
+          "target": "retry-wt-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-wt-ok->resolve-executor",
+          "source": "retry-wt-ok",
+          "target": "resolve-executor",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "retry-wt-ok->release-claim-wt-failed",
+          "source": "retry-wt-ok",
+          "target": "release-claim-wt-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "wt-retry-eligible->release-claim-wt-failed",
+          "source": "wt-retry-eligible",
           "target": "release-claim-wt-failed",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
@@ -34320,7 +34531,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -34345,7 +34559,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan')?.summary || $ctx.getNodeOutput('plan')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -34370,7 +34587,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan')?.summary || $ctx.getNodeOutput('plan')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -34679,7 +34899,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -34704,7 +34927,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-pipeline')?.summary || $ctx.getNodeOutput('plan-pipeline')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -34729,7 +34955,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-pipeline')?.summary || $ctx.getNodeOutput('plan-pipeline')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -35155,7 +35384,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -35180,7 +35412,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('reproduce')?.summary || $ctx.getNodeOutput('reproduce')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -35205,7 +35440,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('reproduce')?.summary || $ctx.getNodeOutput('reproduce')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -35318,7 +35556,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -35343,7 +35584,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('analyse-requirements')?.summary || $ctx.getNodeOutput('analyse-requirements')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -35368,7 +35612,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('analyse-requirements')?.summary || $ctx.getNodeOutput('analyse-requirements')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -35657,7 +35904,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -35682,7 +35932,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('analyse-design')?.summary || $ctx.getNodeOutput('analyse-design')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -35707,7 +35960,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('analyse-design')?.summary || $ctx.getNodeOutput('analyse-design')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -35820,7 +36076,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -35845,7 +36104,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -35870,7 +36132,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -35895,7 +36160,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -37701,8 +37969,8 @@
           "type": "loop.for_each",
           "label": "Process Each Task",
           "config": {
-            "items": "{{query-tasks.output}}",
-            "itemVariable": "task",
+            "items": "$ctx.getNodeOutput('query-tasks')?.output || []",
+            "variable": "task",
             "indexVariable": "idx",
             "maxConcurrent": "{{maxConcurrent}}"
           },
@@ -38043,11 +38311,12 @@
           "type": "loop.for_each",
           "label": "Dispatch Tasks",
           "config": {
-            "items": "{{query-tasks.output}}",
+            "items": "$ctx.getNodeOutput('query-tasks')?.output || []",
             "itemVariable": "currentTask",
             "indexVariable": "taskIndex",
             "maxConcurrent": "{{maxConcurrent}}",
-            "workflowId": "{{subWorkflow}}"
+            "workflowId": "{{subWorkflow}}",
+            "mode": "dispatch"
           },
           "position": {
             "x": 400,
@@ -38152,7 +38421,7 @@
           "source": "check-coordinator",
           "target": "query-tasks",
           "sourcePort": "default",
-          "condition": "result.result === true"
+          "condition": "$output === true || $output?.result === true || $output?.value === true"
         },
         {
           "id": "query-tasks->dispatch-tasks",
@@ -38213,7 +38482,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 53,
+      "nodeCount": 59,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -38561,6 +38830,22 @@
           "outputs": [
             "yes",
             "no"
+          ]
+        },
+        {
+          "id": "auto-commit-dirty",
+          "type": "action.auto_commit_dirty",
+          "label": "Auto Commit Dirty",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "taskId": "{{taskId}}"
+          },
+          "position": {
+            "x": 120,
+            "y": 1680
+          },
+          "outputs": [
+            "default"
           ]
         },
         {
@@ -39192,6 +39477,91 @@
           "outputs": [
             "default"
           ]
+        },
+        {
+          "id": "wt-retry-eligible",
+          "type": "condition.expression",
+          "label": "Retryable WT Failure?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('acquire-worktree')?.retryable !== false"
+          },
+          "position": {
+            "x": 850,
+            "y": 960
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "recover-worktree",
+          "type": "action.recover_worktree",
+          "label": "Clean Broken WT",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "branch": "{{branch}}",
+            "taskId": "{{taskId}}"
+          },
+          "position": {
+            "x": 850,
+            "y": 1090
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-acquire-wt",
+          "type": "action.acquire_worktree",
+          "label": "Retry Acquire WT",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "branch": "{{branch}}",
+            "taskId": "{{taskId}}",
+            "baseBranch": "{{baseBranch}}",
+            "defaultTargetBranch": "{{defaultTargetBranch}}"
+          },
+          "position": {
+            "x": 850,
+            "y": 1220
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-wt-ok",
+          "type": "condition.expression",
+          "label": "Retry WT OK?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('retry-acquire-wt')?.success === true"
+          },
+          "position": {
+            "x": 850,
+            "y": 1350
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "sweep-task-wts",
+          "type": "action.recover_worktree",
+          "label": "Sweep Task WTs",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "branch": "{{branch}}",
+            "taskId": "{{taskId}}"
+          },
+          "position": {
+            "x": 200,
+            "y": 3090
+          },
+          "outputs": [
+            "default"
+          ]
         }
       ],
       "edges": [
@@ -39295,11 +39665,17 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->detect-commits",
+          "id": "claim-stolen->auto-commit-dirty",
           "source": "claim-stolen",
-          "target": "detect-commits",
+          "target": "auto-commit-dirty",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
+        },
+        {
+          "id": "auto-commit-dirty->detect-commits",
+          "source": "auto-commit-dirty",
+          "target": "detect-commits",
+          "sourcePort": "default"
         },
         {
           "id": "detect-commits->has-commits",
@@ -39505,6 +39881,12 @@
           "sourcePort": "default"
         },
         {
+          "id": "release-slot->sweep-task-wts",
+          "source": "release-slot",
+          "target": "sweep-task-wts",
+          "sourcePort": "default"
+        },
+        {
           "id": "claim-ok->release-slot-claim-failed",
           "source": "claim-ok",
           "target": "release-slot-claim-failed",
@@ -39518,8 +39900,48 @@
           "sourcePort": "default"
         },
         {
-          "id": "worktree-ok->release-claim-wt-failed",
+          "id": "worktree-ok->wt-retry-eligible",
           "source": "worktree-ok",
+          "target": "wt-retry-eligible",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "wt-retry-eligible->recover-worktree",
+          "source": "wt-retry-eligible",
+          "target": "recover-worktree",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "recover-worktree->retry-acquire-wt",
+          "source": "recover-worktree",
+          "target": "retry-acquire-wt",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-acquire-wt->retry-wt-ok",
+          "source": "retry-acquire-wt",
+          "target": "retry-wt-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-wt-ok->resolve-executor",
+          "source": "retry-wt-ok",
+          "target": "resolve-executor",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "retry-wt-ok->release-claim-wt-failed",
+          "source": "retry-wt-ok",
+          "target": "release-claim-wt-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "wt-retry-eligible->release-claim-wt-failed",
+          "source": "wt-retry-eligible",
           "target": "release-claim-wt-failed",
           "sourcePort": "no",
           "condition": "$output?.result !== true"

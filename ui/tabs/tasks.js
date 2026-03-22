@@ -66,6 +66,7 @@ import {
   SkeletonCard,
   EmptyState
 } from "../components/shared.js";
+import { DiffViewer } from "../components/diff-viewer.js";
 import {
   SegmentedControl,
   SearchInput,
@@ -1246,9 +1247,12 @@ function buildTaskRelatedLinks(task) {
     "";
   const prNumber =
     task?.prNumber ||
+    task?.pr ||
     task?.pr_number ||
     task?.meta?.prNumber ||
+    task?.meta?.pr ||
     task?.meta?.pr_number ||
+    task?.meta?.pr?.number ||
     "";
   const prUrl =
     task?.prUrl ||
@@ -1259,11 +1263,70 @@ function buildTaskRelatedLinks(task) {
     "";
   const baseBranch = getTaskBaseBranch(task);
 
-  if (branch) links.push({ kind: "Branch", value: branch, url: "" });
+  if (branch) links.push({ kind: "Branch", value: branch, url: "", emphasis: true });
   if (baseBranch) links.push({ kind: "Base", value: baseBranch, url: "" });
-  if (prNumber) links.push({ kind: "PR", value: `#${prNumber}`, url: prUrl || "" });
+  if (prNumber) links.push({ kind: "PR", value: `#${prNumber}`, url: prUrl || "", emphasis: true });
   if (prUrl) links.push({ kind: "PR URL", value: prUrl, url: prUrl });
   return links;
+}
+
+function renderTaskRelatedLinks(relatedLinks, { onReviewDiff = null } = {}) {
+  if (!Array.isArray(relatedLinks) || !relatedLinks.length) {
+    if (!onReviewDiff) return "No branch or PR links recorded.";
+    return html`
+      <div style=${{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}>
+        <button
+          type="button"
+          class="task-related-link-chip"
+          onClick=${onReviewDiff}
+        >
+          ${resolveIcon("edit") || "✎"} Review Diff
+        </button>
+      </div>
+    `;
+  }
+
+  return html`
+    <div style=${{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}>
+      ${relatedLinks.map((item, index) => html`
+        ${item.url
+          ? html`
+              <a
+                key=${`task-link-${index}`}
+                class="task-related-link-chip"
+                data-emphasis=${item.emphasis ? "true" : "false"}
+                href=${item.url}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <span class="task-related-link-kind">${item.kind}</span>
+                <span class="task-related-link-value">${item.value}</span>
+              </a>
+            `
+          : html`
+              <span
+                key=${`task-link-${index}`}
+                class="task-related-link-chip"
+                data-emphasis=${item.emphasis ? "true" : "false"}
+              >
+                <span class="task-related-link-kind">${item.kind}</span>
+                <span class="task-related-link-value">${item.value}</span>
+              </span>
+            `}
+      `)}
+      ${onReviewDiff && html`
+        <button
+          type="button"
+          class="task-related-link-chip"
+          data-emphasis="true"
+          onClick=${onReviewDiff}
+        >
+          <span class="task-related-link-kind">Review</span>
+          <span class="task-related-link-value">Open Diff</span>
+        </button>
+      `}
+    </div>
+  `;
 }
 
 function buildTaskAgentList(task) {
@@ -2712,10 +2775,14 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.id,
     task?.branch,
     task?.branchName,
+    task?.pr,
     task?.prNumber,
     task?.prUrl,
     task?.meta,
   ]);
+  const handleOpenReviewDiff = useCallback(() => {
+    setActiveTab("diff");
+  }, []);
   const taskAgents = useMemo(() => buildTaskAgentList(task), [
     task?.id,
     task?.assignee,
@@ -3482,6 +3549,9 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
           ${resolveIcon("clock") || "⏱"} History
           ${historyEntries.length > 0 && html`<span class="task-tab-count">${historyEntries.length}</span>`}
         </button>
+        <button class="task-tab-btn" data-active=${activeTab === "diff"} onClick=${() => setActiveTab("diff")}>
+          ${resolveIcon("edit") || "✎"} Diff
+        </button>
       </div>
 
       ${/* ── Content Body ───────────────────────────────────────────── */ ""}
@@ -3840,7 +3910,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
               </div>
               <div class="task-comment-item">
                 <div class="task-comment-meta">Branch / PR</div>
-                <div class="task-comment-body">${relatedLinks.length ? relatedLinks.map((item) => `${item.kind}: ${item.value}`).join(" · ") : "No branch or PR links recorded."}</div>
+                <div class="task-comment-body">${renderTaskRelatedLinks(relatedLinks, { onReviewDiff: handleOpenReviewDiff })}</div>
               </div>
             </div>
           </div>
@@ -4608,6 +4678,18 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       </div>`}
 
       ${/* ── HISTORY TAB ─────────────────────────────────────────────── */ ""}
+      ${activeTab === "diff" && html`
+        <div class="task-comments-block modal-form-span jira-panel">
+          <div class="task-attachments-title">Review Diff</div>
+          <div style=${{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            <div class="task-comment-meta">
+              Compare the task branch or linked session against its recorded base so completed PRs stay reviewable from the task itself.
+            </div>
+            <${DiffViewer} taskId=${task?.id || ""} title=${task?.title || "Task Diff"} />
+          </div>
+        </div>
+      `}
+
       ${activeTab === "history" && html`<div style="display:contents;">
 
       ${historyEntries.length > 0 ? html`
@@ -4635,9 +4717,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
               <div class="task-comment-item" key=${`link-${index}`}>
                 <div class="task-comment-meta">${item.kind}</div>
                 <div class="task-comment-body">
-                  ${item.url
-                    ? html`<a href=${item.url} target="_blank" rel="noopener">${item.value}</a>`
-                    : item.value}
+                  ${renderTaskRelatedLinks([item])}
                 </div>
               </div>
             `)}

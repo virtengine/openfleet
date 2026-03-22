@@ -850,3 +850,47 @@
   color: var(--text-primary);
   font-size: 12px;
 }
+
+.task-related-link-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.5);
+  color: var(--text-primary);
+  text-decoration: none;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.18s ease, transform 0.18s ease, background 0.18s ease;
+}
+
+.task-related-link-chip:hover {
+  border-color: rgba(96, 165, 250, 0.5);
+  background: rgba(30, 41, 59, 0.75);
+  transform: translateY(-1px);
+}
+
+.task-related-link-chip[data-emphasis="true"] {
+  border-color: rgba(96, 165, 250, 0.32);
+  background: rgba(37, 99, 235, 0.14);
+}
+
+.task-related-link-chip .task-related-link-kind {
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+}
+
+.task-related-link-chip .task-related-link-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+button.task-related-link-chip {
+  appearance: none;
+}

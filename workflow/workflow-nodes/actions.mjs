@@ -49,8 +49,17 @@ import { getAgentToolConfig, getEffectiveTools } from "../../agent/agent-tool-co
 import { getToolsPromptBlock } from "../../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../../agent/bosun-skills.mjs";
 import { getSessionTracker } from "../../infra/session-tracker.mjs";
+import { recordWorktreeRecoveryEvent } from "../../infra/worktree-recovery-state.mjs";
 import { normalizeBaseBranch } from "../../git/git-safety.mjs";
 import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../../git/git-commit-helpers.mjs";
+import { buildArchitectEditorFrame } from "../../lib/repo-map.mjs";
+import {
+  appendKnowledgeEntry,
+  buildKnowledgeEntry,
+  formatKnowledgeBriefing,
+  initSharedKnowledge,
+  retrieveKnowledgeEntries,
+} from "../../workspace/shared-knowledge.mjs";
 import { fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
 
 import {
@@ -241,6 +250,11 @@ registerNodeType("action.run_agent", {
       model: { type: "string", description: "Optional model override for the selected SDK" },
       taskId: { type: "string", description: "Optional task ID used for task metadata lookup" },
       cwd: { type: "string", description: "Working directory for the agent" },
+      mode: { type: "string", enum: ["ask", "agent", "plan", "web", "instant"], default: "agent", description: "Optional framing mode for the agent run" },
+      executionRole: { type: "string", enum: ["architect", "editor"], description: "Optional architect/editor execution role override" },
+      architectPlan: { type: "string", description: "Approved architect plan passed into editor/verify phases" },
+      repoMapQuery: { type: "string", description: "Optional query used to select a compact repo map" },
+      repoMapFileLimit: { type: "number", default: 12, description: "Maximum repo-map files to include" },
       timeoutMs: { type: "number", default: 3600000, description: "Agent timeout in ms" },
       agentProfile: { type: "string", description: "Agent profile name (e.g., 'frontend', 'backend')" },
       includeTaskContext: { type: "boolean", default: true, description: "Append task comments/attachments if available" },
@@ -294,6 +308,13 @@ registerNodeType("action.run_agent", {
     const timeoutMs = Number.isFinite(resolvedTimeout) && resolvedTimeout > 0
       ? resolvedTimeout
       : 3600000;
+    const effectiveMode = String(ctx.resolve(node.config?.mode || "agent") || "agent").trim().toLowerCase() || "agent";
+    const architectPlan = String(
+      ctx.resolve(node.config?.architectPlan || "") ||
+      ctx.data?.architectPlan ||
+      ctx.data?.planSummary ||
+      "",
+    ).trim();
     const includeTaskContext =
       node.config?.includeTaskContext !== false &&
       ctx.data?._taskIncludeContext !== false;
@@ -338,6 +359,36 @@ registerNodeType("action.run_agent", {
     const effectiveSystemPrompt = String(configuredSystemPrompt || "").trim();
     assertStableSystemPrompt(effectiveSystemPrompt);
     let finalPrompt = prompt;
+    const architectEditorFrame = buildArchitectEditorFrame({
+      executionRole: ctx.resolve(node.config?.executionRole || ""),
+      architectPlan,
+      planSummary: architectPlan,
+      repoMap: node.config?.repoMap || ctx.data?.repoMap || null,
+      repoMapFileLimit: node.config?.repoMapFileLimit,
+      repoMapQuery: ctx.resolve(node.config?.repoMapQuery || ""),
+      query: trackedTaskTitle || ctx.data?.taskDescription || prompt,
+      prompt,
+      taskTitle: trackedTaskTitle,
+      taskDescription:
+        ctx.data?.taskDescription ||
+        ctx.data?.task?.description ||
+        ctx.data?.task?.body ||
+        ctx.data?.taskDetail?.description ||
+        ctx.data?.taskInfo?.description ||
+        "",
+      changedFiles:
+        (Array.isArray(ctx.data?.changedFiles) ? ctx.data.changedFiles : null) ||
+        (Array.isArray(ctx.data?.task?.changedFiles) ? ctx.data.task.changedFiles : null) ||
+        [],
+      cwd,
+      repoRoot: ctx.data?.repoRoot || cwd,
+    }, effectiveMode);
+    if (
+      architectEditorFrame &&
+      !String(finalPrompt || "").includes("## Architect/Editor Execution")
+    ) {
+      finalPrompt = `${architectEditorFrame}\n\n${finalPrompt}`;
+    }
     const promptHasTaskContext =
       ctx.data?._taskPromptIncludesTaskContext === true ||
       String(finalPrompt || "").includes("## Task Context");
@@ -997,6 +1048,37 @@ registerNodeType("action.run_agent", {
 
     // Fallback: shell-based execution
     ctx.log(node.id, "Agent pool not available, using shell fallback");
+    const recoveryState = {
+      recreated: false,
+      detectedIssues: new Set(),
+      phase: null,
+      worktreePath: null,
+    };
+    const persistRecoveryEvent = async (event) => {
+      const payload = {
+        reason: "poisoned_worktree",
+        branch,
+        taskId,
+        worktreePath: event?.worktreePath || recoveryState.worktreePath || null,
+        phase: event?.phase || recoveryState.phase || null,
+        detectedIssues: event?.detectedIssues || Array.from(recoveryState.detectedIssues),
+        error: event?.error || null,
+        outcome: event?.outcome || "healthy_noop",
+        timestamp: new Date().toISOString(),
+      };
+      const details = [
+        `outcome=${payload.outcome}`,
+        `branch=${payload.branch}`,
+        payload.taskId ? `taskId=${payload.taskId}` : "",
+        payload.phase ? `phase=${payload.phase}` : "",
+        payload.worktreePath ? `path=${payload.worktreePath}` : "",
+        payload.detectedIssues.length ? `issues=${payload.detectedIssues.join(",")}` : "",
+        payload.error ? `error=${payload.error}` : "",
+      ].filter(Boolean).join(" ");
+      ctx.log(node.id, `[worktree-recovery] ${details}`);
+      await recordWorktreeRecoveryEvent(repoRoot, payload);
+    };
+
     try {
       const escapedPrompt = String(finalPrompt || "")
         .replace(/\\/g, "\\\\")
@@ -4572,6 +4654,36 @@ registerNodeType("action.acquire_worktree", {
     const baseBranch = pickGitRef(baseBranchRaw, defaultTargetBranch, "origin/main", "main");
     const fetchTimeout = node.config?.fetchTimeout ?? 30000;
     const worktreeTimeout = node.config?.worktreeTimeout ?? 60000;
+    const recoveryState = {
+      recreated: false,
+      detectedIssues: new Set(),
+      phase: null,
+      worktreePath: null,
+    };
+    const persistRecoveryEvent = async (event) => {
+      const payload = {
+        reason: "poisoned_worktree",
+        branch,
+        taskId,
+        worktreePath: event?.worktreePath || recoveryState.worktreePath || null,
+        phase: event?.phase || recoveryState.phase || null,
+        detectedIssues: event?.detectedIssues || Array.from(recoveryState.detectedIssues),
+        error: event?.error || null,
+        outcome: event?.outcome || "healthy_noop",
+        timestamp: new Date().toISOString(),
+      };
+      const details = [
+        `outcome=${payload.outcome}`,
+        `branch=${payload.branch}`,
+        payload.taskId ? `taskId=${payload.taskId}` : "",
+        payload.phase ? `phase=${payload.phase}` : "",
+        payload.worktreePath ? `path=${payload.worktreePath}` : "",
+        payload.detectedIssues.length ? `issues=${payload.detectedIssues.join(",")}` : "",
+        payload.error ? `error=${payload.error}` : "",
+      ].filter(Boolean).join(" ");
+      ctx.log(node.id, `[worktree-recovery] ${details}`);
+      await recordWorktreeRecoveryEvent(repoRoot, payload);
+    };
 
     if (!branch) throw new Error("action.acquire_worktree: branch is required");
     if (!taskId) throw new Error("action.acquire_worktree: taskId is required");
@@ -4614,7 +4726,14 @@ registerNodeType("action.acquire_worktree", {
               currentBranch = branchRef.replace(/^refs\/heads\//, "");
             }
           }
-          if (currentPath && currentBranch === branch) return currentPath;
+        try {
+          await recordWorktreeRecoveryEvent(repoRoot, payload);
+        } catch (err) {
+          ctx.log(
+            node.id,
+            `[worktree-recovery] Warning: failed to record recovery event: ${err && err.message ? err.message : String(err)}`,
+          );
+        }
         } catch {
           // best-effort only
         }
@@ -4634,6 +4753,13 @@ registerNodeType("action.acquire_worktree", {
           );
         }
         ctx.log(node.id, `Discarding broken managed worktree (${phaseLabel}): ${candidatePath} ${details}`.trim());
+        recoveryState.recreated = true;
+        recoveryState.phase = phaseLabel;
+        recoveryState.worktreePath = candidatePath;
+        for (const issue of state.issues || []) {
+          const normalized = String(issue || "").trim();
+          if (normalized) recoveryState.detectedIssues.add(normalized);
+        }
         resetManagedWorktree(repoRoot, candidatePath, state.gitDir);
         return true;
       };
@@ -4687,6 +4813,10 @@ registerNodeType("action.acquire_worktree", {
           ctx.data.baseBranch = baseBranch;
           ctx.data._worktreeCreated = false;
           ctx.data._worktreeManaged = true;
+          await persistRecoveryEvent({
+            outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+            worktreePath,
+          });
           ctx.log(node.id, `Reusing worktree: ${worktreePath}`);
           return { success: true, worktreePath, created: false, reused: true, branch, baseBranch };
         }
@@ -4717,6 +4847,10 @@ registerNodeType("action.acquire_worktree", {
             ctx.data.baseBranch = baseBranch;
             ctx.data._worktreeCreated = false;
             ctx.data._worktreeManaged = true;
+            await persistRecoveryEvent({
+              outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+              worktreePath: attachedPath,
+            });
             ctx.log(node.id, `Reusing existing branch worktree: ${attachedPath}`);
             return {
               success: true,
@@ -4751,9 +4885,46 @@ registerNodeType("action.acquire_worktree", {
       ctx.data.baseBranch = baseBranch;
       ctx.data._worktreeCreated = true;
       ctx.data._worktreeManaged = true;
+      await persistRecoveryEvent({
+        outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+        worktreePath,
+      });
       ctx.log(node.id, `Worktree created: ${worktreePath} (branch: ${branch}, base: ${baseBranch})`);
       return { success: true, worktreePath, created: true, branch, baseBranch };
     } catch (err) {
+      // Safely derive recovery context without assuming try-block scoped bindings exist here.
+      const safeRecoveryState =
+        typeof recoveryState !== "undefined" && recoveryState
+          ? recoveryState
+          : {
+              phase: "post-pull",
+              worktreePath:
+                (typeof worktreePath !== "undefined" && worktreePath) ||
+                (ctx?.data && ctx.data.worktreePath) ||
+                undefined,
+              detectedIssues: new Set(["refresh_conflict"]),
+            };
+      const safePersistRecoveryEvent =
+        typeof persistRecoveryEvent === "function" ? persistRecoveryEvent : async () => {};
+      const safeWorktreePath =
+        (typeof worktreePath !== "undefined" && worktreePath) ||
+        safeRecoveryState.worktreePath ||
+        (ctx?.data && ctx.data.worktreePath) ||
+        undefined;
+
+      if (/managed worktree was removed after stale refresh state/i.test(String(err?.message || ""))) {
+        await safePersistRecoveryEvent({
+          outcome: "recreation_failed",
+          phase: safeRecoveryState.phase || "post-pull",
+          worktreePath: safeRecoveryState.worktreePath || safeWorktreePath,
+          detectedIssues: Array.from(
+            safeRecoveryState.detectedIssues && safeRecoveryState.detectedIssues.size
+              ? safeRecoveryState.detectedIssues
+              : ["refresh_conflict"],
+          ),
+          error: String(err?.message || err),
+        });
+      }
       ctx.log(node.id, `Worktree acquisition failed: ${err.message}`);
       return { success: false, error: err.message, branch, baseBranch };
     }
@@ -4852,6 +5023,11 @@ registerNodeType("action.build_task_prompt", {
       includeComments: { type: "boolean", default: true },
       includeGitContext: { type: "boolean", default: true },
       includeStatusEndpoint: { type: "boolean", default: true },
+      includeMemory: { type: "boolean", default: true },
+      teamId: { type: "string" },
+      workspaceId: { type: "string" },
+      sessionId: { type: "string" },
+      runId: { type: "string" },
       promptTemplate: { type: "string", description: "Custom template (overrides)" },
     },
     required: ["taskTitle"],
@@ -4870,6 +5046,7 @@ registerNodeType("action.build_task_prompt", {
     const includeComments = node.config?.includeComments !== false;
     const includeGitContext = node.config?.includeGitContext !== false;
     const includeStatusEndpoint = node.config?.includeStatusEndpoint !== false;
+    const includeMemory = node.config?.includeMemory !== false;
     ctx.data._taskIncludeContext = includeComments;
     const customTemplate = cfgOrCtx(node, ctx, "promptTemplate");
     const taskPayload =
@@ -4994,6 +5171,38 @@ registerNodeType("action.build_task_prompt", {
     );
     const primaryRepository = pickFirstString(repository, normalizedRepoSlug);
     const allowedRepositories = normalizeStringArray(repositories, primaryRepository);
+    const memoryTeamId = pickFirstString(
+      resolvePromptValue("teamId"),
+      taskPayload?.teamId,
+      taskMeta?.teamId,
+      process.env.BOSUN_TEAM_ID,
+      process.env.BOSUN_TEAM,
+      normalizedRepoSlug,
+    );
+    const memoryWorkspaceId = pickFirstString(
+      resolvePromptValue("workspaceId"),
+      taskPayload?.workspaceId,
+      taskMeta?.workspaceId,
+      workspace,
+      ctx.data?._workspaceId,
+      process.env.BOSUN_WORKSPACE_ID,
+      process.env.BOSUN_WORKSPACE,
+    );
+    const memorySessionId = pickFirstString(
+      resolvePromptValue("sessionId"),
+      taskPayload?.sessionId,
+      taskMeta?.sessionId,
+      ctx.data?.sessionId,
+      process.env.BOSUN_SESSION_ID,
+    );
+    const memoryRunId = pickFirstString(
+      resolvePromptValue("runId"),
+      taskPayload?.runId,
+      taskMeta?.runId,
+      ctx.data?.runId,
+      ctx.id,
+      process.env.BOSUN_RUN_ID,
+    );
     const matchedSkills = findRelevantSkills(
       normalizedRepoRoot,
       normalizedTaskTitle,
@@ -5135,6 +5344,22 @@ registerNodeType("action.build_task_prompt", {
     }
 
     const userParts = [];
+    const stripPromptMemorySection = (content, docName) => {
+      const text = String(content || "");
+      if (!text) return "";
+      if (!/AGENTS\.md$/i.test(String(docName || ""))) return text;
+      const learningsHeaderRe = /^## Agent Learnings\s*$/im;
+      const sectionMatch = learningsHeaderRe.exec(text);
+      if (!sectionMatch) return text;
+      const sectionStart = sectionMatch.index;
+      const headerLength = sectionMatch[0].length;
+      const before = text.slice(0, sectionStart).trimEnd();
+      const afterSection = text.slice(sectionStart + headerLength);
+      const nextSectionMatch = /^##\s+/m.exec(afterSection);
+      if (!nextSectionMatch) return before;
+      const afterIndex = sectionStart + headerLength + nextSectionMatch.index;
+      return `${before}\n\n${text.slice(afterIndex).trimStart()}`.trim();
+    };
 
     // Header
     userParts.push(`# Task: ${normalizedTaskTitle}`);
@@ -5218,7 +5443,10 @@ registerNodeType("action.build_task_prompt", {
           if (loaded.has(doc)) continue;
           try {
             if (existsSync(fullPath)) {
-              const content = readFileSync(fullPath, "utf8").trim();
+              const content = stripPromptMemorySection(
+                readFileSync(fullPath, "utf8"),
+                doc,
+              ).trim();
               if (content && content.length > 10) {
                 loaded.add(doc);
                 userParts.push(`## ${doc}`);
@@ -5228,6 +5456,39 @@ registerNodeType("action.build_task_prompt", {
             }
           } catch { /* best-effort */ }
         }
+      }
+    }
+
+    if (includeMemory) {
+      try {
+        const retrievedMemory = await retrieveKnowledgeEntries({
+          repoRoot: normalizedRepoRoot,
+          teamId: memoryTeamId,
+          workspaceId: memoryWorkspaceId,
+          sessionId: memorySessionId,
+          runId: memoryRunId,
+          taskId: normalizedTaskId,
+          taskTitle: normalizedTaskTitle,
+          taskDescription: normalizedTaskDescription,
+          query: [
+            normalizedTaskTitle,
+            normalizedTaskDescription,
+            normalizedRetryReason,
+          ]
+            .filter(Boolean)
+            .join(" "),
+          limit: 4,
+        });
+        const memoryBriefing = formatKnowledgeBriefing(retrievedMemory, {
+          maxEntries: 4,
+        });
+        if (memoryBriefing) {
+          userParts.push(memoryBriefing);
+          userParts.push("");
+          ctx.data._taskRetrievedMemory = retrievedMemory;
+        }
+      } catch (err) {
+        ctx.log(node.id, `Persistent memory retrieval failed (non-fatal): ${err.message}`);
       }
     }
 
@@ -5327,6 +5588,297 @@ registerNodeType("action.build_task_prompt", {
       systemLength: systemPrompt.length,
       cacheAnchorMode: strictCacheAnchoring ? "strict" : "default",
     };
+  },
+});
+
+
+registerNodeType("action.persist_memory", {
+  describe: () =>
+    "Persist a scoped team/workspace/session/run memory entry for later prompt retrieval.",
+  schema: {
+    type: "object",
+    properties: {
+      content: { type: "string", description: "The durable lesson or memory to store." },
+      scope: { type: "string", description: "Optional topical scope such as testing or auth." },
+      category: { type: "string", default: "pattern" },
+      scopeLevel: {
+        type: "string",
+        enum: ["team", "workspace", "session", "run"],
+        default: "workspace",
+      },
+      tags: {
+        anyOf: [
+          { type: "array", items: { type: "string" } },
+          { type: "string" },
+        ],
+      },
+      taskId: { type: "string" },
+      repoRoot: { type: "string" },
+      targetFile: { type: "string", description: "Knowledge markdown file (defaults to AGENTS.md)." },
+      registryFile: { type: "string", description: "Persistent registry JSON path." },
+      agentId: { type: "string" },
+      agentType: { type: "string", default: "workflow" },
+      teamId: { type: "string" },
+      workspaceId: { type: "string" },
+      sessionId: { type: "string" },
+      runId: { type: "string" },
+    },
+    required: ["content"],
+  },
+  async execute(node, ctx) {
+    const TASK_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
+    const TASK_TEMPLATE_INLINE_PLACEHOLDER_RE = /\{\{\s*[\w.-]+\s*\}\}/g;
+    const normalizeString = (value) => {
+      if (value == null) return "";
+      const text = String(value).trim();
+      if (!text) return "";
+      if (TASK_TEMPLATE_PLACEHOLDER_RE.test(text)) return "";
+      return text
+        .replace(TASK_TEMPLATE_INLINE_PLACEHOLDER_RE, " ")
+        .replace(/[ 	]{2,}/g, " ")
+        .trim();
+    };
+    const pickFirstString = (...values) => {
+      for (const value of values) {
+        const normalized = normalizeString(value);
+        if (normalized) return normalized;
+      }
+      return "";
+    };
+    const normalizeStringArray = (...values) => {
+      const out = [];
+      const seen = new Set();
+      const append = (value) => {
+        const normalized = normalizeString(value);
+        if (!normalized) return;
+        const key = normalized.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push(normalized);
+      };
+      for (const value of values) {
+        if (Array.isArray(value)) {
+          for (const item of value) append(item);
+        } else if (typeof value === "string" && value.includes(",")) {
+          for (const item of value.split(",")) append(item);
+        } else {
+          append(value);
+        }
+      }
+      return out;
+    };
+    const resolveValue = (key) => {
+      if (Object.prototype.hasOwnProperty.call(node.config || {}, key)) {
+        const resolved = ctx.resolve(node.config[key]);
+        if (resolved != null && resolved !== "") return resolved;
+      }
+      const ctxValue = ctx.data?.[key];
+      if (ctxValue != null && ctxValue !== "") return ctxValue;
+      return null;
+    };
+
+    const taskPayload =
+      ctx.data?.task && typeof ctx.data.task === "object"
+        ? ctx.data.task
+        : null;
+    const taskMeta =
+      taskPayload?.meta && typeof taskPayload.meta === "object"
+        ? taskPayload.meta
+        : null;
+    const repoRoot = pickFirstString(resolveValue("repoRoot"), process.cwd()) || process.cwd();
+    const repoSlug = pickFirstString(
+      resolveValue("repoSlug"),
+      taskPayload?.repository,
+      taskPayload?.repo,
+      taskMeta?.repository,
+    );
+    const workspace = pickFirstString(
+      resolveValue("workspace"),
+      taskPayload?.workspace,
+      taskMeta?.workspace,
+    );
+    const taskId = pickFirstString(
+      resolveValue("taskId"),
+      taskPayload?.id,
+      taskPayload?.taskId,
+      taskMeta?.taskId,
+    );
+    const entry = buildKnowledgeEntry({
+      content: pickFirstString(resolveValue("content")),
+      scope: pickFirstString(resolveValue("scope")),
+      category: pickFirstString(resolveValue("category"), "pattern") || "pattern",
+      taskRef: taskId || null,
+      scopeLevel: pickFirstString(resolveValue("scopeLevel"), "workspace") || "workspace",
+      teamId: pickFirstString(
+        resolveValue("teamId"),
+        taskPayload?.teamId,
+        taskMeta?.teamId,
+        process.env.BOSUN_TEAM_ID,
+        process.env.BOSUN_TEAM,
+        repoSlug,
+      ),
+      workspaceId: pickFirstString(
+        resolveValue("workspaceId"),
+        taskPayload?.workspaceId,
+        taskMeta?.workspaceId,
+        workspace,
+        ctx.data?._workspaceId,
+        process.env.BOSUN_WORKSPACE_ID,
+        process.env.BOSUN_WORKSPACE,
+      ),
+      sessionId: pickFirstString(
+        resolveValue("sessionId"),
+        taskPayload?.sessionId,
+        taskMeta?.sessionId,
+        ctx.data?.sessionId,
+        process.env.BOSUN_SESSION_ID,
+      ),
+      runId: pickFirstString(
+        resolveValue("runId"),
+        taskPayload?.runId,
+        taskMeta?.runId,
+        ctx.data?.runId,
+        ctx.id,
+        process.env.BOSUN_RUN_ID,
+      ),
+      agentId: pickFirstString(resolveValue("agentId"), `workflow:${node.id}`) || `workflow:${node.id}`,
+      agentType: pickFirstString(resolveValue("agentType"), "workflow") || "workflow",
+      tags: normalizeStringArray(resolveValue("tags")),
+    });
+
+    try {
+      const initOpts = {
+        repoRoot,
+        targetFile: pickFirstString(resolveValue("targetFile"), "AGENTS.md") || "AGENTS.md",
+      };
+      const registryFile = pickFirstString(resolveValue("registryFile"));
+      if (registryFile) initOpts.registryFile = registryFile;
+      initSharedKnowledge(initOpts);
+
+      const result = await appendKnowledgeEntry(entry);
+      if (!result.success) {
+        const nonFatal = /duplicate entry|rate limited/i.test(String(result.reason || ""));
+        ctx.log(node.id, `Persistent memory ${nonFatal ? "skipped" : "failed"}: ${result.reason}`);
+        if (nonFatal) {
+          return {
+            success: true,
+            persisted: false,
+            skipped: true,
+            reason: result.reason,
+            entry,
+            scopeLevel: entry.scopeLevel,
+          };
+        }
+        return {
+          success: false,
+          persisted: false,
+          error: result.reason,
+          reason: result.reason,
+          entry,
+          scopeLevel: entry.scopeLevel,
+        };
+      }
+
+      ctx.data._lastPersistedMemory = entry;
+      ctx.data._lastPersistedMemoryResult = result;
+      ctx.log(node.id, `Persistent memory stored at ${entry.scopeLevel} scope`);
+      return {
+        success: true,
+        persisted: true,
+        entry,
+        hash: result.hash || entry.hash,
+        registryPath: result.registryPath || null,
+        scopeLevel: entry.scopeLevel,
+      };
+    } catch (err) {
+      ctx.log(node.id, `Persistent memory error: ${err.message}`);
+      return {
+        success: false,
+        persisted: false,
+        error: err.message,
+        entry,
+        scopeLevel: entry.scopeLevel,
+      };
+    }
+  },
+});
+
+// ── action.auto_commit_dirty ────────────────────────────────────────────────
+// Safety net: if the agent left uncommitted work in the worktree, stage + commit
+// so that detect_new_commits can see it and the work isn't silently destroyed.
+
+registerNodeType("action.auto_commit_dirty", {
+  describe: () =>
+    "Check the worktree for uncommitted changes and auto-commit them so " +
+    "downstream nodes (detect_new_commits, push_branch) can pick them up. " +
+    "This prevents agent work from being silently destroyed when the worktree is released.",
+  schema: {
+    type: "object",
+    properties: {
+      worktreePath: { type: "string", description: "Worktree to check" },
+      taskId: { type: "string", description: "Task ID for commit message" },
+      commitMessage: { type: "string", description: "Override commit message" },
+    },
+    required: ["worktreePath"],
+  },
+  async execute(node, ctx) {
+    const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
+    const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "unknown";
+
+    if (!worktreePath) {
+      ctx.log(node.id, "auto_commit_dirty: no worktreePath — skipping");
+      return { success: false, committed: false, reason: "no worktreePath" };
+    }
+
+    // Check for uncommitted changes (tracked modified + untracked)
+    let porcelain = "";
+    try {
+      porcelain = execGitArgsSync(["status", "--porcelain"], {
+        cwd: worktreePath, encoding: "utf8", timeout: 10000,
+      }).trim();
+    } catch (err) {
+      ctx.log(node.id, `git status failed: ${err.message}`);
+      return { success: false, committed: false, reason: err.message };
+    }
+
+    if (!porcelain) {
+      ctx.log(node.id, "Worktree clean — nothing to auto-commit");
+      return { success: true, committed: false, reason: "clean" };
+    }
+
+    const dirtyCount = porcelain.split("\n").filter(Boolean).length;
+    ctx.log(node.id, `Found ${dirtyCount} dirty file(s) — auto-committing`);
+
+    // Stage everything
+    try {
+      execGitArgsSync(["add", "-A"], {
+        cwd: worktreePath, encoding: "utf8", timeout: 15000,
+      });
+    } catch (err) {
+      ctx.log(node.id, `git add -A failed: ${err.message}`);
+      return { success: false, committed: false, reason: `git add failed: ${err.message}` };
+    }
+
+    // Commit
+    const message = cfgOrCtx(node, ctx, "commitMessage")
+      || `chore: auto-commit agent work (${taskId.substring(0, 12)})`;
+    try {
+      execGitArgsSync(
+        ["-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "--no-verify", "-m", message],
+        { cwd: worktreePath, encoding: "utf8", timeout: 20000 },
+      );
+    } catch (err) {
+      const errText = (err.stderr || err.stdout || err.message || "").toLowerCase();
+      if (errText.includes("nothing to commit")) {
+        ctx.log(node.id, "Nothing to commit after staging (all changes already committed)");
+        return { success: true, committed: false, reason: "nothing_to_commit" };
+      }
+      ctx.log(node.id, `git commit failed: ${err.message}`);
+      return { success: false, committed: false, reason: `git commit failed: ${err.message}` };
+    }
+
+    ctx.log(node.id, `Auto-committed ${dirtyCount} file(s) for task ${taskId.substring(0, 12)}`);
+    return { success: true, committed: true, dirtyCount };
   },
 });
 
@@ -5759,3 +6311,5 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 //  Export all registered types for introspection
 // ═══════════════════════════════════════════════════════════════════════════
+
+

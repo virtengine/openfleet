@@ -41,6 +41,7 @@ import {
   truncate,
   countChangedFields,
 } from "../modules/utils.js";
+import { buildWorktreeRecoveryViewModel } from "../modules/worktree-recovery.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   Card,
@@ -331,6 +332,9 @@ export function DashboardTab() {
   const execData = executor?.data;
   const mode = executor?.mode || "vk";
   const defaultSdk = execData?.sdk || "auto";
+  const worktreeRecovery = buildWorktreeRecoveryViewModel(
+    status?.worktreeRecovery || status?.worktree_recovery || null,
+  );
 
   const running = Number(counts.running || counts.inprogress || 0);
   const review = Number(counts.review || counts.inreview || 0);
@@ -806,6 +810,24 @@ export function DashboardTab() {
             >
               Resume
             <//>
+          </div>
+          <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:8px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+              <div>
+                <div style="font-size:12px;font-weight:600;">${worktreeRecovery.headline}</div>
+                <div style="font-size:11px;color:var(--text-secondary);">${worktreeRecovery.summary}</div>
+              </div>
+              <span class="dashboard-chip" style=${`border-color:${worktreeRecovery.tone === "error" ? "var(--color-error)" : worktreeRecovery.tone === "warning" ? "var(--color-inreview)" : "var(--color-done)"};`}>
+                ${worktreeRecovery.health}
+              </span>
+            </div>
+            ${worktreeRecovery.events.slice(0, 2).map((event) => html`
+              <div key=${event.key} style="padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2);">
+                <div style="font-size:12px;font-weight:600;">${event.title}</div>
+                <div style="font-size:11px;color:var(--text-secondary);">${event.detail}</div>
+                ${event.error ? html`<div style="font-size:11px;color:var(--color-error);margin-top:4px;">${event.error}</div>` : null}
+              </div>
+            `)}
           </div>
           ${tickerTasks.length > 0 ? html`
             <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">

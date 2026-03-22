@@ -124,6 +124,29 @@ describe("task-store path configuration", () => {
     }
   });
 
+  it("normalizes equivalent workspace-rooted keys to one canonical key", async () => {
+    const taskStore = await loadTaskStoreModule();
+    const isWin = process.platform === "win32";
+    // Backslash→forward-slash normalization always applies; case folding only on Windows
+    expect(taskStore.normalizeWorkspaceStorageKey("VirtEngine-GH\\BOSUN")).toBe(
+      isWin ? "virtengine-gh/bosun" : "VirtEngine-GH/BOSUN",
+    );
+    expect(taskStore.normalizeWorkspaceStorageKey("./virtengine-gh/bosun/")).toBe(
+      "virtengine-gh/bosun",
+    );
+  });
+
+  it("rejects collisions caused by separator normalization", async () => {
+    const taskStore = await loadTaskStoreModule();
+    // Use separator-only collision that works on all platforms
+    expect(() =>
+      taskStore.normalizeWorkspaceStorageKeys(
+        ["virtengine-gh/bosun", "virtengine-gh\\bosun"],
+        { kind: "test.workspace-keys" },
+      ),
+    ).toThrow(/collision/i);
+  });
+
   it("prefers explicit REPO_ROOT over BOSUN_HOME for default store resolution", async () => {
     const env = snapshotEnv();
     const explicitRepoRoot = makeTempDir("ve-task-store-explicit-repo-");

@@ -134,6 +134,10 @@ import {
   selectCoordinator,
 } from "../infra/presence.mjs";
 import {
+  normalizeWorktreeRecoveryState,
+  readWorktreeRecoveryState,
+} from "../infra/worktree-recovery-state.mjs";
+import {
   loadWorkspaceRegistry,
   getLocalWorkspace,
 } from "../workspace/workspace-registry.mjs";
@@ -242,6 +246,10 @@ const TASK_STORE_DAG_EXPORTS = Object.freeze({
 });
 const TASK_STORE_GET_TASK_EXPORTS = ["getTaskById", "getTask"];
 const TASK_STORE_COMMENT_EXPORTS = ["getTaskComments", "listTaskComments"];
+const TASK_STORE_RUN_EXPORTS = {
+  list: ["getTaskRuns", "listTaskRuns"],
+  append: ["appendTaskRun", "addTaskRun"],
+};
 const TASK_STORE_DEPENDENCY_EXPORTS = {
   add: ["addTaskDependency"],
   remove: ["removeTaskDependency"],
@@ -2181,6 +2189,261 @@ function resolvePrimaryWorkspaceId() {
   } catch {
     return "";
   }
+}
+
+function normalizeDiffTaskRef(value) {
+  return String(value || "").trim();
+}
+
+function collectTaskWorkflowRunEntries(task) {
+  return [
+    ...(Array.isArray(task?.workflowRuns) ? task.workflowRuns : []),
+    ...(Array.isArray(task?.workflowHistory) ? task.workflowHistory : []),
+    ...(Array.isArray(task?.workflows) ? task.workflows : []),
+    ...(Array.isArray(task?.meta?.workflowRuns) ? task.meta.workflowRuns : []),
+  ];
+}
+
+function collectTaskDiffSessionIds(task) {
+  const ids = new Set();
+  const push = (value) => {
+    const normalized = normalizeDiffTaskRef(value);
+    if (normalized) ids.add(normalized);
+  };
+
+  push(task?.sessionId);
+  push(task?.primarySessionId);
+  push(task?.meta?.sessionId);
+  push(task?.meta?.primarySessionId);
+
+  for (const entry of collectTaskWorkflowRunEntries(task)) {
+    push(entry?.sessionId);
+    push(entry?.primarySessionId);
+    push(entry?.threadId);
+    push(entry?.agentSessionId);
+    push(entry?.meta?.sessionId);
+    push(entry?.meta?.threadId);
+  }
+
+  return [...ids];
+}
+
+function collectTaskDiffCommitRefs(task) {
+  const refs = new Set();
+  const push = (value) => {
+    const normalized = normalizeDiffTaskRef(value);
+    if (normalized) refs.add(normalized);
+  };
+
+  push(task?.commitSha);
+  push(task?.sha);
+  push(task?.headSha);
+  push(task?.mergeCommitSha);
+  push(task?.meta?.commitSha);
+  push(task?.meta?.sha);
+  push(task?.meta?.headSha);
+  push(task?.meta?.mergeCommitSha);
+  push(task?.meta?.pr?.headSha);
+  push(task?.meta?.pr?.mergeCommitSha);
+
+  return [...refs];
+}
+
+function pickTaskDiffBranch(task) {
+  return (
+    normalizeDiffTaskRef(task?.branchName) ||
+    normalizeDiffTaskRef(task?.branch) ||
+    normalizeDiffTaskRef(task?.meta?.branchName) ||
+    normalizeDiffTaskRef(task?.meta?.branch) ||
+    normalizeDiffTaskRef(task?.meta?.pr?.headRefName) ||
+    ""
+  );
+}
+
+function pickTaskDiffBaseBranch(task) {
+  return (
+    normalizeDiffTaskRef(task?.baseBranch) ||
+    normalizeDiffTaskRef(task?.base_branch) ||
+    normalizeDiffTaskRef(task?.meta?.baseBranch) ||
+    normalizeDiffTaskRef(task?.meta?.base_branch) ||
+    normalizeDiffTaskRef(task?.meta?.pr?.baseRefName) ||
+    "origin/main"
+  );
+}
+
+function resolveTaskWorkspaceEntry(task, workspaceContext = {}) {
+  const configDir = resolveUiConfigDir();
+  if (!configDir) return null;
+  const listed = listManagedWorkspaces(configDir, { repoRoot });
+  const taskWorkspace = normalizeDiffTaskRef(task?.workspace || task?.meta?.workspace);
+  const taskWorkspacePath = normalizeCandidatePath(taskWorkspace);
+  const workspaceId = normalizeDiffTaskRef(workspaceContext?.workspaceId || workspaceContext?.workspaceFilter);
+
+  return (
+    (taskWorkspace
+      ? listed.find((entry) => {
+          const id = normalizeDiffTaskRef(entry?.id);
+          const entryPath = normalizeCandidatePath(entry?.path);
+          return id === taskWorkspace || (taskWorkspacePath && entryPath && entryPath === taskWorkspacePath);
+        })
+      : null) ||
+    (workspaceId
+      ? listed.find((entry) => normalizeDiffTaskRef(entry?.id) === workspaceId)
+      : null) ||
+    getActiveManagedWorkspace(configDir) ||
+    listed[0] ||
+    null
+  );
+}
+
+function resolveTaskRepositoryDir(task, workspaceContext = {}) {
+  const repositoryName = normalizeDiffTaskRef(task?.repository || task?.meta?.repository);
+  const taskWorkspace = normalizeDiffTaskRef(task?.workspace || task?.meta?.workspace);
+  const taskWorkspacePath = normalizeCandidatePath(taskWorkspace);
+  const workspaceEntry = resolveTaskWorkspaceEntry(task, workspaceContext);
+  const candidates = [];
+
+  const pushCandidate = (candidate) => {
+    const normalized = normalizeCandidatePath(candidate);
+    if (normalized && !candidates.includes(normalized)) candidates.push(normalized);
+  };
+
+  if (taskWorkspacePath && repositoryName) pushCandidate(resolve(taskWorkspacePath, repositoryName));
+  if (taskWorkspacePath) pushCandidate(taskWorkspacePath);
+
+  if (workspaceEntry) {
+    const repos = Array.isArray(workspaceEntry.repos) ? workspaceEntry.repos : [];
+    const matchedRepo = repositoryName
+      ? repos.find((repo) => {
+          const values = [
+            normalizeDiffTaskRef(repo?.name),
+            normalizeDiffTaskRef(repo?.slug),
+            normalizeCandidatePath(repo?.path),
+          ].filter(Boolean);
+          return values.includes(repositoryName) || values.includes(normalizeCandidatePath(repositoryName));
+        })
+      : null;
+    if (matchedRepo?.path) pushCandidate(matchedRepo.path);
+    if (workspaceEntry.path && repositoryName) pushCandidate(resolve(workspaceEntry.path, repositoryName));
+    pushCandidate(pickWorkspaceRepoDir(workspaceEntry));
+    pushCandidate(workspaceEntry.path);
+  }
+
+  if (workspaceContext?.workspaceDir && repositoryName) {
+    pushCandidate(resolve(workspaceContext.workspaceDir, repositoryName));
+  }
+  pushCandidate(workspaceContext?.workspaceDir);
+  pushCandidate(repoRoot);
+
+  for (const candidate of candidates) {
+    if (!candidate || !existsSync(candidate)) continue;
+    if (existsSync(resolve(candidate, ".git"))) return candidate;
+  }
+  return candidates.find((candidate) => candidate && existsSync(candidate)) || "";
+}
+
+function emptyTaskDiffPayload(formatted, source = {}) {
+  return {
+    diff: {
+      files: [],
+      totalFiles: 0,
+      totalAdditions: 0,
+      totalDeletions: 0,
+      formatted,
+    },
+    summary: formatted,
+    commits: [],
+    source,
+  };
+}
+
+async function buildTaskDiffPayload(task, workspaceContext = {}) {
+  if (!task) {
+    return emptyTaskDiffPayload("(task not found)", { kind: "task", detail: "Task could not be loaded." });
+  }
+
+  const baseBranch = pickTaskDiffBaseBranch(task);
+
+  for (const sessionId of collectTaskDiffSessionIds(task)) {
+    try {
+      const session = tracker.getSession(sessionId);
+      if (!session) continue;
+      const worktreePath = await resolveSessionWorktreePath(session);
+      if (!worktreePath || !existsSync(worktreePath)) continue;
+      const diff = collectDiffStats(worktreePath, {
+        baseBranch,
+        includePatch: true,
+      });
+      if (diff.totalFiles > 0) {
+        return {
+          diff,
+          summary: diff.formatted,
+          commits: getRecentCommits(worktreePath),
+          source: {
+            kind: "session",
+            label: diff.sourceRange || "session worktree",
+            detail: worktreePath,
+          },
+        };
+      }
+    } catch {
+      // Fall through to branch or commit resolution.
+    }
+  }
+
+  const repoPath = resolveTaskRepositoryDir(task, workspaceContext);
+  if (!repoPath || !existsSync(repoPath)) {
+    return emptyTaskDiffPayload("(no repository for task diff)", {
+      kind: "task",
+      detail: "No repository or preserved worktree is available for this task.",
+    });
+  }
+
+  const attempts = [];
+  const branch = pickTaskDiffBranch(task);
+  if (branch) {
+    attempts.push({
+      kind: "branch",
+      label: `${baseBranch}...${branch}`,
+      options: { baseBranch, targetRef: branch, includePatch: true },
+    });
+  }
+  for (const commitRef of collectTaskDiffCommitRefs(task)) {
+    attempts.push({
+      kind: "commit",
+      label: commitRef,
+      options: { range: `${commitRef}^..${commitRef}`, includePatch: true },
+    });
+  }
+  if (!attempts.length) {
+    attempts.push({
+      kind: "task",
+      label: `${baseBranch}...HEAD`,
+      options: { baseBranch, includePatch: true },
+    });
+  }
+
+  for (const attempt of attempts) {
+    const diff = collectDiffStats(repoPath, attempt.options);
+    if (diff.totalFiles > 0) {
+      return {
+        diff,
+        summary: diff.formatted,
+        commits: getRecentCommits(repoPath),
+        source: {
+          kind: attempt.kind,
+          label: diff.sourceRange || attempt.label,
+          detail: repoPath,
+        },
+      };
+    }
+  }
+
+  return emptyTaskDiffPayload("(no diff available)", {
+    kind: branch ? "branch" : "task",
+    label: branch ? `${baseBranch}...${branch}` : "",
+    detail: repoPath,
+  });
 }
 
 function taskMatchesWorkspaceContext(task, workspaceContext) {
@@ -9255,6 +9518,106 @@ function summarizeOutputLines(value, maxLines = 3, maxChars = 140) {
   return lines;
 }
 
+function summarizeTrajectoryText(value, maxLength = 160) {
+  const text = String(value ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (!text) return null;
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+}
+
+function classifyTrajectorySessionEvent(event = {}) {
+  const payload = event && typeof event === "object" ? event : {};
+  const role = String(payload?.role || payload?.message?.role || "").trim().toLowerCase();
+  const type = String(payload?.type || payload?.message?.type || payload?.event?.kind || "").trim().toLowerCase();
+  if (role === "user") return "user";
+  if (role === "assistant") return "assistant";
+  if (type.includes("tool") && (type.includes("result") || type.includes("output"))) return "tool_result";
+  if (type.includes("tool")) return "tool_call";
+  if (type.includes("reason") || type.includes("thinking")) return "reasoning";
+  if (type === "error") return "status";
+  return "event";
+}
+
+function buildTrajectoryStepFromSessionEvent(event = {}) {
+  const normalizedType = classifyTrajectorySessionEvent(event);
+  const message = event?.message && typeof event.message === "object" ? event.message : event;
+  const content = message?.content ?? event?.content ?? null;
+  const summary = summarizeTrajectoryText(
+    message?.summary || event?.summary || content || event?.label || event?.reason || event?.type || "Run event recorded.",
+  ) || "Run event recorded.";
+  return {
+    id: String(event?.id || message?.id || `step-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`),
+    at: String(event?.timestamp || message?.timestamp || event?.at || new Date().toISOString()),
+    type: normalizedType,
+    summary,
+    payload: {
+      role: message?.role || event?.role || null,
+      type: message?.type || event?.type || null,
+      content: typeof content === "string" ? content : null,
+      reason: event?.reason || null,
+    },
+    event: event && typeof event === "object" ? { ...event } : null,
+  };
+}
+
+function buildTaskRunSummary(steps = [], fallback = "Run recorded.") {
+  const ordered = Array.isArray(steps) ? steps : [];
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const summary = summarizeTrajectoryText(ordered[index]?.summary || "");
+    if (summary) return summary;
+  }
+  return fallback;
+}
+
+async function buildReplayableTaskRuns(task, tracker = null, limit = 5) {
+  const sessionIds = collectTaskDiffSessionIds(task);
+  const { value: storedRunsRaw } = await callTaskStoreFunction(TASK_STORE_RUN_EXPORTS.list, [task?.id]);
+  const storedRuns = storedRunsRaw;
+  const runs = Array.isArray(storedRuns) ? storedRuns.map((run) => ({
+    ...run,
+    summary: run.summary || buildTaskRunSummary(run.steps, run.status === "failed" ? "Run failed." : "Run completed."),
+  })) : [];
+  const seenRunIds = new Set(runs.map((entry) => String(entry?.runId || "")).filter(Boolean));
+  for (const sessionId of sessionIds) {
+    const session = tracker?.getSession?.(sessionId);
+    if (!session) continue;
+    const events = Array.isArray(session?.events) ? session.events : [];
+    const steps = events.map((event) => buildTrajectoryStepFromSessionEvent(event)).filter(Boolean);
+    if (steps.length === 0) continue;
+    const runId = String(sessionId || session?.id || "").trim();
+    if (!runId || seenRunIds.has(runId)) continue;
+    seenRunIds.add(runId);
+    runs.push({
+      runId,
+      startedAt: String(session?.createdAt || steps[0]?.at || new Date().toISOString()),
+      endedAt: session?.status === "active" ? null : String(session?.updatedAt || steps.at(-1)?.at || new Date().toISOString()),
+      status: String(session?.status || "completed"),
+      taskKey: String(task?.id || session?.taskId || "").trim() || null,
+      sdk: String(session?.executor || session?.sdk || session?.metadata?.resolvedSdk || "").trim() || null,
+      threadId: String(session?.threadId || session?.metadata?.threadId || "").trim() || null,
+      resumeThreadId: String(session?.metadata?.resumeThreadId || session?.threadId || "").trim() || null,
+      replayable: true,
+      outcome: session?.status === "failed" ? "failed" : "completed",
+      summary: buildTaskRunSummary(steps, session?.status === "failed" ? "Run failed." : "Run completed."),
+      steps,
+      meta: {
+        sessionId: runId,
+        source: "session-tracker",
+      },
+    });
+  }
+  runs.sort((left, right) => Date.parse(String(right?.startedAt || 0)) - Date.parse(String(left?.startedAt || 0)));
+  return runs.slice(0, Math.max(1, Number(limit) || 5));
+}
+
 function buildWorkflowNodeOutputPreview(nodeType, output = null) {
   if (output == null) return { lines: [] };
   const type = String(nodeType || "").trim().toLowerCase();
@@ -9850,7 +10213,6 @@ function startLogStream(socket, logType, query) {
         // File was truncated/rotated — reset
         streamState.offset = 0;
       }
-
       if (size <= streamState.offset) return;
 
       // Read only new bytes
@@ -10643,7 +11005,13 @@ async function handleDeviceFlowPoll(req, res) {
 async function readStatusSnapshot() {
   try {
     const raw = await readFile(statusPath, "utf8");
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      parsed.worktreeRecovery = normalizeWorktreeRecoveryState(
+        parsed.worktreeRecovery || parsed.worktree_recovery || null,
+      );
+    }
+    return parsed;
   } catch {
     return null;
   }
@@ -11459,6 +11827,162 @@ function resolveAgentWorkLogDir() {
   return candidates[0];
 }
 
+function clampRunSummaryText(value, maxLength = 220) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+function summarizeTrajectoryEvent(event = {}) {
+  const type = String(event?.event_type || event?.type || "event").trim() || "event";
+  const data = event?.data && typeof event.data === "object" ? event.data : {};
+  if (type === "session_start") {
+    return clampRunSummaryText(`Started ${String(event.executor || event.model || "agent").trim() || "agent"} run for ${String(event.task_title || event.taskId || "task").trim() || "task"}`);
+  }
+  if (type === "session_end") {
+    const status = String(data?.completion_status || event?.status || "completed").trim() || "completed";
+    return clampRunSummaryText(`Finished run with status ${status}`);
+  }
+  if (type === "tool_call") {
+    const toolName = String(data?.tool_name || event?.tool_name || "tool").trim() || "tool";
+    return clampRunSummaryText(`Called ${toolName}`);
+  }
+  if (type === "tool_result") {
+    const toolName = String(data?.tool_name || event?.tool_name || "tool").trim() || "tool";
+    const status = String(data?.status || event?.status || "completed").trim() || "completed";
+    return clampRunSummaryText(`${toolName} returned ${status}`);
+  }
+  if (type === "error") {
+    const message = String(data?.error_message || event?.error_message || event?.message || "error").trim() || "error";
+    return clampRunSummaryText(`Error: ${message}`);
+  }
+  if (type === "usage") {
+    const totalTokens = numberOrZero(data?.total_tokens || data?.tokens || event?.total_tokens);
+    if (totalTokens > 0) return clampRunSummaryText(`Used ${totalTokens} tokens`);
+  }
+  if (type === "agent_output") {
+    const output = String(data?.output || event?.output || "").trim();
+    if (output) return clampRunSummaryText(output);
+  }
+  return clampRunSummaryText(type.replace(/_/g, " "));
+}
+
+function toTrajectoryReplayEvent(event = {}, index = 0) {
+  const timestamp = event?.timestamp || event?.recordedAt || null;
+  const eventType = String(event?.event_type || event?.type || "event").trim() || "event";
+  const data = event?.data && typeof event.data === "object" ? event.data : {};
+  return {
+    index,
+    timestamp,
+    type: eventType,
+    summary: summarizeTrajectoryEvent(event),
+    attemptId: String(event?.attempt_id || event?.attemptId || "").trim() || null,
+    taskId: String(event?.taskId || "").trim() || null,
+    taskTitle: String(event?.task_title || event?.taskTitle || "").trim() || null,
+    executor: String(event?.executor || event?.model || "").trim() || null,
+    data: makeJsonSafe(data, { maxDepth: 4 }),
+  };
+}
+
+function buildReplayOverview(events = []) {
+  const totals = {
+    events: events.length,
+    toolCalls: 0,
+    toolResults: 0,
+    outputs: 0,
+    errors: 0,
+    usageEvents: 0,
+  };
+  const shortSteps = [];
+  for (const event of events) {
+    if (event.type === "tool_call") totals.toolCalls += 1;
+    if (event.type === "tool_result") totals.toolResults += 1;
+    if (event.type === "agent_output") totals.outputs += 1;
+    if (event.type === "error") totals.errors += 1;
+    if (event.type === "usage") totals.usageEvents += 1;
+    if (shortSteps.length >= 12) continue;
+    if (["session_start", "tool_call", "tool_result", "error", "session_end"].includes(event.type)) {
+      shortSteps.push(event.summary);
+      continue;
+    }
+    if (event.type === "agent_output" && shortSteps.length < 6) shortSteps.push(event.summary);
+  }
+  return { totals, shortSteps };
+}
+
+async function listReplayableAgentRuns(options = {}) {
+  const logDir = resolveAgentWorkLogDir();
+  const sessionsDir = resolve(logDir, "agent-sessions");
+  const limit = Math.max(1, Math.min(100, Number(options.limit) || 25));
+  const taskIdFilter = String(options.taskId || "").trim();
+  const files = await readdir(sessionsDir).catch(() => []);
+  const runs = [];
+
+  for (const name of files) {
+    if (!name.endsWith(".jsonl")) continue;
+    const attemptId = name.replace(/\.jsonl$/i, "");
+    const filePath = resolve(sessionsDir, name);
+    const entries = await readJsonlTail(filePath, 5000, 10000000).catch(() => []);
+    if (!entries.length) continue;
+    const replayEvents = entries.map((entry, index) => toTrajectoryReplayEvent(entry, index));
+    const first = replayEvents[0] || null;
+    const last = replayEvents[replayEvents.length - 1] || null;
+    const taskId = String(first?.taskId || last?.taskId || "").trim() || null;
+    if (taskIdFilter && taskId !== taskIdFilter) continue;
+    const startedAt = first?.timestamp || null;
+    const endedAt = last?.type === "session_end" ? last.timestamp : null;
+    const overview = buildReplayOverview(replayEvents);
+    runs.push({
+      attemptId,
+      taskId,
+      taskTitle: first?.taskTitle || last?.taskTitle || null,
+      executor: first?.executor || last?.executor || null,
+      startedAt,
+      endedAt,
+      status: last?.type === "session_end"
+        ? String(last?.data?.completion_status || "completed")
+        : "in_progress",
+      eventCount: replayEvents.length,
+      shortSteps: overview.shortSteps,
+      totals: overview.totals,
+    });
+  }
+
+  runs.sort((a, b) => {
+    const aTs = Date.parse(String(a.endedAt || a.startedAt || 0)) || 0;
+    const bTs = Date.parse(String(b.endedAt || b.startedAt || 0)) || 0;
+    return bTs - aTs;
+  });
+  return runs.slice(0, limit);
+}
+
+async function readReplayableAgentRun(attemptId) {
+  const normalizedAttemptId = String(attemptId || "").trim();
+  if (!normalizedAttemptId) return null;
+  const filePath = resolve(resolveAgentWorkLogDir(), "agent-sessions", `${normalizedAttemptId}.jsonl`);
+  if (!existsSync(filePath)) return null;
+  const entries = await readJsonlTail(filePath, 20000, 25000000).catch(() => []);
+  if (!entries.length) return null;
+  const events = entries.map((entry, index) => toTrajectoryReplayEvent(entry, index));
+  const first = events[0] || null;
+  const last = events[events.length - 1] || null;
+  const overview = buildReplayOverview(events);
+  return {
+    attemptId: normalizedAttemptId,
+    taskId: first?.taskId || last?.taskId || null,
+    taskTitle: first?.taskTitle || last?.taskTitle || null,
+    executor: first?.executor || last?.executor || null,
+    startedAt: first?.timestamp || null,
+    endedAt: last?.type === "session_end" ? last.timestamp : null,
+    status: last?.type === "session_end"
+      ? String(last?.data?.completion_status || "completed")
+      : "in_progress",
+    shortSteps: overview.shortSteps,
+    totals: overview.totals,
+    events,
+  };
+}
 async function listAgentLogFiles(query = "", limit = 60) {
   const entries = [];
   const agentLogsDir = await resolveAgentLogsDir();
@@ -12319,6 +12843,25 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/tasks/diff") {
+    try {
+      const taskId =
+        url.searchParams.get("taskId") || url.searchParams.get("id") || "";
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      const adapter = getKanbanAdapter();
+      const task = await adapter.getTask(taskId);
+      const payload = await buildTaskDiffPayload(task, workspaceContext);
+      jsonResponse(res, 200, { ok: true, ...payload });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/tasks/detail") {
     try {
       const taskId =
@@ -12368,6 +12911,15 @@ async function handleApi(req, res, url) {
           workspaceDir: workspaceContext?.workspaceDir || repoRoot,
         });
         const diagnostics = buildTaskDiagnostics(detailTask, supervisorDiagnostics);
+        const replayRuns = await buildReplayableTaskRuns(detailTask, getSessionTracker(), 8);
+        if (replayRuns.length > 0) {
+          detailTask.runs = replayRuns;
+          detailTask.meta = {
+            ...(detailTask.meta || {}),
+            latestRunSummary: replayRuns[0]?.summary || null,
+            replayRunCount: replayRuns.length,
+          };
+        }
 
         detailTask.meta = {
           ...(detailTask.meta || {}),
@@ -15419,7 +15971,15 @@ async function handleApi(req, res, url) {
     try {
       const worktrees = listActiveWorktrees(repoRoot);
       const stats = await getWorktreeStats(repoRoot);
-      jsonResponse(res, 200, { ok: true, data: worktrees, stats });
+      const recovery = await readWorktreeRecoveryState(repoRoot);
+      jsonResponse(res, 200, {
+        ok: true,
+        data: worktrees,
+        stats: {
+          ...stats,
+          recovery,
+        },
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -15977,7 +16537,33 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (path === "/api/agent-logs/context") {
+    if (path === "/api/agent-runs") {
+    try {
+      const limit = Number(url.searchParams.get("limit") || "25");
+      const taskId = String(url.searchParams.get("taskId") || "").trim();
+      const data = await listReplayableAgentRuns({ limit, taskId });
+      jsonResponse(res, 200, { ok: true, data });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path.startsWith("/api/agent-runs/")) {
+    try {
+      const attemptId = decodeURIComponent(path.slice("/api/agent-runs/".length));
+      const data = await readReplayableAgentRun(attemptId);
+      if (!data) {
+        jsonResponse(res, 404, { ok: false, error: "run not found" });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, data });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+if (path === "/api/agent-logs/context") {
     try {
       const query = url.searchParams.get("query") || "";
       if (!query) {
@@ -16076,6 +16662,7 @@ async function handleApi(req, res, url) {
     try {
       const executor = uiDeps.getInternalExecutor?.();
       const status = executor?.getStatus?.() || {};
+      const worktreeRecovery = await readWorktreeRecoveryState(repoRoot);
       const data = {
         executor: {
           mode: uiDeps.getExecutorMode?.() || "internal",
@@ -16083,6 +16670,7 @@ async function handleApi(req, res, url) {
           activeSlots: status.activeSlots || 0,
           paused: executor?.isPaused?.() || false,
         },
+        worktreeRecovery,
         system: {
           uptime: process.uptime(),
           memoryMB: Math.round(process.memoryUsage.rss() / 1024 / 1024),
@@ -19506,10 +20094,20 @@ async function handleApi(req, res, url) {
           jsonResponse(res, 200, { ok: true, diff: { files: [], totalFiles: 0, totalAdditions: 0, totalDeletions: 0, formatted: "(no worktree)" }, summary: "(no worktree)", commits: [] });
           return;
         }
-        const stats = collectDiffStats(worktreePath);
-        const summary = getCompactDiffSummary(worktreePath);
+        const stats = collectDiffStats(worktreePath, { includePatch: true });
+        const summary = stats.formatted || getCompactDiffSummary(worktreePath);
         const commits = getRecentCommits(worktreePath);
-        jsonResponse(res, 200, { ok: true, diff: stats, summary, commits });
+        jsonResponse(res, 200, {
+          ok: true,
+          diff: stats,
+          summary,
+          commits,
+          source: {
+            kind: "session",
+            label: stats.sourceRange || "origin/main...HEAD",
+            detail: worktreePath,
+          },
+        });
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
@@ -21875,6 +22473,20 @@ export function stopTelegramUiServer() {
   // Clear injected configDir so it does not leak between server lifecycles
   // (tests start/stop servers repeatedly with different config directories).
   delete uiDeps.configDir;
+  tuiStatsEmitter?.stop?.();
+  tuiStatsEmitter = null;
+  removeSessionEventListener?.();
+  removeSessionEventListener = null;
+  sessionListenerAttached = false;
+  removeSessionStateListener?.();
+  removeSessionStateListener = null;
+  sessionStateListenerAttached = false;
+  removeActiveSessionListener?.();
+  removeActiveSessionListener = null;
+  activeSessionListenerAttached = false;
+  removeSessionAccumulatorListener?.();
+  removeSessionAccumulatorListener = null;
+  sessionAccumulatorListenerAttached = false;
   for (const socket of wsClients) {
     try {
       stopLogStream(socket);
@@ -21909,3 +22521,6 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
+
+

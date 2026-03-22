@@ -5,7 +5,7 @@
  * Provides an in-memory cache with auto-persist on every mutation.
  */
 
-import { resolve, dirname, basename } from "node:path";
+import { resolve, dirname, basename, posix as posixPath } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
@@ -147,6 +147,8 @@ const MAX_ERROR_LENGTH = 1000;
 const MAX_TASK_TIMELINE = 300;
 const MAX_TASK_COMMENTS = 200;
 const MAX_WORKFLOW_RUN_LINKS = 200;
+const MAX_TASK_RUN_STEPS = 120;
+const MAX_TASK_RUNS = 20;
 const ATOMIC_RENAME_FALLBACK_CODES = new Set(["EPERM", "EACCES", "EBUSY", "EXDEV"]);
 const TERMINAL_TASK_STATUSES = new Set(["done", "cancelled"]);
 const SPRINT_ORDER_MODES = new Set(["parallel", "sequential"]);
@@ -191,6 +193,18 @@ const ALLOWED_STATE_TRANSITIONS = Object.freeze({
   cancelled: new Set([]),
   blocked: new Set(["backlog", "inprogress", "cancelled", "paused"]),
 });
+
+function createWorkspaceStorageCollisionError(kind, canonicalKey, existingRaw, incomingRaw) {
+  const err = new Error(
+    `${kind} key collision after normalization: "${existingRaw}" conflicts with "${incomingRaw}" (canonical="${canonicalKey}")`,
+  );
+  err.code = "TASK_STORE_KEY_COLLISION";
+  err.kind = kind;
+  err.canonicalKey = canonicalKey;
+  err.existingRaw = existingRaw;
+  err.incomingRaw = incomingRaw;
+  return err;
+}
 
 // ---------------------------------------------------------------------------
 // In-memory state
@@ -299,6 +313,41 @@ function normalizeTaskStatus(rawStatus) {
   if (value === "completed") return "done";
   if (value === "canceled") return "cancelled";
   return value;
+}
+
+export function normalizeWorkspaceStorageKey(rawKey) {
+  const value = String(rawKey ?? "").trim();
+  if (!value) return "";
+  const unifiedSeparators = value.replace(/[\\]+/g, "/");
+  let normalized = posixPath.normalize(unifiedSeparators);
+  if (normalized === ".") return "";
+  normalized = normalized.replace(/^\.\/+/, "");
+  if (normalized.length > 1 && normalized.endsWith("/")) {
+    normalized = normalized.slice(0, -1);
+  }
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+export function normalizeWorkspaceStorageKeys(rawKeys, options = {}) {
+  const kind = String(options.kind || "workspace-rooted storage").trim();
+  const values = Array.isArray(rawKeys) ? rawKeys : [rawKeys];
+  const seen = new Map();
+  const normalized = [];
+  for (const value of values) {
+    const raw = String(value ?? "").trim();
+    if (!raw) continue;
+    const canonical = normalizeWorkspaceStorageKey(raw);
+    if (!canonical) continue;
+    const existingRaw = seen.get(canonical);
+    if (existingRaw && existingRaw !== raw) {
+      throw createWorkspaceStorageCollisionError(kind, canonical, existingRaw, raw);
+    }
+    if (!existingRaw) {
+      seen.set(canonical, raw);
+      normalized.push(canonical);
+    }
+  }
+  return normalized;
 }
 
 function normalizeLifecycleState(rawStatus) {
@@ -411,6 +460,106 @@ function normalizeWorkflowRunLinks(rawRuns) {
   return normalized.slice(-MAX_WORKFLOW_RUN_LINKS);
 }
 
+function summarizeTrajectoryStepText(value, maxLength = 160) {
+  const text = String(value ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (!text) return null;
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+}
+
+function buildTrajectoryStepSummary(step = {}) {
+  const type = String(step?.type || "event").trim().toLowerCase();
+  const payload = step?.payload && typeof step.payload === "object" ? step.payload : {};
+  const event = step?.event && typeof step.event === "object" ? step.event : {};
+
+  if (type === "thread") {
+    const resumed = payload?.resumed === true || event?.resumed === true;
+    const sdk = String(payload?.sdk || event?.sdk || "agent").trim() || "agent";
+    return resumed ? `Resumed ${sdk} session.` : `Started ${sdk} session.`;
+  }
+  if (type === "assistant") {
+    return summarizeTrajectoryStepText(
+      payload?.summary || payload?.message || payload?.content || event?.summary || event?.content || "Assistant responded.",
+    ) || "Assistant responded.";
+  }
+  if (type === "user") {
+    return summarizeTrajectoryStepText(
+      payload?.summary || payload?.message || payload?.content || event?.summary || event?.content || "User prompt recorded.",
+    ) || "User prompt recorded.";
+  }
+  if (type === "tool_call") {
+    const toolName = String(payload?.toolName || payload?.tool || event?.toolName || event?.tool || "tool").trim() || "tool";
+    return `Called ${toolName}.`;
+  }
+  if (type === "tool_result") {
+    const toolName = String(payload?.toolName || payload?.tool || event?.toolName || event?.tool || "tool").trim() || "tool";
+    const status = String(payload?.status || event?.status || "ok").trim().toLowerCase();
+    return status === "error" || status === "failed" ? `${toolName} returned an error.` : `${toolName} completed.`;
+  }
+  if (type === "reasoning") {
+    return summarizeTrajectoryStepText(payload?.summary || payload?.text || event?.summary || event?.text || "Reasoning updated.") || "Reasoning updated.";
+  }
+  if (type === "status") {
+    return summarizeTrajectoryStepText(payload?.summary || payload?.message || event?.summary || event?.message || "Run status changed.") || "Run status changed.";
+  }
+  return summarizeTrajectoryStepText(
+    step?.summary || payload?.summary || payload?.message || event?.summary || event?.message || "Run event recorded.",
+  ) || "Run event recorded.";
+}
+
+function normalizeTaskRunStep(step = {}, index = 0) {
+  return {
+    id: String(step?.id || `step-${Date.now()}-${index}-${Math.random().toString(16).slice(2, 8)}`),
+    at: String(step?.at || step?.timestamp || now()),
+    type: String(step?.type || "event"),
+    summary: summarizeTrajectoryStepText(step?.summary || buildTrajectoryStepSummary(step)) || "Run event recorded.",
+    payload: step?.payload && typeof step.payload === "object" ? { ...step.payload } : null,
+    event: step?.event && typeof step.event === "object" ? { ...step.event } : null,
+  };
+}
+
+function normalizeTaskRunSteps(rawSteps) {
+  const values = Array.isArray(rawSteps) ? rawSteps : [];
+  const normalized = values.map((step, index) => normalizeTaskRunStep(step, index)).filter(Boolean);
+  if (normalized.length <= MAX_TASK_RUN_STEPS) return normalized;
+  return normalized.slice(-MAX_TASK_RUN_STEPS);
+}
+
+function normalizeTaskRuns(rawRuns) {
+  const values = Array.isArray(rawRuns) ? rawRuns : [];
+  const normalized = [];
+  for (const entry of values) {
+    if (!entry || typeof entry !== "object") continue;
+    const runId = String(entry.runId || entry.id || "").trim();
+    if (!runId) continue;
+    normalized.push({
+      runId,
+      startedAt: String(entry.startedAt || entry.createdAt || now()),
+      endedAt: entry.endedAt != null ? String(entry.endedAt) : null,
+      status: entry.status != null ? String(entry.status) : "running",
+      taskKey: entry.taskKey != null ? String(entry.taskKey) : null,
+      sdk: entry.sdk != null ? String(entry.sdk) : null,
+      threadId: entry.threadId != null ? String(entry.threadId) : null,
+      resumeThreadId: entry.resumeThreadId != null ? String(entry.resumeThreadId) : null,
+      replayable: entry.replayable !== false,
+      outcome: entry.outcome != null ? String(entry.outcome) : null,
+      summary: summarizeTrajectoryStepText(entry.summary || entry.title || "") || null,
+      steps: normalizeTaskRunSteps(entry.steps),
+      meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
+    });
+  }
+  if (normalized.length <= MAX_TASK_RUNS) return normalized;
+  return normalized.slice(-MAX_TASK_RUNS);
+}
+
 function validateTaskTransition(currentStatus, nextStatus, options = {}) {
   const fromStatus = normalizeTaskStatus(currentStatus);
   const toStatus = normalizeTaskStatus(nextStatus);
@@ -438,6 +587,16 @@ function validateTaskTransition(currentStatus, nextStatus, options = {}) {
 
 function normalizeTaskStructure(rawTask = {}) {
   const base = defaultTask(rawTask);
+  const taskId = String(base?.id || rawTask?.id || "").trim() || "<unknown-task>";
+  const workspaceKey = normalizeWorkspaceStorageKey(base.workspace);
+  const repositoryKey = normalizeWorkspaceStorageKey(base.repository);
+  const repositoryKeys = normalizeWorkspaceStorageKeys(base.repositories || [], {
+    kind: `task:${taskId}:repositories`,
+  });
+  const scopedRepositoryKeys = normalizeWorkspaceStorageKeys(
+    [repositoryKey, ...repositoryKeys],
+    { kind: `task:${taskId}:workspace-rooted` },
+  );
   const normalized = {
     ...base,
     status: normalizeTaskStatus(base.status),
@@ -476,11 +635,21 @@ function normalizeTaskStructure(rawTask = {}) {
           ? base.meta.workflowRuns
           : [],
     ),
+    runs: normalizeTaskRuns(
+      Array.isArray(base.runs)
+        ? base.runs
+        : Array.isArray(base.meta?.runs)
+          ? base.meta.runs
+          : [],
+    ),
     stateVersion: Number.isFinite(Number(base.stateVersion))
       ? Number(base.stateVersion)
       : 2,
     sprintId: normalizeSprintId(base.sprintId),
     sprintOrder: normalizeSprintOrder(base.sprintOrder),
+    workspace: workspaceKey || null,
+    repository: repositoryKey || null,
+    repositories: scopedRepositoryKeys,
   };
   if (normalized.status === "draft") {
     normalized.draft = true;
@@ -556,6 +725,7 @@ function defaultTask(overrides = {}) {
     comments: [],
     timeline: [],
     workflowRuns: [],
+    runs: [],
     links: { branches: [], prs: [], workflows: [] },
     stateVersion: 2,
 
@@ -1262,6 +1432,10 @@ export function updateTask(taskId, updates) {
       task.workflowRuns = normalizeWorkflowRunLinks(value);
       continue;
     }
+    if (key === "runs") {
+      task.runs = normalizeTaskRuns(value);
+      continue;
+    }
     if (key === "assignees") { task.assignees = uniqueStringList(value); continue; }
     if (key === "watchers") { task.watchers = uniqueStringList(value); continue; }
     if (key === "childTaskIds") { task.childTaskIds = uniqueStringList(value); continue; }
@@ -1639,6 +1813,25 @@ export function appendTaskTimelineEvent(taskId, event = {}) {
   markTaskTouched(task, event?.source || "task-store");
   saveStore();
   return normalizedEvent;
+}
+
+export function getTaskRuns(taskId) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return [];
+  return Array.isArray(task.runs) ? [...task.runs] : [];
+}
+
+export function appendTaskRun(taskId, run = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return null;
+  const nextRun = normalizeTaskRuns([run])[0] || null;
+  if (!nextRun) return null;
+  task.runs = normalizeTaskRuns([...(Array.isArray(task.runs) ? task.runs : []), nextRun]);
+  markTaskTouched(task, run?.source || "task-run");
+  saveStore();
+  return nextRun;
 }
 
 export function addTaskComment(taskId, comment = {}) {

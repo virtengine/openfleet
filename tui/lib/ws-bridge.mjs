@@ -216,6 +216,7 @@ class TuiWsBridge {
 			case "workflow:complete":
 				this._emit("workflow:complete", payload);
 				break;
+			}
 			case "pong":
 				break;
 			default:

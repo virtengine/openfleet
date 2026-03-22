@@ -4133,6 +4133,32 @@
         const q = params.get('query') || '';
         return { data: buildContextForQuery(q) };
       }
+      if (route === '/api/agent-runs') {
+        return { ok: true, data: [
+          { attemptId: 'demo-run-001', taskId: 'bosun-42', taskTitle: 'Fix login redirect', executor: 'codex', startedAt: new Date(Date.now() - 3600000).toISOString(), endedAt: new Date(Date.now() - 3000000).toISOString(), status: 'completed', eventCount: 18, shortSteps: ['read config', 'edit auth.mjs', 'run tests'], totals: { tool_calls: 12, tokens: 4200 } },
+          { attemptId: 'demo-run-002', taskId: 'bosun-43', taskTitle: 'Add retry logic', executor: 'claude', startedAt: new Date(Date.now() - 1800000).toISOString(), endedAt: null, status: 'in_progress', eventCount: 6, shortSteps: ['read queue.mjs'], totals: { tool_calls: 4, tokens: 1500 } },
+        ] };
+      }
+      if (route.startsWith('/api/agent-runs/')) {
+        const attemptId = decodeURIComponent(route.slice('/api/agent-runs/'.length));
+        if (!attemptId) return { ok: false, error: 'run not found' };
+        return { ok: true, data: {
+          attemptId,
+          taskId: 'bosun-42',
+          taskTitle: 'Fix login redirect',
+          executor: 'codex',
+          startedAt: new Date(Date.now() - 3600000).toISOString(),
+          endedAt: new Date(Date.now() - 3000000).toISOString(),
+          status: 'completed',
+          shortSteps: ['read config', 'edit auth.mjs', 'run tests'],
+          totals: { tool_calls: 12, tokens: 4200 },
+          events: [
+            { index: 0, type: 'session_start', timestamp: new Date(Date.now() - 3600000).toISOString(), taskId: 'bosun-42', taskTitle: 'Fix login redirect', executor: 'codex' },
+            { index: 1, type: 'tool_call', timestamp: new Date(Date.now() - 3500000).toISOString(), data: { tool: 'read_file', args: { path: 'config.mjs' } } },
+            { index: 2, type: 'session_end', timestamp: new Date(Date.now() - 3000000).toISOString(), data: { completion_status: 'completed' } },
+          ],
+        } };
+      }
 
       // ── Health ──
       if (route === '/api/health')

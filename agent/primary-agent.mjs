@@ -9,6 +9,7 @@ import { loadConfig } from "../config/config.mjs";
 import { ensureCodexConfig, printConfigSummary } from "../shell/codex-config.mjs";
 import { ensureRepoConfigs, printRepoConfigSummary } from "../config/repo-config.mjs";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
+import { buildArchitectEditorFrame } from "../lib/repo-map.mjs";
 import { getAgentToolConfig, getEffectiveTools } from "./agent-tool-config.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
 import { getEntry, getEntryContent, resolveAgentProfileLibraryMetadata } from "../infra/library-manager.mjs";
@@ -190,6 +191,10 @@ function appendAttachmentsToPrompt(message, attachments) {
   const lines = ["", "Attachments:", ...list.map(formatAttachmentLine)];
   return { message: `${message}${lines.join("\n")}`, appended: true };
 }
+
+
+
+
 
 function summarizeContextCompressionItems(items) {
   if (!Array.isArray(items) || items.length === 0) return null;
@@ -1062,8 +1067,9 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
   const messageWithAttachments = attachments.length && !attachmentsAppended
     ? appendAttachmentsToPrompt(userMessage, attachments).message
     : userMessage;
+  const architectEditorFrame = buildArchitectEditorFrame(options, effectiveMode);
   const toolContract = buildPrimaryToolCapabilityContract(options);
-  const messageWithToolContract = [selectedProfile.block, toolContract, messageWithAttachments]
+  const messageWithToolContract = [selectedProfile.block, architectEditorFrame, toolContract, messageWithAttachments]
     .filter(Boolean)
     .join("\n\n");
   const framedMessage = modePrefix ? modePrefix + messageWithToolContract : messageWithToolContract;
@@ -1257,6 +1263,18 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
               timestamp: new Date().toISOString(),
               _sessionType: sessionType,
             });
+            const compressionSummary = summarizeContextCompressionItems(retryResult?.items);
+            if (compressionSummary) {
+              tracker.recordEvent(sessionId, {
+                role: "system",
+                type: "system",
+                content: compressionSummary.content,
+                timestamp: new Date().toISOString(),
+                meta: {
+                  contextCompression: compressionSummary,
+                },
+              });
+            }
             clearAdapterFailureState(adapterName);
             return retryResult;
           } catch (retryErr) {
@@ -1538,3 +1556,7 @@ export async function execSdkCommand(command, args = "", adapterName, options = 
   }
   return adapter.execSdkCommand(cmd, args, options);
 }
+
+
+
+

@@ -239,6 +239,26 @@ describe("workflow-templates", () => {
     expect(Object.isFrozen(WORKFLOW_TEMPLATES)).toBe(true);
   });
 
+  it("task execution templates carry architect/editor phase framing", () => {
+    const template = getTemplate("template-task-fullstack");
+    expect(template).toBeTruthy();
+
+    const planNode = template.nodes.find((node) => node.id === "plan-architecture");
+    const backendNode = template.nodes.find((node) => node.id === "implement-backend");
+    const frontendNode = template.nodes.find((node) => node.id === "implement-frontend");
+    const verifyNode = template.nodes.find((node) => node.id === "integration-test");
+
+    expect(planNode?.config?.mode).toBe("plan");
+    expect(planNode?.config?.executionRole).toBe("architect");
+    expect(planNode?.config?.repoMapQuery).toBe("{{taskTitle}} {{taskDescription}}");
+    expect(backendNode?.config?.executionRole).toBe("editor");
+    expect(frontendNode?.config?.executionRole).toBe("editor");
+    expect(verifyNode?.config?.executionRole).toBe("editor");
+    expect(String(backendNode?.config?.architectPlan || "")).toContain("plan-architecture");
+    expect(String(frontendNode?.config?.architectPlan || "")).toContain("plan-architecture");
+    expect(String(verifyNode?.config?.architectPlan || "")).toContain("plan-architecture");
+  });
+
   it("every template has required fields", () => {
     for (const t of WORKFLOW_TEMPLATES) {
       expect(t.id).toMatch(/^template-/);
@@ -1042,6 +1062,27 @@ describe("workflow setup profiles", () => {
     expect(logNode?.config?.message).toContain("{{batchResult.successCount}}/{{batchResult.totalItems}}");
   });
 
+  it("dispatches task-batch lifecycle fan-out without waiting for child completion", () => {
+    const batchProcessor = getTemplate("template-task-batch-processor");
+    const dispatchLoop = batchProcessor?.nodes?.find((node) => node.id === "dispatch-tasks");
+    const coordinatorEdge = batchProcessor?.edges?.find((edge) => edge.source === "check-coordinator" && edge.target === "query-tasks");
+
+    expect(dispatchLoop?.config?.items).toBe("$ctx.getNodeOutput('query-tasks')?.output || []");
+    expect(dispatchLoop?.config?.workflowId).toBe("{{subWorkflow}}");
+    expect(dispatchLoop?.config?.mode).toBe("dispatch");
+    expect(coordinatorEdge?.condition).toBe("$output === true || $output?.result === true || $output?.value === true");
+  });
+
+  it("uses JavaScript loop expressions for both task-batch templates", () => {
+    const batchProcessor = getTemplate("template-task-batch-processor");
+    const batchPr = getTemplate("template-task-batch-pr");
+
+    expect(batchProcessor?.nodes?.find((node) => node.id === "dispatch-tasks")?.config?.items)
+      .toBe("$ctx.getNodeOutput('query-tasks')?.output || []");
+    expect(batchPr?.nodes?.find((node) => node.id === "for-each-task")?.config?.items)
+      .toBe("$ctx.getNodeOutput('query-tasks')?.output || []");
+  });
+
   it("exposes built-in setup profiles with template selections", () => {
     const profiles = listWorkflowSetupProfiles();
     const ids = profiles.map((profile) => profile.id);
@@ -1527,3 +1568,4 @@ describe("template category coverage", () => {
     }
   });
 });
+

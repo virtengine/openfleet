@@ -39,6 +39,14 @@ import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, emitSkillInvokeEvent, findRelevantSkills } from "../agent/bosun-skills.mjs";
 import { readBenchmarkModeState, taskMatchesBenchmarkMode } from "../bench/benchmark-mode.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
+import { recordWorktreeRecoveryEvent } from "../infra/worktree-recovery-state.mjs";
+import {
+  appendKnowledgeEntry,
+  buildKnowledgeEntry,
+  formatKnowledgeBriefing,
+  initSharedKnowledge,
+  retrieveKnowledgeEntries,
+} from "../workspace/shared-knowledge.mjs";
 import {
   buildWorkflowContractPromptBlock,
   loadWorkflowContract,
@@ -49,6 +57,7 @@ import { loadConfig } from "../config/config.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity, normalizeBaseBranch } from "../git/git-safety.mjs";
 import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../git/git-commit-helpers.mjs";
+import { buildArchitectEditorFrame } from "../lib/repo-map.mjs";
 import { getGitHubToken, invalidateTokenType } from "../github/github-auth-manager.mjs";
 import {
   CUSTOM_NODE_DIR_NAME,
@@ -356,6 +365,10 @@ const NODE_PORT_OVERRIDES = Object.freeze({
     inputs: [makePort("default", "GitRef", "", { accepts: ["TaskDef", "JSON", "TriggerEvent", "Boolean", "String", "Any"] })],
     outputs: [makePort("default", "GitRef", "Commit detection summary")],
   },
+  "action.auto_commit_dirty": {
+    inputs: [makePort("default", "GitRef", "", { accepts: ["TaskDef", "JSON", "TriggerEvent", "Boolean", "String", "Any"] })],
+    outputs: [makePort("default", "GitRef", "Auto-commit result")],
+  },
   "action.create_pr": {
     inputs: [makePort("default", "GitRef", "", { accepts: ["TaskDef", "JSON", "TriggerEvent", "Boolean", "String", "Any"] })],
     outputs: [makePort("default", "PRUrl", "Pull request link payload")],
@@ -525,6 +538,37 @@ function resolveGitCandidates(env = process.env) {
   }
 
   if (process.platform === "win32") {
+    const recoveryState = {
+      recreated: false,
+      detectedIssues: new Set(),
+      phase: null,
+      worktreePath: null,
+    };
+    const persistRecoveryEvent = async (event) => {
+      const payload = {
+        reason: "poisoned_worktree",
+        branch,
+        taskId,
+        worktreePath: event?.worktreePath || recoveryState.worktreePath || null,
+        phase: event?.phase || recoveryState.phase || null,
+        detectedIssues: event?.detectedIssues || Array.from(recoveryState.detectedIssues),
+        error: event?.error || null,
+        outcome: event?.outcome || "healthy_noop",
+        timestamp: new Date().toISOString(),
+      };
+      const details = [
+        `outcome=${payload.outcome}`,
+        `branch=${payload.branch}`,
+        payload.taskId ? `taskId=${payload.taskId}` : "",
+        payload.phase ? `phase=${payload.phase}` : "",
+        payload.worktreePath ? `path=${payload.worktreePath}` : "",
+        payload.detectedIssues.length ? `issues=${payload.detectedIssues.join(",")}` : "",
+        payload.error ? `error=${payload.error}` : "",
+      ].filter(Boolean).join(" ");
+      ctx.log(node.id, `[worktree-recovery] ${details}`);
+      await recordWorktreeRecoveryEvent(repoRoot, payload);
+    };
+
     try {
       const whereOutput = execFileSync("where.exe", ["git"], {
         encoding: "utf8",
@@ -2440,6 +2484,11 @@ registerBuiltinNodeType("action.run_agent", {
       model: { type: "string", description: "Optional model override for the selected SDK" },
       taskId: { type: "string", description: "Optional task ID used for task metadata lookup" },
       cwd: { type: "string", description: "Working directory for the agent" },
+      mode: { type: "string", enum: ["ask", "agent", "plan", "web", "instant"], default: "agent", description: "Optional framing mode for the agent run" },
+      executionRole: { type: "string", enum: ["architect", "editor"], description: "Optional architect/editor execution role override" },
+      architectPlan: { type: "string", description: "Approved architect plan passed into editor/verify phases" },
+      repoMapQuery: { type: "string", description: "Optional query used to select a compact repo map" },
+      repoMapFileLimit: { type: "number", default: 12, description: "Maximum repo-map files to include" },
       timeoutMs: { type: "number", default: 3600000, description: "Agent timeout in ms" },
       agentProfile: { type: "string", description: "Agent profile name (e.g., 'frontend', 'backend')" },
       includeTaskContext: { type: "boolean", default: true, description: "Append task comments/attachments if available" },
@@ -2493,6 +2542,13 @@ registerBuiltinNodeType("action.run_agent", {
     const timeoutMs = Number.isFinite(Number(resolvedTimeoutMs))
       ? Math.max(1000, Math.trunc(Number(resolvedTimeoutMs)))
       : 3600000;
+    const effectiveMode = String(ctx.resolve(node.config?.mode || "agent") || "agent").trim().toLowerCase() || "agent";
+    const architectPlan = String(
+      ctx.resolve(node.config?.architectPlan || "") ||
+      ctx.data?.architectPlan ||
+      ctx.data?.planSummary ||
+      "",
+    ).trim();
     const includeTaskContext =
       node.config?.includeTaskContext !== false &&
       ctx.data?._taskIncludeContext !== false;
@@ -2559,6 +2615,36 @@ registerBuiltinNodeType("action.run_agent", {
       );
     }
     let finalPrompt = prompt;
+    const architectEditorFrame = buildArchitectEditorFrame({
+      executionRole: ctx.resolve(node.config?.executionRole || ""),
+      architectPlan,
+      planSummary: architectPlan,
+      repoMap: node.config?.repoMap || ctx.data?.repoMap || null,
+      repoMapFileLimit: node.config?.repoMapFileLimit,
+      repoMapQuery: ctx.resolve(node.config?.repoMapQuery || ""),
+      query: trackedTaskTitle || ctx.data?.taskDescription || prompt,
+      prompt,
+      taskTitle: trackedTaskTitle,
+      taskDescription:
+        ctx.data?.taskDescription ||
+        ctx.data?.task?.description ||
+        ctx.data?.task?.body ||
+        ctx.data?.taskDetail?.description ||
+        ctx.data?.taskInfo?.description ||
+        "",
+      changedFiles:
+        (Array.isArray(ctx.data?.changedFiles) ? ctx.data.changedFiles : null) ||
+        (Array.isArray(ctx.data?.task?.changedFiles) ? ctx.data.task.changedFiles : null) ||
+        [],
+      cwd,
+      repoRoot: ctx.data?.repoRoot || cwd,
+    }, effectiveMode);
+    if (
+      architectEditorFrame &&
+      !String(finalPrompt || "").includes("## Architect/Editor Execution")
+    ) {
+      finalPrompt = `${architectEditorFrame}\n\n${finalPrompt}`;
+    }
     const promptHasTaskContext =
       ctx.data?._taskPromptIncludesTaskContext === true ||
       String(finalPrompt || "").includes("## Task Context");
@@ -7590,7 +7676,7 @@ registerBuiltinNodeType("flow.universial", UNIVERSAL_FLOW_NODE);
 registerBuiltinNodeType("loop.for_each", {
   describe: () =>
     "Iterate over an array, executing a sub-workflow for each item. " +
-    "Supports parallel fan-out via maxConcurrent and provides per-item " +
+    "Supports sync or dispatch fan-out via maxConcurrent and provides per-item " +
     "context injection under the configured variable name.",
   schema: {
     type: "object",
@@ -7601,6 +7687,12 @@ registerBuiltinNodeType("loop.for_each", {
       maxIterations: { type: "number", default: 50, description: "Cap on total iterations" },
       maxConcurrent: { type: "number", default: 1, description: "Parallel fan-out width (1 = sequential)" },
       workflowId: { type: "string", description: "Sub-workflow to execute for each item (optional)" },
+      mode: {
+        type: "string",
+        enum: ["sync", "dispatch"],
+        default: "sync",
+        description: "sync waits for child workflows; dispatch fires and forgets",
+      },
     },
     required: ["items"],
   },
@@ -7619,7 +7711,11 @@ registerBuiltinNodeType("loop.for_each", {
     const varName = node.config?.variable || "item";
     const indexVar = node.config?.indexVariable || "index";
     const maxConcurrent = Math.max(1, node.config?.maxConcurrent || 1);
-    const subWorkflowId = node.config?.workflowId || "";
+    const subWorkflowId = String(ctx.resolve(node.config?.workflowId || "") || "").trim();
+    const modeRaw = String(ctx.resolve(node.config?.mode || "sync") || "sync")
+      .trim()
+      .toLowerCase();
+    const mode = modeRaw === "dispatch" ? "dispatch" : "sync";
 
     // Store items for downstream processing (backward compat)
     ctx.data[`_loop_${node.id}_items`] = items;
@@ -7629,7 +7725,10 @@ registerBuiltinNodeType("loop.for_each", {
 
     // If a sub-workflow is specified, fan-out execution across items
     if (subWorkflowId && engine?.execute) {
-      ctx.log(node.id, `Fan-out: ${items.length} item(s), concurrency=${maxConcurrent}, workflow=${subWorkflowId}`);
+      ctx.log(
+        node.id,
+        `Fan-out: ${items.length} item(s), concurrency=${maxConcurrent}, workflow=${subWorkflowId}, mode=${mode}`,
+      );
 
       // Process items in batches of maxConcurrent
       for (let batchStart = 0; batchStart < items.length; batchStart += maxConcurrent) {
@@ -7645,13 +7744,45 @@ registerBuiltinNodeType("loop.for_each", {
             _loopTotal: items.length,
           }, subWorkflowId);
           try {
-            const runCtx = await engine.execute(
-              subWorkflowId,
-              itemData,
-              makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: subWorkflowId }),
-            );
+            const childRunOpts = makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: subWorkflowId });
+            if (mode === "dispatch") {
+              const dispatched = Promise.resolve(engine.execute(subWorkflowId, itemData, childRunOpts));
+              dispatched
+                .then((runCtx) => {
+                  const status = runCtx?.errors?.length ? "failed" : "completed";
+                  ctx.log(
+                    node.id,
+                    `Dispatched loop child "${subWorkflowId}" iteration ${itemIndex} finished with status=${status}`,
+                  );
+                })
+                .catch((err) => {
+                  ctx.log(
+                    node.id,
+                    `Dispatched loop child "${subWorkflowId}" iteration ${itemIndex} failed: ${err.message}`,
+                    "error",
+                  );
+                });
+              return {
+                index: itemIndex,
+                item,
+                success: true,
+                queued: true,
+                workflowId: subWorkflowId,
+                mode: "dispatch",
+                parentRunId: ctx.id,
+              };
+            }
+            const runCtx = await engine.execute(subWorkflowId, itemData, childRunOpts);
             const ok = !runCtx?.errors?.length;
-            return { index: itemIndex, item, success: ok, runId: runCtx?.id || null };
+            return {
+              index: itemIndex,
+              item,
+              success: ok,
+              queued: false,
+              workflowId: subWorkflowId,
+              mode: "sync",
+              runId: runCtx?.id || null,
+            };
           } catch (err) {
             return { index: itemIndex, item, success: false, error: err?.message || String(err) };
           }
@@ -11400,14 +11531,56 @@ registerBuiltinNodeType("action.acquire_worktree", {
     required: ["branch", "taskId"],
   },
   async execute(node, ctx) {
-    const taskId = cfgOrCtx(node, ctx, "taskId");
-    const branch = cfgOrCtx(node, ctx, "branch");
-    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    // Outer guard: ensure we ALWAYS return structured output with recoveryNote
+    // so downstream {{acquire-worktree.recoveryNote}} templates never stay literal.
+    let taskId, branch, repoRoot, baseBranch;
+    try {
+    taskId = cfgOrCtx(node, ctx, "taskId");
+    branch = cfgOrCtx(node, ctx, "branch");
+    repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
     const baseBranchRaw = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
     const defaultTargetBranch = cfgOrCtx(node, ctx, "defaultTargetBranch", "origin/main");
-    const baseBranch = pickGitRef(baseBranchRaw, defaultTargetBranch, "origin/main", "main");
+    baseBranch = pickGitRef(baseBranchRaw, defaultTargetBranch, "origin/main", "main");
     const fetchTimeout = node.config?.fetchTimeout ?? 30000;
     const worktreeTimeout = node.config?.worktreeTimeout ?? 60000;
+    const recoveryState = {
+      recreated: false,
+      detectedIssues: new Set(),
+      phase: null,
+      worktreePath: null,
+    };
+    const persistRecoveryEvent = async (event) => {
+      const payload = {
+        reason: "poisoned_worktree",
+        branch,
+        taskId,
+        worktreePath: event?.worktreePath || recoveryState.worktreePath || null,
+        phase: event?.phase || recoveryState.phase || null,
+        detectedIssues: event?.detectedIssues || Array.from(recoveryState.detectedIssues),
+        error: event?.error || null,
+        outcome: event?.outcome || "healthy_noop",
+        timestamp: new Date().toISOString(),
+      };
+      try {
+        await recordWorktreeRecoveryEvent(repoRoot, payload);
+      } catch (err) {
+        ctx.log(
+          node.id,
+          `[worktree-recovery] failed to persist recovery event: ${
+            err && err.message ? err.message : String(err)
+          }`,
+        );
+      }
+      const details = [
+        `outcome=${payload.outcome}`,
+        `branch=${payload.branch}`,
+        payload.taskId ? `taskId=${payload.taskId}` : "",
+        payload.phase ? `phase=${payload.phase}` : "",
+        payload.worktreePath ? `path=${payload.worktreePath}` : "",
+        payload.error ? `error=${payload.error}` : "",
+      ].filter(Boolean).join(" ");
+      ctx.log(node.id, `[worktree-recovery] ${details}`);
+    };
 
     if (!branch) throw new Error("action.acquire_worktree: branch is required");
     if (!taskId) throw new Error("action.acquire_worktree: taskId is required");
@@ -11426,6 +11599,15 @@ registerBuiltinNodeType("action.acquire_worktree", {
     try {
       // Ensure base branch ref is fresh
       const baseBranchShort = baseBranch.replace(/^origin\//, "");
+      const notePoisonedWorktree = (phase, worktreePath, issues = []) => {
+        recoveryState.recreated = true;
+        recoveryState.phase = phase;
+        recoveryState.worktreePath = worktreePath || recoveryState.worktreePath || null;
+        for (const issue of issues) {
+          const normalized = String(issue || "").trim();
+          if (normalized) recoveryState.detectedIssues.add(normalized);
+        }
+      };
       if (!shouldSkipGitRefreshForTests()) {
         try {
           execGitArgsSync(["fetch", "origin", baseBranchShort, "--no-tags"], {
@@ -11458,9 +11640,11 @@ registerBuiltinNodeType("action.acquire_worktree", {
       if (existsSync(worktreePath)) {
         if (!isValidGitWorktreePath(worktreePath)) {
           ctx.log(node.id, `Managed worktree is invalid, recreating: ${worktreePath}`);
+          notePoisonedWorktree("pre-reuse", worktreePath, ["missing_git_metadata"]);
           cleanupBrokenManagedWorktree(repoRoot, worktreePath);
         } else if (hasUnresolvedGitOperation(worktreePath)) {
           ctx.log(node.id, `Managed worktree has unresolved git state, recreating: ${worktreePath}`);
+          notePoisonedWorktree("pre-reuse", worktreePath, ["unresolved_git_operation"]);
           cleanupBrokenManagedWorktree(repoRoot, worktreePath);
         }
       }
@@ -11479,6 +11663,10 @@ registerBuiltinNodeType("action.acquire_worktree", {
           ctx.data.worktreePath = worktreePath;
           ctx.data._worktreeCreated = false;
           ctx.data._worktreeManaged = true;
+          await persistRecoveryEvent({
+            outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+            worktreePath,
+          });
           ctx.log(node.id, `Reusing worktree: ${worktreePath}`);
           const cleared1 = clearBlockedWorktreeIdentity(worktreePath);
           if (cleared1) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${worktreePath}`);
@@ -11508,6 +11696,11 @@ registerBuiltinNodeType("action.acquire_worktree", {
               node.id,
               `Existing branch worktree is invalid or unresolved, recreating managed path: ${existingBranchWorktree}`,
             );
+            notePoisonedWorktree("attached-branch", existingBranchWorktree, [
+              !isValidGitWorktreePath(existingBranchWorktree)
+                ? "missing_git_metadata"
+                : "unresolved_git_operation",
+            ]);
             cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
           }
         }
@@ -11532,6 +11725,10 @@ registerBuiltinNodeType("action.acquire_worktree", {
           ctx.data.worktreePath = existingBranchWorktree;
           ctx.data._worktreeCreated = false;
           ctx.data._worktreeManaged = true;
+          await persistRecoveryEvent({
+            outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+            worktreePath: existingBranchWorktree,
+          });
           ctx.log(node.id, `Reusing existing branch worktree: ${existingBranchWorktree}`);
           const cleared2 = clearBlockedWorktreeIdentity(existingBranchWorktree);
           if (cleared2) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${existingBranchWorktree}`);
@@ -11564,6 +11761,11 @@ registerBuiltinNodeType("action.acquire_worktree", {
                 node.id,
                 `Existing branch worktree is invalid or unresolved, recreating managed path: ${existingBranchWorktree}`,
               );
+              notePoisonedWorktree("attached-branch", existingBranchWorktree, [
+                !isValidGitWorktreePath(existingBranchWorktree)
+                  ? "missing_git_metadata"
+                  : "unresolved_git_operation",
+              ]);
               cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
             }
           }
@@ -11588,6 +11790,10 @@ registerBuiltinNodeType("action.acquire_worktree", {
             ctx.data.worktreePath = existingBranchWorktree;
             ctx.data._worktreeCreated = false;
             ctx.data._worktreeManaged = true;
+            await persistRecoveryEvent({
+              outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+              worktreePath: existingBranchWorktree,
+            });
             ctx.log(node.id, `Reusing existing branch worktree: ${existingBranchWorktree}`);
             const cleared2 = clearBlockedWorktreeIdentity(existingBranchWorktree);
             if (cleared2) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${existingBranchWorktree}`);
@@ -11618,6 +11824,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
           fetchTimeout,
         );
         if (!existsSync(worktreePath)) {
+          notePoisonedWorktree("post-pull", worktreePath, ["refresh_conflict"]);
           throw new Error(
             `Worktree refresh failed for existing branch ${branch}; managed worktree was removed after stale refresh state`,
           );
@@ -11630,6 +11837,10 @@ registerBuiltinNodeType("action.acquire_worktree", {
       ctx.data.worktreePath = worktreePath;
       ctx.data._worktreeCreated = true;
       ctx.data._worktreeManaged = true;
+      await persistRecoveryEvent({
+        outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
+        worktreePath,
+      });
       ctx.log(node.id, `Worktree created: ${worktreePath} (branch: ${branch}, base: ${baseBranch})`);
       return { success: true, worktreePath, created: true, branch, baseBranch };
     } catch (err) {
@@ -11641,6 +11852,23 @@ registerBuiltinNodeType("action.acquire_worktree", {
       const blockedReason = retryable
         ? errorMessage
         : "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.";
+      if (!retryable) {
+        await recordWorktreeRecoveryEvent(repoRoot, {
+          outcome: "recreation_failed",
+          reason: "poisoned_worktree",
+          phase: "post-pull",
+          branch,
+          taskId,
+          worktreePath: resolve(
+            repoRoot,
+            ".bosun",
+            "worktrees",
+            deriveManagedWorktreeDirName(taskId, branch)
+          ),
+          detectedIssues: ["refresh_conflict"],
+          error: errorMessage,
+        });
+      }
       ctx.log(node.id, `Worktree acquisition failed: ${errorMessage}`);
       return {
         success: false,
@@ -11656,6 +11884,171 @@ registerBuiltinNodeType("action.acquire_worktree", {
         recoveryNote: retryable || !retryAt ? "" : ` — blocked until ${retryAt}`,
       };
     }
+    } catch (outerErr) {
+      // Outer catch: guard throws, cfgOrCtx errors, or any uncaught path.
+      // Always return structured output so {{acquire-worktree.recoveryNote}} resolves.
+      const errorMessage = String(outerErr?.message || outerErr || "acquire_worktree_outer_failure");
+      ctx.log(node.id, `Worktree acquisition outer error: ${errorMessage}`);
+      return {
+        success: false,
+        error: errorMessage,
+        branch: branch || "",
+        baseBranch: baseBranch || "",
+        retryable: true,
+        failureKind: "acquire_outer_error",
+        recordedAt: new Date().toISOString(),
+        autoRecoverDelayMs: 0,
+        retryAt: null,
+        blockedReason: errorMessage,
+        recoveryNote: "",
+      };
+    }
+  },
+});
+
+// ── action.recover_worktree ─────────────────────────────────────────────────
+
+registerBuiltinNodeType("action.recover_worktree", {
+  describe: () =>
+    "Clean up a broken worktree so a fresh acquire can succeed. " +
+    "Removes the directory, prunes git worktree list, and resets context data.",
+  schema: {
+    type: "object",
+    properties: {
+      worktreePath: { type: "string", description: "Path of the broken worktree" },
+      branch: { type: "string", description: "Branch that was being used" },
+      repoRoot: { type: "string", description: "Repository root" },
+      taskId: { type: "string", description: "Owning task ID" },
+    },
+  },
+  execute: async (_config, ctx) => {
+    const worktreePath = cfgOrCtx(_config, ctx, "worktreePath") ||
+      ctx.getNodeOutput("acquire-worktree")?.worktreePath || "";
+    const branch = cfgOrCtx(_config, ctx, "branch") ||
+      ctx.getNodeOutput("acquire-worktree")?.branch || "";
+    const repoRoot = cfgOrCtx(_config, ctx, "repoRoot") ||
+      ctx.getNodeOutput("acquire-worktree")?.repoRoot ||
+      ctx.data?.repoRoot || process.cwd();
+    const taskId = cfgOrCtx(_config, ctx, "taskId") ||
+      ctx.getNodeOutput("acquire-worktree")?.taskId ||
+      ctx.data?.taskId || "";
+
+    const cleaned = [];
+    try {
+      // 1. Force-remove via git worktree remove
+      if (worktreePath && existsSync(worktreePath)) {
+        try {
+          execSync(`git worktree remove --force "${worktreePath}"`, {
+            cwd: repoRoot, timeout: 30000, stdio: "pipe",
+          });
+          cleaned.push("git-worktree-remove");
+        } catch { /* may already be gone */ }
+      }
+      // 2. Remove the directory itself if still present
+      if (worktreePath && existsSync(worktreePath)) {
+        rmSync(worktreePath, { recursive: true, force: true });
+        cleaned.push("rmSync-dir");
+      }
+      // 3. Resolve and remove the linked gitdir entry
+      try {
+        const gitdir = resolveGitDirForWorktree(worktreePath, repoRoot);
+        if (gitdir && existsSync(gitdir)) {
+          rmSync(gitdir, { recursive: true, force: true });
+          cleaned.push("rmSync-gitdir");
+        }
+      } catch { /* best-effort */ }
+      // 4. Prune stale worktree references
+      try {
+        execSync("git worktree prune", { cwd: repoRoot, timeout: 15000, stdio: "pipe" });
+        cleaned.push("git-worktree-prune");
+      } catch { /* best-effort */ }
+      // 5. Fix any git config corruption left behind
+      try {
+        fixGitConfigCorruption(repoRoot);
+        cleaned.push("fix-git-config");
+      } catch { /* best-effort */ }
+      // 6. Reset context data so retry starts fresh
+      if (ctx.data) {
+        delete ctx.data.worktreePath;
+        delete ctx.data.worktreeDir;
+        cleaned.push("ctx-data-reset");
+      }
+
+      return { success: true, cleaned, worktreePath, taskId, branch };
+    } catch (err) {
+      const errorMessage =
+        String(err?.message || err || "recover_worktree_failed");
+      return { success: false, error: errorMessage, cleaned, worktreePath, taskId, branch };
+    }
+  },
+});
+
+// ── action.sweep_task_worktrees ─────────────────────────────────────────────
+
+registerBuiltinNodeType("action.sweep_task_worktrees", {
+  describe: () =>
+    "Sweep stale or orphan worktrees for a completed/failed task. " +
+    "If taskId is given, only removes worktrees belonging to that task; " +
+    "otherwise removes all managed worktrees older than maxAgeMs.",
+  schema: {
+    type: "object",
+    properties: {
+      repoRoot: { type: "string", description: "Repository root" },
+      taskId: { type: "string", description: "Task ID whose worktrees to remove" },
+      maxAgeMs: { type: "number", default: 43200000, description: "Max age in ms (default 12h)" },
+    },
+  },
+  execute: async (_config, ctx) => {
+    const repoRoot = cfgOrCtx(_config, ctx, "repoRoot") ||
+      ctx.data?.repoRoot || process.cwd();
+    const taskId = cfgOrCtx(_config, ctx, "taskId") ||
+      ctx.data?.taskId || "";
+    const maxAgeMs = Number(cfgOrCtx(_config, ctx, "maxAgeMs")) || 43200000;
+
+    const { readdirSync, statSync } = await import("node:fs");
+    const wtBase = resolve(repoRoot, ".bosun", "worktrees");
+    const removed = [];
+    const errors = [];
+    let scanned = 0;
+
+    if (!existsSync(wtBase)) {
+      return { success: true, removed, scanned, errors, taskId };
+    }
+
+    const now = Date.now();
+    for (const entry of readdirSync(wtBase)) {
+      const entryPath = resolve(wtBase, entry);
+      try {
+        const st = statSync(entryPath);
+        if (!st.isDirectory()) continue;
+        scanned++;
+
+        const belongsToTask = taskId && isManagedBosunWorktree(entryPath) &&
+          entry.includes(taskId.replace(/[^a-zA-Z0-9]/g, "-").slice(0, 30));
+        const isStale = (now - st.mtimeMs) > maxAgeMs;
+
+        if (belongsToTask || (!taskId && isStale)) {
+          try {
+            execSync(`git worktree remove --force "${entryPath}"`, {
+              cwd: repoRoot, timeout: 30000, stdio: "pipe",
+            });
+          } catch { /* may not be registered */ }
+          if (existsSync(entryPath)) {
+            rmSync(entryPath, { recursive: true, force: true });
+          }
+          removed.push(entry);
+        }
+      } catch (err) {
+        errors.push({ entry, error: String(err?.message || err) });
+      }
+    }
+
+    // Prune any dangling references
+    try {
+      execSync("git worktree prune", { cwd: repoRoot, timeout: 15000, stdio: "pipe" });
+    } catch { /* best-effort */ }
+
+    return { success: true, removed, scanned, errors, taskId };
   },
 });
 
@@ -11723,6 +12116,81 @@ registerBuiltinNodeType("action.release_worktree", {
   },
 });
 
+registerBuiltinNodeType("action.recover_worktree", {
+  describe: () =>
+    "Recover a failed task worktree by releasing any managed worktree for the task so acquisition can retry cleanly.",
+  schema: {
+    type: "object",
+    properties: {
+      worktreePath: { type: "string", description: "Worktree path to release if known" },
+      repoRoot: { type: "string", description: "Repository root" },
+      taskId: { type: "string", description: "Task ID (owner)" },
+      prune: { type: "boolean", default: true, description: "Run git worktree prune after recovery" },
+      removeTimeout: { type: "number", default: 30000, description: "Timeout for removal (ms)" },
+    },
+  },
+  async execute(node, ctx) {
+    const worktreePath = cfgOrCtx(node, ctx, "worktreePath") || ctx.data?.worktreePath || "";
+    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "";
+    const removeTimeout = Number(node.config?.removeTimeout ?? 30000);
+    const shouldPrune = node.config?.prune !== false;
+
+    const releaseNode = {
+      ...node,
+      config: {
+        ...(node.config || {}),
+        worktreePath,
+        repoRoot,
+        taskId,
+        removeTimeout,
+        prune: shouldPrune,
+      },
+    };
+    const result = await getNodeType("action.release_worktree")?.execute?.(releaseNode, ctx);
+    ctx.data.worktreePath = "";
+    return {
+      success: result?.success !== false,
+      recovered: true,
+      worktreePath,
+      released: result?.released === true,
+      skipped: result?.skipped === true,
+      warning: result?.warning,
+    };
+  },
+});
+
+registerBuiltinNodeType("action.sweep_task_worktrees", {
+  describe: () =>
+    "Sweep stale managed task worktrees for a task by pruning git worktree metadata.",
+  schema: {
+    type: "object",
+    properties: {
+      repoRoot: { type: "string", description: "Repository root" },
+      taskId: { type: "string", description: "Task ID (owner)" },
+      timeout: { type: "number", default: 15000, description: "Timeout for git worktree prune (ms)" },
+    },
+  },
+  async execute(node, ctx) {
+    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "";
+    const timeout = Number(node.config?.timeout ?? 15000);
+    try {
+      execGitArgsSync(["worktree", "prune"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        timeout,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      fixGitConfigCorruption(repoRoot);
+      ctx.log(node.id, `Swept task worktrees for ${taskId || "(unknown task)"}`);
+      return { success: true, taskId, swept: true };
+    } catch (err) {
+      ctx.log(node.id, `Task worktree sweep warning: ${err.message}`);
+      return { success: true, taskId, swept: false, warning: err.message };
+    }
+  },
+});
 const readWorkflowContractHandler = {
   describe: () =>
     "Read a project WORKFLOW.md runtime contract and stage it for session-start prompt injection.",
@@ -11902,6 +12370,11 @@ registerBuiltinNodeType("action.build_task_prompt", {
       includeComments: { type: "boolean", default: true },
       includeGitContext: { type: "boolean", default: true },
       includeStatusEndpoint: { type: "boolean", default: true },
+      includeMemory: { type: "boolean", default: true },
+      teamId: { type: "string" },
+      workspaceId: { type: "string" },
+      sessionId: { type: "string" },
+      runId: { type: "string" },
       promptTemplate: { type: "string", description: "Custom template (overrides)" },
     },
     required: ["taskTitle"],
@@ -11920,6 +12393,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
     const includeComments = node.config?.includeComments !== false;
     const includeGitContext = node.config?.includeGitContext !== false;
     const includeStatusEndpoint = node.config?.includeStatusEndpoint !== false;
+    const includeMemory = node.config?.includeMemory !== false;
     ctx.data._taskIncludeContext = includeComments;
     const customTemplate = cfgOrCtx(node, ctx, "promptTemplate");
     const taskPayload =
@@ -12044,6 +12518,39 @@ registerBuiltinNodeType("action.build_task_prompt", {
     );
     const primaryRepository = pickFirstString(repository, normalizedRepoSlug);
     const allowedRepositories = normalizeStringArray(repositories, primaryRepository);
+    const memoryTeamId = pickFirstString(
+      resolvePromptValue("teamId"),
+      taskPayload?.teamId,
+      taskMeta?.teamId,
+      process.env.BOSUN_TEAM_ID,
+      process.env.BOSUN_TEAM,
+      normalizedRepoSlug,
+    );
+    const memoryWorkspaceId = pickFirstString(
+      resolvePromptValue("workspaceId"),
+      taskPayload?.workspaceId,
+      taskMeta?.workspaceId,
+      workspace,
+      ctx.data?._workspaceId,
+      process.env.BOSUN_WORKSPACE_ID,
+      process.env.BOSUN_WORKSPACE,
+    );
+    const memorySessionId = pickFirstString(
+      resolvePromptValue("sessionId"),
+      taskPayload?.sessionId,
+      taskMeta?.sessionId,
+      ctx.data?.sessionId,
+      process.env.BOSUN_SESSION_ID,
+    );
+    const memoryRunId = pickFirstString(
+      resolvePromptValue("runId"),
+      taskPayload?.runId,
+      taskMeta?.runId,
+      ctx.data?.runId,
+      ctx.id,
+      ctx.id,
+      process.env.BOSUN_RUN_ID,
+    );
     const matchedSkills = findRelevantSkills(
       normalizedRepoRoot,
       normalizedTaskTitle,
@@ -12103,6 +12610,23 @@ registerBuiltinNodeType("action.build_task_prompt", {
         "Follow the task details and project instructions provided in the user message.",
         "Be concise, rigorous, and complete tasks end-to-end with verified results.",
       ].join("\n");
+
+    const stripPromptMemorySection = (content, docName) => {
+      const text = String(content || "");
+      if (!text) return "";
+      if (!/AGENTS\.md$/i.test(String(docName || ""))) return text;
+      const learningsHeaderRe = /^## Agent Learnings\s*$/im;
+      const sectionMatch = learningsHeaderRe.exec(text);
+      if (!sectionMatch) return text;
+      const sectionStart = sectionMatch.index;
+      const headerLength = sectionMatch[0].length;
+      const before = text.slice(0, sectionStart).trimEnd();
+      const afterSection = text.slice(sectionStart + headerLength);
+      const nextSectionMatch = /^##\s+/m.exec(afterSection);
+      if (!nextSectionMatch) return before;
+      const afterIndex = sectionStart + headerLength + nextSectionMatch.index;
+      return `${before}\n\n${text.slice(afterIndex).trimStart()}`.trim();
+    };
 
     const cacheAnchorMarkers = collectCacheAnchorMarkers(
       {
@@ -12275,7 +12799,10 @@ registerBuiltinNodeType("action.build_task_prompt", {
           if (loaded.has(doc)) continue;
           try {
             if (existsSync(fullPath)) {
-              const content = readFileSync(fullPath, "utf8").trim();
+              const content = stripPromptMemorySection(
+                readFileSync(fullPath, "utf8"),
+                doc,
+              ).trim();
               if (content && content.length > 10) {
                 loaded.add(doc);
                 userParts.push(`## ${doc}`);
@@ -12285,6 +12812,39 @@ registerBuiltinNodeType("action.build_task_prompt", {
             }
           } catch { /* best-effort */ }
         }
+      }
+    }
+
+    if (includeMemory) {
+      try {
+        const retrievedMemory = await retrieveKnowledgeEntries({
+          repoRoot: normalizedRepoRoot,
+          teamId: memoryTeamId,
+          workspaceId: memoryWorkspaceId,
+          sessionId: memorySessionId,
+          runId: memoryRunId,
+          taskId: normalizedTaskId,
+          taskTitle: normalizedTaskTitle,
+          taskDescription: normalizedTaskDescription,
+          query: [
+            normalizedTaskTitle,
+            normalizedTaskDescription,
+            normalizedRetryReason,
+          ]
+            .filter(Boolean)
+            .join(" "),
+          limit: 4,
+        });
+        const memoryBriefing = formatKnowledgeBriefing(retrievedMemory, {
+          maxEntries: 4,
+        });
+        if (memoryBriefing) {
+          userParts.push(memoryBriefing);
+          userParts.push("");
+          ctx.data._taskRetrievedMemory = retrievedMemory;
+        }
+      } catch (err) {
+        ctx.log(node.id, `Persistent memory retrieval failed (non-fatal): ${err.message}`);
       }
     }
 
@@ -12405,6 +12965,294 @@ registerBuiltinNodeType("action.build_task_prompt", {
       systemLength: systemPrompt.length,
       cacheAnchorMode: strictCacheAnchoring ? "strict" : "default",
     };
+  },
+});
+
+
+registerBuiltinNodeType("action.persist_memory", {
+  describe: () =>
+    "Persist a scoped team/workspace/session/run memory entry for later prompt retrieval.",
+  schema: {
+    type: "object",
+    properties: {
+      content: { type: "string", description: "The durable lesson or memory to store." },
+      scope: { type: "string", description: "Optional topical scope such as testing or auth." },
+      category: { type: "string", default: "pattern" },
+      scopeLevel: {
+        type: "string",
+        enum: ["team", "workspace", "session", "run"],
+        default: "workspace",
+      },
+      tags: {
+        anyOf: [
+          { type: "array", items: { type: "string" } },
+          { type: "string" },
+        ],
+      },
+      taskId: { type: "string" },
+      repoRoot: { type: "string" },
+      targetFile: { type: "string", description: "Knowledge markdown file (defaults to AGENTS.md)." },
+      registryFile: { type: "string", description: "Persistent registry JSON path." },
+      agentId: { type: "string" },
+      agentType: { type: "string", default: "workflow" },
+      teamId: { type: "string" },
+      workspaceId: { type: "string" },
+      sessionId: { type: "string" },
+      runId: { type: "string" },
+    },
+    required: ["content"],
+  },
+  async execute(node, ctx) {
+    const TASK_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
+    const TASK_TEMPLATE_INLINE_PLACEHOLDER_RE = /\{\{\s*[\w.-]+\s*\}\}/g;
+    const normalizeString = (value) => {
+      if (value == null) return "";
+      const text = String(value).trim();
+      if (!text) return "";
+      if (TASK_TEMPLATE_PLACEHOLDER_RE.test(text)) return "";
+      return text
+        .replace(TASK_TEMPLATE_INLINE_PLACEHOLDER_RE, " ")
+        .replace(/[ 	]{2,}/g, " ")
+        .trim();
+    };
+    const pickFirstString = (...values) => {
+      for (const value of values) {
+        const normalized = normalizeString(value);
+        if (normalized) return normalized;
+      }
+      return "";
+    };
+    const normalizeStringArray = (...values) => {
+      const out = [];
+      const seen = new Set();
+      const append = (value) => {
+        const normalized = normalizeString(value);
+        if (!normalized) return;
+        const key = normalized.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push(normalized);
+      };
+      for (const value of values) {
+        if (Array.isArray(value)) {
+          for (const item of value) append(item);
+        } else if (typeof value === "string" && value.includes(",")) {
+          for (const item of value.split(",")) append(item);
+        } else {
+          append(value);
+        }
+      }
+      return out;
+    };
+    const resolveValue = (key) => {
+      if (Object.prototype.hasOwnProperty.call(node.config || {}, key)) {
+        const resolved = ctx.resolve(node.config[key]);
+        if (resolved != null && resolved !== "") return resolved;
+      }
+      const ctxValue = ctx.data?.[key];
+      if (ctxValue != null && ctxValue !== "") return ctxValue;
+      return null;
+    };
+
+    const taskPayload =
+      ctx.data?.task && typeof ctx.data.task === "object"
+        ? ctx.data.task
+        : null;
+    const taskMeta =
+      taskPayload?.meta && typeof taskPayload.meta === "object"
+        ? taskPayload.meta
+        : null;
+    const repoRoot = pickFirstString(resolveValue("repoRoot"), process.cwd()) || process.cwd();
+    const repoSlug = pickFirstString(
+      resolveValue("repoSlug"),
+      taskPayload?.repository,
+      taskPayload?.repo,
+      taskMeta?.repository,
+    );
+    const workspace = pickFirstString(
+      resolveValue("workspace"),
+      taskPayload?.workspace,
+      taskMeta?.workspace,
+    );
+    const taskId = pickFirstString(
+      resolveValue("taskId"),
+      taskPayload?.id,
+      taskPayload?.taskId,
+      taskMeta?.taskId,
+    );
+    const entry = buildKnowledgeEntry({
+      content: pickFirstString(resolveValue("content")),
+      scope: pickFirstString(resolveValue("scope")),
+      category: pickFirstString(resolveValue("category"), "pattern") || "pattern",
+      taskRef: taskId || null,
+      scopeLevel: pickFirstString(resolveValue("scopeLevel"), "workspace") || "workspace",
+      teamId: pickFirstString(
+        resolveValue("teamId"),
+        taskPayload?.teamId,
+        taskMeta?.teamId,
+        process.env.BOSUN_TEAM_ID,
+        process.env.BOSUN_TEAM,
+        repoSlug,
+      ),
+      workspaceId: pickFirstString(
+        resolveValue("workspaceId"),
+        taskPayload?.workspaceId,
+        taskMeta?.workspaceId,
+        workspace,
+        ctx.data?._workspaceId,
+        process.env.BOSUN_WORKSPACE_ID,
+        process.env.BOSUN_WORKSPACE,
+      ),
+      sessionId: pickFirstString(
+        resolveValue("sessionId"),
+        taskPayload?.sessionId,
+        taskMeta?.sessionId,
+        ctx.data?.sessionId,
+        process.env.BOSUN_SESSION_ID,
+      ),
+      runId: pickFirstString(
+        resolveValue("runId"),
+        taskPayload?.runId,
+        taskMeta?.runId,
+        ctx.data?.runId,
+        ctx.id,
+        process.env.BOSUN_RUN_ID,
+      ),
+      agentId: pickFirstString(resolveValue("agentId"), `workflow:${node.id}`) || `workflow:${node.id}`,
+      agentType: pickFirstString(resolveValue("agentType"), "workflow") || "workflow",
+      tags: normalizeStringArray(resolveValue("tags")),
+    });
+
+    try {
+      const initOpts = {
+        repoRoot,
+        targetFile: pickFirstString(resolveValue("targetFile"), "AGENTS.md") || "AGENTS.md",
+      };
+      const registryFile = pickFirstString(resolveValue("registryFile"));
+      if (registryFile) initOpts.registryFile = registryFile;
+      initSharedKnowledge(initOpts);
+
+      const result = await appendKnowledgeEntry(entry);
+      if (!result.success) {
+        const nonFatal = /duplicate entry|rate limited/i.test(String(result.reason || ""));
+        ctx.log(node.id, `Persistent memory ${nonFatal ? "skipped" : "failed"}: ${result.reason}`);
+        if (nonFatal) {
+          return {
+            success: true,
+            persisted: false,
+            skipped: true,
+            reason: result.reason,
+            entry,
+            scopeLevel: entry.scopeLevel,
+          };
+        }
+        return {
+          success: false,
+          persisted: false,
+          error: result.reason,
+          reason: result.reason,
+          entry,
+          scopeLevel: entry.scopeLevel,
+        };
+      }
+
+      ctx.data._lastPersistedMemory = entry;
+      ctx.data._lastPersistedMemoryResult = result;
+      ctx.log(node.id, `Persistent memory stored at ${entry.scopeLevel} scope`);
+      return {
+        success: true,
+        persisted: true,
+        entry,
+        hash: result.hash || entry.hash,
+        registryPath: result.registryPath || null,
+        scopeLevel: entry.scopeLevel,
+      };
+    } catch (err) {
+      ctx.log(node.id, `Persistent memory error: ${err.message}`);
+      return {
+        success: false,
+        persisted: false,
+        error: err.message,
+        entry,
+        scopeLevel: entry.scopeLevel,
+      };
+    }
+  },
+});
+
+// ── action.auto_commit_dirty ────────────────────────────────────────────────
+// Safety net: if the agent left uncommitted work in the worktree, stage + commit
+// so that detect_new_commits can see it and the work isn't silently destroyed.
+
+registerBuiltinNodeType("action.auto_commit_dirty", {
+  describe: () =>
+    "Check the worktree for uncommitted changes and auto-commit them so " +
+    "downstream nodes (detect_new_commits, push_branch) can pick them up. " +
+    "This prevents agent work from being silently destroyed when the worktree is released.",
+  schema: {
+    type: "object",
+    properties: {
+      worktreePath: { type: "string", description: "Worktree to check" },
+      taskId: { type: "string", description: "Task ID for commit message" },
+      commitMessage: { type: "string", description: "Override commit message" },
+    },
+    required: ["worktreePath"],
+  },
+  async execute(node, ctx) {
+    const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
+    const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "unknown";
+
+    if (!worktreePath) {
+      ctx.log(node.id, "auto_commit_dirty: no worktreePath — skipping");
+      return { success: false, committed: false, reason: "no worktreePath" };
+    }
+
+    let porcelain = "";
+    try {
+      porcelain = execGitArgsSync(["status", "--porcelain"], {
+        cwd: worktreePath, encoding: "utf8", timeout: 10000,
+      }).trim();
+    } catch (err) {
+      ctx.log(node.id, `git status failed: ${err.message}`);
+      return { success: false, committed: false, reason: err.message };
+    }
+
+    if (!porcelain) {
+      ctx.log(node.id, "Worktree clean — nothing to auto-commit");
+      return { success: true, committed: false, reason: "clean" };
+    }
+
+    const dirtyCount = porcelain.split("\n").filter(Boolean).length;
+    ctx.log(node.id, `Found ${dirtyCount} dirty file(s) — auto-committing`);
+
+    try {
+      execGitArgsSync(["add", "-A"], {
+        cwd: worktreePath, encoding: "utf8", timeout: 15000,
+      });
+    } catch (err) {
+      ctx.log(node.id, `git add -A failed: ${err.message}`);
+      return { success: false, committed: false, reason: `git add failed: ${err.message}` };
+    }
+
+    const message = cfgOrCtx(node, ctx, "commitMessage")
+      || `chore: auto-commit agent work (${taskId.substring(0, 12)})`;
+    try {
+      execGitArgsSync(
+        ["-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "--no-verify", "-m", message],
+        { cwd: worktreePath, encoding: "utf8", timeout: 20000 },
+      );
+    } catch (err) {
+      const errText = (err.stderr || err.stdout || err.message || "").toLowerCase();
+      if (errText.includes("nothing to commit")) {
+        ctx.log(node.id, "Nothing to commit after staging (all changes already committed)");
+        return { success: true, committed: false, reason: "nothing_to_commit" };
+      }
+      ctx.log(node.id, `git commit failed: ${err.message}`);
+      return { success: false, committed: false, reason: `git commit failed: ${err.message}` };
+    }
+
+    ctx.log(node.id, `Auto-committed ${dirtyCount} file(s) for task ${taskId.substring(0, 12)}`);
+    return { success: true, committed: true, dirtyCount };
   },
 });
 
@@ -13234,3 +14082,5 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
+
+
