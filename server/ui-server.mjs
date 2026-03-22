@@ -9458,9 +9458,11 @@ function broadcastTuiSessionsSnapshot(reason = "updated", detail = {}) {
 
 function buildCurrentTuiMonitorStats() {
   const executor = uiDeps.getInternalExecutor?.() || null;
+  const injectedStats = uiDeps.getTuiMonitorStats?.() || {};
   const status = executor?.getStatus?.() || {};
   const slots = Array.isArray(status?.slots) ? status.slots : [];
   const runtimeStats = getRuntimeStats() || {};
+  const runtimeSessions = Array.isArray(runtimeStats?.sessions) ? runtimeStats.sessions : [];
 
   const pickNumericStat = (...candidates) => {
     for (const candidate of candidates) {
@@ -9472,6 +9474,8 @@ function buildCurrentTuiMonitorStats() {
     }
     return 0;
   };
+  const tokensIn = pickNumericStat(injectedStats?.tokensIn, runtimeStats?.totalInputTokens);
+  const tokensOut = pickNumericStat(injectedStats?.tokensOut, runtimeStats?.totalOutputTokens);
 
   return buildMonitorStatsPayload({
     agentPool: {
@@ -9484,7 +9488,7 @@ function buildCurrentTuiMonitorStats() {
     },
     runtimeStats: {
       ...runtimeStats,
-      sessions: runtimeExport?.sessions || [],
+      sessions: runtimeSessions,
       totalInputTokens: tokensIn,
       totalOutputTokens: tokensOut,
     },
