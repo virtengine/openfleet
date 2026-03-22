@@ -4646,10 +4646,6 @@ let sessionListenerAttached = false;
 let sessionStateListenerAttached = false;
 let activeSessionListenerAttached = false;
 let sessionAccumulatorListenerAttached = false;
-let removeSessionEventListener = null;
-let removeSessionStateListener = null;
-let removeActiveSessionListener = null;
-let removeSessionAccumulatorListener = null;
 /** @type {ReturnType<typeof setInterval>|null} */
 let wsHeartbeatTimer = null;
 let tuiStatsEmitter = null;
@@ -9181,24 +9177,12 @@ function buildCurrentTuiMonitorStats() {
   const injectedStats = uiDeps.getTuiMonitorStats?.() || {};
   const tokensIn = (runtimeExport?.sessions || []).reduce((sum, session) => sum + Number(session?.inputTokens || 0), 0);
   const tokensOut = (runtimeExport?.sessions || []).reduce((sum, session) => sum + Number(session?.outputTokens || 0), 0);
-
-  const pickNumericStat = (...candidates) => {
-    for (const candidate of candidates) {
-      if (candidate == null) continue;
-      const numeric = Number(candidate);
-      if (Number.isFinite(numeric)) {
-        return numeric;
-      }
-    }
-    return 0;
-  };
-
   return buildMonitorStatsPayload({
     agentPool: {
-      activeAgents: pickNumericStat(status?.activeSlots, slots.length, injectedStats?.activeAgents),
-      maxAgents: pickNumericStat(status?.maxParallel, injectedStats?.maxAgents),
-      tokensIn: pickNumericStat(injectedStats?.tokensIn, tokensIn),
-      tokensOut: pickNumericStat(injectedStats?.tokensOut, tokensOut),
+      activeAgents: Number(status?.activeSlots || slots.length || injectedStats?.activeAgents || 0),
+      maxAgents: Number(status?.maxParallel || injectedStats?.maxAgents || 0),
+      tokensIn: Number(injectedStats?.tokensIn || tokensIn || 0),
+      tokensOut: Number(injectedStats?.tokensOut || tokensOut || 0),
       throughputTps: injectedStats?.throughputTps,
       rateLimits: injectedStats?.rateLimits || {},
     },
@@ -9851,9 +9835,7 @@ function startLogStream(socket, logType, query) {
         streamState.offset = 0;
       }
 
-      if (size <= streamState.offset) {
-        return;
-      }
+      if (size <= streamState.offset) return;
 
       // Read only new bytes
       const readLen = Math.min(size - streamState.offset, 512_000);
@@ -9866,6 +9848,9 @@ function startLogStream(socket, logType, query) {
         const lines = text.split("\n").filter(Boolean);
         if (lines.length > 0) {
           sendWsMessage(socket, { type: "log-lines", lines });
+          for (const line of lines) {
+            broadcastCanonicalEvent(["logs", "tui"], "logs:stream", buildLogStreamPayload({ logType, query, filePath, line }));
+          }
         }
       } finally {
         await handle.close();
@@ -11072,9 +11057,9 @@ async function tailFile(filePath, lineCount, maxBytes = 1_000_000) {
   };
 }
 
-async function readJsonlTail(filePath, maxLines = 2000, maxBytes = 1_000_000) {
+async function readJsonlTail(filePath, maxLines = 2000) {
   if (!existsSync(filePath)) return [];
-  const tail = await tailFile(filePath, maxLines, maxBytes);
+  const tail = await tailFile(filePath, maxLines);
   return (tail.lines || [])
     .map((line) => {
       try {
@@ -11148,7 +11133,7 @@ async function readCompletedSessionEntries(maxLines = 100_000) {
       }
     } catch { /* stat failed, skip */ }
   }
-  const entries = await readJsonlTail(sessionLogPath, maxLines, 50_000_000);
+  const entries = await readJsonlTail(sessionLogPath, maxLines);
   return {
     sessionLogPath,
     entries: entries.filter((entry) => String(entry?.type || "completed_session") === "completed_session"),
@@ -11292,7 +11277,7 @@ async function buildUsageAnalytics(days) {
   const streamPath = resolve(logDir, "agent-work-stream.jsonl");
   const [{ entries: completedSessions }, events] = await Promise.all([
     readCompletedSessionEntries(100_000),
-    readJsonlTail(streamPath, 100_000, 50_000_000),
+    readJsonlTail(streamPath, 100_000),
   ]);
 
   const cutoff = days ? Date.now() - days * 24 * 60 * 60 * 1000 : 0;
@@ -15651,42 +15636,25 @@ async function handleApi(req, res, url) {
       const days = Number(url.searchParams.get("days") || "7");
       const logDir = resolveAgentWorkLogDir();
       const metricsPath = resolve(logDir, "agent-metrics.jsonl");
-      const metrics = await readJsonlTail(metricsPath, 100_000, 50_000_000);
+      const metrics = await readJsonlTail(metricsPath, 3000);
       const summary = summarizeTelemetry(metrics, days) || {};
-
-      // Read lifetime totals from the full JSONL log (not the capped in-memory state)
-      // so the count is accurate even when sessions exceed the in-memory cap.
-      const { entries: allSessions } = await readCompletedSessionEntries(200_000);
-      const lifetimeTotals = allSessions.reduce(
+      const runtimeStats = getRuntimeStats();
+      const completedSessions = getCompletedSessions(10_000);
+      const lifetimeTotals = completedSessions.reduce(
         (acc, session) => {
           acc.attemptsCount += 1;
           acc.tokenCount += Number(session?.tokenCount || 0);
           acc.inputTokens += Number(session?.inputTokens || 0);
           acc.outputTokens += Number(session?.outputTokens || 0);
-          acc.durationMs += Math.max(0, Number(session?.durationMs || 0));
           return acc;
         },
-        { attemptsCount: 0, tokenCount: 0, inputTokens: 0, outputTokens: 0, durationMs: 0 },
+        { attemptsCount: 0, tokenCount: 0, inputTokens: 0, outputTokens: 0 },
       );
-
-      // Supplement token counts from agent-metrics.jsonl which has actual LLM usage data
-      // (prompt_tokens, completion_tokens, total_tokens) that the session log may lack.
-      if (lifetimeTotals.tokenCount <= 0 && metrics.length > 0) {
-        let metricsTokens = 0;
-        let metricsInputTokens = 0;
-        let metricsOutputTokens = 0;
-        for (const m of metrics) {
-          const met = m?.metrics || m;
-          metricsTokens += Number(met?.total_tokens || 0);
-          metricsInputTokens += Number(met?.prompt_tokens || 0);
-          metricsOutputTokens += Number(met?.completion_tokens || 0);
-        }
-        lifetimeTotals.tokenCount = metricsTokens;
-        lifetimeTotals.inputTokens = metricsInputTokens;
-        lifetimeTotals.outputTokens = metricsOutputTokens;
-      }
-
-      summary.lifetimeTotals = lifetimeTotals;
+      summary.runtimeMs = Number(runtimeStats?.runtimeMs || 0);
+      summary.lifetimeTotals = {
+        ...lifetimeTotals,
+        durationMs: summary.runtimeMs,
+      };
       jsonResponse(res, 200, { ok: true, data: summary });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -21239,19 +21207,19 @@ export async function startTelegramUiServer(options = {}) {
     wsServer = new WebSocketServer({ noServer: true });
     if (!sessionListenerAttached) {
       sessionListenerAttached = true;
-      removeSessionEventListener = addSessionEventListener((payload) => {
+      addSessionEventListener((payload) => {
         broadcastSessionMessage(payload);
       });
     }
     if (!sessionStateListenerAttached) {
       sessionStateListenerAttached = true;
-      removeSessionStateListener = addSessionStateListener((payload) => {
+      addSessionStateListener((payload) => {
         broadcastTuiSessionsSnapshot(payload?.reason || payload?.event?.reason || "updated", payload || {});
       });
     }
     if (!activeSessionListenerAttached) {
       activeSessionListenerAttached = true;
-      removeActiveSessionListener = addActiveSessionListener((sessions, detail = {}) => {
+      addActiveSessionListener((sessions, detail = {}) => {
         const snapshot = getCurrentSessionSnapshot();
         broadcastCanonicalEvent(["sessions", "tui"], "sessions:update", snapshot);
         if (detail?.taskKey) {
@@ -21277,7 +21245,7 @@ export async function startTelegramUiServer(options = {}) {
     }
     if (!sessionAccumulatorListenerAttached) {
       sessionAccumulatorListenerAttached = true;
-      removeSessionAccumulatorListener = addSessionAccumulationListener((payload) => {
+      addSessionAccumulationListener((payload) => {
         broadcastUiEvent(["tasks", "overview", "telemetry", "sessions"], "invalidate", {
           reason: "session-accumulated",
           taskId: payload?.taskId || null,
@@ -21861,15 +21829,23 @@ export function stopTelegramUiServer() {
   stopWsHeartbeat();
   tuiStatsEmitter?.stop?.();
   tuiStatsEmitter = null;
-  removeSessionEventListener?.();
-  removeSessionEventListener = null;
-  sessionListenerAttached = false;
-  removeSessionStateListener?.();
-  removeSessionStateListener = null;
-  sessionStateListenerAttached = false;
-  removeActiveSessionListener?.();
-  removeActiveSessionListener = null;
-
+  // Clear injected configDir so it does not leak between server lifecycles
+  // (tests start/stop servers repeatedly with different config directories).
+  delete uiDeps.configDir;
+  for (const socket of wsClients) {
+    try {
+      stopLogStream(socket);
+      socket.close();
+    } catch {
+      // best effort
+    }
+  }
+  wsClients.clear();
+  // Clean up any remaining log stream poll timers
+  for (const [, streamer] of logStreamers) {
+    if (streamer.pollTimer) clearInterval(streamer.pollTimer);
+  }
+  logStreamers.clear();
   if (wsServer) {
     try {
       wsServer.close();
@@ -21890,3 +21866,24 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
