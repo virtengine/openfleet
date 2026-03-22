@@ -11752,6 +11752,9 @@ registerBuiltinNodeType("action.acquire_worktree", {
       if (!retryable) {
         await recordWorktreeRecoveryEvent(repoRoot, {
           outcome: "recreation_failed",
+          reason: "poisoned_worktree",
+          branch,
+          taskId,
           phase: "post-pull",
           worktreePath: resolve(
             repoRoot,
