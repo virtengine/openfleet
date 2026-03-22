@@ -11814,6 +11814,152 @@ registerBuiltinNodeType("action.acquire_worktree", {
   },
 });
 
+// ── action.recover_worktree ─────────────────────────────────────────────────
+
+registerBuiltinNodeType("action.recover_worktree", {
+  describe: () =>
+    "Clean up a broken worktree so a fresh acquire can succeed. " +
+    "Removes the directory, prunes git worktree list, and resets context data.",
+  schema: {
+    type: "object",
+    properties: {
+      worktreePath: { type: "string", description: "Path of the broken worktree" },
+      branch: { type: "string", description: "Branch that was being used" },
+      repoRoot: { type: "string", description: "Repository root" },
+      taskId: { type: "string", description: "Owning task ID" },
+    },
+  },
+  execute: async (_config, ctx) => {
+    const worktreePath = cfgOrCtx(_config, ctx, "worktreePath") ||
+      ctx.getNodeOutput("acquire-worktree")?.worktreePath || "";
+    const branch = cfgOrCtx(_config, ctx, "branch") ||
+      ctx.getNodeOutput("acquire-worktree")?.branch || "";
+    const repoRoot = cfgOrCtx(_config, ctx, "repoRoot") ||
+      ctx.getNodeOutput("acquire-worktree")?.repoRoot ||
+      ctx.data?.repoRoot || process.cwd();
+    const taskId = cfgOrCtx(_config, ctx, "taskId") ||
+      ctx.getNodeOutput("acquire-worktree")?.taskId ||
+      ctx.data?.taskId || "";
+
+    const cleaned = [];
+    try {
+      // 1. Force-remove via git worktree remove
+      if (worktreePath && existsSync(worktreePath)) {
+        try {
+          execSync(`git worktree remove --force "${worktreePath}"`, {
+            cwd: repoRoot, timeout: 30000, stdio: "pipe",
+          });
+          cleaned.push("git-worktree-remove");
+        } catch { /* may already be gone */ }
+      }
+      // 2. Remove the directory itself if still present
+      if (worktreePath && existsSync(worktreePath)) {
+        rmSync(worktreePath, { recursive: true, force: true });
+        cleaned.push("rmSync-dir");
+      }
+      // 3. Resolve and remove the linked gitdir entry
+      try {
+        const gitdir = resolveGitDirForWorktree(worktreePath, repoRoot);
+        if (gitdir && existsSync(gitdir)) {
+          rmSync(gitdir, { recursive: true, force: true });
+          cleaned.push("rmSync-gitdir");
+        }
+      } catch { /* best-effort */ }
+      // 4. Prune stale worktree references
+      try {
+        execSync("git worktree prune", { cwd: repoRoot, timeout: 15000, stdio: "pipe" });
+        cleaned.push("git-worktree-prune");
+      } catch { /* best-effort */ }
+      // 5. Fix any git config corruption left behind
+      try {
+        fixGitConfigCorruption(repoRoot);
+        cleaned.push("fix-git-config");
+      } catch { /* best-effort */ }
+      // 6. Reset context data so retry starts fresh
+      if (ctx.data) {
+        delete ctx.data.worktreePath;
+        delete ctx.data.worktreeDir;
+        cleaned.push("ctx-data-reset");
+      }
+
+      return { success: true, cleaned, worktreePath, taskId, branch };
+    } catch (err) {
+      const errorMessage =
+        String(err?.message || err || "recover_worktree_failed");
+      return { success: false, error: errorMessage, cleaned, worktreePath, taskId, branch };
+    }
+  },
+});
+
+// ── action.sweep_task_worktrees ─────────────────────────────────────────────
+
+registerBuiltinNodeType("action.sweep_task_worktrees", {
+  describe: () =>
+    "Sweep stale or orphan worktrees for a completed/failed task. " +
+    "If taskId is given, only removes worktrees belonging to that task; " +
+    "otherwise removes all managed worktrees older than maxAgeMs.",
+  schema: {
+    type: "object",
+    properties: {
+      repoRoot: { type: "string", description: "Repository root" },
+      taskId: { type: "string", description: "Task ID whose worktrees to remove" },
+      maxAgeMs: { type: "number", default: 43200000, description: "Max age in ms (default 12h)" },
+    },
+  },
+  execute: async (_config, ctx) => {
+    const repoRoot = cfgOrCtx(_config, ctx, "repoRoot") ||
+      ctx.data?.repoRoot || process.cwd();
+    const taskId = cfgOrCtx(_config, ctx, "taskId") ||
+      ctx.data?.taskId || "";
+    const maxAgeMs = Number(cfgOrCtx(_config, ctx, "maxAgeMs")) || 43200000;
+
+    const { readdirSync, statSync } = await import("node:fs");
+    const wtBase = resolve(repoRoot, ".bosun", "worktrees");
+    const removed = [];
+    const errors = [];
+    let scanned = 0;
+
+    if (!existsSync(wtBase)) {
+      return { success: true, removed, scanned, errors, taskId };
+    }
+
+    const now = Date.now();
+    for (const entry of readdirSync(wtBase)) {
+      const entryPath = resolve(wtBase, entry);
+      try {
+        const st = statSync(entryPath);
+        if (!st.isDirectory()) continue;
+        scanned++;
+
+        const belongsToTask = taskId && isManagedBosunWorktree(entryPath) &&
+          entry.includes(taskId.replace(/[^a-zA-Z0-9]/g, "-").slice(0, 30));
+        const isStale = (now - st.mtimeMs) > maxAgeMs;
+
+        if (belongsToTask || (!taskId && isStale)) {
+          try {
+            execSync(`git worktree remove --force "${entryPath}"`, {
+              cwd: repoRoot, timeout: 30000, stdio: "pipe",
+            });
+          } catch { /* may not be registered */ }
+          if (existsSync(entryPath)) {
+            rmSync(entryPath, { recursive: true, force: true });
+          }
+          removed.push(entry);
+        }
+      } catch (err) {
+        errors.push({ entry, error: String(err?.message || err) });
+      }
+    }
+
+    // Prune any dangling references
+    try {
+      execSync("git worktree prune", { cwd: repoRoot, timeout: 15000, stdio: "pipe" });
+    } catch { /* best-effort */ }
+
+    return { success: true, removed, scanned, errors, taskId };
+  },
+});
+
 // ── action.release_worktree ─────────────────────────────────────────────────
 
 registerBuiltinNodeType("action.release_worktree", {
