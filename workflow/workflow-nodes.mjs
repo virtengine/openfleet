@@ -2648,69 +2648,104 @@ registerBuiltinNodeType("action.run_agent", {
           if (!evaluateTaskAssignedTriggerConfig(triggerNode?.config, delegationData)) continue;
 
           const tracker = trackedTaskId ? getSessionTracker() : null;
-          if (tracker && trackedTaskId) {
-            const existing = tracker.getSessionById(trackedTaskId);
-            if (!existing) {
-              tracker.createSession({
-                id: trackedTaskId,
-                type: "task",
-                taskId: trackedTaskId,
-                metadata: {
-                  title: trackedTaskTitle || trackedTaskId,
-                  workspaceId: String(ctx.data?.workspaceId || ctx.data?.activeWorkspace || "").trim() || undefined,
-                  workspaceDir: String(cwd || "").trim() || undefined,
-                  branch:
-                    String(
-                      ctx.data?.branch ||
-                        ctx.data?.task?.branchName ||
-                        ctx.data?.taskDetail?.branchName ||
-                        "",
-                    ).trim() || undefined,
-                },
+          const delegationTimestamp = new Date().toISOString();
+          const assignTransitionKey = trackedTaskId ? `assign:${trackedTaskId}:${wf.id}` : `assign:${wf.id}`;
+          const handoffCompletedTransitionKey = trackedTaskId ? `handoff-complete:${trackedTaskId}:${wf.id}:completed` : `handoff-complete:${wf.id}:completed`;
+          const handoffFailedTransitionKey = trackedTaskId ? `handoff-complete:${trackedTaskId}:${wf.id}:failed` : `handoff-complete:${wf.id}:failed`;
+          if (!reserveDelegationTransition(ctx, assignTransitionKey)) {
+            continue;
+          }
+          try {
+            if (tracker && trackedTaskId) {
+              const existing = tracker.getSessionById(trackedTaskId);
+              if (!existing) {
+                tracker.createSession({
+                  id: trackedTaskId,
+                  type: "task",
+                  taskId: trackedTaskId,
+                  metadata: {
+                    title: trackedTaskTitle || trackedTaskId,
+                    workspaceId: String(ctx.data?.workspaceId || ctx.data?.activeWorkspace || "").trim() || undefined,
+                    workspaceDir: String(cwd || "").trim() || undefined,
+                    branch:
+                      String(
+                        ctx.data?.branch ||
+                          ctx.data?.task?.branchName ||
+                          ctx.data?.taskDetail?.branchName ||
+                          "",
+                      ).trim() || undefined,
+                  },
+                });
+              } else {
+                tracker.updateSessionStatus(trackedTaskId, "active");
+                if (trackedTaskTitle) tracker.renameSession(trackedTaskId, trackedTaskTitle);
+              }
+              tracker.recordEvent(trackedTaskId, {
+                role: "system",
+                type: "system",
+                content: `Delegating to agent workflow "${wf.name}" (${wf.id})`,
+                timestamp: delegationTimestamp,
+                _sessionType: "task",
               });
-            } else {
-              tracker.updateSessionStatus(trackedTaskId, "active");
-              if (trackedTaskTitle) tracker.renameSession(trackedTaskId, trackedTaskTitle);
             }
-            tracker.recordEvent(trackedTaskId, {
-              role: "system",
-              type: "system",
-              content: `Delegating to agent workflow "${wf.name}" (${wf.id})`,
-              timestamp: new Date().toISOString(),
-              _sessionType: "task",
+            recordDelegationEvent(ctx, {
+              type: "assign",
+              transitionKey: assignTransitionKey,
+              taskId: trackedTaskId,
+              workflowId: wf.id,
+              ownerId: String(ctx.data?._claimInstanceId || "").trim() || null,
+              timestamp: delegationTimestamp,
+              metadata: { workflowName: wf.name, nodeId: node.id },
             });
-          }
 
-          // Delegate to this agent workflow
-          ctx.log(node.id, `Delegating to agent workflow "${wf.name}" (${wf.id})`);
-          const subCtx = await engine.execute(
-            wf.id,
-            applyChildWorkflowLineage(ctx, {
-              ...delegationData,
-              _agentWorkflowActive: true,
-            }, wf.id),
-            makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: wf.id }),
-          );
-          const subErrors = Array.isArray(subCtx?.errors) ? subCtx.errors : [];
-          const subStatus = subErrors.length === 0 ? "completed" : "failed";
-          if (tracker && trackedTaskId) {
-            tracker.updateSessionStatus(trackedTaskId, subStatus);
-            tracker.recordEvent(trackedTaskId, {
-              role: subStatus === "completed" ? "assistant" : "system",
-              type: subStatus === "completed" ? "agent_message" : "error",
-              content: `Agent workflow "${wf.name}" ${subStatus} (${subErrors.length} errors)`,
-              timestamp: new Date().toISOString(),
-              _sessionType: "task",
-            });
+            // Delegate to this agent workflow
+            ctx.log(node.id, `Delegating to agent workflow "${wf.name}" (${wf.id})`);
+            const subCtx = await engine.execute(
+              wf.id,
+              applyChildWorkflowLineage(ctx, {
+                ...delegationData,
+                _agentWorkflowActive: true,
+              }, wf.id),
+              makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: wf.id }),
+            );
+            const subErrors = Array.isArray(subCtx?.errors) ? subCtx.errors : [];
+            const subStatus = subErrors.length === 0 ? "completed" : "failed";
+            const handoffTransitionKey = subStatus === "completed" ? handoffCompletedTransitionKey : handoffFailedTransitionKey;
+            if (reserveDelegationTransition(ctx, handoffTransitionKey)) {
+              if (tracker && trackedTaskId) {
+                tracker.updateSessionStatus(trackedTaskId, subStatus);
+                tracker.recordEvent(trackedTaskId, {
+                  role: subStatus === "completed" ? "assistant" : "system",
+                  type: subStatus === "completed" ? "agent_message" : "error",
+                  content: `Agent workflow "${wf.name}" ${subStatus} (${subErrors.length} errors)`,
+                  timestamp: new Date().toISOString(),
+                  _sessionType: "task",
+                });
+              }
+              recordDelegationEvent(ctx, {
+                type: "handoff-complete",
+                transitionKey: handoffTransitionKey,
+                taskId: trackedTaskId,
+                workflowId: wf.id,
+                ownerId: String(ctx.data?._claimInstanceId || "").trim() || null,
+                timestamp: new Date().toISOString(),
+                metadata: { workflowName: wf.name, subStatus, errorCount: subErrors.length, nodeId: node.id },
+              });
+            }
+            ctx.log(node.id, `Agent workflow "${wf.name}" ${subStatus} (${subErrors.length} errors)`);
+            return {
+              success: subErrors.length === 0,
+              delegated: true,
+              subWorkflowId: wf.id,
+              subWorkflowName: wf.name,
+              subStatus,
+            };
+          } catch (err) {
+            releaseDelegationTransitionReservation(ctx, assignTransitionKey);
+            releaseDelegationTransitionReservation(ctx, handoffCompletedTransitionKey);
+            releaseDelegationTransitionReservation(ctx, handoffFailedTransitionKey);
+            throw err;
           }
-          ctx.log(node.id, `Agent workflow "${wf.name}" ${subStatus} (${subErrors.length} errors)`);
-          return {
-            success: subErrors.length === 0,
-            delegated: true,
-            subWorkflowId: wf.id,
-            subWorkflowName: wf.name,
-            subStatus,
-          };
         }
       } catch (err) {
         ctx.log(node.id, `Sub-workflow delegation check failed: ${err?.message || err}`);
@@ -11065,6 +11100,17 @@ registerBuiltinNodeType("action.claim_task", {
         const renewTimer = setInterval(async () => {
           try {
             const renewalResult = await renewClaimFn({ taskId, claimToken: token, instanceId, ttlMinutes });
+            if (renewalResult?.success !== false) {
+              recordDelegationEvent(ctx, {
+                type: "claim-renew",
+                transitionKey: `claim-renew:${taskId}:${token}:${renewalResult?.claim?.renewed_at || "ok"}`,
+                taskId,
+                workflowId: String(ctx.data?._workflowId || "").trim() || null,
+                ownerId: instanceId || null,
+                timestamp: renewalResult?.claim?.renewed_at || new Date().toISOString(),
+                metadata: { nodeId: node.id },
+              });
+            }
             if (renewalResult && renewalResult.success === false) {
               const resultError = String(renewalResult.error || "claim_renew_failed");
               const fatalResult = ["claimed_by_different_instance", "claim_token_mismatch",
@@ -11074,6 +11120,15 @@ registerBuiltinNodeType("action.claim_task", {
                 clearInterval(renewTimer);
                 runtimeState.claimRenewTimer = null;
                 ctx.data._claimRenewTimer = null;
+                recordDelegationEvent(ctx, {
+                  type: "owner-mismatch",
+                  transitionKey: `owner-mismatch:${taskId}:${token}:${resultError}`,
+                  taskId,
+                  workflowId: String(ctx.data?._workflowId || "").trim() || null,
+                  ownerId: instanceId || null,
+                  timestamp: new Date().toISOString(),
+                  metadata: { nodeId: node.id, reason: resultError },
+                });
                 ctx.data._claimStolen = true;
               } else {
                 ctx.log(node.id, `Claim renewal warning: ${resultError}`);
@@ -11088,7 +11143,15 @@ registerBuiltinNodeType("action.claim_task", {
               clearInterval(renewTimer);
               runtimeState.claimRenewTimer = null;
               ctx.data._claimRenewTimer = null;
-              // Signal abort to downstream nodes via context
+              recordDelegationEvent(ctx, {
+                type: "owner-mismatch",
+                transitionKey: `owner-mismatch:${taskId}:${token}:${msg}`,
+                taskId,
+                workflowId: String(ctx.data?._workflowId || "").trim() || null,
+                ownerId: instanceId || null,
+                timestamp: new Date().toISOString(),
+                metadata: { nodeId: node.id, reason: msg },
+              });
               ctx.data._claimStolen = true;
             } else {
               ctx.log(node.id, `Claim renewal warning: ${msg}`);
@@ -13914,3 +13977,11 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
+
+
+
+
+
+
+
+

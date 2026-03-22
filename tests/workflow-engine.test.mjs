@@ -1368,6 +1368,57 @@ describe("WorkflowEngine - run history details", () => {
     expect(persisted?.detail?.data?.prePrValidationCommand).toBe("auto");
   });
 
+  it("persists delegation audit trail in run detail and hydrated history", async () => {
+    registerNodeType("test.delegation_audit", {
+      describe: () => "Records delegation audit entries",
+      schema: { type: "object", properties: {} },
+      async execute(node, ctx) {
+        const runtimeState = getWorkflowRuntimeState(ctx);
+        runtimeState.delegationTrail = [
+          {
+            type: "assign",
+            transitionKey: "assign:t-1:wf-a",
+            taskId: "t-1",
+            workflowId: "wf-a",
+            timestamp: "2026-03-22T00:00:00.000Z",
+            sequence: 1,
+          },
+          {
+            type: "handoff-complete",
+            transitionKey: "handoff:t-1:wf-a",
+            taskId: "t-1",
+            workflowId: "wf-a",
+            timestamp: "2026-03-22T00:00:01.000Z",
+            sequence: 2,
+          },
+        ];
+        ctx.data.delegationTrail = runtimeState.delegationTrail;
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "audit", type: "test.delegation_audit", label: "Audit", config: {} },
+      ],
+      [{ id: "e1", source: "trigger", target: "audit" }],
+      { id: "wf-delegation-history", name: "Delegation History Workflow" },
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+
+    const detail = engine.getRunDetail(ctx.id);
+    expect(Array.isArray(detail?.detail?.delegationTrail)).toBe(true);
+    expect(detail.detail.delegationTrail.map((event) => event.type)).toEqual(["assign", "handoff-complete"]);
+
+    const history = engine.getRunHistory(wf.id, 5);
+    expect(history[0]?.delegationTrailCount).toBe(2);
+
+    const hydrated = engine.getRunDetail(history[0].runId);
+    expect(hydrated?.detail?.delegationTrail?.[0]?.transitionKey).toBe("assign:t-1:wf-a");
+  });
   it("hydrates missing history entries from run detail files when index is truncated", () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
@@ -5026,3 +5077,4 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });
+

@@ -3795,6 +3795,9 @@ export class WorkflowEngine extends EventEmitter {
       detail.endedAt = null;
       detail.duration = Math.max(0, Date.now() - Number(ctx?.startedAt || Date.now()));
     }
+    if (ctx?.data && Array.isArray(ctx.data.delegationTrail)) {
+      detail.delegationTrail = ctx.data.delegationTrail.map((entry) => ({ ...entry }));
+    }
     return detail;
   }
 
@@ -3846,6 +3849,7 @@ export class WorkflowEngine extends EventEmitter {
       detail?.data?._retryMode ||
       null;
     const retryDecisionReason = detail?.data?._retryDecisionReason || null;
+    const delegationTrail = Array.isArray(detail?.delegationTrail) ? detail.delegationTrail : [];
     const issueAdvisorRecommendation = detail?.issueAdvisor?.recommendedAction || null;
     const issueAdvisorSummary = detail?.issueAdvisor?.summary || null;
 
@@ -3879,6 +3883,7 @@ export class WorkflowEngine extends EventEmitter {
       retryOf,
       retryMode,
       retryDecisionReason,
+      delegationTrailCount: delegationTrail.length,
       issueAdvisorRecommendation,
       issueAdvisorSummary,
     };
@@ -4464,3 +4469,6 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+
+
+

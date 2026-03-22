@@ -512,6 +512,93 @@ function cfgOrCtx(node, ctx, key, defaultVal = "") {
   return defaultVal;
 }
 
+function cloneDelegationTrailEntry(entry = {}) {
+  return {
+    type: String(entry.type || "").trim() || "unknown",
+    transitionKey: String(entry.transitionKey || "").trim() || null,
+    taskId: String(entry.taskId || "").trim() || null,
+    workflowId: String(entry.workflowId || "").trim() || null,
+    ownerId: String(entry.ownerId || "").trim() || null,
+    timestamp: String(entry.timestamp || new Date().toISOString()).trim(),
+    sequence: Number.isFinite(Number(entry.sequence)) ? Number(entry.sequence) : null,
+    metadata: entry.metadata && typeof entry.metadata === "object" ? { ...entry.metadata } : undefined,
+  };
+}
+
+function ensureDelegationState(ctx) {
+  const runtimeState = getWorkflowRuntimeState(ctx);
+  if (!runtimeState.delegationTrail || !Array.isArray(runtimeState.delegationTrail)) {
+    const existing = Array.isArray(ctx?.data?.delegationTrail) ? ctx.data.delegationTrail : [];
+    runtimeState.delegationTrail = existing.map((entry) => cloneDelegationTrailEntry(entry));
+  }
+  if (!runtimeState.delegationTransitionKeys || !(runtimeState.delegationTransitionKeys instanceof Set)) {
+    const existingTrail = Array.isArray(runtimeState.delegationTrail) ? runtimeState.delegationTrail : [];
+    runtimeState.delegationTransitionKeys = new Set(
+      existingTrail.map((entry) => String(entry?.transitionKey || "").trim()).filter(Boolean),
+    );
+  }
+  if (!Number.isFinite(Number(runtimeState.delegationSequence))) {
+    runtimeState.delegationSequence = Array.isArray(runtimeState.delegationTrail)
+      ? runtimeState.delegationTrail.reduce((max, entry) => {
+          const seq = Number(entry?.sequence);
+          return Number.isFinite(seq) && seq > max ? seq : max;
+        }, 0)
+      : 0;
+  }
+  if (!runtimeState.delegationPendingTransitionKeys || !(runtimeState.delegationPendingTransitionKeys instanceof Set)) {
+    runtimeState.delegationPendingTransitionKeys = new Set();
+  }
+  return runtimeState;
+}
+
+function shouldProcessDelegationTransition(ctx, transitionKey) {
+  const normalizedKey = String(transitionKey || "").trim();
+  if (!normalizedKey) return true;
+  const runtimeState = ensureDelegationState(ctx);
+  return !runtimeState.delegationTransitionKeys.has(normalizedKey) &&
+    !runtimeState.delegationPendingTransitionKeys.has(normalizedKey);
+}
+
+function reserveDelegationTransition(ctx, transitionKey) {
+  const normalizedKey = String(transitionKey || "").trim();
+  if (!normalizedKey) return true;
+  const runtimeState = ensureDelegationState(ctx);
+  if (runtimeState.delegationTransitionKeys.has(normalizedKey) ||
+      runtimeState.delegationPendingTransitionKeys.has(normalizedKey)) {
+    return false;
+  }
+  runtimeState.delegationPendingTransitionKeys.add(normalizedKey);
+  return true;
+}
+
+function releaseDelegationTransitionReservation(ctx, transitionKey) {
+  const normalizedKey = String(transitionKey || "").trim();
+  if (!normalizedKey) return;
+  const runtimeState = ensureDelegationState(ctx);
+  runtimeState.delegationPendingTransitionKeys.delete(normalizedKey);
+}
+
+function recordDelegationEvent(ctx, entry = {}) {
+  const runtimeState = ensureDelegationState(ctx);
+  const normalized = cloneDelegationTrailEntry(entry);
+  if (normalized.transitionKey && runtimeState.delegationTransitionKeys.has(normalized.transitionKey)) {
+    return {
+      recorded: false,
+      event: runtimeState.delegationTrail.find((item) => item.transitionKey === normalized.transitionKey) || normalized,
+    };
+  }
+  runtimeState.delegationSequence += 1;
+  normalized.sequence = Number.isFinite(Number(normalized.sequence)) ? Number(normalized.sequence) : runtimeState.delegationSequence;
+  runtimeState.delegationTrail.push(normalized);
+  if (normalized.transitionKey) {
+    runtimeState.delegationPendingTransitionKeys.delete(normalized.transitionKey);
+    runtimeState.delegationTransitionKeys.add(normalized.transitionKey);
+  }
+  if (ctx?.data && typeof ctx.data === "object") {
+    ctx.data.delegationTrail = runtimeState.delegationTrail.map((item) => cloneDelegationTrailEntry(item));
+  }
+  return { recorded: true, event: normalized };
+}
 function getWorkflowRuntimeState(ctx) {
   if (!ctx || typeof ctx !== "object") return {};
   if (!ctx.__workflowRuntimeState || typeof ctx.__workflowRuntimeState !== "object") {
@@ -585,6 +672,8 @@ export {
   ensureTaskStoreMod,
   formatExecSyncError,
   getWorkflowRuntimeState,
+  recordDelegationEvent,
+  shouldProcessDelegationTransition,
   isExistingBranchWorktreeError,
   isUnresolvedTemplateToken,
   normalizeCanStartGuardResult,
@@ -610,3 +699,4 @@ export {
   ensureAgentPoolMod,
   ensureTaskComplexityMod,
 };
+

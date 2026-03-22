@@ -3233,3 +3233,63 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
+
+describe("delegation transition idempotency", () => {
+  it("deduplicates repeated delegation transition events by transition key", async () => {
+    const { recordDelegationEvent, shouldProcessDelegationTransition } = await import("../workflow/workflow-nodes.mjs");
+    const ctx = { data: {} };
+
+    expect(shouldProcessDelegationTransition(ctx, "assign:t-1:wf-a")).toBe(true);
+    const first = recordDelegationEvent(ctx, {
+      type: "assign",
+      transitionKey: "assign:t-1:wf-a",
+      taskId: "t-1",
+      workflowId: "wf-a",
+      timestamp: "2026-03-22T00:00:00.000Z",
+    });
+    expect(first.recorded).toBe(true);
+    expect(shouldProcessDelegationTransition(ctx, "assign:t-1:wf-a")).toBe(false);
+
+    const duplicate = recordDelegationEvent(ctx, {
+      type: "assign",
+      transitionKey: "assign:t-1:wf-a",
+      taskId: "t-1",
+      workflowId: "wf-a",
+      timestamp: "2026-03-22T00:00:00.000Z",
+    });
+
+    expect(duplicate.recorded).toBe(false);
+    expect(Array.isArray(ctx.data.delegationTrail)).toBe(true);
+    expect(ctx.data.delegationTrail).toHaveLength(1);
+    expect(ctx.data.delegationTrail[0].type).toBe("assign");
+  });
+
+  it("treats reserved transition keys as in-flight until recorded or released", async () => {
+    const {
+      recordDelegationEvent,
+      releaseDelegationTransitionReservation,
+      reserveDelegationTransition,
+      shouldProcessDelegationTransition,
+    } = await import("../workflow/workflow-nodes.mjs");
+    const ctx = { data: {} };
+
+    expect(reserveDelegationTransition(ctx, "handoff-complete:t-1:wf-a:completed")).toBe(true);
+    expect(shouldProcessDelegationTransition(ctx, "handoff-complete:t-1:wf-a:completed")).toBe(false);
+    expect(reserveDelegationTransition(ctx, "handoff-complete:t-1:wf-a:completed")).toBe(false);
+
+    releaseDelegationTransitionReservation(ctx, "handoff-complete:t-1:wf-a:completed");
+    expect(shouldProcessDelegationTransition(ctx, "handoff-complete:t-1:wf-a:completed")).toBe(true);
+
+    expect(reserveDelegationTransition(ctx, "handoff-complete:t-1:wf-a:completed")).toBe(true);
+    const recorded = recordDelegationEvent(ctx, {
+      type: "handoff-complete",
+      transitionKey: "handoff-complete:t-1:wf-a:completed",
+      taskId: "t-1",
+      workflowId: "wf-a",
+      timestamp: "2026-03-22T00:00:01.000Z",
+      metadata: { subStatus: "completed" },
+    });
+    expect(recorded.recorded).toBe(true);
+    expect(shouldProcessDelegationTransition(ctx, "handoff-complete:t-1:wf-a:completed")).toBe(false);
+  });
+});
