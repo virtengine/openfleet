@@ -167,17 +167,6 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
         applySessionSnapshot(sessions, Date.now());
       }),
 
-      return;
-    }
-    if (input === "l" || input === "L") {
-      void openLogs();
-      return;
-    }
-    if (input === "d" || input === "D") {
-      void openDiff();
-      return;
-    }
-    if (input === "c" || input === "C") {
       if (selectedSession?.id) {
         stdout.write(buildOsc52CopySequence(selectedSession.id));
         setStatusLine(`Copied ${selectedSession.id}`);
