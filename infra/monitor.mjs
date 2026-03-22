@@ -10345,6 +10345,7 @@ async function ensureWeeklyReportStateLoaded() {
     weeklyReportStateLoaded = false;
     weeklyReportStateLoaded = false;
     weeklyReportStateLoaded = false;
+    weeklyReportStateLoaded = false;
   }
 }
 
