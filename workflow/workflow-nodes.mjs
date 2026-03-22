@@ -11878,6 +11878,81 @@ registerBuiltinNodeType("action.release_worktree", {
   },
 });
 
+registerBuiltinNodeType("action.recover_worktree", {
+  describe: () =>
+    "Recover a failed task worktree by releasing any managed worktree for the task so acquisition can retry cleanly.",
+  schema: {
+    type: "object",
+    properties: {
+      worktreePath: { type: "string", description: "Worktree path to release if known" },
+      repoRoot: { type: "string", description: "Repository root" },
+      taskId: { type: "string", description: "Task ID (owner)" },
+      prune: { type: "boolean", default: true, description: "Run git worktree prune after recovery" },
+      removeTimeout: { type: "number", default: 30000, description: "Timeout for removal (ms)" },
+    },
+  },
+  async execute(node, ctx) {
+    const worktreePath = cfgOrCtx(node, ctx, "worktreePath") || ctx.data?.worktreePath || "";
+    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "";
+    const removeTimeout = Number(node.config?.removeTimeout ?? 30000);
+    const shouldPrune = node.config?.prune !== false;
+
+    const releaseNode = {
+      ...node,
+      config: {
+        ...(node.config || {}),
+        worktreePath,
+        repoRoot,
+        taskId,
+        removeTimeout,
+        prune: shouldPrune,
+      },
+    };
+    const result = await getNodeType("action.release_worktree")?.execute?.(releaseNode, ctx);
+    ctx.data.worktreePath = "";
+    return {
+      success: result?.success !== false,
+      recovered: true,
+      worktreePath,
+      released: result?.released === true,
+      skipped: result?.skipped === true,
+      warning: result?.warning,
+    };
+  },
+});
+
+registerBuiltinNodeType("action.sweep_task_worktrees", {
+  describe: () =>
+    "Sweep stale managed task worktrees for a task by pruning git worktree metadata.",
+  schema: {
+    type: "object",
+    properties: {
+      repoRoot: { type: "string", description: "Repository root" },
+      taskId: { type: "string", description: "Task ID (owner)" },
+      timeout: { type: "number", default: 15000, description: "Timeout for git worktree prune (ms)" },
+    },
+  },
+  async execute(node, ctx) {
+    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "";
+    const timeout = Number(node.config?.timeout ?? 15000);
+    try {
+      execGitArgsSync(["worktree", "prune"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        timeout,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      fixGitConfigCorruption(repoRoot);
+      ctx.log(node.id, `Swept task worktrees for ${taskId || "(unknown task)"}`);
+      return { success: true, taskId, swept: true };
+    } catch (err) {
+      ctx.log(node.id, `Task worktree sweep warning: ${err.message}`);
+      return { success: true, taskId, swept: false, warning: err.message };
+    }
+  },
+});
 const readWorkflowContractHandler = {
   describe: () =>
     "Read a project WORKFLOW.md runtime contract and stage it for session-start prompt injection.",
