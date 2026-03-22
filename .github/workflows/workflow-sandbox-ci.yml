@@ -30,11 +30,14 @@ on:
   push:
     branches: ["main", "feat/**", "fix/**", "refactor/**"]
     paths:
+      - "infra/**"
+      - "task/**"
       - "workflow-templates/**"
       - "workflow/workflow-templates.mjs"
       - "workflow/workflow-nodes.mjs"
       - "workflow/workflow-engine.mjs"
       - "tests/workflow-*.test.mjs"
+      - "tests/*task*.test.mjs"
       - "tests/sandbox/**"
       - ".github/workflows/workflow-sandbox-ci.yml"
   pull_request:

@@ -3403,6 +3403,74 @@ describe("Session chaining - action.run_agent", () => {
     expect(launchEphemeralThread).not.toHaveBeenCalled();
   });
 
+  it("marks delegated task sessions as failed when the delegated workflow fails", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      taskId: "TASK-DELEGATE-FAIL",
+      taskTitle: "Backend migration failed",
+      workspaceId: "virtengine-gh",
+      task: {
+        id: "TASK-DELEGATE-FAIL",
+        title: "Backend migration failed",
+        tags: ["backend"],
+        branchName: "feat/backend-failure",
+      },
+    });
+
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-backend-fail",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: {
+                taskPattern: "backend",
+                filter: "task.tags?.includes('backend')",
+              },
+            },
+          ],
+        },
+      ]),
+      execute: vi.fn().mockResolvedValue({
+        errors: [new Error("delegated workflow crashed")],
+        status: "failed",
+        message: "delegated workflow crashed",
+      }),
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn(),
+        },
+      },
+    };
+
+    const node = {
+      id: "delegated-session-fail-node",
+      type: "action.run_agent",
+      config: { prompt: "Handle task via delegated workflow", failOnError: false },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result.success).toBe(false);
+    expect(result.delegated).toBe(true);
+
+    const tracker = getSessionTracker();
+    const session = tracker.getSessionById("TASK-DELEGATE-FAIL");
+    expect(session).toBeTruthy();
+    expect(session.type).toBe("task");
+    expect(session.status).toBe("failed");
+    expect(session.metadata.branch).toBe("feat/backend-failure");
+
+    const messages = Array.isArray(session.messages) ? session.messages : [];
+    expect(messages.some((msg) => String(msg?.content || "").includes("Delegating to agent workflow"))).toBe(true);
+    expect(messages.some((msg) => String(msg?.content || "").toLowerCase().includes("failed"))).toBe(true);
+  });
   it("records delegated runs in session tracker for task visibility", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
@@ -3467,6 +3535,135 @@ describe("Session chaining - action.run_agent", () => {
     const messages = Array.isArray(session.messages) ? session.messages : [];
     expect(messages.some((msg) => String(msg?.content || "").includes("Delegating to agent workflow"))).toBe(true);
     expect(messages.some((msg) => String(msg?.content || "").includes("Backend Agent\" completed"))).toBe(true);
+  });
+
+  it("marks delegated task session failed when delegated workflow returns errors", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      taskId: "TASK-DELEGATE-FAIL",
+      taskTitle: "Backend migration failed",
+      workspaceId: "virtengine-gh",
+      task: {
+        id: "TASK-DELEGATE-FAIL",
+        title: "Backend migration failed",
+        tags: ["backend"],
+        branchName: "feat/backend-fail",
+      },
+    });
+
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-backend",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: {
+                taskPattern: "backend",
+                filter: "task.tags?.includes('backend')",
+              },
+            },
+          ],
+        },
+      ]),
+      execute: vi.fn().mockResolvedValue({
+        errors: [new Error("delegated workflow failed")],
+      }),
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn(),
+        },
+      },
+    };
+
+    const node = {
+      id: "delegated-session-failed-node",
+      type: "action.run_agent",
+      config: { prompt: "Handle task via delegated workflow" },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result.success).toBe(false);
+    expect(result.delegated).toBe(true);
+    expect(result.subStatus).toBe("failed");
+
+    const tracker = getSessionTracker();
+    const session = tracker.getSessionById("TASK-DELEGATE-FAIL");
+    expect(session).toBeTruthy();
+    expect(session.status).toBe("failed");
+
+    const messages = Array.isArray(session.messages) ? session.messages : [];
+    expect(messages.some((msg) => String(msg?.content || "").includes("Delegating to agent workflow"))).toBe(true);
+    expect(messages.some((msg) => String(msg?.content || "").includes("failed"))).toBe(true);
+  });
+
+  it("preserves existing task session visibility when delegated workflow reuses current session id", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      taskId: "TASK-DELEGATE-REUSE",
+      taskTitle: "Reuse visible session",
+      sessionId: "TASK-DELEGATE-REUSE",
+      workspaceId: "virtengine-gh",
+      worktreePath: "/tmp/test",
+      task: {
+        id: "TASK-DELEGATE-REUSE",
+        title: "Reuse visible session",
+        tags: ["backend"],
+        branchName: "feat/reuse-session",
+      },
+    });
+
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-backend",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: {
+                taskPattern: "backend",
+                filter: "task.tags?.includes('backend')",
+              },
+            },
+          ],
+        },
+      ]),
+      execute: vi.fn().mockResolvedValue({ errors: [] }),
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn(),
+        },
+      },
+    };
+
+    const node = {
+      id: "delegated-session-visible-node",
+      type: "action.run_agent",
+      config: { prompt: "Handle task via delegated workflow" },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result.success).toBe(true);
+    expect(result.delegated).toBe(true);
+
+    const tracker = getSessionTracker();
+    const session = tracker.getSessionById("TASK-DELEGATE-REUSE");
+    expect(session).toBeTruthy();
+    expect(session.id).toBe("TASK-DELEGATE-REUSE");
+    expect(session.status).toBe("completed");
+    expect(session.metadata.workspaceDir).toBe("/tmp/test");
   });
 
   it("does not delegate agent workflows when task context is missing", async () => {
@@ -5026,3 +5223,4 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });
+
