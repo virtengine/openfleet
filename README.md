@@ -144,6 +144,8 @@ Set `primaryAgent` in `.bosun/bosun.config.json` or choose an executor preset du
 - `bosun --daemon --sentinel` starts daemon + sentinel together (recommended for unattended operation).
 - `bosun --terminate` is the clean reset command when you suspect stale/ghost processes.
 
+Telegram operators can pull the weekly agent work summary with `/weekly [days]` or `/report weekly [days]`. To post it automatically once per week, set `TELEGRAM_WEEKLY_REPORT_ENABLED=true` together with `TELEGRAM_WEEKLY_REPORT_DAY`, `TELEGRAM_WEEKLY_REPORT_HOUR`, and optional `TELEGRAM_WEEKLY_REPORT_DAYS`.
+
 ## Documentation
 
 **Published docs (website):** https://bosun.engineer/docs/

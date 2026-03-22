@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, it } from "node:test";
 
 import {
@@ -8,7 +9,10 @@ import {
   formatWeeklyAgentWorkReport,
   generateWeeklyAgentWorkReport,
   getNextWeeklyReportTime,
+  readWeeklyReportScheduleState,
+  runWeeklyAgentWorkReportCli,
   shouldSendWeeklyReport,
+  writeWeeklyReportScheduleState,
 } from "../agent/agent-work-report.mjs";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -174,6 +178,32 @@ describe("agent-work-report generation", () => {
     assert.equal(errorsArgs.days, 5);
     assert.deepEqual(result.warnings, []);
   });
+
+  it("writes report output through the CLI helper", async () => {
+    const stdout = [];
+    const stderr = [];
+
+    const exitCode = await runWeeklyAgentWorkReportCli({
+      argv: ["14"],
+      stdout: {
+        write(chunk) {
+          stdout.push(String(chunk));
+        },
+      },
+      stderr: {
+        write(chunk) {
+          stderr.push(String(chunk));
+        },
+      },
+      loadMetrics: async () => [],
+      loadErrors: async () => [],
+      now: new Date("2026-02-25T12:00:00.000Z"),
+    });
+
+    assert.equal(exitCode, 0);
+    assert.match(stdout.join(""), /Weekly Agent Work Report/);
+    assert.equal(stderr.join(""), "");
+  });
 });
 
 describe("agent-work-report scheduling", () => {
@@ -237,6 +267,30 @@ describe("agent-work-report scheduling", () => {
     });
     assert.equal(badLastSent, true);
   });
+
+  it("persists the last sent timestamp for restart-safe dedup", async () => {
+    const stateDir = mkdtempSync(resolve(tmpdir(), "bosun-weekly-report-"));
+    const statePath = resolve(stateDir, "weekly-report-state.json");
+
+    const emptyState = await readWeeklyReportScheduleState({ statePath });
+    assert.equal(emptyState.lastSentAt, null);
+
+    const saved = await writeWeeklyReportScheduleState("2026-02-25T10:00:00.000Z", {
+      statePath,
+    });
+    assert.equal(saved.lastSentAt, "2026-02-25T10:00:00.000Z");
+
+    const reloaded = await readWeeklyReportScheduleState({ statePath });
+    assert.equal(reloaded.lastSentAt, "2026-02-25T10:00:00.000Z");
+
+    const duplicateWindow = shouldSendWeeklyReport({
+      now: new Date("2026-02-26T10:00:00.000Z"),
+      dayOfWeek: 3,
+      hourUtc: 9,
+      lastSentAt: reloaded.lastSentAt,
+    });
+    assert.equal(duplicateWindow, false);
+  });
 });
 
 describe("weekly report command and scheduler wiring", () => {
@@ -245,6 +299,8 @@ describe("weekly report command and scheduler wiring", () => {
     "utf8",
   );
   const monitorSource = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
+  const envExampleSource = readFileSync(resolve(process.cwd(), ".env.example"), "utf8");
+  const readmeSource = readFileSync(resolve(process.cwd(), "README.md"), "utf8");
 
   it("registers Telegram commands for weekly reporting", () => {
     assert.match(
@@ -271,8 +327,21 @@ describe("weekly report command and scheduler wiring", () => {
   it("enables monitor-level weekly scheduler and send path", () => {
     assert.match(monitorSource, /safeSetInterval\("telegram-weekly-report"/);
     assert.match(monitorSource, /safeSetTimeout\("telegram-weekly-report-initial"/);
+    assert.match(monitorSource, /getNextWeeklyReportTime\(\{/);
+    assert.match(monitorSource, /next scheduled send at \$\{nextWeeklyReportTime\.toISOString\(\)\}/);
+    assert.match(monitorSource, /readWeeklyReportScheduleState\(\{/);
     assert.match(monitorSource, /generateWeeklyAgentWorkReport\(\{/);
     assert.match(monitorSource, /weeklyReportLastSentAt\s*=\s*now\.toISOString\(\)/);
+    assert.match(monitorSource, /writeWeeklyReportScheduleState\(weeklyReportLastSentAt/);
     assert.match(monitorSource, /dedupKey:\s*`weekly-report:\$\{now\.toISOString\(\)\.slice\(0, 10\)\}`/);
+  });
+
+  it("documents the scheduler env vars and README note", () => {
+    assert.match(envExampleSource, /TELEGRAM_WEEKLY_REPORT_ENABLED=false/);
+    assert.match(envExampleSource, /TELEGRAM_WEEKLY_REPORT_DAY=0/);
+    assert.match(envExampleSource, /TELEGRAM_WEEKLY_REPORT_HOUR=9/);
+    assert.match(envExampleSource, /TELEGRAM_WEEKLY_REPORT_DAYS=7/);
+    assert.match(readmeSource, /\/weekly \[days\]/);
+    assert.match(readmeSource, /TELEGRAM_WEEKLY_REPORT_ENABLED=true/);
   });
 });

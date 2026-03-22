@@ -58,7 +58,11 @@ import {
 import { startAnalyzer, stopAnalyzer } from "../agent/agent-work-analyzer.mjs";
 import {
   generateWeeklyAgentWorkReport,
+  getNextWeeklyReportTime,
+  getWeeklyReportStatePath,
+  readWeeklyReportScheduleState,
   shouldSendWeeklyReport,
+  writeWeeklyReportScheduleState,
 } from "../agent/agent-work-report.mjs";
 
 import {
@@ -2882,6 +2886,8 @@ try {
 let telegramNotifierInterval = null;
 let telegramNotifierTimeout = null;
 let weeklyReportLastSentAt = null;
+let weeklyReportStateLoaded = false;
+const weeklyReportStatePath = getWeeklyReportStatePath();
 const monitorRestartReason = String(
   process.env.BOSUN_MONITOR_RESTART_REASON || "",
 )
@@ -10311,9 +10317,26 @@ async function sendTelegramMessage(text, options = {}) {
   });
 }
 
+async function ensureWeeklyReportStateLoaded() {
+  if (weeklyReportStateLoaded) return;
+  weeklyReportStateLoaded = true;
+  try {
+    const state = await readWeeklyReportScheduleState({
+      statePath: weeklyReportStatePath,
+    });
+    weeklyReportLastSentAt = state?.lastSentAt || null;
+  } catch (err) {
+    console.warn(
+      `[monitor] failed loading weekly report state from ${weeklyReportStatePath}: ${err?.message || err}`,
+    );
+    weeklyReportLastSentAt = null;
+  }
+}
+
 async function maybeSendWeeklyReport(nowInput = new Date()) {
   if (!telegramWeeklyReportEnabled) return;
   if (!telegramToken || !telegramChatId) return;
+  await ensureWeeklyReportStateLoaded();
   const now = nowInput instanceof Date ? nowInput : new Date(nowInput);
   if (!Number.isFinite(now.getTime())) return;
 
@@ -10335,6 +10358,9 @@ async function maybeSendWeeklyReport(nowInput = new Date()) {
       skipDedup: true,
     });
     weeklyReportLastSentAt = now.toISOString();
+    await writeWeeklyReportScheduleState(weeklyReportLastSentAt, {
+      statePath: weeklyReportStatePath,
+    });
     if (Array.isArray(report.warnings) && report.warnings.length > 0) {
       console.warn(
         `[monitor] weekly report generated with warnings: ${report.warnings.join(" | ")}`,
@@ -14971,10 +14997,15 @@ if (dependabotAutoMerge) {
 
 if (telegramWeeklyReportEnabled) {
   const weeklyReportPollMs = 60 * 1000;
+  const nextWeeklyReportTime = getNextWeeklyReportTime({
+    now: new Date(),
+    dayOfWeek: telegramWeeklyReportDay,
+    hourUtc: telegramWeeklyReportHour,
+  });
   safeSetInterval("telegram-weekly-report", () => maybeSendWeeklyReport(), weeklyReportPollMs);
   safeSetTimeout("telegram-weekly-report-initial", () => maybeSendWeeklyReport(), 45 * 1000);
   console.log(
-    `[monitor] weekly Telegram report scheduler enabled (day=${telegramWeeklyReportDay}, hourUtc=${telegramWeeklyReportHour}, lookbackDays=${telegramWeeklyReportDays})`,
+    `[monitor] weekly Telegram report scheduler enabled (day=${telegramWeeklyReportDay}, hourUtc=${telegramWeeklyReportHour}, lookbackDays=${telegramWeeklyReportDays}); next scheduled send at ${nextWeeklyReportTime.toISOString()}`,
   );
 }
 
