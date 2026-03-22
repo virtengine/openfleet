@@ -18412,8 +18412,8 @@
         "workflow-first",
         "core"
       ],
-      "nodeCount": 58,
-      "edgeCount": 66,
+      "nodeCount": 59,
+      "edgeCount": 67,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -18794,6 +18794,22 @@
           "outputs": [
             "yes",
             "no"
+          ]
+        },
+        {
+          "id": "auto-commit-dirty",
+          "type": "action.auto_commit_dirty",
+          "label": "Auto Commit Dirty",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "taskId": "{{taskId}}"
+          },
+          "position": {
+            "x": 120,
+            "y": 1680
+          },
+          "outputs": [
+            "default"
           ]
         },
         {
@@ -19613,11 +19629,17 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->detect-commits",
+          "id": "claim-stolen->auto-commit-dirty",
           "source": "claim-stolen",
-          "target": "detect-commits",
+          "target": "auto-commit-dirty",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
+        },
+        {
+          "id": "auto-commit-dirty->detect-commits",
+          "source": "auto-commit-dirty",
+          "target": "detect-commits",
+          "sourcePort": "default"
         },
         {
           "id": "detect-commits->has-commits",
@@ -38346,7 +38368,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 58,
+      "nodeCount": 59,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -38694,6 +38716,22 @@
           "outputs": [
             "yes",
             "no"
+          ]
+        },
+        {
+          "id": "auto-commit-dirty",
+          "type": "action.auto_commit_dirty",
+          "label": "Auto Commit Dirty",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "taskId": "{{taskId}}"
+          },
+          "position": {
+            "x": 120,
+            "y": 1680
+          },
+          "outputs": [
+            "default"
           ]
         },
         {
@@ -39513,11 +39551,17 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->detect-commits",
+          "id": "claim-stolen->auto-commit-dirty",
           "source": "claim-stolen",
-          "target": "detect-commits",
+          "target": "auto-commit-dirty",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
+        },
+        {
+          "id": "auto-commit-dirty->detect-commits",
+          "source": "auto-commit-dirty",
+          "target": "detect-commits",
+          "sourcePort": "default"
         },
         {
           "id": "detect-commits->has-commits",
