@@ -14337,7 +14337,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -14362,7 +14365,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan')?.summary || $ctx.getNodeOutput('plan')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -14387,7 +14393,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan')?.summary || $ctx.getNodeOutput('plan')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -14718,7 +14727,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -14743,7 +14755,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-pipeline')?.summary || $ctx.getNodeOutput('plan-pipeline')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -14768,7 +14783,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-pipeline')?.summary || $ctx.getNodeOutput('plan-pipeline')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -15220,7 +15238,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -15245,7 +15266,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('reproduce')?.summary || $ctx.getNodeOutput('reproduce')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -15270,7 +15294,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('reproduce')?.summary || $ctx.getNodeOutput('reproduce')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -15396,7 +15423,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -15421,7 +15451,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('analyse-requirements')?.summary || $ctx.getNodeOutput('analyse-requirements')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -15446,7 +15479,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('analyse-requirements')?.summary || $ctx.getNodeOutput('analyse-requirements')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -15756,7 +15792,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -15781,7 +15820,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('analyse-design')?.summary || $ctx.getNodeOutput('analyse-design')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -15806,7 +15848,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('analyse-design')?.summary || $ctx.getNodeOutput('analyse-design')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -15926,7 +15971,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -15951,7 +15999,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -15976,7 +16027,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -16001,7 +16055,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -34474,7 +34531,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -34499,7 +34559,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan')?.summary || $ctx.getNodeOutput('plan')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -34524,7 +34587,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan')?.summary || $ctx.getNodeOutput('plan')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -34833,7 +34899,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -34858,7 +34927,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-pipeline')?.summary || $ctx.getNodeOutput('plan-pipeline')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -34883,7 +34955,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-pipeline')?.summary || $ctx.getNodeOutput('plan-pipeline')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -35309,7 +35384,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -35334,7 +35412,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('reproduce')?.summary || $ctx.getNodeOutput('reproduce')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -35359,7 +35440,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('reproduce')?.summary || $ctx.getNodeOutput('reproduce')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -35472,7 +35556,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -35497,7 +35584,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('analyse-requirements')?.summary || $ctx.getNodeOutput('analyse-requirements')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -35522,7 +35612,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('analyse-requirements')?.summary || $ctx.getNodeOutput('analyse-requirements')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -35811,7 +35904,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -35836,7 +35932,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('analyse-design')?.summary || $ctx.getNodeOutput('analyse-design')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -35861,7 +35960,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('analyse-design')?.summary || $ctx.getNodeOutput('analyse-design')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -35974,7 +36076,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "mode": "plan",
+            "executionRole": "architect"
           },
           "position": {
             "x": 400,
@@ -35999,7 +36104,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -36024,7 +36132,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
           "position": {
             "x": 400,
@@ -36049,7 +36160,10 @@
             "maxRetries": "{{maxRetries}}",
             "maxContinues": "{{maxContinues}}",
             "resolveMode": "library",
-            "failOnError": false
+            "failOnError": false,
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "executionRole": "editor",
+            "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
           "position": {
             "x": 400,
