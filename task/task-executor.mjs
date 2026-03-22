@@ -4034,7 +4034,7 @@ class TaskExecutor {
         !hasThread &&
         attempts <= 0 &&
         ageMs > INPROGRESS_RECOVERY_UNSTARTED_RESET_MS;
-      if (isUnstartedStale) {
+      if (isUnstartedStale && !hasStaleSharedClaim) {
         try {
           await transitionTaskStatus(id, "todo", {
             source: "task-executor-recovery-unstarted",

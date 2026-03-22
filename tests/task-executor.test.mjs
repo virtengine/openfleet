@@ -1221,6 +1221,46 @@ describe("task-executor", () => {
       );
     });
 
+    it("does not reset fresh unstarted tasks owned by another live executor claim", async () => {
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: false });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+      const freshTs = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "claimed-unstarted-1",
+          title: "Claimed but not locally threaded",
+          status: "inprogress",
+          updated_at: freshTs,
+          agentAttempts: 0,
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+      getSharedState.mockResolvedValueOnce({
+        ownerId: "remote-instance-1",
+        ownerHeartbeat: new Date().toISOString(),
+      });
+      getClaim.mockResolvedValueOnce({
+        instance_id: "remote-instance-1",
+        metadata: {
+          host: "remote-host",
+          pid: 4242,
+        },
+      });
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "claimed-unstarted-1",
+        "todo",
+        expect.objectContaining({ source: "task-executor-recovery-unstarted" }),
+      );
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
+
     it("does not reset fresh workflow-owned tasks when an active workflow run exists", async () => {
       const ex = new TaskExecutor({
         projectId: "proj-1",
