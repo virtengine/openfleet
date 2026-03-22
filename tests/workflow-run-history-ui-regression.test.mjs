@@ -25,5 +25,12 @@ describe("workflow run history UI pagination", () => {
       expect(source).toContain("Load more runs");
       expect(source).toContain("of ${totalRuns} run(s)");
     });
+
+    it(`${label} exposes DAG revision history in run details`, () => {
+      if (label !== "ui") return;
+      expect(source).toContain("DAG Revisions");
+      expect(source).toContain("graphBefore");
+      expect(source).toContain("graphAfter");
+    });
   }
 });

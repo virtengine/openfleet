@@ -711,6 +711,10 @@ describe("WorkflowEngine - run history details", () => {
     expect(detail?.detail?.issueAdvisor?.recommendedAction).toBe("replan_from_failed");
     expect(detail?.detail?.issueAdvisor?.failedNodes?.[0]?.nodeId).toBe("fail");
     expect(detail?.detail?.issueAdvisor?.summary).toContain("Fail Step");
+    expect(detail?.detail?.issueAdvisor?.retryDecisionClass).toBe("replan_entire_subgraph");
+    expect(detail?.detail?.issueAdvisor?.issueFindings?.[0]?.source).toBe("validation");
+    expect(Array.isArray(detail?.detail?.dagState?.edges)).toBe(true);
+    expect(detail?.detail?.dagState?.edges?.[0]?.source).toBe("trigger");
   });
 
   it("returns retry options with an issue-advisor recommendation", async () => {
@@ -5407,6 +5411,92 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     events[0].taskId = "mutated";
     const reread = engine.getTaskTraceEvents(ctx.id);
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
+  });
+  it("records DAGState revisions and preserves completed nodes when replanning from a failed boundary", async () => {
+    let attempts = 0;
+    registerNodeType("test.replan_once", {
+      describe: () => "Fails once so retry planning can revise the active DAG",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        attempts += 1;
+        if (attempts === 1) throw new Error("validation failed: tests red");
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "build", type: "test.replan_once", label: "Build", config: { maxRetries: 0 } },
+        { id: "verify", type: "test.replan_once", label: "Verify", config: { maxRetries: 0 } },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "build" },
+        { id: "e2", source: "build", target: "verify" },
+      ],
+      { autoRetry: { enabled: false } },
+    );
+
+    engine.save(wf);
+    const firstCtx = await engine.execute(wf.id, {});
+    expect(firstCtx.errors.length).toBeGreaterThan(0);
+    const firstRun = engine.listRuns({ workflowId: wf.id }).at(-1);
+    expect(firstRun?.detail?.dagState?.status).toBe("failed");
+    expect(firstRun?.detail?.issueAdvisor?.recommendedAction).toBe("replan_from_failed");
+
+    const retry = await engine.retryRun(firstRun.runId, { mode: "from_failed" });
+    expect(retry.mode).toBe("from_failed");
+
+    const runs = engine.listRuns({ workflowId: wf.id });
+    const retriedRun = runs.find((entry) => entry.runId === retry.retryRunId);
+    expect(retriedRun?.detail?.dagState?.retryOf).toBe(firstRun.runId);
+    expect(retriedRun?.detail?.dagState?.retryMode).toBe("from_failed");
+    expect(retriedRun?.detail?.dagState?.revisions?.length).toBeGreaterThanOrEqual(2);
+
+    const [initialRevision, replanRevision] = retriedRun.detail.dagState.revisions;
+    expect(initialRevision.reason).toBe("retry_resume");
+    expect(replanRevision.reason).toBe("retry_replan_from_failed");
+    expect(initialRevision.counts.completed).toBe(1);
+    expect(replanRevision.counts.completed).toBe(1);
+    expect(replanRevision.preservedCompletedNodeIds).toContain("trigger");
+    expect(replanRevision.focusNodeIds).toContain("build");
+    expect(Array.isArray(replanRevision.graphAfter?.nodes)).toBe(true);
+    expect(Array.isArray(replanRevision.graphAfter?.edges)).toBe(true);
+    expect(replanRevision.graphAfter?.edges?.[0]?.source).toBe("trigger");
+    expect(retriedRun.detail.issueAdvisor.recommendedAction).toBe("resume_remaining");
+  });
+
+  it("distinguishes rerun, fix-step, and subgraph replan retry decisions", () => {
+    const rerun = engine._chooseRetryModeFromDetail({
+      issueAdvisor: { recommendedAction: "resume_remaining", summary: "Resume from verify." },
+      dagState: { counts: { completed: 2, failed: 0, pending: 1 } },
+    });
+    expect(rerun.mode).toBe("from_failed");
+    expect(rerun.reason).toBe("issue_advisor.resume_remaining");
+
+    const rerunSameStep = engine._chooseRetryModeFromDetail({
+      issueAdvisor: { recommendedAction: "rerun_same_step", summary: "Rerun the timed out test step." },
+      dagState: { counts: { completed: 2, failed: 1, pending: 0 } },
+    });
+    expect(rerunSameStep.mode).toBe("from_failed");
+    expect(rerunSameStep.reason).toBe("issue_advisor.rerun_same_step");
+
+    const fixStep = engine._chooseRetryModeFromDetail({
+      issueAdvisor: {
+        recommendedAction: "spawn_fix_step",
+        summary: "Add a targeted fix step before retrying verify.",
+      },
+      dagState: { counts: { completed: 2, failed: 1, pending: 0 } },
+    });
+    expect(fixStep.mode).toBe("from_failed");
+    expect(fixStep.reason).toBe("issue_advisor.spawn_fix_step");
+
+    const replan = engine._chooseRetryModeFromDetail({
+      issueAdvisor: { recommendedAction: "replan_subgraph", summary: "Replan downstream nodes." },
+      dagState: { counts: { completed: 1, failed: 1, pending: 2 } },
+    });
+    expect(replan.mode).toBe("from_scratch");
+    expect(replan.reason).toBe("issue_advisor.replan_subgraph");
   });
 });
 

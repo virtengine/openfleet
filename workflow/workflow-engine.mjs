@@ -408,6 +408,190 @@ function cleanObject(value = {}) {
     Object.entries(value).filter(([, entry]) => entry !== undefined),
   );
 }
+
+function normalizeDagText(value, maxLength = 240) {
+  const text = String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return "";
+  if (!Number.isFinite(maxLength) || maxLength <= 0 || text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function cloneDagGraphNode(node = {}) {
+  return {
+    nodeId: String(node.nodeId || "").trim(),
+    label: node.label || null,
+    type: node.type || null,
+    status: node.status || NodeStatus.PENDING,
+    dependencies: Array.isArray(node.dependencies) ? [...node.dependencies] : [],
+    attempts: Number(node.attempts || 0) || 0,
+    lastError: node.lastError || null,
+    issueFindingCount: Array.isArray(node.issueFindings) ? node.issueFindings.length : 0,
+    completionEvidenceCount: Array.isArray(node.completionEvidence) ? node.completionEvidence.length : 0,
+  };
+}
+
+function buildDagGraphSnapshot(dagState = {}) {
+  const nodes = Object.values(dagState?.nodes || {})
+    .map((node) => cloneDagGraphNode(node))
+    .filter((node) => node.nodeId);
+  const edges = Array.isArray(dagState?.edges)
+    ? dagState.edges
+      .map((edge) => ({
+        edgeId: String(edge?.edgeId || edge?.id || `${edge?.source || ""}->${edge?.target || ""}`).trim(),
+        source: String(edge?.source || "").trim(),
+        target: String(edge?.target || "").trim(),
+        label: edge?.label || null,
+        condition: edge?.condition || null,
+      }))
+      .filter((edge) => edge.source && edge.target)
+    : [];
+  return { nodes, edges };
+}
+
+function detectDagFindingSource(node = {}, result = {}, errorMessage = "") {
+  const nodeType = String(node?.type || "").trim().toLowerCase();
+  const reason = String(result?.reason || "").trim().toLowerCase();
+  const combined = `${errorMessage} ${result?.output || ""} ${result?.stderr || ""} ${result?.reviewOutput || ""}`.toLowerCase();
+
+  if (nodeType.includes("model_review") || reason.includes("manual_review") || combined.includes("changes requested")) {
+    return "review";
+  }
+  if (
+    nodeType.startsWith("validation.") ||
+    combined.includes("validation") ||
+    combined.includes("tests red") ||
+    combined.includes("test failed")
+  ) {
+    return "validation";
+  }
+  if (
+    combined.includes("dependency") ||
+    combined.includes("module not found") ||
+    combined.includes("cannot find module") ||
+    combined.includes("api changed") ||
+    combined.includes("contract") ||
+    combined.includes("schema")
+  ) {
+    return "workflow_diagnostics";
+  }
+  return "execution";
+}
+
+function detectDagRecommendedAction(node = {}, result = {}, errorMessage = "") {
+  const reason = String(result?.reason || "").trim().toLowerCase();
+  const combined = `${errorMessage} ${result?.output || ""} ${result?.stderr || ""} ${result?.reviewOutput || ""}`.toLowerCase();
+  const source = detectDagFindingSource(node, result, errorMessage);
+
+  if (
+    combined.includes("timeout") ||
+    combined.includes("timed out") ||
+    combined.includes("temporar") ||
+    combined.includes("network") ||
+    combined.includes("econnreset") ||
+    combined.includes("service unavailable") ||
+    combined.includes("rate limit")
+  ) {
+    return "rerun_same_step";
+  }
+  if (source === "review") {
+    return "spawn_fix_step";
+  }
+  if (
+    source === "workflow_diagnostics" ||
+    combined.includes("dependency") ||
+    combined.includes("module not found") ||
+    combined.includes("cannot find module") ||
+    combined.includes("api changed") ||
+    combined.includes("schema") ||
+    combined.includes("contract")
+  ) {
+    return "replan_subgraph";
+  }
+  if (reason === "manual_review_required") {
+    return "spawn_fix_step";
+  }
+  if (source === "validation") {
+    return "replan_from_failed";
+  }
+  return "inspect_failure";
+}
+
+function collectDagIssueFindings(node = {}, result = undefined, errorMessage = "") {
+  const output = result && typeof result === "object" ? result : {};
+  const message = normalizeDagText(
+    errorMessage || output?.reviewOutput || output?.stderr || output?.output || output?.reason || "",
+    260,
+  );
+  const failed = Boolean(errorMessage) || output?.passed === false || output?._failed === true;
+  if (!failed || !message) return [];
+
+  const source = detectDagFindingSource(node, output, message);
+  const recommendedAction = detectDagRecommendedAction(node, output, message);
+  return [cleanObject({
+    nodeId: node?.id || node?.nodeId || null,
+    label: node?.label || null,
+    source,
+    severity: source === "review" ? "high" : (source === "workflow_diagnostics" ? "high" : "medium"),
+    summary: message,
+    reason: output?.reason || null,
+    exitCode: Number.isFinite(Number(output?.exitCode)) ? Number(output.exitCode) : null,
+    command: normalizeDagText(output?.command || "", 140) || null,
+    recommendedAction,
+    suggestedRerun: output?.outputSuggestedRerun || output?.outputDiagnostics?.suggestedRerun || null,
+  })];
+}
+
+function collectDagCompletionEvidence(node = {}, result = undefined) {
+  const output = result && typeof result === "object" ? result : {};
+  const passed = output?.passed !== false && output?._failed !== true;
+  if (!passed) return [];
+
+  const evidence = [];
+  const summary = normalizeDagText(
+    output?.summary || output?.outputHint || output?.narrative || output?.output || output?.reviewPath || "",
+    220,
+  );
+  if (summary) {
+    evidence.push({
+      nodeId: node?.id || node?.nodeId || null,
+      label: node?.label || null,
+      kind: "summary",
+      summary,
+    });
+  }
+  const command = normalizeDagText(output?.command || "", 140);
+  if (command) {
+    evidence.push(cleanObject({
+      nodeId: node?.id || node?.nodeId || null,
+      label: node?.label || null,
+      kind: "command",
+      command,
+      exitCode: Number.isFinite(Number(output?.exitCode)) ? Number(output.exitCode) : 0,
+    }));
+  }
+  const artifactPath = normalizeDagText(output?.reviewPath || output?.evidenceDir || output?.path || "", 180);
+  if (artifactPath) {
+    evidence.push({
+      nodeId: node?.id || node?.nodeId || null,
+      label: node?.label || null,
+      kind: "artifact",
+      path: artifactPath,
+    });
+  }
+  return evidence;
+}
+
+function summarizeDagEvidence(evidence = [], limit = 3) {
+  if (!Array.isArray(evidence) || evidence.length === 0) return [];
+  return evidence.slice(0, Math.max(1, limit)).map((entry) => {
+    if (entry?.summary) return entry.summary;
+    if (entry?.command) return `Command: ${entry.command}`;
+    if (entry?.path) return `Artifact: ${entry.path}`;
+    return normalizeDagText(JSON.stringify(entry), 140);
+  }).filter(Boolean);
+}
 /**
  * Register a node type handler.
  * @param {string} type - Node type identifier (e.g., "trigger.task_low", "action.run_agent")
@@ -803,14 +987,22 @@ export class WorkflowEngine extends EventEmitter {
 
   _initializeDagState(def, ctx, extra = {}) {
     const dependencyMap = new Map();
+    const edges = [];
     for (const node of def?.nodes || []) {
       dependencyMap.set(node.id, []);
     }
     for (const edge of def?.edges || []) {
-      if (!edge?.target || edge.backEdge === true) continue;
+      if (!edge?.source || !edge?.target || edge.backEdge === true) continue;
       const deps = dependencyMap.get(edge.target) || [];
       deps.push(edge.source);
       dependencyMap.set(edge.target, deps);
+      edges.push({
+        edgeId: String(edge.id || `${edge.source}->${edge.target}`),
+        source: edge.source,
+        target: edge.target,
+        label: edge.label || null,
+        condition: edge.condition || null,
+      });
     }
 
     const nowIso = new Date(ctx.startedAt).toISOString();
@@ -823,9 +1015,11 @@ export class WorkflowEngine extends EventEmitter {
       parentRunId: extra.parentRunId || ctx.data?._workflowParentRunId || null,
       retryOf: extra.retryOf || ctx.data?._retryOf || null,
       retryMode: extra.retryMode || null,
+      revisionReason: extra.revisionReason || null,
       createdAt: nowIso,
       updatedAt: nowIso,
       status: WorkflowStatus.RUNNING,
+      revisions: [],
       counts: {
         total: Array.isArray(def?.nodes) ? def.nodes.length : 0,
         pending: Array.isArray(def?.nodes) ? def.nodes.length : 0,
@@ -834,6 +1028,7 @@ export class WorkflowEngine extends EventEmitter {
         failed: 0,
         skipped: 0,
       },
+      edges,
       nodes: Object.fromEntries(
         (def?.nodes || []).map((node) => [
           node.id,
@@ -846,6 +1041,8 @@ export class WorkflowEngine extends EventEmitter {
             attempts: 0,
             lastError: null,
             outputSummary: null,
+            issueFindings: [],
+            completionEvidence: [],
             startedAt: null,
             endedAt: null,
             updatedAt: nowIso,
@@ -860,6 +1057,63 @@ export class WorkflowEngine extends EventEmitter {
     return dagState;
   }
 
+  _recordDagRevision(ctx, revision = {}) {
+    const dagState = ctx?.data?._dagState;
+    if (!dagState || typeof dagState !== "object" || !dagState.nodes || typeof dagState.nodes !== "object") {
+      return null;
+    }
+    if (!Array.isArray(dagState.revisions)) dagState.revisions = [];
+    const nodes = Object.values(dagState.nodes);
+    const counts = {
+      total: nodes.length,
+      pending: nodes.filter((node) => node?.status === NodeStatus.PENDING).length,
+      running: nodes.filter((node) => node?.status === NodeStatus.RUNNING || node?.status === NodeStatus.WAITING).length,
+      completed: nodes.filter((node) => node?.status === NodeStatus.COMPLETED).length,
+      failed: nodes.filter((node) => node?.status === NodeStatus.FAILED).length,
+      skipped: nodes.filter((node) => node?.status === NodeStatus.SKIPPED).length,
+    };
+    const completedNodeIds = nodes.filter((node) => node?.status === NodeStatus.COMPLETED).map((node) => node.nodeId);
+    const failedNodeIds = nodes.filter((node) => node?.status === NodeStatus.FAILED).map((node) => node.nodeId);
+    const pendingNodeIds = nodes
+      .filter((node) => node?.status === NodeStatus.PENDING || node?.status === NodeStatus.WAITING)
+      .map((node) => node.nodeId);
+    const graphBefore = revision.graphBefore && typeof revision.graphBefore === "object"
+      ? revision.graphBefore
+      : (dagState.revisions.length > 0 ? dagState.revisions[dagState.revisions.length - 1]?.graphAfter || null : null);
+    const graphAfter = revision.graphAfter && typeof revision.graphAfter === "object"
+      ? revision.graphAfter
+      : buildDagGraphSnapshot(dagState);
+    const issueFindings = nodes.flatMap((node) => Array.isArray(node?.issueFindings) ? node.issueFindings : []);
+    const completionEvidence = nodes.flatMap((node) => Array.isArray(node?.completionEvidence) ? node.completionEvidence : []);
+    const snapshot = {
+      index: dagState.revisions.length,
+      recordedAt: new Date().toISOString(),
+      reason: revision.reason || "update",
+      sourceRunId: revision.sourceRunId || null,
+      retryMode: dagState.retryMode || null,
+      status: dagState.status || WorkflowStatus.RUNNING,
+      counts,
+      preservedCompletedNodeIds: Array.isArray(revision.preservedCompletedNodeIds)
+        ? [...new Set(revision.preservedCompletedNodeIds.map((id) => String(id || "").trim()).filter(Boolean))]
+        : completedNodeIds,
+      focusNodeIds: Array.isArray(revision.focusNodeIds)
+        ? [...new Set(revision.focusNodeIds.map((id) => String(id || "").trim()).filter(Boolean))]
+        : (failedNodeIds.length ? failedNodeIds : pendingNodeIds),
+      failedNodeIds,
+      pendingNodeIds,
+      issueFindingCount: issueFindings.length,
+      completionEvidenceCount: completionEvidence.length,
+      issueFindingsPreview: issueFindings.slice(0, 6),
+      completionEvidencePreview: completionEvidence.slice(0, 6),
+      graphBefore,
+      graphAfter,
+      edgeCount: Array.isArray(dagState.edges) ? dagState.edges.length : 0,
+      nodeCount: nodes.length,
+    };
+    dagState.revisions.push(snapshot);
+    dagState.updatedAt = snapshot.recordedAt;
+    return snapshot;
+  }
   _refreshDagState(ctx, status = null) {
     const dagState = ctx?.data?._dagState;
     if (!dagState || typeof dagState !== "object" || !dagState.nodes || typeof dagState.nodes !== "object") {
@@ -882,18 +1136,43 @@ export class WorkflowEngine extends EventEmitter {
     const pendingNodes = nodes.filter((node) => node?.status === NodeStatus.PENDING || node?.status === NodeStatus.WAITING);
     const firstFailed = failedNodes[0] || null;
     const firstPending = pendingNodes[0] || null;
+    const issueFindings = nodes.flatMap((node) => Array.isArray(node?.issueFindings) ? node.issueFindings : []);
+    const completionEvidence = nodes.flatMap((node) => Array.isArray(node?.completionEvidence) ? node.completionEvidence : []);
+    const firstFinding = issueFindings[0] || null;
 
     let recommendedAction = "continue";
     let summary = "Workflow is ready to continue.";
     if (failedNodes.length > 0) {
-      recommendedAction = counts.completed > 0 ? "replan_from_failed" : "inspect_failure";
-      summary = firstFailed?.lastError
-        ? `Failed at ${firstFailed.label || firstFailed.nodeId}: ${firstFailed.lastError}`
-        : `Workflow has ${failedNodes.length} failed node(s).`;
+      recommendedAction = firstFinding?.recommendedAction || (counts.completed > 0 ? "replan_from_failed" : "inspect_failure");
+      summary = firstFinding?.summary
+        ? `Failed at ${firstFailed?.label || firstFailed?.nodeId || "a workflow step"}: ${firstFinding.summary}`
+        : (firstFailed?.lastError
+            ? `Failed at ${firstFailed.label || firstFailed.nodeId}: ${firstFailed.lastError}`
+            : `Workflow has ${failedNodes.length} failed node(s).`);
     } else if (pendingNodes.length > 0 && counts.completed > 0) {
       recommendedAction = "resume_remaining";
       summary = `Resume from ${firstPending?.label || firstPending?.nodeId || "the next pending node"}.`;
     }
+
+    const nextStepGuidance = failedNodes.length > 0
+      ? [
+        recommendedAction === "rerun_same_step"
+          ? "Preserve completed work and rerun the same failed step with the suggested command or fix."
+          : (recommendedAction === "spawn_fix_step"
+              ? "Preserve completed work and insert a targeted fix step before resuming downstream execution."
+              : (recommendedAction === "replan_subgraph"
+                  ? "Preserve completed work and replan the impacted downstream subgraph before continuing."
+                  : "Preserve completed work and replan from the failed boundary.")),
+        firstFailed?.label ? `Focus next on ${firstFailed.label}.` : null,
+        firstFinding?.suggestedRerun ? `Suggested rerun: ${firstFinding.suggestedRerun}` : null,
+        firstFailed?.lastError ? `Address failure: ${firstFailed.lastError}` : null,
+      ].filter(Boolean).join(" ")
+      : (pendingNodes.length > 0 && counts.completed > 0
+        ? [
+          "Preserve completed work and continue from the next pending node.",
+          firstPending?.label ? `Next step: ${firstPending.label}.` : null,
+        ].filter(Boolean).join(" ")
+        : "Plan is healthy; continue executing the remaining graph.");
 
     const issueAdvisor = {
       status: dagState.status,
@@ -902,14 +1181,28 @@ export class WorkflowEngine extends EventEmitter {
       failedNodeCount: failedNodes.length,
       pendingNodeCount: pendingNodes.length,
       completedNodeCount: counts.completed,
-      suggestedRerun: firstFailed?.suggestedRerun || null,
+      suggestedRerun: firstFailed?.suggestedRerun || firstFinding?.suggestedRerun || null,
+      retryDecisionClass:
+        recommendedAction === "rerun_same_step"
+          ? "rerun_same_step"
+          : (recommendedAction === "spawn_fix_step"
+              ? "spawn_fix_step"
+              : ((recommendedAction === "replan_subgraph" || recommendedAction === "replan_from_failed")
+                  ? "replan_entire_subgraph"
+                  : "inspect_failure")),
       failedNodes: failedNodes.slice(0, 6).map((node) => ({
         nodeId: node.nodeId,
         label: node.label || null,
         error: node.lastError || null,
         attempts: node.attempts || 0,
+        issueFindings: Array.isArray(node.issueFindings) ? node.issueFindings.slice(0, 3) : [],
+        completionEvidence: Array.isArray(node.completionEvidence) ? node.completionEvidence.slice(0, 3) : [],
       })),
+      issueFindings: issueFindings.slice(0, 8),
+      completionEvidence: completionEvidence.slice(0, 8),
       updatedAt: dagState.updatedAt,
+      nextStepGuidance,
+      dagRevisionCount: Array.isArray(dagState.revisions) ? dagState.revisions.length : 0,
     };
 
     ctx.data._issueAdvisor = issueAdvisor;
@@ -920,11 +1213,16 @@ export class WorkflowEngine extends EventEmitter {
     ctx.data._plannerFeedback = {
       ...existingFeedback,
       issueAdvisor,
+      issueAdvisorSummary: [summary, nextStepGuidance].filter(Boolean).join("\n"),
       dagStateSummary: {
+        revisionCount: Array.isArray(dagState.revisions) ? dagState.revisions.length : 0,
         runId: dagState.runId,
         workflowId: dagState.workflowId,
         status: dagState.status,
         counts,
+        issueFindingCount: issueFindings.length,
+        completionEvidenceCount: completionEvidence.length,
+        graph: buildDagGraphSnapshot(dagState),
       },
     };
     return issueAdvisor;
@@ -989,11 +1287,18 @@ export class WorkflowEngine extends EventEmitter {
   } = {}) {
     if (!ctx || !node?.id) return;
     const timing = ctx.getNodeTiming(node.id) || {};
+    const issueFindings = collectDagIssueFindings(node, result, error ? String(error) : "");
+    const completionEvidence = collectDagCompletionEvidence(node, result);
+    const existingDagNode = ctx.data?._dagState?.nodes?.[node.id] || {};
     const nodePatch = cleanObject({
       status,
       attempts: Number.isFinite(Number(attempt)) ? Number(attempt) : ctx.getRetryCount(node.id),
       lastError: error ? String(error) : null,
       outputSummary: result !== undefined ? this._summarizeTaskTraceNodeResult(result) : undefined,
+      issueFindings: issueFindings.length > 0 ? issueFindings : (status === NodeStatus.COMPLETED ? [] : (existingDagNode.issueFindings || undefined)),
+      completionEvidence: completionEvidence.length > 0
+        ? [...(Array.isArray(existingDagNode.completionEvidence) ? existingDagNode.completionEvidence : []), ...completionEvidence]
+        : (status === NodeStatus.FAILED ? (existingDagNode.completionEvidence || undefined) : undefined),
       startedAt: Number.isFinite(Number(timing.startedAt)) ? new Date(Number(timing.startedAt)).toISOString() : null,
       endedAt: Number.isFinite(Number(timing.endedAt)) ? new Date(Number(timing.endedAt)).toISOString() : null,
       suggestedRerun:
@@ -1812,6 +2117,7 @@ export class WorkflowEngine extends EventEmitter {
         _parentRunId: runId,
         _rootRunId: originalRootRunId,
         _retryMode: mode,
+        _dagRevisionReason: "retry_replan_subgraph",
         force: true,
       });
       return { retryRunId: ctx.id, mode, originalRunId: runId, ctx };
@@ -1842,8 +2148,11 @@ export class WorkflowEngine extends EventEmitter {
     });
 
     // Pre-populate nodes that already succeeded.
+    const preservedCompletedNodeIds = [];
+    const focusNodeIds = [];
     for (const [nodeId, status] of Object.entries(nodeStatuses)) {
       if (status === NodeStatus.COMPLETED) {
+        preservedCompletedNodeIds.push(nodeId);
         ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
         if (nodeOutputs[nodeId] !== undefined) {
           ctx.setNodeOutput(nodeId, nodeOutputs[nodeId]);
@@ -1855,6 +2164,13 @@ export class WorkflowEngine extends EventEmitter {
       }
       // Reset failed / skipped nodes so the DAG will re-run them.
     }
+
+    this._recordDagRevision(ctx, {
+      reason: mode === "from_failed" ? "retry_replan_from_failed" : `retry_${mode}`,
+      sourceRunId: runId,
+      preservedCompletedNodeIds,
+      focusNodeIds,
+    });
 
     const retryRunId = ctx.id;
     this._activeRuns.set(retryRunId, {
@@ -2062,6 +2378,15 @@ export class WorkflowEngine extends EventEmitter {
     if (issueAdvisor?.recommendedAction === "resume_remaining") {
       mode = "from_failed";
       reason = "issue_advisor.resume_remaining";
+    } else if (issueAdvisor?.recommendedAction === "rerun_same_step") {
+      mode = "from_failed";
+      reason = "issue_advisor.rerun_same_step";
+    } else if (issueAdvisor?.recommendedAction === "spawn_fix_step") {
+      mode = "from_failed";
+      reason = "issue_advisor.spawn_fix_step";
+    } else if (issueAdvisor?.recommendedAction === "replan_subgraph") {
+      mode = "from_scratch";
+      reason = "issue_advisor.replan_subgraph";
     } else if (issueAdvisor?.recommendedAction === "replan_from_failed") {
       mode = "from_scratch";
       reason = "issue_advisor.replan_from_failed";
@@ -2854,6 +3179,8 @@ export class WorkflowEngine extends EventEmitter {
     // Pre-seed completed nodes from snapshot
     const nodeStatuses = snapshot.nodeStatuses || {};
     const nodeOutputs = snapshot.nodeOutputs || {};
+    const preservedCompletedNodeIds = [];
+    const focusNodeIds = [];
     for (const [nodeId, status] of Object.entries(nodeStatuses)) {
       if (status === "completed") {
         ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
@@ -2862,6 +3189,13 @@ export class WorkflowEngine extends EventEmitter {
         }
       }
     }
+
+    this._recordDagRevision(ctx, {
+      reason: mode === "from_failed" ? "retry_replan_from_failed" : `retry_${mode}`,
+      sourceRunId: runId,
+      preservedCompletedNodeIds,
+      focusNodeIds,
+    });
 
     const retryRunId = ctx.id;
     this._activeRuns.set(retryRunId, {
@@ -3034,6 +3368,7 @@ export class WorkflowEngine extends EventEmitter {
     // begins from the first un-completed node.
     for (const [nodeId, status] of ctx.nodeStatuses) {
       if (status === NodeStatus.COMPLETED) {
+        preservedCompletedNodeIds.push(nodeId);
         executed.add(nodeId);
       }
     }
@@ -3872,6 +4207,8 @@ export class WorkflowEngine extends EventEmitter {
 
   _serializeRunContext(ctx, isRunning = false) {
     const detail = ctx.toJSON(Date.now());
+    if (ctx?.data?._dagState) detail.dagState = ctx.data._dagState;
+    if (ctx?.data?._issueAdvisor) detail.issueAdvisor = ctx.data._issueAdvisor;
     if (isRunning) {
       detail.endedAt = null;
       detail.duration = Math.max(0, Date.now() - Number(ctx?.startedAt || Date.now()));
@@ -3929,6 +4266,7 @@ export class WorkflowEngine extends EventEmitter {
     const retryDecisionReason = detail?.data?._retryDecisionReason || null;
     const issueAdvisorRecommendation = detail?.issueAdvisor?.recommendedAction || null;
     const issueAdvisorSummary = detail?.issueAdvisor?.summary || null;
+    const dagRevisionCount = Array.isArray(detail?.dagState?.revisions) ? detail.dagState.revisions.length : 0;
 
     return {
       runId,
@@ -3962,6 +4300,7 @@ export class WorkflowEngine extends EventEmitter {
       retryDecisionReason,
       issueAdvisorRecommendation,
       issueAdvisorSummary,
+      dagRevisionCount,
     };
   }
 
@@ -4545,4 +4884,5 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+
 
