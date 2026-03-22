@@ -199,6 +199,12 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       expression: "$data._claimStolen === true",
     }, { x: 200, y: 1610, outputs: ["yes", "no"] }),
 
+    // ── Auto-commit dirty worktree (safety net) ────────────────────────
+    node("auto-commit-dirty", "action.auto_commit_dirty", "Auto Commit Dirty", {
+      worktreePath: "{{worktreePath}}",
+      taskId: "{{taskId}}",
+    }, { x: 120, y: 1680 }),
+
     // ── Detect new commits ───────────────────────────────────────────────
     node("detect-commits", "action.detect_new_commits", "Detect Commits", {
       worktreePath: "{{worktreePath}}",
@@ -496,7 +502,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("run-agent-implement", "claim-stolen"),
 
     // Post-agent: check claim
-    edge("claim-stolen", "detect-commits", { condition: "$output?.result !== true", port: "no" }),
+    edge("claim-stolen", "auto-commit-dirty", { condition: "$output?.result !== true", port: "no" }),
+    edge("auto-commit-dirty", "detect-commits"),
     edge("detect-commits", "has-commits"),
 
     // Success path (has commits)
