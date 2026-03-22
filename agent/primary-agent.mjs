@@ -1191,13 +1191,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     ? appendAttachmentsToPrompt(userMessage, attachments).message
     : userMessage;
   const toolContract = buildPrimaryToolCapabilityContract(options);
-  const architectEditorFrame = buildArchitectEditorFrame(
-    options,
-    selectedProfile.block,
-    toolContract,
-    architectEditorFrame,
-    messageWithAttachments,
-  ]
+  const messageWithToolContract = [selectedProfile.block, toolContract, messageWithAttachments]
     .filter(Boolean)
     .join("\n\n");
   const framedMessage = modePrefix ? modePrefix + messageWithToolContract : messageWithToolContract;
