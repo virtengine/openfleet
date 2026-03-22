@@ -157,7 +157,9 @@ function buildTimelineEntry(msg, overridePhase = "") {
       : phase === "output"
         ? firstLine || "Tool output"
         : phase === "patch_result"
-          ? firstLine || "Patch result"
+          ? files.length
+            ? `Patched ${files.slice(0, 2).join(", ")}`
+            : firstLine || "Patch result"
           : phase === "error"
             ? firstLine || "Stream error"
             : firstLine || "Thinking step";

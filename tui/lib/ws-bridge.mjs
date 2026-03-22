@@ -151,6 +151,12 @@ class TuiWsBridge {
 			case "sessions:update":
 				this._emit("sessions:update", payload);
 				break;
+			case "session:update":
+				this._emit("session:update", payload);
+				break;
+			case "session:end":
+				this._emit("session:end", payload);
+				break;
 			case "session:event": {
 				this._emit("session:event", payload);
 				// backward compat: bridge to legacy session lifecycle events
@@ -191,6 +197,25 @@ class TuiWsBridge {
 				}
 				break;
 			}
+			case "task:delete":
+				this._emit("task:delete", payload);
+				break;
+			case "retry:update":
+				this._emit("retry:update", payload);
+				break;
+			case "retry-queue-updated":
+				this._emit("retry-queue-updated", payload);
+				this._emit("retry:update", payload);
+				break;
+			case "invalidate":
+				this._emit("invalidate", payload);
+				break;
+			case "workflow:trigger":
+				this._emit("workflow:trigger", payload);
+				break;
+			case "workflow:complete":
+				this._emit("workflow:complete", payload);
+				break;
 			case "pong":
 				break;
 			default:
@@ -281,3 +306,4 @@ export {
 	defaultConfigDir,
 	resolveTuiAuthToken,
 };
+

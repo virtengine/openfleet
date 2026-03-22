@@ -14,9 +14,10 @@
 
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 
-const __dirname = dirname(fileURLToPath(new URL(".", import.meta.url)));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 function showHelp() {
   const version = JSON.parse(
@@ -50,7 +51,7 @@ function showHelp() {
     Enter            Select / Execute action
     Esc              Back / Close modal
     c                Create new task (tasks screen)
-    r                Refresh data
+    r                Resume selected agent session (Agents screen)
     q                Quit
 
   EXAMPLES
