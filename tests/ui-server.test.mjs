@@ -2459,9 +2459,16 @@ describe("ui-server mini app", () => {
     process.env.CODEX_MONITOR_HOME = isolatedDir;
     process.env.CODEX_MONITOR_DIR = isolatedDir;
 
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
     const taskStore = await import("../task/task-store.mjs");
-    taskStore.configureTaskStore({ storePath: join(isolatedDir, "kanban-state.json") });
-    taskStore.loadStore();
     taskStore.addTask({ id: "task-replay-1", title: "Replay me", status: "blocked" });
     taskStore.appendTaskRun("task-replay-1", {
       runId: "run-replay-1",
@@ -2474,15 +2481,6 @@ describe("ui-server mini app", () => {
         { type: "assistant", payload: { content: "Investigated the failure and need a follow-up turn." } },
       ],
     });
-
-    const mod = await import("../server/ui-server.mjs");
-    const server = await mod.startTelegramUiServer({
-      port: await getFreePort(),
-      host: "127.0.0.1",
-      skipInstanceLock: true,
-      skipAutoOpen: true,
-    });
-    const port = server.address().port;
 
     const detail = await fetch(`http://127.0.0.1:${port}/api/tasks/detail?taskId=task-replay-1`).then((r) => r.json());
     expect(detail.ok).toBe(true);
@@ -3982,6 +3980,172 @@ describe("ui-server mini app", () => {
     }
   });
 
+  it("lists replayable agent runs with short step summaries", async () => {
+    const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-runs-"));
+    const previousRepoRoot = process.env.REPO_ROOT;
+    process.env.REPO_ROOT = isolatedRepoRoot;
+    vi.resetModules();
+
+    const sessionsDir = join(isolatedRepoRoot, ".cache", "agent-work-logs", "agent-sessions");
+    mkdirSync(sessionsDir, { recursive: true });
+    const attemptId = "attempt-replay-1";
+    const now = new Date();
+    writeFileSync(
+      join(sessionsDir, `${attemptId}.jsonl`),
+      `${[
+        {
+          timestamp: new Date(now.getTime() - 60_000).toISOString(),
+          attempt_id: attemptId,
+          event_type: "session_start",
+          taskId: "task-123",
+          task_title: "Replayable task",
+          executor: "codex",
+        },
+        {
+          timestamp: new Date(now.getTime() - 50_000).toISOString(),
+          attempt_id: attemptId,
+          event_type: "tool_call",
+          taskId: "task-123",
+          task_title: "Replayable task",
+          executor: "codex",
+          data: { tool_name: "web.search" },
+        },
+        {
+          timestamp: new Date(now.getTime() - 40_000).toISOString(),
+          attempt_id: attemptId,
+          event_type: "tool_result",
+          taskId: "task-123",
+          task_title: "Replayable task",
+          executor: "codex",
+          data: { tool_name: "web.search", status: "completed" },
+        },
+        {
+          timestamp: new Date(now.getTime() - 30_000).toISOString(),
+          attempt_id: attemptId,
+          event_type: "session_end",
+          taskId: "task-123",
+          task_title: "Replayable task",
+          executor: "codex",
+          data: { completion_status: "failed" },
+        },
+      ].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/agent-runs?limit=10`);
+      const payload = await response.json();
+      expect(payload.ok).toBe(true);
+      expect(Array.isArray(payload.data)).toBe(true);
+      expect(payload.data[0]).toEqual(expect.objectContaining({
+        attemptId,
+        taskId: "task-123",
+        taskTitle: "Replayable task",
+        executor: "codex",
+        status: "failed",
+        eventCount: 4,
+      }));
+      expect(payload.data[0].shortSteps).toEqual(expect.arrayContaining([
+        expect.stringContaining("Started codex run"),
+        expect.stringContaining("Called web.search"),
+        expect.stringContaining("web.search returned completed"),
+        expect.stringContaining("Finished run with status failed"),
+      ]));
+    } finally {
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
+      rmSync(isolatedRepoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("returns replayable trajectory details for a single agent run", async () => {
+    const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-run-detail-"));
+    const previousRepoRoot = process.env.REPO_ROOT;
+    process.env.REPO_ROOT = isolatedRepoRoot;
+    vi.resetModules();
+
+    const sessionsDir = join(isolatedRepoRoot, ".cache", "agent-work-logs", "agent-sessions");
+    mkdirSync(sessionsDir, { recursive: true });
+    const attemptId = "attempt-replay-detail";
+    const now = new Date();
+    writeFileSync(
+      join(sessionsDir, `${attemptId}.jsonl`),
+      `${[
+        {
+          timestamp: new Date(now.getTime() - 45_000).toISOString(),
+          attempt_id: attemptId,
+          event_type: "session_start",
+          taskId: "task-456",
+          task_title: "Replay detail task",
+          executor: "claude",
+        },
+        {
+          timestamp: new Date(now.getTime() - 30_000).toISOString(),
+          attempt_id: attemptId,
+          event_type: "agent_output",
+          taskId: "task-456",
+          task_title: "Replay detail task",
+          executor: "claude",
+          data: { output: "Investigated failure and prepared patch." },
+        },
+        {
+          timestamp: new Date(now.getTime() - 15_000).toISOString(),
+          attempt_id: attemptId,
+          event_type: "error",
+          taskId: "task-456",
+          task_title: "Replay detail task",
+          executor: "claude",
+          data: { error_message: "Context window exhausted" },
+        },
+      ].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/agent-runs/${attemptId}`);
+      const payload = await response.json();
+      expect(payload.ok).toBe(true);
+      expect(payload.data).toEqual(expect.objectContaining({
+        attemptId,
+        taskId: "task-456",
+        taskTitle: "Replay detail task",
+        executor: "claude",
+        status: "in_progress",
+      }));
+      expect(payload.data.shortSteps).toEqual(expect.arrayContaining([
+        expect.stringContaining("Started claude run"),
+        expect.stringContaining("Investigated failure and prepared patch."),
+        expect.stringContaining("Error: Context window exhausted"),
+      ]));
+      expect(payload.data.totals.errors).toBe(1);
+      expect(payload.data.events[1]).toEqual(expect.objectContaining({
+        type: "agent_output",
+        summary: "Investigated failure and prepared patch.",
+      }));
+    } finally {
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
+      rmSync(isolatedRepoRoot, { recursive: true, force: true });
+    }
+  });
   it("serves benchmark snapshots and persists benchmark mode for the active workspace", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-ui-benchmark-mode-"));
@@ -4202,5 +4366,7 @@ describe("ui-server mini app", () => {
   });
 
 });
+
+
 
 

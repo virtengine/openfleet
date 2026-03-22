@@ -9606,10 +9606,14 @@ function buildTaskRunSummary(steps = [], fallback = "Run recorded.") {
   return fallback;
 }
 
-function buildReplayableTaskRuns(task, tracker = null, limit = 5) {
+async function buildReplayableTaskRuns(task, tracker = null, limit = 5) {
   const sessionIds = collectTaskDiffSessionIds(task);
-  const storedRuns = listTaskRuns(task?.id);
-  const runs = Array.isArray(storedRuns) ? [...storedRuns] : [];
+  const { value: storedRunsRaw } = await callTaskStoreFunction(TASK_STORE_RUN_EXPORTS.list, [task?.id]);
+  const storedRuns = storedRunsRaw;
+  const runs = Array.isArray(storedRuns) ? storedRuns.map((run) => ({
+    ...run,
+    summary: run.summary || buildTaskRunSummary(run.steps, run.status === "failed" ? "Run failed." : "Run completed."),
+  })) : [];
   const seenRunIds = new Set(runs.map((entry) => String(entry?.runId || "")).filter(Boolean));
   for (const sessionId of sessionIds) {
     const session = tracker?.getSession?.(sessionId);
@@ -11851,6 +11855,162 @@ function resolveAgentWorkLogDir() {
   return candidates[0];
 }
 
+function clampRunSummaryText(value, maxLength = 220) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+function summarizeTrajectoryEvent(event = {}) {
+  const type = String(event?.event_type || event?.type || "event").trim() || "event";
+  const data = event?.data && typeof event.data === "object" ? event.data : {};
+  if (type === "session_start") {
+    return clampRunSummaryText(`Started ${String(event.executor || event.model || "agent").trim() || "agent"} run for ${String(event.task_title || event.taskId || "task").trim() || "task"}`);
+  }
+  if (type === "session_end") {
+    const status = String(data?.completion_status || event?.status || "completed").trim() || "completed";
+    return clampRunSummaryText(`Finished run with status ${status}`);
+  }
+  if (type === "tool_call") {
+    const toolName = String(data?.tool_name || event?.tool_name || "tool").trim() || "tool";
+    return clampRunSummaryText(`Called ${toolName}`);
+  }
+  if (type === "tool_result") {
+    const toolName = String(data?.tool_name || event?.tool_name || "tool").trim() || "tool";
+    const status = String(data?.status || event?.status || "completed").trim() || "completed";
+    return clampRunSummaryText(`${toolName} returned ${status}`);
+  }
+  if (type === "error") {
+    const message = String(data?.error_message || event?.error_message || event?.message || "error").trim() || "error";
+    return clampRunSummaryText(`Error: ${message}`);
+  }
+  if (type === "usage") {
+    const totalTokens = numberOrZero(data?.total_tokens || data?.tokens || event?.total_tokens);
+    if (totalTokens > 0) return clampRunSummaryText(`Used ${totalTokens} tokens`);
+  }
+  if (type === "agent_output") {
+    const output = String(data?.output || event?.output || "").trim();
+    if (output) return clampRunSummaryText(output);
+  }
+  return clampRunSummaryText(type.replace(/_/g, " "));
+}
+
+function toTrajectoryReplayEvent(event = {}, index = 0) {
+  const timestamp = event?.timestamp || event?.recordedAt || null;
+  const eventType = String(event?.event_type || event?.type || "event").trim() || "event";
+  const data = event?.data && typeof event.data === "object" ? event.data : {};
+  return {
+    index,
+    timestamp,
+    type: eventType,
+    summary: summarizeTrajectoryEvent(event),
+    attemptId: String(event?.attempt_id || event?.attemptId || "").trim() || null,
+    taskId: String(event?.taskId || "").trim() || null,
+    taskTitle: String(event?.task_title || event?.taskTitle || "").trim() || null,
+    executor: String(event?.executor || event?.model || "").trim() || null,
+    data: makeJsonSafe(data, { maxDepth: 4 }),
+  };
+}
+
+function buildReplayOverview(events = []) {
+  const totals = {
+    events: events.length,
+    toolCalls: 0,
+    toolResults: 0,
+    outputs: 0,
+    errors: 0,
+    usageEvents: 0,
+  };
+  const shortSteps = [];
+  for (const event of events) {
+    if (event.type === "tool_call") totals.toolCalls += 1;
+    if (event.type === "tool_result") totals.toolResults += 1;
+    if (event.type === "agent_output") totals.outputs += 1;
+    if (event.type === "error") totals.errors += 1;
+    if (event.type === "usage") totals.usageEvents += 1;
+    if (shortSteps.length >= 12) continue;
+    if (["session_start", "tool_call", "tool_result", "error", "session_end"].includes(event.type)) {
+      shortSteps.push(event.summary);
+      continue;
+    }
+    if (event.type === "agent_output" && shortSteps.length < 6) shortSteps.push(event.summary);
+  }
+  return { totals, shortSteps };
+}
+
+async function listReplayableAgentRuns(options = {}) {
+  const logDir = resolveAgentWorkLogDir();
+  const sessionsDir = resolve(logDir, "agent-sessions");
+  const limit = Math.max(1, Math.min(100, Number(options.limit) || 25));
+  const taskIdFilter = String(options.taskId || "").trim();
+  const files = await readdir(sessionsDir).catch(() => []);
+  const runs = [];
+
+  for (const name of files) {
+    if (!name.endsWith(".jsonl")) continue;
+    const attemptId = name.replace(/\.jsonl$/i, "");
+    const filePath = resolve(sessionsDir, name);
+    const entries = await readJsonlTail(filePath, 5000, 10000000).catch(() => []);
+    if (!entries.length) continue;
+    const replayEvents = entries.map((entry, index) => toTrajectoryReplayEvent(entry, index));
+    const first = replayEvents[0] || null;
+    const last = replayEvents[replayEvents.length - 1] || null;
+    const taskId = String(first?.taskId || last?.taskId || "").trim() || null;
+    if (taskIdFilter && taskId !== taskIdFilter) continue;
+    const startedAt = first?.timestamp || null;
+    const endedAt = last?.type === "session_end" ? last.timestamp : null;
+    const overview = buildReplayOverview(replayEvents);
+    runs.push({
+      attemptId,
+      taskId,
+      taskTitle: first?.taskTitle || last?.taskTitle || null,
+      executor: first?.executor || last?.executor || null,
+      startedAt,
+      endedAt,
+      status: last?.type === "session_end"
+        ? String(last?.data?.completion_status || "completed")
+        : "in_progress",
+      eventCount: replayEvents.length,
+      shortSteps: overview.shortSteps,
+      totals: overview.totals,
+    });
+  }
+
+  runs.sort((a, b) => {
+    const aTs = Date.parse(String(a.endedAt || a.startedAt || 0)) || 0;
+    const bTs = Date.parse(String(b.endedAt || b.startedAt || 0)) || 0;
+    return bTs - aTs;
+  });
+  return runs.slice(0, limit);
+}
+
+async function readReplayableAgentRun(attemptId) {
+  const normalizedAttemptId = String(attemptId || "").trim();
+  if (!normalizedAttemptId) return null;
+  const filePath = resolve(resolveAgentWorkLogDir(), "agent-sessions", `${normalizedAttemptId}.jsonl`);
+  if (!existsSync(filePath)) return null;
+  const entries = await readJsonlTail(filePath, 20000, 25000000).catch(() => []);
+  if (!entries.length) return null;
+  const events = entries.map((entry, index) => toTrajectoryReplayEvent(entry, index));
+  const first = events[0] || null;
+  const last = events[events.length - 1] || null;
+  const overview = buildReplayOverview(events);
+  return {
+    attemptId: normalizedAttemptId,
+    taskId: first?.taskId || last?.taskId || null,
+    taskTitle: first?.taskTitle || last?.taskTitle || null,
+    executor: first?.executor || last?.executor || null,
+    startedAt: first?.timestamp || null,
+    endedAt: last?.type === "session_end" ? last.timestamp : null,
+    status: last?.type === "session_end"
+      ? String(last?.data?.completion_status || "completed")
+      : "in_progress",
+    shortSteps: overview.shortSteps,
+    totals: overview.totals,
+    events,
+  };
+}
 async function listAgentLogFiles(query = "", limit = 60) {
   const entries = [];
   const agentLogsDir = await resolveAgentLogsDir();
@@ -12779,7 +12939,7 @@ async function handleApi(req, res, url) {
           workspaceDir: workspaceContext?.workspaceDir || repoRoot,
         });
         const diagnostics = buildTaskDiagnostics(detailTask, supervisorDiagnostics);
-        const replayRuns = buildReplayableTaskRuns(detailTask, getSessionTracker(), 8);
+        const replayRuns = await buildReplayableTaskRuns(detailTask, getSessionTracker(), 8);
         if (replayRuns.length > 0) {
           detailTask.runs = replayRuns;
           detailTask.meta = {
@@ -16405,7 +16565,33 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (path === "/api/agent-logs/context") {
+    if (path === "/api/agent-runs") {
+    try {
+      const limit = Number(url.searchParams.get("limit") || "25");
+      const taskId = String(url.searchParams.get("taskId") || "").trim();
+      const data = await listReplayableAgentRuns({ limit, taskId });
+      jsonResponse(res, 200, { ok: true, data });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path.startsWith("/api/agent-runs/")) {
+    try {
+      const attemptId = decodeURIComponent(path.slice("/api/agent-runs/".length));
+      const data = await readReplayableAgentRun(attemptId);
+      if (!data) {
+        jsonResponse(res, 404, { ok: false, error: "run not found" });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, data });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+if (path === "/api/agent-logs/context") {
     try {
       const query = url.searchParams.get("query") || "";
       if (!query) {
@@ -22379,3 +22565,6 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
+
+

@@ -251,6 +251,98 @@ describe("session-tracker", () => {
       expect(session.lastActivityAt).toBe(before);
     });
 
+    it("builds replayable trajectory steps with compact summaries", () => {
+      tracker.startSession("task-1", "Replay test");
+      tracker.recordEvent("task-1", {
+        role: "user",
+        content: "Investigate flaky tests in the API suite",
+        timestamp: "2026-03-22T10:00:00.000Z",
+      });
+      tracker.recordEvent("task-1", {
+        type: "item.completed",
+        item: { type: "reasoning", text: "Checking recent failures and narrowing likely causes" },
+      });
+      tracker.recordEvent("task-1", {
+        type: "item.started",
+        item: { type: "command_execution", command: "npm test -- tests/session-api.test.mjs" },
+      });
+      tracker.recordEvent("task-1", {
+        type: "item.completed",
+        item: {
+          type: "command_execution",
+          command: "npm test -- tests/session-api.test.mjs",
+          aggregated_output: "1 failed, 12 passed",
+          status: "completed",
+          exit_code: 1,
+        },
+      });
+      tracker.recordEvent("task-1", {
+        type: "assistant.message",
+        data: { content: "Found a stale session fixture; patching the failing expectation." },
+      });
+
+      const session = tracker.getSession("task-1");
+      expect(Array.isArray(session.trajectory?.steps)).toBe(true);
+      expect(session.trajectory.steps.length).toBeGreaterThanOrEqual(4);
+      expect(session.trajectory.steps[0]).toEqual(
+        expect.objectContaining({
+          kind: "user_message",
+          summary: "Investigate flaky tests in the API suite",
+        }),
+      );
+      expect(session.trajectory.steps).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "reasoning",
+            summary: expect.stringMatching(/checking recent failures/i),
+          }),
+          expect.objectContaining({
+            kind: "tool_call",
+            summary: "Ran npm test -- tests/session-api.test.mjs",
+          }),
+          expect.objectContaining({
+            kind: "tool_result",
+            summary: expect.stringMatching(/npm test -- tests\/session-api\.test\.mjs/i),
+          }),
+          expect.objectContaining({
+            kind: "agent_message",
+            summary: expect.stringMatching(/found a stale session fixture/i),
+          }),
+        ]),
+      );
+    });
+
+    it("persists trajectory data across disk reloads", () => {
+      const persisted = new SessionTracker({ persistDir: tempDir, flushIntervalMs: 5 });
+      persisted.startSession("task-2", "Persist replay test");
+      persisted.recordEvent("task-2", {
+        role: "user",
+        content: "Resume the failed run from the last meaningful step",
+      });
+      persisted.recordEvent("task-2", {
+        type: "assistant.message",
+        data: { content: "I will continue from the last failing command." },
+      });
+      persisted.updateSessionStatus("task-2", "failed");
+      persisted.flushNow();
+
+      const restored = new SessionTracker({ persistDir: tempDir, flushIntervalMs: 5 });
+      const session = restored.getSession("task-2");
+      expect(session?.trajectory?.steps).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: "user_message" }),
+          expect.objectContaining({ kind: "agent_message" }),
+        ]),
+      );
+      expect(session?.summary).toEqual(
+        expect.objectContaining({
+          shortSteps: expect.arrayContaining([
+            expect.stringMatching(/resume the failed run/i),
+          ]),
+        }),
+      );
+    });
+
     it("records Copilot message events", () => {
       tracker.startSession("task-1", "Test");
       tracker.recordEvent("task-1", {
@@ -475,6 +567,133 @@ describe("session-tracker", () => {
       } finally {
         rmSync(persistDir, { recursive: true, force: true });
       }
+    });
+
+    it("stores replayable trajectories with normalized step summaries", () => {
+      const persistDir = mkdtempSync(join(tmpdir(), "bosun-session-tracker-"));
+      try {
+        const persistentTracker = createSessionTracker({ maxMessages: 20, persistDir });
+        persistentTracker.createSession({ id: "chat-replay", type: "primary" });
+        persistentTracker.recordEvent("chat-replay", {
+          type: "item.started",
+          item: { type: "reasoning", text: "Inspecting workspace state" },
+        });
+        persistentTracker.recordEvent("chat-replay", {
+          type: "item.completed",
+          item: { type: "function_call", name: "read_file", arguments: "ui/app.js" },
+        });
+        persistentTracker.recordEvent("chat-replay", {
+          type: "item.completed",
+          item: { type: "agent_message", text: "Patched the session sidebar and validated the state flow." },
+        });
+        persistentTracker.recordEvent("chat-replay", {
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            command: "npm test -- tests/session-tracker.test.mjs",
+            status: "completed",
+            exit_code: 0,
+            aggregated_output: "1 passed",
+          },
+        });
+        persistentTracker.flush();
+        const session = persistentTracker.getSessionMessages("chat-replay");
+
+        expect(session?.trajectory?.steps).toEqual(
+          expect.objectContaining({
+            version: 1,
+            replayable: true,
+            steps: expect.arrayContaining([
+              expect.objectContaining({ kind: "reasoning", summary: "Inspecting workspace state" }),
+              expect.objectContaining({ kind: "tool_call", summary: "read_file ui/app.js" }),
+              expect.objectContaining({ kind: "assistant", summary: "Patched the session sidebar and validated the state flow." }),
+              expect.objectContaining({ kind: "command", summary: "npm test -- tests/session-tracker.test.mjs" }),
+            ]),
+          }),
+        );
+        expect(session?.trajectory?.steps.every((step) => typeof step.id === "string" && step.id.length > 0)).toBe(true);
+        expect(session?.trajectory?.steps.every((step) => typeof step.timestamp === "string" && step.timestamp.length > 0)).toBe(true);
+        expect(session?.summary).toMatchObject({
+          failedOrLongRun: false,
+          resumable: false,
+          totalSteps: 4,
+        });
+        expect(session?.summary?.shortSteps.map((step) => step.summary)).toEqual([
+          "Inspecting workspace state",
+          "read_file ui/app.js",
+          "Patched the session sidebar and validated the state flow.",
+          "npm test -- tests/session-tracker.test.mjs",
+        ]);
+        expect(session?.summary?.latestStep?.summary).toBe("npm test -- tests/session-tracker.test.mjs");
+
+        persistentTracker.destroy();
+
+        const reloadedTracker = createSessionTracker({ maxMessages: 20, persistDir });
+        const reloaded = reloadedTracker.getSessionMessages("chat-replay");
+        expect(reloaded?.trajectory?.steps).toHaveLength(4);
+        expect(reloaded?.trajectory?.steps.map((step) => step.summary)).toEqual([
+          "Inspecting workspace state",
+          "read_file ui/app.js",
+          "Patched the session sidebar and validated the state flow.",
+          "npm test -- tests/session-tracker.test.mjs",
+        ]);
+        expect(reloaded?.summary?.shortSteps.map((step) => step.summary)).toEqual([
+          "Inspecting workspace state",
+          "read_file ui/app.js",
+          "Patched the session sidebar and validated the state flow.",
+          "npm test -- tests/session-tracker.test.mjs",
+        ]);
+        reloadedTracker.destroy();
+      } finally {
+        rmSync(persistDir, { recursive: true, force: true });
+      }
+    });
+
+    it("marks failed or long runs as resumable and trims short summaries", () => {
+      tracker = createSessionTracker({ maxMessages: 50, persistDir: null });
+      tracker.createSession({ id: "chat-resume", type: "primary" });
+
+      for (let index = 0; index < 14; index += 1) {
+        tracker.recordEvent("chat-resume", {
+          role: "assistant",
+          content: "Step " + (index + 1) + " completed",
+          timestamp: new Date(Date.now() + index * 1000).toISOString(),
+        });
+      }
+      tracker.updateSessionStatus("chat-resume", "failed");
+
+      const session = tracker.getSessionMessages("chat-resume");
+      expect(session?.summary?.failedOrLongRun).toBe(true);
+      expect(session?.summary?.resumable).toBe(true);
+      expect(session?.summary?.shortSteps).toHaveLength(12);
+      expect(session?.summary?.shortSteps[0]?.summary).toBe("Step 3 completed");
+      expect(session?.summary?.latestStep?.summary).toBe("Step 14 completed");
+    });
+
+    it("keeps trajectory steps when message ring buffer truncates", () => {
+      tracker = createSessionTracker({ maxMessages: 2, persistDir: null });
+      tracker.createSession({ id: "chat-truncate", type: "primary" });
+
+      tracker.recordEvent("chat-truncate", {
+        type: "item.completed",
+        item: { type: "reasoning", text: "Step one analysis" },
+      });
+      tracker.recordEvent("chat-truncate", {
+        type: "item.completed",
+        item: { type: "function_call", name: "read_file", arguments: "task/task-executor.mjs" },
+      });
+      tracker.recordEvent("chat-truncate", {
+        type: "item.completed",
+        item: { type: "agent_message", text: "Implemented the replay plumbing." },
+      });
+
+      expect(tracker.getLastMessages("chat-truncate")).toHaveLength(2);
+      const session = tracker.getSessionMessages("chat-truncate");
+      expect(session?.trajectory?.steps.map((step) => step.summary)).toEqual([
+        "Step one analysis",
+        "read_file task/task-executor.mjs",
+        "Implemented the replay plumbing.",
+      ]);
     });
   });
 });
