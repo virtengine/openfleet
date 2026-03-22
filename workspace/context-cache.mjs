@@ -601,23 +601,36 @@ function isLikelyStructuredOutput(text, item) {
   );
 }
 
+function hasBuildDiagnosticSignals(item) {
+  const text = [item?.aggregated_output, item?.output, item?.text]
+    .filter((value) => typeof value === "string" && value.trim())
+    .join("\n");
+  if (!text) return false;
+  return (
+    /\b(?:error|warning)\s+(?:TS|CS|MSB|NU)\d+\b/i.test(text)
+    || /^[^:\n]+\.(?:cs|fs|vb|ts|tsx|js|jsx|java|kt|go|rs|cpp|c|h|hpp)(?::\d+(?::\d+)?)?.*\b(?:error|warning)\b/im.test(text)
+    || /\b(?:Build FAILED|Cannot find name|not assignable to type|The build failed\.)\b/i.test(text)
+  );
+}
+
 function classifyLiveFamily(commandFamily, item) {
   const cmd = String(commandFamily || "").trim().toLowerCase();
   const commandLine = extractCommandLine(item);
   const full = `${cmd} ${commandLine}`.toLowerCase();
+  const hasBuildDiagnostics = hasBuildDiagnosticSignals(item);
 
   if (["grep", "rg", "find", "findstr", "select-string", "ag", "ack", "sift", "fd", "where", "which", "ls", "dir", "tree", "gci", "get-childitem"].includes(cmd) || /git\s+grep\b/.test(full)) return "search";
   if (cmd === "git") return "git";
 
   if (/\b(dotnet|go|pytest|cargo|gradle|maven|mvn|javac|tsc|jest|vitest|deno|make|cmake|bazel|buck|nx|turbo|rush|msbuild|xunit|nunit|ctest)\b/.test(full)) {
-    if (/\b(test|tests|pytest|vitest|jest|xunit|nunit|ctest)\b/.test(full)) return "test";
+    if (/\b(test|tests|pytest|vitest|jest|xunit|nunit|ctest)\b/.test(full)) return hasBuildDiagnostics ? "build" : "test";
     if (/\b(publish|deploy|release|ship|rollout|upgrade)\b/.test(full)) return "deploy";
     return "build";
   }
 
   if (["npm", "pnpm", "yarn", "bun", "npx", "pip", "pip3", "poetry", "composer", "bundle"].includes(cmd)) {
     if (/\b(install|add|update|upgrade|remove|uninstall|ci|dedupe|audit|outdated|list)\b/.test(full)) return "package-manager";
-    if (/\b(test|coverage|jest|vitest|mocha|ava|unittest)\b/.test(full)) return "test";
+    if (/\b(test|coverage|jest|vitest|mocha|ava|unittest)\b/.test(full)) return hasBuildDiagnostics ? "build" : "test";
     if (/\b(build|compile|bundle|pack|publish)\b/.test(full)) return "build";
   }
 
@@ -627,6 +640,8 @@ function classifyLiveFamily(commandFamily, item) {
     if (/\b(up|apply|deploy|rollout|upgrade|install|release|push|publish|compose)\b/.test(full)) return "deploy";
     return "ops";
   }
+
+  if (hasBuildDiagnostics) return "build";
 
   return "generic";
 }
