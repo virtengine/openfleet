@@ -2907,6 +2907,61 @@ describe("ui-server mini app", () => {
       }),
     );
   });
+  it("does not expose backend error text in 500 json responses", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    mod._testInjectWorkflowEngine(null, null);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mod.injectUiDependencies({
+      taskStoreApi: {
+        canStartTask: vi.fn(() => {
+          throw new Error("detail exploded without stack");
+        }),
+      },
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "diagnostic detail task",
+        description: "trigger task detail failure",
+      }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+
+    const detailResp = await fetch(
+      `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(created.data.id)}`,
+    );
+    const detailJson = await detailResp.json();
+
+    expect(detailResp.status).toBe(500);
+    expect(detailJson).toMatchObject({
+      ok: false,
+      error: "Internal server error",
+    });
+    expect(detailJson.diagnosticId).toMatch(/^req_[a-f0-9]+$/i);
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[ui-server] request failed",
+      expect.objectContaining({
+        diagnosticId: detailJson.diagnosticId,
+        path: "/api/tasks/detail",
+        payload: expect.objectContaining({
+          error: expect.stringContaining("detail exploded without stack"),
+        }),
+      }),
+    );
+  });
+
   it("wires sprint and dag task-store APIs through ui-server endpoints", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 

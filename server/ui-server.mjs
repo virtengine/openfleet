@@ -2883,7 +2883,13 @@ async function handleEsmProxy(req, res, url) {
   }
 }
 
-const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
+const moduleStatusPath = resolve(__dirname, "..", ".cache", "ve-orchestrator-status.json");
+const cwdStatusPath = resolve(process.cwd(), ".cache", "ve-orchestrator-status.json");
+const statusPath = existsSync(moduleStatusPath)
+  ? moduleStatusPath
+  : existsSync(cwdStatusPath)
+    ? cwdStatusPath
+    : resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
 const logsDir = resolve(__dirname, "..", "logs");
 const agentLogsDirCandidates = [
   resolve(__dirname, "..", "logs", "agents"),
@@ -7636,22 +7642,6 @@ function makeJsonSafe(value, options = {}) {
 }
 
 function extractSafeErrorMessage(payload) {
-  if (payload == null) return "Internal server error";
-  if (payload instanceof Error) {
-    const message = String(payload.message || "").trim();
-    if (!message || isStackLikeErrorText(message)) return "Internal server error";
-    return message;
-  }
-  if (typeof payload === "string") {
-    const message = payload.trim();
-    if (!message || isStackLikeErrorText(message)) return "Internal server error";
-    return message;
-  }
-  if (typeof payload === "object") {
-    const candidate = String(payload?.error || payload?.message || "").trim();
-    if (!candidate || isStackLikeErrorText(candidate)) return "Internal server error";
-    return candidate;
-  }
   return "Internal server error";
 }
 
@@ -9489,7 +9479,13 @@ async function collectUiStats() {
 
   // Try to read status from the monitor's status file first
   let orchestratorStatus = null;
-  const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
+  const moduleStatusPath = resolve(__dirname, "..", ".cache", "ve-orchestrator-status.json");
+const cwdStatusPath = resolve(process.cwd(), ".cache", "ve-orchestrator-status.json");
+const statusPath = existsSync(moduleStatusPath)
+  ? moduleStatusPath
+  : existsSync(cwdStatusPath)
+    ? cwdStatusPath
+    : resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
   try {
     if (existsSync(statusPath)) {
       const raw = await readFile(statusPath, "utf8");
@@ -21784,4 +21780,5 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
 
