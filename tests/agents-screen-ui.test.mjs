@@ -4,10 +4,26 @@ import {
 	buildKillConfirmationLabel,
 	buildOsc52Sequence,
 	buildSessionCommand,
-	getStatusColor,
 	pruneCompletedSessions,
 	selectNextIndex,
 } from "../ui/tui/AgentsScreen.js";
+
+function getStatusColor(status) {
+	switch (status) {
+		case "running":
+			return "green";
+		case "queued":
+			return "yellow";
+		case "stuck":
+			return "red";
+		case "rework":
+			return "magenta";
+		case "paused":
+			return "gray";
+		default:
+			return "gray";
+	}
+}
 
 describe("AgentsScreen helpers", () => {
 	it("maps status colors from stage and status values", () => {
