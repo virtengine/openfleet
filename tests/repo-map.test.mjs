@@ -74,4 +74,28 @@ describe("repo-map", () => {
     expect(frame).toContain("Root: C:/repo");
     expect(frame).toContain("agent/primary-agent.mjs");
   });
+
+  it("handles slash-heavy query input without regex backtracking", () => {
+    const indexDir = resolve(testRoot, ".bosun", "context-index");
+    mkdirSync(indexDir, { recursive: true });
+    writeFileSync(resolve(indexDir, "agent-index.json"), JSON.stringify({
+      files: [
+        { path: "lib/repo-map.mjs", summary: "repo map query tokenization" },
+      ],
+      symbols: [
+        { path: "lib/repo-map.mjs", name: "tokenizeQuery", kind: "function", line: 155, signature: "tokenizeQuery(...parts)" },
+      ],
+    }, null, 2), "utf8");
+
+    const repoMap = buildRepoMap({
+      repoRoot: testRoot,
+      query: `${"/".repeat(5000)}repo-map///`,
+      repoMapFileLimit: 1,
+    });
+
+    expect(repoMap.files).toHaveLength(1);
+    expect(repoMap.files[0].path).toBe("lib/repo-map.mjs");
+    expect(repoMap.files[0].symbols).toContain("tokenizeQuery");
+  });
 });
+
