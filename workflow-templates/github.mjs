@@ -2043,7 +2043,10 @@ export const SDK_CONFLICT_RESOLVER_TEMPLATE = {
 
     node("chain-merge-strategy", "action.execute_workflow", "Re-evaluate Merge", {
       workflowId: "template-pr-merge-strategy",
-      mode: "dispatch",
+      mode: "async",
+      waitForCompletion: true,
+      watchdogTimeoutMs: 30000,
+      watchdogRetryLimit: 1,
       input: "({prNumber: $data?.prNumber, branch: $data?.branch, baseBranch: $data?.baseBranch})",
     }, { x: 200, y: 1550 }),
   ],
@@ -2094,3 +2097,4 @@ export const SDK_CONFLICT_RESOLVER_TEMPLATE = {
     },
   },
 };
+

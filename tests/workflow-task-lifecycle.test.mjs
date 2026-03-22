@@ -3078,6 +3078,21 @@ describe("template-task-lifecycle", () => {
     expect(validationNode?.config.cwd).toBe("{{worktreePath}}");
   });
 
+  it("configures PR progressor handoff with single-retry watchdog", () => {
+    const t = getTemplate("template-task-lifecycle");
+    const handoff = t.nodes.find((node) => node.id === "handoff-pr-progressor");
+    const recovered = t.nodes.find((node) => node.id === "handoff-pr-progressor-stolen");
+
+    expect(handoff?.config.mode).toBe("async");
+    expect(handoff?.config.waitForCompletion).toBe(true);
+    expect(handoff?.config.watchdogTimeoutMs).toBe(30000);
+    expect(handoff?.config.watchdogRetryLimit).toBe(1);
+    expect(recovered?.config.mode).toBe("async");
+    expect(recovered?.config.waitForCompletion).toBe(true);
+    expect(recovered?.config.watchdogTimeoutMs).toBe(30000);
+    expect(recovered?.config.watchdogRetryLimit).toBe(1);
+  });
+
   it("replaces task-executor.mjs module", () => {
     const t = getTemplate("template-task-lifecycle");
     expect(t.metadata.replaces.module).toBe("task-executor.mjs");

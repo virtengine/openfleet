@@ -3469,6 +3469,187 @@ describe("Session chaining - action.run_agent", () => {
     expect(messages.some((msg) => String(msg?.content || "").includes("Backend Agent\" completed"))).toBe(true);
   });
 
+  it("marks stalled delegated non-task nodes retryable and retries only once", async () => {
+    const engine = new WorkflowEngine({ workflowsDir: tempDir });
+    const callState = { attempts: 0 };
+
+    engine.save({
+      id: "delegation-watchdog",
+      name: "Delegation Watchdog",
+      enabled: true,
+      nodes: [
+        { id: "start", type: "trigger.manual" },
+        {
+          id: "delegate",
+          type: "action.execute_workflow",
+          config: {
+            workflowId: "child-delegated",
+            async: true,
+            waitForCompletion: false,
+            timeoutMs: 25,
+            watchdogTimeoutMs: 25,
+            watchdogRetryLimit: 1,
+          },
+        },
+      ],
+      edges: [{ source: "start", target: "delegate" }],
+    });
+
+    engine.save({
+      id: "child-delegated",
+      name: "Child Delegated",
+      enabled: true,
+      nodes: [
+        { id: "start", type: "trigger.workflow_call" },
+        {
+          id: "slow",
+          type: "action.script",
+          config: {
+            language: "javascript",
+            code: "await new Promise((resolve) => setTimeout(resolve, 200)); return { ok: true };",
+          },
+        },
+      ],
+      edges: [{ source: "start", target: "slow" }],
+    });
+
+    const retrySpy = vi.spyOn(engine, "retryRun").mockImplementation(async (runId, options = {}) => {
+      callState.attempts += 1;
+      return { retryRunId: `${runId}-retry-${callState.attempts}`, mode: options.mode || "from_failed", ctx: null };
+    });
+
+    const ctx = await engine.execute("delegation-watchdog", {});
+    expect(ctx.getNodeOutput("delegate")).toMatchObject({
+      success: false,
+      stalled: true,
+      retryable: true,
+      watchdogRecovered: true,
+      watchdogRetryCount: 1,
+    });
+    expect(retrySpy).toHaveBeenCalledTimes(1);
+
+    const detail = engine.getRunDetail(ctx.id);
+    expect(detail.detail.nodeOutputs.delegate).toMatchObject({
+      stalled: true,
+      retryable: true,
+      watchdogRecovered: true,
+      watchdogRetryCount: 1,
+    });
+  });
+
+  it("skips watchdog recovery for task lifecycle child workflows", async () => {
+    const engine = new WorkflowEngine({ workflowsDir: tempDir });
+
+    engine.save({
+      id: "delegation-watchdog-task-child",
+      name: "Delegation Watchdog Task Child",
+      enabled: true,
+      nodes: [
+        { id: "start", type: "trigger.manual" },
+        {
+          id: "delegate",
+          type: "action.execute_workflow",
+          config: {
+            workflowId: "child-task-delegated",
+            mode: "async",
+            waitForCompletion: true,
+            watchdogTimeoutMs: 25,
+            watchdogRetryLimit: 1,
+          },
+        },
+      ],
+      edges: [{ source: "start", target: "delegate" }],
+    });
+
+    engine.save({
+      id: "child-task-delegated",
+      name: "Child Task Delegated",
+      category: "task-execution",
+      enabled: true,
+      metadata: { installedFrom: "template-task-lifecycle" },
+      nodes: [
+        { id: "start", type: "trigger.workflow_call" },
+        {
+          id: "slow",
+          type: "action.script",
+          config: {
+            language: "javascript",
+            code: "await new Promise((resolve) => setTimeout(resolve, 100)); return { ok: true };",
+          },
+        },
+      ],
+      edges: [{ source: "start", target: "slow" }],
+    });
+
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ retryRunId: "retry-1", mode: "from_failed", ctx: null });
+    const ctx = await engine.execute("delegation-watchdog-task-child", {});
+
+    expect(ctx.getNodeOutput("delegate")).toMatchObject({
+      success: true,
+      queued: true,
+      mode: "async",
+      workflowId: "child-task-delegated",
+      watchdogEnabled: false,
+    });
+    expect(retrySpy).not.toHaveBeenCalled();
+  });
+
+  it("does not infinitely retry a stalled delegated non-task node", async () => {
+    const engine = new WorkflowEngine({ workflowsDir: tempDir });
+
+    engine.save({
+      id: "delegation-watchdog-cap",
+      name: "Delegation Watchdog Cap",
+      enabled: true,
+      nodes: [
+        { id: "start", type: "trigger.manual" },
+        {
+          id: "delegate",
+          type: "action.execute_workflow",
+          config: {
+            workflowId: "child-delegated-cap",
+            async: true,
+            waitForCompletion: false,
+            timeoutMs: 25,
+            watchdogTimeoutMs: 25,
+            watchdogRetryLimit: 1,
+          },
+        },
+      ],
+      edges: [{ source: "start", target: "delegate" }],
+    });
+
+    engine.save({
+      id: "child-delegated-cap",
+      name: "Child Delegated Cap",
+      enabled: true,
+      nodes: [
+        { id: "start", type: "trigger.workflow_call" },
+        {
+          id: "slow",
+          type: "action.script",
+          config: {
+            language: "javascript",
+            code: "await new Promise((resolve) => setTimeout(resolve, 200)); return { ok: true };",
+          },
+        },
+      ],
+      edges: [{ source: "start", target: "slow" }],
+    });
+
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ retryRunId: "retry-1", mode: "from_failed", ctx: null });
+    const wf = await engine.execute("delegation-watchdog-cap", { _watchdogRetryCounts: { delegate: 1 } });
+
+    expect(wf.getNodeOutput("delegate")).toMatchObject({
+      success: false,
+      stalled: true,
+      retryable: false,
+      watchdogRecovered: false,
+      watchdogRetryCount: 1,
+    });
+    expect(retrySpy).not.toHaveBeenCalled();
+  });
+
   it("does not delegate agent workflows when task context is missing", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
@@ -5026,3 +5207,4 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });
+

@@ -3427,7 +3427,7 @@ registerBuiltinNodeType("action.execute_workflow", {
     type: "object",
     properties: {
       workflowId: { type: "string", description: "Workflow ID to execute" },
-      mode: { type: "string", enum: ["sync", "dispatch"], default: "sync" },
+      mode: { type: "string", enum: ["sync", "dispatch", "async"], default: "sync" },
       input: {
         type: "object",
         description: "Input payload passed to the child workflow",
@@ -3470,6 +3470,20 @@ registerBuiltinNodeType("action.execute_workflow", {
         default: false,
         description: "Allow recursive workflow execution when true",
       },
+      waitForCompletion: {
+        type: "boolean",
+        default: true,
+        description: "For async mode, wait up to watchdogTimeoutMs before marking the delegation stalled",
+      },
+      watchdogTimeoutMs: {
+        type: "number",
+        description: "Delegation watchdog threshold in ms for async mode",
+      },
+      watchdogRetryLimit: {
+        type: "number",
+        default: 1,
+        description: "Maximum number of watchdog-triggered recovery retries for this node",
+      },
     },
     required: ["workflowId"],
   },
@@ -3501,8 +3515,8 @@ registerBuiltinNodeType("action.execute_workflow", {
     if (!workflowId) {
       throw new Error("action.execute_workflow: 'workflowId' is required");
     }
-    if (mode !== "sync" && mode !== "dispatch") {
-      throw new Error(`action.execute_workflow: invalid mode "${mode}". Expected "sync" or "dispatch".`);
+    if (mode !== "sync" && mode !== "dispatch" && mode !== "async") {
+      throw new Error(`action.execute_workflow: invalid mode "${mode}". Expected "sync", "dispatch", or "async".`);
     }
     if (!engine || typeof engine.execute !== "function") {
       throw new Error("action.execute_workflow: workflow engine is not available");
@@ -3576,8 +3590,34 @@ registerBuiltinNodeType("action.execute_workflow", {
       childInput._targetRepo = sourceData._targetRepo;
     }
 
-    if (mode === "dispatch") {
-      ctx.log(node.id, `Dispatching workflow "${workflowId}"`);
+    if (mode === "dispatch" || mode === "async") {
+      const waitForCompletion = parseBooleanSetting(
+        resolveWorkflowNodeValue(node.config?.waitForCompletion ?? (mode !== "dispatch"), ctx),
+        mode !== "dispatch",
+      );
+      const childDefinition = typeof engine.get === "function" ? engine.get(workflowId) : null;
+      const childTemplateId = String(childDefinition?.metadata?.installedFrom || "").trim();
+      const childCategory = String(childDefinition?.category || "").trim().toLowerCase();
+      const childIsTaskLifecycle = childTemplateId === "template-task-lifecycle" || childCategory === "task-execution";
+      const watchdogEnabled = !childIsTaskLifecycle;
+      const watchdogTimeoutRaw = Number(resolveWorkflowNodeValue(node.config?.watchdogTimeoutMs ?? node.config?.timeoutMs ?? 0, ctx));
+      const watchdogTimeoutMs = Number.isFinite(watchdogTimeoutRaw) && watchdogTimeoutRaw > 0
+        ? Math.max(1, Math.trunc(watchdogTimeoutRaw))
+        : null;
+      const watchdogRetryLimitRaw = Number(resolveWorkflowNodeValue(node.config?.watchdogRetryLimit ?? 1, ctx));
+      const watchdogRetryLimit = Number.isFinite(watchdogRetryLimitRaw)
+        ? Math.max(0, Math.trunc(watchdogRetryLimitRaw))
+        : 1;
+      const watchdogCounts =
+        ctx.data && typeof ctx.data._watchdogRetryCounts === "object" && ctx.data._watchdogRetryCounts !== null
+          ? ctx.data._watchdogRetryCounts
+          : (ctx.data._watchdogRetryCounts = {});
+      const priorWatchdogRetriesRaw = Number(watchdogCounts[node.id] || 0);
+      const priorWatchdogRetries = Number.isFinite(priorWatchdogRetriesRaw)
+        ? Math.max(0, Math.trunc(priorWatchdogRetriesRaw))
+        : 0;
+
+      ctx.log(node.id, `${mode === "dispatch" ? "Dispatching" : "Executing async"} workflow "${workflowId}"`);
       let dispatched;
       try {
         dispatched = Promise.resolve(engine.execute(workflowId, childInput, childRunOpts));
@@ -3593,14 +3633,93 @@ registerBuiltinNodeType("action.execute_workflow", {
           ctx.log(node.id, `Dispatched workflow "${workflowId}" failed: ${err.message}`, "error");
         });
 
+      if (!waitForCompletion || !watchdogEnabled || !watchdogTimeoutMs) {
+        const output = {
+          success: true,
+          queued: true,
+          mode,
+          workflowId,
+          parentRunId: ctx.id,
+          stackDepth: childInput._workflowStack.length,
+          watchdogEnabled,
+        };
+        if (outputVariable) {
+          ctx.data[outputVariable] = output;
+        }
+        return output;
+      }
+
+      const timeoutResult = await Promise.race([
+        dispatched.then((childCtx) => ({ childCtx })),
+        new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), watchdogTimeoutMs)),
+      ]);
+
+      if (!timeoutResult?.timedOut) {
+        const childCtx = timeoutResult?.childCtx;
+        const childErrors = Array.isArray(childCtx?.errors)
+          ? childCtx.errors.map((entry) => ({
+              nodeId: entry?.nodeId || null,
+              error: String(entry?.error || "unknown child workflow error"),
+            }))
+          : [];
+        const status = childErrors.length > 0 ? "failed" : "completed";
+        const output = {
+          success: status === "completed",
+          queued: false,
+          mode,
+          workflowId,
+          runId: childCtx?.id || null,
+          status,
+          errorCount: childErrors.length,
+          errors: childErrors,
+        };
+        if (outputVariable) {
+          ctx.data[outputVariable] = output;
+        }
+        if (status === "failed" && failOnChildError) {
+          const reason = childErrors[0]?.error || "child workflow failed";
+          const err = new Error(`action.execute_workflow: child workflow "${workflowId}" failed: ${reason}`);
+          err.childWorkflow = output;
+          throw err;
+        }
+        return output;
+      }
+
+      const nextWatchdogRetryCount = priorWatchdogRetries + 1;
+      const canRetry = nextWatchdogRetryCount <= watchdogRetryLimit;
+      watchdogCounts[node.id] = canRetry ? nextWatchdogRetryCount : priorWatchdogRetries;
       const output = {
-        success: true,
-        queued: true,
-        mode: "dispatch",
+        success: false,
+        queued: false,
+        mode,
         workflowId,
-        parentRunId: ctx.id,
-        stackDepth: childInput._workflowStack.length,
+        stalled: true,
+        status: "stalled",
+        retryable: canRetry,
+        watchdogRecovered: false,
+        watchdogRetryCount: priorWatchdogRetries,
+        watchdogRetryLimit,
+        watchdogTimeoutMs,
+        watchdogEnabled,
+        retryStatus: canRetry ? "retryable" : "exhausted",
       };
+
+      if (canRetry && typeof engine.retryRun === "function") {
+        try {
+          const childRunId = await dispatched.then((childCtx) => childCtx?.id || null).catch(() => null);
+          if (childRunId) {
+            await engine.retryRun(childRunId, {
+              mode: "from_failed",
+              _decisionReason: `delegation watchdog recovery for node ${node.id}`,
+            });
+            output.retryRunRequested = true;
+          }
+        } catch (retryErr) {
+          ctx.log(node.id, `Watchdog retry failed for workflow "${workflowId}": ${retryErr?.message || retryErr}`, "warn");
+        }
+        output.watchdogRecovered = true;
+        output.watchdogRetryCount = nextWatchdogRetryCount;
+      }
       if (outputVariable) {
         ctx.data[outputVariable] = output;
       }
@@ -3655,7 +3774,7 @@ registerBuiltinNodeType("action.inline_workflow", {
           "Embedded workflow definition fragment. Supports { name, variables, nodes, edges, trigger, metadata }.",
         additionalProperties: true,
       },
-      mode: { type: "string", enum: ["sync", "dispatch"], default: "sync" },
+      mode: { type: "string", enum: ["sync", "dispatch", "async"], default: "sync" },
       input: {
         type: "object",
         description: "Input payload passed to the embedded workflow",
@@ -7509,7 +7628,7 @@ const UNIVERSAL_FLOW_NODE = {
     type: "object",
     properties: {
       workflowId: { type: "string", description: "Shared subworkflow to run" },
-      mode: { type: "string", enum: ["sync", "dispatch"], default: "sync" },
+      mode: { type: "string", enum: ["sync", "dispatch", "async"], default: "sync" },
       input: { type: "object", additionalProperties: true },
       inheritContext: { type: "boolean", default: true },
       outputVariable: { type: "string" },
@@ -13914,3 +14033,4 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
+

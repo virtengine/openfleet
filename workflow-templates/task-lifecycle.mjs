@@ -281,7 +281,10 @@ export const TASK_LIFECYCLE_TEMPLATE = {
 
     node("handoff-pr-progressor", "action.execute_workflow", "Handoff PR Progressor", {
       workflowId: "template-bosun-pr-progressor",
-      mode: "dispatch",
+      mode: "async",
+      waitForCompletion: true,
+      watchdogTimeoutMs: 30000,
+      watchdogRetryLimit: 1,
       input: {
         taskId: "{{taskId}}",
         taskTitle: "{{taskTitle}}",
@@ -343,7 +346,10 @@ export const TASK_LIFECYCLE_TEMPLATE = {
 
     node("handoff-pr-progressor-stolen", "action.execute_workflow", "Handoff PR Progressor (Recovered)", {
       workflowId: "template-bosun-pr-progressor",
-      mode: "dispatch",
+      mode: "async",
+      waitForCompletion: true,
+      watchdogTimeoutMs: 30000,
+      watchdogRetryLimit: 1,
       input: {
         taskId: "{{taskId}}",
         taskTitle: "{{taskTitle}}",
@@ -838,3 +844,4 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     },
   },
 };
+
