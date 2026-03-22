@@ -22269,6 +22269,12 @@ export function stopTelegramUiServer() {
   }
   uiServer = null;
   uiServerTls = false;
+  // Clear session token so a fresh crypto-random token is generated on next
+  // start.  Without this, the stale value in `process.env.BOSUN_UI_TOKEN`
+  // leaks across server lifecycles (especially in tests) and can persist a
+  // bogus token indefinitely.
+  sessionToken = "";
+  delete process.env.BOSUN_UI_TOKEN;
   resetProjectSyncWebhookMetrics();
   releaseUiInstanceLock();
 }

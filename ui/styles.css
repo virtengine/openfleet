@@ -894,3 +894,184 @@
 button.task-related-link-chip {
   appearance: none;
 }
+
+.task-detail-columns--operations {
+  display: block;
+}
+.task-operations-rail {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(280px, 1.05fr);
+  gap: 16px;
+  align-items: start;
+}
+.task-operations-card {
+  background: var(--color-bg-secondary, #111827);
+  border: 1px solid var(--color-border, #263041);
+  border-radius: 14px;
+  padding: 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16);
+}
+.task-operations-card--notifications {
+  grid-column: 1;
+}
+.task-operations-card[aria-label="Activity feed"] {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+.task-operations-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.task-operations-card__header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+.task-operations-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(96, 165, 250, 0.18);
+  color: #bfdbfe;
+  font-size: 12px;
+  font-weight: 700;
+}
+.task-notification-item,
+.task-ops-feed-item,
+.task-run-mini-card {
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: 12px;
+  padding: 12px;
+}
+.task-notification-item + .task-notification-item,
+.task-ops-feed-item + .task-ops-feed-item {
+  margin-top: 10px;
+}
+.task-notification-item[data-kind="error"],
+.task-ops-feed-item[data-kind="error"] {
+  border-color: rgba(248, 113, 113, 0.35);
+}
+.task-notification-item[data-kind="warning"],
+.task-ops-feed-item[data-kind="warning"],
+.task-notification-item[data-kind="risk"],
+.task-ops-feed-item[data-kind="risk"] {
+  border-color: rgba(251, 191, 36, 0.35);
+}
+.task-notification-item__title,
+.task-ops-feed-item__title,
+.task-run-mini-card__title {
+  font-weight: 700;
+  color: var(--color-text, #e5e7eb);
+}
+.task-notification-item__body,
+.task-ops-feed-item__body,
+.task-run-mini-card__meta,
+.task-ops-feed-empty {
+  margin-top: 6px;
+  color: var(--color-text-secondary, #94a3b8);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.task-ops-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.task-ops-feed-item__meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-secondary, #7c8aa0);
+  margin-bottom: 6px;
+}
+.task-ops-feed-item__lane {
+  color: #93c5fd;
+}
+.task-run-mini-card__code {
+  display: inline-block;
+  margin-top: 8px;
+}
+.task-ops-link-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: #93c5fd;
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+@media (max-width: 1080px) {
+  .task-operations-rail {
+    grid-template-columns: 1fr;
+  }
+  .task-operations-card[aria-label="Activity feed"] {
+    grid-column: auto;
+    grid-row: auto;
+  }
+}
+
+.workflow-run-layout {
+  min-height: 100%;
+}
+.workflow-run-columns {
+  margin-bottom: 14px;
+}
+.workflow-ops-card {
+  background: var(--color-bg-secondary, #1a1f2e);
+  border: 1px solid var(--color-border, #2a3040);
+  border-radius: 12px;
+  padding: 14px;
+}
+.workflow-ops-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.workflow-ops-card__header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+.workflow-ops-item + .workflow-ops-item {
+  margin-top: 10px;
+}
+.workflow-ops-item {
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: 12px;
+  padding: 12px;
+}
+.workflow-ops-item[data-kind="error"] {
+  border-color: rgba(248, 113, 113, 0.35);
+}
+.workflow-ops-item[data-kind="warning"] {
+  border-color: rgba(251, 191, 36, 0.35);
+}
+.workflow-ops-item__title {
+  font-weight: 700;
+  color: var(--color-text, #e5e7eb);
+}
+.workflow-ops-item__body {
+  margin-top: 6px;
+  color: var(--color-text-secondary, #94a3b8);
+  font-size: 12px;
+  line-height: 1.5;
+}
+@media (max-width: 1080px) {
+  .workflow-run-columns {
+    grid-template-columns: 1fr !important;
+  }
+}

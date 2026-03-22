@@ -583,6 +583,29 @@ function freezeNestedStringListMap(value) {
   return Object.freeze(normalized);
 }
 
+function clampNumber(value, fallback, min, max) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(min, Math.min(max, numeric));
+}
+
+function resolveTracingConfig(configData = {}) {
+  const raw = configData.tracing && typeof configData.tracing === "object"
+    ? configData.tracing
+    : {};
+  const endpoint = String(
+    process.env.BOSUN_OTEL_ENDPOINT ?? raw.endpoint ?? "",
+  ).trim();
+  const enabled = endpoint.length > 0
+    ? isEnvEnabled(process.env.BOSUN_OTEL_ENABLED ?? raw.enabled, true)
+    : isEnvEnabled(process.env.BOSUN_OTEL_ENABLED ?? raw.enabled, false);
+  return Object.freeze({
+    enabled,
+    endpoint,
+    sampleRate: clampNumber(process.env.BOSUN_OTEL_SAMPLE_RATE ?? raw.sampleRate, 1, 0, 1),
+  });
+}
+
 function resolveWorktreeBootstrapConfig(configData = {}) {
   const raw = configData.worktreeBootstrap && typeof configData.worktreeBootstrap === "object"
     ? configData.worktreeBootstrap
@@ -1822,6 +1845,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     1440,
   );
   const worktreeBootstrap = resolveWorktreeBootstrapConfig(configData);
+  const tracing = resolveTracingConfig(configData);
 
   // ── GitHub Reconciler ───────────────────────────────────
   const ghReconcileEnabled = isEnvEnabled(
@@ -2020,6 +2044,7 @@ export function loadConfig(argv = process.argv, options = {}) {
   // ── First-run detection ──────────────────────────────────
   const isFirstRun = !hasSetupMarkers(configDir);
 
+
   const config = {
     // Identity
     projectName,
@@ -2051,6 +2076,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     autoFixEnabled,
     interactiveShellEnabled,
     preflightEnabled,
+    tracing,
     preflightRetryMs,
     codexEnabled,
     agentPoolEnabled,
@@ -2106,6 +2132,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     workflows,
   workflowWorktreeRecoveryCooldownMin,
     worktreeBootstrap,
+    tracing,
 
     // GitHub Reconciler
     githubReconcile: {
@@ -2260,3 +2287,5 @@ export {
   resolveAgentRepoRoot,
 };
 export default loadConfig;
+
+

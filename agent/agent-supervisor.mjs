@@ -1,3 +1,4 @@
+import { recordAgentError, recordAgentIntervention } from "../infra/tracing.mjs";
 /**
  * agent-supervisor.mjs — Unified Agent Health Scoring & Intervention Engine
  *
@@ -470,6 +471,10 @@ export class AgentSupervisor {
     if (intervention !== INTERVENTION.NONE) {
       state.interventionCount++;
       state.lastIntervention = Date.now();
+      recordAgentIntervention(intervention, { taskId, situation });
+    }
+    if (situation && /error|failure|invalid|expired|overflow|policy/i.test(String(situation))) {
+      recordAgentError(situation, { taskId, intervention });
     }
 
     this._lastDecision.set(taskId, { situation, intervention, ts: Date.now() });

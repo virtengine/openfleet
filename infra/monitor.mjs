@@ -36,6 +36,7 @@ if (typeof net.setDefaultAutoSelectFamilyAttemptTimeout === "function") {
 }
 
 import { acquireMonitorLock } from "./maintenance.mjs";
+import { setupTracing } from "./tracing.mjs";
 
 import {
   attemptAutoFix,
@@ -1733,6 +1734,8 @@ workflowAutomationEnabled = parseEnvBoolean(
     ? dedupMs
     : 15_000;
 }
+
+await setupTracing(config.tracing || {});
 
 // Initialize runtime accumulator for persistent stats across restarts
 const runtimeStats = initRuntimeAccumulator();

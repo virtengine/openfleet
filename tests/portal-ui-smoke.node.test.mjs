@@ -190,7 +190,7 @@ async function withTimeout(label, timeoutMs, work) {
 }
 
 async function assertTasksDagViewActivated(page) {
-  await page.getByRole("button", { name: /DAG/i }).click();
+  await page.getByRole("button", { name: /DAG|Dependency Graph/i }).click();
   await page.waitForTimeout(1000);
 
   const bodyText = await page.locator("body").textContent().catch(() => "");
@@ -382,3 +382,4 @@ test("catches Tasks DAG subview failures after the route boots", { timeout: 6000
     }
   });
 });
+

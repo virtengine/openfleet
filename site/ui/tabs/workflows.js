@@ -10,12 +10,28 @@ import htm from "htm";
 const html = htm.bind(h);
 
 import { haptic } from "../modules/telegram.js";
-import { apiFetch } from "../modules/api.js";
+import { apiFetch, onWsMessage } from "../modules/api.js";
 import { showToast, refreshTab } from "../modules/state.js";
 import { navigateTo, routeParams, setRouteParams } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
 import { resolveIcon } from "../modules/icon-utils.js";
 import { formatDate, formatDuration, formatRelative } from "../modules/utils.js";
+import {
+  HISTORY_LIMIT,
+  HISTORY_COMMIT_DEBOUNCE_MS,
+  buildNodeStatusesFromRunDetail,
+  createHistoryState,
+  getNodeSearchMetadata,
+  parseGraphSnapshot,
+  pushHistorySnapshot,
+  redoHistory,
+  resolveNodeOutputPreview,
+  searchNodeTypes,
+  serializeGraphSnapshot,
+  undoHistory,
+} from "./workflow-canvas-utils.mjs";
+import { createSession } from "../components/session-list.js";
+import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import { Card, Badge, EmptyState } from "../components/shared.js";
 import {
   Typography, Box, Stack, Card as MuiCard, CardContent, Button, IconButton, Chip,
@@ -47,10 +63,37 @@ const selectedNodeId = signal(null);
 const selectedEdgeId = signal(null);
 const draggingNode = signal(null);
 const connectingFrom = signal(null);
-const viewMode = signal("list"); // "list" | "canvas" | "runs"
-const WORKFLOW_RUN_PAGE_SIZE = 20;
+const viewMode = signal("list"); // "list" | "canvas" | "runs" | "code"
+const WORKFLOW_RUN_PAGE_SIZE = 50;
 const WORKFLOW_RUN_MAX_FETCH = 5000;
-const workflowRunsLimit = signal(WORKFLOW_RUN_PAGE_SIZE);
+const WORKFLOW_LIVE_POLL_MS = 3000;
+const WORKFLOW_LIVE_WS_BATCH_MS = 90;
+const NODE_COMPLETION_FLASH_MS = 1400;
+const NODE_RUNNING_HINT_MS = 500;
+const EDGE_FLOW_ANIMATION_MS = 1200;
+const WORKFLOW_NODE_HEADER_HEIGHT = 44;
+const NODE_HEADER = WORKFLOW_NODE_HEADER_HEIGHT;
+const NODE_HEADER_H = WORKFLOW_NODE_HEADER_HEIGHT;
+
+const WORKFLOW_OPERATIONS_RAIL_LABELS = [
+  "Kanban Overview",
+  "Sticky run detail",
+  "Open run details",
+  "Recent Activity",
+  "Notifications",
+  "Lineage & Recovery",
+  "Node Execution",
+  "Back to Run History",
+  "Run Detail Panel",
+  "Execution DAG",
+  "Last activity",
+  "Active alerts",
+  "Success rate",
+  "Avg duration",
+  "shown",
+  "loaded",
+  "total",
+];
 
 // ── Execute Dialog state ──────────────────────────────────────────────────
 const executeDialogOpen = signal(false);
@@ -68,6 +111,15 @@ const installDialogVars = signal({});
 const installDialogMode = signal("quick");
 const installDialogInstalling = signal(false);
 const installDialogResult = signal(null);
+const workflowsLoading = signal(false);
+const templatesLoading = signal(false);
+const nodeTypesLoading = signal(false);
+
+function getWorkflowNameById(workflowId) {
+  const id = String(workflowId || "").trim();
+  if (!id) return "";
+  return (workflows.value || []).find((workflow) => workflow?.id === id)?.name || id;
+}
 
 function resetWorkflowRunsState(scopeWorkflowId = null) {
   workflowRuns.value = [];
@@ -110,6 +162,25 @@ function returnToWorkflowList() {
   setRouteParams({}, { replace: true, skipGuard: true });
 }
 
+function openWorkflowCanvas(workflowId) {
+  const id = String(workflowId || "").trim();
+  if (!id) return;
+  apiFetch(`/api/workflows/${encodeURIComponent(id)}`)
+    .then((data) => {
+      activeWorkflow.value = data?.workflow || (workflows.value || []).find((workflow) => workflow.id === id) || null;
+      if (activeWorkflow.value) {
+        viewMode.value = "canvas";
+      }
+    })
+    .catch(() => {
+      const existing = (workflows.value || []).find((workflow) => workflow.id === id) || null;
+      if (existing) {
+        activeWorkflow.value = existing;
+        viewMode.value = "canvas";
+      }
+    });
+}
+
 export function openWorkflowRunsView(workflowId, runId = null) {
   const scopedWorkflowId = String(workflowId || "").trim() || null;
   resetWorkflowRunsState(scopedWorkflowId);
@@ -122,7 +193,466 @@ export function openWorkflowRunsView(workflowId, runId = null) {
   setRouteParams(route, { replace: false, skipGuard: true });
   loadRuns(scopedWorkflowId, { reset: true }).catch(() => {});
   if (runId) {
-    loadRunDetail(runId).catch(() => {});
+    loadRunDetail(runId, { workflowId: scopedWorkflowId }).catch(() => {});
+  }
+}
+
+const WORKFLOW_COPILOT_MAX_CHARS = 5000;
+
+function formatWorkflowCopilotBlock(value, maxChars = WORKFLOW_COPILOT_MAX_CHARS) {
+  try {
+    const json = JSON.stringify(value, null, 2);
+    if (json.length <= maxChars) return json;
+    const omitted = json.length - maxChars;
+    return `${json.slice(0, maxChars)}\n\n[truncated ${omitted} chars]`;
+  } catch {
+    const text = String(value ?? "");
+    if (text.length <= maxChars) return text;
+    const omitted = text.length - maxChars;
+    return `${text.slice(0, maxChars)}\n\n[truncated ${omitted} chars]`;
+  }
+}
+
+function summarizeWorkflowNodes(workflow, limit = 20) {
+  const nodes = Array.isArray(workflow?.nodes) ? workflow.nodes : [];
+  if (!nodes.length) return "No nodes defined.";
+  const lines = nodes.slice(0, limit).map((node, index) => {
+    const nodeId = String(node?.id || `node-${index + 1}`).trim();
+    const nodeType = String(node?.type || "unknown").trim();
+    const nodeName =
+      String(node?.name || node?.label || node?.title || "").trim() || null;
+    const configKeys = Object.keys(node?.config || {}).slice(0, 6);
+    const configSummary = configKeys.length ? ` config keys: ${configKeys.join(", ")}` : "";
+    return `${index + 1}. ${nodeId} [${nodeType}]${nodeName ? ` - ${nodeName}` : ""}${configSummary}`;
+  });
+  if (nodes.length > limit) {
+    lines.push(`... ${nodes.length - limit} more node(s) omitted`);
+  }
+  return lines.join("\n");
+}
+
+function summarizeWorkflowEdges(workflow, limit = 24) {
+  const edges = Array.isArray(workflow?.edges) ? workflow.edges : [];
+  if (!edges.length) return "No edges defined.";
+  const lines = edges.slice(0, limit).map((edge, index) => {
+    const from = String(edge?.source || edge?.from || "?").trim() || "?";
+    const to = String(edge?.target || edge?.to || "?").trim() || "?";
+    const fromPort = String(edge?.sourcePort || edge?.fromPort || "").trim();
+    const toPort = String(edge?.targetPort || edge?.toPort || "").trim();
+    const portSummary = fromPort || toPort ? ` (${fromPort || "default"} -> ${toPort || "default"})` : "";
+    return `${index + 1}. ${from} -> ${to}${portSummary}`;
+  });
+  if (edges.length > limit) {
+    lines.push(`... ${edges.length - limit} more edge(s) omitted`);
+  }
+  return lines.join("\n");
+}
+
+function summarizeWorkflowNodeLinks(workflow, nodeId, direction = "incoming", limit = 10) {
+  const safeNodeId = String(nodeId || "").trim();
+  if (!safeNodeId) return direction === "outgoing" ? "No downstream edges." : "No upstream edges.";
+  const edges = Array.isArray(workflow?.edges) ? workflow.edges : [];
+  const relevant = edges.filter((edge) => {
+    const sourceId = String(edge?.source || edge?.from || "").trim();
+    const targetId = String(edge?.target || edge?.to || "").trim();
+    return direction === "outgoing" ? sourceId === safeNodeId : targetId === safeNodeId;
+  });
+  if (!relevant.length) return direction === "outgoing" ? "No downstream edges." : "No upstream edges.";
+  const lines = relevant.slice(0, limit).map((edge, index) => {
+    const sourceId = String(edge?.source || edge?.from || "?").trim() || "?";
+    const targetId = String(edge?.target || edge?.to || "?").trim() || "?";
+    const sourcePort = String(edge?.sourcePort || edge?.fromPort || "").trim() || "default";
+    const targetPort = String(edge?.targetPort || edge?.toPort || "").trim() || "default";
+    return `${index + 1}. ${sourceId}:${sourcePort} -> ${targetId}:${targetPort}`;
+  });
+  if (relevant.length > limit) {
+    lines.push(`... ${relevant.length - limit} more ${direction} edge(s) omitted`);
+  }
+  return lines.join("\n");
+}
+
+function summarizeRunNodeStatuses(run, limit = 25) {
+  const nodeStatuses = buildNodeStatusesFromRunDetail(run);
+  const entries = Object.entries(nodeStatuses || {});
+  if (!entries.length) return "No node status data recorded.";
+  const sorted = entries.sort((a, b) => {
+    const rankDiff = getNodeStatusRank(a[1]) - getNodeStatusRank(b[1]);
+    if (rankDiff !== 0) return rankDiff;
+    return String(a[0]).localeCompare(String(b[0]));
+  });
+  const lines = sorted.slice(0, limit).map(([nodeId, status], index) => (
+    `${index + 1}. ${nodeId}: ${status || "unknown"}`
+  ));
+  if (sorted.length > limit) {
+    lines.push(`... ${sorted.length - limit} more node status entries omitted`);
+  }
+  return lines.join("\n");
+}
+
+function summarizeRunNodeOutputs(run, limit = 12) {
+  const outputs = run?.detail?.nodeOutputs && typeof run.detail.nodeOutputs === "object"
+    ? run.detail.nodeOutputs
+    : {};
+  const entries = Object.entries(outputs);
+  if (!entries.length) return "No node outputs recorded.";
+  const lines = entries.slice(0, limit).map(([nodeId, output], index) => {
+    const summary = String(output?.summary || "").trim();
+    const narrative = String(output?.narrative || "").trim();
+    if (summary || narrative) {
+      const parts = [summary, narrative].filter(Boolean);
+      return `${index + 1}. ${nodeId}: ${parts.join(" | ")}`;
+    }
+    return `${index + 1}. ${nodeId}: ${formatWorkflowCopilotBlock(output, 500)}`;
+  });
+  if (entries.length > limit) {
+    lines.push(`... ${entries.length - limit} more node output entries omitted`);
+  }
+  return lines.join("\n");
+}
+
+function getRunDagCounts(run) {
+  const dagCounts = run?.detail?.dagState?.counts;
+  if (dagCounts && typeof dagCounts === "object") {
+    return {
+      nodeCount: Number(dagCounts.nodeCount ?? dagCounts.total ?? run?.nodeCount ?? 0) || 0,
+      completed: Number(dagCounts.completed ?? dagCounts.completedCount ?? run?.completedCount ?? 0) || 0,
+      failed: Number(dagCounts.failed ?? dagCounts.failedCount ?? run?.failedCount ?? 0) || 0,
+      skipped: Number(dagCounts.skipped ?? dagCounts.skippedCount ?? run?.skippedCount ?? 0) || 0,
+      active: Number(dagCounts.active ?? dagCounts.activeNodeCount ?? run?.activeNodeCount ?? 0) || 0,
+    };
+  }
+  return {
+    nodeCount: Number(run?.nodeCount || 0) || 0,
+    completed: Number(run?.completedCount || 0) || 0,
+    failed: Number(run?.failedCount || 0) || 0,
+    skipped: Number(run?.skippedCount || 0) || 0,
+    active: Number(run?.activeNodeCount || 0) || 0,
+  };
+}
+
+function formatRetryModeLabel(mode) {
+  const normalized = String(mode || "").trim().toLowerCase();
+  if (normalized === "from_failed") return "Retry from failed step";
+  if (normalized === "from_scratch") return "Retry from scratch";
+  return normalized || "Unknown retry mode";
+}
+
+function formatRetryDecisionReason(reason) {
+  const normalized = String(reason || "").trim().toLowerCase();
+  if (!normalized) return "No retry decision reason recorded.";
+  if (normalized === "issue_advisor.replan_from_failed") return "Issue advisor recommends replanning from the failure boundary.";
+  if (normalized === "issue_advisor.resume_remaining") return "Issue advisor recommends resuming remaining work.";
+  if (normalized === "issue_advisor.inspect_failure") return "Issue advisor recommends inspection before trusting resume state.";
+  if (normalized === "dag_state.no_completed_nodes") return "No completed nodes were available to resume from.";
+  if (normalized === "dag_state.multiple_failures") return "Multiple failed nodes suggest a clean rerun is safer.";
+  if (normalized === "dag_state.localized_resume") return "Completed upstream work can be reused for a localized retry.";
+  if (normalized.startsWith("fallback:")) {
+    return `Fallback retry policy selected ${formatRetryModeLabel(normalized.replace("fallback:", ""))}.`;
+  }
+  return normalized.replaceAll("_", " ");
+}
+
+function formatIssueAdvisorAction(action) {
+  const normalized = String(action || "").trim().toLowerCase();
+  if (normalized === "replan_from_failed") return "Replan from failed node";
+  if (normalized === "resume_remaining") return "Resume remaining work";
+  if (normalized === "inspect_failure") return "Inspect failure first";
+  if (normalized === "continue") return "Continue";
+  return normalized ? normalized.replaceAll("_", " ") : "No recommendation";
+}
+
+function summarizeLedgerEvent(event) {
+  if (!event || typeof event !== "object") return "Unknown event";
+  const parts = [String(event.eventType || "event").trim() || "event"];
+  if (event.nodeId) parts.push(String(event.nodeId).trim());
+  if (event.status) parts.push(`status=${String(event.status).trim()}`);
+  if (event.retryMode) parts.push(`mode=${String(event.retryMode).trim()}`);
+  if (event.error) parts.push(`error=${String(event.error).trim()}`);
+  return parts.join(" · ");
+}
+
+function summarizeRunExecutionInsights(run, limit = 12) {
+  const issueAdvisor =
+    run?.detail?.issueAdvisor && typeof run.detail.issueAdvisor === "object"
+      ? run.detail.issueAdvisor
+      : null;
+  const counts = getRunDagCounts(run);
+  const ledgerEvents = Array.isArray(run?.ledger?.events) ? run.ledger.events : [];
+  const lines = [
+    `- Completed nodes: ${counts.completed}/${counts.nodeCount}`,
+    `- Failed nodes: ${counts.failed}`,
+    `- Skipped nodes: ${counts.skipped}`,
+    `- Active nodes: ${counts.active}`,
+    `- Root run: ${String(run?.rootRunId || run?.detail?.dagState?.rootRunId || "—")}`,
+    `- Parent run: ${String(run?.parentRunId || run?.detail?.dagState?.parentRunId || "—")}`,
+    `- Retry of: ${String(run?.retryOf || run?.detail?.dagState?.retryOf || "—")}`,
+    `- Retry mode: ${formatRetryModeLabel(run?.retryMode || run?.detail?.dagState?.retryMode || "")}`,
+    `- Retry decision: ${formatRetryDecisionReason(run?.retryDecisionReason)}`,
+    `- Issue advisor action: ${formatIssueAdvisorAction(issueAdvisor?.recommendedAction)}`,
+    `- Issue advisor summary: ${String(issueAdvisor?.summary || "None recorded.")}`,
+  ];
+  if (ledgerEvents.length) {
+    lines.push("");
+    lines.push("Recent Ledger Events");
+    const recent = ledgerEvents.slice(-limit);
+    for (const entry of recent) {
+      lines.push(`- ${entry?.timestamp ? formatDate(entry.timestamp) : "unknown time"} · ${summarizeLedgerEvent(entry)}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function buildWorkflowExplainPrompt(workflow) {
+  const workflowId = String(workflow?.id || "").trim() || "(unknown)";
+  const workflowName = String(workflow?.name || workflowId).trim() || workflowId;
+  const description = String(workflow?.description || "").trim() || "None provided.";
+  const variables = workflow?.variables && typeof workflow.variables === "object"
+    ? workflow.variables
+    : {};
+  return [
+    "You are helping inside Bosun with a workflow authoring review.",
+    "Explain this workflow in plain English, identify the riskiest nodes or missing guardrails, and suggest the smallest high-leverage improvements.",
+    "",
+    "Return:",
+    "1. A concise summary of what the workflow is trying to do",
+    "2. The critical nodes or transitions that matter most",
+    "3. Failure risks, ambiguity, or missing validation/retry/observability",
+    "4. Concrete next edits Bosun should make",
+    "",
+    "Workflow Context",
+    `- Name: ${workflowName}`,
+    `- ID: ${workflowId}`,
+    `- Enabled: ${workflow?.enabled === false ? "no" : "yes"}`,
+    `- Core workflow: ${workflow?.core === true ? "yes" : "no"}`,
+    `- Description: ${description}`,
+    `- Node count: ${Array.isArray(workflow?.nodes) ? workflow.nodes.length : 0}`,
+    `- Edge count: ${Array.isArray(workflow?.edges) ? workflow.edges.length : 0}`,
+    "",
+    "Variables",
+    formatWorkflowCopilotBlock(variables, 2500),
+    "",
+    "Node Summary",
+    summarizeWorkflowNodes(workflow),
+    "",
+    "Edge Summary",
+    summarizeWorkflowEdges(workflow),
+    "",
+    "Raw Workflow Snapshot",
+    formatWorkflowCopilotBlock({
+      id: workflow?.id,
+      name: workflow?.name,
+      description: workflow?.description,
+      enabled: workflow?.enabled,
+      core: workflow?.core,
+      metadata: workflow?.metadata || {},
+    }, 2500),
+  ].join("\n");
+}
+
+function buildWorkflowNodePrompt(workflow, node, nodeTypeMap = new Map()) {
+  if (!node) return "";
+  const workflowId = String(workflow?.id || "").trim() || "(unknown)";
+  const workflowName = String(workflow?.name || workflowId).trim() || workflowId;
+  const nodeType = String(node?.type || "unknown").trim() || "unknown";
+  const typeInfo = nodeTypeMap.get(nodeType) || null;
+  const schemaKeys = Object.keys(typeInfo?.schema?.properties || {});
+  return [
+    "You are helping inside Bosun with workflow node authoring.",
+    "Explain what this node does, how it interacts with adjacent nodes, what is risky or underspecified, and which exact config edits Bosun should make next.",
+    "",
+    "Return:",
+    "1. Node purpose",
+    "2. Upstream/downstream interaction notes",
+    "3. Risks, missing validation, or bad defaults",
+    "4. Concrete config or graph edits",
+    "",
+    "Workflow Context",
+    `- Workflow: ${workflowName}`,
+    `- Workflow ID: ${workflowId}`,
+    `- Node count: ${Array.isArray(workflow?.nodes) ? workflow.nodes.length : 0}`,
+    `- Edge count: ${Array.isArray(workflow?.edges) ? workflow.edges.length : 0}`,
+    "",
+    "Node Context",
+    `- Node ID: ${String(node?.id || "").trim() || "(unknown)"}`,
+    `- Label: ${String(node?.label || node?.name || "").trim() || "(none)"}`,
+    `- Type: ${nodeType}`,
+    `- Category: ${nodeType.split(".")[0] || "unknown"}`,
+    `- Description: ${String(typeInfo?.description || "").trim() || "None provided."}`,
+    `- Schema keys: ${schemaKeys.length ? schemaKeys.join(", ") : "None"}`,
+    "",
+    "Upstream Edges",
+    summarizeWorkflowNodeLinks(workflow, node?.id, "incoming"),
+    "",
+    "Downstream Edges",
+    summarizeWorkflowNodeLinks(workflow, node?.id, "outgoing"),
+    "",
+    "Node Config",
+    formatWorkflowCopilotBlock(node?.config || {}, 3500),
+    "",
+    "Raw Node Snapshot",
+    formatWorkflowCopilotBlock(node, 3500),
+  ].join("\n");
+}
+
+function buildRunCopilotPrompt(run, intent = "ask") {
+  const workflowName = String(run?.workflowName || getWorkflowNameById(run?.workflowId) || run?.workflowId || "Unknown Workflow").trim();
+  const status = String(run?.status || "unknown").trim() || "unknown";
+  const errors = Array.isArray(run?.detail?.errors) ? run.detail.errors : [];
+  const logs = Array.isArray(run?.detail?.logs) ? run.detail.logs : [];
+  const failed = intent === "fix" || status === "failed";
+  const request = failed
+    ? "Analyze why this workflow run failed. Identify the root cause, name the most likely failing node or nodes, propose the smallest concrete fix, and say whether Bosun should retry from failed state or rerun from the beginning."
+    : "Explain what happened in this workflow run, call out unusual or risky behavior, and suggest the next debugging or hardening steps.";
+  return [
+    "You are helping inside Bosun with workflow run analysis.",
+    request,
+    "",
+    "Return:",
+    "1. Short diagnosis",
+    "2. Evidence from the run",
+    failed ? "3. Concrete fix plan" : "3. Recommended next steps",
+    failed ? "4. Retry advice: retry from failed, rerun from start, or do not retry yet" : "4. Risks or follow-up checks",
+    "",
+    "Run Context",
+    `- Workflow: ${workflowName}`,
+    `- Workflow ID: ${String(run?.workflowId || "").trim() || "(unknown)"}`,
+    `- Run ID: ${String(run?.runId || "").trim() || "(unknown)"}`,
+    `- Status: ${status}`,
+    `- Started: ${formatDate(run?.startedAt)}`,
+    `- Finished: ${run?.endedAt ? formatDate(run.endedAt) : "Running"}`,
+    `- Duration: ${formatDuration(run?.duration)}`,
+    `- Active nodes: ${Number(run?.activeNodeCount || 0)}`,
+    `- Error count: ${Number(run?.errorCount || errors.length)}`,
+    `- Log count: ${Number(run?.logCount || logs.length)}`,
+    "",
+    "Execution Insights",
+    summarizeRunExecutionInsights(run, 10),
+    "",
+    "Node Statuses",
+    summarizeRunNodeStatuses(run),
+    "",
+    "Node Output Summaries",
+    summarizeRunNodeOutputs(run),
+    "",
+    "Errors",
+    formatWorkflowCopilotBlock(errors.slice(0, 8), 3500),
+    "",
+    "Recent Logs",
+    formatWorkflowCopilotBlock(logs.slice(-40), 4000),
+  ].join("\n");
+}
+
+function buildRunNodeCopilotPrompt(run, nodeId, opts = {}) {
+  const safeNodeId = String(nodeId || "").trim();
+  if (!safeNodeId) return "";
+  const workflow = opts?.workflow || null;
+  const node = Array.isArray(workflow?.nodes)
+    ? workflow.nodes.find((entry) => String(entry?.id || "").trim() === safeNodeId) || null
+    : null;
+  const nodeStatuses = buildNodeStatusesFromRunDetail(run);
+  const nodeOutputs = run?.detail?.nodeOutputs && typeof run.detail.nodeOutputs === "object"
+    ? run.detail.nodeOutputs
+    : {};
+  const errors = Array.isArray(run?.detail?.errors) ? run.detail.errors : [];
+  const relatedErrors = errors.filter((entry) => formatWorkflowCopilotBlock(entry, 500).includes(safeNodeId));
+  const failed = String(opts?.intent || "").trim().toLowerCase() === "fix"
+    || String(nodeStatuses[safeNodeId] || "").trim().toLowerCase() === "failed";
+  return [
+    "You are helping inside Bosun with workflow run node analysis.",
+    failed
+      ? "Diagnose why this node failed or behaved incorrectly, identify the root cause, and propose the smallest concrete fix Bosun should make."
+      : "Explain what happened in this node during the run, what inputs or outputs matter, and what Bosun should inspect next.",
+    "",
+    "Return:",
+    "1. Short diagnosis",
+    "2. Evidence from this node",
+    failed ? "3. Concrete fix plan" : "3. Recommended next checks",
+    failed ? "4. Retry advice for this node or run" : "4. Risks or follow-up notes",
+    "",
+    "Run Context",
+    `- Workflow ID: ${String(run?.workflowId || workflow?.id || "").trim() || "(unknown)"}`,
+    `- Run ID: ${String(run?.runId || "").trim() || "(unknown)"}`,
+    `- Run status: ${String(run?.status || "unknown").trim() || "unknown"}`,
+    `- Started: ${formatDate(run?.startedAt)}`,
+    `- Finished: ${run?.endedAt ? formatDate(run.endedAt) : "Running"}`,
+    "",
+    "Node Context",
+    `- Node ID: ${safeNodeId}`,
+    `- Node label: ${String(node?.label || node?.name || "").trim() || "(none)"}`,
+    `- Node type: ${String(node?.type || "").trim() || "(unknown)"}`,
+    `- Node status: ${String(nodeStatuses[safeNodeId] || "unknown").trim() || "unknown"}`,
+    "",
+    "Node Config",
+    formatWorkflowCopilotBlock(node?.config || {}, 2500),
+    "",
+    "Node Output",
+    formatWorkflowCopilotBlock(nodeOutputs[safeNodeId] ?? null, 3500),
+    "",
+    "Node Errors",
+    formatWorkflowCopilotBlock(relatedErrors.length ? relatedErrors : errors.slice(0, 8), 3000),
+  ].join("\n");
+}
+
+async function fetchWorkflowCopilotPrompt(endpoint, fetchOptions = {}) {
+  const safeEndpoint = String(endpoint || "").trim();
+  if (!safeEndpoint) return null;
+  try {
+    const data = await apiFetch(safeEndpoint, fetchOptions);
+    const prompt = String(data?.prompt || "").trim();
+    return prompt || null;
+  } catch {
+    return null;
+  }
+}
+
+async function startWorkflowCopilotSession({
+  endpoint = "",
+  fetchOptions = {},
+  fallbackPrompt = "",
+  title = "",
+  successToast = "",
+} = {}) {
+  const prompt = await fetchWorkflowCopilotPrompt(endpoint, fetchOptions) || String(fallbackPrompt || "").trim();
+  return openWorkflowCopilotChat(prompt, { title, successToast });
+}
+
+async function openWorkflowCopilotChat(prompt, opts = {}) {
+  const content = String(prompt || "").trim();
+  if (!content) {
+    showToast("Workflow copilot prompt was empty", "error");
+    return null;
+  }
+  const successToast = String(opts?.successToast || "Opened workflow copilot chat").trim();
+  try {
+    const created = await createSession({
+      type: "primary",
+      reuseFresh: false,
+      ...(opts?.title ? { title: String(opts.title) } : {}),
+    });
+    const session = created?.session || null;
+    const sessionId = String(session?.id || "").trim();
+    if (!sessionId) throw new Error("Session creation failed");
+    const messagePath = buildSessionApiPath(sessionId, "message", {
+      workspace: resolveSessionWorkspaceHint(session, "active"),
+    });
+    if (!messagePath) throw new Error("Session path unavailable");
+    await apiFetch(messagePath, {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    });
+    const navigated = navigateTo("chat", {
+      params: { sessionId },
+      forceRefresh: true,
+    });
+    if (!navigated) {
+      showToast("Workflow copilot session started. Open Chat after resolving unsaved changes.", "info");
+      return sessionId;
+    }
+    showToast(successToast, "success");
+    return sessionId;
+  } catch (err) {
+    showToast(`Failed to start workflow copilot: ${err.message || "Unknown error"}`, "error");
+    return null;
   }
 }
 
@@ -131,29 +661,38 @@ export function openWorkflowRunsView(workflowId, runId = null) {
  * ═══════════════════════════════════════════════════════════════ */
 
 async function loadWorkflows() {
+  workflowsLoading.value = true;
   try {
     const data = await apiFetch("/api/workflows");
     if (data?.workflows) workflows.value = data.workflows;
   } catch (err) {
     console.error("[workflows] Failed to load:", err);
+  } finally {
+    workflowsLoading.value = false;
   }
 }
 
 async function loadTemplates() {
+  templatesLoading.value = true;
   try {
     const data = await apiFetch("/api/workflows/templates");
     if (data?.templates) templates.value = data.templates;
   } catch (err) {
     console.error("[workflows] Failed to load templates:", err);
+  } finally {
+    templatesLoading.value = false;
   }
 }
 
 async function loadNodeTypes() {
+  nodeTypesLoading.value = true;
   try {
     const data = await apiFetch("/api/workflows/node-types");
     if (data?.nodeTypes) nodeTypes.value = data.nodeTypes;
   } catch (err) {
     console.error("[workflows] Failed to load node types:", err);
+  } finally {
+    nodeTypesLoading.value = false;
   }
 }
 
@@ -173,6 +712,32 @@ async function saveWorkflow(def) {
     return data?.workflow;
   } catch (err) {
     showToast("Failed to save workflow", "error");
+  }
+}
+
+async function exportWorkflow(workflow) {
+  if (!workflow?.id) return;
+  try {
+    const bundle = await apiFetch(`/api/workflows/${encodeURIComponent(workflow.id)}/export`);
+    if (!bundle?.files) throw new Error("No export data received");
+
+    const content = JSON.stringify({
+      _bosunExport: true,
+      projectName: bundle.projectName,
+      metadata: bundle.metadata,
+      files: bundle.files,
+    }, null, 2);
+
+    const blob = new Blob([content], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${bundle.projectName || "workflow"}-export.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast("Workflow exported successfully", "success");
+  } catch (err) {
+    showToast("Export failed: " + (err.message || err), "error");
   }
 }
 
@@ -601,7 +1166,7 @@ function ExecuteWorkflowDialog() {
       PaperProps=${{ sx: { bgcolor: 'var(--color-bg-secondary, #1a1f2e)', color: 'var(--color-text, #e8eaf0)', borderRadius: '12px' } }}
     >
       <${DialogTitle} sx=${{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        <span style="font-size: 20px">${resolveIcon("play")}</span>
+        <span class="icon-inline">${resolveIcon("play")}</span>
         <span>Execute: ${wf.name}</span>
       <//>
 
@@ -961,7 +1526,7 @@ function InstallTemplateDialog() {
       PaperProps=${{ sx: { bgcolor: 'var(--color-bg-secondary, #1a1f2e)', color: 'var(--color-text, #e8eaf0)', borderRadius: '12px' } }}
     >
       <${DialogTitle} sx=${{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        <span style="font-size: 20px">${resolveIcon("download")}</span>
+        <span class="icon-inline">${resolveIcon("download")}</span>
         <span>Install: ${template.name}</span>
       <//>
 
@@ -1140,6 +1705,55 @@ async function applyTemplateUpdate(workflowId, mode = "replace", force = false) 
   return null;
 }
 
+async function relayoutTemplateWorkflow(workflowId) {
+  try {
+    const data = await apiFetch(`/api/workflows/${encodeURIComponent(workflowId)}/reflow-layout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workflowId }),
+    });
+    if (data?.workflow) {
+      const refreshed = data.workflow;
+      workflows.value = (workflows.value || []).map((workflow) => (
+        workflow.id === refreshed.id ? refreshed : workflow
+      ));
+      if (activeWorkflow.value?.id === refreshed.id) {
+        activeWorkflow.value = refreshed;
+      }
+      showToast("Workflow layout refreshed", "success");
+      return refreshed;
+    }
+  } catch (err) {
+    showToast(`Failed to refresh workflow layout: ${err.message}`, "error");
+  }
+  return null;
+}
+
+async function relayoutInstalledTemplateWorkflows() {
+  try {
+    const data = await apiFetch("/api/workflows/reflow-template-layouts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const result = data?.result || {};
+    const updated = Number(result.updated || 0);
+    await loadWorkflows();
+    if (activeWorkflow.value?.id) {
+      const updatedActive = (workflows.value || []).find((workflow) => workflow.id === activeWorkflow.value.id);
+      if (updatedActive) activeWorkflow.value = updatedActive;
+    }
+    showToast(
+      updated > 0 ? `Refreshed layout for ${updated} template workflow${updated === 1 ? "" : "s"}` : "No template workflows needed relayout",
+      "success",
+    );
+    return result;
+  } catch (err) {
+    showToast(`Failed to refresh template layouts: ${err.message}`, "error");
+  }
+  return null;
+}
+
 async function loadRuns(workflowId, opts = {}) {
   const append = opts.append === true;
   const hasScopedWorkflowId = workflowId !== undefined;
@@ -1193,15 +1807,21 @@ async function loadRuns(workflowId, opts = {}) {
   }
 }
 
-async function loadRunDetail(runId) {
+async function loadRunDetail(runId, opts = {}) {
   if (!runId) return;
   try {
     const data = await apiFetch(`/api/workflows/runs/${encodeURIComponent(runId)}`);
     if (data?.run) {
+      const scopedWorkflowId = String(opts?.workflowId || workflowRunsScopeId.value || data.run.workflowId || "").trim() || null;
+      if (scopedWorkflowId) {
+        workflowRunsScopeId.value = scopedWorkflowId;
+      }
       selectedRunId.value = runId;
       selectedRunDetail.value = data.run;
       viewMode.value = "runs";
-      setRouteParams({ runsView: true, runId }, { replace: false, skipGuard: true });
+      const route = { runsView: true, runId };
+      if (scopedWorkflowId) route.runsWorkflowId = scopedWorkflowId;
+      setRouteParams(route, { replace: false, skipGuard: true });
     }
   } catch (err) {
     showToast("Failed to load run details", "error");
@@ -1235,11 +1855,149 @@ function stripEmoji(text) {
     .trim();
 }
 
+const PORT_TYPE_META = {
+  Any: { color: "#9ca3af", description: "Wildcard payload" },
+  TaskDef: { color: "#10b981", description: "Task definition/context payload" },
+  TriggerEvent: { color: "#22c55e", description: "Event payload emitted by trigger nodes" },
+  AgentResult: { color: "#8b5cf6", description: "Agent execution output" },
+  String: { color: "#3b82f6", description: "Text payload" },
+  Boolean: { color: "#14b8a6", description: "Boolean flag" },
+  Number: { color: "#0ea5e9", description: "Numeric payload" },
+  JSON: { color: "#06b6d4", description: "Structured JSON payload" },
+  GitRef: { color: "#f97316", description: "Git branch/hash/ref payload" },
+  PRUrl: { color: "#f43f5e", description: "Pull request URL payload" },
+  LogStream: { color: "#eab308", description: "Log output or command transcript" },
+  SessionRef: { color: "#a855f7", description: "Session identifier payload" },
+  CommandResult: { color: "#f59e0b", description: "Command execution result" },
+};
+
+function normalizePortDescriptor(port, direction, index) {
+  const fallbackName = index === 0 ? "default" : `${direction}-${index + 1}`;
+  if (!port || typeof port !== "object") {
+    return {
+      name: fallbackName,
+      label: fallbackName,
+      type: "Any",
+      description: PORT_TYPE_META.Any.description,
+      accepts: [],
+      color: PORT_TYPE_META.Any.color,
+    };
+  }
+  const type = String(port.type || "Any").trim() || "Any";
+  const typeMeta = PORT_TYPE_META[type] || PORT_TYPE_META.Any;
+  return {
+    ...port,
+    name: String(port.name || fallbackName).trim() || fallbackName,
+    label: String(port.label || port.name || fallbackName).trim() || fallbackName,
+    type,
+    description: String(port.description || typeMeta.description || "").trim(),
+    accepts: Array.isArray(port.accepts)
+      ? Array.from(new Set(port.accepts.map((value) => String(value || "").trim()).filter(Boolean)))
+      : [],
+    color: String(port.color || typeMeta.color || "").trim() || typeMeta.color,
+  };
+}
+
+function isWildcardPortType(type) {
+  const normalized = String(type || "").trim();
+  return normalized === "*" || normalized === "Any";
+}
+
+function isPortConnectionCompatible(sourcePort, targetPort) {
+  if (!sourcePort || !targetPort) return { compatible: true, reason: null };
+  const sourceType = String(sourcePort.type || "Any").trim() || "Any";
+  const targetType = String(targetPort.type || "Any").trim() || "Any";
+  const accepted = new Set(
+    [targetType, ...(Array.isArray(targetPort.accepts) ? targetPort.accepts : [])]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  );
+  if (isWildcardPortType(sourceType) || isWildcardPortType(targetType) || accepted.has("*") || accepted.has("Any")) {
+    return { compatible: true, reason: null };
+  }
+  if (sourceType === targetType || accepted.has(sourceType)) {
+    return { compatible: true, reason: null };
+  }
+  return {
+    compatible: false,
+    reason: `${sourcePort.label || sourcePort.name} emits ${sourceType}, but ${targetPort.label || targetPort.name} expects ${targetType}`,
+  };
+}
+
+function resolveNodePorts(node, nodeTypeMap) {
+  const typeInfo = nodeTypeMap.get(node?.type) || null;
+  const typePorts = typeInfo?.ports || {};
+  const inputSource = Array.isArray(node?.inputPorts) && node.inputPorts.length
+    ? node.inputPorts
+    : typePorts.inputs;
+  const outputSource = Array.isArray(node?.outputPorts) && node.outputPorts.length
+    ? node.outputPorts
+    : typePorts.outputs;
+  const inputs = (Array.isArray(inputSource) ? inputSource : [])
+    .map((port, index) => normalizePortDescriptor(port, "input", index));
+  const outputs = (Array.isArray(outputSource) ? outputSource : [])
+    .map((port, index) => normalizePortDescriptor(port, "output", index));
+  return {
+    inputs: inputs.length ? inputs : [normalizePortDescriptor(null, "input", 0)],
+    outputs: outputs.length ? outputs : [normalizePortDescriptor(null, "output", 0)],
+  };
+}
+
+function sanitizeInlineFieldValue(value) {
+  if (value == null) return "";
+  if (typeof value === "object") return JSON.stringify(value);
+  return value;
+}
+
+function pickInlineFieldKeys(typeInfo, node, maxFields = 3) {
+  const schema = typeInfo?.schema?.properties || {};
+  const keys = Object.keys(schema);
+  const preferred = Array.isArray(typeInfo?.ui?.primaryFields)
+    ? typeInfo.ui.primaryFields
+    : [];
+  const selected = [];
+  for (const key of preferred) {
+    if (keys.includes(key) && !selected.includes(key)) selected.push(key);
+  }
+  if (selected.length >= maxFields) return selected.slice(0, maxFields);
+  const fallbackPriority = ["model", "expression", "enabled", "branch", "branchName", "eventType", "command", "message", "prompt"];
+  for (const key of fallbackPriority) {
+    if (keys.includes(key) && !selected.includes(key)) selected.push(key);
+    if (selected.length >= maxFields) break;
+  }
+  return selected.slice(0, maxFields);
+}
+
+function getInlineFieldDescriptors(typeInfo, node, maxFields = 3) {
+  const schema = typeInfo?.schema?.properties || {};
+  const config = node?.config || {};
+  const keys = pickInlineFieldKeys(typeInfo, node, maxFields);
+  return keys
+    .map((key) => {
+      const fieldSchema = schema[key] || {};
+      const value = config[key] ?? fieldSchema.default ?? "";
+      const type = fieldSchema.type || "string";
+      const isEnum = Array.isArray(fieldSchema.enum) && fieldSchema.enum.length > 0;
+      const shortString = type === "string" && String(value || "").length <= 42;
+      const supported = isEnum || type === "boolean" || type === "number" || shortString;
+      if (!supported) return null;
+      return {
+        key,
+        value: sanitizeInlineFieldValue(value),
+        schema: fieldSchema,
+        fieldType: type,
+        isEnum,
+      };
+    })
+    .filter(Boolean)
+    .slice(0, maxFields);
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  Canvas — SVG-based Workflow Editor
  * ═══════════════════════════════════════════════════════════════ */
 
-function WorkflowCanvas({ workflow, onSave }) {
+function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }) {
   const canvasRef = useRef(null);
   const [nodes, setNodes] = useState(workflow?.nodes || []);
   const [edges, setEdges] = useState(workflow?.edges || []);
@@ -1249,24 +2007,555 @@ function WorkflowCanvas({ workflow, onSave }) {
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [editingNode, setEditingNode] = useState(null);
   const [showNodePalette, setShowNodePalette] = useState(false);
+  const [nodePaletteQuery, setNodePaletteQuery] = useState("");
+  const [paletteInsertPoint, setPaletteInsertPoint] = useState(null);
+  const [showShortcutOverlay, setShowShortcutOverlay] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [contextMenu, setContextMenu] = useState(null);
   const [spacePanning, setSpacePanning] = useState(false);
+  const [connectionHint, setConnectionHint] = useState(null);
+  const [portHoverHint, setPortHoverHint] = useState(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState(new Set());
-  const [marquee, setMarquee] = useState(null); // { x, y, w, h } in canvas coords
-  const marqueeStartRef = useRef(null); // canvas pos where marquee drag started
-  const multiDragRef = useRef({}); // { [nodeId]: { x, y } } start positions
-  // Keep a ref to selectedNodeIds so keyDown handler (closure) can read current value
+  const [historyState, setHistoryState] = useState(() => createHistoryState(workflow?.nodes || [], workflow?.edges || []));
+  const [marquee, setMarquee] = useState(null);
+  const [liveHighlightEnabled, setLiveHighlightEnabled] = useState(true);
+  const [liveRun, setLiveRun] = useState(null);
+  const [recentRuns, setRecentRuns] = useState([]);
+  const [recentRunsTotal, setRecentRunsTotal] = useState(0);
+  const [recentRunsLoading, setRecentRunsLoading] = useState(false);
+  const [runsPanelOpen, setRunsPanelOpen] = useState(true);
+  const [liveNodeStatuses, setLiveNodeStatuses] = useState({});
+  const [liveNodeOutputPreviews, setLiveNodeOutputPreviews] = useState({});
+  const [liveNodeFlashStates, setLiveNodeFlashStates] = useState({});
+  const [liveNodeRunningHints, setLiveNodeRunningHints] = useState({});
+  const [liveEdgeActivity, setLiveEdgeActivity] = useState({});
+  const [liveNowTick, setLiveNowTick] = useState(Date.now());
+  const marqueeStartRef = useRef(null);
+  const multiDragRef = useRef({});
+  const nodesRef = useRef(nodes);
+  const edgesRef = useRef(edges);
+  const historyRef = useRef(historyState);
+  const historyTimerRef = useRef(null);
+  const historyPendingSnapshotRef = useRef(null);
+  const saveTimer = useRef(null);
   const selectedNodeIdsRef = useRef(selectedNodeIds);
+  const liveEventQueueRef = useRef([]);
+  const liveEventFlushTimerRef = useRef(null);
+  // Derived live status helpers
+  const hasLiveStatuses = Object.keys(liveNodeStatuses).length > 0;
+  const liveActiveNodes = Object.values(liveNodeStatuses).filter(
+    (s) => s === "running" || s === "active" || s === "in_progress",
+  ).length;
+  const liveRunDuration = liveRun?.status === "running" && liveRun?.startedAt
+    ? Math.max(0, liveNowTick - Number(liveRun.startedAt))
+    : Number(liveRun?.duration) || 0;
+  const workflowSnapshotKey = useMemo(
+    () => serializeGraphSnapshot(workflow?.nodes || [], workflow?.edges || []),
+    [workflow?.nodes, workflow?.edges],
+  );
+  const nodeTypeMap = useMemo(
+    () => new Map((availableNodeTypes || []).map((type) => [type.type, type])),
+    [availableNodeTypes],
+  );
+  const ensureNodePortMetadata = useCallback((node) => {
+    const ports = resolveNodePorts(node, nodeTypeMap);
+    return {
+      ...node,
+      inputPorts: ports.inputs,
+      outputPorts: ports.outputs,
+    };
+  }, [nodeTypeMap]);
+
+  const normalizeNodesForCanvas = useCallback((nodeList = []) => (
+    (Array.isArray(nodeList) ? nodeList : []).map((node) => ensureNodePortMetadata(node))
+  ), [ensureNodePortMetadata]);
+  const createWorkflowSnapshotForCopilot = useCallback(() => ({
+    ...(workflow || {}),
+    nodes: normalizeNodesForCanvas(nodesRef.current || []),
+    edges: Array.isArray(edgesRef.current) ? [...edgesRef.current] : [],
+  }), [normalizeNodesForCanvas, workflow]);
+  const openWorkflowCopilotFromCanvas = useCallback(async ({
+    intent = "explain",
+    nodeId = "",
+    title = "",
+    successToast = "",
+  } = {}) => {
+    const snapshot = createWorkflowSnapshotForCopilot();
+    const safeWorkflowId = String(snapshot?.id || workflow?.id || "").trim();
+    const safeNodeId = String(nodeId || "").trim();
+    const fallbackNode = safeNodeId
+      ? (snapshot.nodes || []).find((entry) => String(entry?.id || "").trim() === safeNodeId) || null
+      : null;
+    const fallbackPrompt = safeNodeId
+      ? buildWorkflowNodePrompt(snapshot, fallbackNode, nodeTypeMap)
+      : buildWorkflowExplainPrompt(snapshot);
+    if (!safeWorkflowId) {
+      return openWorkflowCopilotChat(fallbackPrompt, { title, successToast });
+    }
+    return startWorkflowCopilotSession({
+      endpoint: `/api/workflows/${encodeURIComponent(safeWorkflowId)}/copilot-context`,
+      fetchOptions: {
+        method: "POST",
+        body: JSON.stringify({
+          intent,
+          ...(safeNodeId ? { nodeId: safeNodeId } : {}),
+          workflow: snapshot,
+        }),
+      },
+      fallbackPrompt,
+      title,
+      successToast,
+    });
+  }, [createWorkflowSnapshotForCopilot, nodeTypeMap, workflow]);
   useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds; }, [selectedNodeIds]);
+  useEffect(() => {
+    nodesRef.current = nodes;
+    edgesRef.current = edges;
+  }, [nodes, edges]);
 
   useEffect(() => {
-    setNodes(workflow?.nodes || []);
-    setEdges(workflow?.edges || []);
+    const nextNodes = normalizeNodesForCanvas(workflow?.nodes || []);
+    const nextEdges = workflow?.edges || [];
+    if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
+    historyPendingSnapshotRef.current = null;
+    nodesRef.current = nextNodes;
+    edgesRef.current = nextEdges;
+    setNodes(nextNodes);
+    setEdges(nextEdges);
+    const nextHistory = createHistoryState(nextNodes, nextEdges);
+    historyRef.current = nextHistory;
+    setHistoryState(nextHistory);
     setSelectedNodeIds(new Set());
     selectedNodeId.value = null;
-  }, [workflow?.id, workflow?.nodes?.length, workflow?.edges?.length]);
+    selectedEdgeId.value = null;
+    setEditingNode(null);
+    setContextMenu(null);
+    setShowNodePalette(false);
+  }, [workflow?.id, workflowSnapshotKey, normalizeNodesForCanvas]);
+
+  useEffect(() => {
+    if (!workflow?.id) {
+      setLiveRun(null);
+      setRecentRuns([]);
+      setRecentRunsTotal(0);
+      setRecentRunsLoading(false);
+      setLiveNodeStatuses({});
+      setLiveNodeOutputPreviews({});
+      setLiveNodeFlashStates({});
+      setLiveNodeRunningHints({});
+      setLiveEdgeActivity({});
+      return;
+    }
+    let cancelled = false;
+
+    const pollLiveRun = async () => {
+      try {
+        setRecentRunsLoading(true);
+        const data = await apiFetch(`/api/workflows/${encodeURIComponent(workflow.id)}/runs?limit=12`);
+        if (cancelled) return;
+        const runs = Array.isArray(data?.runs) ? data.runs : [];
+        const total = Number(data?.pagination?.total);
+        setRecentRuns(runs);
+        setRecentRunsTotal(Number.isFinite(total) ? total : runs.length);
+        const running = runs.find((run) => run?.status === "running");
+        const targetRun = running || runs[0] || null;
+        if (!targetRun?.runId) {
+          setLiveRun(null);
+          setLiveNodeStatuses({});
+          setLiveNodeRunningHints({});
+          setLiveNodeOutputPreviews({});
+          setLiveNodeFlashStates({});
+          setLiveEdgeActivity({});
+          return;
+        }
+        if (!liveHighlightEnabled) {
+          setLiveRun(targetRun);
+          setLiveNodeStatuses({});
+          setLiveNodeRunningHints({});
+          setLiveNodeOutputPreviews({});
+          setLiveNodeFlashStates({});
+          setLiveEdgeActivity({});
+          return;
+        }
+        if (targetRun.status !== "running") {
+          setLiveRun(targetRun);
+          setLiveNodeStatuses({});
+          return;
+        }
+        const detailResponse = await apiFetch(`/api/workflows/runs/${targetRun.runId}`);
+        if (cancelled) return;
+        const detailedRun = detailResponse?.run || targetRun;
+        setLiveRun(detailedRun);
+        const runStatuses = buildNodeStatusesFromRunDetail(detailedRun);
+        const normalizedStatuses = {};
+        for (const [nodeId, status] of Object.entries(runStatuses || {})) {
+          normalizedStatuses[nodeId] = normalizeLiveNodeStatus(status);
+        }
+        setLiveNodeStatuses(normalizedStatuses);
+        const nodeOutputs = detailedRun?.detail?.nodeOutputs && typeof detailedRun.detail.nodeOutputs === "object"
+          ? detailedRun.detail.nodeOutputs
+          : {};
+        setLiveNodeOutputPreviews((prev) => {
+          const next = { ...prev };
+          for (const node of nodesRef.current || []) {
+            const nodeId = String(node?.id || "").trim();
+            if (!nodeId || !Object.prototype.hasOwnProperty.call(nodeOutputs, nodeId)) continue;
+            const preview = resolveNodeOutputPreview(node?.type, null, nodeOutputs[nodeId]);
+            const lines = Array.isArray(preview?.lines)
+              ? preview.lines.map((line) => String(line || "").trim()).filter(Boolean).slice(0, 3)
+              : [];
+            if (!lines.length && preview?.tokenCount == null) continue;
+            next[nodeId] = {
+              lines,
+              tokenCount: Number.isFinite(Number(preview?.tokenCount))
+                ? Math.max(0, Math.round(Number(preview.tokenCount)))
+                : null,
+              updatedAt: Date.now(),
+            };
+          }
+          return next;
+        });
+      } catch {
+        if (cancelled) return;
+      } finally {
+        if (!cancelled) setRecentRunsLoading(false);
+      }
+    };
+
+    pollLiveRun();
+    const pollTimer = setInterval(pollLiveRun, WORKFLOW_LIVE_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(pollTimer);
+    };
+  }, [liveHighlightEnabled, workflow?.id]);
+
+  useEffect(() => {
+    if (!liveHighlightEnabled) return undefined;
+    const timer = setInterval(() => setLiveNowTick(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [liveHighlightEnabled, liveRun?.status]);
+
+  useEffect(() => {
+    if (!liveHighlightEnabled) return;
+    const now = Date.now();
+    setLiveNodeFlashStates((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const [nodeId, flash] of Object.entries(next)) {
+        if (!flash || Number(flash.until) <= now) {
+          delete next[nodeId];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    setLiveNodeRunningHints((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const [nodeId, until] of Object.entries(next)) {
+        if (Number(until || 0) <= now) {
+          delete next[nodeId];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    setLiveEdgeActivity((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const [edgeId, info] of Object.entries(next)) {
+        if (!info || now - Number(info.ts || 0) > EDGE_FLOW_ANIMATION_MS) {
+          delete next[edgeId];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [liveNowTick, liveHighlightEnabled]);
+
+  useEffect(() => {
+    if (!liveHighlightEnabled || !workflow?.id) return undefined;
+    const flushQueuedEvents = () => {
+      if (liveEventFlushTimerRef.current) {
+        clearTimeout(liveEventFlushTimerRef.current);
+        liveEventFlushTimerRef.current = null;
+      }
+      const queued = liveEventQueueRef.current.splice(0, liveEventQueueRef.current.length);
+      if (!queued.length) return;
+      setLiveNowTick(Date.now());
+      setLiveRun((prev) => {
+        let next = prev;
+        for (const event of queued) {
+          if (event.kind !== "run") continue;
+          if (!next || next.runId !== event.runId) {
+            next = {
+              ...(next || {}),
+              runId: event.runId,
+              workflowId: event.workflowId || workflow.id,
+              workflowName: event.workflowName || workflow.name,
+              startedAt: event.timestamp || Date.now(),
+            };
+          }
+          next = {
+            ...next,
+            runId: event.runId,
+            workflowId: event.workflowId || next.workflowId || workflow.id,
+            workflowName: event.workflowName || next.workflowName || workflow.name,
+            status: event.status || next.status || "running",
+            duration: Number.isFinite(Number(event.duration)) ? Number(event.duration) : next.duration,
+            endedAt: event.status && event.status !== "running"
+              ? (event.timestamp || Date.now())
+              : next.endedAt,
+          };
+        }
+        return next;
+      });
+      setLiveNodeStatuses((prev) => {
+        const next = { ...prev };
+        for (const event of queued) {
+          if (event.kind !== "node" || !event.nodeId) continue;
+          next[event.nodeId] = normalizeLiveNodeStatus(event.status);
+        }
+        return next;
+      });
+      setLiveNodeOutputPreviews((prev) => {
+        const next = { ...prev };
+        for (const event of queued) {
+          if (event.kind !== "node" || !event.nodeId) continue;
+          if (event.outputPreview || event.error) {
+            const lines = Array.isArray(event.outputPreview?.lines)
+              ? event.outputPreview.lines
+              : (event.error ? [String(event.error)] : []);
+            next[event.nodeId] = {
+              lines: lines.slice(0, 3),
+              tokenCount: Number.isFinite(Number(event.outputPreview?.tokenCount))
+                ? Math.max(0, Math.round(Number(event.outputPreview.tokenCount)))
+                : null,
+              updatedAt: event.timestamp || Date.now(),
+            };
+          }
+        }
+        return next;
+      });
+      setLiveNodeFlashStates((prev) => {
+        const next = { ...prev };
+        const now = Date.now();
+        for (const event of queued) {
+          if (event.kind !== "node" || !event.nodeId) continue;
+          const normalized = normalizeLiveNodeStatus(event.status);
+          if (normalized === "success" || normalized === "fail" || normalized === "skipped") {
+            next[event.nodeId] = {
+              state: normalized,
+              until: now + NODE_COMPLETION_FLASH_MS,
+            };
+          }
+        }
+        for (const [nodeId, flash] of Object.entries(next)) {
+          if (!flash || Number(flash.until) <= now) delete next[nodeId];
+        }
+        return next;
+      });
+      setLiveNodeRunningHints((prev) => {
+        const next = { ...prev };
+        const now = Date.now();
+        let changed = false;
+        for (const event of queued) {
+          if (event.kind !== "node" || !event.nodeId) continue;
+          const normalized = normalizeLiveNodeStatus(event.status);
+          if (normalized === "running") {
+            next[event.nodeId] = now + NODE_RUNNING_HINT_MS;
+            changed = true;
+            continue;
+          }
+          if (normalized === "success" || normalized === "fail" || normalized === "skipped") {
+            if (next[event.nodeId]) {
+              delete next[event.nodeId];
+              changed = true;
+            }
+          }
+        }
+        return changed ? next : prev;
+      });
+      setLiveEdgeActivity((prev) => {
+        const next = { ...prev };
+        const now = Date.now();
+        for (const event of queued) {
+          if (event.kind !== "edge" || !event.edgeId) continue;
+          next[event.edgeId] = {
+            ts: Number(event.timestamp) || now,
+            source: event.source || null,
+            target: event.target || null,
+            reason: event.reason || "flow",
+          };
+        }
+        for (const [edgeId, info] of Object.entries(next)) {
+          if (!info || now - Number(info.ts || 0) > EDGE_FLOW_ANIMATION_MS) {
+            delete next[edgeId];
+          }
+        }
+        return next;
+      });
+    };
+
+    const scheduleEventFlush = () => {
+      if (liveEventFlushTimerRef.current) return;
+      liveEventFlushTimerRef.current = setTimeout(flushQueuedEvents, WORKFLOW_LIVE_WS_BATCH_MS);
+    };
+
+    const unsub = onWsMessage((msg) => {
+      if (msg?.type !== "workflow-run-events") return;
+      const payload = msg?.payload || {};
+      const payloadWorkflowId = String(payload.workflowId || "").trim();
+      if (payloadWorkflowId !== String(workflow.id || "").trim()) return;
+      const events = Array.isArray(payload.events) ? payload.events : [];
+      if (!events.length) return;
+      liveEventQueueRef.current.push(...events);
+      scheduleEventFlush();
+    });
+
+    return () => {
+      if (liveEventFlushTimerRef.current) {
+        clearTimeout(liveEventFlushTimerRef.current);
+        liveEventFlushTimerRef.current = null;
+      }
+      liveEventQueueRef.current = [];
+      try {
+        unsub?.();
+      } catch {}
+    };
+  }, [liveHighlightEnabled, workflow?.id, workflow?.name]);
+
+  // Canvas dimensions
+  const NODE_W = 220;
+  const NODE_H = 118;
+  const PORT_R = 8;
+
+  const toCanvas = useCallback((clientX, clientY) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return {
+      x: (clientX - rect.left - pan.x) / zoom,
+      y: (clientY - rect.top - pan.y) / zoom,
+    };
+  }, [zoom, pan]);
+
+
+  const setHistory = useCallback((nextHistory) => {
+    historyRef.current = nextHistory;
+    setHistoryState(nextHistory);
+  }, []);
+
+  const flushPendingHistory = useCallback(() => {
+    if (!historyPendingSnapshotRef.current) return historyRef.current;
+    if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
+    historyTimerRef.current = null;
+    const snapshot = parseGraphSnapshot(historyPendingSnapshotRef.current);
+    historyPendingSnapshotRef.current = null;
+    const nextHistory = pushHistorySnapshot(historyRef.current, snapshot.nodes, snapshot.edges, HISTORY_LIMIT);
+    if (nextHistory !== historyRef.current) setHistory(nextHistory);
+    return nextHistory;
+  }, [setHistory]);
+
+  const scheduleHistoryCommit = useCallback((nextNodes, nextEdges) => {
+    historyPendingSnapshotRef.current = serializeGraphSnapshot(nextNodes, nextEdges);
+    if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
+    historyTimerRef.current = setTimeout(() => {
+      const snapshot = parseGraphSnapshot(historyPendingSnapshotRef.current);
+      historyPendingSnapshotRef.current = null;
+      historyTimerRef.current = null;
+      const nextHistory = pushHistorySnapshot(historyRef.current, snapshot.nodes, snapshot.edges, HISTORY_LIMIT);
+      if (nextHistory !== historyRef.current) setHistory(nextHistory);
+    }, HISTORY_COMMIT_DEBOUNCE_MS);
+  }, [setHistory]);
+
+  const scheduleSave = useCallback((nextNodes, nextEdges) => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    const snapshot = serializeGraphSnapshot(normalizeNodesForCanvas(nextNodes), nextEdges);
+    saveTimer.current = setTimeout(() => {
+      if (!workflow?.id) return;
+      const latest = parseGraphSnapshot(snapshot);
+      saveWorkflow({ ...workflow, nodes: normalizeNodesForCanvas(latest.nodes), edges: latest.edges });
+    }, 1500);
+  }, [normalizeNodesForCanvas, workflow]);
+
+  const applyGraphChange = useCallback((updater, options = {}) => {
+    const currentNodes = nodesRef.current;
+    const currentEdges = edgesRef.current;
+    const nextGraph = updater({ nodes: currentNodes, edges: currentEdges });
+    if (!nextGraph) return null;
+    const nextNodes = normalizeNodesForCanvas(nextGraph.nodes ?? currentNodes);
+    const nextEdges = nextGraph.edges ?? currentEdges;
+    if (nextNodes === currentNodes && nextEdges === currentEdges) return null;
+    nodesRef.current = nextNodes;
+    edgesRef.current = nextEdges;
+    setNodes(nextNodes);
+    setEdges(nextEdges);
+    scheduleSave(nextNodes, nextEdges);
+    if (options.history === "debounced") {
+      scheduleHistoryCommit(nextNodes, nextEdges);
+    } else if (options.history !== "skip") {
+      flushPendingHistory();
+      const nextHistory = pushHistorySnapshot(historyRef.current, nextNodes, nextEdges, HISTORY_LIMIT);
+      if (nextHistory !== historyRef.current) setHistory(nextHistory);
+    }
+    return { nodes: nextNodes, edges: nextEdges };
+  }, [flushPendingHistory, normalizeNodesForCanvas, scheduleHistoryCommit, scheduleSave, setHistory]);
+
+  const getDefaultInsertPoint = useCallback(() => {
+    if ((mousePos.x || mousePos.y) && Number.isFinite(mousePos.x) && Number.isFinite(mousePos.y)) {
+      return mousePos;
+    }
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 300, y: 300 };
+    return toCanvas(rect.left + (rect.width / 2), rect.top + (rect.height / 2));
+  }, [mousePos, toCanvas]);
+
+  const openNodePalette = useCallback((point = getDefaultInsertPoint()) => {
+    setPaletteInsertPoint(point);
+    setNodePaletteQuery("");
+    setShowNodePalette(true);
+    setContextMenu(null);
+  }, [getDefaultInsertPoint]);
+
+  const closeNodePalette = useCallback(() => {
+    setShowNodePalette(false);
+    setNodePaletteQuery("");
+  }, []);
+
+  const applyHistorySnapshot = useCallback((snapshot) => {
+    const nextNodes = normalizeNodesForCanvas(snapshot?.nodes || []);
+    const nextEdges = snapshot?.edges || [];
+    if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
+    historyPendingSnapshotRef.current = null;
+    nodesRef.current = nextNodes;
+    edgesRef.current = nextEdges;
+    setNodes(nextNodes);
+    setEdges(nextEdges);
+    setSelectedNodeIds(new Set());
+    selectedNodeId.value = null;
+    selectedEdgeId.value = null;
+    setEditingNode(null);
+    setContextMenu(null);
+    scheduleSave(nextNodes, nextEdges);
+  }, [normalizeNodesForCanvas, scheduleSave]);
+
+  const undoCanvas = useCallback(() => {
+    const readyHistory = flushPendingHistory();
+    const { history: nextHistory, snapshot } = undoHistory(readyHistory);
+    if (nextHistory === readyHistory) return;
+    setHistory(nextHistory);
+    applyHistorySnapshot(snapshot);
+  }, [applyHistorySnapshot, flushPendingHistory, setHistory]);
+
+  const redoCanvas = useCallback(() => {
+    const readyHistory = flushPendingHistory();
+    const { history: nextHistory, snapshot } = redoHistory(readyHistory, HISTORY_LIMIT);
+    if (nextHistory === readyHistory) return;
+    setHistory(nextHistory);
+    applyHistorySnapshot(snapshot);
+  }, [applyHistorySnapshot, flushPendingHistory, setHistory]);
 
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -1277,22 +2566,91 @@ function WorkflowCanvas({ workflow, onSave }) {
         target.tagName === "SELECT" ||
         target.isContentEditable
       );
+      const modKey = e.ctrlKey || e.metaKey;
+      const lowerKey = String(e.key || "").toLowerCase();
       if (e.code === "Space") {
         if (inInput) return;
         e.preventDefault();
         setSpacePanning(true);
         return;
       }
-      // Delete / Backspace — remove all selected nodes
+      if (e.key === "Escape") {
+        if (showNodePalette) {
+          e.preventDefault();
+          closeNodePalette();
+          return;
+        }
+        if (showShortcutOverlay) {
+          e.preventDefault();
+          setShowShortcutOverlay(false);
+          return;
+        }
+        if (contextMenu) {
+          e.preventDefault();
+          setContextMenu(null);
+          return;
+        }
+        if (connecting) {
+          e.preventDefault();
+          setConnecting(null);
+          return;
+        }
+        if (!inInput && editingNode) {
+          e.preventDefault();
+          setEditingNode(null);
+          return;
+        }
+      }
+      if (!inInput && !modKey && !e.altKey && e.key === "/") {
+        e.preventDefault();
+        openNodePalette();
+        return;
+      }
+      if (!inInput && !modKey && !e.altKey && e.key === "?") {
+        e.preventDefault();
+        setShowShortcutOverlay((current) => !current);
+        return;
+      }
+      if (!inInput && modKey && !e.altKey && lowerKey === "a") {
+        e.preventDefault();
+        const ids = new Set(nodesRef.current.map((node) => node.id));
+        setSelectedNodeIds(ids);
+        selectedNodeId.value = ids.size ? [...ids][0] : null;
+        selectedEdgeId.value = null;
+        return;
+      }
+      if (!inInput && modKey && !e.altKey && lowerKey === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redoCanvas();
+        else undoCanvas();
+        return;
+      }
+      if (!inInput && modKey && !e.altKey && lowerKey === "y") {
+        e.preventDefault();
+        redoCanvas();
+        return;
+      }
       if ((e.key === "Delete" || e.key === "Backspace") && !inInput) {
         const ids = selectedNodeIdsRef.current;
         if (ids.size > 0) {
           e.preventDefault();
-          setNodes(prev => prev.filter(n => !ids.has(n.id)));
-          setEdges(prev => prev.filter(ed => !ids.has(ed.source) && !ids.has(ed.target)));
+          applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+            nodes: currentNodes.filter((node) => !ids.has(node.id)),
+            edges: currentEdges.filter((edge) => !ids.has(edge.source) && !ids.has(edge.target)),
+          }));
           setSelectedNodeIds(new Set());
           selectedNodeId.value = null;
           setEditingNode(null);
+          return;
+        }
+        if (selectedEdgeId.value) {
+          e.preventDefault();
+          const edgeId = selectedEdgeId.value;
+          applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+            nodes: currentNodes,
+            edges: currentEdges.filter((edge) => edge.id !== edgeId),
+          }));
+          selectedEdgeId.value = null;
         }
       }
     };
@@ -1311,21 +2669,7 @@ function WorkflowCanvas({ workflow, onSave }) {
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onWindowBlur);
     };
-  }, []);
-
-  // Canvas dimensions
-  const NODE_W = 220;
-  const NODE_H = 60;
-  const PORT_R = 8;
-
-  const toCanvas = useCallback((clientX, clientY) => {
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return { x: 0, y: 0 };
-    return {
-      x: (clientX - rect.left - pan.x) / zoom,
-      y: (clientY - rect.top - pan.y) / zoom,
-    };
-  }, [zoom, pan]);
+  }, [applyGraphChange, closeNodePalette, connecting, contextMenu, editingNode, openNodePalette, redoCanvas, showNodePalette, showShortcutOverlay, undoCanvas]);
 
   // ── Mouse events ──────────────────────────────────────────
 
@@ -1352,20 +2696,21 @@ function WorkflowCanvas({ workflow, onSave }) {
       const newPrimaryY = canvasPos.y - dragState.offsetY;
       const deltaX = newPrimaryX - dragState.startX;
       const deltaY = newPrimaryY - dragState.startY;
-      setNodes((prev) =>
-        prev.map((n) => {
-          if (n.id === dragState.nodeId) {
-            return { ...n, position: { x: newPrimaryX, y: newPrimaryY } };
+      applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+        nodes: currentNodes.map((node) => {
+          if (node.id === dragState.nodeId) {
+            return { ...node, position: { x: newPrimaryX, y: newPrimaryY } };
           }
-          const startPos = multiDragRef.current[n.id];
+          const startPos = multiDragRef.current[node.id];
           if (startPos !== undefined) {
-            return { ...n, position: { x: startPos.x + deltaX, y: startPos.y + deltaY } };
+            return { ...node, position: { x: startPos.x + deltaX, y: startPos.y + deltaY } };
           }
-          return n;
+          return node;
         }),
-      );
+        edges: currentEdges,
+      }), { history: "debounced" });
     }
-  }, [toCanvas, panStart, dragState]);
+  }, [applyGraphChange, toCanvas, panStart, dragState]);
 
   const onMouseDown = useCallback((e) => {
     if (e.button === 1 || (e.button === 0 && (e.ctrlKey || spacePanning))) {
@@ -1396,7 +2741,7 @@ function WorkflowCanvas({ workflow, onSave }) {
     if (dragState) {
       setDragState(null);
       multiDragRef.current = {};
-      autoSave();
+      flushPendingHistory();
     }
     if (connecting) {
       setConnecting(null);
@@ -1405,7 +2750,7 @@ function WorkflowCanvas({ workflow, onSave }) {
       const m = marquee;
       if (m && m.w > 4 && m.h > 4) {
         const ids = new Set();
-        for (const node of nodes) {
+        for (const node of nodesRef.current) {
           const nx = node.position?.x || 0;
           const ny = node.position?.y || 0;
           if (nx + NODE_W > m.x && nx < m.x + m.w && ny + NODE_H > m.y && ny < m.y + m.h) {
@@ -1420,7 +2765,7 @@ function WorkflowCanvas({ workflow, onSave }) {
       marqueeStartRef.current = null;
       setMarquee(null);
     }
-  }, [panStart, dragState, connecting, marquee, nodes]);
+  }, [panStart, dragState, connecting, marquee, flushPendingHistory]);
 
   const onPointerDown = useCallback((e) => {
     if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
@@ -1454,19 +2799,29 @@ function WorkflowCanvas({ workflow, onSave }) {
     if (dragState) {
       setDragState(null);
       multiDragRef.current = {};
-      autoSave();
+      flushPendingHistory();
     }
     if (connecting) {
       setConnecting(null);
     }
     e.preventDefault();
-  }, [panStart, dragState, connecting]);
+  }, [panStart, dragState, connecting, flushPendingHistory]);
 
   const onWheel = useCallback((e) => {
     e.preventDefault();
     const delta = e.deltaY > 0 ? -0.1 : 0.1;
     setZoom(z => Math.max(0.2, Math.min(3, z + delta)));
   }, []);
+
+  const onCanvasDoubleClick = useCallback((e) => {
+    const target = e.target;
+    const isBackgroundTarget =
+      target === e.currentTarget ||
+      target?.classList?.contains?.("canvas-bg");
+    if (!isBackgroundTarget) return;
+    e.preventDefault();
+    openNodePalette(toCanvas(e.clientX, e.clientY));
+  }, [openNodePalette, toCanvas]);
 
   // ── Node interaction ──────────────────────────────────────
 
@@ -1547,134 +2902,260 @@ function WorkflowCanvas({ workflow, onSave }) {
 
   // ── Port / connection interaction ─────────────────────────
 
-  const onOutputPortMouseDown = useCallback((nodeId, e) => {
-    e.stopPropagation();
-    setConnecting({ sourceId: nodeId, startX: e.clientX, startY: e.clientY });
+  const showConnectionHint = useCallback((message, clientX, clientY) => {
+    setConnectionHint({
+      message,
+      x: Math.max(12, Math.round(clientX || 0) + 12),
+      y: Math.max(12, Math.round(clientY || 0) + 12),
+      expiresAt: Date.now() + 2200,
+    });
   }, []);
 
-  const onOutputPortPointerDown = useCallback((nodeId, e) => {
+  const showPortHoverHint = useCallback((port, clientX, clientY) => {
+    if (!port) {
+      setPortHoverHint(null);
+      return;
+    }
+    const type = String(port.type || "Any").trim() || "Any";
+    const description = String(port.description || "").trim();
+    const label = String(port.label || port.name || "Port").trim() || "Port";
+    setPortHoverHint({
+      message: `${label} (${type})${description ? ` - ${description}` : ""}`,
+      x: Math.max(12, Math.round(clientX || 0) + 12),
+      y: Math.max(12, Math.round(clientY || 0) + 12),
+    });
+  }, []);
+
+  const getNodeById = useCallback((nodeId) => nodesRef.current.find((node) => node.id === nodeId) || null, []);
+
+  const getOutputPortDescriptor = useCallback((nodeId, portName = "default") => {
+    const node = getNodeById(nodeId);
+    if (!node) return null;
+    const ports = resolveNodePorts(node, nodeTypeMap).outputs;
+    return ports.find((port) => port.name === portName) || ports[0] || null;
+  }, [getNodeById, nodeTypeMap]);
+
+  const getInputPortDescriptor = useCallback((nodeId, portName = "default") => {
+    const node = getNodeById(nodeId);
+    if (!node) return null;
+    const ports = resolveNodePorts(node, nodeTypeMap).inputs;
+    return ports.find((port) => port.name === portName) || ports[0] || null;
+  }, [getNodeById, nodeTypeMap]);
+
+  const onOutputPortMouseDown = useCallback((nodeId, portName, e) => {
+    e.stopPropagation();
+    const sourcePort = getOutputPortDescriptor(nodeId, portName);
+    setConnecting({
+      sourceId: nodeId,
+      sourcePort: sourcePort?.name || portName || "default",
+      startX: e.clientX,
+      startY: e.clientY,
+    });
+  }, [getOutputPortDescriptor]);
+
+  const onOutputPortPointerDown = useCallback((nodeId, portName, e) => {
     if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
     e.stopPropagation();
-    setConnecting({ sourceId: nodeId, startX: e.clientX, startY: e.clientY });
+    const sourcePort = getOutputPortDescriptor(nodeId, portName);
+    setConnecting({
+      sourceId: nodeId,
+      sourcePort: sourcePort?.name || portName || "default",
+      startX: e.clientX,
+      startY: e.clientY,
+    });
     movePointer(e.clientX, e.clientY);
     try {
       canvasRef.current?.setPointerCapture?.(e.pointerId);
     } catch {}
     e.preventDefault();
-  }, [movePointer]);
+  }, [getOutputPortDescriptor, movePointer]);
 
-  const onInputPortMouseUp = useCallback((nodeId) => {
+  const onInputPortMouseUp = useCallback((nodeId, targetPortName = "default", eventMeta = null) => {
     if (connecting && connecting.sourceId !== nodeId) {
-      const edgeId = `${connecting.sourceId}->${nodeId}`;
-      const exists = edges.some(e => e.source === connecting.sourceId && e.target === nodeId);
+      const sourcePort = getOutputPortDescriptor(connecting.sourceId, connecting.sourcePort || "default");
+      const targetPort = getInputPortDescriptor(nodeId, targetPortName);
+      const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
+      if (!compatibility.compatible) {
+        showConnectionHint(
+          compatibility.reason || "Incompatible port types",
+          eventMeta?.clientX || mousePos.x,
+          eventMeta?.clientY || mousePos.y,
+        );
+        setConnecting(null);
+        return;
+      }
+      const edgeId = `${connecting.sourceId}:${sourcePort?.name || "default"}->${nodeId}:${targetPort?.name || "default"}`;
+      const exists = edgesRef.current.some((edge) =>
+        edge.source === connecting.sourceId
+        && edge.target === nodeId
+        && String(edge.sourcePort || "default") === String(sourcePort?.name || "default")
+        && String(edge.targetPort || "default") === String(targetPort?.name || "default")
+      );
       if (!exists) {
-        setEdges(prev => [...prev, {
-          id: edgeId,
-          source: connecting.sourceId,
-          target: nodeId,
-          sourcePort: "default",
-        }]);
-        autoSave();
+        applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+          nodes: currentNodes,
+          edges: [...currentEdges, {
+            id: edgeId,
+            source: connecting.sourceId,
+            target: nodeId,
+            sourcePort: sourcePort?.name || "default",
+            targetPort: targetPort?.name || "default",
+            sourcePortType: sourcePort?.type || "Any",
+            targetPortType: targetPort?.type || "Any",
+          }],
+        }));
       }
     }
     setConnecting(null);
-  }, [connecting, edges]);
+  }, [applyGraphChange, connecting, getInputPortDescriptor, getOutputPortDescriptor, mousePos.x, mousePos.y, showConnectionHint]);
 
-  const onInputPortPointerUp = useCallback((nodeId, e) => {
+  const onInputPortPointerUp = useCallback((nodeId, portName, e) => {
     if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
     e.stopPropagation();
-    onInputPortMouseUp(nodeId);
+    onInputPortMouseUp(nodeId, portName, { clientX: e.clientX, clientY: e.clientY });
     e.preventDefault();
   }, [onInputPortMouseUp]);
 
   // ── CRUD ──────────────────────────────────────────────────
 
-  const addNode = useCallback((type) => {
-    const id = `node-${Date.now()}`;
-    const [cat, name] = type.split(".");
-    const meta = getNodeMeta(type);
+  const addNode = useCallback((type, position = paletteInsertPoint || getDefaultInsertPoint()) => {
+    const id = `node-${Date.now()}-${Math.round(Math.random() * 1000)}`;
+    const name = type.split(".").pop();
+    const typeInfo = nodeTypeMap.get(type) || null;
+    const nextConfig = {};
+    const schemaProps = typeInfo?.schema?.properties || {};
+    for (const [key, field] of Object.entries(schemaProps)) {
+      if (Object.prototype.hasOwnProperty.call(field || {}, "default")) {
+        nextConfig[key] = field.default;
+      }
+    }
+    const ports = resolveNodePorts({ type }, nodeTypeMap);
     const newNode = {
       id,
       type,
       label: name?.replace(/_/g, " ") || type,
-      config: {},
-      position: { x: mousePos.x || 300, y: mousePos.y || 300 },
+      config: nextConfig,
+      position: position || { x: 300, y: 300 },
+      inputPorts: ports.inputs,
+      outputPorts: ports.outputs,
       outputs: ["default"],
     };
-    setNodes(prev => [...prev, newNode]);
+    applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+      nodes: [...currentNodes, newNode],
+      edges: currentEdges,
+    }));
     selectedNodeId.value = id;
-    setShowNodePalette(false);
+    selectedEdgeId.value = null;
+    setSelectedNodeIds(new Set([id]));
+    closeNodePalette();
     haptic("light");
-  }, [mousePos]);
+  }, [applyGraphChange, closeNodePalette, getDefaultInsertPoint, nodeTypeMap, paletteInsertPoint]);
 
   const deleteNode = useCallback((nodeId) => {
-    setNodes(prev => prev.filter(n => n.id !== nodeId));
-    setEdges(prev => prev.filter(e => e.source !== nodeId && e.target !== nodeId));
+    applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+      nodes: currentNodes.filter((node) => node.id !== nodeId),
+      edges: currentEdges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId),
+    }));
     if (selectedNodeId.value === nodeId) selectedNodeId.value = null;
-    setSelectedNodeIds(prev => { const s = new Set(prev); s.delete(nodeId); return s; });
+    setSelectedNodeIds((current) => {
+      const next = new Set(current);
+      next.delete(nodeId);
+      return next;
+    });
     setEditingNode(null);
     setContextMenu(null);
-    autoSave();
-  }, []);
+  }, [applyGraphChange]);
 
   const deleteEdge = useCallback((edgeId) => {
-    setEdges(prev => prev.filter(e => e.id !== edgeId));
+    applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+      nodes: currentNodes,
+      edges: currentEdges.filter((edge) => edge.id !== edgeId),
+    }));
     selectedEdgeId.value = null;
-    autoSave();
-  }, []);
+  }, [applyGraphChange]);
+
+  const duplicateNode = useCallback((nodeId) => {
+    const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
+    if (!sourceNode) return;
+    const clone = {
+      ...sourceNode,
+      id: `node-${Date.now()}-${Math.round(Math.random() * 1000)}`,
+      position: {
+        x: (sourceNode.position?.x || 0) + 40,
+        y: (sourceNode.position?.y || 0) + 40,
+      },
+    };
+    applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+      nodes: [...currentNodes, clone],
+      edges: currentEdges,
+    }));
+    selectedNodeId.value = clone.id;
+    selectedEdgeId.value = null;
+    setSelectedNodeIds(new Set([clone.id]));
+    setContextMenu(null);
+  }, [applyGraphChange]);
 
   const updateNodeConfig = useCallback((nodeId, configPatch) => {
-    setNodes(prev => prev.map(n =>
-      n.id === nodeId ? { ...n, config: { ...n.config, ...configPatch } } : n
-    ));
-    autoSave();
-  }, []);
+    applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+      nodes: currentNodes.map((node) => (
+        node.id === nodeId ? { ...node, config: { ...node.config, ...configPatch } } : node
+      )),
+      edges: currentEdges,
+    }), { history: "debounced" });
+  }, [applyGraphChange]);
 
   const updateNodeLabel = useCallback((nodeId, label) => {
-    setNodes(prev => prev.map(n =>
-      n.id === nodeId ? { ...n, label } : n
-    ));
-    autoSave();
+    applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+      nodes: currentNodes.map((node) => (
+        node.id === nodeId ? { ...node, label } : node
+      )),
+      edges: currentEdges,
+    }), { history: "debounced" });
+  }, [applyGraphChange]);
+
+  useEffect(() => () => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
   }, []);
 
-  // ── Auto-save (debounced) ─────────────────────────────────
+  useEffect(() => {
+    if (!connectionHint) return undefined;
+    const remaining = Math.max(120, (connectionHint.expiresAt || Date.now() + 1200) - Date.now());
+    const timer = setTimeout(() => {
+      setConnectionHint((current) => (current === connectionHint ? null : current));
+    }, remaining);
+    return () => clearTimeout(timer);
+  }, [connectionHint]);
 
-  const saveTimer = useRef(null);
-  const autoSave = useCallback(() => {
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      if (!workflow?.id) return;
-      const updated = {
-        ...workflow,
-        nodes: nodes,
-        edges: edges,
-      };
-      // Use latest state
-      saveWorkflow(updated);
-    }, 1500);
-  }, [workflow, nodes, edges]);
-
-  // cleanup
-  useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
+  useEffect(() => {
+    if (connecting) return undefined;
+    setPortHoverHint(null);
+    return undefined;
+  }, [connecting]);
 
   // ── Render helpers ────────────────────────────────────────
 
   const getNodeCenter = (nodeId) => {
-    const n = nodes.find(n => n.id === nodeId);
+    const n = nodes.find((value) => value.id === nodeId);
     if (!n) return { x: 0, y: 0 };
     return { x: (n.position?.x || 0) + NODE_W / 2, y: (n.position?.y || 0) + NODE_H / 2 };
   };
 
-  const getInputPort = (nodeId) => {
-    const n = nodes.find(n => n.id === nodeId);
+  const getNodePortPosition = (nodeId, direction, portName = "default") => {
+    const n = nodes.find((value) => value.id === nodeId);
     if (!n) return { x: 0, y: 0 };
-    return { x: (n.position?.x || 0), y: (n.position?.y || 0) + NODE_H / 2 };
-  };
-
-  const getOutputPort = (nodeId) => {
-    const n = nodes.find(n => n.id === nodeId);
-    if (!n) return { x: 0, y: 0 };
-    return { x: (n.position?.x || 0) + NODE_W, y: (n.position?.y || 0) + NODE_H / 2 };
+    const ports = resolveNodePorts(n, nodeTypeMap)[direction === "input" ? "inputs" : "outputs"];
+    const index = Math.max(
+      0,
+      ports.findIndex((port) => port.name === portName),
+    );
+    const spread = 24;
+    const centerY = NODE_H / 2 + 10;
+    const offsetY = (index - ((ports.length - 1) / 2)) * spread;
+    return {
+      x: (n.position?.x || 0) + (direction === "input" ? 0 : NODE_W),
+      y: (n.position?.y || 0) + centerY + offsetY,
+    };
   };
 
   // Bezier curve between points
@@ -1697,10 +3178,22 @@ function WorkflowCanvas({ workflow, onSave }) {
         <${Button} variant="text" size="small" onClick=${returnToWorkflowList}>
           ← Back to Workflows
         <//>
-        <${Button} variant="contained" size="small" onClick=${() => setShowNodePalette(!showNodePalette)} sx=${{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <span style="font-size: 18px;">+</span> Add Node
+        <${Button}
+          variant="outlined"
+          size="small"
+          onClick=${() => openWorkflowCopilotFromCanvas({
+            intent: "explain",
+            title: `Explain workflow ${workflow?.name || workflow?.id || ""}`.trim(),
+            successToast: "Opened workflow explanation chat",
+          })}
+        >
+          <span class="btn-icon">${resolveIcon("bot")}</span>
+          Explain With Bosun
         <//>
-        <${Button} variant="outlined" size="small" onClick=${() => { if (workflow) saveWorkflow({ ...workflow, nodes, edges }); }}>
+        <${Button} variant="contained" size="small" onClick=${() => openNodePalette()} sx=${{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <span style="font-size: 18px;">+</span> Add Node /
+        <//>
+        <${Button} variant="outlined" size="small" onClick=${() => { if (workflow) saveWorkflow({ ...workflow, nodes: normalizeNodesForCanvas(nodesRef.current), edges: edgesRef.current }); }}>
           <span class="btn-icon">${resolveIcon("save")}</span>
           Save
         <//>
@@ -1720,6 +3213,30 @@ function WorkflowCanvas({ workflow, onSave }) {
           <span class="btn-icon">${resolveIcon("play")}</span>
           Run
         <//>
+        <${Button}
+          variant="outlined"
+          size="small"
+          onClick=${() => openWorkflowRunsView(workflow?.id)}
+        >
+          <span class="btn-icon">${resolveIcon("chart")}</span>
+          Runs
+        <//>
+        <${Button} variant="outlined" size="small" onClick=${() => { viewMode.value = "code"; }}>
+          <span class="btn-icon">${resolveIcon("settings")}</span>
+          Code
+        <//>
+        <${Button} variant="outlined" size="small" onClick=${() => exportWorkflow(workflow)}>
+          <span class="btn-icon">${resolveIcon("save")}</span>
+          Export
+        <//>
+        ${workflow?.metadata?.installedFrom && html`<${Button}
+          variant="outlined"
+          size="small"
+          onClick=${() => relayoutTemplateWorkflow(workflow.id)}
+        >
+          <span class="btn-icon">${resolveIcon("refresh")}</span>
+          Re-layout
+        <//>`}
         ${workflow?.core !== true && html`<${Button}
           variant="outlined"
           size="small"
@@ -1732,6 +3249,9 @@ function WorkflowCanvas({ workflow, onSave }) {
           ${workflow?.enabled === false ? "Resume" : "Pause"}
         <//>`}
         ${workflow?.core === true && html`<span class="wf-badge" style="background: #8b5cf620; color: #a78bfa; font-size: 11px; font-weight: 600;">Core</span>`}
+        <${Button} variant="text" size="small" disabled=${historyState.past.length === 0} onClick=${undoCanvas}>Undo<//>
+        <${Button} variant="text" size="small" disabled=${historyState.future.length === 0} onClick=${redoCanvas}>Redo<//>
+        <${Button} variant="text" size="small" onClick=${() => setShowShortcutOverlay(true)}>Shortcuts ?<//>
         <div style="flex:1;"></div>
         ${selectedNodeIds.size > 1 && html`
           <span class="wf-badge" style="font-size: 11px; background: #3b82f640; color: #60a5fa; border: 1px solid #3b82f660;">
@@ -1744,19 +3264,92 @@ function WorkflowCanvas({ workflow, onSave }) {
         <span class="wf-badge" style="font-size: 11px; opacity: 0.75;">
           ${workflow?.enabled === false ? "Paused" : "Active"} · Pan: touch drag, Ctrl/Space + drag
         </span>
+        <div style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--color-text-secondary, #8b95a5);">
+          <${Switch}
+            size="small"
+            checked=${liveHighlightEnabled}
+            onChange=${(e) => setLiveHighlightEnabled(Boolean(e.target.checked))}
+          />
+          <span>Live highlights</span>
+        </div>
+        ${liveHighlightEnabled && liveRun?.runId && html`
+          <span class="wf-badge" style="font-size: 11px; background: ${getRunStatusBadgeStyles(liveRun.status).bg}; color: ${getRunStatusBadgeStyles(liveRun.status).color};">
+            ${liveRun.status === "running" ? "Live Run" : "Last Run"} · ${formatDuration(liveRunDuration)}
+          </span>
+        `}
+        ${liveHighlightEnabled && hasLiveStatuses && html`
+          <span class="wf-badge" style="font-size: 11px; background: var(--accent-soft, rgba(59,130,246,0.18)); color: var(--accent, #60a5fa);">
+            ${liveActiveNodes} active node${liveActiveNodes === 1 ? "" : "s"}
+          </span>
+        `}
         <${Button} variant="text" size="small" onClick=${() => setZoom(1)}>Reset Zoom<//>
         <${Button} variant="text" size="small" onClick=${() => setPan({ x: 0, y: 0 })}>Reset Pan<//>
         <${Button} variant="text" size="small" onClick=${returnToWorkflowList}>← Back to Workflows<//>
       </div>
 
-      <!-- Node Palette (dropdown) -->
-      ${showNodePalette && html`
-        <${NodePalette}
-          nodeTypes=${nodeTypes.value}
-          onSelect=${(type) => addNode(type)}
-          onClose=${() => setShowNodePalette(false)}
-        />
-      `}
+      <div style="position: absolute; top: 64px; right: 12px; z-index: 18; width: min(340px, calc(100vw - 24px)); pointer-events: none;">
+        <div style="pointer-events: auto; background: var(--bg-card, #2b2a27); border: 1px solid var(--color-border, #2a3040); border-radius: 12px; backdrop-filter: blur(8px); box-shadow: var(--shadow-lg, 0 10px 30px rgba(0,0,0,0.28)); overflow: hidden; color: var(--color-text, #e8eaf0);">
+          <div style="display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom: 1px solid var(--color-border, #2a3040);">
+            <span class="icon-inline">${resolveIcon("chart")}</span>
+            <div style="font-size: 12px; font-weight: 700; letter-spacing: 0.02em; flex:1;">Workflow Runs</div>
+            <span class="wf-badge" style="font-size: 10px; background: var(--bg-secondary, #1f2937); color: var(--text-secondary, #cbd5e1);">${recentRunsTotal || recentRuns.length} total</span>
+            ${recentRuns.some((run) => run?.status === "running") && html`<span class="wf-badge" style="font-size: 10px; background: var(--accent-soft, rgba(59,130,246,0.18)); color: var(--accent, #60a5fa);">active</span>`}
+            <${Button} variant="text" size="small" onClick=${() => setRunsPanelOpen((open) => !open)}>${runsPanelOpen ? "Hide" : "Show"}<//>
+          </div>
+          ${runsPanelOpen && html`
+            <div style="padding: 10px 10px 12px; display:flex; flex-direction:column; gap:8px;">
+              <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <${Button} variant="outlined" size="small" onClick=${() => openWorkflowRunsView(workflow?.id)}>View all runs<//>
+                ${liveRun?.runId && html`<${Button} variant="text" size="small" onClick=${() => openWorkflowRunsView(workflow?.id, liveRun.runId)}>Open current run<//>`}
+              </div>
+              ${recentRunsLoading && recentRuns.length === 0 && html`<div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5);">Loading recent runs…</div>`}
+              ${!recentRunsLoading && recentRuns.length === 0 && html`<div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5);">No runs recorded for this workflow yet.</div>`}
+              ${recentRuns.map((run) => {
+                const styles = getRunStatusBadgeStyles(run?.status);
+                const lastActivityAt = getRunActivityAt(run);
+                return html`
+                  <button
+                    key=${run.runId}
+                    type="button"
+                    onClick=${() => openWorkflowRunsView(workflow?.id, run.runId)}
+                    style="text-align:left; width:100%; border:1px solid ${run?.status === 'running' ? 'var(--accent, #60a5fa)' : 'var(--color-border, #2a3040)'}; border-radius:10px; background:var(--bg-secondary, #111827); color:inherit; padding:10px; display:flex; gap:10px; cursor:pointer; box-shadow: var(--shadow-sm, none);"
+                  >
+                    <div style="flex:1; min-width:0;">
+                      <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+                        <span class="wf-badge" style="background:${styles.bg}; color:${styles.color}; font-size:10px;">${run?.status || 'unknown'}</span>
+                        <span style="font-size:11px; color: var(--color-text-secondary, #94a3b8); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${String(run?.runId || '').slice(0, 12) || 'run'}</span>
+                      </div>
+                      <div style="font-size:12px; font-weight:600; color:var(--color-text, #e5e7eb); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${formatRelative(run?.startedAt)}</div>
+                      <div style="font-size:11px; color: var(--color-text-secondary, #8b95a5); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                        ${formatDuration(run?.status === 'running' && run?.startedAt ? Math.max(0, liveNowTick - Number(run.startedAt)) : Number(run?.duration) || 0)}
+                        ${lastActivityAt ? ` · active ${formatRelative(lastActivityAt)}` : ''}
+                        ${run?.errorCount ? ` · ${run.errorCount} error${run.errorCount === 1 ? '' : 's'}` : ''}
+                      </div>
+                    </div>
+                    <div style="display:flex; align-items:center; color:var(--color-text-secondary, #94a3b8);">${resolveIcon('arrow-right') || '→'}</div>
+                  </button>
+                `;
+              })}
+            </div>
+          `}
+        </div>
+      </div>
+
+      <${NodePalette}
+        open=${showNodePalette}
+        nodeTypes=${availableNodeTypes}
+        insertPoint=${paletteInsertPoint || getDefaultInsertPoint()}
+        query=${nodePaletteQuery}
+        onQueryChange=${setNodePaletteQuery}
+        onSelect=${(type) => addNode(type, paletteInsertPoint || getDefaultInsertPoint())}
+        onClose=${closeNodePalette}
+      />
+      <${KeyboardShortcutOverlay}
+        open=${showShortcutOverlay}
+        onClose=${() => setShowShortcutOverlay(false)}
+        canUndo=${historyState.past.length > 0}
+        canRedo=${historyState.future.length > 0}
+      />
 
       <!-- SVG Canvas -->
       <svg
@@ -1771,6 +3364,7 @@ function WorkflowCanvas({ workflow, onSave }) {
         onPointerUp=${onPointerUp}
         onPointerCancel=${onPointerUp}
         onWheel=${onWheel}
+        onDblClick=${onCanvasDoubleClick}
         onContextMenu=${(e) => e.preventDefault()}
       >
         <defs>
@@ -1795,29 +3389,52 @@ function WorkflowCanvas({ workflow, onSave }) {
 
           <!-- Edges -->
           ${edges.map(edge => {
-            const from = getOutputPort(edge.source);
-            const to = getInputPort(edge.target);
+            const sourcePort = getOutputPortDescriptor(edge.source, edge.sourcePort || "default");
+            const from = getNodePortPosition(edge.source, "output", edge.sourcePort || "default");
+            const to = getNodePortPosition(edge.target, "input", edge.targetPort || "default");
             const isSelected = selectedEdgeId.value === edge.id;
             const hasCondition = !!edge.condition;
+            const edgeColor = sourcePort?.color || (hasCondition ? "#f59e0b" : "#6b7280");
+            const edgePath = curvePath(from.x, from.y, to.x, to.y);
+            const isActiveFlow = liveHighlightEnabled && liveEdgeActivity[edge.id];
             return html`
               <g key=${edge.id} class="wf-edge" onClick=${(e) => { e.stopPropagation(); selectedEdgeId.value = edge.id; }}>
                 <path
-                  d=${curvePath(from.x, from.y, to.x, to.y)}
+                  d=${edgePath}
                   fill="none"
-                  stroke=${isSelected ? "#3b82f6" : hasCondition ? "#f59e0b" : "#6b7280"}
+                  stroke=${isSelected ? "#3b82f6" : edgeColor}
                   stroke-width=${isSelected ? 3 : 2}
                   stroke-dasharray=${hasCondition ? "6,4" : "none"}
                   marker-end="url(#arrowhead)"
-                  style="cursor: pointer; transition: stroke 0.15s;"
+                  style=${`cursor: pointer; transition: stroke 0.15s, stroke-width 0.15s; ${isActiveFlow ? "filter: drop-shadow(0 0 6px rgba(96,165,250,0.45));" : ""}`}
                 />
+                ${isActiveFlow && html`
+                  <path
+                    d=${edgePath}
+                    fill="none"
+                    stroke="#93c5fd"
+                    stroke-width="1.6"
+                    stroke-dasharray="12,8"
+                    marker-end="url(#arrowhead)"
+                    opacity="0.9"
+                    style="pointer-events: none;"
+                  >
+                    <animate attributeName="stroke-dashoffset" values="0;-20" dur="0.45s" repeatCount="indefinite" />
+                  </path>
+                `}
                 <!-- Invisible wider hit area -->
                 <path
-                  d=${curvePath(from.x, from.y, to.x, to.y)}
+                  d=${edgePath}
                   fill="none"
                   stroke="transparent"
                   stroke-width="12"
                   style="cursor: pointer;"
                 />
+                ${isActiveFlow && html`
+                  <circle r="3.4" fill="#93c5fd" opacity="0.95">
+                    <animateMotion dur="0.95s" repeatCount="1" rotate="auto" path=${edgePath} />
+                  </circle>
+                `}
                 ${hasCondition && html`
                   <text
                     x=${(from.x + to.x) / 2}
@@ -1845,44 +3462,82 @@ function WorkflowCanvas({ workflow, onSave }) {
 
           <!-- Connecting line (while dragging) -->
           ${connecting && html`
+            ${(() => {
+              const start = getNodePortPosition(connecting.sourceId, "output", connecting.sourcePort || "default");
+              const sourcePort = getOutputPortDescriptor(connecting.sourceId, connecting.sourcePort || "default");
+              return html`
             <line
-              x1=${getOutputPort(connecting.sourceId).x}
-              y1=${getOutputPort(connecting.sourceId).y}
+              x1=${start.x}
+              y1=${start.y}
               x2=${mousePos.x}
               y2=${mousePos.y}
-              stroke="#3b82f680"
+              stroke=${(sourcePort?.color || "#3b82f6") + "80"}
               stroke-width="2"
               stroke-dasharray="6,4"
             />
+            `;
+            })()}
           `}
 
           <!-- Nodes -->
           ${nodes.map(node => {
             const meta = getNodeMeta(node.type);
+            const typeInfo = nodeTypeMap.get(node.type) || null;
+            const ports = resolveNodePorts(node, nodeTypeMap);
+            const inlineFields = getInlineFieldDescriptors(typeInfo, node, 2);
             const isSelected = selectedNodeIds.has(node.id);
+            const nodeRunStatus = liveHighlightEnabled ? normalizeLiveNodeStatus(liveNodeStatuses[node.id]) : null;
+            const nodeFlash = liveNodeFlashStates[node.id] || null;
+            const flashState = nodeFlash?.state || "";
+            const executionVisuals = getCanvasNodeExecutionVisuals(nodeRunStatus, isSelected, meta.color, flashState);
+            const nodeStatusStyles = getRunStatusBadgeStyles(nodeRunStatus);
+            const preview = resolveNodeOutputPreview(node.type, liveNodeOutputPreviews[node.id], null);
+            const previewLines = preview.lines.slice(0, 3);
+            const hasPreview = previewLines.length > 0 || preview.tokenCount != null;
+            const runningHintUntil = Number(liveNodeRunningHints[node.id] || 0);
+            const hasRunningHint = runningHintUntil > liveNowTick;
+            const spinnerVisible = nodeRunStatus === "running" || hasRunningHint;
+            const previewPanelY = NODE_HEADER_H + 8;
+            const previewPanelH = Math.max(30, NODE_H - previewPanelY - 8);
             const x = node.position?.x || 0;
             const y = node.position?.y || 0;
             return html`
               <g
                 key=${node.id}
-                class="wf-node"
+                class=${`wf-node${spinnerVisible ? " wf-node-running" : ""}${flashState ? ` wf-node-flash-${flashState}` : ""}`}
                 transform="translate(${x} ${y})"
                 onMouseDown=${(e) => onNodeMouseDown(node.id, e)}
                 onPointerDown=${(e) => onNodePointerDown(node.id, e)}
                 onDblClick=${() => onNodeDoubleClick(node.id)}
                 onContextMenu=${(e) => onNodeContextMenu(node.id, e)}
                 style="cursor: grab;"
-                filter=${isSelected ? "url(#node-glow)" : "url(#node-shadow)"}
+                filter=${executionVisuals.filter}
               >
                 <!-- Node body -->
                 <rect
                   width=${NODE_W}
                   height=${NODE_H}
                   rx="8"
-                  fill=${isSelected ? "#1e293b" : "#1a1f2e"}
-                  stroke=${isSelected ? meta.color : "#2a3040"}
-                  stroke-width=${isSelected ? 2 : 1}
+                  fill=${executionVisuals.fill}
+                  stroke=${executionVisuals.stroke}
+                  stroke-width=${executionVisuals.strokeWidth}
                 />
+                ${spinnerVisible && html`
+                  <rect
+                    x="1.5"
+                    y="1.5"
+                    width=${NODE_W - 3}
+                    height=${NODE_H - 3}
+                    rx="7"
+                    fill="none"
+                    stroke="#93c5fd"
+                    stroke-opacity="0.85"
+                    stroke-width="1.6"
+                    stroke-dasharray="10 6"
+                  >
+                    <animate attributeName="stroke-dashoffset" values="0;-32" dur="1s" repeatCount="indefinite" />
+                  </rect>
+                `}
 
                 <!-- Category color strip -->
                 <rect
@@ -1895,7 +3550,7 @@ function WorkflowCanvas({ workflow, onSave }) {
                 <!-- Label -->
                 <text
                   x=${NODE_W / 2}
-                  y=${NODE_H / 2 - 6}
+                  y="24"
                   text-anchor="middle"
                   fill="white"
                   font-size="13"
@@ -1905,37 +3560,135 @@ function WorkflowCanvas({ workflow, onSave }) {
                 <!-- Type subtitle -->
                 <text
                   x=${NODE_W / 2}
-                  y=${NODE_H / 2 + 12}
+                  y="40"
                   text-anchor="middle"
                   fill="#94a3b8"
                   font-size="10"
                 >${node.type}</text>
 
-                <!-- Input port (left) -->
-                <circle
-                  cx="0"
-                  cy=${NODE_H / 2}
-                  r=${PORT_R}
-                  fill="#1a1f2e"
-                  stroke=${connecting ? "#10b981" : "#4a5568"}
-                  stroke-width="2"
-                  style="cursor: crosshair;"
-                  onMouseUp=${() => onInputPortMouseUp(node.id)}
-                  onPointerUp=${(e) => onInputPortPointerUp(node.id, e)}
-                />
+                ${inlineFields.length > 0 && html`
+                  <foreignObject
+                    x="10"
+                    y="48"
+                    width=${NODE_W - 20}
+                    height="56"
+                    style="overflow: visible;"
+                    onMouseDown=${(e) => e.stopPropagation()}
+                    onPointerDown=${(e) => e.stopPropagation()}
+                  >
+                    <div xmlns="http://www.w3.org/1999/xhtml" style="display:flex; flex-direction:column; gap:4px; font-size:10px;">
+                      ${inlineFields.map((field) => {
+                        const label = String(field.key || "").replace(/([A-Z])/g, " $1").replace(/_/g, " ").trim();
+                        if (field.isEnum) {
+                          return html`
+                            <label key=${field.key} style="display:flex; flex-direction:column; gap:2px; color:#94a3b8;">
+                              <span>${label}</span>
+                              <select
+                                value=${field.value ?? ""}
+                                style="height:18px; border:1px solid #334155; border-radius:4px; background:#0f172a; color:#e2e8f0; font-size:10px;"
+                                onInput=${(e) => updateNodeConfig(node.id, { [field.key]: e.target.value })}
+                                onMouseDown=${(e) => e.stopPropagation()}
+                              >
+                                <option value="">-</option>
+                                ${(field.schema.enum || []).map((opt) => html`<option key=${String(opt)} value=${opt}>${String(opt)}</option>`)}
+                              </select>
+                            </label>
+                          `;
+                        }
+                        if (field.fieldType === "boolean") {
+                          return html`
+                            <label key=${field.key} style="display:flex; align-items:center; gap:6px; color:#94a3b8;">
+                              <input
+                                type="checkbox"
+                                checked=${Boolean(field.value)}
+                                onInput=${(e) => updateNodeConfig(node.id, { [field.key]: e.target.checked })}
+                                onMouseDown=${(e) => e.stopPropagation()}
+                              />
+                              <span>${label}</span>
+                            </label>
+                          `;
+                        }
+                        return html`
+                          <label key=${field.key} style="display:flex; flex-direction:column; gap:2px; color:#94a3b8;">
+                            <span>${label}</span>
+                            <input
+                              type=${field.fieldType === "number" ? "number" : "text"}
+                              value=${field.value ?? ""}
+                              style="height:18px; border:1px solid #334155; border-radius:4px; background:#0f172a; color:#e2e8f0; font-size:10px; padding:0 4px;"
+                              onInput=${(e) => updateNodeConfig(node.id, {
+                                [field.key]: field.fieldType === "number" ? Number(e.target.value || 0) : e.target.value,
+                              })}
+                              onMouseDown=${(e) => e.stopPropagation()}
+                            />
+                          </label>
+                        `;
+                      })}
+                    </div>
+                  </foreignObject>
+                `}
 
-                <!-- Output port (right) -->
-                <circle
-                  cx=${NODE_W}
-                  cy=${NODE_H / 2}
-                  r=${PORT_R}
-                  fill="#1a1f2e"
-                  stroke=${meta.color}
-                  stroke-width="2"
-                  style="cursor: crosshair;"
-                  onMouseDown=${(e) => onOutputPortMouseDown(node.id, e)}
-                  onPointerDown=${(e) => onOutputPortPointerDown(node.id, e)}
-                />
+                ${ports.inputs.map((port) => {
+                  const pos = getNodePortPosition(node.id, "input", port.name);
+                  const localY = pos.y - y;
+                  const sourcePort = connecting ? getOutputPortDescriptor(connecting.sourceId, connecting.sourcePort || "default") : null;
+                  const compatibility = connecting && connecting.sourceId !== node.id
+                    ? isPortConnectionCompatible(sourcePort, port)
+                    : { compatible: true };
+                  const strokeColor = connecting && connecting.sourceId !== node.id
+                    ? (compatibility.compatible ? "#22c55e" : "#ef4444")
+                    : (port.color || "#4a5568");
+                  const cursorStyle = connecting && connecting.sourceId !== node.id && !compatibility.compatible
+                    ? "not-allowed"
+                    : "crosshair";
+                  return html`
+                    <circle
+                      key=${`in-${node.id}-${port.name}`}
+                      cx="0"
+                      cy=${localY}
+                      r=${PORT_R}
+                      fill="#0f172a"
+                      stroke=${strokeColor}
+                      stroke-width="2"
+                      style=${`cursor: ${cursorStyle};`}
+                      onMouseUp=${(e) => onInputPortMouseUp(node.id, port.name, { clientX: e.clientX, clientY: e.clientY })}
+                      onPointerUp=${(e) => onInputPortPointerUp(node.id, port.name, e)}
+                      onMouseEnter=${(e) => {
+                        showPortHoverHint(port, e.clientX, e.clientY);
+                        if (connecting && connecting.sourceId !== node.id && !compatibility.compatible) {
+                          showConnectionHint(compatibility.reason || "Incompatible port types", e.clientX, e.clientY);
+                        }
+                      }}
+                      onMouseMove=${(e) => showPortHoverHint(port, e.clientX, e.clientY)}
+                      onMouseLeave=${() => setPortHoverHint(null)}
+                    >
+                      <title>${`${port.label} (${port.type})${port.description ? ` - ${port.description}` : ""}`}</title>
+                    </circle>
+                  `;
+                })}
+
+                ${ports.outputs.map((port) => {
+                  const pos = getNodePortPosition(node.id, "output", port.name);
+                  const localY = pos.y - y;
+                  return html`
+                    <circle
+                      key=${`out-${node.id}-${port.name}`}
+                      cx=${NODE_W}
+                      cy=${localY}
+                      r=${PORT_R}
+                      fill="#0f172a"
+                      stroke=${port.color || meta.color}
+                      stroke-width="2"
+                      style="cursor: crosshair;"
+                      onMouseDown=${(e) => onOutputPortMouseDown(node.id, port.name, e)}
+                      onPointerDown=${(e) => onOutputPortPointerDown(node.id, port.name, e)}
+                      onMouseEnter=${(e) => showPortHoverHint(port, e.clientX, e.clientY)}
+                      onMouseMove=${(e) => showPortHoverHint(port, e.clientX, e.clientY)}
+                      onMouseLeave=${() => setPortHoverHint(null)}
+                    >
+                      <title>${`${port.label} (${port.type})${port.description ? ` - ${port.description}` : ""}`}</title>
+                    </circle>
+                  `;
+                })}
               </g>
             `;
           })}
@@ -1957,14 +3710,45 @@ function WorkflowCanvas({ workflow, onSave }) {
         </g>
       </svg>
 
+      ${connectionHint && html`
+        <div
+          style="position: fixed; left: ${connectionHint.x}px; top: ${connectionHint.y}px; z-index: 40; max-width: 320px; padding: 6px 8px; border-radius: 6px; background: #111827; color: #fca5a5; border: 1px solid #ef444480; font-size: 11px; pointer-events: none; box-shadow: 0 8px 24px rgba(0,0,0,0.35);"
+        >
+          ${connectionHint.message}
+        </div>
+      `}
+
+      ${portHoverHint && html`
+        <div
+          style="position: fixed; left: ${portHoverHint.x}px; top: ${portHoverHint.y}px; z-index: 39; max-width: 340px; padding: 6px 8px; border-radius: 6px; background: #0f172a; color: #cbd5e1; border: 1px solid #334155; font-size: 11px; pointer-events: none; box-shadow: 0 8px 24px rgba(0,0,0,0.35);"
+        >
+          ${portHoverHint.message}
+        </div>
+      `}
+
       <!-- Context Menu -->
       ${contextMenu && html`
         <div class="wf-context-menu" style="position: fixed; left: ${contextMenu.x}px; top: ${contextMenu.y}px; z-index: 50;">
+          <${MenuItem}
+            onClick=${() => {
+              const node = nodes.find((entry) => entry.id === contextMenu.nodeId) || null;
+              setContextMenu(null);
+              openWorkflowCopilotFromCanvas({
+                intent: "node",
+                nodeId: contextMenu.nodeId,
+                title: `Ask Bosun about node ${node?.label || contextMenu.nodeId}`.trim(),
+                successToast: "Opened node copilot chat",
+              });
+            }}
+          >
+            <span class="btn-icon">${resolveIcon("bot")}</span>
+            Ask Bosun About Node
+          <//>
           <${MenuItem} onClick=${() => { setEditingNode(contextMenu.nodeId); setContextMenu(null); }}>
             <span class="btn-icon">${resolveIcon("settings")}</span>
             Edit Config
           <//>
-          <${MenuItem} onClick=${() => { const n = nodes.find(n => n.id === contextMenu.nodeId); if (n) { const clone = { ...n, id: `node-${Date.now()}`, position: { x: n.position.x + 40, y: n.position.y + 40 } }; setNodes(p => [...p, clone]); } setContextMenu(null); }}>
+          <${MenuItem} onClick=${() => duplicateNode(contextMenu.nodeId)}>
             <span class="btn-icon">${resolveIcon("clipboard")}</span>
             Duplicate
           <//>
@@ -1977,14 +3761,28 @@ function WorkflowCanvas({ workflow, onSave }) {
 
       <!-- Node Config Editor (side panel) -->
       ${editingNode && html`
+        ${(() => {
+          const editingNodeDef = nodes.find((n) => n.id === editingNode) || null;
+          const editingTypeInfo = nodeTypeMap.get(editingNodeDef?.type) || null;
+          const inlineDescriptors = getInlineFieldDescriptors(editingTypeInfo, editingNodeDef, 3);
+          return html`
         <${NodeConfigEditor}
-          node=${nodes.find(n => n.id === editingNode)}
-          nodeTypes=${nodeTypes.value}
+          node=${editingNodeDef}
+          nodeTypes=${availableNodeTypes}
+          inlineFieldKeys=${inlineDescriptors.map((field) => field.key)}
           onUpdate=${(config) => updateNodeConfig(editingNode, config)}
           onUpdateLabel=${(label) => updateNodeLabel(editingNode, label)}
+          onAskBosun=${() => openWorkflowCopilotFromCanvas({
+            intent: "node",
+            nodeId: editingNode,
+            title: `Ask Bosun about node ${editingNodeDef?.label || editingNode}`.trim(),
+            successToast: "Opened node copilot chat",
+          })}
           onClose=${() => setEditingNode(null)}
           onDelete=${() => deleteNode(editingNode)}
         />
+          `;
+        })()}
       `}
     </div>
   `;
@@ -1994,84 +3792,195 @@ function WorkflowCanvas({ workflow, onSave }) {
  *  Node Palette — categorized node type picker
  * ═══════════════════════════════════════════════════════════════ */
 
-function NodePalette({ nodeTypes: types, onSelect, onClose }) {
-  const [search, setSearch] = useState("");
-  const [expandedCat, setExpandedCat] = useState(null);
+function NodePalette({
+  open,
+  nodeTypes: types,
+  insertPoint,
+  query,
+  onQueryChange,
+  onSelect,
+  onClose,
+}) {
+  const [selectedIndex, setSelectedIndex] = useState(0);
 
-  const grouped = useMemo(() => {
-    const groups = {};
-    for (const nt of (types || [])) {
-      const cat = nt.category || "other";
-      if (!groups[cat]) groups[cat] = [];
-      groups[cat].push(nt);
-    }
-    return groups;
-  }, [types]);
+  const results = useMemo(() => {
+    const safeTypes = types || [];
+    return searchNodeTypes(safeTypes, query, Math.max(1, safeTypes.length || 1));
+  }, [types, query]);
 
-  const filtered = useMemo(() => {
-    if (!search.trim()) return grouped;
-    const q = search.toLowerCase();
-    const result = {};
-    for (const [cat, items] of Object.entries(grouped)) {
-      const matched = items.filter(nt =>
-        nt.type.toLowerCase().includes(q) ||
-        (nt.description || "").toLowerCase().includes(q)
-      );
-      if (matched.length) result[cat] = matched;
+  useEffect(() => {
+    if (!open) return;
+    setSelectedIndex(0);
+  }, [open, query]);
+
+  useEffect(() => {
+    if (selectedIndex < results.length) return;
+    setSelectedIndex(0);
+  }, [results.length, selectedIndex]);
+
+  const renderChips = (items = [], fallback = "None") => {
+    const safeList = Array.isArray(items) ? items : [];
+    if (!safeList.length) {
+      return html`<span class="wf-node-chip wf-node-chip-fallback">${fallback}</span>`;
     }
-    return result;
-  }, [grouped, search]);
+    const limit = 4;
+    const visible = safeList.slice(0, limit);
+    const remainder = Math.max(0, safeList.length - visible.length);
+    return html`
+      ${visible.map((value, index) => html`<span key=${`${value}-${index}`} class="wf-node-chip">${value}</span>`)}
+      ${remainder > 0 && html`<span class="wf-node-chip wf-node-chip-more">+${remainder}</span>`}
+    `;
+  };
+
+  if (!open) return null;
+
+  const totalTypes = types?.length || 0;
+  const selected = results[selectedIndex] || results[0] || null;
+  const submit = (item) => {
+    if (!item) return;
+    onSelect(item.type);
+  };
+  const pointLabel = `${Math.round(insertPoint?.x || 0)}, ${Math.round(insertPoint?.y || 0)}`;
 
   return html`
-    <div class="wf-palette" style="position: absolute; top: 52px; left: 12px; z-index: 30; width: 320px; max-height: 70vh; overflow-y: auto; background: var(--color-bg, #0d1117); border: 1px solid var(--color-border, #2a3040); border-radius: 12px; padding: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.5);">
-      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+    <div class="wf-palette-backdrop" onClick=${(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div class="wf-palette">
+        <div class="wf-palette-header">
+          <div class="wf-palette-title-group">
+            <div class="wf-palette-title">Insert workflow node</div>
+            <div class="wf-palette-subtitle">${totalTypes} node types · insert at ${pointLabel}</div>
+          </div>
+          <${IconButton} size="small" onClick=${onClose} sx=${{ fontSize: '16px', lineHeight: 1 }}>
+            <span class="icon-inline">${resolveIcon("✕")}</span>
+          <//>
+        </div>
         <${TextField}
           size="small"
           variant="outlined"
-          placeholder="Search nodes..."
-          value=${search}
-          onInput=${(e) => setSearch(e.target.value)}
+          placeholder="Search by name, category, description, or config input..."
+          value=${query}
+          onInput=${(e) => onQueryChange(e.target.value)}
+          onKeyDown=${(e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setSelectedIndex((current) => results.length ? Math.min(current + 1, results.length - 1) : 0);
+              return;
+            }
+            if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setSelectedIndex((current) => Math.max(current - 1, 0));
+              return;
+            }
+            if (e.key === "Enter") {
+              e.preventDefault();
+              submit(selected);
+              return;
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              onClose();
+            }
+          }}
           sx=${{ flex: 1 }}
           autoFocus
         />
-        <${IconButton} size="small" onClick=${onClose} sx=${{ fontSize: '16px', lineHeight: 1 }}>
-          <span class="icon-inline">${resolveIcon("✕")}</span>
-        <//>
-      </div>
-
-      ${Object.entries(filtered).map(([cat, items]) => {
-        const meta = NODE_CATEGORY_META[cat] || { color: "#6b7280", icon: "diamond", label: cat };
-        return html`
-          <div key=${cat} style="margin-bottom: 8px;">
-            <div
-              style="display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 6px; cursor: pointer; color: ${meta.color}; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;"
-              onClick=${() => setExpandedCat(expandedCat === cat ? null : cat)}
-            >
-              <span class="icon-inline">${resolveIcon(meta.icon) || ICONS.dot}</span>
-              <span>${meta.label}</span>
-              <span style="margin-left: auto; font-size: 10px; opacity: 0.5;">${items.length}</span>
-              <span style="font-size: 10px;">${expandedCat === cat ? ICONS.chevronDown : ICONS.arrowRight}</span>
-            </div>
-            ${(expandedCat === cat || search.trim()) && items.map(nt => html`
-              <${Button}
-                key=${nt.type}
-                onClick=${() => { onSelect(nt.type); haptic("light"); }}
-                variant="text"
-                size="small"
-                sx=${{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px 8px 28px', background: 'none', border: 'none', color: 'var(--color-text, white)', fontSize: '13px', cursor: 'pointer', borderRadius: '6px', margin: '1px 0', textTransform: 'none' }}
+        <div class="wf-palette-hints">
+          <span>${results.length} matches</span>
+          <span>·</span>
+          <span>↵ insert</span>
+          <span>·</span>
+          <span>↑↓ navigate</span>
+        </div>
+        <div class="wf-palette-results">
+          ${results.map((item, index) => {
+            const meta = NODE_CATEGORY_META[item.category] || { color: "#6b7280", bg: "#6b728020", label: item.category };
+            const io = getNodeSearchMetadata(item);
+            return html`
+              <button
+                key=${item.type}
+                type="button"
+                class=${`wf-node-search-item ${index === selectedIndex ? "active" : ""}`}
+                style=${`border-color: ${index === selectedIndex ? '#3b82f6aa' : 'var(--color-border, #2a3040)'}; background: ${index === selectedIndex ? 'rgba(59,130,246,0.12)' : 'var(--color-bg-secondary, #131722)'};`}
+                onMouseEnter=${() => setSelectedIndex(index)}
+                onClick=${() => submit(item)}
               >
-                <div style="font-weight: 500;">${nt.type.split(".").pop()?.replace(/_/g, " ")}</div>
-                <div style="font-size: 11px; opacity: 0.6; margin-top: 2px;">${(nt.description || "").slice(0, 60)}</div>
-              <//>
-            `)}
-          </div>
-        `;
-      })}
-
-      ${Object.keys(filtered).length === 0 && html`
-        <div style="text-align: center; padding: 20px; opacity: 0.5;">No matching nodes</div>
-      `}
+                <div class="wf-node-search-item-top">
+                  <span class="wf-node-search-label">${item.label}</span>
+                  <span
+                    class="wf-node-category-badge"
+                    style=${`color:${meta.color}; background:${meta.bg}; border-color:${meta.color}33;`}
+                  >
+                    ${meta.label || item.category}
+                  </span>
+                  ${item.badge
+                    ? html`<span
+                        class="wf-node-category-badge"
+                        style=${`color:${item.isCustom ? "#f472b6" : "#cbd5e1"}; background:${item.isCustom ? "rgba(244,114,182,0.2)" : "rgba(148,163,184,0.2)"}; border-color:${item.isCustom ? "#f472b655" : "#94a3b855"};`}
+                      >
+                        ${item.badge}
+                      </span>`
+                    : ""}
+                  <span class="wf-node-search-type">${item.type}</span>
+                </div>
+                <div class="wf-node-search-description">${item.description || "No description available."}</div>
+                <div class="wf-node-chip-row">
+                  <div class="wf-node-chip-group">
+                    <span class="wf-node-chip-label">Inputs</span>
+                    <div class="wf-node-chip-list">
+                      ${renderChips(io.inputs, "None")}
+                    </div>
+                  </div>
+                  <div class="wf-node-chip-group">
+                    <span class="wf-node-chip-label">Outputs</span>
+                    <div class="wf-node-chip-list">
+                      ${renderChips(io.outputs, "Default")}
+                    </div>
+                  </div>
+                </div>
+              </button>
+            `;
+          })}
+          ${results.length === 0 && html`
+            <div class="wf-node-search-empty">No matching nodes</div>
+          `}
+        </div>
+      </div>
     </div>
+  `;
+}
+
+function KeyboardShortcutOverlay({ open, onClose, canUndo, canRedo }) {
+  if (!open) return null;
+  const shortcuts = [
+    { keys: "/", description: "Open fuzzy node search" },
+    { keys: "Double-click canvas", description: "Insert a node at that position" },
+    { keys: "?", description: "Show this shortcut reference" },
+    { keys: "Ctrl/Cmd + Z", description: canUndo ? "Undo last graph change" : "Undo unavailable" },
+    { keys: "Ctrl/Cmd + Shift + Z", description: canRedo ? "Redo last undone change" : "Redo unavailable" },
+    { keys: "Ctrl/Cmd + Y", description: canRedo ? "Alternate redo shortcut" : "Alternate redo unavailable" },
+    { keys: "Ctrl/Cmd + A", description: "Select all nodes" },
+    { keys: "Delete / Backspace", description: "Delete selected node or edge" },
+    { keys: "Space + drag", description: "Pan the canvas" },
+    { keys: "Ctrl/Cmd + drag", description: "Alternate mouse panning" },
+    { keys: "Shift + click", description: "Add or remove a node from the selection" },
+  ];
+  return html`
+    <${Dialog} open=${open} onClose=${onClose} maxWidth="sm" fullWidth>
+      <${DialogTitle}>Canvas Shortcuts<//>
+      <${DialogContent} dividers>
+        <div class="wf-shortcuts-grid">
+          ${shortcuts.map((shortcut) => html`
+            <div key=${shortcut.keys} class="wf-shortcut-row">
+              <code class="wf-shortcut-key">${shortcut.keys}</code>
+              <span class="wf-shortcut-desc">${shortcut.description}</span>
+            </div>
+          `)}
+        </div>
+      <//>
+      <${DialogActions}>
+        <${Button} onClick=${onClose}>Close<//>
+      <//>
+    <//>
   `;
 }
 
@@ -2081,80 +3990,80 @@ function NodePalette({ nodeTypes: types, onSelect, onClose }) {
 
 const COMMAND_PRESETS = {
   testing: [
-    { label: "Run Tests (npm)", cmd: "npm test", icon: "🧪" },
-    { label: "Run Tests (yarn)", cmd: "yarn test", icon: "🧪" },
-    { label: "Run Tests (pnpm)", cmd: "pnpm test", icon: "🧪" },
-    { label: "Run Tests (pytest)", cmd: "pytest", icon: "🧪" },
-    { label: "Run Tests (Go)", cmd: "go test ./...", icon: "🧪" },
-    { label: "Run Tests (Rust)", cmd: "cargo test", icon: "🧪" },
-    { label: "Run Tests (Java/Maven)", cmd: "mvn test", icon: "🧪" },
-    { label: "Run Tests (Java/Gradle)", cmd: "./gradlew test", icon: "🧪" },
-    { label: "Run Tests (.NET)", cmd: "dotnet test", icon: "🧪" },
-    { label: "Run Tests (Ruby)", cmd: "bundle exec rspec", icon: "🧪" },
-    { label: "Run Single File", cmd: 'npx vitest run tests/{{testFile}}', icon: "🎯" },
-    { label: "Syntax Check (Node)", cmd: "npm run syntax:check", icon: "✅" },
-    { label: "Syntax Check (Python)", cmd: "python -m py_compile", icon: "✅" },
-    { label: "Syntax Check (Go)", cmd: "go vet ./...", icon: "✅" },
-    { label: "Syntax Check (Rust)", cmd: "cargo check", icon: "✅" },
+    { label: "Run Tests (npm)", cmd: "npm test", icon: "beaker" },
+    { label: "Run Tests (yarn)", cmd: "yarn test", icon: "beaker" },
+    { label: "Run Tests (pnpm)", cmd: "pnpm test", icon: "beaker" },
+    { label: "Run Tests (pytest)", cmd: "pytest", icon: "beaker" },
+    { label: "Run Tests (Go)", cmd: "go test ./...", icon: "beaker" },
+    { label: "Run Tests (Rust)", cmd: "cargo test", icon: "beaker" },
+    { label: "Run Tests (Java/Maven)", cmd: "mvn test", icon: "beaker" },
+    { label: "Run Tests (Java/Gradle)", cmd: "./gradlew test", icon: "beaker" },
+    { label: "Run Tests (.NET)", cmd: "dotnet test", icon: "beaker" },
+    { label: "Run Tests (Ruby)", cmd: "bundle exec rspec", icon: "beaker" },
+    { label: "Run Single File", cmd: 'npx vitest run tests/{{testFile}}', icon: "target" },
+    { label: "Syntax Check (Node)", cmd: "npm run syntax:check", icon: "check" },
+    { label: "Syntax Check (Python)", cmd: "python -m py_compile", icon: "check" },
+    { label: "Syntax Check (Go)", cmd: "go vet ./...", icon: "check" },
+    { label: "Syntax Check (Rust)", cmd: "cargo check", icon: "check" },
   ],
   build: [
-    { label: "Build (npm)", cmd: "npm run build", icon: "🔨" },
-    { label: "Build (yarn)", cmd: "yarn build", icon: "🔨" },
-    { label: "Build (pnpm)", cmd: "pnpm build", icon: "🔨" },
-    { label: "Build (Go)", cmd: "go build ./...", icon: "🔨" },
-    { label: "Build (Rust)", cmd: "cargo build", icon: "🔨" },
-    { label: "Build (Maven)", cmd: "mvn package -DskipTests", icon: "🔨" },
-    { label: "Build (Gradle)", cmd: "./gradlew build", icon: "🔨" },
-    { label: "Build (.NET)", cmd: "dotnet build", icon: "🔨" },
-    { label: "Build (Python)", cmd: "python -m build", icon: "🔨" },
-    { label: "Build (Make)", cmd: "make", icon: "🔨" },
-    { label: "Build Watch", cmd: "npm run build -- --watch", icon: "👁" },
-    { label: "Type Check (TS)", cmd: "npx tsc --noEmit", icon: "📏" },
+    { label: "Build (npm)", cmd: "npm run build", icon: "hammer" },
+    { label: "Build (yarn)", cmd: "yarn build", icon: "hammer" },
+    { label: "Build (pnpm)", cmd: "pnpm build", icon: "hammer" },
+    { label: "Build (Go)", cmd: "go build ./...", icon: "hammer" },
+    { label: "Build (Rust)", cmd: "cargo build", icon: "hammer" },
+    { label: "Build (Maven)", cmd: "mvn package -DskipTests", icon: "hammer" },
+    { label: "Build (Gradle)", cmd: "./gradlew build", icon: "hammer" },
+    { label: "Build (.NET)", cmd: "dotnet build", icon: "hammer" },
+    { label: "Build (Python)", cmd: "python -m build", icon: "hammer" },
+    { label: "Build (Make)", cmd: "make", icon: "hammer" },
+    { label: "Build Watch", cmd: "npm run build -- --watch", icon: "eye" },
+    { label: "Type Check (TS)", cmd: "npx tsc --noEmit", icon: "ruler" },
   ],
   lint: [
-    { label: "Lint (npm)", cmd: "npm run lint", icon: "🔍" },
-    { label: "Lint (ESLint)", cmd: "npx eslint .", icon: "🔍" },
-    { label: "Lint (Python/Ruff)", cmd: "ruff check .", icon: "🔍" },
-    { label: "Lint (Python/Flake8)", cmd: "flake8", icon: "🔍" },
-    { label: "Lint (Go)", cmd: "golangci-lint run", icon: "🔍" },
-    { label: "Lint (Rust)", cmd: "cargo clippy -- -D warnings", icon: "🔍" },
-    { label: "Lint (Ruby)", cmd: "bundle exec rubocop", icon: "🔍" },
-    { label: "Lint (.NET)", cmd: "dotnet format --verify-no-changes", icon: "🔍" },
+    { label: "Lint (npm)", cmd: "npm run lint", icon: "search" },
+    { label: "Lint (ESLint)", cmd: "npx eslint .", icon: "search" },
+    { label: "Lint (Python/Ruff)", cmd: "ruff check .", icon: "search" },
+    { label: "Lint (Python/Flake8)", cmd: "flake8", icon: "search" },
+    { label: "Lint (Go)", cmd: "golangci-lint run", icon: "search" },
+    { label: "Lint (Rust)", cmd: "cargo clippy -- -D warnings", icon: "search" },
+    { label: "Lint (Ruby)", cmd: "bundle exec rubocop", icon: "search" },
+    { label: "Lint (.NET)", cmd: "dotnet format --verify-no-changes", icon: "search" },
   ],
   git: [
-    { label: "Diff Stats", cmd: "git diff --stat main...HEAD", icon: "📊" },
-    { label: "Git Status", cmd: "git status --porcelain", icon: "📋" },
-    { label: "Stage All", cmd: "git add -A", icon: "⬇" },
-    { label: "Commit", cmd: 'git commit -m "{{commitMessage}}"', icon: "💾" },
-    { label: "Push", cmd: "git push --set-upstream origin HEAD", icon: "🚀" },
+    { label: "Diff Stats", cmd: "git diff --stat main...HEAD", icon: "chart" },
+    { label: "Git Status", cmd: "git status --porcelain", icon: "clipboard" },
+    { label: "Stage All", cmd: "git add -A", icon: "download" },
+    { label: "Commit", cmd: 'git commit -m "{{commitMessage}}"', icon: "save" },
+    { label: "Push", cmd: "git push --set-upstream origin HEAD", icon: "rocket" },
   ],
   github: [
-    { label: "Check CI", cmd: "gh pr checks --json name,state", icon: "🔍" },
-    { label: "Merge PR (squash)", cmd: "gh pr merge --auto --squash", icon: "🔀" },
-    { label: "Close PR", cmd: 'gh pr close --comment "{{reason}}"', icon: "🚫" },
-    { label: "PR Diff", cmd: "gh pr diff --stat", icon: "📊" },
-    { label: "PR Handoff Note", cmd: 'echo "Bosun manages PR lifecycle after push; direct PR commands are disabled."', icon: "📝" },
-    { label: "Add Label", cmd: 'gh pr edit --add-label "{{label}}"', icon: "🏷" },
-    { label: "Request Review", cmd: 'gh pr edit --add-reviewer {{reviewer}}', icon: "👁" },
+    { label: "Check CI", cmd: "gh pr checks --json name,state", icon: "search" },
+    { label: "Merge PR (squash)", cmd: "gh pr merge --auto --squash", icon: "git" },
+    { label: "Close PR", cmd: 'gh pr close --comment "{{reason}}"', icon: "ban" },
+    { label: "PR Diff", cmd: "gh pr diff --stat", icon: "chart" },
+    { label: "PR Handoff Note", cmd: 'echo "Bosun manages PR lifecycle after push; direct PR commands are disabled."', icon: "edit" },
+    { label: "Add Label", cmd: 'gh pr edit --add-label "{{label}}"', icon: "tag" },
+    { label: "Request Review", cmd: 'gh pr edit --add-reviewer {{reviewer}}', icon: "eye" },
   ],
   bosun: [
-    { label: "List Tasks", cmd: "bosun task list --status todo --json", icon: "📋" },
-    { label: "Count Tasks", cmd: "bosun task list --status todo --count", icon: "#️⃣" },
-    { label: "Task Stats", cmd: "bosun task stats --json", icon: "📊" },
-    { label: "Plan Tasks", cmd: "bosun task plan --count 5", icon: "🧭" },
-    { label: "Create Task", cmd: 'bosun task create --title "{{title}}" --status todo', icon: "➕" },
-    { label: "Monitor Status", cmd: "bosun --daemon-status", icon: "❤" },
+    { label: "List Tasks", cmd: "bosun task list --status todo --json", icon: "clipboard" },
+    { label: "Count Tasks", cmd: "bosun task list --status todo --count", icon: "hash" },
+    { label: "Task Stats", cmd: "bosun task stats --json", icon: "chart" },
+    { label: "Plan Tasks", cmd: "bosun task plan --count 5", icon: "compass" },
+    { label: "Create Task", cmd: 'bosun task create --title "{{title}}" --status todo', icon: "plus" },
+    { label: "Monitor Status", cmd: "bosun --daemon-status", icon: "heart" },
   ],
   session: [
-    { label: "Continue Session", cmd: 'bosun agent continue --session "{{sessionId}}" --prompt "continue"', icon: "▶" },
-    { label: "Restart Agent", cmd: 'bosun agent restart --session "{{sessionId}}"', icon: "🔄" },
-    { label: "Kill Agent", cmd: 'bosun agent kill --session "{{sessionId}}"', icon: "⏹" },
-    { label: "List Sessions", cmd: "bosun agent list --json", icon: "🖥" },
+    { label: "Continue Session", cmd: 'bosun agent continue --session "{{sessionId}}" --prompt "continue"', icon: "play" },
+    { label: "Restart Agent", cmd: 'bosun agent restart --session "{{sessionId}}"', icon: "refresh" },
+    { label: "Kill Agent", cmd: 'bosun agent kill --session "{{sessionId}}"', icon: "stop" },
+    { label: "List Sessions", cmd: "bosun agent list --json", icon: "server" },
   ],
   screenshots: [
-    { label: "Desktop Screenshot", cmd: "bosun screenshot --viewport 1280x720", icon: "🖥" },
-    { label: "Mobile Screenshot", cmd: "bosun screenshot --viewport 375x812", icon: "📱" },
-    { label: "All Viewports", cmd: "bosun screenshot --viewport desktop,mobile", icon: "📸" },
+    { label: "Desktop Screenshot", cmd: "bosun screenshot --viewport 1280x720", icon: "monitor" },
+    { label: "Mobile Screenshot", cmd: "bosun screenshot --viewport 375x812", icon: "phone" },
+    { label: "All Viewports", cmd: "bosun screenshot --viewport desktop,mobile", icon: "camera" },
   ],
 };
 
@@ -2280,13 +4189,15 @@ function WorkflowAgentLibraryPicker({ config, onUpdate }) {
  *  Node Config Editor (right side panel)
  * ═══════════════════════════════════════════════════════════════ */
 
-function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onClose, onDelete }) {
+function NodeConfigEditor({ node, nodeTypes: types, inlineFieldKeys = [], onUpdate, onUpdateLabel, onAskBosun, onClose, onDelete }) {
   if (!node) return null;
 
   const meta = getNodeMeta(node.type);
   const typeInfo = (types || []).find(nt => nt.type === node.type);
   const schema = typeInfo?.schema?.properties || {};
   const config = node.config || {};
+  const hiddenInlineKeys = new Set((inlineFieldKeys || []).map((key) => String(key || "").trim()).filter(Boolean));
+  const schemaEntries = Object.entries(schema).filter(([key]) => !hiddenInlineKeys.has(key));
   const [presetExpanded, setPresetExpanded] = useState(true);
 
   const onFieldChange = useCallback((key, value) => {
@@ -2329,6 +4240,17 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
         <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 12px; padding: 8px; background: var(--color-bg-secondary, #1a1f2e); border-radius: 8px;">
           ${typeInfo.description}
         </div>
+      `}
+      ${typeof onAskBosun === "function" && html`
+        <${Button}
+          onClick=${onAskBosun}
+          variant="outlined"
+          size="small"
+          sx=${{ width: "100%", marginBottom: "12px", textTransform: "none" }}
+        >
+          <span class="btn-icon">${resolveIcon("bot")}</span>
+          Ask Bosun About This Node
+        <//>
       `}
 
       <!-- ═══ Smart Presets: action.run_command ═══ -->
@@ -2634,7 +4556,7 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
 
       <!-- ═══ Config Fields (schema-driven) ═══ -->
       <div style="display: flex; flex-direction: column; gap: 12px;">
-        ${Object.entries(schema).map(([key, fieldSchema]) => {
+        ${schemaEntries.map(([key, fieldSchema]) => {
           const value = config[key] ?? fieldSchema.default ?? "";
           const fieldType = fieldSchema.type || "string";
           const isRequired = typeInfo?.schema?.required?.includes(key);
@@ -2705,10 +4627,10 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
       </div>
 
       <!-- No schema fields hint -->
-      ${Object.keys(schema).length === 0 && html`
+      ${schemaEntries.length === 0 && html`
         <div style="padding: 12px; background: var(--color-bg-secondary, #1a1f2e); border-radius: 8px; text-align: center; margin-bottom: 12px;">
-          <div style="font-size: 12px; color: #6b7280;">This node has no configurable fields.</div>
-          <div style="font-size: 10px; color: #4b5563; margin-top: 4px;">It executes with defaults or inherits from workflow context.</div>
+          <div style="font-size: 12px; color: #6b7280;">Advanced settings only.</div>
+          <div style="font-size: 10px; color: #4b5563; margin-top: 4px;">Primary fields are editable inline on the node body.</div>
         </div>
       `}
 
@@ -2814,6 +4736,8 @@ function resolveWorkflowTemplateSource(workflow, templateLookupById, templateLoo
 function WorkflowListView() {
   const wfs = workflows.value || [];
   const tmpls = templates.value || [];
+  const isWorkflowListLoading = workflowsLoading.value;
+  const isTemplateListLoading = templatesLoading.value;
   const installedTemplateIds = new Set();
   wfs.forEach((wf) => {
     if (wf.metadata?.installedFrom) installedTemplateIds.add(wf.metadata.installedFrom);
@@ -2881,10 +4805,22 @@ function WorkflowListView() {
           <span class="btn-icon">${resolveIcon("chart")}</span>
           Run History
         <//>
+        <${Button} type="button" variant="outlined" size="small" onClick=${() => relayoutInstalledTemplateWorkflows()}>
+          <span class="btn-icon">${resolveIcon("refresh")}</span>
+          Re-layout Installed Templates
+        <//>
       </div>
 
       <!-- Active Workflows -->
-      ${wfs.length > 0 && html`
+      ${isWorkflowListLoading && html`
+        <div style="text-align: center; padding: 40px 20px; background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; margin-bottom: 24px; border: 1px solid var(--color-border, #2a3040);">
+          <${CircularProgress} size=${28} />
+          <div style="font-size: 16px; font-weight: 600; margin-top: 12px; margin-bottom: 8px;">Loading workflows…</div>
+          <div style="font-size: 13px; color: var(--color-text-secondary, #8b95a5);">Fetching installed workflows and template metadata.</div>
+        </div>
+      `}
+
+      ${!isWorkflowListLoading && wfs.length > 0 && html`
         <div style="margin-bottom: 24px;">
           <h3 style="font-size: 14px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
             Your Workflows (${wfs.length})
@@ -3016,6 +4952,17 @@ function WorkflowListView() {
                       >
                         <span class="icon-inline">${resolveIcon("play")}</span>
                       <//>
+                      <${Button}
+                        variant="text"
+                        size="small"
+                        sx=${{ fontSize: '11px', textTransform: 'none' }}
+                        onClick=${(e) => {
+                          e.stopPropagation();
+                          exportWorkflow(wf);
+                        }}
+                      >
+                        <span class="icon-inline">${resolveIcon("save")}</span>
+                      <//>
                       ${!isCore && html`<${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
                         <span class="icon-inline">${resolveIcon("trash")}</span>
                       <//>`}
@@ -3030,7 +4977,7 @@ function WorkflowListView() {
         </div>
       `}
 
-      ${wfs.length === 0 && html`
+      ${!isWorkflowListLoading && wfs.length === 0 && html`
         <div style="text-align: center; padding: 40px 20px; background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; margin-bottom: 24px; border: 1px solid var(--color-border, #2a3040);">
           <div style="font-size: 36px; margin-bottom: 12px;">
             <span class="icon-inline">${resolveIcon("refresh")}</span>
@@ -3058,15 +5005,21 @@ function WorkflowListView() {
       <!-- Templates (grouped by category, deduped against installed) -->
       <div>
         <h3 style="font-size: 14px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
-          Available Templates (${availableTemplates.length})${tmpls.length !== availableTemplates.length ? html` <span style="font-size: 11px; font-weight: 400; opacity: 0.6;">· ${tmpls.length - availableTemplates.length} installed</span>` : ""}
+          Available Templates (${isTemplateListLoading ? "…" : availableTemplates.length})${!isTemplateListLoading && tmpls.length !== availableTemplates.length ? html` <span style="font-size: 11px; font-weight: 400; opacity: 0.6;">· ${tmpls.length - availableTemplates.length} installed</span>` : ""}
         </h3>
-        ${availableTemplates.length === 0 && html`
+        ${isTemplateListLoading && html`
+          <div style="text-align: center; padding: 24px; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 8px;">
+            <${CircularProgress} size=${18} />
+            <span>Loading templates…</span>
+          </div>
+        `}
+        ${!isTemplateListLoading && availableTemplates.length === 0 && html`
           <div style="text-align: center; padding: 24px; opacity: 0.5; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 6px;">
             <span class="icon-inline">${resolveIcon("star")}</span>
             <span>All templates are installed!</span>
           </div>
         `}
-        ${availableTemplateGroups.map((group) => html`
+        ${!isTemplateListLoading && availableTemplateGroups.map((group) => html`
           <div key=${group.key} style="margin-bottom: 20px;">
             <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--color-border, #2a304060);">
               <span class="icon-inline" style="font-size: 16px;">${resolveIcon(group.icon) || ICONS.dot}</span>
@@ -3119,20 +5072,58 @@ function WorkflowListView() {
  *  Run History View
  * ═══════════════════════════════════════════════════════════════ */
 
+function normalizeLiveNodeStatus(status) {
+  const s = String(status || "").trim().toLowerCase();
+  if (!s) return "";
+  if (s === "success" || s === "done" || s === "complete") return "completed";
+  if (s === "fail" || s === "error" || s === "errored") return "failed";
+  if (s === "in_progress" || s === "active" || s === "executing") return "running";
+  if (s === "idle" || s === "queued") return "pending";
+  return s;
+}
+
 function getRunStatusBadgeStyles(status) {
-  if (status === "completed") return { bg: "#10b98130", color: "#10b981" };
-  if (status === "failed") return { bg: "#ef444430", color: "#ef4444" };
-  if (status === "running") return { bg: "#3b82f630", color: "#60a5fa" };
+  const normalized = normalizeLiveNodeStatus(status) || String(status || "").trim().toLowerCase();
+  if (normalized === "completed" || normalized === "success") return { bg: "#10b98130", color: "#10b981" };
+  if (normalized === "failed" || normalized === "fail") return { bg: "#ef444430", color: "#ef4444" };
+  if (normalized === "running") return { bg: "#3b82f630", color: "#60a5fa" };
+  if (normalized === "skipped") return { bg: "#94a3b830", color: "#94a3b8" };
   return { bg: "#6b728030", color: "#9ca3af" };
 }
 
+function getCanvasNodeExecutionVisuals(status, isSelected, selectedColor, flashState = "") {
+  const normalized = normalizeLiveNodeStatus(status) || String(status || "").trim().toLowerCase();
+  if (normalized === "running") {
+    return { fill: "#10233f", stroke: "#60a5fa", strokeWidth: 2.5, filter: "url(#node-glow)" };
+  }
+  if (normalized === "failed" || normalized === "fail" || flashState === "fail") {
+    return { fill: "#2a1217", stroke: "#ef4444", strokeWidth: 2.25, filter: "url(#node-shadow)" };
+  }
+  if (normalized === "completed" || normalized === "success" || flashState === "success") {
+    return { fill: "#0f2a23", stroke: "#10b981", strokeWidth: 2, filter: "url(#node-shadow)" };
+  }
+  if (normalized === "skipped" || flashState === "skipped") {
+    return { fill: "#1f2430", stroke: "#94a3b8", strokeWidth: 2, filter: "url(#node-shadow)" };
+  }
+  if (normalized === "waiting" || normalized === "pending") {
+    return { fill: "#2f2310", stroke: "#f59e0b", strokeWidth: 2, filter: "url(#node-shadow)" };
+  }
+  return {
+    fill: isSelected ? "#1e293b" : "#1a1f2e",
+    stroke: isSelected ? selectedColor : "#2a3040",
+    strokeWidth: isSelected ? 2 : 1,
+    filter: isSelected ? "url(#node-glow)" : "url(#node-shadow)",
+  };
+}
+
 function getNodeStatusRank(status) {
-  if (status === "running") return 0;
-  if (status === "failed") return 1;
+  const normalized = normalizeLiveNodeStatus(status) || status;
+  if (normalized === "running") return 0;
+  if (normalized === "failed" || normalized === "fail") return 1;
   if (status === "waiting") return 2;
   if (status === "pending") return 3;
-  if (status === "completed") return 4;
-  if (status === "skipped") return 5;
+  if (normalized === "completed" || normalized === "success") return 4;
+  if (normalized === "skipped") return 5;
   return 6;
 }
 
@@ -3144,16 +5135,85 @@ function getRunActivityAt(run) {
   return candidates.length > 0 ? Math.max(...candidates) : null;
 }
 
+function summarizeWorkflowNotifications(run, errors = [], logs = []) {
+  const notices = [];
+  if (run?.isStuck) {
+    notices.push({ kind: 'warning', title: 'Run appears stalled', body: 'No recent node progress has been recorded for this running workflow.' });
+  }
+  if (String(run?.status || '').toLowerCase() === 'failed') {
+    notices.push({ kind: 'error', title: 'Run failed', body: formatRetryDecisionReason(run?.retryDecisionReason) });
+  }
+  if (Array.isArray(errors) && errors.length > 0) {
+    notices.push({ kind: 'error', title: 'Errors recorded', body: `${errors.length} error entr${errors.length === 1 ? 'y' : 'ies'} captured for this run.` });
+  }
+  if (Array.isArray(logs) && logs.length > 20) {
+    notices.push({ kind: 'info', title: 'High log volume', body: `${logs.length} log entries available for inspection.` });
+  }
+  return notices;
+}
+
+function buildWorkflowActivityItems(run, logs = [], ledgerEvents = [], errors = []) {
+  const items = [];
+  (ledgerEvents || []).slice(-10).forEach((event, index) => {
+    items.push({
+      id: `ledger-${index}`,
+      lane: 'ledger',
+      title: summarizeLedgerEvent(event),
+      body: String(event?.type || event?.nodeId || '').trim(),
+      at: event?.timestamp || null,
+    });
+  });
+  (errors || []).slice(-5).forEach((entry, index) => {
+    items.push({
+      id: `error-${index}`,
+      lane: 'error',
+      title: String(entry?.message || entry?.error || 'Workflow error').trim(),
+      body: String(entry?.nodeId || entry?.code || '').trim(),
+      at: entry?.timestamp || entry?.at || null,
+    });
+  });
+  (logs || []).slice(-5).forEach((entry, index) => {
+    const title = typeof entry === 'string' ? entry : String(entry?.message || entry?.summary || entry?.event || 'Workflow log').trim();
+    items.push({
+      id: `log-${index}`,
+      lane: 'log',
+      title,
+      body: typeof entry === 'object' ? String(entry?.nodeId || entry?.level || '').trim() : '',
+      at: entry?.timestamp || entry?.at || null,
+    });
+  });
+  if (run?.startedAt) {
+    items.push({
+      id: 'run-started',
+      lane: 'run',
+      title: 'Run started',
+      body: getWorkflowRunTriggerLabel(run),
+      at: run.startedAt,
+    });
+  }
+  return items.sort((a, b) => normalizeTimestampForSort(b.at) - normalizeTimestampForSort(a.at));
+}
+
+function normalizeTimestampForSort(value) {
+  const parsed = Date.parse(value || 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+
 function normalizeWorkflowRunTriggerSource(run) {
   const rawSource = String(run?.triggerSource || "").trim().toLowerCase();
   const triggerEvent = String(run?.triggerEvent || "").trim().toLowerCase();
-  if (!rawSource || rawSource === "manual") return "manual";
+  if (!rawSource) {
+    return triggerEvent ? "event" : "unknown";
+  }
+  if (rawSource === "manual") return "manual";
   if (
     rawSource === "monitor-event" ||
     rawSource === "monitor" ||
     rawSource === "schedule-poll" ||
     rawSource === "startup" ||
-    rawSource === "manual-sweep"
+    rawSource === "manual-sweep" ||
+    rawSource.includes("schedule")
   ) {
     return "monitor-event";
   }
@@ -3162,7 +5222,7 @@ function normalizeWorkflowRunTriggerSource(run) {
     rawSource === "ui-server" ||
     rawSource === "ui-event" ||
     rawSource.includes("webhook") ||
-    (triggerEvent && rawSource !== "manual")
+    triggerEvent
   ) {
     return "event";
   }
@@ -3184,36 +5244,6 @@ function getWorkflowRunTriggerLabel(run) {
     return rawSource || "event";
   }
   return rawSource || normalizedSource || "unknown";
-}
-
-function buildNodeStatusesFromRunDetail(run) {
-  const detail = run?.detail || {};
-  const statuses = { ...(detail?.nodeStatuses || {}) };
-  const statusEvents = Array.isArray(detail?.nodeStatusEvents) ? detail.nodeStatusEvents : [];
-  const logs = Array.isArray(detail?.logs) ? detail.logs : [];
-
-  for (const event of statusEvents) {
-    const nodeId = String(event?.nodeId || "").trim();
-    const status = String(event?.status || "").trim();
-    if (!nodeId || !status) continue;
-    statuses[nodeId] = status;
-  }
-
-  // Backfill older runs that only recorded nodeId in logs.
-  if (Object.keys(statuses).length === 0) {
-    const fallbackStatus = run?.status === "failed"
-      ? "failed"
-      : run?.status === "completed"
-        ? "completed"
-        : "running";
-    for (const entry of logs) {
-      const nodeId = String(entry?.nodeId || "").trim();
-      if (!nodeId || statuses[nodeId]) continue;
-      statuses[nodeId] = fallbackStatus;
-    }
-  }
-
-  return statuses;
 }
 
 function getNodeCardBorder(status) {
@@ -3241,6 +5271,8 @@ function RunHistoryView() {
   const hasMoreRuns = workflowRunsHasMore.value === true;
   const loadingMoreRuns = workflowRunsLoadingMore.value === true;
   const selectedRun = selectedRunDetail.value;
+  const scopedWorkflowId = String(workflowRunsScopeId.value || "").trim();
+  const scopedWorkflowName = scopedWorkflowId ? getWorkflowNameById(scopedWorkflowId) : "";
   const workflowNameMap = new Map((workflows.value || []).map((wf) => [wf.id, wf.name]));
   const [nowTick, setNowTick] = useState(Date.now());
   const hasRunningRuns = runs.some((run) => run?.status === "running");
@@ -3319,7 +5351,7 @@ function RunHistoryView() {
   }, [runs, workflowNameMap, statusFilter, workflowFilter, triggerFilter, normalizedSearch]);
 
   const runCounts = useMemo(() => {
-    const counts = { all: runs.length, running: 0, failed: 0, completed: 0 };
+    const counts = { all: runs.length, running: 0, failed: 0, completed: 0, paused: 0 };
     for (const run of runs) {
       const status = String(run?.status || "");
       if (status in counts) counts[status] += 1;
@@ -3340,11 +5372,97 @@ function RunHistoryView() {
     });
     return true;
   }, [canLoadMoreRuns, loadingMoreRuns, runs.length, totalRuns]);
+  const openRunCopilot = useCallback((run, intent = "ask") => {
+    const safeRunId = String(run?.runId || "").trim();
+    const safeIntent = String(intent || "ask").trim().toLowerCase();
+    if (!safeRunId) return null;
+    return startWorkflowCopilotSession({
+      endpoint: `/api/workflows/runs/${encodeURIComponent(safeRunId)}/copilot-context?intent=${encodeURIComponent(safeIntent)}`,
+      fallbackPrompt: buildRunCopilotPrompt(run, safeIntent),
+      title: `${safeIntent === "fix" ? "Fix failed workflow run" : "Ask about workflow run"} ${safeRunId}`.trim(),
+      successToast: safeIntent === "fix" ? "Opened failed-run fix chat" : "Opened workflow run analysis chat",
+    });
+  }, []);
+  const openRunNodeCopilot = useCallback((run, nodeId, intent = "node", workflow = null) => {
+    const safeRunId = String(run?.runId || "").trim();
+    const safeNodeId = String(nodeId || "").trim();
+    const safeIntent = String(intent || "node").trim().toLowerCase();
+    if (!safeRunId || !safeNodeId) return null;
+    return startWorkflowCopilotSession({
+      endpoint: `/api/workflows/runs/${encodeURIComponent(safeRunId)}/copilot-context?intent=${encodeURIComponent(safeIntent)}&nodeId=${encodeURIComponent(safeNodeId)}`,
+      fallbackPrompt: buildRunNodeCopilotPrompt(run, safeNodeId, { intent: safeIntent, workflow }),
+      title: `${safeIntent === "fix" ? "Fix node" : "Ask Bosun about node"} ${safeNodeId}`.trim(),
+      successToast: safeIntent === "fix" ? "Opened node fix chat" : "Opened node copilot chat",
+    });
+  }, []);
+  const requestWorkflowRunRetry = useCallback(async (run, explicitMode = "") => {
+    const safeRunId = String(run?.runId || "").trim();
+    if (!safeRunId) return;
+    try {
+      const retryInfo = await apiFetch(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/retry`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      const options = Array.isArray(retryInfo?.options) ? retryInfo.options : [];
+      const recommended =
+        options.find((entry) => entry?.recommended) ||
+        options.find((entry) => String(entry?.mode || "").trim() === String(retryInfo?.recommendedMode || "").trim()) ||
+        options[0] ||
+        null;
+
+      let selectedMode = String(explicitMode || "").trim().toLowerCase();
+      if (!selectedMode) {
+        if (options.length <= 1) {
+          selectedMode = String(recommended?.mode || retryInfo?.recommendedMode || "from_failed").trim().toLowerCase();
+        } else {
+          const promptLines = [
+            `Retry mode for workflow run ${safeRunId}:`,
+            "",
+            ...options.map((entry) => {
+              const mode = String(entry?.mode || "").trim();
+              const label = String(entry?.label || formatRetryModeLabel(mode)).trim();
+              const description = String(entry?.description || "").trim();
+              const suffix = entry?.recommended ? " (recommended)" : "";
+              return `- ${mode}: ${label}${suffix}${description ? ` — ${description}` : ""}`;
+            }),
+            "",
+            `Recommended: ${String(recommended?.mode || retryInfo?.recommendedMode || "from_failed")}`,
+            retryInfo?.summary ? `Why: ${retryInfo.summary}` : "",
+            retryInfo?.recommendedReason ? `Signal: ${formatRetryDecisionReason(retryInfo.recommendedReason)}` : "",
+            "",
+            "Type from_failed or from_scratch.",
+          ].filter(Boolean);
+          const choice = window.prompt(
+            promptLines.join("\n"),
+            String(recommended?.mode || retryInfo?.recommendedMode || "from_failed"),
+          );
+          if (choice == null) return;
+          selectedMode = String(choice || "").trim().toLowerCase();
+        }
+      }
+
+      if (selectedMode !== "from_failed" && selectedMode !== "from_scratch") {
+        showToast("Retry cancelled: invalid retry mode", "warning");
+        return;
+      }
+
+      const result = await apiFetch(`/api/workflows/runs/${encodeURIComponent(safeRunId)}/retry`, {
+        method: "POST",
+        body: JSON.stringify({ mode: selectedMode }),
+      });
+      showToast(`Run retry initiated: ${formatRetryModeLabel(result?.mode || selectedMode)}`, "success");
+      setTimeout(() => loadRunDetail(safeRunId), 1000);
+    } catch (err) {
+      showToast("Retry failed: " + (err.message || err), "error");
+    }
+  }, []);
 
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
     const logs = Array.isArray(selectedRun?.detail?.logs) ? selectedRun.detail.logs : [];
     const errors = Array.isArray(selectedRun?.detail?.errors) ? selectedRun.detail.errors : [];
+    const currentWorkflow =
+      (workflows.value || []).find((workflow) => workflow?.id === selectedRun.workflowId) || null;
     const nodeStatuses = buildNodeStatusesFromRunDetail(selectedRun);
     const nodeOutputs = selectedRun?.detail?.nodeOutputs || {};
     const nodeIds = Object.keys(nodeStatuses).sort((a, b) => {
@@ -3361,15 +5479,86 @@ function RunHistoryView() {
       ? Math.max(0, nowTick - lastActivityAt)
       : 0;
     const showStuck = selectedRun.status === "running" && selectedRun.isStuck;
+    const issueAdvisor =
+      selectedRun?.detail?.issueAdvisor && typeof selectedRun.detail.issueAdvisor === "object"
+        ? selectedRun.detail.issueAdvisor
+        : null;
+    const dagCounts = getRunDagCounts(selectedRun);
+    const ledgerEvents = Array.isArray(selectedRun?.ledger?.events) ? selectedRun.ledger.events : [];
+    const recommendedRetryMode =
+      selectedRun?.status === "failed"
+        ? (selectedRun?.issueAdvisorRecommendation === "replan_from_failed" ? "from_scratch" : "from_failed")
+        : "";
+    const recommendedRetryLabel = formatRetryModeLabel(recommendedRetryMode);
 
     return html`
-      <div style="padding: 0 4px;">
+      <div class="workflow-run-layout" style="padding: 0 4px;">
         <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
           <${Button} variant="text" size="small" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; }}>
             ← Back to Run History
           <//>
+          ${selectedRun.workflowId && html`<${Button} variant="text" size="small" onClick=${() => openWorkflowCanvas(selectedRun.workflowId)}>Open Workflow<//>`}
           <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run Details</h2>
           <${Button} variant="text" size="small" onClick=${() => loadRunDetail(selectedRun.runId)}>Refresh<//>
+          <${Button}
+            variant="outlined"
+            size="small"
+            onClick=${() => openRunCopilot(selectedRun, "ask")}
+          >
+            <span class="btn-icon">${resolveIcon("bot")}</span>
+            Ask Bosun
+          <//>
+          ${selectedRun.status === "failed" && html`
+            <${Button}
+              variant="contained"
+              size="small"
+              color="error"
+              onClick=${() => openRunCopilot(selectedRun, "fix")}
+            >
+              <span class="btn-icon">${resolveIcon("settings")}</span>
+              Fix With Bosun
+            <//>
+          `}
+          ${selectedRun.status === "failed" && html`
+            <${Button}
+              variant="contained"
+              size="small"
+              color="warning"
+              onClick=${() => requestWorkflowRunRetry(selectedRun, recommendedRetryMode)}
+            >
+              <span class="btn-icon">${resolveIcon("refresh")}</span>
+              ${recommendedRetryMode ? recommendedRetryLabel : "Retry Run"}
+            <//>
+          `}
+          ${selectedRun.status === "failed" && html`
+            <${Button}
+              variant="outlined"
+              size="small"
+              onClick=${() => requestWorkflowRunRetry(selectedRun)}
+            >
+              <span class="btn-icon">${resolveIcon("settings")}</span>
+              Retry Options
+            <//>
+          `}
+          ${selectedRun.status === "running" && html`
+            <${Button}
+              variant="contained"
+              size="small"
+              color="error"
+              onClick=${async () => {
+                try {
+                  await apiFetch("/api/workflows/runs/" + encodeURIComponent(selectedRun.runId) + "/cancel", { method: "POST" });
+                  showToast("Run cancellation requested", "success");
+                  setTimeout(() => loadRunDetail(selectedRun.runId), 1000);
+                } catch (err) {
+                  showToast("Cancel failed: " + (err.message || err), "error");
+                }
+              }}
+            >
+              <span class="btn-icon">${resolveIcon("close")}</span>
+              Stop Run
+            <//>
+          `}
         </div>
 
         <div style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px; margin-bottom: 12px;">
@@ -3396,6 +5585,54 @@ function RunHistoryView() {
             ${selectedRun.status === "running" && html`<div><b>No Progress For:</b> ${formatDuration(staleMs)}</div>`}
             <div><b>Nodes:</b> ${selectedRun.nodeCount || 0} · <b>Logs:</b> ${selectedRun.logCount || logs.length} · <b>Errors:</b> ${selectedRun.errorCount || errors.length}</div>
             <div><b>Active Nodes:</b> ${selectedRun.activeNodeCount || 0}</div>
+            <div><b>Trigger:</b> ${getWorkflowRunTriggerLabel(selectedRun)}</div>
+            <div><b>Root Run:</b> <code>${selectedRun.rootRunId || "—"}</code></div>
+            <div><b>Parent Run:</b> <code>${selectedRun.parentRunId || "—"}</code></div>
+            <div><b>Retry Of:</b> <code>${selectedRun.retryOf || "—"}</code></div>
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; margin-bottom: 12px;">
+          <div style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+              <span class="wf-badge" style="background:#3b82f620; color:#93c5fd;">Execution Insight</span>
+              ${issueAdvisor?.recommendedAction && html`
+                <span class="wf-badge" style="background:#f59e0b24; color:#fbbf24;">
+                  ${formatIssueAdvisorAction(issueAdvisor.recommendedAction)}
+                </span>
+              `}
+            </div>
+            <div style="font-size: 12px; color: var(--color-text-secondary, #cbd5e1); line-height: 1.6;">
+              <div><b>Completed:</b> ${dagCounts.completed}/${dagCounts.nodeCount}</div>
+              <div><b>Failed:</b> ${dagCounts.failed} · <b>Skipped:</b> ${dagCounts.skipped} · <b>Active:</b> ${dagCounts.active}</div>
+              <div><b>Recommendation:</b> ${formatIssueAdvisorAction(issueAdvisor?.recommendedAction)}</div>
+              <div style="margin-top: 6px; color: #e5e7eb;">${issueAdvisor?.summary || "No issue-advisor summary recorded for this run."}</div>
+            </div>
+          </div>
+
+          <div style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+              <span class="wf-badge" style="background:#10b98120; color:#6ee7b7;">Recovery & Lineage</span>
+            </div>
+            <div style="font-size: 12px; color: var(--color-text-secondary, #cbd5e1); line-height: 1.6;">
+              <div><b>Retry Mode:</b> ${selectedRun.retryMode ? formatRetryModeLabel(selectedRun.retryMode) : "—"}</div>
+              <div><b>Retry Decision:</b> ${formatRetryDecisionReason(selectedRun.retryDecisionReason)}</div>
+              <div><b>Root Run:</b> <code>${selectedRun.rootRunId || "—"}</code></div>
+              <div><b>Parent Run:</b> <code>${selectedRun.parentRunId || "—"}</code></div>
+              <div><b>Retry Of:</b> <code>${selectedRun.retryOf || "—"}</code></div>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+              ${selectedRun.parentRunId && html`
+                <${Button} variant="outlined" size="small" onClick=${() => loadRunDetail(selectedRun.parentRunId)}>
+                  Open Parent Run
+                <//>
+              `}
+              ${selectedRun.rootRunId && selectedRun.rootRunId !== selectedRun.runId && html`
+                <${Button} variant="outlined" size="small" onClick=${() => loadRunDetail(selectedRun.rootRunId)}>
+                  Open Root Run
+                <//>
+              `}
+            </div>
           </div>
         </div>
 
@@ -3422,10 +5659,54 @@ function RunHistoryView() {
                     ${nodeNarrative ? html`<div style="margin-top: ${nodeSummary ? "6px" : "0"};"><b>Narrative:</b> ${nodeNarrative}</div>` : ""}
                   </div>
                 `}
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px;">
+                  <${Button}
+                    variant="outlined"
+                    size="small"
+                    onClick=${() => openRunNodeCopilot(selectedRun, nodeId, "node", currentWorkflow)}
+                  >
+                    <span class="btn-icon">${resolveIcon("bot")}</span>
+                    Ask Bosun About This Node
+                  <//>
+                  ${String(nodeStatus || "").trim().toLowerCase() === "failed" && html`
+                    <${Button}
+                      variant="contained"
+                      size="small"
+                      color="error"
+                      onClick=${() => openRunNodeCopilot(selectedRun, nodeId, "fix", currentWorkflow)}
+                    >
+                      <span class="btn-icon">${resolveIcon("settings")}</span>
+                      Fix This Node
+                    <//>
+                  `}
+                </div>
                 <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(nodeOutput)}</pre>
               </details>
             `;
           })}
+        </div>
+
+        <div class="workflow-run-columns" style="margin-top: 14px; display: grid; gap: 16px; grid-template-columns: minmax(280px, 0.95fr) minmax(360px, 1.05fr); align-items: start;">
+          <div style="display:grid; gap:10px;">
+            <div class="workflow-ops-card" aria-label="Workflow notifications">
+              <div class="workflow-ops-card__header"><h3>Notifications</h3></div>
+              ${summarizeWorkflowNotifications(selectedRun, errors, logs).length
+                ? summarizeWorkflowNotifications(selectedRun, errors, logs).map((item, index) => html`<div key=${`wf-note-${index}`} class="workflow-ops-item" data-kind=${item.kind}><div class="workflow-ops-item__title">${item.title}</div><div class="workflow-ops-item__body">${item.body}</div></div>`)
+                : html`<div class="task-ops-feed-empty">No notifications.</div>`}
+            </div>
+            <div class="workflow-ops-card" aria-label="Persistent run detail panel">
+              <div class="workflow-ops-card__header"><h3>Persistent run detail panel</h3></div>
+              <div class="workflow-ops-item">
+                <div class="workflow-ops-item__title">${selectedRun.workflowName || workflowNameMap.get(selectedRun.workflowId) || selectedRun.workflowId || 'Workflow run'}</div>
+                <div class="workflow-ops-item__body">${getWorkflowRunTriggerLabel(selectedRun)} · ${selectedRun.runId || 'unknown run'}</div>
+                <div class="workflow-ops-item__body">${selectedRun.status || 'unknown'} · ${formatDuration(liveDuration)} · ${dagCounts.completed}/${dagCounts.nodeCount} nodes complete</div>
+              </div>
+            </div>
+          </div>
+          <div class="workflow-ops-card" aria-label="Workflow activity feed">
+            <div class="workflow-ops-card__header"><h3>Activity feed</h3></div>
+            <div class="task-ops-feed">${buildWorkflowActivityItems(selectedRun, logs, ledgerEvents, errors).slice(0, 18).map((item) => html`<article key=${item.id} class="task-ops-feed-item" data-lane=${item.lane} data-kind=${item.lane}><div class="task-ops-feed-item__meta"><span class="task-ops-feed-item__lane">${item.lane}</span><span>${item.at ? formatRelative(item.at) : 'just now'}</span></div><div class="task-ops-feed-item__title">${item.title}</div>${item.body ? html`<div class="task-ops-feed-item__body">${item.body}</div>` : ''}</article>`)}</div>
+          </div>
         </div>
 
         <div style="margin-top: 14px; display: grid; gap: 10px;">
@@ -3436,6 +5717,23 @@ function RunHistoryView() {
           <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
             <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Errors (${errors.length})</summary>
             <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #fca5a5; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(errors)}</pre>
+          </details>
+          <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
+            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Execution Ledger (${ledgerEvents.length})</summary>
+            ${ledgerEvents.length === 0
+              ? html`<div style="margin-top: 8px; font-size: 12px; color: var(--color-text-secondary, #8b95a5);">No ledger events recorded.</div>`
+              : html`
+                <div style="margin-top: 8px; display:flex; flex-direction:column; gap:6px;">
+                  ${ledgerEvents.slice(-20).map((event, index) => html`
+                    <div key=${`${event?.timestamp || "event"}-${index}`} style="background:#111827; border:1px solid #1f2937; border-radius:6px; padding:8px;">
+                      <div style="font-size:11px; color:#93c5fd; margin-bottom:4px;">
+                        ${event?.timestamp ? `${formatDate(event.timestamp)} (${formatRelative(event.timestamp)})` : "unknown time"}
+                      </div>
+                      <div style="font-size:12px; color:#e5e7eb;">${summarizeLedgerEvent(event)}</div>
+                    </div>
+                  `)}
+                </div>
+              `}
           </details>
           <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
             <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Raw Run JSON</summary>
@@ -3450,7 +5748,8 @@ function RunHistoryView() {
     <div style="padding: 0 4px;">
       <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
         <${Button} variant="text" size="small" onClick=${returnToWorkflowList}>← Back to Workflows<//>
-        <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run History</h2>
+        ${scopedWorkflowId && html`<${Button} variant="text" size="small" onClick=${() => openWorkflowCanvas(scopedWorkflowId)}>Open Workflow<//>`}
+        <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run History${scopedWorkflowName ? ` · ${scopedWorkflowName}` : ""}</h2>
         <${Button}
           variant="text"
           size="small"
@@ -3494,6 +5793,7 @@ function RunHistoryView() {
           <${MenuItem} value="manual">Manual</${MenuItem}>
           <${MenuItem} value="monitor-event">Monitor Event</${MenuItem}>
           <${MenuItem} value="event">Event</${MenuItem}>
+          <${MenuItem} value="unknown">Unknown</${MenuItem}>
         </${Select}>
       </div>
 
@@ -3520,6 +5820,12 @@ function RunHistoryView() {
           label=${`Completed ${runCounts.completed}`}
           onClick=${() => setStatusFilter("completed")}
           variant=${statusFilter === "completed" ? "filled" : "outlined"}
+          size="small"
+        />
+        <${Chip}
+          label=${`Paused ${runCounts.paused}`}
+          onClick=${() => setStatusFilter("paused")}
+          variant=${statusFilter === "paused" ? "filled" : "outlined"}
           size="small"
         />
         <span class="wf-runs-count">${filteredRuns.length} shown</span>
@@ -3549,9 +5855,13 @@ function RunHistoryView() {
             ? Math.max(0, nowTick - run.startedAt)
             : run.duration;
           const borderColor = run.isStuck
-            ? "#f59e0b80"
-            : (run.status === "running" ? "#3b82f680" : "var(--color-border, #2a3040)");
+            ? "var(--accent-warning, #f59e0b)"
+            : (run.status === "running" ? "var(--accent, #60a5fa)" : "var(--color-border, #2a3040)");
           const triggerLabel = getWorkflowRunTriggerLabel(run);
+          const retryBadge = run.retryOf ? formatRetryModeLabel(run.retryMode) : "";
+          const advisorBadge = run.issueAdvisorRecommendation
+            ? formatIssueAdvisorAction(run.issueAdvisorRecommendation)
+            : "";
           return html`
             <${Button}
               key=${run.runId}
@@ -3577,6 +5887,17 @@ function RunHistoryView() {
                     : `Finished ${run.endedAt ? formatRelative(run.endedAt) : "—"}`}</span>
                   <span>Trigger: ${triggerLabel}</span>
                 </div>
+                ${(advisorBadge || retryBadge) && html`
+                  <div style="font-size: 11px; color: var(--color-text-secondary, #94a3b8); margin-top: 4px; display:flex; gap:8px; flex-wrap:wrap;">
+                    ${advisorBadge ? html`<span>Advisor: ${advisorBadge}</span>` : ""}
+                    ${retryBadge ? html`<span>Retry: ${retryBadge}</span>` : ""}
+                  </div>
+                `}
+                ${run.issueAdvisorSummary && html`
+                  <div style="font-size: 11px; color: #cbd5e1; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                    ${run.issueAdvisorSummary}
+                  </div>
+                `}
                 <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); margin-top: 2px;">
                   Run: <code>${run.runId}</code>
                 </div>
@@ -3586,6 +5907,7 @@ function RunHistoryView() {
                   ${run.status || "unknown"}
                 </span>
                 ${run.isStuck && html`<span class="wf-badge" style="background: #f59e0b2f; color: #f59e0b; border-color: #f59e0b50;">stuck</span>`}
+                ${run.retryOf && html`<span class="wf-badge" style="background:#10b98120; color:#6ee7b7;">retry</span>`}
               </div>
             <//>
           `;
@@ -3604,6 +5926,171 @@ function RunHistoryView() {
           <//>
         </div>
       `}
+    </div>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  Code View — JSON Editor for Workflows
+ * ═══════════════════════════════════════════════════════════════ */
+
+function WorkflowCodeView({ workflow, onSave }) {
+  const [code, setCode] = useState("");
+  const [originalCode, setOriginalCode] = useState("");
+  const [errors, setErrors] = useState([]);
+  const [isDirty, setIsDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const textareaRef = useRef(null);
+
+  useEffect(() => {
+    if (!workflow?.id) return;
+    apiFetch(`/api/workflows/${encodeURIComponent(workflow.id)}/code`)
+      .then(data => {
+        if (data?.code) {
+          setCode(data.code);
+          setOriginalCode(data.code);
+          setErrors([]);
+          setIsDirty(false);
+        }
+      })
+      .catch(() => showToast("Failed to load workflow code", "error"));
+  }, [workflow?.id]);
+
+  const handleCodeChange = useCallback((e) => {
+    const newCode = e.target.value;
+    setCode(newCode);
+    setIsDirty(newCode !== originalCode);
+
+    try {
+      JSON.parse(newCode);
+      setErrors([]);
+    } catch (err) {
+      const lineMatch = String(err.message).match(/position\s+(\d+)/i);
+      let line;
+      if (lineMatch) {
+        const pos = parseInt(lineMatch[1], 10);
+        line = newCode.slice(0, pos).split("\n").length;
+      }
+      setErrors([{ message: err.message, line }]);
+    }
+  }, [originalCode]);
+
+  const handleSave = useCallback(async () => {
+    if (!workflow?.id || !isDirty) return;
+    setSaving(true);
+    try {
+      const resp = await apiFetch(`/api/workflows/${encodeURIComponent(workflow.id)}/code`, {
+        method: "PUT",
+        body: JSON.stringify({ code }),
+      });
+      if (resp?.ok) {
+        showToast("Workflow updated from code", "success");
+        setOriginalCode(code);
+        setIsDirty(false);
+        if (resp.workflow && onSave) onSave(resp.workflow);
+      } else if (resp?.errors) {
+        setErrors(resp.errors.map(e => typeof e === "string" ? { message: e } : e));
+        showToast("Validation errors — check below", "error");
+      }
+    } catch (err) {
+      showToast("Failed to save: " + (err.message || err), "error");
+    } finally {
+      setSaving(false);
+    }
+  }, [workflow?.id, code, isDirty, onSave]);
+
+  const handleRevert = useCallback(() => {
+    setCode(originalCode);
+    setIsDirty(false);
+    setErrors([]);
+  }, [originalCode]);
+
+  const handleFormat = useCallback(() => {
+    try {
+      const parsed = JSON.parse(code);
+      const formatted = JSON.stringify(parsed, null, 2);
+      setCode(formatted);
+      setIsDirty(formatted !== originalCode);
+      setErrors([]);
+    } catch {
+      showToast("Cannot format — fix JSON syntax errors first", "warning");
+    }
+  }, [code, originalCode]);
+
+  const lineCount = code.split("\n").length;
+
+  return html`
+    <div style="padding: 0 4px; display: flex; flex-direction: column; height: calc(100vh - 120px);">
+      <!-- Toolbar -->
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;">
+        <${Button} variant="text" size="small" onClick=${() => { viewMode.value = "canvas"; }}>
+          ← Back to Canvas
+        <//>
+        <h2 style="margin: 0; font-size: 18px; font-weight: 700; flex: 1;">
+          Code View: ${workflow?.name || "Workflow"}
+        </h2>
+        <${Button} variant="outlined" size="small" onClick=${handleFormat} disabled=${saving}>
+          Format JSON
+        <//>
+        <${Button} variant="outlined" size="small" onClick=${handleRevert} disabled=${!isDirty || saving}>
+          Revert
+        <//>
+        <${Button} variant="contained" size="small" onClick=${handleSave} disabled=${!isDirty || errors.length > 0 || saving}>
+          ${saving ? "Saving…" : "Save"}
+        <//>
+        ${isDirty && html`
+          <${Chip} label="Unsaved changes" size="small" color="warning" variant="outlined" />
+        `}
+      </div>
+
+      <!-- Error bar -->
+      ${errors.length > 0 && html`
+        <${Alert} severity="error" style="margin-bottom: 8px; font-size: 12px;">
+          ${errors.map((e, i) => html`
+            <div key=${i}>${e.line ? `Line ${e.line}: ` : ""}${e.message}</div>
+          `)}
+        <//>
+      `}
+
+      <!-- Editor area -->
+      <div style="flex: 1; display: flex; border: 1px solid ${errors.length > 0 ? '#ef4444' : 'var(--color-border, #2a3040)'}; border-radius: 8px; overflow: hidden; background: #0d1117;">
+        <!-- Line numbers -->
+        <div style="padding: 12px 8px; background: #161b22; color: #484f58; font-family: 'Fira Code', 'Cascadia Code', monospace; font-size: 12px; line-height: 1.6; text-align: right; user-select: none; min-width: 48px; border-right: 1px solid #21262d;">
+          ${Array.from({ length: lineCount }, (_, i) => html`<div key=${i}>${i + 1}</div>`)}
+        </div>
+
+        <!-- Code textarea -->
+        <textarea
+          ref=${textareaRef}
+          value=${code}
+          onInput=${handleCodeChange}
+          spellcheck=${false}
+          style="flex: 1; padding: 12px; background: transparent; color: #e6edf3; font-family: 'Fira Code', 'Cascadia Code', monospace; font-size: 12px; line-height: 1.6; border: none; outline: none; resize: none; tab-size: 2; white-space: pre; overflow: auto;"
+          onKeyDown=${(e) => {
+            if (e.key === "Tab") {
+              e.preventDefault();
+              const ta = e.target;
+              const start = ta.selectionStart;
+              const end = ta.selectionEnd;
+              const newVal = code.slice(0, start) + "  " + code.slice(end);
+              setCode(newVal);
+              setIsDirty(newVal !== originalCode);
+              requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = start + 2; });
+            }
+            if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+              e.preventDefault();
+              handleSave();
+            }
+          }}
+        />
+      </div>
+
+      <!-- Status bar -->
+      <div style="display: flex; align-items: center; gap: 12px; padding: 6px 4px; font-size: 11px; color: var(--color-text-secondary, #8b95a5);">
+        <span>${lineCount} lines</span>
+        <span>${code.length} characters</span>
+        <span>JSON${errors.length === 0 ? " ✓" : " ✗"}</span>
+      </div>
     </div>
   `;
 }
@@ -3641,14 +6128,15 @@ export function WorkflowsTab() {
     const route = routeParams.value || {};
     const workflowId = String(route.workflowId || "").trim();
     const runId = String(route.runId || "").trim();
+    const runsWorkflowId = String(route.runsWorkflowId || "").trim();
     const wantsRuns = Boolean(route.runsView) || Boolean(runId);
 
     if (wantsRuns) {
-      resetWorkflowRunsState();
+      resetWorkflowRunsState(runsWorkflowId || null);
       viewMode.value = "runs";
-      loadRuns(null, { reset: true });
+      loadRuns(runsWorkflowId || null, { reset: true });
       if (runId) {
-        loadRunDetail(runId);
+        loadRunDetail(runId, { workflowId: runsWorkflowId || null });
       } else {
         selectedRunId.value = null;
         selectedRunDetail.value = null;
@@ -3693,12 +6181,13 @@ export function WorkflowsTab() {
     }
     if (mode === "runs") {
       if (selectedRunId.value) {
-        setRouteParams(
-          { runsView: true, runId: selectedRunId.value },
-          { replace: true, skipGuard: true },
-        );
+        const route = { runsView: true, runId: selectedRunId.value };
+        if (workflowRunsScopeId.value) route.runsWorkflowId = workflowRunsScopeId.value;
+        setRouteParams(route, { replace: true, skipGuard: true });
       } else {
-        setRouteParams({ runsView: true }, { replace: true, skipGuard: true });
+        const route = { runsView: true };
+        if (workflowRunsScopeId.value) route.runsWorkflowId = workflowRunsScopeId.value;
+        setRouteParams(route, { replace: true, skipGuard: true });
       }
       return;
     }
@@ -3839,6 +6328,34 @@ export function WorkflowsTab() {
       .wf-preset-btn:hover { border-color: #3b82f6 !important; background: var(--bg-card-hover) !important; }
       .wf-preset-section { animation: wf-fade-in 0.15s ease; }
       @keyframes wf-fade-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+      .wf-node-running rect:first-child {
+        animation: wf-node-running-pulse 1.1s ease-in-out infinite;
+      }
+      .wf-node-flash-success rect:first-child {
+        animation: wf-node-flash-success 0.45s ease-in-out 2;
+      }
+      .wf-node-flash-fail rect:first-child {
+        animation: wf-node-flash-fail 0.45s ease-in-out 2;
+      }
+      .wf-node-flash-skipped rect:first-child {
+        animation: wf-node-flash-skipped 0.45s ease-in-out 2;
+      }
+      @keyframes wf-node-running-pulse {
+        0%, 100% { stroke-opacity: 0.6; }
+        50% { stroke-opacity: 1; }
+      }
+      @keyframes wf-node-flash-success {
+        0%, 100% { filter: none; }
+        50% { filter: drop-shadow(0 0 10px rgba(16, 185, 129, 0.65)); }
+      }
+      @keyframes wf-node-flash-fail {
+        0%, 100% { filter: none; }
+        50% { filter: drop-shadow(0 0 10px rgba(239, 68, 68, 0.65)); }
+      }
+      @keyframes wf-node-flash-skipped {
+        0%, 100% { filter: none; }
+        50% { filter: drop-shadow(0 0 8px rgba(148, 163, 184, 0.55)); }
+      }
       .wf-canvas-container { height: calc(100vh - 140px); min-height: 500px; }
       @media (min-width: 1200px) { .wf-canvas-container { height: calc(100vh - 120px); min-height: 700px; } }
     </style>
@@ -3847,8 +6364,10 @@ export function WorkflowsTab() {
       class="wf-theme"
       style="padding: 8px; --color-bg: var(--bg-card); --color-bg-secondary: var(--bg-secondary); --color-border: var(--border); --color-text: var(--text-primary); --color-text-secondary: var(--text-secondary);"
     >
-      ${mode === "canvas" && activeWorkflow.value
-        ? html`<${WorkflowCanvas} workflow=${activeWorkflow.value} />`
+      ${mode === "code" && activeWorkflow.value
+        ? html`<${WorkflowCodeView} workflow=${activeWorkflow.value} onSave=${(wf) => { activeWorkflow.value = wf; viewMode.value = "canvas"; }} />`
+        : mode === "canvas" && activeWorkflow.value
+        ? html`<${WorkflowCanvas} workflow=${activeWorkflow.value} nodeTypes=${nodeTypes.value} />`
         : mode === "runs"
         ? html`<${RunHistoryView} />`
         : html`<${WorkflowListView} />`

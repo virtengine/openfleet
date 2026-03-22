@@ -1,0 +1,48 @@
+{
+  "title": "Bosun OpenTelemetry Overview",
+  "uid": "bosun-otel-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "tags": ["bosun", "otel", "agents"],
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Task Duration",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [{ "expr": "histogram_quantile(0.5, sum(rate(bosun_task_duration_bucket[5m])) by (le))" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Token Usage by Model",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [{ "expr": "sum by (model) (rate(bosun_task_tokens_total_total[5m]))" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Cost USD",
+      "gridPos": { "x": 0, "y": 8, "w": 8, "h": 8 },
+      "targets": [{ "expr": "sum(rate(bosun_task_cost_usd_total[5m]))" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Agent Errors by Type",
+      "gridPos": { "x": 8, "y": 8, "w": 8, "h": 8 },
+      "targets": [{ "expr": "sum by (errorType) (rate(bosun_agent_errors_total[5m]))" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Interventions by Type",
+      "gridPos": { "x": 16, "y": 8, "w": 8, "h": 8 },
+      "targets": [{ "expr": "sum by (interventionType) (rate(bosun_agent_interventions_total[5m]))" }]
+    },
+    {
+      "type": "traces",
+      "title": "Workflow Waterfall",
+      "gridPos": { "x": 0, "y": 16, "w": 24, "h": 10 },
+      "datasource": { "type": "tempo", "uid": "${DS_TEMPO}" },
+      "targets": [{ "queryType": "traceql", "query": "{ resource.service.name = \"bosun\" }" }]
+    }
+  ]
+}

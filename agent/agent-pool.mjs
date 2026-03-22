@@ -45,6 +45,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { loadConfig } from "../config/config.mjs";
+import { traceAgentSession, traceToolCall } from "../infra/tracing.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "../config/repo-root.mjs";
 import { resolveCodexProfileRuntime } from "../shell/codex-model-profiles.mjs";
 import { resolveCopilotCliLaunchConfig } from "../shell/copilot-shell.mjs";
@@ -2389,6 +2390,9 @@ export async function launchEphemeralThread(
   timeoutMs = DEFAULT_TIMEOUT_MS,
   extra = {},
 ) {
+  return traceAgentSession(
+    extra?.sessionId || extra?.threadKey || `ephemeral:${Date.now()}`,
+    async () => {
   const resolvedGithubToken = await resolveGithubSessionToken();
   const baseRuntimeEnv =
     extra?.envOverrides && typeof extra.envOverrides === "object"
@@ -2723,6 +2727,8 @@ export async function launchEphemeralThread(
     sdk: primaryName,
     threadId: null,
   };
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -2753,6 +2759,7 @@ export async function launchEphemeralThread(
  *   Defaults to false for maximum fidelity in short-lived delegate calls.
  * @returns {Promise<{ finalResponse: string, items: Array, usage: object|null }>}
  */
+
 export async function execPooledPrompt(userMessage, options = {}) {
   const {
     onEvent,
@@ -2769,12 +2776,13 @@ export async function execPooledPrompt(userMessage, options = {}) {
     // call-site compatible with execPrimaryPrompt without modification.
   } = options;
 
-  const result = await launchEphemeralThread(userMessage, cwd, timeoutMs, {
-    onEvent,
-    abortController,
-    sdk,
-    model,
-  });
+  const result = await traceToolCall("agent.launchEphemeralThread", () =>
+    launchEphemeralThread(userMessage, cwd, timeoutMs, {
+      onEvent,
+      abortController,
+      sdk,
+      model,
+    }), { sdk, model, sessionType });
 
   if (!result.success) {
     // Match execPrimaryPrompt behaviour: always return the triple, let the
@@ -4004,5 +4012,6 @@ export function getActiveThreads() {
   }
   return result;
 }
+
 
 

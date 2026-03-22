@@ -109,12 +109,20 @@ const DAG_EPIC_DEPENDENCY_ENDPOINT_CANDIDATES = [
   "/api/tasks/epics/dependencies",
   "/api/tasks/dag/epics",
 ];
-const EMPTY_DAG_GRAPH = {
-  title: "",
-  description: "",
-  nodes: [],
-  edges: [],
-};
+
+const RUN_DETAIL_SHEET_LABEL = "Run detail side-sheet";
+const OPERATIONS_FEED_LABEL = "Activity feed";
+const OPERATIONS_SURFACE_LABELS = [
+  "board",
+  "feed",
+  "side-sheet",
+  "Run Detail",
+  "Run detail side-sheet",
+  "Activity feed",
+  "Dependency Graph",
+  "Global DAG of DAGs",
+  "Epic Dependency DAG",
+];
 const DAG_EDGE_STYLES = {
   "depends-on": { color: "var(--accent)", dash: "" },
   dependency: { color: "var(--accent)", dash: "" },
@@ -124,7 +132,13 @@ const DAG_EDGE_STYLES = {
 };
 const DAG_MIN_ZOOM = 0.25;
 const DAG_MAX_ZOOM = 2.4;
-
+const EMPTY_DAG_GRAPH = {
+  title: "",
+  description: "",
+  nodes: [],
+  edges: [],
+  levels: [],
+};
 /* ─── Status/Priority → MUI Chip color ─── */
 function statusChipColor(status) {
   const s = String(status || "").toLowerCase();
@@ -6002,7 +6016,7 @@ export function TasksTab() {
         <${ToggleButtonGroup} size="small" exclusive value=${isDag ? 'dag' : (isKanban ? 'kanban' : 'list')}>
           <${ToggleButton} value="list" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText(":menu: List")}<//>
           <${ToggleButton} value="kanban" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board<//>
-          <${ToggleButton} value="dag" onClick=${() => { viewMode.value = 'dag'; haptic(); }}>⛓ DAG<//>
+          <${ToggleButton} value="dag" aria-label="DAG" onClick=${() => { viewMode.value = 'dag'; haptic(); }}>⛓ DAG<//>
         <//>
         <div style="display:flex;gap:8px;align-items:center;">
           <${Button}
@@ -6077,7 +6091,7 @@ export function TasksTab() {
     <${ToggleButtonGroup} size="small" exclusive value=${isDag ? 'dag' : (isKanban ? 'kanban' : 'list')}>
       <${ToggleButton} value="list" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText(":menu: List")}<//>
       <${ToggleButton} value="kanban" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board<//>
-      <${ToggleButton} value="dag" onClick=${() => { viewMode.value = 'dag'; haptic(); }}>⛓ DAG<//>
+      <${ToggleButton} value="dag" aria-label="DAG" onClick=${() => { viewMode.value = 'dag'; haptic(); }}>⛓ DAG<//>
     <//>
   `;
 
@@ -7454,3 +7468,6 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     <//>
   `;
 }
+
+
+

@@ -20,6 +20,7 @@
  *   AGENT_EVENT  — Frozen enum of all event types
  */
 
+import { recordEventOnTaskSpan, beginLlmCallSpan, updateLlmCallSpan, endLlmCallSpan } from "../infra/tracing.mjs";
 import {
   createRetryQueueState,
   reduceRetryQueue,
@@ -232,6 +233,7 @@ export class AgentEventBus {
   emit(type, taskId, payload = {}, opts = {}) {
     const ts = Date.now();
     const event = { type, taskId, payload, ts };
+    recordEventOnTaskSpan(taskId, `agent.event.${String(type || "unknown").replace(/[:]/g, ".")}`, { type, ...payload });
 
     // ── Dedup
     const key = `${type}:${taskId}`;

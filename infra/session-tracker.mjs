@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { buildSessionInsights } from "../lib/session-insights.mjs";
 import { isTestRuntime } from "./test-runtime.mjs";
 import { addCompletedSession } from "./runtime-accumulator.mjs";
+import { trackSessionLifecycle } from "./tracing.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WORKSPACE_MIRROR_MARKER = `${sep}.bosun${sep}workspaces${sep}`.toLowerCase();
@@ -268,6 +269,7 @@ export class SessionTracker {
     const session = this.#sessions.get(taskId);
     this.#markDirty(taskId);
     emitSessionStateEvent(session, "session-created", { title: taskTitle || taskId });
+    trackSessionLifecycle({ reason: "session-created", sessionId: session.id, taskId, attributes: { title: taskTitle || taskId, type: session.type || "task" } });
   }
 
   /**
@@ -389,6 +391,7 @@ export class SessionTracker {
     this.#accumulateCompletedSession(session, taskId);
     this.#markDirty(taskId);
     emitSessionStateEvent(session, "session-ended", { status });
+    trackSessionLifecycle({ reason: "session-ended", sessionId: session.id, taskId, attributes: { status } });
   }
 
   /**

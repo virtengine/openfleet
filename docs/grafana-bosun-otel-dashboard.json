@@ -1,0 +1,19 @@
+{
+  "title": "Bosun OpenTelemetry",
+  "panels": [
+    { "title": "Task throughput", "type": "timeseries" },
+    { "title": "Task success rate", "type": "timeseries" },
+    { "title": "Average duration", "type": "timeseries" },
+    { "title": "Token usage by model", "type": "timeseries" },
+    { "title": "Cost by SDK", "type": "timeseries" },
+    { "title": "Errors by type", "type": "timeseries" },
+    { "title": "Interventions", "type": "timeseries" },
+    { "title": "Workflow waterfall", "type": "traces" }
+  ],
+  "templating": {
+    "list": [
+      { "name": "sdk", "type": "query" },
+      { "name": "model", "type": "query" }
+    ]
+  }
+}

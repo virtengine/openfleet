@@ -66,6 +66,7 @@ import {
 } from "./task-store.mjs";
 import { createErrorDetector } from "../infra/error-detector.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
+import { traceTaskExecution } from "../infra/tracing.mjs";
 import {
   getCompactDiffSummary,
   getRecentCommits,
@@ -5365,6 +5366,17 @@ class TaskExecutor {
    * @returns {Promise<void>}
    */
   async executeTask(task, options = {}) {
+    return traceTaskExecution(
+      String(task?.id || task?.task_id || "").trim(),
+      {
+        title: task?.title || task?.task_title || null,
+        priority: task?.priority || null,
+        assignee: task?.assignee || task?.owner || null,
+        sdk: options?.sdk || task?.sdk || this.sdk || null,
+        model: options?.model || task?.model || null,
+        branch: task?.branch || task?.branchName || null,
+      },
+      async () => {
     const taskId = String(task?.id || task?.task_id || "").trim();
     if (!taskId) {
       return { skipped: true, reason: "missing_task_id" };
@@ -5438,6 +5450,8 @@ class TaskExecutor {
     // [LEGACY REMOVED] Replaced by workflow node: TASK_LIFECYCLE_TEMPLATE (all nodes)
     // See workflow-templates/task-lifecycle.mjs
     return { skipped: true, reason: "legacy_removed" };
+      },
+    );
   }
 
   // ── Prompt Building ───────────────────────────────────────────────────────
@@ -5892,3 +5906,4 @@ export function isExecutorDisabled() {
 
 export { TaskExecutor };
 export default TaskExecutor;
+

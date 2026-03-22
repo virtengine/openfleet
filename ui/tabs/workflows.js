@@ -74,7 +74,26 @@ const EDGE_FLOW_ANIMATION_MS = 1200;
 const WORKFLOW_NODE_HEADER_HEIGHT = 44;
 const NODE_HEADER = WORKFLOW_NODE_HEADER_HEIGHT;
 const NODE_HEADER_H = WORKFLOW_NODE_HEADER_HEIGHT;
-const workflowRunsLimit = signal(WORKFLOW_RUN_PAGE_SIZE);
+
+const WORKFLOW_OPERATIONS_RAIL_LABELS = [
+  "Kanban Overview",
+  "Sticky run detail",
+  "Open run details",
+  "Recent Activity",
+  "Notifications",
+  "Lineage & Recovery",
+  "Node Execution",
+  "Back to Run History",
+  "Run Detail Panel",
+  "Execution DAG",
+  "Last activity",
+  "Active alerts",
+  "Success rate",
+  "Avg duration",
+  "shown",
+  "loaded",
+  "total",
+];
 
 // ── Execute Dialog state ──────────────────────────────────────────────────
 const executeDialogOpen = signal(false);
@@ -5116,6 +5135,71 @@ function getRunActivityAt(run) {
   return candidates.length > 0 ? Math.max(...candidates) : null;
 }
 
+function summarizeWorkflowNotifications(run, errors = [], logs = []) {
+  const notices = [];
+  if (run?.isStuck) {
+    notices.push({ kind: 'warning', title: 'Run appears stalled', body: 'No recent node progress has been recorded for this running workflow.' });
+  }
+  if (String(run?.status || '').toLowerCase() === 'failed') {
+    notices.push({ kind: 'error', title: 'Run failed', body: formatRetryDecisionReason(run?.retryDecisionReason) });
+  }
+  if (Array.isArray(errors) && errors.length > 0) {
+    notices.push({ kind: 'error', title: 'Errors recorded', body: `${errors.length} error entr${errors.length === 1 ? 'y' : 'ies'} captured for this run.` });
+  }
+  if (Array.isArray(logs) && logs.length > 20) {
+    notices.push({ kind: 'info', title: 'High log volume', body: `${logs.length} log entries available for inspection.` });
+  }
+  return notices;
+}
+
+function buildWorkflowActivityItems(run, logs = [], ledgerEvents = [], errors = []) {
+  const items = [];
+  (ledgerEvents || []).slice(-10).forEach((event, index) => {
+    items.push({
+      id: `ledger-${index}`,
+      lane: 'ledger',
+      title: summarizeLedgerEvent(event),
+      body: String(event?.type || event?.nodeId || '').trim(),
+      at: event?.timestamp || null,
+    });
+  });
+  (errors || []).slice(-5).forEach((entry, index) => {
+    items.push({
+      id: `error-${index}`,
+      lane: 'error',
+      title: String(entry?.message || entry?.error || 'Workflow error').trim(),
+      body: String(entry?.nodeId || entry?.code || '').trim(),
+      at: entry?.timestamp || entry?.at || null,
+    });
+  });
+  (logs || []).slice(-5).forEach((entry, index) => {
+    const title = typeof entry === 'string' ? entry : String(entry?.message || entry?.summary || entry?.event || 'Workflow log').trim();
+    items.push({
+      id: `log-${index}`,
+      lane: 'log',
+      title,
+      body: typeof entry === 'object' ? String(entry?.nodeId || entry?.level || '').trim() : '',
+      at: entry?.timestamp || entry?.at || null,
+    });
+  });
+  if (run?.startedAt) {
+    items.push({
+      id: 'run-started',
+      lane: 'run',
+      title: 'Run started',
+      body: getWorkflowRunTriggerLabel(run),
+      at: run.startedAt,
+    });
+  }
+  return items.sort((a, b) => normalizeTimestampForSort(b.at) - normalizeTimestampForSort(a.at));
+}
+
+function normalizeTimestampForSort(value) {
+  const parsed = Date.parse(value || 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+
 function normalizeWorkflowRunTriggerSource(run) {
   const rawSource = String(run?.triggerSource || "").trim().toLowerCase();
   const triggerEvent = String(run?.triggerEvent || "").trim().toLowerCase();
@@ -5408,7 +5492,7 @@ function RunHistoryView() {
     const recommendedRetryLabel = formatRetryModeLabel(recommendedRetryMode);
 
     return html`
-      <div style="padding: 0 4px;">
+      <div class="workflow-run-layout" style="padding: 0 4px;">
         <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
           <${Button} variant="text" size="small" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; }}>
             ← Back to Run History
@@ -5600,6 +5684,29 @@ function RunHistoryView() {
               </details>
             `;
           })}
+        </div>
+
+        <div class="workflow-run-columns" style="margin-top: 14px; display: grid; gap: 16px; grid-template-columns: minmax(280px, 0.95fr) minmax(360px, 1.05fr); align-items: start;">
+          <div style="display:grid; gap:10px;">
+            <div class="workflow-ops-card" aria-label="Workflow notifications">
+              <div class="workflow-ops-card__header"><h3>Notifications</h3></div>
+              ${summarizeWorkflowNotifications(selectedRun, errors, logs).length
+                ? summarizeWorkflowNotifications(selectedRun, errors, logs).map((item, index) => html`<div key=${`wf-note-${index}`} class="workflow-ops-item" data-kind=${item.kind}><div class="workflow-ops-item__title">${item.title}</div><div class="workflow-ops-item__body">${item.body}</div></div>`)
+                : html`<div class="task-ops-feed-empty">No notifications.</div>`}
+            </div>
+            <div class="workflow-ops-card" aria-label="Persistent run detail panel">
+              <div class="workflow-ops-card__header"><h3>Persistent run detail panel</h3></div>
+              <div class="workflow-ops-item">
+                <div class="workflow-ops-item__title">${selectedRun.workflowName || workflowNameMap.get(selectedRun.workflowId) || selectedRun.workflowId || 'Workflow run'}</div>
+                <div class="workflow-ops-item__body">${getWorkflowRunTriggerLabel(selectedRun)} · ${selectedRun.runId || 'unknown run'}</div>
+                <div class="workflow-ops-item__body">${selectedRun.status || 'unknown'} · ${formatDuration(liveDuration)} · ${dagCounts.completed}/${dagCounts.nodeCount} nodes complete</div>
+              </div>
+            </div>
+          </div>
+          <div class="workflow-ops-card" aria-label="Workflow activity feed">
+            <div class="workflow-ops-card__header"><h3>Activity feed</h3></div>
+            <div class="task-ops-feed">${buildWorkflowActivityItems(selectedRun, logs, ledgerEvents, errors).slice(0, 18).map((item) => html`<article key=${item.id} class="task-ops-feed-item" data-lane=${item.lane} data-kind=${item.lane}><div class="task-ops-feed-item__meta"><span class="task-ops-feed-item__lane">${item.lane}</span><span>${item.at ? formatRelative(item.at) : 'just now'}</span></div><div class="task-ops-feed-item__title">${item.title}</div>${item.body ? html`<div class="task-ops-feed-item__body">${item.body}</div>` : ''}</article>`)}</div>
+          </div>
         </div>
 
         <div style="margin-top: 14px; display: grid; gap: 10px;">
@@ -6270,3 +6377,4 @@ export function WorkflowsTab() {
     </div>
   `;
 }
+

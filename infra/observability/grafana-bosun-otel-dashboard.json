@@ -1,0 +1,16 @@
+{
+  "title": "Bosun OpenTelemetry",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["bosun", "otel"],
+  "panels": [
+    { "title": "Task Throughput", "type": "timeseries" },
+    { "title": "Success Rate", "type": "stat" },
+    { "title": "Average Duration", "type": "timeseries" },
+    { "title": "Token Usage by Model", "type": "timeseries" },
+    { "title": "Cost by Model", "type": "timeseries" },
+    { "title": "Error Rate by Type", "type": "timeseries" },
+    { "title": "Intervention Frequency", "type": "timeseries" },
+    { "title": "Workflow Waterfall", "type": "traces" }
+  ]
+}
