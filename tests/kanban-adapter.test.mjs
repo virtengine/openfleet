@@ -1153,6 +1153,45 @@ describe("kanban-adapter internal backend", () => {
     expect(task.description).toBe("Recovered description");
     expect(task.projectId).toBe("internal");
   });
-});
 
+  it("supports payload-only createTask calls for the internal adapter", async () => {
+    const adapter = getKanbanAdapter();
+
+    const task = await adapter.createTask({
+      title: "feat(workflow): payload-only createTask",
+      description: "Created without explicit projectId arg",
+      status: "draft",
+      workspace: "virtengine-gh",
+      repository: "virtengine/bosun",
+    });
+
+    expect(task).toBeTruthy();
+    expect(task.title).toBe("feat(workflow): payload-only createTask");
+    expect(task.description).toBe("Created without explicit projectId arg");
+    expect(task.status).toBe("draft");
+    expect(task.draft).toBe(true);
+    expect(task.projectId).toBe("internal");
+    expect(task.workspace).toBe("virtengine-gh");
+    expect(task.repository).toBe("virtengine/bosun");
+
+    const viaHelper = await createKanbanTask({
+      title: "feat(workflow): payload-only helper createTask",
+      description: "Created through exported helper without explicit projectId arg",
+      status: "todo",
+      workspace: "virtengine-gh",
+      repository: "virtengine/bosun",
+    });
+
+    expect(viaHelper).toBeTruthy();
+    expect(viaHelper.title).toBe("feat(workflow): payload-only helper createTask");
+    expect(viaHelper.description).toBe(
+      "Created through exported helper without explicit projectId arg",
+    );
+    expect(viaHelper.status).toBe("todo");
+    expect(viaHelper.draft).toBe(false);
+    expect(viaHelper.projectId).toBe("internal");
+    expect(viaHelper.workspace).toBe("virtengine-gh");
+    expect(viaHelper.repository).toBe("virtengine/bosun");
+  });
+});
 

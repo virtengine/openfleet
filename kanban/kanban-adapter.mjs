@@ -1008,7 +1008,13 @@ class InternalAdapter {
     return this._normalizeTask(updated);
   }
 
-  async createTask(projectId, taskData = {}) {
+  async createTask(projectIdOrTaskData, taskDataArg = {}) {
+    const payloadOnlyCall =
+      projectIdOrTaskData &&
+      typeof projectIdOrTaskData === "object" &&
+      !Array.isArray(projectIdOrTaskData);
+    const taskData = payloadOnlyCall ? projectIdOrTaskData : (taskDataArg || {});
+    const projectId = payloadOnlyCall ? taskData.projectId : projectIdOrTaskData;
     const id = String(taskData.id || randomUUID());
     const tags = normalizeTags(taskData.tags || taskData.labels || []);
     const draft = Boolean(taskData.draft || taskData.status === "draft");
@@ -6082,7 +6088,13 @@ export async function updateTask(taskId, patch) {
   return adapter.getTask(taskId);
 }
 
-export async function createTask(projectId, taskData) {
+export async function createTask(projectIdOrTaskData, taskDataArg = {}) {
+  const payloadOnlyCall =
+    projectIdOrTaskData &&
+    typeof projectIdOrTaskData === "object" &&
+    !Array.isArray(projectIdOrTaskData);
+  const taskData = payloadOnlyCall ? projectIdOrTaskData : (taskDataArg || {});
+  const projectId = payloadOnlyCall ? taskData.projectId : projectIdOrTaskData;
   const result = await getKanbanAdapter().createTask(projectId, taskData);
   emitKanbanEvent("task.created", {
     projectId,
@@ -6164,4 +6176,3 @@ export async function unmarkTaskIgnored(taskId) {
   );
   return false;
 }
-
