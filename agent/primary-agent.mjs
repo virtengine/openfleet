@@ -1193,9 +1193,6 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
   const toolContract = buildPrimaryToolCapabilityContract(options);
   const architectEditorFrame = buildArchitectEditorFrame(
     options,
-    effectiveMode,
-  );
-  const messageWithToolContract = [
     selectedProfile.block,
     toolContract,
     architectEditorFrame,
