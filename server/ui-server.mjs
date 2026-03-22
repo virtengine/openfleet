@@ -246,6 +246,10 @@ const TASK_STORE_DAG_EXPORTS = Object.freeze({
 });
 const TASK_STORE_GET_TASK_EXPORTS = ["getTaskById", "getTask"];
 const TASK_STORE_COMMENT_EXPORTS = ["getTaskComments", "listTaskComments"];
+const TASK_STORE_RUN_EXPORTS = {
+  list: ["getTaskRuns", "listTaskRuns"],
+  append: ["appendTaskRun", "addTaskRun"],
+};
 const TASK_STORE_DEPENDENCY_EXPORTS = {
   add: ["addTaskDependency"],
   remove: ["removeTaskDependency"],
@@ -9543,6 +9547,102 @@ function summarizeOutputLines(value, maxLines = 3, maxChars = 140) {
   return lines;
 }
 
+function summarizeTrajectoryText(value, maxLength = 160) {
+  const text = String(value ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (!text) return null;
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+}
+
+function classifyTrajectorySessionEvent(event = {}) {
+  const payload = event && typeof event === "object" ? event : {};
+  const role = String(payload?.role || payload?.message?.role || "").trim().toLowerCase();
+  const type = String(payload?.type || payload?.message?.type || payload?.event?.kind || "").trim().toLowerCase();
+  if (role === "user") return "user";
+  if (role === "assistant") return "assistant";
+  if (type.includes("tool") && (type.includes("result") || type.includes("output"))) return "tool_result";
+  if (type.includes("tool")) return "tool_call";
+  if (type.includes("reason") || type.includes("thinking")) return "reasoning";
+  if (type === "error") return "status";
+  return "event";
+}
+
+function buildTrajectoryStepFromSessionEvent(event = {}) {
+  const normalizedType = classifyTrajectorySessionEvent(event);
+  const message = event?.message && typeof event.message === "object" ? event.message : event;
+  const content = message?.content ?? event?.content ?? null;
+  const summary = summarizeTrajectoryText(
+    message?.summary || event?.summary || content || event?.label || event?.reason || event?.type || "Run event recorded.",
+  ) || "Run event recorded.";
+  return {
+    id: String(event?.id || message?.id || `step-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`),
+    at: String(event?.timestamp || message?.timestamp || event?.at || new Date().toISOString()),
+    type: normalizedType,
+    summary,
+    payload: {
+      role: message?.role || event?.role || null,
+      type: message?.type || event?.type || null,
+      content: typeof content === "string" ? content : null,
+      reason: event?.reason || null,
+    },
+    event: event && typeof event === "object" ? { ...event } : null,
+  };
+}
+
+function buildTaskRunSummary(steps = [], fallback = "Run recorded.") {
+  const ordered = Array.isArray(steps) ? steps : [];
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const summary = summarizeTrajectoryText(ordered[index]?.summary || "");
+    if (summary) return summary;
+  }
+  return fallback;
+}
+
+function buildReplayableTaskRuns(task, tracker = null, limit = 5) {
+  const sessionIds = collectTaskDiffSessionIds(task);
+  const storedRuns = listTaskRuns(task?.id);
+  const runs = Array.isArray(storedRuns) ? [...storedRuns] : [];
+  const seenRunIds = new Set(runs.map((entry) => String(entry?.runId || "")).filter(Boolean));
+  for (const sessionId of sessionIds) {
+    const session = tracker?.getSession?.(sessionId);
+    if (!session) continue;
+    const events = Array.isArray(session?.events) ? session.events : [];
+    const steps = events.map((event) => buildTrajectoryStepFromSessionEvent(event)).filter(Boolean);
+    if (steps.length === 0) continue;
+    const runId = String(sessionId || session?.id || "").trim();
+    if (!runId || seenRunIds.has(runId)) continue;
+    seenRunIds.add(runId);
+    runs.push({
+      runId,
+      startedAt: String(session?.createdAt || steps[0]?.at || new Date().toISOString()),
+      endedAt: session?.status === "active" ? null : String(session?.updatedAt || steps.at(-1)?.at || new Date().toISOString()),
+      status: String(session?.status || "completed"),
+      taskKey: String(task?.id || session?.taskId || "").trim() || null,
+      sdk: String(session?.executor || session?.sdk || session?.metadata?.resolvedSdk || "").trim() || null,
+      threadId: String(session?.threadId || session?.metadata?.threadId || "").trim() || null,
+      resumeThreadId: String(session?.metadata?.resumeThreadId || session?.threadId || "").trim() || null,
+      replayable: true,
+      outcome: session?.status === "failed" ? "failed" : "completed",
+      summary: buildTaskRunSummary(steps, session?.status === "failed" ? "Run failed." : "Run completed."),
+      steps,
+      meta: {
+        sessionId: runId,
+        source: "session-tracker",
+      },
+    });
+  }
+  runs.sort((left, right) => Date.parse(String(right?.startedAt || 0)) - Date.parse(String(left?.startedAt || 0)));
+  return runs.slice(0, Math.max(1, Number(limit) || 5));
+}
+
 function buildWorkflowNodeOutputPreview(nodeType, output = null) {
   if (output == null) return { lines: [] };
   const type = String(nodeType || "").trim().toLowerCase();
@@ -12679,6 +12779,15 @@ async function handleApi(req, res, url) {
           workspaceDir: workspaceContext?.workspaceDir || repoRoot,
         });
         const diagnostics = buildTaskDiagnostics(detailTask, supervisorDiagnostics);
+        const replayRuns = buildReplayableTaskRuns(detailTask, getSessionTracker(), 8);
+        if (replayRuns.length > 0) {
+          detailTask.runs = replayRuns;
+          detailTask.meta = {
+            ...(detailTask.meta || {}),
+            latestRunSummary: replayRuns[0]?.summary || null,
+            replayRunCount: replayRuns.length,
+          };
+        }
 
         detailTask.meta = {
           ...(detailTask.meta || {}),

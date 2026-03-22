@@ -2451,6 +2451,53 @@ describe("ui-server mini app", () => {
     expect(detail.data.workflowRuns.some((run) => run.workflowId === workflowId)).toBe(true);
   }, 20000);
 
+  it("includes replayable task runs and a latest run summary on task detail", async () => {
+    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-task-runs-"));
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_HOME = isolatedDir;
+    process.env.BOSUN_DIR = isolatedDir;
+    process.env.CODEX_MONITOR_HOME = isolatedDir;
+    process.env.CODEX_MONITOR_DIR = isolatedDir;
+
+    const taskStore = await import("../task/task-store.mjs");
+    taskStore.configureTaskStore({ storePath: join(isolatedDir, "kanban-state.json") });
+    taskStore.loadStore();
+    taskStore.addTask({ id: "task-replay-1", title: "Replay me", status: "blocked" });
+    taskStore.appendTaskRun("task-replay-1", {
+      runId: "run-replay-1",
+      startedAt: "2026-03-22T10:00:00.000Z",
+      status: "failed",
+      sdk: "codex",
+      threadId: "thread-replay-1",
+      steps: [
+        { type: "thread", payload: { sdk: "codex", resumed: false } },
+        { type: "assistant", payload: { content: "Investigated the failure and need a follow-up turn." } },
+      ],
+    });
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const detail = await fetch(`http://127.0.0.1:${port}/api/tasks/detail?taskId=task-replay-1`).then((r) => r.json());
+    expect(detail.ok).toBe(true);
+    expect(Array.isArray(detail.data.runs)).toBe(true);
+    expect(detail.data.runs[0]).toMatchObject({
+      runId: "run-replay-1",
+      sdk: "codex",
+      threadId: "thread-replay-1",
+      replayable: true,
+      status: "failed",
+    });
+    expect(detail.data.runs[0].steps[0].summary).toBe("Started codex session.");
+    expect(detail.data.meta.latestRunSummary).toContain("Investigated the failure");
+  }, 20000);
+
   it("preserves stored workflow session links while adding primary session ids from workflow detail", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-workflow-merge-"));
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
