@@ -371,6 +371,9 @@ describe("task-executor", () => {
         expect.objectContaining({
           enabled: true,
           configuredLimit: 2,
+          fairQueue: expect.objectContaining({
+            policy: "round_robin_oldest_wait",
+          }),
           totals: expect.objectContaining({
             conflicts: 2,
             blockedDispatches: 2,
@@ -384,6 +387,7 @@ describe("task-executor", () => {
           }),
         }),
       );
+      expect(status.repoAreaLocks.worker).toBeInstanceOf(Array);
       expect(status.repoAreaLocks.areas).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -422,6 +426,27 @@ describe("task-executor", () => {
         { id: "t2", repo_areas: ["infra"] },
       ], 2);
       expect(selected.map((task) => task.id)).toEqual(["t1", "t2"]);
+    });
+
+    it("applies fair queue ordering across mixed repo-area candidates", () => {
+      const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 2 });
+      const selected = ex._selectTasksForBaseBranchLimit(
+        [
+          { id: "infra-1", repo_areas: ["infra"] },
+          { id: "infra-2", repo_areas: ["infra"] },
+          { id: "workflow-1", repo_areas: ["workflow"] },
+          { id: "workflow-2", repo_areas: ["workflow"] },
+        ],
+        2,
+      );
+
+      expect(selected.map((task) => task.id)).toEqual(["infra-1", "workflow-1"]);
+      expect(ex.getStatus().repoAreaLocks.lastDispatch).toEqual(
+        expect.objectContaining({
+          policy: "round_robin_oldest_wait",
+          selectedCount: 2,
+        }),
+      );
     });
 
     it("reduces effective repo area cap when active failures are high", () => {
@@ -620,6 +645,16 @@ describe("task-executor", () => {
           }),
         ]),
       );
+      expect(ex.getStatus().repoAreaLocks.worker).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            area: "infra",
+            waitSamples: 1,
+            lastWaitMs: 1500,
+            maxWaitMs: 1500,
+          }),
+        ]),
+      );
       expect(ex.getStatus().repoAreaLocks.contention).toEqual(
         expect.objectContaining({
           events: 1,
@@ -632,6 +667,57 @@ describe("task-executor", () => {
             }),
           ]),
         }),
+      );
+    });
+
+    it("tracks starvation counters per repo area and worker", () => {
+      const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 1 });
+      const now = Date.now();
+      ex._activeSlots.set("active-1", {
+        taskId: "active-1",
+        repoAreas: ["infra"],
+        attempt: 1,
+        startedAt: now - 2_000,
+        status: "running",
+      });
+
+      let tick = now;
+      vi.spyOn(Date, "now").mockImplementation(() => {
+        tick += 100;
+        return tick;
+      });
+
+      expect(
+        ex._selectTasksForBaseBranchLimit([{ id: "t1", repo_areas: ["infra"] }], 1),
+      ).toEqual([]);
+      expect(
+        ex._selectTasksForBaseBranchLimit([{ id: "t1", repo_areas: ["infra"] }], 1),
+      ).toEqual([]);
+      expect(
+        ex._selectTasksForBaseBranchLimit([{ id: "t1", repo_areas: ["infra"] }], 1),
+      ).toEqual([]);
+
+      const status = ex.getStatus().repoAreaLocks;
+      expect(status.lastDispatch.starvationEvents).toBeGreaterThanOrEqual(1);
+      expect(status.lastDispatch.starvingAreas).toContain("infra");
+      expect(status.areas).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            area: "infra",
+            starvationEvents: 1,
+            starvingTasks: 1,
+            maxStarvationCycles: 3,
+          }),
+        ]),
+      );
+      expect(status.worker).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            area: "infra",
+            starvationEvents: 1,
+            maxStarvationCycles: 3,
+          }),
+        ]),
       );
     });
 
