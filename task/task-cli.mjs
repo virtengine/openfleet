@@ -125,6 +125,14 @@ async function flushStoreWrites(store) {
  */
 function resolveKanbanStorePath() {
   if (process.env.BOSUN_STORE_PATH) return process.env.BOSUN_STORE_PATH;
+  if (process.env.REPO_ROOT) {
+    return resolve(
+      process.env.REPO_ROOT,
+      '.bosun',
+      '.cache',
+      'kanban-state.json',
+    );
+  }
 
   try {
     const bosunHome = _deriveBosunHome();
