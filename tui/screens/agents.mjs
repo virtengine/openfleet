@@ -167,17 +167,6 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
         applySessionSnapshot(sessions, Date.now());
       }),
 
-        method: "POST",
-      });
-      setStatusLine(`${action} sent for ${describeSelection(selectedSession)}`);
-      await refreshData();
-    },
-    [refreshData, resolvedHost, resolvedPort, selectedSession],
-  );
-
-  useInput((input, key) => {
-    if (confirmKill) {
-      if (input === "y" || input === "Y") {
         setConfirmKill(false);
         void postAction("stop");
       } else if (input === "n" || input === "N" || key.escape) {
