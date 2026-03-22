@@ -22223,4 +22223,4 @@ export function stopTelegramUiServer() {
   releaseUiInstanceLock();
 }
 
-export { getLocalLanIp };\n
+export { getLocalLanIp };
