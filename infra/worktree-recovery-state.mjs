@@ -1,5 +1,7 @@
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const DEFAULT_RECOVERY_STATE = Object.freeze({
   health: "healthy",
@@ -16,10 +18,17 @@ const DEFAULT_RECOVERY_STATE = Object.freeze({
 const MAX_RECOVERY_EVENTS = 12;
 const VALID_HEALTH = new Set(["healthy", "recovered", "failing", "degraded"]);
 const VALID_OUTCOMES = new Set(["healthy_noop", "recreated", "recreation_failed"]);
+const MODULE_REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function getStatusPath(repoRoot) {
-  return resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
+  const defaultPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
+  const modulePath = resolve(MODULE_REPO_ROOT, ".cache", "ve-orchestrator-status.json");
+  if (modulePath !== defaultPath && existsSync(modulePath)) return modulePath;
+  const cwdPath = resolve(process.cwd(), ".cache", "ve-orchestrator-status.json");
+  if (cwdPath !== defaultPath && cwdPath !== modulePath && existsSync(cwdPath)) return cwdPath;
+  return defaultPath;
 }
+
 
 function toIsoTimestamp(value) {
   const text = String(value || "").trim();
@@ -146,3 +155,6 @@ export {
   readWorktreeRecoveryState,
   recordWorktreeRecoveryEvent,
 };
+
+
+

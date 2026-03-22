@@ -2883,7 +2883,13 @@ async function handleEsmProxy(req, res, url) {
   }
 }
 
-const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
+const moduleStatusPath = resolve(__dirname, "..", ".cache", "ve-orchestrator-status.json");
+const cwdStatusPath = resolve(process.cwd(), ".cache", "ve-orchestrator-status.json");
+const statusPath = existsSync(moduleStatusPath)
+  ? moduleStatusPath
+  : existsSync(cwdStatusPath)
+    ? cwdStatusPath
+    : resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
 const logsDir = resolve(__dirname, "..", "logs");
 const agentLogsDirCandidates = [
   resolve(__dirname, "..", "logs", "agents"),
@@ -9444,7 +9450,13 @@ async function collectUiStats() {
 
   // Try to read status from the monitor's status file first
   let orchestratorStatus = null;
-  const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
+  const moduleStatusPath = resolve(__dirname, "..", ".cache", "ve-orchestrator-status.json");
+const cwdStatusPath = resolve(process.cwd(), ".cache", "ve-orchestrator-status.json");
+const statusPath = existsSync(moduleStatusPath)
+  ? moduleStatusPath
+  : existsSync(cwdStatusPath)
+    ? cwdStatusPath
+    : resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
   try {
     if (existsSync(statusPath)) {
       const raw = await readFile(statusPath, "utf8");
@@ -21711,4 +21723,5 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
 
