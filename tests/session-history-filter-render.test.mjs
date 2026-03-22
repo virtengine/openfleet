@@ -24,13 +24,13 @@ for (const { relPath, source } of sourceFiles) {
         /function isHistoricSession\(session\)\s*\{\s*return !isActiveSession\(session\);\s*\}/,
       );
       expect(source).toMatch(
-        /function isActiveSession\(session\)\s*\{[\s\S]*status === "active" \|\| status === "running"/,
+        /function isActiveSession\(session\)\s*\{\s*return getSessionLifecycleState\(session\)\.isActive;\s*\}/,
       );
     });
 
-    it("renders All, Active, and Historic filter buttons with counts", () => {
+    it("renders All, Lifecycle Active, and Historic filter buttons with counts", () => {
       expect(source).toContain("All (${allCount})");
-      expect(source).toContain("Active (${activeCount})");
+      expect(source).toContain("Lifecycle Active (${activeCount})");
       expect(source).toContain("Historic (${historicCount})");
     });
 
