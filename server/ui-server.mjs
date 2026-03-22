@@ -9195,6 +9195,18 @@ function buildCurrentTuiMonitorStats() {
       maxAgents: pickNumericStat(status?.maxParallel, injectedStats?.maxAgents),
       tokensIn: pickNumericStat(injectedStats?.tokensIn, tokensIn),
       tokensOut: pickNumericStat(injectedStats?.tokensOut, tokensOut),
+        return numeric;
+      }
+    }
+    return 0;
+  };
+
+  return buildMonitorStatsPayload({
+    agentPool: {
+      activeAgents: pickNumericStat(status?.activeSlots, slots.length, injectedStats?.activeAgents),
+      maxAgents: pickNumericStat(status?.maxParallel, injectedStats?.maxAgents),
+      tokensIn: pickNumericStat(injectedStats?.tokensIn, tokensIn),
+      tokensOut: pickNumericStat(injectedStats?.tokensOut, tokensOut),
       throughputTps: injectedStats?.throughputTps,
       rateLimits: injectedStats?.rateLimits || {},
     },
@@ -9848,9 +9860,7 @@ function startLogStream(socket, logType, query) {
 
       if (size <= streamState.offset) return;
 
-      const readLen = Math.min(size - streamState.offset, 512_000);
-      const handle = await open(filePath, "r");
-      try {
+
         const buffer = Buffer.alloc(readLen);
         await handle.read(buffer, 0, readLen, streamState.offset);
         streamState.offset += readLen;
