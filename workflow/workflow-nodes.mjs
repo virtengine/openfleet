@@ -7673,7 +7673,7 @@ registerBuiltinNodeType("flow.universial", UNIVERSAL_FLOW_NODE);
 registerBuiltinNodeType("loop.for_each", {
   describe: () =>
     "Iterate over an array, executing a sub-workflow for each item. " +
-    "Supports parallel fan-out via maxConcurrent and provides per-item " +
+    "Supports sync or dispatch fan-out via maxConcurrent and provides per-item " +
     "context injection under the configured variable name.",
   schema: {
     type: "object",
@@ -7684,6 +7684,12 @@ registerBuiltinNodeType("loop.for_each", {
       maxIterations: { type: "number", default: 50, description: "Cap on total iterations" },
       maxConcurrent: { type: "number", default: 1, description: "Parallel fan-out width (1 = sequential)" },
       workflowId: { type: "string", description: "Sub-workflow to execute for each item (optional)" },
+      mode: {
+        type: "string",
+        enum: ["sync", "dispatch"],
+        default: "sync",
+        description: "sync waits for child workflows; dispatch fires and forgets",
+      },
     },
     required: ["items"],
   },
@@ -7702,7 +7708,11 @@ registerBuiltinNodeType("loop.for_each", {
     const varName = node.config?.variable || "item";
     const indexVar = node.config?.indexVariable || "index";
     const maxConcurrent = Math.max(1, node.config?.maxConcurrent || 1);
-    const subWorkflowId = node.config?.workflowId || "";
+    const subWorkflowId = String(ctx.resolve(node.config?.workflowId || "") || "").trim();
+    const modeRaw = String(ctx.resolve(node.config?.mode || "sync") || "sync")
+      .trim()
+      .toLowerCase();
+    const mode = modeRaw === "dispatch" ? "dispatch" : "sync";
 
     // Store items for downstream processing (backward compat)
     ctx.data[`_loop_${node.id}_items`] = items;
@@ -7712,7 +7722,10 @@ registerBuiltinNodeType("loop.for_each", {
 
     // If a sub-workflow is specified, fan-out execution across items
     if (subWorkflowId && engine?.execute) {
-      ctx.log(node.id, `Fan-out: ${items.length} item(s), concurrency=${maxConcurrent}, workflow=${subWorkflowId}`);
+      ctx.log(
+        node.id,
+        `Fan-out: ${items.length} item(s), concurrency=${maxConcurrent}, workflow=${subWorkflowId}, mode=${mode}`,
+      );
 
       // Process items in batches of maxConcurrent
       for (let batchStart = 0; batchStart < items.length; batchStart += maxConcurrent) {
@@ -7728,13 +7741,45 @@ registerBuiltinNodeType("loop.for_each", {
             _loopTotal: items.length,
           }, subWorkflowId);
           try {
-            const runCtx = await engine.execute(
-              subWorkflowId,
-              itemData,
-              makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: subWorkflowId }),
-            );
+            const childRunOpts = makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: subWorkflowId });
+            if (mode === "dispatch") {
+              const dispatched = Promise.resolve(engine.execute(subWorkflowId, itemData, childRunOpts));
+              dispatched
+                .then((runCtx) => {
+                  const status = runCtx?.errors?.length ? "failed" : "completed";
+                  ctx.log(
+                    node.id,
+                    `Dispatched loop child "${subWorkflowId}" iteration ${itemIndex} finished with status=${status}`,
+                  );
+                })
+                .catch((err) => {
+                  ctx.log(
+                    node.id,
+                    `Dispatched loop child "${subWorkflowId}" iteration ${itemIndex} failed: ${err.message}`,
+                    "error",
+                  );
+                });
+              return {
+                index: itemIndex,
+                item,
+                success: true,
+                queued: true,
+                workflowId: subWorkflowId,
+                mode: "dispatch",
+                parentRunId: ctx.id,
+              };
+            }
+            const runCtx = await engine.execute(subWorkflowId, itemData, childRunOpts);
             const ok = !runCtx?.errors?.length;
-            return { index: itemIndex, item, success: ok, runId: runCtx?.id || null };
+            return {
+              index: itemIndex,
+              item,
+              success: ok,
+              queued: false,
+              workflowId: subWorkflowId,
+              mode: "sync",
+              runId: runCtx?.id || null,
+            };
           } catch (err) {
             return { index: itemIndex, item, success: false, error: err?.message || String(err) };
           }
