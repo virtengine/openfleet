@@ -157,6 +157,8 @@ export async function readWeeklyReportScheduleState(options = {}) {
     throw new Error(message, { cause: err });
     // Preserve the original error as the cause when supported.
     throw new Error(message, { cause: err });
+    // Preserve the original error as the cause when supported.
+    throw new Error(message, { cause: err });
   }
 }
 
