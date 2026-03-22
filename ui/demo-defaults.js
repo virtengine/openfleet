@@ -17891,8 +17891,8 @@
           "type": "loop.for_each",
           "label": "Process Each Task",
           "config": {
-            "items": "{{query-tasks.output}}",
-            "itemVariable": "task",
+            "items": "$ctx.getNodeOutput('query-tasks')?.output || []",
+            "variable": "task",
             "indexVariable": "idx",
             "maxConcurrent": "{{maxConcurrent}}"
           },
@@ -18245,11 +18245,12 @@
           "type": "loop.for_each",
           "label": "Dispatch Tasks",
           "config": {
-            "items": "{{query-tasks.output}}",
+            "items": "$ctx.getNodeOutput('query-tasks')?.output || []",
             "itemVariable": "currentTask",
             "indexVariable": "taskIndex",
             "maxConcurrent": "{{maxConcurrent}}",
-            "workflowId": "{{subWorkflow}}"
+            "workflowId": "{{subWorkflow}}",
+            "mode": "dispatch"
           },
           "position": {
             "x": 400,
@@ -18354,7 +18355,7 @@
           "source": "check-coordinator",
           "target": "query-tasks",
           "sourcePort": "default",
-          "condition": "result.result === true"
+          "condition": "$output === true || $output?.result === true || $output?.value === true"
         },
         {
           "id": "query-tasks->dispatch-tasks",
@@ -18411,8 +18412,8 @@
         "workflow-first",
         "core"
       ],
-      "nodeCount": 58,
-      "edgeCount": 66,
+      "nodeCount": 59,
+      "edgeCount": 67,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -18793,6 +18794,22 @@
           "outputs": [
             "yes",
             "no"
+          ]
+        },
+        {
+          "id": "auto-commit-dirty",
+          "type": "action.auto_commit_dirty",
+          "label": "Auto Commit Dirty",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "taskId": "{{taskId}}"
+          },
+          "position": {
+            "x": 120,
+            "y": 1680
+          },
+          "outputs": [
+            "default"
           ]
         },
         {
@@ -19495,10 +19512,11 @@
         },
         {
           "id": "sweep-task-wts",
-          "type": "action.sweep_task_worktrees",
+          "type": "action.recover_worktree",
           "label": "Sweep Task WTs",
           "config": {
             "repoRoot": "{{repoRoot}}",
+            "branch": "{{branch}}",
             "taskId": "{{taskId}}"
           },
           "position": {
@@ -19611,11 +19629,17 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->detect-commits",
+          "id": "claim-stolen->auto-commit-dirty",
           "source": "claim-stolen",
-          "target": "detect-commits",
+          "target": "auto-commit-dirty",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
+        },
+        {
+          "id": "auto-commit-dirty->detect-commits",
+          "source": "auto-commit-dirty",
+          "target": "detect-commits",
+          "sourcePort": "default"
         },
         {
           "id": "detect-commits->has-commits",
@@ -37831,8 +37855,8 @@
           "type": "loop.for_each",
           "label": "Process Each Task",
           "config": {
-            "items": "{{query-tasks.output}}",
-            "itemVariable": "task",
+            "items": "$ctx.getNodeOutput('query-tasks')?.output || []",
+            "variable": "task",
             "indexVariable": "idx",
             "maxConcurrent": "{{maxConcurrent}}"
           },
@@ -38173,11 +38197,12 @@
           "type": "loop.for_each",
           "label": "Dispatch Tasks",
           "config": {
-            "items": "{{query-tasks.output}}",
+            "items": "$ctx.getNodeOutput('query-tasks')?.output || []",
             "itemVariable": "currentTask",
             "indexVariable": "taskIndex",
             "maxConcurrent": "{{maxConcurrent}}",
-            "workflowId": "{{subWorkflow}}"
+            "workflowId": "{{subWorkflow}}",
+            "mode": "dispatch"
           },
           "position": {
             "x": 400,
@@ -38282,7 +38307,7 @@
           "source": "check-coordinator",
           "target": "query-tasks",
           "sourcePort": "default",
-          "condition": "result.result === true"
+          "condition": "$output === true || $output?.result === true || $output?.value === true"
         },
         {
           "id": "query-tasks->dispatch-tasks",
@@ -38343,7 +38368,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 58,
+      "nodeCount": 59,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -38691,6 +38716,22 @@
           "outputs": [
             "yes",
             "no"
+          ]
+        },
+        {
+          "id": "auto-commit-dirty",
+          "type": "action.auto_commit_dirty",
+          "label": "Auto Commit Dirty",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "taskId": "{{taskId}}"
+          },
+          "position": {
+            "x": 120,
+            "y": 1680
+          },
+          "outputs": [
+            "default"
           ]
         },
         {
@@ -39393,10 +39434,11 @@
         },
         {
           "id": "sweep-task-wts",
-          "type": "action.sweep_task_worktrees",
+          "type": "action.recover_worktree",
           "label": "Sweep Task WTs",
           "config": {
             "repoRoot": "{{repoRoot}}",
+            "branch": "{{branch}}",
             "taskId": "{{taskId}}"
           },
           "position": {
@@ -39509,11 +39551,17 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->detect-commits",
+          "id": "claim-stolen->auto-commit-dirty",
           "source": "claim-stolen",
-          "target": "detect-commits",
+          "target": "auto-commit-dirty",
           "sourcePort": "no",
           "condition": "$output?.result !== true"
+        },
+        {
+          "id": "auto-commit-dirty->detect-commits",
+          "source": "auto-commit-dirty",
+          "target": "detect-commits",
+          "sourcePort": "default"
         },
         {
           "id": "detect-commits->has-commits",

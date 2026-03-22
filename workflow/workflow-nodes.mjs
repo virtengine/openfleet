@@ -365,6 +365,10 @@ const NODE_PORT_OVERRIDES = Object.freeze({
     inputs: [makePort("default", "GitRef", "", { accepts: ["TaskDef", "JSON", "TriggerEvent", "Boolean", "String", "Any"] })],
     outputs: [makePort("default", "GitRef", "Commit detection summary")],
   },
+  "action.auto_commit_dirty": {
+    inputs: [makePort("default", "GitRef", "", { accepts: ["TaskDef", "JSON", "TriggerEvent", "Boolean", "String", "Any"] })],
+    outputs: [makePort("default", "GitRef", "Auto-commit result")],
+  },
   "action.create_pr": {
     inputs: [makePort("default", "GitRef", "", { accepts: ["TaskDef", "JSON", "TriggerEvent", "Boolean", "String", "Any"] })],
     outputs: [makePort("default", "PRUrl", "Pull request link payload")],
@@ -7673,7 +7677,7 @@ registerBuiltinNodeType("flow.universial", UNIVERSAL_FLOW_NODE);
 registerBuiltinNodeType("loop.for_each", {
   describe: () =>
     "Iterate over an array, executing a sub-workflow for each item. " +
-    "Supports parallel fan-out via maxConcurrent and provides per-item " +
+    "Supports sync or dispatch fan-out via maxConcurrent and provides per-item " +
     "context injection under the configured variable name.",
   schema: {
     type: "object",
@@ -7684,6 +7688,12 @@ registerBuiltinNodeType("loop.for_each", {
       maxIterations: { type: "number", default: 50, description: "Cap on total iterations" },
       maxConcurrent: { type: "number", default: 1, description: "Parallel fan-out width (1 = sequential)" },
       workflowId: { type: "string", description: "Sub-workflow to execute for each item (optional)" },
+      mode: {
+        type: "string",
+        enum: ["sync", "dispatch"],
+        default: "sync",
+        description: "sync waits for child workflows; dispatch fires and forgets",
+      },
     },
     required: ["items"],
   },
@@ -7702,7 +7712,11 @@ registerBuiltinNodeType("loop.for_each", {
     const varName = node.config?.variable || "item";
     const indexVar = node.config?.indexVariable || "index";
     const maxConcurrent = Math.max(1, node.config?.maxConcurrent || 1);
-    const subWorkflowId = node.config?.workflowId || "";
+    const subWorkflowId = String(ctx.resolve(node.config?.workflowId || "") || "").trim();
+    const modeRaw = String(ctx.resolve(node.config?.mode || "sync") || "sync")
+      .trim()
+      .toLowerCase();
+    const mode = modeRaw === "dispatch" ? "dispatch" : "sync";
 
     // Store items for downstream processing (backward compat)
     ctx.data[`_loop_${node.id}_items`] = items;
@@ -7712,7 +7726,10 @@ registerBuiltinNodeType("loop.for_each", {
 
     // If a sub-workflow is specified, fan-out execution across items
     if (subWorkflowId && engine?.execute) {
-      ctx.log(node.id, `Fan-out: ${items.length} item(s), concurrency=${maxConcurrent}, workflow=${subWorkflowId}`);
+      ctx.log(
+        node.id,
+        `Fan-out: ${items.length} item(s), concurrency=${maxConcurrent}, workflow=${subWorkflowId}, mode=${mode}`,
+      );
 
       // Process items in batches of maxConcurrent
       for (let batchStart = 0; batchStart < items.length; batchStart += maxConcurrent) {
@@ -7728,13 +7745,45 @@ registerBuiltinNodeType("loop.for_each", {
             _loopTotal: items.length,
           }, subWorkflowId);
           try {
-            const runCtx = await engine.execute(
-              subWorkflowId,
-              itemData,
-              makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: subWorkflowId }),
-            );
+            const childRunOpts = makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: subWorkflowId });
+            if (mode === "dispatch") {
+              const dispatched = Promise.resolve(engine.execute(subWorkflowId, itemData, childRunOpts));
+              dispatched
+                .then((runCtx) => {
+                  const status = runCtx?.errors?.length ? "failed" : "completed";
+                  ctx.log(
+                    node.id,
+                    `Dispatched loop child "${subWorkflowId}" iteration ${itemIndex} finished with status=${status}`,
+                  );
+                })
+                .catch((err) => {
+                  ctx.log(
+                    node.id,
+                    `Dispatched loop child "${subWorkflowId}" iteration ${itemIndex} failed: ${err.message}`,
+                    "error",
+                  );
+                });
+              return {
+                index: itemIndex,
+                item,
+                success: true,
+                queued: true,
+                workflowId: subWorkflowId,
+                mode: "dispatch",
+                parentRunId: ctx.id,
+              };
+            }
+            const runCtx = await engine.execute(subWorkflowId, itemData, childRunOpts);
             const ok = !runCtx?.errors?.length;
-            return { index: itemIndex, item, success: ok, runId: runCtx?.id || null };
+            return {
+              index: itemIndex,
+              item,
+              success: ok,
+              queued: false,
+              workflowId: subWorkflowId,
+              mode: "sync",
+              runId: runCtx?.id || null,
+            };
           } catch (err) {
             return { index: itemIndex, item, success: false, error: err?.message || String(err) };
           }
@@ -13129,6 +13178,82 @@ registerBuiltinNodeType("action.persist_memory", {
         scopeLevel: entry.scopeLevel,
       };
     }
+  },
+});
+
+// ── action.auto_commit_dirty ────────────────────────────────────────────────
+// Safety net: if the agent left uncommitted work in the worktree, stage + commit
+// so that detect_new_commits can see it and the work isn't silently destroyed.
+
+registerBuiltinNodeType("action.auto_commit_dirty", {
+  describe: () =>
+    "Check the worktree for uncommitted changes and auto-commit them so " +
+    "downstream nodes (detect_new_commits, push_branch) can pick them up. " +
+    "This prevents agent work from being silently destroyed when the worktree is released.",
+  schema: {
+    type: "object",
+    properties: {
+      worktreePath: { type: "string", description: "Worktree to check" },
+      taskId: { type: "string", description: "Task ID for commit message" },
+      commitMessage: { type: "string", description: "Override commit message" },
+    },
+    required: ["worktreePath"],
+  },
+  async execute(node, ctx) {
+    const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
+    const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "unknown";
+
+    if (!worktreePath) {
+      ctx.log(node.id, "auto_commit_dirty: no worktreePath — skipping");
+      return { success: false, committed: false, reason: "no worktreePath" };
+    }
+
+    let porcelain = "";
+    try {
+      porcelain = execGitArgsSync(["status", "--porcelain"], {
+        cwd: worktreePath, encoding: "utf8", timeout: 10000,
+      }).trim();
+    } catch (err) {
+      ctx.log(node.id, `git status failed: ${err.message}`);
+      return { success: false, committed: false, reason: err.message };
+    }
+
+    if (!porcelain) {
+      ctx.log(node.id, "Worktree clean — nothing to auto-commit");
+      return { success: true, committed: false, reason: "clean" };
+    }
+
+    const dirtyCount = porcelain.split("\n").filter(Boolean).length;
+    ctx.log(node.id, `Found ${dirtyCount} dirty file(s) — auto-committing`);
+
+    try {
+      execGitArgsSync(["add", "-A"], {
+        cwd: worktreePath, encoding: "utf8", timeout: 15000,
+      });
+    } catch (err) {
+      ctx.log(node.id, `git add -A failed: ${err.message}`);
+      return { success: false, committed: false, reason: `git add failed: ${err.message}` };
+    }
+
+    const message = cfgOrCtx(node, ctx, "commitMessage")
+      || `chore: auto-commit agent work (${taskId.substring(0, 12)})`;
+    try {
+      execGitArgsSync(
+        ["-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "--no-verify", "-m", message],
+        { cwd: worktreePath, encoding: "utf8", timeout: 20000 },
+      );
+    } catch (err) {
+      const errText = (err.stderr || err.stdout || err.message || "").toLowerCase();
+      if (errText.includes("nothing to commit")) {
+        ctx.log(node.id, "Nothing to commit after staging (all changes already committed)");
+        return { success: true, committed: false, reason: "nothing_to_commit" };
+      }
+      ctx.log(node.id, `git commit failed: ${err.message}`);
+      return { success: false, committed: false, reason: `git commit failed: ${err.message}` };
+    }
+
+    ctx.log(node.id, `Auto-committed ${dirtyCount} file(s) for task ${taskId.substring(0, 12)}`);
+    return { success: true, committed: true, dirtyCount };
   },
 });
 

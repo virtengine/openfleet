@@ -5804,6 +5804,85 @@ registerNodeType("action.persist_memory", {
   },
 });
 
+// ── action.auto_commit_dirty ────────────────────────────────────────────────
+// Safety net: if the agent left uncommitted work in the worktree, stage + commit
+// so that detect_new_commits can see it and the work isn't silently destroyed.
+
+registerNodeType("action.auto_commit_dirty", {
+  describe: () =>
+    "Check the worktree for uncommitted changes and auto-commit them so " +
+    "downstream nodes (detect_new_commits, push_branch) can pick them up. " +
+    "This prevents agent work from being silently destroyed when the worktree is released.",
+  schema: {
+    type: "object",
+    properties: {
+      worktreePath: { type: "string", description: "Worktree to check" },
+      taskId: { type: "string", description: "Task ID for commit message" },
+      commitMessage: { type: "string", description: "Override commit message" },
+    },
+    required: ["worktreePath"],
+  },
+  async execute(node, ctx) {
+    const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
+    const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "unknown";
+
+    if (!worktreePath) {
+      ctx.log(node.id, "auto_commit_dirty: no worktreePath — skipping");
+      return { success: false, committed: false, reason: "no worktreePath" };
+    }
+
+    // Check for uncommitted changes (tracked modified + untracked)
+    let porcelain = "";
+    try {
+      porcelain = execGitArgsSync(["status", "--porcelain"], {
+        cwd: worktreePath, encoding: "utf8", timeout: 10000,
+      }).trim();
+    } catch (err) {
+      ctx.log(node.id, `git status failed: ${err.message}`);
+      return { success: false, committed: false, reason: err.message };
+    }
+
+    if (!porcelain) {
+      ctx.log(node.id, "Worktree clean — nothing to auto-commit");
+      return { success: true, committed: false, reason: "clean" };
+    }
+
+    const dirtyCount = porcelain.split("\n").filter(Boolean).length;
+    ctx.log(node.id, `Found ${dirtyCount} dirty file(s) — auto-committing`);
+
+    // Stage everything
+    try {
+      execGitArgsSync(["add", "-A"], {
+        cwd: worktreePath, encoding: "utf8", timeout: 15000,
+      });
+    } catch (err) {
+      ctx.log(node.id, `git add -A failed: ${err.message}`);
+      return { success: false, committed: false, reason: `git add failed: ${err.message}` };
+    }
+
+    // Commit
+    const message = cfgOrCtx(node, ctx, "commitMessage")
+      || `chore: auto-commit agent work (${taskId.substring(0, 12)})`;
+    try {
+      execGitArgsSync(
+        ["-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "--no-verify", "-m", message],
+        { cwd: worktreePath, encoding: "utf8", timeout: 20000 },
+      );
+    } catch (err) {
+      const errText = (err.stderr || err.stdout || err.message || "").toLowerCase();
+      if (errText.includes("nothing to commit")) {
+        ctx.log(node.id, "Nothing to commit after staging (all changes already committed)");
+        return { success: true, committed: false, reason: "nothing_to_commit" };
+      }
+      ctx.log(node.id, `git commit failed: ${err.message}`);
+      return { success: false, committed: false, reason: `git commit failed: ${err.message}` };
+    }
+
+    ctx.log(node.id, `Auto-committed ${dirtyCount} file(s) for task ${taskId.substring(0, 12)}`);
+    return { success: true, committed: true, dirtyCount };
+  },
+});
+
 // ── action.detect_new_commits ───────────────────────────────────────────────
 
 registerNodeType("action.detect_new_commits", {
