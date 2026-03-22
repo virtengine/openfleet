@@ -22203,6 +22203,25 @@ export function stopTelegramUiServer() {
   removeSessionStateListener?.();
   removeSessionStateListener = null;
   sessionStateListenerAttached = false;
+  removeActiveSessionListener?.();
+  removeActiveSessionListener = null;
+  activeSessionListenerAttached = false;
+  removeSessionAccumulatorListener?.();
+  removeSessionAccumulatorListener = null;
+  sessionAccumulatorListenerAttached = false;
+  delete uiDeps.configDir;
+  for (const socket of wsClients) {
+    try {
+      stopLogStream(socket);
+      socket.close();
+    } catch {
+      // best effort
+    }
+  }
+  wsClients.clear();
+  for (const [, streamer] of logStreamers) {
+    if (streamer.pollTimer) clearInterval(streamer.pollTimer);
+  }
   logStreamers.clear();
   if (wsServer) {
     try {
@@ -22223,4 +22242,4 @@ export function stopTelegramUiServer() {
   releaseUiInstanceLock();
 }
 
-export { getLocalLanIp };\n
+export { getLocalLanIp };
