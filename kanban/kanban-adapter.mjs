@@ -1009,12 +1009,24 @@ class InternalAdapter {
   }
 
   async createTask(projectIdOrTaskData, taskDataArg = {}) {
-    const payloadOnlyCall =
-      projectIdOrTaskData &&
-      typeof projectIdOrTaskData === "object" &&
-      !Array.isArray(projectIdOrTaskData);
-    const taskData = payloadOnlyCall ? projectIdOrTaskData : (taskDataArg || {});
-    const projectId = payloadOnlyCall ? taskData.projectId : projectIdOrTaskData;
+    function normalizeCreateTaskArgs(projectIdOrTaskDataInner, taskDataArgInner = {}) {
+      const payloadOnlyCall =
+        projectIdOrTaskDataInner &&
+        typeof projectIdOrTaskDataInner === "object" &&
+        !Array.isArray(projectIdOrTaskDataInner);
+      const taskDataNormalized = payloadOnlyCall
+        ? projectIdOrTaskDataInner
+        : (taskDataArgInner || {});
+      const projectIdNormalized = payloadOnlyCall
+        ? taskDataNormalized.projectId
+        : projectIdOrTaskDataInner;
+      return { taskData: taskDataNormalized, projectId: projectIdNormalized };
+    }
+
+    const { taskData, projectId } = normalizeCreateTaskArgs(
+      projectIdOrTaskData,
+      taskDataArg,
+    );
     const id = String(taskData.id || randomUUID());
     const tags = normalizeTags(taskData.tags || taskData.labels || []);
     const draft = Boolean(taskData.draft || taskData.status === "draft");
@@ -6093,8 +6105,11 @@ export async function createTask(projectIdOrTaskData, taskDataArg = {}) {
     projectIdOrTaskData &&
     typeof projectIdOrTaskData === "object" &&
     !Array.isArray(projectIdOrTaskData);
-  const taskData = payloadOnlyCall ? projectIdOrTaskData : (taskDataArg || {});
-  const projectId = payloadOnlyCall ? taskData.projectId : projectIdOrTaskData;
+  const rawTaskData = payloadOnlyCall ? projectIdOrTaskData : (taskDataArg || {});
+  const projectId = payloadOnlyCall ? rawTaskData?.projectId : projectIdOrTaskData;
+  // Strip projectId from the payload we pass to the adapter to avoid sending both
+  // `projectId` and `project_id` in downstream requests.
+  const { projectId: _ignoredProjectId, ...taskData } = rawTaskData || {};
   const result = await getKanbanAdapter().createTask(projectId, taskData);
   emitKanbanEvent("task.created", {
     projectId,
