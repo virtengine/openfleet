@@ -9195,18 +9195,6 @@ function buildCurrentTuiMonitorStats() {
       maxAgents: pickNumericStat(status?.maxParallel, injectedStats?.maxAgents),
       tokensIn: pickNumericStat(injectedStats?.tokensIn, tokensIn),
       tokensOut: pickNumericStat(injectedStats?.tokensOut, tokensOut),
-        return numeric;
-      }
-    }
-    return 0;
-  };
-
-  return buildMonitorStatsPayload({
-    agentPool: {
-      activeAgents: pickNumericStat(status?.activeSlots, slots.length, injectedStats?.activeAgents),
-      maxAgents: pickNumericStat(status?.maxParallel, injectedStats?.maxAgents),
-      tokensIn: pickNumericStat(injectedStats?.tokensIn, tokensIn),
-      tokensOut: pickNumericStat(injectedStats?.tokensOut, tokensOut),
       throughputTps: injectedStats?.throughputTps,
       rateLimits: injectedStats?.rateLimits || {},
     },
@@ -9219,7 +9207,6 @@ function buildCurrentTuiMonitorStats() {
     uptimeMs: runtimeStats?.startedAt ? Date.now() - Number(runtimeStats.startedAt) : process.uptime() * 1000,
   });
 }
-
 function normalizeWorkflowNodeStatus(status) {
   const normalized = String(status || "").trim().toLowerCase();
   if (normalized === "completed" || normalized === "success") return "success";
@@ -21886,4 +21873,5 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
 
