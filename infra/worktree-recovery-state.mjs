@@ -21,6 +21,17 @@ const VALID_OUTCOMES = new Set(["healthy_noop", "recreated", "recreation_failed"
 const MODULE_REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function getStatusPath(repoRoot) {
+  const override = String(process.env.STATUS_FILE || "").trim();
+  if (override) {
+    // If override is an absolute path, resolve it directly;
+    // if it's relative, resolve it against the repo root.
+    const isWindowsAbsolute = /^[a-zA-Z]:[\\/]/.test(override) || override.startsWith("\\\\");
+    const isPosixAbsolute = override.startsWith("/");
+    if (isWindowsAbsolute || isPosixAbsolute) {
+      return resolve(override);
+    }
+    return resolve(repoRoot, override);
+  }
   const defaultPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
   const modulePath = resolve(MODULE_REPO_ROOT, ".cache", "ve-orchestrator-status.json");
   if (modulePath !== defaultPath && existsSync(modulePath)) return modulePath;

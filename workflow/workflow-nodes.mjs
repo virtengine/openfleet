@@ -11464,7 +11464,16 @@ registerBuiltinNodeType("action.acquire_worktree", {
       await recordWorktreeRecoveryEvent(repoRoot, payload);
     };
 
-    try {
+        try {
+          await recordWorktreeRecoveryEvent(repoRoot, payload);
+        } catch (err) {
+          ctx.log(
+            node.id,
+            `[worktree-recovery] failed to persist recovery event: ${
+              err && err.message ? err.message : String(err)
+            }`,
+          );
+        }
       // Ensure base branch ref is fresh
       const baseBranchShort = baseBranch.replace(/^origin\//, "");
       if (!shouldSkipGitRefreshForTests()) {
@@ -11711,11 +11720,16 @@ registerBuiltinNodeType("action.acquire_worktree", {
       const blockedReason = retryable
         ? errorMessage
         : "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.";
-      if (!retryable) {
-        await persistRecoveryEvent({
+        await recordWorktreeRecoveryEvent({
           outcome: "recreation_failed",
-          phase: recoveryState.phase || "post-pull",
-          worktreePath: recoveryState.worktreePath || resolve(repoRoot, ".bosun", "worktrees", deriveManagedWorktreeDirName(taskId, branch)),
+          phase: "post-pull",
+          worktreePath: resolve(
+            repoRoot,
+            ".bosun",
+            "worktrees",
+            deriveManagedWorktreeDirName(taskId, branch)
+          ),
+          detectedIssues: ["refresh_conflict"],
           detectedIssues: Array.from(recoveryState.detectedIssues.size ? recoveryState.detectedIssues : ["refresh_conflict"]),
           error: errorMessage,
         });
