@@ -151,9 +151,12 @@ function logThrottledBranchSync(
       : "";
   const line = `${message}${suffix}`;
 
+  const isConsoleLogLevel = level === "info" || level === "log";
   if (level === "error") {
     console.error(line);
-  } else if (level === "info" || level === "log") {
+  } else if (level === "info") {
+    console.log(line);
+  } else if (isConsoleLogLevel) {
     console.log(line);
   } else {
     console.warn(line);
@@ -1150,7 +1153,7 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           logThrottledBranchSync(
             `sync:${branch}:diverged-dirty`,
             `[maintenance] local '${branch}' diverged (${ahead}↑ ${behind}↓) but has uncommitted changes — skipping`,
-            "log",
+            "info",
           );
           continue;
         }
@@ -1212,7 +1215,7 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           logThrottledBranchSync(
             `sync:${branch}:dirty-pull-skip`,
             `[maintenance] '${branch}' is checked out with uncommitted changes — skipping pull`,
-            "log",
+            "info",
           );
           continue;
         }
