@@ -679,6 +679,215 @@ describe("trigger.task_available", () => {
       try { rmSync(repoRoot, { recursive: true, force: true }); } catch { /* ok */ }
     }
   });
+  it("monitor polling dispatches only reclaimable tasks and skips actively claimed todo work", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "wf-monitor-dispatch-"));
+    const taskDir = join(repoRoot, ".bosun", "tasks");
+    mkdirSync(taskDir, { recursive: true });
+
+    const { initTaskClaims, claimTask, releaseTask } = await import("../task/task-claims.mjs");
+    let claimToken = "";
+    try {
+      await initTaskClaims({ repoRoot });
+      const claimResult = await claimTask({
+        repoRoot,
+        taskId: "task-active-claim",
+        agentInstanceId: "agent-active",
+        taskTitle: "Already claimed",
+      });
+      expect(claimResult.success).toBe(true);
+      claimToken = claimResult.token || "";
+
+      const blockedTask = {
+        id: "task-reclaimable",
+        title: "Recover blocked worktree",
+        status: "blocked",
+        cooldownUntil: new Date(Date.now() - 60000).toISOString(),
+        meta: {
+          autoRecovery: {
+            active: true,
+            reason: "worktree_failure",
+            retryAt: new Date(Date.now() - 60000).toISOString(),
+          },
+        },
+      };
+      const activeClaimTask = {
+        id: "task-active-claim",
+        title: "Already claimed",
+        status: "todo",
+      };
+
+      writeFileSync(join(taskDir, "task-reclaimable.json"), JSON.stringify(blockedTask, null, 2));
+      writeFileSync(join(taskDir, "task-active-claim.json"), JSON.stringify(activeClaimTask, null, 2));
+
+      const listTasks = vi.fn(async (_projectId, opts = {}) => {
+        if (opts.status === "blocked") {
+          return [blockedTask];
+        }
+        if (opts.status === "todo") {
+          return [
+            blockedTask.status === "todo" ? blockedTask : null,
+            activeClaimTask,
+          ].filter(Boolean);
+        }
+        return [];
+      });
+      const updateTask = vi.fn(async (taskId, patch) => {
+        if (taskId === blockedTask.id) {
+          Object.assign(blockedTask, patch);
+        }
+        return { taskId, ...patch };
+      });
+      const trigger = getNodeType("trigger.task_available");
+      const ctx = makeCtx({ repoRoot });
+      const node = makeNode("trigger.task_available", {
+        repoRoot,
+        status: "todo",
+      }, "dispatch");
+
+      const result = await trigger.execute(node, ctx, {
+        services: {
+          kanban: {
+            listTasks,
+            updateTask,
+          },
+        },
+      });
+
+      expect(result.triggered).toBe(true);
+      expect(result.selectedTaskId).toBe("task-reclaimable");
+      expect(result.task.id).toBe("task-reclaimable");
+      expect(result.task.id).not.toBe("task-active-claim");
+      expect(updateTask).toHaveBeenCalledWith(
+        "task-reclaimable",
+        expect.objectContaining({ status: "todo", cooldownUntil: null }),
+      );
+      expect(listTasks).toHaveBeenNthCalledWith(1, undefined, { status: "blocked" });
+      expect(listTasks).toHaveBeenNthCalledWith(2, undefined, { status: "todo" });
+    } finally {
+      if (claimToken) {
+        await releaseTask({
+          repoRoot,
+          taskId: "task-active-claim",
+          claimToken,
+          agentInstanceId: "agent-active",
+        });
+      }
+      try { rmSync(repoRoot, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  });
+
+  it("engine handoff claims the dispatched task and releases ownership after completion", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "wf-monitor-handoff-"));
+    const { initTaskClaims, getClaim } = await import("../task/task-claims.mjs");
+    const listTasks = vi.fn(async (_projectId, opts = {}) => {
+      if (opts.status === "blocked") return [];
+      if (opts.status === "todo") {
+        return [{
+          id: "task-engine-handoff",
+          title: "Run lifecycle handoff",
+          status: "todo",
+          workspace: repoRoot,
+          repository: "virtengine/bosun",
+          baseBranch: "main",
+        }];
+      }
+      return [];
+    });
+
+    try {
+      await initTaskClaims({ repoRoot });
+      makeTmpEngine();
+      engine.services = {
+        kanban: {
+          listTasks,
+          updateTask: vi.fn(async (_taskId, patch) => patch),
+        },
+      };
+
+      const workflow = {
+        id: "monitor-handoff-regression",
+        name: "Monitor Handoff Regression",
+        enabled: true,
+        nodes: [
+          {
+            id: "poll",
+            type: "trigger.task_available",
+            config: {
+              repoRoot,
+              status: "todo",
+              maxParallel: 1,
+              filterDrafts: false,
+              enforceStartGuards: false,
+              respectBenchmarkMode: false,
+            },
+          },
+          {
+            id: "claim",
+            type: "action.claim_task",
+            config: {
+              taskId: "{{poll.selectedTaskId}}",
+              taskTitle: "{{poll.taskTitle}}",
+              renewIntervalMs: 0,
+              ttlMinutes: 5,
+              instanceId: "wf-monitor-handoff",
+            },
+          },
+          {
+            id: "release",
+            type: "action.release_claim",
+            config: {
+              taskId: "{{claim.taskId}}",
+              claimToken: "{{claim.claimToken}}",
+              instanceId: "{{claim.instanceId}}",
+            },
+          },
+          {
+            id: "finish",
+            type: "flow.end",
+            config: {
+              status: "completed",
+              message: "handoff completed",
+            },
+          },
+        ],
+        edges: [
+          { id: "e1", source: "poll", target: "claim" },
+          { id: "e2", source: "claim", target: "release" },
+          { id: "e3", source: "release", target: "finish" },
+        ],
+      };
+
+      engine.save(workflow);
+      const result = await engine.execute(workflow.id, {
+        repoRoot,
+        workspace: repoRoot,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.ctx.getNodeOutput("poll")).toEqual(
+        expect.objectContaining({
+          selectedTaskId: "task-engine-handoff",
+          taskCount: 1,
+        }),
+      );
+      expect(result.ctx.getNodeOutput("claim")).toEqual(
+        expect.objectContaining({
+          success: true,
+          taskId: "task-engine-handoff",
+          instanceId: "wf-monitor-handoff",
+        }),
+      );
+      expect(result.ctx.getNodeOutput("release")).toEqual(
+        expect.objectContaining({
+          success: true,
+          taskId: "task-engine-handoff",
+        }),
+      );
+      expect(await getClaim("task-engine-handoff")).toBeNull();
+    } finally {
+      try { rmSync(repoRoot, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  });
 });
 
 //  condition.slot_available Tests

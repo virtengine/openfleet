@@ -3658,6 +3658,70 @@ describe("Session chaining - action.run_agent", () => {
     expect(messages.some((msg) => String(msg?.content || "").includes("Delegating to agent workflow"))).toBe(true);
     expect(messages.some((msg) => String(msg?.content || "").includes("Backend Agent\" completed"))).toBe(true);
   });
+  it("keeps delegated completion visible even when the child workflow ends without explicit output", async () => {
+    const childWorkflow = {
+      id: "child-visible-without-output",
+      name: "Child Visible Without Output",
+      enabled: true,
+      nodes: [
+        { id: "start", type: "trigger.manual", config: {} },
+        { id: "finish", type: "flow.end", config: { status: "completed", message: "child done" } },
+      ],
+      edges: [{ id: "e1", source: "start", target: "finish" }],
+    };
+
+    const parentWorkflow = {
+      id: "parent-visible-without-output",
+      name: "Parent Visible Without Output",
+      enabled: true,
+      nodes: [
+        { id: "trigger", type: "trigger.manual", config: {} },
+        {
+          id: "delegate",
+          type: "flow.universal",
+          config: {
+            workflowId: childWorkflow.id,
+            mode: "sync",
+            inheritContext: true,
+          },
+        },
+        {
+          id: "finish",
+          type: "flow.end",
+          config: {
+            status: "{{delegate.status || 'completed'}}",
+            message: "{{delegate.message || 'delegated workflow completed'}}",
+          },
+        },
+      ],
+      edges: [
+        { id: "e1", source: "trigger", target: "delegate" },
+        { id: "e2", source: "delegate", target: "finish" },
+      ],
+    };
+
+    engine.save(childWorkflow);
+    engine.save(parentWorkflow);
+
+    await engine.execute(parentWorkflow.id, {
+      taskId: "task-visible-no-output",
+      taskTitle: "Visible without output",
+      workspaceId: "virtengine-gh",
+      task: {
+        id: "task-visible-no-output",
+        title: "Visible without output",
+        branchName: "feat/visible-no-output",
+      },
+    });
+
+    const tracker = getSessionTracker();
+    const session = tracker.getSessionById("task-visible-no-output");
+    expect(session).toBeTruthy();
+    expect(session.status).toBe("completed");
+    expect(session.metadata.branch).toBe("feat/visible-no-output");
+    expect(Array.isArray(session.messages)).toBe(true);
+    expect(session.messages.some((msg) => String(msg?.content || "").includes("completed"))).toBe(true);
+  });
 
   it("marks delegated task session failed when delegated workflow returns errors", async () => {
     const handler = getNodeType("action.run_agent");
