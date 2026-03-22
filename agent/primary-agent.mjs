@@ -10,6 +10,7 @@ import { ensureCodexConfig, printConfigSummary } from "../shell/codex-config.mjs
 import { ensureRepoConfigs, printRepoConfigSummary } from "../config/repo-config.mjs";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 import { getAgentToolConfig, getEffectiveTools } from "./agent-tool-config.mjs";
+import { formatCapabilityOntologyPacks, loadLocalCapabilityOntologyPacks } from "./ontology-packs.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
 import { getEntry, getEntryContent, resolveAgentProfileLibraryMetadata } from "../infra/library-manager.mjs";
 import { execPooledPrompt } from "./agent-pool.mjs";
@@ -395,10 +396,15 @@ function buildPrimaryToolCapabilityContract(options = {}) {
   const enabledMcpServers = Array.isArray(rawCfg?.enabledMcpServers)
     ? rawCfg.enabledMcpServers.map((id) => String(id || "").trim()).filter(Boolean)
     : [];
+  const resolvedOntologyPacks = Array.isArray(options.ontologyPacks) && options.ontologyPacks.length > 0
+    ? options.ontologyPacks
+    : loadLocalCapabilityOntologyPacks(rootDir);
   const manifest = {
+    ontologyPackCount: resolvedOntologyPacks.length,
     agentProfileId: agentProfileId || null,
     enabledBuiltinTools,
     enabledMcpServers,
+    ontologyPacks: resolvedOntologyPacks,
     toolBridge: {
       module: "./voice-tools.mjs",
       function: "executeToolCall(toolName, args, context)",
@@ -408,6 +414,7 @@ function buildPrimaryToolCapabilityContract(options = {}) {
       ],
     },
   };
+  const ontologyBlock = formatCapabilityOntologyPacks(resolvedOntologyPacks);
   return [
     "## Tool Capability Contract",
     "Use enabled tools by default. Do not claim tools are unavailable without first trying them.",
@@ -415,8 +422,9 @@ function buildPrimaryToolCapabilityContract(options = {}) {
     "```json",
     JSON.stringify(manifest, null, 2),
     "```",
+    ontologyBlock,
     "When uncertain about tool inputs/outputs, call get_admin_help via executeToolCall first.",
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function toStringArray(value) {
@@ -1678,5 +1686,6 @@ export async function execSdkCommand(command, args = "", adapterName, options = 
   }
   return adapter.execSdkCommand(cmd, args, options);
 }
+
 
 

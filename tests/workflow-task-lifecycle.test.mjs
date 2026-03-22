@@ -3163,6 +3163,13 @@ describe("template-ve-orchestrator-lite", () => {
     expect(ids).toContain("record-head");
   });
 
+  it("build prompt node keeps task ontology packs available to prompt assembly", () => {
+    const t = getTemplate("template-task-lifecycle");
+    const promptNode = t.nodes.find((n) => n.id === "build-prompt");
+    expect(promptNode).toBeDefined();
+    expect(promptNode.config.taskDescription).toContain("{{task.description}}");
+  });
+
   it("passes repository scope metadata into prompt node", () => {
     const t = getTemplate("template-ve-orchestrator-lite");
     const promptNode = t.nodes.find((n) => n.id === "prompt");

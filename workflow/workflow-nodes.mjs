@@ -35,6 +35,11 @@ import { resolve, dirname } from "node:path";
 import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
+import {
+  buildLocalOntologyPromptBlock,
+  formatCapabilityOntologyPacks,
+  loadLocalCapabilityOntologyPacks,
+} from "../agent/ontology-packs.mjs";
 import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, emitSkillInvokeEvent, findRelevantSkills } from "../agent/bosun-skills.mjs";
 import { readBenchmarkModeState, taskMatchesBenchmarkMode } from "../bench/benchmark-mode.mjs";
@@ -1819,7 +1824,7 @@ function buildTaskContextBlock(task) {
   return lines.join("\n");
 }
 
-function buildWorkflowAgentToolContract(rootDir, agentProfileId = "") {
+function buildWorkflowAgentToolContract(rootDir, agentProfileId = "", ontologyPacks = []) {
   const profileId = String(agentProfileId || "").trim();
   const effective = profileId
     ? getEffectiveTools(rootDir, profileId)
@@ -1836,16 +1841,21 @@ function buildWorkflowAgentToolContract(rootDir, agentProfileId = "") {
   const enabledMcpServers = Array.isArray(rawCfg?.enabledMcpServers)
     ? rawCfg.enabledMcpServers.map((id) => String(id || "").trim()).filter(Boolean)
     : [];
+  const resolvedOntologyPacks = Array.isArray(ontologyPacks) && ontologyPacks.length > 0
+    ? ontologyPacks
+    : loadLocalCapabilityOntologyPacks(rootDir);
   const manifest = {
     agentProfileId: profileId || null,
     enabledBuiltinTools,
     enabledMcpServers,
+    ontologyPacks: resolvedOntologyPacks,
     toolBridge: {
       module: "./voice-tools.mjs",
       function: "executeToolCall(toolName, args, context)",
       quickUse: "node -e \"import('../voice/voice-tools.mjs').then(async m=>{const r=await m.executeToolCall('get_workspace_context', {}, {});console.log(r?.result||r);})\"",
     },
   };
+  const ontologyBlock = formatCapabilityOntologyPacks(resolvedOntologyPacks);
   return [
     "## Tool Capability Contract",
     "Use enabled tools by default before claiming work is blocked.",
@@ -1853,10 +1863,10 @@ function buildWorkflowAgentToolContract(rootDir, agentProfileId = "") {
     "```json",
     JSON.stringify(manifest, null, 2),
     "```",
+    ontologyBlock,
     "When uncertain about arguments, call get_admin_help via executeToolCall.",
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
-
 // ═══════════════════════════════════════════════════════════════════════════
 //  TRIGGERS — Events that initiate a workflow
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2539,7 +2549,8 @@ registerBuiltinNodeType("action.run_agent", {
       ctx.resolve(node.config?.systemPrompt || "") ||
       ctx.data?._taskSystemPrompt ||
       "";
-    const toolContract = buildWorkflowAgentToolContract(cwd, agentProfileId);
+    const ontologyPacks = Array.isArray(ctx.data?.task?.ontologyPacks) ? ctx.data.task.ontologyPacks : [];
+    const toolContract = buildWorkflowAgentToolContract(cwd, agentProfileId, ontologyPacks);
     const effectiveSystemPrompt = [configuredSystemPrompt, toolContract]
       .map((value) => String(value || "").trim())
       .filter(Boolean)
@@ -12459,6 +12470,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
       ctx.id,
       process.env.BOSUN_RUN_ID,
     );
+    const ontologyPacks = Array.isArray(taskPayload?.ontologyPacks) ? taskPayload.ontologyPacks : [];
     const matchedSkills = findRelevantSkills(
       normalizedRepoRoot,
       normalizedTaskTitle,
@@ -12696,6 +12708,17 @@ registerBuiltinNodeType("action.build_task_prompt", {
       userParts.push("");
     }
 
+    const ontologyPacksBlock = formatCapabilityOntologyPacks(ontologyPacks);
+    if (ontologyPacksBlock) {
+      userParts.push(ontologyPacksBlock);
+      userParts.push("");
+    }
+
+    const localOntologyPacksBlock = buildLocalOntologyPromptBlock(repoRoot);
+    if (localOntologyPacksBlock) {
+      userParts.push(localOntologyPacksBlock);
+      userParts.push("");
+    }
     // AGENTS.md + copilot-instructions.md
     if (includeAgentsMd) {
       const searchDirs = [normalizedWorktreePath || normalizedRepoRoot, normalizedRepoRoot].filter(Boolean);

@@ -38,6 +38,8 @@ describe("voice tool capability injection regressions", () => {
     expect(primary).toContain("## Tool Capability Contract");
     expect(primary).toContain("Enabled tools JSON:");
     expect(workflow).toContain("buildWorkflowAgentToolContract");
+    expect(workflow).toContain("loadLocalCapabilityOntologyPacks");
+    expect(workflow).toContain("const ontologyBlock = formatCapabilityOntologyPacks(resolvedOntologyPacks);");
     expect(workflow).toContain("## Tool Capability Contract");
   });
 });
