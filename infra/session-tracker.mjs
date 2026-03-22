@@ -1704,3 +1704,8 @@ export function _resetSingleton(nextOptions) {
   }
   if (nextOptions) {
 
+    // Pre-create with the supplied options so the next getSessionTracker()
+    // call doesn't fall back to the default persistDir.
+    _instance = new SessionTracker(nextOptions);
+  }
+}
