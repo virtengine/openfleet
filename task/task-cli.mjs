@@ -25,7 +25,7 @@
  *   taskStats()           — Programmatic stats
  */
 
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, isAbsolute } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readFileSync, existsSync, statSync } from "node:fs";
@@ -332,9 +332,11 @@ export async function taskCreate(data) {
     inputMeta.execution = executionMeta;
   }
   const defaults = resolveActiveWorkspaceDefaults();
-  const workspaceKey = normalizeKey(
-    data.workspace || defaults.workspace || process.cwd(),
-  );
+  const rawWorkspace = data.workspace || defaults.workspace || process.cwd();
+  const workspaceKey = normalizeKey(rawWorkspace);
+  const workspaceValue = typeof rawWorkspace === "string" && isAbsolute(rawWorkspace)
+    ? rawWorkspace
+    : (workspaceKey || null);
   const repositoryKey = normalizeKey(data.repository || defaults.repository || "");
   const repositoryKeys = normalizeKeys(
     [repositoryKey, ...(Array.isArray(data.repositories) ? data.repositories : [])],
@@ -349,7 +351,7 @@ export async function taskCreate(data) {
     priority: data.priority || "medium",
     tags: normalizeTags(data.tags),
     baseBranch: data.baseBranch || data.base_branch || "main",
-    workspace: workspaceKey || null,
+    workspace: workspaceValue,
     repository: repositoryKey || null,
     repositories: repositoryKeys,
     candidateCount: candidateCount && candidateCount > 1 ? candidateCount : undefined,
