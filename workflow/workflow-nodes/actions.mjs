@@ -998,37 +998,6 @@ registerNodeType("action.run_agent", {
 
     // Fallback: shell-based execution
     ctx.log(node.id, "Agent pool not available, using shell fallback");
-    const recoveryState = {
-      recreated: false,
-      detectedIssues: new Set(),
-      phase: null,
-      worktreePath: null,
-    };
-    const persistRecoveryEvent = async (event) => {
-      const payload = {
-        reason: "poisoned_worktree",
-        branch,
-        taskId,
-        worktreePath: event?.worktreePath || recoveryState.worktreePath || null,
-        phase: event?.phase || recoveryState.phase || null,
-        detectedIssues: event?.detectedIssues || Array.from(recoveryState.detectedIssues),
-        error: event?.error || null,
-        outcome: event?.outcome || "healthy_noop",
-        timestamp: new Date().toISOString(),
-      };
-      const details = [
-        `outcome=${payload.outcome}`,
-        `branch=${payload.branch}`,
-        payload.taskId ? `taskId=${payload.taskId}` : "",
-        payload.phase ? `phase=${payload.phase}` : "",
-        payload.worktreePath ? `path=${payload.worktreePath}` : "",
-        payload.detectedIssues.length ? `issues=${payload.detectedIssues.join(",")}` : "",
-        payload.error ? `error=${payload.error}` : "",
-      ].filter(Boolean).join(" ");
-      ctx.log(node.id, `[worktree-recovery] ${details}`);
-      await recordWorktreeRecoveryEvent(repoRoot, payload);
-    };
-
     try {
       const escapedPrompt = String(finalPrompt || "")
         .replace(/\\/g, "\\\\")
@@ -4604,36 +4573,6 @@ registerNodeType("action.acquire_worktree", {
     const baseBranch = pickGitRef(baseBranchRaw, defaultTargetBranch, "origin/main", "main");
     const fetchTimeout = node.config?.fetchTimeout ?? 30000;
     const worktreeTimeout = node.config?.worktreeTimeout ?? 60000;
-    const recoveryState = {
-      recreated: false,
-      detectedIssues: new Set(),
-      phase: null,
-      worktreePath: null,
-    };
-    const persistRecoveryEvent = async (event) => {
-      const payload = {
-        reason: "poisoned_worktree",
-        branch,
-        taskId,
-        worktreePath: event?.worktreePath || recoveryState.worktreePath || null,
-        phase: event?.phase || recoveryState.phase || null,
-        detectedIssues: event?.detectedIssues || Array.from(recoveryState.detectedIssues),
-        error: event?.error || null,
-        outcome: event?.outcome || "healthy_noop",
-        timestamp: new Date().toISOString(),
-      };
-      const details = [
-        `outcome=${payload.outcome}`,
-        `branch=${payload.branch}`,
-        payload.taskId ? `taskId=${payload.taskId}` : "",
-        payload.phase ? `phase=${payload.phase}` : "",
-        payload.worktreePath ? `path=${payload.worktreePath}` : "",
-        payload.detectedIssues.length ? `issues=${payload.detectedIssues.join(",")}` : "",
-        payload.error ? `error=${payload.error}` : "",
-      ].filter(Boolean).join(" ");
-      ctx.log(node.id, `[worktree-recovery] ${details}`);
-      await recordWorktreeRecoveryEvent(repoRoot, payload);
-    };
 
     if (!branch) throw new Error("action.acquire_worktree: branch is required");
     if (!taskId) throw new Error("action.acquire_worktree: taskId is required");
@@ -4676,21 +4615,7 @@ registerNodeType("action.acquire_worktree", {
               currentBranch = branchRef.replace(/^refs\/heads\//, "");
             }
           }
-        try {
-          await recordWorktreeRecoveryEvent(repoRoot, payload);
-        } catch (err) {
-          ctx.log(
-            node.id,
-            `[worktree-recovery] Warning: failed to record recovery event: ${err && err.message ? err.message : String(err)}`,
-          );
-        }
-          await recordWorktreeRecoveryEvent(repoRoot, payload);
-        } catch (err) {
-          ctx.log(
-            node.id,
-            `[worktree-recovery] Warning: failed to record recovery event: ${err && err.message ? err.message : String(err)}`,
-          );
-        }
+          if (currentPath && currentBranch === branch) return currentPath;
         } catch {
           // best-effort only
         }
@@ -4723,6 +4648,36 @@ registerNodeType("action.acquire_worktree", {
 
       // Ensure base branch ref is fresh
       const baseBranchShort = baseBranch.replace(/^origin\//, "");
+      const recoveryState = {
+        recreated: false,
+        detectedIssues: new Set(),
+        phase: null,
+        worktreePath: null,
+      };
+      const persistRecoveryEvent = async (event) => {
+        const payload = {
+          reason: "poisoned_worktree",
+          branch,
+          taskId,
+          worktreePath: event?.worktreePath || recoveryState.worktreePath || null,
+          phase: event?.phase || recoveryState.phase || null,
+          detectedIssues: event?.detectedIssues || Array.from(recoveryState.detectedIssues),
+          error: event?.error || null,
+          outcome: event?.outcome || "healthy_noop",
+          timestamp: new Date().toISOString(),
+        };
+        const details = [
+          `outcome=${payload.outcome}`,
+          `branch=${payload.branch}`,
+          payload.taskId ? `taskId=${payload.taskId}` : "",
+          payload.phase ? `phase=${payload.phase}` : "",
+          payload.worktreePath ? `path=${payload.worktreePath}` : "",
+          payload.detectedIssues.length ? `issues=${payload.detectedIssues.join(",")}` : "",
+          payload.error ? `error=${payload.error}` : "",
+        ].filter(Boolean).join(" ");
+        ctx.log(node.id, `[worktree-recovery] ${details}`);
+        await recordWorktreeRecoveryEvent(repoRoot, payload);
+      };
       try {
         execGitArgsSync(["fetch", "origin", baseBranchShort, "--no-tags"], {
           cwd: repoRoot, encoding: "utf8",
@@ -4811,36 +4766,12 @@ registerNodeType("action.acquire_worktree", {
             ctx.log(node.id, `Reusing existing branch worktree: ${attachedPath}`);
             return {
               success: true,
-      // Safely derive recovery context without assuming try-block scoped bindings exist here.
-      const safeRecoveryState =
-        typeof recoveryState !== "undefined" && recoveryState
-          ? recoveryState
-          : {
-              phase: "post-pull",
-              worktreePath:
-                (typeof worktreePath !== "undefined" && worktreePath) ||
-                (ctx?.data && ctx.data.worktreePath) ||
-                undefined,
-              detectedIssues: new Set(["refresh_conflict"]),
-            };
-      const safePersistRecoveryEvent =
-        typeof persistRecoveryEvent === "function" ? persistRecoveryEvent : async () => {};
-      const safeWorktreePath =
-        (typeof worktreePath !== "undefined" && worktreePath) ||
-        safeRecoveryState.worktreePath ||
-        (ctx?.data && ctx.data.worktreePath) ||
-        undefined;
-
-      if (/managed worktree was removed after stale refresh state/i.test(String(err?.message || ""))) {
-        await safePersistRecoveryEvent({
-          outcome: "recreation_failed",
-          phase: safeRecoveryState.phase || "post-pull",
-          worktreePath: safeRecoveryState.worktreePath || safeWorktreePath,
-          detectedIssues: Array.from(
-            safeRecoveryState.detectedIssues && safeRecoveryState.detectedIssues.size
-              ? safeRecoveryState.detectedIssues
-              : ["refresh_conflict"],
-          ),
+              worktreePath: attachedPath,
+              created: false,
+              reused: true,
+              reusedExistingBranch: true,
+              branch,
+              baseBranch,
             };
           }
         }
@@ -4873,36 +4804,12 @@ registerNodeType("action.acquire_worktree", {
       ctx.log(node.id, `Worktree created: ${worktreePath} (branch: ${branch}, base: ${baseBranch})`);
       return { success: true, worktreePath, created: true, branch, baseBranch };
     } catch (err) {
-      // Safely derive recovery context without assuming try-block scoped bindings exist here.
-      const safeRecoveryState =
-        typeof recoveryState !== "undefined" && recoveryState
-          ? recoveryState
-          : {
-              phase: "post-pull",
-              worktreePath:
-                (typeof worktreePath !== "undefined" && worktreePath) ||
-                (ctx?.data && ctx.data.worktreePath) ||
-                undefined,
-              detectedIssues: new Set(["refresh_conflict"]),
-            };
-      const safePersistRecoveryEvent =
-        typeof persistRecoveryEvent === "function" ? persistRecoveryEvent : async () => {};
-      const safeWorktreePath =
-        (typeof worktreePath !== "undefined" && worktreePath) ||
-        safeRecoveryState.worktreePath ||
-        (ctx?.data && ctx.data.worktreePath) ||
-        undefined;
-
       if (/managed worktree was removed after stale refresh state/i.test(String(err?.message || ""))) {
-        await safePersistRecoveryEvent({
+        await persistRecoveryEvent({
           outcome: "recreation_failed",
-          phase: safeRecoveryState.phase || "post-pull",
-          worktreePath: safeRecoveryState.worktreePath || safeWorktreePath,
-          detectedIssues: Array.from(
-            safeRecoveryState.detectedIssues && safeRecoveryState.detectedIssues.size
-              ? safeRecoveryState.detectedIssues
-              : ["refresh_conflict"],
-          ),
+          phase: recoveryState.phase || "post-pull",
+          worktreePath: recoveryState.worktreePath || worktreePath,
+          detectedIssues: Array.from(recoveryState.detectedIssues.size ? recoveryState.detectedIssues : ["refresh_conflict"]),
           error: String(err?.message || err),
         });
       }
