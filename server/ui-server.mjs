@@ -22199,6 +22199,9 @@ export function stopTelegramUiServer() {
   stopTunnel();
   stopWsHeartbeat();
   _activeSessions = [];
+  // Clear injected configDir so it does not leak between server lifecycles
+  // (tests start/stop servers repeatedly with different config directories).
+  delete uiDeps.configDir;
   tuiStatsEmitter?.stop?.();
   tuiStatsEmitter = null;
   removeSessionEventListener?.();
@@ -22207,6 +22210,25 @@ export function stopTelegramUiServer() {
   removeSessionStateListener?.();
   removeSessionStateListener = null;
   sessionStateListenerAttached = false;
+  removeActiveSessionListener?.();
+  removeActiveSessionListener = null;
+  activeSessionListenerAttached = false;
+  removeSessionAccumulatorListener?.();
+  removeSessionAccumulatorListener = null;
+  sessionAccumulatorListenerAttached = false;
+  for (const socket of wsClients) {
+    try {
+      stopLogStream(socket);
+      socket.close();
+    } catch {
+      // best effort
+    }
+  }
+  wsClients.clear();
+  // Clean up any remaining log stream poll timers
+  for (const [, streamer] of logStreamers) {
+    if (streamer.pollTimer) clearInterval(streamer.pollTimer);
+  }
   logStreamers.clear();
   if (wsServer) {
     try {
