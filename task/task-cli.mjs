@@ -30,7 +30,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { getTaskLifetimeTotals } from "../infra/runtime-accumulator.mjs";
+import { getTaskLifetimeTotals } from \
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1009,7 +1009,6 @@ function computeRepoAreaEffectiveLimit({
 export async function taskImport(source) {
   let tasks;
   if (typeof source === "string") {
-    // File path
     const raw = readFileSync(resolve(source), "utf8");
     const parsed = JSON.parse(raw);
     tasks = parsed.tasks || parsed.backlog || parsed;
@@ -1020,6 +1019,24 @@ export async function taskImport(source) {
     tasks = source;
   } else {
     throw new Error("Source must be a file path or array of task objects");
+  }
+
+  try {
+    tasks = validateTaskBatchPayload(tasks).map((item) => ({
+      id: item.taskId,
+      title: item.taskTitle,
+      status: item.status,
+      branch: item.branch,
+      scope: item.scope,
+      repository: item.repository,
+      workspace: item.workspace,
+    }));
+  } catch (error) {
+    if (typeof source === "string") {
+      const summary = summarizeTaskBatchPayloadForLog(tasks);
+      throw new Error(`${error.message}; summary=${JSON.stringify(summary)}`);
+    }
+    throw error;
   }
 
   let created = 0;
@@ -1748,4 +1765,23 @@ if (process.argv[1] && resolve(process.argv[1]) === __filename) {
     process.exit(1);
   });
 }
+async function cliCreateBatch(args) {
+  const payloadFile = getArgValue(args, "--payload-file") || args.find((a) => !a.startsWith("--"));
+  if (!payloadFile) {
+    console.error("  Error: payload file required. Usage: bosun task create-batch --payload-file <path.json>");
+    process.exit(1);
+  }
 
+  if (!existsSync(resolve(payloadFile))) {
+    console.error(`  Error: file not found: ${payloadFile}`);
+    process.exit(1);
+  }
+
+  try {
+    const result = await taskImport(payloadFile);
+    console.log(JSON.stringify(result, null, 2));
+  } catch (err) {
+    console.error(`  Error: ${err.message}`);
+    process.exit(1);
+  }
+}

@@ -18,7 +18,7 @@ import {
   relayoutInstalledTemplateWorkflows,
   installTemplate,
   installTemplateSet,
-} from "../workflow/workflow-templates.mjs";
+} from \
 import {
   WorkflowEngine,
   getNodeType,
@@ -1525,5 +1525,52 @@ describe("template category coverage", () => {
       expect(typeof val.icon).toBe("string");
       expect(typeof val.order).toBe("number");
     }
+  });
+});
+describe("task batch payload validation", () => {
+  it("accepts a valid minimal batch item", () => {
+    const payload = [
+      {
+        taskId: "task-123",
+        taskTitle: "Ship validation",
+        status: "todo",
+        repository: "virtengine/bosun",
+        workspace: "virtengine-gh",
+        branch: "task/123",
+        scope: "workflow",
+      },
+    ];
+
+    expect(validateTaskBatchPayload(payload)).toEqual(payload);
+  });
+
+  it("rejects malformed batch items with deterministic errors", () => {
+    expect(() => validateTaskBatchPayload([
+      {
+        taskId: "",
+        taskTitle: "Bad payload",
+        status: "todo",
+        repository: "virtengine/bosun",
+        workspace: "virtengine-gh",
+      },
+    ])).toThrow("Invalid task-batch payload: item[0].taskId must be a non-empty string");
+  });
+
+  it("trims oversized optional fields per contract", () => {
+    const payload = [
+      {
+        taskId: "task-oversized",
+        taskTitle: "Trim optional fields",
+        status: "todo",
+        repository: "virtengine/bosun",
+        workspace: "virtengine-gh",
+        branch: "b".repeat(200),
+        scope: "s".repeat(200),
+      },
+    ];
+
+    const [item] = validateTaskBatchPayload(payload);
+    expect(item.branch).toBe("b".repeat(128));
+    expect(item.scope).toBe("s".repeat(128));
   });
 });
