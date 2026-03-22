@@ -21,6 +21,8 @@ describe("chat session regressions", () => {
     const source = read("ui/components/session-list.js");
     expect(source).toContain("buildSessionApiPath");
     expect(source).toContain("resolveSessionWorkspaceHint");
+    expect(source).toContain("normalizeSessionWorkspaceHint");
+    expect(source).toContain("omits malformed workspace hints");
     expect(source).toContain("sessionPath(id, action = \"\")");
     expect(source).toContain("buildSessionApiPath(id, \"\", { workspace: \"all\" })");
     expect(source).toContain("isScopedSessionNotFound");
@@ -45,3 +47,5 @@ describe("chat session regressions", () => {
     expect(source).toContain("workspaceDir: String(s?.metadata?.workspaceDir || \"\").trim() || null");
   });
 });
+
+

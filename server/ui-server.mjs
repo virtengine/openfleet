@@ -3998,6 +3998,35 @@ function resolveWorkspaceContextFromRequest(reqUrl, opts = {}) {
   };
 }
 
+function normalizeSessionWorkspaceHint(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return { ok: true, value: "active" };
+  const lower = raw.toLowerCase();
+  if (lower === "all" || lower === "*") return { ok: true, value: "all" };
+  if (lower === "active") return { ok: true, value: "active" };
+  if (!/^[a-z0-9][a-z0-9._-]*$/i.test(raw)) {
+    return { ok: false, error: "Malformed workspace hint" };
+  }
+  return { ok: true, value: raw };
+}
+
+function resolveSessionWorkspaceContextFromRequest(reqUrl) {
+  const normalizedHint = normalizeSessionWorkspaceHint(reqUrl?.searchParams?.get("workspace"));
+  if (!normalizedHint.ok) return normalizedHint;
+  const workspaceContext = resolveWorkspaceContextFromRequest(
+    new URL(`http://localhost?workspace=${encodeURIComponent(normalizedHint.value)}`),
+    { allowAll: true },
+  );
+  if (!workspaceContext) return { ok: false, error: "Unknown workspace" };
+  return { ok: true, workspaceContext };
+}
+
+function resolveSessionWorkspaceRequestOrRespond(res, reqUrl) {
+  const resolved = resolveSessionWorkspaceContextFromRequest(reqUrl);
+  if (resolved.ok) return resolved.workspaceContext;
+  jsonResponse(res, 400, { ok: false, error: resolved.error || "Unknown workspace" });
+  return null;
+}
 function resolveSessionWorkspaceMeta(session) {
   const metadata =
     session && typeof session.metadata === "object" && session.metadata

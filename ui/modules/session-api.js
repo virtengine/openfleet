@@ -1,6 +1,7 @@
 /*
  * Session API path helpers.
  * Keeps workspace scoping explicit for /api/sessions/:id routes.
+ * Uses shared normalization and omits malformed workspace hints.
  */
 
 export const SESSION_RETRY_DEFAULTS = Object.freeze({
@@ -301,21 +302,14 @@ export function resetSessionRetryMeta(previousMeta) {
   };
 }
 
-function normalizeWorkspaceHint(value) {
+export function normalizeSessionWorkspaceHint(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
   const lower = raw.toLowerCase();
   if (lower === "all" || lower === "*") return "all";
   if (lower === "active") return "active";
+  if (!/^[a-z0-9][a-z0-9._-]*$/i.test(raw)) return null;
   return raw;
-}
-
-function normalizeSessionLifecycleKey(value) {
-  const lower = String(value || "").trim().toLowerCase();
-  if (!lower) return "idle";
-  if (lower === "running") return "active";
-  if (lower === "done") return "completed";
-  return lower;
 }
 
 function normalizeSessionRuntimeKey(value) {
@@ -422,14 +416,14 @@ export function getSessionRuntimeState(session, options = {}) {
 
 export function resolveSessionWorkspaceHint(session, fallback = "active") {
   const direct = String(session?.workspaceId || session?.workspace || "").trim();
-  if (direct) return normalizeWorkspaceHint(direct);
+  if (direct) return normalizeSessionWorkspaceHint(direct);
   const metadata =
     session?.metadata && typeof session.metadata === "object"
       ? session.metadata
       : null;
   const fromMetadata = String(metadata?.workspaceId || "").trim();
-  if (fromMetadata) return normalizeWorkspaceHint(fromMetadata);
-  return normalizeWorkspaceHint(fallback);
+  if (fromMetadata) return normalizeSessionWorkspaceHint(fromMetadata);
+  return normalizeSessionWorkspaceHint(fallback);
 }
 
 export function buildSessionApiPath(sessionId, action = "", opts = {}) {
@@ -439,7 +433,7 @@ export function buildSessionApiPath(sessionId, action = "", opts = {}) {
   const path = `/api/sessions/${safeId}${suffix}`;
   const params = new URLSearchParams();
 
-  const workspace = normalizeWorkspaceHint(opts?.workspace);
+  const workspace = normalizeSessionWorkspaceHint(opts?.workspace);
   if (workspace) params.set("workspace", workspace);
 
   if (opts?.query && typeof opts.query === "object") {
@@ -454,6 +448,8 @@ export function buildSessionApiPath(sessionId, action = "", opts = {}) {
   const qs = params.toString();
   return qs ? `${path}?${qs}` : path;
 }
+
+
 
 
 

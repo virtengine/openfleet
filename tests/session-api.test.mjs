@@ -10,8 +10,7 @@ import {
   createSessionLoadMeta,
   getSessionRetryDelayMs,
   markSessionLoadFailure,
-  markSessionLoadSuccess,
-  resetSessionRetryMeta,
+  markSessionLoadSuccess,`r`n  normalizeSessionWorkspaceHint,`r`n  resetSessionRetryMeta,
   resolveSessionWorkspaceHint,
 } from "../ui/modules/session-api.js";
 
@@ -28,6 +27,21 @@ describe("session api workspace routing", () => {
 
   it("falls back to all when session metadata is absent", () => {
     expect(resolveSessionWorkspaceHint(null, "all")).toBe("all");
+  });
+
+  it("normalizes wildcard, explicit, and malformed workspace hints predictably", () => {
+    expect(normalizeSessionWorkspaceHint("*")).toBe("all");
+    expect(normalizeSessionWorkspaceHint(" ALL ")).toBe("all");
+    expect(normalizeSessionWorkspaceHint("active")).toBe("active");
+    expect(normalizeSessionWorkspaceHint("workspace-123")).toBe("workspace-123");
+    expect(normalizeSessionWorkspaceHint("../bad")).toBeNull();
+    expect(normalizeSessionWorkspaceHint("bad/value")).toBeNull();
+    expect(normalizeSessionWorkspaceHint("?")).toBeNull();
+  });
+
+  it("omits malformed workspace hints from built session api paths", () => {
+    const path = buildSessionApiPath("abc123", "message", { workspace: "../bad" });
+    expect(path).toBe("/api/sessions/abc123/message");
   });
 
   it("formats freshness labels with relative and absolute timestamps", () => {
@@ -257,3 +271,4 @@ describe("session lifecycle/runtime metadata", () => {
     ).toBe("2026-01-02T00:00:00.000Z");
   });
 });
+
