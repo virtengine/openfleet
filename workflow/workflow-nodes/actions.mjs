@@ -4684,6 +4684,13 @@ registerNodeType("action.acquire_worktree", {
             `[worktree-recovery] Warning: failed to record recovery event: ${err && err.message ? err.message : String(err)}`,
           );
         }
+          await recordWorktreeRecoveryEvent(repoRoot, payload);
+        } catch (err) {
+          ctx.log(
+            node.id,
+            `[worktree-recovery] Warning: failed to record recovery event: ${err && err.message ? err.message : String(err)}`,
+          );
+        }
       };
       try {
         execGitArgsSync(["fetch", "origin", baseBranchShort, "--no-tags"], {
@@ -4804,12 +4811,36 @@ registerNodeType("action.acquire_worktree", {
       ctx.data.baseBranch = baseBranch;
       ctx.data._worktreeCreated = true;
       ctx.data._worktreeManaged = true;
-      await persistRecoveryEvent({
-        outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
-        worktreePath,
-      });
-      ctx.log(node.id, `Worktree created: ${worktreePath} (branch: ${branch}, base: ${baseBranch})`);
-      return { success: true, worktreePath, created: true, branch, baseBranch };
+      // Safely derive recovery context without assuming try-block scoped bindings exist here.
+      const safeRecoveryState =
+        typeof recoveryState !== "undefined" && recoveryState
+          ? recoveryState
+          : {
+              phase: "post-pull",
+              worktreePath:
+                (typeof worktreePath !== "undefined" && worktreePath) ||
+                (ctx?.data && ctx.data.worktreePath) ||
+                undefined,
+              detectedIssues: new Set(["refresh_conflict"]),
+            };
+      const safePersistRecoveryEvent =
+        typeof persistRecoveryEvent === "function" ? persistRecoveryEvent : async () => {};
+      const safeWorktreePath =
+        (typeof worktreePath !== "undefined" && worktreePath) ||
+        safeRecoveryState.worktreePath ||
+        (ctx?.data && ctx.data.worktreePath) ||
+        undefined;
+
+      if (/managed worktree was removed after stale refresh state/i.test(String(err?.message || ""))) {
+        await safePersistRecoveryEvent({
+          outcome: "recreation_failed",
+          phase: safeRecoveryState.phase || "post-pull",
+          worktreePath: safeRecoveryState.worktreePath || safeWorktreePath,
+          detectedIssues: Array.from(
+            safeRecoveryState.detectedIssues && safeRecoveryState.detectedIssues.size
+              ? safeRecoveryState.detectedIssues
+              : ["refresh_conflict"],
+          ),
     } catch (err) {
       // Safely derive recovery context without assuming try-block scoped bindings exist here.
       const safeRecoveryState =
