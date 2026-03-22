@@ -9844,7 +9844,12 @@ function startLogStream(socket, logType, query) {
 
       if (size < streamState.offset) {
         // File was truncated/rotated — reset
+        streamState.offset = 0;
+      }
 
+      if (size <= streamState.offset) {
+        return;
+      }
 
       // Read only new bytes
       const readLen = Math.min(size - streamState.offset, 512_000);
