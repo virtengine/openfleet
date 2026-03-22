@@ -29,6 +29,17 @@ function getStatusPath(repoRoot) {
     }
     return resolve(repoRoot, override);
   }
+  const override = String(process.env.STATUS_FILE || "").trim();
+  if (override) {
+    // If override is an absolute path, resolve it directly;
+    // if it's relative, resolve it against the repo root.
+    const isWindowsAbsolute = /^[a-zA-Z]:[\\/]/.test(override) || override.startsWith("\\\\");
+    const isPosixAbsolute = override.startsWith("/");
+    if (isWindowsAbsolute || isPosixAbsolute) {
+      return resolve(override);
+    }
+    return resolve(repoRoot, override);
+  }
   return resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
 }
 

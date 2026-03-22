@@ -11464,7 +11464,16 @@ registerBuiltinNodeType("action.acquire_worktree", {
         ctx.log(
           node.id,
           `[worktree-recovery] failed to persist recovery event: ${
-            err && err.message ? err.message : String(err)
+        try {
+          await recordWorktreeRecoveryEvent(repoRoot, payload);
+        } catch (err) {
+          ctx.log(
+            node.id,
+            `[worktree-recovery] failed to persist recovery event: ${
+              err && err.message ? err.message : String(err)
+            }`,
+          );
+        }
           }`,
         );
       }
@@ -11711,11 +11720,16 @@ registerBuiltinNodeType("action.acquire_worktree", {
         }
       }
       if (attachedExistingBranch) {
-        refreshManagedWorktreeReuse(
-          node.id,
-          ctx,
-          repoRoot,
-          worktreePath,
+        await recordWorktreeRecoveryEvent({
+          outcome: "recreation_failed",
+          phase: "post-pull",
+          worktreePath: resolve(
+            repoRoot,
+            ".bosun",
+            "worktrees",
+            deriveManagedWorktreeDirName(taskId, branch)
+          ),
+          detectedIssues: ["refresh_conflict"],
           baseBranch,
           baseBranchShort,
           fetchTimeout,
