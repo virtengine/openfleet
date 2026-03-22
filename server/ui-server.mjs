@@ -1620,12 +1620,29 @@ function getWorkflowWorkspaceKey(workspaceDir = "") {
   return normalized;
 }
 
-function getWorkflowStoragePaths(workspaceDir = "") {
-  const root = normalizeCandidatePath(workspaceDir) || repoRoot;
+function getWorkflowStoragePaths(workspaceInput = "") {
+  const root = normalizeCandidatePath(workspaceInput) || repoRoot;
+
+  // When the daemon writes workflow runs into a workspace mirror directory
+  // (under configDir/workspaces/<id>/<repo>/.bosun/), prefer that location so
+  // the UI always reads the freshest data the daemon is persisting.
+  let useMirrorRoot = false;
+  let mirrorRoot = "";
+  const configDir = resolveUiConfigDir();
+  if (configDir) {
+    const workspaceId = basename(root);
+    const repoName = basename(repoRoot);
+    mirrorRoot = resolve(configDir, "workspaces", workspaceId, repoName, ".bosun");
+    if (existsSync(resolve(mirrorRoot, "workflow-runs"))) {
+      useMirrorRoot = true;
+    }
+  }
+
+  const workflowBase = useMirrorRoot ? mirrorRoot : resolve(root, ".bosun");
   return {
     workspaceRoot: root,
-    workflowDir: resolve(root, ".bosun", "workflows"),
-    runsDir: resolve(root, ".bosun", "workflow-runs"),
+    workflowDir: resolve(workflowBase, "workflows"),
+    runsDir: resolve(workflowBase, "workflow-runs"),
   };
 }
 
@@ -17233,7 +17250,7 @@ async function handleApi(req, res, url) {
         ? Math.max(0, Math.floor(rawOffset))
         : 0;
       const limit = Number.isFinite(rawLimit) && rawLimit > 0
-        ? Math.min(rawLimit, 5000)
+        ? Math.min(rawLimit, 10000)
         : 20;
       const page = typeof engine.getRunHistoryPage === "function"
         ? engine.getRunHistoryPage(null, { offset, limit })
@@ -17614,7 +17631,7 @@ async function handleApi(req, res, url) {
           ? Math.max(0, Math.floor(rawOffset))
           : 0;
         const limit = Number.isFinite(rawLimit) && rawLimit > 0
-          ? Math.min(rawLimit, 5000)
+          ? Math.min(rawLimit, 10000)
           : 20;
         const page = typeof engine.getRunHistoryPage === "function"
           ? engine.getRunHistoryPage(workflowId, { offset, limit })

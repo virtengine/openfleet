@@ -10147,7 +10147,7 @@ function isClaimOwnershipActive(claim, activePresenceInstanceIds = new Set(), no
     return false;
   }
   const claimHost = pickTaskString(claim?.metadata?.host).toLowerCase();
-  const localHost = pickTaskString(process.env.COMPUTERNAME, process.env.HOSTNAME).toLowerCase();
+  const localHost = pickTaskString(process.env.COMPUTERNAME, process.env.HOSTNAME, "localhost").toLowerCase();
   const claimPid = Number(claim?.metadata?.pid);
   if (claimHost && localHost && claimHost === localHost && Number.isFinite(claimPid) && claimPid > 0) {
     return isLocalProcessAlive(claimPid);
@@ -10179,6 +10179,7 @@ async function getPersistedOwnedTaskIds(node, ctx) {
     || process.cwd();
   const activeTaskIds = new Set();
   const activeOwnerIds = await getActivePresenceInstanceIds(repoRoot);
+  const inactiveClaimOwnerIds = new Set();
   const now = Date.now();
   try {
     const claims = await ensureTaskClaimsMod();
@@ -10186,9 +10187,12 @@ async function getPersistedOwnedTaskIds(node, ctx) {
     if (typeof claims.listClaims === "function") {
       const persistedClaims = await claims.listClaims();
       for (const claim of persistedClaims || []) {
-        if (!isClaimOwnershipActive(claim, activeOwnerIds, now)) continue;
-        const taskId = pickTaskString(claim?.task_id, claim?.taskId);
         const ownerId = pickTaskString(claim?.instance_id, claim?.instanceId);
+        if (!isClaimOwnershipActive(claim, activeOwnerIds, now)) {
+          if (ownerId) inactiveClaimOwnerIds.add(ownerId);
+          continue;
+        }
+        const taskId = pickTaskString(claim?.task_id, claim?.taskId);
         if (taskId) activeTaskIds.add(taskId);
         if (ownerId) activeOwnerIds.add(ownerId);
       }
@@ -10205,6 +10209,7 @@ async function getPersistedOwnedTaskIds(node, ctx) {
         if (!taskId) continue;
         const ownerId = pickTaskString(state?.ownerId, state?.owner_id);
         if (!isSharedStateOwnershipActive(state, now)) continue;
+        if (ownerId && inactiveClaimOwnerIds.has(ownerId)) continue;
         if (activeOwnerIds.size > 0 && ownerId && !activeOwnerIds.has(ownerId)) continue;
         activeTaskIds.add(taskId);
       }
