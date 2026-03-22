@@ -203,8 +203,10 @@ function buildErrorCorrelationEntries(errors, taskProfiles) {
         count: 0,
         task_ids: new Set(),
         by_executor: {},
+        by_model: {},
         by_size: {},
         by_complexity: {},
+        avg_task_duration_ms: 0,
         sample_message: "",
         first_seen_ts: null,
         last_seen_ts: null,
@@ -240,11 +242,21 @@ function buildErrorCorrelationEntries(errors, taskProfiles) {
       extractSizeLabelFromTitle(error.task_title),
     );
     const executor = resolveKnownValue(profile?.executor, error.executor);
+    const model = resolveKnownValue(profile?.model, error.model);
     const complexity = resolveKnownValue(profile?.complexity);
 
     incrementCounter(entry.by_size, sizeLabel);
     incrementCounter(entry.by_executor, executor);
+    incrementCounter(entry.by_model, model);
     incrementCounter(entry.by_complexity, complexity);
+  }
+
+  for (const entry of correlations.values()) {
+    const durations = [...entry.task_ids]
+      .map((taskId) => taskProfiles.get(taskId)?.avg_duration_ms || 0)
+      .filter((duration) => duration > 0);
+    entry.avg_task_duration_ms =
+      durations.length > 0 ? average(durations) : 0;
   }
 
   return correlations;
@@ -300,7 +312,9 @@ export function buildErrorCorrelationJsonPayload(summary, { now } = {}) {
       last_seen: entry.last_seen_ts
         ? new Date(entry.last_seen_ts).toISOString()
         : null,
+      avg_task_duration_ms: entry.avg_task_duration_ms || 0,
       by_executor: buildDistribution(entry.by_executor, entry.count),
+      by_model: buildDistribution(entry.by_model, entry.count),
       by_size: buildDistribution(entry.by_size, entry.count),
       by_complexity: buildDistribution(entry.by_complexity, entry.count),
     })),
