@@ -167,17 +167,6 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
         applySessionSnapshot(sessions, Date.now());
       }),
 
-    setDetailView(null);
-    setDiffView(null);
-    setStatusLine(`Logs filtered to ${describeSelection(selectedSession)}`);
-  }, [resolvedHost, resolvedPort, selectedSession]);
-
-  const openDiff = React.useCallback(async () => {
-    if (!selectedSession?.id) return;
-    const payload = await fetchJson(
-      resolvedHost,
-      resolvedPort,
-      `/api/sessions/${encodeURIComponent(selectedSession.id)}/diff?workspace=all`,
     );
     setDiffView(summarizeDiff(payload));
     setDetailView(null);
