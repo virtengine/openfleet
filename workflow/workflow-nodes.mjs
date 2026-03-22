@@ -11757,7 +11757,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
         ? errorMessage
         : "Managed worktree refresh conflict detected; Bosun will retry automatically after cooldown.";
       if (!retryable) {
-        await recordWorktreeRecoveryEvent({
+        await recordWorktreeRecoveryEvent(repoRoot, {
           outcome: "recreation_failed",
           phase: "post-pull",
           worktreePath: resolve(
