@@ -2169,6 +2169,261 @@ function resolvePrimaryWorkspaceId() {
   }
 }
 
+function normalizeDiffTaskRef(value) {
+  return String(value || "").trim();
+}
+
+function collectTaskWorkflowRunEntries(task) {
+  return [
+    ...(Array.isArray(task?.workflowRuns) ? task.workflowRuns : []),
+    ...(Array.isArray(task?.workflowHistory) ? task.workflowHistory : []),
+    ...(Array.isArray(task?.workflows) ? task.workflows : []),
+    ...(Array.isArray(task?.meta?.workflowRuns) ? task.meta.workflowRuns : []),
+  ];
+}
+
+function collectTaskDiffSessionIds(task) {
+  const ids = new Set();
+  const push = (value) => {
+    const normalized = normalizeDiffTaskRef(value);
+    if (normalized) ids.add(normalized);
+  };
+
+  push(task?.sessionId);
+  push(task?.primarySessionId);
+  push(task?.meta?.sessionId);
+  push(task?.meta?.primarySessionId);
+
+  for (const entry of collectTaskWorkflowRunEntries(task)) {
+    push(entry?.sessionId);
+    push(entry?.primarySessionId);
+    push(entry?.threadId);
+    push(entry?.agentSessionId);
+    push(entry?.meta?.sessionId);
+    push(entry?.meta?.threadId);
+  }
+
+  return [...ids];
+}
+
+function collectTaskDiffCommitRefs(task) {
+  const refs = new Set();
+  const push = (value) => {
+    const normalized = normalizeDiffTaskRef(value);
+    if (normalized) refs.add(normalized);
+  };
+
+  push(task?.commitSha);
+  push(task?.sha);
+  push(task?.headSha);
+  push(task?.mergeCommitSha);
+  push(task?.meta?.commitSha);
+  push(task?.meta?.sha);
+  push(task?.meta?.headSha);
+  push(task?.meta?.mergeCommitSha);
+  push(task?.meta?.pr?.headSha);
+  push(task?.meta?.pr?.mergeCommitSha);
+
+  return [...refs];
+}
+
+function pickTaskDiffBranch(task) {
+  return (
+    normalizeDiffTaskRef(task?.branchName) ||
+    normalizeDiffTaskRef(task?.branch) ||
+    normalizeDiffTaskRef(task?.meta?.branchName) ||
+    normalizeDiffTaskRef(task?.meta?.branch) ||
+    normalizeDiffTaskRef(task?.meta?.pr?.headRefName) ||
+    ""
+  );
+}
+
+function pickTaskDiffBaseBranch(task) {
+  return (
+    normalizeDiffTaskRef(task?.baseBranch) ||
+    normalizeDiffTaskRef(task?.base_branch) ||
+    normalizeDiffTaskRef(task?.meta?.baseBranch) ||
+    normalizeDiffTaskRef(task?.meta?.base_branch) ||
+    normalizeDiffTaskRef(task?.meta?.pr?.baseRefName) ||
+    "origin/main"
+  );
+}
+
+function resolveTaskWorkspaceEntry(task, workspaceContext = {}) {
+  const configDir = resolveUiConfigDir();
+  if (!configDir) return null;
+  const listed = listManagedWorkspaces(configDir, { repoRoot });
+  const taskWorkspace = normalizeDiffTaskRef(task?.workspace || task?.meta?.workspace);
+  const taskWorkspacePath = normalizeCandidatePath(taskWorkspace);
+  const workspaceId = normalizeDiffTaskRef(workspaceContext?.workspaceId || workspaceContext?.workspaceFilter);
+
+  return (
+    (taskWorkspace
+      ? listed.find((entry) => {
+          const id = normalizeDiffTaskRef(entry?.id);
+          const entryPath = normalizeCandidatePath(entry?.path);
+          return id === taskWorkspace || (taskWorkspacePath && entryPath && entryPath === taskWorkspacePath);
+        })
+      : null) ||
+    (workspaceId
+      ? listed.find((entry) => normalizeDiffTaskRef(entry?.id) === workspaceId)
+      : null) ||
+    getActiveManagedWorkspace(configDir) ||
+    listed[0] ||
+    null
+  );
+}
+
+function resolveTaskRepositoryDir(task, workspaceContext = {}) {
+  const repositoryName = normalizeDiffTaskRef(task?.repository || task?.meta?.repository);
+  const taskWorkspace = normalizeDiffTaskRef(task?.workspace || task?.meta?.workspace);
+  const taskWorkspacePath = normalizeCandidatePath(taskWorkspace);
+  const workspaceEntry = resolveTaskWorkspaceEntry(task, workspaceContext);
+  const candidates = [];
+
+  const pushCandidate = (candidate) => {
+    const normalized = normalizeCandidatePath(candidate);
+    if (normalized && !candidates.includes(normalized)) candidates.push(normalized);
+  };
+
+  if (taskWorkspacePath && repositoryName) pushCandidate(resolve(taskWorkspacePath, repositoryName));
+  if (taskWorkspacePath) pushCandidate(taskWorkspacePath);
+
+  if (workspaceEntry) {
+    const repos = Array.isArray(workspaceEntry.repos) ? workspaceEntry.repos : [];
+    const matchedRepo = repositoryName
+      ? repos.find((repo) => {
+          const values = [
+            normalizeDiffTaskRef(repo?.name),
+            normalizeDiffTaskRef(repo?.slug),
+            normalizeCandidatePath(repo?.path),
+          ].filter(Boolean);
+          return values.includes(repositoryName) || values.includes(normalizeCandidatePath(repositoryName));
+        })
+      : null;
+    if (matchedRepo?.path) pushCandidate(matchedRepo.path);
+    if (workspaceEntry.path && repositoryName) pushCandidate(resolve(workspaceEntry.path, repositoryName));
+    pushCandidate(pickWorkspaceRepoDir(workspaceEntry));
+    pushCandidate(workspaceEntry.path);
+  }
+
+  if (workspaceContext?.workspaceDir && repositoryName) {
+    pushCandidate(resolve(workspaceContext.workspaceDir, repositoryName));
+  }
+  pushCandidate(workspaceContext?.workspaceDir);
+  pushCandidate(repoRoot);
+
+  for (const candidate of candidates) {
+    if (!candidate || !existsSync(candidate)) continue;
+    if (existsSync(resolve(candidate, ".git"))) return candidate;
+  }
+  return candidates.find((candidate) => candidate && existsSync(candidate)) || "";
+}
+
+function emptyTaskDiffPayload(formatted, source = {}) {
+  return {
+    diff: {
+      files: [],
+      totalFiles: 0,
+      totalAdditions: 0,
+      totalDeletions: 0,
+      formatted,
+    },
+    summary: formatted,
+    commits: [],
+    source,
+  };
+}
+
+async function buildTaskDiffPayload(task, workspaceContext = {}) {
+  if (!task) {
+    return emptyTaskDiffPayload("(task not found)", { kind: "task", detail: "Task could not be loaded." });
+  }
+
+  const baseBranch = pickTaskDiffBaseBranch(task);
+
+  for (const sessionId of collectTaskDiffSessionIds(task)) {
+    try {
+      const session = tracker.getSession(sessionId);
+      if (!session) continue;
+      const worktreePath = await resolveSessionWorktreePath(session);
+      if (!worktreePath || !existsSync(worktreePath)) continue;
+      const diff = collectDiffStats(worktreePath, {
+        baseBranch,
+        includePatch: true,
+      });
+      if (diff.totalFiles > 0) {
+        return {
+          diff,
+          summary: diff.formatted,
+          commits: getRecentCommits(worktreePath),
+          source: {
+            kind: "session",
+            label: diff.sourceRange || "session worktree",
+            detail: worktreePath,
+          },
+        };
+      }
+    } catch {
+      // Fall through to branch or commit resolution.
+    }
+  }
+
+  const repoPath = resolveTaskRepositoryDir(task, workspaceContext);
+  if (!repoPath || !existsSync(repoPath)) {
+    return emptyTaskDiffPayload("(no repository for task diff)", {
+      kind: "task",
+      detail: "No repository or preserved worktree is available for this task.",
+    });
+  }
+
+  const attempts = [];
+  const branch = pickTaskDiffBranch(task);
+  if (branch) {
+    attempts.push({
+      kind: "branch",
+      label: `${baseBranch}...${branch}`,
+      options: { baseBranch, targetRef: branch, includePatch: true },
+    });
+  }
+  for (const commitRef of collectTaskDiffCommitRefs(task)) {
+    attempts.push({
+      kind: "commit",
+      label: commitRef,
+      options: { range: `${commitRef}^..${commitRef}`, includePatch: true },
+    });
+  }
+  if (!attempts.length) {
+    attempts.push({
+      kind: "task",
+      label: `${baseBranch}...HEAD`,
+      options: { baseBranch, includePatch: true },
+    });
+  }
+
+  for (const attempt of attempts) {
+    const diff = collectDiffStats(repoPath, attempt.options);
+    if (diff.totalFiles > 0) {
+      return {
+        diff,
+        summary: diff.formatted,
+        commits: getRecentCommits(repoPath),
+        source: {
+          kind: attempt.kind,
+          label: diff.sourceRange || attempt.label,
+          detail: repoPath,
+        },
+      };
+    }
+  }
+
+  return emptyTaskDiffPayload("(no diff available)", {
+    kind: branch ? "branch" : "task",
+    label: branch ? `${baseBranch}...${branch}` : "",
+    detail: repoPath,
+  });
+}
+
 function taskMatchesWorkspaceContext(task, workspaceContext) {
   const workspaceFilter = String(
     workspaceContext?.workspaceFilter || workspaceContext?.workspaceId || "",
@@ -4688,6 +4943,35 @@ async function resolveVoiceRelay() {
 let _fallbackExecPrimaryPrompt = null;
 /** Track in-flight chat turns so /api/sessions/:id/stop can abort them. */
 const sessionRunAbortControllers = new Map();
+let _activeSessions = [];
+
+function getLiveSessionSnapshot({ includeHidden = false } = {}) {
+  const tracker = getSessionTracker();
+  let sessions = tracker.listAllSessions();
+  if (!includeHidden) {
+    sessions = sessions.filter((session) => {
+      const detailed = tracker.getSessionById(session.id) || session;
+      return !shouldHideSessionFromDefaultList(detailed);
+    });
+  }
+  return sessions;
+}
+
+function broadcastSessionsSnapshot(sessions = getLiveSessionSnapshot()) {
+  const normalized = Array.isArray(sessions) ? sessions : [];
+  broadcastUiEvent(["sessions", "tui"], "sessions:update", {
+    sessions: normalized,
+  });
+}
+
+function updateActiveSessions(sessions) {
+  _activeSessions = Array.isArray(sessions) ? sessions : [];
+  broadcastSessionsSnapshot(_activeSessions);
+  for (const session of _activeSessions) {
+    broadcastUiEvent(["sessions", "tui"], "session:update", session);
+  }
+}
+
 async function resolveExecPrimaryPrompt() {
   if (typeof uiDeps.execPrimaryPrompt === "function") return uiDeps.execPrimaryPrompt;
   if (_fallbackExecPrimaryPrompt) return _fallbackExecPrimaryPrompt;
@@ -12166,6 +12450,25 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/tasks/diff") {
+    try {
+      const taskId =
+        url.searchParams.get("taskId") || url.searchParams.get("id") || "";
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      const adapter = getKanbanAdapter();
+      const task = await adapter.getTask(taskId);
+      const payload = await buildTaskDiffPayload(task, workspaceContext);
+      jsonResponse(res, 200, { ok: true, ...payload });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/tasks/detail") {
     try {
       const taskId =
@@ -18902,6 +19205,7 @@ async function handleApi(req, res, url) {
       });
       jsonResponse(res, 200, { ok: true, session: { id: session.id, type: session.type, status: session.status, metadata: session.metadata } });
       broadcastUiEvent(["sessions"], "invalidate", { reason: "session-created", sessionId: id });
+      broadcastSessionsSnapshot();
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -19052,6 +19356,7 @@ async function handleApi(req, res, url) {
           reason: wasRunning ? "session-stop-requested" : "session-stop-noop",
           sessionId,
         });
+        broadcastSessionsSnapshot();
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
@@ -19104,6 +19409,7 @@ async function handleApi(req, res, url) {
           // Respond immediately so the UI doesn't block on agent execution
           jsonResponse(res, 200, { ok: true, messageId });
           broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
+          broadcastSessionsSnapshot();
 
           // Build an onEvent callback so intermediate SDK events (thinking,
           // tool calls, code edits, etc.) are streamed to the UI in real-time
@@ -19155,6 +19461,7 @@ async function handleApi(req, res, url) {
             // sessions from staying "active" forever and causing session bloat.
             tracker.updateSessionStatus(sessionId, "completed");
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
+            broadcastSessionsSnapshot();
           }).catch((execErr) => {
             const wasAborted =
               abortController.signal.aborted ||
@@ -19172,6 +19479,7 @@ async function handleApi(req, res, url) {
                 reason: "agent-stopped",
                 sessionId,
               });
+              broadcastSessionsSnapshot();
               return;
             }
             // Record error as system message so user sees feedback
@@ -19183,6 +19491,7 @@ async function handleApi(req, res, url) {
             });
             tracker.updateSessionStatus(sessionId, "failed");
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-error", sessionId });
+            broadcastSessionsSnapshot();
           }).finally(() => {
             // Clear only if this turn still owns the session abort controller.
             if (sessionRunAbortControllers.get(sessionId) === abortController) {
@@ -19209,6 +19518,7 @@ async function handleApi(req, res, url) {
           });
           jsonResponse(res, 200, { ok: true, messageId, warning: "no_agent_available" });
           broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
+          broadcastSessionsSnapshot();
         }
       } catch (err) {
         console.error("[ui-server] session message failed for %s: %s", String(sessionId), String(err?.message || err || "unknown"));
@@ -19248,6 +19558,7 @@ async function handleApi(req, res, url) {
           reason: "session-message-edited",
           sessionId,
         });
+        broadcastSessionsSnapshot();
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
@@ -19267,6 +19578,24 @@ async function handleApi(req, res, url) {
           reason: "session-archived",
           sessionId,
         });
+        broadcastSessionsSnapshot();
+      } catch (err) {
+        jsonResponse(res, 500, { ok: false, error: err.message });
+      }
+      return;
+    }
+
+    if (action === "pause" && req.method === "POST") {
+      try {
+        const session = getScopedSession();
+        if (!session) {
+          jsonResponse(res, 404, { ok: false, error: "Session not found" });
+          return;
+        }
+        tracker.updateSessionStatus(sessionId, "paused");
+        jsonResponse(res, 200, { ok: true });
+        broadcastUiEvent(["sessions"], "invalidate", { reason: "session-paused", sessionId });
+        broadcastSessionsSnapshot();
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
@@ -19283,6 +19612,7 @@ async function handleApi(req, res, url) {
         tracker.updateSessionStatus(sessionId, "active");
         jsonResponse(res, 200, { ok: true });
         broadcastUiEvent(["sessions"], "invalidate", { reason: "session-resumed", sessionId });
+        broadcastSessionsSnapshot();
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
@@ -19302,6 +19632,7 @@ async function handleApi(req, res, url) {
           reason: "session-deleted",
           sessionId,
         });
+        broadcastSessionsSnapshot();
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
@@ -19324,6 +19655,7 @@ async function handleApi(req, res, url) {
         tracker.renameSession(sessionId, title);
         jsonResponse(res, 200, { ok: true });
         broadcastUiEvent(["sessions"], "invalidate", { reason: "session-renamed", sessionId });
+        broadcastSessionsSnapshot();
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
@@ -19353,10 +19685,20 @@ async function handleApi(req, res, url) {
           jsonResponse(res, 200, { ok: true, diff: { files: [], totalFiles: 0, totalAdditions: 0, totalDeletions: 0, formatted: "(no worktree)" }, summary: "(no worktree)", commits: [] });
           return;
         }
-        const stats = collectDiffStats(worktreePath);
-        const summary = getCompactDiffSummary(worktreePath);
+        const stats = collectDiffStats(worktreePath, { includePatch: true });
+        const summary = stats.formatted || getCompactDiffSummary(worktreePath);
         const commits = getRecentCommits(worktreePath);
-        jsonResponse(res, 200, { ok: true, diff: stats, summary, commits });
+        jsonResponse(res, 200, {
+          ok: true,
+          diff: stats,
+          summary,
+          commits,
+          source: {
+            kind: "session",
+            label: stats.sourceRange || "origin/main...HEAD",
+            detail: worktreePath,
+          },
+        });
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
@@ -21147,16 +21489,6 @@ export async function startTelegramUiServer(options = {}) {
     }
     globalThis.__bosun_setRetryQueueData = setRetryQueueData;
 
-    // Session tracking
-    let _activeSessions = [];
-    function updateActiveSessions(sessions) {
-      _activeSessions = sessions || [];
-      // Broadcast session updates
-      for (const session of _activeSessions) {
-        broadcastUiEvent(["sessions", "tui"], "session:update", session);
-      }
-    }
-
     // Task CRUD events
     function broadcastTaskEvent(type, task) {
       broadcastUiEvent(["tasks", "tui"], type, task);
@@ -21173,6 +21505,14 @@ export async function startTelegramUiServer(options = {}) {
         type: "hello",
         channels: ["*"],
         payload: { connected: true },
+        ts: Date.now(),
+      });
+      sendWsMessage(socket, {
+        type: "sessions:update",
+        channels: ["sessions", "tui"],
+        payload: {
+          sessions: _activeSessions.length ? _activeSessions : getLiveSessionSnapshot(),
+        },
         ts: Date.now(),
       });
 
@@ -21670,6 +22010,7 @@ export function stopTelegramUiServer() {
   if (!uiServer) return;
   stopTunnel();
   stopWsHeartbeat();
+  _activeSessions = [];
   // Clear injected configDir so it does not leak between server lifecycles
   // (tests start/stop servers repeatedly with different config directories).
   delete uiDeps.configDir;
@@ -21707,5 +22048,3 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
-
-

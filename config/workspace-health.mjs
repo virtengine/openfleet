@@ -1,11 +1,42 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 
+export function normalizeWorkspaceHealthPath(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+  const isWindowsDrivePath = /^[A-Za-z]:[\\/]/.test(trimmed);
+  const isUncPath = trimmed.startsWith("\\\\");
+  const normalized = (isWindowsDrivePath || isUncPath ? trimmed : resolve(trimmed))
+    .replace(/\\/g, "/");
+  if (/^[A-Z]:/.test(normalized)) {
+    return normalized[0].toLowerCase() + normalized.slice(1);
+  }
+  return normalized;
+}
+
+export function isAbsoluteWorkspaceHealthPath(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return false;
+  if (/^[A-Za-z]:[\\/]/.test(trimmed)) return true;
+  if (trimmed.startsWith("\\\\")) return true;
+  return isAbsolute(trimmed);
+}
+
+export function writableRootContainsPath(root, candidate) {
+  const normalizedRoot = normalizeWorkspaceHealthPath(root);
+  const normalizedCandidate = normalizeWorkspaceHealthPath(candidate);
+  if (!normalizedRoot || !normalizedCandidate) return false;
+  return (
+    normalizedCandidate === normalizedRoot ||
+    normalizedCandidate.startsWith(`${normalizedRoot}/`)
+  );
+}
+
 export function runWorkspaceHealthCheck(options = {}) {
   const configDir = options.configDir || process.env.BOSUN_DIR || join(homedir(), "bosun");
-    const issues = { errors: [], warnings: [], infos: [] };
+  const issues = { errors: [], warnings: [], infos: [] };
   const workspaceResults = [];
 
   // 1. Check if workspaces are configured
@@ -128,7 +159,7 @@ export function runWorkspaceHealthCheck(options = {}) {
           for (const repo of ws.repos || []) {
             const repoPath = join(wsPath, repo.name || repo.slug || "");
             const gitPath = join(repoPath, ".git");
-            if (existsSync(gitPath) && !roots.some(r => gitPath.startsWith(r) || r === gitPath)) {
+            if (existsSync(gitPath) && !roots.some((root) => writableRootContainsPath(root, gitPath))) {
               issues.warnings.push({
                 code: "WS_SANDBOX_MISSING_ROOT",
                 message: `Workspace repo .git not in Codex writable_roots: ${gitPath}`,
@@ -140,13 +171,13 @@ export function runWorkspaceHealthCheck(options = {}) {
 
         // Check for phantom/relative writable roots
         for (const root of roots) {
-          if (!root.startsWith("/")) {
+          if (!isAbsoluteWorkspaceHealthPath(root)) {
             issues.warnings.push({
               code: "WS_SANDBOX_RELATIVE_ROOT",
               message: `Relative path in Codex writable_roots: "${root}" — may resolve incorrectly`,
               fix: `Remove "${root}" from writable_roots in ~/.codex/config.toml and run 'bosun --setup'`,
             });
-          } else if (!existsSync(root) && root !== "/tmp") {
+          } else if (!existsSync(root) && normalizeWorkspaceHealthPath(root) !== normalizeWorkspaceHealthPath("/tmp")) {
             issues.infos.push({
               code: "WS_SANDBOX_PHANTOM_ROOT",
               message: `Codex writable_root path does not exist: ${root}`,
@@ -239,4 +270,3 @@ export function formatWorkspaceHealthReport(result) {
 
   return lines.join("\n");
 }
-

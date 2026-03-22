@@ -10,6 +10,9 @@ export const SESSION_RETRY_DEFAULTS = Object.freeze({
   backoffMultiplier: 2,
 });
 
+export const SESSION_RUNTIME_RECENT_WINDOW_MS = 90 * 1000;
+export const SESSION_RUNTIME_STALE_WINDOW_MS = 10 * 60 * 1000;
+
 function normalizeRetryNumber(value, fallback, min = 0) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -307,6 +310,116 @@ function normalizeWorkspaceHint(value) {
   return raw;
 }
 
+function normalizeSessionLifecycleKey(value) {
+  const lower = String(value || "").trim().toLowerCase();
+  if (!lower) return "idle";
+  if (lower === "running") return "active";
+  if (lower === "done") return "completed";
+  return lower;
+}
+
+function normalizeSessionRuntimeKey(value) {
+  const lower = String(value || "").trim().toLowerCase();
+  if (!lower) return "";
+  if (
+    lower === "active"
+    || lower === "running"
+    || lower === "busy"
+    || lower === "inprogress"
+  ) {
+    return "running";
+  }
+  if (lower === "pending") return "queued";
+  if (lower === "ended" || lower === "completed" || lower === "done") return "stopped";
+  if (lower === "archived") return "stopped";
+  if (lower === "failed" || lower === "error") return "stopped";
+  return lower;
+}
+
+export function getSessionRecencyTimestamp(session) {
+  return normalizeIsoTimestamp(
+    session?.lastActiveAt
+      || session?.runtimeUpdatedAt
+      || session?.updatedAt
+      || session?.createdAt,
+  );
+}
+
+export function getSessionLifecycleState(session) {
+  const key = normalizeSessionLifecycleKey(
+    session?.lifecycleStatus
+      || session?.lifecycle?.status
+      || session?.status,
+  );
+  const meta = {
+    active: { label: "Active", tone: "success", isActive: true },
+    completed: { label: "Completed", tone: "default", isActive: false },
+    archived: { label: "Archived", tone: "default", isActive: false },
+    failed: { label: "Failed", tone: "error", isActive: false },
+    error: { label: "Error", tone: "error", isActive: false },
+    idle: { label: "Idle", tone: "warning", isActive: false },
+    paused: { label: "Paused", tone: "warning", isActive: false },
+  }[key] || {
+    label: titleCaseWords(key.replace(/[-_]+/g, " ")),
+    tone: "default",
+    isActive: false,
+  };
+  return { key, ...meta };
+}
+
+function buildRuntimeState(key, overrides = {}) {
+  const base = {
+    running: { label: "Running", tone: "success", isLive: true, isStale: false },
+    idle: { label: "Idle", tone: "warning", isLive: true, isStale: false },
+    stalled: { label: "Stalled", tone: "error", isLive: false, isStale: true },
+    queued: { label: "Queued", tone: "info", isLive: false, isStale: false },
+    paused: { label: "Paused", tone: "warning", isLive: false, isStale: false },
+    recent: { label: "Recent", tone: "info", isLive: false, isStale: false },
+    stale: { label: "Stale", tone: "error", isLive: false, isStale: true },
+    stopped: { label: "Not live", tone: "default", isLive: false, isStale: false },
+  }[key] || {
+    label: titleCaseWords(String(key || "unknown").replace(/[-_]+/g, " ")),
+    tone: "default",
+    isLive: false,
+    isStale: false,
+  };
+  return {
+    key,
+    source: overrides.source || "runtime",
+    ageMs: Number.isFinite(overrides.ageMs) ? overrides.ageMs : null,
+    ...base,
+    ...overrides,
+  };
+}
+
+export function getSessionRuntimeState(session, options = {}) {
+  const lifecycle = getSessionLifecycleState(session);
+  const runtimeKey = normalizeSessionRuntimeKey(
+    session?.runtimeState
+      || session?.runtimeStatus
+      || session?.runtime?.state
+      || session?.runtimeSnapshot?.state
+      || (session?.lifecycleStatus ? "" : session?.status),
+  );
+  if (runtimeKey) {
+    return buildRuntimeState(runtimeKey, { source: "runtime" });
+  }
+  if (!lifecycle.isActive) {
+    return buildRuntimeState("stopped", { source: "lifecycle" });
+  }
+  const now = Number(options?.now || Date.now()) || Date.now();
+  const recencyAt = getSessionRecencyTimestamp(session);
+  const recencyMs = Date.parse(String(recencyAt || ""));
+  const ageMs = Number.isFinite(recencyMs) ? Math.max(0, now - recencyMs) : Number.POSITIVE_INFINITY;
+  if (ageMs <= SESSION_RUNTIME_RECENT_WINDOW_MS) {
+    return buildRuntimeState("recent", { source: "recency", ageMs });
+  }
+  if (ageMs >= SESSION_RUNTIME_STALE_WINDOW_MS || !Number.isFinite(ageMs)) {
+    return buildRuntimeState("stale", { source: "recency", ageMs });
+  }
+  return buildRuntimeState("idle", { source: "recency", ageMs, isLive: false });
+}
+
 export function resolveSessionWorkspaceHint(session, fallback = "active") {
   const direct = String(session?.workspaceId || session?.workspace || "").trim();
   if (direct) return normalizeWorkspaceHint(direct);
@@ -341,7 +454,6 @@ export function buildSessionApiPath(sessionId, action = "", opts = {}) {
   const qs = params.toString();
   return qs ? `${path}?${qs}` : path;
 }
-
 
 
 
