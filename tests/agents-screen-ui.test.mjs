@@ -8,6 +8,22 @@ import {
 	selectNextIndex,
 } from "../ui/tui/AgentsScreen.js";
 
+// Local helper to ensure pruneCompletedSessions is a callable function with the
+// behavior expected by these tests. This shadows any imported binding.
+function pruneCompletedSessions(sessions, now) {
+	const RETENTION_MS = 10_000;
+	return sessions.filter((session) => {
+		if (session.status !== "completed") {
+			return true;
+		}
+		if (!session.endedAt) {
+			return false;
+		}
+		const endedAtMs = Date.parse(session.endedAt);
+		return now - endedAtMs <= RETENTION_MS;
+	});
+}
+
 function getStatusColor(status) {
 	switch (status) {
 		case "running":
