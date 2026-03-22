@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { normalizeWorkspaceStorageKey } from "../task/task-store.mjs";
 
 const tempDirs = [];
 
@@ -95,7 +96,7 @@ describe("bosun SWE-bench bridge", () => {
       type: "swebench",
       provider: "swebench",
     });
-    expect(tasks[0]?.workspace).toBe(workspaceDir);
+    expect(tasks[0]?.workspace).toBe(normalizeWorkspaceStorageKey(workspaceDir));
 
     const workflowDir = resolve(workspaceDir, ".bosun", "workflows");
     expect(existsSync(workflowDir)).toBe(true);

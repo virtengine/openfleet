@@ -323,7 +323,7 @@ export function normalizeWorkspaceStorageKey(rawKey) {
   if (normalized.length > 1 && normalized.endsWith("/")) {
     normalized = normalized.slice(0, -1);
   }
-  return normalized.toLowerCase();
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
 export function normalizeWorkspaceStorageKeys(rawKeys, options = {}) {
