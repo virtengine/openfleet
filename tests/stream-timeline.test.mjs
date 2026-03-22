@@ -82,6 +82,33 @@ describe("stream timeline helpers", () => {
     expect(blocks[0].chips).toContain("exit=0");
   });
 
+  it("emits file change trace items as patch result blocks", () => {
+    const blocks = buildTraceTimelineBlocks([
+      {
+        type: "system",
+        content: "Planning the update",
+        timestamp: "2026-03-20T01:00:06.000Z",
+      },
+      {
+        type: "system",
+        content: "*** Begin Patch\n*** Update File: ui/components/chat-view.js\n*** End Patch\n",
+        meta: { itemType: "file_change" },
+        timestamp: "2026-03-20T01:00:07.000Z",
+      },
+      {
+        type: "system",
+        content: "Verifying the result",
+        timestamp: "2026-03-20T01:00:08.000Z",
+      },
+    ]);
+
+    expect(blocks).toHaveLength(3);
+    expect(blocks[0].phase).toBe("thinking");
+    expect(blocks[1].phase).toBe("patch_result");
+    expect(blocks[1].title).toContain("ui/components/chat-view.js");
+    expect(blocks[2].phase).toBe("thinking");
+  });
+
   it("keeps errors attached to their tool block when they arrive after the call", () => {
     const blocks = buildTraceTimelineBlocks([
       {
