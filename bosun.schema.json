@@ -855,7 +855,7 @@
         },
         "defaults": {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "properties": {
             "executor": {
               "type": "string"
