@@ -454,6 +454,24 @@ function parseEnvBoolean(value, defaultValue) {
   return defaultValue;
 }
 
+function parseBoundedInteger(value, defaultValue, { min = null, max = null } = {}) {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  if (!Number.isFinite(parsed)) return defaultValue;
+  if (Number.isFinite(min) && parsed < min) return defaultValue;
+  if (Number.isFinite(max) && parsed > max) return defaultValue;
+  return parsed;
+}
+
+function parseBoundedNumber(value, defaultValue, { min = null, max = null } = {}) {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return defaultValue;
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed)) return defaultValue;
+  if (Number.isFinite(min) && parsed < min) return defaultValue;
+  if (Number.isFinite(max) && parsed > max) return defaultValue;
+  return parsed;
+}
+
 function isEnvEnabled(value, defaultValue = false) {
   return parseEnvBoolean(value, defaultValue);
 }
@@ -1578,6 +1596,10 @@ export function loadConfig(argv = process.argv, options = {}) {
   validateKanbanBackendConfig({ kanbanBackend, kanban, jira });
 
   const internalExecutorConfig = configData.internalExecutor || {};
+  const workflowRecoveryConfig =
+    configData.workflowRecovery && typeof configData.workflowRecovery === "object"
+      ? configData.workflowRecovery
+      : {};
   const envInternalExecutorParallel = configFileHadInvalidJson
     ? undefined
     : process.env.INTERNAL_EXECUTOR_PARALLEL;
@@ -1629,6 +1651,41 @@ export function loadConfig(argv = process.argv, options = {}) {
     String(reviewAgentToggleRaw).trim() !== ""
       ? isEnvEnabled(reviewAgentToggleRaw, true)
       : internalExecutorConfig.reviewAgentEnabled !== false;
+  const workflowRecoveryMaxAttempts = parseBoundedInteger(
+    process.env.WORKFLOW_RECOVERY_MAX_ATTEMPTS ??
+      workflowRecoveryConfig.maxAttempts,
+    5,
+    { min: 1, max: 20 },
+  );
+  const workflowRecoveryEscalationThreshold = parseBoundedInteger(
+    process.env.WORKFLOW_RECOVERY_ESCALATION_THRESHOLD ??
+      workflowRecoveryConfig.escalationWarnAfterAttempts ??
+      workflowRecoveryConfig.escalationThreshold,
+    3,
+    { min: 1, max: workflowRecoveryMaxAttempts },
+  );
+  const workflowRecovery = Object.freeze({
+    maxAttempts: workflowRecoveryMaxAttempts,
+    escalationWarnAfterAttempts: workflowRecoveryEscalationThreshold,
+    baseBackoffMs: parseBoundedInteger(
+      process.env.WORKFLOW_RECOVERY_BACKOFF_BASE_MS ??
+        workflowRecoveryConfig.baseBackoffMs,
+      5000,
+      { min: 50, max: 60_000 },
+    ),
+    maxBackoffMs: parseBoundedInteger(
+      process.env.WORKFLOW_RECOVERY_BACKOFF_MAX_MS ??
+        workflowRecoveryConfig.maxBackoffMs,
+      60_000,
+      { min: 1000, max: 30 * 60 * 1000 },
+    ),
+    jitterRatio: parseBoundedNumber(
+      process.env.WORKFLOW_RECOVERY_BACKOFF_JITTER_RATIO ??
+        workflowRecoveryConfig.jitterRatio,
+      0.2,
+      { min: 0, max: 0.9 },
+    ),
+  });
   const internalExecutor = {
     mode: ["vk", "internal", "hybrid"].includes(executorMode)
       ? executorMode
@@ -2059,6 +2116,7 @@ export function loadConfig(argv = process.argv, options = {}) {
 
     // Internal Executor
     internalExecutor,
+    workflowRecovery,
     executorMode: internalExecutor.mode,
     kanban,
     kanbanSource,
