@@ -137,6 +137,23 @@ function normaliseStatus(raw) {
   return STATUS_MAP[key] || "todo";
 }
 
+function resolveCreateTaskInput(projectIdOrTaskData, taskDataArg = {}) {
+  const payloadOnlyCall =
+    projectIdOrTaskData &&
+    typeof projectIdOrTaskData === "object" &&
+    !Array.isArray(projectIdOrTaskData);
+  const rawTaskData = payloadOnlyCall ? projectIdOrTaskData : (taskDataArg || {});
+  const projectId = payloadOnlyCall
+    ? rawTaskData?.projectId ?? rawTaskData?.project_id
+    : projectIdOrTaskData;
+  const {
+    projectId: _ignoredProjectId,
+    project_id: _ignoredProjectIdSnake,
+    ...taskData
+  } = rawTaskData || {};
+  return { projectId, taskData };
+}
+
 const STATUS_LABEL_KEYS = new Set([
   "draft",
   "todo",
@@ -1008,7 +1025,11 @@ class InternalAdapter {
     return this._normalizeTask(updated);
   }
 
-  async createTask(projectId, taskData = {}) {
+  async createTask(projectIdOrTaskData, taskDataArg = {}) {
+    const { projectId, taskData } = resolveCreateTaskInput(
+      projectIdOrTaskData,
+      taskDataArg,
+    );
     const id = String(taskData.id || randomUUID());
     const tags = normalizeTags(taskData.tags || taskData.labels || []);
     const draft = Boolean(taskData.draft || taskData.status === "draft");
@@ -1551,7 +1572,11 @@ class VKAdapter {
     return this._normaliseTask(task);
   }
 
-  async createTask(projectId, taskData) {
+  async createTask(projectIdOrTaskData, taskDataArg = {}) {
+    const { projectId, taskData } = resolveCreateTaskInput(
+      projectIdOrTaskData,
+      taskDataArg,
+    );
     const fetchVk = await this._getFetchVk();
     const tags = normalizeTags(taskData?.tags || taskData?.labels || []);
     const draft = Boolean(taskData?.draft || taskData?.status === "draft");
@@ -3617,7 +3642,8 @@ class GitHubIssuesAdapter {
     return result?.data?.convertProjectV2DraftIssueItemToIssue?.issue || null;
   }
 
-  async createTask(_projectId, taskData) {
+  async createTask(projectIdOrTaskData, taskDataArg = {}) {
+    const { taskData } = resolveCreateTaskInput(projectIdOrTaskData, taskDataArg);
     const normalizedTitle = String(taskData?.title || "").trim();
     if (!normalizedTitle) {
       throw new Error("[kanban] github createTask requires non-empty title");
@@ -5417,7 +5443,11 @@ class JiraAdapter {
     return this.getTask(issueKey);
   }
 
-  async createTask(projectId, taskData = {}) {
+  async createTask(projectIdOrTaskData, taskDataArg = {}) {
+    const { projectId, taskData } = resolveCreateTaskInput(
+      projectIdOrTaskData,
+      taskDataArg,
+    );
     const projectKey = this._normalizeProjectKey(projectId);
     if (!projectKey) {
       throw new Error(
@@ -6082,12 +6112,16 @@ export async function updateTask(taskId, patch) {
   return adapter.getTask(taskId);
 }
 
-export async function createTask(projectId, taskData) {
+export async function createTask(projectIdOrTaskData, taskDataArg = {}) {
+  const { projectId, taskData } = resolveCreateTaskInput(
+    projectIdOrTaskData,
+    taskDataArg,
+  );
   const result = await getKanbanAdapter().createTask(projectId, taskData);
   emitKanbanEvent("task.created", {
-    projectId,
+    projectId: projectId ?? result?.projectId ?? result?.project_id ?? null,
     taskId: result?.id || null,
-    title: taskData?.title || null,
+    title: taskData?.title ?? result?.title ?? null,
   });
   return result;
 }
@@ -6164,4 +6198,3 @@ export async function unmarkTaskIgnored(taskId) {
   );
   return false;
 }
-
