@@ -167,17 +167,6 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
         applySessionSnapshot(sessions, Date.now());
       }),
 
-      for (const off of handlers) {
-        try {
-          off?.();
-        } catch {
-          // best effort
-        }
-      }
-    };
-  }, [applyRetryQueue, applySessionSnapshot, refreshData, wsBridge]);
-
-  const selectedIndex = React.useMemo(() => {
     const index = entries.findIndex((entry) => entry.id === selectedId);
     return index >= 0 ? index : 0;
   }, [entries, selectedId]);
