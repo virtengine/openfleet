@@ -426,7 +426,7 @@ function normalizeTaskPathPayload(rawPayload = {}, taskId = "", options = {}) {
   const normalized = { ...rawPayload };
   for (const key of PORTABLE_TASK_PATH_KEYS) {
     if (typeof normalized[key] === "string") {
-      normalized[key] = normalizePortablePathValue(normalized[key]) || normalized[key];
+      normalized[key] = normalizePortablePathValue(normalized[key]);
     }
   }
   if (options.includeWorkspace === true && typeof normalized.workspace === "string") {
@@ -803,7 +803,7 @@ function normalizeTaskStructure(rawTask = {}) {
 }
 
 export function normalizeTaskStorageRecord(rawTask = {}) {
-  return normalizeTaskStructure(defaultTask(rawTask));
+  return normalizeTaskStructure(rawTask);
 }
 
 function pushTaskTimeline(task, event = {}) {
