@@ -313,8 +313,8 @@ describe("getToolsPromptBlock", () => {
 
   it("includes reflect hint by default", () => {
     const block = getToolsPromptBlock(tmpRoot);
-    expect(block).toContain("Reflect:");
-    expect(block).toContain("- Check existing tools before writing new helpers.");
+    expect(block).toContain("**Reflect**");
+    expect(block).toContain("- Reuse existing tools before writing new helpers.");
     expect(block).not.toContain("Before writing repetitive inline code");
   });
 
@@ -743,10 +743,11 @@ describe("getToolsPromptBlock affinity", () => {
       eagerOnly: true,
       emitReflectHint: false,
     });
-    expect(block).toContain("`search`, then `get_schema`, then `execute`");
+    expect(block).toContain("Use `search`, `get_schema`, then `execute`");
     expect(block).toContain("always-on.mjs");
     expect(block).not.toContain("not-eager.mjs");
   });
 });
 }
+
 

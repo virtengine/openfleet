@@ -100,8 +100,9 @@ describe("builtin skills audit", () => {
     buildSkillsIndex(skillsDir);
 
     const block = buildRelevantSkillsPromptBlock(testHome, "audit the codebase annotations", { maxSkills: 3 });
-    expect(block).toContain("Relevant Skills");
+    expect(block).toContain("Skills Context");
     expect(block).toContain("skill-codebase-audit.md");
     expect(block).not.toContain("I will ");
   });
 });
+
