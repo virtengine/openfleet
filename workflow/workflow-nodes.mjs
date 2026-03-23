@@ -7659,6 +7659,8 @@ const UNIVERSAL_FLOW_NODE = {
       workflowId,
       runId: childCtx?.id || null,
       status: errorCount > 0 ? "failed" : "completed",
+      message: String(childCtx?.data?._workflowTerminalMessage || "").trim(),
+      output: childCtx?.data?._workflowTerminalOutput,
       errorCount,
     };
     if (outputVariable) ctx.data[outputVariable] = output;
@@ -10942,6 +10944,8 @@ registerBuiltinNodeType("trigger.task_available", {
     return {
       triggered: true,
       tasks: toDispatch,
+      task: primaryTask,
+      taskTitle: primaryTask ? pickTaskString(primaryTask.title, primaryTask.task_title) : "",
       taskCount: toDispatch.length,
       availableSlots: remaining,
       selectedTaskId: primaryTask ? pickTaskString(primaryTask.id, primaryTask.task_id) : "",

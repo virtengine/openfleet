@@ -863,21 +863,21 @@ describe("trigger.task_available", () => {
         workspace: repoRoot,
       });
 
-      expect(result.status).toBe("completed");
-      expect(result.ctx.getNodeOutput("poll")).toEqual(
+      expect(result.data._workflowTerminalStatus).toBe("completed");
+      expect(result.getNodeOutput("poll")).toEqual(
         expect.objectContaining({
           selectedTaskId: "task-engine-handoff",
           taskCount: 1,
         }),
       );
-      expect(result.ctx.getNodeOutput("claim")).toEqual(
+      expect(result.getNodeOutput("claim")).toEqual(
         expect.objectContaining({
           success: true,
           taskId: "task-engine-handoff",
           instanceId: "wf-monitor-handoff",
         }),
       );
-      expect(result.ctx.getNodeOutput("release")).toEqual(
+      expect(result.getNodeOutput("release")).toEqual(
         expect.objectContaining({
           success: true,
           taskId: "task-engine-handoff",
