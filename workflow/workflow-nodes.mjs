@@ -8265,12 +8265,30 @@ registerBuiltinNodeType("action.continue_session", {
     const prompt = ctx.resolve(node.config?.prompt || "Continue working on the current task.");
     const timeout = node.config?.timeoutMs || 1800000;
     const strategy = node.config?.strategy || "continue";
+    const issueAdvisor =
+      ctx.data?._issueAdvisor && typeof ctx.data._issueAdvisor === "object"
+        ? ctx.data._issueAdvisor
+        : null;
+    const dagStateSummary =
+      ctx.data?._plannerFeedback?.dagStateSummary && typeof ctx.data._plannerFeedback.dagStateSummary === "object"
+        ? ctx.data._plannerFeedback.dagStateSummary
+        : null;
+    const continuationPrefix = issueAdvisor
+      ? [
+        "Issue-advisor continuation context:",
+        `- Recommendation: ${issueAdvisor.recommendedAction || "continue"}`,
+        issueAdvisor.summary ? `- Summary: ${issueAdvisor.summary}` : null,
+        issueAdvisor.nextStepGuidance ? `- Guidance: ${issueAdvisor.nextStepGuidance}` : null,
+        dagStateSummary?.counts ? `- DAG counts: completed=${Number(dagStateSummary.counts.completed ?? 0) || 0}, failed=${Number(dagStateSummary.counts.failed ?? 0) || 0}, pending=${Number(dagStateSummary.counts.pending ?? 0) || 0}` : null,
+      ].filter(Boolean).join("\n") + "\n\n"
+      : "";
+    const enrichedPrompt = continuationPrefix ? `${continuationPrefix}${prompt}` : prompt;
 
     ctx.log(node.id, `Continuing session ${sessionId} (strategy: ${strategy})`);
 
     const agentPool = engine.services?.agentPool;
     if (agentPool?.continueSession) {
-      const result = await agentPool.continueSession(sessionId, prompt, { timeout, strategy });
+      const result = await agentPool.continueSession(sessionId, enrichedPrompt, { timeout, strategy });
 
       // Propagate session ID for downstream chaining
       const threadId = result.threadId || sessionId;
@@ -8283,12 +8301,12 @@ registerBuiltinNodeType("action.continue_session", {
     // Fallback: use ephemeral thread with continuation context
     if (agentPool?.launchEphemeralThread) {
       const continuation = strategy === "retry"
-        ? `Start over on this task. Previous attempt failed.\n\n${prompt}`
+        ? `Start over on this task. Previous attempt failed.\n\n${enrichedPrompt}`
         : strategy === "refine"
-        ? `Refine your previous work. Specifically:\n\n${prompt}`
+        ? `Refine your previous work. Specifically:\n\n${enrichedPrompt}`
         : strategy === "finish_up"
-        ? `Wrap up the current task. Commit, push, and hand off PR lifecycle to Bosun. Ensure tests pass.\n\n${prompt}`
-        : `Continue where you left off.\n\n${prompt}`;
+        ? `Wrap up the current task. Commit, push, and hand off PR lifecycle to Bosun. Ensure tests pass.\n\n${enrichedPrompt}`
+        : `Continue where you left off.\n\n${enrichedPrompt}`;
 
       const result = await agentPool.launchEphemeralThread(continuation, ctx.data?.worktreePath || process.cwd(), timeout);
 
@@ -12688,6 +12706,14 @@ registerBuiltinNodeType("action.build_task_prompt", {
     const includeMemory = node.config?.includeMemory !== false;
     ctx.data._taskIncludeContext = includeComments;
     const customTemplate = cfgOrCtx(node, ctx, "promptTemplate");
+    const workflowIssueAdvisor =
+      ctx.data?._issueAdvisor && typeof ctx.data._issueAdvisor === "object"
+        ? ctx.data._issueAdvisor
+        : null;
+    const workflowDagStateSummary =
+      ctx.data?._plannerFeedback?.dagStateSummary && typeof ctx.data._plannerFeedback.dagStateSummary === "object"
+        ? ctx.data._plannerFeedback.dagStateSummary
+        : null;
     const taskPayload =
       ctx.data?.task && typeof ctx.data.task === "object"
         ? ctx.data.task
@@ -13005,6 +13031,18 @@ registerBuiltinNodeType("action.build_task_prompt", {
     if (normalizedTaskDescription) {
       userParts.push("## Description");
       userParts.push(normalizedTaskDescription);
+      userParts.push("");
+    }
+
+    if (workflowIssueAdvisor || workflowDagStateSummary) {
+      userParts.push("## Workflow Continuation Context");
+      if (workflowIssueAdvisor?.recommendedAction) userParts.push(`- **Issue Advisor Action:** ${workflowIssueAdvisor.recommendedAction}`);
+      if (workflowIssueAdvisor?.summary) userParts.push(`- **Issue Advisor Summary:** ${workflowIssueAdvisor.summary}`);
+      if (workflowIssueAdvisor?.nextStepGuidance) userParts.push(`- **Next-Step Guidance:** ${workflowIssueAdvisor.nextStepGuidance}`);
+      if (workflowDagStateSummary?.counts) {
+        userParts.push(`- **DAG Counts:** completed=${Number(workflowDagStateSummary.counts.completed ?? 0) || 0}, failed=${Number(workflowDagStateSummary.counts.failed ?? 0) || 0}, pending=${Number(workflowDagStateSummary.counts.pending ?? 0) || 0}`);
+      }
+      if (workflowDagStateSummary?.revisionCount !== undefined) userParts.push(`- **DAG Revisions:** ${workflowDagStateSummary.revisionCount}`);
       userParts.push("");
     }
 
