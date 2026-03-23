@@ -476,3 +476,90 @@ describe("WorkflowContext template resolution is not a shell evaluator", () => {
     expect(result).not.toBeNull();
   });
 });
+
+describe("validation nodes can offload to isolated runners", () => {
+  it("uses the isolated runner for heavyweight test validation", async () => {
+    const nodeType = getNodeType("validation.tests");
+    const node = makeNode("validation.tests", { command: "npm test" }, "validate-tests");
+    const ctx = makeCtx();
+    const runner = vi.fn().mockResolvedValue({
+      status: "success",
+      stdout: "PASS tests/example.test.mjs\n",
+      stderr: "",
+      exitCode: 0,
+      duration: 25,
+      provider: "process",
+      leaseId: "runner-1",
+      artifactRoot: "C:/tmp/artifacts/runner-1",
+      artifacts: [
+        {
+          label: "stdout",
+          path: "C:/tmp/artifacts/runner-1/stdout.log",
+          retrieveCommand: 'Get-Content -Raw "C:/tmp/artifacts/runner-1/stdout.log"',
+        },
+      ],
+    });
+    const engine = {
+      services: {
+        scheduler: {
+          selectWorkflowLane: vi.fn().mockReturnValue({
+            lane: "isolated",
+            reason: "workflow_node:validation.tests",
+            heavy: true,
+          }),
+        },
+        isolatedRunner: { run: runner },
+      },
+    };
+
+    const result = await nodeType.execute(node, ctx, engine);
+
+    expect(runner).toHaveBeenCalled();
+    expect(result.passed).toBe(true);
+    expect(result.isolatedRunner?.leaseId).toBe("runner-1");
+    expect(result.artifactRetrieveCommands).toEqual([
+      'Get-Content -Raw "C:/tmp/artifacts/runner-1/stdout.log"',
+    ]);
+  });
+
+  it("surfaces blocked evidence when the isolated runner cannot obtain a lease", async () => {
+    const nodeType = getNodeType("validation.build");
+    const node = makeNode("validation.build", { command: "npm run build" }, "validate-build");
+    const ctx = makeCtx();
+    const engine = {
+      services: {
+        scheduler: {
+          selectWorkflowLane: vi.fn().mockReturnValue({
+            lane: "isolated",
+            reason: "workflow_node:validation.build",
+            heavy: true,
+          }),
+        },
+        isolatedRunner: {
+          run: vi.fn().mockResolvedValue({
+            status: "blocked",
+            blocked: true,
+            error: "lease_capacity_reached:1",
+            exitCode: null,
+            provider: "process",
+            leaseId: "blocked-1",
+            artifactRoot: "C:/tmp/artifacts/blocked-1",
+            artifacts: [
+              {
+                label: "metadata",
+                path: "C:/tmp/artifacts/blocked-1/metadata.json",
+                retrieveCommand: 'Get-Content -Raw "C:/tmp/artifacts/blocked-1/metadata.json"',
+              },
+            ],
+          }),
+        },
+      },
+    };
+
+    const result = await nodeType.execute(node, ctx, engine);
+
+    expect(result.passed).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.isolatedRunner?.artifacts).toHaveLength(1);
+  });
+});
