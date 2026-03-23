@@ -232,4 +232,79 @@ describe("isolated runner pool", () => {
     mod.releaseRunnerLease(heldLease);
     for (const lease of extraLeases) mod.releaseRunnerLease(lease);
   });
+
+  it("classifies command exit failures with stable diagnostics", async () => {
+    const mod = await import("../infra/container-runner.mjs");
+    const result = await mod.runInIsolatedRunner({
+      command: process.execPath,
+      args: ["-e", "console.error('test command failed'); process.exit(2)"],
+      cwd: process.cwd(),
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.failureDiagnostic).toMatchObject({
+      category: "command_failure",
+      retryable: false,
+      exitCode: 2,
+      status: "error",
+    });
+  });
+
+  it("classifies execution timeouts as retryable failures", async () => {
+    const mod = await import("../infra/container-runner.mjs");
+    const result = await mod.runInIsolatedRunner({
+      command: process.execPath,
+      args: ["-e", "setTimeout(() => {}, 200)"],
+      cwd: process.cwd(),
+      timeoutMs: 25,
+    });
+
+    expect(result.status).toBe("timeout");
+    expect(result.failureDiagnostic).toMatchObject({
+      category: "timeout",
+      retryable: true,
+      status: "timeout",
+    });
+  });
+
+  it("classifies sandbox-style permission errors as non-retryable", async () => {
+    const mod = await import("../infra/container-runner.mjs");
+    const result = await mod.runInIsolatedRunner({
+      command: "sandbox-check",
+      cwd: process.cwd(),
+      execute: async () => ({
+        status: "error",
+        stdout: "",
+        stderr: "Operation not permitted: sandbox denied write access",
+        exitCode: 126,
+        duration: 5,
+      }),
+    });
+
+    expect(result.failureDiagnostic).toMatchObject({
+      category: "sandbox_error",
+      retryable: false,
+      exitCode: 126,
+    });
+  });
+
+  it("classifies runner startup failures as bootstrap failures", async () => {
+    const mod = await import("../infra/container-runner.mjs");
+    const result = await mod.runInIsolatedRunner({
+      command: "missing-binary",
+      cwd: process.cwd(),
+      execute: async () => ({
+        status: "error",
+        stdout: "",
+        stderr: "spawn missing-binary ENOENT",
+        exitCode: -1,
+        duration: 2,
+      }),
+    });
+
+    expect(result.failureDiagnostic).toMatchObject({
+      category: "bootstrap_failure",
+      status: "error",
+    });
+  });
 });
