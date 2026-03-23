@@ -7620,6 +7620,54 @@ const UNIVERSAL_FLOW_NODE = {
       ...configuredInput,
     }, workflowId);
     const childRunOpts = makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: workflowId });
+    const trackedTaskId = String(
+      ctx.data?.taskId ||
+      ctx.data?.task?.id ||
+      ctx.data?.taskDetail?.id ||
+      ctx.data?.taskInfo?.id ||
+      "",
+    ).trim();
+    const trackedTaskTitle = String(
+      ctx.data?.taskTitle ||
+      ctx.data?.task?.title ||
+      ctx.data?.taskDetail?.title ||
+      ctx.data?.taskInfo?.title ||
+      trackedTaskId,
+    ).trim();
+    const tracker = trackedTaskId ? getSessionTracker() : null;
+    if (tracker && trackedTaskId) {
+      const existing = tracker.getSessionById(trackedTaskId);
+      if (!existing) {
+        tracker.createSession({
+          id: trackedTaskId,
+          type: "task",
+          taskId: trackedTaskId,
+          metadata: {
+            title: trackedTaskTitle || trackedTaskId,
+            workspaceId: String(ctx.data?.workspaceId || ctx.data?.activeWorkspace || "").trim() || undefined,
+            workspaceDir: String(ctx.data?.worktreePath || ctx.data?.workspaceDir || "").trim() || undefined,
+            branch:
+              String(
+                ctx.data?.branch ||
+                ctx.data?.task?.branchName ||
+                ctx.data?.taskDetail?.branchName ||
+                ctx.data?.taskInfo?.branchName ||
+                "",
+              ).trim() || undefined,
+          },
+        });
+      } else {
+        tracker.updateSessionStatus(trackedTaskId, "active");
+        if (trackedTaskTitle) tracker.renameSession(trackedTaskId, trackedTaskTitle);
+      }
+      tracker.recordEvent(trackedTaskId, {
+        role: "system",
+        type: "system",
+        content: `Delegating to workflow "${workflowId}"`,
+        timestamp: new Date().toISOString(),
+        _sessionType: "task",
+      });
+    }
 
     if (mode === "dispatch") {
       ctx.log(node.id, `Dispatching universal workflow \"${workflowId}\"`);
@@ -7632,9 +7680,29 @@ const UNIVERSAL_FLOW_NODE = {
       dispatched
         .then((childCtx) => {
           const status = childCtx?.errors?.length ? "failed" : "completed";
+          if (tracker && trackedTaskId) {
+            tracker.updateSessionStatus(trackedTaskId, status);
+            tracker.recordEvent(trackedTaskId, {
+              role: status === "completed" ? "assistant" : "system",
+              type: status === "completed" ? "agent_message" : "error",
+              content: `Workflow "${workflowId}" ${status}`,
+              timestamp: new Date().toISOString(),
+              _sessionType: "task",
+            });
+          }
           ctx.log(node.id, `Dispatched universal workflow \"${workflowId}\" finished with status=${status}`);
         })
         .catch((err) => {
+          if (tracker && trackedTaskId) {
+            tracker.updateSessionStatus(trackedTaskId, "failed");
+            tracker.recordEvent(trackedTaskId, {
+              role: "system",
+              type: "error",
+              content: `Workflow "${workflowId}" failed: ${err.message}`,
+              timestamp: new Date().toISOString(),
+              _sessionType: "task",
+            });
+          }
           ctx.log(node.id, `Dispatched universal workflow \"${workflowId}\" failed: ${err.message}`, "error");
         });
 
@@ -7659,8 +7727,20 @@ const UNIVERSAL_FLOW_NODE = {
       workflowId,
       runId: childCtx?.id || null,
       status: errorCount > 0 ? "failed" : "completed",
+      message: String(childCtx?.data?._workflowTerminalMessage || "").trim(),
+      output: childCtx?.data?._workflowTerminalOutput,
       errorCount,
     };
+    if (tracker && trackedTaskId) {
+      tracker.updateSessionStatus(trackedTaskId, output.status);
+      tracker.recordEvent(trackedTaskId, {
+        role: output.status === "completed" ? "assistant" : "system",
+        type: output.status === "completed" ? "agent_message" : "error",
+        content: `Workflow "${workflowId}" ${output.status}${output.message ? `: ${output.message}` : ""}`,
+        timestamp: new Date().toISOString(),
+        _sessionType: "task",
+      });
+    }
     if (outputVariable) ctx.data[outputVariable] = output;
     return output;
   },
@@ -10942,6 +11022,8 @@ registerBuiltinNodeType("trigger.task_available", {
     return {
       triggered: true,
       tasks: toDispatch,
+      task: primaryTask,
+      taskTitle: primaryTask ? pickTaskString(primaryTask.title, primaryTask.task_title) : "",
       taskCount: toDispatch.length,
       availableSlots: remaining,
       selectedTaskId: primaryTask ? pickTaskString(primaryTask.id, primaryTask.task_id) : "",
@@ -14082,5 +14164,3 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
-
-
