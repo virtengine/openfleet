@@ -61,6 +61,7 @@ describe("tui event contract", () => {
       tokensIn: 1200,
       tokensOut: 400,
       tokensTotal: 1600,
+      totalTokens: 1600,
       throughputTps: 13.5,
       uptimeMs: 30_000,
       rateLimits: {

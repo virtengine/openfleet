@@ -155,6 +155,8 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     };
   }, [refreshData]);
 
+  const selectedSession = entries.find((entry) => entry.id === selectedId)?.session || entries[0]?.session || null;
+
   React.useEffect(() => {
     if (!wsBridge || typeof wsBridge.on !== "function") return undefined;
     const handlers = [
@@ -166,7 +168,64 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
             : [];
         applySessionSnapshot(sessions, Date.now());
       }),
+      wsBridge.on("session:event", (payload) => {
+        const session = payload?.session;
+        if (!session?.id) return;
+        const nextSessions = Array.isArray(liveSessionsRef.current)
+          ? [...liveSessionsRef.current]
+          : [];
+        const existingIndex = nextSessions.findIndex((candidate) => candidate.id === session.id);
+        if (existingIndex >= 0) nextSessions[existingIndex] = session;
+        else nextSessions.unshift(session);
+        applySessionSnapshot(nextSessions, Date.now());
 
+        if (selectedId === session.id) {
+          setDetailView(detailLines(payload));
+          setLogLines(sessionMessagesToLogLines(payload));
+        }
+      }),
+      wsBridge.on("retry:update", applyRetryQueue),
+      wsBridge.on("retry-queue-updated", applyRetryQueue),
+    ];
+
+    return () => {
+      handlers.forEach((handler) => {
+        if (typeof handler === "function") handler();
+      });
+    };
+  }, [applyRetryQueue, applySessionSnapshot, selectedId, wsBridge]);
+
+  useInput((input, key) => {
+    if (confirmKill) {
+      if ((input === "y" || input === "Y") && selectedSession?.id) {
+        void fetchJson(resolvedHost, resolvedPort, sessionActionPath(selectedSession.id, "stop"), {
+          method: "POST",
+        }).then(() => {
+          setStatusLine(`Stopped ${describeSelection(selectedSession)}`);
+        }).catch((error) => {
+          setStatusLine(error.message || String(error));
+        });
+      }
+      setConfirmKill(false);
+      return;
+    }
+
+    const selectableEntries = entries.filter((entry) => entry?.session);
+    const selectedIndex = selectableEntries.findIndex((entry) => entry.id === selectedId);
+
+    if (key.upArrow && selectedIndex > 0) {
+      setSelectedId(selectableEntries[selectedIndex - 1].id);
+      return;
+    }
+    if (key.downArrow && selectedIndex >= 0 && selectedIndex < selectableEntries.length - 1) {
+      setSelectedId(selectableEntries[selectedIndex + 1].id);
+      return;
+    }
+    if (key.return && selectedSession?.id) {
+      setDetailView(detailLines({ session: selectedSession }));
+      return;
+    }
+    if (input === "c" || input === "C") {
       if (selectedSession?.id) {
         stdout.write(buildOsc52CopySequence(selectedSession.id));
         setStatusLine(`Copied ${selectedSession.id}`);
@@ -175,6 +234,58 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     }
     if (input === "b" || input === "B") {
       setShowBackoff((current) => !current);
+      return;
+    }
+    if (input === "p" || input === "P") {
+      if (selectedSession?.id) {
+        void fetchJson(resolvedHost, resolvedPort, sessionActionPath(selectedSession.id, "pause"), {
+          method: "POST",
+        }).then(() => setStatusLine(`Paused ${describeSelection(selectedSession)}`)).catch((error) => {
+          setStatusLine(error.message || String(error));
+        });
+      }
+      return;
+    }
+    if (input === "r" || input === "R") {
+      if (selectedSession?.id) {
+        void fetchJson(resolvedHost, resolvedPort, sessionActionPath(selectedSession.id, "resume"), {
+          method: "POST",
+        }).then(() => setStatusLine(`Resumed ${describeSelection(selectedSession)}`)).catch((error) => {
+          setStatusLine(error.message || String(error));
+        });
+      }
+      return;
+    }
+    if (input === "k" || input === "K") {
+      if (selectedSession?.id) {
+        setConfirmKill(true);
+      }
+      return;
+    }
+    if (input === "l" || input === "L") {
+      if (selectedSession?.id) {
+        void fetchJson(resolvedHost, resolvedPort, `/api/sessions/${encodeURIComponent(selectedSession.id)}?workspace=all&full=1`)
+          .then((payload) => {
+            setLogLines(sessionMessagesToLogLines(payload));
+            setStatusLine(`Loaded logs for ${describeSelection(selectedSession)}`);
+          })
+          .catch((error) => {
+            setStatusLine(error.message || String(error));
+          });
+      }
+      return;
+    }
+    if (input === "d" || input === "D") {
+      if (selectedSession?.id) {
+        void fetchJson(resolvedHost, resolvedPort, sessionActionPath(selectedSession.id, "diff"))
+          .then((payload) => {
+            setDiffView(summarizeDiff(payload));
+            setStatusLine(`Loaded diff for ${describeSelection(selectedSession)}`);
+          })
+          .catch((error) => {
+            setStatusLine(error.message || String(error));
+          });
+      }
       return;
     }
     if (key.escape) {
