@@ -1264,6 +1264,7 @@ let _getErrorDetector = null;
 let _getPrCleanupDaemon = null;
 let _getWorkspaceMonitor = null;
 let _getMonitorMonitorStatus = null;
+let _getTuiMonitorStats = null;
 let _getTaskStoreStats = null;
 let _getTasksPendingReview = null;
 let _triggerTaskPlanner = null;
@@ -1300,6 +1301,7 @@ export function injectMonitorFunctions({
   getPrCleanupDaemon,
   getWorkspaceMonitor,
   getMonitorMonitorStatus,
+  getTuiMonitorStats,
   getTaskStoreStats,
   getTasksPendingReview,
   triggerTaskPlanner,
@@ -1332,6 +1334,7 @@ export function injectMonitorFunctions({
   _getPrCleanupDaemon = getPrCleanupDaemon || null;
   _getWorkspaceMonitor = getWorkspaceMonitor || null;
   _getMonitorMonitorStatus = getMonitorMonitorStatus || null;
+  _getTuiMonitorStats = getTuiMonitorStats || null;
   _getTaskStoreStats = getTaskStoreStats || null;
   _getTasksPendingReview = getTasksPendingReview || null;
   _triggerTaskPlanner = triggerTaskPlanner || null;
@@ -11633,6 +11636,7 @@ export async function startTelegramBot(options = {}) {
         dependencies: {
           execPrimaryPrompt,
           getInternalExecutor: _getInternalExecutor,
+          getTuiMonitorStats: _getTuiMonitorStats,
           getExecutorMode: _getExecutorMode,
           getAgentEventBus: _getAgentEventBus,
           handleUiCommand: handleUiCommand,
@@ -12080,4 +12084,3 @@ export function stopStatusFileWriter() {
     _statusWriterTimer = null;
   }
 }
-

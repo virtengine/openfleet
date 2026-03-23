@@ -723,6 +723,43 @@ export function listNodeTypes() {
  * Runtime context passed through workflow execution.
  * Accumulates data from each node's output.
  */
+function collectValidationFailures(detail = {}) {
+  const nodeOutputs = detail?.nodeOutputs && typeof detail.nodeOutputs === "object"
+    ? detail.nodeOutputs
+    : {};
+  const dagNodes = detail?.dagState?.nodes && typeof detail.dagState.nodes === "object"
+    ? detail.dagState.nodes
+    : {};
+  return Object.entries(nodeOutputs)
+    .map(([nodeId, output]) => {
+      if (!output || typeof output !== "object") return null;
+      const diagnostic = output.failureDiagnostic && typeof output.failureDiagnostic === "object"
+        ? output.failureDiagnostic
+        : null;
+      const failureKind = String(output.failureKind || diagnostic?.category || "").trim();
+      const hasRetryability = typeof output.retryable === "boolean" || typeof diagnostic?.retryable === "boolean";
+      if (!failureKind && !diagnostic && !hasRetryability) return null;
+      return {
+        nodeId,
+        nodeType: dagNodes?.[nodeId]?.type || null,
+        nodeLabel: dagNodes?.[nodeId]?.label || null,
+        failureKind: failureKind || diagnostic?.category || null,
+        retryable: typeof output.retryable === "boolean"
+          ? output.retryable
+          : diagnostic?.retryable === true,
+        blocked: output.blocked === true || diagnostic?.blocked === true,
+        exitCode: diagnostic?.exitCode ?? output.exitCode ?? null,
+        summary:
+          diagnostic?.summary ||
+          output.outputHint ||
+          output.outputDiagnostics?.summary ||
+          null,
+        detail: diagnostic?.detail || null,
+      };
+    })
+    .filter(Boolean);
+}
+
 export class WorkflowContext {
   constructor(initialData = {}) {
     this.id = randomUUID();
@@ -900,7 +937,7 @@ export class WorkflowContext {
   /** Get a serializable summary of the execution */
   toJSON(endedAt = Date.now()) {
     const finishedAt = Number.isFinite(endedAt) ? endedAt : Date.now();
-    return {
+    const detail = {
       id: this.id,
       startedAt: this.startedAt,
       endedAt: finishedAt,
@@ -926,6 +963,12 @@ export class WorkflowContext {
           }))
         : [],
     };
+    const validationFailures = collectValidationFailures(detail);
+    if (validationFailures.length > 0) {
+      detail.validationFailures = validationFailures;
+      detail.latestValidationFailure = validationFailures.at(-1) || null;
+    }
+    return detail;
   }
 }
 
@@ -4293,6 +4336,7 @@ export class WorkflowEngine extends EventEmitter {
     const issueAdvisorRecommendation = detail?.issueAdvisor?.recommendedAction || null;
     const issueAdvisorSummary = detail?.issueAdvisor?.summary || null;
     const dagRevisionCount = Array.isArray(detail?.dagState?.revisions) ? detail.dagState.revisions.length : 0;
+    const validationFailures = collectValidationFailures(detail);
 
     return {
       runId,
@@ -4327,6 +4371,12 @@ export class WorkflowEngine extends EventEmitter {
       issueAdvisorRecommendation,
       issueAdvisorSummary,
       dagRevisionCount,
+      ...(validationFailures.length > 0
+        ? {
+            validationFailures,
+            latestValidationFailure: validationFailures.at(-1) || null,
+          }
+        : {}),
     };
   }
 

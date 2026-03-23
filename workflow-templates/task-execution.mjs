@@ -39,6 +39,7 @@ function withArchitectEditorPhases(phases = []) {
     ...phase,
     extra: {
       repoMapQuery: "{{taskTitle}} {{taskDescription}}",
+      repoMapFileLimit: 8,
       ...(index === 0
         ? { mode: "plan", executionRole: "architect" }
         : { executionRole: "editor", architectPlan }),
@@ -420,5 +421,7 @@ Commit changes with descriptive messages.`,
   ]),
   doneMessage: "Design task completed — design changes implemented and verified.",
 });
+
+
 
 

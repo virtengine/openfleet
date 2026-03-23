@@ -4669,7 +4669,9 @@
           "label": "Plan Implementation",
           "config": {
             "prompt": "Analyze the task requirements and create a step-by-step implementation plan. Identify which files need to be modified, what tests need to be written, and any API contracts to maintain.",
-            "outputVariable": "plan"
+            "outputVariable": "plan",
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8
           },
           "position": {
             "x": 400,
@@ -7052,6 +7054,8 @@
             "taskCount": "{{taskCount}}",
             "context": "{{plannerContext}}",
             "prompt": "{{prompt}}",
+            "repoMapQuery": "{{plannerContext}} {{prompt}}",
+            "repoMapFileLimit": 8,
             "dedup": true,
             "timeoutMs": 960000,
             "agentTimeoutMs": 900000,
@@ -7351,6 +7355,8 @@
             "taskCount": "{{taskCount}}",
             "context": "{{plannerContext}}",
             "prompt": "{{prompt}}",
+            "repoMapQuery": "{{plannerContext}} {{prompt}}",
+            "repoMapFileLimit": 8,
             "timeoutMs": 960000,
             "agentTimeoutMs": 900000,
             "maxRetries": 0,
@@ -14339,6 +14345,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -14367,6 +14374,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan')?.summary || $ctx.getNodeOutput('plan')?.output || ''}}"
           },
@@ -14395,6 +14403,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan')?.summary || $ctx.getNodeOutput('plan')?.output || ''}}"
           },
@@ -14729,6 +14738,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -14757,6 +14767,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-pipeline')?.summary || $ctx.getNodeOutput('plan-pipeline')?.output || ''}}"
           },
@@ -14785,6 +14796,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-pipeline')?.summary || $ctx.getNodeOutput('plan-pipeline')?.output || ''}}"
           },
@@ -15240,6 +15252,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -15268,6 +15281,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('reproduce')?.summary || $ctx.getNodeOutput('reproduce')?.output || ''}}"
           },
@@ -15296,6 +15310,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('reproduce')?.summary || $ctx.getNodeOutput('reproduce')?.output || ''}}"
           },
@@ -15425,6 +15440,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -15453,6 +15469,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('analyse-requirements')?.summary || $ctx.getNodeOutput('analyse-requirements')?.output || ''}}"
           },
@@ -15481,6 +15498,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('analyse-requirements')?.summary || $ctx.getNodeOutput('analyse-requirements')?.output || ''}}"
           },
@@ -15794,6 +15812,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -15822,6 +15841,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('analyse-design')?.summary || $ctx.getNodeOutput('analyse-design')?.output || ''}}"
           },
@@ -15850,6 +15870,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('analyse-design')?.summary || $ctx.getNodeOutput('analyse-design')?.output || ''}}"
           },
@@ -15973,6 +15994,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -16001,6 +16023,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
@@ -16029,6 +16052,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
@@ -16057,6 +16081,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
@@ -25398,7 +25423,9 @@
           "label": "Plan Implementation",
           "config": {
             "prompt": "Analyze the task requirements and create a step-by-step implementation plan. Identify which files need to be modified, what tests need to be written, and any API contracts to maintain.",
-            "outputVariable": "plan"
+            "outputVariable": "plan",
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8
           },
           "position": {
             "x": 400,
@@ -27652,6 +27679,8 @@
             "taskCount": "{{taskCount}}",
             "context": "{{plannerContext}}",
             "prompt": "{{prompt}}",
+            "repoMapQuery": "{{plannerContext}} {{prompt}}",
+            "repoMapFileLimit": 8,
             "dedup": true,
             "timeoutMs": 960000,
             "agentTimeoutMs": 900000,
@@ -27933,6 +27962,8 @@
             "taskCount": "{{taskCount}}",
             "context": "{{plannerContext}}",
             "prompt": "{{prompt}}",
+            "repoMapQuery": "{{plannerContext}} {{prompt}}",
+            "repoMapFileLimit": 8,
             "timeoutMs": 960000,
             "agentTimeoutMs": 900000,
             "maxRetries": 0,
@@ -34533,6 +34564,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -34561,6 +34593,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan')?.summary || $ctx.getNodeOutput('plan')?.output || ''}}"
           },
@@ -34589,6 +34622,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan')?.summary || $ctx.getNodeOutput('plan')?.output || ''}}"
           },
@@ -34901,6 +34935,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -34929,6 +34964,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-pipeline')?.summary || $ctx.getNodeOutput('plan-pipeline')?.output || ''}}"
           },
@@ -34957,6 +34993,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-pipeline')?.summary || $ctx.getNodeOutput('plan-pipeline')?.output || ''}}"
           },
@@ -35386,6 +35423,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -35414,6 +35452,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('reproduce')?.summary || $ctx.getNodeOutput('reproduce')?.output || ''}}"
           },
@@ -35442,6 +35481,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('reproduce')?.summary || $ctx.getNodeOutput('reproduce')?.output || ''}}"
           },
@@ -35558,6 +35598,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -35586,6 +35627,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('analyse-requirements')?.summary || $ctx.getNodeOutput('analyse-requirements')?.output || ''}}"
           },
@@ -35614,6 +35656,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('analyse-requirements')?.summary || $ctx.getNodeOutput('analyse-requirements')?.output || ''}}"
           },
@@ -35906,6 +35949,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -35934,6 +35978,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('analyse-design')?.summary || $ctx.getNodeOutput('analyse-design')?.output || ''}}"
           },
@@ -35962,6 +36007,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('analyse-design')?.summary || $ctx.getNodeOutput('analyse-design')?.output || ''}}"
           },
@@ -36078,6 +36124,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -36106,6 +36153,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
@@ -36134,6 +36182,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
@@ -36162,6 +36211,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },

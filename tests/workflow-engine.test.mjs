@@ -717,6 +717,75 @@ describe("WorkflowEngine - run history details", () => {
     expect(detail?.detail?.dagState?.edges?.[0]?.source).toBe("trigger");
   });
 
+  it("threads validation diagnostics into run detail and history summaries", async () => {
+    makeTmpEngine({
+      scheduler: {
+        selectWorkflowLane: vi.fn().mockReturnValue({
+          lane: "isolated",
+          reason: "workflow_node:validation.tests",
+          heavy: true,
+        }),
+      },
+      isolatedRunner: {
+        run: vi.fn().mockResolvedValue({
+          status: "timeout",
+          stdout: "",
+          stderr: "validation exceeded limit",
+          exitCode: null,
+          duration: 1005,
+          provider: "process",
+          leaseId: "runner-timeout",
+          failureDiagnostic: {
+            category: "timeout",
+            retryable: true,
+            summary: "Validation timed out after 1000ms.",
+            status: "timeout",
+          },
+        }),
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "validate", type: "validation.tests", label: "Validate", config: { command: "npm test", timeoutMs: 1000 } },
+      ],
+      [{ id: "e1", source: "trigger", target: "validate" }],
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+
+    expect(ctx.getNodeOutput("validate")?.failureKind).toBe("timeout");
+    expect(ctx.getNodeOutput("validate")?.retryable).toBe(true);
+
+    const detail = engine.getRunDetail(ctx.id);
+    expect(detail?.detail?.validationFailures).toEqual([
+      expect.objectContaining({
+        nodeId: "validate",
+        nodeType: "validation.tests",
+        failureKind: "timeout",
+        retryable: true,
+      }),
+    ]);
+    expect(detail?.latestValidationFailure).toEqual(
+      expect.objectContaining({
+        nodeId: "validate",
+        failureKind: "timeout",
+        retryable: true,
+      }),
+    );
+
+    const summary = engine.getRunHistory(wf.id).at(-1);
+    expect(summary?.validationFailures).toEqual([
+      expect.objectContaining({
+        nodeId: "validate",
+        failureKind: "timeout",
+        retryable: true,
+      }),
+    ]);
+  });
+
   it("returns retry options with an issue-advisor recommendation", async () => {
     registerNodeType("test.fail_for_retry_options", {
       describe: () => "Completes once then fails",
@@ -4258,6 +4327,133 @@ it("agent.run_planner appends planner feedback context from workflow data", asyn
   expect(sentPrompt).toContain("Planner feedback context:");
   expect(sentPrompt).toContain("Previous run skipped high-risk tasks in workflow area.");
 });
+it("agent.run_planner injects compact repo topology when enabled", async () => {
+  const handler = getNodeType("agent.run_planner");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({
+    taskTitle: "Improve workflow planning",
+    taskDescription: "Inject repo topology into planner prompts",
+    repoMap: {
+      root: "C:/repo",
+      files: [
+        { path: "workflow/workflow-engine.mjs", summary: "workflow runtime" },
+        { path: "workflow/workflow-nodes.mjs", summary: "workflow nodes" },
+        { path: "tests/workflow-engine.test.mjs", summary: "workflow runtime coverage" },
+      ],
+    },
+  });
+  const launchEphemeralThread = vi.fn().mockResolvedValue({
+    success: true,
+    output: '{"tasks":[]}',
+    sdk: "codex",
+    items: [],
+    threadId: "planner-thread-topology",
+  });
+  const mockEngine = {
+    services: {
+      agentPool: {
+        launchEphemeralThread,
+      },
+      prompts: {
+        planner: "Planner prompt",
+      },
+    },
+  };
+
+  const node = {
+    id: "planner-topology",
+    type: "agent.run_planner",
+    config: {
+      taskCount: 2,
+      repoMapQuery: "{{taskTitle}} {{taskDescription}}",
+      repoMapFileLimit: 3,
+    },
+  };
+
+  await handler.execute(node, ctx, mockEngine);
+  const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
+  expect(sentPrompt).toContain("## Repo Topology");
+  expect(sentPrompt).toContain("Areas: workflow (2), tests (1)");
+  expect(sentPrompt).toContain("owner: workflow");
+  expect(sentPrompt).toContain("adjacent: workflow/workflow-nodes.mjs, tests/workflow-engine.test.mjs");
+});
+
+it("agent.run_planner avoids duplicating repo topology blocks", async () => {
+  const handler = getNodeType("agent.run_planner");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({
+    repoMap: {
+      root: "C:/repo",
+      files: [{ path: "workflow/workflow-engine.mjs", summary: "workflow runtime" }],
+    },
+  });
+  const launchEphemeralThread = vi.fn().mockResolvedValue({
+    success: true,
+    output: '{"tasks":[]}',
+    sdk: "codex",
+    items: [],
+    threadId: "planner-thread-no-dup",
+  });
+
+  await handler.execute({
+    id: "planner-no-dup",
+    type: "agent.run_planner",
+    config: {
+      taskCount: 1,
+      prompt: "## Repo Topology\n- Root: C:/repo\n\nPlan carefully.",
+      repoMapQuery: "workflow planning",
+    },
+  }, ctx, {
+    services: {
+      agentPool: { launchEphemeralThread },
+      prompts: { planner: "Planner prompt" },
+    },
+  });
+
+  const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
+  expect((sentPrompt.match(/## Repo Topology/g) || [])).toHaveLength(1);
+});
+
+it("action.run_agent avoids duplicating repo topology in architect/editor framing", async () => {
+  const handler = getNodeType("action.run_agent");
+  const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
+  const launchEphemeralThread = vi.fn().mockResolvedValue({
+    success: true,
+    output: "done",
+    sdk: "codex",
+    items: [],
+    threadId: "thread-repo-topology-dedupe",
+  });
+
+  await handler.execute({
+    id: "run-agent-topology-dedupe",
+    type: "action.run_agent",
+    config: {
+      prompt: "## Repo Topology\n- Root: C:/repo\n\nApply the approved plan",
+      autoRecover: false,
+      executionRole: "editor",
+      architectPlan: "1. Update prompt framing\n2. Validate runtime tests",
+      repoMap: {
+        root: "C:/repo",
+        files: [
+          { path: "workflow/workflow-engine.mjs", summary: "workflow runtime" },
+          { path: "workflow/workflow-nodes.mjs", summary: "workflow nodes" },
+        ],
+      },
+    },
+  }, ctx, {
+    services: {
+      agentPool: { launchEphemeralThread },
+    },
+  });
+
+  const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
+  expect(sentPrompt).toContain("## Architect/Editor Execution");
+  expect((sentPrompt.match(/## Repo Topology/g) || [])).toHaveLength(1);
+});
+
 it("agent.run_planner fails immediately when planner dependencies are unavailable", async () => {
   const handler = getNodeType("agent.run_planner");
   expect(handler).toBeDefined();

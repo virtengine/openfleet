@@ -52,7 +52,7 @@ import { getSessionTracker } from "../../infra/session-tracker.mjs";
 import { recordWorktreeRecoveryEvent } from "../../infra/worktree-recovery-state.mjs";
 import { normalizeBaseBranch } from "../../git/git-safety.mjs";
 import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../../git/git-commit-helpers.mjs";
-import { buildArchitectEditorFrame } from "../../lib/repo-map.mjs";
+import { buildArchitectEditorFrame, hasRepoMapContext } from "../../lib/repo-map.mjs";
 import {
   appendKnowledgeEntry,
   buildKnowledgeEntry,
@@ -359,10 +359,12 @@ registerNodeType("action.run_agent", {
     const effectiveSystemPrompt = String(configuredSystemPrompt || "").trim();
     assertStableSystemPrompt(effectiveSystemPrompt);
     let finalPrompt = prompt;
+    const promptHasRepoMapContext = hasRepoMapContext(finalPrompt);
     const architectEditorFrame = buildArchitectEditorFrame({
       executionRole: ctx.resolve(node.config?.executionRole || ""),
       architectPlan,
       planSummary: architectPlan,
+      includeRepoMap: !promptHasRepoMapContext,
       repoMap: node.config?.repoMap || ctx.data?.repoMap || null,
       repoMapFileLimit: node.config?.repoMapFileLimit,
       repoMapQuery: ctx.resolve(node.config?.repoMapQuery || ""),
@@ -6351,5 +6353,7 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 //  Export all registered types for introspection
 // ═══════════════════════════════════════════════════════════════════════════
+
+
 
 
