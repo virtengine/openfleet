@@ -1273,11 +1273,11 @@ function shouldApplyLiveCompaction(item, opts, contextUsagePct, force = false) {
 async function compactStandaloneToolItem(
   item,
   opts = {},
-  { agentType = null } = {},
+  { agentType = null, force = false } = {},
 ) {
   if (!item || typeof item !== "object") return item;
   const existingText = getItemText(item);
-  if (typeof existingText !== "string" || existingText.length < (opts.liveToolCompactionMinChars ?? 4000)) {
+  if (!force && (typeof existingText !== "string" || existingText.length < (opts.liveToolCompactionMinChars ?? 4000))) {
     return item;
   }
   if (opts.liveToolCompactionBlockStructured !== false && isLikelyStructuredOutput(existingText, item)) {
@@ -1434,7 +1434,7 @@ async function maybeCompactLiveToolOutputs(items, opts = {}, { contextUsagePct =
       nextItems.push(item);
       continue;
     }
-    const compactedItem = await compactStandaloneToolItem(item, opts, { agentType });
+    const compactedItem = await compactStandaloneToolItem(item, opts, { agentType, force });
     nextItems.push(compactedItem);
     changed = changed || compactedItem !== item;
   }

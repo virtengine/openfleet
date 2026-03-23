@@ -39,6 +39,7 @@ import {
   FormControlLabel, Tooltip, Paper, Divider, CircularProgress, Alert,
   Dialog, DialogTitle, DialogContent, DialogActions,
   Tabs, Tab, Fab, Menu as MuiMenu,
+  Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
 } from "@mui/material";
 
 /* ═══════════════════════════════════════════════════════════════

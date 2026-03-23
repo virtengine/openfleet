@@ -5688,26 +5688,6 @@ registerBuiltinNodeType("validation.tests", {
 
     ctx.log(node.id, `Running tests: ${command}`);
     const startedAt = Date.now();
-    const runnerExecution = await executeValidationCommandWithOptionalRunner({
-      node,
-      ctx,
-      nodeType: "validation.tests",
-      command,
-      cwd,
-      timeoutMs: timeout,
-    });
-    if (runnerExecution) {
-      const { run, compacted, baseResult } = runnerExecution;
-      ctx.log(node.id, run.ok ? "Tests passed" : (run.blocked ? "Runner lease failed" : "Tests failed"), run.ok ? undefined : "error");
-      return {
-        passed: run.ok,
-        exitCode: run.exitCode,
-        blocked: run.blocked === true,
-        reason: run.blocked ? (run.failureKind || "runner_lease_failed") : undefined,
-        ...baseResult,
-        ...compacted,
-      };
-    }
     if (!hasRunnerOverride) {
       const isolatedRun = await maybeRunWorkflowCommandInIsolation({
         node,
@@ -5732,6 +5712,26 @@ registerBuiltinNodeType("validation.tests", {
           ...isolatedRun.compacted,
         };
       }
+    }
+    const runnerExecution = await executeValidationCommandWithOptionalRunner({
+      node,
+      ctx,
+      nodeType: "validation.tests",
+      command,
+      cwd,
+      timeoutMs: timeout,
+    });
+    if (runnerExecution) {
+      const { run, compacted, baseResult } = runnerExecution;
+      ctx.log(node.id, run.ok ? "Tests passed" : (run.blocked ? "Runner lease failed" : "Tests failed"), run.ok ? undefined : "error");
+      return {
+        passed: run.ok,
+        exitCode: run.exitCode,
+        blocked: run.blocked === true,
+        reason: run.blocked ? (run.failureKind || "runner_lease_failed") : undefined,
+        ...baseResult,
+        ...compacted,
+      };
     }
 
     try {
@@ -5790,37 +5790,6 @@ registerBuiltinNodeType("validation.build", {
     }
     ctx.log(node.id, `Building: ${command}`);
     const startedAt = Date.now();
-    const runnerExecution = await executeValidationCommandWithOptionalRunner({
-      node,
-      ctx,
-      nodeType: "validation.build",
-      command,
-      cwd,
-      timeoutMs: timeout,
-    });
-    if (runnerExecution) {
-      const { run, compacted, baseResult } = runnerExecution;
-      const combinedOutput = `${run.stdout || ""}\n${run.stderr || ""}`;
-      const hasWarnings = /warning/i.test(combinedOutput);
-      ctx.log(node.id, run.ok ? "Build completed" : (run.blocked ? "Runner lease failed" : "Build failed"), run.ok ? undefined : "error");
-      if (run.ok && node.config?.zeroWarnings && hasWarnings) {
-        return {
-          passed: false,
-          reason: "warnings_found",
-          exitCode: run.exitCode,
-          ...baseResult,
-          ...compacted,
-        };
-      }
-      return {
-        passed: run.ok,
-        exitCode: run.exitCode,
-        blocked: run.blocked === true,
-        reason: run.blocked ? (run.failureKind || "runner_lease_failed") : undefined,
-        ...baseResult,
-        ...compacted,
-      };
-    }
     if (!hasRunnerOverride) {
       const isolatedRun = await maybeRunWorkflowCommandInIsolation({
         node,
@@ -5859,6 +5828,37 @@ registerBuiltinNodeType("validation.build", {
           ...isolatedRun.compacted,
         };
       }
+    }
+    const runnerExecution = await executeValidationCommandWithOptionalRunner({
+      node,
+      ctx,
+      nodeType: "validation.build",
+      command,
+      cwd,
+      timeoutMs: timeout,
+    });
+    if (runnerExecution) {
+      const { run, compacted, baseResult } = runnerExecution;
+      const combinedOutput = `${run.stdout || ""}\n${run.stderr || ""}`;
+      const hasWarnings = /warning/i.test(combinedOutput);
+      ctx.log(node.id, run.ok ? "Build completed" : (run.blocked ? "Runner lease failed" : "Build failed"), run.ok ? undefined : "error");
+      if (run.ok && node.config?.zeroWarnings && hasWarnings) {
+        return {
+          passed: false,
+          reason: "warnings_found",
+          exitCode: run.exitCode,
+          ...baseResult,
+          ...compacted,
+        };
+      }
+      return {
+        passed: run.ok,
+        exitCode: run.exitCode,
+        blocked: run.blocked === true,
+        reason: run.blocked ? (run.failureKind || "runner_lease_failed") : undefined,
+        ...baseResult,
+        ...compacted,
+      };
     }
 
     try {

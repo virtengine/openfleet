@@ -20,4 +20,14 @@ describe("demo defaults generator sync", () => {
     expect(read("ui/demo-defaults.js")).toBe(expected);
     expect(read("site/ui/demo-defaults.js")).toBe(expected);
   });
+  it("demo html fixtures keep the hung-session alert copy in sync", () => {
+    const expectedLabel = "label: 'Alert Hung Sessions'";
+    const expectedMessage = "message: ':dot: Agent session appears hung — auto-continue attempted. Check status.'";
+
+    for (const relPath of ["ui/demo.html", "site/ui/demo.html"]) {
+      const source = read(relPath);
+      expect(source).toContain(expectedLabel);
+      expect(source).toContain(expectedMessage);
+    }
+  });
 });

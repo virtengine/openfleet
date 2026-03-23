@@ -196,18 +196,25 @@ async function execOpencode(args, execOpts = {}) {
     encoding: "utf-8",
     ...execOpts,
   };
+  const escaped = args.map((a) => `"${a}"`).join(" ");
   if (isWindows) {
     // Use exec() on Windows to properly handle .cmd wrappers
-    const escaped = args.map((a) => `"${a}"`).join(" ");
     const result = await execAsync(`"${bin}" ${escaped}`, baseOpts);
     return typeof result === "string"
       ? { stdout: result, stderr: "" }
       : { stdout: result.stdout || "", stderr: result.stderr || "" };
   }
-  const result = await execFileAsync(bin, args, baseOpts);
-  return typeof result === "string"
-    ? { stdout: result, stderr: "" }
-    : { stdout: result.stdout || "", stderr: result.stderr || "" };
+  try {
+    const result = await execFileAsync(bin, args, baseOpts);
+    return typeof result === "string"
+      ? { stdout: result, stderr: "" }
+      : { stdout: result.stdout || "", stderr: result.stderr || "" };
+  } catch {
+    const result = await execAsync(`"${bin}" ${escaped}`, baseOpts);
+    return typeof result === "string"
+      ? { stdout: result, stderr: "" }
+      : { stdout: result.stdout || "", stderr: result.stderr || "" };
+  }
 }
 
 /**

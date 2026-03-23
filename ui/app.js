@@ -55,19 +55,26 @@ function h(type, props, ...rest) {
     console.warn("[h-guard] Array passed as element type — rendering as Fragment", type.length, "items");
     return _h(_PreactFragment, null, ...type);
   }
+  if (type != null && typeof type === "object" && typeof type !== "function") {
+    if (typeof type.render === "function") return _h(type.render, props, ...rest);
+  }
   return _h(type, props, ...rest);
 }
 const html = htm.bind(h);
 
 // Guard: catch invalid VNode types before they hit createElementNS.
 // An array type causes "Failed to execute 'createElementNS': invalid character '['".
+// An object type causes "createElementNS: The qualified name provided ('[object Object]')".
 (function installVnodeTypeGuard() {
   const prev = _preactOptions.vnode;
   _preactOptions.vnode = (vnode) => {
     if (Array.isArray(vnode.type)) {
-      console.warn("[vnode-guard] Array used as element type — converting to Fragment. Items:", vnode.type.length);
       vnode.props = { children: vnode.type };
       vnode.type = _PreactFragment;
+    } else if (vnode.type != null && typeof vnode.type === "object" && typeof vnode.type !== "function") {
+      if (typeof vnode.type.render === "function") {
+        vnode.type = vnode.type.render;
+      }
     }
     if (prev) prev(vnode);
   };

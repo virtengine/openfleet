@@ -4913,6 +4913,22 @@
         };
       }
 
+      if (route === '/api/voice/dispatch-batch' && method === 'POST') {
+        const actions = Array.isArray(body?.actions) ? body.actions : [];
+        if (!actions.length) {
+          return { ok: false, error: 'actions array is required' };
+        }
+        return {
+          ok: true,
+          results: actions.map((action, index) => ({
+            ok: true,
+            actionId: String(action?.actionId || action?.id || 'demo-action-' + (index + 1)),
+            intent: String(action?.intent || action?.tool || 'unknown'),
+            status: 'completed',
+          })),
+        };
+      }
+
       if (route === '/api/voice/audio/respond' && method === 'POST') {
         const inputText = String(body?.inputText || body?.text || '').trim();
         if (!inputText) {
