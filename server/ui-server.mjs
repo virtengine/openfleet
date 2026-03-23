@@ -11726,7 +11726,17 @@ async function readCompletedSessionEntries(maxLines = 100_000) {
   const entries = await readJsonlTail(sessionLogPath, maxLines, 50_000_000);
   return {
     sessionLogPath,
-    entries: entries.filter((entry) => String(entry?.type || "completed_session") === "completed_session"),
+    entries: entries.filter((entry) => {
+      if (String(entry?.type || "completed_session") !== "completed_session") return false;
+      // Filter out test artifacts: zero tokens AND negligible duration (≤ 100ms)
+      const dur = Number(entry?.durationMs || 0);
+      const tok = Number(entry?.tokenCount || 0);
+      if (tok <= 0 && dur <= 100) return false;
+      // Filter out entries with synthetic/template taskIds from tests
+      const taskId = String(entry?.taskId || "");
+      if (/^\{\{.*\}\}$/.test(taskId)) return false;
+      return true;
+    }),
   };
 }
 
@@ -16533,13 +16543,17 @@ async function handleApi(req, res, url) {
       // Read lifetime totals from the full JSONL log (not the capped in-memory state)
       // so the count is accurate even when sessions exceed the in-memory cap.
       const { entries: allSessions } = await readCompletedSessionEntries(200_000);
+      // Cap per-session duration at 4 hours — orphaned sessions reaped days later
+      // would otherwise inflate runtime by hundreds of hours each.
+      const MAX_SESSION_DURATION_MS = 4 * 60 * 60 * 1000;
       const lifetimeTotals = allSessions.reduce(
         (acc, session) => {
           acc.attemptsCount += 1;
           acc.tokenCount += Number(session?.tokenCount || 0);
           acc.inputTokens += Number(session?.inputTokens || 0);
           acc.outputTokens += Number(session?.outputTokens || 0);
-          acc.durationMs += Math.max(0, Number(session?.durationMs || 0));
+          const rawDur = Math.max(0, Number(session?.durationMs || 0));
+          acc.durationMs += Math.min(rawDur, MAX_SESSION_DURATION_MS);
           return acc;
         },
         { attemptsCount: 0, tokenCount: 0, inputTokens: 0, outputTokens: 0, durationMs: 0 },
