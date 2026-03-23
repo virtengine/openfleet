@@ -392,7 +392,7 @@
     "@opentelemetry/sdk-trace-base": "^2.1.0",
     "@opentelemetry/semantic-conventions": "^1.37.0",
     "figures": "^6.1.0",
-    "ink-table": "^3.1.0",
+
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
