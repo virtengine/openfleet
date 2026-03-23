@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -49,6 +50,18 @@ function walkMarkdownFiles(dir) {
   return results;
 }
 
+function isGitIgnored(rootDir, relPath) {
+  try {
+    execFileSync("git", ["check-ignore", "-q", relPath], {
+      cwd: rootDir,
+      stdio: "ignore",
+    });
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
 export function lintPromptText(text, source = "<inline>") {
   const issues = [];
   const lines = String(text || "").split(/\r?\n/);
@@ -87,6 +100,7 @@ export function collectPromptLintTargets(rootDir = process.cwd()) {
   const promptDir = resolve(root, PROMPT_WORKSPACE_DIR);
   for (const filePath of walkMarkdownFiles(promptDir)) {
     const relPath = relative(root, filePath).replace(/\\/g, "/");
+    if (isGitIgnored(root, relPath)) continue;
     targets.set(relPath, {
       path: relPath,
       source: "workspace",

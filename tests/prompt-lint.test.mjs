@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -67,6 +68,24 @@ describe("prompt lint", () => {
     );
   });
 
+  it("ignores gitignored workspace prompt files in repo roots", async () => {
+    execFileSync("git", ["init"], { cwd: testRoot, stdio: "ignore" });
+    await writeFile(resolve(testRoot, ".gitignore"), "/.bosun/\n", "utf8");
+    const promptDir = resolve(testRoot, ".bosun", "agents");
+    mkdirSync(promptDir, { recursive: true });
+    const promptPath = resolve(promptDir, "ignored.md");
+
+    await writeFile(promptPath, "# Ignored\n\nLet me narrate this local override.\n", "utf8");
+
+    const result = lintPromptWorkspace(testRoot);
+    expect(result.ok).toBe(true);
+    expect(result.issues).toEqual([]);
+    expect(result.targets).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: ".bosun/agents/ignored.md" }),
+      ]),
+    );
+  });
   it("keeps CI and pre-commit prompt lint wiring enabled", () => {
     const packageJson = readFileSync(resolve(process.cwd(), "package.json"), "utf8");
     const preCommitHook = readFileSync(resolve(process.cwd(), ".githooks", "pre-commit"), "utf8");
