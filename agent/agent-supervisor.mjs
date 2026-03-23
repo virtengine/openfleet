@@ -29,6 +29,8 @@
  * @module agent-supervisor
  */
 
+import { addSpanEvent, recordIntervention } from "../infra/tracing.mjs";
+
 const TAG = "[agent-supervisor]";
 const API_ERROR_CONTINUE_COOLDOWNS_MS = Object.freeze([
   3 * 60_000,
@@ -473,6 +475,12 @@ export class AgentSupervisor {
     }
 
     this._lastDecision.set(taskId, { situation, intervention, ts: Date.now() });
+    addSpanEvent("bosun.supervisor.assess", {
+      "bosun.task.id": taskId,
+      "bosun.health.score": healthScore,
+      "bosun.situation": situation,
+      "bosun.intervention.type": intervention,
+    });
 
     return { situation, healthScore, intervention, prompt, reason };
   }
@@ -489,6 +497,18 @@ export class AgentSupervisor {
     );
 
     try {
+      if (intervention !== INTERVENTION.NONE) {
+        recordIntervention(intervention, {
+          "bosun.task.id": taskId,
+          "bosun.situation": situation,
+        });
+      }
+      addSpanEvent("bosun.supervisor.intervention", {
+        "bosun.task.id": taskId,
+        "bosun.intervention.type": intervention,
+        "bosun.situation": situation,
+        "bosun.reason": reason,
+      });
       switch (intervention) {
         case INTERVENTION.NONE:
           break;

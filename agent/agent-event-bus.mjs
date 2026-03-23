@@ -25,6 +25,7 @@ import {
   reduceRetryQueue,
   snapshotRetryQueue,
 } from "./retry-queue.mjs";
+import { addSpanEvent, recordAgentError, recordIntervention } from "../infra/tracing.mjs";
 
 const TAG = "[agent-event-bus]";
 
@@ -232,6 +233,14 @@ export class AgentEventBus {
   emit(type, taskId, payload = {}, opts = {}) {
     const ts = Date.now();
     const event = { type, taskId, payload, ts };
+    addSpanEvent(type, { "bosun.task.id": taskId, ...payload });
+    if (type === AGENT_EVENT.AGENT_ERROR) {
+      recordAgentError(payload?.errorType || payload?.classification || "agent_error", {
+        "bosun.task.id": taskId,
+        "bosun.executor": payload?.executor,
+        "bosun.agent.sdk": payload?.sdk,
+      });
+    }
 
     // ── Dedup
     const key = `${type}:${taskId}`;
@@ -1091,4 +1100,5 @@ export class AgentEventBus {
 export function createAgentEventBus(options) {
   return new AgentEventBus(options);
 }
+
 
