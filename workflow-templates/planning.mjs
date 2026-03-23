@@ -64,6 +64,8 @@ export const TASK_PLANNER_TEMPLATE = {
       taskCount: "{{taskCount}}",
       context: "{{plannerContext}}",
       prompt: "{{prompt}}",
+      repoMapQuery: "{{plannerContext}} {{prompt}}",
+      repoMapFileLimit: 8,
       dedup: true,
       timeoutMs: 960000,
       agentTimeoutMs: 900000,
@@ -182,6 +184,8 @@ export const TASK_REPLENISH_TEMPLATE = {
       taskCount: "{{taskCount}}",
       context: "{{plannerContext}}",
       prompt: "{{prompt}}",
+      repoMapQuery: "{{plannerContext}} {{prompt}}",
+      repoMapFileLimit: 8,
       timeoutMs: 960000,
       agentTimeoutMs: 900000,
       maxRetries: 0,
@@ -988,3 +992,6 @@ Rules:
     },
   },
 };
+
+
+
