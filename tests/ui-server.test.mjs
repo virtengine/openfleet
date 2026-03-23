@@ -2451,6 +2451,93 @@ describe("ui-server mini app", () => {
     expect(detail.data.workflowRuns.some((run) => run.workflowId === workflowId)).toBe(true);
   }, 20000);
 
+  it("preserves incoming trace headers for workflow and task API actions", async () => {
+    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-trace-context-"));
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.EXECUTOR_MODE = "internal";
+    process.env.BOSUN_HOME = isolatedDir;
+    process.env.BOSUN_DIR = isolatedDir;
+    process.env.CODEX_MONITOR_HOME = isolatedDir;
+    process.env.CODEX_MONITOR_DIR = isolatedDir;
+
+    const tracing = await import("../infra/tracing.mjs");
+    await tracing.setupTracing("http://collector.example/v1/traces");
+    const mod = await import("../server/ui-server.mjs");
+    const executeTask = vi.fn(async (task) => tracing.traceTaskExecution({ taskId: task.id }, async () => ({ ok: true })));
+    mod.injectUiDependencies({
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 2, activeSlots: 0, slots: [] }),
+        executeTask,
+        isPaused: () => false,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const workflowId = `wf-trace-context-${Date.now()}`;
+    const saveWorkflow = await fetch(`http://127.0.0.1:${port}/api/workflows/save`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: workflowId,
+        name: "Trace context workflow",
+        enabled: true,
+        nodes: [
+          { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        ],
+        edges: [],
+      }),
+    }).then((r) => r.json());
+    expect(saveWorkflow.ok).toBe(true);
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "Trace task", description: "propagate trace headers" }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+    const taskId = created.data.id;
+
+    const traceparent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+
+    const workflowRun = await fetch(`http://127.0.0.1:${port}/api/workflows/${encodeURIComponent(workflowId)}/execute`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        traceparent,
+      },
+      body: JSON.stringify({ waitForCompletion: true, taskId }),
+    }).then((r) => r.json());
+    expect(workflowRun.ok).toBe(true);
+
+    const taskRun = await fetch(`http://127.0.0.1:${port}/api/tasks/start`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        traceparent,
+      },
+      body: JSON.stringify({ taskId, force: true }),
+    }).then((r) => r.json());
+    expect(taskRun.ok).toBe(true);
+
+    expect(executeTask).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const finishedSpans = tracing.getFinishedSpans();
+    const workflowSpan = finishedSpans.find((span) => span.name === "bosun.workflow.run" && span.attributes["bosun.workflow.id"] === workflowId);
+    const taskSpan = finishedSpans.find((span) => span.name === "bosun.task.execute" && span.attributes["bosun.task.id"] === taskId);
+
+    expect(workflowSpan).toBeDefined();
+    expect(taskSpan).toBeDefined();
+    expect(workflowSpan.traceId).toBe("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(taskSpan.traceId).toBe("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  }, 20000);
+
   it("includes replayable task runs and a latest run summary on task detail", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-task-runs-"));
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -4366,6 +4453,8 @@ describe("ui-server mini app", () => {
   });
 
 });
+
+
 
 
 

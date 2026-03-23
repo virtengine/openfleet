@@ -5412,6 +5412,106 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     const reread = engine.getTaskTraceEvents(ctx.id);
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
+
+  it("emits nested task and agent spans for task-backed agent nodes", async () => {
+    const tracing = await import("../infra/tracing.mjs");
+    await tracing.setupTracing("http://collector.example/v1/traces");
+
+    const workflow = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "agent", type: "action.run_agent", label: "Run Agent", config: { prompt: "Ship the fix" } },
+      ],
+      [{ id: "e1", source: "trigger", target: "agent" }],
+      { id: "wf-agent-task-trace", name: "Agent Task Trace" },
+    );
+
+    engine.save(workflow);
+    engine.services.agentPool = {
+      launchEphemeralThread: vi.fn(async () => ({
+        success: true,
+        output: "done",
+        threadId: "thread-trace-1",
+      })),
+    };
+
+    await engine.execute(workflow.id, {
+      taskId: "TASK-AGENT-TRACE",
+      task: { id: "TASK-AGENT-TRACE", title: "Trace agent task", assignee: "agent-primary" },
+    });
+
+    const finishedSpans = tracing.getFinishedSpans();
+    const nodeSpan = finishedSpans.find(
+      (span) => span.name === "bosun.workflow.node" && span.attributes["bosun.workflow.node.id"] === "agent",
+    );
+    const taskSpan = finishedSpans.find(
+      (span) => span.name === "bosun.task.execute" && span.attributes["bosun.task.id"] === "TASK-AGENT-TRACE",
+    );
+    const agentSpan = finishedSpans.find(
+      (span) => span.name === "bosun.agent.session" && span.attributes["bosun.task.id"] === "TASK-AGENT-TRACE",
+    );
+
+    expect(nodeSpan).toBeDefined();
+    expect(taskSpan).toBeDefined();
+    expect(agentSpan).toBeDefined();
+    expect(taskSpan.traceId).toBe(nodeSpan.traceId);
+    expect(taskSpan.parentSpanId).toBe(nodeSpan.spanId);
+    expect(agentSpan.parentSpanId).toBe(taskSpan.spanId);
+    expect(taskSpan.attributes).toEqual(expect.objectContaining({
+      "bosun.workflow.id": workflow.id,
+      "bosun.task.id": "TASK-AGENT-TRACE",
+      "bosun.agent.id": "agent",
+    }));
+  });
+
+  it("preserves a single trace across parent and child workflow execution", async () => {
+    const tracing = await import("../infra/tracing.mjs");
+    await tracing.setupTracing("http://collector.example/v1/traces");
+
+    const child = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+      ],
+      [],
+      { id: "wf-child-trace", name: "Child Trace Workflow" },
+    );
+
+    const parent = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "child",
+          type: "flow.universal",
+          label: "Child",
+          config: { workflowId: child.id, mode: "sync", inheritContext: true },
+        },
+      ],
+      [{ id: "e1", source: "trigger", target: "child" }],
+      { id: "wf-parent-trace", name: "Parent Trace Workflow" },
+    );
+
+    engine.save(child);
+    engine.save(parent);
+
+    const parentCtx = await engine.execute(parent.id, { taskId: "TASK-WF-TRACE" });
+
+    const finishedSpans = tracing.getFinishedSpans();
+    const workflowSpans = finishedSpans.filter((span) => span.name === "bosun.workflow.run");
+    const nodeSpans = finishedSpans.filter((span) => span.name === "bosun.workflow.node");
+    const parentSpan = workflowSpans.find((span) => span.attributes["bosun.workflow.id"] === parent.id);
+    const childSpan = workflowSpans.find((span) => span.attributes["bosun.workflow.id"] === child.id);
+    const childNodeSpan = nodeSpans.find((span) => span.attributes["bosun.workflow.node.id"] === "child");
+
+    expect(parentCtx.errors).toEqual([]);
+    expect(parentSpan).toBeDefined();
+    expect(childSpan).toBeDefined();
+    expect(childNodeSpan).toBeDefined();
+    expect(childSpan.traceId).toBe(parentSpan.traceId);
+    expect(childSpan.parentSpanId).toBe(childNodeSpan.spanId);
+    expect(parentSpan.attributes["bosun.task.id"]).toBe("TASK-WF-TRACE");
+    expect(childSpan.attributes["bosun.task.id"]).toBe("TASK-WF-TRACE");
+    expect(childSpan.attributes["bosun.workflow.parent_run_id"]).toBe(parentCtx.id);
+  });
   it("records DAGState revisions and preserves completed nodes when replanning from a failed boundary", async () => {
     let attempts = 0;
     registerNodeType("test.replan_once", {
@@ -5499,4 +5599,6 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(replan.reason).toBe("issue_advisor.replan_subgraph");
   });
 });
+
+
 

@@ -154,15 +154,15 @@ function recordMetric(name, type, value, attributes = {}) {
   instrument.add(value, attributes);
 }
 
-function createLocalSpan(name, attributes = {}) {
-  const parent = getCurrentContext();
-  const traceId = parent?.traceId || randomId(TRACE_ID_BYTES);
+function createLocalSpan(name, attributes = {}, parent = null) {
+  const activeParent = parent || getCurrentContext();
+  const traceId = activeParent?.traceId || randomId(TRACE_ID_BYTES);
   const spanId = randomId(SPAN_ID_BYTES);
   return {
     name,
     traceId,
     spanId,
-    parentSpanId: parent?.spanId || null,
+    parentSpanId: activeParent?.spanId || null,
     startTime: nowHrTime(),
     endTime: null,
     durationMs: null,
@@ -170,6 +170,7 @@ function createLocalSpan(name, attributes = {}) {
     status: { code: "OK" },
     events: [],
     exceptions: [],
+    links: [],
     otelSpan: null,
   };
 }
@@ -198,6 +199,7 @@ function finalizeLocalSpan(span) {
     attributes: { ...span.attributes },
     events: [...span.events],
     exceptions: [...span.exceptions],
+    links: [...span.links],
     status: { ...span.status },
   });
 }
@@ -402,22 +404,152 @@ export function recordAgentError(type, attributes = {}) {
   });
 }
 
-async function withSpan(name, attributes, fn, hooks = {}) {
+function resolveSpanAttributes(base = {}) {
+  return omitUndefined({
+    "bosun.workflow.id": base.workflowId || base.workflow?.id || base["bosun.workflow.id"],
+    "bosun.workflow.run_id":
+      base.workflowRunId ||
+      base.runId ||
+      base["bosun.workflow.run_id"],
+    "bosun.workflow.parent_run_id":
+      base.parentRunId ||
+      base["bosun.workflow.parent_run_id"],
+    "bosun.workflow.root_run_id":
+      base.rootRunId ||
+      base["bosun.workflow.root_run_id"],
+    "bosun.workflow.node.id": base.nodeId || base["bosun.workflow.node.id"],
+    "bosun.workflow.node.type": base.nodeType || base["bosun.workflow.node.type"],
+    "bosun.task.id": base.taskId || base["bosun.task.id"],
+    "bosun.agent.id": base.agentId || base["bosun.agent.id"],
+  });
+}
+
+function getCarrierValue(carrier, key) {
+  if (!carrier) return null;
+  if (typeof carrier.get === "function") {
+    const direct = carrier.get(key) ?? carrier.get(String(key || "").toLowerCase());
+    return Array.isArray(direct) ? direct[0] : direct;
+  }
+  const direct = carrier[key] ?? carrier[String(key || "").toLowerCase()] ?? carrier[String(key || "").toUpperCase()];
+  return Array.isArray(direct) ? direct[0] : direct;
+}
+
+function parseTraceparent(value) {
+  const raw = String(value || "").trim();
+  const match = /^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/i.exec(raw);
+  if (!match) return null;
+  const [, traceId, spanId, flags] = match;
+  return {
+    traceId: traceId.toLowerCase(),
+    spanId: spanId.toLowerCase(),
+    traceFlags: Number.parseInt(flags, 16),
+    isRemote: true,
+  };
+}
+
+export function formatTraceparent(traceContext = null) {
+  const trace = traceContext || getCurrentTraceContext();
+  const traceId = String(trace?.traceId || "").trim().toLowerCase();
+  const spanId = String(trace?.spanId || "").trim().toLowerCase();
+  const traceFlags = Number.isFinite(Number(trace?.traceFlags))
+    ? Number(trace.traceFlags)
+    : 1;
+  if (!/^[0-9a-f]{32}$/.test(traceId) || !/^[0-9a-f]{16}$/.test(spanId)) {
+    return null;
+  }
+  const flagsHex = Math.max(0, Math.min(255, traceFlags)).toString(16).padStart(2, "0");
+  return `00-${traceId}-${spanId}-${flagsHex}`;
+}
+
+function buildRemoteParentContext(carrier = null) {
+  const spanContext = parseTraceparent(getCarrierValue(carrier, "traceparent"));
+  if (!spanContext) return null;
+  const otelContext = tracingState.api?.trace?.setSpanContext
+    ? tracingState.api.trace.setSpanContext(
+        tracingState.api.ROOT_CONTEXT || tracingState.api.context?.active?.(),
+        spanContext,
+      )
+    : undefined;
+  return {
+    ...spanContext,
+    otelContext,
+  };
+}
+
+function normalizeSpanLink(link = {}, attributes = {}) {
+  const traceId = String(link?.traceId || link?.["trace.trace_id"] || "").trim().toLowerCase();
+  const spanId = String(link?.spanId || link?.["trace.span_id"] || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(traceId) || !/^[0-9a-f]{16}$/.test(spanId)) {
+    return null;
+  }
+  return {
+    traceId,
+    spanId,
+    traceFlags: Number.isFinite(Number(link?.traceFlags)) ? Number(link.traceFlags) : 1,
+    attributes: omitUndefined(attributes),
+  };
+}
+
+export function getCurrentTraceContext() {
+  const current = getCurrentContext();
+  if (!current) return null;
+  return {
+    name: current.name,
+    traceId: current.traceId,
+    spanId: current.spanId,
+    parentSpanId: current.parentSpanId,
+    attributes: { ...current.attributes },
+  };
+}
+
+export function addSpanLink(link = {}, attributes = {}) {
+  const current = getCurrentContext();
+  if (!current) return;
+  const normalized = normalizeSpanLink(link, attributes);
+  if (!normalized) return;
+  current.links.push(normalized);
+  if (current.otelSpan?.addLink) {
+    current.otelSpan.addLink({
+      context: {
+        traceId: normalized.traceId,
+        spanId: normalized.spanId,
+        traceFlags: normalized.traceFlags,
+        isRemote: true,
+      },
+      attributes: normalized.attributes,
+    });
+  }
+}
+
+async function withSpan(name, attributes, fn, hooks = {}, options = {}) {
   if (!tracingState.enabled) {
-    return fn();
+    return fn({
+      name,
+      traceId: null,
+      spanId: null,
+      parentSpanId: null,
+      attributes: omitUndefined(attributes),
+      status: { code: "UNSET" },
+      events: [],
+      exceptions: [],
+      links: [],
+      otelSpan: null,
+    });
   }
 
-  const span = createLocalSpan(name, omitUndefined(attributes));
-  const parent = getCurrentContext();
+  const parent = options.parentSpan || getCurrentContext();
+  const span = createLocalSpan(name, omitUndefined(attributes), parent);
   const otelOptions = { attributes: span.attributes };
   if (tracingState.spanKind && name === "bosun.llm.call") {
     otelOptions.kind = tracingState.spanKind.CLIENT;
   }
 
   if (tracingState.tracer?.startSpan) {
-    const parentContext = parent?.otelSpan && tracingState.api?.trace?.setSpan
-      ? tracingState.api.trace.setSpan(tracingState.api.context.active(), parent.otelSpan)
-      : undefined;
+    const parentContext =
+      options.parentContext ||
+      (parent?.otelSpan && tracingState.api?.trace?.setSpan
+        ? tracingState.api.trace.setSpan(tracingState.api.context.active(), parent.otelSpan)
+        : parent?.otelContext);
     span.otelSpan = tracingState.tracer.startSpan(name, otelOptions, parentContext);
     syncSpanContext(span);
   }
@@ -466,11 +598,58 @@ async function withSpan(name, attributes, fn, hooks = {}) {
   });
 }
 
+export async function withIncomingTraceContext(carrier = {}, requestSpan = {}, fn) {
+  const remoteParent = buildRemoteParentContext(carrier);
+  return withSpan(
+    requestSpan.name || "bosun.http.request",
+    {
+      ...resolveSpanAttributes(requestSpan),
+      ...omitUndefined(requestSpan.attributes || {}),
+      "http.method": requestSpan.method,
+      "http.route": requestSpan.route,
+      "http.target": requestSpan.target,
+    },
+    fn,
+    {},
+    remoteParent
+      ? {
+          parentSpan: remoteParent,
+          parentContext: remoteParent.otelContext,
+        }
+      : {},
+  );
+}
+
+export async function traceWorkflowRun(workflow = {}, fn) {
+  return withSpan(
+    "bosun.workflow.run",
+    {
+      ...resolveSpanAttributes(workflow),
+      "bosun.workflow.name": workflow.name,
+      "bosun.workflow.trigger_source": workflow.triggerSource,
+    },
+    fn,
+  );
+}
+
+export async function traceWorkflowNode(node = {}, fn) {
+  return withSpan(
+    "bosun.workflow.node",
+    {
+      ...resolveSpanAttributes(node),
+      "bosun.workflow.node.label": node.nodeLabel,
+      "bosun.workflow.node.status": node.status,
+    },
+    fn,
+  );
+}
+
 export async function traceTaskExecution(task = {}, fn) {
+  const remoteParent = buildRemoteParentContext(task?.carrier || task?.headers || null);
   return withSpan(
     "bosun.task.execute",
     {
-      "bosun.task.id": task.taskId || task.id,
+      ...resolveSpanAttributes(task),
       "bosun.task.title": task.title,
       "bosun.task.priority": task.priority,
       "bosun.task.assignee": task.assignee,
@@ -515,6 +694,12 @@ export async function traceTaskExecution(task = {}, fn) {
         recordMetric("taskDuration", "histogram", span.durationMs ?? 0, metricAttributes);
       },
     },
+    remoteParent
+      ? {
+          parentSpan: remoteParent,
+          parentContext: remoteParent.otelContext,
+        }
+      : {},
   );
 }
 
@@ -522,6 +707,7 @@ export async function traceAgentSession(session = {}, fn) {
   return withSpan(
     "bosun.agent.session",
     {
+      ...resolveSpanAttributes(session),
       "bosun.session.id": session.sessionId,
       "bosun.agent.sdk": session.sdk,
       "bosun.thread.key": session.threadKey,
@@ -595,3 +781,4 @@ export async function traceLLMCall(call = {}, fn) {
 }
 
 ensureMetricInstruments();
+

@@ -44,6 +44,7 @@ import {
 import { getTemplate } from "./workflow-templates.mjs";
 import { WorkflowExecutionLedger } from "./execution-ledger.mjs";
 import { buildWorkflowStatusPayload } from "../infra/tui-bridge.mjs";
+import { getCurrentTraceContext, traceWorkflowNode, traceWorkflowRun } from "../infra/tracing.mjs";
 
 // Lazy-loaded workspace manager for workspace-aware scheduling
 let _workspaceManagerMod = null;
@@ -158,6 +159,28 @@ function resolveNodeTimeoutMs(node, resolvedConfig) {
   }
 
   return NODE_TIMEOUT_MS;
+}
+
+function resolveTraceTaskId(data = {}) {
+  return String(
+    data?.taskId ||
+      data?.task?.id ||
+      data?.taskDetail?.id ||
+      data?.taskInfo?.id ||
+      "",
+  ).trim() || null;
+}
+
+function resolveTraceAgentId(data = {}, fallback = "") {
+  return String(
+    data?.agentId ||
+      data?.agentProfile ||
+      data?.task?.assignee ||
+      data?.taskDetail?.assignee ||
+      data?.taskInfo?.assignee ||
+      fallback ||
+      "",
+  ).trim() || null;
 }
 
 // ── Node Status ─────────────────────────────────────────────────────────────
@@ -1550,6 +1573,7 @@ export class WorkflowEngine extends EventEmitter {
     if (!taskContext) return null;
 
     const nowMs = Date.now();
+    const activeTrace = getCurrentTraceContext();
     const event = {
       eventType: String(kind || "").trim(),
       timestamp: new Date(nowMs).toISOString(),
@@ -1569,6 +1593,9 @@ export class WorkflowEngine extends EventEmitter {
       branch: taskContext.branch,
       prNumber: taskContext.prNumber,
       prUrl: taskContext.prUrl,
+      traceId: activeTrace?.traceId || null,
+      spanId: activeTrace?.spanId || null,
+      parentSpanId: activeTrace?.parentSpanId || null,
       meta: extra && typeof extra === "object" ? extra : null,
     };
 
@@ -1790,7 +1817,26 @@ export class WorkflowEngine extends EventEmitter {
     this._runSlots++;
 
     try {
-      return await this._executeInner(def, workflowId, inputData, opts);
+      return await traceWorkflowRun(
+        {
+          workflowId,
+          name: def.name,
+          triggerSource: inputData?._triggerSource || null,
+          taskId: resolveTraceTaskId(inputData),
+          agentId: resolveTraceAgentId(inputData),
+          parentRunId: opts._parentRunId || inputData?._workflowParentRunId || inputData?._parentRunId || null,
+          rootRunId: opts._rootRunId || inputData?._workflowRootRunId || inputData?._rootRunId || null,
+        },
+        async (span) => {
+          const ctx = await this._executeInner(def, workflowId, inputData, opts);
+          span.attributes["bosun.workflow.run_id"] = ctx?.id || span.attributes["bosun.workflow.run_id"];
+          span.attributes["bosun.workflow.parent_run_id"] =
+            ctx?.data?._workflowParentRunId || span.attributes["bosun.workflow.parent_run_id"];
+          span.attributes["bosun.workflow.root_run_id"] =
+            ctx?.data?._workflowRootRunId || ctx?.id || span.attributes["bosun.workflow.root_run_id"];
+          return ctx;
+        },
+      );
     } finally {
       this._runSlots--;
       // Wake the next queued run, if any
@@ -1841,10 +1887,29 @@ export class WorkflowEngine extends EventEmitter {
     this._runSlots++;
 
     try {
-      return await this._executeInner(normalized, normalized.id, inputData, {
-        ...opts,
-        force: true,
-      });
+      return await traceWorkflowRun(
+        {
+          workflowId: normalized.id,
+          name: normalized.name,
+          triggerSource: inputData?._triggerSource || normalized.trigger || null,
+          taskId: resolveTraceTaskId(inputData),
+          agentId: resolveTraceAgentId(inputData, opts.sourceNodeId || ""),
+          parentRunId: opts._parentRunId || inputData?._workflowParentRunId || inputData?._parentRunId || null,
+          rootRunId: opts._rootRunId || inputData?._workflowRootRunId || inputData?._rootRunId || null,
+        },
+        async (span) => {
+          const ctx = await this._executeInner(normalized, normalized.id, inputData, {
+            ...opts,
+            force: true,
+          });
+          span.attributes["bosun.workflow.run_id"] = ctx?.id || span.attributes["bosun.workflow.run_id"];
+          span.attributes["bosun.workflow.parent_run_id"] =
+            ctx?.data?._workflowParentRunId || span.attributes["bosun.workflow.parent_run_id"];
+          span.attributes["bosun.workflow.root_run_id"] =
+            ctx?.data?._workflowRootRunId || ctx?.id || span.attributes["bosun.workflow.root_run_id"];
+          return ctx;
+        },
+      );
     } finally {
       this._runSlots--;
       if (this._runQueue.length > 0) {
@@ -3987,48 +4052,63 @@ export class WorkflowEngine extends EventEmitter {
       return { _dryRun: true, type: node.type, config: resolvedConfig };
     }
 
-    // ── Capability pre-flight check ──────────────────────────────────────
-    // Verify required services are present AFTER the dryRun early-return so
-    // dry-run tests work without needing real service dependencies wired up.
-    const requiredCapabilities = this._getNodeRequiredCapabilities(node.type);
-    const missingCapabilities = [];
-    for (const cap of requiredCapabilities) {
-      if (!this._hasCapability(cap)) {
-        missingCapabilities.push(cap);
-      }
-    }
-    if (missingCapabilities.length > 0) {
-      const detail = `Node "${node.label || node.id}" (${node.type}) requires capabilities: [${missingCapabilities.join(", ")}] which are not available. ` +
-        `Check that the required services (agent pool, kanban adapter, etc.) are configured and the agent has the necessary permissions.`;
-      ctx.log(node.id, detail, "error");
-      const capErr = new Error(detail);
-      capErr.retryable = false; // missing service is permanent — don't waste time retrying
-      throw capErr;
-    }
+    return traceWorkflowNode(
+      {
+        workflowId: ctx?.data?._workflowId || null,
+        workflowRunId: ctx?.id || null,
+        rootRunId: ctx?.data?._workflowRootRunId || ctx?.id || null,
+        parentRunId: ctx?.data?._workflowParentRunId || null,
+        nodeId: node.id,
+        nodeType: node.type,
+        nodeLabel: node.label || null,
+        taskId: resolveTraceTaskId(ctx?.data),
+        agentId: resolveTraceAgentId(ctx?.data, resolvedConfig?.agentProfile || node.id),
+      },
+      async () => {
+        // ── Capability pre-flight check ──────────────────────────────────────
+        // Verify required services are present AFTER the dryRun early-return so
+        // dry-run tests work without needing real service dependencies wired up.
+        const requiredCapabilities = this._getNodeRequiredCapabilities(node.type);
+        const missingCapabilities = [];
+        for (const cap of requiredCapabilities) {
+          if (!this._hasCapability(cap)) {
+            missingCapabilities.push(cap);
+          }
+        }
+        if (missingCapabilities.length > 0) {
+          const detail = `Node "${node.label || node.id}" (${node.type}) requires capabilities: [${missingCapabilities.join(", ")}] which are not available. ` +
+            `Check that the required services (agent pool, kanban adapter, etc.) are configured and the agent has the necessary permissions.`;
+          ctx.log(node.id, detail, "error");
+          const capErr = new Error(detail);
+          capErr.retryable = false; // missing service is permanent — don't waste time retrying
+          throw capErr;
+        }
 
-    // Execute with timeout — clear timer on completion to avoid resource leaks
-    const timeout = resolveNodeTimeoutMs(node, resolvedConfig);
-    let timer;
-    ctx.setNodeTiming(node.id, "startedAt", Date.now());
-    try {
-      const result = await Promise.race([
-        handler.execute(
-          { ...node, config: resolvedConfig },
-          ctx,
-          this
-        ),
-        new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`Node "${node.label || node.id}" timed out after ${timeout}ms`)), timeout);
-        }),
-      ]);
-      ctx.setNodeTiming(node.id, "endedAt", Date.now());
-      return result;
-    } catch (err) {
-      ctx.setNodeTiming(node.id, "endedAt", Date.now());
-      throw err;
-    } finally {
-      clearTimeout(timer);
-    }
+        // Execute with timeout — clear timer on completion to avoid resource leaks
+        const timeout = resolveNodeTimeoutMs(node, resolvedConfig);
+        let timer;
+        ctx.setNodeTiming(node.id, "startedAt", Date.now());
+        try {
+          const result = await Promise.race([
+            handler.execute(
+              { ...node, config: resolvedConfig },
+              ctx,
+              this
+            ),
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error(`Node "${node.label || node.id}" timed out after ${timeout}ms`)), timeout);
+            }),
+          ]);
+          ctx.setNodeTiming(node.id, "endedAt", Date.now());
+          return result;
+        } catch (err) {
+          ctx.setNodeTiming(node.id, "endedAt", Date.now());
+          throw err;
+        } finally {
+          clearTimeout(timer);
+        }
+      },
+    );
   }
 
   _resolveConfig(config, ctx) {
@@ -4899,5 +4979,10 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+
+
+
+
+
 
 

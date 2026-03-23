@@ -66,7 +66,7 @@ import {
 } from "./task-store.mjs";
 import { createErrorDetector } from "../infra/error-detector.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
-import { addSpanLink } from "../infra/tracing.mjs";
+import { getCurrentTraceContext, traceTaskExecution } from "../infra/tracing.mjs";
 import {
   getCompactDiffSummary,
   getRecentCommits,
@@ -5760,74 +5760,103 @@ class TaskExecutor {
       return { skipped: true, reason: "missing_task_id" };
     }
 
-    // When workflow automation owns lifecycle execution, emit a synthetic
-    // "started" slot so monitor/ui hooks can dispatch trigger.task_assigned.
-    if (this.workflowOwnsTaskLifecycle) {
-      const now = Date.now();
-      const taskTitle = String(task?.title || task?.task_title || taskId).trim() || taskId;
-      const resolvedSdk = String(
-        options?.sdk ||
-          options?.executor ||
-          task?.sdk ||
-          task?.executor ||
-          this.sdk ||
-          "auto",
-      ).trim() || "auto";
-      const resolvedModel = String(
-        options?.model ||
-          task?.model ||
-          task?.modelName ||
-          "",
-      ).trim();
-      const branch = String(
-        task?.branch ||
-          task?.branchName ||
-          task?.meta?.branch ||
-          task?.meta?.branch_name ||
-          "",
-      ).trim() || `task/${taskId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "work"}`;
-      const worktreePath = String(
-        task?.worktreePath ||
-          task?.meta?.worktreePath ||
-          task?.meta?.worktree_path ||
-          "",
-      ).trim() || null;
+    const workflowMeta =
+      task?.meta?.workflow && typeof task.meta.workflow === "object" && !Array.isArray(task.meta.workflow)
+        ? task.meta.workflow
+        : {};
+    const activeTrace = getCurrentTraceContext();
+    const storedTraceparent = String(
+      options?.traceparent || workflowMeta.traceparent || task?.traceparent || "",
+    ).trim();
+    const resolvedSdk = String(
+      options?.sdk ||
+        options?.executor ||
+        task?.sdk ||
+        task?.executor ||
+        this.sdk ||
+        "auto",
+    ).trim() || "auto";
+    const resolvedModel = String(
+      options?.model ||
+        task?.model ||
+        task?.modelName ||
+        task?.meta?.model ||
+        "",
+    ).trim();
+    const branch = String(
+      task?.branch ||
+        task?.branchName ||
+        task?.meta?.branch ||
+        task?.meta?.branch_name ||
+        "",
+    ).trim() || `task/${taskId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "work"}`;
 
-      const slot = {
+    return traceTaskExecution(
+      {
         taskId,
-        taskTitle,
+        title: String(task?.title || task?.task_title || taskId).trim() || taskId,
+        priority: task?.priority || task?.meta?.priority || null,
+        assignee: task?.assignee || task?.owner || task?.meta?.assignee || workflowMeta.agentId || null,
+        workflowId: options?.workflowId || task?.workflowId || workflowMeta.workflowId || null,
+        workflowRunId: options?.workflowRunId || task?.runId || workflowMeta.runId || null,
+        rootRunId: options?.rootRunId || workflowMeta.rootRunId || null,
+        parentRunId: options?.parentRunId || workflowMeta.parentRunId || null,
+        agentId: options?.agentId || task?.agentId || workflowMeta.agentId || task?.assignee || null,
+        sdk: resolvedSdk,
+        model: resolvedModel || null,
         branch,
-        worktreePath,
-        sdk: resolvedSdk,
-        model: resolvedModel || null,
-        attempt: 1,
-        startedAt: now,
-        status: "running",
-        agentInstanceId: null,
-      };
+        ...(storedTraceparent && !activeTrace ? { carrier: { traceparent: storedTraceparent } } : {}),
+      },
+      async () => {
+        // When workflow automation owns lifecycle execution, emit a synthetic
+        // "started" slot so monitor/ui hooks can dispatch trigger.task_assigned.
+        if (this.workflowOwnsTaskLifecycle) {
+          const now = Date.now();
+          const taskTitle = String(task?.title || task?.task_title || taskId).trim() || taskId;
+          const worktreePath = String(
+            task?.worktreePath ||
+              task?.meta?.worktreePath ||
+              task?.meta?.worktree_path ||
+              "",
+          ).trim() || null;
 
-      if (typeof this.onTaskStarted === "function") {
-        try {
-          await this.onTaskStarted(task, slot);
-        } catch (err) {
-          console.warn(`${TAG} onTaskStarted hook failed for "${taskTitle}": ${err?.message || err}`);
+          const slot = {
+            taskId,
+            taskTitle,
+            branch,
+            worktreePath,
+            sdk: resolvedSdk,
+            model: resolvedModel || null,
+            attempt: 1,
+            startedAt: now,
+            status: "running",
+            agentInstanceId: null,
+          };
+
+          if (typeof this.onTaskStarted === "function") {
+            try {
+              await this.onTaskStarted(task, slot);
+            } catch (err) {
+              console.warn(`${TAG} onTaskStarted hook failed for "${taskTitle}": ${err?.message || err}`);
+            }
+          }
+
+          return {
+            queued: false,
+            started: true,
+            dispatched: true,
+            mode: "workflow-owned",
+            taskId,
+            sdk: resolvedSdk,
+            model: resolvedModel || null,
+          };
         }
-      }
 
-      return {
-        queued: false,
-        started: true,
-        dispatched: true,
-        mode: "workflow-owned",
-        taskId,
-        sdk: resolvedSdk,
-        model: resolvedModel || null,
-      };
-    }
-
-    // [LEGACY REMOVED] Replaced by workflow node: TASK_LIFECYCLE_TEMPLATE (all nodes)
-    // See workflow-templates/task-lifecycle.mjs
-    return { skipped: true, reason: "legacy_removed" };
+        // [LEGACY REMOVED] Replaced by workflow node: TASK_LIFECYCLE_TEMPLATE (all nodes)
+        // See workflow-templates/task-lifecycle.mjs
+        return { skipped: true, reason: "legacy_removed" };
+      },
+    );
   }
 
   // ── Prompt Building ───────────────────────────────────────────────────────
@@ -6282,3 +6311,4 @@ export function isExecutorDisabled() {
 
 export { TaskExecutor };
 export default TaskExecutor;
+
