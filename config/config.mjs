@@ -24,7 +24,11 @@ import {
   getAgentPromptDefinitions,
   resolveAgentPrompts,
 } from "../agent/agent-prompts.mjs";
-import { resolveAgentRepoRoot, resolveRepoLocalBosunDir } from "./repo-root.mjs";
+import {
+  resolveAgentRepoRoot,
+  resolveRepoLocalBosunDir,
+  detectBosunModuleRoot,
+} from "./repo-root.mjs";
 import { applyAllCompatibility } from "../compat.mjs";
 import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import { CONFIG_FILES } from "./config-file-names.mjs";
@@ -64,23 +68,6 @@ function isBosunModuleRoot(dirPath) {
   } catch {
     return false;
   }
-}
-
-/**
- * Detect the bosun module root starting from the current file's directory,
- * walking up until a package.json with name "bosun" (or "@virtengine/bosun") is found.
- * Returns the module root path or __dirname as fallback.
- * @returns {string}
- */
-function detectBosunModuleRoot() {
-  let dir = __dirname;
-  for (let i = 0; i < 6; i++) {
-    if (isBosunModuleRoot(dir)) return dir;
-    const parent = resolve(dir, "..");
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return __dirname;
 }
 
 /**
@@ -127,11 +114,22 @@ function resolveConfigDir(repoRoot) {
   const repoLocalConfigDir = resolveRepoLocalBosunDir(repoRoot);
   if (repoLocalConfigDir) return repoLocalConfigDir;
 
-  // 3. Tests must not fall through to the user's real global Bosun home.
+  // 3. Fallback: check the bosun module's own directory for a .bosun/ config.
+  //    This ensures `bosun` (global) finds the same config as `npm start` which
+  //    explicitly passes `--config-dir .bosun`.  Without this, running from a
+  //    directory outside the module (e.g. home dir) misses workspaces, .env
+  //    vars (TELEGRAM_UI_PORT, TELEGRAM_MINIAPP_ENABLED, etc.), and task store.
+  const moduleRoot = detectBosunModuleRoot();
+  if (moduleRoot && resolve(moduleRoot) !== resolve(repoRoot || "")) {
+    const moduleLocalConfigDir = resolveRepoLocalBosunDir(moduleRoot);
+    if (moduleLocalConfigDir) return moduleLocalConfigDir;
+  }
+
+  // 4. Tests must not fall through to the user's real global Bosun home.
   const sandbox = ensureTestRuntimeSandbox();
   if (sandbox?.configDir) return sandbox.configDir;
 
-  // 4. Platform-aware user home
+  // 5. Platform-aware user home
   const preferWindowsDirs =
     process.platform === "win32" && !isWslInteropRuntime();
   const baseDir = preferWindowsDirs

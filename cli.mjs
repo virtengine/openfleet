@@ -34,7 +34,11 @@ import {
   detectLegacySetup,
   migrateFromLegacy,
 } from "./compat.mjs";
-import { resolveRepoLocalBosunDir, resolveRepoRoot } from "./config/repo-root.mjs";
+import {
+  resolveRepoLocalBosunDir,
+  resolveRepoRoot,
+  detectBosunModuleRoot,
+} from "./config/repo-root.mjs";
 
 const MONITOR_START_MAX_WAIT_MS = Math.max(
   0,
@@ -267,6 +271,17 @@ function resolveConfigDirForCli() {
       : resolveRepoRoot({ cwd: process.cwd() });
   const repoLocalConfigDir = resolveRepoLocalBosunDir(repoRoot);
   if (repoLocalConfigDir) return repoLocalConfigDir;
+
+  // Fallback: check the bosun module's own directory for a .bosun/ config.
+  // This ensures `bosun` (global) finds the same config as `npm start` which
+  // explicitly passes `--config-dir .bosun`.  Without this, running `bosun`
+  // from a directory outside the module (e.g. home dir) would miss workspace
+  // config, .env vars (TELEGRAM_UI_PORT, etc.), and task store data.
+  const moduleRoot = detectBosunModuleRoot();
+  if (moduleRoot && resolve(moduleRoot) !== resolve(repoRoot || "")) {
+    const moduleLocalConfigDir = resolveRepoLocalBosunDir(moduleRoot);
+    if (moduleLocalConfigDir) return moduleLocalConfigDir;
+  }
 
   const sandbox = ensureTestRuntimeSandbox();
   if (sandbox?.configDir) return sandbox.configDir;
