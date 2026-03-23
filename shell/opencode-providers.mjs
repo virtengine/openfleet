@@ -74,6 +74,41 @@ async function loadSDK() {
   }
 }
 
+function shouldRetryProviderQueryWithoutDirectory(err) {
+  const status = Number(
+    err?.status ?? err?.response?.status ?? err?.cause?.status ?? NaN,
+  );
+  if (status === 400) return true;
+
+  const message = String(err?.message || "").toLowerCase();
+  return (
+    message.includes(" 400") ||
+    message.includes("failed to list models: 400") ||
+    message.includes("bad request") ||
+    message.includes("directory")
+  );
+}
+
+async function invokeProviderEndpoint(endpoint, requestOptions) {
+  if (typeof endpoint !== "function") return null;
+
+  if (requestOptions) {
+    try {
+      return await endpoint(requestOptions);
+    } catch (err) {
+      if (!shouldRetryProviderQueryWithoutDirectory(err)) {
+        return null;
+      }
+    }
+  }
+
+  try {
+    return await endpoint();
+  } catch {
+    return null;
+  }
+}
+
 // ── SDK-based discovery (preferred — uses running OpenCode server) ────────────
 
 /**
@@ -116,8 +151,8 @@ async function discoverViaSDK(existingClient = null) {
 
     // Fetch provider list + auth methods in parallel
     const [providerRes, authRes] = await Promise.all([
-      client.provider.list(requestOptions).catch(() => null),
-      client.provider.auth(requestOptions).catch(() => null),
+      invokeProviderEndpoint(client?.provider?.list, requestOptions),
+      invokeProviderEndpoint(client?.provider?.auth, requestOptions),
     ]);
 
     if (!providerRes?.data) return null;
