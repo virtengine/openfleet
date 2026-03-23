@@ -14,6 +14,7 @@ import {
   loadTasks,
   normalizeTaskLifecycleStatus,
   classifyTaskLifecycleAction,
+  mergeTaskRecords,
 } from "../modules/state.js";
 import { apiFetch } from "../modules/api.js";
 import { haptic, showConfirm } from "../modules/telegram.js";
@@ -249,6 +250,56 @@ function getTaskBaseBranch(task) {
   );
 }
 
+function getTaskPrLinkage(task) {
+  if (!task) return [];
+  const records = [];
+  const seen = new Set();
+  const append = (record) => {
+    if (!record || typeof record !== "object") return;
+    const branchName = String(record.branchName || "").trim();
+    const prUrl = String(record.prUrl || "").trim();
+    const prNumber = Number.parseInt(String(record.prNumber ?? ""), 10);
+    if (!branchName && !prUrl && !(Number.isFinite(prNumber) && prNumber > 0)) return;
+    const normalized = {
+      branchName,
+      prUrl,
+      prNumber: Number.isFinite(prNumber) && prNumber > 0 ? prNumber : null,
+      source: String(record.source || task?.meta?.prLinkageSource || "").trim(),
+      freshness: String(record.freshness || task?.meta?.prLinkageFreshness || "").trim(),
+      linkedAt: String(record.linkedAt || "").trim(),
+      updatedAt: String(record.updatedAt || task?.meta?.prLinkageUpdatedAt || "").trim(),
+    };
+    const key = [normalized.branchName.toLowerCase(), normalized.prNumber || "", normalized.prUrl.toLowerCase()].join("|");
+    if (seen.has(key)) return;
+    seen.add(key);
+    records.push(normalized);
+  };
+  (Array.isArray(task.prLinkage) ? task.prLinkage : []).forEach(append);
+  (Array.isArray(task?.meta?.prLinkage) ? task.meta.prLinkage : []).forEach(append);
+  append(task);
+  return records;
+}
+
+function getPrimaryTaskPrLinkage(task) {
+  return getTaskPrLinkage(task)[0] || null;
+}
+
+function formatPrLinkageFreshnessLabel(linkage) {
+  const freshness = String(linkage?.freshness || "").trim().toLowerCase();
+  const timestamp = String(linkage?.updatedAt || linkage?.linkedAt || "").trim();
+  const relative = timestamp ? formatRelative(timestamp) : "";
+  if (freshness === "stale") {
+    return relative ? `PR freshness: Stale (${relative})` : "PR freshness: Stale";
+  }
+  if (freshness === "fresh") {
+    return relative ? `PR freshness: Fresh (${relative})` : "PR freshness: Fresh";
+  }
+  if (relative) {
+    return `PR freshness: Updated ${relative}`;
+  }
+  return "PR freshness: Linked";
+}
+
 function getTaskRuntimeSnapshot(task) {
   return task?.runtimeSnapshot || task?.meta?.runtimeSnapshot || null;
 }
@@ -444,7 +495,7 @@ async function executeBoardTransition(task, newStatus, columnLabel) {
         const merged = detail?.data || startRes?.data || null;
         if (merged) {
           tasksData.value = tasksData.value.map((t) =>
-            matchTaskId(t.id, taskId) ? { ...t, ...merged } : t,
+            matchTaskId(t.id, taskId) ? mergeTaskRecords(t, merged) : t,
           );
         }
         return startRes;
@@ -462,7 +513,7 @@ async function executeBoardTransition(task, newStatus, columnLabel) {
       });
       if (res?.data) {
         tasksData.value = tasksData.value.map((t) =>
-          matchTaskId(t.id, taskId) ? { ...t, ...res.data } : t,
+          matchTaskId(t.id, taskId) ? mergeTaskRecords(t, res.data) : t,
         );
       }
       return res;
@@ -621,6 +672,7 @@ function KanbanCard({ task, onOpen }) {
   const storyPoints = getTaskStoryPoints(task);
   const dueDate = getTaskDueDate(task);
   const blockedPreview = getTaskBlockedPreview(task);
+  const prLinkage = getPrimaryTaskPrLinkage(task);
   const repoName = task.repo || task.repository || "";
   const issueNum = task.issueNumber || task.issue_number || (typeof task.id === "string" && /^\d+$/.test(task.id) ? task.id : null);
   const hasAgent = Boolean(
@@ -691,6 +743,14 @@ function KanbanCard({ task, onOpen }) {
             ${sprint && html`<${Chip} label=${`Sprint: ${truncate(sprint, 18)}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
             ${storyPoints && html`<${Chip} label=${`${storyPoints} pts`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
             ${dueDate && html`<${Chip} label=${`Due: ${truncate(dueDate, 18)}`} size="small" variant="outlined" color="warning" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+          </${Stack}>
+        `}
+        ${prLinkage && html`
+          <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" sx=${{ mt: 0.75 }}>
+            ${prLinkage.prNumber && html`<${Chip} label=${`PR #${prLinkage.prNumber}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+            ${prLinkage.branchName && html`<${Chip} label=${`Branch: ${truncate(prLinkage.branchName, 18)}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+            ${prLinkage.source && html`<${Chip} label=${`PR source: ${truncate(prLinkage.source, 16)}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+            ${(prLinkage.freshness || prLinkage.updatedAt || prLinkage.linkedAt) && html`<${Chip} label=${formatPrLinkageFreshnessLabel(prLinkage)} size="small" color=${prLinkage.freshness === "stale" ? "warning" : "success"} sx=${{ height: 20, fontSize: '0.65rem' }} />`}
           </${Stack}>
         `}
         ${baseBranch && html`
@@ -845,7 +905,7 @@ function KanbanColumn({
           });
           if (res?.data) {
             tasksData.value = tasksData.value.map((t) =>
-              matchTaskId(t.id, taskId) ? { ...t, ...res.data } : t,
+              matchTaskId(t.id, taskId) ? mergeTaskRecords(t, res.data) : t,
             );
           }
           return res;
@@ -1180,3 +1240,5 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
     </${Box}>
   `;
 }
+
+

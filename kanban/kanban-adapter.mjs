@@ -62,6 +62,7 @@ import {
   setTaskStatus as setInternalTaskStatus,
   removeTask as removeInternalTask,
   updateTask as patchInternalTask,
+  waitForStoreWrites,
 } from "../task/task-store.mjs";
 import {
   listTaskAttachments,
@@ -673,6 +674,101 @@ function extractMarkdownLinks(text) {
   return results;
 }
 
+function normalizePrLinkageEntry(entry = {}, fallback = {}) {
+  const safeEntry = entry && typeof entry === "object" ? entry : {};
+  const safeFallback = fallback && typeof fallback === "object" ? fallback : {};
+  const branchName = typeof (safeEntry.branchName ?? safeFallback.branchName) === "string"
+    ? String(safeEntry.branchName ?? safeFallback.branchName).trim()
+    : "";
+  const prUrl = typeof (safeEntry.prUrl ?? safeFallback.prUrl) === "string"
+    ? String(safeEntry.prUrl ?? safeFallback.prUrl).trim()
+    : "";
+  const parsedPrNumber = Number.parseInt(String(safeEntry.prNumber ?? safeFallback.prNumber ?? ""), 10);
+  const prNumber = Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null;
+  if (!branchName && !prUrl && !prNumber) return null;
+  return {
+    branchName: branchName || null,
+    prUrl: prUrl || null,
+    prNumber,
+    source: typeof (safeEntry.source ?? safeFallback.source) === "string" && String(safeEntry.source ?? safeFallback.source).trim()
+      ? String(safeEntry.source ?? safeFallback.source).trim()
+      : null,
+    freshness: typeof (safeEntry.freshness ?? safeFallback.freshness) === "string" && String(safeEntry.freshness ?? safeFallback.freshness).trim()
+      ? String(safeEntry.freshness ?? safeFallback.freshness).trim()
+      : null,
+    linkedAt: typeof (safeEntry.linkedAt ?? safeFallback.linkedAt) === "string" && String(safeEntry.linkedAt ?? safeFallback.linkedAt).trim()
+      ? String(safeEntry.linkedAt ?? safeFallback.linkedAt).trim()
+      : null,
+    updatedAt: typeof (safeEntry.updatedAt ?? safeFallback.updatedAt) === "string" && String(safeEntry.updatedAt ?? safeFallback.updatedAt).trim()
+      ? String(safeEntry.updatedAt ?? safeFallback.updatedAt).trim()
+      : null,
+  };
+}
+
+function mergePrLinkageRecords(...sources) {
+  const merged = [];
+  const indexByKey = new Map();
+  const buildKey = (entry) => {
+    const branchName = String(entry?.branchName || "").trim().toLowerCase();
+    const prUrl = String(entry?.prUrl || "").trim().toLowerCase();
+    const prNumber = Number.isFinite(entry?.prNumber) ? entry.prNumber : "";
+    return [branchName, prNumber, prUrl].join("|");
+  };
+  for (const source of sources) {
+    const entries = Array.isArray(source) ? source : [];
+    for (const rawEntry of entries) {
+      const entry = normalizePrLinkageEntry(rawEntry);
+      if (!entry) continue;
+      const key = buildKey(entry);
+      if (!key) continue;
+      if (indexByKey.has(key)) {
+        const idx = indexByKey.get(key);
+        merged[idx] = normalizePrLinkageEntry({ ...merged[idx], ...entry }, merged[idx]);
+        continue;
+      }
+      indexByKey.set(key, merged.length);
+      merged.push(entry);
+    }
+  }
+  return merged;
+}
+
+function buildPrLinkagePatch(options = {}, currentTask = null) {
+  const branchName = typeof options?.branchName === "string" ? options.branchName.trim() : "";
+  const prUrl = typeof options?.prUrl === "string" ? options.prUrl.trim() : "";
+  const prNumber = options?.prNumber == null || options?.prNumber === ""
+    ? null
+    : Number.parseInt(String(options.prNumber), 10);
+  const source = typeof options?.source === "string" && options.source.trim() ? options.source.trim() : null;
+  const freshness = typeof options?.freshness === "string" && options.freshness.trim() ? options.freshness.trim() : null;
+  const currentMeta = currentTask?.meta && typeof currentTask.meta === "object" ? currentTask.meta : {};
+  const currentLinkage = mergePrLinkageRecords(currentTask?.prLinkage, currentMeta?.prLinkage);
+  const nextEntry = normalizePrLinkageEntry({
+    branchName,
+    prUrl,
+    prNumber: Number.isFinite(prNumber) && prNumber > 0 ? prNumber : null,
+    source,
+    freshness,
+    updatedAt: new Date().toISOString(),
+    linkedAt: currentLinkage[0]?.linkedAt || new Date().toISOString(),
+  }, currentTask || {});
+  if (!nextEntry) return {};
+  const prLinkage = mergePrLinkageRecords(currentLinkage, [nextEntry]);
+  return {
+    ...(nextEntry.branchName ? { branchName: nextEntry.branchName } : {}),
+    ...(nextEntry.prUrl ? { prUrl: nextEntry.prUrl } : {}),
+    ...(Number.isFinite(nextEntry.prNumber) && nextEntry.prNumber > 0 ? { prNumber: nextEntry.prNumber } : {}),
+    prLinkage,
+    meta: {
+      ...currentMeta,
+      prLinkage,
+      prLinkageSource: nextEntry.source || currentMeta.prLinkageSource || null,
+      prLinkageFreshness: nextEntry.freshness || currentMeta.prLinkageFreshness || null,
+      prLinkageUpdatedAt: nextEntry.updatedAt || currentMeta.prLinkageUpdatedAt || null,
+    },
+  };
+}
+
 function extractAttachmentsFromText(text, meta = {}) {
   const links = extractMarkdownLinks(text);
   const attachments = [];
@@ -792,6 +888,8 @@ class InternalAdapter {
       existingAttachments,
       localAttachments,
     );
+    const prLinkage = mergePrLinkageRecords(task.prLinkage, task.meta?.prLinkage, [normalizePrLinkageEntry(task, task)]);
+    const primaryPrLinkage = prLinkage[0] || null;
     return {
       id: String(task.id || ""),
       title: recoveredTitle || "",
@@ -816,9 +914,10 @@ class InternalAdapter {
             ? task.meta.repositories
             : [],
       baseBranch,
-      branchName: task.branchName || null,
-      prNumber: task.prNumber || null,
-      prUrl: task.prUrl || null,
+      branchName: task.branchName || primaryPrLinkage?.branchName || null,
+      prLinkage,
+      prNumber: task.prNumber || primaryPrLinkage?.prNumber || null,
+      prUrl: task.prUrl || primaryPrLinkage?.prUrl || null,
       taskUrl: task.taskUrl || null,
       createdAt: task.createdAt || null,
       updatedAt: task.updatedAt || null,
@@ -836,6 +935,10 @@ class InternalAdapter {
         statusHistory: Array.isArray(task.statusHistory) ? task.statusHistory : (Array.isArray(task.meta?.statusHistory) ? task.meta.statusHistory : []),
         comments: normalizedComments,
         attachments: mergedAttachments,
+        prLinkage,
+        prLinkageSource: primaryPrLinkage?.source || task.meta?.prLinkageSource || null,
+        prLinkageFreshness: primaryPrLinkage?.freshness || task.meta?.prLinkageFreshness || null,
+        prLinkageUpdatedAt: primaryPrLinkage?.updatedAt || task.meta?.prLinkageUpdatedAt || null,
       },
     };
   }
@@ -895,7 +998,8 @@ class InternalAdapter {
     if (!updated) {
       throw new Error(`[kanban] internal task not found: ${normalizedId}`);
     }
-    const linkagePatch = {};
+    const current = getInternalTask(normalizedId);
+    const linkagePatch = buildPrLinkagePatch(options, current);
     const branchName =
       typeof options?.branchName === "string" ? options.branchName.trim() : "";
     const prUrl = typeof options?.prUrl === "string" ? options.prUrl.trim() : "";
@@ -908,8 +1012,10 @@ class InternalAdapter {
     if (Number.isFinite(prNumber) && prNumber > 0) linkagePatch.prNumber = prNumber;
     if (Object.keys(linkagePatch).length > 0) {
       const patched = patchInternalTask(normalizedId, linkagePatch);
+      await waitForStoreWrites();
       if (patched) return this._normalizeTask(patched);
     }
+    await waitForStoreWrites();
     return this._normalizeTask(updated);
   }
 
@@ -1018,10 +1124,26 @@ class InternalAdapter {
         baseBranch,
       };
     }
+    const directLinkage = mergePrLinkageRecords(current?.prLinkage, current?.meta?.prLinkage, patch.prLinkage, patch.meta?.prLinkage, [normalizePrLinkageEntry(patch, patch)]);
+    if (directLinkage.length > 0) {
+      const primaryPrLinkage = directLinkage[0] || null;
+      updates.prLinkage = directLinkage;
+      updates.branchName = updates.branchName ?? primaryPrLinkage?.branchName ?? null;
+      updates.prUrl = updates.prUrl ?? primaryPrLinkage?.prUrl ?? null;
+      updates.prNumber = updates.prNumber ?? primaryPrLinkage?.prNumber ?? null;
+      updates.meta = {
+        ...(updates.meta || current?.meta || {}),
+        prLinkage: directLinkage,
+        prLinkageSource: primaryPrLinkage?.source || updates.meta?.prLinkageSource || current?.meta?.prLinkageSource || null,
+        prLinkageFreshness: primaryPrLinkage?.freshness || updates.meta?.prLinkageFreshness || current?.meta?.prLinkageFreshness || null,
+        prLinkageUpdatedAt: primaryPrLinkage?.updatedAt || updates.meta?.prLinkageUpdatedAt || current?.meta?.prLinkageUpdatedAt || null,
+      };
+    }
     const updated = patchInternalTask(normalizedId, updates);
     if (!updated) {
       throw new Error(`[kanban] internal task not found: ${normalizedId}`);
     }
+    await waitForStoreWrites();
     return this._normalizeTask(updated);
   }
 
@@ -1108,6 +1230,7 @@ class InternalAdapter {
     if (!created) {
       throw new Error("[kanban] internal task creation failed");
     }
+    await waitForStoreWrites();
     return this._normalizeTask(created);
   }
 
@@ -6198,3 +6321,4 @@ export async function unmarkTaskIgnored(taskId) {
   );
   return false;
 }
+
