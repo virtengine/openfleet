@@ -54,6 +54,7 @@ import {
 } from "./workflow-contract.mjs";
 import { resolveAutoCommand } from "./project-detection.mjs";
 import { loadConfig } from "../config/config.mjs";
+import { resolveHeavyRunnerPolicy, runCommandInHeavyRunnerLease } from "./heavy-runner-pool.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity, normalizeBaseBranch } from "../git/git-safety.mjs";
 import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../git/git-commit-helpers.mjs";
@@ -1439,12 +1440,64 @@ async function compactWorkflowCommandResult({
     outputRetrieveCommand: compacted.retrieveCommand,
     outputCompactionFamily: compacted.compactionFamily,
     outputCommandFamily: compacted.commandFamily,
+    outputBudgetPolicy: compacted.budgetPolicy || null,
+    outputBudgetReason: compacted.budgetReason || "",
+    outputContextEnvelope: compacted.contextEnvelope || null,
     outputDiagnostics: compacted.commandDiagnostics || null,
     outputSuggestedRerun: compacted.commandDiagnostics?.suggestedRerun || null,
     outputDeltaSummary: compacted.commandDiagnostics?.deltaSummary || "",
     outputHint: compacted.commandDiagnostics?.hint || "",
     outputInsufficientSignal: compacted.commandDiagnostics?.insufficientSignal === true,
     items: compacted.item ? [compacted.item] : [],
+  };
+}
+
+async function executeValidationCommandWithOptionalRunner({
+  node,
+  ctx,
+  nodeType,
+  command,
+  cwd,
+  timeoutMs,
+} = {}) {
+  const runnerPolicy = resolveHeavyRunnerPolicy({
+    nodeType,
+    command,
+    timeoutMs,
+    runner: node.config?.runner || null,
+  });
+  if (runnerPolicy.lane !== "runner-pool") return null;
+
+  ctx.log(node.id, `Offloading ${runnerPolicy.intent || "validation"} to isolated ${runnerPolicy.runtime} runner pool`);
+  const run = await runCommandInHeavyRunnerLease({
+    command,
+    cwd,
+    timeoutMs,
+    intent: runnerPolicy.intent,
+    runtime: runnerPolicy.runtime,
+    retries: runnerPolicy.retries,
+    artifactRoot: runnerPolicy.artifactDir,
+    commandPrefix: runnerPolicy.commandPrefix,
+    runner: node.config?.runner || null,
+    nodeType,
+  });
+  const compacted = await compactWorkflowCommandResult({
+    command,
+    output: run.stdout || "",
+    stderr: run.stderr || "",
+    exitCode: Number.isFinite(Number(run.exitCode)) ? Number(run.exitCode) : (run.ok ? 0 : 1),
+    durationMs: Number.isFinite(Number(run.durationMs)) ? Number(run.durationMs) : 0,
+  });
+
+  return {
+    run,
+    compacted,
+    baseResult: {
+      executionLane: runnerPolicy.lane,
+      executionLaneReason: runnerPolicy.reason,
+      runnerLease: run.lease || null,
+      runnerArtifactPointers: Array.isArray(run.artifactPointers) ? run.artifactPointers : [],
+    },
   };
 }
 
@@ -5439,6 +5492,15 @@ registerBuiltinNodeType("validation.tests", {
       cwd: { type: "string", description: "Working directory" },
       timeoutMs: { type: "number", default: 600000 },
       requiredPassRate: { type: "number", default: 1.0, description: "Minimum pass rate (0-1)" },
+      runner: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean", description: "Force isolated runner execution" },
+          runtime: { type: "string", enum: ["local-process", "local-container", "remote-sandbox"], default: "local-process" },
+          retries: { type: "number", default: 0 },
+          artifactDir: { type: "string", description: "Directory for persisted runner stdout/stderr artifacts" },
+        },
+      },
     },
   },
   async execute(node, ctx) {
@@ -5448,6 +5510,27 @@ registerBuiltinNodeType("validation.tests", {
 
     ctx.log(node.id, `Running tests: ${command}`);
     const startedAt = Date.now();
+    const runnerExecution = await executeValidationCommandWithOptionalRunner({
+      node,
+      ctx,
+      nodeType: "validation.tests",
+      command,
+      cwd,
+      timeoutMs: timeout,
+    });
+    if (runnerExecution) {
+      const { run, compacted, baseResult } = runnerExecution;
+      ctx.log(node.id, run.ok ? "Tests passed" : (run.blocked ? "Runner lease failed" : "Tests failed"), run.ok ? undefined : "error");
+      return {
+        passed: run.ok,
+        exitCode: run.exitCode,
+        blocked: run.blocked === true,
+        reason: run.blocked ? (run.failureKind || "runner_lease_failed") : undefined,
+        ...baseResult,
+        ...compacted,
+      };
+    }
+
     try {
       const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
       ctx.log(node.id, "Tests passed");
@@ -5457,7 +5540,7 @@ registerBuiltinNodeType("validation.tests", {
         exitCode: 0,
         durationMs: Date.now() - startedAt,
       });
-      return { passed: true, ...compacted };
+      return { passed: true, executionLane: "main", ...compacted };
     } catch (err) {
       const output = (err.stdout?.toString() || "") + (err.stderr?.toString() || "");
       ctx.log(node.id, "Tests failed", "error");
@@ -5467,7 +5550,7 @@ registerBuiltinNodeType("validation.tests", {
         exitCode: err.status,
         durationMs: Date.now() - startedAt,
       });
-      return { passed: false, exitCode: err.status, ...compacted };
+      return { passed: false, exitCode: err.status, executionLane: "main", ...compacted };
     }
   },
 });
@@ -5481,6 +5564,15 @@ registerBuiltinNodeType("validation.build", {
       cwd: { type: "string" },
       timeoutMs: { type: "number", default: 600000 },
       zeroWarnings: { type: "boolean", default: false, description: "Fail on warnings too" },
+      runner: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean", description: "Force isolated runner execution" },
+          runtime: { type: "string", enum: ["local-process", "local-container", "remote-sandbox"], default: "local-process" },
+          retries: { type: "number", default: 0 },
+          artifactDir: { type: "string", description: "Directory for persisted runner stdout/stderr artifacts" },
+        },
+      },
     },
   },
   async execute(node, ctx) {
@@ -5494,6 +5586,38 @@ registerBuiltinNodeType("validation.build", {
     }
     ctx.log(node.id, `Building: ${command}`);
     const startedAt = Date.now();
+    const runnerExecution = await executeValidationCommandWithOptionalRunner({
+      node,
+      ctx,
+      nodeType: "validation.build",
+      command,
+      cwd,
+      timeoutMs: timeout,
+    });
+    if (runnerExecution) {
+      const { run, compacted, baseResult } = runnerExecution;
+      const combinedOutput = `${run.stdout || ""}\n${run.stderr || ""}`;
+      const hasWarnings = /warning/i.test(combinedOutput);
+      ctx.log(node.id, run.ok ? "Build completed" : (run.blocked ? "Runner lease failed" : "Build failed"), run.ok ? undefined : "error");
+      if (run.ok && node.config?.zeroWarnings && hasWarnings) {
+        return {
+          passed: false,
+          reason: "warnings_found",
+          exitCode: run.exitCode,
+          ...baseResult,
+          ...compacted,
+        };
+      }
+      return {
+        passed: run.ok,
+        exitCode: run.exitCode,
+        blocked: run.blocked === true,
+        reason: run.blocked ? (run.failureKind || "runner_lease_failed") : undefined,
+        ...baseResult,
+        ...compacted,
+      };
+    }
+
     try {
       const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
       const hasWarnings = /warning/i.test(output || "");
@@ -5504,9 +5628,9 @@ registerBuiltinNodeType("validation.build", {
         durationMs: Date.now() - startedAt,
       });
       if (node.config?.zeroWarnings && hasWarnings) {
-        return { passed: false, reason: "warnings_found", ...compacted };
+        return { passed: false, reason: "warnings_found", executionLane: "main", ...compacted };
       }
-      return { passed: true, ...compacted };
+      return { passed: true, executionLane: "main", ...compacted };
     } catch (err) {
       const compacted = await compactWorkflowCommandResult({
         command,
@@ -5515,7 +5639,7 @@ registerBuiltinNodeType("validation.build", {
         exitCode: err.status,
         durationMs: Date.now() - startedAt,
       });
-      return { passed: false, exitCode: err.status, ...compacted };
+      return { passed: false, exitCode: err.status, executionLane: "main", ...compacted };
     }
   },
 });

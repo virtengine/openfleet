@@ -768,6 +768,8 @@ function buildCodexSdkOptions(envInput = process.env) {
   // Always strip OPENAI_BASE_URL — for Azure we use config overrides,
   // for non-Azure the CLI should use its built-in endpoint.
   delete env.OPENAI_BASE_URL;
+  delete env.OPENAI_ORGANIZATION;
+  delete env.OPENAI_PROJECT;
 
   if (isAzure) {
     // Map OPENAI_API_KEY → AZURE_OPENAI_API_KEY for Azure auth

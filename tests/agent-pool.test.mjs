@@ -199,6 +199,8 @@ const ENV_KEYS = [
   "CLAUDE_SDK_DISABLED",
   "OPENAI_API_KEY",
   "OPENAI_BASE_URL",
+  "OPENAI_ORGANIZATION",
+  "OPENAI_PROJECT",
   "CODEX_MODEL_PROFILE",
   "CODEX_MODEL",
   "AZURE_OPENAI_API_KEY",
@@ -247,6 +249,8 @@ function clearSdkEnv() {
   delete process.env.CLAUDE_SDK_DISABLED;
   delete process.env.OPENAI_API_KEY;
   delete process.env.OPENAI_BASE_URL;
+  delete process.env.OPENAI_ORGANIZATION;
+  delete process.env.OPENAI_PROJECT;
   delete process.env.CODEX_MODEL_PROFILE;
   delete process.env.CODEX_MODEL;
   delete process.env.AZURE_OPENAI_API_KEY;
@@ -1213,6 +1217,32 @@ describe("launchOrResumeThread", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/timeout after 25ms/i);
+  });
+
+
+  it("strips optional OpenAI organization and project headers from Codex SDK env", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.OPENAI_ORGANIZATION = "org_stale";
+    process.env.OPENAI_PROJECT = "proj_stale";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
+    setPoolSdk("codex");
+
+    const result = await launchOrResumeThread(
+      "sanitize optional headers",
+      process.cwd(),
+      5000,
+      {
+        sdk: "codex",
+      },
+    );
+
+    expect(result.success).toBe(true);
+    expect(mockCodexCtor).toHaveBeenCalledTimes(1);
+    const [opts] = mockCodexCtor.mock.calls.at(-1);
+    expect(opts.env.OPENAI_ORGANIZATION).toBeUndefined();
+    expect(opts.env.OPENAI_PROJECT).toBeUndefined();
   });
 
   it("uses INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS for stalled codex streams", async () => {

@@ -84,6 +84,8 @@ const ENV_KEYS = [
   "INTERNAL_EXECUTOR_STREAM_MAX_ITEM_CHARS",
   "OPENAI_BASE_URL",
   "OPENAI_API_KEY",
+  "OPENAI_ORGANIZATION",
+  "OPENAI_PROJECT",
   "AZURE_OPENAI_API_KEY",
   "CODEX_MODEL",
 ];
@@ -349,4 +351,43 @@ describe("codex-shell stream safeguards", () => {
       }),
     }));
   });
+
+  it("strips optional OpenAI organization and project headers before SDK startup", async () => {
+    const {
+      execCodexPrompt: freshExecCodexPrompt,
+      resetThread: freshResetThread,
+      resolveCodexProfileRuntime: freshResolveCodexProfileRuntime,
+    } = await loadFreshCodexShell();
+
+    await freshResetThread();
+    freshResolveCodexProfileRuntime.mockReturnValue({
+      env: {
+        OPENAI_API_KEY: "openai-key",
+        OPENAI_ORGANIZATION: "org_stale",
+        OPENAI_PROJECT: "proj_stale",
+      },
+    });
+    mockStartThread.mockImplementation(() => ({
+      id: "codex-test-thread-header-sanitize",
+      runStreamed: async () => ({
+        events: {
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "item.completed",
+              item: { type: "agent_message", text: "sanitized ok" },
+            };
+            yield { type: "turn.completed" };
+          },
+        },
+      }),
+    }));
+
+    const result = await freshExecCodexPrompt("sanitize optional headers", { timeoutMs: 5000 });
+
+    expect(result.finalResponse).toContain("sanitized ok");
+    expect(process.env.OPENAI_ORGANIZATION).toBeUndefined();
+    expect(process.env.OPENAI_PROJECT).toBeUndefined();
+    expect(mockCodexCtor).toHaveBeenCalledTimes(1);
+  });
+
 });

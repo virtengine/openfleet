@@ -96,6 +96,8 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env) {
   const env = { ...resolvedEnv };
 
   delete env.OPENAI_BASE_URL;
+  delete env.OPENAI_ORGANIZATION;
+  delete env.OPENAI_PROJECT;
 
   // Use the config.toml provider section name and env_key when available,
   // so Bosun's config override is consistent with the user's config.toml
@@ -516,8 +518,10 @@ async function getThread() {
     };
     const runtime = buildCodexSdkRuntime(streamProviderOverrides, process.env);
 
-    Object.assign(process.env, runtime.env);
     delete process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_ORGANIZATION;
+    delete process.env.OPENAI_PROJECT;
+    Object.assign(process.env, runtime.env);
 
     codexInstance = new Cls({
       config: {

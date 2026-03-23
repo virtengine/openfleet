@@ -12,6 +12,7 @@ import { resolveRepoRoot } from "../config/repo-root.mjs";
 import { buildArchitectEditorFrame } from "../lib/repo-map.mjs";
 import { getAgentToolConfig, getEffectiveTools } from "./agent-tool-config.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
+import { buildContextEnvelope } from "../workspace/context-cache.mjs";
 import { getEntry, getEntryContent, resolveAgentProfileLibraryMetadata } from "../infra/library-manager.mjs";
 import { execPooledPrompt } from "./agent-pool.mjs";
 import {
@@ -197,55 +198,16 @@ function appendAttachmentsToPrompt(message, attachments) {
 
 
 function summarizeContextCompressionItems(items) {
-  if (!Array.isArray(items) || items.length === 0) return null;
-
-  const counts = {
-    agent: 0,
-    user: 0,
-    tool: 0,
-    other: 0,
-  };
-
-  for (const item of items) {
-    if (!item || typeof item !== "object") continue;
-    const compressedTag = String(item._compressed || "").trim().toLowerCase();
-    const text = String(item.text || item.output || item.aggregated_output || "").toLowerCase();
-    const hasToolPlaceholder =
-      Boolean(item._cachedLogId)
-      || text.includes("full output: bosun --tool-log")
-      || text.includes(" chars compressed");
-
-    if (compressedTag.startsWith("agent_")) {
-      counts.agent += 1;
-      continue;
-    }
-    if (compressedTag === "user_breadcrumb") {
-      counts.user += 1;
-      continue;
-    }
-    if (hasToolPlaceholder) {
-      counts.tool += 1;
-      continue;
-    }
-    if (compressedTag) counts.other += 1;
-  }
-
-  const total = counts.agent + counts.user + counts.tool + counts.other;
-  if (total === 0) return null;
-
-  const detailParts = [];
-  if (counts.agent) detailParts.push(`${counts.agent} agent message${counts.agent === 1 ? "" : "s"}`);
-  if (counts.user) detailParts.push(`${counts.user} user prompt${counts.user === 1 ? "" : "s"}`);
-  if (counts.tool) detailParts.push(`${counts.tool} tool output${counts.tool === 1 ? "" : "s"}`);
-  if (counts.other) detailParts.push(`${counts.other} other item${counts.other === 1 ? "" : "s"}`);
-
+  const envelope = buildContextEnvelope({ scope: "continuation", items });
+  if (!envelope) return null;
   return {
-    total,
-    counts,
-    detail: detailParts.join(", "),
-    content:
-      `Context summarized for continuation: ${total} older item${total === 1 ? "" : "s"} compressed (${detailParts.join(", ")}). ` +
-      `Session history in this view is unchanged.`,
+    total: envelope.meta?.total || 0,
+    counts: envelope.meta?.counts || { agent: 0, user: 0, tool: 0, other: 0 },
+    detail: envelope.meta?.detail || "",
+    toolFamilies: envelope.meta?.toolFamilies || {},
+    budgetPolicies: envelope.meta?.budgetPolicies || {},
+    lowSignalToolCount: envelope.meta?.lowSignalToolCount || 0,
+    content: envelope.content,
   };
 }
 

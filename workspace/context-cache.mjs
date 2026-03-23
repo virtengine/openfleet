@@ -210,9 +210,10 @@ async function ensureCacheDir() {
  * @param {object} item        The original item object (has text/output/etc.)
  * @param {string} toolName    Name of the tool call
  * @param {string} argsPreview Short summary of arguments
+ * @param {object|null} [decision] Optional semantic budget decision metadata
  * @returns {Promise<number>}  The assigned log ID
  */
-async function writeToCache(item, toolName, argsPreview) {
+async function writeToCache(item, toolName, argsPreview, decision = null) {
   await ensureCacheDir();
   const fs = await getFs();
 
@@ -226,6 +227,7 @@ async function writeToCache(item, toolName, argsPreview) {
     ts: Date.now(),
     toolName: toolName || "unknown",
     argsPreview: argsPreview || "",
+    ...(decision && typeof decision === "object" ? { decision } : {}),
     item,
   };
 
@@ -256,6 +258,25 @@ async function writeToCache(item, toolName, argsPreview) {
   return logId;
 }
 
+async function updateCachedDecision(logId, decision) {
+  const numericId = Number(logId);
+  if (!Number.isFinite(numericId) || numericId < 1) return;
+  if (!decision || typeof decision !== "object") return;
+  const filepath = _logIndex.get(numericId)?.file || resolve(TOOL_LOG_DIR, `${numericId}.json`);
+  try {
+    const fs = await getFs();
+    const raw = await fs.readFile(filepath, "utf8");
+    const entry = JSON.parse(raw);
+    entry.decision = decision;
+    await fs.writeFile(filepath, JSON.stringify(entry), "utf8");
+    const memEntry = _contentCache.get(numericId);
+    if (memEntry?.entry) {
+      memEntry.entry.decision = decision;
+    }
+  } catch {
+    // best effort only
+  }
+}
 // ---------------------------------------------------------------------------
 // Cache Read
 // ---------------------------------------------------------------------------
@@ -322,6 +343,7 @@ export async function listToolLogs(limit = 20) {
           ts: entry.ts,
           toolName: entry.toolName,
           argsPreview: entry.argsPreview,
+          decision: entry.decision || null,
         });
       } catch {
         // skip corrupt entries
@@ -601,18 +623,43 @@ function isLikelyStructuredOutput(text, item) {
   );
 }
 
+const LIVE_TEST_COMMANDS = new Set(["pytest", "jest", "vitest", "xunit", "nunit", "ctest"]);
+const LIVE_BUILD_COMMANDS = new Set(["cargo", "gradle", "maven", "mvn", "javac", "tsc", "deno", "make", "cmake", "bazel", "buck", "nx", "turbo", "rush", "msbuild"]);
+const LIVE_PACKAGE_MANAGER_COMMANDS = new Set(["npm", "pnpm", "yarn", "bun", "pip", "pip3", "poetry", "composer", "bundle"]);
+const LIVE_DEPLOY_COMMANDS = new Set(["docker", "kubectl", "helm", "terraform", "ansible", "ansible-playbook", "serverless", "vercel", "netlify", "flyctl", "aws", "az", "gcloud", "systemctl"]);
+const LIVE_TEST_SIGNAL_REGEX = /^(?:FAIL\b|Failed\b|--- FAIL:|Error Message:| Stack Trace:|\s*Expected:|\s*But was:|FAILED\s+)/i;
+const LIVE_BUILD_DIAGNOSTIC_REGEX = /\b(?:TS|CS|MSB|NU)\d+\b/;
+const LIVE_PACKAGE_SIGNAL_REGEX = /\b(?:deprecated|vulnerabilit|npm ERR!|pnpm ERR!|ERR_PNPM|peer dep|peer dependency|added \d+ packages|removed \d+ packages|changed \d+ packages|audited \d+ packages|workspace)\b/i;
+const LIVE_DEPLOY_SIGNAL_REGEX = /\b(?:deployment|service|release|revision|namespace|ingress|rollout|configured|created|unchanged|available|healthy|deployed|rollback|timeout|url:|hostname|endpoint)\b/i;
+
 function classifyLiveFamily(commandFamily, item) {
   const cmd = String(commandFamily || "");
   const full = `${cmd} ${extractCommandLine(item)}`.toLowerCase();
   if (["grep", "rg", "find", "findstr", "select-string", "ag", "ack", "sift", "fd", "where", "which", "ls", "dir", "tree", "gci", "get-childitem"].includes(cmd) || /git\s+grep\b/.test(full)) return "search";
   if (cmd === "git") return "git";
-  if (["go", "pytest", "cargo", "gradle", "maven", "mvn", "javac", "tsc", "jest", "vitest", "deno", "bun", "make", "cmake", "bazel", "buck", "nx", "turbo", "rush", "dotnet", "msbuild", "xunit", "nunit", "ctest"].includes(cmd)) return "build";
-  if (["npm", "pnpm", "yarn", "node", "python", "python3", "pip", "pip3", "poetry", "composer", "bundle", "npx"].includes(cmd)) {
-    return /test|build|install|lint|run|pytest|jest|vitest|mocha|ava|unittest|coverage|compile/.test(full) ? "build" : "generic";
-  }
   if (["journalctl", "tail", "get-content"].includes(cmd)) return "logs";
   if (["docker", "kubectl"].includes(cmd) && /logs?\b|tail\b|follow\b|-f\b/.test(full)) return "logs";
-  if (["docker", "kubectl", "helm", "terraform", "ansible", "ansible-playbook", "systemctl"].includes(cmd)) return "ops";
+  if (LIVE_TEST_COMMANDS.has(cmd)) return "test";
+  if (cmd === "dotnet" && /\btest\b/.test(full)) return "test";
+  if (cmd === "go" && /\btest\b/.test(full)) return "test";
+  if (["node", "python", "python3", "npx", ...LIVE_PACKAGE_MANAGER_COMMANDS].includes(cmd)
+    && /\b(?:test|pytest|jest|vitest|mocha|ava|unittest|coverage|xunit|nunit)\b/.test(full)) {
+    return "test";
+  }
+  if (LIVE_PACKAGE_MANAGER_COMMANDS.has(cmd)
+    && /\b(?:install|add|remove|uninstall|update|upgrade|audit|outdated|dedupe|prune|ci|sync|restore|publish|list)\b/.test(full)) {
+    return "package-manager";
+  }
+  if (LIVE_BUILD_COMMANDS.has(cmd)) return "build";
+  if (cmd === "dotnet" && /\b(?:build|publish|restore|pack|msbuild)\b/.test(full)) return "build";
+  if (["node", "python", "python3", "npx", ...LIVE_PACKAGE_MANAGER_COMMANDS].includes(cmd)
+    && /\b(?:build|compile|lint|typecheck|tsc|webpack|vite)\b/.test(full)) {
+    return "build";
+  }
+  if (LIVE_DEPLOY_COMMANDS.has(cmd)
+    && /\b(?:deploy|apply|rollout|release|sync|upgrade|promote|publish|install|plan|destroy|diff|status)\b/.test(full)) {
+    return "deploy";
+  }
   return "generic";
 }
 
@@ -742,16 +789,22 @@ function isLowValuePassLine(line) {
 }
 
 function pickSelectedLines(lines, family, mode) {
-  const maxLines = mode === "aggressive" ? 12 : 20;
-  const errorSet = collectSignalIndices(lines, (line) => LIVE_ERROR_REGEX.test(line) || LIVE_STATUS_REGEX.test(line), family === "build" ? 1 : 0, mode === "aggressive" ? 8 : 12);
+  const maxLinesByFamily = { search: 20, test: 18, build: 18, git: 18, logs: 16, "package-manager": 14, deploy: 14 };
+  const maxLines = mode === "aggressive" ? 12 : (maxLinesByFamily[family] || 20);
+  const buildRadius = family === "build" || family === "test" ? 1 : 0;
+  const errorSet = collectSignalIndices(lines, (line) => LIVE_ERROR_REGEX.test(line) || LIVE_STATUS_REGEX.test(line), buildRadius, mode === "aggressive" ? 8 : 12);
   const warnSet = collectSignalIndices(lines, (line) => LIVE_WARN_REGEX.test(line), 0, mode === "aggressive" ? 4 : 6);
   const summarySet = collectSignalIndices(lines, (line) => LIVE_SUMMARY_REGEX.test(line) && !isLowValuePassLine(line), 0, mode === "aggressive" ? 5 : 8);
   const fileSet = collectSignalIndices(lines, (line) => !!extractFileKey(line), 0, family === "search" ? maxLines : 8);
+  const testSet = collectSignalIndices(lines, (line) => LIVE_TEST_SIGNAL_REGEX.test(line), 1, mode === "aggressive" ? 8 : 10);
+  const buildSet = collectSignalIndices(lines, (line) => LIVE_BUILD_DIAGNOSTIC_REGEX.test(line), 1, mode === "aggressive" ? 8 : 10);
+  const packageSet = collectSignalIndices(lines, (line) => LIVE_PACKAGE_SIGNAL_REGEX.test(line), 0, mode === "aggressive" ? 8 : 10);
+  const deploySet = collectSignalIndices(lines, (line) => LIVE_DEPLOY_SIGNAL_REGEX.test(line), 0, mode === "aggressive" ? 8 : 10);
   const diagnosticTerms = collectDiagnosticSearchTerms(lines, family);
   const termSet = collectSignalIndices(
     lines,
     (line) => diagnosticTerms.some((term) => new RegExp(escapeRegExp(term), "i").test(line)),
-    family === "build" ? 1 : 0,
+    buildRadius,
     mode === "aggressive" ? 8 : 12,
   );
   const selected = new Set();
@@ -761,11 +814,15 @@ function pickSelectedLines(lines, family, mode) {
     }
   };
   addIndices(errorSet);
+  if (family === "test") addIndices(testSet);
+  if (family === "build") addIndices(buildSet);
+  if (family === "package-manager") addIndices(packageSet);
+  if (family === "deploy") addIndices(deploySet);
   addIndices(warnSet);
   addIndices(summarySet);
   addIndices(termSet);
-  if (family === "search" || family === "git") addIndices(fileSet);
-  if ((family === "logs" || family === "ops") && selected.size < maxLines) {
+  if (["search", "git", "test", "build"].includes(family)) addIndices(fileSet);
+  if ((family === "logs" || family === "deploy") && selected.size < maxLines) {
     for (let i = Math.max(0, lines.length - (mode === "aggressive" ? 8 : 12)); i < lines.length && selected.size < maxLines; i += 1) {
       selected.add(i);
     }
@@ -775,7 +832,7 @@ function pickSelectedLines(lines, family, mode) {
       selected.add(i);
     }
   }
-  if (selected.size < Math.min(maxLines, lines.length) && !["search", "git", "build"].includes(family)) {
+  if (selected.size < Math.min(maxLines, lines.length) && !["search", "git", "test", "build"].includes(family)) {
     for (let i = Math.max(0, lines.length - 6); i < lines.length && selected.size < maxLines; i += 1) {
       selected.add(i);
     }
@@ -852,12 +909,229 @@ function appendCommandDiagnosticFooter(baseText, diagnostic, opts) {
   return `${String(baseText || "").slice(0, headBudget).trimEnd()}\n\n[...summary trimmed for diagnostics...]\n\n${footerText}`;
 }
 
+function buildPackageSignalSummary(lines) {
+  const entries = [];
+  for (const line of lines) {
+    for (const match of String(line).matchAll(/\b(@?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)?)@([~^]?[0-9][A-Za-z0-9+_.-]*)\b/g)) {
+      entries.push(`${match[1]}@${match[2]}`);
+      if (entries.length >= 6) return uniqueValues(entries);
+    }
+    if (LIVE_PACKAGE_SIGNAL_REGEX.test(line)) {
+      entries.push(String(line).trim());
+      if (entries.length >= 6) return uniqueValues(entries);
+    }
+  }
+  return uniqueValues(entries).slice(0, 6);
+}
+
+function buildDeploySignalSummary(lines) {
+  const entries = [];
+  for (const line of lines) {
+    const match = String(line).match(/\b(?:deployment|service|release|revision|namespace|ingress|rollout)\/?([A-Za-z0-9_.-]+)?\b/i);
+    if (match) entries.push(match[0].trim());
+  }
+  return uniqueValues(entries).slice(0, 6);
+}
+
+function resolveLiveSummaryLabel(family) {
+  if (family === "package-manager") return "Package signals";
+  if (family === "deploy") return "Deploy targets";
+  if (family === "test") return "Test anchors";
+  return "Top files";
+}
+
+function buildLiveSignalSummary(lines, family) {
+  if (family === "package-manager") return buildPackageSignalSummary(lines);
+  if (family === "deploy") return buildDeploySignalSummary(lines);
+  return family === "search" || family === "git" || family === "test" || family === "build"
+    ? buildSearchFileSummary(lines)
+    : [];
+}
+
+function resolveSemanticBudgetPolicy({ family = "generic", diagnostic = null, retrieveCommand = null, directArtifact = false } = {}) {
+  const artifactStored = Boolean(retrieveCommand);
+  if (!artifactStored) {
+    return {
+      name: "full-inline",
+      reason: "Output fit the inline budget; no retrieval artifact was needed.",
+      artifactStored: false,
+      inlineMode: "full",
+      structuredDelta: false,
+      lowSignal: false,
+    };
+  }
+  if (diagnostic?.deltaSummary) {
+    return {
+      name: "structured-delta",
+      reason: `${family} output produced stable delta signals, so Bosun kept the delta inline and stored the full artifact.`,
+      artifactStored: true,
+      inlineMode: "delta-summary",
+      structuredDelta: true,
+      lowSignal: diagnostic?.insufficientSignal === true,
+    };
+  }
+  if (diagnostic?.insufficientSignal) {
+    return {
+      name: "artifact-summary",
+      reason: `${family} output was large but low-signal, so Bosun stored the full artifact and kept only a compact summary inline.`,
+      artifactStored: true,
+      inlineMode: "minimal-summary",
+      structuredDelta: false,
+      lowSignal: true,
+    };
+  }
+  if (directArtifact) {
+    return {
+      name: "artifact-excerpt",
+      reason: `${family} output exceeded its inline budget, so Bosun kept a bounded excerpt inline and cached the full artifact.`,
+      artifactStored: true,
+      inlineMode: "bounded-excerpt",
+      structuredDelta: false,
+      lowSignal: false,
+    };
+  }
+  return {
+    name: "inline-excerpt",
+    reason: `${family} output matched the semantic excerpt policy, so Bosun kept high-signal lines inline and cached the full artifact.`,
+    artifactStored: true,
+    inlineMode: "selected-lines",
+    structuredDelta: false,
+    lowSignal: false,
+  };
+}
+
+function formatEnvelopeCounts(map = {}, preferredOrder = []) {
+  const entries = Object.entries(map || {}).filter(([, count]) => Number(count) > 0);
+  const order = new Map(preferredOrder.map((value, index) => [value, index]));
+  return entries
+    .sort((left, right) => {
+      const leftOrder = order.has(left[0]) ? order.get(left[0]) : Number.MAX_SAFE_INTEGER;
+      const rightOrder = order.has(right[0]) ? order.get(right[0]) : Number.MAX_SAFE_INTEGER;
+      if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+      return String(left[0]).localeCompare(String(right[0]));
+    })
+    .map(([key, count]) => `${key}=${count}`);
+}
+
+export function buildContextEnvelope({
+  scope = "command",
+  items = [],
+  command = "",
+  family = "generic",
+  commandFamily = "unknown",
+  budgetPolicy = "full-inline",
+  budgetReason = "",
+  retrieveCommand = null,
+  summary = "",
+  deltaSummary = "",
+  suggestedRerun = "",
+  hint = "",
+  lowSignal = false,
+  originalChars = 0,
+  compactedChars = 0,
+  excerptStrategy = "selected-lines",
+} = {}) {
+  if (scope === "continuation") {
+    const counts = { agent: 0, user: 0, tool: 0, other: 0 };
+    const toolFamilies = {};
+    const budgetPolicies = {};
+    let lowSignalToolCount = 0;
+    for (const item of Array.isArray(items) ? items : []) {
+      if (!item || typeof item !== "object") continue;
+      const compressedTag = String(item._compressed || "").trim().toLowerCase();
+      const text = String(item.text || item.output || item.aggregated_output || "").toLowerCase();
+      const hasToolPlaceholder = Boolean(item._cachedLogId) || text.includes("full output: bosun --tool-log") || text.includes(" chars compressed");
+      if (compressedTag.startsWith("agent_")) { counts.agent += 1; continue; }
+      if (compressedTag === "user_breadcrumb") { counts.user += 1; continue; }
+      if (hasToolPlaceholder) {
+        counts.tool += 1;
+        const envelopeMeta = item._contextEnvelope?.meta || {};
+        const effectiveFamily = String(envelopeMeta.family || item._liveCompactionFamily || item._commandDiagnostics?.family || "generic").trim() || "generic";
+        const effectiveBudget = String(envelopeMeta.budgetPolicy || item._semanticBudgetPolicy || (item._cachedLogId ? "cached" : "full-inline")).trim() || "cached";
+        toolFamilies[effectiveFamily] = (toolFamilies[effectiveFamily] || 0) + 1;
+        budgetPolicies[effectiveBudget] = (budgetPolicies[effectiveBudget] || 0) + 1;
+        if (envelopeMeta.lowSignal === true || item._commandDiagnostics?.insufficientSignal === true) lowSignalToolCount += 1;
+        continue;
+      }
+      if (compressedTag) counts.other += 1;
+    }
+    const total = counts.agent + counts.user + counts.tool + counts.other;
+    if (total === 0) return null;
+    const detailParts = [];
+    if (counts.agent) detailParts.push(`${counts.agent} agent message${counts.agent === 1 ? "" : "s"}`);
+    if (counts.user) detailParts.push(`${counts.user} user prompt${counts.user === 1 ? "" : "s"}`);
+    if (counts.tool) detailParts.push(`${counts.tool} tool output${counts.tool === 1 ? "" : "s"}`);
+    if (counts.other) detailParts.push(`${counts.other} other item${counts.other === 1 ? "" : "s"}`);
+    const familyDetails = formatEnvelopeCounts(toolFamilies, ["search", "test", "build", "git", "logs", "package-manager", "deploy", "generic"]);
+    const budgetDetails = formatEnvelopeCounts(budgetPolicies, ["structured-delta", "inline-excerpt", "artifact-excerpt", "artifact-summary", "cached", "full-inline"]);
+    const sentences = [
+      `Context summarized for continuation: ${total} older item${total === 1 ? "" : "s"} compressed (${detailParts.join(", ")}). Session history in this view is unchanged.`,
+    ];
+    if (familyDetails.length) sentences.push(`Tool evidence families: ${familyDetails.join(", ")}.`);
+    if (budgetDetails.length) sentences.push(`Budget policies: ${budgetDetails.join(", ")}.`);
+    if (lowSignalToolCount) sentences.push(`Low-signal tool outputs: ${lowSignalToolCount}.`);
+    return {
+      scope,
+      content: sentences.join(" "),
+      meta: { total, counts, detail: detailParts.join(", "), toolFamilies, budgetPolicies, lowSignalToolCount },
+    };
+  }
+  const savedChars = Math.max(0, Number(originalChars) - Number(compactedChars));
+  const savedPct = Number(originalChars) > 0 ? Math.max(0, Math.round((savedChars / Math.max(1, Number(originalChars))) * 100)) : 0;
+  const parts = [`Command evidence: ${family}/${commandFamily} via ${budgetPolicy}.`];
+  if (summary) parts.push(`Summary: ${summary}`);
+  if (deltaSummary) parts.push(`Delta: ${deltaSummary}`);
+  if (suggestedRerun) parts.push(`Suggested rerun: ${suggestedRerun}`);
+  if (hint) parts.push(`Hint: ${hint}`);
+  if (budgetReason) parts.push(`Budget: ${budgetReason}`);
+  if (retrieveCommand) parts.push(`Retrieve: ${retrieveCommand}`);
+  return {
+    scope,
+    content: parts.join(" "),
+    meta: { command, family, commandFamily, budgetPolicy, budgetReason, retrieveCommand, summary, deltaSummary, suggestedRerun, hint, lowSignal, originalChars, compactedChars, savedChars, savedPct, excerptStrategy },
+  };
+}
+
+function attachCommandEnvelope(compactedItem, {
+  family = "generic",
+  commandFamily = "unknown",
+  diagnostic = null,
+  logId = null,
+  originalChars = 0,
+  compactedChars = 0,
+  excerptStrategy = "selected-lines",
+  directArtifact = false,
+} = {}) {
+  const retrieveCommand = logId ? `bosun --tool-log ${logId}` : null;
+  const policy = resolveSemanticBudgetPolicy({ family, diagnostic, retrieveCommand, directArtifact });
+  const envelope = buildContextEnvelope({
+    scope: "command",
+    command: extractCommandLine(compactedItem) || extractToolName(compactedItem),
+    family,
+    commandFamily,
+    budgetPolicy: policy.name,
+    budgetReason: policy.reason,
+    retrieveCommand,
+    summary: diagnostic?.summary || "",
+    deltaSummary: diagnostic?.deltaSummary || "",
+    suggestedRerun: diagnostic?.suggestedRerun || "",
+    hint: diagnostic?.hint || "",
+    lowSignal: diagnostic?.insufficientSignal === true,
+    originalChars,
+    compactedChars,
+    excerptStrategy,
+  });
+  compactedItem._semanticBudgetPolicy = policy.name;
+  compactedItem._semanticBudgetReason = policy.reason;
+  compactedItem._contextEnvelope = envelope;
+  return envelope;
+}
 function renderLiveCompactionText(analysis, logRef, opts) {
   const retrieve = `bosun --tool-log ${logRef}`;
   const header = `[Live-compacted ${analysis.family}] ${analysis.commandLabel} -> ${analysis.lineCount} lines / ${charLabel(analysis.originalText)}, saved ~${analysis.savedPct}% | Full output: ${retrieve}`;
   const sections = [header];
   if (analysis.highlights.length) sections.push(`Highlights: ${analysis.highlights.join("; ")}`);
-  if (analysis.fileSummary.length) sections.push(`Top files: ${analysis.fileSummary.join(", ")}`);
+  if (analysis.fileSummary.length) sections.push(`${analysis.summaryLabel || "Top files"}: ${analysis.fileSummary.join(", ")}`);
   if (analysis.repeatedSummary.length) sections.push(`Repeated noise omitted: ${analysis.repeatedSummary.join("; ")}`);
   if (analysis.selectedLines.length) sections.push(`Selected lines:\n${analysis.selectedLines.join("\n")}`);
   let rendered = sections.join("\n\n");
@@ -869,7 +1143,7 @@ function renderLiveCompactionText(analysis, logRef, opts) {
     selected.splice(Math.floor(selected.length / 2), 1);
     const nextSections = [header];
     if (analysis.highlights.length) nextSections.push(`Highlights: ${analysis.highlights.join("; ")}`);
-    if (fileSummary.length) nextSections.push(`Top files: ${fileSummary.join(", ")}`);
+    if (fileSummary.length) nextSections.push(`${analysis.summaryLabel || "Top files"}: ${fileSummary.join(", ")}`);
     if (repeated.length) nextSections.push(`Repeated noise omitted: ${repeated.join("; ")}`);
     if (selected.length) nextSections.push(`Selected lines:\n${selected.join("\n")}`);
     rendered = nextSections.join("\n\n");
@@ -878,7 +1152,7 @@ function renderLiveCompactionText(analysis, logRef, opts) {
     repeated = [];
     const nextSections = [header];
     if (analysis.highlights.length) nextSections.push(`Highlights: ${analysis.highlights.join("; ")}`);
-    if (fileSummary.length) nextSections.push(`Top files: ${fileSummary.join(", ")}`);
+    if (fileSummary.length) nextSections.push(`${analysis.summaryLabel || "Top files"}: ${fileSummary.join(", ")}`);
     if (selected.length) nextSections.push(`Selected lines:\n${selected.join("\n")}`);
     rendered = nextSections.join("\n\n");
   }
@@ -886,7 +1160,7 @@ function renderLiveCompactionText(analysis, logRef, opts) {
     fileSummary = fileSummary.slice(0, 4);
     const nextSections = [header];
     if (analysis.highlights.length) nextSections.push(`Highlights: ${analysis.highlights.join("; ")}`);
-    if (fileSummary.length) nextSections.push(`Top files: ${fileSummary.join(", ")}`);
+    if (fileSummary.length) nextSections.push(`${analysis.summaryLabel || "Top files"}: ${fileSummary.join(", ")}`);
     if (selected.length) nextSections.push(`Selected lines:\n${selected.join("\n")}`);
     rendered = nextSections.join("\n\n");
   }
@@ -941,13 +1215,18 @@ function analyzeLiveToolOutput(item, opts) {
   const errorCount = lines.filter((line) => LIVE_ERROR_REGEX.test(line)).length;
   const warningCount = lines.filter((line) => LIVE_WARN_REGEX.test(line)).length;
   const fileMatches = lines.filter((line) => !!extractFileKey(line)).length;
+  const packageSignalCount = family === "package-manager" ? lines.filter((line) => LIVE_PACKAGE_SIGNAL_REGEX.test(line)).length : 0;
+  const deploySignalCount = family === "deploy" ? lines.filter((line) => LIVE_DEPLOY_SIGNAL_REGEX.test(line)).length : 0;
   const highlights = [];
   if (errorCount) highlights.push(`${errorCount} error line${errorCount === 1 ? "" : "s"}`);
   if (warningCount) highlights.push(`${warningCount} warning line${warningCount === 1 ? "" : "s"}`);
-  if (family === "search" && fileMatches) highlights.push(`${fileMatches} file or match line${fileMatches === 1 ? "" : "s"}`);
+  if (["search", "git", "test", "build"].includes(family) && fileMatches) highlights.push(`${fileMatches} file or match line${fileMatches === 1 ? "" : "s"}`);
+  if (packageSignalCount) highlights.push(`${packageSignalCount} package signal${packageSignalCount === 1 ? "" : "s"}`);
+  if (deploySignalCount) highlights.push(`${deploySignalCount} deploy signal${deploySignalCount === 1 ? "" : "s"}`);
   if (!highlights.length) highlights.push(`${selectedLines.length} high-signal line${selectedLines.length === 1 ? "" : "s"}`);
   const repeatedSummary = summarizeRepeatedNoise(lines);
-  const fileSummary = family === "search" || family === "git" ? buildSearchFileSummary(lines) : [];
+  const fileSummary = buildLiveSignalSummary(lines, family);
+  const summaryLabel = resolveLiveSummaryLabel(family);
   const preview = renderLiveCompactionText({
     family,
     commandLabel: extractCommandLine(item) || extractToolName(item),
@@ -955,6 +1234,7 @@ function analyzeLiveToolOutput(item, opts) {
     lineCount: lines.length,
     highlights,
     fileSummary,
+    summaryLabel,
     repeatedSummary,
     selectedLines,
     savedPct: 0,
@@ -968,6 +1248,7 @@ function analyzeLiveToolOutput(item, opts) {
     lineCount: lines.length,
     highlights,
     fileSummary,
+    summaryLabel,
     repeatedSummary,
     selectedLines,
     commandLabel: extractCommandLine(item) || extractToolName(item),
@@ -1005,18 +1286,34 @@ async function compactStandaloneToolItem(
 
   const directGitClass = classifyImmediateGitOutput(item, opts);
   if (directGitClass) {
-    const logId = await writeToCache(item, extractToolName(item), extractArgsPreview(item));
+    const diagnostic = await analyzeCommandDiagnosticForItem(item);
+    const logId = await writeToCache(item, extractToolName(item), extractArgsPreview(item), {
+      family: "git",
+      commandFamily: extractCommandFamily(item),
+      budgetPolicy: diagnostic?.deltaSummary ? "structured-delta" : "artifact-excerpt",
+    });
     const compactedItem = applyImmediateGitCompression(item, logId, opts);
-    const diagnostic = await analyzeCommandDiagnosticForItem(item, logId);
     if (diagnostic) {
       compactedItem._commandDiagnostics = diagnostic;
       setItemText(compactedItem, appendCommandDiagnosticFooter(getItemText(compactedItem), diagnostic, opts));
     }
+    const compactedText = getItemText(compactedItem);
+    const envelope = attachCommandEnvelope(compactedItem, {
+      family: "git",
+      commandFamily: extractCommandFamily(item),
+      diagnostic,
+      logId,
+      originalChars: existingText.length,
+      compactedChars: compactedText.length,
+      excerptStrategy: "bounded-excerpt",
+      directArtifact: true,
+    });
+    await updateCachedDecision(logId, envelope?.meta || null);
     recordShreddingEvent({
       originalChars: existingText.length,
-      compressedChars: getItemText(compactedItem).length,
-      savedChars: Math.max(0, existingText.length - getItemText(compactedItem).length),
-      savedPct: Math.max(0, Math.round(((existingText.length - getItemText(compactedItem).length) / Math.max(1, existingText.length)) * 100)),
+      compressedChars: compactedText.length,
+      savedChars: Math.max(0, existingText.length - compactedText.length),
+      savedPct: Math.max(0, Math.round(((existingText.length - compactedText.length) / Math.max(1, existingText.length)) * 100)),
       agentType: agentType || null,
       stage: "live_tool_compaction",
       compactionFamily: "git",
@@ -1027,8 +1324,12 @@ async function compactStandaloneToolItem(
 
   const analysis = analyzeLiveToolOutput(item, opts);
   if (analysis) {
-    const logId = await writeToCache(item, extractToolName(item), extractArgsPreview(item));
-    const diagnostic = await analyzeCommandDiagnosticForItem(item, logId);
+    const diagnostic = await analyzeCommandDiagnosticForItem(item);
+    const logId = await writeToCache(item, extractToolName(item), extractArgsPreview(item), {
+      family: analysis.family,
+      commandFamily: analysis.commandFamily,
+      budgetPolicy: diagnostic?.deltaSummary ? "structured-delta" : "inline-excerpt",
+    });
     const compactedItem = {
       ...item,
       _cachedLogId: logId,
@@ -1045,10 +1346,21 @@ async function compactStandaloneToolItem(
         opts,
       ),
     );
+    const compactedText = getItemText(compactedItem);
+    const envelope = attachCommandEnvelope(compactedItem, {
+      family: analysis.family,
+      commandFamily: analysis.commandFamily,
+      diagnostic,
+      logId,
+      originalChars: analysis.originalText.length,
+      compactedChars: compactedText.length,
+      excerptStrategy: "selected-lines",
+    });
+    await updateCachedDecision(logId, envelope?.meta || null);
     recordShreddingEvent({
       originalChars: analysis.originalText.length,
-      compressedChars: getItemText(compactedItem).length,
-      savedChars: Math.max(0, analysis.originalText.length - getItemText(compactedItem).length),
+      compressedChars: compactedText.length,
+      savedChars: Math.max(0, analysis.originalText.length - compactedText.length),
       savedPct: analysis.savedPct,
       agentType: agentType || null,
       stage: "live_tool_compaction",
@@ -1058,8 +1370,12 @@ async function compactStandaloneToolItem(
     return compactedItem;
   }
 
-  const logId = await writeToCache(item, extractToolName(item), extractArgsPreview(item));
-  const diagnostic = await analyzeCommandDiagnosticForItem(item, logId);
+  const diagnostic = await analyzeCommandDiagnosticForItem(item);
+  const logId = await writeToCache(item, extractToolName(item), extractArgsPreview(item), {
+    family: classifyLiveFamily(extractCommandFamily(item), item),
+    commandFamily: extractCommandFamily(item),
+    budgetPolicy: diagnostic?.insufficientSignal ? "artifact-summary" : "inline-excerpt",
+  });
   const compactedItem = {
     ...item,
     _cachedLogId: logId,
@@ -1080,6 +1396,18 @@ async function compactStandaloneToolItem(
   if (!compactedText || compactedText.length >= existingText.length) {
     return item;
   }
+  const genericFamily = classifyLiveFamily(extractCommandFamily(item), item);
+  const envelope = attachCommandEnvelope(compactedItem, {
+    family: genericFamily,
+    commandFamily: extractCommandFamily(item),
+    diagnostic,
+    logId,
+    originalChars: existingText.length,
+    compactedChars: compactedText.length,
+    excerptStrategy: diagnostic?.insufficientSignal ? "minimal-summary" : "signal-first",
+    directArtifact: diagnostic?.insufficientSignal === true,
+  });
+  await updateCachedDecision(logId, envelope?.meta || null);
   recordShreddingEvent({
     originalChars: existingText.length,
     compressedChars: compactedText.length,
@@ -1146,6 +1474,9 @@ export async function compactCommandOutputPayload(
       retrieveCommand: null,
       compactionFamily: null,
       commandFamily: null,
+      budgetPolicy: "full-inline",
+      budgetReason: "Output fit the inline budget; no retrieval artifact was needed.",
+      contextEnvelope: null,
     };
   }
 
@@ -1171,6 +1502,25 @@ export async function compactCommandOutputPayload(
   const compactedText = String(getItemText(compactedItem) || combinedText).trim();
   const toolLogId = compactedItem?._cachedLogId || null;
   const commandDiagnostics = compactedItem?._commandDiagnostics || null;
+  const contextEnvelope = compactedItem?._contextEnvelope || buildContextEnvelope({
+    scope: "command",
+    command: extractCommandLine(syntheticItem) || extractToolName(syntheticItem),
+    family: compactedItem?._liveCompactionFamily || classifyLiveFamily(extractCommandFamily(syntheticItem), syntheticItem),
+    commandFamily: compactedItem?._liveCompactionCommandFamily || extractCommandFamily(syntheticItem),
+    budgetPolicy: compactedItem?._semanticBudgetPolicy || (toolLogId ? "inline-excerpt" : "full-inline"),
+    budgetReason: compactedItem?._semanticBudgetReason || (toolLogId
+      ? "Bosun kept a compact inline summary and stored the full artifact for retrieval."
+      : "Output fit the inline budget; no retrieval artifact was needed."),
+    retrieveCommand: toolLogId ? `bosun --tool-log ${toolLogId}` : null,
+    summary: commandDiagnostics?.summary || "",
+    deltaSummary: commandDiagnostics?.deltaSummary || "",
+    suggestedRerun: commandDiagnostics?.suggestedRerun || "",
+    hint: commandDiagnostics?.hint || "",
+    lowSignal: commandDiagnostics?.insufficientSignal === true,
+    originalChars: combinedText.length,
+    compactedChars: compactedText.length,
+    excerptStrategy: toolLogId ? "selected-lines" : "full",
+  });
 
   return {
     text: compactedText,
@@ -1183,6 +1533,9 @@ export async function compactCommandOutputPayload(
     compactionFamily: compactedItem?._liveCompactionFamily || null,
     commandFamily: compactedItem?._liveCompactionCommandFamily || extractCommandFamily(syntheticItem),
     commandDiagnostics,
+    budgetPolicy: contextEnvelope?.meta?.budgetPolicy || compactedItem?._semanticBudgetPolicy || "full-inline",
+    budgetReason: contextEnvelope?.meta?.budgetReason || compactedItem?._semanticBudgetReason || "",
+    contextEnvelope,
   };
 }
 function extractCommandText(item) {

@@ -1317,6 +1317,14 @@ export class WorkflowEngine extends EventEmitter {
         result && typeof result === "object" && result.outputDeltaSummary
           ? String(result.outputDeltaSummary)
           : undefined,
+      outputBudgetPolicy:
+        result && typeof result === "object" && result.outputBudgetPolicy
+          ? String(result.outputBudgetPolicy)
+          : undefined,
+      outputBudgetReason:
+        result && typeof result === "object" && result.outputBudgetReason
+          ? String(result.outputBudgetReason)
+          : undefined,
     });
     ctx.annotateDagNode(node.id, nodePatch);
     this._appendReplayTrajectoryStep(ctx, node, { status, result, error, attempt });
