@@ -142,7 +142,7 @@ function parseBooleanFlag(value, fallback = false) {
   if (value == null || value === "") return fallback;
   if (typeof value === "boolean") return value;
   if (typeof value === "number") return value !== 0;
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = String(value).trim().toLowerCase();
   if (!normalized) return fallback;
   if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
