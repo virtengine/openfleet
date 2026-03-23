@@ -33,6 +33,7 @@ import { randomUUID } from "node:crypto";
 import {
   normalizeWorkspaceStorageKey,
   normalizeWorkspaceStorageKeys,
+  normalizeWorkspaceStorageScope,
 } from "./task-store.mjs";
 import { getTaskLifetimeTotals } from "../infra/runtime-accumulator.mjs";
 
@@ -308,10 +309,9 @@ function isDebugModeEnabled(args = []) {
  */
 export async function taskCreate(data) {
   const store = await initStore();
-  const normalizeKey = store.normalizeWorkspaceStorageKey || normalizeStoreScopeKey;
-  const normalizeKeys =
-    store.normalizeWorkspaceStorageKeys
-    || ((values, options = {}) => normalizeWorkspaceStorageKeys(values, options));
+  const normalizeScope =
+    store.normalizeWorkspaceStorageScope
+    || ((scope, options = {}) => normalizeWorkspaceStorageScope(scope, options));
   const id = data.id || randomUUID();
   const parsedCandidateCount = Number(data?.candidateCount);
   const candidateCount = Number.isFinite(parsedCandidateCount)
@@ -333,15 +333,20 @@ export async function taskCreate(data) {
   }
   const defaults = resolveActiveWorkspaceDefaults();
   const rawWorkspace = data.workspace || defaults.workspace || process.cwd();
-  const workspaceKey = normalizeKey(rawWorkspace);
+  const workspaceInput = typeof rawWorkspace === "string" && isAbsolute(rawWorkspace)
+    ? ""
+    : rawWorkspace;
+  const normalizedScope = normalizeScope(
+    {
+      workspace: workspaceInput,
+      repository: data.repository || defaults.repository || "",
+      repositories: data.repositories,
+    },
+    { kind: `task-cli:create:${id}` },
+  );
   const workspaceValue = typeof rawWorkspace === "string" && isAbsolute(rawWorkspace)
     ? rawWorkspace
-    : (workspaceKey || null);
-  const repositoryKey = normalizeKey(data.repository || defaults.repository || "");
-  const repositoryKeys = normalizeKeys(
-    [repositoryKey, ...(Array.isArray(data.repositories) ? data.repositories : [])],
-    { kind: `task-cli:create:${id}:repositories` },
-  );
+    : (normalizedScope.workspace || null);
   const taskData = {
     id,
     title: data.title,
@@ -352,8 +357,8 @@ export async function taskCreate(data) {
     tags: normalizeTags(data.tags),
     baseBranch: data.baseBranch || data.base_branch || "main",
     workspace: workspaceValue,
-    repository: repositoryKey || null,
-    repositories: repositoryKeys,
+    repository: normalizedScope.repository || null,
+    repositories: normalizedScope.repositories,
     candidateCount: candidateCount && candidateCount > 1 ? candidateCount : undefined,
     meta: inputMeta,
   };
@@ -500,6 +505,9 @@ export async function taskGet(id) {
  */
 export async function taskUpdate(id, patch) {
   const store = await initStore();
+  const normalizeScope =
+    store.normalizeWorkspaceStorageScope
+    || ((scope, options = {}) => normalizeWorkspaceStorageScope(scope, options));
 
   // Resolve prefix
   const task = await taskGet(id);
@@ -515,6 +523,42 @@ export async function taskUpdate(id, patch) {
   if (updates.base_branch) {
     updates.baseBranch = updates.base_branch;
     delete updates.base_branch;
+  }
+  const touchesWorkspaceScope =
+    Object.prototype.hasOwnProperty.call(updates, "workspace")
+    || Object.prototype.hasOwnProperty.call(updates, "repository")
+    || Object.prototype.hasOwnProperty.call(updates, "repositories");
+  if (touchesWorkspaceScope) {
+    const rawWorkspace = Object.prototype.hasOwnProperty.call(updates, "workspace")
+      ? updates.workspace
+      : task.workspace;
+    const workspaceInput = typeof rawWorkspace === "string" && isAbsolute(rawWorkspace)
+      ? ""
+      : rawWorkspace;
+    const normalizedScope = normalizeScope(
+      {
+        workspace: workspaceInput,
+        repository: Object.prototype.hasOwnProperty.call(updates, "repository")
+          ? updates.repository
+          : task.repository,
+        repositories: Object.prototype.hasOwnProperty.call(updates, "repositories")
+          ? updates.repositories
+          : task.repositories,
+      },
+      { kind: `task-cli:update:${task.id}` },
+    );
+    if (Object.prototype.hasOwnProperty.call(updates, "workspace")) {
+      updates.workspace = typeof rawWorkspace === "string" && isAbsolute(rawWorkspace)
+        ? rawWorkspace
+        : (normalizedScope.workspace || null);
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(updates, "repository")
+      || Object.prototype.hasOwnProperty.call(updates, "repositories")
+    ) {
+      updates.repository = normalizedScope.repository || null;
+      updates.repositories = normalizedScope.repositories;
+    }
   }
 
   // Use setTaskStatus for status changes (tracks history)

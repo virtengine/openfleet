@@ -196,7 +196,7 @@ const ALLOWED_STATE_TRANSITIONS = Object.freeze({
 
 function createWorkspaceStorageCollisionError(kind, canonicalKey, existingRaw, incomingRaw) {
   const err = new Error(
-    `${kind} key collision after normalization: "${existingRaw}" conflicts with "${incomingRaw}" (canonical="${canonicalKey}")`,
+    `${kind} key collision after canonical normalization: "${existingRaw}" conflicts with "${incomingRaw}" (canonical="${canonicalKey}")`,
   );
   err.code = "TASK_STORE_KEY_COLLISION";
   err.kind = kind;
@@ -315,17 +315,34 @@ function normalizeTaskStatus(rawStatus) {
   return value;
 }
 
-export function normalizeWorkspaceStorageKey(rawKey) {
+function canonicalizeWorkspaceStorageKey(rawKey) {
   const value = String(rawKey ?? "").trim();
-  if (!value) return "";
+  if (!value) {
+    return {
+      raw: "",
+      canonical: "",
+    };
+  }
   const unifiedSeparators = value.replace(/[\\]+/g, "/");
   let normalized = posixPath.normalize(unifiedSeparators);
-  if (normalized === ".") return "";
+  if (normalized === ".") {
+    return {
+      raw: value,
+      canonical: "",
+    };
+  }
   normalized = normalized.replace(/^\.\/+/, "");
   if (normalized.length > 1 && normalized.endsWith("/")) {
     normalized = normalized.slice(0, -1);
   }
-  return normalized.toLowerCase();
+  return {
+    raw: value,
+    canonical: normalized.toLowerCase(),
+  };
+}
+
+export function normalizeWorkspaceStorageKey(rawKey) {
+  return canonicalizeWorkspaceStorageKey(rawKey).canonical;
 }
 
 export function normalizeWorkspaceStorageKeys(rawKeys, options = {}) {
@@ -334,9 +351,9 @@ export function normalizeWorkspaceStorageKeys(rawKeys, options = {}) {
   const seen = new Map();
   const normalized = [];
   for (const value of values) {
-    const raw = String(value ?? "").trim();
-    if (!raw) continue;
-    const canonical = normalizeWorkspaceStorageKey(raw);
+    const entry = canonicalizeWorkspaceStorageKey(value);
+    const raw = entry.raw;
+    const canonical = entry.canonical;
     if (!canonical) continue;
     const existingRaw = seen.get(canonical);
     if (existingRaw && existingRaw !== raw) {
@@ -348,6 +365,21 @@ export function normalizeWorkspaceStorageKeys(rawKeys, options = {}) {
     }
   }
   return normalized;
+}
+
+export function normalizeWorkspaceStorageScope(rawScope = {}, options = {}) {
+  const kind = String(options.kind || "workspace-rooted storage").trim();
+  const workspace = normalizeWorkspaceStorageKey(rawScope.workspace);
+  const repository = normalizeWorkspaceStorageKey(rawScope.repository);
+  const repositories = normalizeWorkspaceStorageKeys(
+    [repository, ...(Array.isArray(rawScope.repositories) ? rawScope.repositories : [])],
+    { kind: `${kind}:repositories` },
+  );
+  return {
+    workspace,
+    repository,
+    repositories,
+  };
 }
 
 function normalizeLifecycleState(rawStatus) {
@@ -588,14 +620,13 @@ function validateTaskTransition(currentStatus, nextStatus, options = {}) {
 function normalizeTaskStructure(rawTask = {}) {
   const base = defaultTask(rawTask);
   const taskId = String(base?.id || rawTask?.id || "").trim() || "<unknown-task>";
-  const workspaceKey = normalizeWorkspaceStorageKey(base.workspace);
-  const repositoryKey = normalizeWorkspaceStorageKey(base.repository);
-  const repositoryKeys = normalizeWorkspaceStorageKeys(base.repositories || [], {
-    kind: `task:${taskId}:repositories`,
-  });
-  const scopedRepositoryKeys = normalizeWorkspaceStorageKeys(
-    [repositoryKey, ...repositoryKeys],
-    { kind: `task:${taskId}:workspace-rooted` },
+  const normalizedScope = normalizeWorkspaceStorageScope(
+    {
+      workspace: base.workspace,
+      repository: base.repository,
+      repositories: base.repositories,
+    },
+    { kind: `task:${taskId}` },
   );
   const normalized = {
     ...base,
@@ -647,9 +678,9 @@ function normalizeTaskStructure(rawTask = {}) {
       : 2,
     sprintId: normalizeSprintId(base.sprintId),
     sprintOrder: normalizeSprintOrder(base.sprintOrder),
-    workspace: workspaceKey || null,
-    repository: repositoryKey || null,
-    repositories: scopedRepositoryKeys,
+    workspace: normalizedScope.workspace || null,
+    repository: normalizedScope.repository || null,
+    repositories: normalizedScope.repositories,
   };
   if (normalized.status === "draft") {
     normalized.draft = true;

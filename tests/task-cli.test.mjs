@@ -140,12 +140,10 @@ describe("task CLI store persistence", () => {
     expect(result.status).toBe(0);
     const tasks = Object.values(readStore(storePath).tasks || {});
     expect(tasks).toHaveLength(1);
-    const isWin = process.platform === "win32";
-    expect(tasks[0]?.workspace).toBe(isWin ? "virtengine-gh/bosun" : "VirtEngine-GH/BOSUN");
-    expect(tasks[0]?.repository).toBe(isWin ? "virtengine-gh/repo-one" : "VirtEngine-GH/Repo-ONE");
+    expect(tasks[0]?.workspace).toBe("virtengine-gh/bosun");
+    expect(tasks[0]?.repository).toBe("virtengine-gh/repo-one");
   });
-
-  it("fails fast when repository keys collide after normalization", () => {
+  it("fails fast when repository keys collide after case and separator normalization", () => {
     const storePath = makeTempStorePath();
     const result = spawnSync(
       process.execPath,
@@ -158,7 +156,88 @@ describe("task CLI store persistence", () => {
           status: "todo",
           draft: false,
           repository: "virtengine-gh/bosun",
-          repositories: ["virtengine-gh\\bosun/"],
+          repositories: ["VirtEngine-GH\\BOSUN/"],
+        }),
+      ],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, BOSUN_STORE_PATH: storePath },
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(String(result.stderr || "")).toMatch(/collision/i);
+  });
+
+  it("canonicalizes workspace scope keys on update", async () => {
+    const storePath = makeTempStorePath();
+    configureTaskStore({ storePath });
+    loadStore();
+    const task = addTask({
+      id: randomUUID(),
+      title: "Update canonical task key",
+      status: "todo",
+      draft: false,
+      workspace: "virtengine-gh",
+      repository: "repo-one",
+    });
+    await waitForStoreWrites();
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        "cli.mjs",
+        "task",
+        "update",
+        task.id,
+        JSON.stringify({
+          workspace: "VirtEngine-GH\\BOSUN/",
+          repository: "VirtEngine-GH\\Repo-TWO/",
+          repositories: ["VirtEngine-GH\\Repo-THREE/"],
+        }),
+      ],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, BOSUN_STORE_PATH: storePath },
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(0);
+    const updatedTask = readStore(storePath).tasks?.[task.id];
+    expect(updatedTask?.workspace).toBe("virtengine-gh/bosun");
+    expect(updatedTask?.repository).toBe("virtengine-gh/repo-two");
+    expect(updatedTask?.repositories).toEqual([
+      "virtengine-gh/repo-two",
+      "virtengine-gh/repo-three",
+    ]);
+  });
+
+  it("fails fast when update scope keys collide after canonical normalization", async () => {
+    const storePath = makeTempStorePath();
+    configureTaskStore({ storePath });
+    loadStore();
+    const task = addTask({
+      id: randomUUID(),
+      title: "Update collision task key",
+      status: "todo",
+      draft: false,
+      workspace: "virtengine-gh",
+      repository: "repo-one",
+    });
+    await waitForStoreWrites();
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        "cli.mjs",
+        "task",
+        "update",
+        task.id,
+        JSON.stringify({
+          repository: "virtengine-gh/bosun",
+          repositories: ["VirtEngine-GH\\BOSUN/"],
         }),
       ],
       {
@@ -227,11 +306,11 @@ describe("task-cli taskStats repo area lock state", () => {
       if (value.endsWith("/bosun.config.json")) {
         return JSON.stringify({
           workspacesDir,
-          activeWorkspace: "virtengine-gh",
+          activeWorkspace: "VirtEngine-GH",
           workspaces: [
             {
               id: "virtengine-gh",
-              activeRepo: "bosun",
+              activeRepo: "BOSUN",
               repos: [{ name: "bosun", primary: true }],
             },
           ],
@@ -261,8 +340,8 @@ describe("task-cli taskStats repo area lock state", () => {
       if (String(filePath || "").replace(/\\/g, "/").endsWith("/bosun.config.json")) {
         return JSON.stringify({
           workspacesDir: "C:/tmp/workspaces",
-          activeWorkspace: "prod",
-          workspaces: [{ id: "prod/" }, { id: "prod" }],
+          activeWorkspace: "PROD",
+          workspaces: [{ id: "prod/" }, { id: "Prod\\" }],
         });
       }
       return "{}";
@@ -499,5 +578,4 @@ describe("task-cli taskStats repo area lock state", () => {
     logSpy.mockRestore();
   });
 });
-
 

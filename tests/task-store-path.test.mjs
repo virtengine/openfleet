@@ -126,24 +126,42 @@ describe("task-store path configuration", () => {
 
   it("normalizes equivalent workspace-rooted keys to one canonical key", async () => {
     const taskStore = await loadTaskStoreModule();
-    const isWin = process.platform === "win32";
-    // Backslash→forward-slash normalization always applies; case folding only on Windows
     expect(taskStore.normalizeWorkspaceStorageKey("VirtEngine-GH\\BOSUN")).toBe(
-      isWin ? "virtengine-gh/bosun" : "VirtEngine-GH/BOSUN",
+      "virtengine-gh/bosun",
     );
     expect(taskStore.normalizeWorkspaceStorageKey("./virtengine-gh/bosun/")).toBe(
       "virtengine-gh/bosun",
     );
   });
 
-  it("rejects collisions caused by separator normalization", async () => {
+  it("rejects collisions caused by case or separator normalization", async () => {
     const taskStore = await loadTaskStoreModule();
-    // Use separator-only collision that works on all platforms
     expect(() =>
       taskStore.normalizeWorkspaceStorageKeys(
-        ["virtengine-gh/bosun", "virtengine-gh\\bosun"],
+        ["virtengine-gh/bosun", "VirtEngine-GH\\BOSUN"],
         { kind: "test.workspace-keys" },
       ),
+    ).toThrow(/collision/i);
+  });
+
+  it("normalizes workspace scopes and rejects canonical repository collisions", async () => {
+    const taskStore = await loadTaskStoreModule();
+    expect(
+      taskStore.normalizeWorkspaceStorageScope({
+        workspace: "VirtEngine-GH\\BOSUN/",
+        repository: "VirtEngine-GH\\Repo-One/",
+        repositories: ["./virtengine-gh/repo-two"],
+      }),
+    ).toEqual({
+      workspace: "virtengine-gh/bosun",
+      repository: "virtengine-gh/repo-one",
+      repositories: ["virtengine-gh/repo-one", "virtengine-gh/repo-two"],
+    });
+    expect(() =>
+      taskStore.normalizeWorkspaceStorageScope({
+        repository: "virtengine-gh/repo-one",
+        repositories: ["VirtEngine-GH\\REPO-ONE/"],
+      }, { kind: "test.workspace-scope" }),
     ).toThrow(/collision/i);
   });
 
@@ -167,5 +185,4 @@ describe("task-store path configuration", () => {
     }
   });
 });
-
 
