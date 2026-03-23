@@ -231,3 +231,39 @@ describe("ExecutorScheduler summary and status", () => {
     expect(summary[1].status).toBe("active");
   });
 });
+
+describe("ExecutorScheduler workflow offload policy", () => {
+  it("routes heavyweight validation nodes to the isolated lane", () => {
+    const scheduler = makeScheduler();
+
+    expect(
+      scheduler.selectWorkflowLane({
+        nodeType: "validation.tests",
+        command: "npm test",
+      }),
+    ).toMatchObject({ lane: "isolated", heavy: true });
+  });
+
+  it("routes lightweight planning work to the main lane", () => {
+    const scheduler = makeScheduler();
+
+    expect(
+      scheduler.selectWorkflowLane({
+        nodeType: "agent.plan",
+        command: "echo hello",
+      }),
+    ).toMatchObject({ lane: "main", heavy: false });
+  });
+
+  it("matches heavyweight command types even outside validation nodes", () => {
+    const scheduler = makeScheduler();
+
+    expect(
+      scheduler.selectWorkflowLane({
+        nodeType: "action.run_command",
+        commandType: "qualityGate",
+        command: "npm run lint",
+      }),
+    ).toMatchObject({ lane: "isolated", heavy: true });
+  });
+});
