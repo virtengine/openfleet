@@ -19,6 +19,11 @@ describe("container-runner", () => {
         "runInContainer",
         "stopAllContainers",
         "cleanupOrphanedContainers",
+        "isIsolatedRunnerPoolEnabled",
+        "getIsolatedRunnerPoolStatus",
+        "acquireRunnerLease",
+        "releaseRunnerLease",
+        "runInIsolatedRunner",
       ];
       for (const name of expected) {
         expect(typeof mod[name]).toBe("function");
@@ -170,5 +175,52 @@ describe("container-runner", () => {
       expect(source).toContain("activeContainers");
       expect(source).toContain("new Map()");
     });
+  });
+});
+
+describe("isolated runner pool", () => {
+  it("exposes enabled status and lease capacity", async () => {
+    const mod = await import("../infra/container-runner.mjs");
+    const status = mod.getIsolatedRunnerPoolStatus();
+    expect(status.enabled).toBe(true);
+    expect(status.maxConcurrent).toBeGreaterThan(0);
+  });
+
+  it("persists artifacts for isolated runs", async () => {
+    const mod = await import("../infra/container-runner.mjs");
+    const result = await mod.runInIsolatedRunner({
+      command: process.execPath,
+      args: ["-e", "console.log('runner ok'); console.error('runner err')"],
+      cwd: process.cwd(),
+    });
+
+    expect(result.status).toBe("success");
+    expect(Array.isArray(result.artifacts)).toBe(true);
+    expect(result.artifacts.some((artifact) => /stdout\.log$/i.test(artifact.path))).toBe(true);
+    expect(result.artifacts.some((artifact) => /metadata\.json$/i.test(artifact.path))).toBe(true);
+  });
+
+  it("surfaces blocked evidence when lease acquisition stays saturated", async () => {
+    const mod = await import("../infra/container-runner.mjs");
+    const heldLease = mod.acquireRunnerLease({ taskId: "held-lease" });
+    const extraLeases = [];
+    const target = mod.getIsolatedRunnerPoolStatus().maxConcurrent;
+    for (let index = 1; index < target; index += 1) {
+      const lease = mod.acquireRunnerLease({ taskId: `held-${index}` });
+      if (lease) extraLeases.push(lease);
+    }
+
+    const result = await mod.runInIsolatedRunner({
+      command: process.execPath,
+      args: ["-e", "console.log('never runs')"],
+      cwd: process.cwd(),
+      maxAttempts: 1,
+    });
+
+    expect(result.blocked).toBe(true);
+    expect(result.artifacts.some((artifact) => /metadata\.json$/i.test(artifact.path))).toBe(true);
+
+    mod.releaseRunnerLease(heldLease);
+    for (const lease of extraLeases) mod.releaseRunnerLease(lease);
   });
 });
