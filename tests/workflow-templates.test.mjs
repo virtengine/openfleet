@@ -1039,12 +1039,17 @@ describe("workflow setup profiles", () => {
 
     for (const script of queryScripts) {
       expect(script).toContain("const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();");
+      expect(script).toContain('process.env.REPO_ROOT = repoRoot;');
+      expect(script).toContain('process.env.BOSUN_STORE_PATH = path.join(repoRoot, ".bosun", ".cache", "kanban-state.json");');
       expect(script).toContain('path.join(repoRoot, "kanban", "kanban-adapter.mjs")');
       expect(script).toContain("const filtered = (tasks || []).filter((task) => {");
       expect(script).toContain('const repository = typeof task?.repository === "string" ? task.repository.trim() : "";');
       expect(script).toContain('const workspace = typeof task?.workspace === "string" ? task.workspace.trim() : "";');
       expect(script).toContain("repository.length > 0 && workspace.length > 0");
     }
+
+    expect(batchProcessor?.nodes?.find((node) => node.id === "query-tasks")?.config?.cwd).toBe("{{repoRoot}}");
+    expect(batchPr?.nodes?.find((node) => node.id === "query-tasks")?.config?.cwd).toBe("{{repoRoot}}");
   });
 
   it("alerts Telegram only for failed batch items and logs the routine summary", () => {
