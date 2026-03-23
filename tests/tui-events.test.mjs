@@ -65,8 +65,24 @@ describe("tui event contract", () => {
       throughputTps: 13.5,
       uptimeMs: 30_000,
       rateLimits: {
-        openai: { primary: 120, secondary: 20, credits: 4.5, unit: "rpm" },
-        anthropic: { primary: 60, secondary: 10, credits: null, unit: "rpm" },
+        openai: {
+          primary: 120,
+          primaryLimit: null,
+          secondary: 20,
+          secondaryLimit: null,
+          credits: 4.5,
+          creditsLimit: null,
+          unit: "rpm",
+        },
+        anthropic: {
+          primary: 60,
+          primaryLimit: null,
+          secondary: 10,
+          secondaryLimit: null,
+          credits: null,
+          creditsLimit: null,
+          unit: "rpm",
+        },
       },
     });
 
