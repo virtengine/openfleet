@@ -515,7 +515,43 @@ function normalizeCommandToken(token) {
 }
 
 function tokenizeCommandLine(commandLine) {
-  return String(commandLine || "").match(/(?:"[^"]*"|'[^']*'|\S+)/g) || [];
+  const input = String(commandLine || "");
+  const tokens = [];
+  let index = 0;
+
+  while (index < input.length) {
+    while (index < input.length) {
+      const code = input.charCodeAt(index);
+      if (code !== 9 && code !== 10 && code !== 11 && code !== 12 && code !== 13 && code !== 32) break;
+      index += 1;
+    }
+    if (index >= input.length) break;
+
+    const quote = input[index];
+    if (quote === '"' || quote === "'") {
+      const start = index;
+      index += 1;
+      while (index < input.length && input[index] !== quote) {
+        index += 1;
+      }
+      if (index < input.length) {
+        index += 1;
+        tokens.push(input.slice(start, index));
+        continue;
+      }
+      index = start;
+    }
+
+    const start = index;
+    while (index < input.length) {
+      const code = input.charCodeAt(index);
+      if (code === 9 || code === 10 || code === 11 || code === 12 || code === 13 || code === 32) break;
+      index += 1;
+    }
+    tokens.push(input.slice(start, index));
+  }
+
+  return tokens;
 }
 
 function extractNestedCommandToken(token) {
