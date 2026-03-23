@@ -1449,6 +1449,105 @@ async function compactWorkflowCommandResult({
   };
 }
 
+function isValidationSandboxFailureText(text) {
+  return /(?:sandbox|operation not permitted|permission denied|access is denied|read-only file system|EPERM|EACCES|denied by policy|seccomp)/i.test(
+    String(text || ""),
+  );
+}
+
+function isValidationBootstrapFailureText(text) {
+  return /(?:\bENOENT\b|spawn\s+.+\s+ENOENT|not recognized as an internal or external command|is not recognized as a name of a cmdlet|command not found|executable file not found|no such file or directory|cannot find the file|failed to start|startup failure)/i.test(
+    String(text || ""),
+  );
+}
+
+function buildValidationFailureDiagnostic({
+  command = "",
+  args = [],
+  status = "error",
+  exitCode = null,
+  stderr = "",
+  output = "",
+  timeoutMs = null,
+  blocked = false,
+  failureDiagnostic = null,
+} = {}) {
+  if (failureDiagnostic && typeof failureDiagnostic === "object") return failureDiagnostic;
+  const normalizedStatus = String(status || "error").trim().toLowerCase();
+  if (!blocked && normalizedStatus === "success" && Number(exitCode ?? 0) === 0) {
+    return null;
+  }
+  const combinedText = [stderr, output]
+    .map((value) => String(value || "").trim())
+    .find(Boolean) || "";
+
+  let category = "command_failure";
+  let retryable = false;
+  let summary = `Validation command exited with code ${exitCode ?? "unknown"}.`;
+
+  if (blocked || normalizedStatus === "blocked") {
+    category = "runner_unavailable";
+    retryable = true;
+    summary = "Isolated runner was unavailable before the validation command started.";
+  } else if (normalizedStatus === "timeout" || /(?:timed out|ETIMEDOUT|SIGTERM)/i.test(combinedText)) {
+    category = "timeout";
+    retryable = true;
+    summary = `Validation timed out after ${Number(timeoutMs || 0) || "the configured"}ms.`;
+  } else if (isValidationSandboxFailureText(combinedText)) {
+    category = "sandbox_error";
+    retryable = false;
+    summary = "Validation was blocked by sandbox or filesystem restrictions.";
+  } else if (isValidationBootstrapFailureText(combinedText) || normalizedStatus === "error" && (exitCode == null || Number(exitCode) < 0)) {
+    category = "bootstrap_failure";
+    retryable = true;
+    summary = "Validation could not start cleanly.";
+  }
+
+  const detail = String(combinedText || "").trim().split(/\r?\n/).find(Boolean) || "";
+  return {
+    category,
+    retryable,
+    summary,
+    detail,
+    status: normalizedStatus,
+    exitCode: exitCode ?? null,
+    blocked: blocked === true,
+    command,
+    args: Array.isArray(args) ? [...args] : [],
+  };
+}
+
+function didValidationCommandPass(result = {}) {
+  if (!result || result.blocked === true || result.failureDiagnostic) return false;
+  const status = String(result.status || "success").trim().toLowerCase();
+  if (status && status !== "success") return false;
+  return Number(result.exitCode ?? 0) === 0;
+}
+
+function buildValidationResult({
+  passed,
+  exitCode = null,
+  blocked = false,
+  compacted = {},
+  extras = {},
+  failureDiagnostic = null,
+} = {}) {
+  return {
+    passed,
+    exitCode,
+    blocked,
+    ...(failureDiagnostic
+      ? {
+          failureKind: failureDiagnostic.category || null,
+          retryable: failureDiagnostic.retryable === true,
+          failureDiagnostic,
+        }
+      : {}),
+    ...compacted,
+    ...extras,
+  };
+}
+
 function buildIsolatedRunnerResultExtras(result, lane) {
   const artifacts = Array.isArray(result?.artifacts) ? result.artifacts : [];
   return {
@@ -1460,6 +1559,7 @@ function buildIsolatedRunnerResultExtras(result, lane) {
       artifactRoot: result?.artifactRoot || null,
       attempts: result?.attempts || 1,
       blocked: result?.blocked === true,
+      failureDiagnostic: result?.failureDiagnostic || null,
       artifacts,
     },
     artifactRoot: result?.artifactRoot || null,
@@ -5592,15 +5692,24 @@ registerBuiltinNodeType("validation.tests", {
       commandType: "test",
     });
     if (isolatedRun) {
-      return {
-        passed:
-          isolatedRun.isolated?.blocked !== true &&
-          Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
+      const failureDiagnostic = buildValidationFailureDiagnostic({
+        command,
+        status: isolatedRun.isolated?.status,
+        exitCode: isolatedRun.isolated?.exitCode,
+        stderr: isolatedRun.isolated?.stderr || isolatedRun.isolated?.error || "",
+        output: isolatedRun.isolated?.stdout || "",
+        timeoutMs: timeout,
+        blocked: isolatedRun.isolated?.blocked === true,
+        failureDiagnostic: isolatedRun.isolated?.failureDiagnostic,
+      });
+      return buildValidationResult({
+        passed: didValidationCommandPass({ ...isolatedRun.isolated, failureDiagnostic }),
         exitCode: isolatedRun.isolated?.exitCode ?? null,
         blocked: isolatedRun.isolated?.blocked === true,
-        ...isolatedRun.compacted,
-        ...isolatedRun.extras,
-      };
+        compacted: isolatedRun.compacted,
+        extras: isolatedRun.extras,
+        failureDiagnostic,
+      });
     }
     const startedAt = Date.now();
     try {
@@ -5622,7 +5731,20 @@ registerBuiltinNodeType("validation.tests", {
         exitCode: err.status,
         durationMs: Date.now() - startedAt,
       });
-      return { passed: false, exitCode: err.status, ...compacted };
+      const failureDiagnostic = buildValidationFailureDiagnostic({
+        command,
+        status: /(?:timed out|ETIMEDOUT|SIGTERM)/i.test(String(err?.message || "")) ? "timeout" : "error",
+        exitCode: err.status,
+        stderr: err.stderr?.toString() || err.message,
+        output,
+        timeoutMs: timeout,
+      });
+      return buildValidationResult({
+        passed: false,
+        exitCode: err.status,
+        compacted,
+        failureDiagnostic,
+      });
     }
   },
 });
@@ -5671,15 +5793,24 @@ registerBuiltinNodeType("validation.build", {
           ...isolatedRun.extras,
         };
       }
-      return {
-        passed:
-          isolatedRun.isolated?.blocked !== true &&
-          Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
+      const failureDiagnostic = buildValidationFailureDiagnostic({
+        command,
+        status: isolatedRun.isolated?.status,
+        exitCode: isolatedRun.isolated?.exitCode,
+        stderr: isolatedRun.isolated?.stderr || isolatedRun.isolated?.error || "",
+        output: isolatedRun.isolated?.stdout || "",
+        timeoutMs: timeout,
+        blocked: isolatedRun.isolated?.blocked === true,
+        failureDiagnostic: isolatedRun.isolated?.failureDiagnostic,
+      });
+      return buildValidationResult({
+        passed: didValidationCommandPass({ ...isolatedRun.isolated, failureDiagnostic }),
         exitCode: isolatedRun.isolated?.exitCode ?? null,
         blocked: isolatedRun.isolated?.blocked === true,
-        ...isolatedRun.compacted,
-        ...isolatedRun.extras,
-      };
+        compacted: isolatedRun.compacted,
+        extras: isolatedRun.extras,
+        failureDiagnostic,
+      });
     }
     const startedAt = Date.now();
     try {
@@ -5703,7 +5834,20 @@ registerBuiltinNodeType("validation.build", {
         exitCode: err.status,
         durationMs: Date.now() - startedAt,
       });
-      return { passed: false, exitCode: err.status, ...compacted };
+      const failureDiagnostic = buildValidationFailureDiagnostic({
+        command,
+        status: /(?:timed out|ETIMEDOUT|SIGTERM)/i.test(String(err?.message || "")) ? "timeout" : "error",
+        exitCode: err.status,
+        stderr: err.stderr?.toString() || err.message,
+        output: err.stdout?.toString() || "",
+        timeoutMs: timeout,
+      });
+      return buildValidationResult({
+        passed: false,
+        exitCode: err.status,
+        compacted,
+        failureDiagnostic,
+      });
     }
   },
 });
@@ -5736,15 +5880,24 @@ registerBuiltinNodeType("validation.lint", {
       commandType: "qualityGate",
     });
     if (isolatedRun) {
-      return {
-        passed:
-          isolatedRun.isolated?.blocked !== true &&
-          Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
+      const failureDiagnostic = buildValidationFailureDiagnostic({
+        command,
+        status: isolatedRun.isolated?.status,
+        exitCode: isolatedRun.isolated?.exitCode,
+        stderr: isolatedRun.isolated?.stderr || isolatedRun.isolated?.error || "",
+        output: isolatedRun.isolated?.stdout || "",
+        timeoutMs: timeout,
+        blocked: isolatedRun.isolated?.blocked === true,
+        failureDiagnostic: isolatedRun.isolated?.failureDiagnostic,
+      });
+      return buildValidationResult({
+        passed: didValidationCommandPass({ ...isolatedRun.isolated, failureDiagnostic }),
         exitCode: isolatedRun.isolated?.exitCode ?? null,
         blocked: isolatedRun.isolated?.blocked === true,
-        ...isolatedRun.compacted,
-        ...isolatedRun.extras,
-      };
+        compacted: isolatedRun.compacted,
+        extras: isolatedRun.extras,
+        failureDiagnostic,
+      });
     }
     const startedAt = Date.now();
     try {
@@ -5764,7 +5917,20 @@ registerBuiltinNodeType("validation.lint", {
         exitCode: err.status,
         durationMs: Date.now() - startedAt,
       });
-      return { passed: false, ...compacted };
+      const failureDiagnostic = buildValidationFailureDiagnostic({
+        command,
+        status: /(?:timed out|ETIMEDOUT|SIGTERM)/i.test(String(err?.message || "")) ? "timeout" : "error",
+        exitCode: err.status,
+        stderr: err.stderr?.toString() || err.message,
+        output: err.stdout?.toString() || "",
+        timeoutMs: timeout,
+      });
+      return buildValidationResult({
+        passed: false,
+        exitCode: err.status,
+        compacted,
+        failureDiagnostic,
+      });
     }
   },
 });

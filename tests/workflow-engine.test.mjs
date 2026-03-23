@@ -717,6 +717,75 @@ describe("WorkflowEngine - run history details", () => {
     expect(detail?.detail?.dagState?.edges?.[0]?.source).toBe("trigger");
   });
 
+  it("threads validation diagnostics into run detail and history summaries", async () => {
+    makeTmpEngine({
+      scheduler: {
+        selectWorkflowLane: vi.fn().mockReturnValue({
+          lane: "isolated",
+          reason: "workflow_node:validation.tests",
+          heavy: true,
+        }),
+      },
+      isolatedRunner: {
+        run: vi.fn().mockResolvedValue({
+          status: "timeout",
+          stdout: "",
+          stderr: "validation exceeded limit",
+          exitCode: null,
+          duration: 1005,
+          provider: "process",
+          leaseId: "runner-timeout",
+          failureDiagnostic: {
+            category: "timeout",
+            retryable: true,
+            summary: "Validation timed out after 1000ms.",
+            status: "timeout",
+          },
+        }),
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "validate", type: "validation.tests", label: "Validate", config: { command: "npm test", timeoutMs: 1000 } },
+      ],
+      [{ id: "e1", source: "trigger", target: "validate" }],
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+
+    expect(ctx.getNodeOutput("validate")?.failureKind).toBe("timeout");
+    expect(ctx.getNodeOutput("validate")?.retryable).toBe(true);
+
+    const detail = engine.getRunDetail(ctx.id);
+    expect(detail?.detail?.validationFailures).toEqual([
+      expect.objectContaining({
+        nodeId: "validate",
+        nodeType: "validation.tests",
+        failureKind: "timeout",
+        retryable: true,
+      }),
+    ]);
+    expect(detail?.latestValidationFailure).toEqual(
+      expect.objectContaining({
+        nodeId: "validate",
+        failureKind: "timeout",
+        retryable: true,
+      }),
+    );
+
+    const summary = engine.getRunHistory(wf.id).at(-1);
+    expect(summary?.validationFailures).toEqual([
+      expect.objectContaining({
+        nodeId: "validate",
+        failureKind: "timeout",
+        retryable: true,
+      }),
+    ]);
+  });
+
   it("returns retry options with an issue-advisor recommendation", async () => {
     registerNodeType("test.fail_for_retry_options", {
       describe: () => "Completes once then fails",
