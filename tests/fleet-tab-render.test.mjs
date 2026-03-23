@@ -256,8 +256,17 @@ describe("kanban PR linkage rendering", () => {
     it(`renders PR linkage source and freshness chips (${relPath})`, () => {
       expect(source).toContain("function getTaskPrLinkage(task)");
       expect(source).toContain("PR source:");
-      expect(source).toContain("PR freshness:");`r`n      expect(source).toContain("formatPrLinkageFreshnessLabel");
+      expect(source).toContain("PR freshness:");
+      expect(source).toContain("formatPrLinkageFreshnessLabel");
       expect(source).toContain("Branch: ");
+      expect(source).toContain("linkedAt:");
+      expect(source).toContain("updatedAt:");
+    });
+
+    it(`merges board status updates without shallow-overwriting linkage (${relPath})`, () => {
+      const mergeMatches = source.match(/mergeTaskRecords\(t,\s*(?:merged|res\.data)\)/g) || [];
+      expect(mergeMatches).toHaveLength(3);
+      expect(source).not.toContain("matchTaskId(t.id, taskId) ? { ...t, ...res.data } : t");
     });
   }
 
@@ -303,7 +312,89 @@ describe("kanban PR linkage rendering", () => {
       expect(tasksData.value).toHaveLength(1);
       expect(tasksData.value[0].meta.prLinkage).toHaveLength(1);
       expect(tasksData.value[0].prLinkage).toHaveLength(1);
-      expect(tasksData.value[0].meta.prLinkage[0]).toMatchObject({ prNumber: 42, branchName: "feature/demo", source: "auto-load", freshness: "fresh", updatedAt: "2026-03-22T10:05:00.000Z" });`r`n      expect(tasksData.value[0].branchName).toBe("feature/demo");`r`n      expect(tasksData.value[0].prNumber).toBe(42);`r`n      expect(tasksData.value[0].prUrl).toBe("https://example.test/pr/42");
+      expect(tasksData.value[0].meta.prLinkage[0]).toMatchObject({ prNumber: 42, branchName: "feature/demo", source: "auto-load", freshness: "fresh", updatedAt: "2026-03-22T10:05:00.000Z" });
+      expect(tasksData.value[0].branchName).toBe("feature/demo");
+      expect(tasksData.value[0].prNumber).toBe(42);
+      expect(tasksData.value[0].prUrl).toBe("https://example.test/pr/42");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("preserves canonical linkage fields across non-append reloads", async () => {
+    const { tasksData, tasksPage, tasksPageSize, loadTasks } = await import("../ui/modules/state.js");
+    const originalFetch = globalThis.fetch;
+    const responses = [
+      {
+        ok: true,
+        json: async () => ({
+          data: [{
+            id: "task-2",
+            title: "Task 2 refreshed",
+            meta: {
+              prLinkage: [{
+                branchName: "feature/reload-only",
+                prNumber: 84,
+                prUrl: "https://example.test/pr/84",
+                source: "auto-load",
+                freshness: "fresh",
+                updatedAt: "2026-03-22T11:05:00.000Z",
+              }],
+            },
+          }],
+          total: 1,
+          totalPages: 1,
+          statusCounts: {},
+        }),
+      },
+    ];
+    globalThis.fetch = async () => responses.shift();
+    tasksPage.value = 0;
+    tasksPageSize.value = 25;
+    tasksData.value = [{
+      id: "task-2",
+      title: "Task 2",
+      branchName: "feature/reload-only",
+      prNumber: 84,
+      prUrl: "https://example.test/pr/84",
+      prLinkage: [{
+        branchName: "feature/reload-only",
+        prNumber: 84,
+        prUrl: "https://example.test/pr/84",
+        source: "workflow",
+        freshness: "fresh",
+        updatedAt: "2026-03-22T11:00:00.000Z",
+      }],
+      meta: {
+        prLinkage: [{
+          branchName: "feature/reload-only",
+          prNumber: 84,
+          prUrl: "https://example.test/pr/84",
+          source: "workflow",
+          freshness: "fresh",
+          updatedAt: "2026-03-22T11:00:00.000Z",
+        }],
+        prLinkageSource: "workflow",
+        prLinkageFreshness: "fresh",
+        prLinkageUpdatedAt: "2026-03-22T11:00:00.000Z",
+      },
+    }];
+    try {
+      await loadTasks();
+      expect(tasksData.value).toHaveLength(1);
+      expect(tasksData.value[0].prLinkage).toHaveLength(1);
+      expect(tasksData.value[0].meta.prLinkage).toHaveLength(1);
+      expect(tasksData.value[0].branchName).toBe("feature/reload-only");
+      expect(tasksData.value[0].prNumber).toBe(84);
+      expect(tasksData.value[0].prUrl).toBe("https://example.test/pr/84");
+      expect(tasksData.value[0].meta.prLinkage[0]).toMatchObject({
+        branchName: "feature/reload-only",
+        prNumber: 84,
+        prUrl: "https://example.test/pr/84",
+        source: "auto-load",
+        freshness: "fresh",
+        updatedAt: "2026-03-22T11:05:00.000Z",
+      });
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -1434,6 +1434,42 @@ describe("kanban-adapter internal backend", () => {
     expect(second.prUrl).toBe("https://example.test/pr/456");
   });
 
+  it("persists PR linkage metadata when canonical linkage fields update without explicit meta", async () => {
+    const adapter = getKanbanAdapter();
+
+    const created = await adapter.createTask("internal", {
+      title: "Canonical linkage persistence",
+      description: "Preserves linkage metadata across direct updates",
+      status: "todo",
+    });
+
+    const updated = await adapter.updateTask(created.id, {
+      branchName: "feature/canonical-linkage",
+      prNumber: 777,
+      prUrl: "https://example.test/pr/777",
+    });
+
+    expect(updated.branchName).toBe("feature/canonical-linkage");
+    expect(updated.prNumber).toBe(777);
+    expect(updated.prUrl).toBe("https://example.test/pr/777");
+    expect(updated.prLinkage).toHaveLength(1);
+    expect(updated.meta?.prLinkage).toHaveLength(1);
+    expect(updated.meta?.prLinkage?.[0]).toMatchObject({
+      branchName: "feature/canonical-linkage",
+      prNumber: 777,
+      prUrl: "https://example.test/pr/777",
+    });
+
+    loadStore();
+    const reloadedAdapter = getKanbanAdapter();
+    const reloaded = await reloadedAdapter.getTask(created.id);
+    expect(reloaded.prLinkage).toHaveLength(1);
+    expect(reloaded.meta?.prLinkage).toHaveLength(1);
+    expect(reloaded.branchName).toBe("feature/canonical-linkage");
+    expect(reloaded.prNumber).toBe(777);
+    expect(reloaded.prUrl).toBe("https://example.test/pr/777");
+  });
+
   it("preserves canonical PR linkage fields when reload data only carries meta linkage", async () => {
     const adapter = getKanbanAdapter();
 

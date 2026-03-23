@@ -93,7 +93,7 @@ function mergeTaskLinkageRecords(...sources) {
   return merged;
 }
 
-function mergeTaskRecords(existingTask, incomingTask) {
+export function mergeTaskRecords(existingTask, incomingTask) {
   const merged = { ...(existingTask || {}), ...(incomingTask || {}) };
   const existingMeta = existingTask?.meta && typeof existingTask.meta === "object" ? existingTask.meta : {};
   const incomingMeta = incomingTask?.meta && typeof incomingTask.meta === "object" ? incomingTask.meta : {};
@@ -178,27 +178,28 @@ function normalizeTaskDiagnosticsForUi(diagnostics) {
 
 function normalizeTaskForUi(task) {
   if (!task || typeof task !== "object") return task;
-  const title = sanitizeTaskText(task.title || "");
-  const rawDescription = sanitizeTaskText(task.description || "");
+  const hydratedTask = mergeTaskRecords(null, task);
+  const title = sanitizeTaskText(hydratedTask.title || "");
+  const rawDescription = sanitizeTaskText(hydratedTask.description || "");
   const description = isPlaceholderTaskDescription(rawDescription) ? "" : rawDescription;
-  const diagnostics = normalizeTaskDiagnosticsForUi(task.diagnostics);
-  const meta = task.meta && typeof task.meta === "object"
+  const diagnostics = normalizeTaskDiagnosticsForUi(hydratedTask.diagnostics);
+  const meta = hydratedTask.meta && typeof hydratedTask.meta === "object"
     ? {
-        ...task.meta,
-        title: task.meta.title != null ? sanitizeTaskText(task.meta.title) : task.meta.title,
+        ...hydratedTask.meta,
+        title: hydratedTask.meta.title != null ? sanitizeTaskText(hydratedTask.meta.title) : hydratedTask.meta.title,
         description:
-          task.meta.description != null
-            ? (isPlaceholderTaskDescription(task.meta.description)
+          hydratedTask.meta.description != null
+            ? (isPlaceholderTaskDescription(hydratedTask.meta.description)
               ? ""
-              : sanitizeTaskText(task.meta.description))
-            : task.meta.description,
-        diagnostics: normalizeTaskDiagnosticsForUi(task.meta.diagnostics),
+              : sanitizeTaskText(hydratedTask.meta.description))
+            : hydratedTask.meta.description,
+        diagnostics: normalizeTaskDiagnosticsForUi(hydratedTask.meta.diagnostics),
       }
-    : task.meta;
+    : hydratedTask.meta;
   return {
-    ...task,
+    ...hydratedTask,
     title,
-    description: description || synthesizeTaskDescription({ ...task, title }),
+    description: description || synthesizeTaskDescription({ ...hydratedTask, title }),
     diagnostics,
     meta,
   };
@@ -218,7 +219,7 @@ function mergeTaskPages(existingTasks = [], incomingTasks = []) {
       if (key) indexById.set(key, merged.length - 1);
       continue;
     }
-    merged[indexById.get(key)] = { ...merged[indexById.get(key)], ...task };
+    merged[indexById.get(key)] = mergeTaskRecords(merged[indexById.get(key)], task);
   }
   return merged;
 }

@@ -14,6 +14,7 @@ import {
   loadTasks,
   normalizeTaskLifecycleStatus,
   classifyTaskLifecycleAction,
+  mergeTaskRecords,
 } from "../modules/state.js";
 import { apiFetch } from "../modules/api.js";
 import { haptic, showConfirm } from "../modules/telegram.js";
@@ -265,6 +266,8 @@ function getTaskPrLinkage(task) {
       prNumber: Number.isFinite(prNumber) && prNumber > 0 ? prNumber : null,
       source: String(record.source || task?.meta?.prLinkageSource || "").trim(),
       freshness: String(record.freshness || task?.meta?.prLinkageFreshness || "").trim(),
+      linkedAt: String(record.linkedAt || "").trim(),
+      updatedAt: String(record.updatedAt || task?.meta?.prLinkageUpdatedAt || "").trim(),
     };
     const key = [normalized.branchName.toLowerCase(), normalized.prNumber || "", normalized.prUrl.toLowerCase()].join("|");
     if (seen.has(key)) return;
@@ -279,6 +282,22 @@ function getTaskPrLinkage(task) {
 
 function getPrimaryTaskPrLinkage(task) {
   return getTaskPrLinkage(task)[0] || null;
+}
+
+function formatPrLinkageFreshnessLabel(linkage) {
+  const freshness = String(linkage?.freshness || "").trim().toLowerCase();
+  const timestamp = String(linkage?.updatedAt || linkage?.linkedAt || "").trim();
+  const relative = timestamp ? formatRelative(timestamp) : "";
+  if (freshness === "stale") {
+    return relative ? `PR freshness: Stale (${relative})` : "PR freshness: Stale";
+  }
+  if (freshness === "fresh") {
+    return relative ? `PR freshness: Fresh (${relative})` : "PR freshness: Fresh";
+  }
+  if (relative) {
+    return `PR freshness: Updated ${relative}`;
+  }
+  return "PR freshness: Linked";
 }
 
 function getTaskRuntimeSnapshot(task) {
@@ -476,7 +495,7 @@ async function executeBoardTransition(task, newStatus, columnLabel) {
         const merged = detail?.data || startRes?.data || null;
         if (merged) {
           tasksData.value = tasksData.value.map((t) =>
-            matchTaskId(t.id, taskId) ? { ...t, ...merged } : t,
+            matchTaskId(t.id, taskId) ? mergeTaskRecords(t, merged) : t,
           );
         }
         return startRes;
@@ -494,7 +513,7 @@ async function executeBoardTransition(task, newStatus, columnLabel) {
       });
       if (res?.data) {
         tasksData.value = tasksData.value.map((t) =>
-          matchTaskId(t.id, taskId) ? { ...t, ...res.data } : t,
+          matchTaskId(t.id, taskId) ? mergeTaskRecords(t, res.data) : t,
         );
       }
       return res;
@@ -886,7 +905,7 @@ function KanbanColumn({
           });
           if (res?.data) {
             tasksData.value = tasksData.value.map((t) =>
-              matchTaskId(t.id, taskId) ? { ...t, ...res.data } : t,
+              matchTaskId(t.id, taskId) ? mergeTaskRecords(t, res.data) : t,
             );
           }
           return res;

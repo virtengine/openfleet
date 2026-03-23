@@ -62,6 +62,7 @@ import {
   setTaskStatus as setInternalTaskStatus,
   removeTask as removeInternalTask,
   updateTask as patchInternalTask,
+  waitForStoreWrites,
 } from "../task/task-store.mjs";
 import {
   listTaskAttachments,
@@ -674,30 +675,32 @@ function extractMarkdownLinks(text) {
 }
 
 function normalizePrLinkageEntry(entry = {}, fallback = {}) {
-  const branchName = typeof (entry.branchName ?? fallback.branchName) === "string"
-    ? String(entry.branchName ?? fallback.branchName).trim()
+  const safeEntry = entry && typeof entry === "object" ? entry : {};
+  const safeFallback = fallback && typeof fallback === "object" ? fallback : {};
+  const branchName = typeof (safeEntry.branchName ?? safeFallback.branchName) === "string"
+    ? String(safeEntry.branchName ?? safeFallback.branchName).trim()
     : "";
-  const prUrl = typeof (entry.prUrl ?? fallback.prUrl) === "string"
-    ? String(entry.prUrl ?? fallback.prUrl).trim()
+  const prUrl = typeof (safeEntry.prUrl ?? safeFallback.prUrl) === "string"
+    ? String(safeEntry.prUrl ?? safeFallback.prUrl).trim()
     : "";
-  const parsedPrNumber = Number.parseInt(String(entry.prNumber ?? fallback.prNumber ?? ""), 10);
+  const parsedPrNumber = Number.parseInt(String(safeEntry.prNumber ?? safeFallback.prNumber ?? ""), 10);
   const prNumber = Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null;
   if (!branchName && !prUrl && !prNumber) return null;
   return {
     branchName: branchName || null,
     prUrl: prUrl || null,
     prNumber,
-    source: typeof (entry.source ?? fallback.source) === "string" && String(entry.source ?? fallback.source).trim()
-      ? String(entry.source ?? fallback.source).trim()
+    source: typeof (safeEntry.source ?? safeFallback.source) === "string" && String(safeEntry.source ?? safeFallback.source).trim()
+      ? String(safeEntry.source ?? safeFallback.source).trim()
       : null,
-    freshness: typeof (entry.freshness ?? fallback.freshness) === "string" && String(entry.freshness ?? fallback.freshness).trim()
-      ? String(entry.freshness ?? fallback.freshness).trim()
+    freshness: typeof (safeEntry.freshness ?? safeFallback.freshness) === "string" && String(safeEntry.freshness ?? safeFallback.freshness).trim()
+      ? String(safeEntry.freshness ?? safeFallback.freshness).trim()
       : null,
-    linkedAt: typeof (entry.linkedAt ?? fallback.linkedAt) === "string" && String(entry.linkedAt ?? fallback.linkedAt).trim()
-      ? String(entry.linkedAt ?? fallback.linkedAt).trim()
+    linkedAt: typeof (safeEntry.linkedAt ?? safeFallback.linkedAt) === "string" && String(safeEntry.linkedAt ?? safeFallback.linkedAt).trim()
+      ? String(safeEntry.linkedAt ?? safeFallback.linkedAt).trim()
       : null,
-    updatedAt: typeof (entry.updatedAt ?? fallback.updatedAt) === "string" && String(entry.updatedAt ?? fallback.updatedAt).trim()
-      ? String(entry.updatedAt ?? fallback.updatedAt).trim()
+    updatedAt: typeof (safeEntry.updatedAt ?? safeFallback.updatedAt) === "string" && String(safeEntry.updatedAt ?? safeFallback.updatedAt).trim()
+      ? String(safeEntry.updatedAt ?? safeFallback.updatedAt).trim()
       : null,
   };
 }
@@ -755,6 +758,7 @@ function buildPrLinkagePatch(options = {}, currentTask = null) {
     ...(nextEntry.branchName ? { branchName: nextEntry.branchName } : {}),
     ...(nextEntry.prUrl ? { prUrl: nextEntry.prUrl } : {}),
     ...(Number.isFinite(nextEntry.prNumber) && nextEntry.prNumber > 0 ? { prNumber: nextEntry.prNumber } : {}),
+    prLinkage,
     meta: {
       ...currentMeta,
       prLinkage,
@@ -884,6 +888,8 @@ class InternalAdapter {
       existingAttachments,
       localAttachments,
     );
+    const prLinkage = mergePrLinkageRecords(task.prLinkage, task.meta?.prLinkage, [normalizePrLinkageEntry(task, task)]);
+    const primaryPrLinkage = prLinkage[0] || null;
     return {
       id: String(task.id || ""),
       title: recoveredTitle || "",
@@ -908,9 +914,10 @@ class InternalAdapter {
             ? task.meta.repositories
             : [],
       baseBranch,
-      branchName: task.branchName || null,`r`n      prLinkage: mergePrLinkageRecords(task.prLinkage, task.meta?.prLinkage, [normalizePrLinkageEntry(task, task)]),
-      prNumber: task.prNumber || null,
-      prUrl: task.prUrl || null,
+      branchName: task.branchName || primaryPrLinkage?.branchName || null,
+      prLinkage,
+      prNumber: task.prNumber || primaryPrLinkage?.prNumber || null,
+      prUrl: task.prUrl || primaryPrLinkage?.prUrl || null,
       taskUrl: task.taskUrl || null,
       createdAt: task.createdAt || null,
       updatedAt: task.updatedAt || null,
@@ -928,6 +935,10 @@ class InternalAdapter {
         statusHistory: Array.isArray(task.statusHistory) ? task.statusHistory : (Array.isArray(task.meta?.statusHistory) ? task.meta.statusHistory : []),
         comments: normalizedComments,
         attachments: mergedAttachments,
+        prLinkage,
+        prLinkageSource: primaryPrLinkage?.source || task.meta?.prLinkageSource || null,
+        prLinkageFreshness: primaryPrLinkage?.freshness || task.meta?.prLinkageFreshness || null,
+        prLinkageUpdatedAt: primaryPrLinkage?.updatedAt || task.meta?.prLinkageUpdatedAt || null,
       },
     };
   }
@@ -987,7 +998,8 @@ class InternalAdapter {
     if (!updated) {
       throw new Error(`[kanban] internal task not found: ${normalizedId}`);
     }
-    const current = getInternalTask(normalizedId);`r`n    const linkagePatch = buildPrLinkagePatch(options, current);
+    const current = getInternalTask(normalizedId);
+    const linkagePatch = buildPrLinkagePatch(options, current);
     const branchName =
       typeof options?.branchName === "string" ? options.branchName.trim() : "";
     const prUrl = typeof options?.prUrl === "string" ? options.prUrl.trim() : "";
@@ -1000,8 +1012,10 @@ class InternalAdapter {
     if (Number.isFinite(prNumber) && prNumber > 0) linkagePatch.prNumber = prNumber;
     if (Object.keys(linkagePatch).length > 0) {
       const patched = patchInternalTask(normalizedId, linkagePatch);
+      await waitForStoreWrites();
       if (patched) return this._normalizeTask(patched);
     }
+    await waitForStoreWrites();
     return this._normalizeTask(updated);
   }
 
@@ -1110,10 +1124,26 @@ class InternalAdapter {
         baseBranch,
       };
     }
-    const directLinkage = mergePrLinkageRecords(current?.prLinkage, current?.meta?.prLinkage, patch.prLinkage, patch.meta?.prLinkage, [normalizePrLinkageEntry(patch, patch)]);`r`n    if (directLinkage.length > 0) updates.prLinkage = directLinkage;`r`n    const updated = patchInternalTask(normalizedId, updates);
+    const directLinkage = mergePrLinkageRecords(current?.prLinkage, current?.meta?.prLinkage, patch.prLinkage, patch.meta?.prLinkage, [normalizePrLinkageEntry(patch, patch)]);
+    if (directLinkage.length > 0) {
+      const primaryPrLinkage = directLinkage[0] || null;
+      updates.prLinkage = directLinkage;
+      updates.branchName = updates.branchName ?? primaryPrLinkage?.branchName ?? null;
+      updates.prUrl = updates.prUrl ?? primaryPrLinkage?.prUrl ?? null;
+      updates.prNumber = updates.prNumber ?? primaryPrLinkage?.prNumber ?? null;
+      updates.meta = {
+        ...(updates.meta || current?.meta || {}),
+        prLinkage: directLinkage,
+        prLinkageSource: primaryPrLinkage?.source || updates.meta?.prLinkageSource || current?.meta?.prLinkageSource || null,
+        prLinkageFreshness: primaryPrLinkage?.freshness || updates.meta?.prLinkageFreshness || current?.meta?.prLinkageFreshness || null,
+        prLinkageUpdatedAt: primaryPrLinkage?.updatedAt || updates.meta?.prLinkageUpdatedAt || current?.meta?.prLinkageUpdatedAt || null,
+      };
+    }
+    const updated = patchInternalTask(normalizedId, updates);
     if (!updated) {
       throw new Error(`[kanban] internal task not found: ${normalizedId}`);
     }
+    await waitForStoreWrites();
     return this._normalizeTask(updated);
   }
 
@@ -1200,6 +1230,7 @@ class InternalAdapter {
     if (!created) {
       throw new Error("[kanban] internal task creation failed");
     }
+    await waitForStoreWrites();
     return this._normalizeTask(created);
   }
 

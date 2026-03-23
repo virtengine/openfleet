@@ -1367,6 +1367,7 @@ export function updateTask(taskId, updates) {
     repositories: (next) => { task.repositories = next; },
     baseBranch: (next) => { task.baseBranch = next; },
     branchName: (next) => { task.branchName = next; },
+    prLinkage: (next) => { task.prLinkage = next; },
     prNumber: (next) => { task.prNumber = next; },
     prUrl: (next) => { task.prUrl = next; },
     epicId: (next) => { task.epicId = next; },
