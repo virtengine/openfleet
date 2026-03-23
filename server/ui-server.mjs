@@ -1523,9 +1523,11 @@ async function getWorkflowEngineModule() {
           // Resume any runs that were interrupted by a previous shutdown.
           // This must happen AFTER services are wired so node executors work.
           if (typeof engine.resumeInterruptedRuns === "function") {
-            engine.resumeInterruptedRuns().catch((err) => {
-              console.warn("[workflows] Failed to resume interrupted runs:", err.message);
-            });
+            setTimeout(() => {
+              engine.resumeInterruptedRuns().catch((err) => {
+                console.warn("[workflows] Failed to resume interrupted runs:", err.message);
+              });
+            }, 0);
           }
         } else {
           _wfRecommendedInstalled = true;
@@ -1796,7 +1798,7 @@ async function collectWorkflowRunsForTask(taskId, reqUrl, limit = 40) {
   const normalizedTaskId = String(taskId || "").trim();
   if (!normalizedTaskId) return [];
   try {
-    const wfCtx = await getWorkflowRequestContext(reqUrl);
+    const wfCtx = await getWorkflowRequestContext(reqUrl, { bootstrapTemplates: false });
     if (!wfCtx?.ok || !wfCtx.engine) return [];
     const engine = wfCtx.engine;
     const summaries = engine.getRunHistory ? engine.getRunHistory(null, 240) : [];
@@ -2130,7 +2132,7 @@ function maybeBootstrapWorkspaceWorkflowTemplates(engine, workspaceKey, workspac
   }
 }
 
-async function getWorkflowRequestContext(reqUrl) {
+async function getWorkflowRequestContext(reqUrl, options = {}) {
   const workspaceContext = resolveWorkspaceContextFromRequest(reqUrl, { allowAll: false });
   if (!workspaceContext) {
     return { ok: false, status: 400, error: "Unknown workspace. Set a valid workspace query value." };
@@ -2149,6 +2151,7 @@ async function getWorkflowRequestContext(reqUrl) {
       engine = new wfMod.WorkflowEngine({
         workflowDir: paths.workflowDir,
         runsDir: paths.runsDir,
+        detectInterruptedRuns: false,
         services: _wfServices || {},
         onTaskWorkflowEvent: handleTaskWorkflowTraceEvent,
       });
@@ -2163,11 +2166,13 @@ async function getWorkflowRequestContext(reqUrl) {
     attachWorkflowEngineLiveBridge(engine);
     _wfEngineByWorkspace.set(workspaceKey, engine);
   }
-  maybeBootstrapWorkspaceWorkflowTemplates(
-    engine,
-    workspaceKey,
-    workspaceContext.workspaceId || workspaceKey,
-  );
+  if (options.bootstrapTemplates !== false) {
+    maybeBootstrapWorkspaceWorkflowTemplates(
+      engine,
+      workspaceKey,
+      workspaceContext.workspaceId || workspaceKey,
+    );
+  }
   return {
     ok: true,
     wfMod,
@@ -2494,7 +2499,7 @@ function sortTasksByRecency(tasks = []) {
 async function collectBenchmarkWorkflowRuns(reqUrl, taskIds = new Set(), limit = 12) {
   if (!(taskIds instanceof Set) || taskIds.size === 0) return [];
   try {
-    const wfCtx = await getWorkflowRequestContext(reqUrl);
+    const wfCtx = await getWorkflowRequestContext(reqUrl, { bootstrapTemplates: false });
     if (!wfCtx?.ok || !wfCtx.engine) return [];
     const summaries = wfCtx.engine.getRunHistory ? wfCtx.engine.getRunHistory(null, 240) : [];
     const runs = [];
@@ -12998,7 +13003,7 @@ async function handleApi(req, res, url) {
       }
 
       const mode = url.searchParams.get("mode") || "resolve"; // "resolve" | "dry-run"
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       const engine = wfCtx.ok ? wfCtx.engine : null;
 
       // Resolve library roots for skill resolution
@@ -17177,7 +17182,7 @@ if (path === "/api/agent-logs/context") {
 
   if (path === "/api/workflows") {
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17199,7 +17204,7 @@ if (path === "/api/agent-logs/context") {
   if (path === "/api/workflows/save") {
     try {
       const body = await readJsonBody(req);
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17219,7 +17224,7 @@ if (path === "/api/agent-logs/context") {
   if (path === "/api/workflows/import") {
     try {
       const body = await readJsonBody(req);
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17257,7 +17262,7 @@ if (path === "/api/agent-logs/context") {
         return;
       }
 
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17362,7 +17367,7 @@ if (path === "/api/agent-logs/context") {
 
   if (path === "/api/workflows/templates") {
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17379,7 +17384,7 @@ if (path === "/api/agent-logs/context") {
 
   if (path === "/api/workflows/detect-project") {
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       const rootDir = wfCtx.ok ? (wfCtx.workspaceContext?.workspaceDir || process.cwd()) : process.cwd();
       let detected = { stacks: [], primary: null, commands: {}, frameworks: [], isMonorepo: false };
       try {
@@ -17396,7 +17401,7 @@ if (path === "/api/agent-logs/context") {
   if (path === "/api/workflows/install-template") {
     try {
       const body = await readJsonBody(req);
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17413,7 +17418,7 @@ if (path === "/api/agent-logs/context") {
 
   if (path === "/api/workflows/reflow-template-layouts" && req.method === "POST") {
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17438,7 +17443,7 @@ if (path === "/api/agent-logs/context") {
 
   if (path === "/api/workflows/template-updates") {
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17475,7 +17480,7 @@ if (path === "/api/agent-logs/context") {
 
   if (path.startsWith("/api/workflows/") && path.endsWith("/template-update")) {
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17503,7 +17508,7 @@ if (path === "/api/agent-logs/context") {
 
   if (path === "/api/workflows/node-types") {
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17537,7 +17542,7 @@ if (path === "/api/agent-logs/context") {
 
   if (path === "/api/workflows/runs") {
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17584,7 +17589,7 @@ if (path === "/api/agent-logs/context") {
 
   if (path.startsWith("/api/workflows/runs/")) {
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17862,7 +17867,7 @@ if (path === "/api/agent-logs/context") {
     const action = segments[1] || "";
 
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -18252,7 +18257,7 @@ if (path === "/api/agent-logs/context") {
       }
 
       // Check workflow exists and is enabled
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx?.ok) {
         jsonResponse(res, 503, { ok: false, error: "Workflow engine unavailable" });
         return;
@@ -18308,7 +18313,7 @@ if (path === "/api/agent-logs/context") {
     const subAction = webhookMgmtMatch[2] || "";
 
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx?.ok) {
         jsonResponse(res, wfCtx.status || 503, { ok: false, error: wfCtx.error });
         return;
@@ -18384,7 +18389,7 @@ if (path === "/api/agent-logs/context") {
     const wfId = scheduleMgmtMatch[1];
 
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx?.ok) {
         jsonResponse(res, wfCtx.status || 503, { ok: false, error: wfCtx.error });
         return;
@@ -18556,7 +18561,7 @@ if (path === "/api/agent-logs/context") {
       }
       const mf = await import("../workflow/manual-flows.mjs");
       const ctx = resolveActiveWorkspaceExecutionContext();
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       const repository = String(
         executionContext?.repository ||
           executionContext?.targetRepo ||
