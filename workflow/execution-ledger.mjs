@@ -38,13 +38,21 @@ function toTimestamp(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function trimEdgeDashes(value) {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === "-") start += 1;
+  while (end > start && value[end - 1] === "-") end -= 1;
+  return start === 0 && end === value.length ? value : value.slice(start, end);
+}
+
 function stableKeyPart(value, fallback = "unknown") {
   const normalized = String(value || "")
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return normalized || fallback;
+    .replace(/[^a-z0-9._-]+/g, "-");
+  const trimmed = trimEdgeDashes(normalized);
+  return trimmed || fallback;
 }
 
 function pickRunKind(ledger) {
