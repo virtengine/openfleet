@@ -38,7 +38,7 @@ describe("chat session regressions", () => {
 
   it("keeps retained selection during list failures and recovers deterministically", () => {
     const source = read("ui/components/session-list.js");
-    expect(source).toContain("const currentSelectedSessionId = String(selectedSessionId.value || "").trim();");
+    expect(source).toContain('const currentSelectedSessionId = String(selectedSessionId.value || "").trim();');
     expect(source).toContain("const selectedSessionStillExists = !currentSelectedSessionId || sessionIds.has(currentSelectedSessionId);");
     expect(source).toContain("sessionsError.value = hasCachedData ? null : nextErrorState;");
     expect(source).toContain("const listState = getSessionListState({");

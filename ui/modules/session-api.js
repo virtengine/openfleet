@@ -226,6 +226,7 @@ export function classifySessionRequestError(error) {
   const isNotFound =
     status === 404
     || code === "not_found"
+    || lower.includes("not_found")
     || lower.includes("session not found")
     || lower.includes("request failed (404)")
     || lower.includes("not found");
