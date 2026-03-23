@@ -190,6 +190,10 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
           if (hasMessages || isMessageEvent) {
             setLogLines(sessionMessagesToLogLines(payload));
           }
+          const isMessageEvent = payload?.event?.kind === "message";
+          if (hasMessages || isMessageEvent) {
+            setLogLines(sessionMessagesToLogLines(payload));
+          }
         }
       }),
       wsBridge.on("retry:update", applyRetryQueue),
