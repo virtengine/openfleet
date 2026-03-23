@@ -5684,32 +5684,10 @@ registerBuiltinNodeType("validation.tests", {
     const command = ctx.resolve(node.config?.command || "npm test");
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     const timeout = node.config?.timeoutMs || 600000;
+    const hasRunnerOverride = node.config?.runner != null;
 
     ctx.log(node.id, `Running tests: ${command}`);
     const startedAt = Date.now();
-    const isolatedRun = await maybeRunWorkflowCommandInIsolation({
-      node,
-      ctx,
-      engine,
-      nodeType: "validation.tests",
-      command,
-      cwd,
-      timeoutMs: timeout,
-      commandType: "test",
-    });
-    if (isolatedRun) {
-      return {
-        passed:
-          isolatedRun.isolated?.blocked !== true &&
-          Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
-        exitCode: isolatedRun.isolated?.exitCode ?? null,
-        blocked: isolatedRun.isolated?.blocked === true,
-        executionLane: isolatedRun.lane?.lane || "isolated",
-        executionLaneReason: isolatedRun.lane?.reason || "isolated",
-        ...isolatedRun.extras,
-        ...isolatedRun.compacted,
-      };
-    }
     const runnerExecution = await executeValidationCommandWithOptionalRunner({
       node,
       ctx,
@@ -5729,6 +5707,31 @@ registerBuiltinNodeType("validation.tests", {
         ...baseResult,
         ...compacted,
       };
+    }
+    if (!hasRunnerOverride) {
+      const isolatedRun = await maybeRunWorkflowCommandInIsolation({
+        node,
+        ctx,
+        engine,
+        nodeType: "validation.tests",
+        command,
+        cwd,
+        timeoutMs: timeout,
+        commandType: "test",
+      });
+      if (isolatedRun) {
+        return {
+          passed:
+            isolatedRun.isolated?.blocked !== true &&
+            Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
+          exitCode: isolatedRun.isolated?.exitCode ?? null,
+          blocked: isolatedRun.isolated?.blocked === true,
+          executionLane: isolatedRun.lane?.lane || "isolated",
+          executionLaneReason: isolatedRun.lane?.reason || "isolated",
+          ...isolatedRun.extras,
+          ...isolatedRun.compacted,
+        };
+      }
     }
 
     try {
@@ -5780,49 +5783,13 @@ registerBuiltinNodeType("validation.build", {
     const command = normalizeLegacyWorkflowCommand(resolvedCommand);
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     const timeout = node.config?.timeoutMs || 600000;
+    const hasRunnerOverride = node.config?.runner != null;
 
     if (command !== resolvedCommand) {
       ctx.log(node.id, `Normalized legacy command for portability: ${command}`);
     }
     ctx.log(node.id, `Building: ${command}`);
     const startedAt = Date.now();
-    const isolatedRun = await maybeRunWorkflowCommandInIsolation({
-      node,
-      ctx,
-      engine,
-      nodeType: "validation.build",
-      command,
-      cwd,
-      timeoutMs: timeout,
-      commandType: "build",
-    });
-    if (isolatedRun) {
-      const combinedOutput = `${isolatedRun.isolated?.stdout || ""}\n${isolatedRun.isolated?.stderr || ""}`;
-      const hasWarnings = /warning/i.test(combinedOutput);
-      if (node.config?.zeroWarnings && hasWarnings) {
-        return {
-          passed: false,
-          reason: "warnings_found",
-          exitCode: isolatedRun.isolated?.exitCode ?? 0,
-          blocked: isolatedRun.isolated?.blocked === true,
-          executionLane: isolatedRun.lane?.lane || "isolated",
-          executionLaneReason: isolatedRun.lane?.reason || "isolated",
-          ...isolatedRun.extras,
-          ...isolatedRun.compacted,
-        };
-      }
-      return {
-        passed:
-          isolatedRun.isolated?.blocked !== true &&
-          Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
-        exitCode: isolatedRun.isolated?.exitCode ?? null,
-        blocked: isolatedRun.isolated?.blocked === true,
-        executionLane: isolatedRun.lane?.lane || "isolated",
-        executionLaneReason: isolatedRun.lane?.reason || "isolated",
-        ...isolatedRun.extras,
-        ...isolatedRun.compacted,
-      };
-    }
     const runnerExecution = await executeValidationCommandWithOptionalRunner({
       node,
       ctx,
@@ -5853,6 +5820,45 @@ registerBuiltinNodeType("validation.build", {
         ...baseResult,
         ...compacted,
       };
+    }
+    if (!hasRunnerOverride) {
+      const isolatedRun = await maybeRunWorkflowCommandInIsolation({
+        node,
+        ctx,
+        engine,
+        nodeType: "validation.build",
+        command,
+        cwd,
+        timeoutMs: timeout,
+        commandType: "build",
+      });
+      if (isolatedRun) {
+        const combinedOutput = `${isolatedRun.isolated?.stdout || ""}\n${isolatedRun.isolated?.stderr || ""}`;
+        const hasWarnings = /warning/i.test(combinedOutput);
+        if (node.config?.zeroWarnings && hasWarnings) {
+          return {
+            passed: false,
+            reason: "warnings_found",
+            exitCode: isolatedRun.isolated?.exitCode ?? 0,
+            blocked: isolatedRun.isolated?.blocked === true,
+            executionLane: isolatedRun.lane?.lane || "isolated",
+            executionLaneReason: isolatedRun.lane?.reason || "isolated",
+            ...isolatedRun.extras,
+            ...isolatedRun.compacted,
+          };
+        }
+        return {
+          passed:
+            isolatedRun.isolated?.blocked !== true &&
+            Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
+          exitCode: isolatedRun.isolated?.exitCode ?? null,
+          blocked: isolatedRun.isolated?.blocked === true,
+          executionLane: isolatedRun.lane?.lane || "isolated",
+          executionLaneReason: isolatedRun.lane?.reason || "isolated",
+          ...isolatedRun.extras,
+          ...isolatedRun.compacted,
+        };
+      }
     }
 
     try {

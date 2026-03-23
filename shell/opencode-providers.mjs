@@ -432,8 +432,15 @@ export async function discoverProviders(opts = {}) {
   // Try SDK first (requires running server)
   let snapshot = await discoverViaSDK(client);
 
+  const sdkSnapshotWasEmpty =
+    snapshot &&
+    Array.isArray(snapshot.providers) &&
+    snapshot.providers.length === 0 &&
+    Array.isArray(snapshot.allModels) &&
+    snapshot.allModels.length === 0;
+
   // Fall back to CLI
-  if (!snapshot) {
+  if (!snapshot || sdkSnapshotWasEmpty) {
     snapshot = await discoverViaCLI();
   }
 
