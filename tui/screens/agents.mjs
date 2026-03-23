@@ -287,6 +287,10 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
           if (hasMessages || isMessageEvent) {
             setLogLines(sessionMessagesToLogLines(payload));
           }
+          const isMessageEvent = payload?.event?.kind === "message";
+          if (hasMessages || isMessageEvent) {
+            setLogLines(sessionMessagesToLogLines(payload));
+          }
         }
       }),
 >>>>>>> 99797b3a (Apply code review suggestion)
