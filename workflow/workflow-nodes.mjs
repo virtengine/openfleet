@@ -7416,12 +7416,13 @@ registerBuiltinNodeType("agent.run_planner", {
     const agentPool = engine.services?.agentPool;
     const plannerPrompt = engine.services?.prompts?.planner;
     const basePrompt = explicitPrompt || plannerPrompt || "";
-    const promptHasRepoMap = hasRepoMapContext(basePrompt);
+    const fullPromptForRepoMapCheck = [basePrompt, context, plannerFeedback].filter(Boolean).join("\n\n");
+    const promptHasRepoMap = hasRepoMapContext(fullPromptForRepoMapCheck);
     const repoTopologyContext = (node.config?.repoMap || repoMapQuery)
       && !promptHasRepoMap
       ? buildRepoTopologyContext({
         repoMap: node.config?.repoMap || ctx.data?.repoMap || null,
-        repoMapFileLimit: node.config?.repoMapFileLimit,
+        repoMapFileLimit: node.config?.repoMapFileLimit ?? 8,
         repoMapQuery,
         query: [context, explicitPrompt, plannerPrompt].filter(Boolean).join(" "),
         prompt: explicitPrompt || plannerPrompt || "",
