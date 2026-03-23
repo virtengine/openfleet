@@ -276,6 +276,7 @@ import {
 import { formatRelative } from "./modules/utils.js";
 import {
   buildSessionApiPath,
+  shouldFallbackToAllSessions,
   getSessionLifecycleState,
   getSessionRecencyTimestamp,
   getSessionRuntimeState,
@@ -1050,11 +1051,11 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
         try {
           res = await apiFetch(fullSessionPath, { _silent: true });
         } catch (err) {
-          const errorText = String(err?.message || "").toLowerCase();
-          const shouldRetryAll =
-            Boolean(fallbackSessionPath) &&
-            fallbackSessionPath !== fullSessionPath &&
-            (errorText.includes("session not found") || errorText.includes("request failed (404)"));
+          const shouldRetryAll = shouldFallbackToAllSessions(
+            err,
+            fullSessionPath,
+            fallbackSessionPath,
+          );
           if (!shouldRetryAll) throw err;
           res = await apiFetch(fallbackSessionPath, { _silent: true });
         }
@@ -2688,3 +2689,5 @@ const remountApp = () => {
 };
 globalThis.__veRemountApp = remountApp;
 mountApp();
+
+
