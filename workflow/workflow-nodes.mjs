@@ -7418,10 +7418,11 @@ registerBuiltinNodeType("agent.run_planner", {
     const basePrompt = explicitPrompt || plannerPrompt || "";
     const fullPromptForRepoMapCheck = [basePrompt, context, plannerFeedback].filter(Boolean).join("\n\n");
     const promptHasRepoMap = hasRepoMapContext(fullPromptForRepoMapCheck);
+    const promptHasRepoMap = hasRepoMapContext(fullPromptForRepoMapCheck);
     const repoTopologyContext = (node.config?.repoMap || repoMapQuery)
       && !promptHasRepoMap
       ? buildRepoTopologyContext({
-        repoMap: node.config?.repoMap || ctx.data?.repoMap || null,
+        repoMapFileLimit: node.config?.repoMapFileLimit ?? 8,
         repoMapFileLimit: node.config?.repoMapFileLimit ?? 8,
         repoMapQuery,
         query: [context, explicitPrompt, plannerPrompt].filter(Boolean).join(" "),
