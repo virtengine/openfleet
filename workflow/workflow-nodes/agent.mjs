@@ -545,11 +545,16 @@ registerNodeType("agent.run_planner", {
     const plannerPrompt = engine.services?.prompts?.planner;
     const basePrompt = explicitPrompt || plannerPrompt || "";
     const promptHasRepoMap = hasRepoMapContext(basePrompt);
+    const resolvedRepoMapFileLimit = ctx.resolve(node.config?.repoMapFileLimit ?? null);
+    const repoMapFileLimit =
+      resolvedRepoMapFileLimit == null || resolvedRepoMapFileLimit === ""
+        ? 8
+        : (Number(resolvedRepoMapFileLimit) || 8);
     const repoTopologyContext = (node.config?.repoMap || repoMapQuery)
       && !promptHasRepoMap
       ? buildRepoTopologyContext({
         repoMap: node.config?.repoMap || ctx.data?.repoMap || null,
-        repoMapFileLimit: node.config?.repoMapFileLimit,
+        repoMapFileLimit,
         repoMapQuery,
         query: [context, explicitPrompt, plannerPrompt].filter(Boolean).join(" "),
         prompt: explicitPrompt || plannerPrompt || "",
