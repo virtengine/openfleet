@@ -415,6 +415,29 @@ async function discoverAllViaCLI() {
       timestamp: Date.now(),
     };
   } catch (err) {
+    try {
+      const fallback = await execOpencode(["models", "--refresh"], {
+        timeout: 60_000,
+        maxBuffer: 20 * 1024 * 1024,
+      });
+      const { providerMap, allModels } = parseBasicModelsOutput(fallback.stdout);
+      if (allModels.length > 0) {
+        console.warn(
+          `[opencode-providers] verbose catalog discovery failed; using basic model list instead: ${err.message}`,
+        );
+        return {
+          providers: [...providerMap.values()],
+          connected: [],
+          connectedIds: [],
+          defaults: {},
+          allModels,
+          timestamp: Date.now(),
+        };
+      }
+    } catch {
+      // fall through to the original verbose failure below
+    }
+
     console.warn(`[opencode-providers] catalog discovery failed: ${err.message}`);
     return null;
   }

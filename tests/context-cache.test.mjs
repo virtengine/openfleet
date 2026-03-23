@@ -1140,6 +1140,19 @@ describe("live tool compaction", () => {
     expect(compacted.text).toContain("Deploy targets:");
   });
 
+  it("preserves deploy family in fallback signal-first compaction", async () => {
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    const compacted = await cacheModule.compactCommandOutputPayload({
+      command: "kubectl apply -f k8s/prod",
+      output: Array.from({ length: 260 }, (_, i) => `noise line ${i} ${"x".repeat(20)}`).join("\n"),
+      exitCode: 0,
+    });
+
+    expect(compacted.compacted).toBe(true);
+    expect(compacted.compactionFamily).toBe("deploy");
+    expect(compacted.contextEnvelope?.meta?.family).toBe("deploy");
+  });
+
   it("stores semantic budget decisions with cached tool logs", async () => {
     const cacheModule = await import("../workspace/context-cache.mjs");
     const compacted = await cacheModule.compactCommandOutputPayload({

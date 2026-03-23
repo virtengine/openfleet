@@ -569,9 +569,9 @@ export function registerCustomTool(rootDir, def) {
       : {}),
     scope: isGlobal ? "global" : "workspace",
     // Affinity metadata (persisted for future skill/agent matching)
-    ...(skills.length > 0 ? { skills } : {}),
-    ...(agents.length > 0 ? { agents } : {}),
-    ...(templates.length > 0 ? { templates } : {}),
+    ...(normalizedSkills.length > 0 ? { skills: normalizedSkills } : {}),
+    ...(normalizedAgents.length > 0 ? { agents: normalizedAgents } : {}),
+    ...(normalizedTemplates.length > 0 ? { templates: normalizedTemplates } : {}),
     ...(autoInject ? { autoInject } : {}),
     ...(version ? { version } : {}),
   };

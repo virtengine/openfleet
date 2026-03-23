@@ -1371,8 +1371,9 @@ async function compactStandaloneToolItem(
   }
 
   const diagnostic = await analyzeCommandDiagnosticForItem(item);
+  const fallbackFamily = classifyLiveFamily(extractCommandFamily(item), item);
   const logId = await writeToCache(item, extractToolName(item), extractArgsPreview(item), {
-    family: classifyLiveFamily(extractCommandFamily(item), item),
+    family: fallbackFamily,
     commandFamily: extractCommandFamily(item),
     budgetPolicy: diagnostic?.insufficientSignal ? "artifact-summary" : "inline-excerpt",
   });
@@ -1380,7 +1381,7 @@ async function compactStandaloneToolItem(
     ...item,
     _cachedLogId: logId,
     _liveCompacted: true,
-    _liveCompactionFamily: "generic",
+    _liveCompactionFamily: fallbackFamily,
     _liveCompactionCommandFamily: extractCommandFamily(item),
   };
   if (diagnostic) compactedItem._commandDiagnostics = diagnostic;
@@ -1396,9 +1397,8 @@ async function compactStandaloneToolItem(
   if (!compactedText || compactedText.length >= existingText.length) {
     return item;
   }
-  const genericFamily = classifyLiveFamily(extractCommandFamily(item), item);
   const envelope = attachCommandEnvelope(compactedItem, {
-    family: genericFamily,
+    family: fallbackFamily,
     commandFamily: extractCommandFamily(item),
     diagnostic,
     logId,
@@ -1415,7 +1415,7 @@ async function compactStandaloneToolItem(
     savedPct: Math.max(0, Math.round(((existingText.length - compactedText.length) / Math.max(1, existingText.length)) * 100)),
     agentType: agentType || null,
     stage: "live_tool_compaction",
-    compactionFamily: "generic",
+    compactionFamily: fallbackFamily,
     commandFamily: extractCommandFamily(item),
   });
   return compactedItem;
@@ -3183,5 +3183,8 @@ export async function maybeCompressSessionItems(
 
   return compressedItems;
 }
+
+
+
 
 

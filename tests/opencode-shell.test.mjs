@@ -702,4 +702,61 @@ describe("discoverProviders()", () => {
       ]),
     );
   });
+
+  it("falls back to basic catalog output when verbose refresh listing returns 400", async () => {
+    vi.resetModules();
+    mockCreateOpencodeClient.mockImplementation(() => {
+      throw new Error("sdk unavailable");
+    });
+
+    vi.doMock("node:child_process", () => ({
+      execFile: vi.fn((bin, args, opts, cb) => {
+        const callback = typeof opts === "function" ? opts : cb;
+        if (Array.isArray(args) && args.includes("--refresh") && args.includes("--verbose")) {
+          callback(new Error("Failed to list models: 400"));
+          return;
+        }
+        if (Array.isArray(args) && args.includes("--verbose")) {
+          callback(null, "openai/gpt-5\n", "");
+          return;
+        }
+        if (Array.isArray(args) && args.includes("--refresh")) {
+          callback(null, "openai/gpt-5\ngoogle/gemini-2.5-pro\n", "");
+          return;
+        }
+        callback(null, "openai/gpt-5\n", "");
+      }),
+      exec: vi.fn((command, opts, cb) => {
+        const callback = typeof opts === "function" ? opts : cb;
+        const text = String(command);
+        if (text.includes("--refresh") && text.includes("--verbose")) {
+          callback(new Error("Failed to list models: 400"));
+          return;
+        }
+        if (text.includes("--verbose")) {
+          callback(null, "openai/gpt-5\n", "");
+          return;
+        }
+        if (text.includes("--refresh")) {
+          callback(null, "openai/gpt-5\ngoogle/gemini-2.5-pro\n", "");
+          return;
+        }
+        callback(null, "openai/gpt-5\n", "");
+      }),
+    }));
+
+    const { discoverProviders } = await import("../shell/opencode-providers.mjs");
+    const snapshot = await discoverProviders({ force: true, includeCatalog: true });
+
+    expect(snapshot.connectedIds).toEqual(["openai"]);
+    expect(snapshot.providers.map((provider) => provider.id)).toEqual(["openai", "google"]);
+    expect(snapshot.providers[1]).toEqual(
+      expect.objectContaining({
+        id: "google",
+        connected: false,
+        models: [expect.objectContaining({ fullId: "google/gemini-2.5-pro" })],
+      }),
+    );
+  });
 });
+
