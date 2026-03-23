@@ -256,7 +256,7 @@ export async function setupTracing(endpointOrConfig = null) {
 
   const serviceName = inputConfig.serviceName || DEFAULT_SERVICE_NAME;
   const serviceVersion = inputConfig.serviceVersion || DEFAULT_SERVICE_VERSION;
-  const resolvedSampleRate = Number.isFinite(sampleRate) ? sampleRate : 1;
+  const resolvedSampleRate = clampSampleRate(sampleRate);
   const metrics = createMetricStore();
 
   let sdk = null;
@@ -391,6 +391,13 @@ export function addSpanEvent(name, attributes = {}) {
 export function recordIntervention(type, attributes = {}) {
   recordMetric("agentInterventions", "counter", 1, {
     "bosun.intervention.type": type,
+    ...attributes,
+  });
+}
+
+export function recordAgentError(type, attributes = {}) {
+  recordMetric("agentErrors", "counter", 1, {
+    "bosun.error.type": type,
     ...attributes,
   });
 }
