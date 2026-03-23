@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import htm from "htm";
 import { Box, Text, useInput } from "ink";
 
@@ -7,6 +7,7 @@ import StatusHeader from "./components/status-header.mjs";
 import TasksScreen from "./screens/tasks.mjs";
 import AgentsScreen from "./screens/agents.mjs";
 import StatusScreen from "./screens/status.mjs";
+import { listTasksFromApi } from "../ui/tui/tasks-screen-helpers.js";
 
 const html = htm.bind(React.createElement);
 
@@ -16,6 +17,14 @@ const SCREENS = {
   agents: AgentsScreen,
 };
 
+function upsertById(items, nextItem) {
+  const index = items.findIndex((item) => item.id === nextItem.id);
+  if (index === -1) return [nextItem, ...items];
+  const next = [...items];
+  next[index] = { ...next[index], ...nextItem };
+  return next;
+}
+
 export default function App({ host, port, connectOnly, initialScreen, refreshMs }) {
   const [screen, setScreen] = useState(initialScreen || "status");
   const [connected, setConnected] = useState(false);
@@ -23,44 +32,40 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
   const [sessions, setSessions] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [error, setError] = useState(null);
+  const [screenInputLocked, setScreenInputLocked] = useState(false);
+  const bridgeRef = useRef(null);
 
   useEffect(() => {
-    const bridge = wsBridge({ host, port });
+    let active = true;
+    const bridge = wsBridge({ host, port, refreshMs });
+    bridgeRef.current = bridge;
 
-    bridge.on("connect", () => {
+    const refreshTasks = async () => {
+      try {
+        const nextTasks = await listTasksFromApi();
+        if (active) setTasks(nextTasks);
+      } catch (err) {
+        if (active) setError(String(err?.message || err || "Failed to load tasks"));
+      }
+    };
+
+    const unsubscribes = [];
+    const on = (eventName, handler) => {
+      const unsubscribe = bridge.on(eventName, handler);
+      unsubscribes.push(unsubscribe);
+    };
+
+    on("connect", () => {
       setConnected(true);
       setError(null);
+      void refreshTasks();
     });
-
-    bridge.on("disconnect", () => {
-      setConnected(false);
-    });
-
-    bridge.on("error", (err) => {
-      setError(err.message);
-    });
-
-    bridge.on("stats", (data) => {
-      setStats(data);
-    });
-
-    bridge.on("session:start", (session) => {
-      setSessions((prev) => [...prev, session]);
-    });
-
-    bridge.on("session:update", (session) => {
-      setSessions((prev) => {
-        const existingIndex = prev.findIndex((candidate) => candidate.id === session.id);
-        if (existingIndex >= 0) {
-          const updated = [...prev];
-          updated[existingIndex] = session;
-          return updated;
-        }
-        return [session, ...prev];
-      });
-    });
-
-    bridge.on("sessions:update", (payload) => {
+    on("disconnect", () => setConnected(false));
+    on("error", (err) => setError(err?.message || String(err || "Connection failed")));
+    on("stats", (data) => setStats(data));
+    on("session:start", (session) => setSessions((prev) => upsertById(prev, session)));
+    on("session:update", (session) => setSessions((prev) => upsertById(prev, session)));
+    on("sessions:update", (payload) => {
       const nextSessions = Array.isArray(payload?.sessions)
         ? payload.sessions
         : Array.isArray(payload)
@@ -68,175 +73,58 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
           : [];
       setSessions(nextSessions);
     });
-
-    bridge.on("session:end", (session) => {
-      setSessions((prev) => prev.filter((candidate) => candidate.id !== session.id));
+    on("session:end", (session) => {
+      setSessions((prev) => prev.filter((item) => item.id !== session.id));
     });
-
-    bridge.on("task:update", (task) => {
-      setTasks((prev) => {
-        const idx = prev.findIndex((candidate) => candidate.id === task.id);
-        if (idx >= 0) {
-          const updated = [...prev];
-          updated[idx] = task;
-          return updated;
-        }
-        return [...prev, task];
-      });
+    on("tasks:update", () => {
+      void refreshTasks();
     });
-
-    bridge.on("task:create", (task) => {
-      setTasks((prev) => [...prev, task]);
+    on("task:update", (task) => {
+      setTasks((prev) => upsertById(prev, task));
     });
-
-    bridge.on("task:delete", (taskId) => {
+    on("task:create", (task) => {
+      setTasks((prev) => upsertById(prev, task));
+    });
+    on("task:delete", (taskId) => {
       setTasks((prev) => prev.filter((task) => task.id !== taskId));
     });
-
-    const applyRetryQueue = (retryData) => {
-      setStats((prev) => ({
-        ...(prev || {}),
-        retryQueue: retryData,
-      }));
-    };
-
-    const retryUnsubscribes = [];
-
-    retryUnsubscribes.push(bridge.on("retry:update", applyRetryQueue));
-    retryUnsubscribes.push(bridge.on("retry-queue-updated", applyRetryQueue));
+    on("retry:update", (retryQueue) => {
+      setStats((prev) => ({ ...(prev || {}), retryQueue }));
+    });
+    on("retry-queue-updated", (retryQueue) => {
+      setStats((prev) => ({ ...(prev || {}), retryQueue }));
+    });
 
     bridge.connect();
+    void refreshTasks();
 
     return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
+      active = false;
+      unsubscribes.forEach((unsubscribe) => {
+        if (typeof unsubscribe === "function") unsubscribe();
       });
       bridge.disconnect();
+      bridgeRef.current = null;
     };
-  }, [host, port]);
+  }, [host, port, refreshMs]);
 
   const handleKeyPress = useCallback((key) => {
-    if (key === "q") {
-      process.exit(0);
-    }
-    if (key === "1") {
-      setScreen("status");
-    }
-    if (key === "2") {
-      setScreen("tasks");
-    }
-    if (key === "3") {
-      setScreen("agents");
-    }
+    if (key === "q") process.exit(0);
+    if (key === "1") setScreen("status");
+    if (key === "2") setScreen("tasks");
+    if (key === "3") setScreen("agents");
   }, []);
 
   useInput((input) => {
+    if (screenInputLocked) return;
     handleKeyPress(input);
   });
 
   const ScreenComponent = SCREENS[screen] || StatusScreen;
-  const wsBridgeInstance = typeof wsBridge === "function" ? wsBridge({ host, port }) : wsBridge;
 
   return html`
     <${Box} flexDirection="column" minHeight=${0}>
-      <${StatusHeader}
-        stats=${stats}
-        connected=${connected}
-        screen=${screen}
-      />
+      <${StatusHeader} stats=${stats} connected=${connected} screen=${screen} />
       <${Box} flexDirection="column" flexGrow=${1}>
         ${error
           ? html`
@@ -249,11 +137,13 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
           stats=${stats}
           sessions=${sessions}
           tasks=${tasks}
-          wsBridge=${wsBridgeInstance}
+          wsBridge=${bridgeRef.current}
           host=${host}
           port=${port}
           connectOnly=${connectOnly}
           refreshMs=${refreshMs}
+          onTasksChange=${setTasks}
+          onInputCaptureChange=${setScreenInputLocked}
         />
       <//>
       <${Box} paddingX=${1} borderStyle="single">
