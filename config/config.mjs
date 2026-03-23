@@ -1812,9 +1812,9 @@ export function loadConfig(argv = process.argv, options = {}) {
   const vkPublicUrl = process.env.VK_PUBLIC_URL || process.env.VK_WEB_URL || "";
   const vkTaskUrlTemplate = process.env.VK_TASK_URL_TEMPLATE || "";
   const tracingEndpoint =
-    process.env.BOSUN_OTEL_ENDPOINT || fileConfig?.tracing?.endpoint || null;
-  const tracingEnabled = fileConfig?.tracing?.enabled ?? Boolean(tracingEndpoint);
-  const tracingSampleRate = Number(fileConfig?.tracing?.sampleRate ?? 1);
+    process.env.BOSUN_OTEL_ENDPOINT || configData?.tracing?.endpoint || null;
+  const tracingEnabled = configData?.tracing?.enabled ?? Boolean(tracingEndpoint);
+  const tracingSampleRate = Number(configData?.tracing?.sampleRate ?? 1);
   const vkRecoveryCooldownMin = Number(
     process.env.VK_RECOVERY_COOLDOWN_MIN || "10",
   );
@@ -2341,6 +2341,5 @@ export {
   resolveAgentRepoRoot,
 };
 export default loadConfig;
-
 
 
