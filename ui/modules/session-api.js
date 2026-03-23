@@ -215,6 +215,14 @@ export function classifySessionRequestError(error) {
   const lower = raw.toLowerCase();
   const code = String(error?.code || "").trim().toLowerCase();
   const status = Number(error?.status || error?.statusCode || 0);
+  if (!raw && !code && !status) {
+    return {
+      raw,
+      isNotFound: false,
+      isTransient: false,
+      key: null,
+    };
+  }
   const isNotFound =
     status === 404
     || code === "not_found"
@@ -543,6 +551,7 @@ export function buildSessionApiPath(sessionId, action = "", opts = {}) {
   const qs = params.toString();
   return qs ? `${path}?${qs}` : path;
 }
+
 
 
 
