@@ -738,6 +738,89 @@ describe("loadArchivedTasks", () => {
     expect(result).toHaveLength(1);
     expect(result[0].task.id).toBe("good");
   });
+
+  it("normalizes legacy archive task attachment and archive paths on load", async () => {
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      resolve(dir, "2026-02-01.json"),
+      JSON.stringify([
+        {
+          task: {
+            id: "legacy-task",
+            title: "Legacy archive task",
+            status: "done",
+            workspace: "VirtEngine-GH\\Bosun",
+            repository: "VirtEngine-GH\\Repo-One",
+            attachments: [
+              { filePath: "artifacts\\build.log", name: "build.log" },
+              { path: "./artifacts/build.log", name: "duplicate build.log" },
+            ],
+            meta: {
+              archivePath: "archive\\done\\legacy-task.json",
+              attachments: [
+                { filePath: "notes\\plan.md", name: "plan.md" },
+                { path: "./notes/plan.md", name: "duplicate plan.md" },
+              ],
+            },
+          },
+          archived_at: "2026-02-01T10:00:00Z",
+        },
+      ]),
+    );
+
+    const result = await loadArchivedTasks({ archiveDir: dir });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].task.attachments).toHaveLength(1);
+    expect(result[0].task.attachments[0]).toEqual(
+      expect.objectContaining({ filePath: "artifacts/build.log" }),
+    );
+    expect(result[0].task.meta.archivePath).toBe("archive/done/legacy-task.json");
+    expect(result[0].task.meta.attachments).toHaveLength(1);
+    expect(result[0].task.meta.attachments[0]).toEqual(
+      expect.objectContaining({ filePath: "notes/plan.md" }),
+    );
+  });
+  it("normalizes legacy root artifact paths and mixed-case attachments on archived task load", async () => {
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      resolve(dir, "2026-02-02.json"),
+      JSON.stringify([
+        {
+          task: {
+            id: "legacy-root-paths",
+            title: "Legacy root paths",
+            status: "done",
+            attachments: [
+              { filePath: "Artifacts\\Build.LOG", name: "build.log" },
+              { path: "./artifacts/build.log", name: "duplicate build.log" },
+            ],
+            archivePath: "Archive\\Done\\Legacy-Root-Paths.JSON",
+            importPath: "Imports\\Legacy-Root-Paths.JSON",
+            filePaths: ["Src\\Runner.MJS", "./src/runner.mjs"],
+            paths: ["Docs\\Plan.MD", "./docs/plan.md"],
+            meta: {
+              exportPath: "Exports\\Legacy-Root-Paths.JSON",
+            },
+          },
+          archived_at: "2026-02-02T10:00:00Z",
+        },
+      ]),
+    );
+
+    const result = await loadArchivedTasks({ archiveDir: dir });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].task.attachments).toHaveLength(1);
+    expect(result[0].task.attachments[0]).toEqual(
+      expect.objectContaining({ filePath: "artifacts/build.log" }),
+    );
+    expect(result[0].task.archivePath).toBe("archive/done/legacy-root-paths.json");
+    expect(result[0].task.importPath).toBe("imports/legacy-root-paths.json");
+    expect(result[0].task.filePaths).toEqual(["src/runner.mjs"]);
+    expect(result[0].task.paths).toEqual(["docs/plan.md"]);
+    expect(result[0].task.meta.exportPath).toBe("exports/legacy-root-paths.json");
+  });
 });
 
 // ── readDailyArchive ─────────────────────────────────────────────────────────────
