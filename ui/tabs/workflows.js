@@ -336,6 +336,9 @@ function formatRetryDecisionReason(reason) {
 function formatIssueAdvisorAction(action) {
   const normalized = String(action || "").trim().toLowerCase();
   if (normalized === "replan_from_failed") return "Replan from failed node";
+  if (normalized === "replan_subgraph") return "Replan downstream subgraph";
+  if (normalized === "rerun_same_step") return "Rerun same step";
+  if (normalized === "spawn_fix_step") return "Spawn targeted fix step";
   if (normalized === "resume_remaining") return "Resume remaining work";
   if (normalized === "inspect_failure") return "Inspect failure first";
   if (normalized === "continue") return "Continue";
@@ -5400,10 +5403,11 @@ function RunHistoryView() {
         ? selectedRun.detail.issueAdvisor
         : null;
     const dagCounts = getRunDagCounts(selectedRun);
+    const dagRevisions = Array.isArray(selectedRun?.detail?.dagState?.revisions) ? selectedRun.detail.dagState.revisions : [];
     const ledgerEvents = Array.isArray(selectedRun?.ledger?.events) ? selectedRun.ledger.events : [];
     const recommendedRetryMode =
       selectedRun?.status === "failed"
-        ? (selectedRun?.issueAdvisorRecommendation === "replan_from_failed" ? "from_scratch" : "from_failed")
+        ? ((selectedRun?.issueAdvisorRecommendation === "replan_from_failed" || selectedRun?.issueAdvisorRecommendation === "replan_subgraph") ? "from_scratch" : "from_failed")
         : "";
     const recommendedRetryLabel = formatRetryModeLabel(recommendedRetryMode);
 
@@ -5522,7 +5526,9 @@ function RunHistoryView() {
               <div><b>Completed:</b> ${dagCounts.completed}/${dagCounts.nodeCount}</div>
               <div><b>Failed:</b> ${dagCounts.failed} · <b>Skipped:</b> ${dagCounts.skipped} · <b>Active:</b> ${dagCounts.active}</div>
               <div><b>Recommendation:</b> ${formatIssueAdvisorAction(issueAdvisor?.recommendedAction)}</div>
+              <div><b>Decision Class:</b> ${formatIssueAdvisorAction(issueAdvisor?.retryDecisionClass || issueAdvisor?.recommendedAction)}</div>
               <div style="margin-top: 6px; color: #e5e7eb;">${issueAdvisor?.summary || "No issue-advisor summary recorded for this run."}</div>
+              ${issueAdvisor?.nextStepGuidance && html`<div style="margin-top: 6px; color: #cbd5e1;">${issueAdvisor.nextStepGuidance}</div>`}
             </div>
           </div>
 
@@ -5551,6 +5557,24 @@ function RunHistoryView() {
             </div>
           </div>
         </div>
+
+        <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;">
+          <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">DAG Revisions (${dagRevisions.length})</summary>
+          <div style="display:flex; flex-direction:column; gap:8px; margin-top:8px;">
+            ${dagRevisions.length === 0 && html`<div style="font-size:12px; opacity:0.6;">No DAG revision history recorded.</div>`}
+            ${dagRevisions.map((revision) => html`
+              <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+                <div><b>Revision ${revision.index}:</b> ${revision.reason || "update"}</div>
+                <div><b>Recorded:</b> ${formatDate(revision.recordedAt)}</div>
+                <div><b>Counts:</b> completed=${Number(revision?.counts?.completed || 0)}, failed=${Number(revision?.counts?.failed || 0)}, pending=${Number(revision?.counts?.pending || 0)}</div>
+                <div><b>Preserved:</b> ${(Array.isArray(revision?.preservedCompletedNodeIds) && revision.preservedCompletedNodeIds.length) ? revision.preservedCompletedNodeIds.join(", ") : "—"}</div>
+                <div><b>Focus:</b> ${(Array.isArray(revision?.focusNodeIds) && revision.focusNodeIds.length) ? revision.focusNodeIds.join(", ") : "—"}</div>
+                <div><b>Graph Before:</b> nodes=${Array.isArray(revision?.graphBefore?.nodes) ? revision.graphBefore.nodes.length : 0}, edges=${Array.isArray(revision?.graphBefore?.edges) ? revision.graphBefore.edges.length : 0}</div>
+                <div><b>Graph After:</b> nodes=${Array.isArray(revision?.graphAfter?.nodes) ? revision.graphAfter.nodes.length : 0}, edges=${Array.isArray(revision?.graphAfter?.edges) ? revision.graphAfter.edges.length : 0}</div>
+              </div>
+            `)}
+          </div>
+        </details>
 
         <div style="display: flex; flex-direction: column; gap: 10px;">
           <h3 style="margin: 0; font-size: 14px; color: var(--color-text-secondary, #8b95a5);">Node Execution</h3>

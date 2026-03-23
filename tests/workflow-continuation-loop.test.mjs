@@ -158,4 +158,33 @@ describe("continuation-loop template integration", () => {
     expect(ctx.getNodeStatus("end-escalated")).toBe("completed");
     expect(launchEphemeralThread.mock.calls.length).toBeGreaterThanOrEqual(3);
   }, 15000);
+  it("injects issue-advisor guidance into planner feedback for downstream continuation prompts", async () => {
+    makeTmpEngine();
+    const ctxLike = {
+      data: {
+        _dagState: {
+          runId: "run-123",
+          workflowId: "wf-123",
+          status: "failed",
+          nodes: {
+            build: { nodeId: "build", label: "Build", status: "completed" },
+            verify: {
+              nodeId: "verify",
+              label: "Verify",
+              status: "failed",
+              lastError: "validation failed: tests red",
+            },
+            patch: { nodeId: "patch", label: "Patch", status: "pending" },
+          },
+        },
+      },
+    };
+
+    const advisor = engine._refreshDagState(ctxLike, "failed");
+    expect(advisor.summary).toContain("Verify");
+    expect(ctxLike.data._plannerFeedback.issueAdvisor.summary).toContain("Verify");
+    expect(ctxLike.data._plannerFeedback.issueAdvisor.nextStepGuidance).toContain("Preserve completed work");
+    expect(ctxLike.data._plannerFeedback.dagStateSummary.counts.failed).toBe(1);
+  });
 });
+
