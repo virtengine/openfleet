@@ -451,9 +451,12 @@ export function formatTraceparent(traceContext = null) {
   const trace = traceContext || getCurrentTraceContext();
   const traceId = String(trace?.traceId || "").trim().toLowerCase();
   const spanId = String(trace?.spanId || "").trim().toLowerCase();
-  const traceFlags = Number.isFinite(Number(trace?.traceFlags))
-    ? Number(trace.traceFlags)
-    : 1;
+  const rawFlags = trace?.traceFlags;
+  if (!Number.isFinite(Number(rawFlags))) {
+    // If we cannot determine the correct trace flags, avoid emitting a potentially incorrect traceparent.
+    return null;
+  }
+  const traceFlags = Number(rawFlags);
   if (!/^[0-9a-f]{32}$/.test(traceId) || !/^[0-9a-f]{16}$/.test(spanId)) {
     return null;
   }
