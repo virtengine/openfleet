@@ -314,6 +314,8 @@ describe("getToolsPromptBlock", () => {
   it("includes reflect hint by default", () => {
     const block = getToolsPromptBlock(tmpRoot);
     expect(block).toContain("Reflect:");
+    expect(block).toContain("- Check existing tools before writing new helpers.");
+    expect(block).not.toContain("Before writing repetitive inline code");
   });
 
   it("omits reflect hint when emitReflectHint=false", () => {
@@ -747,3 +749,4 @@ describe("getToolsPromptBlock affinity", () => {
   });
 });
 }
+

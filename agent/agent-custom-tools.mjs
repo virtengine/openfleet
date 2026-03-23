@@ -746,12 +746,12 @@ export function getToolsPromptBlock(rootDir, opts = {}) {
     "## Custom Tools Library",
     "",
     discoveryMode
-      ? "Only eagerly-loaded tools are listed below. Use the MCP discovery tools to find the rest at runtime."
-      : "The following reusable helper scripts are available. Run them via",
+      ? "- Eager tools only below. Discover the rest at runtime."
+      : "- Run tools via `node <tool>.mjs`, `bash <tool>.sh`, or `python3 <tool>.py`.",
     discoveryMode
-      ? "Use `search`, then `get_schema`, then `execute` for tools not listed here. Use `call_discovered_tool` only for simple direct calls."
-      : "`node <tool>.mjs`, `bash <tool>.sh`, or `python3 <tool>.py`.",
-    "Built-in tools live in `bosun/tools/`; workspace tools in `.bosun/tools/`.",
+      ? "- Use `search`, `get_schema`, then `execute` for tools not listed here."
+      : "- Check this library before writing new helper code.",
+    "- Built-in tools: `bosun/tools/`; workspace tools: `.bosun/tools/`.",
     "",
   ];
 
@@ -791,16 +791,13 @@ export function getToolsPromptBlock(rootDir, opts = {}) {
     lines.push(
       "---",
       "",
-      "**Reflect:** Before writing repetitive inline code, check if an existing",
-      "custom tool covers the need. If you encounter a pattern that future agents",
-      "(or yourself on retry) would benefit from having as a persistent script,",
-      "save it to `.bosun/tools/` and register it via the Bosun SDK so the whole",
-      "team benefits. Good candidates: analysis helpers, test generators, codemods,",
-      "build/lint wrappers that differ from what `npm run *` provides.",
+      "**Reflect**",
+      "- Reuse existing tools before writing new helpers.",
+      "- Promote repeated analysis, test, build, transform, or search logic into `.bosun/tools/`.",
+      "- Skip one-off scripts.",
       "",
     );
   }
-
   return lines.join("\n");
 }
 
@@ -931,3 +928,4 @@ export function getAffinityTools(rootDir, opts = {}) {
     .slice(0, limit)
     .map((s) => s.tool);
 }
+

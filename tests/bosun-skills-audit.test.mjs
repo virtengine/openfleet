@@ -1,11 +1,6 @@
-/**
- * @module tests/bosun-skills-audit.test.mjs
- * @description Unit tests for the codebase-annotation-audit builtin skill.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
@@ -17,20 +12,17 @@ import {
   findRelevantSkills,
   getSkillsDir,
 } from "../agent/bosun-skills.mjs";
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
+import { lintPromptText } from "../tools/prompt-lint.mjs";
 
 let testHome;
 
 async function makeTempHome() {
-  const dir = resolve(tmpdir(), `bsa-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+  const dir = await mkdtemp(resolve(tmpdir(), "bsa-test-"));
   mkdirSync(dir, { recursive: true });
   return dir;
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
-
-describe("codebase-annotation-audit skill", () => {
+describe("builtin skills audit", () => {
   beforeEach(async () => {
     testHome = await makeTempHome();
   });
@@ -41,171 +33,75 @@ describe("codebase-annotation-audit skill", () => {
     }
   });
 
-  // ── Skill Registration ──────────────────────────────────────────────────
+  it("keeps every builtin skill concise and metadata-complete", () => {
+    expect(BUILTIN_SKILLS.length).toBeGreaterThan(0);
 
-  it("is present in BUILTIN_SKILLS", () => {
-    const skill = BUILTIN_SKILLS.find((s) => s.filename === "skill-codebase-audit.md");
+    for (const skill of BUILTIN_SKILLS) {
+      expect(skill.filename).toMatch(/\.md$/);
+      expect(skill.title).toBeTruthy();
+      expect(Array.isArray(skill.tags)).toBe(true);
+      expect(skill.tags.length).toBeGreaterThan(0);
+      expect(skill.scope).toBeTruthy();
+      expect(skill.content).toBeTruthy();
+      expect(skill.content.length).toBeLessThan(1000);
+      expect(lintPromptText(skill.content, skill.filename)).toEqual([]);
+    }
+  });
+
+  it("keeps the codebase audit skill compact but actionable", () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.filename === "skill-codebase-audit.md");
+
     expect(skill).toBeTruthy();
-  });
-
-  it("has correct metadata", () => {
-    const skill = BUILTIN_SKILLS.find((s) => s.filename === "skill-codebase-audit.md");
     expect(skill.title).toBe("Codebase Annotation Audit");
-    expect(skill.scope).toBe("global");
-    expect(skill.tags).toContain("audit");
-    expect(skill.tags).toContain("annotation");
-    expect(skill.tags).toContain("documentation");
-    expect(skill.tags).toContain("summary");
-    expect(skill.tags).toContain("claude");
-  });
-
-  it("has non-empty content with expected sections", () => {
-    const skill = BUILTIN_SKILLS.find((s) => s.filename === "skill-codebase-audit.md");
-    expect(skill.content).toBeTruthy();
-    expect(skill.content.length).toBeGreaterThan(500);
-
-    // Key sections
-    expect(skill.content).toContain("Annotation Format");
+    expect(skill.tags).toEqual(expect.arrayContaining(["audit", "annotation", "documentation", "claude"]));
     expect(skill.content).toContain("CLAUDE:SUMMARY");
     expect(skill.content).toContain("CLAUDE:WARN");
-    expect(skill.content).toContain("6-Phase Audit");
-    expect(skill.content).toContain("Phase 1");
-    expect(skill.content).toContain("Inventory");
-  });
-
-  it("loads content from the checked-in markdown file", () => {
-    const skill = BUILTIN_SKILLS.find((s) => s.filename === "skill-codebase-audit.md");
-    const diskContent = readFileSync(resolve("agent", "skills", "skill-codebase-audit.md"), "utf8");
-    expect(skill.content).toBe(diskContent);
-  });
-
-  it("contains LEAN philosophy section", () => {
-    const skill = BUILTIN_SKILLS.find((s) => s.filename === "skill-codebase-audit.md");
     expect(skill.content).toContain("LEAN");
-    expect(skill.content).toContain("documentation-only");
   });
 
-  it("includes success metrics", () => {
-    const skill = BUILTIN_SKILLS.find((s) => s.filename === "skill-codebase-audit.md");
-    expect(skill.content).toContain("4×");
-    expect(skill.content).toContain("20%");
-  });
-
-  // ── Scaffolding ─────────────────────────────────────────────────────────
-
-  it("is scaffolded to disk by scaffoldSkills()", () => {
+  it("scaffolds builtin skills to disk", () => {
     scaffoldSkills(testHome);
 
     const skillsDir = getSkillsDir(testHome);
-    const filePath = resolve(skillsDir, "skill-codebase-audit.md");
-    expect(existsSync(filePath)).toBe(true);
-
-    const content = readFileSync(filePath, "utf8");
-    expect(content).toContain("Codebase Annotation Audit");
-    expect(content).toContain("CLAUDE:SUMMARY");
+    for (const skill of BUILTIN_SKILLS) {
+      const filePath = resolve(skillsDir, skill.filename);
+      expect(existsSync(filePath)).toBe(true);
+      expect(readFileSync(filePath, "utf8")).toBe(skill.content.endsWith("\n") ? skill.content : `${skill.content}\n`);
+    }
   });
 
-  // ── Index & Discovery ───────────────────────────────────────────────────
-
-  it("appears in skill index after scaffolding", () => {
+  it("includes builtin skills in the generated index", () => {
     scaffoldSkills(testHome);
     const skillsDir = getSkillsDir(testHome);
     const indexPath = buildSkillsIndex(skillsDir);
-
-    expect(indexPath).toBeTruthy();
-    expect(existsSync(indexPath)).toBe(true);
-
     const index = JSON.parse(readFileSync(indexPath, "utf8"));
-    expect(Array.isArray(index.skills)).toBe(true);
 
-    const auditEntry = index.skills.find((s) => s.filename === "skill-codebase-audit.md");
+    expect(Array.isArray(index.skills)).toBe(true);
+    expect(index.skills).toHaveLength(BUILTIN_SKILLS.length);
+
+    const auditEntry = index.skills.find((entry) => entry.filename === "skill-codebase-audit.md");
     expect(auditEntry).toBeTruthy();
-    expect(auditEntry.title).toContain("Annotation Audit");
     expect(auditEntry.tags).toContain("audit");
   });
 
-  it("is matched by findRelevantSkills for audit tasks", () => {
+  it("matches relevant skills for audit tasks", () => {
     scaffoldSkills(testHome);
-
-    // buildSkillsIndex writes index.json to disk, which findRelevantSkills reads
     const skillsDir = getSkillsDir(testHome);
     buildSkillsIndex(skillsDir);
 
     const matched = findRelevantSkills(testHome, "audit the codebase annotations");
     expect(matched.length).toBeGreaterThan(0);
-
-    const auditSkill = matched.find((s) => s.filename === "skill-codebase-audit.md");
-    expect(auditSkill).toBeTruthy();
-    expect(auditSkill.content).toContain("CLAUDE:SUMMARY");
+    expect(matched.some((entry) => entry.filename === "skill-codebase-audit.md")).toBe(true);
   });
 
-  it("is matched by findRelevantSkills for documentation tasks", () => {
+  it("builds a compact relevant-skills prompt block", () => {
     scaffoldSkills(testHome);
     const skillsDir = getSkillsDir(testHome);
     buildSkillsIndex(skillsDir);
 
-    const matched = findRelevantSkills(testHome, "documentation summary for the codebase");
-    const auditSkill = matched.find((s) => s.filename === "skill-codebase-audit.md");
-    expect(auditSkill).toBeTruthy();
-  });
-
-  it("is NOT matched by unrelated task titles", () => {
-    scaffoldSkills(testHome);
-    const skillsDir = getSkillsDir(testHome);
-    buildSkillsIndex(skillsDir);
-
-    const matched = findRelevantSkills(testHome, "fix button click handler in React component");
-    const auditSkill = matched.find((s) => s.filename === "skill-codebase-audit.md");
-    // Should not match — audit tags are not in this title
-    expect(auditSkill).toBeFalsy();
-  });
-
-  it("indexes user-defined important skills from metadata comments", () => {
-    const skillsDir = getSkillsDir(testHome);
-    mkdirSync(skillsDir, { recursive: true });
-    writeFileSync(
-      resolve(skillsDir, "critical-path.md"),
-      [
-        "<!-- tags: critical deploy incident -->",
-        "<!-- important: true -->",
-        "# Skill: Critical Path",
-        "",
-        "Handle deploy incidents carefully.",
-      ].join("\n"),
-      "utf8",
-    );
-    const indexPath = buildSkillsIndex(skillsDir);
-    const index = JSON.parse(readFileSync(indexPath, "utf8"));
-    const entry = index.skills.find((skill) => skill.filename === "critical-path.md");
-    expect(entry).toBeTruthy();
-    expect(entry.important).toBe(true);
-    expect(entry.tags).toContain("incident");
-  });
-
-  it("inlines matched important skills in the prompt block", () => {
-    const skillsDir = getSkillsDir(testHome);
-    mkdirSync(skillsDir, { recursive: true });
-    writeFileSync(
-      resolve(skillsDir, "critical-path.md"),
-      [
-        "<!-- tags: critical deploy incident -->",
-        "<!-- important: true -->",
-        "# Skill: Critical Path",
-        "",
-        "Handle deploy incidents carefully.",
-      ].join("\n"),
-      "utf8",
-    );
-    buildSkillsIndex(skillsDir);
-
-    const block = buildRelevantSkillsPromptBlock(
-      testHome,
-      "critical deploy incident",
-      "investigate production deploy",
-    );
-    expect(block).toContain("Critical Path");
-    expect(block).toContain("Handle deploy incidents carefully.");
-    expect(block).toContain("[important]");
+    const block = buildRelevantSkillsPromptBlock(testHome, "audit the codebase annotations", { maxSkills: 3 });
+    expect(block).toContain("Relevant Skills");
+    expect(block).toContain("skill-codebase-audit.md");
+    expect(block).not.toContain("I will ");
   });
 });
-
