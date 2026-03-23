@@ -16,6 +16,11 @@ import {
   renameSync,
 } from "node:fs";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
+import {
+  getTaskAttachmentCanonicalKey,
+  normalizeTaskAttachmentRecord,
+  normalizeTaskAttachments,
+} from "./task-store.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TAG = "[task-attachments]";
@@ -70,17 +75,12 @@ function taskKey(taskId, backend) {
 }
 
 function attachmentKey(att) {
-  if (!att) return "";
-  if (att.url) return `url:${att.url}`;
-  if (att.filePath) return `file:${att.filePath}`;
-  if (att.path) return `path:${att.path}`;
-  if (att.id) return `id:${att.id}`;
-  return `raw:${JSON.stringify(att)}`;
+  return getTaskAttachmentCanonicalKey(att);
 }
 
 function normalizeAttachment(att, backend) {
-  if (!att || typeof att !== "object") return null;
-  const normalized = { ...att };
+  const normalized = normalizeTaskAttachmentRecord(att);
+  if (!normalized || typeof normalized !== "object") return null;
   if (!normalized.id) normalized.id = randomUUID();
   if (!normalized.createdAt) normalized.createdAt = nowIso();
   if (!normalized.source) normalized.source = "upload";
@@ -133,6 +133,11 @@ export function loadStore() {
     if (!_store || typeof _store !== "object") {
       _store = defaultStore();
     }
+    const tasks = _store.tasks && typeof _store.tasks === "object" ? _store.tasks : {};
+    for (const entry of Object.values(tasks)) {
+      if (!entry || typeof entry !== "object") continue;
+      entry.attachments = normalizeTaskAttachments(entry.attachments);
+    }
   } catch (err) {
     console.warn(`${TAG} failed to read store: ${err.message || err}`);
     _store = defaultStore();
@@ -162,7 +167,7 @@ export function listTaskAttachments(taskId, backend = "internal") {
   if (!key) return [];
   const entry = store.tasks?.[key];
   const attachments = Array.isArray(entry?.attachments) ? entry.attachments : [];
-  return attachments.slice();
+  return normalizeTaskAttachments(attachments);
 }
 
 export function addTaskAttachment(taskId, backend, attachment) {
@@ -184,4 +189,3 @@ export function addTaskAttachment(taskId, backend, attachment) {
   saveStore();
   return normalized;
 }
-
