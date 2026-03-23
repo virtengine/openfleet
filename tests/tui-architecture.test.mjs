@@ -20,9 +20,9 @@ describe("tui architecture scaffold", () => {
   });
 
   it("guards non-TTY output and wires resize-aware ink startup", () => {
-    expect(entrySource).toContain("process.stdout.isTTY");
+    expect(entrySource).toContain("const stdout = options.stdout || process.stdout;");
     expect(entrySource).toContain("loadConfig(");
-    expect(entrySource).toContain('process.stdout.on("resize"');
+    expect(entrySource).toContain('if (!stdout?.isTTY)');`r`n    expect(entrySource).toContain('stdout.on?.("resize"');
     expect(entrySource).toContain("120");
     expect(entrySource).toContain("30");
     expect(entrySource).toContain('await import("./ui/tui/App.js")');
