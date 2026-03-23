@@ -12,6 +12,7 @@ describe("container-runner", () => {
     it("exports all expected functions", async () => {
       const mod = await import("../infra/container-runner.mjs");
       const expected = [
+        "formatArtifactRetrieveCommand",
         "isContainerEnabled",
         "getContainerStatus",
         "checkContainerRuntime",
@@ -174,6 +175,14 @@ describe("container-runner", () => {
 
       expect(source).toContain("activeContainers");
       expect(source).toContain("new Map()");
+    });
+
+    it("builds shell-safe artifact retrieval commands on POSIX", async () => {
+      const mod = await import("../infra/container-runner.mjs");
+
+      expect(
+        mod.formatArtifactRetrieveCommand("/tmp/a\\b\"c'd.txt", "linux"),
+      ).toBe(`cat '/tmp/a\\b"c'"'"'d.txt'`);
     });
   });
 });
