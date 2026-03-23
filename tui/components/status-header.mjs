@@ -4,126 +4,201 @@ import { Box, Text } from "ink";
 
 const html = htm.bind(React.createElement);
 
-const STATUS_COLORS = {
-  connected: "green",
-  disconnected: "red",
-  active: "green",
+const PROVIDER_ORDER = ["claude", "codex", "gemini", "copilot"];
+const PROVIDER_ALIASES = {
+  anthropic: "claude",
+  claude: "claude",
+  openai: "codex",
+  azure: "codex",
+  codex: "codex",
+  google: "gemini",
+  gemini: "gemini",
+  copilot: "copilot",
+  github: "copilot",
+};
+const TONE_COLORS = {
+  normal: undefined,
+  dim: undefined,
+  warning: "yellow",
+  danger: "red",
+};
+const CONNECTION_STATES = {
+  connected: { color: "green", label: "Connected" },
+  reconnecting: { color: "yellow", label: "Reconnecting" },
+  offline: { color: "red", label: "Offline" },
 };
 
+function toNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function padMetric(value, width = 0) {
+  return String(value ?? "").padStart(width, " ");
+}
+
+function formatCompactMetric(value) {
+  const numeric = Math.max(0, toNumber(value, 0));
+  if (numeric >= 1_000_000) return `${(numeric / 1_000_000).toFixed(1)}m`;
+  if (numeric >= 1_000) return `${(numeric / 1_000).toFixed(1)}k`;
+  if (numeric >= 100) return String(Math.round(numeric));
+  if (numeric >= 10) return Number(numeric.toFixed(1)).toString();
+  return Number(numeric.toFixed(2)).toString();
+}
+
 function formatDuration(ms) {
-  const safe = Math.max(0, Number(ms || 0));
-  const seconds = Math.floor(safe / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-  if (days > 0) return `${days}d ${hours % 24}h`;
-  if (hours > 0) return `${hours}h ${minutes % 60}m`;
-  if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+  const safeMs = Math.max(0, toNumber(ms, 0));
+  const totalSeconds = Math.floor(safeMs / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
   return `${seconds}s`;
 }
 
-function formatCost(usd) {
-  const value = Number(usd || 0);
-  return `$${Number.isFinite(value) ? value.toFixed(2) : "0.00"}`;
+function normalizeProviderKey(provider) {
+  const normalized = String(provider || "").trim().toLowerCase();
+  return PROVIDER_ALIASES[normalized] || normalized;
 }
 
-function formatCompactNumber(value) {
-  const numeric = Number(value || 0);
-  if (!Number.isFinite(numeric) || numeric <= 0) return "0";
-  if (numeric >= 1_000_000) return `${(numeric / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
-  if (numeric >= 1_000) return `${(numeric / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
-  return String(Math.round(numeric));
+function formatRateValue(value, unit = "min") {
+  if (value == null) return "n/a";
+  return `${toNumber(value, 0)}/${unit}`;
 }
 
-export function formatTokenSummary(stats = {}) {
-  const tokensIn = formatCompactNumber(stats.tokensIn);
-  const tokensOut = formatCompactNumber(stats.tokensOut);
-  const tokensTotal = formatCompactNumber(
-    stats.tokensTotal ?? (Number(stats.tokensIn || 0) + Number(stats.tokensOut || 0)),
-  );
-  return `${tokensIn} in / ${tokensOut} out / ${tokensTotal} total`;
-}
+function resolveProviderTone(bucket = {}) {
+  const values = [bucket.primary, bucket.secondary, bucket.credits]
+    .map((value) => (value == null ? null : toNumber(value, NaN)))
+    .filter((value) => Number.isFinite(value));
+  if (values.some((value) => value <= 0)) return "danger";
 
-function countItems(value) {
-  if (Array.isArray(value)) return value.length;
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : 0;
-}
-
-export default function StatusHeader({ stats, connected, screen }) {
-  const s = {
-    uptimeMs: 0,
-    runtimeMs: 0,
-    totalCostUsd: 0,
-    totalSessions: 0,
-    activeSessions: 0,
-    totalTasks: 0,
-    activeTasks: 0,
-    completedTasks: 0,
-    failedTasks: 0,
-    retryQueue: { count: 0 },
-    workflows: { active: 0, total: 0 },
-    agents: { online: 0, total: 0 },
-    tokensIn: 0,
-    tokensOut: 0,
-    tokensTotal: 0,
-    ...(stats || {}),
-  };
-
-  const workflowActive = countItems(s.workflows?.active);
-  const workflowTotal = countItems(s.workflows?.total);
-  const navItems = [
-    { key: "status", num: "1", label: "Status" },
-    { key: "tasks", num: "2", label: "Tasks" },
-    { key: "agents", num: "3", label: "Agents" },
+  const limits = [
+    [bucket.primary, bucket.primaryLimit],
+    [bucket.secondary, bucket.secondaryLimit],
+    [bucket.credits, bucket.creditsLimit],
   ];
+  if (limits.some(([remaining, limit]) => Number.isFinite(Number(remaining)) && Number.isFinite(Number(limit)) && Number(limit) > 0 && (Number(remaining) / Number(limit)) <= 0.2)) {
+    return "warning";
+  }
+  if (values.some((value) => value <= 20)) return "warning";
+  return "normal";
+}
+
+export function normalizeHeaderRateLimits(rateLimits = {}, configuredProviders = {}) {
+  const normalized = {};
+  for (const [provider, bucket] of Object.entries(rateLimits || {})) {
+    const key = normalizeProviderKey(provider);
+    if (!PROVIDER_ORDER.includes(key) || !bucket || typeof bucket !== "object") continue;
+    normalized[key] = {
+      primary: bucket.primary == null ? null : toNumber(bucket.primary, 0),
+      secondary: bucket.secondary == null ? null : toNumber(bucket.secondary, 0),
+      credits: bucket.credits == null ? null : toNumber(bucket.credits, 0),
+      primaryLimit: bucket.primaryLimit == null ? null : toNumber(bucket.primaryLimit, 0),
+      secondaryLimit: bucket.secondaryLimit == null ? null : toNumber(bucket.secondaryLimit, 0),
+      creditsLimit: bucket.creditsLimit == null ? null : toNumber(bucket.creditsLimit, 0),
+      unit: String(bucket.unit || "min").trim() || "min",
+    };
+  }
+
+  return PROVIDER_ORDER.reduce((acc, provider) => {
+    const configured = configuredProviders[provider] === true || Boolean(normalized[provider]);
+    const bucket = normalized[provider] || null;
+    if (!configured || !bucket) {
+      acc[provider] = {
+        provider,
+        configured,
+        tone: "dim",
+        label: `${provider} n/a`,
+      };
+      return acc;
+    }
+
+    acc[provider] = {
+      provider,
+      configured,
+      tone: resolveProviderTone(bucket),
+      label: `${provider} primary ${formatRateValue(bucket.primary, bucket.unit)} | secondary ${formatRateValue(bucket.secondary, bucket.unit)} | credits ${bucket.credits == null ? "n/a" : toNumber(bucket.credits, 0)}`,
+    };
+    return acc;
+  }, {});
+}
+
+export function buildStatusHeaderModel({
+  stats = {},
+  configuredProviders = {},
+  connectionState = "offline",
+  projectLabel = "No project",
+  refreshCountdownSec = 0,
+} = {}) {
+  const activeAgents = Math.max(0, toNumber(stats?.activeAgents, 0));
+  const maxAgents = Math.max(0, toNumber(stats?.maxAgents, 0));
+  const throughputTps = Math.max(0, toNumber(stats?.throughputTps, 0));
+  const uptimeMs = Math.max(0, toNumber(stats?.uptimeMs, 0));
+  const tokensIn = Math.max(0, toNumber(stats?.tokensIn, 0));
+  const tokensOut = Math.max(0, toNumber(stats?.tokensOut, 0));
+  const tokensTotal = Math.max(0, toNumber(stats?.tokensTotal ?? stats?.totalTokens, tokensIn + tokensOut));
+  const providers = normalizeHeaderRateLimits(stats?.rateLimits || {}, configuredProviders);
+  const connection = CONNECTION_STATES[connectionState] || CONNECTION_STATES.offline;
+
+  return {
+    row1: `Agents: ${padMetric(activeAgents, 2)}/${padMetric(maxAgents, 2)} | Throughput: ${throughputTps} tps | Runtime: ${formatDuration(uptimeMs)} | Tokens: in ${formatCompactMetric(tokensIn)} | out ${formatCompactMetric(tokensOut)} | total ${formatCompactMetric(tokensTotal)}`,
+    row2: PROVIDER_ORDER.map((provider) => providers[provider]),
+    row3: {
+      connection,
+      projectLabel: String(projectLabel || "").trim() || "No project",
+      refreshLabel: `Next refresh: ${Math.max(0, Math.trunc(toNumber(refreshCountdownSec, 0)))}s`,
+    },
+  };
+}
+
+export default function StatusHeader({
+  stats,
+  connected,
+  connectionState,
+  projectLabel,
+  configuredProviders,
+  refreshCountdownSec,
+}) {
+  const resolvedConnectionState = connectionState || (connected ? "connected" : "offline");
+  const model = buildStatusHeaderModel({
+    stats,
+    configuredProviders,
+    connectionState: resolvedConnectionState,
+    projectLabel,
+    refreshCountdownSec,
+  });
+  const connectionDot = resolvedConnectionState === "reconnecting" && refreshCountdownSec % 2 === 0
+    ? "◌"
+    : "●";
 
   return html`
-    <${Box} flexDirection="column" borderStyle="round" paddingX=${1}>
-      <${Box} justifyContent="space-between">
-        <${Box}>
-          <${Text} bold>Bosun TUI<//>
-          <${Text} dimColor> | <//>
-          <${Text}
-            color=${connected ? STATUS_COLORS.connected : STATUS_COLORS.disconnected}
-            bold=${!connected}
-          >
-            ${connected ? "Connected" : "Disconnected"}
-          <//>
-        <//>
-        <${Box}>
-          <${Text} dimColor>Uptime: <//>
-          <${Text}>${formatDuration(s.uptimeMs)}<//>
-          <${Text} dimColor> | Runtime: <//>
-          <${Text}>${formatDuration(s.runtimeMs)}<//>
-          <${Text} dimColor> | Cost: <//>
-          <${Text}>${formatCost(s.totalCostUsd)}<//>
-        <//>
-      <//>
+    <${Box} flexDirection="column" paddingX=${1} paddingTop=${1}>
       <${Box}>
-        <${Text} dimColor>Sessions: <//>
-        <${Text} color=${s.activeSessions > 0 ? STATUS_COLORS.active : undefined}>${s.activeSessions}<//>
-        <${Text} dimColor>/${s.totalSessions}  Tasks: <//>
-        <${Text} color=${s.activeTasks > 0 ? STATUS_COLORS.active : undefined}>${s.activeTasks}<//>
-        <${Text} dimColor>
-          /${s.totalTasks}  Done:${s.completedTasks}  Fail:${s.failedTasks}
-           | Retry:${s.retryQueue?.count || 0}
-           | WF:${workflowActive}/${workflowTotal}
-           | Agents:${s.agents?.online || 0}/${s.agents?.total || 0}
-        <//>
+        <${Text}>${model.row1}<//>
       <//>
-      <${Box}>
-        <${Text} dimColor>Tokens: <//>
-        <${Text}>${formatTokenSummary(s)}<//>
-      <//>
-      <${Box}>
-        ${navItems.map((item) => html`
-          <${Box} key=${item.key} marginRight=${2}>
-            <${Text} inverse=${screen === item.key} color=${screen === item.key ? undefined : "cyan"}>
-              [${item.num}] ${item.label}
+      <${Box} marginTop=${1}>
+        ${model.row2.map((provider, index) => html`
+          <${React.Fragment} key=${provider.provider}>
+            <${Text}
+              color=${TONE_COLORS[provider.tone]}
+              dimColor=${provider.tone === "dim"}
+            >
+              ${provider.label}
             <//>
+            ${index < model.row2.length - 1 ? html`<${Text} dimColor> | <//>` : null}
           <//>
         `)}
+      <//>
+      <${Box} marginTop=${1}>
+        <${Text} color=${model.row3.connection.color}>${connectionDot}<//>
+        <${Text}> ${model.row3.connection.label}<//>
+        <${Text} dimColor> | Project: <//>
+        <${Text}>${model.row3.projectLabel}<//>
+        <${Text} dimColor> | <//>
+        <${Text}>${model.row3.refreshLabel}<//>
       <//>
     <//>
   `;

@@ -56,13 +56,6 @@ function buildTuiWebSocketUrl({ host, port, token = "", protocol = "ws" }) {
 	return url.toString();
 }
 
-/**
- * WebSocket Bridge for TUI
- *
- * Connects to the Bosun UI server's WebSocket endpoint to receive
- * real-time stats, session events, and task updates.
- */
-
 class TuiWsBridge {
 	constructor({ host, port, configDir, protocol = "ws", WebSocketImpl = globalThis.WebSocket }) {
 		this.host = host;
@@ -77,6 +70,8 @@ class TuiWsBridge {
 		this.reconnectDelay = 1000;
 		this.reconnectTimer = null;
 		this._connected = false;
+		this._connectionState = "offline";
+		this._manualDisconnect = false;
 		this._url = buildTuiWebSocketUrl({
 			host,
 			port,
@@ -89,6 +84,7 @@ class TuiWsBridge {
 		if (this.ws && this.ws.readyState === this.WebSocketImpl?.OPEN) {
 			return;
 		}
+		this._manualDisconnect = false;
 
 		try {
 			if (typeof this.WebSocketImpl !== "function") {
@@ -104,10 +100,12 @@ class TuiWsBridge {
 
 			this.ws.onopen = () => {
 				this._connected = true;
+				this._connectionState = "connected";
 				this.reconnectAttempts = 0;
 				this.send("subscribe", {
 					channels: ["monitor", "stats", "sessions", "tasks", "workflows", "tui"],
 				});
+				this._emit("connection:state", { state: this._connectionState });
 				this._emit("connect", {});
 			};
 
@@ -122,14 +120,16 @@ class TuiWsBridge {
 
 			this.ws.onclose = () => {
 				this._connected = false;
+				this._connectionState = this._manualDisconnect ? "offline" : "reconnecting";
+				this._emit("connection:state", { state: this._connectionState });
 				this._emit("disconnect", {});
-				this._scheduleReconnect();
+				if (!this._manualDisconnect) {
+					this._scheduleReconnect();
+				}
 			};
 
 			this.ws.onerror = (err) => {
 				const message = err?.message || err?.error?.message || "WebSocket error";
-				this._emit("error", { message });
-				this._emit("error", { message });
 				this._emit("error", { message });
 			};
 		} catch (err) {
@@ -139,6 +139,7 @@ class TuiWsBridge {
 	}
 
 	disconnect() {
+		this._manualDisconnect = true;
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = null;
@@ -148,16 +149,30 @@ class TuiWsBridge {
 			this.ws = null;
 		}
 		this._connected = false;
+		this._connectionState = "offline";
+		this._emit("connection:state", { state: this._connectionState });
 	}
 
 	_scheduleReconnect() {
 		if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+			this._connectionState = "offline";
+			this._emit("connection:state", { state: this._connectionState });
 			this._emit("error", { message: "Max reconnection attempts reached" });
 			return;
 		}
 
 		const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts);
 		this.reconnectAttempts++;
+		this._connectionState = "reconnecting";
+		this._emit("connection:state", {
+			state: this._connectionState,
+			attempt: this.reconnectAttempts,
+			delayMs: delay,
+		});
+		this._emit("reconnecting", {
+			attempt: this.reconnectAttempts,
+			delayMs: delay,
+		});
 
 		this.reconnectTimer = setTimeout(() => {
 			this.connect();
@@ -178,7 +193,6 @@ class TuiWsBridge {
 				break;
 			case "session:event": {
 				this._emit("session:event", payload);
-				// backward compat: bridge to legacy session lifecycle events
 				const sessionEventReason = payload?.event?.reason || "";
 				const sessionData = payload?.session || {};
 				if (sessionEventReason === "session-started") {
@@ -198,7 +212,6 @@ class TuiWsBridge {
 				break;
 			case "tasks:update": {
 				this._emit("tasks:update", payload);
-				// backward compat: bridge to legacy task events
 				const taskReason = payload?.reason || "";
 				const taskSourceEvent = payload?.sourceEvent || "";
 				const taskId = payload?.taskId ?? payload?.patch?.id;
@@ -256,6 +269,10 @@ class TuiWsBridge {
 
 	get isConnected() {
 		return this._connected;
+	}
+
+	get connectionState() {
+		return this._connectionState;
 	}
 }
 
