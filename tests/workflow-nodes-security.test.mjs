@@ -562,4 +562,88 @@ describe("validation nodes can offload to isolated runners", () => {
     expect(result.blocked).toBe(true);
     expect(result.isolatedRunner?.artifacts).toHaveLength(1);
   });
+
+  it("surfaces timeout diagnostics for isolated validation failures", async () => {
+    const nodeType = getNodeType("validation.tests");
+    const node = makeNode("validation.tests", { command: "npm test" }, "validate-timeout");
+    const ctx = makeCtx();
+    const engine = {
+      services: {
+        scheduler: {
+          selectWorkflowLane: vi.fn().mockReturnValue({
+            lane: "isolated",
+            reason: "workflow_node:validation.tests",
+            heavy: true,
+          }),
+        },
+        isolatedRunner: {
+          run: vi.fn().mockResolvedValue({
+            status: "timeout",
+            stdout: "",
+            stderr: "validation exceeded limit",
+            exitCode: null,
+            duration: 120001,
+            provider: "process",
+            leaseId: "runner-timeout",
+            failureDiagnostic: {
+              category: "timeout",
+              retryable: true,
+              summary: "Validation timed out after 120000ms.",
+              status: "timeout",
+            },
+          }),
+        },
+      },
+    };
+
+    const result = await nodeType.execute(node, ctx, engine);
+
+    expect(result.passed).toBe(false);
+    expect(result.failureKind).toBe("timeout");
+    expect(result.retryable).toBe(true);
+    expect(result.failureDiagnostic?.summary).toContain("timed out");
+    expect(result.isolatedRunner?.failureDiagnostic?.category).toBe("timeout");
+  });
+
+  it("surfaces command failure diagnostics for isolated validation exits", async () => {
+    const nodeType = getNodeType("validation.lint");
+    const node = makeNode("validation.lint", { command: "npm run lint" }, "validate-lint");
+    const ctx = makeCtx();
+    const engine = {
+      services: {
+        scheduler: {
+          selectWorkflowLane: vi.fn().mockReturnValue({
+            lane: "isolated",
+            reason: "workflow_node:validation.lint",
+            heavy: true,
+          }),
+        },
+        isolatedRunner: {
+          run: vi.fn().mockResolvedValue({
+            status: "error",
+            stdout: "",
+            stderr: "ESLint found 3 errors",
+            exitCode: 1,
+            duration: 52,
+            provider: "process",
+            leaseId: "runner-lint",
+            failureDiagnostic: {
+              category: "command_failure",
+              retryable: false,
+              summary: "Validation command exited with code 1.",
+              status: "error",
+              exitCode: 1,
+            },
+          }),
+        },
+      },
+    };
+
+    const result = await nodeType.execute(node, ctx, engine);
+
+    expect(result.passed).toBe(false);
+    expect(result.failureKind).toBe("command_failure");
+    expect(result.retryable).toBe(false);
+    expect(result.failureDiagnostic?.exitCode).toBe(1);
+  });
 });
