@@ -656,9 +656,14 @@ function hasBuildDiagnosticSignals(item) {
     .filter((value) => typeof value === "string" && value.trim())
     .join("\n");
   if (!text) return false;
+  const hasFileScopedDiagnosticLine = text.split(/\r?\n/).some((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || !/\b(?:error|warning)\b/i.test(trimmed)) return false;
+    return /^[^:\n]+\.(?:cs|fs|vb|ts|tsx|js|jsx|java|kt|go|rs|cpp|c|h|hpp)(?::\d+(?::\d+)?)?/i.test(trimmed);
+  });
   return (
     /\b(?:error|warning)\s+(?:TS|CS|MSB|NU)\d+\b/i.test(text)
-    || /^[^:\n]+\.(?:cs|fs|vb|ts|tsx|js|jsx|java|kt|go|rs|cpp|c|h|hpp)(?::\d+(?::\d+)?)?.*\b(?:error|warning)\b/im.test(text)
+    || hasFileScopedDiagnosticLine
     || /\b(?:Build FAILED|Cannot find name|not assignable to type|The build failed\.)\b/i.test(text)
   );
 }

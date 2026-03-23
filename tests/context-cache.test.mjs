@@ -1108,6 +1108,30 @@ describe("live tool compaction", () => {
     expect(result[0].aggregated_output).toContain("bosun --tool-log");
   });
 
+  it("classifies file-scoped diagnostic lines without a backtracking-prone regex", async () => {
+    const lines = [];
+    for (let i = 0; i < 180; i++) {
+      lines.push("0".repeat(45) + String(i));
+    }
+    lines.push("src/app.ts:42:7 error TS2322: Type 'string' is not assignable to type 'number'.");
+    const items = [{
+      type: "command_execution",
+      command: "dotnet test",
+      exit_code: 1,
+      aggregated_output: lines.join("\n"),
+    }];
+
+    const result = await runLiveCompaction(items, {
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS: "1200",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT: "5",
+    });
+
+    expect(result[0]._liveCompacted).toBe(true);
+    expect(result[0]._liveCompactionFamily).toBe("build");
+    expect(result[0].aggregated_output).toContain("src/app.ts:42:7 error TS2322");
+    expect(result[0].aggregated_output).toContain("bosun --tool-log");
+  });
+
   it("classifies dotnet test output as build-family and keeps failing test anchors", async () => {
     const lines = [];
     for (let i = 0; i < 180; i++) {
