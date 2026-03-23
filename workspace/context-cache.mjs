@@ -476,7 +476,6 @@ const LIVE_WARN_REGEX = /\b(warn|warning|deprecated)\b/i;
 const LIVE_SUMMARY_REGEX = /\b(summary|total|totals|passed|failed|skipped|collected|found|matched|changed|insertions|deletions|done in|finished|ran \d+ tests?|test suites|packages? audited|up to date|build failed|completed|build succeeded|test run|tests run|total tests|passed!|failed!|restore completed|restore failed|time elapsed)\b/i;
 const LIVE_STATUS_REGEX = /^(FAIL|ERROR|warning|fatal|M\s|A\s|D\s|R\s|\?\?|@@|diff --git|--- |\+\+\+ |> |xUnit\.net|Test Run Failed|Test Run Successful|Failed!)/i;
 const LIVE_STRUCTURED_FLAG_REGEX = /(^|\s)(--json|--format(?:=|\s+)json|-json\b|-o(?:=|\s+)json|--output(?:=|\s+)json|{{json\s+\.}})/i;
-const LIVE_FILE_REF_REGEX = /((?:[A-Za-z]:)?[.~/\\\w-]+(?:[\\/][^:\s]+)+(?::\d+(?::\d+)?)?)/;
 const LIVE_SHELL_WRAPPERS = new Set(["bash", "sh", "zsh", "pwsh", "powershell", "cmd"]);
 const LIVE_ENV_WRAPPERS = new Set(["env", "command", "time", "nohup"]);
 const GENERIC_SIGNAL_MARKER = "\n...[selected signal lines]...\n";
@@ -575,10 +574,61 @@ function extractCommandFamily(item) {
   return first || toolName || "unknown";
 }
 
+function trimFileRefToken(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^[\[\]{}()<>"'`]+/, "")
+    .replace(/[\[\]{}()<>"'`,;.!?]+$/, "");
+}
+
+function stripFileRefLineInfo(value) {
+  let end = value.length;
+  let suffixCount = 0;
+  while (suffixCount < 2 && end > 0) {
+    let cursor = end - 1;
+    while (cursor >= 0) {
+      const code = value.charCodeAt(cursor);
+      if (code < 48 || code > 57) break;
+      cursor -= 1;
+    }
+    if (cursor === end - 1 || cursor < 0 || value[cursor] !== ":") {
+      break;
+    }
+    end = cursor;
+    suffixCount += 1;
+  }
+  return value.slice(0, end);
+}
+
+function isLikelyFileRefToken(value) {
+  const trimmed = trimFileRefToken(value);
+  if (!trimmed || /\s/.test(trimmed) || trimmed.includes("://")) return false;
+  const pathPart = stripFileRefLineInfo(trimmed);
+  if (!pathPart || pathPart.endsWith(":")) return false;
+
+  let normalized = pathPart;
+  if (/^[A-Za-z]:/.test(normalized)) {
+    normalized = normalized.slice(2);
+  }
+  if (!normalized || normalized.includes(":")) return false;
+
+  const hasSeparator = /[\\/]/.test(normalized);
+  const hasExtension = /\.[A-Za-z0-9_]+$/.test(normalized);
+  const startsRelative = /^[.~]/.test(normalized);
+  if (!hasSeparator && !hasExtension && !startsRelative) return false;
+
+  const segments = normalized.split(/[\\/]+/).filter(Boolean);
+  if (segments.length === 0) return false;
+  return segments.every((segment) => !segment.includes(":"));
+}
+
 function extractFileKey(line) {
-  const normalized = String(line || "");
-  const match = normalized.match(/^([^:\n]+\.[A-Za-z0-9_]+(?::\d+(?::\d+)?)?)/) || normalized.match(LIVE_FILE_REF_REGEX);
-  return match ? match[1] : "";
+  const tokens = String(line || "").match(/\S+/g) || [];
+  for (const token of tokens.slice(0, 16)) {
+    if (!isLikelyFileRefToken(token)) continue;
+    return trimFileRefToken(token);
+  }
+  return "";
 }
 
 function getItemRuntimeMs(item) {
@@ -601,22 +651,98 @@ function isLikelyStructuredOutput(text, item) {
   );
 }
 
+function hasBuildDiagnosticSignals(item) {
+  const text = [item?.aggregated_output, item?.output, item?.text]
+    .filter((value) => typeof value === "string" && value.trim())
+    .join("\n");
+  if (!text) return false;
+  const hasFileScopedDiagnosticLine = text.split(/\r?\n/).some((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || !/\b(?:error|warning)\b/i.test(trimmed)) return false;
+    return /^[^:\n]+\.(?:cs|fs|vb|ts|tsx|js|jsx|java|kt|go|rs|cpp|c|h|hpp)(?::\d+(?::\d+)?)?/i.test(trimmed);
+  });
+  return (
+    /\b(?:error|warning)\s+(?:TS|CS|MSB|NU)\d+\b/i.test(text)
+    || hasFileScopedDiagnosticLine
+    || /\b(?:Build FAILED|Cannot find name|not assignable to type|The build failed\.)\b/i.test(text)
+  );
+}
+
 function classifyLiveFamily(commandFamily, item) {
-  const cmd = String(commandFamily || "");
-  const full = `${cmd} ${extractCommandLine(item)}`.toLowerCase();
+  const cmd = String(commandFamily || "").trim().toLowerCase();
+  const commandLine = extractCommandLine(item);
+  const full = `${cmd} ${commandLine}`.toLowerCase();
+  const hasBuildDiagnostics = hasBuildDiagnosticSignals(item);
+
   if (["grep", "rg", "find", "findstr", "select-string", "ag", "ack", "sift", "fd", "where", "which", "ls", "dir", "tree", "gci", "get-childitem"].includes(cmd) || /git\s+grep\b/.test(full)) return "search";
   if (cmd === "git") return "git";
-  if (["go", "pytest", "cargo", "gradle", "maven", "mvn", "javac", "tsc", "jest", "vitest", "deno", "bun", "make", "cmake", "bazel", "buck", "nx", "turbo", "rush", "dotnet", "msbuild", "xunit", "nunit", "ctest"].includes(cmd)) return "build";
-  if (["npm", "pnpm", "yarn", "node", "python", "python3", "pip", "pip3", "poetry", "composer", "bundle", "npx"].includes(cmd)) {
-    return /test|build|install|lint|run|pytest|jest|vitest|mocha|ava|unittest|coverage|compile/.test(full) ? "build" : "generic";
+
+  if (/\b(dotnet|go|pytest|cargo|gradle|maven|mvn|javac|tsc|jest|vitest|deno|make|cmake|bazel|buck|nx|turbo|rush|msbuild|xunit|nunit|ctest)\b/.test(full)) {
+    if (/\b(test|tests|pytest|vitest|jest|xunit|nunit|ctest)\b/.test(full)) return hasBuildDiagnostics ? "build" : "test";
+    if (/\b(publish|deploy|release|ship|rollout|upgrade)\b/.test(full)) return "deploy";
+    return "build";
   }
+
+  if (["npm", "pnpm", "yarn", "bun", "npx", "pip", "pip3", "poetry", "composer", "bundle"].includes(cmd)) {
+    if (/\b(install|add|update|upgrade|remove|uninstall|ci|dedupe|audit|outdated|list)\b/.test(full)) return "package-manager";
+    if (/\b(test|coverage|jest|vitest|mocha|ava|unittest)\b/.test(full)) return hasBuildDiagnostics ? "build" : "test";
+    if (/\b(build|compile|bundle|pack|publish)\b/.test(full)) return "build";
+  }
+
   if (["journalctl", "tail", "get-content"].includes(cmd)) return "logs";
   if (["docker", "kubectl"].includes(cmd) && /logs?\b|tail\b|follow\b|-f\b/.test(full)) return "logs";
-  if (["docker", "kubectl", "helm", "terraform", "ansible", "ansible-playbook", "systemctl"].includes(cmd)) return "ops";
+  if (["docker", "kubectl", "helm", "terraform", "ansible", "ansible-playbook", "systemctl"].includes(cmd)) {
+    if (/\b(up|apply|deploy|rollout|upgrade|install|release|push|publish|compose)\b/.test(full)) return "deploy";
+    return "ops";
+  }
+
+  if (hasBuildDiagnostics) return "build";
+
   return "generic";
 }
 
-function collectSignalIndices(lines, predicate, radius = 0, limit = Infinity) {
+function chooseLiveBudgetPolicy(family, analysis, opts) {
+  const targetChars = Math.max(200, Number(opts?.liveToolCompactionTargetChars) || 1800);
+  const lineCount = Number(analysis?.lineCount) || 0;
+  const savedPct = Number(analysis?.savedPct) || 0;
+  const policy = {
+    family,
+    reason: "inline_summary",
+    budget: {
+      targetChars,
+      decision: "inline_summary",
+      retrievable: false,
+    },
+    why: [`family:${family}`, `lines:${lineCount}`, `savedPct:${savedPct}`],
+  };
+
+  if (["package-manager", "deploy", "logs"].includes(family)) {
+    policy.reason = "artifact_summary";
+    policy.budget.decision = "artifact_summary";
+    policy.budget.retrievable = true;
+    policy.why.push("large-noisy-output");
+  } else if (family === "git") {
+    policy.reason = "structured_delta";
+    policy.budget.decision = "structured_delta";
+    policy.budget.retrievable = true;
+    policy.why.push("delta-friendly-family");
+  } else if (family === "search") {
+    policy.reason = "inline_excerpt";
+    policy.budget.decision = "inline_excerpt";
+    policy.why.push("match-oriented-family");
+  } else if (family === "test") {
+    policy.reason = "inline_summary";
+    policy.budget.decision = "inline_summary";
+    policy.why.push("failure-signals-prioritized");
+  } else if (family === "build") {
+    policy.reason = "summary_with_delta";
+    policy.budget.decision = "summary_with_delta";
+    policy.budget.retrievable = true;
+    policy.why.push("diagnostics-over-progress");
+  }
+
+  return policy;
+}function collectSignalIndices(lines, predicate, radius = 0, limit = Infinity) {
   const out = new Set();
   let count = 0;
   for (let index = 0; index < lines.length; index += 1) {
@@ -1026,6 +1152,7 @@ async function compactStandaloneToolItem(
   }
 
   const analysis = analyzeLiveToolOutput(item, opts);
+  const liveBudgetPolicy = analysis ? chooseLiveBudgetPolicy(analysis.family, analysis, opts) : null;
   if (analysis) {
     const logId = await writeToCache(item, extractToolName(item), extractArgsPreview(item));
     const diagnostic = await analyzeCommandDiagnosticForItem(item, logId);
@@ -1035,6 +1162,7 @@ async function compactStandaloneToolItem(
       _liveCompacted: true,
       _liveCompactionFamily: analysis.family,
       _liveCompactionCommandFamily: analysis.commandFamily,
+      _liveCompactionPolicy: liveBudgetPolicy,
     };
     if (diagnostic) compactedItem._commandDiagnostics = diagnostic;
     setItemText(
@@ -1066,6 +1194,16 @@ async function compactStandaloneToolItem(
     _liveCompacted: true,
     _liveCompactionFamily: "generic",
     _liveCompactionCommandFamily: extractCommandFamily(item),
+    _liveCompactionPolicy: {
+      family: "generic",
+      reason: "signal_excerpt",
+      budget: {
+        targetChars: Math.max(200, Number(opts?.liveToolCompactionTargetChars) || 1800),
+        decision: "inline_excerpt",
+        retrievable: true,
+      },
+      why: ["family:generic", "fallback-signal-excerpt"],
+    },
   };
   if (diagnostic) compactedItem._commandDiagnostics = diagnostic;
   setItemText(
@@ -1322,6 +1460,16 @@ function applyImmediateGitCompression(item, logId, opts) {
     _liveCompacted: true,
     _liveCompactionFamily: "git",
     _liveCompactionCommandFamily: extractCommandFamily(item),
+    _liveCompactionPolicy: {
+      family: "generic",
+      reason: "signal_excerpt",
+      budget: {
+        targetChars: Math.max(200, Number(opts?.liveToolCompactionTargetChars) || 1800),
+        decision: "inline_excerpt",
+        retrievable: true,
+      },
+      why: ["family:generic", "fallback-signal-excerpt"],
+    },
   };
   setItemText(compressed, compressImmediateGitText(getItemText(item), logId, opts));
   return compressed;
@@ -2797,7 +2945,19 @@ export async function maybeCompressSessionItems(
     "../config/context-shredding-config.mjs"
   );
 
-  const shreddingOpts = resolveContextShreddingOptions(sessionType, agentType);
+  const shreddingOpts = {
+    ...resolveContextShreddingOptions(sessionType, agentType),
+    ...Object.fromEntries(Object.entries({
+      liveToolCompactionEnabled: arguments[1]?.liveToolCompactionEnabled,
+      liveToolCompactionMode: arguments[1]?.liveToolCompactionMode,
+      liveToolCompactionMinChars: arguments[1]?.liveToolCompactionMinChars,
+      liveToolCompactionTargetChars: arguments[1]?.liveToolCompactionTargetChars,
+      liveToolCompactionMinSavingsPct: arguments[1]?.liveToolCompactionMinSavingsPct,
+      liveToolCompactionMinRuntimeMs: arguments[1]?.liveToolCompactionMinRuntimeMs,
+      liveToolCompactionBlockStructured: arguments[1]?.liveToolCompactionBlockStructured,
+      liveToolCompactionAllowCommands: arguments[1]?.liveToolCompactionAllowCommands,
+    }).filter(([, value]) => value !== undefined)),
+  };
   if (shreddingOpts?._skip === true && !force) return items;
 
   const usagePct = estimateContextUsagePct(items);
@@ -2830,3 +2990,8 @@ export async function maybeCompressSessionItems(
 
   return compressedItems;
 }
+
+
+
+
+
