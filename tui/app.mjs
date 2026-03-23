@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import htm from "htm";
 import { Box, Text, useInput } from "ink";
 
 import wsBridge from "./lib/ws-bridge.mjs";
 import StatusHeader from "./components/status-header.mjs";
+import { readTuiHeaderConfig } from "./lib/header-config.mjs";
 import TasksScreen from "./screens/tasks.mjs";
 import AgentsScreen from "./screens/agents.mjs";
 import StatusScreen from "./screens/status.mjs";
@@ -17,6 +18,28 @@ const SCREENS = {
   agents: AgentsScreen,
 };
 
+function ScreenTabs({ screen }) {
+  const navItems = [
+    { key: "status", num: "1", label: "Status" },
+    { key: "tasks", num: "2", label: "Tasks" },
+    { key: "agents", num: "3", label: "Agents" },
+  ];
+
+  return html`
+    <${Box} paddingX=${1} borderStyle="single">
+      ${navItems.map((item, index) => html`
+        <${React.Fragment} key=${item.key}>
+          <${Text} inverse=${screen === item.key} color=${screen === item.key ? undefined : "cyan"}>
+            [${item.num}] ${item.label}
+          <//>
+          ${index < navItems.length - 1 ? html`<${Text} dimColor>  <//>` : null}
+        <//>
+      `)}
+      <${Text} dimColor>  [q] Quit<//>
+    <//>
+  `;
+}
+
 function upsertById(items, nextItem) {
   const index = items.findIndex((item) => item.id === nextItem.id);
   if (index === -1) return [nextItem, ...items];
@@ -28,18 +51,31 @@ function upsertById(items, nextItem) {
 export default function App({ host, port, connectOnly, initialScreen, refreshMs }) {
   const [screen, setScreen] = useState(initialScreen || "status");
   const [connected, setConnected] = useState(false);
+  const [connectionState, setConnectionState] = useState("offline");
   const [stats, setStats] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [error, setError] = useState(null);
+  const [refreshCountdownSec, setRefreshCountdownSec] = useState(
+    Math.max(0, Math.ceil(Number(refreshMs || 2000) / 1000)),
+  );
   const [screenInputLocked, setScreenInputLocked] = useState(false);
-  const bridgeRef = useRef(null);
+  const [headerConfig, setHeaderConfig] = useState(() => readTuiHeaderConfig());
+
+  const bridge = useMemo(
+    () => (typeof wsBridge === "function" ? wsBridge({ host, port, refreshMs }) : wsBridge),
+    [host, port, refreshMs],
+  );
+  const bridgeRef = useRef(bridge);
 
   useEffect(() => {
     let active = true;
-    const bridge = wsBridge({ host, port, refreshMs });
     bridgeRef.current = bridge;
+    setHeaderConfig(readTuiHeaderConfig(bridge?.configDir));
 
+    const resetRefreshCountdown = () => {
+      setRefreshCountdownSec(Math.max(0, Math.ceil(Number(refreshMs || 2000) / 1000)));
+    };
     const refreshTasks = async () => {
       try {
         const nextTasks = await listTasksFromApi();
@@ -57,14 +93,36 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
 
     on("connect", () => {
       setConnected(true);
+      setConnectionState("connected");
       setError(null);
+      resetRefreshCountdown();
       void refreshTasks();
     });
-    on("disconnect", () => setConnected(false));
-    on("error", (err) => setError(err?.message || String(err || "Connection failed")));
-    on("stats", (data) => setStats(data));
-    on("session:start", (session) => setSessions((prev) => upsertById(prev, session)));
-    on("session:update", (session) => setSessions((prev) => upsertById(prev, session)));
+    on("disconnect", () => {
+      setConnected(false);
+      setConnectionState("reconnecting");
+    });
+    on("reconnecting", () => {
+      setConnected(false);
+      setConnectionState("reconnecting");
+    });
+    on("error", (err) => {
+      const message = err?.message || String(err || "Connection failed");
+      setError(message);
+      if (String(message).includes("Max reconnection attempts")) {
+        setConnectionState("offline");
+      }
+    });
+    on("stats", (data) => {
+      setStats(data);
+      resetRefreshCountdown();
+    });
+    on("session:start", (session) => {
+      setSessions((prev) => upsertById(prev, session));
+    });
+    on("session:update", (session) => {
+      setSessions((prev) => upsertById(prev, session));
+    });
     on("sessions:update", (payload) => {
       const nextSessions = Array.isArray(payload?.sessions)
         ? payload.sessions
@@ -106,7 +164,14 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
       bridge.disconnect();
       bridgeRef.current = null;
     };
-  }, [host, port, refreshMs]);
+  }, [bridge, refreshMs]);
+
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      setRefreshCountdownSec((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(intervalId);
+  }, []);
 
   const handleKeyPress = useCallback((key) => {
     if (key === "q") process.exit(0);
@@ -124,7 +189,15 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
 
   return html`
     <${Box} flexDirection="column" minHeight=${0}>
-      <${StatusHeader} stats=${stats} connected=${connected} screen=${screen} />
+      <${StatusHeader}
+        stats=${stats}
+        connected=${connected}
+        connectionState=${connectionState}
+        projectLabel=${headerConfig.projectLabel}
+        configuredProviders=${headerConfig.configuredProviders}
+        refreshCountdownSec=${refreshCountdownSec}
+      />
+      <${ScreenTabs} screen=${screen} />
       <${Box} flexDirection="column" flexGrow=${1}>
         ${error
           ? html`
@@ -145,9 +218,6 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
           onTasksChange=${setTasks}
           onInputCaptureChange=${setScreenInputLocked}
         />
-      <//>
-      <${Box} paddingX=${1} borderStyle="single">
-        <${Text} dimColor>[1] Status [2] Tasks [3] Agents [q] Quit<//>
       <//>
     <//>
   `;

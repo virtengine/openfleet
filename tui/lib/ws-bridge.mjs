@@ -76,6 +76,8 @@ class TuiWsBridge {
 		this.reconnectDelay = 1000;
 		this.reconnectTimer = null;
 		this._connected = false;
+		this._connectionState = "offline";
+		this._manualDisconnect = false;
 		this._url = buildTuiWebSocketUrl({
 			host,
 			port,
@@ -88,6 +90,7 @@ class TuiWsBridge {
 		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
 			return;
 		}
+		this._manualDisconnect = false;
 
 		try {
 			this._url = buildTuiWebSocketUrl({
@@ -100,10 +103,12 @@ class TuiWsBridge {
 
 			this.ws.onopen = () => {
 				this._connected = true;
+				this._connectionState = "connected";
 				this.reconnectAttempts = 0;
 				this.send("subscribe", {
 					channels: ["monitor", "stats", "sessions", "tasks", "workflows", "tui"],
 				});
+				this._emit("connection:state", { state: this._connectionState });
 				this._emit("connect", {});
 			};
 
@@ -118,8 +123,13 @@ class TuiWsBridge {
 
 			this.ws.onclose = () => {
 				this._connected = false;
+				this._connectionState = this._manualDisconnect ? "offline" : "reconnecting";
+				this._emit("connection:state", { state: this._connectionState });
 				this._emit("disconnect", {});
-				this._scheduleReconnect();
+				console.log("[ws-bridge] Disconnected from UI server");
+				if (!this._manualDisconnect) {
+					this._scheduleReconnect();
+				}
 			};
 
 			this.ws.onerror = (err) => {
@@ -135,6 +145,7 @@ class TuiWsBridge {
 	}
 
 	disconnect() {
+		this._manualDisconnect = true;
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = null;
@@ -144,16 +155,30 @@ class TuiWsBridge {
 			this.ws = null;
 		}
 		this._connected = false;
+		this._connectionState = "offline";
+		this._emit("connection:state", { state: this._connectionState });
 	}
 
 	_scheduleReconnect() {
 		if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+			this._connectionState = "offline";
+			this._emit("connection:state", { state: this._connectionState });
 			this._emit("error", { message: "Max reconnection attempts reached" });
 			return;
 		}
 
 		const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts);
 		this.reconnectAttempts++;
+		this._connectionState = "reconnecting";
+		this._emit("connection:state", {
+			state: this._connectionState,
+			attempt: this.reconnectAttempts,
+			delayMs: delay,
+		});
+		this._emit("reconnecting", {
+			attempt: this.reconnectAttempts,
+			delayMs: delay,
+		});
 
 		this.reconnectTimer = setTimeout(() => {
 			this.connect();
@@ -253,6 +278,10 @@ class TuiWsBridge {
 	get isConnected() {
 		return this._connected;
 	}
+
+	get connectionState() {
+		return this._connectionState;
+	}
 }
 
 let _instance = null;
@@ -303,3 +332,4 @@ export {
 	resolveWebSocketProtocol,
 	resolveTuiAuthToken,
 };
+
