@@ -27,6 +27,29 @@ function formatCost(usd) {
   return `$${Number.isFinite(value) ? value.toFixed(2) : "0.00"}`;
 }
 
+function formatCompactNumber(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) return "0";
+  if (numeric >= 1_000_000) return `${(numeric / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (numeric >= 1_000) return `${(numeric / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
+  return String(Math.round(numeric));
+}
+
+export function formatTokenSummary(stats = {}) {
+  const tokensIn = formatCompactNumber(stats.tokensIn);
+  const tokensOut = formatCompactNumber(stats.tokensOut);
+  const tokensTotal = formatCompactNumber(
+    stats.tokensTotal ?? (Number(stats.tokensIn || 0) + Number(stats.tokensOut || 0)),
+  );
+  return `${tokensIn} in / ${tokensOut} out / ${tokensTotal} total`;
+}
+
+function countItems(value) {
+  if (Array.isArray(value)) return value.length;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
 export default function StatusHeader({ stats, connected, screen }) {
   const s = {
     uptimeMs: 0,
@@ -41,9 +64,14 @@ export default function StatusHeader({ stats, connected, screen }) {
     retryQueue: { count: 0 },
     workflows: { active: 0, total: 0 },
     agents: { online: 0, total: 0 },
+    tokensIn: 0,
+    tokensOut: 0,
+    tokensTotal: 0,
     ...(stats || {}),
   };
 
+  const workflowActive = countItems(s.workflows?.active);
+  const workflowTotal = countItems(s.workflows?.total);
   const navItems = [
     { key: "status", num: "1", label: "Status" },
     { key: "tasks", num: "2", label: "Tasks" },
@@ -74,19 +102,19 @@ export default function StatusHeader({ stats, connected, screen }) {
       <//>
       <${Box}>
         <${Text} dimColor>Sessions: <//>
-        <${Text} color=${s.activeSessions > 0 ? STATUS_COLORS.active : undefined}>
-          ${s.activeSessions}
-        <//>
+        <${Text} color=${s.activeSessions > 0 ? STATUS_COLORS.active : undefined}>${s.activeSessions}<//>
         <${Text} dimColor>/${s.totalSessions}  Tasks: <//>
-        <${Text} color=${s.activeTasks > 0 ? STATUS_COLORS.active : undefined}>
-          ${s.activeTasks}
-        <//>
+        <${Text} color=${s.activeTasks > 0 ? STATUS_COLORS.active : undefined}>${s.activeTasks}<//>
         <${Text} dimColor>
           /${s.totalTasks}  Done:${s.completedTasks}  Fail:${s.failedTasks}
            | Retry:${s.retryQueue?.count || 0}
-           | WF:${s.workflows?.active || 0}/${s.workflows?.total || 0}
+           | WF:${workflowActive}/${workflowTotal}
            | Agents:${s.agents?.online || 0}/${s.agents?.total || 0}
         <//>
+      <//>
+      <${Box}>
+        <${Text} dimColor>Tokens: <//>
+        <${Text}>${formatTokenSummary(s)}<//>
       <//>
       <${Box}>
         ${navItems.map((item) => html`

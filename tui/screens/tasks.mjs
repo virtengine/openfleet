@@ -7,9 +7,7 @@ const html = htm.bind(React.createElement);
 const COLUMNS = ["todo", "inprogress", "inreview", "blocked", "done"];
 
 function formatTask(task) {
-  const id = String(task?.id || "").slice(0, 8) || "--------";
-  const title = String(task?.title || "Untitled");
-  return `${id}  ${title}`;
+  return String(task?.title || "Untitled");
 }
 
 export default function TasksScreen({ tasks }) {
@@ -31,7 +29,7 @@ export default function TasksScreen({ tasks }) {
             borderStyle="single"
             paddingX=${1}
             marginRight=${1}
-            width=${24}
+            width=${32}
           >
             <${Text} bold>${column} (${(buckets.get(column) || []).length})<//>
             ${(buckets.get(column) || []).slice(0, 8).map((task) => html`
