@@ -515,7 +515,43 @@ function normalizeCommandToken(token) {
 }
 
 function tokenizeCommandLine(commandLine) {
-  return String(commandLine || "").match(/(?:"[^"]*"|'[^']*'|\S+)/g) || [];
+  const input = String(commandLine || "");
+  const tokens = [];
+  let index = 0;
+
+  while (index < input.length) {
+    while (index < input.length) {
+      const code = input.charCodeAt(index);
+      if (code !== 9 && code !== 10 && code !== 11 && code !== 12 && code !== 13 && code !== 32) break;
+      index += 1;
+    }
+    if (index >= input.length) break;
+
+    const quote = input[index];
+    if (quote === '"' || quote === "'") {
+      const start = index;
+      index += 1;
+      while (index < input.length && input[index] !== quote) {
+        index += 1;
+      }
+      if (index < input.length) {
+        index += 1;
+        tokens.push(input.slice(start, index));
+        continue;
+      }
+      index = start;
+    }
+
+    const start = index;
+    while (index < input.length) {
+      const code = input.charCodeAt(index);
+      if (code === 9 || code === 10 || code === 11 || code === 12 || code === 13 || code === 32) break;
+      index += 1;
+    }
+    tokens.push(input.slice(start, index));
+  }
+
+  return tokens;
 }
 
 function extractNestedCommandToken(token) {
@@ -601,22 +637,120 @@ function isLikelyStructuredOutput(text, item) {
   );
 }
 
+function hasSourceDiagnosticLine(text) {
+  const lines = String(text || "").split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const severityMatch = /\b(?:error|warning)\b/i.exec(line);
+    if (!severityMatch) continue;
+
+    const prefix = line.slice(0, severityMatch.index).trimEnd();
+    if (!prefix) continue;
+
+    const colonIndex = prefix.indexOf(":");
+    const filePart = (colonIndex === -1 ? prefix : prefix.slice(0, colonIndex)).trim();
+    if (!/\.(?:cs|fs|vb|ts|tsx|js|jsx|java|kt|go|rs|cpp|c|h|hpp)$/i.test(filePart)) continue;
+
+    if (colonIndex !== -1) {
+      const location = prefix.slice(colonIndex + 1).trim();
+      if (location && !/^\d+(?::\d+)?$/.test(location)) continue;
+    }
+
+    return true;
+  }
+
+  return false;
+}
+
+function hasBuildDiagnosticSignals(item) {
+  const text = [item?.aggregated_output, item?.output, item?.text]
+    .filter((value) => typeof value === "string" && value.trim())
+    .join("\n");
+  if (!text) return false;
+  return (
+    /\b(?:error|warning)\s+(?:TS|CS|MSB|NU)\d+\b/i.test(text)
+    || hasSourceDiagnosticLine(text)
+    || /\b(?:Build FAILED|Cannot find name|not assignable to type|The build failed\.)\b/i.test(text)
+  );
+}
+
 function classifyLiveFamily(commandFamily, item) {
-  const cmd = String(commandFamily || "");
-  const full = `${cmd} ${extractCommandLine(item)}`.toLowerCase();
+  const cmd = String(commandFamily || "").trim().toLowerCase();
+  const commandLine = extractCommandLine(item);
+  const full = `${cmd} ${commandLine}`.toLowerCase();
+  const hasBuildDiagnostics = hasBuildDiagnosticSignals(item);
+
   if (["grep", "rg", "find", "findstr", "select-string", "ag", "ack", "sift", "fd", "where", "which", "ls", "dir", "tree", "gci", "get-childitem"].includes(cmd) || /git\s+grep\b/.test(full)) return "search";
   if (cmd === "git") return "git";
-  if (["go", "pytest", "cargo", "gradle", "maven", "mvn", "javac", "tsc", "jest", "vitest", "deno", "bun", "make", "cmake", "bazel", "buck", "nx", "turbo", "rush", "dotnet", "msbuild", "xunit", "nunit", "ctest"].includes(cmd)) return "build";
-  if (["npm", "pnpm", "yarn", "node", "python", "python3", "pip", "pip3", "poetry", "composer", "bundle", "npx"].includes(cmd)) {
-    return /test|build|install|lint|run|pytest|jest|vitest|mocha|ava|unittest|coverage|compile/.test(full) ? "build" : "generic";
+
+  if (/\b(dotnet|go|pytest|cargo|gradle|maven|mvn|javac|tsc|jest|vitest|deno|make|cmake|bazel|buck|nx|turbo|rush|msbuild|xunit|nunit|ctest)\b/.test(full)) {
+    if (/\b(test|tests|pytest|vitest|jest|xunit|nunit|ctest)\b/.test(full)) return hasBuildDiagnostics ? "build" : "test";
+    if (/\b(publish|deploy|release|ship|rollout|upgrade)\b/.test(full)) return "deploy";
+    return "build";
   }
+
+  if (["npm", "pnpm", "yarn", "bun", "npx", "pip", "pip3", "poetry", "composer", "bundle"].includes(cmd)) {
+    if (/\b(install|add|update|upgrade|remove|uninstall|ci|dedupe|audit|outdated|list)\b/.test(full)) return "package-manager";
+    if (/\b(test|coverage|jest|vitest|mocha|ava|unittest)\b/.test(full)) return hasBuildDiagnostics ? "build" : "test";
+    if (/\b(build|compile|bundle|pack|publish)\b/.test(full)) return "build";
+  }
+
   if (["journalctl", "tail", "get-content"].includes(cmd)) return "logs";
   if (["docker", "kubectl"].includes(cmd) && /logs?\b|tail\b|follow\b|-f\b/.test(full)) return "logs";
-  if (["docker", "kubectl", "helm", "terraform", "ansible", "ansible-playbook", "systemctl"].includes(cmd)) return "ops";
+  if (["docker", "kubectl", "helm", "terraform", "ansible", "ansible-playbook", "systemctl"].includes(cmd)) {
+    if (/\b(up|apply|deploy|rollout|upgrade|install|release|push|publish|compose)\b/.test(full)) return "deploy";
+    return "ops";
+  }
+
+  if (hasBuildDiagnostics) return "build";
+
   return "generic";
 }
 
-function collectSignalIndices(lines, predicate, radius = 0, limit = Infinity) {
+function chooseLiveBudgetPolicy(family, analysis, opts) {
+  const targetChars = Math.max(200, Number(opts?.liveToolCompactionTargetChars) || 1800);
+  const lineCount = Number(analysis?.lineCount) || 0;
+  const savedPct = Number(analysis?.savedPct) || 0;
+  const policy = {
+    family,
+    reason: "inline_summary",
+    budget: {
+      targetChars,
+      decision: "inline_summary",
+      retrievable: false,
+    },
+    why: [`family:${family}`, `lines:${lineCount}`, `savedPct:${savedPct}`],
+  };
+
+  if (["package-manager", "deploy", "logs"].includes(family)) {
+    policy.reason = "artifact_summary";
+    policy.budget.decision = "artifact_summary";
+    policy.budget.retrievable = true;
+    policy.why.push("large-noisy-output");
+  } else if (family === "git") {
+    policy.reason = "structured_delta";
+    policy.budget.decision = "structured_delta";
+    policy.budget.retrievable = true;
+    policy.why.push("delta-friendly-family");
+  } else if (family === "search") {
+    policy.reason = "inline_excerpt";
+    policy.budget.decision = "inline_excerpt";
+    policy.why.push("match-oriented-family");
+  } else if (family === "test") {
+    policy.reason = "inline_summary";
+    policy.budget.decision = "inline_summary";
+    policy.why.push("failure-signals-prioritized");
+  } else if (family === "build") {
+    policy.reason = "summary_with_delta";
+    policy.budget.decision = "summary_with_delta";
+    policy.budget.retrievable = true;
+    policy.why.push("diagnostics-over-progress");
+  }
+
+  return policy;
+}function collectSignalIndices(lines, predicate, radius = 0, limit = Infinity) {
   const out = new Set();
   let count = 0;
   for (let index = 0; index < lines.length; index += 1) {
@@ -1026,6 +1160,7 @@ async function compactStandaloneToolItem(
   }
 
   const analysis = analyzeLiveToolOutput(item, opts);
+  const liveBudgetPolicy = analysis ? chooseLiveBudgetPolicy(analysis.family, analysis, opts) : null;
   if (analysis) {
     const logId = await writeToCache(item, extractToolName(item), extractArgsPreview(item));
     const diagnostic = await analyzeCommandDiagnosticForItem(item, logId);
@@ -1035,6 +1170,7 @@ async function compactStandaloneToolItem(
       _liveCompacted: true,
       _liveCompactionFamily: analysis.family,
       _liveCompactionCommandFamily: analysis.commandFamily,
+      _liveCompactionPolicy: liveBudgetPolicy,
     };
     if (diagnostic) compactedItem._commandDiagnostics = diagnostic;
     setItemText(
@@ -1066,6 +1202,16 @@ async function compactStandaloneToolItem(
     _liveCompacted: true,
     _liveCompactionFamily: "generic",
     _liveCompactionCommandFamily: extractCommandFamily(item),
+    _liveCompactionPolicy: {
+      family: "generic",
+      reason: "signal_excerpt",
+      budget: {
+        targetChars: Math.max(200, Number(opts?.liveToolCompactionTargetChars) || 1800),
+        decision: "inline_excerpt",
+        retrievable: true,
+      },
+      why: ["family:generic", "fallback-signal-excerpt"],
+    },
   };
   if (diagnostic) compactedItem._commandDiagnostics = diagnostic;
   setItemText(
@@ -1322,6 +1468,16 @@ function applyImmediateGitCompression(item, logId, opts) {
     _liveCompacted: true,
     _liveCompactionFamily: "git",
     _liveCompactionCommandFamily: extractCommandFamily(item),
+    _liveCompactionPolicy: {
+      family: "generic",
+      reason: "signal_excerpt",
+      budget: {
+        targetChars: Math.max(200, Number(opts?.liveToolCompactionTargetChars) || 1800),
+        decision: "inline_excerpt",
+        retrievable: true,
+      },
+      why: ["family:generic", "fallback-signal-excerpt"],
+    },
   };
   setItemText(compressed, compressImmediateGitText(getItemText(item), logId, opts));
   return compressed;
@@ -2797,7 +2953,19 @@ export async function maybeCompressSessionItems(
     "../config/context-shredding-config.mjs"
   );
 
-  const shreddingOpts = resolveContextShreddingOptions(sessionType, agentType);
+  const shreddingOpts = {
+    ...resolveContextShreddingOptions(sessionType, agentType),
+    ...Object.fromEntries(Object.entries({
+      liveToolCompactionEnabled: arguments[1]?.liveToolCompactionEnabled,
+      liveToolCompactionMode: arguments[1]?.liveToolCompactionMode,
+      liveToolCompactionMinChars: arguments[1]?.liveToolCompactionMinChars,
+      liveToolCompactionTargetChars: arguments[1]?.liveToolCompactionTargetChars,
+      liveToolCompactionMinSavingsPct: arguments[1]?.liveToolCompactionMinSavingsPct,
+      liveToolCompactionMinRuntimeMs: arguments[1]?.liveToolCompactionMinRuntimeMs,
+      liveToolCompactionBlockStructured: arguments[1]?.liveToolCompactionBlockStructured,
+      liveToolCompactionAllowCommands: arguments[1]?.liveToolCompactionAllowCommands,
+    }).filter(([, value]) => value !== undefined)),
+  };
   if (shreddingOpts?._skip === true && !force) return items;
 
   const usagePct = estimateContextUsagePct(items);
@@ -2830,3 +2998,8 @@ export async function maybeCompressSessionItems(
 
   return compressedItems;
 }
+
+
+
+
+
