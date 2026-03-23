@@ -283,7 +283,12 @@ function buildIsolatedFailureDiagnostic(result = {}, options = {}) {
   } else if (status === "timeout") {
     category = "timeout";
     retryable = true;
-    summary = `Validation timed out after ${Number(options.timeoutMs || 0) || "the configured"}ms.`;
+    const timeoutMs = Number(options.timeoutMs);
+    const timeoutDescription =
+      Number.isFinite(timeoutMs) && timeoutMs > 0
+        ? `${timeoutMs}ms`
+        : "the configured timeout";
+    summary = `Validation timed out after ${timeoutDescription}.`;
   } else if (isSandboxFailureText(errorText)) {
     category = "sandbox_error";
     retryable = false;

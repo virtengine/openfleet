@@ -1492,7 +1492,12 @@ function buildValidationFailureDiagnostic({
   } else if (normalizedStatus === "timeout" || /(?:timed out|ETIMEDOUT|SIGTERM)/i.test(combinedText)) {
     category = "timeout";
     retryable = true;
-    summary = `Validation timed out after ${Number(timeoutMs || 0) || "the configured"}ms.`;
+    const numericTimeoutMs = timeoutMs != null ? Number(timeoutMs) : NaN;
+    if (Number.isFinite(numericTimeoutMs) && numericTimeoutMs > 0) {
+      summary = `Validation timed out after ${numericTimeoutMs}ms.`;
+    } else {
+      summary = "Validation timed out after the configured timeout.";
+    }
   } else if (isValidationSandboxFailureText(combinedText)) {
     category = "sandbox_error";
     retryable = false;
