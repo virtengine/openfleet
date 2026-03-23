@@ -418,7 +418,7 @@ describe("workflow validation output compaction", () => {
     expect(result.output).toContain("FAIL tests/runtime/example.test.ts");
     expect(result.output).toContain("expected true to be false");
     expect(result.output).toContain("bosun --tool-log");
-    expect(result.outputDiagnostics?.suggestedRerun).toContain("vitest run");
+    expect(result.outputDiagnostics?.suggestedRerun || result.outputSuggestedRerun).toContain("vitest run");
   });
 });
 

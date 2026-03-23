@@ -58,7 +58,7 @@ import { loadConfig } from "../config/config.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity, normalizeBaseBranch } from "../git/git-safety.mjs";
 import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../git/git-commit-helpers.mjs";
-import { buildArchitectEditorFrame } from "../lib/repo-map.mjs";
+import { buildArchitectEditorFrame, buildRepoTopologyContext, hasRepoMapContext } from "../lib/repo-map.mjs";
 import { getGitHubToken, invalidateTokenType } from "../github/github-auth-manager.mjs";
 import {
   CUSTOM_NODE_DIR_NAME,
@@ -2818,10 +2818,12 @@ registerBuiltinNodeType("action.run_agent", {
       );
     }
     let finalPrompt = prompt;
+    const promptHasRepoMapContext = hasRepoMapContext(finalPrompt);
     const architectEditorFrame = buildArchitectEditorFrame({
       executionRole: ctx.resolve(node.config?.executionRole || ""),
       architectPlan,
       planSummary: architectPlan,
+      includeRepoMap: !promptHasRepoMapContext,
       repoMap: node.config?.repoMap || ctx.data?.repoMap || null,
       repoMapFileLimit: node.config?.repoMapFileLimit,
       repoMapQuery: ctx.resolve(node.config?.repoMapQuery || ""),
@@ -7550,6 +7552,9 @@ registerBuiltinNodeType("agent.run_planner", {
       context: { type: "string", description: "Additional context for the planner" },
       prompt: { type: "string", description: "Optional explicit planner prompt override" },
       outputVariable: { type: "string", description: "Optional context key to store planner output text" },
+      repoMap: { type: "object", description: "Optional explicit repo map context" },
+      repoMapQuery: { type: "string", description: "Optional query used to select a compact repo topology" },
+      repoMapFileLimit: { type: "number", default: 8, description: "Maximum repo-map files to include" },
       projectId: { type: "string" },
       dedup: { type: "boolean", default: true },
       timeoutMs: { type: "number", default: 960000, description: "Node timeout in ms (recommended >= agentTimeoutMs)" },
@@ -7565,6 +7570,7 @@ registerBuiltinNodeType("agent.run_planner", {
     const plannerFeedback = resolvePlannerFeedbackContext(ctx.data?._plannerFeedback);
     const explicitPrompt = ctx.resolve(node.config?.prompt || "");
     const outputVariable = ctx.resolve(node.config?.outputVariable || "");
+    const repoMapQuery = ctx.resolve(node.config?.repoMapQuery || "");
     const configuredNodeTimeout = Number(ctx.resolve(node.config?.timeoutMs || node.config?.timeout || 0));
     const configuredAgentTimeout = Number(ctx.resolve(node.config?.agentTimeoutMs || 0));
 
@@ -7580,20 +7586,51 @@ registerBuiltinNodeType("agent.run_planner", {
     // This delegates to the existing planner prompt flow
     const agentPool = engine.services?.agentPool;
     const plannerPrompt = engine.services?.prompts?.planner;
+    const basePrompt = explicitPrompt || plannerPrompt || "";
+    const fullPromptForRepoMapCheck = [basePrompt, context, plannerFeedback].filter(Boolean).join("\n\n");
+    const promptHasRepoMap = hasRepoMapContext(fullPromptForRepoMapCheck);
+    const repoTopologyContext = (node.config?.repoMap || repoMapQuery)
+      && !promptHasRepoMap
+      ? buildRepoTopologyContext({
+        repoMap: node.config?.repoMap || ctx.data?.repoMap || null,
+        repoMapFileLimit: node.config?.repoMapFileLimit ?? 8,
+        repoMapQuery,
+        query: [context, explicitPrompt, plannerPrompt].filter(Boolean).join(" "),
+        prompt: explicitPrompt || plannerPrompt || "",
+        userMessage: context,
+        taskTitle: ctx.data?.taskTitle || ctx.data?.task?.title || "",
+        taskDescription:
+          ctx.data?.taskDescription ||
+          ctx.data?.task?.description ||
+          ctx.data?.task?.body ||
+          ctx.data?.taskDetail?.description ||
+          ctx.data?.taskInfo?.description ||
+          "",
+        changedFiles:
+          (Array.isArray(ctx.data?.changedFiles) ? ctx.data.changedFiles : null) ||
+          (Array.isArray(ctx.data?.task?.changedFiles) ? ctx.data.task.changedFiles : null) ||
+          [],
+        cwd: process.cwd(),
+        repoRoot: ctx.data?.repoRoot || process.cwd(),
+      })
+      : "";
     // Enforce strict output instructions to ensure the downstream materialize node
     // can parse the planner output. The planner prompt already defines the contract,
     // but we reinforce it here to prevent agents from wrapping output in prose.
     const outputEnforcement =
       `\n\n## CRITICAL OUTPUT REQUIREMENT\n` +
       `Generate exactly ${count} new tasks.\n` +
-      ((context || plannerFeedback)
-        ? `${[context, plannerFeedback ? `Planner feedback context:\n${plannerFeedback}` : ""].filter(Boolean).join("\n\n")}\n\n`
+      ((context || plannerFeedback || repoTopologyContext)
+        ? `${[
+          context,
+          plannerFeedback ? `Planner feedback context:\n${plannerFeedback}` : "",
+          repoTopologyContext,
+        ].filter(Boolean).join("\n\n")}\n\n`
         : "\n") +
       `Your response MUST be a single fenced JSON block with shape { "tasks": [...] }.\n` +
       `Do NOT include status updates, analysis notes, tool commentary, questions, or prose outside the JSON block.\n` +
       `Do NOT reference or use legacy ve-kanban integration commands or scripts.\n` +
       `The downstream system will parse your output as JSON — any extra text will cause task creation to fail.`;
-    const basePrompt = explicitPrompt || plannerPrompt || "";
     const promptText = basePrompt
       ? `${basePrompt}${outputEnforcement}`
       : "";
@@ -14583,5 +14620,8 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
+
+
+
 
 
