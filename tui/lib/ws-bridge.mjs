@@ -130,6 +130,7 @@ class TuiWsBridge {
 				const message = err?.message || err?.error?.message || "WebSocket error";
 				this._emit("error", { message });
 				this._emit("error", { message });
+				this._emit("error", { message });
 			};
 		} catch (err) {
 			this._emit("error", { message: err?.message || "Failed to connect" });
