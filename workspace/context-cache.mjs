@@ -638,7 +638,7 @@ function classifyLiveFamily(commandFamily, item) {
   if (["grep", "rg", "find", "findstr", "select-string", "ag", "ack", "sift", "fd", "where", "which", "ls", "dir", "tree", "gci", "get-childitem"].includes(cmd) || /git\s+grep\b/.test(full)) return "search";
   if (cmd === "git") return "git";
   if (["journalctl", "tail", "get-content"].includes(cmd)) return "logs";
-  if (["docker", "kubectl"].includes(cmd) && /logs?\b|tail\b|follow\b|-f\b/.test(full)) return "logs";
+  if (["docker", "kubectl"].includes(cmd) && /logs?\b|tail\b|follow\b|--follow\b/.test(full)) return "logs";
   if (LIVE_TEST_COMMANDS.has(cmd)) return "test";
   if (cmd === "dotnet" && /\btest\b/.test(full)) return "test";
   if (cmd === "go" && /\btest\b/.test(full)) return "test";
@@ -1193,9 +1193,9 @@ async function analyzeCommandDiagnosticForItem(item, logId = null) {
   };
 }
 
-function analyzeLiveToolOutput(item, opts) {
+function analyzeLiveToolOutput(item, opts, { force = false } = {}) {
   const originalText = getItemText(item);
-  if (typeof originalText !== "string" || originalText.length < (opts.liveToolCompactionMinChars ?? 4000)) return null;
+  if (typeof originalText !== "string" || (!force && originalText.length < (opts.liveToolCompactionMinChars ?? 4000))) return null;
   const commandFamily = extractCommandFamily(item);
   const allowlist = new Set((opts.liveToolCompactionAllowCommands || []).map((value) => String(value).trim().toLowerCase()).filter(Boolean));
   const enforceAllowlist =
@@ -1322,7 +1322,7 @@ async function compactStandaloneToolItem(
     return compactedItem;
   }
 
-  const analysis = analyzeLiveToolOutput(item, opts);
+  const analysis = analyzeLiveToolOutput(item, opts, { force });
   if (analysis) {
     const diagnostic = await analyzeCommandDiagnosticForItem(item);
     const logId = await writeToCache(item, extractToolName(item), extractArgsPreview(item), {
@@ -3183,3 +3183,5 @@ export async function maybeCompressSessionItems(
 
   return compressedItems;
 }
+
+
