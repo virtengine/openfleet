@@ -2154,6 +2154,71 @@ describe("action.execute_workflow", () => {
     });
     expect(softCtx.data.childResult).toEqual(softResult);
   });
+
+  it("sync mode includes child terminal output in the returned summary", async () => {
+    const childWorkflow = {
+      id: "child-terminal-wf",
+      name: "Child Terminal Workflow",
+      trigger: "trigger.workflow_call",
+      nodes: [
+        {
+          id: "trigger",
+          type: "trigger.workflow_call",
+          label: "Trigger",
+          config: { inputs: { payload: { type: "string", required: false } } },
+        },
+        {
+          id: "finish",
+          type: "flow.end",
+          label: "Finish",
+          config: {
+            status: "completed",
+            message: "done",
+            output: {
+              nodeOutputs: {
+                finish: "{{payload}}",
+              },
+            },
+          },
+        },
+      ],
+      edges: [{ id: "edge-trigger-finish", source: "trigger", target: "finish" }],
+    };
+
+    const parentWorkflow = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start Parent", config: {} },
+        {
+          id: "invoke-child",
+          type: "action.execute_workflow",
+          label: "Invoke Child",
+          config: {
+            workflowId: "child-terminal-wf",
+            mode: "sync",
+            input: { payload: "{{payload}}" },
+          },
+        },
+      ],
+      [{ id: "edge-parent-child", source: "trigger", target: "invoke-child" }],
+      { id: "parent-terminal-wf", name: "Parent Terminal Workflow" },
+    );
+
+    engine.save(childWorkflow);
+    engine.save(parentWorkflow);
+
+    const parentCtx = await engine.execute(parentWorkflow.id, { payload: "hello child" });
+    const output = parentCtx.getNodeOutput("invoke-child");
+    expect(output).toMatchObject({
+      success: true,
+      status: "completed",
+      message: "done",
+      output: {
+        nodeOutputs: {
+          finish: "hello child",
+        },
+      },
+    });
+  });
 });
 
 describe("action.inline_workflow and executeDefinition", () => {
@@ -2282,6 +2347,44 @@ describe("action.inline_workflow and executeDefinition", () => {
     expect(childDetail?.detail?.dagState?.rootRunId).toBe(parentCtx.id);
     expect(childDetail?.ledger?.parentRunId).toBe(parentCtx.id);
     expect(childDetail?.ledger?.rootRunId).toBe(parentCtx.id);
+  });
+
+  it("persists the workflow definition snapshot with each historical run", async () => {
+    const workflow = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Trigger", config: {} },
+        {
+          id: "finish",
+          type: "flow.end",
+          label: "Finish",
+          config: { status: "completed", output: { ok: true } },
+        },
+      ],
+      [{ id: "edge-trigger-finish", source: "trigger", target: "finish" }],
+      { id: "snapshot-wf", name: "Snapshot Workflow" },
+    );
+
+    engine.save(workflow);
+    const ctx = await engine.execute(workflow.id, {});
+
+    const updatedWorkflow = {
+      ...workflow,
+      name: "Snapshot Workflow Updated",
+      description: "changed after run",
+    };
+    engine.save(updatedWorkflow);
+
+    const detail = engine.getRunDetail(ctx.id);
+    expect(detail?.detail?.workflowDefinition).toMatchObject({
+      id: "snapshot-wf",
+      name: "Snapshot Workflow",
+      nodes: expect.arrayContaining([
+        expect.objectContaining({ id: "trigger", type: "trigger.manual" }),
+        expect.objectContaining({ id: "finish", type: "flow.end" }),
+      ]),
+      edges: [expect.objectContaining({ id: "edge-trigger-finish", source: "trigger", target: "finish" })],
+    });
+    expect(detail?.detail?.workflowDefinition?.name).not.toBe("Snapshot Workflow Updated");
   });
 
   it("dispatch mode queues embedded workflows without waiting for completion", async () => {
@@ -5499,4 +5602,5 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(replan.reason).toBe("issue_advisor.replan_subgraph");
   });
 });
+
 

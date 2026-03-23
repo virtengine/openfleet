@@ -17216,6 +17216,24 @@ if (path === "/api/agent-logs/context") {
     return;
   }
 
+  if (path === "/api/workflows/import") {
+    try {
+      const body = await readJsonBody(req);
+      const wfCtx = await getWorkflowRequestContext(url);
+      if (!wfCtx.ok) {
+        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+        return;
+      }
+      const engine = wfCtx.engine;
+      const workflowPayload = body?.workflow ?? body;
+      const imported = await engine.import(workflowPayload);
+      jsonResponse(res, 200, { ok: true, workflow: imported });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   // GET /api/workflows/concurrency — live concurrency stats for dashboard
   if (path === "/api/workflows/concurrency" && req.method === "GET") {
     try {
@@ -22568,6 +22586,7 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
 
 
 

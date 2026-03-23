@@ -19,15 +19,21 @@ import { formatDate, formatDuration, formatRelative } from "../modules/utils.js"
 import {
   HISTORY_LIMIT,
   HISTORY_COMMIT_DEBOUNCE_MS,
+  buildCollapsedGraph,
   buildNodeStatusesFromRunDetail,
+  convertSelectionToSubworkflow,
   createHistoryState,
+  createNodeGroup,
   getNodeSearchMetadata,
+  moveWorkflowGroupByDelta,
   parseGraphSnapshot,
   pushHistorySnapshot,
   redoHistory,
   resolveNodeOutputPreview,
+  resolveWorkflowGroupBounds,
   searchNodeTypes,
   serializeGraphSnapshot,
+  toggleWorkflowGroupCollapsed,
   undoHistory,
 } from "./workflow-canvas-utils.mjs";
 import { createSession } from "../components/session-list.js";
@@ -680,7 +686,10 @@ async function loadNodeTypes() {
   }
 }
 
-async function saveWorkflow(def) {
+async function saveWorkflow(def, options = {}) {
+  const activate = options?.activate !== false;
+  const toastMessage = options?.toastMessage ?? "Workflow saved";
+  const suppressToast = options?.suppressToast === true;
   try {
     const data = await apiFetch("/api/workflows/save", {
       method: "POST",
@@ -688,38 +697,35 @@ async function saveWorkflow(def) {
       body: JSON.stringify(def),
     });
     if (data?.workflow) {
-      activeWorkflow.value = data.workflow;
-      showToast("Workflow saved", "success");
+      if (activate) {
+        activeWorkflow.value = data.workflow;
+        setRouteParams({ workflowId: data.workflow.id }, { replace: true, skipGuard: true });
+      }
+      if (!suppressToast) showToast(toastMessage, "success");
       loadWorkflows();
-      setRouteParams({ workflowId: data.workflow.id }, { replace: true, skipGuard: true });
     }
     return data?.workflow;
   } catch (err) {
-    showToast("Failed to save workflow", "error");
+    if (!suppressToast) showToast("Failed to save workflow", "error");
   }
 }
 
 async function exportWorkflow(workflow) {
-  if (!workflow?.id) return;
+  if (!workflow) return;
   try {
-    const bundle = await apiFetch(`/api/workflows/${encodeURIComponent(workflow.id)}/export`);
-    if (!bundle?.files) throw new Error("No export data received");
-
-    const content = JSON.stringify({
-      _bosunExport: true,
-      projectName: bundle.projectName,
-      metadata: bundle.metadata,
-      files: bundle.files,
-    }, null, 2);
+    const content = JSON.stringify(workflow, null, 2);
+    try {
+      await navigator?.clipboard?.writeText(content);
+      showToast("Workflow JSON copied to clipboard", "success");
+    } catch {}
 
     const blob = new Blob([content], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${bundle.projectName || "workflow"}-export.json`;
+    a.download = `${workflow.name || workflow.id || "workflow"}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    showToast("Workflow exported successfully", "success");
   } catch (err) {
     showToast("Export failed: " + (err.message || err), "error");
   }
@@ -1985,6 +1991,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const canvasRef = useRef(null);
   const [nodes, setNodes] = useState(workflow?.nodes || []);
   const [edges, setEdges] = useState(workflow?.edges || []);
+  const [groups, setGroups] = useState(workflow?.groups || []);
   const [dragState, setDragState] = useState(null);
   const [panStart, setPanStart] = useState(null);
   const [connecting, setConnecting] = useState(null);
@@ -2001,7 +2008,11 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const [connectionHint, setConnectionHint] = useState(null);
   const [portHoverHint, setPortHoverHint] = useState(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState(new Set());
-  const [historyState, setHistoryState] = useState(() => createHistoryState(workflow?.nodes || [], workflow?.edges || []));
+  const [selectedGroupId, setSelectedGroupId] = useState(null);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importJsonText, setImportJsonText] = useState("");
+  const [inlinePreview, setInlinePreview] = useState(null);
+  const [historyState, setHistoryState] = useState(() => createHistoryState(workflow?.nodes || [], workflow?.edges || [], workflow?.groups || []));
   const [marquee, setMarquee] = useState(null);
   const [liveHighlightEnabled, setLiveHighlightEnabled] = useState(true);
   const [liveRun, setLiveRun] = useState(null);
@@ -2019,6 +2030,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const multiDragRef = useRef({});
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
+  const groupsRef = useRef(groups);
   const historyRef = useRef(historyState);
   const historyTimerRef = useRef(null);
   const historyPendingSnapshotRef = useRef(null);
@@ -2035,8 +2047,8 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     ? Math.max(0, liveNowTick - Number(liveRun.startedAt))
     : Number(liveRun?.duration) || 0;
   const workflowSnapshotKey = useMemo(
-    () => serializeGraphSnapshot(workflow?.nodes || [], workflow?.edges || []),
-    [workflow?.nodes, workflow?.edges],
+    () => serializeGraphSnapshot(workflow?.nodes || [], workflow?.edges || [], workflow?.groups || []),
+    [workflow?.nodes, workflow?.edges, workflow?.groups],
   );
   const nodeTypeMap = useMemo(
     () => new Map((availableNodeTypes || []).map((type) => [type.type, type])),
@@ -2058,6 +2070,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     ...(workflow || {}),
     nodes: normalizeNodesForCanvas(nodesRef.current || []),
     edges: Array.isArray(edgesRef.current) ? [...edgesRef.current] : [],
+    groups: Array.isArray(groupsRef.current) ? [...groupsRef.current] : [],
   }), [normalizeNodesForCanvas, workflow]);
   const openWorkflowCopilotFromCanvas = useCallback(async ({
     intent = "explain",
@@ -2101,6 +2114,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   useEffect(() => {
     const nextNodes = normalizeNodesForCanvas(workflow?.nodes || []);
     const nextEdges = workflow?.edges || [];
+    const nextGroups = workflow?.groups || [];
     if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
     historyPendingSnapshotRef.current = null;
     nodesRef.current = nextNodes;
@@ -2111,6 +2125,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     historyRef.current = nextHistory;
     setHistoryState(nextHistory);
     setSelectedNodeIds(new Set());
+    setSelectedGroupId(null);
     selectedNodeId.value = null;
     selectedEdgeId.value = null;
     setEditingNode(null);
@@ -2411,6 +2426,19 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     };
   }, [liveHighlightEnabled, workflow?.id, workflow?.name]);
 
+  const renderGraph = useMemo(() => buildCollapsedGraph({ nodes, edges, groups }), [nodes, edges, groups]);
+  const renderNodes = renderGraph.visibleNodes || [];
+  const renderEdges = renderGraph.visibleEdges || [];
+  const activeGroup = useMemo(() => {
+    if (selectedGroupId) {
+      return (groups || []).find((group) => group.id === selectedGroupId) || null;
+    }
+    if (!selectedNodeIds.size) return null;
+    return (groups || []).find((group) => {
+      const selected = [...selectedNodeIds];
+      return selected.every((nodeId) => group.nodeIds.includes(nodeId));
+    }) || null;
+  }, [groups, selectedGroupId, selectedNodeIds]);
   // Canvas dimensions
   const NODE_W = 220;
   const NODE_H = 118;
@@ -2437,54 +2465,58 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     historyTimerRef.current = null;
     const snapshot = parseGraphSnapshot(historyPendingSnapshotRef.current);
     historyPendingSnapshotRef.current = null;
-    const nextHistory = pushHistorySnapshot(historyRef.current, snapshot.nodes, snapshot.edges, HISTORY_LIMIT);
+    const nextHistory = pushHistorySnapshot(historyRef.current, snapshot.nodes, snapshot.edges, snapshot.groups || [], HISTORY_LIMIT);
     if (nextHistory !== historyRef.current) setHistory(nextHistory);
     return nextHistory;
   }, [setHistory]);
 
   const scheduleHistoryCommit = useCallback((nextNodes, nextEdges) => {
-    historyPendingSnapshotRef.current = serializeGraphSnapshot(nextNodes, nextEdges);
+    historyPendingSnapshotRef.current = serializeGraphSnapshot(nextNodes, nextEdges, groupsRef.current || []);
     if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
     historyTimerRef.current = setTimeout(() => {
       const snapshot = parseGraphSnapshot(historyPendingSnapshotRef.current);
       historyPendingSnapshotRef.current = null;
       historyTimerRef.current = null;
-      const nextHistory = pushHistorySnapshot(historyRef.current, snapshot.nodes, snapshot.edges, HISTORY_LIMIT);
+      const nextHistory = pushHistorySnapshot(historyRef.current, snapshot.nodes, snapshot.edges, snapshot.groups || [], HISTORY_LIMIT);
       if (nextHistory !== historyRef.current) setHistory(nextHistory);
     }, HISTORY_COMMIT_DEBOUNCE_MS);
   }, [setHistory]);
 
-  const scheduleSave = useCallback((nextNodes, nextEdges) => {
+  const scheduleSave = useCallback((nextNodes, nextEdges, nextGroups = groupsRef.current || []) => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    const snapshot = serializeGraphSnapshot(normalizeNodesForCanvas(nextNodes), nextEdges);
+    const snapshot = serializeGraphSnapshot(normalizeNodesForCanvas(nextNodes), nextEdges, groupsRef.current || []);
     saveTimer.current = setTimeout(() => {
       if (!workflow?.id) return;
       const latest = parseGraphSnapshot(snapshot);
-      saveWorkflow({ ...workflow, nodes: normalizeNodesForCanvas(latest.nodes), edges: latest.edges });
+      saveWorkflow({ ...workflow, nodes: normalizeNodesForCanvas(latest.nodes), edges: latest.edges, groups: latest.groups || nextGroups });
     }, 1500);
   }, [normalizeNodesForCanvas, workflow]);
 
   const applyGraphChange = useCallback((updater, options = {}) => {
     const currentNodes = nodesRef.current;
     const currentEdges = edgesRef.current;
-    const nextGraph = updater({ nodes: currentNodes, edges: currentEdges });
+    const currentGroups = groupsRef.current;
+    const nextGraph = updater({ nodes: currentNodes, edges: currentEdges, groups: currentGroups });
     if (!nextGraph) return null;
     const nextNodes = normalizeNodesForCanvas(nextGraph.nodes ?? currentNodes);
     const nextEdges = nextGraph.edges ?? currentEdges;
-    if (nextNodes === currentNodes && nextEdges === currentEdges) return null;
+    const nextGroups = nextGraph.groups ?? currentGroups;
+    if (nextNodes === currentNodes && nextEdges === currentEdges && nextGroups === currentGroups) return null;
     nodesRef.current = nextNodes;
     edgesRef.current = nextEdges;
     setNodes(nextNodes);
     setEdges(nextEdges);
-    scheduleSave(nextNodes, nextEdges);
+    setGroups(nextGroups);
+    groupsRef.current = nextGroups;
+    scheduleSave(nextNodes, nextEdges, nextGroups);
     if (options.history === "debounced") {
       scheduleHistoryCommit(nextNodes, nextEdges);
     } else if (options.history !== "skip") {
       flushPendingHistory();
-      const nextHistory = pushHistorySnapshot(historyRef.current, nextNodes, nextEdges, HISTORY_LIMIT);
+      const nextHistory = pushHistorySnapshot(historyRef.current, nextNodes, nextEdges, nextGroups, HISTORY_LIMIT);
       if (nextHistory !== historyRef.current) setHistory(nextHistory);
     }
-    return { nodes: nextNodes, edges: nextEdges };
+    return { nodes: nextNodes, edges: nextEdges, groups: nextGroups };
   }, [flushPendingHistory, normalizeNodesForCanvas, scheduleHistoryCommit, scheduleSave, setHistory]);
 
   const getDefaultInsertPoint = useCallback(() => {
@@ -2511,18 +2543,22 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const applyHistorySnapshot = useCallback((snapshot) => {
     const nextNodes = normalizeNodesForCanvas(snapshot?.nodes || []);
     const nextEdges = snapshot?.edges || [];
+    const nextGroups = snapshot?.groups || [];
     if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
     historyPendingSnapshotRef.current = null;
     nodesRef.current = nextNodes;
     edgesRef.current = nextEdges;
+    groupsRef.current = nextGroups;
     setNodes(nextNodes);
     setEdges(nextEdges);
+    setGroups(nextGroups);
     setSelectedNodeIds(new Set());
+    setSelectedGroupId(null);
     selectedNodeId.value = null;
     selectedEdgeId.value = null;
     setEditingNode(null);
     setContextMenu(null);
-    scheduleSave(nextNodes, nextEdges);
+    scheduleSave(nextNodes, nextEdges, nextGroups);
   }, [normalizeNodesForCanvas, scheduleSave]);
 
   const undoCanvas = useCallback(() => {
@@ -2623,6 +2659,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
             edges: currentEdges.filter((edge) => !ids.has(edge.source) && !ids.has(edge.target)),
           }));
           setSelectedNodeIds(new Set());
+    setSelectedGroupId(null);
           selectedNodeId.value = null;
           setEditingNode(null);
           return;
@@ -2676,11 +2713,24 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       return;
     }
     if (dragState) {
+      if (dragState.kind === "group") {
+        const deltaX = canvasPos.x - dragState.anchorX;
+        const deltaY = canvasPos.y - dragState.anchorY;
+        applyGraphChange(({ nodes: currentNodes, edges: currentEdges, groups: currentGroups }) => (
+          moveWorkflowGroupByDelta(
+            { nodes: currentNodes, edges: currentEdges, groups: currentGroups },
+            dragState.groupId,
+            deltaX,
+            deltaY,
+          )
+        ), { history: "debounced" });
+        return;
+      }
       const newPrimaryX = canvasPos.x - dragState.offsetX;
       const newPrimaryY = canvasPos.y - dragState.offsetY;
       const deltaX = newPrimaryX - dragState.startX;
       const deltaY = newPrimaryY - dragState.startY;
-      applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+      applyGraphChange(({ nodes: currentNodes, edges: currentEdges, groups: currentGroups }) => ({
         nodes: currentNodes.map((node) => {
           if (node.id === dragState.nodeId) {
             return { ...node, position: { x: newPrimaryX, y: newPrimaryY } };
@@ -2692,6 +2742,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
           return node;
         }),
         edges: currentEdges,
+        groups: currentGroups,
       }), { history: "debounced" });
     }
   }, [applyGraphChange, toCanvas, panStart, dragState]);
@@ -2707,6 +2758,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         selectedNodeId.value = null;
         selectedEdgeId.value = null;
         setSelectedNodeIds(new Set());
+    setSelectedGroupId(null);
       }
       setEditingNode(null);
       setContextMenu(null);
@@ -2809,6 +2861,62 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
 
   // ── Node interaction ──────────────────────────────────────
 
+  const startGroupDrag = useCallback((groupId, clientX, clientY) => {
+    const normalizedGroupId = String(groupId || "").trim();
+    if (!normalizedGroupId) return false;
+    const group = (groups || []).find((entry) => entry.id === normalizedGroupId) || null;
+    if (!group) return false;
+    const canvasPos = toCanvas(clientX, clientY);
+    const startPositions = Object.fromEntries(
+      (nodes || [])
+        .filter((entry) => group.nodeIds?.includes(entry.id))
+        .map((entry) => [entry.id, { x: entry.position?.x || 0, y: entry.position?.y || 0 }]),
+    );
+    setSelectedGroupId(group.id);
+    setSelectedNodeIds(new Set(group.nodeIds || []));
+    selectedNodeId.value = null;
+    selectedEdgeId.value = null;
+    setEditingNode(null);
+    setContextMenu(null);
+    setDragState({
+      kind: "group",
+      groupId: group.id,
+      anchorX: canvasPos.x,
+      anchorY: canvasPos.y,
+      startPositions,
+    });
+    return true;
+  }, [groups, nodes, toCanvas]);
+
+  const onGroupMouseDown = useCallback((groupId, e) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    startGroupDrag(groupId, e.clientX, e.clientY);
+  }, [startGroupDrag]);
+
+  const onGroupPointerDown = useCallback((groupId, e) => {
+    if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
+    e.stopPropagation();
+    if (startGroupDrag(groupId, e.clientX, e.clientY)) {
+      try {
+        canvasRef.current?.setPointerCapture?.(e.pointerId);
+      } catch {}
+      e.preventDefault();
+    }
+  }, [startGroupDrag]);
+
+  const onGroupContextMenu = useCallback((groupId, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const group = (groups || []).find((entry) => entry.id === String(groupId || "").trim()) || null;
+    if (!group) return;
+    setSelectedGroupId(group.id);
+    setSelectedNodeIds(new Set(group.nodeIds || []));
+    selectedNodeId.value = null;
+    selectedEdgeId.value = null;
+    setContextMenu({ x: e.clientX, y: e.clientY, groupId: group.id });
+  }, [groups]);
+
   const onNodeMouseDown = useCallback((nodeId, e) => {
     e.stopPropagation();
     let newSelectedIds;
@@ -2829,8 +2937,14 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       selectedNodeId.value = nodeId;
     }
     setContextMenu(null);
+    const proxyNode = renderNodes.find((entry) => entry.id === nodeId && entry.isGroupProxy);
+    if (proxyNode) {
+      startGroupDrag(proxyNode.groupId, e.clientX, e.clientY);
+      return;
+    }
     const canvasPos = toCanvas(e.clientX, e.clientY);
-    const node = nodes.find(n => n.id === nodeId);
+    setSelectedGroupId(null);
+    const node = nodes.find((n) => n.id === nodeId);
     if (node) {
       // Store start positions for all nodes in the drag group
       multiDragRef.current = {};
@@ -2846,13 +2960,24 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         startY: node.position?.y || 0,
       });
     }
-  }, [nodes, toCanvas, selectedNodeIds]);
+  }, [nodes, renderNodes, selectedNodeIds, startGroupDrag, toCanvas]);
 
   const onNodePointerDown = useCallback((nodeId, e) => {
     if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
     e.stopPropagation();
+    const proxyNode = renderNodes.find((entry) => entry.id === nodeId && entry.isGroupProxy);
+    if (proxyNode) {
+      if (startGroupDrag(proxyNode.groupId, e.clientX, e.clientY)) {
+        try {
+          canvasRef.current?.setPointerCapture?.(e.pointerId);
+        } catch {}
+        e.preventDefault();
+      }
+      return;
+    }
     const newSelectedIds = new Set([nodeId]);
     setSelectedNodeIds(newSelectedIds);
+    setSelectedGroupId(null);
     selectedNodeId.value = nodeId;
     setContextMenu(null);
     const canvasPos = toCanvas(e.clientX, e.clientY);
@@ -2871,7 +2996,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       canvasRef.current?.setPointerCapture?.(e.pointerId);
     } catch {}
     e.preventDefault();
-  }, [nodes, toCanvas]);
+  }, [nodes, renderNodes, startGroupDrag, toCanvas]);
 
   const onNodeDoubleClick = useCallback((nodeId) => {
     setEditingNode(nodeId);
@@ -2880,9 +3005,15 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const onNodeContextMenu = useCallback((nodeId, e) => {
     e.preventDefault();
     e.stopPropagation();
+    const proxyNode = renderNodes.find((entry) => entry.id === nodeId && entry.isGroupProxy);
+    if (proxyNode) {
+      onGroupContextMenu(proxyNode.groupId, e);
+      return;
+    }
     selectedNodeId.value = nodeId;
+    setSelectedGroupId(null);
     setContextMenu({ x: e.clientX, y: e.clientY, nodeId });
-  }, []);
+  }, [onGroupContextMenu, renderNodes]);
 
   // ── Port / connection interaction ─────────────────────────
 
@@ -2910,7 +3041,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     });
   }, []);
 
-  const getNodeById = useCallback((nodeId) => nodesRef.current.find((node) => node.id === nodeId) || null, []);
+  const getNodeById = useCallback((nodeId) => (renderNodes.find((node) => node.id === nodeId) || nodesRef.current.find((node) => node.id === nodeId) || null), [renderNodes]);
 
   const getOutputPortDescriptor = useCallback((nodeId, portName = "default") => {
     const node = getNodeById(nodeId);
@@ -3117,27 +3248,128 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     return undefined;
   }, [connecting]);
 
+  const handleCreateGroup = useCallback(() => {
+    const nodeIds = [...selectedNodeIds].filter(Boolean);
+    if (nodeIds.length < 2) return;
+    const label = window.prompt("Group name", "New Group");
+    if (label == null) return;
+    const nextGroupId = `group-${Date.now()}`;
+    applyGraphChange(({ nodes: currentNodes, edges: currentEdges, groups: currentGroups }) => ({
+      nodes: currentNodes,
+      edges: currentEdges,
+      groups: createNodeGroup({ nodes: currentNodes, edges: currentEdges, groups: currentGroups }, nodeIds, {
+        id: nextGroupId,
+        label,
+        color: "#8b5cf6",
+      }).groups,
+    }));
+    setSelectedGroupId(nextGroupId);
+  }, [applyGraphChange, selectedNodeIds]);
+
+  const handleToggleActiveGroup = useCallback(() => {
+    if (!activeGroup) return;
+    applyGraphChange(({ nodes: currentNodes, edges: currentEdges, groups: currentGroups }) => ({
+      nodes: currentNodes,
+      edges: currentEdges,
+      groups: toggleWorkflowGroupCollapsed({ nodes: currentNodes, edges: currentEdges, groups: currentGroups }, activeGroup.id).groups,
+    }));
+    setSelectedGroupId(activeGroup.id);
+  }, [activeGroup, applyGraphChange]);
+
+  const handleImportWorkflowJson = useCallback(async () => {
+    try {
+      const parsed = JSON.parse(importJsonText);
+      const payload = parsed?.workflow ? parsed : { workflow: parsed };
+      const data = await apiFetch("/api/workflows/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (data?.workflow) {
+        activeWorkflow.value = data.workflow;
+        viewMode.value = "canvas";
+        setImportDialogOpen(false);
+        setImportJsonText("");
+        showToast("Workflow imported", "success");
+        loadWorkflows();
+      }
+    } catch (err) {
+      showToast("Import failed: " + (err.message || err), "error");
+    }
+  }, [importJsonText]);
+
+  const handleImportWorkflowFile = useCallback(async (event) => {
+    const file = event?.target?.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    setImportJsonText(text);
+    setImportDialogOpen(true);
+    event.target.value = "";
+  }, []);
+
+  const handleConvertToSubworkflow = useCallback(async () => {
+    const nodeIds = [...selectedNodeIds].filter(Boolean);
+    if (!workflow?.id || nodeIds.length === 0) return;
+    const childName = window.prompt("New sub-workflow name", `${workflow.name || "Workflow"} Sub-workflow`);
+    if (childName == null) return;
+    const converted = convertSelectionToSubworkflow({ ...workflow, nodes, edges, groups }, nodeIds, {
+      childWorkflowId: `sub-${Date.now()}`,
+      childName,
+      executeNodeId: `execute-sub-${Date.now()}`,
+      executeNodeLabel: childName,
+    });
+    const savedChild = await saveWorkflow(converted.childWorkflow, { activate: false, suppressToast: true });
+    if (!savedChild?.id) return;
+    const parentWithSavedId = {
+      ...converted.parentWorkflow,
+      nodes: converted.parentWorkflow.nodes.map((node) => (
+        node.id === converted.executeNode.id
+          ? { ...node, config: { ...(node.config || {}), workflowId: savedChild.id } }
+          : node
+      )),
+    };
+    const savedParent = await saveWorkflow(parentWithSavedId, { toastMessage: "Sub-workflow created" });
+    if (savedParent) {
+      setSelectedNodeIds(new Set([converted.executeNode.id]));
+      selectedNodeId.value = converted.executeNode.id;
+      setSelectedGroupId(null);
+    }
+  }, [convertSelectionToSubworkflow, edges, groups, nodes, selectedNodeIds, workflow]);
+
+  const handleExpandInline = useCallback(async () => {
+    const selectedId = String(selectedNodeId.value || "").trim();
+    const node = nodes.find((entry) => entry.id === selectedId) || null;
+    const workflowId = String(node?.config?.workflowId || "").trim();
+    if (!workflowId) return;
+    try {
+      const data = await apiFetch(`/api/workflows/${encodeURIComponent(workflowId)}`);
+      if (data?.workflow) setInlinePreview(data.workflow);
+    } catch (err) {
+      showToast("Failed to load inline workflow preview", "error");
+    }
+  }, [nodes]);
   // ── Render helpers ────────────────────────────────────────
 
   const getNodeCenter = (nodeId) => {
-    const n = nodes.find((value) => value.id === nodeId);
+    const n = renderNodes.find((value) => value.id === nodeId);
     if (!n) return { x: 0, y: 0 };
-    return { x: (n.position?.x || 0) + NODE_W / 2, y: (n.position?.y || 0) + NODE_H / 2 };
+    const width = Number(n?.size?.width || NODE_W);
+    const height = Number(n?.size?.height || NODE_H);
+    return { x: (n.position?.x || 0) + width / 2, y: (n.position?.y || 0) + height / 2 };
   };
 
   const getNodePortPosition = (nodeId, direction, portName = "default") => {
-    const n = nodes.find((value) => value.id === nodeId);
+    const n = renderNodes.find((value) => value.id === nodeId);
     if (!n) return { x: 0, y: 0 };
     const ports = resolveNodePorts(n, nodeTypeMap)[direction === "input" ? "inputs" : "outputs"];
-    const index = Math.max(
-      0,
-      ports.findIndex((port) => port.name === portName),
-    );
+    const index = Math.max(0, ports.findIndex((port) => port.name === portName));
     const spread = 24;
-    const centerY = NODE_H / 2 + 10;
+    const width = Number(n?.size?.width || NODE_W);
+    const height = Number(n?.size?.height || NODE_H);
+    const centerY = height / 2 + 10;
     const offsetY = (index - ((ports.length - 1) / 2)) * spread;
     return {
-      x: (n.position?.x || 0) + (direction === "input" ? 0 : NODE_W),
+      x: (n.position?.x || 0) + (direction === "input" ? 0 : width),
       y: (n.position?.y || 0) + centerY + offsetY,
     };
   };
@@ -3177,7 +3409,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         <${Button} variant="contained" size="small" onClick=${() => openNodePalette()} sx=${{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <span style="font-size: 18px;">+</span> Add Node /
         <//>
-        <${Button} variant="outlined" size="small" onClick=${() => { if (workflow) saveWorkflow({ ...workflow, nodes: normalizeNodesForCanvas(nodesRef.current), edges: edgesRef.current }); }}>
+        <${Button} variant="outlined" size="small" onClick=${() => { if (workflow) saveWorkflow({ ...workflow, nodes: normalizeNodesForCanvas(nodesRef.current), edges: edgesRef.current, groups: groupsRef.current }); }}>
           <span class="btn-icon">${resolveIcon("save")}</span>
           Save
         <//>
@@ -3209,10 +3441,16 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
           <span class="btn-icon">${resolveIcon("settings")}</span>
           Code
         <//>
-        <${Button} variant="outlined" size="small" onClick=${() => exportWorkflow(workflow)}>
+        <${Button} variant="outlined" size="small" onClick=${() => exportWorkflow({ ...workflow, nodes, edges, groups })}>
           <span class="btn-icon">${resolveIcon("save")}</span>
           Export
         <//>
+        <input type="file" accept="application/json,.json" style="display:none;" id="workflow-import-file" onChange=${handleImportWorkflowFile} />
+        <${Button} variant="outlined" size="small" onClick=${() => setImportDialogOpen(true)}>
+          <span class="btn-icon">${resolveIcon("download")}</span>
+          Import
+        <//>
+        <${Button} variant="text" size="small" onClick=${() => document.getElementById("workflow-import-file")?.click()}>Upload JSON<//>
         ${workflow?.metadata?.installedFrom && html`<${Button}
           variant="outlined"
           size="small"
@@ -3237,6 +3475,10 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         <${Button} variant="text" size="small" disabled=${historyState.future.length === 0} onClick=${redoCanvas}>Redo<//>
         <${Button} variant="text" size="small" onClick=${() => setShowShortcutOverlay(true)}>Shortcuts ?<//>
         <div style="flex:1;"></div>
+        ${selectedNodeIds.size > 1 && html`<${Button} variant="text" size="small" onClick=${handleCreateGroup}>Create Group<//>`}
+        ${activeGroup && html`<${Button} variant="text" size="small" onClick=${handleToggleActiveGroup}>${activeGroup.collapsed ? "Expand Group" : "Collapse Group"}<//>`}
+        ${selectedNodeIds.size > 0 && html`<${Button} variant="text" size="small" onClick=${handleConvertToSubworkflow}>Convert to Sub-workflow<//>`}
+        ${(() => { const selected = nodes.find((entry) => entry.id === selectedNodeId.value); return selected && ["action.execute_workflow", "flow.universal"].includes(selected.type); })() && html`<${Button} variant="text" size="small" onClick=${handleExpandInline}>Expand Inline<//>`}
         ${selectedNodeIds.size > 1 && html`
           <span class="wf-badge" style="font-size: 11px; background: #3b82f640; color: #60a5fa; border: 1px solid #3b82f660;">
             ${selectedNodeIds.size} nodes selected · Del to delete
@@ -3371,8 +3613,40 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
 
         <g transform="translate(${pan.x} ${pan.y}) scale(${zoom})">
 
+          <!-- Groups -->
+          ${(groups || []).filter((group) => group.collapsed !== true).map((group) => {
+            const bounds = resolveWorkflowGroupBounds({ nodes, groups }, group.id);
+            const isSelected = selectedGroupId === group.id;
+            return html`
+              <g key=${group.id}>
+                <rect
+                  x=${bounds.x}
+                  y=${bounds.y}
+                  width=${bounds.width}
+                  height=${bounds.height}
+                  rx="16"
+                  fill=${group.color + "18"}
+                  stroke=${isSelected ? group.color : (group.color + "88")}
+                  stroke-width=${isSelected ? 2.2 : 1.4}
+                  style="cursor: grab;"
+                  onMouseDown=${(e) => onGroupMouseDown(group.id, e)}
+                  onPointerDown=${(e) => onGroupPointerDown(group.id, e)}
+                  onContextMenu=${(e) => onGroupContextMenu(group.id, e)}
+                />
+                <text
+                  x=${bounds.x + 14}
+                  y=${bounds.y + 22}
+                  fill=${group.color}
+                  font-size="12"
+                  font-weight="700"
+                  style="pointer-events: none; user-select: none;"
+                >${group.label}</text>
+              </g>
+            `;
+          })}
+
           <!-- Edges -->
-          ${edges.map(edge => {
+          ${renderEdges.map(edge => {
             const sourcePort = getOutputPortDescriptor(edge.source, edge.sourcePort || "default");
             const from = getNodePortPosition(edge.source, "output", edge.sourcePort || "default");
             const to = getNodePortPosition(edge.target, "input", edge.targetPort || "default");
@@ -3464,7 +3738,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
           `}
 
           <!-- Nodes -->
-          ${nodes.map(node => {
+          ${renderNodes.map(node => {
             const meta = getNodeMeta(node.type);
             const typeInfo = nodeTypeMap.get(node.type) || null;
             const ports = resolveNodePorts(node, nodeTypeMap);
@@ -3713,35 +3987,95 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       <!-- Context Menu -->
       ${contextMenu && html`
         <div class="wf-context-menu" style="position: fixed; left: ${contextMenu.x}px; top: ${contextMenu.y}px; z-index: 50;">
-          <${MenuItem}
-            onClick=${() => {
-              const node = nodes.find((entry) => entry.id === contextMenu.nodeId) || null;
-              setContextMenu(null);
-              openWorkflowCopilotFromCanvas({
-                intent: "node",
-                nodeId: contextMenu.nodeId,
-                title: `Ask Bosun about node ${node?.label || contextMenu.nodeId}`.trim(),
-                successToast: "Opened node copilot chat",
-              });
-            }}
-          >
-            <span class="btn-icon">${resolveIcon("bot")}</span>
-            Ask Bosun About Node
-          <//>
-          <${MenuItem} onClick=${() => { setEditingNode(contextMenu.nodeId); setContextMenu(null); }}>
-            <span class="btn-icon">${resolveIcon("settings")}</span>
-            Edit Config
-          <//>
-          <${MenuItem} onClick=${() => duplicateNode(contextMenu.nodeId)}>
-            <span class="btn-icon">${resolveIcon("clipboard")}</span>
-            Duplicate
-          <//>
-          <${MenuItem} onClick=${() => { deleteNode(contextMenu.nodeId); }} sx=${{ color: '#ef4444' }}>
-            <span class="btn-icon">${resolveIcon("trash")}</span>
-            Delete
-          <//>
+          ${contextMenu.groupId ? html`
+            <${MenuItem} onClick=${() => { handleToggleActiveGroup(); setContextMenu(null); }}>
+              <span class="btn-icon">${resolveIcon(activeGroup?.collapsed ? "play" : "pause")}</span>
+              ${activeGroup?.collapsed ? "Expand Group" : "Collapse Group"}
+            <//>
+          ` : html`
+            <${MenuItem}
+              onClick=${() => {
+                const node = nodes.find((entry) => entry.id === contextMenu.nodeId) || null;
+                setContextMenu(null);
+                openWorkflowCopilotFromCanvas({
+                  intent: "node",
+                  nodeId: contextMenu.nodeId,
+                  title: `Ask Bosun about node ${node?.label || contextMenu.nodeId}`.trim(),
+                  successToast: "Opened node copilot chat",
+                });
+              }}
+            >
+              <span class="btn-icon">${resolveIcon("bot")}</span>
+              Ask Bosun About Node
+            <//>
+            <${MenuItem} onClick=${() => { setEditingNode(contextMenu.nodeId); setContextMenu(null); }}>
+              <span class="btn-icon">${resolveIcon("settings")}</span>
+              Edit Config
+            <//>
+            <${MenuItem} onClick=${() => duplicateNode(contextMenu.nodeId)}>
+              <span class="btn-icon">${resolveIcon("clipboard")}</span>
+              Duplicate
+            <//>
+          `}
+          ${selectedNodeIds.size > 1 && html`
+            <${MenuItem} onClick=${() => { handleCreateGroup(); setContextMenu(null); }}>
+              <span class="btn-icon">${resolveIcon("plus")}</span>
+              Create Group
+            <//>
+          `}
+          ${activeGroup && !contextMenu.groupId && html`
+            <${MenuItem} onClick=${() => { handleToggleActiveGroup(); setContextMenu(null); }}>
+              <span class="btn-icon">${resolveIcon(activeGroup.collapsed ? "play" : "pause")}</span>
+              ${activeGroup.collapsed ? "Expand Group" : "Collapse Group"}
+            <//>
+          `}
+          ${!contextMenu.groupId && html`
+            <${MenuItem} onClick=${() => { deleteNode(contextMenu.nodeId); }} sx=${{ color: '#ef4444' }}>
+              <span class="btn-icon">${resolveIcon("trash")}</span>
+              Delete
+            <//>
+          `}
         </div>
       `}
+
+      <${Dialog} open=${importDialogOpen} onClose=${() => setImportDialogOpen(false)} maxWidth="md" fullWidth>
+        <${DialogTitle}>Import Workflow JSON</${DialogTitle}>
+        <${DialogContent}>
+          <textarea value=${importJsonText} onInput=${(e) => setImportJsonText(e.target.value)} style="width:100%; min-height:260px; font-family:monospace; font-size:12px; background:#0f172a; color:#e2e8f0; border:1px solid #334155; border-radius:8px; padding:12px;" placeholder='{"name":"Imported Workflow","nodes":[],"edges":[]}' />
+        </${DialogContent}>
+        <${DialogActions}>
+          <${Button} onClick=${() => setImportDialogOpen(false)}>Cancel<//>
+          <${Button} variant="contained" onClick=${handleImportWorkflowJson}>Import<//>
+        </${DialogActions}>
+      </${Dialog}>
+
+      <${Dialog} open=${Boolean(inlinePreview)} onClose=${() => setInlinePreview(null)} maxWidth="lg" fullWidth>
+        <${DialogTitle}>Inline Sub-workflow Preview</${DialogTitle}>
+        <${DialogContent}>
+          ${inlinePreview && html`
+            <div style="font-size:12px; color:var(--color-text-secondary,#94a3b8); margin-bottom:10px;">${inlinePreview.name} · ${inlinePreview.nodes?.length || 0} nodes · ${inlinePreview.edges?.length || 0} edges</div>
+            <svg viewBox="0 0 1200 480" style="width:100%; height:420px; background:#0f1117; border:1px solid #1f2937; border-radius:10px;">
+              ${(inlinePreview.edges || []).map((edge) => {
+                const source = (inlinePreview.nodes || []).find((node) => node.id === edge.source);
+                const target = (inlinePreview.nodes || []).find((node) => node.id === edge.target);
+                if (!source || !target) return null;
+                const x1 = (source.position?.x || 0) + 220;
+                const y1 = (source.position?.y || 0) + 59;
+                const x2 = (target.position?.x || 0);
+                const y2 = (target.position?.y || 0) + 59;
+                return html`<path d=${curvePath(x1, y1, x2, y2)} fill="none" stroke="#64748b" stroke-width="2" />`;
+              })}
+              ${(inlinePreview.nodes || []).map((node) => html`
+                <g key=${node.id} transform="translate(${node.position?.x || 0} ${node.position?.y || 0})">
+                  <rect width="220" height="118" rx="10" fill="#111827" stroke="#334155" />
+                  <text x="110" y="24" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="700">${stripEmoji(node.label || node.type).slice(0, 28)}</text>
+                  <text x="110" y="42" text-anchor="middle" fill="#94a3b8" font-size="11">${node.type}</text>
+                </g>
+              `)}
+            </svg>
+          `}
+        </${DialogContent}>
+      </${Dialog}>
 
       <!-- Node Config Editor (side panel) -->
       ${editingNode && html`
@@ -6294,3 +6628,37 @@ export function WorkflowsTab() {
     </div>
   `;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
