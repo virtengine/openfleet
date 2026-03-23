@@ -63,12 +63,12 @@ npm run smoke:packed-cli
 # Format: "source_prefix|test_glob_1|test_glob_2|..."
 # Globs are matched against tests/*.test.mjs filenames (basename only).
 ADJACENCY_MAP=(
-  "workflow/|workflow-*|workflow-pipeline-primitives*|manual-flows*|mcp-workflow-adapter*|bosun-native-workflow-nodes*|meeting-workflow*|run-evaluator*|webhook-gateway*|credential-store*|cron-scheduler*"
+  "workflow/|workflow-*|workflow-task-lifecycle*|workflow-pipeline-primitives*|manual-flows*|mcp-workflow-adapter*|bosun-native-workflow-nodes*|meeting-workflow*|run-evaluator*|webhook-gateway*|credential-store*|cron-scheduler*"
   "workflow-templates/|workflow-templates*|workflow-new-templates*|workflow-engine*|manual-flows*"
-  "task/|task-*|kanban-*|ve-orchestrator*|vk-api*|ve-kanban*"
+  "task/|task-*|workflow-task-lifecycle*|kanban-*|ve-orchestrator*|vk-api*|ve-kanban*"
   "kanban/|kanban-*|task-store*|task-claims*|ve-kanban*|ve-orchestrator*|vk-api*"
   "workspace/|workspace-*|shared-state*|worktree-*|sync-engine*"
-  "infra/|monitor-*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*|tui-bridge*|weekly-agent-work-report*"
+  "infra/|monitor-*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*|tui-bridge*|weekly-agent-work-report*|workflow-task-lifecycle*|workflow-engine*"
   "agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*|hook-library*|weekly-agent-work-report*"
   "bench/|bench-swebench*|benchmark-*|task-*"
   "config/|config-*|workspace-health*|bosun-skills*|codex-config*"

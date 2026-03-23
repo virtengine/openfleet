@@ -11988,6 +11988,9 @@ async function listReplayableAgentRuns(options = {}) {
 async function readReplayableAgentRun(attemptId) {
   const normalizedAttemptId = String(attemptId || "").trim();
   if (!normalizedAttemptId) return null;
+  // Ensure attemptId cannot perform path traversal or escape the intended directory.
+  // Only allow simple identifiers composed of letters, digits, underscore, and dash.
+  if (!/^[a-zA-Z0-9_-]+$/.test(normalizedAttemptId)) return null;
   const filePath = resolve(resolveAgentWorkLogDir(), "agent-sessions", `${normalizedAttemptId}.jsonl`);
   if (!existsSync(filePath)) return null;
   const entries = await readJsonlTail(filePath, 20000, 25000000).catch(() => []);

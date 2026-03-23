@@ -64,6 +64,60 @@ function _cacheFresh(url, group) {
   const e = _apiCache.get(url);
   return e ? (Date.now() - e.fetchedAt) < (CACHE_TTL[group] || 10000) : false;
 }
+function mergeTaskLinkageRecords(...sources) {
+  const merged = [];
+  const indexByKey = new Map();
+  const keyFor = (record) => {
+    if (!record || typeof record !== "object") return "";
+    const branchName = String(record.branchName || "").trim().toLowerCase();
+    const prUrl = String(record.prUrl || "").trim().toLowerCase();
+    const prNumber = Number.parseInt(String(record.prNumber ?? ""), 10);
+    return [branchName, Number.isFinite(prNumber) && prNumber > 0 ? prNumber : "", prUrl].join("|");
+  };
+  for (const source of sources) {
+    const records = Array.isArray(source) ? source : [];
+    for (const record of records) {
+      if (!record || typeof record !== "object") continue;
+      const normalized = { ...record };
+      const key = keyFor(normalized);
+      if (!key) continue;
+      if (indexByKey.has(key)) {
+        const idx = indexByKey.get(key);
+        merged[idx] = { ...merged[idx], ...normalized };
+        continue;
+      }
+      indexByKey.set(key, merged.length);
+      merged.push(normalized);
+    }
+  }
+  return merged;
+}
+
+export function mergeTaskRecords(existingTask, incomingTask) {
+  const merged = { ...(existingTask || {}), ...(incomingTask || {}) };
+  const existingMeta = existingTask?.meta && typeof existingTask.meta === "object" ? existingTask.meta : {};
+  const incomingMeta = incomingTask?.meta && typeof incomingTask.meta === "object" ? incomingTask.meta : {};
+  merged.meta = { ...existingMeta, ...incomingMeta };
+  const linkage = mergeTaskLinkageRecords(
+    existingTask?.prLinkage,
+    existingMeta?.prLinkage,
+    incomingTask?.prLinkage,
+    incomingMeta?.prLinkage,
+  );
+  if (linkage.length > 0) {
+    merged.prLinkage = linkage;
+    merged.meta.prLinkage = linkage;
+    const primaryLinkage = linkage[0] || null;
+    if (primaryLinkage?.branchName) merged.branchName = primaryLinkage.branchName;
+    if (primaryLinkage?.prUrl) merged.prUrl = primaryLinkage.prUrl;
+    if (Number.isFinite(primaryLinkage?.prNumber) && primaryLinkage.prNumber > 0) merged.prNumber = primaryLinkage.prNumber;
+    merged.meta.prLinkageSource = primaryLinkage?.source || incomingMeta?.prLinkageSource || existingMeta?.prLinkageSource || null;
+    merged.meta.prLinkageFreshness = primaryLinkage?.freshness || incomingMeta?.prLinkageFreshness || existingMeta?.prLinkageFreshness || null;
+    merged.meta.prLinkageUpdatedAt = primaryLinkage?.updatedAt || incomingMeta?.prLinkageUpdatedAt || existingMeta?.prLinkageUpdatedAt || null;
+  }
+  return merged;
+}
+
 function _cacheClearGroup(group) {
   for (const k of _apiCache.keys()) {
     if (k.includes(group) || group === '*') _apiCache.delete(k);
@@ -124,27 +178,28 @@ function normalizeTaskDiagnosticsForUi(diagnostics) {
 
 function normalizeTaskForUi(task) {
   if (!task || typeof task !== "object") return task;
-  const title = sanitizeTaskText(task.title || "");
-  const rawDescription = sanitizeTaskText(task.description || "");
+  const hydratedTask = mergeTaskRecords(null, task);
+  const title = sanitizeTaskText(hydratedTask.title || "");
+  const rawDescription = sanitizeTaskText(hydratedTask.description || "");
   const description = isPlaceholderTaskDescription(rawDescription) ? "" : rawDescription;
-  const diagnostics = normalizeTaskDiagnosticsForUi(task.diagnostics);
-  const meta = task.meta && typeof task.meta === "object"
+  const diagnostics = normalizeTaskDiagnosticsForUi(hydratedTask.diagnostics);
+  const meta = hydratedTask.meta && typeof hydratedTask.meta === "object"
     ? {
-        ...task.meta,
-        title: task.meta.title != null ? sanitizeTaskText(task.meta.title) : task.meta.title,
+        ...hydratedTask.meta,
+        title: hydratedTask.meta.title != null ? sanitizeTaskText(hydratedTask.meta.title) : hydratedTask.meta.title,
         description:
-          task.meta.description != null
-            ? (isPlaceholderTaskDescription(task.meta.description)
+          hydratedTask.meta.description != null
+            ? (isPlaceholderTaskDescription(hydratedTask.meta.description)
               ? ""
-              : sanitizeTaskText(task.meta.description))
-            : task.meta.description,
-        diagnostics: normalizeTaskDiagnosticsForUi(task.meta.diagnostics),
+              : sanitizeTaskText(hydratedTask.meta.description))
+            : hydratedTask.meta.description,
+        diagnostics: normalizeTaskDiagnosticsForUi(hydratedTask.meta.diagnostics),
       }
-    : task.meta;
+    : hydratedTask.meta;
   return {
-    ...task,
+    ...hydratedTask,
     title,
-    description: description || synthesizeTaskDescription({ ...task, title }),
+    description: description || synthesizeTaskDescription({ ...hydratedTask, title }),
     diagnostics,
     meta,
   };
@@ -164,7 +219,7 @@ function mergeTaskPages(existingTasks = [], incomingTasks = []) {
       if (key) indexById.set(key, merged.length - 1);
       continue;
     }
-    merged[indexById.get(key)] = { ...merged[indexById.get(key)], ...task };
+    merged[indexById.get(key)] = mergeTaskRecords(merged[indexById.get(key)], task);
   }
   return merged;
 }
@@ -1070,3 +1125,4 @@ export function initWsInvalidationListener() {
       });
   });
 }
+

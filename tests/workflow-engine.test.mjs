@@ -711,6 +711,10 @@ describe("WorkflowEngine - run history details", () => {
     expect(detail?.detail?.issueAdvisor?.recommendedAction).toBe("replan_from_failed");
     expect(detail?.detail?.issueAdvisor?.failedNodes?.[0]?.nodeId).toBe("fail");
     expect(detail?.detail?.issueAdvisor?.summary).toContain("Fail Step");
+    expect(detail?.detail?.issueAdvisor?.retryDecisionClass).toBe("replan_entire_subgraph");
+    expect(detail?.detail?.issueAdvisor?.issueFindings?.[0]?.source).toBe("validation");
+    expect(Array.isArray(detail?.detail?.dagState?.edges)).toBe(true);
+    expect(detail?.detail?.dagState?.edges?.[0]?.source).toBe("trigger");
   });
 
   it("returns retry options with an issue-advisor recommendation", async () => {
@@ -3525,6 +3529,74 @@ describe("Session chaining - action.run_agent", () => {
     expect(launchEphemeralThread).not.toHaveBeenCalled();
   });
 
+  it("marks delegated task sessions as failed when the delegated workflow fails", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      taskId: "TASK-DELEGATE-FAIL",
+      taskTitle: "Backend migration failed",
+      workspaceId: "virtengine-gh",
+      task: {
+        id: "TASK-DELEGATE-FAIL",
+        title: "Backend migration failed",
+        tags: ["backend"],
+        branchName: "feat/backend-failure",
+      },
+    });
+
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-backend-fail",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: {
+                taskPattern: "backend",
+                filter: "task.tags?.includes('backend')",
+              },
+            },
+          ],
+        },
+      ]),
+      execute: vi.fn().mockResolvedValue({
+        errors: [new Error("delegated workflow crashed")],
+        status: "failed",
+        message: "delegated workflow crashed",
+      }),
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn(),
+        },
+      },
+    };
+
+    const node = {
+      id: "delegated-session-fail-node",
+      type: "action.run_agent",
+      config: { prompt: "Handle task via delegated workflow", failOnError: false },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result.success).toBe(false);
+    expect(result.delegated).toBe(true);
+
+    const tracker = getSessionTracker();
+    const session = tracker.getSessionById("TASK-DELEGATE-FAIL");
+    expect(session).toBeTruthy();
+    expect(session.type).toBe("task");
+    expect(session.status).toBe("failed");
+    expect(session.metadata.branch).toBe("feat/backend-failure");
+
+    const messages = Array.isArray(session.messages) ? session.messages : [];
+    expect(messages.some((msg) => String(msg?.content || "").includes("Delegating to agent workflow"))).toBe(true);
+    expect(messages.some((msg) => String(msg?.content || "").toLowerCase().includes("failed"))).toBe(true);
+  });
   it("records delegated runs in session tracker for task visibility", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
@@ -3589,6 +3661,199 @@ describe("Session chaining - action.run_agent", () => {
     const messages = Array.isArray(session.messages) ? session.messages : [];
     expect(messages.some((msg) => String(msg?.content || "").includes("Delegating to agent workflow"))).toBe(true);
     expect(messages.some((msg) => String(msg?.content || "").includes("Backend Agent\" completed"))).toBe(true);
+  });
+  it("keeps delegated completion visible even when the child workflow ends without explicit output", async () => {
+    const childWorkflow = {
+      id: "child-visible-without-output",
+      name: "Child Visible Without Output",
+      enabled: true,
+      nodes: [
+        { id: "start", type: "trigger.manual", config: {} },
+        { id: "finish", type: "flow.end", config: { status: "completed", message: "child done" } },
+      ],
+      edges: [{ id: "e1", source: "start", target: "finish" }],
+    };
+
+    const parentWorkflow = {
+      id: "parent-visible-without-output",
+      name: "Parent Visible Without Output",
+      enabled: true,
+      nodes: [
+        { id: "trigger", type: "trigger.manual", config: {} },
+        {
+          id: "delegate",
+          type: "flow.universal",
+          config: {
+            workflowId: childWorkflow.id,
+            mode: "sync",
+            inheritContext: true,
+          },
+        },
+        {
+          id: "finish",
+          type: "flow.end",
+          config: {
+            status: "{{delegate.status || 'completed'}}",
+            message: "{{delegate.message || 'delegated workflow completed'}}",
+          },
+        },
+      ],
+      edges: [
+        { id: "e1", source: "trigger", target: "delegate" },
+        { id: "e2", source: "delegate", target: "finish" },
+      ],
+    };
+
+    engine.save(childWorkflow);
+    engine.save(parentWorkflow);
+
+    await engine.execute(parentWorkflow.id, {
+      taskId: "task-visible-no-output",
+      taskTitle: "Visible without output",
+      workspaceId: "virtengine-gh",
+      task: {
+        id: "task-visible-no-output",
+        title: "Visible without output",
+        branchName: "feat/visible-no-output",
+      },
+    });
+
+    const tracker = getSessionTracker();
+    const session = tracker.getSessionById("task-visible-no-output");
+    expect(session).toBeTruthy();
+    expect(session.status).toBe("completed");
+    expect(session.metadata.branch).toBe("feat/visible-no-output");
+    expect(Array.isArray(session.messages)).toBe(true);
+    expect(session.messages.some((msg) => String(msg?.content || "").includes("completed"))).toBe(true);
+  });
+
+  it("marks delegated task session failed when delegated workflow returns errors", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      taskId: "TASK-DELEGATE-FAIL",
+      taskTitle: "Backend migration failed",
+      workspaceId: "virtengine-gh",
+      task: {
+        id: "TASK-DELEGATE-FAIL",
+        title: "Backend migration failed",
+        tags: ["backend"],
+        branchName: "feat/backend-fail",
+      },
+    });
+
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-backend",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: {
+                taskPattern: "backend",
+                filter: "task.tags?.includes('backend')",
+              },
+            },
+          ],
+        },
+      ]),
+      execute: vi.fn().mockResolvedValue({
+        errors: [new Error("delegated workflow failed")],
+      }),
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn(),
+        },
+      },
+    };
+
+    const node = {
+      id: "delegated-session-failed-node",
+      type: "action.run_agent",
+      config: { prompt: "Handle task via delegated workflow" },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result.success).toBe(false);
+    expect(result.delegated).toBe(true);
+    expect(result.subStatus).toBe("failed");
+
+    const tracker = getSessionTracker();
+    const session = tracker.getSessionById("TASK-DELEGATE-FAIL");
+    expect(session).toBeTruthy();
+    expect(session.status).toBe("failed");
+
+    const messages = Array.isArray(session.messages) ? session.messages : [];
+    expect(messages.some((msg) => String(msg?.content || "").includes("Delegating to agent workflow"))).toBe(true);
+    expect(messages.some((msg) => String(msg?.content || "").includes("failed"))).toBe(true);
+  });
+
+  it("preserves existing task session visibility when delegated workflow reuses current session id", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      taskId: "TASK-DELEGATE-REUSE",
+      taskTitle: "Reuse visible session",
+      sessionId: "TASK-DELEGATE-REUSE",
+      workspaceId: "virtengine-gh",
+      worktreePath: "/tmp/test",
+      task: {
+        id: "TASK-DELEGATE-REUSE",
+        title: "Reuse visible session",
+        tags: ["backend"],
+        branchName: "feat/reuse-session",
+      },
+    });
+
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-backend",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: {
+                taskPattern: "backend",
+                filter: "task.tags?.includes('backend')",
+              },
+            },
+          ],
+        },
+      ]),
+      execute: vi.fn().mockResolvedValue({ errors: [] }),
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn(),
+        },
+      },
+    };
+
+    const node = {
+      id: "delegated-session-visible-node",
+      type: "action.run_agent",
+      config: { prompt: "Handle task via delegated workflow" },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result.success).toBe(true);
+    expect(result.delegated).toBe(true);
+
+    const tracker = getSessionTracker();
+    const session = tracker.getSessionById("TASK-DELEGATE-REUSE");
+    expect(session).toBeTruthy();
+    expect(session.id).toBe("TASK-DELEGATE-REUSE");
+    expect(session.status).toBe("completed");
+    expect(session.metadata.workspaceDir).toBe("/tmp/test");
   });
 
   it("does not delegate agent workflows when task context is missing", async () => {
@@ -5146,6 +5411,92 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     events[0].taskId = "mutated";
     const reread = engine.getTaskTraceEvents(ctx.id);
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
+  });
+  it("records DAGState revisions and preserves completed nodes when replanning from a failed boundary", async () => {
+    let attempts = 0;
+    registerNodeType("test.replan_once", {
+      describe: () => "Fails once so retry planning can revise the active DAG",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        attempts += 1;
+        if (attempts === 1) throw new Error("validation failed: tests red");
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "build", type: "test.replan_once", label: "Build", config: { maxRetries: 0 } },
+        { id: "verify", type: "test.replan_once", label: "Verify", config: { maxRetries: 0 } },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "build" },
+        { id: "e2", source: "build", target: "verify" },
+      ],
+      { autoRetry: { enabled: false } },
+    );
+
+    engine.save(wf);
+    const firstCtx = await engine.execute(wf.id, {});
+    expect(firstCtx.errors.length).toBeGreaterThan(0);
+    const firstRun = engine.getRunHistory(wf.id).at(-1);
+    expect(firstRun?.detail?.dagState?.status).toBe("failed");
+    expect(firstRun?.detail?.issueAdvisor?.recommendedAction).toBe("replan_from_failed");
+
+    const retry = await engine.retryRun(firstRun.runId, { mode: "from_failed" });
+    expect(retry.mode).toBe("from_failed");
+
+    const runs = engine.getRunHistory(wf.id);
+    const retriedRun = runs.find((entry) => entry.runId === retry.retryRunId);
+    expect(retriedRun?.detail?.dagState?.retryOf).toBe(firstRun.runId);
+    expect(retriedRun?.detail?.dagState?.retryMode).toBe("from_failed");
+    expect(retriedRun?.detail?.dagState?.revisions?.length).toBeGreaterThanOrEqual(2);
+
+    const [initialRevision, replanRevision] = retriedRun.detail.dagState.revisions;
+    expect(initialRevision.reason).toBe("retry_resume");
+    expect(replanRevision.reason).toBe("retry_replan_from_failed");
+    expect(initialRevision.counts.completed).toBe(1);
+    expect(replanRevision.counts.completed).toBe(1);
+    expect(replanRevision.preservedCompletedNodeIds).toContain("trigger");
+    expect(replanRevision.focusNodeIds).toContain("build");
+    expect(Array.isArray(replanRevision.graphAfter?.nodes)).toBe(true);
+    expect(Array.isArray(replanRevision.graphAfter?.edges)).toBe(true);
+    expect(replanRevision.graphAfter?.edges?.[0]?.source).toBe("trigger");
+    expect(retriedRun.detail.issueAdvisor.recommendedAction).toBe("continue");
+  });
+
+  it("distinguishes rerun, fix-step, and subgraph replan retry decisions", () => {
+    const rerun = engine._chooseRetryModeFromDetail({
+      issueAdvisor: { recommendedAction: "resume_remaining", summary: "Resume from verify." },
+      dagState: { counts: { completed: 2, failed: 0, pending: 1 } },
+    });
+    expect(rerun.mode).toBe("from_failed");
+    expect(rerun.reason).toBe("issue_advisor.resume_remaining");
+
+    const rerunSameStep = engine._chooseRetryModeFromDetail({
+      issueAdvisor: { recommendedAction: "rerun_same_step", summary: "Rerun the timed out test step." },
+      dagState: { counts: { completed: 2, failed: 1, pending: 0 } },
+    });
+    expect(rerunSameStep.mode).toBe("from_failed");
+    expect(rerunSameStep.reason).toBe("issue_advisor.rerun_same_step");
+
+    const fixStep = engine._chooseRetryModeFromDetail({
+      issueAdvisor: {
+        recommendedAction: "spawn_fix_step",
+        summary: "Add a targeted fix step before retrying verify.",
+      },
+      dagState: { counts: { completed: 2, failed: 1, pending: 0 } },
+    });
+    expect(fixStep.mode).toBe("from_failed");
+    expect(fixStep.reason).toBe("issue_advisor.spawn_fix_step");
+
+    const replan = engine._chooseRetryModeFromDetail({
+      issueAdvisor: { recommendedAction: "replan_subgraph", summary: "Replan downstream nodes." },
+      dagState: { counts: { completed: 1, failed: 1, pending: 2 } },
+    });
+    expect(replan.mode).toBe("from_scratch");
+    expect(replan.reason).toBe("issue_advisor.replan_subgraph");
   });
 });
 
