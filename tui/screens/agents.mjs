@@ -181,7 +181,11 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
 
         if (selectedId === session.id) {
           setDetailView(detailLines(payload));
-          setLogLines(sessionMessagesToLogLines(payload));
+          const hasMessages = Array.isArray(payload?.session?.messages);
+          const isMessageEvent = payload?.event?.kind === "message";
+          if (hasMessages || isMessageEvent) {
+            setLogLines(sessionMessagesToLogLines(payload));
+          }
         }
       }),
       wsBridge.on("retry:update", applyRetryQueue),
