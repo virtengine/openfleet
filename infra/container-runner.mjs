@@ -18,7 +18,7 @@
 
 import { spawn, spawnSync, execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve, basename } from "node:path";
+import { resolve, basename, join } from "node:path";
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -51,7 +51,36 @@ const OUTPUT_END_MARKER = "---CODEXMON_OUTPUT_END---";
 // ── State ────────────────────────────────────────────────────────────────────
 
 const activeContainers = new Map(); // containerName → { proc, startTime, taskId }
+const isolatedRunnerPoolEnabled = !["0", "false", "no", "off"].includes(
+  String(process.env.HEAVY_RUNNER_POOL_ENABLED || "1").toLowerCase(),
+);
+const isolatedRunnerProvider =
+  String(process.env.HEAVY_RUNNER_PROVIDER || "process").trim().toLowerCase() || "process";
+const isolatedRunnerLeaseTimeoutMs = Math.max(
+  1000,
+  parseInt(process.env.HEAVY_RUNNER_LEASE_TIMEOUT_MS || "30000", 10),
+);
+const isolatedRunnerRetryLimit = Math.max(
+  0,
+  parseInt(process.env.HEAVY_RUNNER_RETRY_LIMIT || "1", 10),
+);
+const isolatedRunnerRetryDelayMs = Math.max(
+  0,
+  parseInt(process.env.HEAVY_RUNNER_RETRY_DELAY_MS || "750", 10),
+);
+const isolatedRunnerMaxConcurrent = Math.max(
+  1,
+  parseInt(
+    process.env.HEAVY_RUNNER_MAX_CONCURRENT || String(maxConcurrentContainers),
+    10,
+  ),
+);
+const isolatedRunnerArtifactDirName = String(
+  process.env.HEAVY_RUNNER_ARTIFACT_DIR || join(".bosun", "artifacts", "isolated-runs"),
+);
+const activeRunnerLeases = new Map(); // leaseId → lease metadata
 let containerIdCounter = 0;
+let runnerLeaseCounter = 0;
 
 function runContainerRuntimeSync(args, options = {}) {
   const res = spawnSync(containerRuntime, args, {
@@ -70,6 +99,222 @@ function runContainerRuntimeSync(args, options = {}) {
     );
   }
   return String(res.stdout || "");
+}
+
+function waitForLeaseRetry(delayMs) {
+  if (!delayMs || delayMs <= 0) return Promise.resolve();
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, delayMs));
+}
+
+export function formatArtifactRetrieveCommand(filePath, platform = process.platform) {
+  const normalizedPath = String(filePath || "");
+  if (platform === "win32") {
+    return `Get-Content -Raw "${normalizedPath.replace(/"/g, '""')}"`;
+  }
+  return `cat '${normalizedPath.replace(/'/g, `'"'"'`)}'`;
+}
+
+function buildIsolatedArtifactRoot(cwd) {
+  return resolve(cwd || process.cwd(), isolatedRunnerArtifactDirName);
+}
+
+function persistIsolatedRunArtifacts({
+  cwd,
+  leaseId,
+  stdout = "",
+  stderr = "",
+  metadata = {},
+  extraArtifacts = [],
+} = {}) {
+  const artifactRoot = resolve(
+    buildIsolatedArtifactRoot(cwd),
+    leaseId || `lease-${Date.now()}`,
+  );
+  mkdirSync(artifactRoot, { recursive: true });
+
+  const stdoutPath = resolve(artifactRoot, "stdout.log");
+  const stderrPath = resolve(artifactRoot, "stderr.log");
+  const metadataPath = resolve(artifactRoot, "metadata.json");
+  writeFileSync(stdoutPath, String(stdout || ""), "utf8");
+  writeFileSync(stderrPath, String(stderr || ""), "utf8");
+  writeFileSync(metadataPath, JSON.stringify(metadata || {}, null, 2), "utf8");
+
+  const artifacts = [
+    {
+      label: "stdout",
+      kind: "log",
+      path: stdoutPath,
+      retrieveCommand: formatArtifactRetrieveCommand(stdoutPath),
+    },
+    {
+      label: "stderr",
+      kind: "log",
+      path: stderrPath,
+      retrieveCommand: formatArtifactRetrieveCommand(stderrPath),
+    },
+    {
+      label: "metadata",
+      kind: "json",
+      path: metadataPath,
+      retrieveCommand: formatArtifactRetrieveCommand(metadataPath),
+    },
+  ];
+
+  for (const entry of Array.isArray(extraArtifacts) ? extraArtifacts : []) {
+    if (!entry?.path) continue;
+    artifacts.push({
+      label: entry.label || basename(entry.path),
+      kind: entry.kind || "artifact",
+      path: entry.path,
+      retrieveCommand:
+        entry.retrieveCommand || formatArtifactRetrieveCommand(entry.path),
+    });
+  }
+
+  return { artifactRoot, artifacts };
+}
+
+function acquireLeaseRecord(options = {}) {
+  if (!isolatedRunnerPoolEnabled) {
+    return { ok: false, reason: "runner_pool_disabled" };
+  }
+  if (activeRunnerLeases.size >= isolatedRunnerMaxConcurrent) {
+    return {
+      ok: false,
+      reason: `lease_capacity_reached:${isolatedRunnerMaxConcurrent}`,
+    };
+  }
+
+  const leaseId = `runner-${Date.now()}-${++runnerLeaseCounter}`;
+  const lease = {
+    leaseId,
+    taskId: String(options.taskId || "validation"),
+    requestType: String(options.requestType || options.commandType || "validation"),
+    provider: String(options.provider || isolatedRunnerProvider || "process"),
+    cwd: resolve(options.cwd || process.cwd()),
+    acquiredAt: Date.now(),
+    metadata:
+      options.metadata && typeof options.metadata === "object"
+        ? { ...options.metadata }
+        : {},
+  };
+  activeRunnerLeases.set(leaseId, lease);
+  return { ok: true, lease };
+}
+
+function releaseLeaseRecord(leaseOrId, options = {}) {
+  const leaseId = typeof leaseOrId === "string" ? leaseOrId : leaseOrId?.leaseId;
+  if (!leaseId) return null;
+  const lease = activeRunnerLeases.get(leaseId) || null;
+  activeRunnerLeases.delete(leaseId);
+  if (!lease) return null;
+  const releasedAt = Date.now();
+  return {
+    ...lease,
+    releasedAt,
+    durationMs: releasedAt - lease.acquiredAt,
+    ...options,
+  };
+}
+
+function quotePosixArg(value) {
+  return `'${String(value || "").replace(/'/g, `'\\''`)}'`;
+}
+
+function joinCommandArgs(command, args = []) {
+  const parts = [
+    String(command || "").trim(),
+    ...args.map((arg) => quotePosixArg(arg)),
+  ].filter(Boolean);
+  return parts.join(" ").trim();
+}
+
+function resolveRunnerProvider(provider, options = {}) {
+  const requested = String(
+    provider || options.provider || isolatedRunnerProvider || "process",
+  )
+    .trim()
+    .toLowerCase();
+  if (typeof options.execute === "function") return "custom";
+  if (requested === "auto") {
+    return containerEnabled && checkContainerRuntime().available
+      ? "container"
+      : "process";
+  }
+  return requested || "process";
+}
+
+async function runIsolatedProcess(options = {}) {
+  const {
+    command,
+    args = [],
+    cwd = process.cwd(),
+    env = {},
+    timeoutMs = containerTimeout,
+    onStdout,
+    onStderr,
+  } = options;
+
+  return new Promise((resolvePromise) => {
+    const useArgv = Array.isArray(args) && args.length > 0;
+    const proc = useArgv
+      ? spawn(String(command || ""), args.map((arg) => String(arg)), {
+          cwd,
+          env: { ...process.env, ...env },
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
+        })
+      : spawn(String(command || ""), {
+          cwd,
+          env: { ...process.env, ...env },
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
+          shell: true,
+        });
+
+    const startedAt = Date.now();
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+
+    proc.stdout.on("data", (data) => {
+      const chunk = data.toString();
+      stdout += chunk;
+      if (typeof onStdout === "function") onStdout(chunk);
+    });
+    proc.stderr.on("data", (data) => {
+      const chunk = data.toString();
+      stderr += chunk;
+      if (typeof onStderr === "function") onStderr(chunk);
+    });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill("SIGKILL");
+    }, timeoutMs);
+
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      resolvePromise({
+        status: timedOut ? "timeout" : code === 0 ? "success" : "error",
+        stdout,
+        stderr,
+        exitCode: code,
+        duration: Date.now() - startedAt,
+      });
+    });
+
+    proc.on("error", (error) => {
+      clearTimeout(timer);
+      resolvePromise({
+        status: "error",
+        stdout,
+        stderr: error?.message || "spawn failed",
+        exitCode: -1,
+        duration: Date.now() - startedAt,
+      });
+    });
+  });
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -329,6 +574,8 @@ export async function runInContainer(options) {
     timeout = containerTimeout,
     mountOptions = {},
     onOutput,
+    onStdout,
+    onStderr,
   } = options;
 
   // Create scratch directory for container writes
@@ -395,6 +642,7 @@ export async function runInContainer(options) {
       if (stdout.length + chunk.length <= containerMaxOutput) {
         stdout += chunk;
       }
+      if (typeof onStdout === "function") onStdout(chunk);
 
       // Stream-parse for output markers
       if (onOutput) {
@@ -422,6 +670,7 @@ export async function runInContainer(options) {
       if (stderr.length + chunk.length <= containerMaxOutput) {
         stderr += chunk;
       }
+      if (typeof onStderr === "function") onStderr(chunk);
     });
 
     const timer = setTimeout(() => {
@@ -552,4 +801,217 @@ export function cleanupOrphanedContainers() {
   } catch {
     /* no orphans or runtime not available */
   }
+}
+
+
+
+
+export function isIsolatedRunnerPoolEnabled() {
+  return isolatedRunnerPoolEnabled;
+}
+
+export function getIsolatedRunnerPoolStatus() {
+  return {
+    enabled: isolatedRunnerPoolEnabled,
+    provider: isolatedRunnerProvider,
+    maxConcurrent: isolatedRunnerMaxConcurrent,
+    leaseTimeoutMs: isolatedRunnerLeaseTimeoutMs,
+    retryLimit: isolatedRunnerRetryLimit,
+    active: activeRunnerLeases.size,
+    leases: [...activeRunnerLeases.values()].map((lease) => ({
+      leaseId: lease.leaseId,
+      taskId: lease.taskId,
+      requestType: lease.requestType,
+      provider: lease.provider,
+      ageMs: Date.now() - lease.acquiredAt,
+    })),
+  };
+}
+
+export function acquireRunnerLease(options = {}) {
+  const result = acquireLeaseRecord(options);
+  return result.ok ? result.lease : null;
+}
+
+export function releaseRunnerLease(leaseOrId, options = {}) {
+  return releaseLeaseRecord(leaseOrId, options);
+}
+
+export async function runInIsolatedRunner(options = {}) {
+  const command = String(options.command || "").trim();
+  if (!command) {
+    throw new Error("runInIsolatedRunner requires a non-empty command");
+  }
+
+  const maxAttempts = Math.max(
+    1,
+    Number(options.maxAttempts ?? isolatedRunnerRetryLimit + 1),
+  );
+  const provider = resolveRunnerProvider(options.provider, options);
+  let lastFailure = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const leaseResult = acquireLeaseRecord({
+      ...options,
+      provider,
+      metadata: {
+        ...(options.metadata && typeof options.metadata === "object"
+          ? options.metadata
+          : {}),
+        attempt,
+      },
+    });
+
+    if (!leaseResult.ok) {
+      lastFailure = new Error(leaseResult.reason || "runner_lease_unavailable");
+      if (attempt < maxAttempts) {
+        await waitForLeaseRetry(isolatedRunnerRetryDelayMs);
+        continue;
+      }
+      const failedLeaseId = `blocked-${Date.now()}-${attempt}`;
+      const evidence = persistIsolatedRunArtifacts({
+        cwd: options.cwd || process.cwd(),
+        leaseId: failedLeaseId,
+        metadata: {
+          status: "blocked",
+          reason: lastFailure.message,
+          attempts: attempt,
+          provider,
+          command,
+          args: Array.isArray(options.args) ? options.args : [],
+        },
+      });
+      return {
+        status: "blocked",
+        blocked: true,
+        error: lastFailure.message,
+        exitCode: null,
+        attempts: attempt,
+        provider,
+        leaseId: failedLeaseId,
+        artifactRoot: evidence.artifactRoot,
+        artifacts: evidence.artifacts,
+      };
+    }
+
+    const lease = leaseResult.lease;
+    const startedAt = Date.now();
+    try {
+      const timeoutMs = Number(
+        options.timeoutMs || options.timeout || containerTimeout,
+      );
+      let result;
+      if (typeof options.execute === "function") {
+        result = await options.execute({
+          ...options,
+          command,
+          cwd: lease.cwd,
+          timeoutMs,
+          lease,
+          provider,
+        });
+      } else if (provider === "container") {
+        result = await runInContainer({
+          workspacePath: lease.cwd,
+          command: "/bin/sh",
+          args: [
+            "-lc",
+            joinCommandArgs(command, Array.isArray(options.args) ? options.args : []),
+          ],
+          env: options.env || {},
+          taskId: lease.taskId,
+          timeout: timeoutMs,
+          onStdout: options.onStdout,
+          onStderr: options.onStderr,
+        });
+      } else {
+        result = await runIsolatedProcess({
+          command,
+          args: Array.isArray(options.args) ? options.args : [],
+          cwd: lease.cwd,
+          env: options.env || {},
+          timeoutMs,
+          onStdout: options.onStdout,
+          onStderr: options.onStderr,
+        });
+      }
+
+      const releaseInfo = releaseLeaseRecord(lease, {
+        status: result?.status || "unknown",
+        exitCode: result?.exitCode ?? null,
+      });
+      const extraArtifacts = [];
+      if (result?.scratchDir) {
+        extraArtifacts.push({
+          label: "scratch",
+          kind: "directory",
+          path: result.scratchDir,
+        });
+      }
+      const evidence = persistIsolatedRunArtifacts({
+        cwd: lease.cwd,
+        leaseId: lease.leaseId,
+        stdout: result?.stdout || "",
+        stderr: result?.stderr || "",
+        metadata: {
+          lease: releaseInfo,
+          provider,
+          command,
+          args: Array.isArray(options.args) ? options.args : [],
+          attempts: attempt,
+          durationMs: result?.duration ?? Date.now() - startedAt,
+          status: result?.status || "unknown",
+          exitCode: result?.exitCode ?? null,
+        },
+        extraArtifacts,
+      });
+      return {
+        ...result,
+        attempts: attempt,
+        provider,
+        isolated: true,
+        leaseId: lease.leaseId,
+        artifactRoot: evidence.artifactRoot,
+        artifacts: evidence.artifacts,
+      };
+    } catch (error) {
+      releaseLeaseRecord(lease, {
+        status: "error",
+        error: error?.message || String(error),
+      });
+      lastFailure = error;
+      if (attempt < maxAttempts) {
+        await waitForLeaseRetry(isolatedRunnerRetryDelayMs);
+        continue;
+      }
+      const failedLeaseId = lease.leaseId || `failed-${Date.now()}-${attempt}`;
+      const evidence = persistIsolatedRunArtifacts({
+        cwd: lease.cwd,
+        leaseId: failedLeaseId,
+        stderr: error?.stack || error?.message || String(error),
+        metadata: {
+          status: "blocked",
+          reason: error?.message || String(error),
+          provider,
+          command,
+          args: Array.isArray(options.args) ? options.args : [],
+          attempts: attempt,
+        },
+      });
+      return {
+        status: "blocked",
+        blocked: true,
+        error: error?.message || String(error),
+        exitCode: null,
+        attempts: attempt,
+        provider,
+        isolated: true,
+        leaseId: failedLeaseId,
+        artifactRoot: evidence.artifactRoot,
+        artifacts: evidence.artifacts,
+      };
+    }
+  }
+
+  throw lastFailure || new Error("runInIsolatedRunner failed unexpectedly");
 }

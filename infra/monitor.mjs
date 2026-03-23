@@ -98,6 +98,8 @@ import {
   ensureContainerRuntime,
   stopAllContainers,
   cleanupOrphanedContainers,
+  getIsolatedRunnerPoolStatus,
+  runInIsolatedRunner,
 } from "./container-runner.mjs";
 import { ensureCodexConfig, printConfigSummary } from "../shell/codex-config.mjs";
 import { RestartController } from "./restart-controller.mjs";
@@ -899,6 +901,11 @@ async function ensureWorkflowAutomationEngine() {
         meeting: meetingService,
         prompts: Object.keys(promptServices).length > 0 ? promptServices : null,
         anomalyDetector: anomalyDetector || null,
+        scheduler: executorScheduler,
+        isolatedRunner: {
+          run: runInIsolatedRunner,
+          getStatus: getIsolatedRunnerPoolStatus,
+        },
       };
 
       const engine = getWorkflowEngine({
@@ -16469,3 +16476,5 @@ export {
   // Workflow event bridge — for fleet/kanban modules to emit events
   queueWorkflowEvent,
 };
+
+

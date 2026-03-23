@@ -481,7 +481,6 @@ describe("WorkflowContext template resolution is not a shell evaluator", () => {
   });
 });
 
-
 describe("validation nodes can offload to isolated runners", () => {
   it("uses the isolated runner for heavyweight test validation", async () => {
     const nodeType = getNodeType("validation.tests");
