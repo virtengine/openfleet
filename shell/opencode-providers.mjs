@@ -196,13 +196,18 @@ async function execOpencode(args, execOpts = {}) {
     encoding: "utf-8",
     ...execOpts,
   };
-
   if (isWindows) {
     // Use exec() on Windows to properly handle .cmd wrappers
     const escaped = args.map((a) => `"${a}"`).join(" ");
-    return execAsync(`"${bin}" ${escaped}`, baseOpts);
+    const result = await execAsync(`"${bin}" ${escaped}`, baseOpts);
+    return typeof result === "string"
+      ? { stdout: result, stderr: "" }
+      : { stdout: result.stdout || "", stderr: result.stderr || "" };
   }
-  return execFileAsync(bin, args, baseOpts);
+  const result = await execFileAsync(bin, args, baseOpts);
+  return typeof result === "string"
+    ? { stdout: result, stderr: "" }
+    : { stdout: result.stdout || "", stderr: result.stderr || "" };
 }
 
 /**
@@ -578,3 +583,4 @@ export function buildExecutorEntry(providerID, modelFullId, overrides = {}) {
 export function invalidateCache() {
   _providerCache = { data: null, ts: 0 };
 }
+
