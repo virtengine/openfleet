@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  classifySessionRequestError,
   formatSessionFreshnessTimestamp,
   getSessionManualRetryState,
   getSessionListState,
@@ -14,6 +15,7 @@ import {
   markSessionLoadSuccess,
   resetSessionRetryMeta,
   resolveSessionWorkspaceHint,
+  shouldFallbackToAllSessions,
 } from "../ui/modules/session-api.js";
 
 describe("session api workspace routing", () => {
@@ -340,4 +342,5 @@ describe("session lifecycle/runtime metadata", () => {
     ).toBe("2026-01-02T00:00:00.000Z");
   });
 });
+
 
