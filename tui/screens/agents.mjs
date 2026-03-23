@@ -234,6 +234,62 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
             : [];
         applySessionSnapshot(sessions, Date.now());
       }),
+<<<<<<< HEAD
+||||||| parent of 99797b3a (Apply code review suggestion)
+      wsBridge.on("session:event", (payload) => {
+        const session = payload?.session;
+        if (!session?.id) return;
+        const nextSessions = Array.isArray(liveSessionsRef.current)
+          ? [...liveSessionsRef.current]
+          : [];
+        const existingIndex = nextSessions.findIndex((candidate) => candidate.id === session.id);
+        if (existingIndex >= 0) nextSessions[existingIndex] = session;
+        else nextSessions.unshift(session);
+        applySessionSnapshot(nextSessions, Date.now());
+
+        if (selectedId === session.id) {
+          setDetailView(detailLines(payload));
+          const hasMessages = Array.isArray(payload?.session?.messages);
+          const isMessageEvent = payload?.event?.kind === "message";
+          if (hasMessages || isMessageEvent) {
+            setLogLines(sessionMessagesToLogLines(payload));
+          }
+          const isMessageEvent = payload?.event?.kind === "message";
+          if (hasMessages || isMessageEvent) {
+            setLogLines(sessionMessagesToLogLines(payload));
+          }
+        }
+      }),
+=======
+      wsBridge.on("session:event", (payload) => {
+        const session = payload?.session;
+        if (!session?.id) return;
+        const nextSessions = Array.isArray(liveSessionsRef.current)
+          ? [...liveSessionsRef.current]
+          : [];
+        const existingIndex = nextSessions.findIndex((candidate) => candidate.id === session.id);
+        if (existingIndex >= 0) nextSessions[existingIndex] = session;
+        else nextSessions.unshift(session);
+        applySessionSnapshot(nextSessions, Date.now());
+
+        if (selectedId === session.id) {
+          setDetailView(detailLines(payload));
+          const hasMessages = Array.isArray(payload?.session?.messages);
+          const isMessageEvent = payload?.event?.kind === "message";
+          if (hasMessages || isMessageEvent) {
+            setLogLines(sessionMessagesToLogLines(payload));
+          }
+          const isMessageEvent = payload?.event?.kind === "message";
+          if (hasMessages || isMessageEvent) {
+            setLogLines(sessionMessagesToLogLines(payload));
+          }
+          const isMessageEvent = payload?.event?.kind === "message";
+          if (hasMessages || isMessageEvent) {
+            setLogLines(sessionMessagesToLogLines(payload));
+          }
+        }
+      }),
+>>>>>>> 99797b3a (Apply code review suggestion)
       wsBridge.on("retry:update", applyRetryQueue),
       wsBridge.on("retry-queue-updated", applyRetryQueue),
     ];
