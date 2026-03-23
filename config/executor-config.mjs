@@ -122,6 +122,84 @@ const DEFAULT_EXECUTORS = {
   distribution: "primary-only",
 };
 
+const DEFAULT_WORKFLOW_OFFLOAD_POLICY = Object.freeze({
+  enabled: true,
+  nodeTypes: ["validation.tests", "validation.build", "validation.lint"],
+  commandTypes: ["test", "build", "qualityGate"],
+  commandPatterns: [
+    "\\b(?:npm|pnpm|yarn|bun)\\s+(?:run\\s+)?test\\b",
+    "\\b(?:npm|pnpm|yarn|bun)\\s+run\\s+build\\b",
+    "\\b(?:npm|pnpm|yarn|bun)\\s+run\\s+lint\\b",
+    "\\bvitest\\b",
+    "\\bjest\\b",
+    "\\btsc\\b",
+    "\\bpre-?push\\b",
+    "\\bgit\\s+diff\\b",
+  ],
+});
+
+function parseBooleanFlag(value, fallback = false) {
+  if (value == null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+function normalizeWorkflowOffloadPolicy(configData = {}) {
+  const rawPolicy =
+    configData?.workflowOffloadPolicy && typeof configData.workflowOffloadPolicy === "object"
+      ? configData.workflowOffloadPolicy
+      : configData?.executors?.workflowOffloadPolicy &&
+          typeof configData.executors.workflowOffloadPolicy === "object"
+        ? configData.executors.workflowOffloadPolicy
+        : {};
+
+  const parsePatterns = (value) =>
+    parseListValue(value)
+      .map((entry) => {
+        try {
+          return new RegExp(entry, "i");
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+
+  const nodeTypes = parseListValue(
+    process.env.HEAVY_RUNNER_OFFLOAD_NODE_TYPES ??
+      rawPolicy.nodeTypes ??
+      DEFAULT_WORKFLOW_OFFLOAD_POLICY.nodeTypes,
+  );
+  const commandTypes = parseListValue(
+    process.env.HEAVY_RUNNER_OFFLOAD_COMMAND_TYPES ??
+      rawPolicy.commandTypes ??
+      DEFAULT_WORKFLOW_OFFLOAD_POLICY.commandTypes,
+  );
+  const commandPatterns = parsePatterns(
+    process.env.HEAVY_RUNNER_OFFLOAD_COMMAND_PATTERNS ??
+      rawPolicy.commandPatterns ??
+      DEFAULT_WORKFLOW_OFFLOAD_POLICY.commandPatterns,
+  );
+
+  return {
+    enabled: parseBooleanFlag(
+      process.env.HEAVY_RUNNER_OFFLOAD_ENABLED ?? rawPolicy.enabled,
+      DEFAULT_WORKFLOW_OFFLOAD_POLICY.enabled,
+    ),
+    nodeTypes: new Set(
+      nodeTypes.map((entry) => String(entry || "").trim()).filter(Boolean),
+    ),
+    commandTypes: new Set(
+      commandTypes.map((entry) => String(entry || "").trim()).filter(Boolean),
+    ),
+    commandPatterns,
+  };
+}
+
 function parseExecutorsFromEnv() {
   // EXECUTORS=CODEX:DEFAULT:100:gpt-5.2-codex|gpt-5.1-codex-mini
   const raw = process.env.EXECUTORS;
@@ -256,7 +334,12 @@ export function loadExecutorConfig(configDir, configData) {
     process.env.EXECUTOR_DISTRIBUTION ||
     DEFAULT_EXECUTORS.distribution;
 
-  return { executors, failover, distribution };
+  return {
+    executors,
+    failover,
+    distribution,
+    workflowOffloadPolicy: normalizeWorkflowOffloadPolicy(configData),
+  };
 }
 
 // ── Executor Scheduler ───────────────────────────────────────────────────────
@@ -266,11 +349,51 @@ export class ExecutorScheduler {
     this.executors = config.executors.filter((e) => e.enabled !== false);
     this.failover = config.failover;
     this.distribution = config.distribution;
+    this.workflowOffloadPolicy = normalizeWorkflowOffloadPolicy(config);
     this._roundRobinIndex = 0;
     this._failureCounts = new Map(); // name → consecutive failures
     this._disabledUntil = new Map(); // name → timestamp
     this._workspaceActiveCount = new Map(); // workspaceId → current active executor count
     this._workspaceConfigs = new Map(); // workspaceId → { maxConcurrent, pool, weight }
+  }
+
+  selectWorkflowLane({ nodeType = "", commandType = "", command = "" } = {}) {
+    const policy = this.workflowOffloadPolicy || DEFAULT_WORKFLOW_OFFLOAD_POLICY;
+    if (!policy.enabled) {
+      return { lane: "main", reason: "offload_disabled", heavy: false };
+    }
+
+    const normalizedNodeType = String(nodeType || "").trim();
+    if (normalizedNodeType && policy.nodeTypes.has(normalizedNodeType)) {
+      return {
+        lane: "isolated",
+        reason: `workflow_node:${normalizedNodeType}`,
+        heavy: true,
+      };
+    }
+
+    const normalizedCommandType = String(commandType || "").trim();
+    if (normalizedCommandType && policy.commandTypes.has(normalizedCommandType)) {
+      return {
+        lane: "isolated",
+        reason: `command_type:${normalizedCommandType}`,
+        heavy: true,
+      };
+    }
+
+    const rawCommand = String(command || "");
+    if (rawCommand) {
+      const matched = policy.commandPatterns.find((pattern) => pattern.test(rawCommand));
+      if (matched) {
+        return {
+          lane: "isolated",
+          reason: `command_pattern:${matched.source}`,
+          heavy: true,
+        };
+      }
+    }
+
+    return { lane: "main", reason: "lightweight", heavy: false };
   }
 
   /**

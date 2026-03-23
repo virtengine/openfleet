@@ -39,6 +39,7 @@ import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, emitSkillInvokeEvent, findRelevantSkills } from "../agent/bosun-skills.mjs";
 import { readBenchmarkModeState, taskMatchesBenchmarkMode } from "../bench/benchmark-mode.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
+import { runInIsolatedRunner } from "../infra/container-runner.mjs";
 import { recordWorktreeRecoveryEvent } from "../infra/worktree-recovery-state.mjs";
 import {
   appendKnowledgeEntry,
@@ -1448,6 +1449,103 @@ async function compactWorkflowCommandResult({
   };
 }
 
+function buildIsolatedRunnerResultExtras(result, lane) {
+  const artifacts = Array.isArray(result?.artifacts) ? result.artifacts : [];
+  return {
+    isolatedRunner: {
+      lane: lane?.lane || "main",
+      reason: lane?.reason || "unknown",
+      provider: result?.provider || null,
+      leaseId: result?.leaseId || null,
+      artifactRoot: result?.artifactRoot || null,
+      attempts: result?.attempts || 1,
+      blocked: result?.blocked === true,
+      artifacts,
+    },
+    artifactRoot: result?.artifactRoot || null,
+    artifacts,
+    artifactPaths: artifacts.map((artifact) => artifact.path).filter(Boolean),
+    artifactRetrieveCommands: artifacts
+      .map((artifact) => artifact.retrieveCommand)
+      .filter(Boolean),
+  };
+}
+
+function resolveWorkflowCommandLane({ nodeType, commandType, command, engine }) {
+  const scheduler = engine?.services?.scheduler;
+  if (scheduler && typeof scheduler.selectWorkflowLane === "function") {
+    return scheduler.selectWorkflowLane({ nodeType, commandType, command });
+  }
+
+  const normalizedNodeType = String(nodeType || "").trim();
+  if (['validation.tests', 'validation.build', 'validation.lint'].includes(normalizedNodeType)) {
+    return { lane: "isolated", reason: `workflow_node:${normalizedNodeType}`, heavy: true };
+  }
+
+  const normalizedCommandType = String(commandType || "").trim();
+  if (["test", "build", "qualityGate"].includes(normalizedCommandType)) {
+    return { lane: "isolated", reason: `command_type:${normalizedCommandType}`, heavy: true };
+  }
+
+  const rawCommand = String(command || "");
+  if (/(?:\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|\b(?:npm|pnpm|yarn|bun)\s+run\s+build\b|\b(?:npm|pnpm|yarn|bun)\s+run\s+lint\b|\bpre-?push\b|\bgit\s+diff\b|\bvitest\b|\bjest\b|\btsc\b)/i.test(rawCommand)) {
+    return { lane: "isolated", reason: "command_pattern:default", heavy: true };
+  }
+
+  return { lane: "main", reason: "lightweight", heavy: false };
+}
+
+async function maybeRunWorkflowCommandInIsolation({
+  node,
+  ctx,
+  engine,
+  nodeType,
+  command,
+  args = [],
+  cwd,
+  timeoutMs,
+  env = {},
+  commandType = "",
+  sessionType = "flow",
+} = {}) {
+  const lane = resolveWorkflowCommandLane({ nodeType, commandType, command, engine });
+  if (lane?.lane !== "isolated") return null;
+
+  ctx.log(node.id, `Offloading ${commandType || nodeType} to isolated runner (${lane.reason})`);
+  const runner = engine?.services?.isolatedRunner;
+  const execute = typeof runner?.run === "function" ? runner.run.bind(runner) : runInIsolatedRunner;
+  const isolated = await execute({
+    command,
+    args,
+    cwd,
+    timeoutMs,
+    env,
+    requestType: commandType || nodeType,
+    taskId: `${node.id || nodeType || "validation"}`,
+    metadata: {
+      nodeId: node.id || null,
+      nodeType,
+      commandType,
+    },
+  });
+  const compacted = await compactWorkflowCommandResult({
+    command,
+    args,
+    output: isolated?.stdout || "",
+    stderr: isolated?.stderr || isolated?.error || "",
+    exitCode: isolated?.exitCode,
+    durationMs: isolated?.duration,
+    sessionType,
+  });
+
+  return {
+    lane,
+    isolated,
+    compacted,
+    extras: buildIsolatedRunnerResultExtras(isolated, lane),
+  };
+}
+
 function resolveWorkflowNodeValue(value, ctx) {
   if (typeof value === "string") {
     const resolved = ctx.resolve(value);
@@ -1872,7 +1970,7 @@ registerBuiltinNodeType("trigger.manual", {
     type: "object",
     properties: {},
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     ctx.log(node.id, "Manual trigger fired");
     return { triggered: true, reason: "manual" };
   },
@@ -1892,7 +1990,7 @@ registerBuiltinNodeType("trigger.task_low", {
       countDraftTasks: { type: "boolean", default: false, description: "Also count draft tasks toward threshold" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const threshold = node.config?.threshold ?? 3;
     const status = node.config?.status ?? "todo";
     const countDrafts = node.config?.countDraftTasks === true;
@@ -1953,7 +2051,7 @@ registerBuiltinNodeType("trigger.schedule", {
       cron: { type: "string", description: "Cron expression (future support)" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const interval = node.config?.intervalMs ?? 3600000;
     const lastRun = ctx.data?._lastRunAt ?? 0;
     const elapsed = Date.now() - lastRun;
@@ -1972,7 +2070,7 @@ registerBuiltinNodeType("trigger.event", {
       filter: { type: "string", description: "Optional filter expression" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const expected = node.config?.eventType;
     const actual = ctx.data?.eventType || ctx.eventType;
     const triggered = expected === actual;
@@ -2018,7 +2116,7 @@ registerBuiltinNodeType("trigger.meeting.wake_phrase", {
       },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const eventData = ctx.data && typeof ctx.data === "object" ? ctx.data : {};
     const resolveValue = (value) => (
       typeof ctx?.resolve === "function" ? ctx.resolve(value) : value
@@ -2156,7 +2254,7 @@ registerBuiltinNodeType("trigger.webhook", {
       method: { type: "string", default: "POST", enum: ["GET", "POST"] },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     return { triggered: true, payload: ctx.data?.webhookPayload || {} };
   },
 });
@@ -2175,7 +2273,7 @@ registerBuiltinNodeType("trigger.pr_event", {
       branchPattern: { type: "string", description: "Branch name regex filter" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const expectedEvents = [
       node.config?.event,
       ...(Array.isArray(node.config?.events) ? node.config.events : []),
@@ -2208,7 +2306,7 @@ registerBuiltinNodeType("trigger.task_assigned", {
       filter: { type: "string", description: "JS expression filter (e.g., \"task.tags?.includes('backend')\")" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const triggered = evaluateTaskAssignedTriggerConfig(node.config, ctx.data);
     return { triggered, task: ctx.data };
   },
@@ -2224,7 +2322,7 @@ registerBuiltinNodeType("trigger.anomaly", {
       agentFilter: { type: "string", description: "Regex to match agent ID or name" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const expected = node.config?.anomalyType;
     const actual = ctx.data?.anomalyType || ctx.data?.type;
     const typeMatch = !expected || expected === actual;
@@ -2264,7 +2362,7 @@ registerBuiltinNodeType("trigger.scheduled_once", {
     },
     required: ["runAt"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const rawRunAt = ctx.resolve(node.config?.runAt || "");
     let runAtMs;
 
@@ -2315,7 +2413,7 @@ registerBuiltinNodeType("trigger.workflow_call", {
       },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     // Validate required inputs from _triggerVars or context data
     const inputDefs = node.config?.inputs || {};
     const callerVars = ctx.data?._triggerVars || ctx.data || {};
@@ -2365,7 +2463,7 @@ registerBuiltinNodeType("condition.expression", {
     },
     required: ["expression"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const expr = node.config?.expression;
     if (!expr) throw new Error("Expression is required");
     try {
@@ -2391,7 +2489,7 @@ registerBuiltinNodeType("condition.task_has_tag", {
     },
     required: ["tag"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const tag = node.config?.tag?.toLowerCase();
     const field = node.config?.field || "tags";
     let haystack = ctx.data?.task?.[field] || ctx.data?.[field] || "";
@@ -2412,7 +2510,7 @@ registerBuiltinNodeType("condition.file_exists", {
     },
     required: ["path"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const filePath = ctx.resolve(node.config?.path || "");
     const exists = existsSync(filePath);
     ctx.log(node.id, `File check: "${filePath}" → ${exists}`);
@@ -2436,7 +2534,7 @@ registerBuiltinNodeType("condition.switch", {
     },
     required: [],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     let value;
     const expr = node.config?.value || node.config?.expression || "";
     if (expr) {
@@ -3343,7 +3441,7 @@ registerBuiltinNodeType("action.run_command", {
     },
     required: ["command"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const resolvedCommand = ctx.resolve(node.config?.command || "");
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     const commandType = typeof node.config?.commandType === "string" ? node.config.commandType.trim() : "";
@@ -3409,7 +3507,43 @@ registerBuiltinNodeType("action.run_command", {
     if (command !== autoResolvedCommand) {
       ctx.log(node.id, `Normalized legacy command for portability: ${command}`);
     }
-    ctx.log(node.id, `Running: ${usedArgv ? `${command} ${commandArgs.join(" ")}`.trim() : command}`);
+    const displayCommand = usedArgv ? `${command} ${commandArgs.join(" ")}`.trim() : command;
+    ctx.log(node.id, `Running: ${displayCommand}`);
+    const isolatedRun = await maybeRunWorkflowCommandInIsolation({
+      node,
+      ctx,
+      engine,
+      nodeType: "action.run_command",
+      command,
+      args: commandArgs,
+      cwd,
+      timeoutMs: timeout,
+      env: commandEnv,
+      commandType,
+    });
+    if (isolatedRun) {
+      if (shouldParseJson) {
+        const parsedOutput = parseOutput(isolatedRun.isolated?.stdout || isolatedRun.compacted.output || "");
+        return {
+          success: isolatedRun.isolated?.blocked !== true && Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
+          exitCode: isolatedRun.isolated?.exitCode ?? null,
+          output: parsedOutput,
+          ...isolatedRun.extras,
+        };
+      }
+      const result = {
+        success: isolatedRun.isolated?.blocked !== true && Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
+        exitCode: isolatedRun.isolated?.exitCode ?? null,
+        blocked: isolatedRun.isolated?.blocked === true,
+        error: isolatedRun.isolated?.error || null,
+        ...isolatedRun.compacted,
+        ...isolatedRun.extras,
+      };
+      if (node.config?.failOnError && !result.success) {
+        throw new Error(trimLogText(result.output || result.error || "command failed", 400));
+      }
+      return result;
+    }
     const startedAt = Date.now();
     try {
       const output = usedArgv
@@ -4594,7 +4728,7 @@ registerBuiltinNodeType("action.git_operations", {
     },
     required: [],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     const resolveOpCommand = (opConfig = {}) => {
       const op = String(opConfig.op || opConfig.operation || "").trim();
@@ -4736,7 +4870,7 @@ registerBuiltinNodeType("action.create_pr", {
     },
     required: ["title"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const title = ctx.resolve(node.config?.title || "");
     const body = ctx.resolve(node.config?.body || "");
     const baseInput = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
@@ -5079,7 +5213,7 @@ registerBuiltinNodeType("action.write_file", {
     },
     required: ["path", "content"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const filePath = ctx.resolve(node.config?.path || "");
     const content = ctx.resolve(node.config?.content || "");
     if (node.config?.mkdir) {
@@ -5105,7 +5239,7 @@ registerBuiltinNodeType("action.read_file", {
     },
     required: ["path"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const filePath = ctx.resolve(node.config?.path || "");
     if (!existsSync(filePath)) {
       return { success: false, error: `File not found: ${filePath}` };
@@ -5126,7 +5260,7 @@ registerBuiltinNodeType("action.set_variable", {
     },
     required: ["key"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const key = node.config?.key;
     let value = node.config?.value || "";
     if (node.config?.isExpression) {
@@ -5161,7 +5295,7 @@ registerBuiltinNodeType("action.delay", {
       message: { type: "string", description: "Legacy alias for reason" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const baseMs = Number(
       node.config?.ms ??
       node.config?.delayMs ??
@@ -5218,7 +5352,7 @@ registerBuiltinNodeType("validation.screenshot", {
     },
     required: ["url"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const url = ctx.resolve(node.config?.url || "http://localhost:3000");
     const outDir = ctx.resolve(node.config?.outputDir || ".bosun/evidence");
     const filename = ctx.resolve(node.config?.filename || `screenshot-${Date.now()}.png`);
@@ -5441,12 +5575,33 @@ registerBuiltinNodeType("validation.tests", {
       requiredPassRate: { type: "number", default: 1.0, description: "Minimum pass rate (0-1)" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const command = ctx.resolve(node.config?.command || "npm test");
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     const timeout = node.config?.timeoutMs || 600000;
 
     ctx.log(node.id, `Running tests: ${command}`);
+    const isolatedRun = await maybeRunWorkflowCommandInIsolation({
+      node,
+      ctx,
+      engine,
+      nodeType: "validation.tests",
+      command,
+      cwd,
+      timeoutMs: timeout,
+      commandType: "test",
+    });
+    if (isolatedRun) {
+      return {
+        passed:
+          isolatedRun.isolated?.blocked !== true &&
+          Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
+        exitCode: isolatedRun.isolated?.exitCode ?? null,
+        blocked: isolatedRun.isolated?.blocked === true,
+        ...isolatedRun.compacted,
+        ...isolatedRun.extras,
+      };
+    }
     const startedAt = Date.now();
     try {
       const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
@@ -5483,7 +5638,7 @@ registerBuiltinNodeType("validation.build", {
       zeroWarnings: { type: "boolean", default: false, description: "Fail on warnings too" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const resolvedCommand = ctx.resolve(node.config?.command || "npm run build");
     const command = normalizeLegacyWorkflowCommand(resolvedCommand);
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
@@ -5493,6 +5648,39 @@ registerBuiltinNodeType("validation.build", {
       ctx.log(node.id, `Normalized legacy command for portability: ${command}`);
     }
     ctx.log(node.id, `Building: ${command}`);
+    const isolatedRun = await maybeRunWorkflowCommandInIsolation({
+      node,
+      ctx,
+      engine,
+      nodeType: "validation.build",
+      command,
+      cwd,
+      timeoutMs: timeout,
+      commandType: "build",
+    });
+    if (isolatedRun) {
+      const combinedOutput = `${isolatedRun.isolated?.stdout || ""}\n${isolatedRun.isolated?.stderr || ""}`;
+      const hasWarnings = /warning/i.test(combinedOutput);
+      if (node.config?.zeroWarnings && hasWarnings) {
+        return {
+          passed: false,
+          reason: "warnings_found",
+          exitCode: isolatedRun.isolated?.exitCode ?? 0,
+          blocked: isolatedRun.isolated?.blocked === true,
+          ...isolatedRun.compacted,
+          ...isolatedRun.extras,
+        };
+      }
+      return {
+        passed:
+          isolatedRun.isolated?.blocked !== true &&
+          Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
+        exitCode: isolatedRun.isolated?.exitCode ?? null,
+        blocked: isolatedRun.isolated?.blocked === true,
+        ...isolatedRun.compacted,
+        ...isolatedRun.extras,
+      };
+    }
     const startedAt = Date.now();
     try {
       const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
@@ -5530,15 +5718,37 @@ registerBuiltinNodeType("validation.lint", {
       timeoutMs: { type: "number", default: 120000 },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const command = ctx.resolve(node.config?.command || "npm run lint");
     if (!command || !command.trim()) {
       return { passed: true, output: "no lint configured", skipped: true };
     }
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const timeout = node.config?.timeoutMs || 120000;
+    const isolatedRun = await maybeRunWorkflowCommandInIsolation({
+      node,
+      ctx,
+      engine,
+      nodeType: "validation.lint",
+      command,
+      cwd,
+      timeoutMs: timeout,
+      commandType: "qualityGate",
+    });
+    if (isolatedRun) {
+      return {
+        passed:
+          isolatedRun.isolated?.blocked !== true &&
+          Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
+        exitCode: isolatedRun.isolated?.exitCode ?? null,
+        blocked: isolatedRun.isolated?.blocked === true,
+        ...isolatedRun.compacted,
+        ...isolatedRun.extras,
+      };
+    }
     const startedAt = Date.now();
     try {
-      const output = execSync(command, { cwd, timeout: node.config?.timeoutMs || 120000, encoding: "utf8", stdio: "pipe" });
+      const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
       const compacted = await compactWorkflowCommandResult({
         command,
         output: output?.trim() || "",
@@ -5572,7 +5782,7 @@ registerBuiltinNodeType("transform.json_parse", {
       field: { type: "string", description: "Field in source output containing JSON" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const sourceId = node.config?.input;
     const field = node.config?.field || "output";
     let raw = sourceId ? ctx.getNodeOutput(sourceId)?.[field] : ctx.resolve(node.config?.value || "");
@@ -5594,7 +5804,7 @@ registerBuiltinNodeType("transform.template", {
     },
     required: ["template"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const result = ctx.resolve(node.config?.template || "");
     return { text: result };
   },
@@ -5608,7 +5818,7 @@ registerBuiltinNodeType("transform.aggregate", {
       sources: { type: "array", items: { type: "string" }, description: "Node IDs to aggregate" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const sources = node.config?.sources || [];
     const aggregated = {};
     for (const src of sources) {
@@ -5662,7 +5872,7 @@ registerBuiltinNodeType("transform.llm_parse", {
     },
     required: [],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     // Resolve the input text
     let text = "";
     const inputRef = ctx.resolve(node.config?.input || "");
@@ -5739,7 +5949,7 @@ registerBuiltinNodeType("notify.log", {
     },
     required: ["message"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const message = ctx.resolve(node.config?.message || "");
     const level = node.config?.level || "info";
     ctx.log(node.id, message, level);
@@ -5793,7 +6003,7 @@ registerBuiltinNodeType("notify.webhook_out", {
     },
     required: ["url"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const url = ctx.resolve(node.config?.url || "");
     const method = node.config?.method || "POST";
     const body = node.config?.body ? JSON.stringify(node.config.body) : undefined;
@@ -5954,7 +6164,7 @@ registerBuiltinNodeType("agent.select_profile", {
       default: { type: "string", default: "general", description: "Default profile if no match" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const profiles = node.config?.profiles || {};
     const taskTitle = (ctx.data?.taskTitle || "").toLowerCase();
     const taskTags = (ctx.data?.taskTags || []).map((t) => t.toLowerCase());
@@ -7312,7 +7522,7 @@ registerBuiltinNodeType("agent.evidence_collect", {
       types: { type: "array", items: { type: "string" }, default: ["png", "jpg", "json", "log", "txt"] },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const dir = ctx.resolve(node.config?.evidenceDir || ".bosun/evidence");
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
@@ -7443,7 +7653,7 @@ registerBuiltinNodeType("flow.join", {
       },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const mode = String(ctx.resolve(node.config?.mode || "all") || "all").toLowerCase();
     const includeSkipped = parseBooleanSetting(
       resolveWorkflowNodeValue(node.config?.includeSkipped ?? true, ctx),
@@ -7526,7 +7736,7 @@ registerBuiltinNodeType("flow.end", {
       },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const rawStatus = String(ctx.resolve(node.config?.status || "completed") || "completed")
       .trim()
       .toLowerCase();
@@ -8187,7 +8397,7 @@ registerBuiltinNodeType("action.bosun_cli", {
     },
     required: ["subcommand"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const sub = node.config?.subcommand || "";
     const args = ctx.resolve(node.config?.args || "");
     const cmd = `bosun ${sub} ${args}`.trim();
@@ -8316,7 +8526,7 @@ registerBuiltinNodeType("action.bosun_tool", {
     },
     required: ["toolId"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const toolId = ctx.resolve(node.config?.toolId || "");
     if (!toolId) throw new Error("action.bosun_tool: 'toolId' is required");
 
@@ -9013,7 +9223,7 @@ registerBuiltinNodeType("action.handle_rate_limit", {
       strategy: { type: "string", enum: ["wait", "rotate", "skip"], default: "wait", description: "Rate limit strategy" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const attempt = ctx.data?._rateLimitAttempt || 0;
     const maxRetries = node.config?.maxRetries || 5;
     const strategy = node.config?.strategy || "wait";
@@ -9166,7 +9376,7 @@ registerBuiltinNodeType("action.refresh_worktree", {
     },
     required: ["operation"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const op = node.config?.operation || "fetch";
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     const branch = ctx.resolve(node.config?.branch || "main");
@@ -9521,7 +9731,7 @@ registerBuiltinNodeType("action.mcp_tool_call", {
     },
     required: ["server", "tool"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const serverId = ctx.resolve(node.config?.server || "");
     const toolName = ctx.resolve(node.config?.tool || "");
     const timeoutMs = node.config?.timeoutMs || 30000;
@@ -9616,7 +9826,7 @@ registerBuiltinNodeType("action.mcp_list_tools", {
     },
     required: ["server"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const serverId = ctx.resolve(node.config?.server || "");
     const timeoutMs = node.config?.timeoutMs || 30000;
 
@@ -9743,7 +9953,7 @@ registerBuiltinNodeType("action.mcp_pipeline", {
     },
     required: ["steps"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const adapter = await getMcpAdapter();
     const pipelineSpec = adapter.createPipelineSpec(node.config?.steps || []);
 
@@ -9948,7 +10158,7 @@ registerBuiltinNodeType("transform.mcp_extract", {
     },
     required: ["source", "fields"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const sourceNodeId = ctx.resolve(node.config?.source || "");
     const sourceField = node.config?.sourceField || "data";
 
@@ -11064,7 +11274,7 @@ registerBuiltinNodeType("condition.slot_available", {
       baseBranch: { type: "string", description: "Base branch to check against" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const maxParallel = node.config?.maxParallel ?? 3;
     const baseBranchLimit = node.config?.baseBranchLimit ?? 0;
     const activeSlotCount = ctx.data?.activeSlotCount ?? 0;
@@ -11102,7 +11312,7 @@ registerBuiltinNodeType("action.allocate_slot", {
     },
     required: ["taskId"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const taskId = cfgOrCtx(node, ctx, "taskId");
     const taskTitle = cfgOrCtx(node, ctx, "taskTitle", "(untitled)");
     const branch = cfgOrCtx(node, ctx, "branch");
@@ -11156,7 +11366,7 @@ registerBuiltinNodeType("action.release_slot", {
       taskId: { type: "string", description: "Task ID whose slot to release" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const taskId = cfgOrCtx(node, ctx, "taskId");
     const slot = ctx.data?._allocatedSlot;
 
@@ -11200,7 +11410,7 @@ registerBuiltinNodeType("action.claim_task", {
     },
     required: ["taskId"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const taskId = cfgOrCtx(node, ctx, "taskId");
     const taskTitle = cfgOrCtx(node, ctx, "taskTitle");
     const ttlMinutes = node.config?.ttlMinutes ?? 180;
@@ -11322,7 +11532,7 @@ registerBuiltinNodeType("action.release_claim", {
       instanceId: { type: "string", description: "Instance ID (auto-read from ctx)" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const taskId = cfgOrCtx(node, ctx, "taskId");
     const claimToken = cfgOrCtx(node, ctx, "claimToken") || ctx.data?._claimToken || "";
     const instanceId = cfgOrCtx(node, ctx, "instanceId") || ctx.data?._claimInstanceId || "";
@@ -11389,7 +11599,7 @@ registerBuiltinNodeType("action.resolve_executor", {
       modelOverride: { type: "string", description: "Force a specific model" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const defaultSdk = cfgOrCtx(node, ctx, "defaultSdk", "auto");
     const sdkOverride = cfgOrCtx(node, ctx, "sdkOverride");
     const modelOverride = cfgOrCtx(node, ctx, "modelOverride");
@@ -11630,7 +11840,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
     },
     required: ["branch", "taskId"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     // Outer guard: ensure we ALWAYS return structured output with recoveryNote
     // so downstream {{acquire-worktree.recoveryNote}} templates never stay literal.
     let taskId, branch, repoRoot, baseBranch;
@@ -12167,7 +12377,7 @@ registerBuiltinNodeType("action.release_worktree", {
       removeTimeout: { type: "number", default: 30000, description: "Timeout for removal (ms)" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
     const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
     const taskId = cfgOrCtx(node, ctx, "taskId");
@@ -12229,7 +12439,7 @@ registerBuiltinNodeType("action.recover_worktree", {
       removeTimeout: { type: "number", default: 30000, description: "Timeout for removal (ms)" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const worktreePath = cfgOrCtx(node, ctx, "worktreePath") || ctx.data?.worktreePath || "";
     const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
     const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "";
@@ -12271,7 +12481,7 @@ registerBuiltinNodeType("action.sweep_task_worktrees", {
       timeout: { type: "number", default: 15000, description: "Timeout for git worktree prune (ms)" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
     const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "";
     const timeout = Number(node.config?.timeout ?? 15000);
@@ -12308,7 +12518,7 @@ const readWorkflowContractHandler = {
       },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const projectRoot = cfgOrCtx(node, ctx, "projectRoot")
       || cfgOrCtx(node, ctx, "worktreePath")
       || cfgOrCtx(node, ctx, "repoRoot")
@@ -12377,7 +12587,7 @@ const workflowContractValidationHandler = {
       },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const projectRoot = cfgOrCtx(node, ctx, "projectRoot")
       || cfgOrCtx(node, ctx, "worktreePath")
       || cfgOrCtx(node, ctx, "repoRoot")
@@ -12479,7 +12689,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
     },
     required: ["taskTitle"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const taskId = cfgOrCtx(node, ctx, "taskId");
     const taskTitle = cfgOrCtx(node, ctx, "taskTitle");
     const taskDescription = cfgOrCtx(node, ctx, "taskDescription");
@@ -13122,7 +13332,7 @@ registerBuiltinNodeType("action.persist_memory", {
     },
     required: ["content"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const TASK_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
     const TASK_TEMPLATE_INLINE_PLACEHOLDER_RE = /\{\{\s*[\w.-]+\s*\}\}/g;
     const normalizeString = (value) => {
@@ -13318,7 +13528,7 @@ registerBuiltinNodeType("action.auto_commit_dirty", {
     },
     required: ["worktreePath"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
     const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "unknown";
 
@@ -13390,7 +13600,7 @@ registerBuiltinNodeType("action.detect_new_commits", {
       baseBranch: { type: "string", description: "Base branch for diff stats" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
     const baseBranch = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
 
@@ -13527,7 +13737,7 @@ registerBuiltinNodeType("action.push_branch", {
     },
     required: ["worktreePath"],
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
     const branch = cfgOrCtx(node, ctx, "branch", "");
     const baseBranch = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
@@ -14202,3 +14412,5 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
+
+
