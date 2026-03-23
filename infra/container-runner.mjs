@@ -244,6 +244,72 @@ function resolveRunnerProvider(provider, options = {}) {
   return requested || "process";
 }
 
+function isSandboxFailureText(text) {
+  return /(?:sandbox|operation not permitted|permission denied|access is denied|read-only file system|EPERM|EACCES|denied by policy|seccomp)/i.test(
+    String(text || ""),
+  );
+}
+
+function isBootstrapFailureText(text) {
+  return /(?:\bENOENT\b|spawn\s+.+\s+ENOENT|not recognized as an internal or external command|is not recognized as a name of a cmdlet|command not found|executable file not found|no such file or directory|cannot find the file|failed to start|startup failure)/i.test(
+    String(text || ""),
+  );
+}
+
+function summarizeFailureDetail(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  const firstLine = normalized.split(/\r?\n/).find((line) => String(line || "").trim()) || normalized;
+  return firstLine.slice(0, 400);
+}
+
+function buildIsolatedFailureDiagnostic(result = {}, options = {}) {
+  const status = String(result?.status || "unknown").trim().toLowerCase();
+  const exitCode = result?.exitCode ?? null;
+  const blocked = result?.blocked === true || status === "blocked";
+  const errorText = [result?.stderr, result?.error, result?.stdout]
+    .map((value) => String(value || "").trim())
+    .find(Boolean) || "";
+  if (!blocked && status === "success" && Number(exitCode ?? 0) === 0) return null;
+
+  let category = "command_failure";
+  let retryable = false;
+  let summary = `Validation command exited with code ${exitCode ?? "unknown"}.`;
+
+  if (blocked) {
+    category = "runner_unavailable";
+    retryable = true;
+    summary = "Isolated runner was unavailable before the validation command started.";
+  } else if (status === "timeout") {
+    category = "timeout";
+    retryable = true;
+    summary = `Validation timed out after ${Number(options.timeoutMs || 0) || "the configured"}ms.`;
+  } else if (isSandboxFailureText(errorText)) {
+    category = "sandbox_error";
+    retryable = false;
+    summary = "Validation was blocked by sandbox or filesystem restrictions.";
+  } else if (isBootstrapFailureText(errorText) || status === "error" && (exitCode == null || Number(exitCode) < 0)) {
+    category = "bootstrap_failure";
+    retryable = true;
+    summary = "Validation could not start cleanly in the isolated runner.";
+  }
+
+  return {
+    category,
+    retryable,
+    summary,
+    detail: summarizeFailureDetail(errorText),
+    status,
+    exitCode,
+    blocked,
+    provider: options.provider || null,
+    command: options.command || null,
+    args: Array.isArray(options.args) ? [...options.args] : [],
+    attempts: Number(options.attempts || 1),
+    durationMs: result?.duration ?? null,
+  };
+}
+
 async function runIsolatedProcess(options = {}) {
   const {
     command,
@@ -787,6 +853,18 @@ export async function runInIsolatedRunner(options = {}) {
         continue;
       }
       const failedLeaseId = `blocked-${Date.now()}-${attempt}`;
+      const blockedResult = {
+        status: "blocked",
+        blocked: true,
+        error: lastFailure.message,
+        exitCode: null,
+      };
+      const failureDiagnostic = buildIsolatedFailureDiagnostic(blockedResult, {
+        command,
+        args: Array.isArray(options.args) ? options.args : [],
+        provider,
+        attempts: attempt,
+      });
       const evidence = persistIsolatedRunArtifacts({
         cwd: options.cwd || process.cwd(),
         leaseId: failedLeaseId,
@@ -797,18 +875,17 @@ export async function runInIsolatedRunner(options = {}) {
           provider,
           command,
           args: Array.isArray(options.args) ? options.args : [],
+          failureDiagnostic,
         },
       });
       return {
-        status: "blocked",
-        blocked: true,
-        error: lastFailure.message,
-        exitCode: null,
+        ...blockedResult,
         attempts: attempt,
         provider,
         leaseId: failedLeaseId,
         artifactRoot: evidence.artifactRoot,
         artifacts: evidence.artifacts,
+        failureDiagnostic,
       };
     }
 
@@ -854,6 +931,13 @@ export async function runInIsolatedRunner(options = {}) {
         });
       }
 
+      const failureDiagnostic = buildIsolatedFailureDiagnostic(result, {
+        command,
+        args: Array.isArray(options.args) ? options.args : [],
+        provider,
+        attempts: attempt,
+        timeoutMs,
+      });
       const releaseInfo = releaseLeaseRecord(lease, {
         status: result?.status || "unknown",
         exitCode: result?.exitCode ?? null,
@@ -880,6 +964,7 @@ export async function runInIsolatedRunner(options = {}) {
           durationMs: result?.duration ?? Date.now() - startedAt,
           status: result?.status || "unknown",
           exitCode: result?.exitCode ?? null,
+          failureDiagnostic,
         },
         extraArtifacts,
       });
@@ -891,6 +976,7 @@ export async function runInIsolatedRunner(options = {}) {
         leaseId: lease.leaseId,
         artifactRoot: evidence.artifactRoot,
         artifacts: evidence.artifacts,
+        failureDiagnostic,
       };
     } catch (error) {
       releaseLeaseRecord(lease, {
@@ -903,6 +989,18 @@ export async function runInIsolatedRunner(options = {}) {
         continue;
       }
       const failedLeaseId = lease.leaseId || `failed-${Date.now()}-${attempt}`;
+      const blockedResult = {
+        status: "blocked",
+        blocked: true,
+        error: error?.message || String(error),
+        exitCode: null,
+      };
+      const failureDiagnostic = buildIsolatedFailureDiagnostic(blockedResult, {
+        command,
+        args: Array.isArray(options.args) ? options.args : [],
+        provider,
+        attempts: attempt,
+      });
       const evidence = persistIsolatedRunArtifacts({
         cwd: lease.cwd,
         leaseId: failedLeaseId,
@@ -914,19 +1012,18 @@ export async function runInIsolatedRunner(options = {}) {
           command,
           args: Array.isArray(options.args) ? options.args : [],
           attempts: attempt,
+          failureDiagnostic,
         },
       });
       return {
-        status: "blocked",
-        blocked: true,
-        error: error?.message || String(error),
-        exitCode: null,
+        ...blockedResult,
         attempts: attempt,
         provider,
         isolated: true,
         leaseId: failedLeaseId,
         artifactRoot: evidence.artifactRoot,
         artifacts: evidence.artifacts,
+        failureDiagnostic,
       };
     }
   }
