@@ -348,6 +348,7 @@
     "workflow/workflow-nodes/custom-loader.mjs",
     "workflow/workflow-nodes/definitions.mjs",
     "workflow/workflow-nodes/transforms.mjs",
+    "workflow/heavy-runner-pool.mjs",
     "workflow/workflow-templates.mjs",
     "workspace-reaper.mjs",
     "workspace/command-diagnostics.mjs",
