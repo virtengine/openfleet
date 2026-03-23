@@ -8,6 +8,7 @@ import StatusHeader from "./components/status-header.mjs";
 import TasksScreen from "./screens/tasks.mjs";
 import AgentsScreen from "./screens/agents.mjs";
 import StatusScreen from "./screens/status.mjs";
+import { listTasksFromApi } from "../ui/tui/tasks-screen-helpers.js";
 
 const html = htm.bind(React.createElement);
 
@@ -17,6 +18,15 @@ const SCREENS = {
   agents: AgentsScreen,
 };
 
+function upsertById(items = [], nextItem) {
+  if (!nextItem?.id) return items;
+  const index = items.findIndex((item) => item.id === nextItem.id);
+  if (index === -1) return [nextItem, ...items];
+  const next = [...items];
+  next[index] = { ...next[index], ...nextItem };
+  return next;
+}
+
 export default function App({ host, port, connectOnly, initialScreen, refreshMs, wsClient }) {
   const { exit } = useApp();
   const [screen, setScreen] = useState(initialScreen || "status");
@@ -25,6 +35,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   const [sessions, setSessions] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [error, setError] = useState(null);
+  const [screenInputLocked, setScreenInputLocked] = useState(false);
 
   const bridge = useMemo(
     () => wsClient || wsBridgeFactory({ host, port }),
@@ -32,83 +43,83 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   );
 
   useEffect(() => {
+    let active = true;
     const unsubscribes = [];
 
-    unsubscribes.push(bridge.on("connect", () => {
+    const on = (eventName, handler) => {
+      const unsubscribe = bridge.on(eventName, handler);
+      unsubscribes.push(unsubscribe);
+    };
+
+    const refreshTasks = async () => {
+      try {
+        const nextTasks = await listTasksFromApi();
+        if (active) setTasks(nextTasks);
+      } catch (err) {
+        if (active) setError(String(err?.message || err || "Failed to load tasks"));
+      }
+    };
+
+    on("connect", () => {
       setConnected(true);
       setError(null);
-    }));
-
-    unsubscribes.push(bridge.on("disconnect", () => {
+      void refreshTasks();
+    });
+    on("disconnect", () => {
       setConnected(false);
-    }));
-
-    unsubscribes.push(bridge.on("error", (err) => {
+    });
+    on("error", (err) => {
       setError(err?.message || String(err || "Unknown websocket error"));
-    }));
-
-    unsubscribes.push(bridge.on("stats", (data) => {
+    });
+    on("monitor:stats", (data) => {
       setStats(data || null);
-    }));
-
-    unsubscribes.push(bridge.on("sessions:update", (payload) => {
+    });
+    on("stats", (data) => {
+      setStats(data || null);
+    });
+    on("sessions:update", (payload) => {
       const nextSessions = Array.isArray(payload?.sessions)
         ? payload.sessions
         : Array.isArray(payload)
           ? payload
           : [];
       setSessions(nextSessions);
-    }));
-
-    unsubscribes.push(bridge.on("session:start", (session) => {
-      setSessions((previous) => [session, ...previous.filter((candidate) => candidate.id !== session?.id)]);
-    }));
-
-    unsubscribes.push(bridge.on("session:update", (session) => {
-      setSessions((previous) => {
-        const existingIndex = previous.findIndex((candidate) => candidate.id === session?.id);
-        if (existingIndex >= 0) {
-          const updated = [...previous];
-          updated[existingIndex] = session;
-          return updated;
-        }
-        return [session, ...previous];
-      });
-    }));
-
-    unsubscribes.push(bridge.on("session:end", (session) => {
+    });
+    on("session:start", (session) => {
+      setSessions((previous) => upsertById(previous, session));
+    });
+    on("session:update", (session) => {
+      setSessions((previous) => upsertById(previous, session));
+    });
+    on("session:end", (session) => {
       setSessions((previous) => previous.filter((candidate) => candidate.id !== session?.id));
-    }));
-
-    unsubscribes.push(bridge.on("task:update", (task) => {
-      setTasks((previous) => {
-        const index = previous.findIndex((candidate) => candidate.id === task?.id);
-        if (index >= 0) {
-          const updated = [...previous];
-          updated[index] = task;
-          return updated;
-        }
-        return [...previous, task];
-      });
-    }));
-
-    unsubscribes.push(bridge.on("task:create", (task) => {
-      setTasks((previous) => [...previous.filter((candidate) => candidate.id !== task?.id), task]);
-    }));
-
-    unsubscribes.push(bridge.on("task:delete", (taskId) => {
+    });
+    on("tasks:update", () => {
+      void refreshTasks();
+    });
+    on("task:update", (task) => {
+      setTasks((previous) => upsertById(previous, task));
+    });
+    on("task:create", (task) => {
+      setTasks((previous) => upsertById(previous, task));
+    });
+    on("task:delete", (taskId) => {
       setTasks((previous) => previous.filter((task) => task.id !== taskId));
-    }));
-
-    unsubscribes.push(bridge.on("retry:update", (retryQueue) => {
+    });
+    on("retry:update", (retryQueue) => {
       setStats((previous) => ({ ...(previous || {}), retryQueue }));
-    }));
+    });
+    on("retry-queue-updated", (retryQueue) => {
+      setStats((previous) => ({ ...(previous || {}), retryQueue }));
+    });
 
     if (typeof bridge.connect === "function") {
       bridge.connect();
     }
+    void refreshTasks();
 
     return () => {
+      active = false;
       unsubscribes.forEach((unsubscribe) => {
         if (typeof unsubscribe === "function") unsubscribe();
       });
@@ -116,7 +127,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
         bridge.disconnect();
       }
     };
-  }, [bridge]);
+  }, [bridge, refreshMs]);
 
   const handleInput = useCallback((input) => {
     if (input === "q") {
@@ -127,6 +138,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   }, [exit]);
 
   useInput((input) => {
+    if (screenInputLocked) return;
     handleInput(input);
   });
 
@@ -156,6 +168,8 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
           port=${port}
           connectOnly=${connectOnly}
           refreshMs=${refreshMs}
+          onTasksChange=${setTasks}
+          onInputCaptureChange=${setScreenInputLocked}
         />
       <//>
       <${Box} paddingX=${1} borderStyle="single">
