@@ -11,6 +11,7 @@ const DEFAULT_SERVICE_NAME = "bosun";
 const DEFAULT_SERVICE_VERSION = process.env.npm_package_version || "0.42.0";
 const TRACE_ID_BYTES = 16;
 const SPAN_ID_BYTES = 8;
+const DEFAULT_EXPORT_TIMEOUT_MS = 1000;
 
 const contextStore = new AsyncLocalStorage();
 
@@ -223,6 +224,14 @@ async function loadOtelBindings() {
   };
 }
 
+async function shutdownSdk(sdk) {
+  if (!sdk?.shutdown) return;
+  try {
+    await sdk.shutdown();
+  } catch {
+  }
+}
+
 export async function setupTracing(endpointOrConfig = null) {
   const inputConfig =
     typeof endpointOrConfig === "string"
@@ -232,13 +241,12 @@ export async function setupTracing(endpointOrConfig = null) {
   const endpoint = inputConfig.endpoint || process.env.BOSUN_OTEL_ENDPOINT || null;
   const enabled = inputConfig.enabled ?? Boolean(endpoint);
   const sampleRate = Number(inputConfig.sampleRate ?? 1);
+  const exportTimeoutMillis = Math.max(
+    1,
+    Number(inputConfig.exportTimeoutMillis ?? DEFAULT_EXPORT_TIMEOUT_MS),
+  );
 
-  if (tracingState.sdk?.shutdown) {
-    try {
-      await tracingState.sdk.shutdown();
-    } catch {
-    }
-  }
+  await shutdownSdk(tracingState.sdk);
 
   if (!enabled || !endpoint) {
     tracingState = createNoopState();
@@ -271,10 +279,24 @@ export async function setupTracing(endpointOrConfig = null) {
       [otel.semantic.SEMRESATTRS_SERVICE_VERSION || "service.version"]: serviceVersion,
     });
 
+    const metricReader = new otel.PeriodicExportingMetricReader({
+      exporter: new otel.OTLPMetricExporter({
+        url: deriveMetricsEndpoint(endpoint),
+        timeoutMillis: exportTimeoutMillis,
+      }),
+      exportIntervalMillis: 60_000,
+      exportTimeoutMillis,
+    });
     sdk = new otel.NodeSDK({
       resource,
-      traceExporter: new otel.OTLPTraceExporter({ url: endpoint }),
-      metricReader: undefined,
+      traceExporter: new otel.OTLPTraceExporter({
+        url: endpoint,
+        timeoutMillis: exportTimeoutMillis,
+      }),
+      metricReader,
+      sampler: new otel.ParentBasedSampler({
+        root: new otel.TraceIdRatioBasedSampler(resolvedSampleRate),
+      }),
     });
 
     if (typeof sdk.start === "function") {
@@ -344,12 +366,7 @@ export function getMetricSnapshot() {
 }
 
 export async function shutdownTracing() {
-  if (tracingState.sdk?.shutdown) {
-    try {
-      await tracingState.sdk.shutdown();
-    } catch {
-    }
-  }
+  await shutdownSdk(tracingState.sdk);
   tracingState = createNoopState();
   metricInstruments = null;
   ensureMetricInstruments();
