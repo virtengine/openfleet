@@ -476,7 +476,7 @@ export function buildRelevantSkillsPromptBlock(bosunHome, taskTitle, taskDescrip
 
   const importantMatches = matched.filter((skill) => skill.important);
   const summaryMatches = matched.slice(0, Math.max(1, maxListed));
-  const lines = ["## Skills Context", ""];
+  const lines = ["## Relevant Skills", ""];
 
   if (importantMatches.length > 0) {
     lines.push(

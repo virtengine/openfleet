@@ -749,7 +749,7 @@ export function getToolsPromptBlock(rootDir, opts = {}) {
       ? "- Eager tools only below. Discover the rest at runtime."
       : "- Run tools via `node <tool>.mjs`, `bash <tool>.sh`, or `python3 <tool>.py`.",
     discoveryMode
-      ? "- Use `search`, `get_schema`, then `execute` for tools not listed here."
+      ? "- Use `search`, then `get_schema`, then `execute` for tools not listed here."
       : "- Check this library before writing new helper code.",
     "- Built-in tools: `bosun/tools/`; workspace tools: `.bosun/tools/`.",
     "",
@@ -791,8 +791,8 @@ export function getToolsPromptBlock(rootDir, opts = {}) {
     lines.push(
       "---",
       "",
-      "**Reflect**",
-      "- Reuse existing tools before writing new helpers.",
+      "Reflect:",
+      "- Check existing tools before writing new helpers.",
       "- Promote repeated analysis, test, build, transform, or search logic into `.bosun/tools/`.",
       "- Skip one-off scripts.",
       "",
