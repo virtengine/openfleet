@@ -476,7 +476,6 @@ const LIVE_WARN_REGEX = /\b(warn|warning|deprecated)\b/i;
 const LIVE_SUMMARY_REGEX = /\b(summary|total|totals|passed|failed|skipped|collected|found|matched|changed|insertions|deletions|done in|finished|ran \d+ tests?|test suites|packages? audited|up to date|build failed|completed|build succeeded|test run|tests run|total tests|passed!|failed!|restore completed|restore failed|time elapsed)\b/i;
 const LIVE_STATUS_REGEX = /^(FAIL|ERROR|warning|fatal|M\s|A\s|D\s|R\s|\?\?|@@|diff --git|--- |\+\+\+ |> |xUnit\.net|Test Run Failed|Test Run Successful|Failed!)/i;
 const LIVE_STRUCTURED_FLAG_REGEX = /(^|\s)(--json|--format(?:=|\s+)json|-json\b|-o(?:=|\s+)json|--output(?:=|\s+)json|{{json\s+\.}})/i;
-const LIVE_FILE_REF_REGEX = /((?:[A-Za-z]:)?[.~/\\\w-]+(?:[\\/][^:\s]+)+(?::\d+(?::\d+)?)?)/;
 const LIVE_SHELL_WRAPPERS = new Set(["bash", "sh", "zsh", "pwsh", "powershell", "cmd"]);
 const LIVE_ENV_WRAPPERS = new Set(["env", "command", "time", "nohup"]);
 const GENERIC_SIGNAL_MARKER = "\n...[selected signal lines]...\n";
@@ -575,10 +574,61 @@ function extractCommandFamily(item) {
   return first || toolName || "unknown";
 }
 
+function trimFileRefToken(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^[\[\]{}()<>"'`]+/, "")
+    .replace(/[\[\]{}()<>"'`,;.!?]+$/, "");
+}
+
+function stripFileRefLineInfo(value) {
+  let end = value.length;
+  let suffixCount = 0;
+  while (suffixCount < 2 && end > 0) {
+    let cursor = end - 1;
+    while (cursor >= 0) {
+      const code = value.charCodeAt(cursor);
+      if (code < 48 || code > 57) break;
+      cursor -= 1;
+    }
+    if (cursor === end - 1 || cursor < 0 || value[cursor] !== ":") {
+      break;
+    }
+    end = cursor;
+    suffixCount += 1;
+  }
+  return value.slice(0, end);
+}
+
+function isLikelyFileRefToken(value) {
+  const trimmed = trimFileRefToken(value);
+  if (!trimmed || /\s/.test(trimmed) || trimmed.includes("://")) return false;
+  const pathPart = stripFileRefLineInfo(trimmed);
+  if (!pathPart || pathPart.endsWith(":")) return false;
+
+  let normalized = pathPart;
+  if (/^[A-Za-z]:/.test(normalized)) {
+    normalized = normalized.slice(2);
+  }
+  if (!normalized || normalized.includes(":")) return false;
+
+  const hasSeparator = /[\\/]/.test(normalized);
+  const hasExtension = /\.[A-Za-z0-9_]+$/.test(normalized);
+  const startsRelative = /^[.~]/.test(normalized);
+  if (!hasSeparator && !hasExtension && !startsRelative) return false;
+
+  const segments = normalized.split(/[\\/]+/).filter(Boolean);
+  if (segments.length === 0) return false;
+  return segments.every((segment) => !segment.includes(":"));
+}
+
 function extractFileKey(line) {
-  const normalized = String(line || "");
-  const match = normalized.match(/^([^:\n]+\.[A-Za-z0-9_]+(?::\d+(?::\d+)?)?)/) || normalized.match(LIVE_FILE_REF_REGEX);
-  return match ? match[1] : "";
+  const tokens = String(line || "").match(/\S+/g) || [];
+  for (const token of tokens.slice(0, 16)) {
+    if (!isLikelyFileRefToken(token)) continue;
+    return trimFileRefToken(token);
+  }
+  return "";
 }
 
 function getItemRuntimeMs(item) {

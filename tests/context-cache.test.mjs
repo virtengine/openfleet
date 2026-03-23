@@ -1047,6 +1047,27 @@ describe("live tool compaction", () => {
     expect(result[0].aggregated_output).toContain("src/feature/file0.ts:10");
   });
 
+  it("compacts zero-heavy file references without regex backtracking", async () => {
+    const lines = [];
+    for (let i = 0; i < 180; i++) {
+      const zeroDir = String(i).padStart(6, "0");
+      lines.push(`src/000000/${zeroDir}/file${i}.ts:${1000 + i}: const thing${i} = true;`);
+    }
+    const items = [{
+      type: "command_execution",
+      command: "rg thing src/000000",
+      exit_code: 0,
+      aggregated_output: lines.join("\n"),
+    }];
+
+    const result = await runLiveCompaction(items, {
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS: "1200",
+    });
+
+    expect(result[0]._liveCompacted).toBe(true);
+    expect(result[0]._liveCompactionFamily).toBe("search");
+    expect(result[0].aggregated_output).toContain("Top files: src/000000/000000/file0.ts:1000");
+  });
   it("preserves structured output when live compaction is enabled", async () => {
     const structured = JSON.stringify({ files: Array.from({ length: 80 }, (_, i) => ({ path: `src/file${i}.ts`, ok: true })) }, null, 2);
     const items = [{
