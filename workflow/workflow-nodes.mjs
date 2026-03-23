@@ -7416,12 +7416,13 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
         skipped.push({ title: task.title, reason: "risk_above_threshold", risk: task.risk, maxRiskWithoutHuman });
         materializationOutcomes.push({ ...baseOutcome, created: false, reason: "risk_above_threshold" });
         continue;
-      }
+    const fullPromptForRepoMapCheck = [basePrompt, context, plannerFeedback].filter(Boolean).join("\n\n");
+    const promptHasRepoMap = hasRepoMapContext(fullPromptForRepoMapCheck);
       if (Number.isFinite(maxConcurrentRepoAreaTasks) && maxConcurrentRepoAreaTasks > 0) {
         let saturated = false;
         const saturatedAreas = [];
         for (const area of task.repoAreas) {
-          const areaKey = normalizePlannerAreaKey(area);
+        repoMapFileLimit: node.config?.repoMapFileLimit ?? 8,
           if (!areaKey) continue;
           const existingCount = existingBacklogAreaCounts.get(areaKey) || 0;
           const createdCount = createdAreaCounts.get(areaKey) || 0;

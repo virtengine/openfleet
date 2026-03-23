@@ -560,6 +560,11 @@ registerNodeType("agent.run_planner", {
       ? buildRepoTopologyContext({
         repoMap: node.config?.repoMap || ctx.data?.repoMap || null,
         repoMapFileLimit,
+    const repoTopologyContext = (node.config?.repoMap || repoMapQuery)
+      && !promptHasRepoMap
+      ? buildRepoTopologyContext({
+        repoMap: node.config?.repoMap || ctx.data?.repoMap || null,
+        repoMapFileLimit,
         repoMapQuery,
         query: [context, explicitPrompt, plannerPrompt].filter(Boolean).join(" "),
         prompt: explicitPrompt || plannerPrompt || "",
