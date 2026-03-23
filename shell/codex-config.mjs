@@ -1329,6 +1329,29 @@ function buildModelProviderSection(providerName, config = {}) {
   return lines.join("\n");
 }
 
+function setModelProviderField(toml, providerName, key, value) {
+  const header = `[model_providers.${providerName}]`;
+  const headerIdx = toml.indexOf(header);
+  if (headerIdx === -1) return toml;
+
+  const afterHeader = headerIdx + header.length;
+  const nextSection = toml.indexOf("\n[", afterHeader);
+  const sectionEnd = nextSection === -1 ? toml.length : nextSection;
+
+  let section = toml.substring(afterHeader, sectionEnd);
+  const fieldRegex = new RegExp(`^${escapeRegex(key)}\\s*=.*$`, "m");
+  const escapedValue = String(value || "").replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+  const line = `${key} = "${escapedValue}"`;
+
+  if (fieldRegex.test(section)) {
+    section = section.replace(fieldRegex, line);
+  } else {
+    section = `${section.trimEnd()}\n${line}\n`;
+  }
+
+  return toml.substring(0, afterHeader) + section + toml.substring(sectionEnd);
+}
+
 /**
  * Codex CLI built-in provider IDs that cannot be used in [model_providers.*].
  * Declaring these in config.toml causes a fatal "reserved built-in provider"
@@ -1355,8 +1378,9 @@ function migrateReservedProviderIds(toml) {
   return { toml, migrated };
 }
 
-function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
+export function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
   const added = [];
+  const updated = [];
   const { env: resolvedEnv, active } = resolveCodexProfileRuntime(env);
 
   // Migrate any legacy reserved provider IDs before adding new sections
@@ -1390,6 +1414,12 @@ function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
         model: active?.model || resolvedEnv.CODEX_MODEL || "",
       });
       added.push("azure");
+    } else if (activeBaseUrl) {
+      const updatedToml = setModelProviderField(toml, "azure", "base_url", activeBaseUrl);
+      if (updatedToml !== toml) {
+        toml = updatedToml;
+        updated.push("azure.base_url");
+      }
     }
   }
 
@@ -1397,7 +1427,7 @@ function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
   // The built-in already handles OPENAI_API_KEY.  Declaring it causes:
   //   "model_providers contains reserved built-in provider IDs: openai"
 
-  return { toml, added, migrated: migration.migrated };
+  return { toml, added, updated, migrated: migration.migrated };
 }
 
 /**
@@ -1853,5 +1883,3 @@ function parseBoolEnv(value) {
   if (["0", "false", "no", "off", "n"].includes(raw)) return false;
   return true;
 }
-
-

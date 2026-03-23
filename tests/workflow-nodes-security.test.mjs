@@ -489,8 +489,7 @@ describe("validation nodes can offload to isolated runners", () => {
     const ctx = makeCtx();
     const runner = vi.fn().mockResolvedValue({
       status: "success",
-      stdout: "PASS tests/example.test.mjs
-",
+      stdout: "PASS tests/example.test.mjs\n",
       stderr: "",
       exitCode: 0,
       duration: 25,
