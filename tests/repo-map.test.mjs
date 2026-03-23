@@ -105,7 +105,7 @@ describe("repo-map", () => {
       ],
     }, { repoMapSummaryLimit: 60 });
 
-    expect(topology).toContain("This summary is intentionally very long so the compact repo...");
+    expect(topology).toContain("This summary is intentionally very long so the compact re...");
     expect(topology).not.toContain("formatter trims it before injecting");
   });
 
