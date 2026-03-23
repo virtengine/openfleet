@@ -637,6 +637,33 @@ function isLikelyStructuredOutput(text, item) {
   );
 }
 
+function hasSourceDiagnosticLine(text) {
+  const lines = String(text || "").split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const severityMatch = /\b(?:error|warning)\b/i.exec(line);
+    if (!severityMatch) continue;
+
+    const prefix = line.slice(0, severityMatch.index).trimEnd();
+    if (!prefix) continue;
+
+    const colonIndex = prefix.indexOf(":");
+    const filePart = (colonIndex === -1 ? prefix : prefix.slice(0, colonIndex)).trim();
+    if (!/\.(?:cs|fs|vb|ts|tsx|js|jsx|java|kt|go|rs|cpp|c|h|hpp)$/i.test(filePart)) continue;
+
+    if (colonIndex !== -1) {
+      const location = prefix.slice(colonIndex + 1).trim();
+      if (location && !/^\d+(?::\d+)?$/.test(location)) continue;
+    }
+
+    return true;
+  }
+
+  return false;
+}
+
 function hasBuildDiagnosticSignals(item) {
   const text = [item?.aggregated_output, item?.output, item?.text]
     .filter((value) => typeof value === "string" && value.trim())
@@ -644,7 +671,7 @@ function hasBuildDiagnosticSignals(item) {
   if (!text) return false;
   return (
     /\b(?:error|warning)\s+(?:TS|CS|MSB|NU)\d+\b/i.test(text)
-    || /^[^:\n]+\.(?:cs|fs|vb|ts|tsx|js|jsx|java|kt|go|rs|cpp|c|h|hpp)(?::\d+(?::\d+)?)?.*\b(?:error|warning)\b/im.test(text)
+    || hasSourceDiagnosticLine(text)
     || /\b(?:Build FAILED|Cannot find name|not assignable to type|The build failed\.)\b/i.test(text)
   );
 }
