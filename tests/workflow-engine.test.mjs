@@ -3964,7 +3964,7 @@ describe("Session chaining - action.run_agent", () => {
       expect.objectContaining({
         eventType: "agent.started",
         executionKind: "agent",
-        executionKey: "agent:agent-ledger-node:codex",
+        executionKey: "agent:agent-ledger-node:auto",
       }),
     );
     expect(recordLedgerEvent).toHaveBeenCalledWith(
@@ -5608,7 +5608,9 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(diff?.executionDelta?.changed).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          executionId: "node:build",
+          executionKey: "node:build",
+          executionKind: "node",
+          nodeId: "build",
           baseStatus: NodeStatus.FAILED,
           comparisonStatus: NodeStatus.COMPLETED,
         }),
