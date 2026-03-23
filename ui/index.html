@@ -30,7 +30,20 @@
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <!-- Preload critical JS modules to parallelise with CSS -->
+  <link rel="modulepreload" href="/vendor/preact.js" />
+  <link rel="modulepreload" href="/vendor/preact-hooks.js" />
+  <link rel="modulepreload" href="/vendor/htm.js" />
+  <link rel="modulepreload" href="/vendor/preact-signals.js" />
+  <link rel="modulepreload" href="/app.js" />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <!-- Critical CSS: loaded as parallel <link> tags instead of @import waterfall -->
+  <link rel="stylesheet" href="/styles/variables.css" />
+  <link rel="stylesheet" href="/styles/base.css" />
+  <link rel="stylesheet" href="/styles/layout.css" />
+  <link rel="stylesheet" href="/styles/components.css" />
+  <link rel="stylesheet" href="/styles/animations.css" />
+  <link rel="stylesheet" href="/styles/workspace-switcher.css" />
   <link rel="stylesheet" href="/styles.css" />
   <link rel="stylesheet" href="/styles/kanban.css" />
   <link rel="stylesheet" href="/styles/sessions.css" />
@@ -159,7 +172,6 @@
       const res = await fetch(url, {
         method: "GET",
         credentials: "include",
-        cache: "no-store",
       });
       if (res.status === 401 || res.status === 403) {
         throw new Error(`Session expired or unauthorized (HTTP ${res.status}). Re-open Bosun with a fresh authenticated URL.`);

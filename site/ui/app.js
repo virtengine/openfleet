@@ -341,8 +341,13 @@ import {
 } from "./components/command-palette.js";
 import { VoiceOverlay } from "./modules/voice-overlay.js";
 
+/* ── Tab imports (eager — loaded with app.js) ── */
+import { DashboardTab } from "./tabs/dashboard.js";
+import { ChatTab } from "./tabs/chat.js";
+
 /* ── Lazy tab loader ── */
 const _lazyTabCache = {};
+const _dynamicImport = window.importShim || Function("u", "return import(u)");
 function LazyTab({ loader, fallback, ...props }) {
   const [Comp, setComp] = useState(_lazyTabCache[loader.key] || null);
   const [err, setErr] = useState(null);
@@ -360,27 +365,27 @@ function LazyTab({ loader, fallback, ...props }) {
   if (!Comp) return fallback || html`<div style="display:flex;justify-content:center;padding:3rem"><${CircularProgress} /></div>`;
   return html`<${Comp} ...${props} />`;
 }
-function lazyTab(importFn, exportName) {
-  const loader = () => importFn().then((m) => ({ default: exportName ? m[exportName] : m.default || Object.values(m)[0] }));
-  loader.key = importFn.toString().slice(0, 80);
+function lazyTab(tabPath, exportName) {
+  const loader = () => {
+    return _dynamicImport(tabPath).then((m) => ({ default: exportName ? m[exportName] : m.default || Object.values(m)[0] }));
+  };
+  loader.key = tabPath;
   return (props) => html`<${LazyTab} loader=${loader} ...${props} />`;
 }
 
-/* ── Tab imports (lazy-loaded on first visit) ── */
-import { DashboardTab } from "./tabs/dashboard.js";
-const TasksTab = lazyTab(() => import("./tabs/tasks.js"), "TasksTab");
-const BenchmarksTab = lazyTab(() => import("./tabs/benchmarks.js"), "BenchmarksTab");
-import { ChatTab } from "./tabs/chat.js";
-const AgentsTab = lazyTab(() => import("./tabs/agents.js"), "AgentsTab");
-const FleetSessionsTab = lazyTab(() => import("./tabs/agents.js"), "FleetSessionsTab");
-const InfraTab = lazyTab(() => import("./tabs/infra.js"), "InfraTab");
-const ControlTab = lazyTab(() => import("./tabs/control.js"), "ControlTab");
-const LogsTab = lazyTab(() => import("./tabs/logs.js"), "LogsTab");
-const TelemetryTab = lazyTab(() => import("./tabs/telemetry.js"), "TelemetryTab");
-const SettingsTab = lazyTab(() => import("./tabs/settings.js"), "SettingsTab");
-const WorkflowsTab = lazyTab(() => import("./tabs/workflows.js"), "WorkflowsTab");
-const LibraryTab = lazyTab(() => import("./tabs/library.js"), "LibraryTab");
-const ManualFlowsTab = lazyTab(() => import("./tabs/manual-flows.js"), "ManualFlowsTab");
+/* ── Lazy tab definitions ── */
+const TasksTab = lazyTab("./tabs/tasks.js", "TasksTab");
+const BenchmarksTab = lazyTab("./tabs/benchmarks.js", "BenchmarksTab");
+const AgentsTab = lazyTab("./tabs/agents.js", "AgentsTab");
+const FleetSessionsTab = lazyTab("./tabs/agents.js", "FleetSessionsTab");
+const InfraTab = lazyTab("./tabs/infra.js", "InfraTab");
+const ControlTab = lazyTab("./tabs/control.js", "ControlTab");
+const LogsTab = lazyTab("./tabs/logs.js", "LogsTab");
+const TelemetryTab = lazyTab("./tabs/telemetry.js", "TelemetryTab");
+const SettingsTab = lazyTab("./tabs/settings.js", "SettingsTab");
+const WorkflowsTab = lazyTab("./tabs/workflows.js", "WorkflowsTab");
+const LibraryTab = lazyTab("./tabs/library.js", "LibraryTab");
+const ManualFlowsTab = lazyTab("./tabs/manual-flows.js", "ManualFlowsTab");
 
 /* ── Shared components ── */
 

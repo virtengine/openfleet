@@ -74,7 +74,6 @@ import {
 } from "../components/forms.js";
 import { KanbanBoard } from "../components/kanban-board.js";
 import { VoiceMicButton, VoiceMicButtonInline } from "../modules/voice.js";
-import { openWorkflowRunsView } from "./workflows.js";
 import {
   workspaces as managedWorkspaces,
   activeWorkspaceId,
@@ -1212,7 +1211,11 @@ export function buildTaskWorkflowRunStatusLine(run) {
 
 export async function openTaskWorkflowRun(run, deps = {}) {
   const navigate = deps.navigateTo || navigateTo;
-  const openRuns = deps.openWorkflowRunsView || openWorkflowRunsView;
+  let openRuns = deps.openWorkflowRunsView;
+  if (!openRuns) {
+    const wfMod = await import("./workflows.js");
+    openRuns = wfMod.openWorkflowRunsView;
+  }
   const workflowId = String(run?.workflowId || "").trim();
   const runId = String(run?.runId || "").trim();
   if (!runId) return false;
