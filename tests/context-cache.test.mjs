@@ -330,11 +330,11 @@ describe("context-cache", () => {
       });
 
       expect(result._liveCompacted).toBe(true);
-      expect(result._liveCompactionFamily).toBe("test");
+      expect(result._liveCompactionFamily).toBe("build");
       expect(result._liveCompactionPolicy).toBeDefined();
-      expect(result._liveCompactionPolicy.family).toBe("test");
+      expect(result._liveCompactionPolicy.family).toBe("build");
       expect(result._liveCompactionPolicy.budget.decision).toBe("inline_summary");
-      expect(result._liveCompactionPolicy.why.join(" ")).toContain("family:test");
+      expect(result._liveCompactionPolicy.why.join(" ")).toContain("family:build");
       expect(result.aggregated_output).toContain("CS1002");
     });
 
