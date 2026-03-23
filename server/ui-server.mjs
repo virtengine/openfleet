@@ -5368,7 +5368,11 @@ function resolveUiCachePath(fileName) {
 }
 
 function isValidSessionToken(token) {
-  return /^[a-f0-9]{64}$/i.test(String(token || ""));
+  const s = String(token || "");
+  if (!/^[a-f0-9]{64}$/i.test(s)) return false;
+  // Reject zero-entropy tokens (all identical characters, e.g. "aaaa…")
+  if (/^(.)\1+$/.test(s)) return false;
+  return true;
 }
 
 function readPersistedSessionToken() {
