@@ -621,6 +621,11 @@ export async function loadExecutor() {
 /** Load tasks with current filter/page/sort → tasksData + tasksTotalPages */
 export async function loadTasks(options = {}) {
   const append = Boolean(options?.append);
+  // When doing a full (non-append) refresh, always reset to page 0 so we
+  // don't accidentally fetch a stale later page and overwrite the full list.
+  if (!append && tasksPage.value !== 0) {
+    tasksPage.value = 0;
+  }
   const params = new URLSearchParams({
     page: String(tasksPage.value),
     pageSize: String(tasksPageSize.value),
