@@ -56,6 +56,39 @@ const backendDown = signal(false);
 const backendError = signal("");
 const backendLastSeen = signal(null);
 const backendRetryCount = signal(0);
+
+// ── Visibility-aware polling ────────────────────────────────────────────────
+// When the browser tab is hidden, slow all polling to save network/CPU.
+const _pageVisible = signal(true);
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    _pageVisible.value = document.visibilityState === "visible";
+  });
+}
+
+/**
+ * Drop-in replacement for setInterval that pauses when the tab is hidden.
+ * Returns a cleanup function (call it to clear the interval).
+ */
+function visibilityInterval(fn, ms) {
+  let id = null;
+  let hiddenId = null;
+  const HIDDEN_MULTIPLIER = 10; // 10× slower when hidden
+  function start() {
+    stop();
+    id = setInterval(fn, _pageVisible.value ? ms : ms * HIDDEN_MULTIPLIER);
+  }
+  function stop() {
+    if (id != null) { clearInterval(id); id = null; }
+    if (hiddenId != null) { clearInterval(hiddenId); hiddenId = null; }
+  }
+  const onVisChange = () => { start(); if (_pageVisible.value) fn(); };
+  document.addEventListener("visibilitychange", onVisChange);
+  start();
+  return () => { stop(); document.removeEventListener("visibilitychange", onVisChange); };
+}
+// Export for tabs to use
+globalThis.__bosunVisibilityInterval = visibilityInterval;
 const DESKTOP_MIN_WIDTH = 1400;
 const TABLET_MIN_WIDTH = 768;
 const COMPACT_NAV_MAX_WIDTH = 520;
@@ -308,20 +341,46 @@ import {
 } from "./components/command-palette.js";
 import { VoiceOverlay } from "./modules/voice-overlay.js";
 
-/* ── Tab imports ── */
+/* ── Lazy tab loader ── */
+const _lazyTabCache = {};
+function LazyTab({ loader, fallback, ...props }) {
+  const [Comp, setComp] = useState(_lazyTabCache[loader.key] || null);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    if (_lazyTabCache[loader.key]) { setComp(() => _lazyTabCache[loader.key]); return; }
+    let cancelled = false;
+    loader().then((mod) => {
+      const C = mod.default || Object.values(mod)[0];
+      _lazyTabCache[loader.key] = C;
+      if (!cancelled) setComp(() => C);
+    }).catch((e) => { if (!cancelled) setErr(e); });
+    return () => { cancelled = true; };
+  }, [loader]);
+  if (err) return html`<div style="padding:2rem;color:#ef4444">Failed to load tab: ${err.message}</div>`;
+  if (!Comp) return fallback || html`<div style="display:flex;justify-content:center;padding:3rem"><${CircularProgress} /></div>`;
+  return html`<${Comp} ...${props} />`;
+}
+function lazyTab(importFn, exportName) {
+  const loader = () => importFn().then((m) => ({ default: exportName ? m[exportName] : m.default || Object.values(m)[0] }));
+  loader.key = importFn.toString().slice(0, 80);
+  return (props) => html`<${LazyTab} loader=${loader} ...${props} />`;
+}
+
+/* ── Tab imports (lazy-loaded on first visit) ── */
 import { DashboardTab } from "./tabs/dashboard.js";
-import { TasksTab } from "./tabs/tasks.js";
-import { BenchmarksTab } from "./tabs/benchmarks.js";
+const TasksTab = lazyTab(() => import("./tabs/tasks.js"), "TasksTab");
+const BenchmarksTab = lazyTab(() => import("./tabs/benchmarks.js"), "BenchmarksTab");
 import { ChatTab } from "./tabs/chat.js";
-import { AgentsTab, FleetSessionsTab } from "./tabs/agents.js";
-import { InfraTab } from "./tabs/infra.js";
-import { ControlTab } from "./tabs/control.js";
-import { LogsTab } from "./tabs/logs.js";
-import { TelemetryTab } from "./tabs/telemetry.js";
-import { SettingsTab } from "./tabs/settings.js";
-import { WorkflowsTab } from "./tabs/workflows.js";
-import { LibraryTab } from "./tabs/library.js";
-import { ManualFlowsTab } from "./tabs/manual-flows.js";
+const AgentsTab = lazyTab(() => import("./tabs/agents.js"), "AgentsTab");
+const FleetSessionsTab = lazyTab(() => import("./tabs/agents.js"), "FleetSessionsTab");
+const InfraTab = lazyTab(() => import("./tabs/infra.js"), "InfraTab");
+const ControlTab = lazyTab(() => import("./tabs/control.js"), "ControlTab");
+const LogsTab = lazyTab(() => import("./tabs/logs.js"), "LogsTab");
+const TelemetryTab = lazyTab(() => import("./tabs/telemetry.js"), "TelemetryTab");
+const SettingsTab = lazyTab(() => import("./tabs/settings.js"), "SettingsTab");
+const WorkflowsTab = lazyTab(() => import("./tabs/workflows.js"), "WorkflowsTab");
+const LibraryTab = lazyTab(() => import("./tabs/library.js"), "LibraryTab");
+const ManualFlowsTab = lazyTab(() => import("./tabs/manual-flows.js"), "ManualFlowsTab");
 
 /* ── Shared components ── */
 
@@ -465,8 +524,8 @@ function useBackendHealth() {
 
   useEffect(() => {
     checkHealth();
-    intervalRef.current = setInterval(checkHealth, 15000);
-    return () => clearInterval(intervalRef.current);
+    const cleanup = visibilityInterval(checkHealth, 15000);
+    return cleanup;
   }, [checkHealth]);
 
   // If WS reconnects, consider backend up
@@ -1013,10 +1072,10 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
     };
 
     fetchLogs();
-    const interval = setInterval(fetchLogs, 12000);
+    const cleanup = visibilityInterval(fetchLogs, 12000);
     return () => {
       active = false;
-      clearInterval(interval);
+      cleanup();
     };
   }, [isSessionTab, sessionId, session?.taskId, session?.branch, lifecycle.isActive]);
 
@@ -1070,10 +1129,10 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
     };
 
     fetchInsights();
-    const interval = setInterval(fetchInsights, 10000);
+    const cleanup = visibilityInterval(fetchInsights, 10000);
     return () => {
       active = false;
-      clearInterval(interval);
+      cleanup();
     };
   }, [isSessionTab, sessionId, workspaceHint]);
 

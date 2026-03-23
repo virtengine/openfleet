@@ -11,7 +11,11 @@ import { resolve, extname, dirname, basename, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { arch as osArch, platform as osPlatform } from "node:os";
+import { gzip as zlibGzip } from "node:zlib";
+import { promisify } from "node:util";
 import Ajv2020 from "ajv/dist/2020.js";
+
+const gzipAsync = promisify(zlibGzip);
 
 const {
   createHash,
@@ -22,6 +26,62 @@ const {
   argon2: nodeArgon2,
 } = nodeCrypto;
 const argon2 = typeof nodeArgon2 === "function" ? nodeArgon2 : null;
+
+// ── Response compression + caching helpers ──────────────────────────────────
+const GZIP_MIN_BYTES = 1024;
+const COMPRESSIBLE_TYPES = /^(text\/|application\/json|application\/javascript|image\/svg)/;
+
+function acceptsGzip(req) {
+  return String(req?.headers?.["accept-encoding"] || "").includes("gzip");
+}
+
+async function compressAndSend(req, res, statusCode, headers, body) {
+  const buf = typeof body === "string" ? Buffer.from(body) : body;
+  const ct = headers["Content-Type"] || "";
+  if (buf.length >= GZIP_MIN_BYTES && COMPRESSIBLE_TYPES.test(ct) && acceptsGzip(req)) {
+    try {
+      const compressed = await gzipAsync(buf);
+      res.writeHead(statusCode, { ...headers, "Content-Encoding": "gzip", "Vary": "Accept-Encoding" });
+      res.end(compressed);
+      return;
+    } catch { /* fall through to uncompressed */ }
+  }
+  res.writeHead(statusCode, headers);
+  res.end(buf);
+}
+
+// Lightweight TTL cache for expensive API responses
+const _apiCache = new Map();
+function getCachedApiResponse(key, ttlMs) {
+  const entry = _apiCache.get(key);
+  if (!entry) return undefined;
+  if (Date.now() - entry.ts > ttlMs) { _apiCache.delete(key); return undefined; }
+  return entry.value;
+}
+function setCachedApiResponse(key, value) {
+  _apiCache.set(key, { ts: Date.now(), value });
+  if (_apiCache.size > 200) {
+    const oldest = _apiCache.keys().next().value;
+    _apiCache.delete(oldest);
+  }
+}
+function invalidateApiCache(prefix) {
+  for (const key of _apiCache.keys()) {
+    if (key.startsWith(prefix)) _apiCache.delete(key);
+  }
+}
+
+// Static file ETag + cache header helper
+function cacheControlForPath(pathname) {
+  if (pathname.endsWith(".html")) return "no-cache";
+  if (/\.(js|mjs|css|svg|png|jpg|jpeg|gif|webp|ico|woff2?)$/i.test(pathname)) {
+    return "public, max-age=3600, stale-while-revalidate=86400";
+  }
+  return "public, max-age=300";
+}
+function computeETag(data) {
+  return `"${createHash("md5").update(data).digest("hex").slice(0, 16)}"`;
+}
 
 function getLocalLanIp() {
   const nets = networkInterfaces();
@@ -2988,7 +3048,7 @@ async function handleVendor(req, res, url) {
 
   const headers = {
     "Content-Type": "application/javascript; charset=utf-8",
-    "Cache-Control": "no-store",
+    "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
     "Access-Control-Allow-Origin": "*",
   };
 
@@ -2997,8 +3057,13 @@ async function handleVendor(req, res, url) {
   if (existsSync(bundledPath)) {
     try {
       const data = await readFile(bundledPath);
-      res.writeHead(200, { ...headers, "X-Bosun-Vendor": "bundled" });
-      res.end(data);
+      const etag = computeETag(data);
+      if (req.headers["if-none-match"] === etag) {
+        res.writeHead(304, { ETag: etag });
+        res.end();
+        return;
+      }
+      await compressAndSend(req, res, 200, { ...headers, "X-Bosun-Vendor": "bundled", ETag: etag }, data);
       return;
     } catch { /* fall through */ }
   }
@@ -3008,8 +3073,13 @@ async function handleVendor(req, res, url) {
   if (localPath && existsSync(localPath)) {
     try {
       const data = await readFile(localPath);
-      res.writeHead(200, { ...headers, "X-Bosun-Vendor": "node_modules" });
-      res.end(data);
+      const etag = computeETag(data);
+      if (req.headers["if-none-match"] === etag) {
+        res.writeHead(304, { ETag: etag });
+        res.end();
+        return;
+      }
+      await compressAndSend(req, res, 200, { ...headers, "X-Bosun-Vendor": "node_modules", ETag: etag }, data);
       return;
     } catch (err) {
       textResponse(res, 500, `Vendor error: ${err.message}`);
@@ -3089,11 +3159,9 @@ async function handleEsmProxy(req, res, url) {
 
   const headers = {
     "Content-Type": "application/javascript; charset=utf-8",
-    "Cache-Control": "no-store",
+    "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
     "Access-Control-Allow-Origin": "*",
   };
-
-  // ── 1. Disk cache ──────────────────────────────────────────────────────────
   const cachePath = getEsmCachePath(name, cdnUrl);
   if (existsSync(cachePath)) {
     try {
@@ -3111,8 +3179,7 @@ async function handleEsmProxy(req, res, url) {
       if (hasUnsupportedCjsRuntime(finalBody)) {
         throw new Error("cached ESM bundle contains unsupported dynamic require runtime");
       }
-      res.writeHead(200, { ...headers, "X-Bosun-Esm": "cached" });
-      res.end(finalBody);
+      await compressAndSend(req, res, 200, { ...headers, "X-Bosun-Esm": "cached" }, finalBody);
       return;
     } catch { /* fall through to live fetch */ }
   }
@@ -3143,8 +3210,7 @@ async function handleEsmProxy(req, res, url) {
       console.warn(`[ui-server] esm cache write failed: ${cacheErr.message}`);
     }
 
-    res.writeHead(200, { ...headers, "X-Bosun-Esm": "fetched" });
-    res.end(body);
+    await compressAndSend(req, res, 200, { ...headers, "X-Bosun-Esm": "fetched" }, body);
   } catch (err) {
     console.warn(`[ui-server] esm proxy failed for ${name}: ${err.message}`);
     textResponse(
@@ -8004,12 +8070,26 @@ function jsonResponse(res, statusCode, payload) {
           diagnosticId,
         }
       : normalizedPayload;
-  const body = JSON.stringify(safePayload, null, 2);
-  res.writeHead(statusCode, {
+  const body = JSON.stringify(safePayload);
+  const headers = {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
-  });
-  res.end(body);
+    "Cache-Control": "no-store",
+  };
+  const req = res.__bosunRequestContext?._req;
+  if (req && body.length >= GZIP_MIN_BYTES && acceptsGzip(req)) {
+    gzipAsync(Buffer.from(body)).then(
+      (compressed) => {
+        if (res.writableEnded) return;
+        res.writeHead(statusCode, { ...headers, "Content-Encoding": "gzip", "Vary": "Accept-Encoding" });
+        res.end(compressed);
+      },
+      () => { if (!res.writableEnded) { res.writeHead(statusCode, headers); res.end(body); } },
+    );
+  } else {
+    res.writeHead(statusCode, headers);
+    res.end(body);
+  }
 }
 
 function textResponse(res, statusCode, body, contentType = "text/plain") {
@@ -9952,7 +10032,11 @@ function broadcastUiEvent(channels, type, payload = {}) {
     broadcastTuiSessionsSnapshot(type, payload);
   }
   if (required.includes("tasks") && type !== "tasks:update") {
+    invalidateApiCache("tasks:");
     broadcastCanonicalEvent(["tasks", "tui"], "tasks:update", buildTasksUpdatePayload(payload, { sourceEvent: type }));
+  }
+  if (required.includes("status") || type.startsWith("status")) {
+    invalidateApiCache("status");
   }
 }
 
@@ -12286,8 +12370,12 @@ async function handleApi(req, res, url) {
     return;
   }
   if (path === "/api/status") {
+    const cached = getCachedApiResponse("status", 2000);
+    if (cached) { jsonResponse(res, 200, cached); return; }
     const data = await readStatusSnapshot();
-    jsonResponse(res, 200, { ok: true, data });
+    const payload = { ok: true, data };
+    setCachedApiResponse("status", payload);
+    jsonResponse(res, 200, payload);
     return;
   }
 
@@ -12759,6 +12847,9 @@ async function handleApi(req, res, url) {
   }
 
   if (path === "/api/tasks") {
+    const cacheKey = `tasks:${url.search}`;
+    const cached = getCachedApiResponse(cacheKey, 3000);
+    if (cached) { jsonResponse(res, 200, cached); return; }
     const status = url.searchParams.get("status") || "";
     const projectId = url.searchParams.get("project") || "";
     const workspaceQueryRaw = String(url.searchParams.get("workspace") || "").trim();
@@ -12857,7 +12948,7 @@ async function handleApi(req, res, url) {
       const slice = filtered.slice(start, start + pageSize);
       const enriched = await applySharedStateToTasks(slice);
       const withRuntime = enriched.map((task) => withTaskRuntimeSnapshot(task));
-      jsonResponse(res, 200, {
+      const responsePayload = {
         ok: true,
         data: withRuntime,
         page,
@@ -12867,7 +12958,9 @@ async function handleApi(req, res, url) {
         hasMore: start + slice.length < total,
         statusCounts,
         projectId: activeProject,
-      });
+      };
+      setCachedApiResponse(cacheKey, responsePayload);
+      jsonResponse(res, 200, responsePayload);
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -21540,12 +21633,12 @@ async function handleStatic(req, res, url) {
       if (existsSync(indexPath)) {
         try {
           const data = await readFile(indexPath);
-          res.writeHead(200, {
+          const headers = {
             "Content-Type": "text/html; charset=utf-8",
             "Access-Control-Allow-Origin": "*",
-            "Cache-Control": "no-store",
-          });
-          res.end(data);
+            "Cache-Control": "no-cache",
+          };
+          await compressAndSend(req, res, 200, headers, data);
           return;
         } catch (err) {
           textResponse(res, 500, `Failed to load /index.html: ${err.message}`);
@@ -21561,12 +21654,19 @@ async function handleStatic(req, res, url) {
     const ext = extname(filePath).toLowerCase();
     const contentType = MIME_TYPES[ext] || "application/octet-stream";
     const data = await readFile(filePath);
-    res.writeHead(200, {
+    const etag = computeETag(data);
+    if (req.headers["if-none-match"] === etag) {
+      res.writeHead(304, { ETag: etag });
+      res.end();
+      return;
+    }
+    const headers = {
       "Content-Type": contentType,
       "Access-Control-Allow-Origin": "*",
-      "Cache-Control": "no-store",
-    });
-    res.end(data);
+      "Cache-Control": cacheControlForPath(pathname),
+      "ETag": etag,
+    };
+    await compressAndSend(req, res, 200, headers, data);
   } catch (err) {
     textResponse(res, 500, `Failed to load ${pathname}: ${err.message}`);
   }
@@ -21690,6 +21790,7 @@ export async function startTelegramUiServer(options = {}) {
       method: String(req?.method || "GET").toUpperCase(),
       path: url.pathname,
       query: url.search || "",
+      _req: req,
     };
     const webhookPath = getGitHubWebhookPath();
 
