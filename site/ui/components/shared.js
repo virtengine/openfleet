@@ -45,7 +45,6 @@ import {
   ListItemText,
   ListItemSecondaryAction,
   IconButton,
-  Fade,
 } from "@mui/material";
 
 import { ICONS } from "../modules/icons.js";
@@ -227,7 +226,13 @@ export function SkeletonCard({ height = "80px", className = "" }) {
  * onSaveBeforeClose?: (() => Promise<boolean|{closed?: boolean}|void>)|null,
  * onDiscardBeforeClose?: (() => Promise<boolean|{closed?: boolean}|void>)|null,
  * activeOperationLabel?: string,
- * closeGuard?: boolean
+ * closeGuard?: boolean,
+ * layout?: "sheet"|"side-sheet",
+ * resizable?: boolean,
+ * defaultWidth?: number,
+ * minWidth?: number,
+ * maxWidth?: number,
+ * widthStorageKey?: string
  * }} props
  */
 export function Modal({
@@ -242,6 +247,12 @@ export function Modal({
   onDiscardBeforeClose = null,
   activeOperationLabel = "",
   closeGuard = true,
+  layout = "sheet",
+  resizable = false,
+  defaultWidth = 760,
+  minWidth = 440,
+  maxWidth = 1120,
+  widthStorageKey = "",
 }) {
   const [visible, setVisible] = useState(false);
   const contentRef = useRef(null);
@@ -249,6 +260,13 @@ export function Modal({
   const [dragY, setDragY] = useState(0);
   const [closePromptOpen, setClosePromptOpen] = useState(false);
   const [closePromptSaving, setClosePromptSaving] = useState(false);
+  const isSideSheet = layout === "side-sheet";
+  const [sheetWidth, setSheetWidth] = useState(() => {
+    const fallback = Number.isFinite(Number(defaultWidth)) ? Number(defaultWidth) : 760;
+    if (!isSideSheet || !widthStorageKey || typeof localStorage === "undefined") return fallback;
+    const stored = Number(localStorage.getItem(widthStorageKey));
+    return Number.isFinite(stored) ? stored : fallback;
+  });
   const scopedUnsavedCount = Number.isFinite(Number(unsavedChanges))
     ? Math.max(0, Number(unsavedChanges))
     : 0;
@@ -346,8 +364,43 @@ export function Modal({
   }, []);
 
   const isDragHandleTarget = useCallback((target) => (
-    Boolean(target?.closest?.(".modal-handle, .modal-header"))
-  ), []);
+    !isSideSheet && Boolean(target?.closest?.(".modal-handle, .modal-header"))
+  ), [isSideSheet]);
+
+  const persistSheetWidth = useCallback((nextWidth) => {
+    if (!widthStorageKey || typeof localStorage === "undefined") return;
+    try {
+      localStorage.setItem(widthStorageKey, String(nextWidth));
+    } catch {
+      /* ignore width persistence failures */
+    }
+  }, [widthStorageKey]);
+
+  const handleSheetResizeStart = useCallback((event) => {
+    if (!isSideSheet || !resizable) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = sheetWidth;
+    const minAllowed = Math.max(320, Number.isFinite(Number(minWidth)) ? Number(minWidth) : 440);
+    const maxAllowedBase = Number.isFinite(Number(maxWidth)) ? Number(maxWidth) : 1120;
+    const maxAllowed = typeof window !== "undefined"
+      ? Math.min(maxAllowedBase, Math.max(minAllowed, window.innerWidth - 48))
+      : maxAllowedBase;
+    let latestWidth = startWidth;
+    const onMove = (moveEvent) => {
+      const delta = startX - moveEvent.clientX;
+      latestWidth = Math.max(minAllowed, Math.min(maxAllowed, startWidth + delta));
+      setSheetWidth(latestWidth);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      persistSheetWidth(latestWidth);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [isSideSheet, maxWidth, minWidth, persistSheetWidth, resizable, sheetWidth]);
 
   const handleTouchStart = useCallback((e) => {
     if (!isDragHandleTarget(e.target)) return;
@@ -530,53 +583,62 @@ export function Modal({
   const dragStyle = dragY > 0
     ? `transform: translateY(${dragY}px); opacity: ${Math.max(0.2, 1 - dragY / 400)}`
     : "";
+  const contentStyle = [
+    dragStyle,
+    isSideSheet ? `--modal-sheet-width:${sheetWidth}px` : "",
+  ].filter(Boolean).join("; ");
 
   const content = html`
-    <${Fade} in=${visible} timeout=${300}>
+    <div
+      class="modal-overlay ${visible ? "modal-overlay-visible" : ""}"
+      onClick=${(e) => {
+        if (e.target === e.currentTarget) requestClose();
+      }}
+    >
       <div
-        class="modal-overlay ${visible ? "modal-overlay-visible" : ""}"
-        onClick=${(e) => {
-          if (e.target === e.currentTarget) requestClose();
-        }}
+        ref=${contentRef}
+        class="modal-content ${isSideSheet ? "modal-side-sheet" : ""} ${contentClassName} ${visible ? "modal-content-visible" : ""} ${dragY > 0 ? "modal-dragging" : ""}"
+        style=${contentStyle}
+        onClick=${(e) => e.stopPropagation()}
+        onTouchStart=${handleTouchStart}
+        onTouchMove=${handleTouchMove}
+        onTouchEnd=${handleTouchEnd}
+        onTouchCancel=${handleTouchCancel}
+        onPointerDown=${handlePointerDown}
+        onPointerMove=${handlePointerMove}
+        onPointerUp=${handlePointerEnd}
+        onPointerCancel=${handlePointerCancel}
       >
-        <div
-          ref=${contentRef}
-          class="modal-content ${contentClassName} ${visible ? "modal-content-visible" : ""} ${dragY > 0 ? "modal-dragging" : ""}"
-          style=${dragStyle}
-          onClick=${(e) => e.stopPropagation()}
-          onTouchStart=${handleTouchStart}
-          onTouchMove=${handleTouchMove}
-          onTouchEnd=${handleTouchEnd}
-          onTouchCancel=${handleTouchCancel}
-          onPointerDown=${handlePointerDown}
-          onPointerMove=${handlePointerMove}
-          onPointerUp=${handlePointerEnd}
-          onPointerCancel=${handlePointerCancel}
-        >
-          <div class="modal-header">
-            <div class="modal-handle"></div>
-            ${title ? html`<div class="modal-title">${title}</div>` : null}
-            <${IconButton}
-              className="modal-close-btn"
-              size="small"
-              onTouchStart=${(e) => e.stopPropagation()}
-              onPointerDown=${(e) => e.stopPropagation()}
-              onPointerUp=${(e) => e.stopPropagation()}
-              onMouseDown=${(e) => e.stopPropagation()}
-              onClick=${requestClose}
-              aria-label="Close"
-              sx=${{ position: "absolute", right: 8, top: 8, zIndex: 8, pointerEvents: "auto" }}
-            >
-              ${ICONS.close}
-            <//>
-          </div>
-          <div class="modal-body" onTouchStart=${handleBodyTouchStart}>
-            ${children}
-          </div>
-          ${footer ? html`<div class="modal-footer">${footer}</div>` : null}
+        ${isSideSheet && resizable
+          ? html`<div
+              class="modal-sheet-resizer"
+              onPointerDown=${handleSheetResizeStart}
+              title="Resize panel"
+            ></div>`
+          : null}
+        <div class="modal-header">
+          <div class="modal-handle"></div>
+          ${title ? html`<div class="modal-title">${title}</div>` : null}
+          <${IconButton}
+            className="modal-close-btn"
+            size="small"
+            onTouchStart=${(e) => e.stopPropagation()}
+            onPointerDown=${(e) => e.stopPropagation()}
+            onPointerUp=${(e) => e.stopPropagation()}
+            onMouseDown=${(e) => e.stopPropagation()}
+            onClick=${requestClose}
+            aria-label="Close"
+            sx=${{ position: "absolute", right: 8, top: 8, zIndex: 8, pointerEvents: "auto" }}
+          >
+            ${ICONS.close}
+          <//>
         </div>
+        <div class="modal-body" onTouchStart=${handleBodyTouchStart}>
+          ${children}
+        </div>
+        ${footer ? html`<div class="modal-footer">${footer}</div>` : null}
       </div>
-    </${Fade}>
+    </div>
   `;
 
   const guard = closePromptOpen

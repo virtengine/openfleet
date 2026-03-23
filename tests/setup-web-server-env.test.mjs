@@ -167,6 +167,35 @@ describe("setup web server non-blocking env defaults", () => {
     });
   });
 
+  it("normalizes direct Azure models endpoints to the stable api-version", () => {
+    const result = buildModelsProbeRequest({
+      apiKey: "azure-secret",
+      baseUrl: "https://example-resource.openai.azure.com/openai/models?api-version=2025-01-01-preview",
+    });
+
+    expect(result).toEqual({
+      endpoint: "https://example-resource.openai.azure.com/openai/models?api-version=2024-10-21",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": "azure-secret",
+      },
+    });
+  });
+
+  it("adds the required api-version when Azure models endpoint is pasted directly", () => {
+    const result = buildModelsProbeRequest({
+      apiKey: "azure-secret",
+      baseUrl: "https://example-resource.openai.azure.com/openai/models",
+    });
+
+    expect(result).toEqual({
+      endpoint: "https://example-resource.openai.azure.com/openai/models?api-version=2024-10-21",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": "azure-secret",
+      },
+    });
+  });
   it("preserves Azure v1 model routes without forcing the legacy api-version query", () => {
     const result = buildModelsProbeRequest({
       apiKey: "azure-secret",

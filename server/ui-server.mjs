@@ -17428,6 +17428,21 @@ if (path === "/api/agent-logs/context") {
     return;
   }
 
+  /* ── Resolve git repo cwd from ?repo= query param (path-traversal safe) ── */
+  function resolveGitRepoCwd(reqUrl) {
+    const repoParam = (reqUrl.searchParams.get("repo") || "").trim();
+    if (!repoParam) return process.cwd();
+    // Sanitize: allow only simple directory name (no slashes, dots, etc.)
+    const safeName = repoParam.replace(/[^a-zA-Z0-9_-]/g, "");
+    if (!safeName) return process.cwd();
+    const parentDir = resolve(process.cwd(), "..");
+    const candidate = resolve(parentDir, safeName);
+    // Ensure the resolved path is actually inside parentDir (prevent traversal)
+    if (!candidate.startsWith(parentDir)) return process.cwd();
+    if (existsSync(resolve(candidate, ".git"))) return candidate;
+    return process.cwd();
+  }
+
   if (path === "/api/git/diff") {
     try {
       const diff = runGit("diff --stat HEAD", 15000);
@@ -17438,14 +17453,42 @@ if (path === "/api/agent-logs/context") {
     return;
   }
 
+  /* ── Discover git repos in parent directory ── */
+  if (path === "/api/git/repos") {
+    try {
+      const parentDir = resolve(process.cwd(), "..");
+      const entries = readdirSync(parentDir, { withFileTypes: true });
+      const repos = [];
+      for (const ent of entries) {
+        if (!ent.isDirectory()) continue;
+        const fullPath = resolve(parentDir, ent.name);
+        if (existsSync(resolve(fullPath, ".git"))) {
+          repos.push({ name: ent.name, path: fullPath });
+        }
+      }
+      // Sort: current repo first, then alphabetical
+      const currentName = basename(process.cwd());
+      repos.sort((a, b) => {
+        if (a.name === currentName) return -1;
+        if (b.name === currentName) return 1;
+        return a.name.localeCompare(b.name);
+      });
+      jsonResponse(res, 200, { ok: true, data: repos });
+    } catch (err) {
+      jsonResponse(res, 200, { ok: true, data: [{ name: basename(process.cwd()), path: process.cwd() }], error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/recent-commits") {
     try {
       const maxCount = Math.min(100, Math.max(6, Number(url.searchParams.get("count") || "40")));
+      const gitCwd = resolveGitRepoCwd(url);
       // Return graph-friendly objects: full hash, parents (for branch lanes), decorate refs, author email
       const proc = spawnSync(
         "git",
         ["log", "--format=%H\x1f%P\x1f%s\x1f%an\x1f%ae\x1f%aI\x1f%D", `--max-count=${maxCount}`, "--all"],
-        { cwd: process.cwd(), encoding: "utf8", timeout: 15_000 },
+        { cwd: gitCwd, encoding: "utf8", timeout: 15_000 },
       );
       if (proc.status === 0 && (proc.stdout || "").trim()) {
         const commits = proc.stdout
@@ -17468,7 +17511,7 @@ if (path === "/api/agent-logs/context") {
         jsonResponse(res, 200, { ok: true, data: commits });
       } else {
         // Fallback: parse --oneline strings
-        const lines = getRecentCommits(process.cwd(), maxCount);
+        const lines = getRecentCommits(gitCwd, maxCount);
         const commits = lines.map((l) => {
           const sp = (l || "").indexOf(" ");
           return { hash: sp > 0 ? l.slice(0, sp) : l.slice(0, 40), shortHash: (l || "").slice(0, 7), parents: [], message: sp > 0 ? l.slice(sp + 1) : l, author: "", email: "", date: "", refs: [] };
@@ -17489,10 +17532,11 @@ if (path === "/api/agent-logs/context") {
         jsonResponse(res, 400, { ok: false, error: "Invalid commit hash" });
         return;
       }
+      const gitCwd = resolveGitRepoCwd(url);
       // Get commit metadata
       const metaProc = spawnSync(
         "git", ["show", "--no-patch", "--format=%H\x1f%P\x1f%s\x1f%b\x1f%an\x1f%ae\x1f%aI\x1f%D", commitHash],
-        { cwd: process.cwd(), encoding: "utf8", timeout: 10_000 },
+        { cwd: gitCwd, encoding: "utf8", timeout: 10_000 },
       );
       if (metaProc.status !== 0) {
         jsonResponse(res, 404, { ok: false, error: "Commit not found" });
@@ -17502,7 +17546,7 @@ if (path === "/api/agent-logs/context") {
       // Get file stats (numstat)
       const statProc = spawnSync(
         "git", ["diff-tree", "--no-commit-id", "-r", "--numstat", commitHash],
-        { cwd: process.cwd(), encoding: "utf8", timeout: 10_000 },
+        { cwd: gitCwd, encoding: "utf8", timeout: 10_000 },
       );
       const files = (statProc.stdout || "").trim().split("\n").filter(Boolean).map((line) => {
         const parts = line.split("\t");
@@ -17511,7 +17555,7 @@ if (path === "/api/agent-logs/context") {
       // Get the actual patch (limit size to prevent huge payloads)
       const patchProc = spawnSync(
         "git", ["diff-tree", "--no-commit-id", "-r", "-p", "--diff-filter=ACDMRT", commitHash],
-        { cwd: process.cwd(), encoding: "utf8", timeout: 15_000, maxBuffer: 2 * 1024 * 1024 },
+        { cwd: gitCwd, encoding: "utf8", timeout: 15_000, maxBuffer: 2 * 1024 * 1024 },
       );
       const rawPatch = (patchProc.stdout || "").slice(0, 1_500_000); // cap at ~1.5MB
       // Parse patch into file-level hunks

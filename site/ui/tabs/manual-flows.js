@@ -111,13 +111,13 @@ async function loadRuns() {
   }
 }
 
-async function executeFlow(templateId, formValues) {
+async function executeFlow(templateId, formValues, executionContext = {}) {
   executing.value = true;
   try {
     const data = await apiFetch("/api/manual-flows/execute", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ templateId, formValues }),
+      body: JSON.stringify({ templateId, formValues, executionContext }),
     });
     if (data?.run) {
       activeRun.value = data.run;
@@ -499,6 +499,17 @@ function FlowFormView({ template, onBack }) {
     }
     return defaults;
   });
+  const [workspaceRepos, setWorkspaceRepos] = useState([]);
+  const [targetRepo, setTargetRepo] = useState("");
+
+  useEffect(() => {
+    apiFetch("/api/workspaces/active/repos").then((data) => {
+      const repos = Array.isArray(data?.repos) ? data.repos : [];
+      setWorkspaceRepos(repos);
+      const primary = repos.find((repo) => repo.primary);
+      setTargetRepo(primary?.name || repos[0]?.name || "");
+    }).catch(() => {});
+  }, []);
 
   const handleFieldChange = useCallback((fieldId, value) => {
     setFormValues((prev) => ({ ...prev, [fieldId]: value }));
@@ -506,11 +517,13 @@ function FlowFormView({ template, onBack }) {
 
   const handleExecute = useCallback(async () => {
     haptic();
-    const run = await executeFlow(template.id, formValues);
+    const run = await executeFlow(template.id, formValues, {
+      repository: targetRepo || undefined,
+    });
     if (run) {
       activeRun.value = run;
     }
-  }, [template.id, formValues]);
+  }, [template.id, formValues, targetRepo]);
 
   const catMeta = getCategoryMeta(template.category);
 
@@ -545,6 +558,42 @@ function FlowFormView({ template, onBack }) {
         <${Typography} variant="subtitle2" fontWeight=${600} sx=${{ mb: 2 }}>
           Configuration
         </${Typography}>
+
+        <${Alert} severity="info" sx=${{ mb: 2 }}>
+          Manual flow templates are form-driven task/instruction builders.
+          Use the Workflow Launcher tab for the full node graph runtime with branches, loops, and run tracing.
+        </${Alert}>
+
+        ${workspaceRepos.length > 1 && html`
+          <${FormControl} fullWidth size="small" sx=${{ mb: 2 }}>
+            <${InputLabel}>Target Repository</${InputLabel}>
+            <${Select}
+              value=${targetRepo || ""}
+              label="Target Repository"
+              onChange=${(e) => setTargetRepo(e.target.value)}
+            >
+              ${workspaceRepos.map((repo) => html`
+                <${MenuItem} key=${repo.name} value=${repo.name}>
+                  <${Stack} direction="row" spacing=${1} alignItems="center">
+                    <span>${repo.name}</span>
+                    ${repo.primary && html`<${Chip} label="primary" size="small" sx=${{ height: 18, fontSize: "10px" }} />`}
+                  </${Stack}>
+                </${MenuItem}>
+              `)}
+            </${Select}>
+            <${Typography} variant="caption" color="text.secondary" sx=${{ mt: 0.5, ml: 1.5 }}>
+              This target is stored with the run and passed through to any task the template creates.
+            </${Typography}>
+          </${FormControl}>
+        `}
+        ${workspaceRepos.length === 1 && html`
+          <${Chip}
+            label=${`Repo: ${workspaceRepos[0]?.name || "default"}`}
+            size="small"
+            variant="outlined"
+            sx=${{ mb: 2, fontSize: "11px" }}
+          />
+        `}
 
         ${(template.fields || []).map(
           (field) => html`
@@ -595,23 +644,22 @@ function FlowFormView({ template, onBack }) {
 function RunResultCard({ run }) {
   if (!run) return null;
 
-  const statusColors = {
-    pending: "#f59e0b",
-    running: "#3b82f6",
-    completed: "#10b981",
-    failed: "#ef4444",
-  };
-  const statusColor = statusColors[run.status] || "#6b7280";
+  const statusStyles = getRunStatusBadgeStyles(run.status);
+  const repository = String(run?.metadata?.repository || run?.metadata?.targetRepo || "").trim();
+  const workspaceId = String(run?.metadata?.workspaceId || "").trim();
+  const mode = String(run?.result?.mode || run?.result?.action || "").trim();
+  const taskId = String(run?.result?.taskId || "").trim();
+  const instructions = String(run?.result?.instructions || "").trim();
 
   return html`
-    <${Paper} variant="outlined" sx=${{ p: 2.5, borderColor: statusColor + "40" }}>
+    <${Paper} variant="outlined" sx=${{ p: 2.5, borderColor: statusStyles.color + "40" }}>
       <${Stack} direction="row" alignItems="center" spacing=${1} sx=${{ mb: 1.5 }}>
         <${Chip}
           label=${run.status}
           size="small"
           sx=${{
-            background: statusColor + "20",
-            color: statusColor,
+            background: statusStyles.bg,
+            color: statusStyles.color,
             fontWeight: 600,
             fontSize: "11px",
             textTransform: "uppercase",
@@ -634,9 +682,14 @@ function RunResultCard({ run }) {
 
       ${run.result && html`
         <div>
-          ${run.result.mode && html`
+          ${mode && html`
             <${Typography} variant="body2" sx=${{ mb: 1 }}>
-              <strong>Mode:</strong> ${run.result.mode}
+              <strong>Mode:</strong> ${mode}
+            </${Typography}>
+          `}
+          ${(repository || workspaceId) && html`
+            <${Typography} variant="body2" sx=${{ mb: 0.5 }}>
+              <strong>Target:</strong> ${repository || "default repo"}${workspaceId ? ` · workspace ${workspaceId}` : ""}
             </${Typography}>
           `}
           ${run.result.filesScanned != null && html`
@@ -654,14 +707,14 @@ function RunResultCard({ run }) {
               <strong>Files needing warnings:</strong> ${run.result.filesNeedingWarn}
             </${Typography}>
           `}
-          ${run.result.taskId && html`
+          ${taskId && html`
             <${Alert} severity="info" sx=${{ mt: 1 }}>
-              Task dispatched: ${run.result.taskId}
+              Task dispatched: ${taskId}
             </${Alert}>
           `}
-          ${run.result.instructions && html`
+          ${instructions && html`
             <${Alert} severity="info" sx=${{ mt: 1 }}>
-              ${run.result.instructions}
+              ${instructions}
             </${Alert}>
           `}
           ${run.result.inventoryPath && html`
@@ -1035,10 +1088,15 @@ function TemplateListView() {
   return html`
     <div>
       <${Stack} direction="row" justifyContent="space-between" alignItems="center" sx=${{ mb: 2 }}>
-        <${Typography} variant="body2" color="text.secondary" sx=${{ maxWidth: "600px" }}>
-          One-shot transformations for your codebase. Pick a template, fill the form, and trigger.
-          Each flow runs once — annotate, generate skills, prepare configs, and more.
-        </${Typography}>
+        <div style="max-width: 760px;">
+          <${Typography} variant="body2" color="text.secondary">
+            One-shot form-based helpers for your codebase. These are not graph workflows:
+            each template either dispatches a Kanban task with templated fields or returns operator instructions.
+          </${Typography}>
+          <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block", mt: 0.75 }}>
+            Use this when you want a reusable intake form. Use Workflow Launcher for the full node canvas runtime with branches, joins, retries, and live run history.
+          </${Typography}>
+        </div>
         <${Stack} direction="row" spacing=${1}>
           <${Button}
             variant="contained"
@@ -1113,6 +1171,11 @@ function TemplateListView() {
         </${DialogTitle}>
         <${DialogContent} dividers>
           ${editorError && html`<${Alert} severity="error" sx=${{ mb: 2 }}>${editorError}</${Alert}>`}
+          <${Alert} severity="info" sx=${{ mb: 2 }}>
+            Manual templates define a form plus a single action.
+            "Dispatch Task" creates a Kanban task using the title, description, and labels below.
+            "Instructions-only" stores operator guidance but does not launch a node workflow.
+          </${Alert}>
 
           <${Stack} spacing=${1.5}>
             <${TextField}
@@ -2409,6 +2472,12 @@ function WfLaunchForm({ template, onBack }) {
                 <${Typography} variant="body2"><strong>Workflow ID:</strong> <code>${wfLaunchResult.value.workflowId}</code></${Typography}>
                 <${Typography} variant="body2"><strong>Run ID:</strong> <code>${wfLaunchResult.value.runId || "resolving..."}</code></${Typography}>
                 <${Typography} variant="body2"><strong>Mode:</strong> ${wfLaunchResult.value.mode}</${Typography}>
+                ${(targetRepo || wfLaunchResult.value?.targetRepo || wfLaunchResult.value?.repository) && html`
+                  <${Typography} variant="body2"><strong>Target Repo:</strong> ${targetRepo || wfLaunchResult.value?.targetRepo || wfLaunchResult.value?.repository}</${Typography}>
+                `}
+                ${wfLaunchResult.value?.workspaceId && html`
+                  <${Typography} variant="body2"><strong>Workspace:</strong> ${wfLaunchResult.value.workspaceId}</${Typography}>
+                `}
                 ${wfLaunchResult.value.dispatchedAt && html`
                   <${Typography} variant="caption" color="text.secondary">
                     Dispatched at ${new Date(wfLaunchResult.value.dispatchedAt).toLocaleString()}
@@ -2432,12 +2501,13 @@ function WfLaunchForm({ template, onBack }) {
                 </${Typography}>
                 <${Box} sx=${{
                   p: 1.5, borderRadius: 1,
-                  background: "rgba(0,0,0,0.2)",
+                  background: "var(--bg-secondary, rgba(0,0,0,0.2))",
+                  border: "1px solid var(--border, rgba(255,255,255,0.08))",
                   fontFamily: "monospace", fontSize: "0.8em",
                   maxHeight: 200, overflow: "auto",
                 }}>
                   ${Object.entries(wfLaunchResult.value.variables).map(([k, v]) => html`
-                    <div key=${k}><span style="color: #10b981">${k}</span>: ${JSON.stringify(v)}</div>
+                    <div key=${k}><span style="color: var(--accent-success, #10b981)">${k}</span>: ${JSON.stringify(v)}</div>
                   `)}
                 </${Box}>
               `}
@@ -2839,6 +2909,9 @@ function ManualWorkflowRunHistoryView({ onBack }) {
           <${Stack} spacing=${0.4} sx=${{ fontSize: "0.86rem" }}>
             <${Typography} variant="body2"><strong>Workflow ID:</strong> <code>${selectedRun.workflowId || "—"}</code></${Typography}>
             <${Typography} variant="body2"><strong>Run ID:</strong> <code>${selectedRun.runId || "—"}</code></${Typography}>
+            <${Typography} variant="body2"><strong>Target Repo:</strong> ${selectedRun.targetRepo || "—"}</${Typography}>
+            <${Typography} variant="body2"><strong>Workspace:</strong> ${selectedRun.detail?.data?.workspaceId || selectedRun.detail?.data?.workspace || "—"}</${Typography}>
+            <${Typography} variant="body2"><strong>Trigger:</strong> ${selectedRun.triggerSource || "manual"}${selectedRun.triggerEvent ? ` · ${selectedRun.triggerEvent}` : ""}</${Typography}>
             <${Typography} variant="body2"><strong>Started:</strong> ${formatDate(selectedRun.startedAt)} (${formatRelative(selectedRun.startedAt)})</${Typography}>
             <${Typography} variant="body2"><strong>Finished:</strong> ${finishedAt ? formatDate(finishedAt) : "Running"}</${Typography}>
             <${Typography} variant="body2"><strong>Duration:</strong> ${formatDuration(liveDuration)}</${Typography}>
@@ -2868,17 +2941,17 @@ function ManualWorkflowRunHistoryView({ onBack }) {
 
         <${Paper} variant="outlined" sx=${{ p: 2, mt: 1.5 }}>
           <${Typography} variant="subtitle2" sx=${{ mb: 1 }}>Run Logs (${logs.length})</${Typography}>
-          <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;color:#c9d1d9;background:#111827;border-radius:6px;padding:8px;max-height:320px;overflow:auto;">${safePrettyJson(logs)}</pre>
+          <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;color:var(--text-primary,#c9d1d9);background:var(--bg-secondary,#111827);border:1px solid var(--border,#2a3040);border-radius:6px;padding:8px;max-height:320px;overflow:auto;">${safePrettyJson(logs)}</pre>
         </${Paper}>
 
         <${Paper} variant="outlined" sx=${{ p: 2, mt: 1.5 }}>
           <${Typography} variant="subtitle2" sx=${{ mb: 1 }}>Errors (${errors.length})</${Typography}>
-          <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;color:#fca5a5;background:#111827;border-radius:6px;padding:8px;max-height:220px;overflow:auto;">${safePrettyJson(errors)}</pre>
+          <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;color:var(--destructive,#fca5a5);background:var(--bg-secondary,#111827);border:1px solid var(--border,#2a3040);border-radius:6px;padding:8px;max-height:220px;overflow:auto;">${safePrettyJson(errors)}</pre>
         </${Paper}>
 
         <${Paper} variant="outlined" sx=${{ p: 2, mt: 1.5 }}>
           <${Typography} variant="subtitle2" sx=${{ mb: 1 }}>Node Outputs</${Typography}>
-          <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;color:#c9d1d9;background:#111827;border-radius:6px;padding:8px;max-height:280px;overflow:auto;">${safePrettyJson(nodeOutputs)}</pre>
+          <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;color:var(--text-primary,#c9d1d9);background:var(--bg-secondary,#111827);border:1px solid var(--border,#2a3040);border-radius:6px;padding:8px;max-height:280px;overflow:auto;">${safePrettyJson(nodeOutputs)}</pre>
         </${Paper}>
       </div>
     `;
@@ -2978,6 +3051,9 @@ function ManualWorkflowRunHistoryView({ onBack }) {
                 </${Stack}>
                 <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block" }}>
                   Workflow: ${run.workflowId || "—"}
+                </${Typography}>
+                <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block" }}>
+                  Target: ${run.targetRepo || "default repo"}${run.detail?.data?.workspaceId ? ` · workspace ${run.detail.data.workspaceId}` : ""}
                 </${Typography}>
                 <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block" }}>
                   Run: ${run.runId || "—"}

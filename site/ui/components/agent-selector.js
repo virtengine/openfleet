@@ -53,9 +53,11 @@ export const agentMode = signal("ask"); // "ask" | "agent" | "plan" | "web" | "i
 
 /** Available agents loaded from API */
 export const availableAgents = signal([]); // Array<{ id, name, provider, available, busy, capabilities }>
+export const manualAgents = signal([]);
 
 /** Currently active agent adapter id */
 export const activeAgent = signal("codex-sdk");
+export const activeManualAgentId = signal("");
 
 /** Whether agent data is currently loading */
 export const agentSelectorLoading = signal(false);
@@ -71,6 +73,7 @@ try { if (typeof localStorage !== "undefined") yoloMode.value = localStorage.get
 /** Selected model override — empty string means "default" */
 export const selectedModel = signal("");
 try { if (typeof localStorage !== "undefined") selectedModel.value = localStorage.getItem("ve-selected-model") || ""; } catch {}
+try { if (typeof localStorage !== "undefined") activeManualAgentId.value = localStorage.getItem("ve-active-manual-agent") || ""; } catch {}
 
 /** Computed: resolved active agent object */
 export const activeAgentInfo = computed(() => {
@@ -90,6 +93,8 @@ const MODES = [
   { id: "web", label: "Web", icon: "globe", description: "Web-style quick answers" },
   { id: "instant", label: "Instant", icon: "zap", description: "Fast back-and-forth" },
 ];
+
+const VALID_MANUAL_MODES = new Set(MODES.map((mode) => mode.id));
 
 const AGENT_ICONS = {
   "codex-sdk": "zap",
@@ -394,8 +399,10 @@ export async function loadAvailableAgents() {
   try {
     const res = await apiFetch("/api/agents/available", { _silent: true });
     const agents = Array.isArray(res) ? res : (res?.agents || res?.data || []);
+    const nextManualAgents = Array.isArray(res?.manualAgents) ? res.manualAgents : [];
     const reportedActive = String(res?.active || "").trim();
     availableAgents.value = agents;
+    manualAgents.value = nextManualAgents;
     // Prefer backend-reported active selection when present.
     if (reportedActive && agents.some((a) => a.id === reportedActive)) {
       activeAgent.value = reportedActive;
@@ -403,6 +410,10 @@ export async function loadAvailableAgents() {
       // Otherwise keep UX predictable: pick first enabled executor, then first entry.
       const firstEnabled = agents.find((a) => a.available);
       activeAgent.value = (firstEnabled || agents[0]).id;
+    }
+    if (activeManualAgentId.value && !nextManualAgents.some((agent) => agent.id === activeManualAgentId.value)) {
+      activeManualAgentId.value = "";
+      try { localStorage.setItem("ve-active-manual-agent", ""); } catch {}
     }
   } catch (err) {
     console.warn("[agent-selector] Failed to load agents:", err);
@@ -417,6 +428,12 @@ export async function loadAvailableAgents() {
   } finally {
     agentSelectorLoading.value = false;
   }
+}
+
+function setActiveManualAgent(agentId) {
+  const nextId = String(agentId || "").trim();
+  activeManualAgentId.value = nextId;
+  try { localStorage.setItem("ve-active-manual-agent", nextId); } catch {}
 }
 
 /**
@@ -861,6 +878,115 @@ export function AgentPicker() {
   `;
 }
 
+export function ManualAgentPicker() {
+  const profiles = manualAgents.value;
+  const current = activeManualAgentId.value;
+  const [anchorEl, setAnchorEl] = useState(null);
+  const open = Boolean(anchorEl);
+
+  const grouped = profiles.reduce((acc, profile) => {
+    const key = String(profile?.sectionLabel || "Manual").trim() || "Manual";
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(profile);
+    return acc;
+  }, {});
+  const currentProfile = profiles.find((profile) => profile.id === current) || null;
+  const currentLabel = currentProfile?.name || "Manual Agent";
+
+  const handleSelect = useCallback((profileId) => {
+    const nextId = String(profileId || "").trim();
+    const selected = profiles.find((profile) => profile.id === nextId) || null;
+    setActiveManualAgent(nextId);
+    if (selected?.interactiveMode && VALID_MANUAL_MODES.has(selected.interactiveMode)) {
+      setAgentMode(selected.interactiveMode);
+    }
+    if (selected?.model) {
+      selectedModel.value = selected.model;
+      try { localStorage.setItem("ve-selected-model", selected.model); } catch {}
+    }
+    haptic(selected ? "light" : "medium");
+    setAnchorEl(null);
+  }, [profiles]);
+
+  return html`
+    <${Tooltip} title="Select a library-backed manual chat agent" arrow>
+      <${Chip}
+        label=${currentLabel}
+        size="small"
+        variant=${currentProfile ? "filled" : "outlined"}
+        onClick=${(e) => setAnchorEl(e.currentTarget)}
+        icon=${html`<span style="font-size:13px;line-height:1">${resolveIcon("bot")}</span>`}
+        sx=${{
+          flexShrink: 0,
+          cursor: "pointer",
+          fontSize: 12,
+          fontWeight: 500,
+          color: "var(--tg-theme-text-color, #fff)",
+          borderColor: open ? "var(--tg-theme-button-color, #3b82f6)" : "rgba(255,255,255,0.08)",
+          bgcolor: currentProfile ? "rgba(59,130,246,0.12)" : "transparent",
+          "&:hover": { bgcolor: "rgba(255,255,255,0.06)" },
+        }}
+      />
+    </${Tooltip}>
+    <${Menu}
+      anchorEl=${anchorEl}
+      open=${open}
+      onClose=${() => setAnchorEl(null)}
+      anchorOrigin=${{ vertical: "top", horizontal: "left" }}
+      transformOrigin=${{ vertical: "bottom", horizontal: "left" }}
+      slotProps=${{ paper: { sx: { ...muiDarkPaper, minWidth: 260 } } }}
+    >
+      <${MenuItem} selected=${!current} onClick=${() => handleSelect("")}>
+        <${ListItemIcon} sx=${{ minWidth: "28px !important" }}>
+          ${!current ? html`<${Typography} sx=${{ color: "var(--tg-theme-button-color, #3b82f6)", fontWeight: 700, fontSize: 14 }}>✓</${Typography}>` : null}
+        </${ListItemIcon}>
+        <${ListItemText}
+          primary="No manual profile"
+          secondary="Use only the executor + mode selection"
+          primaryTypographyProps=${{ fontSize: 13, fontWeight: 500 }}
+          secondaryTypographyProps=${{ fontSize: 11 }}
+        />
+      </${MenuItem}>
+      ${profiles.length > 0 ? html`<${Divider} />` : null}
+      ${Object.entries(grouped).map(([sectionLabel, items], sectionIndex) => html`
+        <div key=${sectionLabel}>
+          ${sectionIndex > 0 ? html`<${Divider} />` : null}
+          <${MenuItem} disabled sx=${{ opacity: 0.7, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 }}>
+            ${sectionLabel}
+          </${MenuItem}>
+          ${items.map((profile) => html`
+            <${MenuItem}
+              key=${profile.id}
+              selected=${profile.id === current}
+              onClick=${() => handleSelect(profile.id)}
+            >
+              <${ListItemIcon} sx=${{ minWidth: "28px !important" }}>
+                ${profile.id === current ? html`<${Typography} sx=${{ color: "var(--tg-theme-button-color, #3b82f6)", fontWeight: 700, fontSize: 14 }}>✓</${Typography}>` : null}
+              </${ListItemIcon}>
+              <${ListItemText}
+                primary=${profile.name}
+                secondary=${profile.description || profile.interactiveMode || profile.agentCategory || "Manual agent"}
+                primaryTypographyProps=${{ fontSize: 13, fontWeight: 500 }}
+                secondaryTypographyProps=${{ fontSize: 11 }}
+              />
+            </${MenuItem}>
+          `)}
+        </div>
+      `)}
+      ${profiles.length === 0 ? html`
+        <${MenuItem} disabled>
+          <${ListItemText}
+            primary="No manual agents"
+            secondary="Mark an interactive agent as visible in chat from the Library tab."
+            primaryTypographyProps=${{ fontSize: 13, fontWeight: 500 }}
+            secondaryTypographyProps=${{ fontSize: 11 }}
+          />
+        </${MenuItem}>
+      ` : null}
+    </${Menu}>
+  `;
+}
+
 /* ═══════════════════════════════════════════════
  *  AgentStatusBadge
  *  MUI Chip showing agent runtime state
@@ -1016,6 +1142,7 @@ export function ChatInputToolbar() {
     <div class="chat-input-toolbar">
       <${AgentPicker} />
       <${AgentModeSelector} />
+      <${ManualAgentPicker} />
       <${ModelPicker} />
       <${YoloToggle} />
       <${Box} sx=${{ flex: 1, minWidth: 8 }} />

@@ -44,12 +44,34 @@ globalThis.addEventListener?.("unhandledrejection", (e) => {
   maybeRemountUi(message);
 });
 
-import { h, render as preactRender, Component } from "preact";
+import { h as _h, render as preactRender, Component, options as _preactOptions, Fragment as _PreactFragment } from "preact";
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import { signal } from "@preact/signals";
 import htm from "htm";
 
+// Wrap h() to guard against Array/invalid types reaching createElementNS
+function h(type, props, ...rest) {
+  if (Array.isArray(type)) {
+    console.warn("[h-guard] Array passed as element type — rendering as Fragment", type.length, "items");
+    return _h(_PreactFragment, null, ...type);
+  }
+  return _h(type, props, ...rest);
+}
 const html = htm.bind(h);
+
+// Guard: catch invalid VNode types before they hit createElementNS.
+// An array type causes "Failed to execute 'createElementNS': invalid character '['".
+(function installVnodeTypeGuard() {
+  const prev = _preactOptions.vnode;
+  _preactOptions.vnode = (vnode) => {
+    if (Array.isArray(vnode.type)) {
+      console.warn("[vnode-guard] Array used as element type — converting to Fragment. Items:", vnode.type.length);
+      vnode.props = { children: vnode.type };
+      vnode.type = _PreactFragment;
+    }
+    if (prev) prev(vnode);
+  };
+})();
 
 // ── Visibility-aware polling ──
 // Pauses or slows intervals 10× when tab is hidden; resumes immediately on focus.

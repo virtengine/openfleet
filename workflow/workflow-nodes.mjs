@@ -5686,27 +5686,6 @@ registerBuiltinNodeType("validation.tests", {
     const timeout = node.config?.timeoutMs || 600000;
 
     ctx.log(node.id, `Running tests: ${command}`);
-    const isolatedRun = await maybeRunWorkflowCommandInIsolation({
-      node,
-      ctx,
-      engine,
-      nodeType: "validation.tests",
-      command,
-      cwd,
-      timeoutMs: timeout,
-      commandType: "test",
-    });
-    if (isolatedRun) {
-      return {
-        passed:
-          isolatedRun.isolated?.blocked !== true &&
-          Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
-        exitCode: isolatedRun.isolated?.exitCode ?? null,
-        blocked: isolatedRun.isolated?.blocked === true,
-        ...isolatedRun.compacted,
-        ...isolatedRun.extras,
-      };
-    }
     const startedAt = Date.now();
     const isolatedRun = await maybeRunWorkflowCommandInIsolation({
       node,
@@ -5806,39 +5785,6 @@ registerBuiltinNodeType("validation.build", {
       ctx.log(node.id, `Normalized legacy command for portability: ${command}`);
     }
     ctx.log(node.id, `Building: ${command}`);
-    const isolatedRun = await maybeRunWorkflowCommandInIsolation({
-      node,
-      ctx,
-      engine,
-      nodeType: "validation.build",
-      command,
-      cwd,
-      timeoutMs: timeout,
-      commandType: "build",
-    });
-    if (isolatedRun) {
-      const combinedOutput = `${isolatedRun.isolated?.stdout || ""}\n${isolatedRun.isolated?.stderr || ""}`;
-      const hasWarnings = /warning/i.test(combinedOutput);
-      if (node.config?.zeroWarnings && hasWarnings) {
-        return {
-          passed: false,
-          reason: "warnings_found",
-          exitCode: isolatedRun.isolated?.exitCode ?? 0,
-          blocked: isolatedRun.isolated?.blocked === true,
-          ...isolatedRun.compacted,
-          ...isolatedRun.extras,
-        };
-      }
-      return {
-        passed:
-          isolatedRun.isolated?.blocked !== true &&
-          Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
-        exitCode: isolatedRun.isolated?.exitCode ?? null,
-        blocked: isolatedRun.isolated?.blocked === true,
-        ...isolatedRun.compacted,
-        ...isolatedRun.extras,
-      };
-    }
     const startedAt = Date.now();
     const isolatedRun = await maybeRunWorkflowCommandInIsolation({
       node,
