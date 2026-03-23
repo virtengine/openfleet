@@ -39,6 +39,7 @@ import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, emitSkillInvokeEvent, findRelevantSkills } from "../agent/bosun-skills.mjs";
 import { readBenchmarkModeState, taskMatchesBenchmarkMode } from "../bench/benchmark-mode.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
+import { runInIsolatedRunner } from "../infra/container-runner.mjs";
 import { recordWorktreeRecoveryEvent } from "../infra/worktree-recovery-state.mjs";
 import {
   appendKnowledgeEntry,
@@ -1452,52 +1453,100 @@ async function compactWorkflowCommandResult({
   };
 }
 
-async function executeValidationCommandWithOptionalRunner({
+function buildIsolatedRunnerResultExtras(result, lane) {
+  const artifacts = Array.isArray(result?.artifacts) ? result.artifacts : [];
+  return {
+    isolatedRunner: {
+      lane: lane?.lane || "main",
+      reason: lane?.reason || "unknown",
+      provider: result?.provider || null,
+      leaseId: result?.leaseId || null,
+      artifactRoot: result?.artifactRoot || null,
+      attempts: result?.attempts || 1,
+      blocked: result?.blocked === true,
+      artifacts,
+    },
+    artifactRoot: result?.artifactRoot || null,
+    artifacts,
+    artifactPaths: artifacts.map((artifact) => artifact.path).filter(Boolean),
+    artifactRetrieveCommands: artifacts
+      .map((artifact) => artifact.retrieveCommand)
+      .filter(Boolean),
+  };
+}
+
+function resolveWorkflowCommandLane({ nodeType, commandType, command, engine }) {
+  const scheduler = engine?.services?.scheduler;
+  if (scheduler && typeof scheduler.selectWorkflowLane === "function") {
+    return scheduler.selectWorkflowLane({ nodeType, commandType, command });
+  }
+
+  const normalizedNodeType = String(nodeType || "").trim();
+  if (['validation.tests', 'validation.build', 'validation.lint'].includes(normalizedNodeType)) {
+    return { lane: "isolated", reason: `workflow_node:${normalizedNodeType}`, heavy: true };
+  }
+
+  const normalizedCommandType = String(commandType || "").trim();
+  if (["test", "build", "qualityGate"].includes(normalizedCommandType)) {
+    return { lane: "isolated", reason: `command_type:${normalizedCommandType}`, heavy: true };
+  }
+
+  const rawCommand = String(command || "");
+  if (/(?:\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|\b(?:npm|pnpm|yarn|bun)\s+run\s+build\b|\b(?:npm|pnpm|yarn|bun)\s+run\s+lint\b|\bpre-?push\b|\bgit\s+diff\b|\bvitest\b|\bjest\b|\btsc\b)/i.test(rawCommand)) {
+    return { lane: "isolated", reason: "command_pattern:default", heavy: true };
+  }
+
+  return { lane: "main", reason: "lightweight", heavy: false };
+}
+
+async function maybeRunWorkflowCommandInIsolation({
   node,
   ctx,
+  engine,
   nodeType,
   command,
+  args = [],
   cwd,
   timeoutMs,
+  env = {},
+  commandType = "",
+  sessionType = "flow",
 } = {}) {
-  const runnerPolicy = resolveHeavyRunnerPolicy({
-    nodeType,
-    command,
-    timeoutMs,
-    runner: node.config?.runner || null,
-  });
-  if (runnerPolicy.lane !== "runner-pool") return null;
+  const lane = resolveWorkflowCommandLane({ nodeType, commandType, command, engine });
+  if (lane?.lane !== "isolated") return null;
 
-  ctx.log(node.id, `Offloading ${runnerPolicy.intent || "validation"} to isolated ${runnerPolicy.runtime} runner pool`);
-  const run = await runCommandInHeavyRunnerLease({
+  ctx.log(node.id, `Offloading ${commandType || nodeType} to isolated runner (${lane.reason})`);
+  const runner = engine?.services?.isolatedRunner;
+  const execute = typeof runner?.run === "function" ? runner.run.bind(runner) : runInIsolatedRunner;
+  const isolated = await execute({
     command,
+    args,
     cwd,
     timeoutMs,
-    intent: runnerPolicy.intent,
-    runtime: runnerPolicy.runtime,
-    retries: runnerPolicy.retries,
-    artifactRoot: runnerPolicy.artifactDir,
-    commandPrefix: runnerPolicy.commandPrefix,
-    runner: node.config?.runner || null,
-    nodeType,
+    env,
+    requestType: commandType || nodeType,
+    taskId: `${node.id || nodeType || "validation"}`,
+    metadata: {
+      nodeId: node.id || null,
+      nodeType,
+      commandType,
+    },
   });
   const compacted = await compactWorkflowCommandResult({
     command,
-    output: run.stdout || "",
-    stderr: run.stderr || "",
-    exitCode: Number.isFinite(Number(run.exitCode)) ? Number(run.exitCode) : (run.ok ? 0 : 1),
-    durationMs: Number.isFinite(Number(run.durationMs)) ? Number(run.durationMs) : 0,
+    args,
+    output: isolated?.stdout || "",
+    stderr: isolated?.stderr || isolated?.error || "",
+    exitCode: isolated?.exitCode,
+    durationMs: isolated?.duration,
+    sessionType,
   });
 
   return {
-    run,
+    lane,
+    isolated,
     compacted,
-    baseResult: {
-      executionLane: runnerPolicy.lane,
-      executionLaneReason: runnerPolicy.reason,
-      runnerLease: run.lease || null,
-      runnerArtifactPointers: Array.isArray(run.artifactPointers) ? run.artifactPointers : [],
-    },
+    extras: buildIsolatedRunnerResultExtras(isolated, lane),
   };
 }
 
@@ -5483,6 +5532,98 @@ Respond with exactly one of:
   },
 });
 
+function formatWorkflowArtifactRetrieveCommand(filePath, platform = process.platform) {
+  const normalizedPath = String(filePath || "");
+  if (!normalizedPath) return null;
+  if (platform === "win32") {
+    return `Get-Content -Raw "${normalizedPath.replace(/"/g, '""')}"`;
+  }
+  return `cat '${normalizedPath.replace(/'/g, `'"'"'`)}'`;
+}
+
+function buildHeavyRunnerResultExtras(result, lane) {
+  const artifacts = Array.isArray(result?.artifactPointers)
+    ? result.artifactPointers.map((artifact) => ({
+        label: artifact?.label || artifact?.kind || null,
+        path: artifact?.path || null,
+        retrieveCommand: artifact?.retrieveCommand || formatWorkflowArtifactRetrieveCommand(artifact?.path),
+      }))
+    : [];
+  const firstArtifactPath = artifacts.find((artifact) => artifact?.path)?.path || null;
+  const artifactRoot = firstArtifactPath ? dirname(firstArtifactPath) : null;
+  return {
+    isolatedRunner: {
+      lane: lane?.lane || result?.lease?.lane || "runner-pool",
+      reason: lane?.reason || result?.failureKind || "unknown",
+      provider: result?.lease?.runtime || null,
+      leaseId: result?.lease?.leaseId || null,
+      artifactRoot,
+      attempts: result?.attempts || result?.lease?.attempts || result?.lease?.attempt || 1,
+      blocked: result?.blocked === true,
+      artifacts,
+    },
+    artifactRoot,
+    artifacts,
+    artifactPaths: artifacts.map((artifact) => artifact.path).filter(Boolean),
+    artifactRetrieveCommands: artifacts
+      .map((artifact) => artifact.retrieveCommand)
+      .filter(Boolean),
+  };
+}
+
+async function executeValidationCommandWithOptionalRunner({
+  node,
+  ctx,
+  nodeType,
+  command,
+  cwd,
+  timeoutMs,
+} = {}) {
+  const runnerPolicy = resolveHeavyRunnerPolicy({
+    nodeType,
+    command,
+    timeoutMs,
+    runner: node.config?.runner || null,
+  });
+  if (runnerPolicy.lane !== "runner-pool") return null;
+
+  ctx.log(node.id, `Offloading ${runnerPolicy.intent || "validation"} to isolated ${runnerPolicy.runtime} runner pool`);
+  const run = await runCommandInHeavyRunnerLease({
+    command,
+    cwd,
+    timeoutMs,
+    intent: runnerPolicy.intent,
+    runtime: runnerPolicy.runtime,
+    retries: runnerPolicy.retries,
+    artifactRoot: runnerPolicy.artifactDir,
+    commandPrefix: runnerPolicy.commandPrefix,
+    runner: node.config?.runner || null,
+    nodeType,
+  });
+  const compacted = await compactWorkflowCommandResult({
+    command,
+    output: run.stdout || "",
+    stderr: run.stderr || "",
+    exitCode: Number.isFinite(Number(run.exitCode)) ? Number(run.exitCode) : (run.ok ? 0 : 1),
+    durationMs: Number.isFinite(Number(run.durationMs)) ? Number(run.durationMs) : 0,
+  });
+
+  return {
+    run,
+    compacted,
+    baseResult: {
+      executionLane: runnerPolicy.lane,
+      executionLaneReason: runnerPolicy.reason,
+      runnerLease: run.lease || null,
+      runnerArtifactPointers: Array.isArray(run.artifactPointers) ? run.artifactPointers : [],
+      ...buildHeavyRunnerResultExtras(run, {
+        lane: runnerPolicy.lane,
+        reason: runnerPolicy.reason,
+      }),
+    },
+  };
+}
+
 registerBuiltinNodeType("validation.tests", {
   describe: () => "Run test suite and verify results",
   schema: {
@@ -5503,13 +5644,36 @@ registerBuiltinNodeType("validation.tests", {
       },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const command = ctx.resolve(node.config?.command || "npm test");
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     const timeout = node.config?.timeoutMs || 600000;
 
     ctx.log(node.id, `Running tests: ${command}`);
     const startedAt = Date.now();
+    const isolatedRun = await maybeRunWorkflowCommandInIsolation({
+      node,
+      ctx,
+      engine,
+      nodeType: "validation.tests",
+      command,
+      cwd,
+      timeoutMs: timeout,
+      commandType: "test",
+    });
+    if (isolatedRun) {
+      return {
+        passed:
+          isolatedRun.isolated?.blocked !== true &&
+          Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
+        exitCode: isolatedRun.isolated?.exitCode ?? null,
+        blocked: isolatedRun.isolated?.blocked === true,
+        executionLane: isolatedRun.lane?.lane || "isolated",
+        executionLaneReason: isolatedRun.lane?.reason || "isolated",
+        ...isolatedRun.extras,
+        ...isolatedRun.compacted,
+      };
+    }
     const runnerExecution = await executeValidationCommandWithOptionalRunner({
       node,
       ctx,
@@ -5575,7 +5739,7 @@ registerBuiltinNodeType("validation.build", {
       },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const resolvedCommand = ctx.resolve(node.config?.command || "npm run build");
     const command = normalizeLegacyWorkflowCommand(resolvedCommand);
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
@@ -5586,6 +5750,43 @@ registerBuiltinNodeType("validation.build", {
     }
     ctx.log(node.id, `Building: ${command}`);
     const startedAt = Date.now();
+    const isolatedRun = await maybeRunWorkflowCommandInIsolation({
+      node,
+      ctx,
+      engine,
+      nodeType: "validation.build",
+      command,
+      cwd,
+      timeoutMs: timeout,
+      commandType: "build",
+    });
+    if (isolatedRun) {
+      const combinedOutput = `${isolatedRun.isolated?.stdout || ""}\n${isolatedRun.isolated?.stderr || ""}`;
+      const hasWarnings = /warning/i.test(combinedOutput);
+      if (node.config?.zeroWarnings && hasWarnings) {
+        return {
+          passed: false,
+          reason: "warnings_found",
+          exitCode: isolatedRun.isolated?.exitCode ?? 0,
+          blocked: isolatedRun.isolated?.blocked === true,
+          executionLane: isolatedRun.lane?.lane || "isolated",
+          executionLaneReason: isolatedRun.lane?.reason || "isolated",
+          ...isolatedRun.extras,
+          ...isolatedRun.compacted,
+        };
+      }
+      return {
+        passed:
+          isolatedRun.isolated?.blocked !== true &&
+          Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
+        exitCode: isolatedRun.isolated?.exitCode ?? null,
+        blocked: isolatedRun.isolated?.blocked === true,
+        executionLane: isolatedRun.lane?.lane || "isolated",
+        executionLaneReason: isolatedRun.lane?.reason || "isolated",
+        ...isolatedRun.extras,
+        ...isolatedRun.compacted,
+      };
+    }
     const runnerExecution = await executeValidationCommandWithOptionalRunner({
       node,
       ctx,
