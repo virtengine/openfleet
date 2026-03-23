@@ -1478,7 +1478,7 @@ function resolveWorkflowCommandLane({ nodeType, commandType, command, engine }) 
   }
 
   const normalizedNodeType = String(nodeType || "").trim();
-  if (["validation.tests", "validation.build", "validation.lint"].includes(normalizedNodeType)) {
+  if (['validation.tests', 'validation.build', 'validation.lint'].includes(normalizedNodeType)) {
     return { lane: "isolated", reason: `workflow_node:${normalizedNodeType}`, heavy: true };
   }
 
