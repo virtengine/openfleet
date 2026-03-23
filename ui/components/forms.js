@@ -236,6 +236,7 @@ export function SearchInput({
   onClear,
   disabled = false,
   inputRef,
+  onKeyDown,
 }) {
   return html`
     <${TextField}
@@ -244,6 +245,7 @@ export function SearchInput({
       placeholder=${placeholder}
       value=${value}
       onInput=${onInput}
+      onKeyDown=${onKeyDown}
       disabled=${disabled}
       inputRef=${inputRef}
       InputProps=${{

@@ -886,7 +886,9 @@ export class WorkflowContext {
 
     return template.replace(/\{\{([A-Za-z0-9_][A-Za-z0-9_.-]*)\}\}/g, (match, path) => {
       const value = resolvePathValue(path);
-      return value != null ? String(value) : match;
+      if (value == null) return match;
+      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+      try { return JSON.stringify(value); } catch { return String(value); }
     });
   }
 

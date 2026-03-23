@@ -665,5 +665,41 @@ describe("discoverProviders()", () => {
       }),
     );
   });
-});
 
+  it("falls back to basic CLI output when verbose model listing returns 400", async () => {
+    vi.resetModules();
+    mockCreateOpencodeClient.mockImplementation(() => {
+      throw new Error("sdk unavailable");
+    });
+
+    vi.doMock("node:child_process", () => ({
+      execFile: vi.fn((bin, args, opts, cb) => {
+        const callback = typeof opts === "function" ? opts : cb;
+        if (Array.isArray(args) && args.includes("--verbose")) {
+          callback(new Error("Failed to list models: 400"));
+          return;
+        }
+        callback(null, "openai/gpt-5\nanthropic/claude-sonnet\n", "");
+      }),
+      exec: vi.fn((command, opts, cb) => {
+        const callback = typeof opts === "function" ? opts : cb;
+        if (String(command).includes("--verbose")) {
+          callback(new Error("Failed to list models: 400"));
+          return;
+        }
+        callback(null, "openai/gpt-5\nanthropic/claude-sonnet\n", "");
+      }),
+    }));
+
+    const { discoverProviders } = await import("../shell/opencode-providers.mjs");
+    const snapshot = await discoverProviders({ force: true });
+
+    expect(snapshot.connectedIds).toEqual(["openai", "anthropic"]);
+    expect(snapshot.allModels).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ fullId: "openai/gpt-5", providerID: "openai", id: "gpt-5" }),
+        expect.objectContaining({ fullId: "anthropic/claude-sonnet", providerID: "anthropic", id: "claude-sonnet" }),
+      ]),
+    );
+  });
+});

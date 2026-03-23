@@ -1287,12 +1287,35 @@ export function AgentsTab() {
 
   const [expandedSlot, setExpandedSlot] = useState(null);
   const [selectedAgent, setSelectedAgent] = useState(null);
+  const [fleetSearch, setFleetSearch] = useState("");
+  const [sessionSearch, setSessionSearch] = useState("");
   const [isCompact, setIsCompact] = useState(() => {
     try { return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false; }
     catch { return false; }
   });
   const dispatchInputRef = useRef(null);
   const workspaceTarget = agentWorkspaceTarget.value;
+
+  const filteredSlots = useMemo(() => {
+    const q = fleetSearch.trim().toLowerCase();
+    if (!q) return slots;
+    return slots.filter((slot, i) => {
+      const blob = getFleetEntrySearchBlob({ slot, session: null });
+      return blob.includes(q);
+    });
+  }, [slots, fleetSearch]);
+
+  const allSessions = sessionsData.value || [];
+  const filteredSessions = useMemo(() => {
+    const q = sessionSearch.trim().toLowerCase();
+    if (!q) return allSessions;
+    return allSessions.filter((s) => {
+      const blob = [
+        s?.title, s?.taskTitle, s?.id, s?.taskId, s?.branch, s?.status,
+      ].map((p) => String(p || "").toLowerCase()).join(" ");
+      return blob.includes(q);
+    });
+  }, [allSessions, sessionSearch]);
 
   useEffect(() => {
     const current = selectedSessionId.value;
@@ -1585,8 +1608,15 @@ export function AgentsTab() {
                 ? `${activeSlots} active · ${freeSlots} free`
                 : "No active slots"}
             </div>
-            ${slots.length
-                ? slots.map(
+            <${TextField}
+              size="small" variant="outlined" placeholder="Filter by task, branch, status…"
+              value=${fleetSearch}
+              onInput=${(e) => setFleetSearch(e?.target?.value || "")}
+              fullWidth
+              sx=${{ mb: 1, "& .MuiInputBase-input": { fontSize: "0.82rem" } }}
+            />
+            ${filteredSlots.length
+                ? filteredSlots.map(
                     (slot, i) => html`
                     <div
                       key=${fleetSlotKey(i, slot)}
@@ -1690,11 +1720,61 @@ export function AgentsTab() {
                   </div>
                 `,
               )
-            : html`<${EmptyState} message=${activeSlots > 0
-              ? "Active slots reported, but slot details haven't arrived yet."
-              : "No active agents."} />`}
+            : html`<${EmptyState} message=${fleetSearch.trim()
+              ? "No slots match this search."
+              : activeSlots > 0
+                ? "Active slots reported, but slot details haven't arrived yet."
+                : "No active agents."} />`}
         <//>
       <//>
+      </div>
+
+      <div class="fleet-span">
+        <${Card} className="fleet-sessions-card">
+          <${Collapsible}
+            title=${`Sessions · ${allSessions.length} total`}
+            defaultOpen=${!isCompact}
+          >
+            <${TextField}
+              size="small" variant="outlined" placeholder="Filter sessions by title, ID, task…"
+              value=${sessionSearch}
+              onInput=${(e) => setSessionSearch(e?.target?.value || "")}
+              fullWidth
+              sx=${{ mb: 1, "& .MuiInputBase-input": { fontSize: "0.82rem" } }}
+            />
+            ${filteredSessions.length
+              ? filteredSessions.map((s) => html`
+                <div
+                  key=${s.id}
+                  class="task-card fleet-agent-card"
+                  style="cursor:pointer"
+                  onClick=${() => {
+                    haptic();
+                    selectedSessionId.value = s.id;
+                    navigateTo("agents");
+                  }}
+                >
+                  <div class="task-card-header">
+                    <div>
+                      <div class="task-card-title">
+                        <${StatusDot} status=${s.status || "idle"} />
+                        ${truncate(s.title || s.taskTitle || s.taskId || s.id || "(untitled)", 60)}
+                      </div>
+                      <div class="task-card-meta">
+                        ${s.id || "?"}
+                        ${s.taskId ? ` · ${s.taskId}` : ""}
+                        ${s.branch ? ` · ${s.branch}` : ""}
+                      </div>
+                    </div>
+                    <${Badge} status=${s.status || "idle"} text=${s.status || "idle"} />
+                  </div>
+                </div>
+              `)
+              : html`<${EmptyState} message=${sessionSearch.trim()
+                ? "No sessions match this search."
+                : "No sessions yet."} />`}
+          <//>
+        <//>
       </div>
 
       ${agents.length > 0 &&

@@ -15,6 +15,7 @@ import {
   normalizeTaskLifecycleStatus,
   classifyTaskLifecycleAction,
   mergeTaskRecords,
+  KANBAN_PAGE_SIZE,
 } from "../modules/state.js";
 import { apiFetch } from "../modules/api.js";
 import { haptic, showConfirm } from "../modules/telegram.js";
@@ -384,7 +385,7 @@ function queueBoardTasksRefresh() {
   // fetch only a later page and overwrite the full list, making tasks vanish.
   if (tasksPage) tasksPage.value = 0;
   setTimeout(() => {
-    void loadTasks();
+    void loadTasks({ pageSize: KANBAN_PAGE_SIZE });
   }, 500);
 }
 

@@ -2,12 +2,12 @@
  *  Tab: Control — executor, commands, routing, quick commands
  * ────────────────────────────────────────────────────────────── */
 import { h } from "preact";
-import { useState, useCallback, useEffect, useRef } from "preact/hooks";
+import { useState, useCallback, useEffect, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
 
 const html = htm.bind(h);
 
-import { Typography, Box, Stack, Card, CardContent, Button, IconButton, Chip, Divider, Paper, TextField, InputAdornment, CircularProgress, Alert, Tooltip, Switch, FormControlLabel, Dialog, DialogTitle, DialogContent, DialogActions, List, ListItem, ListItemButton, ListItemText, ListItemIcon, Menu, MenuItem, Tabs, Tab, Skeleton, Badge, Avatar, LinearProgress, Grid, Slider, Select } from "@mui/material";
+import { Typography, Box, Stack, Card as MuiCard, CardContent, Button, IconButton, Chip, Divider, Paper, TextField, InputAdornment, CircularProgress, Alert, Tooltip, Switch, FormControlLabel, Dialog, DialogTitle, DialogContent, DialogActions, List, ListItem, ListItemButton, ListItemText, ListItemIcon, Menu, MenuItem, Tabs, Tab, Skeleton, Badge as MuiBadge, Avatar, LinearProgress, Grid, Slider, Select } from "@mui/material";
 
 import { haptic, showConfirm } from "../modules/telegram.js";
 import { apiFetch, sendCommandToChat } from "../modules/api.js";
@@ -23,7 +23,7 @@ import { ICONS } from "../modules/icons.js";
 import { iconText as iconTextUtil } from "../modules/icon-utils.js";
 import { cloneValue, truncate } from "../modules/utils.js";
 import { SegmentedControl, Collapsible } from "../components/forms.js";
-import { SkeletonCard } from "../components/shared.js";
+import { Card, Badge, SkeletonCard } from "../components/shared.js";
 
 /* ─── Command registry for autocomplete ─── */
 const CMD_REGISTRY = [
@@ -134,6 +134,8 @@ export function ControlTab() {
   const [runningCmd, setRunningCmd] = useState(null);
   const [sendingCmd, setSendingCmd] = useState(false);
   const [expandedOutputs, setExpandedOutputs] = useState({});
+  const [historyFilter, setHistoryFilter] = useState("");
+  const [outputWrap, setOutputWrap] = useState(true);
   const pollRef = useRef(null);
   const isPaused = Boolean(executor?.paused || execData?.paused);
   const slotsLabel = `${execData?.activeSlots ?? 0}/${execData?.maxParallel ?? "—"}`;
@@ -554,6 +556,34 @@ export function ControlTab() {
     }
   }, [retryTaskId, refreshTaskOptions]);
 
+  const filteredHistory = useMemo(() => {
+    if (!historyFilter.trim()) return cmdHistory;
+    const q = historyFilter.toLowerCase();
+    return cmdHistory.filter((c) => c.toLowerCase().includes(q));
+  }, [cmdHistory, historyFilter]);
+
+  const copyOutput = useCallback((text) => {
+    try {
+      navigator.clipboard.writeText(text);
+      showToast("Copied to clipboard", "success");
+    } catch {
+      showToast("Copy failed", "error");
+    }
+  }, []);
+
+  const colorizeOutputLine = useCallback((line) => {
+    const lower = line.toLowerCase();
+    if (/\berror\b|\bfailed\b|\bfatal\b|\bpanic\b/.test(lower))
+      return "var(--color-error)";
+    if (/\bwarn\b|\bwarning\b/.test(lower))
+      return "var(--color-inreview)";
+    if (/\bsuccess\b|\b✓\b|\bdone\b|\bcompleted\b/.test(lower))
+      return "var(--color-done)";
+    if (/\bdebug\b|\btrace\b/.test(lower))
+      return "var(--text-hint)";
+    return "inherit";
+  }, []);
+
   return html`
     <div class="control-layout">
       ${!executor && !config && html`<${Card} title="Loading…" className="control-skeleton"><${SkeletonCard} /><//>`}
@@ -669,23 +699,38 @@ export function ControlTab() {
                 cmdHistory.length > 0 &&
                 html`
                   <div class="cmd-history-dropdown">
-                    ${cmdHistory.map(
-                      (c, i) => html`
-                        <${Button}
-                          key=${i}
-                          variant="text"
-                          size="small"
-                          className="cmd-history-item"
-                          onMouseDown=${(e) => {
-                            e.preventDefault();
-                            setCommandInput(c);
-                            setShowHistory(false);
-                          }}
-                        >
-                          ${c}
-                        <//>
-                      `,
-                    )}
+                    <div style="padding:4px 6px;border-bottom:1px solid var(--border);">
+                      <${TextField}
+                        size="small"
+                        variant="standard"
+                        placeholder="Filter history…"
+                        value=${historyFilter}
+                        onInput=${(e) => setHistoryFilter(e.target.value)}
+                        onMouseDown=${(e) => e.stopPropagation()}
+                        fullWidth
+                        InputProps=${{ sx: { fontSize: "0.8rem" } }}
+                      />
+                    </div>
+                    ${filteredHistory.length > 0
+                      ? filteredHistory.map(
+                          (c, i) => html`
+                            <${Button}
+                              key=${i}
+                              variant="text"
+                              size="small"
+                              className="cmd-history-item"
+                              onMouseDown=${(e) => {
+                                e.preventDefault();
+                                setCommandInput(c);
+                                setShowHistory(false);
+                                setHistoryFilter("");
+                              }}
+                            >
+                              ${c}
+                            <//>
+                          `,
+                        )
+                      : html`<div style="padding:8px;font-size:0.8rem;color:var(--text-secondary);text-align:center;">No matches</div>`}
                   </div>
                 `}
               </div>
@@ -746,7 +791,17 @@ export function ControlTab() {
                       </span>
                     <//>
                     ${expandedOutputs[idx] && html`
-                      <div class="cmd-output-panel">${entry.output}</div>
+                      <div style="display:flex;gap:4px;padding:4px 8px;border-bottom:1px solid var(--border);">
+                        <${Button} variant="text" size="small" onClick=${() => copyOutput(entry.output)}>Copy<//>
+                        <${Button} variant="text" size="small" onClick=${() => setOutputWrap((v) => !v)}>
+                          ${outputWrap ? "No Wrap" : "Wrap"}
+                        <//>
+                      </div>
+                      <div class="cmd-output-panel" style="white-space:${outputWrap ? 'pre-wrap' : 'pre'};overflow-x:${outputWrap ? 'visible' : 'auto'}">
+                        ${entry.output.split("\n").map((line, li) => html`
+                          <div key=${li} style="color:${colorizeOutputLine(line)}">${line}</div>
+                        `)}
+                      </div>
                     `}
                   </div>
                 `)}

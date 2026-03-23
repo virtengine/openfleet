@@ -1258,6 +1258,11 @@ function coerceTemplateVariableValue(rawValue, defaultValue) {
     return rawValue && typeof rawValue === "object" ? rawValue : defaultValue;
   }
   if (rawValue === undefined || rawValue === null) return defaultValue;
+  // Guard against objects being coerced to "[object Object]" when the
+  // default is a string (or when no type branch matched).
+  if (rawValue && typeof rawValue === "object") {
+    try { return JSON.stringify(rawValue); } catch { return defaultValue; }
+  }
   return String(rawValue);
 }
 

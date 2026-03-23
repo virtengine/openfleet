@@ -66,7 +66,6 @@ import {
 } from "./task-store.mjs";
 import { createErrorDetector } from "../infra/error-detector.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
-import { addSpanLink } from "../infra/tracing.mjs";
 import {
   getCompactDiffSummary,
   getRecentCommits,

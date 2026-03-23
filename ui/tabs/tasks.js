@@ -40,6 +40,7 @@ import {
   clearPendingChange,
   sanitizeTaskText,
   isPlaceholderTaskDescription,
+  KANBAN_PAGE_SIZE,
 } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
 import {
@@ -2678,6 +2679,18 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.workflowHistory,
     task?.workflows,
   ]);
+  const HISTORY_ROW_HEIGHT = 46;
+  const HISTORY_SCROLL_BUFFER = 16;
+  const historyFirstVisible = Math.floor(historyScrollTop / HISTORY_ROW_HEIGHT);
+  const historyStartIdx = Math.max(0, historyFirstVisible - HISTORY_SCROLL_BUFFER);
+  const historyVisibleCount = Math.ceil(historyViewportHeight / HISTORY_ROW_HEIGHT);
+  const historyEndIdx = Math.min(
+    historyEntries.length,
+    historyFirstVisible + historyVisibleCount + HISTORY_SCROLL_BUFFER,
+  );
+  const historyTopSpacer = historyStartIdx * HISTORY_ROW_HEIGHT;
+  const historyBottomSpacer = Math.max(0, (historyEntries.length - historyEndIdx) * HISTORY_ROW_HEIGHT);
+  const visibleHistoryEntries = historyEntries.slice(historyStartIdx, historyEndIdx);
   // ── Execution Plan state ──────────────────────────────────────────────────
   const [executionPlan, setExecutionPlan] = useState(null);
   const [executionPlanLoading, setExecutionPlanLoading] = useState(false);
@@ -2687,6 +2700,9 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   const [dryRunResults, setDryRunResults] = useState(null);
   const [fullScreen, setFullScreen] = useState(false);
   const [activeTab, setActiveTab] = useState("details");
+  const historyTableRef = useRef(null);
+  const [historyScrollTop, setHistoryScrollTop] = useState(0);
+  const [historyViewportHeight, setHistoryViewportHeight] = useState(320);
 
   const fetchExecutionPlan = useCallback((mode = "resolve") => {
     if (!task?.id) return;
@@ -2709,6 +2725,30 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     if (activeTab !== "execution") return;
     fetchExecutionPlan("resolve");
   }, [activeTab, fetchExecutionPlan]);
+
+  useEffect(() => {
+    if (activeTab !== "history") return;
+    const el = historyTableRef.current;
+    if (!el) return;
+    setHistoryViewportHeight(el.clientHeight || 320);
+    const onScroll = (event) => {
+      setHistoryScrollTop(event.target.scrollTop || 0);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    let resizeObserver = null;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          setHistoryViewportHeight(entry.contentRect.height || 320);
+        }
+      });
+      resizeObserver.observe(el);
+    }
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      if (resizeObserver) resizeObserver.disconnect();
+    };
+  }, [activeTab]);
 
   const handleOpenWorkflowRun = useCallback(async (run) => {
     try {
@@ -3898,14 +3938,18 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         <div class="task-section">
           <div class="task-section-title">Tracking Overview</div>
           <div class="task-section-body">
-            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;">
               <div class="task-comment-item">
                 <div class="task-comment-meta">Assigned Agents</div>
                 <div class="task-comment-body">${taskAgents.length ? taskAgents.join(" · ") : "No agent assignment recorded."}</div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>${taskAgents.length} linked</div>
               </div>
               <div class="task-comment-item">
                 <div class="task-comment-meta">Workflow Runs</div>
                 <div class="task-comment-body">${workflowRuns.length ? `${workflowRuns.length} linked runs` : "No workflow runs linked yet."}</div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${workflowRuns.filter((run) => String(run?.status || "").toLowerCase() === "failed").length} failed
+                </div>
               </div>
               <div class="task-comment-item">
                 <div class="task-comment-meta">Timeline Events</div>
@@ -4698,17 +4742,41 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       ${historyEntries.length > 0 ? html`
         <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">History Timeline</div>
-          <div class="task-comments-list">
-            ${historyEntries.map((entry, index) => html`
-              <div class="task-comment-item" key=${`history-${index}`}>
-                <div class="task-comment-meta">
-                  ${entry.timestamp ? formatRelative(entry.timestamp) : "Time unknown"}
-                  ${entry.source ? ` · ${entry.source}` : ""}
-                </div>
-                <div class="task-comment-body">${entry.label}</div>
-              </div>
-            `)}
-          </div>
+          <${TableContainer} ref=${historyTableRef} component=${Paper} variant="outlined" sx=${{ maxHeight: 360, overflow: "auto" }}>
+            <${Table} size="small" stickyHeader>
+              <${TableHead}>
+                <${TableRow}>
+                  <${TableCell}>When<//>
+                  <${TableCell}>Source<//>
+                  <${TableCell}>Event<//>
+                </${TableRow}>
+              <//>
+              <${TableBody}>
+                ${historyTopSpacer > 0
+                  ? html`<${TableRow}><${TableCell} colSpan=${3} sx=${{ p: 0, border: 0, height: `${historyTopSpacer}px` }} /><//>`
+                  : null}
+                ${visibleHistoryEntries.map((entry, index) => html`
+                  <${TableRow} key=${`history-${historyStartIdx + index}`} hover>
+                    <${TableCell} sx=${{ whiteSpace: "nowrap" }}>
+                      ${entry.timestamp ? formatRelative(entry.timestamp) : "Time unknown"}
+                    <//>
+                    <${TableCell}>
+                      <${Chip}
+                        size="small"
+                        variant="outlined"
+                        color="default"
+                        label=${entry.source || "system"}
+                      />
+                    <//>
+                    <${TableCell}>${entry.label}<//>
+                  </${TableRow}>
+                `)}
+                ${historyBottomSpacer > 0
+                  ? html`<${TableRow}><${TableCell} colSpan=${3} sx=${{ p: 0, border: 0, height: `${historyBottomSpacer}px` }} /><//>`
+                  : null}
+              <//>
+            </${Table}>
+          <//>
         </div>
       ` : ""}
 
@@ -4732,9 +4800,60 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       ${workflowRuns.length > 0 && html`
         <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">Workflow Activity</div>
-          <div class="task-comments-list">
-            ${workflowRuns.map((run, index) => renderWorkflowActivityCard(run, `wf-hist-${index}`))}
-          </div>
+          <${TableContainer} component=${Paper} variant="outlined">
+            <${Table} size="small" stickyHeader>
+              <${TableHead}>
+                <${TableRow}>
+                  <${TableCell}>Workflow<//>
+                  <${TableCell}>Run<//>
+                  <${TableCell}>Status<//>
+                  <${TableCell}>Timing<//>
+                  <${TableCell} align="right">Actions<//>
+                </${TableRow}>
+              <//>
+              <${TableBody}>
+                ${workflowRuns.map((run, index) => html`
+                  <${TableRow} key=${`wf-hist-${index}`} hover>
+                    <${TableCell}>
+                      <${Typography} variant="body2">${run.workflowName || run.workflowId || "workflow"}<//>
+                      ${run.nodeId ? html`<${Typography} variant="caption" color="text.secondary">Node: ${run.nodeId}<//>` : null}
+                    <//>
+                    <${TableCell}>
+                      <${Typography} variant="caption" sx=${{ fontFamily: "monospace" }}>
+                        ${run.runId || run.id || "-"}
+                      <//>
+                    <//>
+                    <${TableCell}>
+                      <${Chip}
+                        size="small"
+                        color=${statusChipColor(run.status || run.outcome || "default")}
+                        label=${run.status || run.outcome || "unknown"}
+                      />
+                    <//>
+                    <${TableCell}>
+                      <${Typography} variant="caption">
+                        ${run.startedAt ? formatRelative(run.startedAt) : (run.timestamp ? formatRelative(run.timestamp) : "Unknown")}
+                      <//>
+                    <//>
+                    <${TableCell} align="right">
+                      <${Stack} direction="row" spacing=${0.5} justifyContent="flex-end">
+                        ${run.hasRunLink ? html`
+                          <${Button} variant="outlined" size="small" onClick=${() => { void handleOpenWorkflowRun(run); }}>
+                            Open Run
+                          <//>
+                        ` : null}
+                        ${run.hasSessionLink ? html`
+                          <${Button} variant="text" size="small" onClick=${() => { void handleOpenWorkflowAgentHistory(run); }}>
+                            Agent
+                          <//>
+                        ` : null}
+                      <//>
+                    <//>
+                  </${TableRow}>
+                `)}
+              <//>
+            </${Table}>
+          <//>
         </div>
       `}
 
@@ -5463,7 +5582,7 @@ export function TasksTab() {
     setKanbanLoadingMore(true);
     if (tasksPage) tasksPage.value = page + 1;
     try {
-      await loadTasks({ append: true });
+      await loadTasks({ append: true, pageSize: KANBAN_PAGE_SIZE });
     } finally {
       setKanbanLoadingMore(false);
     }
