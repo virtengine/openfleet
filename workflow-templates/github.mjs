@@ -1058,7 +1058,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url';",
         "const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']);",
         "const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']);",
-        "const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']);",
+        "const CONFLICT_MERGEABLES=new Set(['CONFLICTING','DIRTY']);",
+        "const BEHIND_MERGEABLES=new Set(['BEHIND']);",
         "const SECURITY_CHECK_RE=/(^|[^a-z])(codeql|code scanning|security|sarif|codacy)([^a-z]|$)/i;",
         "function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();}",
         "function isFailedCheck(check){return FAIL_STATES.has(check?.conclusion||check?.state||'');}",
@@ -1132,7 +1133,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "    repoErrors.push({repo:repo||'current',error:String(e?.message||e)});",
         "  }",
         "}",
-        "const readyCandidates=[],conflicts=[],securityFailures=[],ciFailures=[],pending=[],drafted=[];",
+        "const readyCandidates=[],conflicts=[],securityFailures=[],ciFailures=[],pending=[],drafted=[],behindBranches=[];",
         "let newlyLabeled=0,staleLabelCleared=0,ciKicked=0;",
         "for(const pr of prs){",
         "  const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);",
@@ -1145,9 +1146,13 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  const hasSecurityFail=securityCheckNames.length>0;",
         "  const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));",
         "  const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());",
+        "  const isBehind=BEHIND_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());",
         "  const isDraft=pr.isDraft===true;",
         "  const repo=String(pr.__repo||'').trim();",
         "  if(isDraft){drafted.push({n:pr.number,repo});continue;}",
+        "  if(isBehind&&!isConflict){",
+        "    behindBranches.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});",
+        "  }",
         "  if(isConflict){",
         "    conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});",
         "    if(!hasFixLabel){",
@@ -1190,6 +1195,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  repoErrors,",
         "  readyCandidates,",
         "  conflicts,",
+        "  behindBranches,",
         "  securityFailures,",
         "  ciFailures,",
         "  pending:pending.length,",
@@ -1214,6 +1220,49 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "return (JSON.parse(o||'{}').total||0)>0;" +
         "}catch(e){return false;}})()",
     }, { x: 400, y: 370 }),
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // STEP 1b: Fast-path — update behind branches (no conflicts, just out-of-date)
+    // ─────────────────────────────────────────────────────────────────────────
+    node("has-behind", "condition.expression", "Behind Branches?", {
+      expression:
+        "(()=>{try{" +
+        "const o=$ctx.getNodeOutput('fetch-and-classify')?.output;" +
+        "return (JSON.parse(o||'{}').behindBranches||[]).length>0;" +
+        "}catch(e){return false;}})()",
+    }, { x: 400, y: 450 }),
+
+    node("update-behind-branches", "action.run_command", "Update Behind Branches", {
+      command: [
+        "node -e \"",
+        "const {execFileSync}=require('child_process');",
+        "const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||'');",
+        "const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})();",
+        "const behind=Array.isArray(payload.behindBranches)?payload.behindBranches:[];",
+        "let updated=0,failed=0;",
+        "for(const pr of behind){",
+        "  const repo=String(pr.repo||'').trim();",
+        "  if(!repo){console.log('skip PR '+pr.n+' — no repo slug');continue;}",
+        "  try{",
+        "    execFileSync('gh',['api','repos/'+repo+'/pulls/'+pr.n+'/update-branch','--method','PUT'],{encoding:'utf8',stdio:['pipe','pipe','pipe']});",
+        "    updated++;",
+        "    console.log('Updated PR #'+pr.n+' ('+repo+')');",
+        "  }catch(e){",
+        "    failed++;",
+        "    console.log('Failed to update PR #'+pr.n+' ('+repo+'): '+String(e.message||e).slice(0,200));",
+        "  }",
+        "}",
+        "console.log(JSON.stringify({updated,failed,total:behind.length}));",
+        "\"",
+      ].join(" "),
+      continueOnError: true,
+      failOnError: false,
+      timeout: 120000,
+      env: {
+        BOSUN_FETCH_AND_CLASSIFY:
+          "{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}",
+      },
+    }, { x: 600, y: 450 }),
 
     // ─────────────────────────────────────────────────────────────────────────
     // STEP 2a: Fix path — route security failures separately, then dispatch
@@ -1547,8 +1596,12 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
   edges: [
     edge("trigger",          "fetch-and-classify"),
     edge("fetch-and-classify","has-prs"),
-    edge("has-prs",          "fix-needed",      { condition: "$output?.result === true" }),
+    edge("has-prs",          "has-behind",      { condition: "$output?.result === true" }),
     edge("has-prs",          "no-prs",          { condition: "$output?.result !== true" }),
+    // Behind-branch fast-path: update out-of-date PRs without agent dispatch
+    edge("has-behind",       "update-behind-branches", { condition: "$output?.result === true", port: "yes" }),
+    edge("has-behind",       "fix-needed",      { condition: "$output?.result !== true", port: "no" }),
+    edge("update-behind-branches", "fix-needed"),
     // Fix path (security failures, then conflicts + non-security CI failures)
     edge("fix-needed",       "security-fix-needed", { condition: "$output?.result === true" }),
     edge("fix-needed",       "review-needed",       { condition: "$output?.result !== true" }),
@@ -1575,14 +1628,15 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     author: "bosun",
     version: 4,
     createdAt: "2025-07-01T00:00:00Z",
-    templateVersion: "2.2.0",
+    templateVersion: "2.3.0",
     tags: ["github", "pr", "ci", "merge", "watchdog", "bosun-attached", "safety"],
     replaces: {
       module: "agent-hooks.mjs",
       functions: ["registerBuiltinHooks (PostPR block)"],
       calledFrom: [],
       description:
-        "v2.2: Consolidates PR polling into one gh pr list fetch per target repo per cycle. " +
+        "v2.3: Adds fast-path update-branch for out-of-date (BEHIND) PRs without conflicts. " +
+        "Consolidates PR polling into one gh pr list fetch per target repo per cycle. " +
         "Uses deterministic-first remediation and review/merge command nodes; " +
         "agent execution is now fallback-only for unresolved conflicts or failed " +
         "automatic remediation attempts. All external PRs (no bosun-attached label) " +
