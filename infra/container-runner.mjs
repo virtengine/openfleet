@@ -106,12 +106,12 @@ function waitForLeaseRetry(delayMs) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, delayMs));
 }
 
-function formatArtifactRetrieveCommand(filePath) {
+export function formatArtifactRetrieveCommand(filePath, platform = process.platform) {
   const normalizedPath = String(filePath || "");
-  if (process.platform === "win32") {
+  if (platform === "win32") {
     return `Get-Content -Raw "${normalizedPath.replace(/"/g, '""')}"`;
   }
-  return `cat "${normalizedPath.replace(/"/g, '\\"')}"`;
+  return `cat '${normalizedPath.replace(/'/g, `'"'"'`)}'`;
 }
 
 function buildIsolatedArtifactRoot(cwd) {
