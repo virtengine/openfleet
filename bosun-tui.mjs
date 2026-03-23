@@ -1,102 +1,144 @@
 #!/usr/bin/env node
 
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
-import React from "react";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import loadConfig from "./config/config.mjs";
+import { resolveWebSocketProtocol } from "./tui/lib/ws-bridge.mjs";
+
+const MIN_COLUMNS = 120;
+const MIN_ROWS = 30;
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-function readVersion() {
-  return JSON.parse(readFileSync(resolve(__dirname, "package.json"), "utf8")).version;
-}
-
 function showHelp() {
-  const version = readVersion();
-
+  const version = JSON.parse(readFileSync(resolve(__dirname, "package.json"), "utf8")).version;
   console.log(`
   bosun-tui v${version}
-  Terminal User Interface for Bosun
+  Terminal UI for Bosun
 
   USAGE
-    bosun-tui [options]
+    bosun tui [options]
+    node bosun-tui.mjs [options]
 
   OPTIONS
-    --port <n>         UI server port to connect (default: 3080 or TELEGRAM_UI_PORT env)
-    --host <host>      UI server host (default: localhost)
-    --connect          Connect to existing UI server (don't start monitor)
-    --screen <name>    Initial screen (tasks|agents|status)
-    --refresh <ms>     Stats refresh interval (default: 2000ms)
-    --help             Show this help
-    --version          Show version
+    --host <host>       WebSocket host (default: 127.0.0.1)
+    --port <n>          WebSocket/UI port (default: TELEGRAM_UI_PORT or 3080)
+    --screen <name>     Initial screen (agents|tasks|logs|workflows|telemetry|settings|help)
+    --help              Show this help
+    --version           Show version
   `);
 }
 
-function getArgValue(flag, defaultValue = "") {
-  const args = process.argv.slice(2);
-  const match = args.find((arg) => arg.startsWith(`${flag}=`));
-  if (match) return match.slice(flag.length + 1).trim();
-  const idx = args.indexOf(flag);
-  if (idx >= 0 && args[idx + 1] && !args[idx + 1].startsWith("--")) {
-    return args[idx + 1].trim();
+function getArgValue(args, flag, defaultValue = "") {
+  const inline = args.find((arg) => arg.startsWith(`${flag}=`));
+  if (inline) return inline.slice(flag.length + 1).trim();
+  const index = args.indexOf(flag);
+  if (index >= 0 && args[index + 1] && !args[index + 1].startsWith("--")) {
+    return args[index + 1].trim();
   }
   return defaultValue;
 }
 
-function getArgFlag(flag) {
-  return process.argv.slice(2).includes(flag);
+function hasFlag(args, ...flags) {
+  return flags.some((flag) => args.includes(flag));
 }
 
-function ensureTty() {
-  if (process.env.NODE_NO_TTY === "1" || !process.stdout.isTTY || !process.stdin.isTTY) {
-    console.error("[bosun-tui] Not a TTY");
-    process.exit(1);
-  }
+function getTerminalSize(stdout = process.stdout) {
+  return {
+    columns: Math.max(0, Number(stdout?.columns || 0)),
+    rows: Math.max(0, Number(stdout?.rows || 0)),
+  };
 }
 
-async function main() {
-  const args = process.argv.slice(2);
+function resolvePort(config) {
+  return Number(process.env.TELEGRAM_UI_PORT || process.env.BOSUN_PORT || config?.telegramUiPort || "3080") || 3080;
+}
 
-  if (getArgFlag("--help") || args.includes("-h")) {
+function renderApp(instance, React, App, props) {
+  instance.rerender(React.createElement(App, props));
+}
+
+export async function runBosunTui(argv = process.argv.slice(2), options = {}) {
+  const stdout = options.stdout || process.stdout;
+  const stderr = options.stderr || process.stderr;
+  const args = Array.isArray(argv) ? argv : [];
+
+  if (hasFlag(args, "--help", "-h")) {
     showHelp();
-    process.exit(0);
+    return 0;
   }
 
-  if (getArgFlag("--version") || args.includes("-v")) {
-    console.log(`bosun-tui v${readVersion()}`);
-    process.exit(0);
+  if (hasFlag(args, "--version", "-v")) {
+    const version = JSON.parse(readFileSync(resolve(__dirname, "package.json"), "utf8")).version;
+    console.log(`bosun-tui v${version}`);
+    return 0;
   }
 
-  ensureTty();
+  if (!stdout?.isTTY) {
+    stderr.write("[bosun-tui] Error: stdout is not a TTY. Run `bosun tui` in an interactive terminal.\n");
+    return 1;
+  }
 
-  const port = Number(getArgValue("--port", process.env.TELEGRAM_UI_PORT || "3080")) || 3080;
-  const host = getArgValue("--host", "localhost");
-  const connectOnly = getArgFlag("--connect");
-  const initialScreen = getArgValue("--screen", "status");
-  const refreshMs = Number(getArgValue("--refresh", "2000")) || 2000;
+  globalThis.WebSocket = globalThis.WebSocket || (await import("ws")).WebSocket;
 
-  console.log("[bosun-tui] Starting...");
-  console.log(`[bosun-tui] Connecting to ${host}:${port}`);
+  const config = loadConfig([process.argv[0], __filename, ...args]);
+  const configDir = String(config?.configDir || process.env.BOSUN_DIR || resolve(process.cwd(), ".bosun")).trim();
+  const host = getArgValue(args, "--host", "127.0.0.1");
+  const port = Number(getArgValue(args, "--port", String(resolvePort(config)))) || resolvePort(config);
+  const protocol = getArgValue(
+    args,
+    "--protocol",
+    resolveWebSocketProtocol({ configDir }),
+  );
+  const initialScreen = getArgValue(args, "--screen", "agents");
+
+  const React = await import("react");
+  const ink = await import("ink");
+  const { default: App } = await import("./ui/tui/App.js");
+
+  let terminalSize = getTerminalSize(stdout);
+  const props = {
+    config,
+    configDir,
+    host,
+    port,
+    protocol,
+    initialScreen,
+    terminalSize,
+  };
+
+  const instance = ink.render(React.createElement(App, props), { exitOnCtrlC: true });
+
+  const onResize = () => {
+    terminalSize = getTerminalSize(stdout);
+    renderApp(instance, React, App, { ...props, terminalSize });
+  };
+
+  stdout.on?.("resize", onResize);
 
   try {
-    const { render } = await import("ink");
-    const { default: App } = await import("./tui/app.mjs");
-    const app = render(
-      React.createElement(App, {
-        host,
-        port,
-        connectOnly,
-        initialScreen,
-        refreshMs,
-      }),
-    );
-    await app.waitUntilExit();
-  } catch (err) {
-    console.error(`[bosun-tui] Failed to start: ${err.message}`);
-    console.log("[bosun-tui] Ensure bosun is running or use --connect to connect to an existing UI server");
-    process.exit(1);
+    if (typeof instance.waitUntilExit === "function") {
+      await instance.waitUntilExit();
+    }
+    return 0;
+  } finally {
+    stdout.off?.("resize", onResize);
   }
 }
 
-main();
+if (process.argv[1] && resolve(process.argv[1]) === __filename) {
+  runBosunTui(process.argv.slice(2))
+    .then((code) => {
+      process.exit(code ?? 0);
+    })
+    .catch((error) => {
+      console.error(`[bosun-tui] Failed to start: ${error?.message || error}`);
+      process.exit(1);
+    });
+}
+
+

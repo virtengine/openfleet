@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { resolveTuiAuthToken as resolveSharedTuiAuthToken } from "../../infra/tui-bridge.mjs";
@@ -15,6 +16,27 @@ function defaultConfigDir() {
 function normalizeProtocol(protocol) {
 	const value = String(protocol || "").trim().toLowerCase();
 	return value === "wss" ? "wss" : "ws";
+}
+
+function readUiInstanceLock(configDir = defaultConfigDir()) {
+	try {
+		const lockPath = resolve(configDir, ".cache", "ui-server.instance.lock.json");
+		if (!existsSync(lockPath)) return null;
+		const parsed = JSON.parse(readFileSync(lockPath, "utf8"));
+		if (!parsed || typeof parsed !== "object") return null;
+		return parsed;
+	} catch {
+		return null;
+	}
+}
+
+function resolveWebSocketProtocol({ protocol, configDir } = {}) {
+	const explicit = String(protocol || "").trim().toLowerCase();
+	if (explicit === "ws" || explicit === "wss") {
+		return explicit;
+	}
+	const instance = readUiInstanceLock(configDir);
+	return String(instance?.protocol || "").trim().toLowerCase() === "https" ? "wss" : "ws";
 }
 
 function resolveTuiAuthToken(options = {}) {
@@ -58,7 +80,7 @@ class TuiWsBridge {
 		this._url = buildTuiWebSocketUrl({
 			host,
 			port,
-			protocol,
+			protocol: resolveWebSocketProtocol({ protocol, configDir: this.configDir }),
 			token: resolveTuiAuthToken({ configDir: this.configDir }),
 		});
 	}
@@ -75,7 +97,7 @@ class TuiWsBridge {
 			this._url = buildTuiWebSocketUrl({
 				host: this.host,
 				port: this.port,
-				protocol: this.protocol,
+				protocol: resolveWebSocketProtocol({ protocol: this.protocol, configDir: this.configDir }),
 				token: resolveTuiAuthToken({ configDir: this.configDir }),
 			});
 			this.ws = new this.WebSocketImpl(this._url);
@@ -87,7 +109,6 @@ class TuiWsBridge {
 					channels: ["monitor", "stats", "sessions", "tasks", "workflows", "tui"],
 				});
 				this._emit("connect", {});
-				console.log("[ws-bridge] Connected to UI server");
 			};
 
 			this.ws.onmessage = (event) => {
@@ -95,23 +116,21 @@ class TuiWsBridge {
 					const data = JSON.parse(event.data);
 					this._handleMessage(data);
 				} catch (err) {
-					console.warn("[ws-bridge] Failed to parse message:", err.message);
+					this._emit("error", { message: err?.message || "Failed to parse message" });
 				}
 			};
 
 			this.ws.onclose = () => {
 				this._connected = false;
 				this._emit("disconnect", {});
-				console.log("[ws-bridge] Disconnected from UI server");
 				this._scheduleReconnect();
 			};
 
 			this.ws.onerror = (err) => {
-				console.error("[ws-bridge] WebSocket error:", err.message);
 				this._emit("error", { message: err.message || "WebSocket error" });
 			};
 		} catch (err) {
-			console.error("[ws-bridge] Failed to connect:", err.message);
+			this._emit("error", { message: err?.message || "Failed to connect" });
 			this._scheduleReconnect();
 		}
 	}
@@ -138,7 +157,6 @@ class TuiWsBridge {
 		this.reconnectAttempts++;
 
 		this.reconnectTimer = setTimeout(() => {
-			console.log(`[ws-bridge] Reconnecting (attempt ${this.reconnectAttempts})...`);
 			this.connect();
 		}, delay);
 	}
@@ -299,5 +317,6 @@ export {
 	buildTuiWebSocketUrl,
 	createWsBridge,
 	defaultConfigDir,
+	resolveWebSocketProtocol,
 	resolveTuiAuthToken,
 };
