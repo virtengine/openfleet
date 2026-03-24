@@ -8920,7 +8920,7 @@ function summarizeRepoAreaLockHotArea(area = {}) {
   if (!normalizedArea) return null;
   const events = Math.max(
     0,
-    Math.trunc(Number(area?.contentionEvents ?? area?.conflicts ?? 0)),
+    Math.trunc(Number(area?.events ?? area?.contentionEvents ?? area?.conflicts ?? 0)),
   );
   const waitMsTotal = Math.max(
     0,
@@ -22798,3 +22798,4 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
