@@ -184,6 +184,36 @@ describe("action.bosun_tool", () => {
     // but toolId resolution should work
     expect(result.toolId).toBe("nonexistent");
   });
+
+  it("records Bosun tool execution in the execution ledger when engine hook exists", async () => {
+    const handler = getNodeType("action.bosun_tool");
+    makeTmpDir();
+    const ctx = new WorkflowContext({ repoRoot: tmpDir });
+    const recordLedgerEvent = vi.fn();
+    const node = {
+      id: "t-ledger",
+      type: "action.bosun_tool",
+      config: { toolId: "nonexistent-tool-xyz" },
+    };
+
+    const result = await handler.execute(node, ctx, { _recordLedgerEvent: recordLedgerEvent });
+
+    expect(result.success).toBe(false);
+    expect(recordLedgerEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "tool.started",
+        executionKind: "tool",
+        toolId: "nonexistent-tool-xyz",
+      }),
+    );
+    expect(recordLedgerEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "tool.failed",
+        executionKind: "tool",
+        toolId: "nonexistent-tool-xyz",
+      }),
+    );
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1311,3 +1341,4 @@ describe("cross-node data piping", () => {
     expect(invokeOutput.workflowId).toBe("chain-child-wf");
   });
 });
+
