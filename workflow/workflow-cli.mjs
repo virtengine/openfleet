@@ -105,12 +105,17 @@ export async function executeWorkflowCommand(args, options = {}) {
 
   const asJson = hasFlag(normalizedArgs, "--json") || options.json === true;
   if (subcommand === "nodes") {
-    const report = await inspectCustomWorkflowNodePlugins({
-      repoRoot: options.repoRoot || options.cwd || process.cwd(),
+    const inspectorOptions = {
       forceReload: hasFlag(normalizedArgs, "--reload", "--force-reload"),
       runSmokeTests: hasFlag(normalizedArgs, "--smoke", "--run-smoke-tests"),
       logWarnings: false,
-    });
+    };
+    if (options.repoRoot) {
+      inspectorOptions.repoRoot = options.repoRoot;
+    } else if (options.cwd) {
+      inspectorOptions.repoRoot = options.cwd;
+    }
+    const report = await inspectCustomWorkflowNodePlugins(inspectorOptions);
     if (asJson) {
       stdout(JSON.stringify(report, null, 2));
     } else {

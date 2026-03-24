@@ -335,7 +335,15 @@ export async function inspectCustomWorkflowNodePlugins(options = {}) {
       report.summary.duplicateNodeIds += 1;
     }
     if (options.logWarnings !== false && pluginReport.diagnostics.length > 0) {
-      logWarn(`Skipping ${pluginReport.fileName}: ${describeDiagnostic(pluginReport.diagnostics[0])}`);
+      let messagePrefix;
+      if (pluginReport.status === "skipped") {
+        messagePrefix = "Skipping";
+      } else if (pluginReport.smokeTest?.status === "failed") {
+        messagePrefix = "Smoke test failed for";
+      } else {
+        messagePrefix = "Issues found in";
+      }
+      logWarn(`${messagePrefix} ${pluginReport.fileName}: ${describeDiagnostic(pluginReport.diagnostics[0])}`);
     }
   }
 

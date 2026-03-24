@@ -24,7 +24,9 @@ function makeRepoRoot() {
 afterEach(() => {
   stopCustomNodeDiscovery();
   if (repoRoot) {
-    try { rmSync(repoRoot, { recursive: true, force: true }); } catch { }
+    try { rmSync(repoRoot, { recursive: true, force: true }); } catch {
+      /* best effort cleanup; ignore errors */
+    }
   }
   repoRoot = null;
 });
