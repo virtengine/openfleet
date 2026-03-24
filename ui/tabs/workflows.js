@@ -31,6 +31,7 @@ import {
   serializeGraphSnapshot,
   undoHistory,
   validateCanvasEdgePorts,
+  canUpdateCanvasEdgePortMapping,
 } from "./workflow-canvas-utils.mjs";
 import { createSession } from "../components/session-list.js";
 import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
@@ -3054,13 +3055,13 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     const edge = edgesRef.current.find((entry) => entry.id === edgeId) || null;
     if (!edge) return false;
 
-    const nextCandidate = { ...edge, ...patch };
-    const validation = validateEdgePortMapping(nextCandidate, nodeLookup, nodeTypeMap);
-    if (validation.issues.length) {
-      showToast(validation.issues[0]?.message || "Invalid port binding", "error");
+    const patchCheck = canUpdateCanvasEdgePortMapping(edge, patch, nodesRef.current, nodeTypeMap);
+    if (!patchCheck.allowed) {
+      showToast(patchCheck.blockingIssue?.message || "Invalid port binding", "error");
       return false;
     }
 
+    const validation = patchCheck.validation;
     const nextSourcePortName = validation.sourcePort?.name || validation.requestedSourcePortName || "default";
     const nextTargetPortName = validation.targetPort?.name || validation.requestedTargetPortName || "default";
     const nextEdgeId = `${edge.source}:${nextSourcePortName}->${edge.target}:${nextTargetPortName}`;
@@ -3093,7 +3094,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     }));
     selectedEdgeId.value = nextEdgeId;
     return true;
-  }, [applyGraphChange, nodeLookup, nodeTypeMap]);
+  }, [applyGraphChange, nodeTypeMap]);
 
   const onOutputPortMouseDown = useCallback((nodeId, portName, e) => {
     e.stopPropagation();

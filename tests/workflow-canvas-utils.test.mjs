@@ -9,6 +9,7 @@ import {
   serializeGraphSnapshot,
   undoHistory,
   validateCanvasEdgePorts,
+  canUpdateCanvasEdgePortMapping,
 } from "../ui/tabs/workflow-canvas-utils.mjs";
 
 function makeNode(id, x = 0, y = 0) {
@@ -383,4 +384,64 @@ describe("workflow canvas history", () => {
       }),
     ]);
   });
+  it("allows repairing stale explicit bindings one side at a time", () => {
+    const nodeTypes = [
+      {
+        type: "test.router",
+        ports: {
+          outputs: [
+            { name: "default", label: "Default", type: "Any" },
+            { name: "success", label: "Success", type: "JSON" },
+          ],
+        },
+      },
+      {
+        type: "test.consumer",
+        ports: {
+          inputs: [
+            { name: "default", label: "Default", type: "Any" },
+            { name: "payload", label: "Payload", type: "JSON" },
+          ],
+        },
+      },
+    ];
+    const nodes = [
+      { id: "source", type: "test.router", label: "Source", config: {} },
+      { id: "target", type: "test.consumer", label: "Target", config: {} },
+    ];
+    const staleEdge = {
+      id: "stale-edge",
+      source: "source",
+      target: "target",
+      sourcePort: "missing-output",
+      targetPort: "missing-input",
+    };
+
+    const repairSource = canUpdateCanvasEdgePortMapping(staleEdge, { sourcePort: "success" }, nodes, nodeTypes);
+    expect(repairSource.allowed).toBe(true);
+    expect(repairSource.blockingIssue).toBeNull();
+    expect(repairSource.validation.requestedSourcePortName).toBe("success");
+    expect(repairSource.validation.requestedTargetPortName).toBe("missing-input");
+
+    const repairTarget = canUpdateCanvasEdgePortMapping(staleEdge, { targetPort: "payload" }, nodes, nodeTypes);
+    expect(repairTarget.allowed).toBe(true);
+    expect(repairTarget.blockingIssue).toBeNull();
+    expect(repairTarget.validation.requestedSourcePortName).toBe("missing-output");
+    expect(repairTarget.validation.requestedTargetPortName).toBe("payload");
+
+    const invalidSource = canUpdateCanvasEdgePortMapping(staleEdge, { sourcePort: "still-missing" }, nodes, nodeTypes);
+    expect(invalidSource.allowed).toBe(false);
+    expect(invalidSource.blockingIssue).toEqual(expect.objectContaining({
+      code: "unknown-output-port",
+      message: expect.stringContaining("Unknown source port \"still-missing\""),
+    }));
+
+    const invalidTarget = canUpdateCanvasEdgePortMapping(staleEdge, { targetPort: "still-missing" }, nodes, nodeTypes);
+    expect(invalidTarget.allowed).toBe(false);
+    expect(invalidTarget.blockingIssue).toEqual(expect.objectContaining({
+      code: "unknown-input-port",
+      message: expect.stringContaining("Unknown target port \"still-missing\""),
+    }));
+  });
+
 });

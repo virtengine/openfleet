@@ -215,6 +215,7 @@ function buildUnknownPortIssue(edge, direction, requestedPortName, availablePort
     .filter(Boolean);
   const availableSuffix = availableNames.length ? ` Available ports: ${availableNames.join(", ")}.` : "";
   return {
+    code: direction === "output" ? "unknown-output-port" : "unknown-input-port",
     edgeId: edge.id || `${edge.source}->${edge.target}`,
     source: edge.source,
     target: edge.target,
@@ -323,32 +324,29 @@ export function hydrateCanvasEdges(nodes = [], edges = [], nodeTypes = []) {
   });
 }
 
-export function validateCanvasEdgePorts(nodes = [], edges = [], nodeTypes = []) {
-  const nodeTypeMap = toNodeTypeMap(nodeTypes);
-  const nodeMap = new Map((Array.isArray(nodes) ? nodes : []).map((node) => [node.id, node]));
+function inspectCanvasEdgePortBinding(edge, nodeMap, nodeTypeMap) {
+  const sourceNode = nodeMap.get(edge?.source);
+  const targetNode = nodeMap.get(edge?.target);
+  const sourcePorts = resolveCanvasNodePorts(sourceNode, nodeTypeMap).outputs;
+  const targetPorts = resolveCanvasNodePorts(targetNode, nodeTypeMap).inputs;
+  const requestedSourcePortName = String(edge?.sourcePort ?? edge?.fromPort ?? "").trim() || "default";
+  const requestedTargetPortName = String(edge?.targetPort ?? edge?.toPort ?? "").trim() || "default";
+  const sourcePort = resolvePortByName(sourcePorts, requestedSourcePortName);
+  const targetPort = resolvePortByName(targetPorts, requestedTargetPortName);
   const issues = [];
-  for (const edge of Array.isArray(edges) ? edges : []) {
-    const sourceNode = nodeMap.get(edge?.source);
-    const targetNode = nodeMap.get(edge?.target);
-    const sourcePorts = resolveCanvasNodePorts(sourceNode, nodeTypeMap).outputs;
-    const targetPorts = resolveCanvasNodePorts(targetNode, nodeTypeMap).inputs;
-    const requestedSourcePort = String(edge?.sourcePort ?? edge?.fromPort ?? "").trim() || "default";
-    const requestedTargetPort = String(edge?.targetPort ?? edge?.toPort ?? "").trim() || "default";
-    const sourcePort = resolvePortByName(sourcePorts, requestedSourcePort);
-    const targetPort = resolvePortByName(targetPorts, requestedTargetPort);
 
-    if (!sourcePort) {
-      issues.push(buildUnknownPortIssue(edge, "output", requestedSourcePort, sourcePorts));
-      continue;
-    }
-    if (!targetPort) {
-      issues.push(buildUnknownPortIssue(edge, "input", requestedTargetPort, targetPorts));
-      continue;
-    }
+  if (!sourcePort) {
+    issues.push(buildUnknownPortIssue(edge, "output", requestedSourcePortName, sourcePorts));
+  }
+  if (!targetPort) {
+    issues.push(buildUnknownPortIssue(edge, "input", requestedTargetPortName, targetPorts));
+  }
 
+  if (sourcePort && targetPort) {
     const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
     if (!compatibility.compatible) {
       issues.push({
+        code: "invalid-port-binding",
         edgeId: edge.id || `${edge.source}->${edge.target}`,
         source: edge.source,
         target: edge.target,
@@ -360,6 +358,51 @@ export function validateCanvasEdgePorts(nodes = [], edges = [], nodeTypes = []) 
         message: compatibility.reason,
       });
     }
+  }
+
+  return {
+    edge,
+    sourceNode,
+    targetNode,
+    sourcePorts,
+    targetPorts,
+    sourcePort,
+    targetPort,
+    requestedSourcePortName,
+    requestedTargetPortName,
+    issues,
+  };
+}
+
+export function inspectCanvasEdgePorts(edge, nodes = [], nodeTypes = []) {
+  const nodeTypeMap = toNodeTypeMap(nodeTypes);
+  const nodeMap = new Map((Array.isArray(nodes) ? nodes : []).map((node) => [node.id, node]));
+  return inspectCanvasEdgePortBinding(edge, nodeMap, nodeTypeMap);
+}
+
+export function canUpdateCanvasEdgePortMapping(edge, patch = {}, nodes = [], nodeTypes = []) {
+  const validation = inspectCanvasEdgePorts({ ...edge, ...patch }, nodes, nodeTypes);
+  const changedSourcePort = Object.prototype.hasOwnProperty.call(patch, "sourcePort")
+    || Object.prototype.hasOwnProperty.call(patch, "fromPort");
+  const changedTargetPort = Object.prototype.hasOwnProperty.call(patch, "targetPort")
+    || Object.prototype.hasOwnProperty.call(patch, "toPort");
+  const blockingIssue = validation.issues.find((issue) => (
+    (issue?.code === "unknown-output-port" && changedSourcePort)
+    || (issue?.code === "unknown-input-port" && changedTargetPort)
+  )) || null;
+  return {
+    allowed: !blockingIssue,
+    blockingIssue,
+    validation,
+  };
+}
+
+export function validateCanvasEdgePorts(nodes = [], edges = [], nodeTypes = []) {
+  const nodeTypeMap = toNodeTypeMap(nodeTypes);
+  const nodeMap = new Map((Array.isArray(nodes) ? nodes : []).map((node) => [node.id, node]));
+  const issues = [];
+  for (const edge of Array.isArray(edges) ? edges : []) {
+    issues.push(...inspectCanvasEdgePortBinding(edge, nodeMap, nodeTypeMap).issues);
   }
   return issues;
 }

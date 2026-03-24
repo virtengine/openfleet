@@ -74,6 +74,21 @@ async function loadSDK() {
   }
 }
 
+function shouldRetryWithoutDirectory(err) {
+  if (!err) return false;
+  const status =
+    err.status ??
+    err.statusCode ??
+    err.response?.status ??
+    err.cause?.status ??
+    err.cause?.statusCode;
+
+  if (status === 400) return true;
+
+  const message = String(err.message || err.cause?.message || "").toLowerCase();
+  return message.includes("400") || message.includes("bad request");
+}
+
 // ── SDK-based discovery (preferred — uses running OpenCode server) ────────────
 
 /**
@@ -114,11 +129,29 @@ async function discoverViaSDK(existingClient = null) {
       ? { query: { directory } }
       : undefined;
 
-    // Fetch provider list + auth methods in parallel
-    const [providerRes, authRes] = await Promise.all([
-      client.provider.list(requestOptions).catch(() => null),
-      client.provider.auth(requestOptions).catch(() => null),
-    ]);
+    const requestProviderData = async (options) => {
+      const [providerOutcome, authOutcome] = await Promise.allSettled([
+        client.provider.list(options),
+        client.provider.auth(options),
+      ]);
+
+      return {
+        providerRes: providerOutcome.status === "fulfilled" ? providerOutcome.value : null,
+        providerErr: providerOutcome.status === "rejected" ? providerOutcome.reason : null,
+        authRes: authOutcome.status === "fulfilled" ? authOutcome.value : null,
+        authErr: authOutcome.status === "rejected" ? authOutcome.reason : null,
+      };
+    };
+
+    let { providerRes, providerErr, authRes, authErr } = await requestProviderData(requestOptions);
+
+    if (
+      !providerRes?.data &&
+      requestOptions &&
+      (shouldRetryWithoutDirectory(providerErr) || shouldRetryWithoutDirectory(authErr))
+    ) {
+      ({ providerRes, authRes } = await requestProviderData(undefined));
+    }
 
     if (!providerRes?.data) return null;
 
