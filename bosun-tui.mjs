@@ -1,142 +1,144 @@
 #!/usr/bin/env node
 
-/**
- * bosun-tui — Terminal User Interface for Bosun
- *
- * A terminal-based UI for monitoring Bosun agents, tasks, and workflows.
- * Built with Ink (React-like CLI framework).
- *
- * Usage:
- *   bosun-tui              # Start the TUI
- *   bosun-tui --help       # Show help
- *   bosun-tui --port 3080  # Connect to specific port
- */
-
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import loadConfig from "./config/config.mjs";
+import { resolveWebSocketProtocol } from "./tui/lib/ws-bridge.mjs";
+
+const MIN_COLUMNS = 120;
+const MIN_ROWS = 30;
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 function showHelp() {
-  const version = JSON.parse(
-    readFileSync(resolve(__dirname, "package.json"), "utf8"),
-  ).version;
-
+  const version = JSON.parse(readFileSync(resolve(__dirname, "package.json"), "utf8")).version;
   console.log(`
   bosun-tui v${version}
-  Terminal User Interface for Bosun
+  Terminal UI for Bosun
 
   USAGE
-    bosun-tui [options]
+    bosun tui [options]
+    node bosun-tui.mjs [options]
 
   OPTIONS
-    --port <n>         UI server port to connect (default: 3080 or TELEGRAM_UI_PORT env)
-    --host <host>     UI server host (default: localhost)
-    --connect         Connect to existing UI server (don't start monitor)
-    --screen <name>   Initial screen (tasks|agents|status)
-    --refresh <ms>    Stats refresh interval (default: 2000ms)
-    --help            Show this help
-    --version         Show version
-
-  SCREENS
-    tasks    Kanban board with task CRUD
-    agents   Live agent session table
-    status   System status overview
-
-  KEYBOARD NAVIGATION
-    Tab / Shift+Tab   Navigate between panels
-    ↑↓←→             Navigate within panels
-    Enter            Select / Execute action
-    Esc              Back / Close modal
-    c                Create new task (tasks screen)
-    r                Resume selected agent session (Agents screen)
-    q                Quit
-
-  EXAMPLES
-    bosun-tui --port 3080
-    bosun-tui --screen tasks
-    bosun-tui --connect --port 3080
+    --host <host>       WebSocket host (default: 127.0.0.1)
+    --port <n>          WebSocket/UI port (default: TELEGRAM_UI_PORT or 3080)
+    --screen <name>     Initial screen (agents|tasks|logs|workflows|telemetry|settings|help)
+    --help              Show this help
+    --version           Show version
   `);
 }
 
-function getArgValue(flag, defaultValue = "") {
-  const args = process.argv.slice(2);
-  const match = args.find((arg) => arg.startsWith(`${flag}=`));
-  if (match) {
-    return match.slice(flag.length + 1).trim();
-  }
-  const idx = args.indexOf(flag);
-  if (idx >= 0 && args[idx + 1] && !args[idx + 1].startsWith("--")) {
-    return args[idx + 1].trim();
+function getArgValue(args, flag, defaultValue = "") {
+  const inline = args.find((arg) => arg.startsWith(`${flag}=`));
+  if (inline) return inline.slice(flag.length + 1).trim();
+  const index = args.indexOf(flag);
+  if (index >= 0 && args[index + 1] && !args[index + 1].startsWith("--")) {
+    return args[index + 1].trim();
   }
   return defaultValue;
 }
 
-function getArgFlag(flag) {
-  const args = process.argv.slice(2);
-  return args.includes(flag);
+function hasFlag(args, ...flags) {
+  return flags.some((flag) => args.includes(flag));
 }
 
-async function main() {
-  const args = process.argv.slice(2);
+function getTerminalSize(stdout = process.stdout) {
+  return {
+    columns: Math.max(0, Number(stdout?.columns || 0)),
+    rows: Math.max(0, Number(stdout?.rows || 0)),
+  };
+}
 
-  if (getArgFlag("--help") || args.includes("-h")) {
+function resolvePort(config) {
+  return Number(process.env.TELEGRAM_UI_PORT || process.env.BOSUN_PORT || config?.telegramUiPort || "3080") || 3080;
+}
+
+function renderApp(instance, React, App, props) {
+  instance.rerender(React.createElement(App, props));
+}
+
+export async function runBosunTui(argv = process.argv.slice(2), options = {}) {
+  const stdout = options.stdout || process.stdout;
+  const stderr = options.stderr || process.stderr;
+  const args = Array.isArray(argv) ? argv : [];
+
+  if (hasFlag(args, "--help", "-h")) {
     showHelp();
-    process.exit(0);
+    return 0;
   }
 
-  if (getArgFlag("--version") || args.includes("-v")) {
-    const version = JSON.parse(
-      readFileSync(resolve(__dirname, "package.json"), "utf8"),
-    ).version;
+  if (hasFlag(args, "--version", "-v")) {
+    const version = JSON.parse(readFileSync(resolve(__dirname, "package.json"), "utf8")).version;
     console.log(`bosun-tui v${version}`);
-    process.exit(0);
+    return 0;
   }
 
-  const port = Number(getArgValue("--port", process.env.TELEGRAM_UI_PORT || "3080")) || 3080;
-  const host = getArgValue("--host", "localhost");
-  const connectOnly = getArgFlag("--connect");
-  const initialScreen = getArgValue("--screen", "status");
-  const refreshMs = Number(getArgValue("--refresh", "2000")) || 2000;
+  if (!stdout?.isTTY) {
+    stderr.write("[bosun-tui] Error: stdout is not a TTY. Run `bosun tui` in an interactive terminal.\n");
+    return 1;
+  }
 
-  console.log(`[bosun-tui] Starting...`);
-  console.log(`[bosun-tui] Connecting to ${host}:${port}`);
+  globalThis.WebSocket = globalThis.WebSocket || (await import("ws")).WebSocket;
+
+  const config = loadConfig([process.argv[0], __filename, ...args]);
+  const configDir = String(config?.configDir || process.env.BOSUN_DIR || resolve(process.cwd(), ".bosun")).trim();
+  const host = getArgValue(args, "--host", "127.0.0.1");
+  const port = Number(getArgValue(args, "--port", String(resolvePort(config)))) || resolvePort(config);
+  const protocol = getArgValue(
+    args,
+    "--protocol",
+    resolveWebSocketProtocol({ configDir }),
+  );
+  const initialScreen = getArgValue(args, "--screen", "agents");
+
+  const React = await import("react");
+  const ink = await import("ink");
+  const { default: App } = await import("./ui/tui/App.js");
+
+  let terminalSize = getTerminalSize(stdout);
+  const props = {
+    config,
+    configDir,
+    host,
+    port,
+    protocol,
+    initialScreen,
+    terminalSize,
+  };
+
+  const instance = ink.render(React.createElement(App, props), { exitOnCtrlC: true });
+
+  const onResize = () => {
+    terminalSize = getTerminalSize(stdout);
+    renderApp(instance, React, App, { ...props, terminalSize });
+  };
+
+  stdout.on?.("resize", onResize);
 
   try {
-    const { render } = await import("ink");
-    const importErrors = [];
-
-    let App;
-    try {
-      const appModule = await import("./tui/app.mjs");
-      App = appModule.default;
-    } catch (importErr) {
-      importErrors.push(`App: ${importErr.message}`);
-      console.error(`[bosun-tui] Failed to import TUI app: ${importErr.message}`);
-      console.log(`[bosun-tui] TUI requires ink. Install with: npm install ink`);
-      process.exit(1);
+    if (typeof instance.waitUntilExit === "function") {
+      await instance.waitUntilExit();
     }
-
-    const { waitUntilExit } = await import("ink");
-
-    const app = render(
-      App({
-        host,
-        port,
-        connectOnly,
-        initialScreen,
-        refreshMs,
-      }),
-    );
-
-    process.exitCode = await waitUntilExit(app);
-  } catch (err) {
-    console.error(`[bosun-tui] Failed to start: ${err.message}`);
-    console.log(`[bosun-tui] Ensure bosun is running or use --connect to connect to an existing UI server`);
-    process.exit(1);
+    return 0;
+  } finally {
+    stdout.off?.("resize", onResize);
   }
 }
 
-main();
+if (process.argv[1] && resolve(process.argv[1]) === __filename) {
+  runBosunTui(process.argv.slice(2))
+    .then((code) => {
+      process.exit(code ?? 0);
+    })
+    .catch((error) => {
+      console.error(`[bosun-tui] Failed to start: ${error?.message || error}`);
+      process.exit(1);
+    });
+}
+
+

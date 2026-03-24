@@ -30,14 +30,18 @@ export function serializeWorkflowToCode(workflow) {
       ...(n.config && Object.keys(n.config).length > 0 ? { config: n.config } : {}),
       position: n.position || { x: 0, y: 0 },
     })),
-    edges: (workflow.edges || []).map(e => ({
-      source: e.source,
-      target: e.target,
-      ...(e.sourcePort ? { sourcePort: e.sourcePort } : {}),
-      ...(e.targetPort ? { targetPort: e.targetPort } : {}),
-      ...(e.label ? { label: e.label } : {}),
-      ...(e.condition ? { condition: e.condition } : {}),
-    })),
+    edges: (workflow.edges || []).map((e) => {
+      const sourcePort = String(e.sourcePort ?? e.fromPort ?? "").trim();
+      const targetPort = String(e.targetPort ?? e.toPort ?? "").trim();
+      return {
+        source: e.source,
+        target: e.target,
+        ...(sourcePort ? { sourcePort } : {}),
+        ...(targetPort ? { targetPort } : {}),
+        ...(e.label ? { label: e.label } : {}),
+        ...(e.condition ? { condition: e.condition } : {}),
+      };
+    }),
   };
 
   const code = JSON.stringify(clean, null, 2);
@@ -134,6 +138,19 @@ export function deserializeCodeToWorkflow(code) {
     return { workflow: null, errors };
   }
 
+  const edges = parsed.edges.map((edge) => {
+    const sourcePort = String(edge?.sourcePort ?? edge?.fromPort ?? "").trim();
+    const targetPort = String(edge?.targetPort ?? edge?.toPort ?? "").trim();
+    const normalized = {
+      ...edge,
+      ...(sourcePort ? { sourcePort } : {}),
+      ...(targetPort ? { targetPort } : {}),
+    };
+    delete normalized.fromPort;
+    delete normalized.toPort;
+    return normalized;
+  });
+
   return {
     workflow: {
       name: parsed.name,
@@ -142,7 +159,7 @@ export function deserializeCodeToWorkflow(code) {
       enabled: parsed.enabled !== false,
       variables: parsed.variables || {},
       nodes: parsed.nodes,
-      edges: parsed.edges,
+      edges,
     },
     errors: [],
   };

@@ -76,6 +76,7 @@ describe("ui-server mini app", () => {
     "FLEET_ENABLED",
     "FLEET_SYNC_INTERVAL_MS",
     "OPENAI_API_KEY",
+    "STATUS_FILE",
     "BOSUN_ENV_NO_OVERRIDE",
   ];
   let envSnapshot = {};
@@ -196,6 +197,50 @@ describe("ui-server mini app", () => {
     }
   });
 
+  it("honors STATUS_FILE overrides for worktree recovery status", async () => {
+    const tmpStatusDir = mkdtempSync(join(tmpdir(), "ui-status-file-"));
+    const statusPath = join(tmpStatusDir, "custom-status.json");
+    process.env.STATUS_FILE = statusPath;
+    writeFileSync(statusPath, JSON.stringify({
+      worktreeRecovery: {
+        health: "recovered",
+        failureStreak: 0,
+        recentEvents: [{
+          outcome: "recreated",
+          reason: "poisoned_worktree",
+          branch: "task/healed-worktree",
+          taskId: "task-healed-1",
+          timestamp: "2026-03-22T01:02:03.000Z",
+        }],
+      },
+    }, null, 2));
+
+    try {
+      const mod = await import("../server/ui-server.mjs");
+      mod.injectUiDependencies({
+        getInternalExecutor: () => ({
+          getStatus: () => ({ maxParallel: 2, activeSlots: 0, slots: [] }),
+          isPaused: () => false,
+        }),
+      });
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const status = await fetch(`http://127.0.0.1:${port}/api/status`).then((r) => r.json());
+      expect(status.ok).toBe(true);
+      expect(status.data.worktreeRecovery).toMatchObject({
+        health: "recovered",
+        recentEvents: [expect.objectContaining({ outcome: "recreated" })],
+      });
+    } finally {
+      rmSync(tmpStatusDir, { recursive: true, force: true });
+    }
+  });
   it("getLocalLanIp returns a string", async () => {
     const mod = await import("../server/ui-server.mjs");
     const ip = mod.getLocalLanIp();
@@ -224,6 +269,23 @@ describe("ui-server mini app", () => {
     expect(response.headers.get("location")).toBe("/chat?launch=meeting&call=video");
     expect(response.headers.get("set-cookie") || "").toContain("ve_session=");
   });
+  it("regenerates zero-entropy session tokens before issuing browser auth", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_UI_TOKEN = "a".repeat(64);
+    vi.resetModules();
+    const mod = await import("../server/ui-server.mjs");
+    await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const token = mod.getSessionToken();
+    expect(token).toMatch(/^[a-f0-9]{64}$/i);
+    expect(token).not.toBe("a".repeat(64));
+    delete process.env.BOSUN_UI_TOKEN;
+  });
+
 
   it("bootstraps local static requests into a session cookie", async () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";

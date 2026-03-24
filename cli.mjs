@@ -79,6 +79,8 @@ function showHelp() {
   COMMANDS
     workflow list              List declarative pipeline workflows
     workflow run <name>        Run a declarative pipeline workflow
+    workflow nodes             Inspect custom workflow node plugin health
+    tui                        Launch the terminal UI
     audit <command>            Run codebase annotation audit tools (scan|generate|warn|manifest|index|trim|conformity|migrate)
     --setup                    Launch the web-based setup wizard (default)
     --setup-terminal            Run the legacy terminal setup wizard
@@ -167,6 +169,7 @@ function showHelp() {
     workflow run <name>         Run a declarative fresh-context workflow
 
     Run 'bosun workflow --help' for workflow CLI examples.
+    Run 'bosun tui' to launch the terminal UI.
 
   VIBE-KANBAN
     --no-vk-spawn               Don't auto-spawn Vibe-Kanban
@@ -1423,6 +1426,12 @@ async function main() {
       process.exit(1);
     }
     process.exit(0);
+  }
+
+  if (args[0] === "tui") {
+    const { runBosunTui } = await import("./bosun-tui.mjs");
+    const exitCode = await runBosunTui(args.slice(1));
+    process.exit(exitCode ?? 0);
   }
 
   // Handle --help
@@ -2710,3 +2719,5 @@ main().catch(async (err) => {
   await sendCrashNotification(1, null).catch(() => {});
   process.exit(1);
 });
+
+

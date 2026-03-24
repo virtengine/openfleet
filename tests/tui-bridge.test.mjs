@@ -68,9 +68,10 @@ describe("tui bridge helpers", () => {
     const cacheDir = mkdtempSync(join(tmpdir(), "bosun-tui-token-"));
     try {
       expect(persistCompatibleTuiAuthToken("token-123", { cacheDir })).toBe("token-123");
-      expect(resolveTuiAuthToken({ cacheDir })).toBe("token-123");
+      expect(resolveTuiAuthToken({ cacheDir, env: {} })).toBe("token-123");
     } finally {
       rmSync(cacheDir, { recursive: true, force: true });
     }
   });
 });
+

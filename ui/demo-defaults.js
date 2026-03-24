@@ -1001,7 +1001,7 @@
           "type": "action.run_command",
           "label": "Sync PR State → Kanban (Programmatic)",
           "config": {
-            "command": "node -e \" const {execFileSync}=require('child_process'); const fs=require('fs'); const raw=String(process.env.BOSUN_FETCH_PR_STATE||''); const data=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const merged=Array.isArray(data.merged)?data.merged:[]; const open=Array.isArray(data.open)?data.open:[]; const updates=[]; const unresolved=[]; const maxBuffer=25*1024*1024; const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task-cli.mjs','task/task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); if(!taskRunner){   console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_command_missing'}],needsAgent:true}));   process.exit(0); } function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} function parseJsonObject(raw){const txt=String(raw||'').trim();if(!txt)return null;try{return JSON.parse(txt);}catch{}const lines=txt.split(/\\r?\\n/);for(let start=0;start<lines.length;start++){const token=lines[start].trim();if(!(token==='['||token==='{'||token.startsWith('[{')||token.startsWith('{\"')||token.startsWith('[\"')))continue;const candidate=lines.slice(start).join('\\n').trim();try{return JSON.parse(candidate);}catch{}}const compact=lines.map(s=>s.trim()).filter(Boolean);for(let i=compact.length-1;i>=0;i--){const line=compact[i];if(!(line.startsWith('{')||line.startsWith('[')))continue;try{return JSON.parse(line);}catch{}}const start=txt.indexOf('{');const end=txt.lastIndexOf('}');if(start>=0&&end>start){try{return JSON.parse(txt.slice(start,end+1));}catch{}}return null;} let taskListCache=null; function normalizeRepo(value){return String(value||'').trim().toLowerCase();} function listTasks(){   if(Array.isArray(taskListCache)) return taskListCache;   try{const raw=runTask(['list','--json']);const tasks=parseJsonObject(raw);taskListCache=Array.isArray(tasks)?tasks:[];return taskListCache;}catch{taskListCache=[];return taskListCache;} } function resolveTaskId(item){   const explicit=String(item?.taskId||'').trim();   if(explicit) return explicit;   const branch=String(item?.branch||'').trim();   if(!branch) return '';   const repo=normalizeRepo(item?.repo);   const matches=listTasks().filter((task)=>{     const taskBranch=String(task?.branchName||'').trim();     if(taskBranch!==branch) return false;     const taskRepo=normalizeRepo(task?.repository||'');     if(!repo || !taskRepo) return true;     return taskRepo===repo;   });   if(matches.length===1) return String(matches[0]?.id||'').trim();   const exactRepo=matches.find((task)=>normalizeRepo(task?.repository||'')===repo);   return exactRepo?String(exactRepo?.id||'').trim():''; } function getTaskSnapshot(id){   try{const raw=runTask(['get',id,'--json']);const task=parseJsonObject(raw);return {status:task?.status||null,reviewStatus:task?.reviewStatus||null};}catch{return {status:null,reviewStatus:null};} } for(const item of merged){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'done',reason:'task_lookup_failed'});continue;}   try{runTask(['update',id,'--status','done']);updates.push({taskId:id,status:'done'});}catch(e){unresolved.push({taskId:id,status:'done',error:String(e?.message||e)});} } for(const item of open){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'inreview',reason:'task_lookup_failed'});continue;}   try{const snap=getTaskSnapshot(id);const current=String(snap?.status||'').trim().toLowerCase();const review=String(snap?.reviewStatus||'').toLowerCase();if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview',fromStatus:current||null,reviewStatus:review||null});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});} } const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim()); console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:actionableUnresolved.length>0})); \"",
+            "command": "node -e \" const {execFileSync}=require('child_process'); const fs=require('fs'); const raw=String(process.env.BOSUN_FETCH_PR_STATE||''); const data=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const merged=Array.isArray(data.merged)?data.merged:[]; const open=Array.isArray(data.open)?data.open:[]; const updates=[]; const unresolved=[]; const maxBuffer=25*1024*1024; const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); if(!taskRunner){   console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_command_missing'}],needsAgent:true}));   process.exit(0); } function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} function parseJsonObject(raw){const txt=String(raw||'').trim();if(!txt)return null;try{return JSON.parse(txt);}catch{}const lines=txt.split(/\\r?\\n/);for(let start=0;start<lines.length;start++){const token=lines[start].trim();if(!(token==='['||token==='{'||token.startsWith('[{')||token.startsWith('{\"')||token.startsWith('[\"')))continue;const candidate=lines.slice(start).join('\\n').trim();try{return JSON.parse(candidate);}catch{}}const compact=lines.map(s=>s.trim()).filter(Boolean);for(let i=compact.length-1;i>=0;i--){const line=compact[i];if(!(line.startsWith('{')||line.startsWith('[')))continue;try{return JSON.parse(line);}catch{}}const start=txt.indexOf('{');const end=txt.lastIndexOf('}');if(start>=0&&end>start){try{return JSON.parse(txt.slice(start,end+1));}catch{}}return null;} let taskListCache=null; function normalizeRepo(value){return String(value||'').trim().toLowerCase();} function listTasks(){   if(Array.isArray(taskListCache)) return taskListCache;   try{const raw=runTask(['list','--json']);const tasks=parseJsonObject(raw);taskListCache=Array.isArray(tasks)?tasks:[];return taskListCache;}catch{taskListCache=[];return taskListCache;} } function resolveTaskId(item){   const explicit=String(item?.taskId||'').trim();   if(explicit) return explicit;   const branch=String(item?.branch||'').trim();   if(!branch) return '';   const repo=normalizeRepo(item?.repo);   const matches=listTasks().filter((task)=>{     const taskBranch=String(task?.branchName||'').trim();     if(taskBranch!==branch) return false;     const taskRepo=normalizeRepo(task?.repository||'');     if(!repo || !taskRepo) return true;     return taskRepo===repo;   });   if(matches.length===1) return String(matches[0]?.id||'').trim();   const exactRepo=matches.find((task)=>normalizeRepo(task?.repository||'')===repo);   return exactRepo?String(exactRepo?.id||'').trim():''; } function getTaskSnapshot(id){   try{const raw=runTask(['get',id,'--json']);const task=parseJsonObject(raw);return {status:task?.status||null,reviewStatus:task?.reviewStatus||null};}catch{return {status:null,reviewStatus:null};} } for(const item of merged){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'done',reason:'task_lookup_failed'});continue;}   try{runTask(['update',id,'--status','done']);updates.push({taskId:id,status:'done'});}catch(e){unresolved.push({taskId:id,status:'done',error:String(e?.message||e)});} } for(const item of open){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'inreview',reason:'task_lookup_failed'});continue;}   try{const snap=getTaskSnapshot(id);const current=String(snap?.status||'').trim().toLowerCase();const review=String(snap?.reviewStatus||'').toLowerCase();if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview',fromStatus:current||null,reviewStatus:review||null});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});} } const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim()); console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:actionableUnresolved.length>0})); \"",
             "continueOnError": true,
             "failOnError": false,
             "env": {
@@ -1036,7 +1036,7 @@
           "type": "action.run_agent",
           "label": "Sync PR State → Kanban (Fallback)",
           "config": {
-            "prompt": "You are the Bosun GitHub-Kanban sync fallback agent. A deterministic sync pass already ran.\n\nProgrammatic sync output:\n{{$ctx.getNodeOutput('sync-programmatic')?.output}}\n\nNow complete only unresolved updates.\n\nGitHub PR state:\nPR state (JSON from fetch-pr-state node output):\n{{$ctx.getNodeOutput('fetch-pr-state')?.output}}\n\nRULES:\n1. For each MERGED PR entry with a taskId: update the kanban task to done.\n   Use the available bosun/vk CLI, for example:\n     node task-cli.mjs update <taskId> --status done\n   Or check available commands: ls *.mjs | grep -i task\n2. For each OPEN (non-draft) PR entry with a taskId: if the task is not\n   already in inreview or done status, update it to inreview.\n3. Only act on entries that have a non-null taskId.\n4. Log each update and whether it succeeded.\n5. Do NOT close, merge, or modify any PR.\n6. Do NOT create new tasks — only update existing ones.",
+            "prompt": "You are the Bosun GitHub-Kanban sync fallback agent. A deterministic sync pass already ran.\n\nProgrammatic sync output:\n{{$ctx.getNodeOutput('sync-programmatic')?.output}}\n\nNow complete only unresolved updates.\n\nGitHub PR state:\nPR state (JSON from fetch-pr-state node output):\n{{$ctx.getNodeOutput('fetch-pr-state')?.output}}\n\nRULES:\n1. For each MERGED PR entry with a taskId: update the kanban task to done.\n   Use the available bosun/vk CLI, for example:\n     node task/task-cli.mjs update <taskId> --status done\n   Or inspect available commands with a shell-native file listing.\n2. For each OPEN (non-draft) PR entry with a taskId: if the task is not\n   already in inreview or done status, update it to inreview.\n3. Only act on entries that have a non-null taskId.\n4. Log each update and whether it succeeded.\n5. Do NOT close, merge, or modify any PR.\n6. Do NOT create new tasks — only update existing ones.",
             "sdk": "auto",
             "timeoutMs": 300000,
             "continueOnError": true
@@ -4669,7 +4669,9 @@
           "label": "Plan Implementation",
           "config": {
             "prompt": "Analyze the task requirements and create a step-by-step implementation plan. Identify which files need to be modified, what tests need to be written, and any API contracts to maintain.",
-            "outputVariable": "plan"
+            "outputVariable": "plan",
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8
           },
           "position": {
             "x": 400,
@@ -7052,6 +7054,8 @@
             "taskCount": "{{taskCount}}",
             "context": "{{plannerContext}}",
             "prompt": "{{prompt}}",
+            "repoMapQuery": "{{plannerContext}} {{prompt}}",
+            "repoMapFileLimit": 8,
             "dedup": true,
             "timeoutMs": 960000,
             "agentTimeoutMs": 900000,
@@ -7351,6 +7355,8 @@
             "taskCount": "{{taskCount}}",
             "context": "{{plannerContext}}",
             "prompt": "{{prompt}}",
+            "repoMapQuery": "{{plannerContext}} {{prompt}}",
+            "repoMapFileLimit": 8,
             "timeoutMs": 960000,
             "agentTimeoutMs": 900000,
             "maxRetries": 0,
@@ -14339,6 +14345,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -14367,6 +14374,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan')?.summary || $ctx.getNodeOutput('plan')?.output || ''}}"
           },
@@ -14395,6 +14403,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan')?.summary || $ctx.getNodeOutput('plan')?.output || ''}}"
           },
@@ -14729,6 +14738,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -14757,6 +14767,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-pipeline')?.summary || $ctx.getNodeOutput('plan-pipeline')?.output || ''}}"
           },
@@ -14785,6 +14796,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-pipeline')?.summary || $ctx.getNodeOutput('plan-pipeline')?.output || ''}}"
           },
@@ -15240,6 +15252,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -15268,6 +15281,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('reproduce')?.summary || $ctx.getNodeOutput('reproduce')?.output || ''}}"
           },
@@ -15296,6 +15310,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('reproduce')?.summary || $ctx.getNodeOutput('reproduce')?.output || ''}}"
           },
@@ -15425,6 +15440,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -15453,6 +15469,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('analyse-requirements')?.summary || $ctx.getNodeOutput('analyse-requirements')?.output || ''}}"
           },
@@ -15481,6 +15498,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('analyse-requirements')?.summary || $ctx.getNodeOutput('analyse-requirements')?.output || ''}}"
           },
@@ -15794,6 +15812,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -15822,6 +15841,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('analyse-design')?.summary || $ctx.getNodeOutput('analyse-design')?.output || ''}}"
           },
@@ -15850,6 +15870,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('analyse-design')?.summary || $ctx.getNodeOutput('analyse-design')?.output || ''}}"
           },
@@ -15973,6 +15994,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -16001,6 +16023,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
@@ -16029,6 +16052,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
@@ -16057,6 +16081,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
@@ -21973,7 +21998,7 @@
           "type": "action.run_command",
           "label": "Sync PR State → Kanban (Programmatic)",
           "config": {
-            "command": "node -e \" const {execFileSync}=require('child_process'); const fs=require('fs'); const raw=String(process.env.BOSUN_FETCH_PR_STATE||''); const data=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const merged=Array.isArray(data.merged)?data.merged:[]; const open=Array.isArray(data.open)?data.open:[]; const updates=[]; const unresolved=[]; const maxBuffer=25*1024*1024; const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task-cli.mjs','task/task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); if(!taskRunner){   console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_command_missing'}],needsAgent:true}));   process.exit(0); } function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} function parseJsonObject(raw){const txt=String(raw||'').trim();if(!txt)return null;try{return JSON.parse(txt);}catch{}const lines=txt.split(/\\r?\\n/);for(let start=0;start<lines.length;start++){const token=lines[start].trim();if(!(token==='['||token==='{'||token.startsWith('[{')||token.startsWith('{\"')||token.startsWith('[\"')))continue;const candidate=lines.slice(start).join('\\n').trim();try{return JSON.parse(candidate);}catch{}}const compact=lines.map(s=>s.trim()).filter(Boolean);for(let i=compact.length-1;i>=0;i--){const line=compact[i];if(!(line.startsWith('{')||line.startsWith('[')))continue;try{return JSON.parse(line);}catch{}}const start=txt.indexOf('{');const end=txt.lastIndexOf('}');if(start>=0&&end>start){try{return JSON.parse(txt.slice(start,end+1));}catch{}}return null;} let taskListCache=null; function normalizeRepo(value){return String(value||'').trim().toLowerCase();} function listTasks(){   if(Array.isArray(taskListCache)) return taskListCache;   try{const raw=runTask(['list','--json']);const tasks=parseJsonObject(raw);taskListCache=Array.isArray(tasks)?tasks:[];return taskListCache;}catch{taskListCache=[];return taskListCache;} } function resolveTaskId(item){   const explicit=String(item?.taskId||'').trim();   if(explicit) return explicit;   const branch=String(item?.branch||'').trim();   if(!branch) return '';   const repo=normalizeRepo(item?.repo);   const matches=listTasks().filter((task)=>{     const taskBranch=String(task?.branchName||'').trim();     if(taskBranch!==branch) return false;     const taskRepo=normalizeRepo(task?.repository||'');     if(!repo || !taskRepo) return true;     return taskRepo===repo;   });   if(matches.length===1) return String(matches[0]?.id||'').trim();   const exactRepo=matches.find((task)=>normalizeRepo(task?.repository||'')===repo);   return exactRepo?String(exactRepo?.id||'').trim():''; } function getTaskSnapshot(id){   try{const raw=runTask(['get',id,'--json']);const task=parseJsonObject(raw);return {status:task?.status||null,reviewStatus:task?.reviewStatus||null};}catch{return {status:null,reviewStatus:null};} } for(const item of merged){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'done',reason:'task_lookup_failed'});continue;}   try{runTask(['update',id,'--status','done']);updates.push({taskId:id,status:'done'});}catch(e){unresolved.push({taskId:id,status:'done',error:String(e?.message||e)});} } for(const item of open){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'inreview',reason:'task_lookup_failed'});continue;}   try{const snap=getTaskSnapshot(id);const current=String(snap?.status||'').trim().toLowerCase();const review=String(snap?.reviewStatus||'').toLowerCase();if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview',fromStatus:current||null,reviewStatus:review||null});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});} } const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim()); console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:actionableUnresolved.length>0})); \"",
+            "command": "node -e \" const {execFileSync}=require('child_process'); const fs=require('fs'); const raw=String(process.env.BOSUN_FETCH_PR_STATE||''); const data=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const merged=Array.isArray(data.merged)?data.merged:[]; const open=Array.isArray(data.open)?data.open:[]; const updates=[]; const unresolved=[]; const maxBuffer=25*1024*1024; const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':''; const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||''; const taskRunner=cliPath?'cli':(taskCli?'task-cli':''); if(!taskRunner){   console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_command_missing'}],needsAgent:true}));   process.exit(0); } function runTask(args){const cmdArgs=taskRunner==='cli'?['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']:[taskCli,...args];return execFileSync('node',cmdArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe'],maxBuffer}).trim();} function parseJsonObject(raw){const txt=String(raw||'').trim();if(!txt)return null;try{return JSON.parse(txt);}catch{}const lines=txt.split(/\\r?\\n/);for(let start=0;start<lines.length;start++){const token=lines[start].trim();if(!(token==='['||token==='{'||token.startsWith('[{')||token.startsWith('{\"')||token.startsWith('[\"')))continue;const candidate=lines.slice(start).join('\\n').trim();try{return JSON.parse(candidate);}catch{}}const compact=lines.map(s=>s.trim()).filter(Boolean);for(let i=compact.length-1;i>=0;i--){const line=compact[i];if(!(line.startsWith('{')||line.startsWith('[')))continue;try{return JSON.parse(line);}catch{}}const start=txt.indexOf('{');const end=txt.lastIndexOf('}');if(start>=0&&end>start){try{return JSON.parse(txt.slice(start,end+1));}catch{}}return null;} let taskListCache=null; function normalizeRepo(value){return String(value||'').trim().toLowerCase();} function listTasks(){   if(Array.isArray(taskListCache)) return taskListCache;   try{const raw=runTask(['list','--json']);const tasks=parseJsonObject(raw);taskListCache=Array.isArray(tasks)?tasks:[];return taskListCache;}catch{taskListCache=[];return taskListCache;} } function resolveTaskId(item){   const explicit=String(item?.taskId||'').trim();   if(explicit) return explicit;   const branch=String(item?.branch||'').trim();   if(!branch) return '';   const repo=normalizeRepo(item?.repo);   const matches=listTasks().filter((task)=>{     const taskBranch=String(task?.branchName||'').trim();     if(taskBranch!==branch) return false;     const taskRepo=normalizeRepo(task?.repository||'');     if(!repo || !taskRepo) return true;     return taskRepo===repo;   });   if(matches.length===1) return String(matches[0]?.id||'').trim();   const exactRepo=matches.find((task)=>normalizeRepo(task?.repository||'')===repo);   return exactRepo?String(exactRepo?.id||'').trim():''; } function getTaskSnapshot(id){   try{const raw=runTask(['get',id,'--json']);const task=parseJsonObject(raw);return {status:task?.status||null,reviewStatus:task?.reviewStatus||null};}catch{return {status:null,reviewStatus:null};} } for(const item of merged){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'done',reason:'task_lookup_failed'});continue;}   try{runTask(['update',id,'--status','done']);updates.push({taskId:id,status:'done'});}catch(e){unresolved.push({taskId:id,status:'done',error:String(e?.message||e)});} } for(const item of open){   const id=resolveTaskId(item);   if(!id){unresolved.push({taskId:null,repo:String(item?.repo||''),branch:String(item?.branch||''),status:'inreview',reason:'task_lookup_failed'});continue;}   try{const snap=getTaskSnapshot(id);const current=String(snap?.status||'').trim().toLowerCase();const review=String(snap?.reviewStatus||'').toLowerCase();if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview',fromStatus:current||null,reviewStatus:review||null});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});} } const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim()); console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:actionableUnresolved.length>0})); \"",
             "continueOnError": true,
             "failOnError": false,
             "env": {
@@ -22008,7 +22033,7 @@
           "type": "action.run_agent",
           "label": "Sync PR State → Kanban (Fallback)",
           "config": {
-            "prompt": "You are the Bosun GitHub-Kanban sync fallback agent. A deterministic sync pass already ran.\n\nProgrammatic sync output:\n{{$ctx.getNodeOutput('sync-programmatic')?.output}}\n\nNow complete only unresolved updates.\n\nGitHub PR state:\nPR state (JSON from fetch-pr-state node output):\n{{$ctx.getNodeOutput('fetch-pr-state')?.output}}\n\nRULES:\n1. For each MERGED PR entry with a taskId: update the kanban task to done.\n   Use the available bosun/vk CLI, for example:\n     node task-cli.mjs update <taskId> --status done\n   Or check available commands: ls *.mjs | grep -i task\n2. For each OPEN (non-draft) PR entry with a taskId: if the task is not\n   already in inreview or done status, update it to inreview.\n3. Only act on entries that have a non-null taskId.\n4. Log each update and whether it succeeded.\n5. Do NOT close, merge, or modify any PR.\n6. Do NOT create new tasks — only update existing ones.",
+            "prompt": "You are the Bosun GitHub-Kanban sync fallback agent. A deterministic sync pass already ran.\n\nProgrammatic sync output:\n{{$ctx.getNodeOutput('sync-programmatic')?.output}}\n\nNow complete only unresolved updates.\n\nGitHub PR state:\nPR state (JSON from fetch-pr-state node output):\n{{$ctx.getNodeOutput('fetch-pr-state')?.output}}\n\nRULES:\n1. For each MERGED PR entry with a taskId: update the kanban task to done.\n   Use the available bosun/vk CLI, for example:\n     node task/task-cli.mjs update <taskId> --status done\n   Or inspect available commands with a shell-native file listing.\n2. For each OPEN (non-draft) PR entry with a taskId: if the task is not\n   already in inreview or done status, update it to inreview.\n3. Only act on entries that have a non-null taskId.\n4. Log each update and whether it succeeded.\n5. Do NOT close, merge, or modify any PR.\n6. Do NOT create new tasks — only update existing ones.",
             "sdk": "auto",
             "timeoutMs": 300000,
             "continueOnError": true
@@ -25398,7 +25423,9 @@
           "label": "Plan Implementation",
           "config": {
             "prompt": "Analyze the task requirements and create a step-by-step implementation plan. Identify which files need to be modified, what tests need to be written, and any API contracts to maintain.",
-            "outputVariable": "plan"
+            "outputVariable": "plan",
+            "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8
           },
           "position": {
             "x": 400,
@@ -27652,6 +27679,8 @@
             "taskCount": "{{taskCount}}",
             "context": "{{plannerContext}}",
             "prompt": "{{prompt}}",
+            "repoMapQuery": "{{plannerContext}} {{prompt}}",
+            "repoMapFileLimit": 8,
             "dedup": true,
             "timeoutMs": 960000,
             "agentTimeoutMs": 900000,
@@ -27933,6 +27962,8 @@
             "taskCount": "{{taskCount}}",
             "context": "{{plannerContext}}",
             "prompt": "{{prompt}}",
+            "repoMapQuery": "{{plannerContext}} {{prompt}}",
+            "repoMapFileLimit": 8,
             "timeoutMs": 960000,
             "agentTimeoutMs": 900000,
             "maxRetries": 0,
@@ -34533,6 +34564,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -34561,6 +34593,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan')?.summary || $ctx.getNodeOutput('plan')?.output || ''}}"
           },
@@ -34589,6 +34622,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan')?.summary || $ctx.getNodeOutput('plan')?.output || ''}}"
           },
@@ -34901,6 +34935,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -34929,6 +34964,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-pipeline')?.summary || $ctx.getNodeOutput('plan-pipeline')?.output || ''}}"
           },
@@ -34957,6 +34993,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-pipeline')?.summary || $ctx.getNodeOutput('plan-pipeline')?.output || ''}}"
           },
@@ -35386,6 +35423,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -35414,6 +35452,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('reproduce')?.summary || $ctx.getNodeOutput('reproduce')?.output || ''}}"
           },
@@ -35442,6 +35481,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('reproduce')?.summary || $ctx.getNodeOutput('reproduce')?.output || ''}}"
           },
@@ -35558,6 +35598,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -35586,6 +35627,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('analyse-requirements')?.summary || $ctx.getNodeOutput('analyse-requirements')?.output || ''}}"
           },
@@ -35614,6 +35656,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('analyse-requirements')?.summary || $ctx.getNodeOutput('analyse-requirements')?.output || ''}}"
           },
@@ -35906,6 +35949,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -35934,6 +35978,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('analyse-design')?.summary || $ctx.getNodeOutput('analyse-design')?.output || ''}}"
           },
@@ -35962,6 +36007,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('analyse-design')?.summary || $ctx.getNodeOutput('analyse-design')?.output || ''}}"
           },
@@ -36078,6 +36124,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "mode": "plan",
             "executionRole": "architect"
           },
@@ -36106,6 +36153,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
@@ -36134,6 +36182,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
@@ -36162,6 +36211,7 @@
             "resolveMode": "library",
             "failOnError": false,
             "repoMapQuery": "{{taskTitle}} {{taskDescription}}",
+            "repoMapFileLimit": 8,
             "executionRole": "editor",
             "architectPlan": "{{$ctx.getNodeOutput('plan-architecture')?.summary || $ctx.getNodeOutput('plan-architecture')?.output || ''}}"
           },
