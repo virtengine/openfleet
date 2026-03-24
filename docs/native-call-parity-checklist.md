@@ -31,3 +31,4 @@ Use this with `npm run check:native-call-parity`.
 1. Local gate: `npm run check:native-call-parity`
 2. Full validation: `npm test`
 3. CI gate: GitHub `CI` workflow runs `check:native-call-parity` before full test suite.
+4. Debug confusing turns: inspect the voice turn replay helpers (`getVoiceTurnTrace()` / `formatVoiceTurnTrace()`) to separate transport failures from action-dispatch mismatches.
