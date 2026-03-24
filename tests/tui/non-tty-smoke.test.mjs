@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("bosun-tui non-tty smoke", () => {
-  it("exits with a friendly Not a TTY message", async () => {
+  it("exits with a friendly non-tty message", async () => {
     const scriptPath = resolve(process.cwd(), "bosun-tui.mjs");
 
     const result = await new Promise((resolveResult, reject) => {
@@ -33,6 +33,6 @@ describe("bosun-tui non-tty smoke", () => {
     });
 
     expect(result.code).toBe(1);
-    expect(`${result.stdout}\n${result.stderr}`).toContain("Not a TTY");
+    expect(`${result.stdout}\n${result.stderr}`).toContain("stdout is not a TTY");
   });
 });

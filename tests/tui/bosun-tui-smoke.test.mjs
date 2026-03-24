@@ -13,7 +13,7 @@ describe("bosun-tui smoke", () => {
     });
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("[bosun-tui] Not a TTY");
+    expect(result.stderr).toContain("stdout is not a TTY");
     expect(result.stderr).not.toContain("Unhandled");
   });
 });
