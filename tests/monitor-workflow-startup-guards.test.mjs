@@ -289,7 +289,7 @@ describe("workflow-engine interrupted run deduplication", () => {
   });
 
   it("reads taskId from detail.data.taskId or detail.inputData.taskId", () => {
-    expect(engineSource).toContain("d.data?.taskId || d.inputData?.taskId");
+    expect(engineSource).toContain("this._resolveRunTaskIdentity(run, d)?.taskId");
   });
 
   it("bounds orphan interrupted-run scans so archived run details do not stall startup", () => {

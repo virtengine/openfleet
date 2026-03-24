@@ -1521,6 +1521,28 @@ export class WorkflowEngine extends EventEmitter {
     }
   }
 
+  _buildLedgerTaskMeta(ctx, extra = {}) {
+    const taskId = String(
+      ctx?.data?.taskId ||
+      ctx?.data?.task?.id ||
+      ctx?.data?.taskInfo?.id ||
+      ctx?.data?.taskDetail?.id ||
+      "",
+    ).trim();
+    const taskTitle = String(
+      ctx?.data?.taskTitle ||
+      ctx?.data?.task?.title ||
+      ctx?.data?.taskInfo?.title ||
+      ctx?.data?.taskDetail?.title ||
+      "",
+    ).trim();
+    return cleanObject({
+      ...extra,
+      taskId: taskId || undefined,
+      taskTitle: taskTitle || undefined,
+    });
+  }
+
 
   /**
    * Register a per-engine hook for task-linked workflow trace events.
@@ -2057,6 +2079,7 @@ export class WorkflowEngine extends EventEmitter {
       _workflowId: workflowId,
       _workflowName: def.name,
       ...(opts._decisionReason ? { _retryDecisionReason: opts._decisionReason } : {}),
+      ...(opts._parentExecutionId ? { _workflowParentExecutionId: opts._parentExecutionId } : {}),
     });
     ctx.variables = { ...def.variables };
     this._initializeDagState(def, ctx, {
@@ -2106,12 +2129,13 @@ export class WorkflowEngine extends EventEmitter {
       parentRunId: ctx.data?._workflowParentRunId || null,
       retryOf: ctx.data?._retryOf || null,
       retryMode: opts._retryMode || null,
+      parentExecutionId: ctx.data?._workflowParentExecutionId || null,
       status: WorkflowStatus.RUNNING,
-      meta: {
+      meta: this._buildLedgerTaskMeta(ctx, {
         triggerSource: ctx.data?._triggerSource || null,
         targetRepo: ctx.data?._targetRepo || null,
         decisionReason: opts._decisionReason || null,
-      },
+      }),
     });
     await this._emitTaskTraceEvent("workflow.run.start", {
       ctx,
@@ -2170,12 +2194,13 @@ export class WorkflowEngine extends EventEmitter {
         parentRunId: ctx.data?._workflowParentRunId || null,
         retryOf: ctx.data?._retryOf || null,
         retryMode: opts._retryMode || null,
+        parentExecutionId: ctx.data?._workflowParentExecutionId || null,
         status,
         durationMs: Date.now() - ctx.startedAt,
         summary: ctx.data?._issueAdvisor?.summary || null,
-        meta: {
+        meta: this._buildLedgerTaskMeta(ctx, {
           decisionReason: opts._decisionReason || null,
-        },
+        }),
       });
       await this._emitTaskTraceEvent("workflow.run.end", {
         ctx,
@@ -2208,13 +2233,14 @@ export class WorkflowEngine extends EventEmitter {
         parentRunId: ctx.data?._workflowParentRunId || null,
         retryOf: ctx.data?._retryOf || null,
         retryMode: opts._retryMode || null,
+        parentExecutionId: ctx.data?._workflowParentExecutionId || null,
         status: WorkflowStatus.FAILED,
         durationMs: Date.now() - ctx.startedAt,
         error: err.message,
         summary: ctx.data?._issueAdvisor?.summary || null,
-        meta: {
+        meta: this._buildLedgerTaskMeta(ctx, {
           decisionReason: opts._decisionReason || null,
-        },
+        }),
       });
       await this._emitTaskTraceEvent("workflow.run.error", {
         ctx,
@@ -2400,9 +2426,9 @@ export class WorkflowEngine extends EventEmitter {
       retryOf: runId,
       retryMode: mode,
       status: WorkflowStatus.RUNNING,
-      meta: {
+      meta: this._buildLedgerTaskMeta(ctx, {
         decisionReason,
-      },
+      }),
     });
     await this._emitTaskTraceEvent("workflow.run.start", {
       ctx,
@@ -3092,6 +3118,29 @@ export class WorkflowEngine extends EventEmitter {
     };
   }
 
+  _buildExecutionTree(runGraph, startRunId) {
+    if (!runGraph || !Array.isArray(runGraph.runs) || runGraph.runs.length === 0) return null;
+    const runMap = new Map(runGraph.runs.map((entry) => [entry.runId, { ...entry, children: [] }]));
+    for (const edge of Array.isArray(runGraph.edges) ? runGraph.edges : []) {
+      if (edge?.type !== "parent-child") continue;
+      const parent = runMap.get(edge.parentRunId);
+      const child = runMap.get(edge.childRunId);
+      if (parent && child) parent.children.push(child);
+    }
+    const requestedRunId = String(startRunId || runGraph.requestedRunId || runGraph.rootRunId || "").trim();
+    return runMap.get(requestedRunId) || runMap.get(runGraph.rootRunId) || null;
+  }
+
+  _decorateRunDetail(run) {
+    if (!run?.runId) return run;
+    const runGraph = this.getRunGraph(run.runId);
+    return {
+      ...run,
+      runGraph,
+      executionTree: this._buildExecutionTree(runGraph, run.runId),
+    };
+  }
+
   /** Get full run detail for a specific runId */
   getRunDetail(runId) {
     const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
@@ -3102,11 +3151,11 @@ export class WorkflowEngine extends EventEmitter {
     if (activeRun?.ctx) {
       const summary = this._buildActiveRunSummary(normalizedRunId, activeRun);
       if (!summary) return null;
-      return {
+      return this._decorateRunDetail({
         ...summary,
         detail: this._serializeRunContext(activeRun.ctx, true),
         ledger,
-      };
+      });
     }
 
     const detailPath = resolve(this.runsDir, `${normalizedRunId}.json`);
@@ -3125,7 +3174,7 @@ export class WorkflowEngine extends EventEmitter {
           status: summary.status || WorkflowStatus.COMPLETED,
           detail,
         });
-        return { ...summary, ...recomputed, detail, ledger };
+        return this._decorateRunDetail({ ...summary, ...recomputed, detail, ledger });
       }
       const terminalRaw = String(detail?.data?._workflowTerminalStatus || "")
         .trim()
@@ -3144,7 +3193,7 @@ export class WorkflowEngine extends EventEmitter {
         status,
         detail,
       });
-      return { ...computed, detail, ledger };
+      return this._decorateRunDetail({ ...computed, detail, ledger });
     } catch {
       return null;
     }
@@ -3154,6 +3203,19 @@ export class WorkflowEngine extends EventEmitter {
     const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
     if (!normalizedRunId) return null;
     return this._executionLedger.getRunLedger(normalizedRunId);
+  }
+
+  getRunGraph(runId) {
+    const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
+    if (!normalizedRunId) return null;
+    return this._executionLedger.buildRunGraph(normalizedRunId);
+  }
+
+  diffRunGraphs(baseRunId, comparisonRunId) {
+    const normalizedBaseRunId = basename(String(baseRunId || "")).replace(/\.json$/i, "");
+    const normalizedComparisonRunId = basename(String(comparisonRunId || "")).replace(/\.json$/i, "");
+    if (!normalizedBaseRunId || !normalizedComparisonRunId) return null;
+    return this._executionLedger.diffRunGraphs(normalizedBaseRunId, normalizedComparisonRunId);
   }
 
   getRetryOptions(runId) {
@@ -4879,13 +4941,37 @@ export class WorkflowEngine extends EventEmitter {
       // and mark older duplicates as not-resumable before we even try them.
       const runDetailCache = new Map(); // runId → parsed detail
       const latestByTaskId = new Map(); // taskId → run entry (highest startedAt)
+      const ledgerTaskEntries = this._executionLedger.listTaskRunEntries();
+      const ledgerTaskIdByRunId = new Map();
+      for (const entry of ledgerTaskEntries) {
+        if (!entry?.runId || !entry?.taskId) continue;
+        ledgerTaskIdByRunId.set(entry.runId, entry.taskId);
+        const previous = latestByTaskId.get(entry.taskId);
+        const entryTime = typeof entry.startedAt === "number"
+          ? entry.startedAt
+          : (Date.parse(entry.startedAt || entry.updatedAt || "") || 0);
+        const previousTime = previous
+          ? (typeof previous.startedAt === "number"
+              ? previous.startedAt
+              : (Date.parse(previous.startedAt || previous.updatedAt || "") || 0))
+          : 0;
+        const candidate = {
+          runId: entry.runId,
+          startedAt: entry.startedAt || entry.updatedAt || null,
+          updatedAt: entry.updatedAt || null,
+          status: entry.status || null,
+        };
+        if (!previous || entryTime >= previousTime) {
+          latestByTaskId.set(entry.taskId, candidate);
+        }
+      }
       for (const run of allRuns) {
         const dp = resolve(this.runsDir, `${run.runId}.json`);
         if (!existsSync(dp)) continue;
         try {
           const d = JSON.parse(readFileSync(dp, "utf8"));
           runDetailCache.set(run.runId, d);
-          const tid = d.data?.taskId || d.inputData?.taskId;
+          const tid = ledgerTaskIdByRunId.get(run.runId) || this._resolveRunTaskIdentity(run, d)?.taskId || "";
           if (!tid) continue;
           const prev = latestByTaskId.get(tid);
           if (!prev || (run.startedAt || 0) >= (prev.startedAt || 0)) {
@@ -4900,7 +4986,7 @@ export class WorkflowEngine extends EventEmitter {
       let dedupedCount = 0;
       for (const run of runs) {
         const d = runDetailCache.get(run.runId);
-        const tid = d?.data?.taskId || d?.inputData?.taskId;
+        const tid = this._resolveRunTaskIdentity(run, d)?.taskId || "";
         if (!tid) continue;
         const latest = latestByTaskId.get(tid);
         if (latest && latest.runId !== run.runId) {
@@ -4917,7 +5003,7 @@ export class WorkflowEngine extends EventEmitter {
       for (const run of runs) {
         // Skip runs that were marked as duplicates above
         const _runDetail = runDetailCache.get(run.runId);
-        const _tid = _runDetail?.data?.taskId || _runDetail?.inputData?.taskId;
+        const _tid = this._resolveRunTaskIdentity(run, _runDetail)?.taskId || "";
         if (_tid) {
           const latest = latestByTaskId.get(_tid);
           if (latest && latest.runId !== run.runId) continue;
@@ -4969,6 +5055,22 @@ export class WorkflowEngine extends EventEmitter {
     } finally {
       this._resumingRuns = false;
     }
+  }
+
+  _resolveRunTaskIdentity(runSummary, detail = null) {
+    const detailTaskId = String(
+      detail?.data?.taskId || detail?.inputData?.taskId || detail?.taskId || "",
+    ).trim();
+    if (detailTaskId) {
+      return {
+        taskId: detailTaskId,
+        taskTitle: String(detail?.data?.taskTitle || detail?.inputData?.taskTitle || "").trim() || null,
+        source: "detail",
+      };
+    }
+    const ledgerIdentity = this._executionLedger.getTaskIdentity(runSummary?.runId || detail?.id || "");
+    if (ledgerIdentity?.taskId) return ledgerIdentity;
+    return null;
   }
 
   /**
@@ -5115,6 +5217,7 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+
 
 
 
