@@ -1020,20 +1020,24 @@ function getDispatchFingerprint(intent = {}) {
   const correlationId = String(intent?.id || "").trim();
   if (correlationId) return `id:${correlationId}`;
   try {
-    return `hash:${createHash("sha1").update(`${action}:${JSON.stringify(intent?.params || {})}`).digest("hex")}`;
+    return `hash:${createHash("sha256").update(`${action}:${JSON.stringify(intent?.params || {})}`).digest("hex")}`;
   } catch {
-    return `hash:${createHash("sha1").update(`${action}:${String(intent?.params || "")}`).digest("hex")}`;
+    return `hash:${createHash("sha256").update(`${action}:${String(intent?.params || "")}`).digest("hex")}`;
   }
 }
 
 function hasPriorDispatchForFingerprint(traceContext, fingerprint) {
   if (!traceContext?.traceEnabled || !traceContext?.turnId || !fingerprint) return false;
+  const normalizedFingerprint = String(fingerprint).trim();
+  // Only treat id-based fingerprints as eligible for duplicate suppression.
+  // This allows legitimate retries when the model re-issues an action without a new `id`.
+  if (!normalizedFingerprint.startsWith("id:")) return false;
   const trace = getVoiceTurnTraceState(traceContext.sessionId, { turnId: traceContext.turnId });
   const turn = trace?.turns?.[0];
   if (!turn) return false;
   return (turn.events || []).some((event) => {
     const eventFingerprint = String(event?.fingerprint || "").trim();
-    return eventFingerprint === fingerprint && event?.type !== "turn.start";
+    return eventFingerprint === normalizedFingerprint && event?.type !== "turn.start";
   });
 }
 
