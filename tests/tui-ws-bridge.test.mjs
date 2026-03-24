@@ -41,7 +41,7 @@ describe("tui websocket bridge", () => {
       "http://127.0.0.1:3080/api/tasks/create",
     );
     expect(buildTuiHttpUrl({ host: "example.com", port: 443, path: "api/tasks/create", protocol: "wss" })).toBe(
-      "https://example.com:443/api/tasks/create",
+      "https://example.com/api/tasks/create",
     );
   });
 
