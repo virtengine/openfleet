@@ -31,6 +31,9 @@ jobs:
       - name: Prepublish check (files array + import validation)
         run: node tools/prepublish-check.mjs
 
+      - name: Prompt lint
+        run: npm run prompt:lint
+
       - name: Packed CLI smoke test
         run: npm run smoke:packed-cli
 
@@ -46,3 +49,4 @@ jobs:
 
       - name: Run tests
         run: npm test
+
