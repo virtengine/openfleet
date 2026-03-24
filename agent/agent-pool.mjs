@@ -791,6 +791,9 @@ function buildCodexSdkOptions(envInput = process.env) {
             wire_api: "responses",
           },
         },
+        features: {
+          remote_models: false,
+        },
         ...(azureModel ? { model: azureModel } : {}),
       },
     };
@@ -1222,6 +1225,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   codexOpts.config = {
     ...(codexOpts.config || {}),
     features: {
+      ...(codexOpts.config?.features || {}),
       child_agents_md: true,
       multi_agent: true,
       memories: true,
@@ -3158,6 +3162,17 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: modelOverride };
     codexOpts.config = { ...(codexOpts.config || {}), model: modelOverride };
   }
+  codexOpts.config = {
+    ...(codexOpts.config || {}),
+    features: {
+      ...(codexOpts.config?.features || {}),
+      child_agents_md: true,
+      multi_agent: true,
+      memories: true,
+      undo: true,
+      steer: true,
+    },
+  };
   const codex = new CodexClass(codexOpts);
 
   let thread;

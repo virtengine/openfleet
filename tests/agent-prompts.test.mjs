@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 
 import {
   applyPromptDefaultUpdates,
+  buildCustomToolsContextPrompt,
   ensureAgentPromptWorkspace,
   getDefaultPromptTemplate,
   getPromptDefaultUpdateStatus,
@@ -13,6 +14,7 @@ import {
   PROMPT_WORKSPACE_DIR,
   renderPromptTemplate,
 } from "../agent/agent-prompts.mjs";
+import { registerCustomTool } from "../agent/agent-custom-tools.mjs";
 
 describe("agent-prompts workspace", () => {
   const envKeys = [
@@ -240,5 +242,34 @@ describe("agent-prompts workspace", () => {
     expect(rendered).toContain("Task: Prompt cleanup");
     expect(rendered).toContain("Description: Investigate placeholder leakage");
     expect(rendered).not.toContain("{{repoSlug}}");
+  });
+
+  it("skips custom tools context when no custom tools are registered", async () => {
+    const root = await createTempDir("prompts-custom-tools-empty-");
+
+    const rendered = await buildCustomToolsContextPrompt(root);
+
+    expect(rendered).toBe("");
+  });
+
+  it("renders custom tools context when a custom tool is registered", async () => {
+    const root = await createTempDir("prompts-custom-tools-present-");
+    registerCustomTool(root, {
+      title: "Prompt helper",
+      description: "Summarizes prompt metadata",
+      category: "analysis",
+      lang: "mjs",
+      tags: ["prompt"],
+      script: 'console.log("helper")',
+      createdBy: "test-agent",
+      taskId: "task-123",
+    });
+
+    const rendered = await buildCustomToolsContextPrompt(root, { includeBuiltins: false });
+
+    expect(rendered).toContain("Check this library before writing new helper code.");
+    expect(rendered).toContain("## Custom Tools Library");
+    expect(rendered).toContain("prompt-helper.mjs");
+    expect(rendered).toContain("Summarizes prompt metadata");
   });
 });

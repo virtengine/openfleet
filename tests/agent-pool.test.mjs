@@ -973,6 +973,28 @@ describe("launchEphemeralThread", () => {
     expect(codexCtorOpts.env?.CODEX_MODEL ?? codexCtorOpts.config?.model).toBe("gpt-5.3-codex");
   });
 
+  it("disables remote model discovery for Azure Codex pool launches", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_BASE_URL = "https://example-resource.openai.azure.com/openai/v1";
+    process.env.OPENAI_API_KEY = "azure-key";
+    process.env.CODEX_MODEL = "gpt-5.4";
+    setPoolSdk("codex");
+
+    const result = await launchEphemeralThread("test prompt", process.cwd(), 5000, {
+      sdk: "codex",
+    });
+
+    expect(result.success).toBe(true);
+    const codexCtorOpts = mockCodexCtor.mock.calls.at(-1)?.[0];
+    expect(codexCtorOpts?.config).toEqual(expect.objectContaining({
+      features: expect.objectContaining({
+        remote_models: false,
+      }),
+      model: "gpt-5.4",
+    }));
+    expect(codexCtorOpts?.config?.model_provider).toMatch(/^azure/);
+  });
+
   it("accepts copilot output when sendAndWait times out waiting for session.idle", async () => {
     process.env.__MOCK_COPILOT_AVAILABLE = "1";
     process.env.CODEX_SDK_DISABLED = "1";

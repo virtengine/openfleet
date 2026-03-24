@@ -174,6 +174,26 @@ export function resolvePromptTemplate(template, values, fallback) {
   return rendered && rendered.trim() ? rendered : base;
 }
 
+export async function buildCustomToolsContextPrompt(rootDir, opts = {}) {
+  const { getToolsPromptBlock, listCustomTools } = await import("./agent-custom-tools.mjs");
+  const registeredTools = listCustomTools(rootDir, {
+    includeBuiltins: false,
+  });
+  if (registeredTools.length === 0) return "";
+
+  const promptTemplate = DEFAULT_PROMPTS.customToolsContext || "{{CUSTOM_TOOLS_BLOCK}}";
+  const toolsBlock = getToolsPromptBlock(rootDir, opts);
+  if (!toolsBlock.trim()) return "";
+
+  return renderPromptTemplate(
+    promptTemplate,
+    {
+      CUSTOM_TOOLS_BLOCK: toolsBlock,
+    },
+    rootDir,
+  ).trim();
+}
+
 export function ensureAgentPromptWorkspace(repoRoot) {
   const root = resolve(repoRoot || process.cwd());
   let workspaceDir = getDefaultPromptWorkspace(root);

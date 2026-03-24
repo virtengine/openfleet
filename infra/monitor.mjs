@@ -3124,6 +3124,9 @@ function buildCodexSdkOptionsForMonitor() {
             wire_api: "responses",
           },
         },
+        features: {
+          remote_models: false,
+        },
         ...(azureModel ? { model: azureModel } : {}),
       },
     };

@@ -89,13 +89,16 @@ function shouldRetryProviderQueryWithoutDirectory(err) {
   );
 }
 
-async function invokeProviderEndpoint(providerApi, methodName, requestOptions) {
-  const endpoint = providerApi?.[methodName];
+async function invokeProviderEndpoint(endpoint, requestOptions, context = null) {
   if (typeof endpoint !== "function") return null;
+
+  const callEndpoint = (...args) => (
+    context ? endpoint.call(context, ...args) : endpoint(...args)
+  );
 
   if (requestOptions) {
     try {
-      return await endpoint.call(providerApi, requestOptions);
+      return await callEndpoint(requestOptions);
     } catch (err) {
       if (!shouldRetryProviderQueryWithoutDirectory(err)) {
         return null;
@@ -104,7 +107,7 @@ async function invokeProviderEndpoint(providerApi, methodName, requestOptions) {
   }
 
   try {
-    return await endpoint.call(providerApi);
+    return await callEndpoint();
   } catch {
     return null;
   }
@@ -152,8 +155,8 @@ async function discoverViaSDK(existingClient = null) {
 
     // Fetch provider list + auth methods in parallel
     const [providerRes, authRes] = await Promise.all([
-      invokeProviderEndpoint(client?.provider, "list", requestOptions),
-      invokeProviderEndpoint(client?.provider, "auth", requestOptions),
+      invokeProviderEndpoint(client?.provider?.list, requestOptions, client?.provider),
+      invokeProviderEndpoint(client?.provider?.auth, requestOptions, client?.provider),
     ]);
 
     if (!providerRes?.data) return null;
@@ -528,4 +531,3 @@ export function buildExecutorEntry(providerID, modelFullId, overrides = {}) {
 export function invalidateCache() {
   _providerCache = { data: null, ts: 0 };
 }
-
