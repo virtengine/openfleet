@@ -2103,6 +2103,7 @@ function buildTaskMetaPatch(previousMeta, metadataPatchMeta, options = {}) {
   if (clearBlockedState) {
     delete nextMeta.autoRecovery;
     delete nextMeta.blockedReason;
+    delete nextMeta.worktreeFailure;
   }
   if (metadataPatchMeta && typeof metadataPatchMeta === "object") {
     Object.assign(nextMeta, metadataPatchMeta);
@@ -2492,7 +2493,14 @@ function taskMatchesWorkspaceContext(task, workspaceContext) {
 
   const taskWorkspacePath = normalizeCandidatePath(taskWorkspaceRaw);
   const workspaceDirFilter = normalizeCandidatePath(workspaceContext?.workspaceDir);
-  return Boolean(taskWorkspacePath && workspaceDirFilter && taskWorkspacePath === workspaceDirFilter);
+  const workspaceRootFilter = normalizeCandidatePath(workspaceContext?.workspaceRoot);
+  return Boolean(
+    taskWorkspacePath
+    && (
+      (workspaceDirFilter && taskWorkspacePath === workspaceDirFilter)
+      || (workspaceRootFilter && (taskWorkspacePath === workspaceRootFilter || taskWorkspacePath.startsWith(workspaceRootFilter + sep)))
+    )
+  );
 }
 
 async function listTasksForWorkspaceContext(workspaceContext, { status = "", projectId = "" } = {}) {
@@ -2766,7 +2774,8 @@ async function buildBenchmarkSnapshot(reqUrl, providerId = "") {
   }
 
   const rawProviderId = String(providerId || "").trim().toLowerCase();
-  const modeState = readBenchmarkModeState(workspaceContext.workspaceDir || repoRoot);
+  const workspaceRootDir = workspaceContext.workspaceRoot || workspaceContext.workspaceDir || repoRoot;
+  const modeState = readBenchmarkModeState(workspaceRootDir);
   const effectiveProviderId =
     rawProviderId
     || modeState.providerId
@@ -2777,13 +2786,23 @@ async function buildBenchmarkSnapshot(reqUrl, providerId = "") {
         enabled: true,
         workspaceId: workspaceContext.workspaceId,
         workspaceDir: workspaceContext.workspaceDir,
-        repoRoot: workspaceContext.workspaceDir || repoRoot,
+        repoRoot: workspaceRootDir,
       });
 
-  const { tasks, projectId } = await listTasksForWorkspaceContext(workspaceContext);
-  const matchingTasks = filterTasksForBenchmarkMode(tasks, filterMode, {
-    repoRoot: workspaceContext.workspaceDir || repoRoot,
+  let { tasks, projectId } = await listTasksForWorkspaceContext(workspaceContext);
+  let matchingTasks = filterTasksForBenchmarkMode(tasks, filterMode, {
+    repoRoot: workspaceRootDir,
   });
+  if (matchingTasks.length === 0) {
+    const allTaskFn = getTaskStoreApiSync()?.getAllTasks;
+    if (typeof allTaskFn === "function") {
+      const allWorkspaceTasks = (allTaskFn() || []).filter((task) => taskMatchesWorkspaceContext(task, workspaceContext));
+      matchingTasks = filterTasksForBenchmarkMode(allWorkspaceTasks, filterMode, {
+        repoRoot: workspaceRootDir,
+      });
+      if (!tasks?.length) tasks = allWorkspaceTasks;
+    }
+  }
   const recentTasks = sortTasksByRecency(matchingTasks).slice(0, 12);
   const enrichedTasks = await applySharedStateToTasks(recentTasks);
   const recentWithRuntime = enrichedTasks.map((task) => withTaskRuntimeSnapshot(task));
@@ -2814,7 +2833,7 @@ async function buildBenchmarkSnapshot(reqUrl, providerId = "") {
       mode: modeState,
       filter: filterMode,
       summary: summarizeBenchmarkTasks(tasks, filterMode, {
-        repoRoot: workspaceContext.workspaceDir || repoRoot,
+        repoRoot: workspaceRootDir,
       }),
       recentTasks: recentWithRuntime,
       workflowRuns,
@@ -8895,7 +8914,9 @@ function withTaskRuntimeSnapshot(task) {
   if (!task || typeof task !== "object") return task;
   const withLifetimeTotals = enrichTaskLifetimeTotals(task);
   const runtimeSnapshot = buildTaskRuntimeSnapshot(withLifetimeTotals);
-  const contentionSummary = summarizeRepoAreaLockContention(status?.repoAreaLocks || null);
+  const runtimeExecutor = uiDeps.getInternalExecutor?.() || null;
+  const executorStatus = runtimeExecutor?.getStatus?.() || {};
+  const contentionSummary = summarizeRepoAreaLockContention(executorStatus?.repoAreaLocks || null);
   return {
     ...withLifetimeTotals,
     runtimeSnapshot,
@@ -12853,7 +12874,11 @@ async function handleApi(req, res, url) {
         });
       }
 
-      const launchResult = await launchBenchmark(providerId, body || {});
+      const launchResult = await launchBenchmark(providerId, {
+        ...(body || {}),
+        workspaceId: workspaceContext.workspaceId || body?.workspaceId || "",
+        workspaceDir: workspaceContext.workspaceDir || body?.workspaceDir || "",
+      });
       let mode = null;
       if (body?.activateMode === true) {
         const modeChange = await applyBenchmarkModeChange({
@@ -14507,6 +14532,7 @@ async function handleApi(req, res, url) {
         ...(baseBranchProvided ? { baseBranch } : {}),
         ...metadataPatch.topLevel,
         ...(nextMeta ? { meta: nextMeta } : {}),
+        ...(clearsBlockedState ? { autoRecovery: null, worktreeFailure: null } : {}),
       };
       if (!hasTaskPatchValues(patch) && !baseBranchProvided && !draftProvided && !tagsProvided) {
         jsonResponse(res, 400, {
@@ -14521,6 +14547,11 @@ async function handleApi(req, res, url) {
           : await adapter.updateTaskStatus(taskId, patch.status);
       const updated = withTaskMetadataTopLevel(updatedRaw);
       if (clearsBlockedState) {
+        if (updated?.meta && typeof updated.meta === "object") {
+          delete updated.meta.autoRecovery;
+          delete updated.meta.worktreeFailure;
+          delete updated.meta.blockedReason;
+        }
         resetExecutorTaskThrottleState(taskId);
       }
       const nextStatus = updated?.status || patch.status || null;
@@ -14657,6 +14688,7 @@ async function handleApi(req, res, url) {
         ...(baseBranchProvided ? { baseBranch } : {}),
         ...metadataPatch.topLevel,
         ...(nextMeta ? { meta: nextMeta } : {}),
+        ...(clearsBlockedState ? { autoRecovery: null, worktreeFailure: null } : {}),
       };
       if (!hasTaskPatchValues(patch) && !baseBranchProvided && !draftProvided && !tagsProvided) {
         jsonResponse(res, 400, {
@@ -14671,6 +14703,11 @@ async function handleApi(req, res, url) {
           : await adapter.updateTaskStatus(taskId, patch.status);
       const updated = withTaskMetadataTopLevel(updatedRaw);
       if (clearsBlockedState) {
+        if (updated?.meta && typeof updated.meta === "object") {
+          delete updated.meta.autoRecovery;
+          delete updated.meta.worktreeFailure;
+          delete updated.meta.blockedReason;
+        }
         resetExecutorTaskThrottleState(taskId);
       }
       const nextStatus = updated?.status || patch.status || null;
@@ -16456,6 +16493,7 @@ async function handleApi(req, res, url) {
       summary.lifetimeTotals = lifetimeTotals;
       summary.repoAreaContention = summarizeRepoAreaLockContention(
         uiDeps.getInternalExecutor?.()?.getStatus?.()?.repoAreaLocks || null,
+        { now: "2026-03-24T12:00:00.000Z" },
       );
       jsonResponse(res, 200, {
         ok: true,
@@ -22798,4 +22836,12 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
+
+
+
+
+
+
+
 
