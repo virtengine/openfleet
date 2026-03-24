@@ -16020,7 +16020,7 @@ async function handleApi(req, res, url) {
     try {
       const worktrees = listActiveWorktrees(repoRoot);
       const stats = await getWorktreeStats(repoRoot);
-      const recovery = await readWorktreeRecoveryState(resolveUiStatusRepoRoot());
+      const recovery = await readWorktreeRecoveryState(repoRoot);
       jsonResponse(res, 200, {
         ok: true,
         data: worktrees,
@@ -16711,7 +16711,7 @@ if (path === "/api/agent-logs/context") {
     try {
       const executor = uiDeps.getInternalExecutor?.();
       const status = executor?.getStatus?.() || {};
-      const worktreeRecovery = await readWorktreeRecoveryState(resolveUiStatusRepoRoot());
+      const worktreeRecovery = await readWorktreeRecoveryState(repoRoot);
       const data = {
         executor: {
           mode: uiDeps.getExecutorMode?.() || "internal",
