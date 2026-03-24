@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
@@ -631,6 +631,269 @@ describe("WorkflowEngine - source port routing", () => {
     expect(visited).toEqual(["shared"]);
     expect(result.getNodeStatus("shared")).toBe(NodeStatus.COMPLETED);
   });
+
+  it("preserves mixed legacy and explicit port graphs during execution", async () => {
+    const visited = [];
+    registerNodeType("test.capture_mixed_ports", {
+      describe: () => "Capture mixed legacy/explicit routing",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        visited.push(node.id);
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "switch",
+          type: "condition.switch",
+          label: "Switch",
+          config: {
+            value: "'left'",
+            cases: {
+              left: "left-port",
+              right: "right-port",
+            },
+          },
+        },
+        { id: "left", type: "test.capture_mixed_ports", label: "Left", config: {} },
+        { id: "audit", type: "test.capture_mixed_ports", label: "Audit", config: {} },
+        { id: "right", type: "test.capture_mixed_ports", label: "Right", config: {} },
+      ],
+      [
+        { id: "legacy-trigger", source: "trigger", target: "switch" },
+        { id: "explicit-left", source: "switch", target: "left", sourcePort: "left-port" },
+        { id: "legacy-audit", source: "trigger", target: "audit" },
+        { id: "explicit-right", source: "switch", target: "right", sourcePort: "right-port" },
+      ],
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {});
+    expect(result.errors).toEqual([]);
+    expect(visited.sort()).toEqual(["audit", "left"]);
+  });
+
+  it("rejects unknown explicit source and target ports before execution", () => {
+    registerNodeType("test.port_source", {
+      describe: () => "Source node with explicit ports",
+      schema: { type: "object", properties: {} },
+      outputs: [
+        { name: "default", type: "Any" },
+        { name: "success", type: "JSON" },
+      ],
+      async execute() {
+        return { ok: true, matchedPort: "success", port: "success" };
+      },
+    });
+
+    registerNodeType("test.port_target", {
+      describe: () => "Target node with explicit ports",
+      schema: { type: "object", properties: {} },
+      inputs: [
+        { name: "default", type: "Any" },
+        { name: "payload", type: "JSON" },
+      ],
+      async execute() {
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "source", type: "test.port_source", label: "Source", config: {} },
+        { id: "target", type: "test.port_target", label: "Target", config: {} },
+      ],
+      [
+        { id: "legacy-start", source: "trigger", target: "source" },
+        {
+          id: "invalid-binding",
+          source: "source",
+          target: "target",
+          sourcePort: "missing-output",
+          targetPort: "missing-input",
+        },
+      ],
+    );
+
+    expect(() => engine.save(wf)).toThrow(/Workflow port validation failed/i);
+    expect(() => engine.save(wf)).toThrow(/missing-output/i);
+    expect(() => engine.save(wf)).toThrow(/missing-input/i);
+  });
+
+  it("honors explicit source port mappings across branch and back-edge retries", async () => {
+    const visitLog = [];
+
+    registerNodeType("test.branch_with_retry", {
+      describe: () => "Branches between retry and done ports",
+      schema: { type: "object", properties: {} },
+      outputs: [
+        { name: "retry", label: "Retry", type: "JSON" },
+        { name: "done", label: "Done", type: "JSON" },
+      ],
+      async execute(_node, ctx) {
+        const attempt = Number(ctx.data.branchAttempt || 0) + 1;
+        ctx.data.branchAttempt = attempt;
+        visitLog.push(`branch:${attempt}`);
+        return {
+          ok: true,
+          attempt,
+          matchedPort: attempt === 1 ? "retry" : "done",
+          port: attempt === 1 ? "retry" : "done",
+        };
+      },
+    });
+
+    registerNodeType("test.capture_retry_branch", {
+      describe: () => "Retry branch marker",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        visitLog.push("review");
+        return { ok: true };
+      },
+    });
+
+    registerNodeType("test.capture_done_branch", {
+      describe: () => "Done branch marker",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        visitLog.push("complete");
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "branch", type: "test.branch_with_retry", label: "Branch", config: {} },
+        { id: "review", type: "test.capture_retry_branch", label: "Review", config: {} },
+        { id: "complete", type: "test.capture_done_branch", label: "Complete", config: {} },
+      ],
+      [
+        { id: "start", source: "trigger", target: "branch" },
+        { id: "retry-path", source: "branch", target: "review", sourcePort: "retry" },
+        { id: "retry-loop", source: "review", target: "branch", backEdge: true },
+        { id: "done-path", source: "branch", target: "complete", sourcePort: "done" },
+      ],
+      { name: "Explicit Port Back Edge Workflow" },
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {});
+
+    expect(result.errors).toEqual([]);
+    expect(visitLog).toEqual(["branch:1", "review", "branch:2", "complete"]);
+    expect(result.getNodeStatus("review")).toBe(NodeStatus.COMPLETED);
+    expect(result.getNodeStatus("complete")).toBe(NodeStatus.COMPLETED);
+  });
+  it("accepts legacy condition port aliases alongside explicit yes/no routing", () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "guard",
+          type: "condition.expression",
+          label: "Guard",
+          config: { expression: "true" },
+        },
+        { id: "default-path", type: "notify.log", label: "Default", config: { message: "default" } },
+        { id: "yes-path", type: "notify.log", label: "Yes", config: { message: "yes" } },
+        { id: "no-path", type: "notify.log", label: "No", config: { message: "no" } },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "guard" },
+        { id: "e2", source: "guard", target: "default-path" },
+        { id: "e3", source: "guard", target: "yes-path", sourcePort: "true" },
+        { id: "e4", source: "guard", target: "no-path", sourcePort: "false" },
+      ],
+    );
+
+    expect(() => engine.save(wf)).not.toThrow();
+  });
+
+  it("infers transform.llm_parse ports from configured output fields", () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "src", type: "transform.template", label: "Source", config: { template: "VERDICT: CORRECT" } },
+        {
+          id: "parse",
+          type: "transform.llm_parse",
+          label: "Parse Verdict",
+          config: {
+            input: "src",
+            patterns: { verdict: "VERDICT:\\s*(CORRECT|MINOR|CRITICAL)" },
+            outputPort: "verdict",
+          },
+        },
+        { id: "done", type: "notify.log", label: "Done", config: { message: "done" } },
+        { id: "retry", type: "notify.log", label: "Retry", config: { message: "retry" } },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "src" },
+        { id: "e2", source: "src", target: "parse" },
+        { id: "e3", source: "parse", target: "done", sourcePort: "correct" },
+        { id: "e4", source: "parse", target: "retry", sourcePort: "minor" },
+      ],
+    );
+
+    expect(() => engine.save(wf)).not.toThrow();
+  });
+
+  it("rejects executing loaded workflows that still carry invalid explicit ports", async () => {
+    registerNodeType("test.execute_port_source", {
+      describe: () => "Source node with explicit ports",
+      schema: { type: "object", properties: {} },
+      outputs: [{ name: "success", type: "JSON" }],
+      async execute() {
+        return { ok: true, matchedPort: "success", port: "success" };
+      },
+    });
+
+    registerNodeType("test.execute_port_target", {
+      describe: () => "Target node with explicit ports",
+      schema: { type: "object", properties: {} },
+      inputs: [{ name: "payload", type: "JSON" }],
+      async execute() {
+        return { ok: true };
+      },
+    });
+
+    const workflowId = "wf-invalid-execute-port-bindings";
+    const persisted = {
+      id: workflowId,
+      name: "Invalid Execute Port Bindings",
+      enabled: true,
+      nodes: [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "source", type: "test.execute_port_source", label: "Source", config: {} },
+        { id: "target", type: "test.execute_port_target", label: "Target", config: {} },
+      ],
+      edges: [
+        { id: "legacy-start", source: "trigger", target: "source" },
+        {
+          id: "invalid-binding",
+          source: "source",
+          target: "target",
+          sourcePort: "missing-output",
+          targetPort: "missing-input",
+        },
+      ],
+      metadata: {},
+      variables: {},
+    };
+
+    mkdirSync(join(tmpDir, "workflows"), { recursive: true });
+    writeFileSync(join(tmpDir, "workflows", workflowId + ".json"), JSON.stringify(persisted, null, 2));
+    engine.load();
+
+    await expect(engine.execute(workflowId, {})).rejects.toThrow(/Workflow port validation failed/i);
+    await expect(engine.execute(workflowId, {})).rejects.toThrow(/missing-output/i);
+  });
+
 });
 
 // ── Run History / Detail Tests ──────────────────────────────────────────────
@@ -1191,6 +1454,111 @@ describe("WorkflowEngine - run history details", () => {
     expect(interrupted.resumeResult).toBe("duplicate_task_run");
   });
 
+  it("deduplicates interrupted runs from ledger task identity when detail files omit task ids", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-resume-ledger-dedupe", name: "Resume Ledger Dedupe Workflow" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const olderRunId = "run-ledger-older";
+    const newerRunId = "run-ledger-newer";
+    const taskId = "task-ledger-identity-1";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: olderRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: null,
+            resumable: true,
+          },
+          {
+            runId: newerRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 2000,
+            endedAt: null,
+            resumable: true,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${olderRunId}.json`),
+      JSON.stringify({
+        id: olderRunId,
+        startedAt: 1000,
+        endedAt: null,
+        data: { _workflowId: wf.id, _workflowName: wf.name },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${newerRunId}.json`),
+      JSON.stringify({
+        id: newerRunId,
+        startedAt: 2000,
+        endedAt: null,
+        data: { _workflowId: wf.id, _workflowName: wf.name },
+        nodeStatuses: { trigger: NodeStatus.RUNNING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    engine._executionLedger.appendEvent({
+      eventType: "run.start",
+      runId: olderRunId,
+      workflowId: wf.id,
+      workflowName: wf.name,
+      status: WorkflowStatus.RUNNING,
+      timestamp: new Date(1000).toISOString(),
+      meta: { taskId, taskTitle: "Ledger Task" },
+    });
+    engine._executionLedger.appendEvent({
+      eventType: "run.start",
+      runId: newerRunId,
+      workflowId: wf.id,
+      workflowName: wf.name,
+      status: WorkflowStatus.RUNNING,
+      timestamp: new Date(2000).toISOString(),
+      meta: { taskId, taskTitle: "Ledger Task" },
+    });
+
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
+
+    await engine.resumeInterruptedRuns();
+
+    expect(retrySpy).toHaveBeenCalledTimes(1);
+    expect(retrySpy).toHaveBeenCalledWith(
+      newerRunId,
+      expect.objectContaining({ mode: expect.any(String) }),
+    );
+
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const older = index.runs.find((entry) => entry.runId === olderRunId);
+    expect(older).toBeTruthy();
+    expect(older.resumable).toBe(false);
+    expect(older.resumeResult).toBe("duplicate_task_run");
+  });
+
   it("refreshes migrated task-lifecycle defaults when retrying an interrupted run", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
@@ -1419,74 +1787,7 @@ describe("WorkflowEngine - run history details", () => {
     expect(interrupted.resumeResult).toBe("duplicate_task_run");
   });
 
-  it("refreshes migrated task-lifecycle defaults when retrying an interrupted run", async () => {
-    const wf = makeSimpleWorkflow(
-      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
-      [],
-      {
-        id: "wf-resume-migrated-default",
-        name: "Resume Migrated Default",
-        variables: { prePrValidationCommand: "auto" },
-      },
-    );
-    wf.metadata = {
-      ...(wf.metadata || {}),
-      installedFrom: "template-task-lifecycle",
-    };
-    engine.save(wf);
 
-    const runsDir = join(tmpDir, "runs");
-    const interruptedRunId = "run-stale-quality-gate";
-
-    writeFileSync(
-      join(runsDir, "index.json"),
-      JSON.stringify({
-        runs: [
-          {
-            runId: interruptedRunId,
-            workflowId: wf.id,
-            workflowName: wf.name,
-            status: WorkflowStatus.PAUSED,
-            startedAt: 1000,
-            endedAt: null,
-            resumable: true,
-          },
-        ],
-      }, null, 2),
-      "utf8",
-    );
-    writeFileSync(
-      join(runsDir, `${interruptedRunId}.json`),
-      JSON.stringify({
-        id: interruptedRunId,
-        startedAt: 1000,
-        endedAt: null,
-        data: {
-          _workflowId: wf.id,
-          _workflowName: wf.name,
-          taskId: "task-shared-1",
-          prePrValidationCommand: "npm run prepush:check",
-        },
-        nodeStatuses: { trigger: NodeStatus.COMPLETED },
-        nodeStatusEvents: [],
-        logs: [],
-        errors: [],
-      }, null, 2),
-      "utf8",
-    );
-    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
-
-    const executeDagSpy = vi.spyOn(engine, "_executeDag").mockResolvedValue();
-
-    const { retryRunId } = await engine.retryRun(interruptedRunId, { mode: "from_failed" });
-
-    expect(executeDagSpy).toHaveBeenCalledTimes(1);
-    const resumedCtx = executeDagSpy.mock.calls[0][3];
-    expect(resumedCtx.data.prePrValidationCommand).toBe("auto");
-
-    const resumedRun = engine.getRunDetail(retryRunId);
-    expect(resumedRun?.detail?.data?.prePrValidationCommand).toBe("auto");
-  });
 
   it("refreshes migrated task-lifecycle defaults for fresh task-lifecycle executions", async () => {
     const wf = makeSimpleWorkflow(
@@ -2000,6 +2301,24 @@ describe("action.execute_workflow", () => {
     expect(childDetail.detail?.dagState?.rootRunId).toBe(parentCtx.id);
     expect(childDetail.ledger?.parentRunId).toBe(parentCtx.id);
     expect(childDetail.ledger?.rootRunId).toBe(parentCtx.id);
+
+    const parentDetail = engine.getRunDetail(parentCtx.id);
+    expect(parentDetail?.executionTree?.runId).toBe(parentCtx.id);
+    expect(parentDetail?.executionTree?.children?.map((entry) => entry.runId)).toContain(output.runId);
+    expect(parentDetail?.runGraph?.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "parent-child",
+          parentRunId: parentCtx.id,
+          childRunId: output.runId,
+        }),
+      ]),
+    );
+    expect(
+      parentDetail?.runGraph?.timeline?.some(
+        (entry) => entry?.runId === output.runId && entry?.eventType === "run.start",
+      ),
+    ).toBe(true);
   });
 
   it("sync mode resolves installed template aliases via metadata.installedFrom", async () => {
@@ -4028,6 +4347,87 @@ describe("Session chaining - action.run_agent", () => {
     expect(session.metadata.workspaceDir).toBe("/tmp/test");
   });
 
+  it("records autonomous agent recovery attempts in the execution ledger", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      _workflowId: "workflow-ledger-parent",
+      _workflowName: "Workflow Ledger Parent",
+      taskId: "TASK-LEDGER-AGENT",
+      taskTitle: "Ledger agent task",
+      sessionId: "session-ledger-1",
+      worktreePath: "/tmp/ledger-agent",
+    });
+
+    const recordLedgerEvent = vi.fn();
+    const continueSession = vi.fn().mockResolvedValue({ success: false, error: "session expired" });
+    const execWithRetry = vi.fn().mockResolvedValue({
+      success: true,
+      output: "done",
+      sdk: "codex",
+      items: [],
+      threadId: "thread-ledger-1",
+      attempts: 2,
+      continues: 1,
+      resumed: true,
+    });
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([]),
+      _recordLedgerEvent: recordLedgerEvent,
+      services: {
+        agentPool: {
+          continueSession,
+          execWithRetry,
+          launchEphemeralThread: vi.fn(),
+        },
+      },
+    };
+
+    const node = {
+      id: "agent-ledger-node",
+      type: "action.run_agent",
+      config: { prompt: "Do task work", autoRecover: true, continueOnSession: true },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(continueSession).toHaveBeenCalledTimes(1);
+    expect(execWithRetry).toHaveBeenCalledTimes(1);
+    expect(recordLedgerEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "agent.started",
+        executionKind: "agent",
+        executionKey: "agent:agent-ledger-node:auto",
+      }),
+    );
+    expect(recordLedgerEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "recovery.attempted",
+        executionKind: "recovery",
+        meta: expect.objectContaining({ strategy: "continue_session" }),
+      }),
+    );
+    expect(recordLedgerEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "recovery.failed",
+        executionKind: "recovery",
+        meta: expect.objectContaining({ strategy: "continue_session" }),
+      }),
+    );
+    expect(recordLedgerEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "agent.completed",
+        executionKind: "agent",
+        meta: expect.objectContaining({
+          threadId: "thread-ledger-1",
+          resumed: true,
+        }),
+      }),
+    );
+  });
+
   it("does not delegate agent workflows when task context is missing", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
@@ -5763,6 +6163,21 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(Array.isArray(replanRevision.graphAfter?.edges)).toBe(true);
     expect(replanRevision.graphAfter?.edges?.[0]?.source).toBe("trigger");
     expect(retriedRun.detail.issueAdvisor.recommendedAction).toBe("continue");
+
+    const diff = engine.diffRunGraphs(firstRun.runId, retry.retryRunId);
+    expect(diff?.baseRunId).toBe(firstRun.runId);
+    expect(diff?.comparisonRunId).toBe(retry.retryRunId);
+    expect(diff?.executionDelta?.changed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          executionKey: "node:build",
+          executionKind: "node",
+          nodeId: "build",
+          baseStatus: NodeStatus.FAILED,
+          comparisonStatus: NodeStatus.COMPLETED,
+        }),
+      ]),
+    );
   });
 
   it("distinguishes rerun, fix-step, and subgraph replan retry decisions", () => {
@@ -5798,5 +6213,7 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(replan.reason).toBe("issue_advisor.replan_subgraph");
   });
 });
+
+
 
 

@@ -64,6 +64,7 @@ import {
   CUSTOM_NODE_DIR_NAME,
   ensureCustomWorkflowNodesLoaded,
   getCustomNodeDir,
+  inspectCustomWorkflowNodePlugins,
   scaffoldCustomNodeFile,
   startCustomNodeDiscovery,
   stopCustomNodeDiscovery,
@@ -1914,11 +1915,56 @@ function applyChildWorkflowLineage(ctx, inputData = {}, childWorkflowId = "", ex
 
 function makeChildWorkflowExecuteOptions(ctx, extra = {}) {
   const lineage = getChildWorkflowLineage(ctx, extra.childWorkflowId || "", extra);
+  const sourceNodeId = String(extra?.sourceNodeId || "").trim();
   return {
     ...(extra && typeof extra === "object" ? extra : {}),
     _parentRunId: lineage.parentRunId,
     _rootRunId: lineage.rootRunId,
+    ...(sourceNodeId ? { _parentExecutionId: `node:${ctx?.id || "run"}:${sourceNodeId}` } : {}),
   };
+}
+
+function sanitizeLedgerKeyPart(value, fallback = "unknown") {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || fallback;
+}
+
+function buildWorkflowLedgerBase(ctx, extra = {}) {
+  return {
+    runId: ctx?.id || null,
+    workflowId: ctx?.data?._workflowId || null,
+    workflowName: ctx?.data?._workflowName || null,
+    rootRunId: ctx?.data?._workflowRootRunId || ctx?.id || null,
+    parentRunId: ctx?.data?._workflowParentRunId || null,
+    retryOf: ctx?.data?._retryOf || null,
+    retryMode: ctx?.data?._retryMode || null,
+    ...extra,
+  };
+}
+
+function buildNodeExecutionLedgerRef(ctx, node, kind, parts = [], label = null) {
+  const nodeId = String(node?.id || "node").trim() || "node";
+  const suffix = (Array.isArray(parts) ? parts : [parts])
+    .map((part) => sanitizeLedgerKeyPart(part, "item"))
+    .filter(Boolean)
+    .join(":");
+  return {
+    executionKind: kind,
+    executionId: `${kind}:${ctx?.id || "run"}:${nodeId}${suffix ? `:${suffix}` : ""}`,
+    executionKey: `${kind}:${nodeId}${suffix ? `:${suffix}` : ""}`,
+    executionLabel: label || node?.label || nodeId,
+    parentExecutionId: `node:${ctx?.id || "run"}:${nodeId}`,
+  };
+}
+
+function recordNodeLedgerEvent(engine, event = {}) {
+  if (typeof engine?._recordLedgerEvent === "function") {
+    engine._recordLedgerEvent(event);
+  }
 }
 
 function isBosunStateComment(text) {
@@ -2941,10 +2987,22 @@ registerBuiltinNodeType("action.run_agent", {
               ...delegationData,
               _agentWorkflowActive: true,
             }, wf.id),
-            makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: wf.id }),
+            makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: wf.id, sourceNodeId: node.id }),
           );
           const subErrors = Array.isArray(subCtx?.errors) ? subCtx.errors : [];
           const subStatus = subErrors.length === 0 ? "completed" : "failed";
+          recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+            eventType: "agent.delegated",
+            ...buildNodeExecutionLedgerRef(ctx, node, "agent", ["delegate", wf.id], wf.name || wf.id),
+            childRunId: subCtx?.id || null,
+            status: subStatus,
+            summary: `Delegated to ${wf.id}`,
+            meta: {
+              delegatedWorkflowId: wf.id,
+              delegatedWorkflowName: wf.name || null,
+              errorCount: subErrors.length,
+            },
+          }));
           if (tracker && trackedTaskId) {
             tracker.updateSessionStatus(trackedTaskId, subStatus);
             tracker.recordEvent(trackedTaskId, {
@@ -2959,6 +3017,7 @@ registerBuiltinNodeType("action.run_agent", {
           return {
             success: subErrors.length === 0,
             delegated: true,
+            runId: subCtx?.id || null,
             subWorkflowId: wf.id,
             subWorkflowName: wf.name,
             subStatus,
@@ -3086,6 +3145,13 @@ registerBuiltinNodeType("action.run_agent", {
           : WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT;
         const tracker = trackedTaskId ? getSessionTracker() : null;
         const trackedSessionType = trackedTaskId ? "task" : "flow";
+        const agentExecutionLedgerRef = buildNodeExecutionLedgerRef(
+          ctx,
+          node,
+          "agent",
+          [sdkOverride || sdk || "auto"],
+          node.label || node.id,
+        );
 
         if (tracker && trackedTaskId) {
           const existing = tracker.getSessionById(trackedTaskId);
@@ -3153,6 +3219,17 @@ registerBuiltinNodeType("action.run_agent", {
           ctx.log(node.id, `${passLabel || "Agent"} still running (${elapsedSec}s elapsed)`);
         }, WORKFLOW_AGENT_HEARTBEAT_MS);
 
+        recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+          eventType: "agent.started",
+          ...agentExecutionLedgerRef,
+          status: "running",
+          meta: {
+            sdk: sdkOverride || sdk || null,
+            sessionId,
+            taskKey: recoveryTaskKey,
+            sessionType: trackedSessionType,
+          },
+        }));
         let result = null;
         let success = false;
         try {
@@ -3164,6 +3241,13 @@ registerBuiltinNodeType("action.run_agent", {
           ) {
             ctx.log(node.id, `${passLabel} Recovery: continuing existing session ${sessionId}`.trim());
             try {
+              recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+                eventType: "recovery.attempted",
+                ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["continue-session", sessionId || "session"], "continue-session"),
+                status: "running",
+                attempt: 1,
+                meta: { strategy: "continue_session", sessionId, taskKey: recoveryTaskKey },
+              }));
               result = await agentPool.continueSession(sessionId, continuePrompt, {
                 timeout: timeoutMs,
                 cwd,
@@ -3171,8 +3255,23 @@ registerBuiltinNodeType("action.run_agent", {
                 model: modelOverride,
               });
               if (result?.success) {
+                recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+                  eventType: "recovery.succeeded",
+                  ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["continue-session", sessionId || "session"], "continue-session"),
+                  status: "completed",
+                  attempt: 1,
+                  meta: { strategy: "continue_session", sessionId, taskKey: recoveryTaskKey },
+                }));
                 ctx.log(node.id, `${passLabel} Recovery: continue-session succeeded`.trim());
               } else {
+                recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+                  eventType: "recovery.failed",
+                  ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["continue-session", sessionId || "session"], "continue-session"),
+                  status: "failed",
+                  attempt: 1,
+                  error: result?.error || "unknown error",
+                  meta: { strategy: "continue_session", sessionId, taskKey: recoveryTaskKey },
+                }));
                 ctx.log(
                   node.id,
                   `${passLabel} Recovery: continue-session failed (${result?.error || "unknown error"})`.trim(),
@@ -3181,6 +3280,14 @@ registerBuiltinNodeType("action.run_agent", {
                 result = null;
               }
             } catch (err) {
+              recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+                eventType: "recovery.failed",
+                ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["continue-session", sessionId || "session"], "continue-session"),
+                status: "failed",
+                attempt: 1,
+                error: err?.message || String(err),
+                meta: { strategy: "continue_session", sessionId, taskKey: recoveryTaskKey },
+              }));
               ctx.log(
                 node.id,
                 `${passLabel} Recovery: continue-session threw (${err?.message || err})`.trim(),
@@ -3195,6 +3302,13 @@ registerBuiltinNodeType("action.run_agent", {
               node.id,
               `${passLabel} Recovery: execWithRetry taskKey=${recoveryTaskKey} retries=${sessionRetries} continues=${maxContinues}`.trim(),
             );
+            recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+              eventType: "recovery.attempted",
+              ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["exec-with-retry", recoveryTaskKey], "execWithRetry"),
+              status: "running",
+              attempt: 1,
+              meta: { strategy: "exec_with_retry", taskKey: recoveryTaskKey, maxRetries: sessionRetries, maxContinues },
+            }));
             result = await agentPool.execWithRetry(passPrompt, {
               taskKey: recoveryTaskKey,
               cwd,
@@ -3211,6 +3325,13 @@ registerBuiltinNodeType("action.run_agent", {
 
           if (!result && autoRecover && typeof agentPool.launchOrResumeThread === "function") {
             ctx.log(node.id, `${passLabel} Recovery: launchOrResumeThread taskKey=${recoveryTaskKey}`.trim());
+            recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+              eventType: "recovery.attempted",
+              ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["launch-or-resume", recoveryTaskKey], "launchOrResumeThread"),
+              status: "running",
+              attempt: 1,
+              meta: { strategy: "launch_or_resume_thread", taskKey: recoveryTaskKey },
+            }));
             result = await agentPool.launchOrResumeThread(passPrompt, cwd, timeoutMs, {
               taskKey: recoveryTaskKey,
               sessionType: trackedSessionType,
@@ -3222,10 +3343,35 @@ registerBuiltinNodeType("action.run_agent", {
           }
 
           if (!result) {
+            recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+              eventType: "recovery.attempted",
+              ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["launch-ephemeral", recoveryTaskKey], "launchEphemeralThread"),
+              status: "running",
+              attempt: 1,
+              meta: { strategy: "launch_ephemeral_thread", taskKey: recoveryTaskKey },
+            }));
             launchExtra.systemPrompt = effectiveSystemPrompt;
             result = await agentPool.launchEphemeralThread(passPrompt, cwd, timeoutMs, launchExtra);
           }
           success = result?.success === true;
+          if (result) {
+            const strategy = result?.attempts || result?.continues || result?.resumed
+              ? "exec_with_retry"
+              : (sessionId ? "continue_or_resume" : "launch_ephemeral_thread");
+            recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+              eventType: success ? "recovery.succeeded" : "recovery.failed",
+              ...buildNodeExecutionLedgerRef(ctx, node, "recovery", [strategy, recoveryTaskKey], strategy),
+              status: success ? "completed" : "failed",
+              attempt: Number(result?.attempts || 1),
+              error: success ? null : (result?.error || null),
+              meta: {
+                strategy,
+                taskKey: recoveryTaskKey,
+                threadId: result?.threadId || result?.sessionId || null,
+                resumed: result?.resumed === true,
+              },
+            }));
+          }
         } finally {
           clearInterval(heartbeat);
         }
@@ -3257,6 +3403,22 @@ registerBuiltinNodeType("action.run_agent", {
           ctx.data._agentSessionTaskKey = recoveryTaskKey;
         }
         const digest = buildAgentExecutionDigest(result, streamLines, maxRetainedEvents);
+        recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+          eventType: success ? "agent.completed" : "agent.failed",
+          ...agentExecutionLedgerRef,
+          status: success ? "completed" : "failed",
+          durationMs: Date.now() - startedAt,
+          error: success ? null : (result?.error || null),
+          summary: digest.summary || null,
+          meta: {
+            sdk: result?.sdk || sdkOverride || sdk || null,
+            threadId: result?.threadId || result?.sessionId || sessionId || null,
+            resumed: result?.resumed === true,
+            attempts: result?.attempts,
+            continues: result?.continues,
+            itemCount: digest.itemCount,
+          },
+        }));
 
         if (!success) {
           return {
@@ -3845,7 +4007,7 @@ registerBuiltinNodeType("action.execute_workflow", {
       ...inheritedInput,
       ...configuredInput,
     }, workflowId);
-    const childRunOpts = makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: workflowId });
+    const childRunOpts = makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: workflowId, sourceNodeId: node.id });
 
     // Forward _triggerVars — explicit config takes precedence over inherited
     const triggerVarsConfig = resolveWorkflowNodeValue(node.config?.triggerVars ?? null, ctx);
@@ -4098,7 +4260,7 @@ registerBuiltinNodeType("action.inline_workflow", {
         parentWorkflowId,
       },
     }, childInput, {
-      ...makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: inlineWorkflowId }),
+      ...makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: inlineWorkflowId, sourceNodeId: node.id }),
       force: true,
       sourceNodeId: node.id,
       inlineWorkflowId,
@@ -6274,7 +6436,7 @@ registerNodeType("action.emit_event", {
               _triggeredByRunId: ctx.id,
             }, workflowId),
             {
-              ...makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: workflowId }),
+              ...makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: workflowId, sourceNodeId: node.id }),
               force: true,
             },
           );
@@ -8039,7 +8201,7 @@ const UNIVERSAL_FLOW_NODE = {
       ...inheritedInput,
       ...configuredInput,
     }, workflowId);
-    const childRunOpts = makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: workflowId });
+    const childRunOpts = makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: workflowId, sourceNodeId: node.id });
     const trackedTaskId = String(
       ctx.data?.taskId ||
       ctx.data?.task?.id ||
@@ -8244,7 +8406,7 @@ registerBuiltinNodeType("loop.for_each", {
             _loopTotal: items.length,
           }, subWorkflowId);
           try {
-            const childRunOpts = makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: subWorkflowId });
+            const childRunOpts = makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: subWorkflowId, sourceNodeId: node.id });
             if (mode === "dispatch") {
               const dispatched = Promise.resolve(engine.execute(subWorkflowId, itemData, childRunOpts));
               dispatched
@@ -8374,7 +8536,7 @@ registerBuiltinNodeType("loop.while", {
 
         try {
           const childCtx = await engine.execute(subWorkflowId, iterInput, {
-            ...makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: subWorkflowId }),
+            ...makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: subWorkflowId, sourceNodeId: node.id }),
             force: true,
           });
           const ok = !childCtx?.errors?.length;
@@ -8757,6 +8919,20 @@ registerBuiltinNodeType("action.bosun_tool", {
     }
 
     ctx.log(node.id, `Invoking Bosun tool: ${toolId} ${resolvedArgs.join(" ")}`.trim());
+    const toolStartedAt = Date.now();
+    const bosunToolLedgerRef = buildNodeExecutionLedgerRef(ctx, node, "tool", ["bosun", toolId], toolId);
+    recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+      eventType: "tool.started",
+      ...bosunToolLedgerRef,
+      toolId,
+      toolName: toolId,
+      status: "running",
+      meta: {
+        provider: "bosun",
+        cwd,
+        args: resolvedArgs,
+      },
+    }));
 
     const toolsMod = await getCustomToolsMod();
 
@@ -8771,6 +8947,16 @@ registerBuiltinNodeType("action.bosun_tool", {
         matchedPort: "error",
         port: "error",
       };
+      recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+        eventType: "tool.failed",
+        ...bosunToolLedgerRef,
+        toolId,
+        toolName: toolId,
+        status: "failed",
+        durationMs: Date.now() - toolStartedAt,
+        error: errResult.error,
+        meta: { provider: "bosun", cwd },
+      }));
       if (node.config?.outputVariable) ctx.data[node.config.outputVariable] = errResult;
       return errResult;
     }
@@ -8792,6 +8978,26 @@ registerBuiltinNodeType("action.bosun_tool", {
         matchedPort: "error",
         port: "error",
       };
+      recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+        eventType: "tool.failed",
+        ...bosunToolLedgerRef,
+        toolId,
+        toolName: toolId,
+        status: "failed",
+        durationMs: Date.now() - toolStartedAt,
+        error: errResult.error,
+        meta: { provider: "bosun", cwd },
+      }));
+      recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+        eventType: "tool.failed",
+        ...bosunToolLedgerRef,
+        toolId,
+        toolName: toolId,
+        status: "failed",
+        durationMs: Date.now() - toolStartedAt,
+        error: err.message,
+        meta: { provider: "bosun", cwd },
+      }));
       if (node.config?.outputVariable) ctx.data[node.config.outputVariable] = errResult;
       return errResult;
     }
@@ -8847,6 +9053,21 @@ registerBuiltinNodeType("action.bosun_tool", {
       ctx.data[node.config.outputVariable] = output;
     }
 
+    recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+      eventType: exitSuccess ? "tool.completed" : "tool.failed",
+      ...bosunToolLedgerRef,
+      toolId,
+      toolName: toolId,
+      status: exitSuccess ? "completed" : "failed",
+      durationMs: Date.now() - toolStartedAt,
+      error: exitSuccess ? null : (toolResult.stderr || null),
+      summary: typeof data === "string" ? data.slice(0, 240) : null,
+      meta: {
+        provider: "bosun",
+        cwd,
+        exitCode: toolResult.exitCode,
+      },
+    }));
     if (exitSuccess) {
       ctx.log(node.id, `Tool "${toolId}" completed (exit ${toolResult.exitCode})`);
     } else {
@@ -8956,7 +9177,7 @@ registerBuiltinNodeType("action.invoke_workflow", {
       ...(pipeContext ? { ...ctx.data } : {}),
       ...(typeof resolvedInput === "object" && resolvedInput !== null ? resolvedInput : {}),
     }, workflowId);
-    const childRunOpts = makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: workflowId });
+    const childRunOpts = makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: workflowId, sourceNodeId: node.id });
 
     // ── Dispatch mode ──
     if (mode === "dispatch") {
@@ -9950,13 +10171,24 @@ registerBuiltinNodeType("action.mcp_tool_call", {
     if (!toolName) throw new Error("action.mcp_tool_call: 'tool' is required");
 
     ctx.log(node.id, `MCP tool call: ${serverId}/${toolName}`);
+    const mcpToolStartedAt = Date.now();
+    const mcpToolLedgerRef = buildNodeExecutionLedgerRef(ctx, node, "tool", ["mcp", serverId, toolName], `${serverId}/${toolName}`);
+    recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+      eventType: "tool.started",
+      ...mcpToolLedgerRef,
+      toolId: toolName,
+      toolName,
+      serverId,
+      status: "running",
+      meta: { provider: "mcp", serverId },
+    }));
 
     let rawOutput;
     try {
       rawOutput = await _executeMcpToolCall(serverId, toolName, node.config?.input, timeoutMs, ctx);
     } catch (err) {
       ctx.log(node.id, `MCP tool call failed: ${err.message}`);
-      return {
+      const failedResult = {
         success: false,
         error: err.message,
         server: serverId,
@@ -9964,6 +10196,18 @@ registerBuiltinNodeType("action.mcp_tool_call", {
         matchedPort: "error",
         port: "error",
       };
+      recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+        eventType: "tool.failed",
+        ...mcpToolLedgerRef,
+        toolId: toolName,
+        toolName,
+        serverId,
+        status: "failed",
+        durationMs: Date.now() - mcpToolStartedAt,
+        error: err.message,
+        meta: { provider: "mcp", serverId },
+      }));
+      return failedResult;
     }
 
     if (!rawOutput.success) {
@@ -10003,6 +10247,23 @@ registerBuiltinNodeType("action.mcp_tool_call", {
     if (node.config?.outputVariable) {
       ctx.data[node.config.outputVariable] = extracted;
     }
+
+    recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+      eventType: rawOutput.success ? "tool.completed" : "tool.failed",
+      ...mcpToolLedgerRef,
+      toolId: toolName,
+      toolName,
+      serverId,
+      status: rawOutput.success ? "completed" : "failed",
+      durationMs: Date.now() - mcpToolStartedAt,
+      error: rawOutput.success ? null : (rawOutput.error || null),
+      summary: rawOutput.text ? String(rawOutput.text).slice(0, 240) : null,
+      meta: {
+        provider: "mcp",
+        serverId,
+        contentType: rawOutput.contentType || null,
+      },
+    }));
 
     return extracted;
   },
@@ -14366,7 +14627,7 @@ registerBuiltinNodeType("flow.try_catch", {
           const runCtx = await engine.execute(
             tryWfId,
             applyChildWorkflowLineage(ctx, { ...ctx.data }, tryWfId),
-            makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: tryWfId }),
+            makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: tryWfId, sourceNodeId: node.id }),
           );
           const hasErrors = runCtx?.errors?.length > 0;
           if (hasErrors) {
@@ -14409,7 +14670,7 @@ registerBuiltinNodeType("flow.try_catch", {
           const catchCtx = await engine.execute(
             catchWfId,
             applyChildWorkflowLineage(ctx, { ...ctx.data, [errorVar]: errorObj }, catchWfId),
-            makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: catchWfId }),
+            makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: catchWfId, sourceNodeId: node.id }),
           );
           catchResult = { executed: true, runId: catchCtx?.id || null };
         } catch (catchErr) {
@@ -14426,7 +14687,7 @@ registerBuiltinNodeType("flow.try_catch", {
         const finallyCtx = await engine.execute(
           finallyWfId,
           applyChildWorkflowLineage(ctx, { ...ctx.data }, finallyWfId),
-          makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: finallyWfId }),
+          makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: finallyWfId, sourceNodeId: node.id }),
         );
         finallyResult = { executed: true, runId: finallyCtx?.id || null };
       } catch (finErr) {
@@ -14515,7 +14776,7 @@ registerBuiltinNodeType("flow.parallel", {
       return engine.execute(
         wfId,
         branchData,
-        makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: wfId }),
+        makeChildWorkflowExecuteOptions(ctx, { childWorkflowId: wfId, sourceNodeId: node.id }),
       ).then(
         (runCtx) => {
           const hasErrors = runCtx?.errors?.length > 0;
@@ -14605,6 +14866,7 @@ export { evaluateTaskAssignedTriggerConfig };
 export {
   CUSTOM_NODE_DIR_NAME,
   getCustomNodeDir,
+  inspectCustomWorkflowNodePlugins,
   scaffoldCustomNodeFile,
   startCustomNodeDiscovery,
   stopCustomNodeDiscovery,

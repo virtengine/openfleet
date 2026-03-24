@@ -269,15 +269,103 @@ function normalizeHandlerMetadata(handler) {
   return normalized;
 }
 
+function buildNamedPorts(names = [], direction = "output") {
+  return Array.from(new Set((Array.isArray(names) ? names : [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)))
+    .map((name, index) => normalizePortDescriptor({ name, label: name, type: "Any" }, direction, index));
+}
+
+function inferLlmParseOutputPorts(node) {
+  const outputPortField = String(node?.config?.outputPort || "").trim();
+  if (!outputPortField) return [];
+
+  const keywordPorts = Array.isArray(node?.config?.keywords?.[outputPortField])
+    ? node.config.keywords[outputPortField]
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean)
+    : [];
+
+  const pattern = String(node?.config?.patterns?.[outputPortField] || "").trim();
+  const match = pattern.match(/\(([^()]+)\)/);
+  const patternPorts = match
+    ? match[1]
+      .split("|")
+      .map((value) => value.replace(/^\?:/, "").trim().toLowerCase())
+      .filter((value) => value && !value.includes("\\"))
+    : [];
+
+  return Array.from(new Set([...keywordPorts, ...patternPorts]));
+}
+
+function getConfiguredNodeInputs(node) {
+  return buildNamedPorts(node?.inputs, "input");
+}
+
+function getConfiguredNodeOutputs(node) {
+  const explicitOutputNames = Array.isArray(node?.outputs)
+    ? Array.from(new Set(node.outputs.map((value) => String(value || "").trim()).filter(Boolean)))
+    : [];
+
+  if (node?.type === "condition.switch") {
+    const caseOutputs = Object.values(node?.config?.cases || {})
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+    const mergedOutputs = Array.from(new Set([
+      ...(explicitOutputNames.length > 0 ? explicitOutputNames : ["default"]),
+      ...caseOutputs,
+    ]));
+    return buildNamedPorts(mergedOutputs, "output");
+  }
+
+  if (String(node?.type || "").startsWith("condition.")) {
+    const mergedOutputs = Array.from(new Set([
+      "default",
+      ...(explicitOutputNames.length > 0 ? explicitOutputNames : []),
+      "yes",
+      "no",
+    ]));
+    return buildNamedPorts(mergedOutputs, "output");
+  }
+
+  if (node?.type === "transform.llm_parse") {
+    const inferredOutputs = inferLlmParseOutputPorts(node);
+    const mergedOutputs = Array.from(new Set([
+      ...(explicitOutputNames.length > 0 ? explicitOutputNames : ["default"]),
+      ...inferredOutputs,
+    ]));
+    return buildNamedPorts(mergedOutputs, "output");
+  }
+
+  return buildNamedPorts(explicitOutputNames, "output");
+}
+
 function resolveNodePorts(node) {
-  const handler = node?.type ? _nodeTypeRegistry.get(node.type) : null;
+  const rawHandler = node?.type ? _nodeTypeRegistry.get(node.type) : null;
+  const handler = rawHandler ? normalizeHandlerMetadata(rawHandler) : null;
   const handlerPorts = handler?.ports || {};
   const inputPorts = normalizePortList(node?.inputPorts, "input");
   const outputPorts = normalizePortList(node?.outputPorts, "output");
+  const configuredInputs = getConfiguredNodeInputs(node);
+  const configuredOutputs = getConfiguredNodeOutputs(node);
+  const handlerInputs = normalizePortList(handlerPorts.inputs, "input");
+  const handlerOutputs = normalizePortList(handlerPorts.outputs, "output");
 
   return {
-    inputs: inputPorts.length > 0 ? inputPorts : normalizePortList(handlerPorts.inputs, "input"),
-    outputs: outputPorts.length > 0 ? outputPorts : normalizePortList(handlerPorts.outputs, "output"),
+    inputs: inputPorts.length > 0
+      ? inputPorts
+      : (configuredInputs.length > 0
+        ? configuredInputs
+        : (handlerInputs.length > 0
+          ? handlerInputs
+          : [normalizePortDescriptor({ name: "default", label: "default", type: "Any" }, "input", 0)])),
+    outputs: outputPorts.length > 0
+      ? outputPorts
+      : (configuredOutputs.length > 0
+        ? configuredOutputs
+        : (handlerOutputs.length > 0
+          ? handlerOutputs
+          : [normalizePortDescriptor({ name: "default", label: "default", type: "Any" }, "output", 0)])),
   };
 }
 
@@ -285,13 +373,50 @@ function resolvePortByName(ports, requestedName, direction) {
   if (!Array.isArray(ports) || ports.length === 0) return null;
   const normalizedName = String(requestedName || "").trim();
   if (!normalizedName) return ports[0];
-  const matched = ports.find((port) => port.name === normalizedName);
-  if (matched) return matched;
-  return normalizePortDescriptor({
-    name: normalizedName,
-    label: normalizedName,
-    type: "Any",
-  }, direction, 0);
+  const directMatch = ports.find((port) => port.name === normalizedName);
+  if (directMatch) return directMatch;
+
+  if (direction === "output") {
+    if (normalizedName === "true") {
+      return ports.find((port) => port.name === "yes") || null;
+    }
+    if (normalizedName === "false") {
+      return ports.find((port) => port.name === "no") || null;
+    }
+  }
+
+  return null;
+}
+
+function resolveRequestedPortName(edge, key, alias) {
+  return String(edge?.[key] ?? edge?.[alias] ?? "").trim();
+}
+
+function buildUnknownPortValidationIssue(edge, direction, requestedPortName, availablePorts = []) {
+  const safeRequestedPortName = String(requestedPortName || "").trim() || "default";
+  const portLabel = direction === "output" ? "output" : "input";
+  const availableNames = (Array.isArray(availablePorts) ? availablePorts : [])
+    .map((port) => String(port?.name || "").trim())
+    .filter(Boolean);
+  const availableSuffix = availableNames.length
+    ? ` Available ${portLabel} ports: ${availableNames.join(", ")}.`
+    : "";
+
+  return {
+    edgeId: edge.id || `${edge.source}->${edge.target}`,
+    source: edge.source,
+    target: edge.target,
+    sourcePort: direction === "output"
+      ? safeRequestedPortName
+      : String(resolveRequestedPortName(edge, "sourcePort", "fromPort") || "default").trim() || "default",
+    targetPort: direction === "input"
+      ? safeRequestedPortName
+      : String(resolveRequestedPortName(edge, "targetPort", "toPort") || "default").trim() || "default",
+    sourceType: null,
+    targetType: null,
+    severity: "error",
+    message: `Unknown ${portLabel} port "${safeRequestedPortName}" on edge ${edge.id || `${edge.source}->${edge.target}`}.${availableSuffix}`,
+  };
 }
 
 function isWildcardPortType(type) {
@@ -364,18 +489,37 @@ function hydrateWorkflowEdge(edge, nodeMap, issues) {
   const targetNode = nodeMap.get(edge.target);
   const sourcePorts = resolveNodePorts(sourceNode);
   const targetPorts = resolveNodePorts(targetNode);
-  const sourcePort = resolvePortByName(sourcePorts.outputs, edge.sourcePort || "default", "output");
-  const targetPort = resolvePortByName(targetPorts.inputs, edge.targetPort || "default", "input");
-  const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
+  const requestedSourcePortName = resolveRequestedPortName(edge, "sourcePort", "fromPort");
+  const requestedTargetPortName = resolveRequestedPortName(edge, "targetPort", "toPort");
+  const sourcePort = resolvePortByName(
+    sourcePorts.outputs,
+    requestedSourcePortName || "default",
+    "output",
+  );
+  const targetPort = resolvePortByName(
+    targetPorts.inputs,
+    requestedTargetPortName || "default",
+    "input",
+  );
 
-  if (!compatibility.compatible) {
-    issues.push(buildPortValidationIssue(edge, sourcePort, targetPort, compatibility));
+  if (requestedSourcePortName && !sourcePort) {
+    issues.push(buildUnknownPortValidationIssue(edge, "output", requestedSourcePortName, sourcePorts.outputs));
+  }
+  if (requestedTargetPortName && !targetPort) {
+    issues.push(buildUnknownPortValidationIssue(edge, "input", requestedTargetPortName, targetPorts.inputs));
+  }
+
+  if (sourcePort && targetPort) {
+    const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
+    if (!compatibility.compatible) {
+      issues.push(buildPortValidationIssue(edge, sourcePort, targetPort, compatibility));
+    }
   }
 
   return {
     ...edge,
-    sourcePort: sourcePort?.name || String(edge.sourcePort || "default").trim() || "default",
-    targetPort: targetPort?.name || String(edge.targetPort || "default").trim() || "default",
+    sourcePort: sourcePort?.name || requestedSourcePortName || "default",
+    targetPort: targetPort?.name || requestedTargetPortName || "default",
     sourcePortType: sourcePort?.type || null,
     targetPortType: targetPort?.type || null,
   };
@@ -1384,6 +1528,28 @@ export class WorkflowEngine extends EventEmitter {
     }
   }
 
+  _buildLedgerTaskMeta(ctx, extra = {}) {
+    const taskId = String(
+      ctx?.data?.taskId ||
+      ctx?.data?.task?.id ||
+      ctx?.data?.taskInfo?.id ||
+      ctx?.data?.taskDetail?.id ||
+      "",
+    ).trim();
+    const taskTitle = String(
+      ctx?.data?.taskTitle ||
+      ctx?.data?.task?.title ||
+      ctx?.data?.taskInfo?.title ||
+      ctx?.data?.taskDetail?.title ||
+      "",
+    ).trim();
+    return cleanObject({
+      ...extra,
+      taskId: taskId || undefined,
+      taskTitle: taskTitle || undefined,
+    });
+  }
+
 
   /**
    * Register a per-engine hook for task-linked workflow trace events.
@@ -1823,8 +1989,9 @@ export class WorkflowEngine extends EventEmitter {
    * @returns {Promise<WorkflowContext>}
    */
   async execute(workflowId, inputData = {}, opts = {}) {
-    const def = this.get(workflowId);
-    if (!def) throw new Error(`${TAG} Workflow "${workflowId}" not found`);
+    const persistedDef = this.get(workflowId);
+    if (!persistedDef) throw new Error(`${TAG} Workflow "${workflowId}" not found`);
+    const def = hydrateWorkflowDefinition(persistedDef, { strict: true });
     if (def.enabled === false && !opts.force) {
       throw new Error(`${TAG} Workflow "${def.name}" is disabled`);
     }
@@ -1920,6 +2087,7 @@ export class WorkflowEngine extends EventEmitter {
       _workflowName: def.name,
       _workflowDefinitionSnapshot: cloneRunSnapshot(def),
       ...(opts._decisionReason ? { _retryDecisionReason: opts._decisionReason } : {}),
+      ...(opts._parentExecutionId ? { _workflowParentExecutionId: opts._parentExecutionId } : {}),
     });
     ctx.variables = { ...def.variables };
     this._initializeDagState(def, ctx, {
@@ -1969,12 +2137,13 @@ export class WorkflowEngine extends EventEmitter {
       parentRunId: ctx.data?._workflowParentRunId || null,
       retryOf: ctx.data?._retryOf || null,
       retryMode: opts._retryMode || null,
+      parentExecutionId: ctx.data?._workflowParentExecutionId || null,
       status: WorkflowStatus.RUNNING,
-      meta: {
+      meta: this._buildLedgerTaskMeta(ctx, {
         triggerSource: ctx.data?._triggerSource || null,
         targetRepo: ctx.data?._targetRepo || null,
         decisionReason: opts._decisionReason || null,
-      },
+      }),
     });
     await this._emitTaskTraceEvent("workflow.run.start", {
       ctx,
@@ -2033,12 +2202,13 @@ export class WorkflowEngine extends EventEmitter {
         parentRunId: ctx.data?._workflowParentRunId || null,
         retryOf: ctx.data?._retryOf || null,
         retryMode: opts._retryMode || null,
+        parentExecutionId: ctx.data?._workflowParentExecutionId || null,
         status,
         durationMs: Date.now() - ctx.startedAt,
         summary: ctx.data?._issueAdvisor?.summary || null,
-        meta: {
+        meta: this._buildLedgerTaskMeta(ctx, {
           decisionReason: opts._decisionReason || null,
-        },
+        }),
       });
       await this._emitTaskTraceEvent("workflow.run.end", {
         ctx,
@@ -2071,13 +2241,14 @@ export class WorkflowEngine extends EventEmitter {
         parentRunId: ctx.data?._workflowParentRunId || null,
         retryOf: ctx.data?._retryOf || null,
         retryMode: opts._retryMode || null,
+        parentExecutionId: ctx.data?._workflowParentExecutionId || null,
         status: WorkflowStatus.FAILED,
         durationMs: Date.now() - ctx.startedAt,
         error: err.message,
         summary: ctx.data?._issueAdvisor?.summary || null,
-        meta: {
+        meta: this._buildLedgerTaskMeta(ctx, {
           decisionReason: opts._decisionReason || null,
-        },
+        }),
       });
       await this._emitTaskTraceEvent("workflow.run.error", {
         ctx,
@@ -2263,9 +2434,9 @@ export class WorkflowEngine extends EventEmitter {
       retryOf: runId,
       retryMode: mode,
       status: WorkflowStatus.RUNNING,
-      meta: {
+      meta: this._buildLedgerTaskMeta(ctx, {
         decisionReason,
-      },
+      }),
     });
     await this._emitTaskTraceEvent("workflow.run.start", {
       ctx,
@@ -2955,6 +3126,29 @@ export class WorkflowEngine extends EventEmitter {
     };
   }
 
+  _buildExecutionTree(runGraph, startRunId) {
+    if (!runGraph || !Array.isArray(runGraph.runs) || runGraph.runs.length === 0) return null;
+    const runMap = new Map(runGraph.runs.map((entry) => [entry.runId, { ...entry, children: [] }]));
+    for (const edge of Array.isArray(runGraph.edges) ? runGraph.edges : []) {
+      if (edge?.type !== "parent-child") continue;
+      const parent = runMap.get(edge.parentRunId);
+      const child = runMap.get(edge.childRunId);
+      if (parent && child) parent.children.push(child);
+    }
+    const requestedRunId = String(startRunId || runGraph.requestedRunId || runGraph.rootRunId || "").trim();
+    return runMap.get(requestedRunId) || runMap.get(runGraph.rootRunId) || null;
+  }
+
+  _decorateRunDetail(run) {
+    if (!run?.runId) return run;
+    const runGraph = this.getRunGraph(run.runId);
+    return {
+      ...run,
+      runGraph,
+      executionTree: this._buildExecutionTree(runGraph, run.runId),
+    };
+  }
+
   /** Get full run detail for a specific runId */
   getRunDetail(runId) {
     const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
@@ -2965,11 +3159,11 @@ export class WorkflowEngine extends EventEmitter {
     if (activeRun?.ctx) {
       const summary = this._buildActiveRunSummary(normalizedRunId, activeRun);
       if (!summary) return null;
-      return {
+      return this._decorateRunDetail({
         ...summary,
         detail: this._serializeRunContext(activeRun.ctx, true),
         ledger,
-      };
+      });
     }
 
     const detailPath = resolve(this.runsDir, `${normalizedRunId}.json`);
@@ -2988,7 +3182,7 @@ export class WorkflowEngine extends EventEmitter {
           status: summary.status || WorkflowStatus.COMPLETED,
           detail,
         });
-        return { ...summary, ...recomputed, detail, ledger };
+        return this._decorateRunDetail({ ...summary, ...recomputed, detail, ledger });
       }
       const terminalRaw = String(detail?.data?._workflowTerminalStatus || "")
         .trim()
@@ -3007,7 +3201,7 @@ export class WorkflowEngine extends EventEmitter {
         status,
         detail,
       });
-      return { ...computed, detail, ledger };
+      return this._decorateRunDetail({ ...computed, detail, ledger });
     } catch {
       return null;
     }
@@ -3017,6 +3211,19 @@ export class WorkflowEngine extends EventEmitter {
     const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
     if (!normalizedRunId) return null;
     return this._executionLedger.getRunLedger(normalizedRunId);
+  }
+
+  getRunGraph(runId) {
+    const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
+    if (!normalizedRunId) return null;
+    return this._executionLedger.buildRunGraph(normalizedRunId);
+  }
+
+  diffRunGraphs(baseRunId, comparisonRunId) {
+    const normalizedBaseRunId = basename(String(baseRunId || "")).replace(/\.json$/i, "");
+    const normalizedComparisonRunId = basename(String(comparisonRunId || "")).replace(/\.json$/i, "");
+    if (!normalizedBaseRunId || !normalizedComparisonRunId) return null;
+    return this._executionLedger.diffRunGraphs(normalizedBaseRunId, normalizedComparisonRunId);
   }
 
   getRetryOptions(runId) {
@@ -3399,6 +3606,7 @@ export class WorkflowEngine extends EventEmitter {
       });
     };
     const markNodeSkipped = (nodeId, reason = "skipped", payload = {}) => {
+      if (ctx.getNodeStatus(nodeId) === NodeStatus.COMPLETED) return;
       const node = nodeMap.get(nodeId) || null;
       ctx.setNodeStatus(nodeId, NodeStatus.SKIPPED);
       this._recordDagNodeOutcome(ctx, node || { id: nodeId }, {
@@ -3784,10 +3992,22 @@ export class WorkflowEngine extends EventEmitter {
         const edges = adjacency.get(nodeId) || [];
         const sourceOutput = ctx.getNodeOutput(nodeId);
         const triggerBlocked = node?.type?.startsWith("trigger.") && sourceOutput?.triggered === false;
+        const explicitEdgePorts = new Set(
+          edges
+            .map((edge) => String(edge?.sourcePort || "default").trim() || "default")
+            .filter((portName) => portName && portName !== "default"),
+        );
+        const inferredConditionPort =
+          !sourceOutput?.matchedPort
+          && !sourceOutput?.port
+          && node?.type?.startsWith("condition.")
+          && typeof sourceOutput?.result === "boolean"
+          ? (sourceOutput.result ? "yes" : "no")
+          : null;
         const selectedPortRaw =
           sourceOutput?.matchedPort ??
           sourceOutput?.port ??
-          null;
+          (inferredConditionPort && explicitEdgePorts.has(inferredConditionPort) ? inferredConditionPort : null);
         const selectedPort =
           typeof selectedPortRaw === "string" && selectedPortRaw.trim()
             ? selectedPortRaw.trim()
@@ -3895,6 +4115,11 @@ export class WorkflowEngine extends EventEmitter {
             if ((incomingSatisfiedCount.get(targetNodeId) || 0) > 0) {
               ready.add(targetNodeId);
             } else {
+              const priorStatus = ctx.getNodeStatus(targetNodeId);
+              if (!matched && priorStatus === NodeStatus.COMPLETED) {
+                executed.add(targetNodeId);
+                return;
+              }
               markNodeSkipped(targetNodeId, skipInfo?.reason || "skipped", skipInfo?.payload || {});
               executed.add(targetNodeId);
               const skippedNode = nodeMap.get(targetNodeId);
@@ -3984,7 +4209,10 @@ export class WorkflowEngine extends EventEmitter {
             const subgraph = this._collectSubgraph(edge.target, adjacency);
             for (const nid of subgraph) {
               executed.delete(nid);
-              ctx.setNodeStatus(nid, NodeStatus.PENDING);
+              const priorStatus = ctx.getNodeStatus(nid);
+              if (nid === edge.target || priorStatus !== NodeStatus.COMPLETED) {
+                ctx.setNodeStatus(nid, NodeStatus.PENDING);
+              }
               incomingSatisfiedCount.set(nid, 0);
               // Restore in-degree for nodes in the subgraph so they schedule
               // correctly on this new iteration.
@@ -4724,13 +4952,37 @@ export class WorkflowEngine extends EventEmitter {
       // and mark older duplicates as not-resumable before we even try them.
       const runDetailCache = new Map(); // runId → parsed detail
       const latestByTaskId = new Map(); // taskId → run entry (highest startedAt)
+      const ledgerTaskEntries = this._executionLedger.listTaskRunEntries();
+      const ledgerTaskIdByRunId = new Map();
+      for (const entry of ledgerTaskEntries) {
+        if (!entry?.runId || !entry?.taskId) continue;
+        ledgerTaskIdByRunId.set(entry.runId, entry.taskId);
+        const previous = latestByTaskId.get(entry.taskId);
+        const entryTime = typeof entry.startedAt === "number"
+          ? entry.startedAt
+          : (Date.parse(entry.startedAt || entry.updatedAt || "") || 0);
+        const previousTime = previous
+          ? (typeof previous.startedAt === "number"
+              ? previous.startedAt
+              : (Date.parse(previous.startedAt || previous.updatedAt || "") || 0))
+          : 0;
+        const candidate = {
+          runId: entry.runId,
+          startedAt: entry.startedAt || entry.updatedAt || null,
+          updatedAt: entry.updatedAt || null,
+          status: entry.status || null,
+        };
+        if (!previous || entryTime >= previousTime) {
+          latestByTaskId.set(entry.taskId, candidate);
+        }
+      }
       for (const run of allRuns) {
         const dp = resolve(this.runsDir, `${run.runId}.json`);
         if (!existsSync(dp)) continue;
         try {
           const d = JSON.parse(readFileSync(dp, "utf8"));
           runDetailCache.set(run.runId, d);
-          const tid = d.data?.taskId || d.inputData?.taskId;
+          const tid = ledgerTaskIdByRunId.get(run.runId) || this._resolveRunTaskIdentity(run, d)?.taskId || "";
           if (!tid) continue;
           const prev = latestByTaskId.get(tid);
           if (!prev || (run.startedAt || 0) >= (prev.startedAt || 0)) {
@@ -4745,7 +4997,7 @@ export class WorkflowEngine extends EventEmitter {
       let dedupedCount = 0;
       for (const run of runs) {
         const d = runDetailCache.get(run.runId);
-        const tid = d?.data?.taskId || d?.inputData?.taskId;
+        const tid = this._resolveRunTaskIdentity(run, d)?.taskId || "";
         if (!tid) continue;
         const latest = latestByTaskId.get(tid);
         if (latest && latest.runId !== run.runId) {
@@ -4762,7 +5014,7 @@ export class WorkflowEngine extends EventEmitter {
       for (const run of runs) {
         // Skip runs that were marked as duplicates above
         const _runDetail = runDetailCache.get(run.runId);
-        const _tid = _runDetail?.data?.taskId || _runDetail?.inputData?.taskId;
+        const _tid = this._resolveRunTaskIdentity(run, _runDetail)?.taskId || "";
         if (_tid) {
           const latest = latestByTaskId.get(_tid);
           if (latest && latest.runId !== run.runId) continue;
@@ -4814,6 +5066,22 @@ export class WorkflowEngine extends EventEmitter {
     } finally {
       this._resumingRuns = false;
     }
+  }
+
+  _resolveRunTaskIdentity(runSummary, detail = null) {
+    const detailTaskId = String(
+      detail?.data?.taskId || detail?.inputData?.taskId || detail?.taskId || "",
+    ).trim();
+    if (detailTaskId) {
+      return {
+        taskId: detailTaskId,
+        taskTitle: String(detail?.data?.taskTitle || detail?.inputData?.taskTitle || "").trim() || null,
+        source: "detail",
+      };
+    }
+    const ledgerIdentity = this._executionLedger.getTaskIdentity(runSummary?.runId || detail?.id || "");
+    if (ledgerIdentity?.taskId) return ledgerIdentity;
+    return null;
   }
 
   /**
