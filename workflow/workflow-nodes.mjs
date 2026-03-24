@@ -64,6 +64,7 @@ import {
   CUSTOM_NODE_DIR_NAME,
   ensureCustomWorkflowNodesLoaded,
   getCustomNodeDir,
+  inspectCustomWorkflowNodePlugins,
   scaffoldCustomNodeFile,
   startCustomNodeDiscovery,
   stopCustomNodeDiscovery,
@@ -14603,6 +14604,7 @@ export { evaluateTaskAssignedTriggerConfig };
 export {
   CUSTOM_NODE_DIR_NAME,
   getCustomNodeDir,
+  inspectCustomWorkflowNodePlugins,
   scaffoldCustomNodeFile,
   startCustomNodeDiscovery,
   stopCustomNodeDiscovery,
@@ -14620,6 +14622,7 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
+
 
 
 

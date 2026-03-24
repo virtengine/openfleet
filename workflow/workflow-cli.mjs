@@ -6,6 +6,7 @@ import {
   loadWorkflowInputFromFile,
   runConfiguredWorkflow,
 } from "./declarative-workflows.mjs";
+import { inspectCustomWorkflowNodePlugins } from "./workflow-nodes.mjs";
 
 function hasFlag(args, ...flags) {
   return flags.some((flag) => args.includes(flag));
@@ -49,6 +50,27 @@ function parseInput(args, cwd = process.cwd()) {
   return positional.length > 2 ? positional.slice(2).join(" ") : "";
 }
 
+function formatCustomNodeHealthReport(report) {
+  const lines = [
+    "Custom node health",
+    `repo=${report.repoRoot}`,
+    `discovered=${report.summary.discovered} loaded=${report.summary.loaded} skipped=${report.summary.skipped} duplicateNodeIds=${report.summary.duplicateNodeIds} smokePassed=${report.summary.smokePassed} smokeFailed=${report.summary.smokeFailed}`,
+  ];
+  for (const plugin of report.plugins) {
+    const manifestText = plugin.manifest?.id
+      ? ` manifest=${plugin.manifest.id}@${plugin.manifest.version}`
+      : "";
+    lines.push(`- ${plugin.fileName}\t${plugin.status}${manifestText}`);
+    for (const diagnostic of plugin.diagnostics || []) {
+      lines.push(`  ! ${diagnostic.code}: ${diagnostic.message}`);
+    }
+    if (plugin.smokeTest) {
+      lines.push(`  smoke=${plugin.smokeTest.status} ${plugin.smokeTest.message}`);
+    }
+  }
+  return lines;
+}
+
 function showHelp(stdout = console.log) {
   stdout(`
   bosun workflow — Declarative multi-agent workflows
@@ -56,6 +78,7 @@ function showHelp(stdout = console.log) {
   SUBCOMMANDS
     list                      List configured and built-in workflows
     run <name> [input]        Run a workflow with fresh-context agents
+    nodes                     Inspect custom workflow node plugin health
 
   OPTIONS
     --json                    Emit JSON output
@@ -63,6 +86,7 @@ function showHelp(stdout = console.log) {
     --input <text>            Inline workflow input
     --input-json <json>       Structured JSON input
     --file <path>             Load workflow input from a file
+    --smoke                   Run plugin smoke tests during health inspection
 `);
 }
 
@@ -79,8 +103,23 @@ export async function executeWorkflowCommand(args, options = {}) {
     return { ok: true, command: "help" };
   }
 
-  const config = options.config || loadConfig(process.argv);
   const asJson = hasFlag(normalizedArgs, "--json") || options.json === true;
+  if (subcommand === "nodes") {
+    const report = await inspectCustomWorkflowNodePlugins({
+      repoRoot: options.repoRoot || options.cwd || process.cwd(),
+      forceReload: hasFlag(normalizedArgs, "--reload", "--force-reload"),
+      runSmokeTests: hasFlag(normalizedArgs, "--smoke", "--run-smoke-tests"),
+      logWarnings: false,
+    });
+    if (asJson) {
+      stdout(JSON.stringify(report, null, 2));
+    } else {
+      for (const line of formatCustomNodeHealthReport(report)) stdout(line);
+    }
+    return { ok: true, command: "nodes", report };
+  }
+
+  const config = options.config || loadConfig(process.argv);
   if (subcommand === "list") {
     const workflows = listConfiguredWorkflows(config);
     if (asJson) {

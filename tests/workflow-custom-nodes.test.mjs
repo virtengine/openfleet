@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import {
   ensureWorkflowNodeTypesLoaded,
   getNodeType,
+  inspectCustomWorkflowNodePlugins,
   listNodeTypes,
   scaffoldCustomNodeFile,
   stopCustomNodeDiscovery,
@@ -23,7 +24,7 @@ function makeRepoRoot() {
 afterEach(() => {
   stopCustomNodeDiscovery();
   if (repoRoot) {
-    try { rmSync(repoRoot, { recursive: true, force: true }); } catch { /* ok */ }
+    try { rmSync(repoRoot, { recursive: true, force: true }); } catch { }
   }
   repoRoot = null;
 });
@@ -58,9 +59,49 @@ describe("custom workflow nodes", () => {
     warnSpy.mockRestore();
   });
 
+  it("reports malformed plugin manifests with actionable diagnostics", async () => {
+    const root = makeRepoRoot();
+    writeFileSync(join(root, "custom-nodes", "bad-manifest.mjs"), [
+      'export const manifest = "nope";',
+      'export const type = "custom.bad_manifest";',
+      "export const inputs = [];",
+      "export const outputs = [];",
+      "export function describe(){ return 'bad manifest'; }",
+      "export async function execute(){ return { success: true, port: 'success' }; }",
+      "",
+    ].join("\n"), "utf8");
+
+    const report = await inspectCustomWorkflowNodePlugins({ repoRoot: root, forceReload: true });
+    const plugin = report.plugins.find((entry) => entry.fileName === "bad-manifest.mjs");
+
+    expect(plugin?.status).toBe("skipped");
+    expect(plugin?.diagnostics.some((entry) => entry.code === "invalid-manifest")).toBe(true);
+    expect(getNodeType("custom.bad_manifest")).toBeNull();
+  });
+
+  it("reports missing required exports during discovery", async () => {
+    const root = makeRepoRoot();
+    writeFileSync(join(root, "custom-nodes", "missing-execute.mjs"), [
+      'export const manifest = { id: "missing-execute", name: "Missing Execute", version: "1.0.0" };',
+      'export const type = "custom.missing_execute";',
+      "export const inputs = [];",
+      "export const outputs = [];",
+      "export function describe(){ return 'missing execute'; }",
+      "",
+    ].join("\n"), "utf8");
+
+    const report = await inspectCustomWorkflowNodePlugins({ repoRoot: root, forceReload: true });
+    const plugin = report.plugins.find((entry) => entry.fileName === "missing-execute.mjs");
+
+    expect(plugin?.status).toBe("skipped");
+    expect(plugin?.diagnostics.some((entry) => entry.code === "missing-execute")).toBe(true);
+    expect(getNodeType("custom.missing_execute")).toBeNull();
+  });
+
   it("skips duplicate custom node types with a warning", async () => {
     const root = makeRepoRoot();
     writeFileSync(join(root, "custom-nodes", "alpha.mjs"), [
+      'export const manifest = { id: "alpha", name: "Alpha", version: "1.0.0" };',
       'export const type = "custom.same";',
       "export const inputs = [];",
       "export const outputs = [];",
@@ -69,6 +110,7 @@ describe("custom workflow nodes", () => {
       "",
     ].join("\n"), "utf8");
     writeFileSync(join(root, "custom-nodes", "bravo.mjs"), [
+      'export const manifest = { id: "bravo", name: "Bravo", version: "1.0.0" };',
       'export const type = "custom.same";',
       "export const inputs = [];",
       "export const outputs = [];",
@@ -82,6 +124,10 @@ describe("custom workflow nodes", () => {
 
     expect(getNodeType("custom.same")).toBeDefined();
     expect(warnSpy).toHaveBeenCalled();
+    const report = await inspectCustomWorkflowNodePlugins({ repoRoot: root, forceReload: true });
+    expect(report.summary.duplicateNodeIds).toBe(1);
+    const duplicate = report.plugins.find((entry) => entry.fileName === "bravo.mjs");
+    expect(duplicate?.diagnostics.some((entry) => entry.code === "duplicate-node-id")).toBe(true);
     warnSpy.mockRestore();
     unregisterNodeType("custom.same");
   });
@@ -89,6 +135,7 @@ describe("custom workflow nodes", () => {
   it("skips custom nodes with invalid schema shape", async () => {
     const root = makeRepoRoot();
     writeFileSync(join(root, "custom-nodes", "bad-schema.mjs"), [
+      'export const manifest = { id: "bad-schema", name: "Bad Schema", version: "1.0.0" };',
       'export const type = "custom.bad_schema";',
       "export const inputs = [];",
       "export const outputs = [];",
@@ -117,6 +164,25 @@ describe("custom workflow nodes", () => {
 
     const filePath = join(root, "custom-nodes", "my-cli-node.mjs");
     expect(existsSync(filePath)).toBe(true);
-    expect(readFileSync(filePath, "utf8")).toContain('export const type = "custom.my_cli_node"');
+    const scaffold = readFileSync(filePath, "utf8");
+    expect(scaffold).toContain('export const type = "custom.my_cli_node"');
+    expect(scaffold).toContain("export const manifest = {");
+    expect(scaffold).toContain("export async function smokeTest()");
+  });
+
+  it("validates scaffolded plugins with a smoke test", async () => {
+    const root = makeRepoRoot();
+    const result = scaffoldCustomNodeFile("health-check", { repoRoot: root });
+
+    const report = await inspectCustomWorkflowNodePlugins({
+      repoRoot: root,
+      forceReload: true,
+      runSmokeTests: true,
+    });
+    const plugin = report.plugins.find((entry) => entry.filePath === result.filePath);
+
+    expect(plugin?.status).toBe("loaded");
+    expect(plugin?.smokeTest?.status).toBe("passed");
+    expect(plugin?.nodeTypes).toContain(result.type);
   });
 });

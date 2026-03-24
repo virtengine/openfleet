@@ -6,8 +6,8 @@ import {
   watch,
   writeFileSync,
 } from "node:fs";
-import { pathToFileURL } from "node:url";
 import { basename, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   getNodeTypeMeta,
   registerNodeType,
@@ -24,9 +24,40 @@ let watcher = null;
 let watcherTimer = null;
 const fileVersions = new Map();
 const fileNodeTypes = new Map();
+const fileReports = new Map();
 
 function logWarn(message) {
   console.warn(`${TAG} ${message}`);
+}
+
+function createDiagnostic(code, message, severity = "error") {
+  return { code, message, severity };
+}
+
+function cloneDiagnostic(diagnostic) {
+  if (!diagnostic || typeof diagnostic !== "object") return diagnostic || null;
+  return {
+    code: diagnostic.code,
+    message: diagnostic.message,
+    severity: diagnostic.severity,
+  };
+}
+
+function clonePluginReport(report) {
+  if (!report || typeof report !== "object") return report;
+  return {
+    ...report,
+    nodeTypes: Array.isArray(report.nodeTypes) ? [...report.nodeTypes] : [],
+    diagnostics: Array.isArray(report.diagnostics) ? report.diagnostics.map(cloneDiagnostic) : [],
+    manifest: report.manifest ? { ...report.manifest } : null,
+    smokeTest: report.smokeTest ? { ...report.smokeTest } : null,
+  };
+}
+
+function createLoaderError(code, message) {
+  const error = new Error(message);
+  error.pluginDiagnostic = createDiagnostic(code, message);
+  return error;
 }
 
 function sanitizeNodeName(name = "") {
@@ -70,38 +101,77 @@ function isValidStringArray(value) {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string" && entry.trim());
 }
 
+function normalizeManifest(manifest, filePath, inferredType = "") {
+  if (manifest == null) {
+    return {
+      id: basename(filePath, ".mjs"),
+      name: inferredType || basename(filePath, ".mjs"),
+      version: "0.1.0",
+      inferred: true,
+      description: null,
+    };
+  }
+  if (typeof manifest !== "object" || Array.isArray(manifest)) {
+    throw createLoaderError("invalid-manifest", "manifest must be an object with string id, name, and version");
+  }
+  const id = String(manifest.id || "").trim();
+  const name = String(manifest.name || "").trim();
+  const version = String(manifest.version || "").trim();
+  if (!id || !name || !version) {
+    throw createLoaderError("invalid-manifest", "manifest.id, manifest.name, and manifest.version are required strings");
+  }
+  return {
+    id,
+    name,
+    version,
+    inferred: false,
+    description: String(manifest.description || "").trim() || null,
+  };
+}
+
 function normalizeNodeExport(mod, filePath) {
   const candidate = mod?.default && typeof mod.default === "object"
     ? { ...mod.default, ...mod }
     : mod;
   const type = String(candidate?.type || "").trim();
-  if (!type) throw new Error("missing string export: type");
-  if (typeof candidate.execute !== "function") throw new Error("missing execute(node, ctx, engine) function");
-  if (typeof candidate.describe !== "function") throw new Error("missing describe() function");
-  if (!isValidStringArray(candidate.inputs || [])) throw new Error("inputs must be an array of strings");
-  if (!isValidStringArray(candidate.outputs || [])) throw new Error("outputs must be an array of strings");
+  if (!type) throw createLoaderError("missing-type", "missing string export: type");
+  if (typeof candidate.execute !== "function") {
+    throw createLoaderError("missing-execute", "missing execute(node, ctx, engine) function");
+  }
+  if (typeof candidate.describe !== "function") {
+    throw createLoaderError("missing-describe", "missing describe() function");
+  }
+  if (!isValidStringArray(candidate.inputs || [])) {
+    throw createLoaderError("invalid-inputs", "inputs must be an array of strings");
+  }
+  if (!isValidStringArray(candidate.outputs || [])) {
+    throw createLoaderError("invalid-outputs", "outputs must be an array of strings");
+  }
   if (candidate.schema != null) {
     if (typeof candidate.schema !== "object" || Array.isArray(candidate.schema)) {
-      throw new Error("schema must be an object when provided");
+      throw createLoaderError("invalid-schema", "schema must be an object when provided");
     }
     if (candidate.schema.type && candidate.schema.type !== "object") {
-      throw new Error("schema.type must be 'object' when provided");
+      throw createLoaderError("invalid-schema", "schema.type must be 'object' when provided");
     }
   }
   return {
-    type,
-    inputs: [...(candidate.inputs || [])],
-    outputs: [...(candidate.outputs || [])],
-    execute: candidate.execute,
-    describe: candidate.describe,
-    schema: candidate.schema || {
-      type: "object",
-      properties: {},
-      additionalProperties: true,
+    candidate,
+    nodeDef: {
+      type,
+      inputs: [...(candidate.inputs || [])],
+      outputs: [...(candidate.outputs || [])],
+      execute: candidate.execute,
+      describe: candidate.describe,
+      schema: candidate.schema || {
+        type: "object",
+        properties: {},
+        additionalProperties: true,
+      },
+      filePath,
+      source: "custom",
+      badge: "custom",
     },
-    filePath,
-    source: "custom",
-    badge: "custom",
   };
 }
 
@@ -110,61 +180,172 @@ function unloadFileTypes(filePath) {
   for (const type of previousTypes) unregisterNodeType(type);
   fileNodeTypes.delete(filePath);
   fileVersions.delete(filePath);
-}
-
-async function loadCustomNodeFile(filePath) {
-  unloadFileTypes(filePath);
-  const version = statSync(filePath).mtimeMs;
-  const imported = await import(`${pathToFileURL(filePath).href}?v=${version}`);
-  const nodeDef = normalizeNodeExport(imported, filePath);
-  const existingMeta = getNodeTypeMeta(nodeDef.type);
-  if (existingMeta && existingMeta.filePath !== filePath) {
-    throw new Error(`duplicate node type '${nodeDef.type}' already registered from ${existingMeta.filePath || existingMeta.source}`);
-  }
-  registerNodeType(nodeDef.type, nodeDef, {
-    source: "custom",
-    badge: "custom",
-    inputs: nodeDef.inputs,
-    outputs: nodeDef.outputs,
-    filePath,
-  });
-  fileVersions.set(filePath, version);
-  fileNodeTypes.set(filePath, [nodeDef.type]);
-  return nodeDef;
+  fileReports.delete(filePath);
 }
 
 function clearRemovedFiles(customDir) {
-  for (const filePath of [...fileNodeTypes.keys()]) {
+  for (const filePath of new Set([...fileNodeTypes.keys(), ...fileReports.keys()])) {
     if (!filePath.startsWith(customDir)) continue;
     if (!existsSync(filePath)) unloadFileTypes(filePath);
   }
 }
 
-export async function ensureCustomWorkflowNodesLoaded(options = {}) {
+async function importCustomNodeModule(filePath) {
+  const version = statSync(filePath).mtimeMs;
+  const imported = await import(`${pathToFileURL(filePath).href}?v=${version}`);
+  return { imported, version };
+}
+
+function describeDiagnostic(diagnostic) {
+  if (!diagnostic) return "unknown plugin error";
+  return diagnostic.message || diagnostic.code || "unknown plugin error";
+}
+
+async function runPluginSmokeTest(candidate, nodeDef, pluginReport) {
+  if (typeof candidate.smokeTest !== "function") {
+    return { status: "skipped", message: "No smokeTest() export provided" };
+  }
+  try {
+    const result = await candidate.smokeTest({
+      type: nodeDef.type,
+      manifest: pluginReport.manifest,
+      filePath: pluginReport.filePath,
+    });
+    if (result === false || result?.success === false || result?.passed === false) {
+      return {
+        status: "failed",
+        message: String(result?.message || result?.error || "smoke test returned a failing result"),
+      };
+    }
+    return {
+      status: "passed",
+      message: String(result?.message || "Smoke test passed"),
+    };
+  } catch (error) {
+    return {
+      status: "failed",
+      message: error?.message || String(error),
+    };
+  }
+}
+
+async function inspectCustomNodeFile(filePath, options = {}) {
+  const version = statSync(filePath).mtimeMs;
+  const cached = fileReports.get(filePath);
+  if (
+    !options.forceReload &&
+    fileVersions.get(filePath) === version &&
+    cached &&
+    (!options.runSmokeTests || cached.smokeTest != null)
+  ) {
+    return clonePluginReport(cached);
+  }
+
+  unloadFileTypes(filePath);
+  const pluginReport = {
+    filePath,
+    fileName: basename(filePath),
+    status: "loaded",
+    nodeTypes: [],
+    diagnostics: [],
+    manifest: null,
+    smokeTest: null,
+  };
+
+  try {
+    const { imported, version: importedVersion } = await importCustomNodeModule(filePath);
+    const { candidate, nodeDef } = normalizeNodeExport(imported, filePath);
+    pluginReport.manifest = normalizeManifest(candidate.manifest, filePath, nodeDef.type);
+
+    const existingMeta = getNodeTypeMeta(nodeDef.type);
+    if (existingMeta && existingMeta.filePath !== filePath) {
+      throw createLoaderError(
+        "duplicate-node-id",
+        `duplicate node type '${nodeDef.type}' already registered from ${existingMeta.filePath || existingMeta.source}`,
+      );
+    }
+
+    registerNodeType(nodeDef.type, nodeDef, {
+      source: "custom",
+      badge: "custom",
+      inputs: nodeDef.inputs,
+      outputs: nodeDef.outputs,
+      filePath,
+    });
+    fileVersions.set(filePath, importedVersion);
+    fileNodeTypes.set(filePath, [nodeDef.type]);
+    pluginReport.nodeTypes = [nodeDef.type];
+
+    if (options.runSmokeTests) {
+      pluginReport.smokeTest = await runPluginSmokeTest(candidate, nodeDef, pluginReport);
+      if (pluginReport.smokeTest.status === "failed") {
+        pluginReport.diagnostics.push(createDiagnostic("smoke-test-failed", pluginReport.smokeTest.message));
+      }
+    }
+  } catch (error) {
+    unloadFileTypes(filePath);
+    pluginReport.status = "skipped";
+    const diagnostic = error?.pluginDiagnostic || createDiagnostic("load-failed", error?.message || String(error));
+    pluginReport.diagnostics.push(diagnostic);
+  }
+
+  const storedReport = clonePluginReport(pluginReport);
+  fileReports.set(filePath, storedReport);
+  return clonePluginReport(storedReport);
+}
+
+export async function inspectCustomWorkflowNodePlugins(options = {}) {
   const repoRoot = defaultRepoRoot(options.repoRoot);
   const customDir = resolveCustomNodeDir(repoRoot);
   activeRepoRoot = repoRoot;
   activeCustomDir = customDir;
-  if (!existsSync(customDir)) return [];
+
+  const report = {
+    repoRoot,
+    customDir,
+    ok: true,
+    plugins: [],
+    summary: {
+      discovered: 0,
+      loaded: 0,
+      skipped: 0,
+      smokePassed: 0,
+      smokeFailed: 0,
+      duplicateNodeIds: 0,
+    },
+  };
+
+  if (!existsSync(customDir)) return report;
+
   clearRemovedFiles(customDir);
-  const loaded = [];
-  for (const filePath of readdirSync(customDir)
+  const filePaths = readdirSync(customDir)
     .filter((name) => name.endsWith(".mjs"))
     .map((name) => resolve(customDir, name))
-    .sort()) {
-    try {
-      const version = statSync(filePath).mtimeMs;
-      if (!options.forceReload && fileVersions.get(filePath) === version && fileNodeTypes.has(filePath)) {
-        loaded.push(...(fileNodeTypes.get(filePath) || []));
-        continue;
-      }
-      const def = await loadCustomNodeFile(filePath);
-      loaded.push(def.type);
-    } catch (error) {
-      logWarn(`Skipping ${basename(filePath)}: ${error?.message || String(error)}`);
+    .sort();
+
+  report.summary.discovered = filePaths.length;
+  for (const filePath of filePaths) {
+    const pluginReport = await inspectCustomNodeFile(filePath, options);
+    report.plugins.push(pluginReport);
+    if (pluginReport.status === "loaded") report.summary.loaded += 1;
+    if (pluginReport.status === "skipped") report.summary.skipped += 1;
+    if (pluginReport.smokeTest?.status === "passed") report.summary.smokePassed += 1;
+    if (pluginReport.smokeTest?.status === "failed") report.summary.smokeFailed += 1;
+    if (pluginReport.diagnostics.some((entry) => entry.code === "duplicate-node-id")) {
+      report.summary.duplicateNodeIds += 1;
+    }
+    if (options.logWarnings !== false && pluginReport.diagnostics.length > 0) {
+      logWarn(`Skipping ${pluginReport.fileName}: ${describeDiagnostic(pluginReport.diagnostics[0])}`);
     }
   }
-  return loaded;
+
+  report.ok = report.summary.skipped === 0 && report.summary.smokeFailed === 0;
+  return report;
+}
+
+export async function ensureCustomWorkflowNodesLoaded(options = {}) {
+  const report = await inspectCustomWorkflowNodePlugins({ ...options, logWarnings: true });
+  return report.plugins.flatMap((plugin) => plugin.nodeTypes || []);
 }
 
 function isDevMode() {
@@ -214,6 +395,13 @@ export function scaffoldCustomNodeFile(name, options = {}) {
   const type = toTypeName(safeName);
   const title = safeName.replace(/[-_]+/g, " ");
   const contents = [
+    "export const manifest = {",
+    `  id: ${JSON.stringify(safeName)},`,
+    `  name: ${JSON.stringify(title)},`,
+    '  version: "1.0.0",',
+    `  description: ${JSON.stringify(`Scaffolded custom node plugin for ${title}`)},`,
+    "};",
+    "",
     `export const type = ${JSON.stringify(type)};`,
     'export const inputs = ["message"];',
     'export const outputs = ["success", "error"];',
@@ -243,8 +431,15 @@ export function scaffoldCustomNodeFile(name, options = {}) {
     '  };',
     '}',
     '',
+    'export async function smokeTest() {',
+    '  const result = await execute({ id: "smoke-test", config: { message: "smoke ok" } }, { log() {} });',
+    '  if (!result || result.success !== true || result.port !== "success") {',
+    '    throw new Error("Expected execute() to return a successful smoke-test result");',
+    '  }',
+    '  return { success: true, message: "Scaffold smoke test passed" };',
+    '}',
+    '',
   ].join("\n");
   writeFileSync(filePath, contents, "utf8");
   return { filePath, type, customDir, repoRoot };
 }
-
