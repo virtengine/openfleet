@@ -23,6 +23,10 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+function readBuiltinSkillFile(filename) {
+  return readFileSync(resolve(__dirname, "skills", filename), "utf8");
+}
+
 // ── Analytics stream path (same file task-executor writes to) ────────────────
 const _SKILL_STREAM_PATH = resolve(
   __dirname,
@@ -67,9 +71,6 @@ export function emitSkillInvokeEvent(skillName, skillTitle, opts = {}) {
  *   scope     – "global" | "bosun" (bosun-specific internals)
  *   content   – the full Markdown skill text
  */
-const compactSkill = (title, sections) =>
-  [`# Skill: ${title}`, "", ...sections].join("\n");
-
 export const BUILTIN_SKILLS = [
   {
     filename: "background-task-execution.md",
@@ -77,15 +78,7 @@ export const BUILTIN_SKILLS = [
     tags: ["background", "task", "reliability", "heartbeat", "stall", "completion"],
     important: true,
     scope: "global",
-    content: compactSkill("Background Task Execution", [
-      "## Rules",
-      "- Send `/heartbeat` at start, after milestones, and at least every 60s during long steps.",
-      "- Send `/status` before work that may look stalled.",
-      "- Verify build, targeted tests, and lint before `/complete`.",
-      "- Review existing edits with `git status`; never discard unknown work silently.",
-      "- On retry, inspect `LAST_ERROR` and recent commits before re-implementing.",
-      "- Stay inside `BOSUN_WORKTREE_PATH`; never touch main or another worktree.",
-    ]),
+    content: readBuiltinSkillFile("background-task-execution.md"),
   },
   {
     filename: "pr-workflow.md",
@@ -93,15 +86,7 @@ export const BUILTIN_SKILLS = [
     tags: ["pr", "pull-request", "github", "review", "ci", "merge"],
     important: true,
     scope: "global",
-    content: compactSkill("Pull Request Workflow", [
-      "## Flow",
-      "- Merge upstream base branch and `origin/main` before push.",
-      "- Push with `git push --set-upstream origin <branch>`.",
-      "- Hand off PR lifecycle to Bosun; do not run direct PR-create commands.",
-      "- Never use `--no-verify`.",
-      "- If hooks fail, fix the root cause and rerun targeted validation.",
-      "- Use `gh pr checks` and `gh run list` to inspect CI state.",
-    ]),
+    content: readBuiltinSkillFile("pr-workflow.md"),
   },
   {
     filename: "error-recovery.md",
@@ -109,120 +94,66 @@ export const BUILTIN_SKILLS = [
     tags: ["error", "recovery", "retry", "debug", "failure"],
     important: true,
     scope: "global",
-    content: compactSkill("Error Recovery Patterns", [
-      "## Rules",
-      "- Classify the failure first: compile, test, dependency, git, config, network, or OOM.",
-      "- Apply the smallest fix that resolves the current error.",
-      "- Fix the first compiler error before chasing follow-on failures.",
-      "- Reproduce test failures in isolation before broad reruns.",
-      "- Fix generators instead of generated output.",
-      "- After two failed attempts on the same issue, report `/error` and stop looping.",
-    ]),
+    content: readBuiltinSkillFile("error-recovery.md"),
   },
   {
     filename: "tdd-pattern.md",
     title: "Test-Driven Development",
-    tags: ["tdd", "testing", "unit-test", "red-green-refactor", "coverage"],
+    tags: ["tdd", "test", "testing", "unit-test", "red-green-refactor"],
+    important: true,
     scope: "global",
-    content: compactSkill("Test-Driven Development", [
-      "## Loop",
-      "- Start with a failing test for the requested behavior.",
-      "- Make the smallest production change that turns the test green.",
-      "- Refactor only after the new behavior is covered.",
-      "- Keep tests deterministic; no real network, random data, or timer-based syncing.",
-      "- Mock external boundaries only, never the module under test.",
-      "- Run the narrowest relevant tests first, then adjacent coverage.",
-    ]),
+    content: readBuiltinSkillFile("tdd-pattern.md"),
   },
   {
     filename: "commit-conventions.md",
     title: "Conventional Commits",
-    tags: ["commits", "git", "conventional-commits", "versioning", "changelog"],
+    tags: ["git", "commit", "commits", "conventional", "history"],
+    important: true,
     scope: "global",
-    content: compactSkill("Conventional Commits", [
-      "## Format",
-      "- Use `<type>(<scope>): <subject>` when scope is known.",
-      "- Allowed types: `feat`, `fix`, `docs`, `refactor`, `test`, `build`, `ci`, `chore`, `perf`.",
-      "- Keep the subject imperative, lowercase, and without a trailing period.",
-      "- Commit only verified logical units; split unrelated changes.",
-      "- Avoid WIP commits unless the task explicitly asks for them.",
-      "- Mention user-facing risk or follow-up detail in the body when needed.",
-    ]),
+    content: readBuiltinSkillFile("commit-conventions.md"),
   },
   {
     filename: "agent-coordination.md",
     title: "Multi-Agent Coordination",
-    tags: ["multi-agent", "parallel", "coordination", "worktree", "conflict", "bosun"],
-    scope: "global",
-    content: compactSkill("Multi-Agent Coordination", [
-      "## Rules",
-      "- Treat branch and worktree isolation as mandatory boundaries.",
-      "- Review `git status` before editing to understand inherited state.",
-      "- Stage files explicitly; do not use `git add .`.",
-      "- Merge upstream before push and resolve conflicts without discarding peer work.",
-      "- Preserve useful intermediate commits from previous attempts.",
-      "- Leave concise handoff notes when the next agent needs context.",
-    ]),
+    tags: ["agent", "coordination", "parallel", "handoff", "merge-conflict"],
+    important: true,
+    scope: "bosun",
+    content: readBuiltinSkillFile("agent-coordination.md"),
   },
   {
     filename: "bosun-agent-api.md",
     title: "Bosun Agent Status API",
-    tags: ["bosun", "api", "status", "heartbeat", "endpoint"],
-    scope: "global",
-    content: compactSkill("Bosun Agent Status API", [
-      "## Required Calls",
-      "- Use the local status API whenever running as a Bosun-managed agent.",
-      "- Read endpoint values from `BOSUN_ENDPOINT_PORT`, `BOSUN_TASK_ID`, and related aliases.",
-      "- POST `/status` for milestones, `/heartbeat` during active work, `/error` on abort, and `/complete` when finished.",
-      "- Include short, concrete notes so orchestrator logs stay useful.",
-      "- Do not mark completion before validation passes and push state is known.",
-    ]),
+    tags: ["bosun", "status", "heartbeat", "api", "complete", "error"],
+    important: true,
+    scope: "bosun",
+    content: readBuiltinSkillFile("bosun-agent-api.md"),
   },
   {
     filename: "code-quality-anti-patterns.md",
     title: "Code Quality Anti-Patterns",
-    tags: ["quality", "code", "architecture", "async", "testing", "reliability", "bug", "crash", "scope", "caching", "promise", "module"],
+    tags: ["quality", "async", "testing", "cache", "anti-pattern"],
+    important: true,
     scope: "global",
-    content: compactSkill("Code Quality Anti-Patterns", [
-      "## Avoid",
-      "- Module-state caches inside hot functions; keep cached state at module scope.",
-      "- Bare async fire-and-forget calls; every promise needs `await` or `.catch()`.",
-      "- Unguarded async handlers that can crash the process.",
-      "- Repeated dynamic `import()` in hot paths without caching.",
-      "- Over-mocked or flaky tests that depend on order, sleep, or random data.",
-      "- Inline flag bypasses or safety-check shortcuts that change system behavior.",
-    ]),
+    content: readBuiltinSkillFile("code-quality-anti-patterns.md"),
   },
   {
     filename: "skill-codebase-audit.md",
     title: "Codebase Annotation Audit",
-    tags: ["audit", "annotation", "documentation", "summary", "inventory", "codebase", "onboarding", "knowledge", "context", "skill", "warn", "manifest", "conformity", "regeneration", "claude", "copilot"],
+    tags: ["audit", "annotation", "documentation", "summary", "claude"],
+    important: true,
     scope: "global",
-    content: compactSkill("Codebase Annotation Audit", [
-      "## Rules",
-      "- Add `CLAUDE:SUMMARY` and `CLAUDE:WARN` only where they reduce future search cost.",
-      "- Place annotations near the top of the file, after imports or shebang.",
-      "- Audit hot paths first: entrypoints, schedulers, cross-module adapters, and risky stateful code.",
-      "- Keep notes LEAN: documentation-only, terse, and easy to regenerate.",
-      "- Re-audit when summaries drift or regenerated coverage drops by about 20 percent.",
-    ]),
+    content: readBuiltinSkillFile("skill-codebase-audit.md"),
   },
   {
     filename: "custom-tool-creation.md",
     title: "Custom Tool Creation & Reuse",
-    tags: ["tools", "custom-tool", "reflect", "reuse", "automation", "script"],
-    scope: "global",
-    content: compactSkill("Custom Tool Creation & Reuse", [
-      "## Rules",
-      "- Check the custom tools library before writing new helper code.",
-      "- Extract repeated or high-friction logic into `.bosun/tools/` when it will save future tasks.",
-      "- Prefer categories from `analysis`, `testing`, `git`, `build`, `transform`, `search`, `validation`, and `utility`.",
-      "- Register tools with `registerCustomTool()` and clear tags, description, and owner metadata.",
-      "- Promote proven workspace tools to global scope when reuse crosses projects.",
-      "- Skip one-off scripts that do not justify long-term maintenance.",
-    ]),
+    tags: ["tool", "tools", "reuse", "automation", "codemod"],
+    important: true,
+    scope: "bosun",
+    content: readBuiltinSkillFile("custom-tool-creation.md"),
   },
 ];
+
 export function getSkillsDir(bosunHome) {
   return resolve(bosunHome, ".bosun", "skills");
 }
@@ -417,6 +348,98 @@ export function loadSkillsIndex(bosunHome) {
   }
 }
 
+const DEFAULT_SKILLS_MAX_CHARS = 4000;
+
+function normalizeKeywordText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function buildKeywordMatcher(title, description = "", labels = []) {
+  const labelList = Array.isArray(labels)
+    ? labels
+    : String(labels || "")
+      .split(",")
+      .map((label) => label.trim())
+      .filter(Boolean);
+  const keywordText = normalizeKeywordText([title, description, ...labelList].join(" "));
+  const keywords = new Set(keywordText.split(/\s+/).filter(Boolean));
+  return {
+    keywordText,
+    paddedKeywordText: " " + keywordText + " ",
+    keywords,
+  };
+}
+
+function tagMatchesKeyword(tag, matcher) {
+  const normalizedTag = normalizeKeywordText(tag);
+  if (!normalizedTag) return false;
+
+  const tagTokens = normalizedTag.split(/\s+/).filter(Boolean);
+  if (tagTokens.length === 0) return false;
+  if (tagTokens.length === 1) {
+    return matcher.keywords.has(tagTokens[0]);
+  }
+
+  return matcher.paddedKeywordText.includes(" " + normalizedTag + " ")
+    || tagTokens.every((token) => matcher.keywords.has(token));
+}
+
+function countSkillTagMatches(tags, matcher) {
+  if (!Array.isArray(tags) || tags.length === 0) return 0;
+  let matches = 0;
+  for (const tag of tags) {
+    if (tagMatchesKeyword(tag, matcher)) matches += 1;
+  }
+  return matches;
+}
+
+function resolveSkillCharBudget(maxChars) {
+  const resolved = Number(maxChars ?? process.env.BOSUN_SKILLS_MAX_CHARS);
+  return Number.isFinite(resolved) && resolved >= 0
+    ? Math.floor(resolved)
+    : DEFAULT_SKILLS_MAX_CHARS;
+}
+
+function selectRelevantSkills(bosunHome, taskTitle, taskDescription = "", opts = {}) {
+  const index = loadSkillsIndex(bosunHome);
+  if (!index?.skills?.length) return [];
+
+  const matcher = buildKeywordMatcher(taskTitle, taskDescription, opts.labels || []);
+  if (!matcher.keywordText) return [];
+
+  const skillsDir = getSkillsDir(bosunHome);
+  return index.skills
+    .map(({ filename, title, tags, important }) => {
+      const matchCount = countSkillTagMatches(tags, matcher);
+      if (matchCount <= 0) return null;
+
+      let content = "";
+      try {
+        content = readFileSync(resolve(skillsDir, filename), "utf8");
+      } catch {
+        return null;
+      }
+
+      return {
+        filename,
+        title,
+        tags,
+        important: important === true,
+        matchCount,
+        content,
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) =>
+      right.matchCount - left.matchCount
+      || Number(right.important === true) - Number(left.important === true)
+      || String(left.filename).localeCompare(String(right.filename)),
+    );
+}
+
 /**
  * Find skills relevant to a given task by matching tags against the task title
  * and description.
@@ -438,73 +461,66 @@ export function loadSkillsIndex(bosunHome) {
  * @returns {Array<{filename:string,title:string,tags:string[],content:string}>}
  */
 export function findRelevantSkills(bosunHome, taskTitle, taskDescription = "", opts = {}) {
-  const index = loadSkillsIndex(bosunHome);
-  if (!index?.skills?.length) return [];
+  const matched = selectRelevantSkills(bosunHome, taskTitle, taskDescription, opts);
 
-  const searchText = `${taskTitle} ${taskDescription}`.toLowerCase();
-  const skillsDir = getSkillsDir(bosunHome);
-
-  const matched = index.skills
-    .filter(({ tags }) =>
-      tags.some((tag) => searchText.includes(tag)),
-    )
-    .map(({ filename, title, tags, important }) => {
-      let content = "";
-      try {
-        content = readFileSync(resolve(skillsDir, filename), "utf8");
-      } catch { /* skip unreadable files */ }
-      return { filename, title, tags, important: important === true, content };
-    })
-    .filter(({ content }) => !!content);
-
-  // Emit analytics events for each loaded skill
-  for (const skill of matched) {
-    const skillName = skill.filename.replace(/\.md$/i, "");
-    emitSkillInvokeEvent(skillName, skill.title, opts);
+  if (opts.emitAnalytics !== false) {
+    for (const skill of matched) {
+      const skillName = skill.filename.replace(/\.md$/i, "");
+      emitSkillInvokeEvent(skillName, skill.title, opts);
+    }
   }
 
   return matched;
 }
 
-export function buildRelevantSkillsPromptBlock(bosunHome, taskTitle, taskDescription = "", opts = {}) {
-  const {
-    maxListed = 8,
-    includeMatchedSummary = true,
-  } = opts;
-  const matched = findRelevantSkills(bosunHome, taskTitle, taskDescription, opts);
-  if (!matched.length) return "";
+export function loadSkillsForTask(bosunHome, task, opts = {}) {
+  const taskTitle = String(task?.title || task?.name || "").trim();
+  const taskDescription = String(task?.description || task?.body || "").trim();
+  const labels = opts.labels ?? task?.labels ?? [];
+  const matched = selectRelevantSkills(bosunHome, taskTitle, taskDescription, {
+    ...opts,
+    labels,
+  });
+  if (matched.length === 0) return "";
 
-  const importantMatches = matched.filter((skill) => skill.important);
-  const summaryMatches = matched.slice(0, Math.max(1, maxListed));
-  const lines = ["## Relevant Skills", ""];
+  const maxChars = resolveSkillCharBudget(opts.maxChars);
+  if (maxChars <= 0) return "";
 
-  if (importantMatches.length > 0) {
-    lines.push(
-      "These matched skills are marked important, so their contents are loaded directly below.",
+  const lines = ["## Skills Context", ""];
+  const included = [];
+  for (const skill of matched) {
+    const importantLabel = skill.important ? " [important]" : "";
+    const blockLines = [
+      "### Skill: " + skill.title + " (`" + skill.filename + "`)" + importantLabel,
+      skill.content.trim(),
       "",
-    );
-    for (const skill of importantMatches) {
-      lines.push(`### Skill: ${skill.title} (\`${skill.filename}\`)`);
-      lines.push(skill.content.trim());
-      lines.push("");
-    }
+    ];
+    const candidate = lines.concat(blockLines).join("\n").trim();
+    if (candidate.length > maxChars) continue;
+    lines.push(...blockLines);
+    included.push(skill);
   }
 
-  if (includeMatchedSummary) {
-    lines.push("Matched skill files:");
-    for (const skill of summaryMatches) {
-      const tags = Array.isArray(skill.tags) && skill.tags.length > 0
-        ? ` — tags: ${skill.tags.join(", ")}`
-        : "";
-      const importantLabel = skill.important ? " [important]" : "";
-      lines.push(`- \`${skill.filename}\` — ${skill.title}${importantLabel}${tags}`);
+  if (included.length === 0) return "";
+
+  if (opts.emitAnalytics !== false) {
+    for (const skill of included) {
+      const skillName = skill.filename.replace(/\.md$/i, "");
+      emitSkillInvokeEvent(skillName, skill.title, opts);
     }
-    lines.push("");
-    lines.push("Load non-important matched skills on demand if you need their details.");
-    lines.push("");
   }
 
   return lines.join("\n").trim();
 }
 
-
+export function buildRelevantSkillsPromptBlock(bosunHome, taskTitle, taskDescription = "", opts = {}) {
+  return loadSkillsForTask(
+    bosunHome,
+    {
+      title: taskTitle,
+      description: taskDescription,
+      labels: opts.labels || [],
+    },
+    opts,
+  );
+}

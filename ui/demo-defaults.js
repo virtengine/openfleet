@@ -42733,16 +42733,17 @@
       "id": "bosun-agent-api",
       "type": "skill",
       "name": "Bosun Agent Status API",
-      "description": "Built-in global skill",
+      "description": "Built-in bosun skill",
       "filename": "bosun-agent-api.md",
       "tags": [
         "bosun",
-        "api",
         "status",
         "heartbeat",
-        "endpoint"
+        "api",
+        "complete",
+        "error"
       ],
-      "scope": "global",
+      "scope": "bosun",
       "workspace": null,
       "storageScope": "global",
       "createdAt": "2026-03-01T09:00:00.000Z",
@@ -42757,17 +42758,10 @@
       "filename": "code-quality-anti-patterns.md",
       "tags": [
         "quality",
-        "code",
-        "architecture",
         "async",
         "testing",
-        "reliability",
-        "bug",
-        "crash",
-        "scope",
-        "caching",
-        "promise",
-        "module"
+        "cache",
+        "anti-pattern"
       ],
       "scope": "global",
       "workspace": null,
@@ -42787,18 +42781,7 @@
         "annotation",
         "documentation",
         "summary",
-        "inventory",
-        "codebase",
-        "onboarding",
-        "knowledge",
-        "context",
-        "skill",
-        "warn",
-        "manifest",
-        "conformity",
-        "regeneration",
-        "claude",
-        "copilot"
+        "claude"
       ],
       "scope": "global",
       "workspace": null,
@@ -42814,11 +42797,11 @@
       "description": "Built-in global skill",
       "filename": "commit-conventions.md",
       "tags": [
-        "commits",
         "git",
-        "conventional-commits",
-        "versioning",
-        "changelog"
+        "commit",
+        "commits",
+        "conventional",
+        "history"
       ],
       "scope": "global",
       "workspace": null,
@@ -42831,17 +42814,16 @@
       "id": "custom-tool-creation",
       "type": "skill",
       "name": "Custom Tool Creation & Reuse",
-      "description": "Built-in global skill",
+      "description": "Built-in bosun skill",
       "filename": "custom-tool-creation.md",
       "tags": [
+        "tool",
         "tools",
-        "custom-tool",
-        "reflect",
         "reuse",
         "automation",
-        "script"
+        "codemod"
       ],
-      "scope": "global",
+      "scope": "bosun",
       "workspace": null,
       "storageScope": "global",
       "createdAt": "2026-03-01T09:00:00.000Z",
@@ -42872,17 +42854,16 @@
       "id": "agent-coordination",
       "type": "skill",
       "name": "Multi-Agent Coordination",
-      "description": "Built-in global skill",
+      "description": "Built-in bosun skill",
       "filename": "agent-coordination.md",
       "tags": [
-        "multi-agent",
-        "parallel",
+        "agent",
         "coordination",
-        "worktree",
-        "conflict",
-        "bosun"
+        "parallel",
+        "handoff",
+        "merge-conflict"
       ],
-      "scope": "global",
+      "scope": "bosun",
       "workspace": null,
       "storageScope": "global",
       "createdAt": "2026-03-01T09:00:00.000Z",
@@ -42918,10 +42899,10 @@
       "filename": "tdd-pattern.md",
       "tags": [
         "tdd",
+        "test",
         "testing",
         "unit-test",
-        "red-green-refactor",
-        "coverage"
+        "red-green-refactor"
       ],
       "scope": "global",
       "workspace": null,
@@ -43246,16 +43227,16 @@
       "enabledTools": null,
       "enabledMcpServers": []
     },
-    "background-task-execution": "# Skill: Background Task Execution\n\n## Rules\n- Send `/heartbeat` at start, after milestones, and at least every 60s during long steps.\n- Send `/status` before work that may look stalled.\n- Verify build, targeted tests, and lint before `/complete`.\n- Review existing edits with `git status`; never discard unknown work silently.\n- On retry, inspect `LAST_ERROR` and recent commits before re-implementing.\n- Stay inside `BOSUN_WORKTREE_PATH`; never touch main or another worktree.\n",
-    "pr-workflow": "# Skill: Pull Request Workflow\n\n## Flow\n- Merge upstream base branch and `origin/main` before push.\n- Push with `git push --set-upstream origin <branch>`.\n- Hand off PR lifecycle to Bosun; do not run direct PR-create commands.\n- Never use `--no-verify`.\n- If hooks fail, fix the root cause and rerun targeted validation.\n- Use `gh pr checks` and `gh run list` to inspect CI state.\n",
-    "error-recovery": "# Skill: Error Recovery Patterns\n\n## Rules\n- Classify the failure first: compile, test, dependency, git, config, network, or OOM.\n- Apply the smallest fix that resolves the current error.\n- Fix the first compiler error before chasing follow-on failures.\n- Reproduce test failures in isolation before broad reruns.\n- Fix generators instead of generated output.\n- After two failed attempts on the same issue, report `/error` and stop looping.\n",
-    "tdd-pattern": "# Skill: Test-Driven Development\n\n## Loop\n- Start with a failing test for the requested behavior.\n- Make the smallest production change that turns the test green.\n- Refactor only after the new behavior is covered.\n- Keep tests deterministic; no real network, random data, or timer-based syncing.\n- Mock external boundaries only, never the module under test.\n- Run the narrowest relevant tests first, then adjacent coverage.\n",
-    "commit-conventions": "# Skill: Conventional Commits\n\n## Format\n- Use `<type>(<scope>): <subject>` when scope is known.\n- Allowed types: `feat`, `fix`, `docs`, `refactor`, `test`, `build`, `ci`, `chore`, `perf`.\n- Keep the subject imperative, lowercase, and without a trailing period.\n- Commit only verified logical units; split unrelated changes.\n- Avoid WIP commits unless the task explicitly asks for them.\n- Mention user-facing risk or follow-up detail in the body when needed.\n",
-    "agent-coordination": "# Skill: Multi-Agent Coordination\n\n## Rules\n- Treat branch and worktree isolation as mandatory boundaries.\n- Review `git status` before editing to understand inherited state.\n- Stage files explicitly; do not use `git add .`.\n- Merge upstream before push and resolve conflicts without discarding peer work.\n- Preserve useful intermediate commits from previous attempts.\n- Leave concise handoff notes when the next agent needs context.\n",
-    "bosun-agent-api": "# Skill: Bosun Agent Status API\n\n## Required Calls\n- Use the local status API whenever running as a Bosun-managed agent.\n- Read endpoint values from `BOSUN_ENDPOINT_PORT`, `BOSUN_TASK_ID`, and related aliases.\n- POST `/status` for milestones, `/heartbeat` during active work, `/error` on abort, and `/complete` when finished.\n- Include short, concrete notes so orchestrator logs stay useful.\n- Do not mark completion before validation passes and push state is known.\n",
-    "code-quality-anti-patterns": "# Skill: Code Quality Anti-Patterns\n\n## Avoid\n- Module-state caches inside hot functions; keep cached state at module scope.\n- Bare async fire-and-forget calls; every promise needs `await` or `.catch()`.\n- Unguarded async handlers that can crash the process.\n- Repeated dynamic `import()` in hot paths without caching.\n- Over-mocked or flaky tests that depend on order, sleep, or random data.\n- Inline flag bypasses or safety-check shortcuts that change system behavior.\n",
-    "skill-codebase-audit": "# Skill: Codebase Annotation Audit\n\n## Rules\n- Add `CLAUDE:SUMMARY` and `CLAUDE:WARN` only where they reduce future search cost.\n- Place annotations near the top of the file, after imports or shebang.\n- Audit hot paths first: entrypoints, schedulers, cross-module adapters, and risky stateful code.\n- Keep notes LEAN: documentation-only, terse, and easy to regenerate.\n- Re-audit when summaries drift or regenerated coverage drops by about 20 percent.\n",
-    "custom-tool-creation": "# Skill: Custom Tool Creation & Reuse\n\n## Rules\n- Check the custom tools library before writing new helper code.\n- Extract repeated or high-friction logic into `.bosun/tools/` when it will save future tasks.\n- Prefer categories from `analysis`, `testing`, `git`, `build`, `transform`, `search`, `validation`, and `utility`.\n- Register tools with `registerCustomTool()` and clear tags, description, and owner metadata.\n- Promote proven workspace tools to global scope when reuse crosses projects.\n- Skip one-off scripts that do not justify long-term maintenance.\n"
+    "background-task-execution": "# Skill: Background Task Execution\n\n- Send heartbeat updates before work starts, after major milestones, and during long operations.\n- Post status notes when a step runs long enough to look stalled.\n- Verify the affected code path before marking the task complete.\n- Finish only after build, tests, and any required push or PR handoff succeed.\n",
+    "pr-workflow": "# Skill: Pull Request Workflow\n\n- Fetch and merge the base branch plus `origin/main` before pushing.\n- Push the task branch and hand off PR lifecycle steps to Bosun.\n- Use a short PR description with Summary, Changes, Testing, and Notes.\n- Never bypass git hooks with `--no-verify`; fix the failing check or note unrelated breakage.\n",
+    "error-recovery": "# Skill: Error Recovery Patterns\n\n- Classify the failure first: syntax, test, dependency, git, network, config, or resource limits.\n- Fix the first real error before chasing downstream noise.\n- Prefer the smallest safe change that resolves the root cause.\n- If the error is external or flaky, retry with limits and stop rather than papering over it.\n",
+    "tdd-pattern": "# Skill: Test-Driven Development\n\n- Start with the smallest failing test that proves the target behavior.\n- Implement the minimum code required to pass that test.\n- Refactor only after the test is green.\n- Keep tests deterministic: no real network, random data, or timer-based synchronization.\n",
+    "commit-conventions": "# Skill: Conventional Commits\n\n- Use Conventional Commits such as `feat:`, `fix:`, `chore:`, or `test:`.\n- Keep the subject short, imperative, and scoped to the actual change.\n- Mention validation in the handoff or PR notes, not in the subject line.\n- Do not bundle unrelated work into the same commit message or commit.\n",
+    "agent-coordination": "# Skill: Multi-Agent Coordination\n\n- Keep scope ownership clear before editing shared files.\n- Prefer small, isolated changes that reduce merge conflict risk.\n- Leave concise status notes when handing work to another agent or retry.\n- Re-check git status before finalizing so no unrelated edits leak into the task.\n",
+    "bosun-agent-api": "# Skill: Bosun Agent Status API\n\n- POST `/status` when starting a new phase or when context changes.\n- POST `/heartbeat` during active work so Bosun does not requeue the task.\n- POST `/error` with concise failure context before aborting.\n- POST `/complete` only after verification is done and the task is truly finished.\n",
+    "code-quality-anti-patterns": "# Skill: Code Quality Anti-Patterns\n\n- Keep caches, lazy singletons, and loaded flags at module scope.\n- Await async work or attach `.catch()`; never leave floating promises.\n- Wrap hot-path callbacks and handlers in error boundaries.\n- Mock external boundaries only; avoid over-mocking the module under test.\n- Keep tests deterministic and remove dead branches instead of layering guard code.\n",
+    "skill-codebase-audit": "# Skill: Codebase Annotation Audit\n\n## Purpose\nSystematically audit and annotate a codebase so that *future* AI agents can\nnavigate it 4× faster, use 20% fewer tokens, and avoid false-positive changes.\nThis skill is **documentation-only** — it MUST NOT fix bugs, refactor code,\nor change program behavior.\n\n## Philosophy — LEAN Annotations\n\nModern AI coding SDKs (Copilot, Codex, Claude Code) already auto-compact\ncontext. Adding a memory/compaction layer on top is wasteful. What *does* help\nis **repo-level documentation** that agents read at the start of a session:\nsummaries, warnings, architectural notes, and module manifests. These cost zero\nruntime tokens and dramatically reduce exploration time.\n\n## Annotation Format\n\nUse structured comment headers that agents are trained to recognize:\n\n```\n// CLAUDE:SUMMARY — <module-name>\n// <1–3 sentence summary of purpose, key types, and public API>\n```\n\n```\n// CLAUDE:WARN — <module-name>\n// <non-obvious pitfall, race condition, or constraint agents MUST know>\n```\n\n- Place annotations at the **top of the file**, after imports / shebang.\n- Keep each annotation to ≤ 3 lines.\n- Do NOT annotate trivial files (configs, lockfiles, generated code).\n\n## 6-Phase Audit\n\n### Phase 1 — Inventory\nEnumerate every source file. For each file record:\n| Field | Value |\n|-------|-------|\n| path | relative from repo root |\n| lang | file extension / language |\n| lines | line count |\n| has_summary | yes / no |\n| has_warn | yes / no |\n| category | core / util / test / config / generated |\n\nOutput: `.bosun/audit/inventory.json`\n\n### Phase 2 — Summaries\nFor every file where `has_summary === false` and `category !== \"generated\"`:\n1. Read the file.\n2. Write a `CLAUDE:SUMMARY` comment at the top.\n3. Stage the file.\n\n### Phase 3 — Warnings\nFor every file, check for non-obvious constraints:\n- Singleton/caching requirements (must be module-scope)\n- Async fire-and-forget patterns (unhandled rejections)\n- Order-dependent initialization\n- Platform-specific behavior (Windows paths, etc.)\n\nAdd `CLAUDE:WARN` comments where found.\n\n### Phase 4 — Manifest Audit\nEnsure `AGENTS.md` (or equivalent) at repo root is accurate:\n- Lists all top-level modules with 1-line descriptions.\n- Documents build / test / lint commands.\n- Documents environment variables.\n- Documents commit conventions.\n- Lists known constraints or gotchas.\n\nIf the file is outdated or missing sections, append corrections.\n\n### Phase 5 — Conformity Check\nRe-scan all annotations and validate:\n- `CLAUDE:SUMMARY` is present in every non-trivial source file.\n- `CLAUDE:WARN` exists for files with known pitfalls.\n- No stale annotations reference symbols/functions that no longer exist.\n\nOutput: `.bosun/audit/conformity-report.json`\n\n### Phase 6 — Regeneration Schedule\nAnnotations rot. Add a `.bosun/audit/schedule.json` with:\n```json\n{\n  \"lastFullAudit\": \"<ISO timestamp>\",\n  \"nextRecommendedAudit\": \"<ISO timestamp + 30 days>\",\n  \"filesAudited\": <count>,\n  \"summariesAdded\": <count>,\n  \"warningsAdded\": <count>,\n  \"conformityScore\": <0-100>\n}\n```\n\n## Hard Rules\n\n1. **Do NOT change program behavior.** Only add/update comments and documentation.\n2. **Do NOT refactor, fix bugs, or rename symbols.** Documentation only.\n3. **Do NOT annotate generated files** (lockfiles, build output, `.min.js`, etc.).\n4. **Keep summaries ≤ 3 lines.** Agents need density, not essays.\n5. **Keep warnings actionable.** \"This is complex\" is useless.\n   \"Must call init() before query() — throws otherwise\" is helpful.\n6. **Stage files individually** — never `git add .`.\n7. **Commit with** `docs(audit): annotate <module>` — not `feat`/`fix`.\n\n## Success Metrics\n- A/B tested: annotated repos show 4× faster agent navigation.\n- 20% fewer tokens consumed per task.\n- Zero false-positive code changes from confused agents.\n",
+    "custom-tool-creation": "# Skill: Custom Tool Creation & Reuse\n\n- Reuse an existing tool before writing repetitive inline code.\n- Extract durable helpers when the same manual sequence appears more than once.\n- Store workspace tools in `.bosun/tools/` with clear titles, tags, and a narrow purpose.\n- Promote high-value helpers to global scope only when they are stable and broadly reusable.\n"
   }
 };
 })();

@@ -1,6 +1,6 @@
 {
   "name": "bosun",
-  "version": "0.42.4",
+  "version": "0.42.5",
   "description": "Bosun Autonomous Engineering — manages AI agent executors with failover, extremely powerful workflow builder, and a massive amount of included default workflow templates for autonomous engineering, creates PRs via Vibe-Kanban API, and sends Telegram notifications. Supports N executors with weighted distribution, multi-repo projects, and auto-setup.",
   "type": "module",
   "license": "Apache-2.0",
@@ -116,7 +116,7 @@
     "shared-workspaces": "node workspace/shared-workspace-cli.mjs",
     "syntax:check": "node --experimental-vm-modules --no-warnings=ExperimentalWarning tools/syntax-check.mjs",
     "prompt:lint": "node tools/prompt-lint.mjs",
-    "pretest": "npm run syntax:check && npm run prompt:lint",
+    "pretest": "npm run syntax:check",
     "test": "node --max-old-space-size=4096 tools/vitest-runner.mjs run --config vitest.config.mjs",
     "test:vitest": "node --max-old-space-size=4096 tools/vitest-runner.mjs run --config vitest.config.mjs",
     "test:node": "node --import ./tests/node-test-bootstrap.mjs --test tests/*.node.test.mjs",
@@ -133,7 +133,7 @@
     "sentinel:stop": "node -e \"import('./telegram/telegram-sentinel.mjs').then(m => m.stopSentinel())\"",
     "sentinel:status": "node -e \"import('./telegram/telegram-sentinel.mjs').then(m => console.log(JSON.stringify(m.getSentinelStatus(), null, 2)))\"",
     "smoke:packed-cli": "node tools/packed-cli-smoke.mjs",
-    "prepush:check": "node tools/prepublish-check.mjs && npm run syntax:check && npm run smoke:packed-cli && npm test",
+    "prepush:check": "node tools/prepublish-check.mjs && npm run syntax:check && npm run prompt:lint && npm run smoke:packed-cli && npm test",
     "prepublishOnly": "node tools/prepublish-check.mjs && npm run smoke:packed-cli",
     "publish:env": "node tools/publish.mjs",
     "publish:dry-run": "node tools/publish.mjs --dry-run",
@@ -413,4 +413,3 @@
     "gaxios": "7.1.4"
   }
 }
-
