@@ -115,7 +115,8 @@
     "build:docs": "node tools/build-docs.mjs",
     "shared-workspaces": "node workspace/shared-workspace-cli.mjs",
     "syntax:check": "node --experimental-vm-modules --no-warnings=ExperimentalWarning tools/syntax-check.mjs",
-    "pretest": "npm run syntax:check",
+    "prompt:lint": "node tools/prompt-lint.mjs",
+    "pretest": "npm run syntax:check && npm run prompt:lint",
     "test": "node --max-old-space-size=4096 tools/vitest-runner.mjs run --config vitest.config.mjs",
     "test:vitest": "node --max-old-space-size=4096 tools/vitest-runner.mjs run --config vitest.config.mjs",
     "test:node": "node --import ./tests/node-test-bootstrap.mjs --test tests/*.node.test.mjs",
@@ -412,3 +413,4 @@
     "gaxios": "7.1.4"
   }
 }
+
