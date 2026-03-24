@@ -31,6 +31,14 @@ function waitFor(condition, { timeoutMs = 3000, intervalMs = 25 } = {}) {
   });
 }
 
+function findLatestMessage(messages, predicate) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (predicate(message)) return message;
+  }
+  return undefined;
+}
+
 describe("ui-server TUI websocket bridge", () => {
   const ENV_KEYS = [
     "TELEGRAM_UI_TLS_DISABLE",
@@ -171,7 +179,12 @@ describe("ui-server TUI websocket bridge", () => {
     tracker.recordEvent("task-1", { role: "assistant", content: "hello from tui bridge" });
 
     const sessionEvent = await waitFor(() => messages.find((message) => message.type === "session:event" && message.payload?.taskId === "task-1" && message.payload?.event?.kind === "message"));
-    const sessionsUpdate = await waitFor(() => messages.findLast?.((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1")) || [...messages].reverse().find((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1")));
+    const sessionsUpdate = await waitFor(() => findLatestMessage(
+      messages,
+      (message) => message.type === "sessions:update"
+        && Array.isArray(message.payload)
+        && message.payload.some((session) => session.taskId === "task-1"),
+    ));
 
     tracker.endSession("task-1", "completed");
 
@@ -232,17 +245,12 @@ describe("ui-server TUI websocket bridge", () => {
     expect(createResponse.status).toBe(200);
     expect(createJson.ok).toBe(true);
 
-    const snapshot = await waitFor(() =>
-      messages.findLast?.((message) => (
-        message.type === "sessions:update"
+    const snapshot = await waitFor(() => findLatestMessage(
+      messages,
+      (message) => message.type === "sessions:update"
         && Array.isArray(message.payload)
-        && message.payload.some((session) => session.id === createJson.session?.id)
-      )) || [...messages].reverse().find((message) => (
-        message.type === "sessions:update"
-        && Array.isArray(message.payload)
-        && message.payload.some((session) => session.id === createJson.session?.id)
-      ))
-    );
+        && message.payload.some((session) => session.id === createJson.session?.id),
+    ));
 
     expect(validateSessions(snapshot.payload), JSON.stringify(validateSessions.errors || [])).toBe(true);
 
