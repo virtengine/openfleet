@@ -1571,6 +1571,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     edge("fetch-and-classify","has-prs"),
     edge("has-prs",          "fix-needed",      { condition: "$output?.result === true" }),
     edge("has-prs",          "no-prs",          { condition: "$output?.result !== true" }),
+    // Parallel merge path — review CLEAN PRs immediately, don't wait for fix agent
+    edge("has-prs",          "review-needed",   { condition: "$output?.result === true" }),
     // Fix path (security failures, then conflicts + non-security CI failures)
     edge("fix-needed",       "security-fix-needed", { condition: "$output?.result === true" }),
     edge("fix-needed",       "review-needed",       { condition: "$output?.result !== true" }),

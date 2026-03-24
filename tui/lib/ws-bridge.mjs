@@ -56,6 +56,24 @@ function buildTuiWebSocketUrl({ host, port, token = "", protocol = "ws" }) {
 	return url.toString();
 }
 
+function buildTuiHttpUrl({ host, port, path = "/", protocol = "ws" }) {
+	const normalizedPath = String(path || "/").startsWith("/")
+		? String(path || "/")
+		: `/${String(path || "")}`;
+	const httpProtocol = normalizeProtocol(protocol) === "wss" ? "https" : "http";
+	return new URL(`${httpProtocol}://${host}:${port}${normalizedPath}`).toString();
+}
+
+async function parseJsonResponse(response) {
+	const text = await response.text();
+	if (!text) return null;
+	try {
+		return JSON.parse(text);
+	} catch {
+		throw new Error(`Expected JSON response but received: ${text.slice(0, 160)}`);
+	}
+}
+
 class TuiWsBridge {
 	constructor({ host, port, configDir, protocol = "ws", WebSocketImpl = globalThis.WebSocket }) {
 		this.host = host;
@@ -280,6 +298,44 @@ class TuiWsBridge {
 	get connectionState() {
 		return this._connectionState;
 	}
+
+	async requestJson(path, options = {}) {
+		const headers = {
+			Accept: "application/json",
+			...(options.body ? { "Content-Type": "application/json" } : {}),
+			...(options.headers || {}),
+		};
+		const token = resolveTuiAuthToken({ configDir: this.configDir });
+		if (token && !headers.Authorization) {
+			headers.Authorization = `Bearer ${token}`;
+		}
+
+		const response = await fetch(buildTuiHttpUrl({
+			host: this.host,
+			port: this.port,
+			path,
+			protocol: resolveWebSocketProtocol({ protocol: this.protocol, configDir: this.configDir }),
+		}), {
+			method: options.method || (options.body ? "POST" : "GET"),
+			headers,
+			body: options.body ? JSON.stringify(options.body) : undefined,
+		});
+
+		const payload = await parseJsonResponse(response);
+		if (!response.ok) {
+			const message = String(payload?.error || payload?.message || response.statusText || "Request failed").trim();
+			throw new Error(message || `HTTP ${response.status}`);
+		}
+		return payload;
+	}
+
+	async createTask(task) {
+		const response = await this.requestJson("/api/tasks/create", {
+			method: "POST",
+			body: task,
+		});
+		return response?.data || null;
+	}
 }
 
 let _instance = null;
@@ -340,9 +396,11 @@ wsBridge._instance = null;
 export default wsBridge;
 export {
 	TuiWsBridge,
+	buildTuiHttpUrl,
 	buildTuiWebSocketUrl,
 	createWsBridge,
 	defaultConfigDir,
 	resolveWebSocketProtocol,
 	resolveTuiAuthToken,
 };
+

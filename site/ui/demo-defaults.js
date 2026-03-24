@@ -431,7 +431,7 @@
         "safety"
       ],
       "nodeCount": 17,
-      "edgeCount": 22,
+      "edgeCount": 23,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.schedule",
@@ -806,6 +806,13 @@
           "target": "no-prs",
           "sourcePort": "default",
           "condition": "$output?.result !== true"
+        },
+        {
+          "id": "has-prs->review-needed",
+          "source": "has-prs",
+          "target": "review-needed",
+          "sourcePort": "default",
+          "condition": "$output?.result === true"
         },
         {
           "id": "fix-needed->security-fix-needed",
@@ -21869,6 +21876,13 @@
           "target": "no-prs",
           "sourcePort": "default",
           "condition": "$output?.result !== true"
+        },
+        {
+          "id": "has-prs->review-needed",
+          "source": "has-prs",
+          "target": "review-needed",
+          "sourcePort": "default",
+          "condition": "$output?.result === true"
         },
         {
           "id": "fix-needed->security-fix-needed",
