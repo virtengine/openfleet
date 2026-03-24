@@ -39,6 +39,7 @@ import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, emitSkillInvokeEvent, findRelevantSkills } from "../agent/bosun-skills.mjs";
 import { readBenchmarkModeState, taskMatchesBenchmarkMode } from "../bench/benchmark-mode.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
+import { formatTraceparent, traceAgentSession, traceTaskExecution } from "../infra/tracing.mjs";
 import { runInIsolatedRunner } from "../infra/container-runner.mjs";
 import { recordWorktreeRecoveryEvent } from "../infra/worktree-recovery-state.mjs";
 import {
@@ -1924,6 +1925,36 @@ function makeChildWorkflowExecuteOptions(ctx, extra = {}) {
   };
 }
 
+function attachWorkflowTaskMetadata(ctx, taskData = {}, extra = {}) {
+  const payload = taskData && typeof taskData === "object" ? { ...taskData } : {};
+  const existingMeta =
+    payload.meta && typeof payload.meta === "object" && !Array.isArray(payload.meta)
+      ? { ...payload.meta }
+      : {};
+  const workflowMeta =
+    existingMeta.workflow && typeof existingMeta.workflow === "object" && !Array.isArray(existingMeta.workflow)
+      ? { ...existingMeta.workflow }
+      : {};
+  const nextWorkflowMeta = {
+    ...workflowMeta,
+    workflowId: String(extra.workflowId || ctx?.data?._workflowId || workflowMeta.workflowId || "").trim() || undefined,
+    workflowName: String(extra.workflowName || ctx?.data?._workflowName || workflowMeta.workflowName || "").trim() || undefined,
+    runId: String(extra.runId || ctx?.id || workflowMeta.runId || "").trim() || undefined,
+    rootRunId: String(extra.rootRunId || ctx?.data?._workflowRootRunId || workflowMeta.rootRunId || "").trim() || undefined,
+    parentRunId: String(extra.parentRunId || ctx?.data?._workflowParentRunId || workflowMeta.parentRunId || "").trim() || undefined,
+    sourceNodeId: String(extra.sourceNodeId || workflowMeta.sourceNodeId || "").trim() || undefined,
+    sourceNodeType: String(extra.sourceNodeType || workflowMeta.sourceNodeType || "").trim() || undefined,
+    agentId: String(extra.agentId || workflowMeta.agentId || "").trim() || undefined,
+    traceparent: String(extra.traceparent || formatTraceparent() || workflowMeta.traceparent || "").trim() || undefined,
+  };
+  if (Object.values(nextWorkflowMeta).every((value) => value == null || value === "")) {
+    return payload;
+  }
+  existingMeta.workflow = nextWorkflowMeta;
+  payload.meta = existingMeta;
+  return payload;
+}
+
 function sanitizeLedgerKeyPart(value, fallback = "unknown") {
   const normalized = String(value || "")
     .trim()
@@ -3232,127 +3263,147 @@ registerBuiltinNodeType("action.run_agent", {
         }));
         let result = null;
         let success = false;
-        try {
-          if (
-            autoRecover &&
-            continueOnSession &&
-            canContinueStoredSession &&
-            typeof agentPool.continueSession === "function"
-          ) {
-            ctx.log(node.id, `${passLabel} Recovery: continuing existing session ${sessionId}`.trim());
-            try {
-              recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
-                eventType: "recovery.attempted",
-                ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["continue-session", sessionId || "session"], "continue-session"),
-                status: "running",
-                attempt: 1,
-                meta: { strategy: "continue_session", sessionId, taskKey: recoveryTaskKey },
-              }));
-              result = await agentPool.continueSession(sessionId, continuePrompt, {
-                timeout: timeoutMs,
-                cwd,
-                sdk: sdkOverride,
-                model: modelOverride,
-              });
-              if (result?.success) {
-                recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
-                  eventType: "recovery.succeeded",
-                  ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["continue-session", sessionId || "session"], "continue-session"),
-                  status: "completed",
-                  attempt: 1,
-                  meta: { strategy: "continue_session", sessionId, taskKey: recoveryTaskKey },
-                }));
-                ctx.log(node.id, `${passLabel} Recovery: continue-session succeeded`.trim());
-              } else {
-                recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
-                  eventType: "recovery.failed",
-                  ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["continue-session", sessionId || "session"], "continue-session"),
-                  status: "failed",
-                  attempt: 1,
-                  error: result?.error || "unknown error",
-                  meta: { strategy: "continue_session", sessionId, taskKey: recoveryTaskKey },
-                }));
+        const executeAgentPass = async (taskSpan = null) => {
+          result = await traceAgentSession(
+            {
+              sessionId: sessionId || recoveryTaskKey || null,
+              sdk: sdkOverride || sdk || null,
+              threadKey: recoveryTaskKey,
+              workflowId: ctx.data?._workflowId || null,
+              workflowRunId: ctx.id,
+              taskId: trackedTaskId || null,
+              agentId: agentProfileId || node.id,
+            },
+            async (span) => {
+              let tracedResult = null;
+              if (
+                autoRecover &&
+                continueOnSession &&
+                canContinueStoredSession &&
+                typeof agentPool.continueSession === "function"
+              ) {
+                ctx.log(node.id, `${passLabel} Recovery: continuing existing session ${sessionId}`.trim());
+                try {
+                  recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+                    eventType: "recovery.attempted",
+                    ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["continue-session", sessionId || "session"], "continue-session"),
+                    status: "running",
+                    attempt: 1,
+                    meta: { strategy: "continue_session", sessionId, taskKey: recoveryTaskKey },
+                  }));
+                  tracedResult = await agentPool.continueSession(sessionId, continuePrompt, {
+                    timeout: timeoutMs,
+                    cwd,
+                    sdk: sdkOverride,
+                    model: modelOverride,
+                  });
+                  if (tracedResult?.success) {
+                    recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+                      eventType: "recovery.succeeded",
+                      ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["continue-session", sessionId || "session"], "continue-session"),
+                      status: "completed",
+                      attempt: 1,
+                      meta: { strategy: "continue_session", sessionId, taskKey: recoveryTaskKey },
+                    }));
+                    ctx.log(node.id, `${passLabel} Recovery: continue-session succeeded`.trim());
+                  } else {
+                    recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+                      eventType: "recovery.failed",
+                      ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["continue-session", sessionId || "session"], "continue-session"),
+                      status: "failed",
+                      attempt: 1,
+                      error: tracedResult?.error || "unknown error",
+                      meta: { strategy: "continue_session", sessionId, taskKey: recoveryTaskKey },
+                    }));
+                    ctx.log(
+                      node.id,
+                      `${passLabel} Recovery: continue-session failed (${tracedResult?.error || "unknown error"})`.trim(),
+                      "warn",
+                    );
+                    tracedResult = null;
+                  }
+                } catch (err) {
+                  recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+                    eventType: "recovery.failed",
+                    ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["continue-session", sessionId || "session"], "continue-session"),
+                    status: "failed",
+                    attempt: 1,
+                    error: err?.message || String(err),
+                    meta: { strategy: "continue_session", sessionId, taskKey: recoveryTaskKey },
+                  }));
+                  ctx.log(
+                    node.id,
+                    `${passLabel} Recovery: continue-session threw (${err?.message || err})`.trim(),
+                    "warn",
+                  );
+                  tracedResult = null;
+                }
+              }
+
+              if (!tracedResult && autoRecover && typeof agentPool.execWithRetry === "function") {
                 ctx.log(
                   node.id,
-                  `${passLabel} Recovery: continue-session failed (${result?.error || "unknown error"})`.trim(),
-                  "warn",
+                  `${passLabel} Recovery: execWithRetry taskKey=${recoveryTaskKey} retries=${sessionRetries} continues=${maxContinues}`.trim(),
                 );
-                result = null;
+                recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+                  eventType: "recovery.attempted",
+                  ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["exec-with-retry", recoveryTaskKey], "execWithRetry"),
+                  status: "running",
+                  attempt: 1,
+                  meta: { strategy: "exec_with_retry", taskKey: recoveryTaskKey, maxRetries: sessionRetries, maxContinues },
+                }));
+                tracedResult = await agentPool.execWithRetry(passPrompt, {
+                  taskKey: recoveryTaskKey,
+                  cwd,
+                  timeoutMs,
+                  maxRetries: sessionRetries,
+                  maxContinues,
+                  sessionType: trackedSessionType,
+                  sdk: sdkOverride,
+                  model: modelOverride,
+                  onEvent: launchExtra.onEvent,
+                  systemPrompt: effectiveSystemPrompt,
+                });
               }
-            } catch (err) {
-              recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
-                eventType: "recovery.failed",
-                ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["continue-session", sessionId || "session"], "continue-session"),
-                status: "failed",
-                attempt: 1,
-                error: err?.message || String(err),
-                meta: { strategy: "continue_session", sessionId, taskKey: recoveryTaskKey },
-              }));
-              ctx.log(
-                node.id,
-                `${passLabel} Recovery: continue-session threw (${err?.message || err})`.trim(),
-                "warn",
-              );
-              result = null;
-            }
-          }
 
-          if (!result && autoRecover && typeof agentPool.execWithRetry === "function") {
-            ctx.log(
-              node.id,
-              `${passLabel} Recovery: execWithRetry taskKey=${recoveryTaskKey} retries=${sessionRetries} continues=${maxContinues}`.trim(),
-            );
-            recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
-              eventType: "recovery.attempted",
-              ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["exec-with-retry", recoveryTaskKey], "execWithRetry"),
-              status: "running",
-              attempt: 1,
-              meta: { strategy: "exec_with_retry", taskKey: recoveryTaskKey, maxRetries: sessionRetries, maxContinues },
-            }));
-            result = await agentPool.execWithRetry(passPrompt, {
-              taskKey: recoveryTaskKey,
-              cwd,
-              timeoutMs,
-              maxRetries: sessionRetries,
-              maxContinues,
-              sessionType: trackedSessionType,
-              sdk: sdkOverride,
-              model: modelOverride,
-              onEvent: launchExtra.onEvent,
-              systemPrompt: effectiveSystemPrompt,
-            });
-          }
+              if (!tracedResult && autoRecover && typeof agentPool.launchOrResumeThread === "function") {
+                ctx.log(node.id, `${passLabel} Recovery: launchOrResumeThread taskKey=${recoveryTaskKey}`.trim());
+                recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+                  eventType: "recovery.attempted",
+                  ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["launch-or-resume", recoveryTaskKey], "launchOrResumeThread"),
+                  status: "running",
+                  attempt: 1,
+                  meta: { strategy: "launch_or_resume_thread", taskKey: recoveryTaskKey },
+                }));
+                tracedResult = await agentPool.launchOrResumeThread(passPrompt, cwd, timeoutMs, {
+                  taskKey: recoveryTaskKey,
+                  sessionType: trackedSessionType,
+                  sdk: sdkOverride,
+                  model: modelOverride,
+                  onEvent: launchExtra.onEvent,
+                  systemPrompt: effectiveSystemPrompt,
+                });
+              }
 
-          if (!result && autoRecover && typeof agentPool.launchOrResumeThread === "function") {
-            ctx.log(node.id, `${passLabel} Recovery: launchOrResumeThread taskKey=${recoveryTaskKey}`.trim());
-            recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
-              eventType: "recovery.attempted",
-              ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["launch-or-resume", recoveryTaskKey], "launchOrResumeThread"),
-              status: "running",
-              attempt: 1,
-              meta: { strategy: "launch_or_resume_thread", taskKey: recoveryTaskKey },
-            }));
-            result = await agentPool.launchOrResumeThread(passPrompt, cwd, timeoutMs, {
-              taskKey: recoveryTaskKey,
-              sessionType: trackedSessionType,
-              sdk: sdkOverride,
-              model: modelOverride,
-              onEvent: launchExtra.onEvent,
-              systemPrompt: effectiveSystemPrompt,
-            });
-          }
-
-          if (!result) {
-            recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
-              eventType: "recovery.attempted",
-              ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["launch-ephemeral", recoveryTaskKey], "launchEphemeralThread"),
-              status: "running",
-              attempt: 1,
-              meta: { strategy: "launch_ephemeral_thread", taskKey: recoveryTaskKey },
-            }));
-            launchExtra.systemPrompt = effectiveSystemPrompt;
-            result = await agentPool.launchEphemeralThread(passPrompt, cwd, timeoutMs, launchExtra);
-          }
+              if (!tracedResult) {
+                recordNodeLedgerEvent(engine, buildWorkflowLedgerBase(ctx, {
+                  eventType: "recovery.attempted",
+                  ...buildNodeExecutionLedgerRef(ctx, node, "recovery", ["launch-ephemeral", recoveryTaskKey], "launchEphemeralThread"),
+                  status: "running",
+                  attempt: 1,
+                  meta: { strategy: "launch_ephemeral_thread", taskKey: recoveryTaskKey },
+                }));
+                launchExtra.systemPrompt = effectiveSystemPrompt;
+                tracedResult = await agentPool.launchEphemeralThread(passPrompt, cwd, timeoutMs, launchExtra);
+              }
+              const resolvedThreadId = tracedResult?.threadId || tracedResult?.sessionId || sessionId || null;
+              if (resolvedThreadId) {
+                span.attributes["bosun.session.id"] = resolvedThreadId;
+                if (taskSpan) taskSpan.attributes["bosun.session.id"] = resolvedThreadId;
+              }
+              return tracedResult;
+            },
+          );
           success = result?.success === true;
           if (result) {
             const strategy = result?.attempts || result?.continues || result?.resumed
@@ -3371,6 +3422,37 @@ registerBuiltinNodeType("action.run_agent", {
                 resumed: result?.resumed === true,
               },
             }));
+          }
+        };
+
+        try {
+          if (trackedTaskId) {
+            await traceTaskExecution(
+              {
+                taskId: trackedTaskId,
+                title: trackedTaskTitle || null,
+                priority: ctx.data?.task?.priority || ctx.data?.taskDetail?.priority || null,
+                assignee: ctx.data?.task?.assignee || ctx.data?.taskDetail?.assignee || agentProfileId || null,
+                workflowId: ctx.data?._workflowId || null,
+                workflowRunId: ctx.id,
+                rootRunId: ctx.data?._workflowRootRunId || ctx.id,
+                parentRunId: ctx.data?._workflowParentRunId || null,
+                agentId: agentProfileId || node.id,
+                sdk: sdkOverride || sdk || null,
+                model: modelOverride || null,
+                branch: String(
+                  ctx.data?.branch ||
+                    ctx.data?.task?.branch ||
+                    ctx.data?.task?.branchName ||
+                    ctx.data?.taskDetail?.branch ||
+                    ctx.data?.taskDetail?.branchName ||
+                    ""
+                ).trim() || null,
+              },
+              async (taskSpan) => executeAgentPass(taskSpan),
+            );
+          } else {
+            await executeAgentPass(null);
           }
         } finally {
           clearInterval(heartbeat);
@@ -4796,14 +4878,21 @@ registerBuiltinNodeType("action.create_task", {
     ctx.log(node.id, `Creating task: ${title}`);
 
     if (kanban?.createTask) {
-      const task = await createKanbanTaskWithProject(kanban, {
-        title,
-        description,
-        status: node.config?.status || "todo",
-        priority: node.config?.priority,
-        tags: node.config?.tags,
-        projectId: node.config?.projectId,
-      }, node.config?.projectId);
+      const task = await createKanbanTaskWithProject(
+        kanban,
+        attachWorkflowTaskMetadata(ctx, {
+          title,
+          description,
+          status: node.config?.status || "todo",
+          priority: node.config?.priority,
+          tags: node.config?.tags,
+          projectId: node.config?.projectId,
+        }, {
+          sourceNodeId: node.id,
+          sourceNodeType: node.type,
+        }),
+        node.config?.projectId,
+      );
       bindTaskContext(ctx, {
         taskId: task?.id,
         taskTitle: task?.title || title,
@@ -7657,7 +7746,14 @@ registerBuiltinNodeType("action.materialize_planner_tasks", {
         verification: task.verification,
       };
       payload.meta = existingMeta;
-      const createdTask = await createKanbanTaskWithProject(kanban, payload, projectId);
+      const createdTask = await createKanbanTaskWithProject(
+        kanban,
+        attachWorkflowTaskMetadata(ctx, payload, {
+          sourceNodeId: node.id,
+          sourceNodeType: node.type,
+        }),
+        projectId,
+      );
       created.push({
         id: createdTask?.id || null,
         title: task.title,
@@ -14882,6 +14978,7 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
+
 
 
 
