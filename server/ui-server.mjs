@@ -3156,8 +3156,24 @@ async function handleEsmProxy(req, res, url) {
   }
 }
 
-const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
 const logsDir = resolve(__dirname, "..", "logs");
+function resolveUiStatusRepoRoot() {
+  return resolve(process.cwd());
+}
+
+function resolveUiStatusPath() {
+  const override = String(process.env.STATUS_FILE || "").trim();
+  if (override) {
+    const isWindowsAbsolute = /^[a-zA-Z]:[\\/]/.test(override) || override.startsWith("\\\\");
+    const isPosixAbsolute = override.startsWith("/");
+    if (isWindowsAbsolute || isPosixAbsolute) {
+      return resolve(override);
+    }
+    return resolve(resolveUiStatusRepoRoot(), override);
+  }
+  return resolve(resolveUiStatusRepoRoot(), ".cache", "ve-orchestrator-status.json");
+}
+
 const agentLogsDirCandidates = [
   resolve(__dirname, "..", "logs", "agents"),
   resolve(repoRoot, ".cache", "agent-logs"),
@@ -10010,7 +10026,7 @@ async function collectUiStats() {
 
   // Try to read status from the monitor's status file first
   let orchestratorStatus = null;
-  const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
+  const statusPath = resolveUiStatusPath();
   try {
     if (existsSync(statusPath)) {
       const raw = await readFile(statusPath, "utf8");
@@ -11042,6 +11058,7 @@ async function handleDeviceFlowPoll(req, res) {
 
 async function readStatusSnapshot() {
   try {
+    const statusPath = resolveUiStatusPath();
     const raw = await readFile(statusPath, "utf8");
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") {

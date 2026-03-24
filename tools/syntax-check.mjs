@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { resolve, join, relative } from "node:path";
 import { execSync } from "node:child_process";
 import vm from "node:vm";
+import { validateImports } from "./import-check.mjs";
 
 function listTopLevelModules() {
   try {
@@ -130,6 +131,24 @@ async function main() {
   }
 
   console.log(`Syntax OK: ${files.length} modules + ${browserFiles.length} browser files checked`);
+
+  // ── Phase 3: ESM import binding validation ────────────────────────────
+  // Link all local modules together using vm.SourceTextModule.link() to
+  // verify that every named import actually exists as an export in the
+  // target module.  This catches ghost imports from partial merges, WIP
+  // saves, and renames that missed a call-site.
+  const { errors: importErrors, moduleCount } = await validateImports();
+
+  if (importErrors.length > 0) {
+    console.error("\nImport validation failed:\n");
+    for (const { file, error } of importErrors) {
+      console.error(`  \u2717 ${file}`);
+      console.error(`    ${error}\n`);
+    }
+    process.exit(1);
+  }
+
+  console.log(`Imports OK: ${moduleCount} modules linked, 0 broken imports`);
 }
 
 main().catch((error) => {
