@@ -148,9 +148,15 @@ class TuiWsBridge {
 				this._emit("monitor:stats", payload);
 				this._emit("stats", payload);
 				break;
-			case "sessions:update":
-				this._emit("sessions:update", payload);
+			case "sessions:update": {
+				const sessions = Array.isArray(payload?.sessions)
+					? payload.sessions
+					: Array.isArray(payload)
+						? payload
+						: [];
+				this._emit("sessions:update", sessions);
 				break;
+			}
 			case "session:event": {
 				this._emit("session:event", payload);
 				// backward compat: bridge to legacy session lifecycle events
