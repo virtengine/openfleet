@@ -88,7 +88,6 @@ function showHelp() {
     --doctor                    Validate bosun .env/config setup
     --tool-log <ID|list|prune>  Retrieve/list/prune cached tool outputs
     node:create <name>          Scaffold a custom workflow node in custom-nodes/
-    node:health                Inspect custom workflow node plugin health
     --context-index [mode]      Run context index workflow (run|status|search)
     --context-index-query <text> Query text for context index search mode
     --context-index-limit <n>   Max results for context index search (default: 25)
@@ -168,7 +167,6 @@ function showHelp() {
   WORKFLOWS
     workflow list               List built-in and configured workflows
     workflow run <name>         Run a declarative fresh-context workflow
-    workflow nodes              Inspect custom workflow node plugin health
 
     Run 'bosun workflow --help' for workflow CLI examples.
     Run 'bosun tui' to launch the terminal UI.
@@ -1378,15 +1376,6 @@ async function main() {
     process.exit(exitCode);
   }
 
-  if (args[0] === "node:health" || (args[0] === "node" && args[1] === "health")) {
-    const { executeWorkflowCommand } = await import("./workflow/workflow-cli.mjs");
-    const healthArgs = ["workflow", "nodes", ...args.slice(args[0] === "node:health" ? 1 : 2)];
-    const result = await executeWorkflowCommand(healthArgs, {
-      stdout: (line) => console.log(line),
-      repoRoot: runtimeRepoRoot,
-    });
-    process.exit(result.report?.ok === false ? 1 : 0);
-  }
   if (args[0] === "node:create" || (args[0] === "node" && args[1] === "create")) {
     const name = args[0] === "node:create" ? args[1] : args[2];
     if (!name) {
@@ -1398,7 +1387,6 @@ async function main() {
       const result = scaffoldCustomNodeFile(name, { repoRoot: runtimeRepoRoot });
       console.log(`\n  ✓ Created custom node \"${result.type}\"`);
       console.log(`    File: ${result.filePath}`);
-      console.log("    Validate: bosun workflow nodes --smoke --json");
       console.log("");
     } catch (err) {
       console.error(`  Error: ${err.message}`);
@@ -2731,4 +2719,5 @@ main().catch(async (err) => {
   await sendCrashNotification(1, null).catch(() => {});
   process.exit(1);
 });
+
 

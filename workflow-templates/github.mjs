@@ -1733,7 +1733,7 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "const updates=[]; const unresolved=[];",
         "const maxBuffer=25*1024*1024;",
         "const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':'';",
-        "const taskCli=['task-cli.mjs','task/task-cli.mjs'].find(p=>fs.existsSync(p))||'';",
+        "const taskCli=['task/task-cli.mjs','task-cli.mjs'].find(p=>fs.existsSync(p))||'';",
         "const taskRunner=cliPath?'cli':(taskCli?'task-cli':'');",
         "if(!taskRunner){",
         "  console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_command_missing'}],needsAgent:true}));",
@@ -1811,8 +1811,8 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "RULES:\n" +
         "1. For each MERGED PR entry with a taskId: update the kanban task to done.\n" +
         "   Use the available bosun/vk CLI, for example:\n" +
-        "     node task-cli.mjs update <taskId> --status done\n" +
-        "   Or check available commands: ls *.mjs | grep -i task\n" +
+        "     node task/task-cli.mjs update <taskId> --status done\n" +
+        "   Or inspect available commands with a shell-native file listing.\n" +
         "2. For each OPEN (non-draft) PR entry with a taskId: if the task is not\n" +
         "   already in inreview or done status, update it to inreview.\n" +
         "3. Only act on entries that have a non-null taskId.\n" +
