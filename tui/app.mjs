@@ -1,12 +1,15 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import htm from "htm";
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useApp, useInput } from "ink";
 
-import wsBridge from "./lib/ws-bridge.mjs";
+import wsBridgeFactory from "./lib/ws-bridge.mjs";
+import { getNextScreenForInput } from "./lib/navigation.mjs";
 import StatusHeader from "./components/status-header.mjs";
 import TasksScreen from "./screens/tasks.mjs";
 import AgentsScreen from "./screens/agents.mjs";
 import StatusScreen from "./screens/status.mjs";
+import { readTuiHeaderConfig } from "./lib/header-config.mjs";
+import { listTasksFromApi } from "../ui/tui/tasks-screen-helpers.js";
 
 const html = htm.bind(React.createElement);
 
@@ -16,64 +19,116 @@ const SCREENS = {
   agents: AgentsScreen,
 };
 
-export default function App({ host, port, connectOnly, initialScreen, refreshMs }) {
+function ScreenTabs({ screen }) {
+  const navItems = [
+    { key: "status", num: "1", label: "Status" },
+    { key: "tasks", num: "2", label: "Tasks" },
+    { key: "agents", num: "3", label: "Agents" },
+  ];
+
+  return html`
+    <${Box} paddingX=${1}>
+      ${navItems.map((item, index) => html`
+        <${Box} key=${item.key}>
+          <${Text} inverse=${screen === item.key} color=${screen === item.key ? undefined : "cyan"}>
+            [${item.num}] ${item.label}
+          <//>
+          ${index < navItems.length - 1 ? html`<${Text} dimColor>  <//>` : null}
+        <//>
+      `)}
+      <${Text} dimColor>  [q] Quit<//>
+    <//>
+  `;
+}
+
+function upsertById(items = [], nextItem) {
+  if (!nextItem?.id) return items;
+  const index = items.findIndex((item) => item.id === nextItem.id);
+  if (index === -1) return [nextItem, ...items];
+  const next = [...items];
+  next[index] = { ...next[index], ...nextItem };
+  return next;
+}
+
+export default function App({ host, port, connectOnly, initialScreen, refreshMs, wsClient }) {
+  const { exit } = useApp();
   const [screen, setScreen] = useState(initialScreen || "status");
   const [connected, setConnected] = useState(false);
+  const [connectionState, setConnectionState] = useState("offline");
   const [stats, setStats] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [error, setError] = useState(null);
+  const [screenInputLocked, setScreenInputLocked] = useState(false);
+  const [refreshCountdownSec, setRefreshCountdownSec] = useState(
+    Math.max(0, Math.ceil(Number(refreshMs || 2000) / 1000)),
+  );
 
-  const applyTaskUpdate = useCallback((task) => {
-    if (!task?.id) return;
-    setTasks((prev) => {
-      const idx = prev.findIndex((candidate) => candidate.id === task.id);
-      if (idx >= 0) {
-        const updated = [...prev];
-        updated[idx] = task;
-        return updated;
-      }
-      return [task, ...prev];
-    });
-  }, []);
+  const bridge = useMemo(
+    () => wsClient || wsBridgeFactory({ host, port }),
+    [host, port, wsClient],
+  );
+  const headerConfig = useMemo(
+    () => readTuiHeaderConfig(bridge?.configDir),
+    [bridge?.configDir],
+  );
 
   useEffect(() => {
-    const bridge = wsBridge({ host, port });
+    let active = true;
+    const unsubscribes = [];
 
-    bridge.on("connect", () => {
+    const resetRefreshCountdown = () => {
+      setRefreshCountdownSec(Math.max(0, Math.ceil(Number(refreshMs || 2000) / 1000)));
+    };
+    const on = (eventName, handler) => {
+      const unsubscribe = bridge.on(eventName, handler);
+      unsubscribes.push(unsubscribe);
+    };
+    const refreshTasks = async () => {
+      try {
+        const nextTasks = await listTasksFromApi();
+        if (active) setTasks(nextTasks);
+      } catch (err) {
+        if (active) setError(String(err?.message || err || "Failed to load tasks"));
+      }
+    };
+
+    on("connect", () => {
       setConnected(true);
+      setConnectionState("connected");
       setError(null);
+      resetRefreshCountdown();
+      void refreshTasks();
     });
-
-    bridge.on("disconnect", () => {
+    on("disconnect", () => {
       setConnected(false);
+      setConnectionState("reconnecting");
     });
-
-    bridge.on("error", (err) => {
-      setError(err.message);
+    on("reconnecting", () => {
+      setConnected(false);
+      setConnectionState("reconnecting");
     });
-
-    bridge.on("stats", (data) => {
-      setStats(data);
+    on("connection:state", (payload) => {
+      if (payload?.state) {
+        setConnectionState(payload.state);
+      }
     });
-
-    bridge.on("session:start", (session) => {
-      setSessions((prev) => [...prev, session]);
+    on("error", (err) => {
+      const message = err?.message || String(err || "Unknown websocket error");
+      setError(message);
+      if (message.includes("Max reconnection attempts")) {
+        setConnectionState("offline");
+      }
     });
-
-    bridge.on("session:update", (session) => {
-      setSessions((prev) => {
-        const existingIndex = prev.findIndex((candidate) => candidate.id === session.id);
-        if (existingIndex >= 0) {
-          const updated = [...prev];
-          updated[existingIndex] = session;
-          return updated;
-        }
-        return [session, ...prev];
-      });
+    on("monitor:stats", (data) => {
+      setStats(data || null);
+      resetRefreshCountdown();
     });
-
-    bridge.on("sessions:update", (payload) => {
+    on("stats", (data) => {
+      setStats(data || null);
+      resetRefreshCountdown();
+    });
+    on("sessions:update", (payload) => {
       const nextSessions = Array.isArray(payload?.sessions)
         ? payload.sessions
         : Array.isArray(payload)
@@ -81,70 +136,84 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
           : [];
       setSessions(nextSessions);
     });
-
-    bridge.on("session:end", (session) => {
-      setSessions((prev) => prev.filter((candidate) => candidate.id !== session.id));
+    on("session:start", (session) => {
+      setSessions((previous) => upsertById(previous, session));
+    });
+    on("session:update", (session) => {
+      setSessions((previous) => upsertById(previous, session));
+    });
+    on("session:end", (session) => {
+      setSessions((previous) => previous.filter((candidate) => candidate.id !== session?.id));
+    });
+    on("tasks:update", () => {
+      void refreshTasks();
+    });
+    on("task:update", (task) => {
+      setTasks((previous) => upsertById(previous, task));
+    });
+    on("task:create", (task) => {
+      setTasks((previous) => upsertById(previous, task));
+    });
+    on("task:delete", (taskId) => {
+      setTasks((previous) => previous.filter((task) => task.id !== taskId));
+    });
+    on("retry:update", (retryQueue) => {
+      setStats((previous) => ({ ...(previous || {}), retryQueue }));
+    });
+    on("retry-queue-updated", (retryQueue) => {
+      setStats((previous) => ({ ...(previous || {}), retryQueue }));
     });
 
-    bridge.on("task:update", applyTaskUpdate);
-    bridge.on("task:create", applyTaskUpdate);
-
-    bridge.on("task:delete", (taskId) => {
-      setTasks((prev) => prev.filter((task) => task.id !== taskId));
-    });
-
-    const applyRetryQueue = (retryData) => {
-      setStats((prev) => ({
-        ...(prev || {}),
-        retryQueue: retryData,
-      }));
-    };
-
-    const retryUnsubscribes = [];
-    retryUnsubscribes.push(bridge.on("retry:update", applyRetryQueue));
-    retryUnsubscribes.push(bridge.on("retry-queue-updated", applyRetryQueue));
-
-    bridge.connect();
+    if (typeof bridge.connect === "function") {
+      bridge.connect();
+    }
+    void refreshTasks();
 
     return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
+      active = false;
+      unsubscribes.forEach((unsubscribe) => {
+        if (typeof unsubscribe === "function") unsubscribe();
       });
-      bridge.disconnect();
+      if (typeof bridge.disconnect === "function") {
+        bridge.disconnect();
+      }
     };
-  }, [applyTaskUpdate, host, port]);
+  }, [bridge, refreshMs]);
 
-  const handleKeyPress = useCallback((key) => {
-    if (key === "q") {
-      process.exit(0);
-    }
-    if (key === "1") {
-      setScreen("status");
-    }
-    if (key === "2") {
-      setScreen("tasks");
-    }
-    if (key === "3") {
-      setScreen("agents");
-    }
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      setRefreshCountdownSec((previous) => Math.max(0, previous - 1));
+    }, 1000);
+    return () => clearInterval(intervalId);
   }, []);
 
+  const handleInput = useCallback((input) => {
+    if (input === "q") {
+      exit();
+      return;
+    }
+    setScreen((current) => getNextScreenForInput(current, input));
+  }, [exit]);
+
   useInput((input) => {
-    handleKeyPress(input);
+    if (screenInputLocked) return;
+    handleInput(input);
   });
 
   const ScreenComponent = SCREENS[screen] || StatusScreen;
-  const wsBridgeInstance = typeof wsBridge === "function" ? wsBridge({ host, port }) : wsBridge;
+  const screenStats = screen === "status" ? stats : undefined;
 
   return html`
     <${Box} flexDirection="column" minHeight=${0}>
       <${StatusHeader}
         stats=${stats}
         connected=${connected}
-        screen=${screen}
+        connectionState=${connectionState}
+        projectLabel=${headerConfig.projectLabel}
+        configuredProviders=${headerConfig.configuredProviders}
+        refreshCountdownSec=${refreshCountdownSec}
       />
+      <${ScreenTabs} screen=${screen} />
       <${Box} flexDirection="column" flexGrow=${1}>
         ${error
           ? html`
@@ -154,20 +223,17 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
             `
           : null}
         <${ScreenComponent}
-          stats=${stats}
+          stats=${screenStats}
           sessions=${sessions}
           tasks=${tasks}
-          isActive=${screen === "tasks"}
-          onTaskCreated=${applyTaskUpdate}
-          wsBridge=${wsBridgeInstance}
+          wsBridge=${bridge}
           host=${host}
           port=${port}
           connectOnly=${connectOnly}
           refreshMs=${refreshMs}
+          onTasksChange=${setTasks}
+          onInputCaptureChange=${setScreenInputLocked}
         />
-      <//>
-      <${Box} paddingX=${1} borderStyle="single">
-        <${Text} dimColor>[1] Status [2] Tasks [3] Agents [c] Create task [q] Quit<//>
       <//>
     <//>
   `;

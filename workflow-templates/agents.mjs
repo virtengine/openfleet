@@ -534,6 +534,8 @@ export const BACKEND_AGENT_TEMPLATE = (() => {
       node("plan-work", "agent.run_planner", "Plan Implementation", {
         prompt: "Analyze the task requirements and create a step-by-step implementation plan. Identify which files need to be modified, what tests need to be written, and any API contracts to maintain.",
         outputVariable: "plan",
+        repoMapQuery: "{{taskTitle}} {{taskDescription}}",
+        repoMapFileLimit: 8,
       }, { x: 400, y: 180 }),
 
       node("write-tests", "action.run_agent", "Write Tests First", {
@@ -1045,3 +1047,4 @@ export const MEETING_SUBWORKFLOW_CHAIN_TEMPLATE = {
     requiredTemplates: ["template-task-planner"],
   },
 };
+

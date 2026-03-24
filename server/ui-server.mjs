@@ -5299,7 +5299,8 @@ function resolveUiCachePath(fileName) {
 }
 
 function isValidSessionToken(token) {
-  return /^[a-f0-9]{64}$/i.test(String(token || ""));
+  const normalized = String(token || "").trim();
+  return /^[a-f0-9]{64}$/i.test(normalized) && !/^(.)\1+$/.test(normalized);
 }
 
 function readPersistedSessionToken() {
@@ -22568,6 +22569,7 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
 
 
 

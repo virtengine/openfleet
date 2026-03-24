@@ -171,6 +171,111 @@ describe("task CLI store persistence", () => {
     expect(result.status).not.toBe(0);
     expect(String(result.stderr || "")).toMatch(/collision/i);
   });
+
+  it("preserves imported attachments and archive metadata under canonical paths", () => {
+    const storePath = makeTempStorePath();
+    const importPath = resolve(tempDirs[tempDirs.length - 1], "task-import.json");
+    writeFileSync(
+      importPath,
+      JSON.stringify({
+        tasks: [
+          {
+            id: "task-import-attachments",
+            title: "Imported task attachments",
+            status: "todo",
+            workspace: "VirtEngine-GH\\Bosun",
+            repository: "VirtEngine-GH\\Repo-One",
+            attachments: [
+              { filePath: "artifacts\\build.log", name: "build.log" },
+              { path: "./artifacts/build.log", name: "duplicate build.log" },
+            ],
+            meta: {
+              archivePath: "archive\\done\\task-import-attachments.json",
+              attachments: [
+                { filePath: "notes\\plan.md", name: "plan.md" },
+                { path: "./notes/plan.md", name: "duplicate plan.md" },
+              ],
+            },
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      ["cli.mjs", "task", "import", importPath],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, BOSUN_STORE_PATH: storePath },
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(0);
+    const imported = (readStore(storePath).tasks || {})["task-import-attachments"];
+    expect(imported).toBeDefined();
+    expect(imported.attachments).toHaveLength(1);
+    expect(imported.attachments[0]).toEqual(
+      expect.objectContaining({ filePath: "artifacts/build.log" }),
+    );
+    expect(imported.meta.archivePath).toBe("archive/done/task-import-attachments.json");
+    expect(imported.meta.attachments).toHaveLength(1);
+    expect(imported.meta.attachments[0]).toEqual(
+      expect.objectContaining({ filePath: "notes/plan.md" }),
+    );
+  });
+  it("normalizes imported legacy root artifact paths and mixed-case attachment paths", () => {
+    const storePath = makeTempStorePath();
+    const importPath = resolve(tempDirs[tempDirs.length - 1], "task-import-root-paths.json");
+    writeFileSync(
+      importPath,
+      JSON.stringify({
+        tasks: [
+          {
+            id: "task-import-root-paths",
+            title: "Imported legacy root paths",
+            status: "todo",
+            attachments: [
+              { filePath: "Artifacts\\Build.LOG", name: "build.log" },
+              { path: "./artifacts/build.log", name: "duplicate build.log" },
+            ],
+            archivePath: "Archive\\Done\\Task-Import-Root-Paths.JSON",
+            importPath: "Imports\\Task-Import-Root-Paths.JSON",
+            filePaths: ["Src\\Runner.MJS", "./src/runner.mjs"],
+            paths: ["Docs\\Plan.MD", "./docs/plan.md"],
+            meta: {
+              exportPath: "Exports\\Task-Import-Root-Paths.JSON",
+            },
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      ["cli.mjs", "task", "import", importPath],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, BOSUN_STORE_PATH: storePath },
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(0);
+    const imported = (readStore(storePath).tasks || {})["task-import-root-paths"];
+    expect(imported).toBeDefined();
+    expect(imported.attachments).toHaveLength(1);
+    expect(imported.attachments[0]).toEqual(
+      expect.objectContaining({ filePath: "artifacts/build.log" }),
+    );
+    expect(imported.archivePath).toBe("archive/done/task-import-root-paths.json");
+    expect(imported.importPath).toBe("imports/task-import-root-paths.json");
+    expect(imported.filePaths).toEqual(["src/runner.mjs"]);
+    expect(imported.paths).toEqual(["docs/plan.md"]);
+    expect(imported.meta.exportPath).toBe("exports/task-import-root-paths.json");
+  });
 });
 
 describe("task-cli taskStats repo area lock state", () => {
@@ -493,4 +598,3 @@ describe("task-cli taskStats repo area lock state", () => {
     logSpy.mockRestore();
   });
 });
-

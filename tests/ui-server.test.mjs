@@ -224,6 +224,23 @@ describe("ui-server mini app", () => {
     expect(response.headers.get("location")).toBe("/chat?launch=meeting&call=video");
     expect(response.headers.get("set-cookie") || "").toContain("ve_session=");
   });
+  it("regenerates zero-entropy session tokens before issuing browser auth", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_UI_TOKEN = "a".repeat(64);
+    vi.resetModules();
+    const mod = await import("../server/ui-server.mjs");
+    await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const token = mod.getSessionToken();
+    expect(token).toMatch(/^[a-f0-9]{64}$/i);
+    expect(token).not.toBe("a".repeat(64));
+    delete process.env.BOSUN_UI_TOKEN;
+  });
+
 
   it("bootstraps local static requests into a session cookie", async () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
@@ -4366,6 +4383,8 @@ describe("ui-server mini app", () => {
   });
 
 });
+
+
 
 
 
