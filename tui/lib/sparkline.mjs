@@ -9,8 +9,19 @@ export function renderSparkline(values = [], { min = null, max = null } = {}) {
 
   if (!numericValues.length) return "";
 
-  const resolvedMin = min == null ? Math.min(...numericValues) : Number(min);
-  const resolvedMax = max == null ? Math.max(...numericValues) : Number(max);
+  let resolvedMin = min == null ? Infinity : Number(min);
+  let resolvedMax = max == null ? -Infinity : Number(max);
+
+  if (min == null || max == null) {
+    for (const value of numericValues) {
+      if (min == null && value < resolvedMin) {
+        resolvedMin = value;
+      }
+      if (max == null && value > resolvedMax) {
+        resolvedMax = value;
+      }
+    }
+  }
   const range = resolvedMax - resolvedMin;
 
   if (range <= 0) {

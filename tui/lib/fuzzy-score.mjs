@@ -44,12 +44,15 @@ export function scoreFuzzyMatch(query = "", candidate = "") {
 
 export function rankFuzzyMatches(query, candidates = [], getValue = (candidate) => candidate) {
   return [...(Array.isArray(candidates) ? candidates : [])]
-    .map((candidate) => ({
-      item: candidate,
-      candidate,
-      value: String(getValue(candidate) || ""),
-      score: scoreFuzzyMatch(query, getValue(candidate)),
-    }))
+    .map((candidate) => {
+      const candidateValue = getValue(candidate);
+      return {
+        item: candidate,
+        candidate,
+        value: String(candidateValue || ""),
+        score: scoreFuzzyMatch(query, candidateValue),
+      };
+    })
     .filter((entry) => Number.isFinite(entry.score))
     .sort((left, right) => {
       if (right.score !== left.score) return right.score - left.score;
