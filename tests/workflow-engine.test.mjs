@@ -789,6 +789,60 @@ describe("WorkflowEngine - source port routing", () => {
     expect(result.getNodeStatus("review")).toBe(NodeStatus.COMPLETED);
     expect(result.getNodeStatus("complete")).toBe(NodeStatus.COMPLETED);
   });
+  it("accepts legacy condition port aliases alongside explicit yes/no routing", () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "guard",
+          type: "condition.expression",
+          label: "Guard",
+          config: { expression: "true" },
+        },
+        { id: "default-path", type: "notify.log", label: "Default", config: { message: "default" } },
+        { id: "yes-path", type: "notify.log", label: "Yes", config: { message: "yes" } },
+        { id: "no-path", type: "notify.log", label: "No", config: { message: "no" } },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "guard" },
+        { id: "e2", source: "guard", target: "default-path" },
+        { id: "e3", source: "guard", target: "yes-path", sourcePort: "true" },
+        { id: "e4", source: "guard", target: "no-path", sourcePort: "false" },
+      ],
+    );
+
+    expect(() => engine.save(wf)).not.toThrow();
+  });
+
+  it("infers transform.llm_parse ports from configured output fields", () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "src", type: "transform.template", label: "Source", config: { template: "VERDICT: CORRECT" } },
+        {
+          id: "parse",
+          type: "transform.llm_parse",
+          label: "Parse Verdict",
+          config: {
+            input: "src",
+            patterns: { verdict: "VERDICT:\\s*(CORRECT|MINOR|CRITICAL)" },
+            outputPort: "verdict",
+          },
+        },
+        { id: "done", type: "notify.log", label: "Done", config: { message: "done" } },
+        { id: "retry", type: "notify.log", label: "Retry", config: { message: "retry" } },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "src" },
+        { id: "e2", source: "src", target: "parse" },
+        { id: "e3", source: "parse", target: "done", sourcePort: "correct" },
+        { id: "e4", source: "parse", target: "retry", sourcePort: "minor" },
+      ],
+    );
+
+    expect(() => engine.save(wf)).not.toThrow();
+  });
+
   it("rejects executing loaded workflows that still carry invalid explicit ports", async () => {
     registerNodeType("test.execute_port_source", {
       describe: () => "Source node with explicit ports",

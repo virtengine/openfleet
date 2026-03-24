@@ -276,6 +276,28 @@ function buildNamedPorts(names = [], direction = "output") {
     .map((name, index) => normalizePortDescriptor({ name, label: name, type: "Any" }, direction, index));
 }
 
+function inferLlmParseOutputPorts(node) {
+  const outputPortField = String(node?.config?.outputPort || "").trim();
+  if (!outputPortField) return [];
+
+  const keywordPorts = Array.isArray(node?.config?.keywords?.[outputPortField])
+    ? node.config.keywords[outputPortField]
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean)
+    : [];
+
+  const pattern = String(node?.config?.patterns?.[outputPortField] || "").trim();
+  const match = pattern.match(/\(([^()]+)\)/);
+  const patternPorts = match
+    ? match[1]
+      .split("|")
+      .map((value) => value.replace(/^\?:/, "").trim().toLowerCase())
+      .filter((value) => value && !value.includes("\\"))
+    : [];
+
+  return Array.from(new Set([...keywordPorts, ...patternPorts]));
+}
+
 function getConfiguredNodeInputs(node) {
   return buildNamedPorts(node?.inputs, "input");
 }
@@ -298,9 +320,19 @@ function getConfiguredNodeOutputs(node) {
 
   if (String(node?.type || "").startsWith("condition.")) {
     const mergedOutputs = Array.from(new Set([
+      "default",
       ...(explicitOutputNames.length > 0 ? explicitOutputNames : []),
       "yes",
       "no",
+    ]));
+    return buildNamedPorts(mergedOutputs, "output");
+  }
+
+  if (node?.type === "transform.llm_parse") {
+    const inferredOutputs = inferLlmParseOutputPorts(node);
+    const mergedOutputs = Array.from(new Set([
+      ...(explicitOutputNames.length > 0 ? explicitOutputNames : ["default"]),
+      ...inferredOutputs,
     ]));
     return buildNamedPorts(mergedOutputs, "output");
   }
@@ -341,7 +373,19 @@ function resolvePortByName(ports, requestedName, direction) {
   if (!Array.isArray(ports) || ports.length === 0) return null;
   const normalizedName = String(requestedName || "").trim();
   if (!normalizedName) return ports[0];
-  return ports.find((port) => port.name === normalizedName) || null;
+  const directMatch = ports.find((port) => port.name === normalizedName);
+  if (directMatch) return directMatch;
+
+  if (direction === "output") {
+    if (normalizedName === "true") {
+      return ports.find((port) => port.name === "yes") || null;
+    }
+    if (normalizedName === "false") {
+      return ports.find((port) => port.name === "no") || null;
+    }
+  }
+
+  return null;
 }
 
 function resolveRequestedPortName(edge, key, alias) {
