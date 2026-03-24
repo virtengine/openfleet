@@ -66,7 +66,6 @@ import {
 } from "./task-store.mjs";
 import { createErrorDetector } from "../infra/error-detector.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
-import { addSpanLink } from "../infra/tracing.mjs";
 import {
   getCompactDiffSummary,
   getRecentCommits,
@@ -4363,6 +4362,24 @@ class TaskExecutor {
       backlogReplenishment: { ...this._backlogReplenishment },
       repoAreaLocks: this._buildRepoAreaLockStatus(),
       projectRequirements: { ...this._projectRequirements },
+    };
+  }
+
+  getTuiStats() {
+    const tokenTotals = Array.from(attemptTelemetry.values()).reduce((acc, telemetry) => {
+      acc.tokensIn += Math.max(0, Number(telemetry?.prompt_tokens || 0) || 0);
+      acc.tokensOut += Math.max(0, Number(telemetry?.completion_tokens || 0) || 0);
+      acc.tokensTotal += Math.max(0, Number(telemetry?.total_tokens || 0) || 0);
+      return acc;
+    }, { tokensIn: 0, tokensOut: 0, tokensTotal: 0 });
+
+    return {
+      activeAgents: this._activeSlots.size,
+      maxAgents: this.maxParallel,
+      tokensIn: tokenTotals.tokensIn,
+      tokensOut: tokenTotals.tokensOut,
+      tokensTotal: tokenTotals.tokensTotal || (tokenTotals.tokensIn + tokenTotals.tokensOut),
+      rateLimits: {},
     };
   }
 

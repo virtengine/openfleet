@@ -31,6 +31,7 @@ import { existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
+import { normalizeTaskStorageRecord } from "./task-store.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -173,7 +174,7 @@ export async function archiveTaskToFile(
     }
 
     const archiveEntry = {
-      task,
+      task: normalizeTaskStorageRecord(task),
       attempt: attemptData,
       archived_at: new Date().toISOString(),
       archiver_version: 3,
@@ -470,7 +471,7 @@ export async function migrateLegacyArchives(archiveDir = ARCHIVE_DIR) {
         for (const legacyFile of fileNames) {
           try {
             const raw = await readFile(resolve(archiveDir, legacyFile), "utf8");
-            const entry = JSON.parse(raw);
+            const entry = normalizeArchiveEntry(JSON.parse(raw));
             const taskId = entry?.task?.id;
 
             if (taskId && existingIds.has(taskId)) {
@@ -663,8 +664,9 @@ export async function loadArchivedTasks(options = {}) {
         // Daily grouped file: array of entries
         if (Array.isArray(data)) {
           for (const entry of data) {
-            if (matchesFilters(entry, since, until, statusFilter)) {
-              archivedTasks.push(entry);
+            const normalizedEntry = normalizeArchiveEntry(entry);
+            if (matchesFilters(normalizedEntry, since, until, statusFilter)) {
+              archivedTasks.push(normalizedEntry);
             }
           }
           continue;
@@ -672,8 +674,9 @@ export async function loadArchivedTasks(options = {}) {
 
         // Legacy single-task file: object with { task, archived_at, ... }
         if (data && typeof data === "object" && data.task) {
-          if (matchesFilters(data, since, until, statusFilter)) {
-            archivedTasks.push(data);
+          const normalizedEntry = normalizeArchiveEntry(data);
+          if (matchesFilters(normalizedEntry, since, until, statusFilter)) {
+            archivedTasks.push(normalizedEntry);
           }
         }
       } catch {
@@ -699,6 +702,15 @@ function matchesFilters(entry, since, until, statusFilter) {
   if (until && archivedAt > until) return false;
   if (statusFilter && entry.task?.status !== statusFilter) return false;
   return true;
+}
+
+function normalizeArchiveEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const normalized = { ...entry };
+  if (normalized.task && typeof normalized.task === "object") {
+    normalized.task = normalizeTaskStorageRecord(normalized.task);
+  }
+  return normalized;
 }
 
 /**

@@ -269,15 +269,103 @@ function normalizeHandlerMetadata(handler) {
   return normalized;
 }
 
+function buildNamedPorts(names = [], direction = "output") {
+  return Array.from(new Set((Array.isArray(names) ? names : [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)))
+    .map((name, index) => normalizePortDescriptor({ name, label: name, type: "Any" }, direction, index));
+}
+
+function inferLlmParseOutputPorts(node) {
+  const outputPortField = String(node?.config?.outputPort || "").trim();
+  if (!outputPortField) return [];
+
+  const keywordPorts = Array.isArray(node?.config?.keywords?.[outputPortField])
+    ? node.config.keywords[outputPortField]
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean)
+    : [];
+
+  const pattern = String(node?.config?.patterns?.[outputPortField] || "").trim();
+  const match = pattern.match(/\(([^()]+)\)/);
+  const patternPorts = match
+    ? match[1]
+      .split("|")
+      .map((value) => value.replace(/^\?:/, "").trim().toLowerCase())
+      .filter((value) => value && !value.includes("\\"))
+    : [];
+
+  return Array.from(new Set([...keywordPorts, ...patternPorts]));
+}
+
+function getConfiguredNodeInputs(node) {
+  return buildNamedPorts(node?.inputs, "input");
+}
+
+function getConfiguredNodeOutputs(node) {
+  const explicitOutputNames = Array.isArray(node?.outputs)
+    ? Array.from(new Set(node.outputs.map((value) => String(value || "").trim()).filter(Boolean)))
+    : [];
+
+  if (node?.type === "condition.switch") {
+    const caseOutputs = Object.values(node?.config?.cases || {})
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+    const mergedOutputs = Array.from(new Set([
+      ...(explicitOutputNames.length > 0 ? explicitOutputNames : ["default"]),
+      ...caseOutputs,
+    ]));
+    return buildNamedPorts(mergedOutputs, "output");
+  }
+
+  if (String(node?.type || "").startsWith("condition.")) {
+    const mergedOutputs = Array.from(new Set([
+      "default",
+      ...(explicitOutputNames.length > 0 ? explicitOutputNames : []),
+      "yes",
+      "no",
+    ]));
+    return buildNamedPorts(mergedOutputs, "output");
+  }
+
+  if (node?.type === "transform.llm_parse") {
+    const inferredOutputs = inferLlmParseOutputPorts(node);
+    const mergedOutputs = Array.from(new Set([
+      ...(explicitOutputNames.length > 0 ? explicitOutputNames : ["default"]),
+      ...inferredOutputs,
+    ]));
+    return buildNamedPorts(mergedOutputs, "output");
+  }
+
+  return buildNamedPorts(explicitOutputNames, "output");
+}
+
 function resolveNodePorts(node) {
-  const handler = node?.type ? _nodeTypeRegistry.get(node.type) : null;
+  const rawHandler = node?.type ? _nodeTypeRegistry.get(node.type) : null;
+  const handler = rawHandler ? normalizeHandlerMetadata(rawHandler) : null;
   const handlerPorts = handler?.ports || {};
   const inputPorts = normalizePortList(node?.inputPorts, "input");
   const outputPorts = normalizePortList(node?.outputPorts, "output");
+  const configuredInputs = getConfiguredNodeInputs(node);
+  const configuredOutputs = getConfiguredNodeOutputs(node);
+  const handlerInputs = normalizePortList(handlerPorts.inputs, "input");
+  const handlerOutputs = normalizePortList(handlerPorts.outputs, "output");
 
   return {
-    inputs: inputPorts.length > 0 ? inputPorts : normalizePortList(handlerPorts.inputs, "input"),
-    outputs: outputPorts.length > 0 ? outputPorts : normalizePortList(handlerPorts.outputs, "output"),
+    inputs: inputPorts.length > 0
+      ? inputPorts
+      : (configuredInputs.length > 0
+        ? configuredInputs
+        : (handlerInputs.length > 0
+          ? handlerInputs
+          : [normalizePortDescriptor({ name: "default", label: "default", type: "Any" }, "input", 0)])),
+    outputs: outputPorts.length > 0
+      ? outputPorts
+      : (configuredOutputs.length > 0
+        ? configuredOutputs
+        : (handlerOutputs.length > 0
+          ? handlerOutputs
+          : [normalizePortDescriptor({ name: "default", label: "default", type: "Any" }, "output", 0)])),
   };
 }
 
@@ -285,13 +373,50 @@ function resolvePortByName(ports, requestedName, direction) {
   if (!Array.isArray(ports) || ports.length === 0) return null;
   const normalizedName = String(requestedName || "").trim();
   if (!normalizedName) return ports[0];
-  const matched = ports.find((port) => port.name === normalizedName);
-  if (matched) return matched;
-  return normalizePortDescriptor({
-    name: normalizedName,
-    label: normalizedName,
-    type: "Any",
-  }, direction, 0);
+  const directMatch = ports.find((port) => port.name === normalizedName);
+  if (directMatch) return directMatch;
+
+  if (direction === "output") {
+    if (normalizedName === "true") {
+      return ports.find((port) => port.name === "yes") || null;
+    }
+    if (normalizedName === "false") {
+      return ports.find((port) => port.name === "no") || null;
+    }
+  }
+
+  return null;
+}
+
+function resolveRequestedPortName(edge, key, alias) {
+  return String(edge?.[key] ?? edge?.[alias] ?? "").trim();
+}
+
+function buildUnknownPortValidationIssue(edge, direction, requestedPortName, availablePorts = []) {
+  const safeRequestedPortName = String(requestedPortName || "").trim() || "default";
+  const portLabel = direction === "output" ? "output" : "input";
+  const availableNames = (Array.isArray(availablePorts) ? availablePorts : [])
+    .map((port) => String(port?.name || "").trim())
+    .filter(Boolean);
+  const availableSuffix = availableNames.length
+    ? ` Available ${portLabel} ports: ${availableNames.join(", ")}.`
+    : "";
+
+  return {
+    edgeId: edge.id || `${edge.source}->${edge.target}`,
+    source: edge.source,
+    target: edge.target,
+    sourcePort: direction === "output"
+      ? safeRequestedPortName
+      : String(resolveRequestedPortName(edge, "sourcePort", "fromPort") || "default").trim() || "default",
+    targetPort: direction === "input"
+      ? safeRequestedPortName
+      : String(resolveRequestedPortName(edge, "targetPort", "toPort") || "default").trim() || "default",
+    sourceType: null,
+    targetType: null,
+    severity: "error",
+    message: `Unknown ${portLabel} port "${safeRequestedPortName}" on edge ${edge.id || `${edge.source}->${edge.target}`}.${availableSuffix}`,
+  };
 }
 
 function isWildcardPortType(type) {
@@ -364,18 +489,37 @@ function hydrateWorkflowEdge(edge, nodeMap, issues) {
   const targetNode = nodeMap.get(edge.target);
   const sourcePorts = resolveNodePorts(sourceNode);
   const targetPorts = resolveNodePorts(targetNode);
-  const sourcePort = resolvePortByName(sourcePorts.outputs, edge.sourcePort || "default", "output");
-  const targetPort = resolvePortByName(targetPorts.inputs, edge.targetPort || "default", "input");
-  const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
+  const requestedSourcePortName = resolveRequestedPortName(edge, "sourcePort", "fromPort");
+  const requestedTargetPortName = resolveRequestedPortName(edge, "targetPort", "toPort");
+  const sourcePort = resolvePortByName(
+    sourcePorts.outputs,
+    requestedSourcePortName || "default",
+    "output",
+  );
+  const targetPort = resolvePortByName(
+    targetPorts.inputs,
+    requestedTargetPortName || "default",
+    "input",
+  );
 
-  if (!compatibility.compatible) {
-    issues.push(buildPortValidationIssue(edge, sourcePort, targetPort, compatibility));
+  if (requestedSourcePortName && !sourcePort) {
+    issues.push(buildUnknownPortValidationIssue(edge, "output", requestedSourcePortName, sourcePorts.outputs));
+  }
+  if (requestedTargetPortName && !targetPort) {
+    issues.push(buildUnknownPortValidationIssue(edge, "input", requestedTargetPortName, targetPorts.inputs));
+  }
+
+  if (sourcePort && targetPort) {
+    const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
+    if (!compatibility.compatible) {
+      issues.push(buildPortValidationIssue(edge, sourcePort, targetPort, compatibility));
+    }
   }
 
   return {
     ...edge,
-    sourcePort: sourcePort?.name || String(edge.sourcePort || "default").trim() || "default",
-    targetPort: targetPort?.name || String(edge.targetPort || "default").trim() || "default",
+    sourcePort: sourcePort?.name || requestedSourcePortName || "default",
+    targetPort: targetPort?.name || requestedTargetPortName || "default",
     sourcePortType: sourcePort?.type || null,
     targetPortType: targetPort?.type || null,
   };
@@ -716,6 +860,43 @@ export function listNodeTypes() {
  * Runtime context passed through workflow execution.
  * Accumulates data from each node's output.
  */
+function collectValidationFailures(detail = {}) {
+  const nodeOutputs = detail?.nodeOutputs && typeof detail.nodeOutputs === "object"
+    ? detail.nodeOutputs
+    : {};
+  const dagNodes = detail?.dagState?.nodes && typeof detail.dagState.nodes === "object"
+    ? detail.dagState.nodes
+    : {};
+  return Object.entries(nodeOutputs)
+    .map(([nodeId, output]) => {
+      if (!output || typeof output !== "object") return null;
+      const diagnostic = output.failureDiagnostic && typeof output.failureDiagnostic === "object"
+        ? output.failureDiagnostic
+        : null;
+      const failureKind = String(output.failureKind || diagnostic?.category || "").trim();
+      const hasRetryability = typeof output.retryable === "boolean" || typeof diagnostic?.retryable === "boolean";
+      if (!failureKind && !diagnostic && !hasRetryability) return null;
+      return {
+        nodeId,
+        nodeType: dagNodes?.[nodeId]?.type || null,
+        nodeLabel: dagNodes?.[nodeId]?.label || null,
+        failureKind: failureKind || diagnostic?.category || null,
+        retryable: typeof output.retryable === "boolean"
+          ? output.retryable
+          : diagnostic?.retryable === true,
+        blocked: output.blocked === true || diagnostic?.blocked === true,
+        exitCode: diagnostic?.exitCode ?? output.exitCode ?? null,
+        summary:
+          diagnostic?.summary ||
+          output.outputHint ||
+          output.outputDiagnostics?.summary ||
+          null,
+        detail: diagnostic?.detail || null,
+      };
+    })
+    .filter(Boolean);
+}
+
 export class WorkflowContext {
   constructor(initialData = {}) {
     this.id = randomUUID();
@@ -893,7 +1074,7 @@ export class WorkflowContext {
   /** Get a serializable summary of the execution */
   toJSON(endedAt = Date.now()) {
     const finishedAt = Number.isFinite(endedAt) ? endedAt : Date.now();
-    return {
+    const detail = {
       id: this.id,
       startedAt: this.startedAt,
       endedAt: finishedAt,
@@ -919,6 +1100,12 @@ export class WorkflowContext {
           }))
         : [],
     };
+    const validationFailures = collectValidationFailures(detail);
+    if (validationFailures.length > 0) {
+      detail.validationFailures = validationFailures;
+      detail.latestValidationFailure = validationFailures.at(-1) || null;
+    }
+    return detail;
   }
 }
 
@@ -1795,8 +1982,9 @@ export class WorkflowEngine extends EventEmitter {
    * @returns {Promise<WorkflowContext>}
    */
   async execute(workflowId, inputData = {}, opts = {}) {
-    const def = this.get(workflowId);
-    if (!def) throw new Error(`${TAG} Workflow "${workflowId}" not found`);
+    const persistedDef = this.get(workflowId);
+    if (!persistedDef) throw new Error(`${TAG} Workflow "${workflowId}" not found`);
+    const def = hydrateWorkflowDefinition(persistedDef, { strict: true });
     if (def.enabled === false && !opts.force) {
       throw new Error(`${TAG} Workflow "${def.name}" is disabled`);
     }
@@ -3410,6 +3598,7 @@ export class WorkflowEngine extends EventEmitter {
       });
     };
     const markNodeSkipped = (nodeId, reason = "skipped", payload = {}) => {
+      if (ctx.getNodeStatus(nodeId) === NodeStatus.COMPLETED) return;
       const node = nodeMap.get(nodeId) || null;
       ctx.setNodeStatus(nodeId, NodeStatus.SKIPPED);
       this._recordDagNodeOutcome(ctx, node || { id: nodeId }, {
@@ -3795,10 +3984,22 @@ export class WorkflowEngine extends EventEmitter {
         const edges = adjacency.get(nodeId) || [];
         const sourceOutput = ctx.getNodeOutput(nodeId);
         const triggerBlocked = node?.type?.startsWith("trigger.") && sourceOutput?.triggered === false;
+        const explicitEdgePorts = new Set(
+          edges
+            .map((edge) => String(edge?.sourcePort || "default").trim() || "default")
+            .filter((portName) => portName && portName !== "default"),
+        );
+        const inferredConditionPort =
+          !sourceOutput?.matchedPort
+          && !sourceOutput?.port
+          && node?.type?.startsWith("condition.")
+          && typeof sourceOutput?.result === "boolean"
+          ? (sourceOutput.result ? "yes" : "no")
+          : null;
         const selectedPortRaw =
           sourceOutput?.matchedPort ??
           sourceOutput?.port ??
-          null;
+          (inferredConditionPort && explicitEdgePorts.has(inferredConditionPort) ? inferredConditionPort : null);
         const selectedPort =
           typeof selectedPortRaw === "string" && selectedPortRaw.trim()
             ? selectedPortRaw.trim()
@@ -3906,6 +4107,11 @@ export class WorkflowEngine extends EventEmitter {
             if ((incomingSatisfiedCount.get(targetNodeId) || 0) > 0) {
               ready.add(targetNodeId);
             } else {
+              const priorStatus = ctx.getNodeStatus(targetNodeId);
+              if (!matched && priorStatus === NodeStatus.COMPLETED) {
+                executed.add(targetNodeId);
+                return;
+              }
               markNodeSkipped(targetNodeId, skipInfo?.reason || "skipped", skipInfo?.payload || {});
               executed.add(targetNodeId);
               const skippedNode = nodeMap.get(targetNodeId);
@@ -3995,7 +4201,10 @@ export class WorkflowEngine extends EventEmitter {
             const subgraph = this._collectSubgraph(edge.target, adjacency);
             for (const nid of subgraph) {
               executed.delete(nid);
-              ctx.setNodeStatus(nid, NodeStatus.PENDING);
+              const priorStatus = ctx.getNodeStatus(nid);
+              if (nid === edge.target || priorStatus !== NodeStatus.COMPLETED) {
+                ctx.setNodeStatus(nid, NodeStatus.PENDING);
+              }
               incomingSatisfiedCount.set(nid, 0);
               // Restore in-degree for nodes in the subgraph so they schedule
               // correctly on this new iteration.
@@ -4344,6 +4553,7 @@ export class WorkflowEngine extends EventEmitter {
     const issueAdvisorRecommendation = detail?.issueAdvisor?.recommendedAction || null;
     const issueAdvisorSummary = detail?.issueAdvisor?.summary || null;
     const dagRevisionCount = Array.isArray(detail?.dagState?.revisions) ? detail.dagState.revisions.length : 0;
+    const validationFailures = collectValidationFailures(detail);
 
     return {
       runId,
@@ -4378,6 +4588,12 @@ export class WorkflowEngine extends EventEmitter {
       issueAdvisorRecommendation,
       issueAdvisorSummary,
       dagRevisionCount,
+      ...(validationFailures.length > 0
+        ? {
+            validationFailures,
+            latestValidationFailure: validationFailures.at(-1) || null,
+          }
+        : {}),
     };
   }
 
@@ -5001,9 +5217,6 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
-
-
-
 
 
 

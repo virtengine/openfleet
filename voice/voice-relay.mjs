@@ -14,6 +14,14 @@
 import { loadConfig } from "../config/config.mjs";
 import { execPrimaryPrompt, getPrimaryAgentName } from "../agent/primary-agent.mjs";
 import { resolveVoiceOAuthToken } from "./voice-auth-manager.mjs";
+import {
+  beginVoiceTurnTrace as beginVoiceTurnTraceState,
+  completeVoiceTurnTrace as completeVoiceTurnTraceState,
+  abortVoiceTurnTrace as abortVoiceTurnTraceState,
+  getVoiceTurnTrace as getVoiceTurnTraceState,
+  renderVoiceTurnTrace as renderVoiceTurnTraceState,
+  formatVoiceTurnTrace as formatVoiceTurnTraceState,
+} from "./vision-session-state.mjs";
 
 // ── Module-scope state ──────────────────────────────────────────────────────
 let _voiceConfig = null;   // cached resolved config
@@ -1977,6 +1985,30 @@ export function getRealtimeConnectionInfo() {
   };
 }
 
+export function beginVoiceTurnTrace(sessionId, metadata = {}) {
+  return beginVoiceTurnTraceState(sessionId, metadata);
+}
+
+export function completeVoiceTurnTrace(sessionId, details = {}) {
+  return completeVoiceTurnTraceState(sessionId, details);
+}
+
+export function abortVoiceTurnTrace(sessionId, reason = "aborted", details = {}) {
+  return abortVoiceTurnTraceState(sessionId, reason, details);
+}
+
+export function getVoiceTurnTrace(sessionId, options = {}) {
+  return getVoiceTurnTraceState(sessionId, options);
+}
+
+export function renderVoiceTurnTrace(sessionId, options = {}) {
+  return renderVoiceTurnTraceState(sessionId, options);
+}
+
+export function formatVoiceTurnTrace(sessionId, options = {}) {
+  return formatVoiceTurnTraceState(sessionId, options);
+}
+
 // ── Voice action dispatch (direct JavaScript, no MCP bridge) ────────────────
 
 /**
@@ -2061,3 +2093,4 @@ export async function buildVoiceAgentPrompt(options = {}) {
     customInstructions: options.customInstructions,
   });
 }
+

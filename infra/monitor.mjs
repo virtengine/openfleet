@@ -16319,6 +16319,15 @@ injectMonitorFunctions({
   getReviewAgentEnabled: () => isReviewAgentEnabled(),
   getSyncEngine: () => syncEngine,
   getErrorDetector: () => errorDetector,
+  getTuiMonitorStats: () => {
+    try {
+      return typeof internalTaskExecutor?.getTuiStats === "function"
+        ? (internalTaskExecutor.getTuiStats() || {})
+        : {};
+    } catch {
+      return {};
+    }
+  },
   getWorkspaceMonitor: () => workspaceMonitor,
   getTaskStoreStats: () => {
     try {

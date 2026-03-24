@@ -1,6 +1,6 @@
 {
   "name": "bosun",
-  "version": "0.42.2",
+  "version": "0.42.4",
   "description": "Bosun Autonomous Engineering — manages AI agent executors with failover, extremely powerful workflow builder, and a massive amount of included default workflow templates for autonomous engineering, creates PRs via Vibe-Kanban API, and sends Telegram notifications. Supports N executors with weighted distribution, multi-repo projects, and auto-setup.",
   "type": "module",
   "license": "Apache-2.0",
@@ -385,12 +385,14 @@
     "vibe-kanban": "latest",
     "ws": "^8.19.0",
     "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/exporter-metrics-otlp-http": "^0.206.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.206.0",
     "@opentelemetry/resources": "^2.1.0",
     "@opentelemetry/sdk-metrics": "^2.1.0",
     "@opentelemetry/sdk-trace-base": "^2.1.0",
-    "@opentelemetry/semantic-conventions": "^1.37.0"
+    "@opentelemetry/semantic-conventions": "^1.37.0",
+    "figures": "^6.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@emotion/react": "^11.14.0",
@@ -398,8 +400,6 @@
     "@mui/material": "^5.18.0",
     "@playwright/test": "^1.58.2",
     "playwright": "^1.58.2",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
     "vitest": "^4.0.18"
   },
   "engines": {

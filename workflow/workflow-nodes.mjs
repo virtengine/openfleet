@@ -58,12 +58,13 @@ import { loadConfig } from "../config/config.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity, normalizeBaseBranch } from "../git/git-safety.mjs";
 import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../git/git-commit-helpers.mjs";
-import { buildArchitectEditorFrame } from "../lib/repo-map.mjs";
+import { buildArchitectEditorFrame, buildRepoTopologyContext, hasRepoMapContext } from "../lib/repo-map.mjs";
 import { getGitHubToken, invalidateTokenType } from "../github/github-auth-manager.mjs";
 import {
   CUSTOM_NODE_DIR_NAME,
   ensureCustomWorkflowNodesLoaded,
   getCustomNodeDir,
+  inspectCustomWorkflowNodePlugins,
   scaffoldCustomNodeFile,
   startCustomNodeDiscovery,
   stopCustomNodeDiscovery,
@@ -1449,6 +1450,110 @@ async function compactWorkflowCommandResult({
   };
 }
 
+function isValidationSandboxFailureText(text) {
+  return /(?:sandbox|operation not permitted|permission denied|access is denied|read-only file system|EPERM|EACCES|denied by policy|seccomp)/i.test(
+    String(text || ""),
+  );
+}
+
+function isValidationBootstrapFailureText(text) {
+  return /(?:\bENOENT\b|spawn\s+.+\s+ENOENT|not recognized as an internal or external command|is not recognized as a name of a cmdlet|command not found|executable file not found|no such file or directory|cannot find the file|failed to start|startup failure)/i.test(
+    String(text || ""),
+  );
+}
+
+function buildValidationFailureDiagnostic({
+  command = "",
+  args = [],
+  status = "error",
+  exitCode = null,
+  stderr = "",
+  output = "",
+  timeoutMs = null,
+  blocked = false,
+  failureDiagnostic = null,
+} = {}) {
+  if (failureDiagnostic && typeof failureDiagnostic === "object") return failureDiagnostic;
+  const normalizedStatus = String(status || "error").trim().toLowerCase();
+  if (!blocked && normalizedStatus === "success" && Number(exitCode ?? 0) === 0) {
+    return null;
+  }
+  const combinedText = [stderr, output]
+    .map((value) => String(value || "").trim())
+    .find(Boolean) || "";
+
+  let category = "command_failure";
+  let retryable = false;
+  let summary = `Validation command exited with code ${exitCode ?? "unknown"}.`;
+
+  if (blocked || normalizedStatus === "blocked") {
+    category = "runner_unavailable";
+    retryable = true;
+    summary = "Isolated runner was unavailable before the validation command started.";
+  } else if (normalizedStatus === "timeout" || /(?:timed out|ETIMEDOUT|SIGTERM)/i.test(combinedText)) {
+    category = "timeout";
+    retryable = true;
+    const numericTimeoutMs = timeoutMs != null ? Number(timeoutMs) : NaN;
+    if (Number.isFinite(numericTimeoutMs) && numericTimeoutMs > 0) {
+      summary = `Validation timed out after ${numericTimeoutMs}ms.`;
+    } else {
+      summary = "Validation timed out after the configured timeout.";
+    }
+  } else if (isValidationSandboxFailureText(combinedText)) {
+    category = "sandbox_error";
+    retryable = false;
+    summary = "Validation was blocked by sandbox or filesystem restrictions.";
+  } else if (isValidationBootstrapFailureText(combinedText) || normalizedStatus === "error" && (exitCode == null || Number(exitCode) < 0)) {
+    category = "bootstrap_failure";
+    retryable = true;
+    summary = "Validation could not start cleanly.";
+  }
+
+  const detail = String(combinedText || "").trim().split(/\r?\n/).find(Boolean) || "";
+  return {
+    category,
+    retryable,
+    summary,
+    detail,
+    status: normalizedStatus,
+    exitCode: exitCode ?? null,
+    blocked: blocked === true,
+    command,
+    args: Array.isArray(args) ? [...args] : [],
+  };
+}
+
+function didValidationCommandPass(result = {}) {
+  if (!result || result.blocked === true || result.failureDiagnostic) return false;
+  const status = String(result.status || "success").trim().toLowerCase();
+  if (status && status !== "success") return false;
+  return Number(result.exitCode ?? 0) === 0;
+}
+
+function buildValidationResult({
+  passed,
+  exitCode = null,
+  blocked = false,
+  compacted = {},
+  extras = {},
+  failureDiagnostic = null,
+} = {}) {
+  return {
+    passed,
+    exitCode,
+    blocked,
+    ...(failureDiagnostic
+      ? {
+          failureKind: failureDiagnostic.category || null,
+          retryable: failureDiagnostic.retryable === true,
+          failureDiagnostic,
+        }
+      : {}),
+    ...compacted,
+    ...extras,
+  };
+}
+
 function buildIsolatedRunnerResultExtras(result, lane) {
   const artifacts = Array.isArray(result?.artifacts) ? result.artifacts : [];
   return {
@@ -1460,6 +1565,7 @@ function buildIsolatedRunnerResultExtras(result, lane) {
       artifactRoot: result?.artifactRoot || null,
       attempts: result?.attempts || 1,
       blocked: result?.blocked === true,
+      failureDiagnostic: result?.failureDiagnostic || null,
       artifacts,
     },
     artifactRoot: result?.artifactRoot || null,
@@ -2758,10 +2864,12 @@ registerBuiltinNodeType("action.run_agent", {
       );
     }
     let finalPrompt = prompt;
+    const promptHasRepoMapContext = hasRepoMapContext(finalPrompt);
     const architectEditorFrame = buildArchitectEditorFrame({
       executionRole: ctx.resolve(node.config?.executionRole || ""),
       architectPlan,
       planSummary: architectPlan,
+      includeRepoMap: !promptHasRepoMapContext,
       repoMap: node.config?.repoMap || ctx.data?.repoMap || null,
       repoMapFileLimit: node.config?.repoMapFileLimit,
       repoMapQuery: ctx.resolve(node.config?.repoMapQuery || ""),
@@ -5753,15 +5861,24 @@ registerBuiltinNodeType("validation.tests", {
       commandType: "test",
     });
     if (isolatedRun) {
-      return {
-        passed:
-          isolatedRun.isolated?.blocked !== true &&
-          Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
+      const failureDiagnostic = buildValidationFailureDiagnostic({
+        command,
+        status: isolatedRun.isolated?.status,
+        exitCode: isolatedRun.isolated?.exitCode,
+        stderr: isolatedRun.isolated?.stderr || isolatedRun.isolated?.error || "",
+        output: isolatedRun.isolated?.stdout || "",
+        timeoutMs: timeout,
+        blocked: isolatedRun.isolated?.blocked === true,
+        failureDiagnostic: isolatedRun.isolated?.failureDiagnostic,
+      });
+      return buildValidationResult({
+        passed: didValidationCommandPass({ ...isolatedRun.isolated, failureDiagnostic }),
         exitCode: isolatedRun.isolated?.exitCode ?? null,
         blocked: isolatedRun.isolated?.blocked === true,
-        ...isolatedRun.compacted,
-        ...isolatedRun.extras,
-      };
+        compacted: isolatedRun.compacted,
+        extras: isolatedRun.extras,
+        failureDiagnostic,
+      });
     }
     const startedAt = Date.now();
     try {
@@ -5783,7 +5900,20 @@ registerBuiltinNodeType("validation.tests", {
         exitCode: err.status,
         durationMs: Date.now() - startedAt,
       });
-      return { passed: false, exitCode: err.status, ...compacted };
+      const failureDiagnostic = buildValidationFailureDiagnostic({
+        command,
+        status: /(?:timed out|ETIMEDOUT|SIGTERM)/i.test(String(err?.message || "")) ? "timeout" : "error",
+        exitCode: err.status,
+        stderr: err.stderr?.toString() || err.message,
+        output,
+        timeoutMs: timeout,
+      });
+      return buildValidationResult({
+        passed: false,
+        exitCode: err.status,
+        compacted,
+        failureDiagnostic,
+      });
     }
   },
 });
@@ -5832,15 +5962,24 @@ registerBuiltinNodeType("validation.build", {
           ...isolatedRun.extras,
         };
       }
-      return {
-        passed:
-          isolatedRun.isolated?.blocked !== true &&
-          Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
+      const failureDiagnostic = buildValidationFailureDiagnostic({
+        command,
+        status: isolatedRun.isolated?.status,
+        exitCode: isolatedRun.isolated?.exitCode,
+        stderr: isolatedRun.isolated?.stderr || isolatedRun.isolated?.error || "",
+        output: isolatedRun.isolated?.stdout || "",
+        timeoutMs: timeout,
+        blocked: isolatedRun.isolated?.blocked === true,
+        failureDiagnostic: isolatedRun.isolated?.failureDiagnostic,
+      });
+      return buildValidationResult({
+        passed: didValidationCommandPass({ ...isolatedRun.isolated, failureDiagnostic }),
         exitCode: isolatedRun.isolated?.exitCode ?? null,
         blocked: isolatedRun.isolated?.blocked === true,
-        ...isolatedRun.compacted,
-        ...isolatedRun.extras,
-      };
+        compacted: isolatedRun.compacted,
+        extras: isolatedRun.extras,
+        failureDiagnostic,
+      });
     }
     const startedAt = Date.now();
     try {
@@ -5864,7 +6003,20 @@ registerBuiltinNodeType("validation.build", {
         exitCode: err.status,
         durationMs: Date.now() - startedAt,
       });
-      return { passed: false, exitCode: err.status, ...compacted };
+      const failureDiagnostic = buildValidationFailureDiagnostic({
+        command,
+        status: /(?:timed out|ETIMEDOUT|SIGTERM)/i.test(String(err?.message || "")) ? "timeout" : "error",
+        exitCode: err.status,
+        stderr: err.stderr?.toString() || err.message,
+        output: err.stdout?.toString() || "",
+        timeoutMs: timeout,
+      });
+      return buildValidationResult({
+        passed: false,
+        exitCode: err.status,
+        compacted,
+        failureDiagnostic,
+      });
     }
   },
 });
@@ -5897,15 +6049,24 @@ registerBuiltinNodeType("validation.lint", {
       commandType: "qualityGate",
     });
     if (isolatedRun) {
-      return {
-        passed:
-          isolatedRun.isolated?.blocked !== true &&
-          Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
+      const failureDiagnostic = buildValidationFailureDiagnostic({
+        command,
+        status: isolatedRun.isolated?.status,
+        exitCode: isolatedRun.isolated?.exitCode,
+        stderr: isolatedRun.isolated?.stderr || isolatedRun.isolated?.error || "",
+        output: isolatedRun.isolated?.stdout || "",
+        timeoutMs: timeout,
+        blocked: isolatedRun.isolated?.blocked === true,
+        failureDiagnostic: isolatedRun.isolated?.failureDiagnostic,
+      });
+      return buildValidationResult({
+        passed: didValidationCommandPass({ ...isolatedRun.isolated, failureDiagnostic }),
         exitCode: isolatedRun.isolated?.exitCode ?? null,
         blocked: isolatedRun.isolated?.blocked === true,
-        ...isolatedRun.compacted,
-        ...isolatedRun.extras,
-      };
+        compacted: isolatedRun.compacted,
+        extras: isolatedRun.extras,
+        failureDiagnostic,
+      });
     }
     const startedAt = Date.now();
     try {
@@ -5925,7 +6086,20 @@ registerBuiltinNodeType("validation.lint", {
         exitCode: err.status,
         durationMs: Date.now() - startedAt,
       });
-      return { passed: false, ...compacted };
+      const failureDiagnostic = buildValidationFailureDiagnostic({
+        command,
+        status: /(?:timed out|ETIMEDOUT|SIGTERM)/i.test(String(err?.message || "")) ? "timeout" : "error",
+        exitCode: err.status,
+        stderr: err.stderr?.toString() || err.message,
+        output: err.stdout?.toString() || "",
+        timeoutMs: timeout,
+      });
+      return buildValidationResult({
+        passed: false,
+        exitCode: err.status,
+        compacted,
+        failureDiagnostic,
+      });
     }
   },
 });
@@ -7540,6 +7714,9 @@ registerBuiltinNodeType("agent.run_planner", {
       context: { type: "string", description: "Additional context for the planner" },
       prompt: { type: "string", description: "Optional explicit planner prompt override" },
       outputVariable: { type: "string", description: "Optional context key to store planner output text" },
+      repoMap: { type: "object", description: "Optional explicit repo map context" },
+      repoMapQuery: { type: "string", description: "Optional query used to select a compact repo topology" },
+      repoMapFileLimit: { type: "number", default: 8, description: "Maximum repo-map files to include" },
       projectId: { type: "string" },
       dedup: { type: "boolean", default: true },
       timeoutMs: { type: "number", default: 960000, description: "Node timeout in ms (recommended >= agentTimeoutMs)" },
@@ -7555,6 +7732,7 @@ registerBuiltinNodeType("agent.run_planner", {
     const plannerFeedback = resolvePlannerFeedbackContext(ctx.data?._plannerFeedback);
     const explicitPrompt = ctx.resolve(node.config?.prompt || "");
     const outputVariable = ctx.resolve(node.config?.outputVariable || "");
+    const repoMapQuery = ctx.resolve(node.config?.repoMapQuery || "");
     const configuredNodeTimeout = Number(ctx.resolve(node.config?.timeoutMs || node.config?.timeout || 0));
     const configuredAgentTimeout = Number(ctx.resolve(node.config?.agentTimeoutMs || 0));
 
@@ -7570,20 +7748,51 @@ registerBuiltinNodeType("agent.run_planner", {
     // This delegates to the existing planner prompt flow
     const agentPool = engine.services?.agentPool;
     const plannerPrompt = engine.services?.prompts?.planner;
+    const basePrompt = explicitPrompt || plannerPrompt || "";
+    const fullPromptForRepoMapCheck = [basePrompt, context, plannerFeedback].filter(Boolean).join("\n\n");
+    const promptHasRepoMap = hasRepoMapContext(fullPromptForRepoMapCheck);
+    const repoTopologyContext = (node.config?.repoMap || repoMapQuery)
+      && !promptHasRepoMap
+      ? buildRepoTopologyContext({
+        repoMap: node.config?.repoMap || ctx.data?.repoMap || null,
+        repoMapFileLimit: node.config?.repoMapFileLimit ?? 8,
+        repoMapQuery,
+        query: [context, explicitPrompt, plannerPrompt].filter(Boolean).join(" "),
+        prompt: explicitPrompt || plannerPrompt || "",
+        userMessage: context,
+        taskTitle: ctx.data?.taskTitle || ctx.data?.task?.title || "",
+        taskDescription:
+          ctx.data?.taskDescription ||
+          ctx.data?.task?.description ||
+          ctx.data?.task?.body ||
+          ctx.data?.taskDetail?.description ||
+          ctx.data?.taskInfo?.description ||
+          "",
+        changedFiles:
+          (Array.isArray(ctx.data?.changedFiles) ? ctx.data.changedFiles : null) ||
+          (Array.isArray(ctx.data?.task?.changedFiles) ? ctx.data.task.changedFiles : null) ||
+          [],
+        cwd: process.cwd(),
+        repoRoot: ctx.data?.repoRoot || process.cwd(),
+      })
+      : "";
     // Enforce strict output instructions to ensure the downstream materialize node
     // can parse the planner output. The planner prompt already defines the contract,
     // but we reinforce it here to prevent agents from wrapping output in prose.
     const outputEnforcement =
       `\n\n## CRITICAL OUTPUT REQUIREMENT\n` +
       `Generate exactly ${count} new tasks.\n` +
-      ((context || plannerFeedback)
-        ? `${[context, plannerFeedback ? `Planner feedback context:\n${plannerFeedback}` : ""].filter(Boolean).join("\n\n")}\n\n`
+      ((context || plannerFeedback || repoTopologyContext)
+        ? `${[
+          context,
+          plannerFeedback ? `Planner feedback context:\n${plannerFeedback}` : "",
+          repoTopologyContext,
+        ].filter(Boolean).join("\n\n")}\n\n`
         : "\n") +
       `Your response MUST be a single fenced JSON block with shape { "tasks": [...] }.\n` +
       `Do NOT include status updates, analysis notes, tool commentary, questions, or prose outside the JSON block.\n` +
       `Do NOT reference or use legacy ve-kanban integration commands or scripts.\n` +
       `The downstream system will parse your output as JSON — any extra text will cause task creation to fail.`;
-    const basePrompt = explicitPrompt || plannerPrompt || "";
     const promptText = basePrompt
       ? `${basePrompt}${outputEnforcement}`
       : "";
@@ -14655,6 +14864,7 @@ export { evaluateTaskAssignedTriggerConfig };
 export {
   CUSTOM_NODE_DIR_NAME,
   getCustomNodeDir,
+  inspectCustomWorkflowNodePlugins,
   scaffoldCustomNodeFile,
   startCustomNodeDiscovery,
   stopCustomNodeDiscovery,
@@ -14672,5 +14882,8 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
+
+
+
 
 

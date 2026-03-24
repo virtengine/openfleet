@@ -4,7 +4,7 @@ import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { tmpdir } from "node:os";
 
-import { buildRepoMap, buildArchitectEditorFrame } from "../lib/repo-map.mjs";
+import { buildRepoMap, buildArchitectEditorFrame, formatRepoTopology } from "../lib/repo-map.mjs";
 
 let testRoot;
 
@@ -71,8 +71,60 @@ describe("repo-map", () => {
     expect(frame).toContain("## Architect/Editor Execution");
     expect(frame).toContain("You are the editor phase.");
     expect(frame).toContain("## Architect Plan");
+    expect(frame).toContain("## Repo Topology");
     expect(frame).toContain("Root: C:/repo");
+    expect(frame).toContain("owner: agent");
     expect(frame).toContain("agent/primary-agent.mjs");
+  });
+
+  it("formats compact repo topology with ownership and adjacency summaries", () => {
+    const topology = formatRepoTopology({
+      root: "C:/repo",
+      files: [
+        { path: "workflow/workflow-engine.mjs", summary: "workflow runtime" },
+        { path: "workflow/workflow-nodes.mjs", summary: "workflow nodes" },
+        { path: "tests/workflow-engine.test.mjs", summary: "workflow runtime coverage" },
+      ],
+    });
+
+    expect(topology).toContain("## Repo Topology");
+    expect(topology).toContain("Areas: workflow (2), tests (1)");
+    expect(topology).toContain("workflow/workflow-engine.mjs");
+    expect(topology).toContain("owner: workflow");
+    expect(topology).toContain("adjacent: workflow/workflow-nodes.mjs, tests/workflow-engine.test.mjs");
+  });
+
+  it("caps repo topology summaries to protect prompt budget", () => {
+    const topology = formatRepoTopology({
+      root: "C:/repo",
+      files: [
+        {
+          path: "workflow/workflow-engine.mjs",
+          summary: "This summary is intentionally very long so the compact repo topology formatter trims it before injecting it into planner and execution prompts.",
+        },
+      ],
+    }, { repoMapSummaryLimit: 60 });
+
+    expect(topology).toContain("This summary is intentionally very long so the compact repo...");
+    expect(topology).not.toContain("formatter trims it before injecting");
+  });
+
+  it("omits repo topology when architect/editor framing disables enrichment", () => {
+    const frame = buildArchitectEditorFrame({
+      executionRole: "editor",
+      architectPlan: "1. Update prompt framing\n2. Run focused tests",
+      includeRepoMap: false,
+      repoMap: {
+        root: "C:/repo",
+        files: [
+          { path: "workflow/workflow-engine.mjs", summary: "workflow runtime" },
+        ],
+      },
+    }, "agent");
+
+    expect(frame).toContain("## Architect/Editor Execution");
+    expect(frame).toContain("## Architect Plan");
+    expect(frame).not.toContain("## Repo Topology");
   });
 
   it("handles slash-heavy query input without regex backtracking", () => {
@@ -98,4 +150,7 @@ describe("repo-map", () => {
     expect(repoMap.files[0].symbols).toContain("tokenizeQuery");
   });
 });
+
+
+
 
