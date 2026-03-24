@@ -3156,8 +3156,24 @@ async function handleEsmProxy(req, res, url) {
   }
 }
 
-const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
 const logsDir = resolve(__dirname, "..", "logs");
+function resolveUiStatusRepoRoot() {
+  return resolve(process.cwd());
+}
+
+function resolveUiStatusPath() {
+  const override = String(process.env.STATUS_FILE || "").trim();
+  if (override) {
+    const isWindowsAbsolute = /^[a-zA-Z]:[\\/]/.test(override) || override.startsWith("\\\\");
+    const isPosixAbsolute = override.startsWith("/");
+    if (isWindowsAbsolute || isPosixAbsolute) {
+      return resolve(override);
+    }
+    return resolve(resolveUiStatusRepoRoot(), override);
+  }
+  return resolve(resolveUiStatusRepoRoot(), ".cache", "ve-orchestrator-status.json");
+}
+
 const agentLogsDirCandidates = [
   resolve(__dirname, "..", "logs", "agents"),
   resolve(repoRoot, ".cache", "agent-logs"),
@@ -10001,7 +10017,7 @@ async function collectUiStats() {
 
   // Try to read status from the monitor's status file first
   let orchestratorStatus = null;
-  const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
+  const statusPath = resolveUiStatusPath();
   try {
     if (existsSync(statusPath)) {
       const raw = await readFile(statusPath, "utf8");
@@ -11033,6 +11049,7 @@ async function handleDeviceFlowPoll(req, res) {
 
 async function readStatusSnapshot() {
   try {
+    const statusPath = resolveUiStatusPath();
     const raw = await readFile(statusPath, "utf8");
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") {
@@ -16003,7 +16020,7 @@ async function handleApi(req, res, url) {
     try {
       const worktrees = listActiveWorktrees(repoRoot);
       const stats = await getWorktreeStats(repoRoot);
-      const recovery = await readWorktreeRecoveryState(repoRoot);
+      const recovery = await readWorktreeRecoveryState(resolveUiStatusRepoRoot());
       jsonResponse(res, 200, {
         ok: true,
         data: worktrees,
@@ -16694,7 +16711,7 @@ if (path === "/api/agent-logs/context") {
     try {
       const executor = uiDeps.getInternalExecutor?.();
       const status = executor?.getStatus?.() || {};
-      const worktreeRecovery = await readWorktreeRecoveryState(repoRoot);
+      const worktreeRecovery = await readWorktreeRecoveryState(resolveUiStatusRepoRoot());
       const data = {
         executor: {
           mode: uiDeps.getExecutorMode?.() || "internal",
