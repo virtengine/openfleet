@@ -63,6 +63,12 @@ afterEach(() => {
 const { loadConfig } = await import("../config/config.mjs");
 const { resolveVoiceOAuthToken } = await import("../voice/voice-auth-manager.mjs");
 const {
+  beginVoiceTurnTrace,
+  completeVoiceTurnTrace,
+  abortVoiceTurnTrace,
+  getVoiceTurnTrace,
+  renderVoiceTurnTrace,
+  formatVoiceTurnTrace,
   getVoiceConfig,
   isVoiceAvailable,
   createEphemeralToken,
@@ -71,7 +77,9 @@ const {
   executeVoiceTool,
   getRealtimeConnectionInfo,
   analyzeVisionFrame,
+  dispatchVoiceActionIntent,
 } = await import("../voice/voice-relay.mjs");
+const { clearVisionSessionState } = await import("../voice/vision-session-state.mjs");
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -117,6 +125,53 @@ describe("voice-relay", () => {
       if (savedEnv[k] === undefined) delete process.env[k];
       else process.env[k] = savedEnv[k];
     }
+  });
+
+  describe("voice turn trace diagnostics", () => {
+    it("records interrupted turns without leaking auth-sensitive values", () => {
+      beginVoiceTurnTrace("voice-trace-interrupt", {
+        turnId: "turn-interrupt-1",
+        transport: "webrtc",
+        authorization: "Bearer top-secret-token",
+      });
+
+      abortVoiceTurnTrace("voice-trace-interrupt", "transport-interrupted", {
+        turnId: "turn-interrupt-1",
+        category: "transport",
+        authToken: "sk-live-secret",
+        closeCode: 1011,
+      });
+
+      const trace = getVoiceTurnTrace("voice-trace-interrupt");
+      const replay = renderVoiceTurnTrace("voice-trace-interrupt");
+      const serialized = JSON.stringify(trace);
+
+      expect(serialized).not.toContain("top-secret-token");
+      expect(serialized).not.toContain("sk-live-secret");
+      expect(replay).toContain("transport-interrupted");
+      expect(replay).toContain("transport issue");
+    });
+
+    it("formats dispatch mismatches for replay", () => {
+      beginVoiceTurnTrace("voice-trace-mismatch", {
+        turnId: "turn-mismatch-1",
+        transport: "webrtc",
+      });
+
+      abortVoiceTurnTrace("voice-trace-mismatch", "response-action-mismatch", {
+        turnId: "turn-mismatch-1",
+        category: "dispatch-mismatch",
+        expected: "tool:dispatch_action",
+        actual: "transport:response.done",
+      });
+      completeVoiceTurnTrace("voice-trace-mismatch", { turnId: "turn-mismatch-1", status: "aborted" });
+
+      const replay = renderVoiceTurnTrace("voice-trace-mismatch");
+
+      expect(replay).toContain("dispatch mismatch");
+      expect(replay).toContain("tool:dispatch_action");
+      expect(replay).toContain("transport:response.done");
+    });
   });
 
   // ── getVoiceConfig ──────────────────────────────────────────
@@ -655,6 +710,44 @@ describe("voice-relay", () => {
     });
   });
 
+  describe("turn trace diagnostics", () => {
+    it("formats interrupted turns as transport issues", () => {
+      const turn = beginVoiceTurnTrace("relay-trace-transport", {
+        transport: "webrtc",
+        phase: "user_speech",
+      });
+
+      abortVoiceTurnTrace("relay-trace-transport", "transport_interrupted", {
+        turnId: turn.turnId,
+        authToken: "secret-token",
+        detail: "socket closed",
+      });
+
+      const trace = getVoiceTurnTrace("relay-trace-transport");
+      expect(trace?.turns).toHaveLength(1);
+
+      const replay = formatVoiceTurnTrace("relay-trace-transport");
+      expect(replay).toContain("transport issue");
+      expect(replay).toContain("transport_interrupted");
+      expect(replay).not.toContain("secret-token");
+    });
+
+    it("replays action mismatches separately from transport failures", async () => {
+      const result = await dispatchVoiceActionIntent(
+        {
+          action: "missing.action",
+          params: { authorization: "Bearer top-secret" },
+        },
+        { sessionId: "relay-trace-mismatch", traceTurns: true },
+      );
+      expect(result.ok).toBe(false);
+
+      const replay = formatVoiceTurnTrace("relay-trace-mismatch");
+      expect(replay).toContain("dispatch mismatch");
+      expect(replay).toContain("unknown_action");
+      expect(replay).not.toContain("top-secret");
+    });
+  });
   describe("analyzeVisionFrame", () => {
     it("calls OpenAI responses API for valid frame input", async () => {
       vi.mocked(loadConfig).mockReturnValue({
@@ -766,3 +859,5 @@ describe("voice-relay", () => {
     });
   });
 });
+
+
