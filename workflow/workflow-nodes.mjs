@@ -4155,6 +4155,8 @@ registerBuiltinNodeType("action.execute_workflow", {
       workflowId,
       runId: childCtx?.id || null,
       status,
+      message: String(childCtx?.data?._workflowTerminalMessage || "").trim(),
+      output: childCtx?.data?._workflowTerminalOutput,
       errorCount: childErrors.length,
       errors: childErrors,
     };

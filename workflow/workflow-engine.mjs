@@ -570,6 +570,13 @@ function hydrateWorkflowDefinition(def, { strict = false } = {}) {
   return normalized;
 }
 
+function cloneRunSnapshot(value) {
+  try {
+    if (typeof structuredClone === "function") return structuredClone(value);
+  } catch {}
+  return JSON.parse(JSON.stringify(value));
+}
+
 function cleanObject(value = {}) {
   return Object.fromEntries(
     Object.entries(value).filter(([, entry]) => entry !== undefined),
@@ -2143,6 +2150,7 @@ export class WorkflowEngine extends EventEmitter {
       ...initialData,
       _workflowId: workflowId,
       _workflowName: def.name,
+      _workflowDefinitionSnapshot: cloneRunSnapshot(def),
       ...(opts._decisionReason ? { _retryDecisionReason: opts._decisionReason } : {}),
       ...(opts._parentExecutionId ? { _workflowParentExecutionId: opts._parentExecutionId } : {}),
     });
@@ -4575,6 +4583,9 @@ export class WorkflowEngine extends EventEmitter {
     const detail = ctx.toJSON(Date.now());
     if (ctx?.data?._dagState) detail.dagState = ctx.data._dagState;
     if (ctx?.data?._issueAdvisor) detail.issueAdvisor = ctx.data._issueAdvisor;
+    if (ctx?.data?._workflowDefinitionSnapshot) {
+      detail.workflowDefinition = cloneRunSnapshot(ctx.data._workflowDefinitionSnapshot);
+    }
     if (isRunning) {
       detail.endedAt = null;
       detail.duration = Math.max(0, Date.now() - Number(ctx?.startedAt || Date.now()));

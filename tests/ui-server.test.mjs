@@ -1797,6 +1797,54 @@ describe("ui-server mini app", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   }, 15000);
 
+  it("imports exported workflow JSON through the mini app API", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const importResponse = await fetch(`http://127.0.0.1:${port}/api/workflows/import`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        workflow: {
+          id: "workflow-original-id",
+          name: "Imported Workflow",
+          description: "Round-tripped from JSON",
+          enabled: true,
+          nodes: [
+            { id: "trigger", type: "trigger.manual", label: "Trigger", config: {}, position: { x: 20, y: 20 } },
+            { id: "finish", type: "flow.end", label: "Finish", config: { status: "completed" }, position: { x: 260, y: 20 } },
+          ],
+          edges: [{ id: "edge-trigger-finish", source: "trigger", target: "finish" }],
+          groups: [{ id: "group-1", label: "Imported Group", color: "#60a5fa", nodeIds: ["trigger", "finish"], collapsed: false }],
+          variables: { greeting: "hi" },
+        },
+      }),
+    });
+    const importJson = await importResponse.json();
+    expect(importResponse.status).toBe(200);
+    expect(importJson.ok).toBe(true);
+    expect(importJson.workflow.id).not.toBe("workflow-original-id");
+    expect(importJson.workflow.name).toBe("Imported Workflow");
+    expect(importJson.workflow.groups).toEqual([
+      expect.objectContaining({ id: "group-1", label: "Imported Group", nodeIds: ["trigger", "finish"] }),
+    ]);
+
+    const fetched = await fetch(`http://127.0.0.1:${port}/api/workflows/${encodeURIComponent(importJson.workflow.id)}`).then((r) => r.json());
+    expect(fetched.ok).toBe(true);
+    expect(fetched.workflow.variables).toEqual({ greeting: "hi" });
+    expect(fetched.workflow.groups).toEqual([
+      expect.objectContaining({ id: "group-1", label: "Imported Group", nodeIds: ["trigger", "finish"] }),
+    ]);
+  }, 15000);
+
   it("previews and imports custom library repositories through the API", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 

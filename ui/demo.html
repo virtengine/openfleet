@@ -4318,6 +4318,16 @@
         if (idx >= 0) STATE.workflows[idx] = wf; else STATE.workflows.push(wf);
         return { ok: true, workflow: wf };
       }
+      if (route === '/api/workflows/import') {
+        const source = body?.workflow || body || {};
+        const now = new Date().toISOString();
+        const wf = JSON.parse(JSON.stringify(source));
+        wf.id = 'wf-' + Math.random().toString(36).slice(2, 9);
+        wf.metadata = { ...wf.metadata, updatedAt: now, createdAt: wf.metadata?.createdAt || now };
+        wf.nodeCount = (wf.nodes || []).length;
+        STATE.workflows.push(wf);
+        return { ok: true, workflow: wf };
+      }
       if (route === '/api/workflows/templates') {
         return { ok: true, templates: STATE.workflowTemplates };
       }
