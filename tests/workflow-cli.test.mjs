@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   executeWorkflowCommand,
   listWorkflowSummaries,
@@ -58,7 +58,7 @@ describe("workflow CLI helpers", () => {
               prompts.push(prompt);
               return {
                 success: true,
-                output: `step-${prompts.length}`,
+                output: "step-" + prompts.length,
                 usage: { totalTokens: 1 },
               };
             },
@@ -72,5 +72,43 @@ describe("workflow CLI helpers", () => {
     expect(prompts).toHaveLength(3);
     expect(JSON.parse(stdout[0]).success).toBe(true);
   });
-});
 
+  it("reports custom node health summaries in JSON", async () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "bosun-workflow-cli-nodes-"));
+    mkdirSync(join(dir, "custom-nodes"), { recursive: true });
+    try {
+      writeFileSync(join(dir, "custom-nodes", "good.mjs"), [
+        'export const manifest = { id: "good-node", name: "Good Node", version: "1.0.0" };',
+        'export const type = "custom.good";',
+        "export const inputs = [];",
+        "export const outputs = ['success'];",
+        "export function describe(){ return 'good'; }",
+        "export async function execute(){ return { success: true, port: 'success' }; }",
+        "",
+      ].join("\n"), "utf8");
+      writeFileSync(join(dir, "custom-nodes", "broken.mjs"), [
+        'export const manifest = "bad";',
+        'export const type = "custom.broken";',
+        "export const inputs = [];",
+        "export const outputs = [];",
+        "export function describe(){ return 'broken'; }",
+        "export async function execute(){ return { success: true, port: 'success' }; }",
+        "",
+      ].join("\n"), "utf8");
+
+      const stdout = [];
+      const response = await executeWorkflowCommand(["workflow", "nodes", "--json"], {
+        stdout: (line) => stdout.push(line),
+        repoRoot: dir,
+      });
+
+      expect(response.ok).toBe(true);
+      const payload = JSON.parse(stdout[0]);
+      expect(payload.summary.loaded).toBe(1);
+      expect(payload.summary.skipped).toBe(1);
+      expect(payload.plugins.some((entry) => entry.fileName === "broken.mjs" && entry.status === "skipped")).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

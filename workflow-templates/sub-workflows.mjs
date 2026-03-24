@@ -143,6 +143,7 @@ export function makeAgentPlanExecuteVerifySub(opts) {
         mode: "plan",
         executionRole: "architect",
         repoMapQuery: "{{taskTitle}} {{taskDescription}}",
+        repoMapFileLimit: 8,
         ...defaults,
       }, { x: 400, y: 0 }),
       node("implement", "action.run_agent", "Implement", {
@@ -150,6 +151,7 @@ export function makeAgentPlanExecuteVerifySub(opts) {
         executionRole: "editor",
         architectPlan: "{{$ctx.getNodeOutput('plan')?.summary || $ctx.getNodeOutput('plan')?.output || ''}}",
         repoMapQuery: "{{taskTitle}} {{taskDescription}}",
+        repoMapFileLimit: 8,
         ...defaults,
       }, { x: 400, y: 160 }),
       node("verify", "action.run_agent", "Verify", {
@@ -157,6 +159,7 @@ export function makeAgentPlanExecuteVerifySub(opts) {
         executionRole: "editor",
         architectPlan: "{{$ctx.getNodeOutput('plan')?.summary || $ctx.getNodeOutput('plan')?.output || ''}}",
         repoMapQuery: "{{taskTitle}} {{taskDescription}}",
+        repoMapFileLimit: 8,
         ...defaults,
       }, { x: 400, y: 320 }),
     ],
@@ -240,4 +243,6 @@ export const PR_CHECK_HANDOFF_SUB = subWorkflow(
     description: "Check PR result, transition task to in-review, dispatch PR progressor.",
   },
 );
+
+
 

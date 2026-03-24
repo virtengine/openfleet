@@ -129,6 +129,26 @@ describe("codex-config defaults", () => {
     expect(toml).toContain("use_linux_sandbox_bwrap = false");
   });
 
+  it("disables remote_models for Azure runtimes", () => {
+    const input = ["[features]", "remote_models = true", ""].join("\n");
+    const { toml } = ensureFeatureFlags(input, {
+      OPENAI_BASE_URL: "https://example-resource.openai.azure.com/openai/v1",
+      OPENAI_API_KEY: "azure-key",
+      CODEX_MODEL: "gpt-5-deployment",
+    });
+    expect(toml).toContain("remote_models = false");
+  });
+
+  it("keeps remote_models enabled for non-Azure runtimes", () => {
+    const input = ["[features]", "remote_models = true", ""].join("\n");
+    const { toml } = ensureFeatureFlags(input, {
+      OPENAI_BASE_URL: "https://api.openai.com/v1",
+      OPENAI_API_KEY: "openai-key",
+      CODEX_MODEL: "gpt-5.4",
+    });
+    expect(toml).toContain("remote_models = true");
+  });
+
   it("adds sandbox workspace-write defaults with repo roots", () => {
     const input = ["[features]", "child_agents_md = true", ""].join("\n");
     const result = ensureSandboxWorkspaceWrite(input, {
@@ -171,5 +191,6 @@ describe("codex-config defaults", () => {
     expect(result.active.baseUrl).toBe("https://example-resource.openai.azure.com/openai/v1");
   });
 });
+
 
 

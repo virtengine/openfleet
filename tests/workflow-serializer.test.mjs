@@ -228,6 +228,25 @@ describe("deserializeCodeToWorkflow", () => {
     expect(errors.some(e => e.includes("missing or invalid 'target'"))).toBe(true);
   });
 
+  it("migrates legacy edge port aliases into explicit source/target port fields", () => {
+    const code = JSON.stringify({
+      name: "Migrated Ports",
+      nodes: [
+        { id: "n1", type: "trigger.manual" },
+        { id: "n2", type: "action.run_command" },
+      ],
+      edges: [{ source: "n1", target: "n2", fromPort: "success", toPort: "payload" }],
+    });
+
+    const { workflow, errors } = deserializeCodeToWorkflow(code);
+
+    expect(errors).toEqual([]);
+    expect(workflow.edges[0].sourcePort).toBe("success");
+    expect(workflow.edges[0].targetPort).toBe("payload");
+    expect(workflow.edges[0].fromPort).toBeUndefined();
+    expect(workflow.edges[0].toPort).toBeUndefined();
+  });
+
   it("rejects variables as array", () => {
     const code = JSON.stringify({
       name: "V",

@@ -32,5 +32,15 @@ describe("workflow run history UI pagination", () => {
       expect(source).toContain("graphBefore");
       expect(source).toContain("graphAfter");
     });
+
+    it(`${label} exposes explicit edge port mapping controls`, () => {
+      if (label !== "ui") return;
+      expect(source).toContain("Port Bindings");
+      expect(source).toContain("Source Port");
+      expect(source).toContain("Target Port");
+      expect(source).toContain("updateEdgePortMapping");
+      expect(source).toContain("Unknown output port");
+      expect(source).toContain("Unknown input port");
+    });
   }
 });

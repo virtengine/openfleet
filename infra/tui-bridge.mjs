@@ -18,6 +18,9 @@ const RATE_LIMIT_BUCKET_SCHEMA = {
     primary: { type: ["number", "null"] },
     secondary: { type: ["number", "null"] },
     credits: { type: ["number", "null"] },
+    primaryLimit: { type: ["number", "null"] },
+    secondaryLimit: { type: ["number", "null"] },
+    creditsLimit: { type: ["number", "null"] },
     unit: { type: "string", minLength: 1 },
   },
 };
@@ -74,6 +77,7 @@ export const TUI_EVENT_SCHEMAS = Object.freeze({
       "tokensIn",
       "tokensOut",
       "tokensTotal",
+      "totalTokens",
       "throughputTps",
       "uptimeMs",
       "rateLimits",
@@ -85,6 +89,7 @@ export const TUI_EVENT_SCHEMAS = Object.freeze({
       tokensIn: { type: "number", minimum: 0 },
       tokensOut: { type: "number", minimum: 0 },
       tokensTotal: { type: "number", minimum: 0 },
+      totalTokens: { type: "number", minimum: 0 },
       throughputTps: { type: "number", minimum: 0 },
       uptimeMs: { type: "number", minimum: 0 },
       rateLimits: {
@@ -208,6 +213,9 @@ function normalizeRateLimits(rateLimits = {}) {
       primary: Number.isFinite(Number(bucket.primary)) ? Number(bucket.primary) : null,
       secondary: Number.isFinite(Number(bucket.secondary)) ? Number(bucket.secondary) : null,
       credits: bucket.credits == null ? null : (Number.isFinite(Number(bucket.credits)) ? Number(bucket.credits) : null),
+      primaryLimit: bucket.primaryLimit == null ? null : (Number.isFinite(Number(bucket.primaryLimit)) ? Number(bucket.primaryLimit) : null),
+      secondaryLimit: bucket.secondaryLimit == null ? null : (Number.isFinite(Number(bucket.secondaryLimit)) ? Number(bucket.secondaryLimit) : null),
+      creditsLimit: bucket.creditsLimit == null ? null : (Number.isFinite(Number(bucket.creditsLimit)) ? Number(bucket.creditsLimit) : null),
       unit: String(bucket.unit || "count").trim() || "count",
     };
   }
@@ -237,7 +245,10 @@ export function buildMonitorStatsPayload({ agentPool, runtimeStats = {}, uptimeM
     agentPoolStats.tokensOut,
     runtimeStats.totalOutputTokens ?? runtimeTokenTotals.tokensOut,
   );
-  const tokensTotal = nonNegativeNumber(agentPoolStats.tokensTotal, tokensIn + tokensOut);
+  const tokensTotal = nonNegativeNumber(
+    agentPoolStats.tokensTotal ?? agentPoolStats.totalTokens,
+    tokensIn + tokensOut,
+  );
   const resolvedUptimeMs = nonNegativeNumber(
     uptimeMs,
     runtimeStats.startedAt ? Date.now() - Number(runtimeStats.startedAt) : 0,
@@ -252,6 +263,7 @@ export function buildMonitorStatsPayload({ agentPool, runtimeStats = {}, uptimeM
     tokensIn,
     tokensOut,
     tokensTotal,
+    totalTokens: tokensTotal,
     throughputTps,
     uptimeMs: resolvedUptimeMs,
     rateLimits: normalizeRateLimits(agentPoolStats.rateLimits),

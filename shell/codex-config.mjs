@@ -160,6 +160,24 @@ const CRITICAL_ALWAYS_OFF_FEATURES = new Set([
   "enable_request_compression",
 ]);
 
+function shouldDisableRemoteModels(envOverrides = process.env) {
+  try {
+    return resolveCodexProfileRuntime(envOverrides).provider === "azure";
+  } catch {
+    return false;
+  }
+}
+
+function getRecommendedFeatureMeta(key, meta, envOverrides = process.env) {
+  if (key !== "remote_models") return meta;
+  if (!shouldDisableRemoteModels(envOverrides)) return meta;
+  return {
+    ...meta,
+    default: false,
+    comment: "Remote model support (DISABLED for Azure - model listing returns HTTP 400)",
+  };
+}
+
 function parsePositiveInt(value) {
   const parsed = Number.parseInt(String(value ?? "").trim(), 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
@@ -434,12 +452,13 @@ export function buildFeaturesBlock(envOverrides = process.env) {
   ];
 
   for (const [key, meta] of Object.entries(RECOMMENDED_FEATURES)) {
-    let enabled = meta.default;
+    const resolvedMeta = getRecommendedFeatureMeta(key, meta, envOverrides);
+    let enabled = resolvedMeta.default;
     // Check env override
-    if (meta.envVar && envOverrides[meta.envVar] !== undefined) {
-      enabled = parseBoolEnv(envOverrides[meta.envVar]);
+    if (resolvedMeta.envVar && envOverrides[resolvedMeta.envVar] !== undefined) {
+      enabled = parseBoolEnv(envOverrides[resolvedMeta.envVar]);
     }
-    if (meta.comment) lines.push(`# ${meta.comment}`);
+    if (resolvedMeta.comment) lines.push(`# ${resolvedMeta.comment}`);
     lines.push(`${key} = ${enabled}`);
   }
 
@@ -457,6 +476,10 @@ export function buildFeaturesBlock(envOverrides = process.env) {
  */
 export function ensureFeatureFlags(toml, envOverrides = process.env) {
   const added = [];
+  const forcedOffFeatures = new Set(CRITICAL_ALWAYS_OFF_FEATURES);
+  if (shouldDisableRemoteModels(envOverrides)) {
+    forcedOffFeatures.add("remote_models");
+  }
 
   if (!hasFeaturesSection(toml)) {
     toml += buildFeaturesBlock(envOverrides);
@@ -473,15 +496,16 @@ export function ensureFeatureFlags(toml, envOverrides = process.env) {
   let section = toml.substring(afterHeader, sectionEnd);
 
   for (const [key, meta] of Object.entries(RECOMMENDED_FEATURES)) {
+    const resolvedMeta = getRecommendedFeatureMeta(key, meta, envOverrides);
     const keyRegex = new RegExp(`^${escapeRegex(key)}\\s*=`, "m");
     const hasEnvOverride =
-      meta.envVar && envOverrides[meta.envVar] !== undefined;
+      resolvedMeta.envVar && envOverrides[resolvedMeta.envVar] !== undefined;
     const envValue = hasEnvOverride
-      ? parseBoolEnv(envOverrides[meta.envVar])
+      ? parseBoolEnv(envOverrides[resolvedMeta.envVar])
       : null;
 
     if (!keyRegex.test(section)) {
-      const enabled = hasEnvOverride ? envValue : meta.default;
+      const enabled = hasEnvOverride ? envValue : resolvedMeta.default;
       section = section.trimEnd() + `\n${key} = ${enabled}\n`;
       added.push(key);
       continue;
@@ -509,7 +533,7 @@ export function ensureFeatureFlags(toml, envOverrides = process.env) {
 
     // Force certain features OFF regardless of what is in the file.
     // (e.g. enable_request_compression corrupts JSON bodies on Azure wire_api=responses)
-    if (CRITICAL_ALWAYS_OFF_FEATURES.has(key)) {
+    if (forcedOffFeatures.has(key)) {
       const enabledRegex = new RegExp(
         `^(${escapeRegex(key)}\\s*=\\s*)true\\b.*$`,
         "m",
@@ -1853,5 +1877,6 @@ function parseBoolEnv(value) {
   if (["0", "false", "no", "off", "n"].includes(raw)) return false;
   return true;
 }
+
 
 

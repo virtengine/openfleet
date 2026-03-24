@@ -418,7 +418,7 @@ describe("workflow validation output compaction", () => {
     expect(result.output).toContain("FAIL tests/runtime/example.test.ts");
     expect(result.output).toContain("expected true to be false");
     expect(result.output).toContain("bosun --tool-log");
-    expect(result.outputDiagnostics?.suggestedRerun).toContain("vitest run");
+    expect(result.outputDiagnostics?.suggestedRerun || result.outputSuggestedRerun).toContain("vitest run");
   });
 });
 
@@ -474,5 +474,176 @@ describe("WorkflowContext template resolution is not a shell evaluator", () => {
     expect(typeof result).toBe("string");
     // Critical: must not return a non-string value (e.g. process object)
     expect(result).not.toBeNull();
+  });
+});
+
+describe("validation nodes can offload to isolated runners", () => {
+  it("uses the isolated runner for heavyweight test validation", async () => {
+    const nodeType = getNodeType("validation.tests");
+    const node = makeNode("validation.tests", { command: "npm test" }, "validate-tests");
+    const ctx = makeCtx();
+    const runner = vi.fn().mockResolvedValue({
+      status: "success",
+      stdout: "PASS tests/example.test.mjs\n",
+      stderr: "",
+      exitCode: 0,
+      duration: 25,
+      provider: "process",
+      leaseId: "runner-1",
+      artifactRoot: "C:/tmp/artifacts/runner-1",
+      artifacts: [
+        {
+          label: "stdout",
+          path: "C:/tmp/artifacts/runner-1/stdout.log",
+          retrieveCommand: 'Get-Content -Raw "C:/tmp/artifacts/runner-1/stdout.log"',
+        },
+      ],
+    });
+    const engine = {
+      services: {
+        scheduler: {
+          selectWorkflowLane: vi.fn().mockReturnValue({
+            lane: "isolated",
+            reason: "workflow_node:validation.tests",
+            heavy: true,
+          }),
+        },
+        isolatedRunner: { run: runner },
+      },
+    };
+
+    const result = await nodeType.execute(node, ctx, engine);
+
+    expect(runner).toHaveBeenCalled();
+    expect(result.passed).toBe(true);
+    expect(result.isolatedRunner?.leaseId).toBe("runner-1");
+    expect(result.artifactRetrieveCommands).toEqual([
+      'Get-Content -Raw "C:/tmp/artifacts/runner-1/stdout.log"',
+    ]);
+  });
+
+  it("surfaces blocked evidence when the isolated runner cannot obtain a lease", async () => {
+    const nodeType = getNodeType("validation.build");
+    const node = makeNode("validation.build", { command: "npm run build" }, "validate-build");
+    const ctx = makeCtx();
+    const engine = {
+      services: {
+        scheduler: {
+          selectWorkflowLane: vi.fn().mockReturnValue({
+            lane: "isolated",
+            reason: "workflow_node:validation.build",
+            heavy: true,
+          }),
+        },
+        isolatedRunner: {
+          run: vi.fn().mockResolvedValue({
+            status: "blocked",
+            blocked: true,
+            error: "lease_capacity_reached:1",
+            exitCode: null,
+            provider: "process",
+            leaseId: "blocked-1",
+            artifactRoot: "C:/tmp/artifacts/blocked-1",
+            artifacts: [
+              {
+                label: "metadata",
+                path: "C:/tmp/artifacts/blocked-1/metadata.json",
+                retrieveCommand: 'Get-Content -Raw "C:/tmp/artifacts/blocked-1/metadata.json"',
+              },
+            ],
+          }),
+        },
+      },
+    };
+
+    const result = await nodeType.execute(node, ctx, engine);
+
+    expect(result.passed).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.isolatedRunner?.artifacts).toHaveLength(1);
+  });
+
+  it("surfaces timeout diagnostics for isolated validation failures", async () => {
+    const nodeType = getNodeType("validation.tests");
+    const node = makeNode("validation.tests", { command: "npm test" }, "validate-timeout");
+    const ctx = makeCtx();
+    const engine = {
+      services: {
+        scheduler: {
+          selectWorkflowLane: vi.fn().mockReturnValue({
+            lane: "isolated",
+            reason: "workflow_node:validation.tests",
+            heavy: true,
+          }),
+        },
+        isolatedRunner: {
+          run: vi.fn().mockResolvedValue({
+            status: "timeout",
+            stdout: "",
+            stderr: "validation exceeded limit",
+            exitCode: null,
+            duration: 120001,
+            provider: "process",
+            leaseId: "runner-timeout",
+            failureDiagnostic: {
+              category: "timeout",
+              retryable: true,
+              summary: "Validation timed out after 120000ms.",
+              status: "timeout",
+            },
+          }),
+        },
+      },
+    };
+
+    const result = await nodeType.execute(node, ctx, engine);
+
+    expect(result.passed).toBe(false);
+    expect(result.failureKind).toBe("timeout");
+    expect(result.retryable).toBe(true);
+    expect(result.failureDiagnostic?.summary).toContain("timed out");
+    expect(result.isolatedRunner?.failureDiagnostic?.category).toBe("timeout");
+  });
+
+  it("surfaces command failure diagnostics for isolated validation exits", async () => {
+    const nodeType = getNodeType("validation.lint");
+    const node = makeNode("validation.lint", { command: "npm run lint" }, "validate-lint");
+    const ctx = makeCtx();
+    const engine = {
+      services: {
+        scheduler: {
+          selectWorkflowLane: vi.fn().mockReturnValue({
+            lane: "isolated",
+            reason: "workflow_node:validation.lint",
+            heavy: true,
+          }),
+        },
+        isolatedRunner: {
+          run: vi.fn().mockResolvedValue({
+            status: "error",
+            stdout: "",
+            stderr: "ESLint found 3 errors",
+            exitCode: 1,
+            duration: 52,
+            provider: "process",
+            leaseId: "runner-lint",
+            failureDiagnostic: {
+              category: "command_failure",
+              retryable: false,
+              summary: "Validation command exited with code 1.",
+              status: "error",
+              exitCode: 1,
+            },
+          }),
+        },
+      },
+    };
+
+    const result = await nodeType.execute(node, ctx, engine);
+
+    expect(result.passed).toBe(false);
+    expect(result.failureKind).toBe("command_failure");
+    expect(result.retryable).toBe(false);
+    expect(result.failureDiagnostic?.exitCode).toBe(1);
   });
 });

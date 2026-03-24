@@ -251,12 +251,32 @@ describe("workflow-templates", () => {
     expect(planNode?.config?.mode).toBe("plan");
     expect(planNode?.config?.executionRole).toBe("architect");
     expect(planNode?.config?.repoMapQuery).toBe("{{taskTitle}} {{taskDescription}}");
+    expect(planNode?.config?.repoMapFileLimit).toBe(8);
     expect(backendNode?.config?.executionRole).toBe("editor");
+    expect(backendNode?.config?.repoMapFileLimit).toBe(8);
     expect(frontendNode?.config?.executionRole).toBe("editor");
+    expect(frontendNode?.config?.repoMapFileLimit).toBe(8);
     expect(verifyNode?.config?.executionRole).toBe("editor");
+    expect(verifyNode?.config?.repoMapFileLimit).toBe(8);
     expect(String(backendNode?.config?.architectPlan || "")).toContain("plan-architecture");
     expect(String(frontendNode?.config?.architectPlan || "")).toContain("plan-architecture");
     expect(String(verifyNode?.config?.architectPlan || "")).toContain("plan-architecture");
+  });
+
+  it("planning templates opt into bounded repo topology context", () => {
+    const planner = getTemplate("template-task-planner");
+    const replenish = getTemplate("template-task-replenish");
+
+    expect(planner).toBeTruthy();
+    expect(replenish).toBeTruthy();
+
+    const plannerNode = planner.nodes.find((node) => node.id === "run-planner");
+    const replenishNode = replenish.nodes.find((node) => node.id === "run-planner");
+
+    expect(plannerNode?.config?.repoMapQuery).toBe("{{plannerContext}} {{prompt}}");
+    expect(plannerNode?.config?.repoMapFileLimit).toBe(8);
+    expect(replenishNode?.config?.repoMapQuery).toBe("{{plannerContext}} {{prompt}}");
+    expect(replenishNode?.config?.repoMapFileLimit).toBe(8);
   });
 
   it("every template has required fields", () => {
@@ -1568,4 +1588,5 @@ describe("template category coverage", () => {
     }
   });
 });
+
 

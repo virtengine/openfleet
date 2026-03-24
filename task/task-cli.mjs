@@ -306,8 +306,7 @@ function isDebugModeEnabled(args = []) {
  * Create a new task. Accepts a plain object with task fields.
  * Returns the created task or throws on error.
  */
-export async function taskCreate(data) {
-  const store = await initStore();
+function buildTaskInput(data, store) {
   const normalizeKey = store.normalizeWorkspaceStorageKey || normalizeStoreScopeKey;
   const normalizeKeys =
     store.normalizeWorkspaceStorageKeys
@@ -387,6 +386,22 @@ export async function taskCreate(data) {
     }
     taskData.description = parts.join("\n");
   }
+
+  return taskData;
+}
+
+function buildImportedTaskInput(data, store) {
+  const taskData = buildTaskInput(data, store);
+  return {
+    ...data,
+    ...taskData,
+    meta: taskData.meta,
+  };
+}
+
+export async function taskCreate(data) {
+  const store = await initStore();
+  const taskData = buildTaskInput(data, store);
 
   const result = store.addTask(taskData);
   if (!result) {
@@ -1099,10 +1114,16 @@ export async function taskImport(source) {
   let created = 0;
   let failed = 0;
   const errors = [];
+  const store = await initStore();
 
   for (const t of tasks) {
     try {
-      await taskCreate(t);
+      const importedTask = buildImportedTaskInput(t, store);
+      const result = store.addTask(importedTask);
+      if (!result) {
+        throw new Error("Failed to create task — addTask returned null");
+      }
+      await flushStoreWrites(store);
       created++;
     } catch (err) {
       failed++;
@@ -1822,4 +1843,3 @@ if (process.argv[1] && resolve(process.argv[1]) === __filename) {
     process.exit(1);
   });
 }
-

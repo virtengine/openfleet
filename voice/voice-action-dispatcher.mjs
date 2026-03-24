@@ -23,7 +23,13 @@ import { loadConfig } from "../config/config.mjs";
 import { execPrimaryPrompt, getPrimaryAgentName, setPrimaryAgent, getAgentMode, setAgentMode } from "../agent/primary-agent.mjs";
 import { existsSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  appendVoiceTurnTraceEvent,
+  beginVoiceTurnTrace,
+  completeVoiceTurnTrace,
+  getVoiceTurnTrace as getVoiceTurnTraceState,
+} from "./vision-session-state.mjs";
 
 // ── Module-scope lazy imports ───────────────────────────────────────────────
 
@@ -644,8 +650,38 @@ registerAction("tool.call", async (params, context) => {
   const toolName = String(params.toolName || params.name || "").trim();
   if (!toolName) throw new Error("toolName is required");
   const toolArgs = params.args || params.arguments || {};
+  const sessionId = String(context?.sessionId || "").trim();
+  const turnId = String(context?.turnId || "").trim();
+  if (sessionId && turnId) {
+    appendVoiceTurnTraceEvent(sessionId, {
+      turnId,
+      type: "tool.dispatch",
+      toolName,
+    });
+  }
   const { executeToolCall } = await import("./voice-tools.mjs");
-  return executeToolCall(toolName, toolArgs, context);
+  try {
+    const result = await executeToolCall(toolName, toolArgs, context);
+    if (sessionId && turnId) {
+      appendVoiceTurnTraceEvent(sessionId, {
+        turnId,
+        type: "tool.complete",
+        toolName,
+      });
+    }
+    return result;
+  } catch (err) {
+    if (sessionId && turnId) {
+      appendVoiceTurnTraceEvent(sessionId, {
+        turnId,
+        type: "tool.error",
+        toolName,
+        reason: "tool_error",
+        detail: err?.message,
+      });
+    }
+    throw err;
+  }
 });
 
 // ── Workflow actions ────────────────────────────────────────────────────────
@@ -873,9 +909,7 @@ registerAction("batch", async (params, context) => {
   const actions = Array.isArray(params.actions) ? params.actions : [];
   if (!actions.length) throw new Error("actions array is required");
   if (actions.length > 10) throw new Error("Maximum 10 actions per batch");
-  const results = await Promise.all(
-    actions.map((actionIntent) => dispatchVoiceAction(actionIntent, context)),
-  );
+  const results = await dispatchVoiceActions(actions, context);
   return { count: results.length, results };
 });
 
@@ -949,6 +983,64 @@ export function getActionManifest() {
   ];
 }
 
+function ensureDispatchTraceContext(context = {}) {
+  const sessionId = String(context?.sessionId || "").trim();
+  const existingTurnId = String(context?.turnId || "").trim();
+  if (!sessionId || (context?.traceTurns !== true && !existingTurnId)) {
+    return { traceEnabled: false, sessionId: "", turnId: null, autoTurn: false };
+  }
+  if (existingTurnId) {
+    return { traceEnabled: true, sessionId, turnId: existingTurnId, autoTurn: false };
+  }
+  const started = beginVoiceTurnTrace(sessionId, {
+    transport: context?.transport,
+    phase: context?.phase,
+    source: "voice-action-dispatch",
+    mode: context?.mode,
+    model: context?.model,
+  });
+  return { traceEnabled: true, sessionId, turnId: started?.turnId || null, autoTurn: true };
+}
+
+function recordDispatchTrace(traceContext, event = {}) {
+  if (!traceContext?.traceEnabled || !traceContext?.turnId) return;
+  appendVoiceTurnTraceEvent(traceContext.sessionId, { ...event, turnId: traceContext.turnId });
+}
+
+function finishDispatchTrace(traceContext, details = {}) {
+  if (!traceContext?.autoTurn || !traceContext?.turnId) return;
+  completeVoiceTurnTrace(traceContext.sessionId, {
+    turnId: traceContext.turnId,
+    outcome: details?.outcome || "completed",
+  });
+}
+
+function getDispatchFingerprint(intent = {}) {
+  const action = String(intent?.action || "").trim();
+  const correlationId = String(intent?.id || "").trim();
+  if (correlationId) return `id:${correlationId}`;
+  try {
+    return `hash:${createHash("sha256").update(`${action}:${JSON.stringify(intent?.params || {})}`).digest("hex")}`;
+  } catch {
+    return `hash:${createHash("sha256").update(`${action}:${String(intent?.params || "")}`).digest("hex")}`;
+  }
+}
+
+function hasPriorDispatchForFingerprint(traceContext, fingerprint) {
+  if (!traceContext?.traceEnabled || !traceContext?.turnId || !fingerprint) return false;
+  const normalizedFingerprint = String(fingerprint).trim();
+  // Only treat id-based fingerprints as eligible for duplicate suppression.
+  // This allows legitimate retries when the model re-issues an action without a new `id`.
+  if (!normalizedFingerprint.startsWith("id:")) return false;
+  const trace = getVoiceTurnTraceState(traceContext.sessionId, { turnId: traceContext.turnId });
+  const turn = trace?.turns?.[0];
+  if (!turn) return false;
+  return (turn.events || []).some((event) => {
+    const eventFingerprint = String(event?.fingerprint || "").trim();
+    return eventFingerprint === normalizedFingerprint && event?.type !== "turn.start";
+  });
+}
+
 /**
  * Dispatch a voice action intent and return structured results.
  *
@@ -967,8 +1059,11 @@ export async function dispatchVoiceAction(intent, context = {}) {
   const action = String(intent?.action || "").trim();
   const params = intent?.params || {};
   const correlationId = intent?.id || null;
+  const traceContext = ensureDispatchTraceContext(context);
 
   if (!action) {
+    recordDispatchTrace(traceContext, { type: "action.mismatch", reason: "missing_action" });
+    finishDispatchTrace(traceContext, { outcome: "mismatch" });
     return {
       ok: false,
       action: "",
@@ -980,7 +1075,35 @@ export async function dispatchVoiceAction(intent, context = {}) {
   }
 
   const handler = ACTION_HANDLERS[action];
+  const fingerprint = getDispatchFingerprint(intent);
+  if (hasPriorDispatchForFingerprint(traceContext, fingerprint)) {
+    recordDispatchTrace(traceContext, {
+      type: "action.skip",
+      action,
+      id: correlationId,
+      reason: "duplicate_dispatch",
+      fingerprint,
+    });
+    finishDispatchTrace(traceContext, { outcome: "duplicate_skipped" });
+    return {
+      ok: false,
+      action,
+      data: null,
+      error: `Duplicate action skipped: ${action || fingerprint}`,
+      id: correlationId,
+      durationMs: Date.now() - startMs,
+    };
+  }
+
   if (!handler) {
+    recordDispatchTrace(traceContext, {
+      type: "action.mismatch",
+      action,
+      id: correlationId,
+      reason: "unknown_action",
+      fingerprint,
+    });
+    finishDispatchTrace(traceContext, { outcome: "mismatch" });
     return {
       ok: false,
       action,
@@ -991,25 +1114,40 @@ export async function dispatchVoiceAction(intent, context = {}) {
     };
   }
 
+  recordDispatchTrace(traceContext, { type: "action.dispatch", action, id: correlationId, fingerprint });
   try {
-    const data = await handler(params, context);
+    const data = await handler(params, traceContext.traceEnabled ? { ...context, turnId: traceContext.turnId } : context);
+    const durationMs = Date.now() - startMs;
+    recordDispatchTrace(traceContext, { type: "action.complete", action, id: correlationId, durationMs, fingerprint });
+    finishDispatchTrace(traceContext, { outcome: "completed" });
     return {
       ok: true,
       action,
       data,
       error: null,
       id: correlationId,
-      durationMs: Date.now() - startMs,
+      durationMs,
     };
   } catch (err) {
+    const durationMs = Date.now() - startMs;
     console.error("[voice-action-dispatcher] %s error: %s", String(action || "unknown"), String(err?.message || err || "unknown"));
+    recordDispatchTrace(traceContext, {
+      type: "action.error",
+      action,
+      id: correlationId,
+      reason: "handler_error",
+      detail: err?.message,
+      durationMs,
+      fingerprint,
+    });
+    finishDispatchTrace(traceContext, { outcome: "error" });
     return {
       ok: false,
       action,
       data: null,
       error: err.message,
       id: correlationId,
-      durationMs: Date.now() - startMs,
+      durationMs,
     };
   }
 }
@@ -1023,7 +1161,43 @@ export async function dispatchVoiceAction(intent, context = {}) {
 export async function dispatchVoiceActions(intents, context = {}) {
   if (!Array.isArray(intents)) return [];
   const limited = intents.slice(0, 20);
-  return Promise.all(limited.map((intent) => dispatchVoiceAction(intent, context)));
+  const traceContext = ensureDispatchTraceContext(context);
+  if (!traceContext.traceEnabled) {
+    return Promise.all(limited.map((intent) => dispatchVoiceAction(intent, context)));
+  }
+
+  const tracedContext = { ...context, traceTurns: true, turnId: traceContext.turnId };
+  const seenFingerprints = new Set();
+  const results = [];
+  for (const intent of limited) {
+    const fingerprint = getDispatchFingerprint(intent);
+    if (seenFingerprints.has(fingerprint)) {
+      const action = String(intent?.action || "").trim();
+      const correlationId = intent?.id || null;
+      recordDispatchTrace(traceContext, {
+        type: "action.skip",
+        action,
+        id: correlationId,
+        reason: "duplicate_dispatch",
+        fingerprint,
+      });
+      results.push({
+        ok: false,
+        action,
+        data: null,
+        error: `Duplicate action skipped: ${action || fingerprint}`,
+        id: correlationId,
+        durationMs: 0,
+      });
+      continue;
+    }
+    seenFingerprints.add(fingerprint);
+    results.push(await dispatchVoiceAction(intent, tracedContext));
+  }
+  finishDispatchTrace(traceContext, {
+    outcome: results.some((result) => result?.ok === false) ? "completed_with_errors" : "completed",
+  });
+  return results;
 }
 
 /**
@@ -1067,3 +1241,4 @@ export function getVoiceActionPromptSection() {
   lines.push("");
   return lines.join("\n");
 }
+

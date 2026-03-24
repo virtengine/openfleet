@@ -181,7 +181,7 @@ export function projectSessionRow(session, now = Date.now(), eventWidth = 32) {
     now - toTimestamp(normalized.createdAt || normalized.lastActiveAt, now),
   );
   const elapsedMs = Math.max(normalized.elapsedMs, elapsedFromClock);
-  const sessionLabel = normalized.workspaceId || normalized.title || normalized.id;
+  const sessionLabel = normalized.title || normalized.workspaceId || normalized.id;
   return {
     id: normalized.id,
     isDimmed:

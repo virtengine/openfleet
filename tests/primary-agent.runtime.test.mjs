@@ -351,7 +351,7 @@ describe("primary-agent runtime safeguards", () => {
     expect(framedMessage).toContain("[MODE: plan]");
     expect(framedMessage).toContain("## Architect/Editor Execution");
     expect(framedMessage).toContain("You are the architect phase.");
-    expect(framedMessage).toContain("## Repo Map");
+    expect(framedMessage).toContain("## Repo Topology");
     expect(framedMessage).toContain("Root: C:/repo");
     expect(framedMessage).toContain("agent/primary-agent.mjs");
     expect(framedMessage).toContain("## Tool Capability Contract");
@@ -377,7 +377,7 @@ describe("primary-agent runtime safeguards", () => {
     expect(framedMessage).toContain("You are the editor phase.");
     expect(framedMessage).toContain("## Architect Plan");
     expect(framedMessage).toContain("Add repo map framing");
-    expect(framedMessage).toContain("## Repo Map");
+    expect(framedMessage).toContain("## Repo Topology");
     expect(framedMessage).toContain("tests/primary-agent.runtime.test.mjs");
     expect(framedMessage).toContain("apply the approved plan");
   });
