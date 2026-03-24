@@ -147,10 +147,95 @@ function extractPreviewTokenCount(value) {
   return null;
 }
 
-export function createGraphSnapshot(nodes = [], edges = []) {
+function toNodeTypeMap(nodeTypes = []) {
+  if (nodeTypes instanceof Map) return nodeTypes;
+  return new Map((Array.isArray(nodeTypes) ? nodeTypes : []).map((type) => [type?.type, type]));
+}
+
+function normalizePortDescriptor(port, direction, index) {
+  const fallbackName = index === 0 ? "default" : `${direction}-${index + 1}`;
+  if (!port || typeof port !== "object") {
+    return {
+      name: fallbackName,
+      label: fallbackName,
+      type: "Any",
+      description: "",
+      accepts: [],
+      color: null,
+    };
+  }
   return {
-    nodes: normalizeGraphValue(nodes),
-    edges: normalizeGraphValue(edges),
+    ...port,
+    name: String(port.name || fallbackName).trim() || fallbackName,
+    label: String(port.label || port.name || fallbackName).trim() || fallbackName,
+    type: String(port.type || "Any").trim() || "Any",
+    description: String(port.description || "").trim(),
+    accepts: Array.isArray(port.accepts)
+      ? Array.from(new Set(port.accepts.map((value) => String(value || "").trim()).filter(Boolean)))
+      : [],
+    color: typeof port.color === "string" && port.color.trim() ? port.color.trim() : null,
+  };
+}
+
+function resolvePortByName(ports, requestedName) {
+  const normalizedName = String(requestedName || "").trim() || "default";
+  return (Array.isArray(ports) ? ports : []).find((port) => port.name === normalizedName) || null;
+}
+
+function isWildcardPortType(type) {
+  const normalized = String(type || "").trim();
+  return normalized === "*" || normalized === "Any";
+}
+
+function isPortConnectionCompatible(sourcePort, targetPort) {
+  if (!sourcePort || !targetPort) return { compatible: true, reason: null };
+  const sourceType = String(sourcePort.type || "Any").trim() || "Any";
+  const targetType = String(targetPort.type || "Any").trim() || "Any";
+  const accepted = new Set(
+    [targetType, ...(Array.isArray(targetPort.accepts) ? targetPort.accepts : [])]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  );
+  if (isWildcardPortType(sourceType) || isWildcardPortType(targetType) || accepted.has("*") || accepted.has("Any")) {
+    return { compatible: true, reason: null };
+  }
+  if (sourceType === targetType || accepted.has(sourceType)) {
+    return { compatible: true, reason: null };
+  }
+  return {
+    compatible: false,
+    reason: `${sourcePort.label || sourcePort.name} emits ${sourceType}, but ${targetPort.label || targetPort.name} expects ${targetType}`,
+  };
+}
+
+function buildUnknownPortIssue(edge, direction, requestedPortName, availablePorts = []) {
+  const portLabel = direction === "output" ? "source" : "target";
+  const availableNames = (Array.isArray(availablePorts) ? availablePorts : [])
+    .map((port) => String(port?.name || "").trim())
+    .filter(Boolean);
+  const availableSuffix = availableNames.length ? ` Available ports: ${availableNames.join(", ")}.` : "";
+  return {
+    edgeId: edge.id || `${edge.source}->${edge.target}`,
+    source: edge.source,
+    target: edge.target,
+    sourcePort: direction === "output"
+      ? requestedPortName
+      : String(edge?.sourcePort ?? edge?.fromPort ?? "").trim() || "default",
+    targetPort: direction === "input"
+      ? requestedPortName
+      : String(edge?.targetPort ?? edge?.toPort ?? "").trim() || "default",
+    sourceType: null,
+    targetType: null,
+    severity: "error",
+    message: `Unknown ${portLabel} port "${requestedPortName}" on edge ${edge.id || `${edge.source}->${edge.target}`}.${availableSuffix}`,
+  };
+}
+
+export function createGraphSnapshot(nodes = [], edges = []) {
+  const safeNodes = normalizeGraphValue(nodes);
+  return {
+    nodes: safeNodes,
+    edges: hydrateCanvasEdges(safeNodes, normalizeGraphValue(edges)),
   };
 }
 
@@ -170,10 +255,113 @@ export function parseGraphSnapshot(snapshot) {
   if (!snapshot) return createGraphSnapshot();
   try {
     const parsed = typeof snapshot === "string" ? JSON.parse(snapshot) : snapshot;
-    return createGraphSnapshot(parsed?.nodes, parsed?.edges);
+    const edges = Array.isArray(parsed?.edges) ? parsed.edges : [];
+    const shouldHydratePorts = edges.some((edge) => {
+      if (!edge || typeof edge !== "object") return false;
+      return ["sourcePort", "targetPort", "fromPort", "toPort"].some((key) => Object.prototype.hasOwnProperty.call(edge, key));
+    });
+    const normalizedEdges = shouldHydratePorts
+      ? edges.map((edge) => {
+        if (!edge || typeof edge !== "object") return edge;
+        const sourcePort = String(edge.sourcePort ?? edge.fromPort ?? "").trim() || "default";
+        const targetPort = String(edge.targetPort ?? edge.toPort ?? "").trim() || "default";
+        const nextEdge = { ...edge, sourcePort, targetPort };
+        delete nextEdge.fromPort;
+        delete nextEdge.toPort;
+        return nextEdge;
+      })
+      : edges;
+    return createGraphSnapshot(parsed?.nodes, normalizedEdges);
   } catch {
     return createGraphSnapshot();
   }
+}
+
+export function resolveCanvasNodePorts(node, nodeTypes = []) {
+  const typeInfo = toNodeTypeMap(nodeTypes).get(node?.type) || null;
+  const typePorts = typeInfo?.ports || {};
+  const typeInputs = Array.isArray(typeInfo?.inputs) ? typeInfo.inputs : typePorts.inputs;
+  const typeOutputs = Array.isArray(typeInfo?.outputs) ? typeInfo.outputs : typePorts.outputs;
+  const inputSource = Array.isArray(node?.inputPorts) && node.inputPorts.length
+    ? node.inputPorts
+    : typeInputs;
+  const outputSource = Array.isArray(node?.outputPorts) && node.outputPorts.length
+    ? node.outputPorts
+    : typeOutputs;
+  const inputs = (Array.isArray(inputSource) ? inputSource : [])
+    .map((port, index) => normalizePortDescriptor(port, "input", index));
+  const outputs = (Array.isArray(outputSource) ? outputSource : [])
+    .map((port, index) => normalizePortDescriptor(port, "output", index));
+  return {
+    inputs: inputs.length ? inputs : [normalizePortDescriptor(null, "input", 0)],
+    outputs: outputs.length ? outputs : [normalizePortDescriptor(null, "output", 0)],
+  };
+}
+
+export function hydrateCanvasEdges(nodes = [], edges = [], nodeTypes = []) {
+  const nodeTypeMap = toNodeTypeMap(nodeTypes);
+  const nodeMap = new Map((Array.isArray(nodes) ? nodes : []).map((node) => [node.id, node]));
+  return (Array.isArray(edges) ? edges : []).map((edge) => {
+    const sourceNode = nodeMap.get(edge?.source);
+    const targetNode = nodeMap.get(edge?.target);
+    const sourcePorts = resolveCanvasNodePorts(sourceNode, nodeTypeMap).outputs;
+    const targetPorts = resolveCanvasNodePorts(targetNode, nodeTypeMap).inputs;
+    const requestedSourcePort = String(edge?.sourcePort ?? edge?.fromPort ?? "").trim() || "default";
+    const requestedTargetPort = String(edge?.targetPort ?? edge?.toPort ?? "").trim() || "default";
+    const sourcePort = resolvePortByName(sourcePorts, requestedSourcePort);
+    const targetPort = resolvePortByName(targetPorts, requestedTargetPort);
+    const normalized = {
+      ...edge,
+      sourcePort: sourcePort?.name || requestedSourcePort,
+      targetPort: targetPort?.name || requestedTargetPort,
+      sourcePortType: sourcePort?.type || String(edge?.sourcePortType || "").trim() || "Any",
+      targetPortType: targetPort?.type || String(edge?.targetPortType || "").trim() || "Any",
+    };
+    delete normalized.fromPort;
+    delete normalized.toPort;
+    return normalized;
+  });
+}
+
+export function validateCanvasEdgePorts(nodes = [], edges = [], nodeTypes = []) {
+  const nodeTypeMap = toNodeTypeMap(nodeTypes);
+  const nodeMap = new Map((Array.isArray(nodes) ? nodes : []).map((node) => [node.id, node]));
+  const issues = [];
+  for (const edge of Array.isArray(edges) ? edges : []) {
+    const sourceNode = nodeMap.get(edge?.source);
+    const targetNode = nodeMap.get(edge?.target);
+    const sourcePorts = resolveCanvasNodePorts(sourceNode, nodeTypeMap).outputs;
+    const targetPorts = resolveCanvasNodePorts(targetNode, nodeTypeMap).inputs;
+    const requestedSourcePort = String(edge?.sourcePort ?? edge?.fromPort ?? "").trim() || "default";
+    const requestedTargetPort = String(edge?.targetPort ?? edge?.toPort ?? "").trim() || "default";
+    const sourcePort = resolvePortByName(sourcePorts, requestedSourcePort);
+    const targetPort = resolvePortByName(targetPorts, requestedTargetPort);
+
+    if (!sourcePort) {
+      issues.push(buildUnknownPortIssue(edge, "output", requestedSourcePort, sourcePorts));
+      continue;
+    }
+    if (!targetPort) {
+      issues.push(buildUnknownPortIssue(edge, "input", requestedTargetPort, targetPorts));
+      continue;
+    }
+
+    const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
+    if (!compatibility.compatible) {
+      issues.push({
+        edgeId: edge.id || `${edge.source}->${edge.target}`,
+        source: edge.source,
+        target: edge.target,
+        sourcePort: sourcePort.name,
+        targetPort: targetPort.name,
+        sourceType: sourcePort.type,
+        targetType: targetPort.type,
+        severity: "error",
+        message: compatibility.reason,
+      });
+    }
+  }
+  return issues;
 }
 
 export const HISTORY_LIMIT = 50;
@@ -313,7 +501,6 @@ export function buildNodeStatusesFromRunDetail(run) {
     statuses[nodeId] = status;
   }
 
-  // Backfill older runs that only recorded nodeId in logs.
   if (Object.keys(statuses).length === 0) {
     const fallbackStatus = run?.status === "failed"
       ? "failed"
@@ -347,3 +534,5 @@ export function resolveNodeOutputPreview(_nodeType, livePreview = null, rawOutpu
     tokenCount: extractPreviewTokenCount(rawOutput),
   };
 }
+
+

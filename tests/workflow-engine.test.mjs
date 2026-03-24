@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
@@ -631,6 +631,215 @@ describe("WorkflowEngine - source port routing", () => {
     expect(visited).toEqual(["shared"]);
     expect(result.getNodeStatus("shared")).toBe(NodeStatus.COMPLETED);
   });
+
+  it("preserves mixed legacy and explicit port graphs during execution", async () => {
+    const visited = [];
+    registerNodeType("test.capture_mixed_ports", {
+      describe: () => "Capture mixed legacy/explicit routing",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        visited.push(node.id);
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "switch",
+          type: "condition.switch",
+          label: "Switch",
+          config: {
+            value: "'left'",
+            cases: {
+              left: "left-port",
+              right: "right-port",
+            },
+          },
+        },
+        { id: "left", type: "test.capture_mixed_ports", label: "Left", config: {} },
+        { id: "audit", type: "test.capture_mixed_ports", label: "Audit", config: {} },
+        { id: "right", type: "test.capture_mixed_ports", label: "Right", config: {} },
+      ],
+      [
+        { id: "legacy-trigger", source: "trigger", target: "switch" },
+        { id: "explicit-left", source: "switch", target: "left", sourcePort: "left-port" },
+        { id: "legacy-audit", source: "trigger", target: "audit" },
+        { id: "explicit-right", source: "switch", target: "right", sourcePort: "right-port" },
+      ],
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {});
+    expect(result.errors).toEqual([]);
+    expect(visited.sort()).toEqual(["audit", "left"]);
+  });
+
+  it("rejects unknown explicit source and target ports before execution", () => {
+    registerNodeType("test.port_source", {
+      describe: () => "Source node with explicit ports",
+      schema: { type: "object", properties: {} },
+      outputs: [
+        { name: "default", type: "Any" },
+        { name: "success", type: "JSON" },
+      ],
+      async execute() {
+        return { ok: true, matchedPort: "success", port: "success" };
+      },
+    });
+
+    registerNodeType("test.port_target", {
+      describe: () => "Target node with explicit ports",
+      schema: { type: "object", properties: {} },
+      inputs: [
+        { name: "default", type: "Any" },
+        { name: "payload", type: "JSON" },
+      ],
+      async execute() {
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "source", type: "test.port_source", label: "Source", config: {} },
+        { id: "target", type: "test.port_target", label: "Target", config: {} },
+      ],
+      [
+        { id: "legacy-start", source: "trigger", target: "source" },
+        {
+          id: "invalid-binding",
+          source: "source",
+          target: "target",
+          sourcePort: "missing-output",
+          targetPort: "missing-input",
+        },
+      ],
+    );
+
+    expect(() => engine.save(wf)).toThrow(/Workflow port validation failed/i);
+    expect(() => engine.save(wf)).toThrow(/missing-output/i);
+    expect(() => engine.save(wf)).toThrow(/missing-input/i);
+  });
+
+  it("honors explicit source port mappings across branch and back-edge retries", async () => {
+    const visitLog = [];
+
+    registerNodeType("test.branch_with_retry", {
+      describe: () => "Branches between retry and done ports",
+      schema: { type: "object", properties: {} },
+      outputs: [
+        { name: "retry", label: "Retry", type: "JSON" },
+        { name: "done", label: "Done", type: "JSON" },
+      ],
+      async execute(_node, ctx) {
+        const attempt = Number(ctx.data.branchAttempt || 0) + 1;
+        ctx.data.branchAttempt = attempt;
+        visitLog.push(`branch:${attempt}`);
+        return {
+          ok: true,
+          attempt,
+          matchedPort: attempt === 1 ? "retry" : "done",
+          port: attempt === 1 ? "retry" : "done",
+        };
+      },
+    });
+
+    registerNodeType("test.capture_retry_branch", {
+      describe: () => "Retry branch marker",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        visitLog.push("review");
+        return { ok: true };
+      },
+    });
+
+    registerNodeType("test.capture_done_branch", {
+      describe: () => "Done branch marker",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        visitLog.push("complete");
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "branch", type: "test.branch_with_retry", label: "Branch", config: {} },
+        { id: "review", type: "test.capture_retry_branch", label: "Review", config: {} },
+        { id: "complete", type: "test.capture_done_branch", label: "Complete", config: {} },
+      ],
+      [
+        { id: "start", source: "trigger", target: "branch" },
+        { id: "retry-path", source: "branch", target: "review", sourcePort: "retry" },
+        { id: "retry-loop", source: "review", target: "branch", backEdge: true },
+        { id: "done-path", source: "branch", target: "complete", sourcePort: "done" },
+      ],
+      { name: "Explicit Port Back Edge Workflow" },
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {});
+
+    expect(result.errors).toEqual([]);
+    expect(visitLog).toEqual(["branch:1", "review", "branch:2", "complete"]);
+    expect(result.getNodeStatus("review")).toBe(NodeStatus.COMPLETED);
+    expect(result.getNodeStatus("complete")).toBe(NodeStatus.COMPLETED);
+  });
+  it("rejects executing loaded workflows that still carry invalid explicit ports", async () => {
+    registerNodeType("test.execute_port_source", {
+      describe: () => "Source node with explicit ports",
+      schema: { type: "object", properties: {} },
+      outputs: [{ name: "success", type: "JSON" }],
+      async execute() {
+        return { ok: true, matchedPort: "success", port: "success" };
+      },
+    });
+
+    registerNodeType("test.execute_port_target", {
+      describe: () => "Target node with explicit ports",
+      schema: { type: "object", properties: {} },
+      inputs: [{ name: "payload", type: "JSON" }],
+      async execute() {
+        return { ok: true };
+      },
+    });
+
+    const workflowId = "wf-invalid-execute-port-bindings";
+    const persisted = {
+      id: workflowId,
+      name: "Invalid Execute Port Bindings",
+      enabled: true,
+      nodes: [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "source", type: "test.execute_port_source", label: "Source", config: {} },
+        { id: "target", type: "test.execute_port_target", label: "Target", config: {} },
+      ],
+      edges: [
+        { id: "legacy-start", source: "trigger", target: "source" },
+        {
+          id: "invalid-binding",
+          source: "source",
+          target: "target",
+          sourcePort: "missing-output",
+          targetPort: "missing-input",
+        },
+      ],
+      metadata: {},
+      variables: {},
+    };
+
+    mkdirSync(join(tmpDir, "workflows"), { recursive: true });
+    writeFileSync(join(tmpDir, "workflows", workflowId + ".json"), JSON.stringify(persisted, null, 2));
+    engine.load();
+
+    await expect(engine.execute(workflowId, {})).rejects.toThrow(/Workflow port validation failed/i);
+    await expect(engine.execute(workflowId, {})).rejects.toThrow(/missing-output/i);
+  });
+
 });
 
 // ── Run History / Detail Tests ──────────────────────────────────────────────
@@ -5695,5 +5904,4 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(replan.reason).toBe("issue_advisor.replan_subgraph");
   });
 });
-
 
