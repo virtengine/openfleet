@@ -233,9 +233,6 @@ describe("ui-server TUI websocket bridge", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        Authorization: "Bearer " + token,
-      },
-        "content-type": "application/json",
         authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ type: "primary", prompt: "hello from ws regression" }),
