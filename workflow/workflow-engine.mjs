@@ -1164,7 +1164,9 @@ export class WorkflowEngine extends EventEmitter {
       sandbox?.runsDir,
     );
     this._configDir = opts.configDir || process.cwd();
-    this.detectInterruptedRuns = opts.detectInterruptedRuns !== false;
+    this.detectInterruptedRuns = opts.detectInterruptedRuns !== false &&
+      process.env.WORKFLOW_DETECT_INTERRUPTED_RUNS !== "0" &&
+      process.env.WORKFLOW_DETECT_INTERRUPTED_RUNS !== "false";
     this.services = opts.services || {};
     this._workflows = new Map();
     this._activeRuns = new Map();
@@ -5009,6 +5011,7 @@ export class WorkflowEngine extends EventEmitter {
    */
   async resumeInterruptedRuns() {
     if (this._resumingRuns) return;
+    if (!this.detectInterruptedRuns) return;
     this._resumingRuns = true;
 
     try {
