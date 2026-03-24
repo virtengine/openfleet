@@ -374,7 +374,8 @@ describe("workflow canvas history", () => {
       },
     ], nodeTypes);
 
-    expect(issues).toEqual([
+    expect(issues).toHaveLength(2);
+    expect(issues).toEqual(expect.arrayContaining([
       expect.objectContaining({
         edgeId: "bad-edge",
         sourcePort: "missing-output",
@@ -382,7 +383,14 @@ describe("workflow canvas history", () => {
         severity: "error",
         message: expect.stringContaining("Unknown source port \"missing-output\""),
       }),
-    ]);
+      expect.objectContaining({
+        edgeId: "bad-edge",
+        sourcePort: "missing-output",
+        targetPort: "missing-input",
+        severity: "error",
+        message: expect.stringContaining("Unknown target port \"missing-input\""),
+      }),
+    ]));
   });
   it("allows repairing stale explicit bindings one side at a time", () => {
     const nodeTypes = [
@@ -445,3 +453,4 @@ describe("workflow canvas history", () => {
   });
 
 });
+
