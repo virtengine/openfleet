@@ -22,6 +22,7 @@ import {
   buildNodeStatusesFromRunDetail,
   createHistoryState,
   getNodeSearchMetadata,
+  hydrateCanvasEdges,
   parseGraphSnapshot,
   pushHistorySnapshot,
   redoHistory,
@@ -29,6 +30,8 @@ import {
   searchNodeTypes,
   serializeGraphSnapshot,
   undoHistory,
+  validateCanvasEdgePorts,
+  canUpdateCanvasEdgePortMapping,
 } from "./workflow-canvas-utils.mjs";
 import { createSession } from "../components/session-list.js";
 import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
@@ -695,7 +698,7 @@ async function saveWorkflow(def) {
     }
     return data?.workflow;
   } catch (err) {
-    showToast("Failed to save workflow", "error");
+    showToast(`Failed to save workflow: ${err?.message || err}`, "error");
   }
 }
 
@@ -1911,12 +1914,14 @@ function isPortConnectionCompatible(sourcePort, targetPort) {
 function resolveNodePorts(node, nodeTypeMap) {
   const typeInfo = nodeTypeMap.get(node?.type) || null;
   const typePorts = typeInfo?.ports || {};
+  const typeInputs = Array.isArray(typeInfo?.inputs) ? typeInfo.inputs : typePorts.inputs;
+  const typeOutputs = Array.isArray(typeInfo?.outputs) ? typeInfo.outputs : typePorts.outputs;
   const inputSource = Array.isArray(node?.inputPorts) && node.inputPorts.length
     ? node.inputPorts
-    : typePorts.inputs;
+    : typeInputs;
   const outputSource = Array.isArray(node?.outputPorts) && node.outputPorts.length
     ? node.outputPorts
-    : typePorts.outputs;
+    : typeOutputs;
   const inputs = (Array.isArray(inputSource) ? inputSource : [])
     .map((port, index) => normalizePortDescriptor(port, "input", index));
   const outputs = (Array.isArray(outputSource) ? outputSource : [])
@@ -1924,6 +1929,81 @@ function resolveNodePorts(node, nodeTypeMap) {
   return {
     inputs: inputs.length ? inputs : [normalizePortDescriptor(null, "input", 0)],
     outputs: outputs.length ? outputs : [normalizePortDescriptor(null, "output", 0)],
+  };
+}
+
+function resolveRequestedEdgePortName(edge, primaryKey, legacyKey) {
+  if (!edge || typeof edge !== "object") return "";
+  for (const key of [primaryKey, legacyKey]) {
+    if (!key || !Object.prototype.hasOwnProperty.call(edge, key)) continue;
+    const value = String(edge[key] || "").trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function resolveEdgePortDescriptor(ports, requestedName) {
+  if (!Array.isArray(ports) || ports.length === 0) return null;
+  const normalizedName = String(requestedName || "").trim();
+  if (!normalizedName) return ports[0] || null;
+  return ports.find((port) => port.name === normalizedName) || null;
+}
+
+function buildUnknownEdgePortMessage(edge, direction, requestedName, ports = []) {
+  const safeName = String(requestedName || "").trim();
+  const label = direction === "output" ? "output" : "input";
+  const available = (Array.isArray(ports) ? ports : [])
+    .map((port) => String(port?.name || "").trim())
+    .filter(Boolean);
+  const suffix = available.length ? ` Available ${label} ports: ${available.join(", ")}.` : "";
+  const edgeId = edge?.id || `${edge?.source || "?"}->${edge?.target || "?"}`;
+  return `Unknown ${label} port "${safeName}" on edge ${edgeId}.${suffix}`;
+}
+
+function validateEdgePortMapping(edge, nodeLookup, nodeTypeMap) {
+  const sourceNode = nodeLookup.get(edge?.source) || null;
+  const targetNode = nodeLookup.get(edge?.target) || null;
+  const sourcePorts = resolveNodePorts(sourceNode, nodeTypeMap).outputs;
+  const targetPorts = resolveNodePorts(targetNode, nodeTypeMap).inputs;
+  const requestedSourcePortName = resolveRequestedEdgePortName(edge, "sourcePort", "fromPort");
+  const requestedTargetPortName = resolveRequestedEdgePortName(edge, "targetPort", "toPort");
+  const sourcePort = resolveEdgePortDescriptor(sourcePorts, requestedSourcePortName || "default");
+  const targetPort = resolveEdgePortDescriptor(targetPorts, requestedTargetPortName || "default");
+  const issues = [];
+
+  if (requestedSourcePortName && !sourcePort) {
+    issues.push({
+      code: "unknown-output-port",
+      message: buildUnknownEdgePortMessage(edge, "output", requestedSourcePortName, sourcePorts),
+    });
+  }
+  if (requestedTargetPortName && !targetPort) {
+    issues.push({
+      code: "unknown-input-port",
+      message: buildUnknownEdgePortMessage(edge, "input", requestedTargetPortName, targetPorts),
+    });
+  }
+
+  if (sourcePort && targetPort) {
+    const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
+    if (!compatibility.compatible) {
+      issues.push({
+        code: "invalid-port-binding",
+        message: `Invalid port binding: ${compatibility.reason || "Port types are incompatible"}`,
+      });
+    }
+  }
+
+  return {
+    issues,
+    sourceNode,
+    targetNode,
+    sourcePorts,
+    targetPorts,
+    sourcePort,
+    targetPort,
+    requestedSourcePortName,
+    requestedTargetPortName,
   };
 }
 
@@ -2042,6 +2122,11 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     () => new Map((availableNodeTypes || []).map((type) => [type.type, type])),
     [availableNodeTypes],
   );
+  const currentSelectedEdgeId = selectedEdgeId.value;
+  const selectedEdge = useMemo(
+    () => edges.find((edge) => edge.id === currentSelectedEdgeId) || null,
+    [currentSelectedEdgeId, edges],
+  );
   const ensureNodePortMetadata = useCallback((node) => {
     const ports = resolveNodePorts(node, nodeTypeMap);
     return {
@@ -2054,11 +2139,30 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const normalizeNodesForCanvas = useCallback((nodeList = []) => (
     (Array.isArray(nodeList) ? nodeList : []).map((node) => ensureNodePortMetadata(node))
   ), [ensureNodePortMetadata]);
+  const nodeLookup = useMemo(
+    () => new Map((nodes || []).map((node) => [node.id, node])),
+    [nodes],
+  );
+  const normalizeEdgesForCanvas = useCallback((edgeList = [], nodeList = nodesRef.current || []) => (
+    hydrateCanvasEdges(normalizeNodesForCanvas(nodeList), edgeList, nodeTypeMap)
+  ), [nodeTypeMap, normalizeNodesForCanvas]);
+  const edgePortValidationIssues = useMemo(() => (
+    validateCanvasEdgePorts(nodes, normalizeEdgesForCanvas(edges, nodes), nodeTypeMap)
+  ), [edges, nodeTypeMap, nodes, normalizeEdgesForCanvas]);
+  const reportEdgeValidationIssues = useCallback(() => {
+    if (!edgePortValidationIssues.length) return false;
+    const firstIssue = edgePortValidationIssues[0] || null;
+    if (firstIssue?.edgeId) {
+      selectedEdgeId.value = firstIssue.edgeId;
+    }
+    showToast(firstIssue?.message || "Workflow has invalid edge port bindings", "error");
+    return true;
+  }, [edgePortValidationIssues]);
   const createWorkflowSnapshotForCopilot = useCallback(() => ({
     ...(workflow || {}),
     nodes: normalizeNodesForCanvas(nodesRef.current || []),
-    edges: Array.isArray(edgesRef.current) ? [...edgesRef.current] : [],
-  }), [normalizeNodesForCanvas, workflow]);
+    edges: normalizeEdgesForCanvas(edgesRef.current || []),
+  }), [normalizeEdgesForCanvas, normalizeNodesForCanvas, workflow]);
   const openWorkflowCopilotFromCanvas = useCallback(async ({
     intent = "explain",
     nodeId = "",
@@ -2100,7 +2204,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
 
   useEffect(() => {
     const nextNodes = normalizeNodesForCanvas(workflow?.nodes || []);
-    const nextEdges = workflow?.edges || [];
+    const nextEdges = normalizeEdgesForCanvas(workflow?.edges || []);
     if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
     historyPendingSnapshotRef.current = null;
     nodesRef.current = nextNodes;
@@ -2116,7 +2220,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     setEditingNode(null);
     setContextMenu(null);
     setShowNodePalette(false);
-  }, [workflow?.id, workflowSnapshotKey, normalizeNodesForCanvas]);
+  }, [normalizeEdgesForCanvas, workflow?.id, workflowSnapshotKey, normalizeNodesForCanvas]);
 
   useEffect(() => {
     if (!workflow?.id) {
@@ -2456,13 +2560,17 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
 
   const scheduleSave = useCallback((nextNodes, nextEdges) => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    const snapshot = serializeGraphSnapshot(normalizeNodesForCanvas(nextNodes), nextEdges);
+    const snapshot = serializeGraphSnapshot(normalizeNodesForCanvas(nextNodes), normalizeEdgesForCanvas(nextEdges, nextNodes));
     saveTimer.current = setTimeout(() => {
       if (!workflow?.id) return;
       const latest = parseGraphSnapshot(snapshot);
-      saveWorkflow({ ...workflow, nodes: normalizeNodesForCanvas(latest.nodes), edges: latest.edges });
+      saveWorkflow({
+        ...workflow,
+        nodes: normalizeNodesForCanvas(latest.nodes),
+        edges: normalizeEdgesForCanvas(latest.edges, latest.nodes),
+      });
     }, 1500);
-  }, [normalizeNodesForCanvas, workflow]);
+  }, [normalizeEdgesForCanvas, normalizeNodesForCanvas, workflow]);
 
   const applyGraphChange = useCallback((updater, options = {}) => {
     const currentNodes = nodesRef.current;
@@ -2926,6 +3034,68 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     return ports.find((port) => port.name === portName) || ports[0] || null;
   }, [getNodeById, nodeTypeMap]);
 
+  const getEdgePortBindingState = useCallback((edge) => {
+    if (!edge) return null;
+    const validation = validateEdgePortMapping(edge, nodeLookup, nodeTypeMap);
+    return {
+      edge,
+      sourceNode: validation.sourceNode,
+      targetNode: validation.targetNode,
+      sourcePorts: validation.sourcePorts,
+      targetPorts: validation.targetPorts,
+      requestedSourcePort: validation.requestedSourcePortName || validation.sourcePort?.name || "default",
+      requestedTargetPort: validation.requestedTargetPortName || validation.targetPort?.name || "default",
+      sourcePort: validation.sourcePort,
+      targetPort: validation.targetPort,
+      validationErrors: validation.issues.map((issue) => issue.message),
+    };
+  }, [nodeLookup, nodeTypeMap]);
+
+  const updateEdgePortMapping = useCallback((edgeId, patch = {}) => {
+    const edge = edgesRef.current.find((entry) => entry.id === edgeId) || null;
+    if (!edge) return false;
+
+    const patchCheck = canUpdateCanvasEdgePortMapping(edge, patch, nodesRef.current, nodeTypeMap);
+    if (!patchCheck.allowed) {
+      showToast(patchCheck.blockingIssue?.message || "Invalid port binding", "error");
+      return false;
+    }
+
+    const validation = patchCheck.validation;
+    const nextSourcePortName = validation.sourcePort?.name || validation.requestedSourcePortName || "default";
+    const nextTargetPortName = validation.targetPort?.name || validation.requestedTargetPortName || "default";
+    const nextEdgeId = `${edge.source}:${nextSourcePortName}->${edge.target}:${nextTargetPortName}`;
+    const duplicate = edgesRef.current.some((entry) => (
+      entry.id !== edgeId
+      && entry.source === edge.source
+      && entry.target === edge.target
+      && String(entry.sourcePort ?? entry.fromPort ?? "default").trim() === nextSourcePortName
+      && String(entry.targetPort ?? entry.toPort ?? "default").trim() === nextTargetPortName
+    ));
+    if (duplicate) {
+      showToast("An edge with the selected port binding already exists", "error");
+      return false;
+    }
+
+    applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+      nodes: currentNodes,
+      edges: currentEdges.map((entry) => {
+        if (entry.id !== edgeId) return entry;
+        return {
+          ...entry,
+          ...patch,
+          id: nextEdgeId,
+          sourcePort: nextSourcePortName,
+          targetPort: nextTargetPortName,
+          sourcePortType: validation.sourcePort?.type || "Any",
+          targetPortType: validation.targetPort?.type || "Any",
+        };
+      }),
+    }));
+    selectedEdgeId.value = nextEdgeId;
+    return true;
+  }, [applyGraphChange, nodeTypeMap]);
+
   const onOutputPortMouseDown = useCallback((nodeId, portName, e) => {
     e.stopPropagation();
     const sourcePort = getOutputPortDescriptor(nodeId, portName);
@@ -3097,6 +3267,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     }), { history: "debounced" });
   }, [applyGraphChange]);
 
+
   useEffect(() => () => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
@@ -3177,7 +3348,15 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         <${Button} variant="contained" size="small" onClick=${() => openNodePalette()} sx=${{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <span style="font-size: 18px;">+</span> Add Node /
         <//>
-        <${Button} variant="outlined" size="small" onClick=${() => { if (workflow) saveWorkflow({ ...workflow, nodes: normalizeNodesForCanvas(nodesRef.current), edges: edgesRef.current }); }}>
+        <${Button} variant="outlined" size="small" onClick=${() => {
+          if (!workflow) return;
+          if (reportEdgeValidationIssues()) return;
+          saveWorkflow({
+            ...workflow,
+            nodes: normalizeNodesForCanvas(nodesRef.current),
+            edges: normalizeEdgesForCanvas(edgesRef.current, nodesRef.current),
+          });
+        }}>
           <span class="btn-icon">${resolveIcon("save")}</span>
           Save
         <//>
@@ -3189,6 +3368,9 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
             if (!workflow?.id) return;
             if (workflow?.enabled === false) {
               showToast("Workflow is paused. Resume it before running.", "warning");
+              return;
+            }
+            if (reportEdgeValidationIssues()) {
               return;
             }
             openExecuteDialog(workflow.id);
@@ -3382,7 +3564,17 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
             const edgePath = curvePath(from.x, from.y, to.x, to.y);
             const isActiveFlow = liveHighlightEnabled && liveEdgeActivity[edge.id];
             return html`
-              <g key=${edge.id} class="wf-edge" onClick=${(e) => { e.stopPropagation(); selectedEdgeId.value = edge.id; }}>
+              <g
+                key=${edge.id}
+                class="wf-edge"
+                onClick=${(e) => {
+                  e.stopPropagation();
+                  selectedEdgeId.value = edge.id;
+                  selectedNodeId.value = null;
+                  setSelectedNodeIds(new Set());
+                  setEditingNode(null);
+                }}
+              >
                 <path
                   d=${edgePath}
                   fill="none"
@@ -3741,6 +3933,96 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
             Delete
           <//>
         </div>
+      `}
+
+      ${!editingNode && selectedEdge && html`
+        ${(() => {
+          const binding = getEdgePortBindingState(selectedEdge);
+          if (!binding) return null;
+          const sourceLabel = binding.sourceNode?.label || binding.edge.source;
+          const targetLabel = binding.targetNode?.label || binding.edge.target;
+          const sourceOptions = binding.sourcePorts.some((port) => port.name === binding.requestedSourcePort)
+            ? binding.sourcePorts
+            : [{ name: binding.requestedSourcePort, label: `${binding.requestedSourcePort} (missing)` }, ...binding.sourcePorts];
+          const targetOptions = binding.targetPorts.some((port) => port.name === binding.requestedTargetPort)
+            ? binding.targetPorts
+            : [{ name: binding.requestedTargetPort, label: `${binding.requestedTargetPort} (missing)` }, ...binding.targetPorts];
+          return html`
+            <div class="wf-config-panel" style="position: absolute; top: 0; right: 0; width: 380px; height: 100%; background: var(--color-bg, #0d1117); border-left: 1px solid var(--color-border, #2a3040); z-index: 25; overflow-y: auto; padding: 16px;">
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                <span class="icon-inline" style="font-size: 20px; color: #60a5fa;">${resolveIcon("git-branch") || ICONS.dot}</span>
+                <div style="flex: 1;">
+                  <div style="font-size: 16px; font-weight: 700; color: var(--color-text, white);">Port Bindings</div>
+                  <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5);">${sourceLabel} → ${targetLabel}</div>
+                </div>
+                <${IconButton} size="small" onClick=${() => { selectedEdgeId.value = null; }}>
+                  ${resolveIcon("close") || "✕"}
+                </${IconButton}>
+              </div>
+
+              <div style="display: grid; gap: 12px; margin-bottom: 16px;">
+                <div>
+                  <label style="display: block; font-size: 12px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 6px;">Source Port</label>
+                  <select
+                    class="wf-input"
+                    value=${binding.requestedSourcePort}
+                    onChange=${(e) => updateEdgePortMapping(binding.edge.id, { sourcePort: e.target.value })}
+                  >
+                    ${sourceOptions.map((port) => html`<option key=${port.name} value=${port.name}>${port.label || port.name}</option>`)}
+                  </select>
+                </div>
+                <div>
+                  <label style="display: block; font-size: 12px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 6px;">Target Port</label>
+                  <select
+                    class="wf-input"
+                    value=${binding.requestedTargetPort}
+                    onChange=${(e) => updateEdgePortMapping(binding.edge.id, { targetPort: e.target.value })}
+                  >
+                    ${targetOptions.map((port) => html`<option key=${port.name} value=${port.name}>${port.label || port.name}</option>`)}
+                  </select>
+                </div>
+              </div>
+
+              ${binding.validationErrors.length > 0 && html`
+                <div style="margin-bottom: 16px; border: 1px solid #7f1d1d; background: #450a0a; color: #fecaca; border-radius: 8px; padding: 10px 12px;">
+                  <div style="font-size: 12px; font-weight: 700; margin-bottom: 6px;">Validation Error</div>
+                  <div style="display: grid; gap: 4px; font-size: 12px;">
+                    ${binding.validationErrors.map((message) => html`<div key=${message}>${message}</div>`)}
+                  </div>
+                </div>
+              `}
+
+              <div style="display: grid; gap: 8px; margin-bottom: 16px;">
+                <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5);">
+                  <strong style="color: var(--color-text, white);">Edge ID:</strong> ${binding.edge.id}
+                </div>
+                <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5);">
+                  <strong style="color: var(--color-text, white);">Source:</strong> ${binding.edge.source}
+                </div>
+                <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5);">
+                  <strong style="color: var(--color-text, white);">Target:</strong> ${binding.edge.target}
+                </div>
+                ${binding.edge.condition && html`
+                  <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5);">
+                    <strong style="color: var(--color-text, white);">Condition:</strong> ${binding.edge.condition}
+                  </div>
+                `}
+                ${binding.edge.backEdge && html`
+                  <div style="font-size: 12px; color: #fbbf24;">Back-edge routing enabled</div>
+                `}
+              </div>
+
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <${Button} variant="outlined" size="small" onClick=${() => { selectedEdgeId.value = null; }}>
+                  Close
+                </${Button}>
+                <${Button} variant="outlined" color="error" size="small" onClick=${() => deleteEdge(binding.edge.id)}>
+                  Delete Edge
+                </${Button}>
+              </div>
+            </div>
+          `;
+        })()}
       `}
 
       <!-- Node Config Editor (side panel) -->
@@ -5843,6 +6125,85 @@ function RunHistoryView() {
           <//>
         </div>
       `}
+
+      ${!editingNode && selectedEdge && html`
+        ${(() => {
+          const edgeValidation = validateEdgePortMapping(selectedEdge, nodeLookup, nodeTypeMap);
+          const sourceNode = edgeValidation.sourceNode;
+          const targetNode = edgeValidation.targetNode;
+          const sourceValue = edgeValidation.requestedSourcePortName || edgeValidation.sourcePort?.name || "default";
+          const targetValue = edgeValidation.requestedTargetPortName || edgeValidation.targetPort?.name || "default";
+          const sourceOptions = edgeValidation.requestedSourcePortName && !edgeValidation.sourcePort
+            ? [{ name: edgeValidation.requestedSourcePortName, label: `Unknown output port: ${edgeValidation.requestedSourcePortName}` }, ...edgeValidation.sourcePorts]
+            : edgeValidation.sourcePorts;
+          const targetOptions = edgeValidation.requestedTargetPortName && !edgeValidation.targetPort
+            ? [{ name: edgeValidation.requestedTargetPortName, label: `Unknown input port: ${edgeValidation.requestedTargetPortName}` }, ...edgeValidation.targetPorts]
+            : edgeValidation.targetPorts;
+          const validationMessage = edgeValidation.issues[0]?.message || "";
+
+          return html`
+            <div class="wf-config-panel" style="position: absolute; top: 0; right: 0; width: 380px; height: 100%; background: var(--color-bg, #0d1117); border-left: 1px solid var(--color-border, #2a3040); z-index: 25; overflow-y: auto; padding: 16px;">
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                <span class="icon-inline" style="font-size: 20px;">${resolveIcon("link") || ICONS.arrowRight}</span>
+                <div style="flex: 1;">
+                  <div style="font-size: 15px; font-weight: 700; color: var(--color-text, #f8fafc);">Selected edge</div>
+                  <div style="font-size: 12px; color: var(--color-text-secondary, #94a3b8);">${sourceNode?.label || selectedEdge.source} → ${targetNode?.label || selectedEdge.target}</div>
+                </div>
+                <${IconButton} size="small" onClick=${() => { selectedEdgeId.value = null; }}>
+                  <span class="icon-inline">${resolveIcon("close")}</span>
+                <//>
+              </div>
+
+              <div style="display:flex; flex-direction:column; gap:12px;">
+                <div style="padding: 12px; border: 1px solid var(--color-border, #2a3040); border-radius: 10px; background: var(--color-bg-secondary, #131722);">
+                  <div style="font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #93c5fd; margin-bottom: 8px;">Port Bindings</div>
+                  <div style="display:flex; flex-direction:column; gap:10px;">
+                    <label style="display:flex; flex-direction:column; gap:4px;">
+                      <span style="font-size: 12px; color: var(--color-text-secondary, #94a3b8);">Source Port</span>
+                      <select
+                        value=${sourceValue}
+                        class="wf-input"
+                        onInput=${(e) => updateEdgePortMapping(selectedEdge.id, { sourcePort: e.target.value })}
+                      >
+                        ${sourceOptions.map((port) => html`<option key=${port.name} value=${port.name}>${port.label || port.name}${port.type ? ` (${port.type})` : ""}</option>`)}
+                      </select>
+                    </label>
+
+                    <label style="display:flex; flex-direction:column; gap:4px;">
+                      <span style="font-size: 12px; color: var(--color-text-secondary, #94a3b8);">Target Port</span>
+                      <select
+                        value=${targetValue}
+                        class="wf-input"
+                        onInput=${(e) => updateEdgePortMapping(selectedEdge.id, { targetPort: e.target.value })}
+                      >
+                        ${targetOptions.map((port) => html`<option key=${port.name} value=${port.name}>${port.label || port.name}${port.type ? ` (${port.type})` : ""}</option>`)}
+                      </select>
+                    </label>
+                  </div>
+                </div>
+
+                ${validationMessage
+                  ? html`<${Alert} severity="error">${validationMessage}<//>`
+                  : html`<${Alert} severity="info">Select runtime-discovered ports to keep this edge compatible before execution.<//>`}
+
+                <div style="padding: 12px; border: 1px solid var(--color-border, #2a3040); border-radius: 10px; background: var(--color-bg-secondary, #131722);">
+                  <div style="font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #cbd5e1; margin-bottom: 8px;">Resolved types</div>
+                  <div style="font-size: 12px; color: var(--color-text-secondary, #94a3b8);">
+                    ${edgeValidation.sourcePort?.label || edgeValidation.sourcePort?.name || "default"} → ${edgeValidation.targetPort?.label || edgeValidation.targetPort?.name || "default"}
+                  </div>
+                  <div style="font-size: 12px; color: var(--color-text-secondary, #94a3b8); margin-top: 4px;">
+                    ${edgeValidation.sourcePort?.type || "Any"} → ${edgeValidation.targetPort?.type || "Any"}
+                  </div>
+                </div>
+
+                <${Button} color="error" variant="outlined" onClick=${() => deleteEdge(selectedEdge.id)}>
+                  Delete Edge
+                <//>
+              </div>
+            </div>
+          `;
+        })()}
+      `}
     </div>
   `;
 }
@@ -6294,3 +6655,4 @@ export function WorkflowsTab() {
     </div>
   `;
 }
+

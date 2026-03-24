@@ -89,12 +89,13 @@ function shouldRetryProviderQueryWithoutDirectory(err) {
   );
 }
 
-async function invokeProviderEndpoint(endpoint, requestOptions) {
+async function invokeProviderEndpoint(providerApi, methodName, requestOptions) {
+  const endpoint = providerApi?.[methodName];
   if (typeof endpoint !== "function") return null;
 
   if (requestOptions) {
     try {
-      return await endpoint(requestOptions);
+      return await endpoint.call(providerApi, requestOptions);
     } catch (err) {
       if (!shouldRetryProviderQueryWithoutDirectory(err)) {
         return null;
@@ -103,7 +104,7 @@ async function invokeProviderEndpoint(endpoint, requestOptions) {
   }
 
   try {
-    return await endpoint();
+    return await endpoint.call(providerApi);
   } catch {
     return null;
   }
@@ -151,8 +152,8 @@ async function discoverViaSDK(existingClient = null) {
 
     // Fetch provider list + auth methods in parallel
     const [providerRes, authRes] = await Promise.all([
-      invokeProviderEndpoint(client?.provider?.list, requestOptions),
-      invokeProviderEndpoint(client?.provider?.auth, requestOptions),
+      invokeProviderEndpoint(client?.provider, "list", requestOptions),
+      invokeProviderEndpoint(client?.provider, "auth", requestOptions),
     ]);
 
     if (!providerRes?.data) return null;
