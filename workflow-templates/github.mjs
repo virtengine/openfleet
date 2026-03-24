@@ -746,8 +746,8 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
     }, { x: 400, y: 300 }),
 
     node("inspect-pr", "action.run_command", "Inspect Single PR", {
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const {execFileSync}=require('child_process');",
         "const ctx=(()=>{try{return JSON.parse(String(process.env.BOSUN_PR_CONTEXT||'{}'))}catch{return {}}})();",
         "const repo=String(ctx.repo||'').trim();",
@@ -781,8 +781,7 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "  catch{classification='ready';reason='ready_without_checks';}",
         "}",
         "console.log(JSON.stringify({success:true,repo,prNumber,url:String(pr?.url||ctx.prUrl||''),branch:String(pr?.headRefName||branch||''),baseBranch:String(pr?.baseRefName||baseBranch||'main'),title:String(pr?.title||ctx.taskTitle||''),mergeable:String(pr?.mergeable||''),classification,reason,ciKicked,hasFailure,hasPending,failedCheckNames}));",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: true,
       failOnError: false,
       env: {
@@ -800,8 +799,8 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
     }, { x: 220, y: 560 }),
 
     node("programmatic-fix", "action.run_command", "Repair Attempt", {
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const {execFileSync}=require('child_process');",
         "const data=(()=>{try{return JSON.parse(String(process.env.BOSUN_PR_INSPECT||'{}'))}catch{return {}}})();",
         "const repo=String(data.repo||'').trim();",
@@ -850,8 +849,7 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "  }",
         "}",
         "console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:classification==='conflict'?'merge_conflict_requires_code_resolution':'repair_required',failedCheckNames}));",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: true,
       failOnError: false,
       env: {
@@ -894,8 +892,8 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
     }, { x: 620, y: 560 }),
 
     node("programmatic-review", "action.run_command", "Review Gate: Merge Single PR", {
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const {execFileSync}=require('child_process');",
         "const pr=(()=>{try{return JSON.parse(String(process.env.BOSUN_PR_INSPECT||'{}'))}catch{return {}}})();",
         "const repo=String(pr.repo||'').trim();",
@@ -936,8 +934,7 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "}catch(e){",
         "  console.log(JSON.stringify({mergedCount:0,heldCount:1,skippedCount:0,held:[{repo,number:n,reason:'merge_attempt_failed',error:String(e?.message||e)}]}));",
         "}",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: true,
       failOnError: false,
       env: {
@@ -1061,8 +1058,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
       //   • Outputs a JSON summary used by all downstream nodes/agents
       // Total gh API calls this node makes: R list calls + N edits
       // (R = target repos, N = newly-broken PRs needing fix label).
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const fs=require('fs');",
         "const path=require('path');",
         "const {execFileSync}=require('child_process');",
@@ -1213,8 +1210,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  ciKicked,",
         "  fixNeeded:conflicts.length+securityFailures.length+ciFailures.length",
         "}));",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: false,
       failOnError: true,
     }, { x: 400, y: 200 }),
@@ -1250,8 +1246,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     }, { x: 120, y: 640 }),
 
     node("programmatic-security-fix", "action.run_command", "Collect Security Alerts", {
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const {execFileSync}=require('child_process');",
         "const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||'');",
         "const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})();",
@@ -1294,8 +1290,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  needsAgent.push({repo,number:n,branch,base:String(item?.base||'').trim(),url:String(item?.url||''),title:String(item?.title||''),reason:'security_code_scanning_failure',securityCheckNames,failedCheckNames:Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[],alerts,fetchError});",
         "}",
         "console.log(JSON.stringify({securityFailureCount:securityFailures.length,alertsFetched,needsAgentCount:needsAgent.length,needsAgent}));",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: true,
       failOnError: false,
       env: {
@@ -1341,8 +1336,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     }, { x: 280, y: 640 }),
 
     node("programmatic-fix", "action.run_command", "Programmatic Fix Pass", {
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const {execFileSync}=require('child_process');",
         "const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||'');",
         "const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})();",
@@ -1400,8 +1395,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  needsAgent.push({repo,number:n,branch,base,mergeable,reason:'merge_conflict_requires_code_resolution'});",
         "}",
         "console.log(JSON.stringify({rerunRequested,branchUpdated,ciFailureCount:ciFailures.length,conflictCount:conflicts.length,needsAgentCount:needsAgent.length,needsAgent}));",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: true,
       failOnError: false,
       env: {
@@ -1451,8 +1445,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     }, { x: 600, y: 530 }),
 
     node("programmatic-review", "action.run_command", "Review Gate: Programmatic Merge", {
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const {execFileSync}=require('child_process');",
         "const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||'');",
         "const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})();",
@@ -1521,8 +1515,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  }",
         "}",
         "console.log(JSON.stringify({mergedCount:merged.length,heldCount:held.length,skippedCount:skipped.length,merged,held,skipped}));",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: true,
       failOnError: false,
       env: {
@@ -1546,8 +1539,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     // Squash merges leave orphan branches because --auto defers deletion.
     // This node runs after the merge gate and prunes any lingering heads.
     node("cleanup-merged-branches", "action.run_command", "Prune Merged Branches", {
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const {execFileSync}=require('child_process');",
         "function gh(a){return execFileSync('gh',a,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
         "const repos=String(process.env.BOSUN_REPO_LIST||'').split(',').map(s=>s.trim()).filter(Boolean);",
@@ -1564,8 +1557,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  }catch(e){}",
         "}",
         "console.log(JSON.stringify({deletedBranches:deleted}));",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: true,
       failOnError: false,
       env: {
@@ -1653,8 +1645,8 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
     }, { x: 400, y: 50 }),
 
     node("fetch-pr-state", "action.run_command", "Fetch Bosun PR State", {
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const fs=require('fs');",
         "const path=require('path');",
         "const {execFileSync}=require('child_process');",
@@ -1739,8 +1731,7 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "  merged:recentMerged.map(p=>({n:p.number,repo:p.__repo||'',title:p.title,branch:p.headRefName,taskId:extractTaskId(p)})),",
         "  open:open.filter(p=>!p.isDraft).map(p=>({n:p.number,repo:p.__repo||'',title:p.title,branch:p.headRefName,taskId:extractTaskId(p)})),",
         "}));",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: true,
     }, { x: 400, y: 200 }),
 
@@ -1754,8 +1745,8 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
     }, { x: 400, y: 370 }),
 
     node("sync-programmatic", "action.run_command", "Sync PR State → Kanban (Programmatic)", {
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const {execFileSync}=require('child_process');",
         "const fs=require('fs');",
         "const raw=String(process.env.BOSUN_FETCH_PR_STATE||'');",
@@ -1811,8 +1802,7 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "}",
         "const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim());",
         "console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:actionableUnresolved.length>0}));",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: true,
       failOnError: false,
       env: {
@@ -2126,3 +2116,4 @@ export const SDK_CONFLICT_RESOLVER_TEMPLATE = {
     },
   },
 };
+
