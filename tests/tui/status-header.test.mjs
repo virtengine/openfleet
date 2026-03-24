@@ -2,14 +2,19 @@ import React from "react";
 import { describe, expect, it } from "vitest";
 
 import StatusHeader, {
-  formatTokenSummary,
+  buildStatusHeaderModel,
 } from "../../tui/components/status-header.mjs";
 import { FIXTURE_STATS } from "./fixtures.mjs";
 import { renderInk } from "./render-ink.mjs";
 
 describe("tui status header", () => {
   it("formats token totals consistently", () => {
-    expect(formatTokenSummary(FIXTURE_STATS)).toBe("1.2K in / 5.7K out / 6.9K total");
+    const model = buildStatusHeaderModel({
+      stats: FIXTURE_STATS,
+      connectionState: "connected",
+    });
+
+    expect(model.row1).toContain("Tokens: in 1.2k | out 5.7k | total 6.9k");
   });
 
   it("renders connection state and token summary", async () => {
@@ -21,10 +26,9 @@ describe("tui status header", () => {
       }),
     );
 
-    expect(view.text()).toContain("Bosun TUI");
     expect(view.text()).toContain("Connected");
-    expect(view.text()).toContain("Tokens: 1.2K in / 5.7K out / 6.9K total");
-    expect(view.text()).toContain("[1] Status");
+    expect(view.text()).toContain("Tokens: in 1.2k | out 5.7k | total 6.9k");
+    expect(view.text()).toContain("Project: No project");
 
     await view.unmount();
   });

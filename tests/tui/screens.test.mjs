@@ -86,10 +86,10 @@ describe("tui screen rendering", () => {
       { columns: 220 },
     );
 
-    expect(view.text()).toContain("Task board view is read-only");
-    expect(view.text()).toContain("todo (1)");
+    expect(view.text()).toContain("[F]ilter: (title, tag, id)");
+    expect(view.text()).toContain("TODO (1)");
     expect(view.text()).toContain("Review PR #404");
-    expect(view.text()).toContain("blocked (0)");
+    expect(view.text()).toContain("DONE (1)");
 
     await view.unmount();
   });
@@ -141,7 +141,7 @@ describe("tui screen rendering", () => {
     await waitFor(() => view.text().includes("Runtime Snapshot"));
 
     await view.press("2");
-    await waitFor(() => view.text().includes("Task board view is read-only"));
+    await waitFor(() => view.text().includes("[F]ilter: (title, tag, id)"));
 
     await view.press("3");
     await waitFor(() => view.text().includes("Backoff queue"));

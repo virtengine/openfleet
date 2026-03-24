@@ -34,7 +34,7 @@ describe("tui unit helpers", () => {
       }),
     );
 
-    expect(view.text()).toContain("Tokens: 12.3K in / 4.6K out / 16.9K total");
+    expect(view.text()).toContain("Tokens: in 12.3k | out 4.6k | total 16.9k");
     expect(view.text()).toContain("Connected");
 
     await view.unmount();

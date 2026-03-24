@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import App from "../../tui/app.mjs";
 import { FIXTURE_SESSIONS, FIXTURE_STATS, FIXTURE_TASKS, createMockWsClient } from "./fixtures.mjs";
 import { renderInk } from "./render-ink.mjs";
+import { waitFor } from "./render-helpers.mjs";
 
 describe("tui app integration", () => {
   it("navigates between screens and applies websocket updates through the injected client", async () => {
@@ -35,14 +36,14 @@ describe("tui app integration", () => {
     expect(view.text()).toContain("Runtime Snapshot");
 
     await view.press("2");
-    expect(view.text()).toContain("Task board view is read-only");
+    await waitFor(() => view.text().includes("[F]ilter: (title, tag, id)"));
 
     wsClient.emit("task:create", FIXTURE_TASKS[4]);
     await view.press(" ", 40);
-    expect(view.text()).toContain("Ship smoke test");
+    await waitFor(() => view.text().includes("Ship smoke test"));
 
     await view.press("3");
-    expect(view.text()).toContain("Backoff queue");
+    await waitFor(() => view.text().includes("Backoff queue"));
     expect(view.text()).toContain("Synthesized failing smoke test");
 
     await view.unmount();
