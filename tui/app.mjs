@@ -24,6 +24,19 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
   const [tasks, setTasks] = useState([]);
   const [error, setError] = useState(null);
 
+  const applyTaskUpdate = useCallback((task) => {
+    if (!task?.id) return;
+    setTasks((prev) => {
+      const idx = prev.findIndex((candidate) => candidate.id === task.id);
+      if (idx >= 0) {
+        const updated = [...prev];
+        updated[idx] = task;
+        return updated;
+      }
+      return [task, ...prev];
+    });
+  }, []);
+
   useEffect(() => {
     const bridge = wsBridge({ host, port });
 
@@ -73,21 +86,8 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
       setSessions((prev) => prev.filter((candidate) => candidate.id !== session.id));
     });
 
-    bridge.on("task:update", (task) => {
-      setTasks((prev) => {
-        const idx = prev.findIndex((candidate) => candidate.id === task.id);
-        if (idx >= 0) {
-          const updated = [...prev];
-          updated[idx] = task;
-          return updated;
-        }
-        return [...prev, task];
-      });
-    });
-
-    bridge.on("task:create", (task) => {
-      setTasks((prev) => [...prev, task]);
-    });
+    bridge.on("task:update", applyTaskUpdate);
+    bridge.on("task:create", applyTaskUpdate);
 
     bridge.on("task:delete", (taskId) => {
       setTasks((prev) => prev.filter((task) => task.id !== taskId));
@@ -101,7 +101,6 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
     };
 
     const retryUnsubscribes = [];
-
     retryUnsubscribes.push(bridge.on("retry:update", applyRetryQueue));
     retryUnsubscribes.push(bridge.on("retry-queue-updated", applyRetryQueue));
 
@@ -113,100 +112,9 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
           unsubscribe();
         }
       });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
-
-    return () => {
-      retryUnsubscribes.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      });
       bridge.disconnect();
     };
-  }, [host, port]);
+  }, [applyTaskUpdate, host, port]);
 
   const handleKeyPress = useCallback((key) => {
     if (key === "q") {
@@ -249,6 +157,8 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
           stats=${stats}
           sessions=${sessions}
           tasks=${tasks}
+          isActive=${screen === "tasks"}
+          onTaskCreated=${applyTaskUpdate}
           wsBridge=${wsBridgeInstance}
           host=${host}
           port=${port}
@@ -257,7 +167,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
         />
       <//>
       <${Box} paddingX=${1} borderStyle="single">
-        <${Text} dimColor>[1] Status [2] Tasks [3] Agents [q] Quit<//>
+        <${Text} dimColor>[1] Status [2] Tasks [3] Agents [c] Create task [q] Quit<//>
       <//>
     <//>
   `;
