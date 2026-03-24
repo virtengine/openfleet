@@ -1472,6 +1472,7 @@ describe("github template CLI compatibility", () => {
     const syncNode = syncTemplate.nodes.find((n) => n.id === "sync-programmatic");
     const fetchCommand = fetchNode?.config?.command || "";
     const syncCommand = syncNode?.config?.command || "";
+    const syncArgs = Array.isArray(syncNode?.config?.args) ? syncNode.config.args.join("\n") : "";
 
     expect(watchdogFixNode?.config?.env?.BOSUN_FETCH_AND_CLASSIFY)
       .toBe("{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}");
@@ -1486,22 +1487,22 @@ describe("github template CLI compatibility", () => {
     expect(fetchCommand).toContain("if(repo){ mergedArgs.push('--repo',repo); openArgs.push('--repo',repo); }");
     expect(fetchCommand).toContain("reposScanned: repoTargets.length");
     expect(fetchCommand).toContain("repo:p.__repo||''");
-    expect(syncCommand).toContain("const maxBuffer=25*1024*1024;");
-    expect(syncCommand).toContain("const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':'';");
-    expect(syncCommand).toContain("const taskRunner=cliPath?'cli':(taskCli?'task-cli':'');");
-    expect(syncCommand).toContain("['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']");
-    expect(syncCommand).toContain("reviewStatus");
-    expect(syncCommand).toContain("runTask(['update',id,'--status','inreview'])");
-    expect(syncCommand).toContain("parseJsonObject(raw)");
-    expect(syncCommand).toContain(String.raw`const candidate=lines.slice(start).join('\n').trim();`);
-    expect(syncCommand).toContain("token==='['||token==='{'");
-    expect(syncCommand).toContain("const task=parseJsonObject(raw)");
-    expect(syncCommand).toContain("function listTasks(){");
-    expect(syncCommand).toContain("function resolveTaskId(item){");
-    expect(syncCommand).toContain("const taskBranch=String(task?.branchName||'').trim();");
-    expect(syncCommand).toContain("task_lookup_failed");
-    expect(syncCommand).toContain("const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||\'\').trim());");
-    expect(syncCommand).not.toContain("current==='todo'||current==='inprogress'");
+    expect(syncCommand).toBe("node");
+    expect(syncArgs).toContain("const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':'';");
+    expect(syncArgs).toContain("const taskRunner=cliPath?'cli':(taskCli?'task-cli':'');");
+    expect(syncArgs).toContain("['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']");
+    expect(syncArgs).toContain("reviewStatus");
+    expect(syncArgs).toContain("runTask(['update',id,'--status','inreview'])");
+    expect(syncArgs).toContain("parseJsonObject(raw)");
+    expect(syncArgs).toContain(String.raw`const candidate=lines.slice(start).join('\n').trim();`);
+    expect(syncArgs).toContain("token==='['||token==='{'||token.startsWith('[{')");
+    expect(syncArgs).toContain("const task=parseJsonObject(raw)");
+    expect(syncArgs).toContain("function listTasks(){");
+    expect(syncArgs).toContain("function resolveTaskId(item){");
+    expect(syncArgs).toContain("const taskBranch=String(task?.branchName||'').trim();");
+    expect(syncArgs).toContain("task_lookup_failed");
+    expect(syncArgs).toContain("const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||\'\').trim());");
+    expect(syncArgs).not.toContain("current==='todo'||current==='inprogress'");
 
     const syncAgentNeededNode = syncTemplate.nodes.find((n) => n.id === "sync-agent-needed");
     expect(syncAgentNeededNode?.config?.expression)
@@ -1588,5 +1589,3 @@ describe("template category coverage", () => {
     }
   });
 });
-
-

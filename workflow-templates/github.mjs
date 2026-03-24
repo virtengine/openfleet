@@ -781,8 +781,7 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "  catch{classification='ready';reason='ready_without_checks';}",
         "}",
         "console.log(JSON.stringify({success:true,repo,prNumber,url:String(pr?.url||ctx.prUrl||''),branch:String(pr?.headRefName||branch||''),baseBranch:String(pr?.baseRefName||baseBranch||'main'),title:String(pr?.title||ctx.taskTitle||''),classification,reason,ciKicked,hasFailure,hasPending,failedCheckNames}));",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: true,
       failOnError: false,
       env: {
@@ -836,8 +835,7 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "  }",
         "}",
         "console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:classification==='conflict'?'merge_conflict_requires_code_resolution':'repair_required',failedCheckNames}));",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: true,
       failOnError: false,
       env: {
@@ -922,8 +920,7 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "}catch(e){",
         "  console.log(JSON.stringify({mergedCount:0,heldCount:1,skippedCount:0,held:[{repo,number:n,reason:'merge_attempt_failed',error:String(e?.message||e)}]}));",
         "}",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: true,
       failOnError: false,
       env: {
@@ -1199,8 +1196,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  ciKicked,",
         "  fixNeeded:conflicts.length+securityFailures.length+ciFailures.length",
         "}));",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: false,
       failOnError: true,
     }, { x: 400, y: 200 }),
@@ -1280,8 +1276,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  needsAgent.push({repo,number:n,branch,base:String(item?.base||'').trim(),url:String(item?.url||''),title:String(item?.title||''),reason:'security_code_scanning_failure',securityCheckNames,failedCheckNames:Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[],alerts,fetchError});",
         "}",
         "console.log(JSON.stringify({securityFailureCount:securityFailures.length,alertsFetched,needsAgentCount:needsAgent.length,needsAgent}));",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: true,
       failOnError: false,
       env: {
@@ -1370,8 +1365,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  needsAgent.push({repo:String(item?.repo||'').trim(),number:String(item?.n||'').trim(),branch:String(item?.branch||'').trim(),base:String(item?.base||'').trim(),reason:'merge_conflict_requires_code_resolution'});",
         "}",
         "console.log(JSON.stringify({rerunRequested,ciFailureCount:ciFailures.length,conflictCount:conflicts.length,needsAgentCount:needsAgent.length,needsAgent}));",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: true,
       failOnError: false,
       env: {
@@ -1491,8 +1485,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  }",
         "}",
         "console.log(JSON.stringify({mergedCount:merged.length,heldCount:held.length,skippedCount:skipped.length,merged,held,skipped}));",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: true,
       failOnError: false,
       env: {
@@ -1534,8 +1527,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  }catch(e){}",
         "}",
         "console.log(JSON.stringify({deletedBranches:deleted}));",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: true,
       failOnError: false,
       env: {
@@ -1707,8 +1699,7 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "  merged:recentMerged.map(p=>({n:p.number,repo:p.__repo||'',title:p.title,branch:p.headRefName,taskId:extractTaskId(p)})),",
         "  open:open.filter(p=>!p.isDraft).map(p=>({n:p.number,repo:p.__repo||'',title:p.title,branch:p.headRefName,taskId:extractTaskId(p)})),",
         "}));",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: true,
     }, { x: 400, y: 200 }),
 
@@ -1722,8 +1713,8 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
     }, { x: 400, y: 370 }),
 
     node("sync-programmatic", "action.run_command", "Sync PR State → Kanban (Programmatic)", {
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const {execFileSync}=require('child_process');",
         "const fs=require('fs');",
         "const raw=String(process.env.BOSUN_FETCH_PR_STATE||'');",
@@ -1779,8 +1770,7 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "}",
         "const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim());",
         "console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:actionableUnresolved.length>0}));",
-        "\"",
-      ].join(" "),
+      ].join(" ")],
       continueOnError: true,
       failOnError: false,
       env: {
@@ -2094,3 +2084,4 @@ export const SDK_CONFLICT_RESOLVER_TEMPLATE = {
     },
   },
 };
+
