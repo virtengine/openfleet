@@ -283,12 +283,14 @@ export function resolveCanvasNodePorts(node, nodeTypes = []) {
   const typePorts = typeInfo?.ports || {};
   const typeInputs = Array.isArray(typeInfo?.inputs) ? typeInfo.inputs : typePorts.inputs;
   const typeOutputs = Array.isArray(typeInfo?.outputs) ? typeInfo.outputs : typePorts.outputs;
+  const nodeInputs = Array.isArray(node?.inputs) ? node.inputs : null;
+  const nodeOutputs = Array.isArray(node?.outputs) ? node.outputs : null;
   const inputSource = Array.isArray(node?.inputPorts) && node.inputPorts.length
     ? node.inputPorts
-    : typeInputs;
+    : (nodeInputs && nodeInputs.length ? nodeInputs : typeInputs);
   const outputSource = Array.isArray(node?.outputPorts) && node.outputPorts.length
     ? node.outputPorts
-    : typeOutputs;
+    : (nodeOutputs && nodeOutputs.length ? nodeOutputs : typeOutputs);
   const inputs = (Array.isArray(inputSource) ? inputSource : [])
     .map((port, index) => normalizePortDescriptor(port, "input", index));
   const outputs = (Array.isArray(outputSource) ? outputSource : [])
