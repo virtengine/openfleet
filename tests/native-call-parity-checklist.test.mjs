@@ -26,5 +26,6 @@ describe("native-call parity checklist", () => {
     expect(doc).toContain("tests/voice-provider-smoke.test.mjs");
     expect(doc).toContain("npm run check:native-call-parity");
     expect(doc).toContain(".github/workflows/ci.yaml");
+    expect(doc).toContain("formatVoiceTurnTrace()");
   });
 });
