@@ -6,6 +6,7 @@ describe("tui architecture scaffold", () => {
   const cwd = process.cwd();
   const cliSource = readFileSync(resolve(cwd, "cli.mjs"), "utf8");
   const entrySource = readFileSync(resolve(cwd, "bosun-tui.mjs"), "utf8");
+  const appSource = readFileSync(resolve(cwd, "ui/tui/App.js"), "utf8");
 
   it("routes the `bosun tui` subcommand before generic help handling", () => {
     const tuiRoutingIndex = cliSource.indexOf('args[0] === "tui"');
@@ -57,4 +58,15 @@ describe("tui architecture scaffold", () => {
       "ws://127.0.0.1:3080/ws?token=abc",
     );
   });
+  it("wires the tasks tab through the interactive TasksScreen", () => {
+    expect(appSource).toContain('import TasksScreen from "./TasksScreen.js"');
+    expect(appSource).toContain("screenInputLocked");
+    expect(appSource).toContain("setScreenInputLocked");
+    expect(appSource).toContain("if (screenInputLocked)");
+    expect(appSource).toContain("TasksScreen");
+    expect(appSource).toContain("combinedTasks");
+    expect(appSource).toContain("taskState.refresh");
+    expect(appSource).toContain("onInputCaptureChange");
+  });
 });
+

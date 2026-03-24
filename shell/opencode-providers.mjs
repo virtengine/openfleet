@@ -74,6 +74,29 @@ async function loadSDK() {
   }
 }
 
+function shouldRetryWithoutQuery(err) {
+  const status = err?.status ?? err?.response?.status ?? err?.cause?.status;
+  if (status === 400) return true;
+
+  const message = String(err?.message || err || "").toLowerCase();
+  return message.includes("400")
+    || message.includes("bad request")
+    || message.includes("unsupported option")
+    || message.includes("unexpected")
+    || message.includes("unknown query");
+}
+
+async function callProviderEndpoint(endpoint, requestOptions) {
+  try {
+    return requestOptions ? await endpoint(requestOptions) : await endpoint();
+  } catch (err) {
+    if (requestOptions && shouldRetryWithoutQuery(err)) {
+      return endpoint();
+    }
+    throw err;
+  }
+}
+
 // ── SDK-based discovery (preferred — uses running OpenCode server) ────────────
 
 /**
@@ -116,8 +139,8 @@ async function discoverViaSDK(existingClient = null) {
 
     // Fetch provider list + auth methods in parallel
     const [providerRes, authRes] = await Promise.all([
-      client.provider.list(requestOptions).catch(() => null),
-      client.provider.auth(requestOptions).catch(() => null),
+      callProviderEndpoint(client.provider.list.bind(client.provider), requestOptions).catch(() => null),
+      callProviderEndpoint(client.provider.auth.bind(client.provider), requestOptions).catch(() => null),
     ]);
 
     if (!providerRes?.data) return null;
@@ -492,4 +515,5 @@ export function buildExecutorEntry(providerID, modelFullId, overrides = {}) {
 export function invalidateCache() {
   _providerCache = { data: null, ts: 0 };
 }
+
 

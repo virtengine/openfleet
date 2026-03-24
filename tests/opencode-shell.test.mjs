@@ -665,5 +665,42 @@ describe("discoverProviders()", () => {
       }),
     );
   });
+
+  it("retries provider endpoints without directory query after a 400", async () => {
+    vi.resetModules();
+    const providerData = {
+      all: [{
+        id: "anthropic",
+        name: "Anthropic",
+        env: ["ANTHROPIC_API_KEY"],
+        models: {
+          "claude-sonnet-4": { id: "claude-sonnet-4", name: "Claude Sonnet 4" },
+        },
+      }],
+      connected: ["anthropic"],
+      default: { anthropic: "claude-sonnet-4" },
+    };
+    const authData = { anthropic: [{ type: "api_key", label: "API key" }] };
+    const list = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error("Failed to list models: 400"), { status: 400 }))
+      .mockResolvedValueOnce({ data: providerData });
+    const auth = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error("400 Bad Request"), { status: 400 }))
+      .mockResolvedValueOnce({ data: authData });
+    mockCreateOpencodeClient.mockReturnValue({ provider: { list, auth } });
+
+    const { discoverProviders } = await import("../shell/opencode-providers.mjs");
+    const snapshot = await discoverProviders({ force: true });
+
+    expect(list).toHaveBeenNthCalledWith(1, { query: { directory: process.cwd() } });
+    expect(list).toHaveBeenNthCalledWith(2);
+    expect(auth).toHaveBeenNthCalledWith(1, { query: { directory: process.cwd() } });
+    expect(auth).toHaveBeenNthCalledWith(2);
+    expect(snapshot.connectedIds).toEqual(["anthropic"]);
+    expect(snapshot.providers[0].models[0].fullId).toBe("anthropic/claude-sonnet-4");
+  });
 });
+
 

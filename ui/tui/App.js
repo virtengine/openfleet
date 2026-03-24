@@ -13,6 +13,7 @@ import {
 import { useWebSocket } from "./useWebSocket.js";
 import { useTasks } from "./useTasks.js";
 import { useWorkflows } from "./useWorkflows.js";
+import TasksScreen from "./TasksScreen.js";
 
 const html = htm.bind(React.createElement);
 
@@ -138,6 +139,7 @@ function ScreenFrame({ title, subtitle, children }) {
 export default function App({ config, configDir, host, port, protocol = "ws", initialScreen = "agents", terminalSize }) {
   const { exit } = useApp();
   const [activeTab, setActiveTab] = useState(initialScreen);
+  const [screenInputLocked, setScreenInputLocked] = useState(false);
   const wsState = useWebSocket({ host, port, configDir, protocol });
   const taskState = useTasks();
   const workflowState = useWorkflows(config);
@@ -148,6 +150,10 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
   );
 
   useInput((input, key) => {
+    if (screenInputLocked) {
+      return;
+    }
+
     if (input === KEY_BINDINGS.q) {
       exit();
       return;
@@ -213,11 +219,19 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
     `;
   } else if (activeTab === "tasks") {
     body = html`
-      <${ScreenFrame}
-        title="Tasks"
-        subtitle=${taskState.loading ? "Loading task store…" : `Showing ${combinedTasks.length} task(s).`}
-      >
-        ${taskState.error ? html`<${Text} color=${ANSI_COLORS.danger}>${taskState.error}<//>` : renderTable(taskRows)}
+      <${Box} flexDirection="column">
+        ${taskState.error
+          ? html`
+              <${Box} marginBottom=${1}>
+                <${Text} color=${ANSI_COLORS.danger}>${taskState.error}<//>
+              <//>
+            `
+          : null}
+        <${TasksScreen}
+          tasks=${combinedTasks}
+          onTasksChange=${taskState.refresh}
+          onInputCaptureChange=${setScreenInputLocked}
+        />
       <//>
     `;
   } else if (activeTab === "logs") {

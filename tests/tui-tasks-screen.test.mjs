@@ -1,7 +1,11 @@
+import React from "react";
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import stripAnsi from "strip-ansi";
+import { render } from "ink";
 
 import {
   formatColumnSummary,
@@ -18,8 +22,10 @@ import {
   validateTaskForm,
 } from "../ui/tui/tasks-screen-helpers.js";
 import { taskList } from "../task/task-cli.mjs";
+import TasksScreen from "../ui/tui/TasksScreen.js";
 
 const tempDirs = [];
+const inkInstances = [];
 
 function createTempStorePath() {
   const dir = mkdtempSync(join(tmpdir(), "bosun-tui-tasks-"));
@@ -31,10 +37,59 @@ function readStore(storePath) {
   return JSON.parse(readFileSync(storePath, "utf8"));
 }
 
+function sanitizeOutput(value) {
+  return stripAnsi(String(value || "")).replace(/\u001B\[\?25[hl]/g, "");
+}
+
+function createTuiHarness(tasks, width = 160) {
+  const stdout = new PassThrough();
+  stdout.columns = width;
+  stdout.rows = 32;
+  stdout.isTTY = true;
+  stdout.getColorDepth = () => 8;
+
+  let buffer = "";
+  stdout.on("data", (chunk) => {
+    buffer += chunk.toString();
+  });
+
+  const stdin = new PassThrough();
+  stdin.isTTY = true;
+  stdin.setRawMode = () => {};
+  stdin.resume = () => {};
+  stdin.pause = () => {};
+  stdin.ref = () => {};
+  stdin.unref = () => {};
+
+  const instance = render(
+    React.createElement(TasksScreen, { tasks }),
+    { stdout, stdin, stderr: stdout, exitOnCtrlC: false, patchConsole: false },
+  );
+  inkInstances.push(instance);
+
+  return {
+    stdin,
+    async waitForRender() {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    },
+    readLastFrame() {
+      const output = sanitizeOutput(buffer);
+      const index = output.lastIndexOf(" Tasks");
+      return index >= 0 ? output.slice(index) : output;
+    },
+    clearBuffer() {
+      buffer = "";
+    },
+  };
+}
+
 afterEach(() => {
   delete process.env.BOSUN_STORE_PATH;
   while (tempDirs.length) {
     rmSync(tempDirs.pop(), { recursive: true, force: true });
+  }
+  while (inkInstances.length) {
+    inkInstances.pop().unmount();
   }
 });
 
@@ -157,5 +212,84 @@ describe("tui tasks screen helpers", () => {
     const removed = await deleteTaskById(created.id);
     expect(removed).toBe(true);
     expect(Object.keys(readStore(storePath).tasks || {})).toHaveLength(0);
+  });
+});
+
+describe("tui tasks screen component", () => {
+  it("renders list mode at 120 columns and kanban mode at 160 and 200 columns", async () => {
+    const sampleTasks = [
+      { id: "MT-123", title: "Alpha", status: "todo", priority: "high", tags: ["auth"] },
+      { id: "MT-124", title: "Beta", status: "done", priority: "low", tags: ["ops"] },
+    ];
+
+    const narrow = createTuiHarness(sampleTasks, 120);
+    await narrow.waitForRender();
+    expect(narrow.readLastFrame()).toContain("[V]iew: kanban/list -> list (auto)");
+    expect(narrow.readLastFrame()).toContain("Task List");
+
+    const medium = createTuiHarness(sampleTasks, 160);
+    await medium.waitForRender();
+    expect(medium.readLastFrame()).toContain("[V]iew: kanban/list -> kanban");
+    expect(medium.readLastFrame()).toContain("TODO (1)");
+    expect(medium.readLastFrame()).toContain("DONE (1)");
+
+    const wide = createTuiHarness(sampleTasks, 200);
+    await wide.waitForRender();
+    expect(wide.readLastFrame()).toContain("TODO (1)");
+    expect(wide.readLastFrame()).toContain("IN PROGRESS (0)");
+    expect(wide.readLastFrame()).toContain("REVIEW (0)");
+    expect(wide.readLastFrame()).toContain("DONE (1)");
+  });
+
+  it("updates the filter results on the next keypress and clears with escape", async () => {
+    const harness = createTuiHarness([
+      { id: "MT-123", title: "Alpha", status: "todo", priority: "high", tags: ["auth"] },
+      { id: "MT-124", title: "Beta", status: "done", priority: "low", tags: ["ops"] },
+    ], 120);
+
+    await harness.waitForRender();
+    harness.clearBuffer();
+
+    harness.stdin.write("f");
+    await harness.waitForRender();
+    harness.stdin.write("z");
+    await harness.waitForRender();
+
+    expect(harness.readLastFrame()).toContain("[F]ilter: z█");
+    expect(harness.readLastFrame()).toContain("TODO (0) | IN PROGRESS (0) | REVIEW (0) | DONE (0)");
+    expect(harness.readLastFrame()).toContain("No matching tasks");
+
+    harness.clearBuffer();
+    harness.stdin.write("\u001b");
+    await harness.waitForRender();
+
+    expect(harness.readLastFrame()).toContain("[F]ilter: (title, tag, id)");
+    expect(harness.readLastFrame()).toContain("MT-123 Alpha");
+    expect(harness.readLastFrame()).toContain("MT-124 Beta");
+  });
+
+  it("shows title validation inline and opens the delete confirmation inline", async () => {
+    const validationHarness = createTuiHarness([], 160);
+
+    await validationHarness.waitForRender();
+    validationHarness.clearBuffer();
+    validationHarness.stdin.write("n");
+    await validationHarness.waitForRender();
+    validationHarness.stdin.write("\u0013");
+    await validationHarness.waitForRender();
+
+    expect(validationHarness.readLastFrame()).toContain("New Task");
+    expect(validationHarness.readLastFrame()).toContain("Title - Title is required");
+
+    const deleteHarness = createTuiHarness([
+      { id: "MT-123", title: "Alpha", status: "todo", priority: "high", tags: ["auth"] },
+    ], 160);
+
+    await deleteHarness.waitForRender();
+    deleteHarness.clearBuffer();
+    deleteHarness.stdin.write("d");
+    await deleteHarness.waitForRender();
+
+    expect(deleteHarness.readLastFrame()).toContain("Delete MT-123? [y/N]");
   });
 });
