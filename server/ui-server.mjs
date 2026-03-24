@@ -5025,17 +5025,26 @@ function getLiveSessionSnapshot({ includeHidden = false } = {}) {
 }
 
 function broadcastSessionsSnapshot(sessions = getLiveSessionSnapshot()) {
-  const normalized = Array.isArray(sessions) ? sessions : [];
-  broadcastUiEvent(["sessions", "tui"], "sessions:update", {
-    sessions: normalized,
-  });
+  const normalized = buildSessionsUpdatePayload(Array.isArray(sessions) ? sessions : []);
+  broadcastCanonicalEvent(["sessions", "tui"], "sessions:update", normalized);
 }
 
 function updateActiveSessions(sessions) {
   _activeSessions = Array.isArray(sessions) ? sessions : [];
   broadcastSessionsSnapshot(_activeSessions);
   for (const session of _activeSessions) {
-    broadcastUiEvent(["sessions", "tui"], "session:update", session);
+    const sessionEvent = buildSessionEventPayload({
+      sessionId: session?.id,
+      taskId: session?.taskId,
+      session,
+      event: {
+        kind: "state",
+        reason: "active-sessions-updated",
+      },
+    });
+    if (sessionEvent.sessionId && sessionEvent.taskId) {
+      broadcastCanonicalEvent(["sessions", "tui"], "session:event", sessionEvent);
+    }
   }
 }
 
@@ -22638,8 +22647,4 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
-
-
-
-
 
