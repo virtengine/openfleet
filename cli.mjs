@@ -79,6 +79,7 @@ function showHelp() {
   COMMANDS
     workflow list              List declarative pipeline workflows
     workflow run <name>        Run a declarative pipeline workflow
+    workflow nodes             Inspect custom workflow node plugin health
     tui                        Launch the terminal UI
     audit <command>            Run codebase annotation audit tools (scan|generate|warn|manifest|index|trim|conformity|migrate)
     --setup                    Launch the web-based setup wizard (default)
