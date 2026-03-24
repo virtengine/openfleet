@@ -14504,7 +14504,6 @@ async function handleApi(req, res, url) {
         ...(clearsBlockedState
           ? { cooldownUntil: null, blockedReason: null }
           : (blockedReasonProvided ? { blockedReason } : {})),
-        ...(clearsBlockedState ? { replaceMeta: true } : {}),
         ...(baseBranchProvided ? { baseBranch } : {}),
         ...metadataPatch.topLevel,
         ...(nextMeta ? { meta: nextMeta } : {}),
@@ -14655,7 +14654,6 @@ async function handleApi(req, res, url) {
         ...(clearsBlockedState
           ? { cooldownUntil: null, blockedReason: null }
           : (blockedReasonProvided ? { blockedReason } : {})),
-        ...(clearsBlockedState ? { replaceMeta: true } : {}),
         ...(baseBranchProvided ? { baseBranch } : {}),
         ...metadataPatch.topLevel,
         ...(nextMeta ? { meta: nextMeta } : {}),
@@ -22800,5 +22798,3 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
-
-
