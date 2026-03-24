@@ -460,6 +460,9 @@ export function formatTraceparent(traceContext = null) {
     return null;
   }
   const traceFlags = Number(rawFlags);
+    return null;
+  }
+  const traceFlags = Number(rawFlags);
   if (!/^[0-9a-f]{32}$/.test(traceId) || !/^[0-9a-f]{16}$/.test(spanId)) {
     return null;
   }
