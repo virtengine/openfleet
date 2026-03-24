@@ -201,13 +201,20 @@ describe("action.create_task adapter contract", () => {
 
     expect(result.success).toBe(true);
     expect(result.taskId).toBe("task-42");
-    expect(createTask).toHaveBeenCalledWith("proj-42", {
+    expect(createTask).toHaveBeenCalledWith("proj-42", expect.objectContaining({
       title: "[m] fix(workflow): create task contract",
       description: "Ensure compatibility",
       status: "todo",
       priority: undefined,
       tags: undefined,
-    });
+      meta: expect.objectContaining({
+        workflow: expect.objectContaining({
+          runId: expect.any(String),
+          sourceNodeId: "test-node",
+          sourceNodeType: "action.create_task",
+        }),
+      }),
+    }));
   });
 });
 
@@ -647,3 +654,4 @@ describe("validation nodes can offload to isolated runners", () => {
     expect(result.failureDiagnostic?.exitCode).toBe(1);
   });
 });
+

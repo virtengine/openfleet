@@ -114,4 +114,112 @@ describe("infra/tracing", () => {
     expect(tokens?.[0]?.value).toBe(25);
     expect(cost?.[0]?.value).toBe(0.25);
   });
+
+  it("accepts stored task carriers to continue task execution traces", async () => {
+    const tracing = await import("../infra/tracing.mjs");
+    await tracing.setupTracing("http://collector.example/v1/traces");
+
+    const remoteTraceparent = "00-99999999999999999999999999999999-8888888888888888-01";
+
+    await tracing.traceTaskExecution(
+      {
+        taskId: "task-carrier",
+        workflowId: "wf-carrier",
+        workflowRunId: "run-carrier",
+        carrier: { traceparent: remoteTraceparent },
+      },
+      async () => "ok",
+    );
+
+    const finishedSpans = tracing.getFinishedSpans();
+    const taskSpan = finishedSpans.find(
+      (span) => span.name === "bosun.task.execute" && span.attributes["bosun.task.id"] === "task-carrier",
+    );
+
+    expect(taskSpan.traceId).toBe("99999999999999999999999999999999");
+    expect(taskSpan.parentSpanId).toBe("8888888888888888");
+    expect(taskSpan.attributes["bosun.workflow.id"]).toBe("wf-carrier");
+    expect(taskSpan.attributes["bosun.workflow.run_id"]).toBe("run-carrier");
+  });
+
+  it("continues a remote parent trace across workflow, task, and agent spans", async () => {
+    const tracing = await import("../infra/tracing.mjs");
+    await tracing.setupTracing("http://collector.example/v1/traces");
+
+    const remoteTraceparent = "00-11111111111111111111111111111111-2222222222222222-01";
+
+    await tracing.withIncomingTraceContext(
+      { traceparent: remoteTraceparent },
+      { name: "bosun.http.request", attributes: { "http.route": "/api/workflows/demo/execute" } },
+      async () => tracing.traceWorkflowRun(
+        {
+          workflowId: "wf-demo",
+          workflowRunId: "run-demo",
+          taskId: "task-demo",
+          agentId: "agent-demo",
+        },
+        async () => tracing.traceTaskExecution(
+          {
+            taskId: "task-demo",
+            workflowId: "wf-demo",
+            workflowRunId: "run-demo",
+            agentId: "agent-demo",
+          },
+          async () => tracing.traceAgentSession(
+            {
+              sessionId: "session-demo",
+              sdk: "codex",
+              workflowId: "wf-demo",
+              workflowRunId: "run-demo",
+              taskId: "task-demo",
+              agentId: "agent-demo",
+            },
+            async () => "ok",
+          ),
+        ),
+      ),
+    );
+
+    const finishedSpans = tracing.getFinishedSpans();
+    const httpSpan = finishedSpans.find((span) => span.name === "bosun.http.request");
+    const workflowSpan = finishedSpans.find((span) => span.name === "bosun.workflow.run");
+    const taskSpan = finishedSpans.find((span) => span.name === "bosun.task.execute");
+    const agentSpan = finishedSpans.find((span) => span.name === "bosun.agent.session");
+
+    expect(httpSpan.traceId).toBe("11111111111111111111111111111111");
+    expect(httpSpan.parentSpanId).toBe("2222222222222222");
+    expect(workflowSpan.traceId).toBe(httpSpan.traceId);
+    expect(workflowSpan.parentSpanId).toBe(httpSpan.spanId);
+    expect(taskSpan.traceId).toBe(httpSpan.traceId);
+    expect(taskSpan.parentSpanId).toBe(workflowSpan.spanId);
+    expect(agentSpan.traceId).toBe(httpSpan.traceId);
+    expect(agentSpan.parentSpanId).toBe(taskSpan.spanId);
+    expect(workflowSpan.attributes).toEqual(
+      expect.objectContaining({
+        "bosun.workflow.id": "wf-demo",
+        "bosun.workflow.run_id": "run-demo",
+        "bosun.task.id": "task-demo",
+        "bosun.agent.id": "agent-demo",
+      }),
+    );
+    expect(taskSpan.attributes).toEqual(
+      expect.objectContaining({
+        "bosun.workflow.id": "wf-demo",
+        "bosun.workflow.run_id": "run-demo",
+        "bosun.task.id": "task-demo",
+        "bosun.agent.id": "agent-demo",
+      }),
+    );
+    expect(agentSpan.attributes).toEqual(
+      expect.objectContaining({
+        "bosun.workflow.id": "wf-demo",
+        "bosun.workflow.run_id": "run-demo",
+        "bosun.task.id": "task-demo",
+        "bosun.agent.id": "agent-demo",
+      }),
+    );
+  }, 12000);
 });
+
+
+
