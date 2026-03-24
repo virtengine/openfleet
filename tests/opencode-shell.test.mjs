@@ -666,12 +666,12 @@ describe("discoverProviders()", () => {
     );
   });
 
-  it("retries provider discovery without directory after 400 responses", async () => {
+  it("retries provider discovery without directory query after a 400 response", async () => {
     vi.resetModules();
     const list = vi
       .fn()
-      .mockRejectedValueOnce(new Error("Failed to list models: 400"))
-      .mockResolvedValue({
+      .mockRejectedValueOnce(Object.assign(new Error("Failed to list models: 400"), { status: 400 }))
+      .mockResolvedValueOnce({
         data: {
           all: [{
             id: "anthropic",
@@ -687,8 +687,8 @@ describe("discoverProviders()", () => {
       });
     const auth = vi
       .fn()
-      .mockRejectedValueOnce(new Error("Bad Request"))
-      .mockResolvedValue({
+      .mockRejectedValueOnce(new Error("HTTP 400 bad request for directory query"))
+      .mockResolvedValueOnce({
         data: { anthropic: [{ type: "api_key", label: "API key" }] },
       });
     mockCreateOpencodeClient.mockReturnValue({ provider: { list, auth } });
@@ -697,9 +697,9 @@ describe("discoverProviders()", () => {
     const snapshot = await discoverProviders({ force: true });
 
     expect(list).toHaveBeenNthCalledWith(1, { query: { directory: process.cwd() } });
-    expect(list).toHaveBeenNthCalledWith(2, undefined);
+    expect(list.mock.calls[1]).toEqual([]);
     expect(auth).toHaveBeenNthCalledWith(1, { query: { directory: process.cwd() } });
-    expect(auth).toHaveBeenNthCalledWith(2, undefined);
+    expect(auth.mock.calls[1]).toEqual([]);
     expect(snapshot.connectedIds).toEqual(["anthropic"]);
     expect(snapshot.providers[0].models[0].fullId).toBe("anthropic/claude-sonnet-4");
   });
