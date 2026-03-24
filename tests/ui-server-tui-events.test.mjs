@@ -218,7 +218,7 @@ describe("ui-server TUI websocket bridge", () => {
     const createUrl = "http://127.0.0.1:" + port + "/api/sessions/create";
     const createResponse = await fetch(createUrl, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
       body: JSON.stringify({ type: "primary", prompt: "hello from ws regression" }),
     });
     const createJson = await createResponse.json();
