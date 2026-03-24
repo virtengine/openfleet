@@ -162,6 +162,7 @@ import {
   addSessionEventListener,
   addSessionStateListener,
 } from "../infra/session-tracker.mjs";
+import { withIncomingTraceContext } from "../infra/tracing.mjs";
 import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import {
   addSessionAccumulationListener,
@@ -1277,6 +1278,26 @@ export function _testInjectWorkflowEngine(mockModule, mockEngine) {
   _wfInitPromise = null;
   _testDefaultEngine = mockEngine || null;
   _wfEngineByWorkspace.clear();
+}
+
+function traceHttpServerAction(req, span = {}, fn) {
+  return withIncomingTraceContext(
+    req?.headers || {},
+    {
+      name: span.name || "bosun.http.request",
+      method: req?.method || span.method,
+      route: span.route,
+      target: span.target || span.route,
+      workflowId: span.workflowId,
+      workflowRunId: span.workflowRunId,
+      taskId: span.taskId,
+      agentId: span.agentId,
+      attributes: {
+        ...(span.attributes && typeof span.attributes === "object" ? span.attributes : {}),
+      },
+    },
+    fn,
+  );
 }
 
 let workflowEventDedupWindowMs = (() => {
@@ -14259,11 +14280,14 @@ async function handleApi(req, res, url) {
       }
 
       const wasPaused = executor.isPaused?.();
-      executor.executeTask(startedTask, {
+      traceHttpServerAction(req, {
+        route: "/api/tasks/start",
+        taskId,
+      }, () => executor.executeTask(startedTask, {
         ...(sdk ? { sdk } : {}),
         ...(model ? { model } : {}),
         force: forceStart || manualOverride,
-      }).catch((error) => {
+      })).catch((error) => {
         console.warn(
           `[telegram-ui] failed to execute task ${taskId}: ${error.message}`,
         );
@@ -17326,7 +17350,12 @@ if (path === "/api/agent-logs/context") {
       if (!shouldWait) {
         const dispatchedAt = new Date().toISOString();
         Promise.resolve()
-          .then(() => engine.execute(workflowId, executeInput, { force: true }))
+          .then(() => traceHttpServerAction(req, {
+            route: "/api/workflows/launch-template",
+            workflowId,
+            taskId: executeInput.taskId,
+            attributes: { "bosun.template.id": templateId },
+          }, () => engine.execute(workflowId, executeInput, { force: true })))
           .then((ctx) => {
             const runStatus = Array.isArray(ctx?.errors) && ctx.errors.length > 0 ? "failed" : "completed";
             console.log(`[workflows] Template launch finished template=${templateId} workflow=${workflowId} status=${runStatus}`);
@@ -17351,7 +17380,12 @@ if (path === "/api/agent-logs/context") {
         return;
       }
 
-      const result = await engine.execute(workflowId, executeInput, { force: true });
+      const result = await traceHttpServerAction(req, {
+        route: "/api/workflows/launch-template",
+        workflowId,
+        taskId: executeInput.taskId,
+        attributes: { "bosun.template.id": templateId },
+      }, () => engine.execute(workflowId, executeInput, { force: true }));
       jsonResponse(res, 200, {
         ok: true,
         mode: "sync",
@@ -17889,7 +17923,11 @@ if (path === "/api/agent-logs/context") {
         if (!shouldWait) {
           const dispatchedAt = new Date().toISOString();
           Promise.resolve()
-            .then(() => engine.execute(workflowId, executeInput))
+            .then(() => traceHttpServerAction(req, {
+              route: `/api/workflows/${workflowId}/execute`,
+              workflowId,
+              taskId: executeInput.taskId,
+            }, () => engine.execute(workflowId, executeInput)))
             .then((ctx) => {
               const runStatus = Array.isArray(ctx?.errors) && ctx.errors.length > 0 ? "failed" : "completed";
               console.log(
@@ -17910,7 +17948,11 @@ if (path === "/api/agent-logs/context") {
           return;
         }
 
-        const result = await engine.execute(workflowId, executeInput);
+        const result = await traceHttpServerAction(req, {
+          route: `/api/workflows/${workflowId}/execute`,
+          workflowId,
+          taskId: executeInput.taskId,
+        }, () => engine.execute(workflowId, executeInput));
         jsonResponse(res, 200, { ok: true, result, mode: "sync" });
         return;
       }
@@ -18291,7 +18333,11 @@ if (path === "/api/agent-logs/context") {
       };
 
       Promise.resolve()
-        .then(() => wfCtx.engine.execute(webhookWorkflowId, eventPayload))
+        .then(() => traceHttpServerAction(req, {
+          route: path,
+          workflowId: webhookWorkflowId,
+          attributes: { "bosun.trigger.type": "webhook" },
+        }, () => wfCtx.engine.execute(webhookWorkflowId, eventPayload)))
         .then((result) => {
           const status = Array.isArray(result?.errors) && result.errors.length > 0 ? "failed" : "completed";
           console.log(`[webhooks] run ${status} workflow=${webhookWorkflowId} runId=${result?.id || runId}`);
@@ -19143,7 +19189,10 @@ if (path === "/api/agent-logs/context") {
         }
         nextTask = await adapter.getTask(taskId);
       }
-      executor.executeTask(nextTask || { ...task, status: "todo" }).catch((error) => {
+      traceHttpServerAction(req, {
+        route: path,
+        taskId,
+      }, () => executor.executeTask(nextTask || { ...task, status: "todo" })).catch((error) => {
         console.warn(
           `[telegram-ui] failed to retry task ${taskId}: ${error.message}`,
         );
@@ -19295,7 +19344,10 @@ if (path === "/api/agent-logs/context") {
           jsonResponse(res, 404, { ok: false, error: "Task not found." });
           return;
         }
-        executor.executeTask(task, { force: true }).catch((error) => {
+        traceHttpServerAction(req, {
+          route: path,
+          taskId,
+        }, () => executor.executeTask(task, { force: true })).catch((error) => {
           console.warn(
             `[telegram-ui] dispatch failed for ${taskId}: ${error.message}`,
           );
@@ -22595,3 +22647,4 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
