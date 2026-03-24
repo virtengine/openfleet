@@ -36,6 +36,9 @@ import {
 import {
   Card as LegacyCard, EmptyState, Badge,
 } from "../components/shared.js";
+import {
+  buildRepoAreaContentionViewModel,
+} from "../modules/repo-area-contention.js";
 
 // ── Colour palettes ──────────────────────────────────────────────────────────
 
@@ -616,6 +619,70 @@ function ShreddingPanel({ period }) {
     <//>
   `;
 }
+function RepoAreaContentionPanel() {
+  const model = buildRepoAreaContentionViewModel(telemetrySummary.value?.repoAreaContention || null);
+
+  return html`
+    <${Paper} elevation=${1} sx=${{ p: 2, mb: 2 }}>
+      <${Stack} direction="row" justifyContent="space-between" alignItems="center" spacing=${1} sx=${{ mb: 1.5, flexWrap: "wrap" }}>
+        <${Box}>
+          <${Typography} variant="h6" gutterBottom>Repo-area lock contention<//>
+          <${Typography} variant="body2" color="text.secondary">${model.summary}<//>
+        <//>
+        <${Stack} direction="row" spacing=${1} alignItems="center">
+          <${Chip} size="small" color=${model.tone === "warning" ? "warning" : model.tone === "info" ? "info" : "success"} label=${model.totalEventsLabel} />
+          <${Chip} size="small" variant="outlined" label=${model.totalWaitLabel} />
+        <//>
+      <//>
+
+      ${model.hotAreas.length === 0 ? html`
+        <${EmptyState}
+          title=${model.headline}
+          description=${model.summary}
+        />
+      ` : html`
+        <${Stack} spacing=${1.25} sx=${{ mb: model.recentEvents.length ? 1.5 : 0 }}>
+          ${model.hotAreas.map((area) => html`
+            <${Paper} key=${area.area} variant="outlined" sx=${{ p: 1.25 }}>
+              <${Stack} direction="row" justifyContent="space-between" alignItems="center" spacing=${1} flexWrap="wrap">
+                <${Box}>
+                  <${Typography} variant="subtitle2">${area.area}<//>
+                  <${Typography} variant="caption" color="text.secondary">${area.avgWaitLabel} · last seen ${area.lastSeenLabel}<//>
+                <//>
+                <${Stack} direction="row" spacing=${0.75} alignItems="center" flexWrap="wrap">
+                  <${Chip} size="small" label=${area.eventsLabel} />
+                  <${Chip} size="small" variant="outlined" label=${area.waitingLabel} />
+                  <${Chip} size="small" variant="outlined" label=${area.activeLabel} />
+                  ${area.detailHref ? html`<${Button} size="small" href=${area.detailHref}>Details<//>` : null}
+                <//>
+              <//>
+            <//>
+          `)}
+        <//>
+      `}
+
+      ${model.recentEvents.length ? html`
+        <${Divider} sx=${{ my: 1.5 }} />
+        <${Typography} variant="subtitle2" gutterBottom>Recent contention samples<//>
+        <${Stack} spacing=${1}>
+          ${model.recentEvents.slice(0, 5).map((event) => html`
+            <${Stack} key=${event.taskId + event.area + (event.at || "")} direction="row" justifyContent="space-between" alignItems="center" spacing=${1}>
+              <${Box}>
+                <${Typography} variant="body2">${event.title}<//>
+                <${Typography} variant="caption" color="text.secondary">${event.subtitle}<//>
+              <//>
+              <${Stack} direction="row" spacing=${0.75} alignItems="center">
+                <${Typography} variant="caption" color="text.secondary">${event.lastSeenLabel}<//>
+                ${event.detailHref ? html`<${Button} size="small" href=${event.detailHref}>Task<//>` : null}
+              <//>
+            <//>
+          `)}
+        <//>
+      ` : null}
+    <//>
+  `;
+}
+
 // ── Main exported component ──────────────────────────────────────────────────
 
 export function TelemetryTab() {
@@ -776,6 +843,8 @@ export function TelemetryTab() {
             palette=${MCP_PALETTE} title="Top MCP Tools" />
         <//>
       <//>
+
+      <${RepoAreaContentionPanel} />
 
       <!-- Context Shredding Panel -->
       <${ShreddingPanel} period=${period} />

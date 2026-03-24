@@ -8895,14 +8895,137 @@ function withTaskRuntimeSnapshot(task) {
   if (!task || typeof task !== "object") return task;
   const withLifetimeTotals = enrichTaskLifetimeTotals(task);
   const runtimeSnapshot = buildTaskRuntimeSnapshot(withLifetimeTotals);
+  const contentionSummary = summarizeRepoAreaLockContention(status?.repoAreaLocks || null);
   return {
     ...withLifetimeTotals,
     runtimeSnapshot,
     meta: {
       ...(withLifetimeTotals.meta || {}),
       runtimeSnapshot,
+      repoAreaContention: contentionSummary,
     },
+    repoAreaContention: contentionSummary,
   };
+}
+
+function safeIsoString(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const ts = Date.parse(text);
+  return Number.isFinite(ts) ? new Date(ts).toISOString() : null;
+}
+
+function summarizeRepoAreaLockHotArea(area = {}) {
+  const normalizedArea = String(area?.area || "").trim();
+  if (!normalizedArea) return null;
+  const events = Math.max(
+    0,
+    Math.trunc(Number(area?.contentionEvents ?? area?.conflicts ?? 0)),
+  );
+  const waitMsTotal = Math.max(
+    0,
+    Math.trunc(Number(area?.contentionWaitMs ?? area?.waitMsTotal ?? 0)),
+  );
+  const waitingTasks = Math.max(0, Math.trunc(Number(area?.waitingTasks || 0)));
+  const activeSlots = Math.max(0, Math.trunc(Number(area?.activeSlots || 0)));
+  const effectiveLimit = Math.max(0, Math.trunc(Number(area?.effectiveLimit || 0)));
+  const lastContentionAt = safeIsoString(area?.lastContentionAt || area?.lastWaitAt || null);
+  return {
+    area: normalizedArea,
+    events,
+    waitMsTotal,
+    avgWaitMs: events > 0 ? Math.round(waitMsTotal / events) : 0,
+    waitingTasks,
+    activeSlots,
+    effectiveLimit,
+    lastContentionAt,
+    detailHref: "/api/tasks?repoArea=" + encodeURIComponent(normalizedArea) + "&contention=1",
+  };
+}
+
+export function normalizeRepoAreaLockContentionSummary(summary = null) {
+  const generatedAt = safeIsoString(summary?.generatedAt) || new Date().toISOString();
+  const stale = summary?.stale === true;
+  const staleAgeMs = Math.max(0, Math.trunc(Number(summary?.staleAgeMs || 0)));
+  const hotAreas = Array.isArray(summary?.hotAreas)
+    ? summary.hotAreas.map((area) => summarizeRepoAreaLockHotArea(area)).filter(Boolean)
+    : [];
+  const recent = Array.isArray(summary?.recent)
+    ? summary.recent
+      .map((event) => {
+        const taskId = String(event?.taskId || "").trim();
+        const area = String(event?.area || "").trim();
+        if (!taskId || !area) return null;
+        return {
+          at: safeIsoString(event?.at),
+          taskId,
+          area,
+          waitMs: Math.max(0, Math.trunc(Number(event?.waitMs || 0))),
+          resolutionReason: String(event?.resolutionReason || "unknown").trim() || "unknown",
+          detailHref: String(event?.detailHref || ("/api/tasks/detail?taskId=" + encodeURIComponent(taskId))),
+        };
+      })
+      .filter(Boolean)
+    : [];
+
+  return {
+    generatedAt,
+    totalEvents: Math.max(0, Math.trunc(Number(summary?.totalEvents || 0))),
+    totalWaitMs: Math.max(0, Math.trunc(Number(summary?.totalWaitMs || 0))),
+    stale,
+    staleAgeMs,
+    hotAreas,
+    recent,
+  };
+}
+
+export function summarizeRepoAreaLockContention(repoAreaLocks = null, options = {}) {
+  const nowValue = options?.now ? Date.parse(String(options.now)) : Date.now();
+  const now = Number.isFinite(nowValue) ? nowValue : Date.now();
+  const staleAfterMs = Math.max(
+    60000,
+    Math.trunc(Number(options?.staleAfterMs || 6 * 60 * 60 * 1000)),
+  );
+  const areas = Array.isArray(repoAreaLocks?.areas)
+    ? repoAreaLocks.areas.map((area) => summarizeRepoAreaLockHotArea(area)).filter(Boolean)
+    : [];
+  const recent = Array.isArray(repoAreaLocks?.contention?.recent)
+    ? repoAreaLocks.contention.recent
+      .map((event) => {
+        const taskId = String(event?.taskId || "").trim();
+        const area = String(event?.area || "").trim();
+        if (!taskId || !area) return null;
+        return {
+          at: safeIsoString(event?.at),
+          taskId,
+          area,
+          waitMs: Math.max(0, Math.trunc(Number(event?.waitMs || 0))),
+          resolutionReason: String(event?.resolutionReason || "unknown").trim() || "unknown",
+          detailHref: "/api/tasks/detail?taskId=" + encodeURIComponent(taskId),
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => Date.parse(String(right.at || 0)) - Date.parse(String(left.at || 0)))
+    : [];
+  const rankedAreas = areas
+    .filter((area) => area.events > 0 || area.waitingTasks > 0)
+    .sort((left, right) => right.events - left.events || right.waitingTasks - left.waitingTasks || left.area.localeCompare(right.area))
+    .slice(0, 8);
+  const lastContentionTs = [
+    ...rankedAreas.map((area) => Date.parse(String(area.lastContentionAt || 0))),
+    ...recent.map((event) => Date.parse(String(event.at || 0))),
+  ].filter((value) => Number.isFinite(value)).sort((left, right) => right - left)[0] || 0;
+  const staleAgeMs = lastContentionTs > 0 ? Math.max(0, now - lastContentionTs) : 0;
+
+  return normalizeRepoAreaLockContentionSummary({
+    generatedAt: new Date(now).toISOString(),
+    totalEvents: Math.max(0, Math.trunc(Number(repoAreaLocks?.contention?.events || 0))),
+    totalWaitMs: Math.max(0, Math.trunc(Number(repoAreaLocks?.contention?.waitMsTotal || 0))),
+    stale: lastContentionTs > 0 ? staleAgeMs > staleAfterMs : false,
+    staleAgeMs,
+    hotAreas: rankedAreas,
+    recent: recent.slice(0, 10),
+  });
 }
 
 function normalizeTaskDiagnosticText(value) {
@@ -16333,7 +16456,14 @@ async function handleApi(req, res, url) {
       }
 
       summary.lifetimeTotals = lifetimeTotals;
-      jsonResponse(res, 200, { ok: true, data: summary });
+      summary.repoAreaContention = summarizeRepoAreaLockContention(
+        uiDeps.getInternalExecutor?.()?.getStatus?.()?.repoAreaLocks || null,
+      );
+      jsonResponse(res, 200, {
+        ok: true,
+        data: summary,
+        repoAreaContention: summary.repoAreaContention,
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -22670,4 +22800,5 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
 
