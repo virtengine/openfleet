@@ -746,8 +746,8 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
     }, { x: 400, y: 300 }),
 
     node("inspect-pr", "action.run_command", "Inspect Single PR", {
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const {execFileSync}=require('child_process');",
         "const ctx=(()=>{try{return JSON.parse(String(process.env.BOSUN_PR_CONTEXT||'{}'))}catch{return {}}})();",
         "const repo=String(ctx.repo||'').trim();",
@@ -799,8 +799,8 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
     }, { x: 220, y: 560 }),
 
     node("programmatic-fix", "action.run_command", "Repair Attempt", {
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const {execFileSync}=require('child_process');",
         "const data=(()=>{try{return JSON.parse(String(process.env.BOSUN_PR_INSPECT||'{}'))}catch{return {}}})();",
         "const repo=String(data.repo||'').trim();",
@@ -878,8 +878,8 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
     }, { x: 620, y: 560 }),
 
     node("programmatic-review", "action.run_command", "Review Gate: Merge Single PR", {
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const {execFileSync}=require('child_process');",
         "const pr=(()=>{try{return JSON.parse(String(process.env.BOSUN_PR_INSPECT||'{}'))}catch{return {}}})();",
         "const repo=String(pr.repo||'').trim();",
@@ -1044,8 +1044,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
       //   • Outputs a JSON summary used by all downstream nodes/agents
       // Total gh API calls this node makes: R list calls + N edits
       // (R = target repos, N = newly-broken PRs needing fix label).
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const fs=require('fs');",
         "const path=require('path');",
         "const {execFileSync}=require('child_process');",
@@ -1232,8 +1232,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     }, { x: 120, y: 640 }),
 
     node("programmatic-security-fix", "action.run_command", "Collect Security Alerts", {
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const {execFileSync}=require('child_process');",
         "const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||'');",
         "const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})();",
@@ -1322,8 +1322,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     }, { x: 280, y: 640 }),
 
     node("programmatic-fix", "action.run_command", "Programmatic Fix Pass", {
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const {execFileSync}=require('child_process');",
         "const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||'');",
         "const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})();",
@@ -1415,8 +1415,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     }, { x: 600, y: 530 }),
 
     node("programmatic-review", "action.run_command", "Review Gate: Programmatic Merge", {
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const {execFileSync}=require('child_process');",
         "const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||'');",
         "const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})();",
@@ -1509,8 +1509,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     // Squash merges leave orphan branches because --auto defers deletion.
     // This node runs after the merge gate and prunes any lingering heads.
     node("cleanup-merged-branches", "action.run_command", "Prune Merged Branches", {
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const {execFileSync}=require('child_process');",
         "function gh(a){return execFileSync('gh',a,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
         "const repos=String(process.env.BOSUN_REPO_LIST||'').split(',').map(s=>s.trim()).filter(Boolean);",
@@ -1613,8 +1613,8 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
     }, { x: 400, y: 50 }),
 
     node("fetch-pr-state", "action.run_command", "Fetch Bosun PR State", {
-      command: [
-        "node -e \"",
+      command: "node",
+      args: ["-e", [
         "const fs=require('fs');",
         "const path=require('path');",
         "const {execFileSync}=require('child_process');",
