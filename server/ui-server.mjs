@@ -12890,6 +12890,7 @@ async function handleApi(req, res, url) {
         ...(body || {}),
         workspaceId: workspaceContext.workspaceId || body?.workspaceId || "",
         workspaceDir: workspaceContext.workspaceDir || body?.workspaceDir || "",
+        workspace: workspaceContext.workspaceDir || body?.workspaceDir || body?.workspace || "",
       });
       let mode = null;
       if (body?.activateMode === true) {
@@ -14544,7 +14545,6 @@ async function handleApi(req, res, url) {
         ...(baseBranchProvided ? { baseBranch } : {}),
         ...metadataPatch.topLevel,
         ...(nextMeta ? { meta: nextMeta } : {}),
-        ...(clearsBlockedState ? { autoRecovery: null, worktreeFailure: null } : {}),
       };
       if (!hasTaskPatchValues(patch) && !baseBranchProvided && !draftProvided && !tagsProvided) {
         jsonResponse(res, 400, {
@@ -14700,7 +14700,6 @@ async function handleApi(req, res, url) {
         ...(baseBranchProvided ? { baseBranch } : {}),
         ...metadataPatch.topLevel,
         ...(nextMeta ? { meta: nextMeta } : {}),
-        ...(clearsBlockedState ? { autoRecovery: null, worktreeFailure: null } : {}),
       };
       if (!hasTaskPatchValues(patch) && !baseBranchProvided && !draftProvided && !tagsProvided) {
         jsonResponse(res, 400, {
