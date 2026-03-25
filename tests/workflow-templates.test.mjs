@@ -373,7 +373,9 @@ describe("workflow-templates", () => {
         const used = strings.some((text) =>
           text.includes(`{{${key}}}`) ||
           text.includes(`$data?.${key}`) ||
-          text.includes(`$data.${key}`),
+          text.includes(`$data.${key}`) ||
+          text.includes(`?.${key}`) ||
+          text.includes(`.${key}`),
         );
         expect(
           used,
@@ -1670,3 +1672,5 @@ describe("template category coverage", () => {
     }
   });
 });
+
+

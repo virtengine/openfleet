@@ -3472,13 +3472,15 @@ describe("template-task-lifecycle", () => {
       taskTimeoutMs: 3600000,
     });
 
+    expect(result.variables.maxParallel).toBe(5);
+    expect(result.variables.taskTimeoutMs).toBe(3600000);
+    expect(result.variables.defaultSdk).toBe("auto"); // unchanged
+  });
+
   it("installs delegation watchdog defaults for non-task recovery", () => {
     const result = installTemplate("template-task-lifecycle", engine);
     expect(result.variables.delegationWatchdogTimeoutMs).toBeGreaterThan(0);
     expect(result.variables.delegationWatchdogMaxRecoveries).toBe(1);
-  });    expect(result.variables.maxParallel).toBe(5);
-    expect(result.variables.taskTimeoutMs).toBe(3600000);
-    expect(result.variables.defaultSdk).toBe("auto"); // unchanged
   });
 
   it("dry-run executes without errors (trigger stops at no kanban)", async () => {
@@ -3494,4 +3496,5 @@ describe("template-task-lifecycle", () => {
     }
   });
 });
+
 
