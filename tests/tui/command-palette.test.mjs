@@ -41,6 +41,34 @@ describe("command palette helpers", () => {
     ]);
   });
 
+  it("includes every expected action family in the palette list", () => {
+    const actions = buildCommandPaletteActions({
+      sessions: [{ id: "MT-734", title: "Investigate flakes", status: "active" }],
+      tasks: [{ id: "task-1", title: "Fix CI failure", status: "todo" }],
+      workflows: [{ id: "wf-1", name: "Health Check" }],
+      currentScreen: "status",
+    });
+
+    expect(actions.some((action) => action.id === "session:kill:MT-734")).toBe(true);
+    expect(actions.some((action) => action.id === "task:update:task-1")).toBe(true);
+    expect(actions.some((action) => action.id === "workflow:trigger:wf-1")).toBe(true);
+    expect(actions.some((action) => action.id === "nav:tasks")).toBe(true);
+    expect(actions.some((action) => action.id === "config:refresh:1")).toBe(true);
+  });
+
+  it("keeps only known recent actions at the top when the query is empty", () => {
+    const actions = buildCommandPaletteActions({
+      sessions: [{ id: "MT-734", title: "Investigate flakes", status: "active" }],
+      tasks: [],
+      workflows: [],
+      currentScreen: "status",
+      recentActionIds: ["missing:id", "session:kill:MT-734"],
+    });
+
+    const ranked = rankCommandPaletteActions("", actions);
+    expect(ranked[0]?.id).toBe("session:kill:MT-734");
+  });
+
   it("loads persisted history and falls back safely", async () => {
     const readFile = vi.fn()
       .mockResolvedValueOnce(JSON.stringify({ recent: ["a", "b"] }))

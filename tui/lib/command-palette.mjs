@@ -41,6 +41,10 @@ function actionWithSearch(action) {
   };
 }
 
+function getLabelSortValue(action) {
+  return String(action?.label || "").toLocaleLowerCase();
+}
+
 export function buildCommandPaletteActions({ sessions = [], tasks = [], workflows = [], currentScreen = "status", recentActionIds = [] } = {}) {
   const recent = normalizeRecentIds(recentActionIds);
   const actions = [];
@@ -145,14 +149,13 @@ export function rankCommandPaletteActions(query = "", actions = []) {
   const list = Array.isArray(actions) ? actions : [];
 
   if (!normalizedQuery) {
-    return [...list]
-      .sort((left, right) => {
-        const leftRecent = left.recentRank >= 0 ? left.recentRank : Number.POSITIVE_INFINITY;
-        const rightRecent = right.recentRank >= 0 ? right.recentRank : Number.POSITIVE_INFINITY;
-        if (leftRecent !== rightRecent) return leftRecent - rightRecent;
-        return String(left.label || "").localeCompare(String(right.label || ""));
-      })
-      .slice(0, RESULT_LIMIT);
+    const recent = list
+      .filter((action) => action.recentRank >= 0)
+      .sort((left, right) => left.recentRank - right.recentRank);
+    const remaining = list
+      .filter((action) => action.recentRank < 0)
+      .sort((left, right) => getLabelSortValue(left).localeCompare(getLabelSortValue(right)));
+    return [...recent, ...remaining].slice(0, RESULT_LIMIT);
   }
 
   return rankFuzzyMatches(normalizedQuery, list, (action) => action.searchText)
@@ -162,22 +165,23 @@ export function rankCommandPaletteActions(query = "", actions = []) {
 
 export async function loadCommandPaletteHistory({ readFile: read = readFile, historyPath = DEFAULT_HISTORY_PATH } = {}) {
   try {
-    const payload = JSON.parse(await read(historyPath, "utf8"));
-    return normalizeRecentIds(payload?.recent || []);
+    const raw = await read(historyPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return normalizeRecentIds(parsed?.recent);
   } catch {
     return [];
   }
 }
 
 export async function saveCommandPaletteHistory({
-  mkdir: makeDir = mkdir,
+  mkdir: ensureDir = mkdir,
   writeFile: write = writeFile,
   historyPath = DEFAULT_HISTORY_PATH,
   actionId,
   recentActionIds = [],
 } = {}) {
-  const nextRecent = normalizeRecentIds([actionId, ...recentActionIds]);
-  await makeDir(path.dirname(historyPath), { recursive: true });
+  const nextRecent = normalizeRecentIds([actionId, ...(Array.isArray(recentActionIds) ? recentActionIds : [])]);
+  await ensureDir(path.dirname(historyPath), { recursive: true });
   await write(historyPath, JSON.stringify({ recent: nextRecent }, null, 2), "utf8");
   return nextRecent;
 }

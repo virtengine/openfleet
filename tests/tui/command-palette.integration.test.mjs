@@ -63,4 +63,94 @@ describe("command palette integration", () => {
 
     await view.unmount();
   });
+
+  it("opens with : only when screen input is not locked", async () => {
+    const wsClient = createMockWsClient();
+
+    const view = await renderInk(
+      React.createElement(App, {
+        host: "127.0.0.1",
+        port: 3080,
+        connectOnly: true,
+        initialScreen: "status",
+        refreshMs: 2000,
+        wsClient,
+        historyAdapter: { load: async () => [], save: async () => [] },
+      }),
+      { columns: 220 },
+    );
+
+    await view.press(":");
+    await waitFor(() => view.text().includes("Command Palette"));
+    await view.press("\u001b");
+    await waitFor(() => !view.text().includes("Command Palette"));
+
+    const lockedView = await renderInk(
+      React.createElement(App, {
+        host: "127.0.0.1",
+        port: 3080,
+        connectOnly: true,
+        initialScreen: "tasks",
+        refreshMs: 2000,
+        wsClient,
+        historyAdapter: { load: async () => [], save: async () => [] },
+      }),
+      { columns: 220 },
+    );
+
+    await waitFor(() => lockedView.text().includes("Tasks"));
+    await lockedView.press("e");
+    await waitFor(() => lockedView.lastFrame()?.includes("Edit task") || lockedView.lastFrame()?.includes("Create task"));
+    await lockedView.press(":");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(lockedView.text().includes("Command Palette")).toBe(false);
+    await lockedView.press("\u0010");
+    await waitFor(() => lockedView.text().includes("Command Palette"));
+
+    await view.unmount();
+    await lockedView.unmount();
+  });
+
+  it("shows recent actions when opened empty and closes cleanly on escape", async () => {
+    const wsClient = createMockWsClient();
+    const save = vi.fn(async ({ actionId, recentActionIds }) => [actionId, ...recentActionIds].slice(0, 10));
+
+    const view = await renderInk(
+      React.createElement(App, {
+        host: "127.0.0.1",
+        port: 3080,
+        connectOnly: true,
+        initialScreen: "status",
+        refreshMs: 2000,
+        wsClient,
+        historyAdapter: { load: async () => ["session:kill:MT-734"], save },
+      }),
+      { columns: 220 },
+    );
+
+    wsClient.emit("connect", {});
+    wsClient.emit("stats", FIXTURE_STATS);
+    wsClient.emit("sessions:update", { sessions: FIXTURE_SESSIONS.map((item) => ({ ...item, id: "MT-734" })) });
+
+    await view.press("\u0010");
+    await waitFor(() => view.text().includes("Recent actions"));
+    expect(view.text()).toContain("Kill MT-734");
+
+    const beforeClose = view.lastFrame();
+    await view.press("\u001b");
+    await waitFor(() => !view.text().includes("Command Palette"));
+    expect(view.lastFrame()).not.toContain("Recent actions");
+    expect(view.lastFrame()).not.toBe(beforeClose);
+
+    await view.press("\u0010");
+    await waitFor(() => view.text().includes("Command Palette"));
+    await view.press("\r");
+    await waitFor(() => !view.text().includes("Command Palette"));
+    expect(save).toHaveBeenCalledWith({
+      actionId: "session:kill:MT-734",
+      recentActionIds: ["session:kill:MT-734"],
+    });
+
+    await view.unmount();
+  });
 });
