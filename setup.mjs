@@ -5443,8 +5443,6 @@ async function main() {
       info("Hook scaffolding skipped by user selection.");
     }
 
-    delete configJson.vkAutoConfig;
-
     // ── Per-workspace kanban wiring ───────────────────────
     // When multiple workspaces exist, offer to wire kanban/project config for
     // each workspace beyond the primary one already configured above.
@@ -6190,9 +6188,6 @@ async function runNonInteractive({
     }
   }
 
-  env.VK_NO_SPAWN = "true";
-  delete configJson.vkAutoConfig;
-
   // ── Workspace bootstrap ────────────────────────────────────────────────
   // If workspaces are configured, auto-clone repos and verify .git
   if (Array.isArray(configJson.workspaces) && configJson.workspaces.length > 0) {
@@ -6276,7 +6271,6 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
   // ── bosun.config.json ──────────────────────────
   // Write config with schema reference for editor autocomplete
   const configOut = { $schema: "./bosun.schema.json", ...configJson };
-  delete configOut.vkAutoConfig;
   const configPath = resolve(targetDir, "bosun.config.json");
   writeFileSync(configPath, JSON.stringify(configOut, null, 2) + "\n", "utf8");
   success(`Config written to ${relative(repoRoot, configPath)}`);
@@ -6330,7 +6324,6 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
       "codex"
     : "codex";
   const repoConfigOptions = {
-    skipVk: true,
     primarySdk,
   };
 
@@ -6373,7 +6366,6 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
   // ── Codex CLI config.toml ─────────────────────────────
   heading("Codex CLI Config");
   const tomlResult = ensureCodexConfig({
-    skipVk: true,
     dryRun: false,
     primarySdk,
     env: {

@@ -155,7 +155,7 @@ function resolveTelegramConfigDir() {
 }
 const repoRoot = resolveRepoRoot();
 const BosunDir = __dirname;
-const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json"); // legacy path
+const statusPath = resolve(repoRoot, ".cache", "orchestrator-status.json");
 const telegramPollLockPath = resolve(
   repoRoot,
   ".cache",
@@ -7092,7 +7092,7 @@ async function loadWorkspaceStatusData(workspacePath) {
     const workspaceStatusPath = resolve(
       workspacePath,
       ".cache",
-      "ve-orchestrator-status.json",
+      "orchestrator-status.json",
     );
     const raw = await readFile(workspaceStatusPath, "utf8").catch(() => null);
     return raw ? JSON.parse(raw) : null;

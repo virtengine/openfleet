@@ -874,11 +874,11 @@ const ORCHESTRATOR_PAUSE_FILE = (() => {
   try {
     const cfg = loadConfig();
     const base = cfg?.statusPath ? dirname(cfg.statusPath) : null;
-    if (base) return resolve(base, "ve-orchestrator-pause.json");
+    if (base) return resolve(base, "orchestrator-pause.json");
   } catch {
     /* best effort */
   }
-  return resolve(dirname(fileURLToPath(import.meta.url)), "..", ".cache", "ve-orchestrator-pause.json");
+  return resolve(dirname(fileURLToPath(import.meta.url)), "..", ".cache", "orchestrator-pause.json");
 })();
 
 const PRIORITY_RANK = {
@@ -2359,7 +2359,7 @@ class TaskExecutor {
     this.defaultTargetBranch =
       merged.defaultTargetBranch ||
       merged.branchRouting?.defaultBranch ||
-      process.env.VK_TARGET_BRANCH ||
+      process.env.BOSUN_TARGET_BRANCH ||
       "origin/main";
     this.workflowRunsDir =
       typeof merged.workflowRunsDir === "string" &&
@@ -6259,7 +6259,7 @@ export function loadExecutorOptionsFromConfig() {
     branchRouting: config.branchRouting || null,
     defaultTargetBranch:
       config.branchRouting?.defaultBranch ||
-      process.env.VK_TARGET_BRANCH ||
+      process.env.BOSUN_TARGET_BRANCH ||
       "origin/main",
     agentPrompts: config.agentPrompts || {},
   };

@@ -2146,7 +2146,7 @@ function handleApply(body) {
       GITHUB_REPO: env.repoSlug || "",
       ORCHESTRATOR_ARGS: env.orchestratorArgs || "",
       EXECUTORS: env.executors || "",
-      VK_PROJECT_DIR: bosunHome,
+      BOSUN_PROJECT_DIR: bosunHome,
     };
 
     applyTelegramMiniAppSetupEnv(envMap, env, process.env);
@@ -2424,7 +2424,6 @@ function handleApply(body) {
     //    bosun settings (sandbox, feature flags, timeouts, etc.).
     try {
       ensureCodexConfig({
-        skipVk: true,
         env: { ...process.env, BOSUN_HOME: bosunHome, BOSUN_WORKSPACES_DIR: workspacesDir },
       });
     } catch (err) {

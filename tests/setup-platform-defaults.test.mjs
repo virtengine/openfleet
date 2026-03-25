@@ -11,7 +11,7 @@ import {
 
 async function createScriptPair(dir, ext) {
   await mkdir(dir, { recursive: true });
-  await writeFile(resolve(dir, `ve-orchestrator.${ext}`), "#!/usr/bin/env stub\n");
+  await writeFile(resolve(dir, `orchestrator.${ext}`), "#!/usr/bin/env stub\n");
 }
 
 describe("setup platform defaults", () => {
@@ -84,10 +84,10 @@ describe("setup platform defaults", () => {
   });
 
   it("formats default orchestrator script as config-relative path", () => {
-    const scriptPath = "/tmp/project/scripts/bosun/ve-orchestrator.sh";
+    const scriptPath = "/tmp/project/scripts/bosun/orchestrator.sh";
     const configDir = "/tmp/project/scripts/bosun";
     expect(formatOrchestratorScriptForEnv(scriptPath, configDir)).toBe(
-      "./ve-orchestrator.sh",
+      "./orchestrator.sh",
     );
   });
 
@@ -110,7 +110,7 @@ describe("setup platform defaults", () => {
       });
 
       expect(result.selectedDefault?.ext).toBe("sh");
-      expect(result.orchestratorScriptEnvValue).toBe("./ve-orchestrator.sh");
+      expect(result.orchestratorScriptEnvValue).toBe("./orchestrator.sh");
     } finally {
       await rm(repoRoot, { recursive: true, force: true });
       await rm(packageDir, { recursive: true, force: true });

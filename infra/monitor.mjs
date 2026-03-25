@@ -13518,7 +13518,6 @@ try {
     process.env.BOSUN_ALLOW_RUNTIME_GLOBAL_CODEX_MUTATION,
   );
   const tomlResult = ensureCodexConfig({
-    skipVk: true,
     dryRun: !allowRuntimeCodexMutation,
   });
   if (!tomlResult.noChanges) {

@@ -1058,7 +1058,7 @@ describe("task-executor", () => {
       ex.pause();
 
       const pauseWriteCall = writeFileSync.mock.calls.find(([filePath]) =>
-        String(filePath || "").includes("ve-orchestrator-pause.json"),
+        String(filePath || "").includes("orchestrator-pause.json"),
       );
       expect(pauseWriteCall).toBeDefined();
       const pausePayload = JSON.parse(pauseWriteCall[1]);
@@ -1092,7 +1092,7 @@ describe("task-executor", () => {
       expect(typeof pauseInfo.pausedAt).toBe("number");
 
       const pauseWriteCall = writeFileSync.mock.calls.find(([filePath]) =>
-        String(filePath || "").includes("ve-orchestrator-pause.json"),
+        String(filePath || "").includes("orchestrator-pause.json"),
       );
       expect(pauseWriteCall).toBeDefined();
       const pausePayload = JSON.parse(pauseWriteCall[1]);

@@ -86,7 +86,7 @@ function sanitizedGitEnv(extra = {}) {
 }
 
 function readWorktreeRecoveryStatus(repoRoot) {
-  const statusPath = join(repoRoot, ".cache", "ve-orchestrator-status.json");
+  const statusPath = join(repoRoot, ".cache", "orchestrator-status.json");
   if (!existsSync(statusPath)) return null;
   return JSON.parse(readFileSync(statusPath, "utf8")).worktreeRecovery || null;
 }
@@ -3323,122 +3323,5 @@ describe("template-task-lifecycle", () => {
       // but the DAG structure should be valid
       expect(err.message).not.toContain("Unknown node type");
     }
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  Template: ve-orchestrator-lite
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("template-ve-orchestrator-lite", () => {
-  beforeEach(() => { makeTmpEngine(); });
-  afterEach(() => {
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
-  });
-
-  it("exists and has correct metadata", () => {
-    const t = getTemplate("template-ve-orchestrator-lite");
-    expect(t).toBeDefined();
-    expect(t.name).toBe("VE Orchestrator Lite");
-    expect(t.category).toBe("task-execution");
-    expect(t.enabled).toBe(true);
-    expect(t.recommended).toBe(false);
-  });
-
-  it("has slot management nodes", () => {
-    const t = getTemplate("template-ve-orchestrator-lite");
-    const ids = t.nodes.map((n) => n.id);
-    expect(ids).toContain("check-slots");
-    expect(ids).toContain("allocate-slot");
-    expect(ids).toContain("release-slot");
-  });
-
-  it("has worktree management nodes", () => {
-    const t = getTemplate("template-ve-orchestrator-lite");
-    const ids = t.nodes.map((n) => n.id);
-    expect(ids).toContain("acquire-worktree");
-    expect(ids).toContain("release-worktree");
-  });
-
-  it("has push-branch node", () => {
-    const t = getTemplate("template-ve-orchestrator-lite");
-    const ids = t.nodes.map((n) => n.id);
-    expect(ids).toContain("push");
-  });
-
-  it("has record-head for commit detection", () => {
-    const t = getTemplate("template-ve-orchestrator-lite");
-    const ids = t.nodes.map((n) => n.id);
-    expect(ids).toContain("record-head");
-  });
-
-  it("passes repository scope metadata into prompt node", () => {
-    const t = getTemplate("template-ve-orchestrator-lite");
-    const promptNode = t.nodes.find((n) => n.id === "prompt");
-    expect(promptNode).toBeDefined();
-    expect(promptNode.config.workspace).toBe("{{workspace}}");
-    expect(promptNode.config.repository).toBe("{{repository}}");
-    expect(promptNode.config.repositories).toBe("{{repositories}}");
-  });
-
-  it("all edges reference valid node IDs", () => {
-    const t = getTemplate("template-ve-orchestrator-lite");
-    const nodeIds = new Set(t.nodes.map((n) => n.id));
-    for (const e of t.edges) {
-      expect(nodeIds, `edge source "${e.source}" not in nodes`).toContain(e.source);
-      expect(nodeIds, `edge target "${e.target}" not in nodes`).toContain(e.target);
-    }
-  });
-
-  it("no orphan nodes", () => {
-    const t = getTemplate("template-ve-orchestrator-lite");
-    const targets = new Set(t.edges.map((e) => e.target));
-    for (const n of t.nodes) {
-      if (n.id === "trigger") continue;
-      expect(targets, `node "${n.id}" is orphaned`).toContain(n.id);
-    }
-  });
-
-  it("cleanup chain: release-worktree → release-claim → release-slot", () => {
-    const t = getTemplate("template-ve-orchestrator-lite");
-    expect(t.edges.find((e) => e.source === "release-worktree" && e.target === "release-claim")).toBeDefined();
-    expect(t.edges.find((e) => e.source === "release-claim" && e.target === "release-slot")).toBeDefined();
-  });
-
-  it("requires confirmed PR reference before transitioning to inreview", () => {
-    const t = getTemplate("template-ve-orchestrator-lite");
-    const prCreated = t.nodes.find((n) => n.id === "pr-created");
-    // handedOff without a real PR number must NOT satisfy the gate — tasks
-    // must have an actual prNumber or prUrl to enter inreview.
-    expect(prCreated?.config?.expression).not.toContain("handedOff");
-    expect(prCreated?.config?.expression).toContain("success === true");
-    expect(prCreated?.config?.expression).toContain("prNumber");
-  });
-
-  it("claim-failed path releases slot", () => {
-    const t = getTemplate("template-ve-orchestrator-lite");
-    expect(t.edges.find((e) => e.source === "claim-check" && e.target === "release-slot-skip")).toBeDefined();
-  });
-
-  it("replaces ve-orchestrator.mjs module", () => {
-    const t = getTemplate("template-ve-orchestrator-lite");
-    expect(t.metadata.replaces.module).toBe("ve-orchestrator.mjs");
-  });
-
-  it("installs and round-trips through engine", () => {
-    const result = installTemplate("template-ve-orchestrator-lite", engine);
-    expect(result.id).not.toBe("template-ve-orchestrator-lite");
-    expect(result.metadata.installedFrom).toBe("template-ve-orchestrator-lite");
-    const stored = engine.get(result.id);
-    expect(stored).toBeDefined();
-    expect(stored.name).toBe("VE Orchestrator Lite");
-  });
-
-  it("has correct variables", () => {
-    const t = getTemplate("template-ve-orchestrator-lite");
-    expect(t.variables.maxParallel).toBe(2);
-    expect(t.variables.maxRetries).toBe(1);
-    expect(t.variables.defaultSdk).toBe("auto");
-    expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });

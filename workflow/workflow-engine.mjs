@@ -374,6 +374,24 @@ function resolveNodePorts(node) {
   const handlerInputs = normalizePortList(handlerPorts.inputs, "input");
   const handlerOutputs = normalizePortList(handlerPorts.outputs, "output");
 
+  // Merge explicit outputPorts with configuredOutputs so that type-specific
+  // ports (yes/no for conditions, case names for switches, etc.) are always
+  // present even when outputPorts was auto-persisted with only "default".
+  let resolvedOutputs;
+  if (outputPorts.length > 0 && configuredOutputs.length > 0) {
+    const existingNames = new Set(outputPorts.map((p) => p.name));
+    const additional = configuredOutputs.filter((p) => !existingNames.has(p.name));
+    resolvedOutputs = [...outputPorts, ...additional];
+  } else if (outputPorts.length > 0) {
+    resolvedOutputs = outputPorts;
+  } else if (configuredOutputs.length > 0) {
+    resolvedOutputs = configuredOutputs;
+  } else if (handlerOutputs.length > 0) {
+    resolvedOutputs = handlerOutputs;
+  } else {
+    resolvedOutputs = [normalizePortDescriptor({ name: "default", label: "default", type: "Any" }, "output", 0)];
+  }
+
   return {
     inputs: inputPorts.length > 0
       ? inputPorts
@@ -382,13 +400,7 @@ function resolveNodePorts(node) {
         : (handlerInputs.length > 0
           ? handlerInputs
           : [normalizePortDescriptor({ name: "default", label: "default", type: "Any" }, "input", 0)])),
-    outputs: outputPorts.length > 0
-      ? outputPorts
-      : (configuredOutputs.length > 0
-        ? configuredOutputs
-        : (handlerOutputs.length > 0
-          ? handlerOutputs
-          : [normalizePortDescriptor({ name: "default", label: "default", type: "Any" }, "output", 0)])),
+    outputs: resolvedOutputs,
   };
 }
 

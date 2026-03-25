@@ -2155,7 +2155,7 @@ function createRepositoryImportCheckoutDir(prefix, repoUrl, branch) {
   const checkoutWarning = /clone succeeded.*checkout failed/i.test(cloneStderr);
   if (clone.status === 0 || checkoutWarning) return checkoutDir;
 
-  rmSync(checkoutDir, { recursive: true, force: true });
+  rmSync(checkoutDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
   if (/repository not found/i.test(cloneStderr)) {
     throw new Error(`Repository not found: ${repoUrl}`);
   }
@@ -2409,7 +2409,7 @@ export function scanRepositoryForImport(options = {}) {
       intraDuplicates: intraDuplicateMap,
     };
   } finally {
-    rmSync(checkoutDir, { recursive: true, force: true });
+    try { rmSync(checkoutDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }); } catch {}
   }
 }
 
@@ -2652,8 +2652,7 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
       });
     }
   } finally {
-
-    rmSync(checkoutDir, { recursive: true, force: true });
+    try { rmSync(checkoutDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }); } catch {}
   }
 
   if (needsAgentIndexRefresh) rebuildAgentProfileIndex(rootDir);

@@ -180,7 +180,7 @@ export const SETTINGS_SCHEMA = [
   { key: "GITHUB_PROJECT_SYNC_RATE_LIMIT_ALERT_THRESHOLD", label: "Rate Limit Alert Threshold", category: "github", type: "number", defaultVal: 3, min: 1, max: 20, description: "Rate-limit events before triggering an alert.", advanced: true },
   { key: "GITHUB_DEFAULT_ASSIGNEE",        label: "Default Assignee",           category: "github", type: "string", description: "GitHub username to assign new issues to. Uses authenticated user if not set." },
   { key: "GITHUB_AUTO_ASSIGN_CREATOR",     label: "Auto-Assign Creator",        category: "github", type: "boolean", defaultVal: true, description: "Automatically assign the authenticated user when creating issues." },
-  { key: "VK_TARGET_BRANCH",               label: "Target Branch",              category: "github", type: "string", defaultVal: "origin/main", description: "Default base branch for PR comparisons and merge targets." },
+  { key: "BOSUN_TARGET_BRANCH",            label: "Target Branch",              category: "github", type: "string", defaultVal: "origin/main", description: "Default base branch for PR comparisons and merge targets." },
   { key: "CODEX_ANALYZE_MERGE_STRATEGY",   label: "Merge Analysis",             category: "github", type: "boolean", defaultVal: true, description: "Enable intelligent merge strategy analysis for PRs." },
   { key: "DEPENDABOT_AUTO_MERGE",          label: "Dependabot Auto-Merge",      category: "github", type: "boolean", defaultVal: true, description: "Automatically merge passing Dependabot PRs." },
   { key: "GH_RECONCILE_ENABLED",           label: "Issue Reconciler",           category: "github", type: "boolean", defaultVal: true, description: "Auto-close issues when their associated PR is merged." },

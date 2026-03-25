@@ -130,7 +130,7 @@ describe("ui-server mini app", () => {
   it("surfaces worktree recovery state through status, infra, and worktree endpoints", async () => {
     const repoRoot = process.cwd();
     const statusDir = resolve(repoRoot, ".cache");
-    const statusPath = resolve(statusDir, "ve-orchestrator-status.json");
+    const statusPath = resolve(statusDir, "orchestrator-status.json");
     const hadStatusFile = existsSync(statusPath);
     const previousStatus = hadStatusFile ? readFileSync(statusPath, "utf8") : null;
     mkdirSync(statusDir, { recursive: true });

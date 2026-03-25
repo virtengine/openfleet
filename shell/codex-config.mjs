@@ -1424,23 +1424,6 @@ function applyAgentSdkDefaults(toml, env, primarySdk, result) {
   return nextToml;
 }
 
-/**
- * Strip any existing [mcp_servers.vibe_kanban] section (and sub-sections)
- * from TOML. VK backend has been removed — this is cleanup only.
- */
-function stripVibeKanbanMcp(toml) {
-  // Remove the entire [mcp_servers.vibe_kanban] block including sub-sections
-  // like [mcp_servers.vibe_kanban.env]. Matches from the header to the next
-  // non-vibe_kanban section or EOF.
-  return toml.replaceAll(
-    /\n?# ── Vibe-Kanban MCP[^\n]*\n(?:\[mcp_servers\.vibe_kanban[^\]]*][^[]*)+/g,
-    "",
-  ).replaceAll(
-    /\n?\[mcp_servers\.vibe_kanban[^\]]*][^[]*/g,
-    "",
-  );
-}
-
 function ensureCommonMcpDefaults(toml, result) {
   let nextToml = toml;
   for (const definition of COMMON_MCP_SERVER_DEFS) {
@@ -1543,7 +1526,6 @@ function applyEnsureCodexConfigDefaults(toml, env, primarySdk, result) {
   result.featuresAdded = featureResult.added;
   nextToml = featureResult.toml;
 
-  nextToml = stripVibeKanbanMcp(nextToml);
   nextToml = ensureCommonMcpDefaults(nextToml, result);
   nextToml = applyModelProviderDefaults(nextToml, env, result);
 
@@ -1559,10 +1541,6 @@ function persistCodexConfigIfChanged(toml, originalToml, dryRun, result) {
 }
 
 export function ensureCodexConfig({
-  // VK params accepted for backward compat but ignored (VK backend removed)
-  vkBaseUrl,
-  skipVk,
-  manageVkMcp,
   dryRun = false,
   env = process.env,
   primarySdk,

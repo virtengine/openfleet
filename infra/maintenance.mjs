@@ -257,7 +257,7 @@ export function killStaleOrchestrators(childPid) {
 
   for (const p of procs) {
     if (p.pid === myPid || p.pid === childPid) continue;
-    if (p.commandLine && (p.commandLine.includes("ve-orchestrator.ps1") || p.commandLine.includes("orchestrator.ps1"))) {
+    if (p.commandLine && p.commandLine.includes("orchestrator.ps1")) {
       killPid(p.pid, "stale orchestrator");
       killed++;
     }
