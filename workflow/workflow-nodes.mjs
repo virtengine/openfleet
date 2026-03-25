@@ -3067,6 +3067,18 @@ registerBuiltinNodeType("action.run_agent", {
     // Use the engine's service injection to call agent pool
     const agentPool = engine.services?.agentPool;
     if (agentPool?.launchEphemeralThread) {
+      const delegatedTaskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.task?.id || ctx.data?.taskId || null;
+      const assignTransitionKey = buildDelegationTransitionKey("assign", [delegatedTaskId, node.id, cwd, sdk, model]);
+      recordDelegationAuditEvent(ctx, {
+        type: "assign",
+        taskId: delegatedTaskId,
+        nodeId: node.id,
+        agentProfile: node.config?.agentProfile || null,
+        sdk,
+        model,
+        transitionKey: assignTransitionKey,
+        idempotencyKey: assignTransitionKey,
+      });
       const parseCandidateCount = (value) => {
         const num = Number(value);
         if (!Number.isFinite(num)) return null;
@@ -3404,6 +3416,18 @@ registerBuiltinNodeType("action.run_agent", {
               if (resolvedThreadId) {
                 span.attributes["bosun.session.id"] = resolvedThreadId;
                 if (taskSpan) taskSpan.attributes["bosun.session.id"] = resolvedThreadId;
+                const handoffTransitionKey = buildDelegationTransitionKey("handoff-complete", [delegatedTaskId, node.id, resolvedThreadId]);
+                recordDelegationAuditEvent(ctx, {
+                  type: "handoff-complete",
+                  taskId: delegatedTaskId,
+                  nodeId: node.id,
+                  sessionId: resolvedThreadId,
+                  threadId: resolvedThreadId,
+                  sdk,
+                  model,
+                  transitionKey: handoffTransitionKey,
+                  idempotencyKey: handoffTransitionKey,
+                });
               }
               return tracedResult;
             },
@@ -11284,6 +11308,91 @@ function getWorkflowRuntimeState(ctx) {
   return ctx.__workflowRuntimeState;
 }
 
+function getDelegationGuardStore(ctx) {
+  if (!ctx?.data || typeof ctx.data !== "object") return {};
+  if (!ctx.data._delegationTransitionGuards || typeof ctx.data._delegationTransitionGuards !== "object") {
+    ctx.data._delegationTransitionGuards = {};
+  }
+  return ctx.data._delegationTransitionGuards;
+}
+
+function buildDelegationTransitionKey(type, parts = []) {
+  return [type, ...parts]
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean)
+    .join(":");
+}
+
+function beginDelegationTransition(ctx, key, meta = {}) {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) return { shouldRun: true, key: null, entry: null };
+  const guards = getDelegationGuardStore(ctx);
+  const existing = guards[normalizedKey];
+  if (existing?.status === "completed") {
+    return { shouldRun: false, key: normalizedKey, entry: existing, completed: true };
+  }
+  if (existing?.status === "in_progress") {
+    return { shouldRun: false, key: normalizedKey, entry: existing, inProgress: true };
+  }
+  const next = {
+    key: normalizedKey,
+    status: "in_progress",
+    startedAt: new Date().toISOString(),
+    ...meta,
+  };
+  guards[normalizedKey] = next;
+  return { shouldRun: true, key: normalizedKey, entry: next };
+}
+
+function completeDelegationTransition(ctx, key, meta = {}) {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) return null;
+  const guards = getDelegationGuardStore(ctx);
+  const next = {
+    ...(guards[normalizedKey] || {}),
+    ...meta,
+    key: normalizedKey,
+    status: "completed",
+    completedAt: new Date().toISOString(),
+  };
+  guards[normalizedKey] = next;
+  return next;
+}
+
+function recordDelegationAuditEvent(ctx, event = {}) {
+  if (typeof ctx?.recordDelegationEvent === "function") {
+    return ctx.recordDelegationEvent(event);
+  }
+  const timestamp = event?.timestamp || new Date().toISOString();
+  const entry = {
+    ...event,
+    type: String(event?.type || event?.eventType || "unknown").trim() || "unknown",
+    eventType: String(event?.eventType || event?.type || "unknown").trim() || "unknown",
+    at: Number(event?.at) || Date.now(),
+    timestamp,
+  };
+  const key = String(event?.transitionKey || event?.idempotencyKey || "").trim();
+  if (key) {
+    entry.transitionKey = entry.transitionKey || key;
+    entry.idempotencyKey = entry.idempotencyKey || key;
+  }
+  if (!ctx.data || typeof ctx.data !== "object") return entry;
+  const existing = Array.isArray(ctx.data._delegationAuditTrail) ? ctx.data._delegationAuditTrail : [];
+  const nextTrail = [...existing, entry]
+    .map((item, index) => ({
+      ...item,
+      type: String(item?.type || item?.eventType || "unknown").trim() || "unknown",
+      eventType: String(item?.eventType || item?.type || "unknown").trim() || "unknown",
+      at: Number(item?.at) || index,
+      timestamp: item?.timestamp || new Date(Number(item?.at) || Date.now()).toISOString(),
+    }))
+    .sort((a, b) => (a.at - b.at) || String(a.timestamp).localeCompare(String(b.timestamp)));
+  ctx.data._delegationAuditTrail = nextTrail;
+  ctx.data._workflowDelegationTrail = nextTrail;
+  ctx.data._delegationTrail = nextTrail;
+  return entry;
+}
+
 function isUnresolvedTemplateToken(value) {
   return /{{[^{}]+}}/.test(String(value || ""));
 }
@@ -12127,8 +12236,25 @@ registerBuiltinNodeType("action.claim_task", {
     const branch = cfgOrCtx(node, ctx, "branch");
     const sdk = cfgOrCtx(node, ctx, "resolvedSdk", cfgOrCtx(node, ctx, "sdk"));
     const model = cfgOrCtx(node, ctx, "resolvedModel", cfgOrCtx(node, ctx, "model"));
+    const transitionType = String(cfgOrCtx(node, ctx, "delegationTransitionType", cfgOrCtx(node, ctx, "transitionType")) || "assign").trim() || "assign";
+    const transitionKey = String(cfgOrCtx(node, ctx, "delegationTransitionKey", cfgOrCtx(node, ctx, "idempotencyKey")) || "").trim();
 
     if (!taskId) throw new Error("action.claim_task: taskId is required");
+
+    const replayGuard = transitionKey && typeof ctx?.getDelegationTransitionGuard === "function"
+      ? ctx.getDelegationTransitionGuard(transitionKey)
+      : null;
+    if (replayGuard?.claimToken) {
+      ctx.data._claimToken = replayGuard.claimToken;
+      ctx.data._claimInstanceId = replayGuard.instanceId || instanceId;
+      return {
+        success: true,
+        taskId,
+        claimToken: replayGuard.claimToken,
+        instanceId: replayGuard.instanceId || instanceId,
+        idempotentReplay: true,
+      };
+    }
 
     const claims = await ensureTaskClaimsMod();
     try {
@@ -12139,7 +12265,24 @@ registerBuiltinNodeType("action.claim_task", {
     }
 
     let claimResult;
+    const assignTransitionKey = buildDelegationTransitionKey("assign", [taskId, instanceId, node.id]);
     try {
+      const assignGuard = beginDelegationTransition(ctx, assignTransitionKey, {
+        type: "assign",
+        taskId,
+        instanceId,
+        nodeId: node.id,
+      });
+      if (!assignGuard.shouldRun) {
+        const existingToken = ctx.data?._claimToken || assignGuard.entry?.claimToken || null;
+        return {
+          success: true,
+          taskId,
+          claimToken: existingToken,
+          instanceId,
+          deduped: true,
+        };
+      }
       claimResult = await claims.claimTask({
         taskId,
         instanceId,
@@ -12162,6 +12305,21 @@ registerBuiltinNodeType("action.claim_task", {
       const token = claimResult.token || claimResult.claim?.claim_token || null;
       ctx.data._claimToken = token;
       ctx.data._claimInstanceId = instanceId;
+      recordDelegationAuditEvent(ctx, {
+        type: "assign",
+        taskId,
+        instanceId,
+        nodeId: node.id,
+        claimToken: token,
+        transitionKey: assignTransitionKey,
+        idempotencyKey: assignTransitionKey,
+      });
+      completeDelegationTransition(ctx, assignTransitionKey, {
+        type: "assign",
+        taskId,
+        instanceId,
+        claimToken: token,
+      });
 
       const runtimeState = getWorkflowRuntimeState(ctx);
       // Start renewal timer (stored in non-serializable runtime state for cleanup by release_claim)
@@ -12177,23 +12335,85 @@ registerBuiltinNodeType("action.claim_task", {
             const renewalResult = await renewClaimFn({ taskId, claimToken: token, instanceId, ttlMinutes });
             if (renewalResult && renewalResult.success === false) {
               const resultError = String(renewalResult.error || "claim_renew_failed");
+              const renewTransitionKey = buildDelegationTransitionKey("claim-renew", [taskId, instanceId, token, resultError]);
+              recordDelegationAuditEvent(ctx, {
+                type: "claim-renew",
+                taskId,
+                instanceId,
+                nodeId: node.id,
+                claimToken: token,
+                result: "failed",
+                error: resultError,
+                transitionKey: renewTransitionKey,
+                idempotencyKey: renewTransitionKey,
+              });
               const fatalResult = ["claimed_by_different_instance", "claim_token_mismatch",
                 "task_not_claimed", "owner_mismatch", "attempt_token_mismatch"].some((e) => resultError.includes(e));
               if (fatalResult) {
+                if (typeof ctx?.recordDelegationEvent === "function") {
+                  ctx.recordDelegationEvent({
+                    type: "owner-mismatch",
+                    eventType: "owner-mismatch",
+                    transitionKey: transitionKey ? `${transitionKey}:owner-mismatch` : "",
+                    idempotencyKey: transitionKey ? `${transitionKey}:owner-mismatch` : "",
+                    taskId,
+                    claimToken: token,
+                    instanceId,
+                    nodeId: node.id,
+                    error: resultError,
+                  });
+                }
                 ctx.log(node.id, `Claim renewal fatal: ${resultError} — aborting task`);
                 clearInterval(renewTimer);
                 runtimeState.claimRenewTimer = null;
                 ctx.data._claimRenewTimer = null;
                 ctx.data._claimStolen = true;
               } else {
+                if (typeof ctx?.recordDelegationEvent === "function") {
+                  ctx.recordDelegationEvent({
+                    type: "claim-renew",
+                    eventType: "claim-renew",
+                    transitionKey: transitionKey ? `${transitionKey}:claim-renew:${Date.now()}` : "",
+                    idempotencyKey: transitionKey ? `${transitionKey}:claim-renew:${Date.now()}` : "",
+                    taskId,
+                    claimToken: token,
+                    instanceId,
+                    nodeId: node.id,
+                  });
+                }
                 ctx.log(node.id, `Claim renewal warning: ${resultError}`);
               }
             }
           } catch (renewErr) {
             const msg = renewErr?.message || String(renewErr);
+            const renewTransitionKey = buildDelegationTransitionKey("claim-renew", [taskId, instanceId, token, msg]);
+            recordDelegationAuditEvent(ctx, {
+              type: "claim-renew",
+              taskId,
+              instanceId,
+              nodeId: node.id,
+              claimToken: token,
+              result: "error",
+              error: msg,
+              transitionKey: renewTransitionKey,
+              idempotencyKey: renewTransitionKey,
+            });
             const fatal = ["claimed_by_different_instance", "claim_token_mismatch",
               "task_not_claimed", "owner_mismatch", "attempt_token_mismatch"].some((e) => msg.includes(e));
             if (fatal) {
+              if (typeof ctx?.recordDelegationEvent === "function") {
+                ctx.recordDelegationEvent({
+                  type: "owner-mismatch",
+                  eventType: "owner-mismatch",
+                  transitionKey: transitionKey ? `${transitionKey}:owner-mismatch` : "",
+                  idempotencyKey: transitionKey ? `${transitionKey}:owner-mismatch` : "",
+                  taskId,
+                  claimToken: token,
+                  instanceId,
+                  nodeId: node.id,
+                  error: msg,
+                });
+              }
               ctx.log(node.id, `Claim renewal fatal: ${msg} — aborting task`);
               clearInterval(renewTimer);
               runtimeState.claimRenewTimer = null;
@@ -12201,6 +12421,18 @@ registerBuiltinNodeType("action.claim_task", {
               // Signal abort to downstream nodes via context
               ctx.data._claimStolen = true;
             } else {
+              if (typeof ctx?.recordDelegationEvent === "function") {
+                ctx.recordDelegationEvent({
+                  type: "claim-renew",
+                  eventType: "claim-renew",
+                  transitionKey: transitionKey ? `${transitionKey}:claim-renew:${Date.now()}` : "",
+                  idempotencyKey: transitionKey ? `${transitionKey}:claim-renew:${Date.now()}` : "",
+                  taskId,
+                  claimToken: token,
+                  instanceId,
+                  nodeId: node.id,
+                });
+              }
               ctx.log(node.id, `Claim renewal warning: ${msg}`);
             }
           }
@@ -12210,6 +12442,29 @@ registerBuiltinNodeType("action.claim_task", {
         runtimeState.claimRenewTimer = renewTimer;
         // Keep serialized context JSON-safe.
         ctx.data._claimRenewTimer = null;
+      }
+
+      if (transitionKey && typeof ctx?.setDelegationTransitionGuard === "function") {
+        ctx.setDelegationTransitionGuard(transitionKey, {
+          type: transitionType,
+          eventType: transitionType,
+          taskId,
+          claimToken: token,
+          instanceId,
+          nodeId: node.id,
+        });
+      }
+      if (typeof ctx?.recordDelegationEvent === "function") {
+        ctx.recordDelegationEvent({
+          type: transitionType,
+          eventType: transitionType,
+          transitionKey,
+          idempotencyKey: transitionKey,
+          taskId,
+          claimToken: token,
+          instanceId,
+          nodeId: node.id,
+        });
       }
 
       ctx.log(node.id, `Task "${taskTitle}" claimed (ttl=${ttlMinutes}min, renew=${renewIntervalMs}ms)`);
@@ -15121,6 +15376,7 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
+
 
 
 

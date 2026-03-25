@@ -185,6 +185,27 @@ function resolveTraceAgentId(data = {}, fallback = "") {
 
 // ── Node Status ─────────────────────────────────────────────────────────────
 
+function normalizeDelegationTrail(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry) => ({ ...entry }))
+    .sort((a, b) => {
+      const aTime = Number(a?.at || a?.timestamp || 0);
+      const bTime = Number(b?.at || b?.timestamp || 0);
+      return aTime - bTime;
+    });
+}
+
+function normalizeDelegationGuardMap(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  return Object.fromEntries(
+    Object.entries(raw)
+      .filter(([key, value]) => String(key || "").trim() && value && typeof value === "object")
+      .map(([key, value]) => [String(key).trim(), { ...value }]),
+  );
+}
+
 export const NodeStatus = Object.freeze({
   PENDING: "pending",
   RUNNING: "running",
@@ -1064,6 +1085,67 @@ export class WorkflowContext {
     this.logs.push({ nodeId, message, level, timestamp: Date.now() });
   }
 
+  getDelegationAuditTrail() {
+    return normalizeDelegationTrail(
+      this.data?._delegationAuditTrail ??
+      this.data?._workflowDelegationTrail ??
+      this.data?._delegationTrail,
+    );
+  }
+
+  recordDelegationEvent(event = {}) {
+    if (!this.data || typeof this.data !== "object") this.data = {};
+    this.data._delegationTransitionGuards = normalizeDelegationGuardMap(this.data._delegationTransitionGuards);
+    const entry = {
+      ...event,
+      type: String(event?.type || event?.eventType || "").trim() || "unknown",
+      eventType: String(event?.eventType || event?.type || "").trim() || "unknown",
+      at: Number(event?.at) || Date.now(),
+      timestamp: event?.timestamp || new Date().toISOString(),
+    };
+    const key = String(event?.transitionKey || event?.idempotencyKey || "").trim();
+    if (key) {
+      if (!this.data._delegationTransitionGuards || typeof this.data._delegationTransitionGuards !== "object") {
+        this.data._delegationTransitionGuards = {};
+      }
+      if (this.data._delegationTransitionGuards[key]) {
+        return {
+          ...this.data._delegationTransitionGuards[key],
+          recorded: false,
+        };
+      }
+      entry.transitionKey = entry.transitionKey || key;
+      entry.idempotencyKey = entry.idempotencyKey || key;
+      this.data._delegationTransitionGuards[key] = entry;
+    }
+    const nextTrail = normalizeDelegationTrail([...this.getDelegationAuditTrail(), entry]);
+    this.data._delegationAuditTrail = nextTrail;
+    this.data._workflowDelegationTrail = nextTrail;
+    this.data._delegationTrail = nextTrail;
+    return {
+      ...entry,
+      recorded: true,
+    };
+  }
+
+  getDelegationTransitionGuard(key) {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey) return null;
+    const guards = normalizeDelegationGuardMap(this.data?._delegationTransitionGuards);
+    return guards[normalizedKey] ? { ...guards[normalizedKey] } : null;
+  }
+
+  setDelegationTransitionGuard(key, value = {}) {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey) return null;
+    if (!this.data || typeof this.data !== "object") this.data = {};
+    const guards = normalizeDelegationGuardMap(this.data._delegationTransitionGuards);
+    const nextValue = { ...value, transitionKey: value?.transitionKey || normalizedKey };
+    guards[normalizedKey] = nextValue;
+    this.data._delegationTransitionGuards = guards;
+    return { ...nextValue };
+  }
+
   /** Record an error */
   error(nodeId, error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -1135,6 +1217,12 @@ export class WorkflowContext {
       dagState: this.data?._dagState || null,
       issueAdvisor: this.data?._issueAdvisor || null,
       replayTrajectory: this.data?._replayTrajectory || null,
+      delegationAuditTrail: this.getDelegationAuditTrail(),
+      delegationTrail: this.getDelegationAuditTrail(),
+      delegationTransitionGuards:
+        this.data?._delegationTransitionGuards && typeof this.data._delegationTransitionGuards === "object"
+          ? { ...this.data._delegationTransitionGuards }
+          : {},
       stepSummaries: Array.isArray(this.data?._replayTrajectory?.steps)
         ? this.data._replayTrajectory.steps.map((s) => ({
             nodeId: s.nodeId,
@@ -3228,13 +3316,28 @@ export class WorkflowEngine extends EventEmitter {
     return runMap.get(requestedRunId) || runMap.get(runGraph.rootRunId) || null;
   }
 
+  _extractDelegationTrail(detail, run = null) {
+    const candidates = [
+      detail?.data?._workflowDelegationTrail,
+      run?.detail?.data?._workflowDelegationTrail,
+      run?.delegationTrail,
+    ];
+    const trail = candidates.find((value) => Array.isArray(value)) || [];
+    return trail
+      .filter((entry) => entry && typeof entry === "object")
+      .slice()
+      .sort((a, b) => String(a?.timestamp || "").localeCompare(String(b?.timestamp || "")));
+  }
+
   _decorateRunDetail(run) {
     if (!run?.runId) return run;
     const runGraph = this.getRunGraph(run.runId);
+    const delegationTrail = this._extractDelegationTrail(run?.detail, run);
     return {
       ...run,
       runGraph,
       executionTree: this._buildExecutionTree(runGraph, run.runId),
+      delegationTrail,
     };
   }
 
@@ -4607,6 +4710,9 @@ export class WorkflowEngine extends EventEmitter {
     const detail = ctx.toJSON(Date.now());
     if (ctx?.data?._dagState) detail.dagState = ctx.data._dagState;
     if (ctx?.data?._issueAdvisor) detail.issueAdvisor = ctx.data._issueAdvisor;
+    if (Array.isArray(ctx?.data?._workflowDelegationTrail)) {
+      detail.data._workflowDelegationTrail = ctx.data._workflowDelegationTrail.map((entry) => ({ ...entry }));
+    }
     if (ctx?.data?._workflowDefinitionSnapshot) {
       detail.workflowDefinition = cloneRunSnapshot(ctx.data._workflowDefinitionSnapshot);
     }
@@ -4648,6 +4754,7 @@ export class WorkflowEngine extends EventEmitter {
     const triggeredBy = detail?.data?._triggeredBy || null;
     const targetRepo = detail?.data?._targetRepo || null;
     const triggerVars = detail?.data?._triggerVars || null;
+    const delegationTrail = normalizeDelegationTrail(detail?.delegationAuditTrail ?? detail?.delegationTrail ?? detail?.data?._delegationAuditTrail ?? detail?.data?._workflowDelegationTrail ?? detail?.data?._delegationTrail);
     const rootRunId =
       detail?.dagState?.rootRunId ||
       detail?.data?._workflowRootRunId ||
@@ -4690,6 +4797,7 @@ export class WorkflowEngine extends EventEmitter {
       isStuck,
       stuckMs,
       stuckThresholdMs: threshold,
+      delegationTrail,
       triggerEvent,
       triggerSource,
       triggeredBy,
@@ -5333,6 +5441,10 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+
+
+
+
 
 
 
