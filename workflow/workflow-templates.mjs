@@ -118,7 +118,6 @@ import {
 // Task Lifecycle (workflow-first core)
 import {
   TASK_LIFECYCLE_TEMPLATE,
-  VE_ORCHESTRATOR_LITE_TEMPLATE,
 } from "../workflow-templates/task-lifecycle.mjs";
 
 // Task Batch (parallel dispatch)
@@ -211,7 +210,6 @@ export {
   CICD_TASK_TEMPLATE,
   DESIGN_TASK_TEMPLATE,
   TASK_LIFECYCLE_TEMPLATE,
-  VE_ORCHESTRATOR_LITE_TEMPLATE,
   TASK_BATCH_PROCESSOR_TEMPLATE,
   TASK_BATCH_PR_TEMPLATE,
   RESEARCH_AGENT_TEMPLATE,
@@ -308,7 +306,6 @@ const BUILTIN_WORKFLOW_TEMPLATES = [
   DESIGN_TASK_TEMPLATE,
   // ── Task Lifecycle (workflow-first core) ──
   TASK_LIFECYCLE_TEMPLATE,
-  VE_ORCHESTRATOR_LITE_TEMPLATE,
   // ── Task Batch (parallel dispatch) ──
   TASK_BATCH_PROCESSOR_TEMPLATE,
   TASK_BATCH_PR_TEMPLATE,
