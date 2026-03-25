@@ -22,6 +22,7 @@ import {
   projectSummary,
   loadStatus,
   loadProjectSummary,
+  loadRetryQueue,
   showToast,
   refreshTab,
   runOptimistic,
@@ -30,6 +31,7 @@ import {
   getDashboardHistory,
   setPendingChange,
   clearPendingChange,
+  retryQueueData,
 } from "../modules/state.js";
 import { navigateTo } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
@@ -39,6 +41,7 @@ import {
   truncate,
   countChangedFields,
 } from "../modules/utils.js";
+import { buildWorktreeRecoveryViewModel } from "../modules/worktree-recovery.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   Card,
@@ -55,9 +58,10 @@ import {
   SliderControl,
 } from "../components/forms.js";
 import { StartTaskModal } from "./tasks.js";
+import { CommitGraph } from "../components/commit-graph.js";
 import {
   Button, TextField, Typography, Box, Stack, Chip, Paper,
-  IconButton, Tooltip, CircularProgress, Alert,
+  IconButton, Tooltip, CircularProgress, Alert, Skeleton,
 } from "@mui/material";
 
 /* ─── Quick Action definitions ─── */
@@ -319,15 +323,22 @@ export function DashboardTab() {
   const [now, setNow] = useState(() => new Date());
   const [recentCommits, setRecentCommits] = useState([]);
   const [flashKey, setFlashKey] = useState(0);
+  const [commitSearch, setCommitSearch] = useState("");
+  const [activitySearch, setActivitySearch] = useState("");
+  const [healthStatsReady, setHealthStatsReady] = useState(false);
   const prevCounts = useRef(null);
   const status = statusData.value;
   const executor = executorData.value;
+  const retryQueue = retryQueueData.value || { count: 0, items: [], stats: {} };
   const project = projectSummary.value;
   const counts = status?.counts || {};
   const summary = status?.success_metrics || {};
   const execData = executor?.data;
   const mode = executor?.mode || "vk";
   const defaultSdk = execData?.sdk || "auto";
+  const worktreeRecovery = buildWorktreeRecoveryViewModel(
+    status?.worktreeRecovery || status?.worktree_recovery || null,
+  );
 
   const running = Number(counts.running || counts.inprogress || 0);
   const review = Number(counts.review || counts.inreview || 0);
@@ -434,6 +445,11 @@ export function DashboardTab() {
     return () => clearInterval(t);
   }, []);
 
+  useEffect(() => {
+    const t = setTimeout(() => setHealthStatsReady(true), 500);
+    return () => clearTimeout(t);
+  }, []);
+
   // ── Recent commits (graceful 404) ──
   useEffect(() => {
     apiFetch("/api/recent-commits", { _silent: true })
@@ -443,9 +459,13 @@ export function DashboardTab() {
           : Array.isArray(res)
             ? res
             : [];
-        setRecentCommits(commits.slice(0, 3));
+        setRecentCommits(commits.slice(0, 10));
       })
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    loadRetryQueue().catch(() => {});
   }, []);
 
   // ── Flash metrics on counts change ──
@@ -655,12 +675,57 @@ export function DashboardTab() {
     scheduleRefresh(150);
   }, []);
 
-  /* ── Recent activity (last 5 tasks from global tasks signal) ── */
-  const recentTasks = (tasksData.value || []).slice(0, 5);
+  const recentTasks = (tasksData.value || []).slice(0, 8);
+  const filteredTasks = activitySearch
+    ? recentTasks.filter((t) => {
+        const q = activitySearch.toLowerCase();
+        return (t.title || "").toLowerCase().includes(q) || (t.id || "").toLowerCase().includes(q);
+      })
+    : recentTasks;
+  const filteredCommits = commitSearch
+    ? recentCommits.filter((c) => {
+        const q = commitSearch.toLowerCase();
+        const msg = c.message || c.msg || c.subject || "";
+        return msg.toLowerCase().includes(q);
+      })
+    : recentCommits;
+  const retryItems = Array.isArray(retryQueue.items) ? retryQueue.items : [];
 
-  /* ── Loading skeleton ── */
+  const formatRetryCountdown = useCallback((nextAttemptAt) => {
+    const target = Number(nextAttemptAt || 0);
+    if (!Number.isFinite(target) || target <= 0) return "Now";
+    const remainingMs = target - now.getTime();
+    if (remainingMs <= 0) return "Now";
+    const totalSec = Math.ceil(remainingMs / 1000);
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    if (min > 0) return `${min}m ${String(sec).padStart(2, "0")}s`;
+    return `${sec}s`;
+  }, [now]);
+
+  const handleRetryNow = useCallback(async (taskId) => {
+    const id = String(taskId || "").trim();
+    if (!id) return;
+    try {
+      await apiFetch("/api/tasks/retry", {
+        method: "POST",
+        body: JSON.stringify({ taskId: id }),
+      });
+      showToast(`Retry requested for ${id}`, "success");
+      scheduleRefresh(100);
+    } catch {
+      /* toast shown by apiFetch */
+    }
+  }, []);
+
   if (!status && !executor)
-    return html`<${Card} title="Loading…"><${SkeletonCard} count=${4} /><//>`;
+    return html`
+      <div class="dashboard-shell">
+        <div class="dashboard-grid">
+          ${Array.from({ length: 6 }, (_, i) => html`<${SkeletonCard} key=${i} />`)}
+        </div>
+      </div>
+    `;
 
   /* ── Welcome empty state ── */
   if (totalTasks === 0 && !executor) {
@@ -735,13 +800,13 @@ export function DashboardTab() {
             <div class="dashboard-health-item">
               <div class="dashboard-health-label">6h fail rate</div>
               <div class="dashboard-health-value" style="color:${healthStats?.total > 0 && healthStats.failRate > 0 ? 'var(--color-error)' : 'inherit'}">
-                ${healthStats?.total > 0 ? `${Math.round(healthStats.failRate * 100)}%` : "—"}
+                ${healthStats?.total > 0 ? `${Math.round(healthStats.failRate * 100)}%` : healthStats === null && healthStatsReady ? html`<${Skeleton} variant="text" width=${40} />` : "—"}
               </div>
             </div>
             <div class="dashboard-health-item">
               <div class="dashboard-health-label">6h runs</div>
               <div class="dashboard-health-value">
-                ${healthStats?.total > 0 ? `${healthStats.successRuns}/${healthStats.total}` : "—"}
+                ${healthStats?.total > 0 ? `${healthStats.successRuns}/${healthStats.total}` : healthStats === null && healthStatsReady ? html`<${Skeleton} variant="text" width=${50} />` : "—"}
               </div>
             </div>
             <div class="dashboard-health-item">
@@ -771,6 +836,24 @@ export function DashboardTab() {
             >
               Resume
             <//>
+          </div>
+          <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:8px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+              <div>
+                <div style="font-size:12px;font-weight:600;">${worktreeRecovery.headline}</div>
+                <div style="font-size:11px;color:var(--text-secondary);">${worktreeRecovery.summary}</div>
+              </div>
+              <span class="dashboard-chip" style=${`border-color:${worktreeRecovery.tone === "error" ? "var(--color-error)" : worktreeRecovery.tone === "warning" ? "var(--color-inreview)" : "var(--color-done)"};`}>
+                ${worktreeRecovery.health}
+              </span>
+            </div>
+            ${worktreeRecovery.events.slice(0, 2).map((event) => html`
+              <div key=${event.key} style="padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2);">
+                <div style="font-size:12px;font-weight:600;">${event.title}</div>
+                <div style="font-size:11px;color:var(--text-secondary);">${event.detail}</div>
+                ${event.error ? html`<div style="font-size:11px;color:var(--color-error);margin-top:4px;">${event.error}</div>` : null}
+              </div>
+            `)}
           </div>
           ${tickerTasks.length > 0 ? html`
             <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
@@ -983,14 +1066,62 @@ export function DashboardTab() {
 
         <${Card}
           title=${html`<span class="dashboard-card-title"
+            ><span class="dashboard-title-icon">${ICONS.refresh || resolveIcon("refresh")}</span>Retry Queue</span
+          >`}
+          className="dashboard-card dashboard-retry-queue"
+        >
+          ${retryItems.length
+            ? html`
+              <div class="dashboard-retry-list">
+                ${retryItems.map((item) => html`
+                  <div key=${item.taskId} class="dashboard-retry-item">
+                    <div class="dashboard-retry-main">
+                      <div class="dashboard-retry-task">${item.taskId}</div>
+                      ${item.taskTitle
+                        ? html`<div class="dashboard-retry-task-title">${truncate(item.taskTitle, 72)}</div>`
+                        : null}
+                      <div class="dashboard-retry-error">${truncate(item.lastError || item.reason || "Unknown retry reason", 120)}</div>
+                    </div>
+                    <div class="dashboard-retry-meta">
+                      <span class="dashboard-retry-pill">Attempt ${item.retryCount || 0}</span>
+                      <span class="dashboard-retry-pill">Next ${formatRetryCountdown(item.nextAttemptAt)}</span>
+                      <${Button}
+                        variant="outlined"
+                        size="small"
+                        onClick=${() => {
+                          haptic("medium");
+                          void handleRetryNow(item.taskId);
+                        }}
+                      >
+                        Retry Now
+                      <//>
+                    </div>
+                  </div>
+                `)}
+              </div>
+            `
+            : html`<${EmptyState} title="No queued retries" description="Failed tasks waiting to retry appear here automatically." />`}
+        <//>
+
+        <${Card}
+          title=${html`<span class="dashboard-card-title"
             ><span class="dashboard-title-icon">${ICONS.clock}</span>Recent
             Activity</span
           >`}
           className="dashboard-card dashboard-activity"
         >
+          <${TextField}
+            size="small"
+            variant="outlined"
+            fullWidth
+            placeholder="Filter by title or ID…"
+            value=${activitySearch}
+            onInput=${(e) => setActivitySearch(e.target.value)}
+            style=${{ marginBottom: 8 }}
+          />
           <div class="dashboard-activity-list">
-            ${recentTasks.length
-              ? recentTasks.map(
+            ${filteredTasks.length
+              ? filteredTasks.map(
                   (task) => html`
                     <div key=${task.id} class="list-item">
                       <div class="list-item-content">
@@ -1007,7 +1138,7 @@ export function DashboardTab() {
                     </div>
                   `,
                 )
-              : html`<${EmptyState} message="No recent tasks" />`}
+              : html`<${EmptyState} message=${activitySearch ? "No matching tasks" : "No recent tasks"} />`}
           </div>
         <//>
       </div>
@@ -1017,25 +1148,10 @@ export function DashboardTab() {
 
       ${recentCommits.length > 0 && html`
         <${Card}
-          title=${html`<span class="dashboard-card-title"><span class="dashboard-title-icon">${ICONS.git || resolveIcon("git")}</span>Recent Commits</span>`}
+          title=${html`<span class="dashboard-card-title"><span class="dashboard-title-icon">${ICONS.git || resolveIcon("git")}</span>Git Graph</span>`}
           className="dashboard-card dashboard-commits-card"
         >
-          <div class="dashboard-commits">
-            ${recentCommits.map((c) => {
-              // Support both structured {hash,message,author,date} and legacy/alternate field names
-              const hash = (c.hash || c.sha || '').slice(0, 7);
-              const messageRaw = c.message || c.msg || c.subject || (typeof c === 'string' ? c.split(' ').slice(1).join(' ') : '');
-              const message = normalizeCommitMessage(messageRaw);
-              const author = c.author || c.authorName || '';
-              const date = c.date || c.timestamp || c.authoredDate || '';
-              return html`
-              <div class="dashboard-commit-item" key=${hash || message}>
-                <div class="dashboard-commit-hash">${hash || '???'}</div>
-                <div class="dashboard-commit-msg">${truncate(message, 60)}</div>
-                ${(author || date) && html`<div class="dashboard-commit-meta">${author}${author && date ? ' · ' : ''}${date ? formatRelative(date) : ''}</div>`}
-              </div>`;
-            })}
-          </div>
+          <${CommitGraph} maxCommits=${40} compact=${true} />
         <//>  
       `}
 
