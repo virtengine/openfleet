@@ -23,6 +23,7 @@ import {
   resolveCodexProfileRuntime,
   readCodexConfigRuntimeDefaults,
 } from "./codex-model-profiles.mjs";
+import { buildTaskWritableRoots } from "./codex-config.mjs";
 import {
   isTransientStreamError,
   streamRetryDelay,
@@ -91,7 +92,39 @@ function isAzureOpenAIBaseUrl(value) {
   }
 }
 
-function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env) {
+function normalizeCodexSandboxMode(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "workspace-write";
+  if (raw === "disk-full-write-access" || raw === "workspace-write") return "workspace-write";
+  if (raw === "disk-read-only" || raw === "read-only") return "read-only";
+  if (raw === "danger-full-access") return "danger-full-access";
+  return raw;
+}
+
+function buildInjectedSandboxConfig(envInput, workingDirectory) {
+  const sandboxMode = normalizeCodexSandboxMode(
+    envInput?.CODEX_SANDBOX || envInput?.CODEX_SANDBOX_MODE || "workspace-write",
+  );
+  const config = {
+    sandbox_mode: sandboxMode,
+  };
+  if (sandboxMode === "workspace-write") {
+    config.sandbox_workspace_write = {
+      network_access: true,
+      exclude_tmpdir_env_var: false,
+      exclude_slash_tmp: false,
+      writable_roots: buildTaskWritableRoots({
+        worktreePath: workingDirectory,
+        repoRoot: REPO_ROOT,
+        tempDir: envInput?.TEMP || envInput?.TMP || "",
+        platform: envInput?.BOSUN_HOST_PLATFORM || envInput?.npm_config_platform || envInput?.OS || process.platform,
+      }),
+    };
+  }
+  return config;
+}
+
+function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, workingDirectory = DEFAULT_WORKING_DIRECTORY) {
   const resolved = resolveCodexProfileRuntime(envInput);
   const { env: resolvedEnv, configProvider } = resolved;
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
@@ -150,6 +183,8 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env) {
         },
       }
     : {};
+
+  Object.assign(config, buildInjectedSandboxConfig(envInput, workingDirectory));
 
   if (!isAzure && Object.keys(streamProviderOverrides || {}).length > 0) {
     config.model_provider = providerSectionName;
@@ -548,7 +583,7 @@ async function getThread() {
       stream_max_retries: 15,
       request_max_retries: 6,
     };
-    const runtime = buildCodexSdkRuntime(streamProviderOverrides, process.env);
+    const runtime = buildCodexSdkRuntime(streamProviderOverrides, process.env, getWorkingDirectory());
 
     delete process.env.OPENAI_BASE_URL;
     delete process.env.OPENAI_ORGANIZATION;
@@ -560,14 +595,15 @@ async function getThread() {
 
     codexInstance = new Cls({
       config: {
+        ...runtime.config,
         features: {
+          ...(runtime.config?.features || {}),
           child_agents_md: true,
           multi_agent: true,
           memories: true,
           undo: true,
           steer: true,
         },
-        ...runtime.config,
       },
     });
 
@@ -1237,7 +1273,7 @@ export async function initCodexShell() {
       stream_max_retries: 15,
       request_max_retries: 6,
     };
-    const runtime = buildCodexSdkRuntime(streamProviderOverrides, process.env);
+    const runtime = buildCodexSdkRuntime(streamProviderOverrides, process.env, getWorkingDirectory());
 
     delete process.env.OPENAI_BASE_URL;
     delete process.env.OPENAI_ORGANIZATION;
@@ -1249,14 +1285,15 @@ export async function initCodexShell() {
 
     codexInstance = new Cls({
       config: {
+        ...runtime.config,
         features: {
+          ...(runtime.config?.features || {}),
           child_agents_md: true,
           multi_agent: true,
           memories: true,
           undo: true,
           steer: true,
         },
-        ...runtime.config,
       },
     });
     console.log(`[codex-shell] initialised with Codex SDK (provider=${runtime.providerName}, sub-agent features enabled)`);

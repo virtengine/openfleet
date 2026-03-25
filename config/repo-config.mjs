@@ -21,6 +21,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -58,13 +59,40 @@ function parseWritableRootsInput(value) {
   return [];
 }
 
+function resolveConfigPlatform(env = process.env) {
+  const raw = String(
+    env?.BOSUN_HOST_PLATFORM ||
+    env?.npm_config_platform ||
+    env?.OS ||
+    process.platform,
+  ).trim().toLowerCase();
+  if (raw === "win32" || raw === "windows" || raw === "windows_nt" || raw.startsWith("mingw")) {
+    return "win32";
+  }
+  if (raw === "darwin" || raw === "mac" || raw === "macos" || raw === "osx") {
+    return "darwin";
+  }
+  if (raw === "linux") {
+    return "linux";
+  }
+  return process.platform;
+}
+
+function getFallbackSandboxTempRoots(env = process.env, platform = resolveConfigPlatform(env)) {
+  if (platform === "win32") {
+    const candidate = String(env?.TEMP || env?.TMP || tmpdir() || "").trim();
+    return candidate && isAbsolute(candidate) ? [candidate] : [];
+  }
+  return ["/tmp"];
+}
+
 function fallbackBuildSandboxMode(envValue) {
   const mode = String(envValue || "workspace-write").trim() || "workspace-write";
   return `\n# Sandbox mode (added by bosun)\nsandbox_mode = "${mode}"\n`;
 }
 
 function fallbackBuildSandboxWorkspaceWrite(options = {}) {
-  const { writableRoots, repoRoot } = options;
+  const { writableRoots, repoRoot, platform = process.platform, tempDir = "" } = options;
   const roots = new Set();
 
   for (const entry of parseWritableRootsInput(writableRoots)) {
@@ -84,7 +112,10 @@ function fallbackBuildSandboxWorkspaceWrite(options = {}) {
     const parent = dirname(repoRoot);
     if (parent && parent !== repoRoot) roots.add(parent);
   }
-  roots.add("/tmp");
+  const sandboxEnv = tempDir ? { TEMP: tempDir } : process.env;
+  for (const tempRoot of getFallbackSandboxTempRoots(sandboxEnv, platform)) {
+    if (isAbsolute(tempRoot)) roots.add(tempRoot);
+  }
 
   if (!roots.size) return "";
   return [
@@ -99,7 +130,8 @@ function fallbackBuildSandboxWorkspaceWrite(options = {}) {
   ].join("\n");
 }
 
-function fallbackBuildFeaturesBlock() {
+function fallbackBuildFeaturesBlock(envOverrides = process.env) {
+  const disableLinuxBwrap = resolveConfigPlatform(envOverrides) !== "linux";
   return [
     "",
     "# Feature flags (compat fallback)",
@@ -110,6 +142,7 @@ function fallbackBuildFeaturesBlock() {
     "memories = true",
     "shell_tool = true",
     "unified_exec = true",
+    `use_linux_sandbox_bwrap = ${disableLinuxBwrap ? "false" : "true"}`,
     "",
   ].join("\n");
 }
@@ -420,6 +453,7 @@ export function buildRepoCodexConfig(options = {}) {
     "# ~/.codex/config.toml and are NOT duplicated here.",
     "",
   ];
+  const platform = resolveConfigPlatform(env);
 
   // ── Sandbox mode ──
   parts.push(buildSandboxMode(env.CODEX_SANDBOX_MODE || undefined).trim());
@@ -430,6 +464,8 @@ export function buildRepoCodexConfig(options = {}) {
     const workspaceWriteBlock = buildSandboxWorkspaceWrite({
       writableRoots: env.CODEX_SANDBOX_WRITABLE_ROOTS || "",
       repoRoot,
+      platform,
+      tempDir: env.TEMP || env.TMP || "",
     });
     if (workspaceWriteBlock) {
       parts.push(workspaceWriteBlock.trim());

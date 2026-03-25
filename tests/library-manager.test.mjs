@@ -210,6 +210,69 @@ describe("manifest CRUD", () => {
     expect(deleteEntry(tmpDir, "nope")).toBe(false);
   });
 
+  it("deleteEntry removes imported source artifacts and stale skill refs when deleting an imported skill", () => {
+    upsertEntry(tmpDir, {
+      type: "skill",
+      id: "k-dense-skill",
+      name: "K Dense Skill",
+      meta: { sourceId: "offer-k-dense-web" },
+    }, "# skill", { skipIndexSync: true });
+
+    upsertEntry(tmpDir, {
+      type: "prompt",
+      id: "k-dense-agent-prompt",
+      name: "K Dense Agent Prompt",
+      tags: ["imported", "agent-prompt", "offer-k-dense-web"],
+      meta: { sourceId: "offer-k-dense-web" },
+    }, "# prompt");
+
+    upsertEntry(tmpDir, {
+      type: "agent",
+      id: "k-dense-agent",
+      name: "K Dense Agent",
+      tags: ["imported", "offer-k-dense-web"],
+      meta: { sourceId: "offer-k-dense-web" },
+    }, {
+      id: "k-dense-agent",
+      name: "K Dense Agent",
+      titlePatterns: ["\\bk\\b"],
+      scopes: ["docs"],
+      skills: ["k-dense-skill"],
+      promptOverride: "k-dense-agent-prompt",
+      importMeta: {
+        sourceId: "offer-k-dense-web",
+      },
+      agentType: "task",
+    }, { skipIndexSync: true });
+
+    upsertEntry(tmpDir, {
+      type: "agent",
+      id: "custom-agent",
+      name: "Custom Agent",
+      tags: ["custom"],
+    }, {
+      id: "custom-agent",
+      name: "Custom Agent",
+      titlePatterns: ["\\bcustom\\b"],
+      scopes: ["docs"],
+      skills: ["k-dense-skill", "other-skill"],
+      agentType: "task",
+    }, { skipIndexSync: true });
+
+    rebuildManifest(tmpDir);
+    rebuildAgentProfileIndex(tmpDir);
+    rebuildSkillEntryIndex(tmpDir);
+
+    expect(deleteEntry(tmpDir, "k-dense-skill", { deleteFile: true })).toBe(true);
+
+    expect(getEntry(tmpDir, "k-dense-skill")).toBeNull();
+    expect(getEntry(tmpDir, "k-dense-agent")).toBeNull();
+    expect(getEntry(tmpDir, "k-dense-agent-prompt")).toBeNull();
+    const customAgentEntry = getEntry(tmpDir, "custom-agent");
+    const customAgent = getEntryContent(tmpDir, customAgentEntry);
+    expect(customAgent.skills).toEqual(["other-skill"]);
+  });
+
   it("listEntries filters by type", () => {
     upsertEntry(tmpDir, { type: "prompt", name: "P1" }, "p");
     upsertEntry(tmpDir, { type: "skill", name: "S1" }, "s");
@@ -885,6 +948,38 @@ describe("well-known source import", () => {
       expect(importedSkill).toBeTruthy();
       const importedSkillBody = String(getEntryContent(tmpDir, importedSkill) || "");
       expect(importedSkillBody).toContain("Prioritize incidents quickly.");
+    } finally {
+      rmSync(srcRepo, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("defaults skill-only repositories to Bosun skill imports when flags are omitted", () => {
+    const srcRepo = mkdtempSync(join(tmpdir(), "lib-skills-only-"));
+    try {
+      mkdirSync(join(srcRepo, "skills", "triage"), { recursive: true });
+      writeFileSync(
+        join(srcRepo, "skills", "triage", "SKILL.md"),
+        "# Skill: Triage\n\nPrioritize incidents quickly.",
+        "utf8",
+      );
+      execGit("git init", { cwd: srcRepo, stdio: "pipe" });
+      execGit("git config user.email test@example.com", { cwd: srcRepo, stdio: "pipe" });
+      execGit("git config user.name test", { cwd: srcRepo, stdio: "pipe" });
+      execGit("git add .", { cwd: srcRepo, stdio: "pipe" });
+      execGit("git commit -m init", { cwd: srcRepo, stdio: "pipe" });
+
+      const branch = execGit("git rev-parse --abbrev-ref HEAD", { cwd: srcRepo, stdio: "pipe", encoding: "utf8" }).trim();
+      const result = importAgentProfilesFromRepository(tmpDir, {
+        repoUrl: srcRepo,
+        branch,
+        maxEntries: 20,
+      });
+
+      expect(result.importedByType).toEqual(expect.objectContaining({
+        agent: 0,
+        prompt: 0,
+        skill: 1,
+      }));
     } finally {
       rmSync(srcRepo, { recursive: true, force: true });
     }

@@ -337,6 +337,11 @@ describe("library marketplace helpers", () => {
           repoUrl: "https://github.com/K-Dense-AI/claude-scientific-skills",
           defaultBranch: "main",
         },
+        candidatesByType: {
+          agent: 0,
+          prompt: 0,
+          skill: 1,
+        },
       },
       ["scientific-skills/xlsx/SKILL.md"],
     );
@@ -346,9 +351,9 @@ describe("library marketplace helpers", () => {
       repoUrl: "https://github.com/K-Dense-AI/claude-scientific-skills",
       branch: "main",
       includeEntries: ["scientific-skills/xlsx/SKILL.md"],
-      importAgents: true,
+      importAgents: false,
       importSkills: true,
-      importPrompts: true,
+      importPrompts: false,
       importTools: true,
     });
   });

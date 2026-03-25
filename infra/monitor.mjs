@@ -1996,6 +1996,49 @@ try {
   console.error(`[monitor] configuration error: ${message}`);
   process.exit(1);
 }
+function writeStdoutSafely(chunk) {
+  try {
+    if (!process.stdout || process.stdout.destroyed || process.stdout.writableEnded) {
+      return false;
+    }
+    process.stdout.write(chunk);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writeStderrSafely(chunk) {
+  try {
+    if (!process.stderr || process.stderr.destroyed || process.stderr.writableEnded) {
+      return false;
+    }
+    process.stderr.write(chunk);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writeMonitorStreamSafely(chunk, { prefer = "stderr" } = {}) {
+  if (prefer === "stdout") {
+    return writeStdoutSafely(chunk) || writeStderrSafely(chunk);
+  }
+  return writeStderrSafely(chunk) || writeStdoutSafely(chunk);
+}
+
+function appendMonitorCrashBreadcrumb(line) {
+  try {
+    const crashDir = config?.logDir || resolve(__dirname, "..", "logs");
+    mkdirSync(crashDir, { recursive: true });
+    appendFileSync(
+      resolve(crashDir, "monitor-crash-breadcrumb.log"),
+      String(line).endsWith("\n") ? String(line) : `${line}\n`,
+    );
+  } catch {
+    /* best effort */
+  }
+}
 workflowAutomationEnabled = parseEnvBoolean(
   process.env.WORKFLOW_AUTOMATION_ENABLED,
   true,
@@ -2908,11 +2951,7 @@ const shellPromptText = shellAnsi.cyan("[agent]") + " > ";
 const shellInfoPrefix = shellAnsi.dim("[shell]") + " ";
 
 function shellWriteRaw(chunk) {
-  try {
-    process.stdout.write(chunk);
-  } catch {
-    /* ignore write failures */
-  }
+  writeMonitorStreamSafely(chunk, { prefer: "stdout" });
 }
 
 function shellWriteLine(text) {
@@ -3732,15 +3771,10 @@ async function handleMonitorFailure(reason, err) {
       return;
     }
   } catch (fatal) {
-    // Use process.stderr to avoid EPIPE on stdout
-    try {
-      // Duplicate-start lock contention exits with code 0; emit on stdout to avoid error-tail noise.
-    process.stdout.write(
-        `[monitor] failure handler crashed: ${fatal.message || fatal}\n`,
-      );
-    } catch {
-      /* completely give up */
-    }
+    writeMonitorStreamSafely(
+      `[monitor] failure handler crashed: ${fatal.message || fatal}\n`,
+      { prefer: "stdout" },
+    );
   } finally {
     monitorFailureHandling = false;
   }
@@ -3751,14 +3785,10 @@ function reportGuardedFailure(reason, err) {
   const error = err instanceof Error ? err : new Error(formatMonitorError(err));
   console.error("[monitor] " + reason + " failed: " + (error.stack || error.message));
   handleMonitorFailure(reason, error).catch((failureErr) => {
-    try {
-      // Duplicate-start lock contention exits with code 0; emit on stdout to avoid error-tail noise.
-    process.stdout.write(
-        "[monitor] handleMonitorFailure failed: " + (failureErr?.message || failureErr) + "\n",
-      );
-    } catch {
-      /* best effort */
-    }
+    writeMonitorStreamSafely(
+      "[monitor] handleMonitorFailure failed: " + (failureErr?.message || failureErr) + "\n",
+      { prefer: "stdout" },
+    );
   });
 }
 
@@ -13322,71 +13352,58 @@ process.on("uncaughtException", (err) => {
   const msg = (err?.code ? err.code + ": " : "") + (err?.message || "");
   // Always suppress stream noise — not just during shutdown
   if (isStreamNoise(msg)) {
-    console.error(
-      "[monitor] suppressed stream noise (uncaughtException): " + msg,
+    appendMonitorCrashBreadcrumb(
+      `[${new Date().toISOString()}] uncaughtException suppressed stream noise ` +
+        `(shuttingDown=${shuttingDown}): ${err?.stack || msg || String(err)}`,
     );
     return;
   }
   // Always log the exception — even during shutdown — so the crash is traceable.
   const detail = err?.stack || msg || String(err);
-  try {
-    // Duplicate-start lock contention exits with code 0; emit on stdout to avoid error-tail noise.
-    process.stdout.write("[monitor] uncaughtException: " + detail + "\n");
-  } catch { /* stderr may be torn down */ }
-  try {
-    const crashDir = config?.logDir || resolve(__dirname, "..", "logs");
-    mkdirSync(crashDir, { recursive: true });
-    appendFileSync(
-      resolve(crashDir, "monitor-crash-breadcrumb.log"),
-      `[${new Date().toISOString()}] uncaughtException (shuttingDown=${shuttingDown}): ${detail}\n`,
-    );
-  } catch { /* best effort */ }
+  writeMonitorStreamSafely("[monitor] uncaughtException: " + detail + "\n", {
+    prefer: "stdout",
+  });
+  appendMonitorCrashBreadcrumb(
+    `[${new Date().toISOString()}] uncaughtException (shuttingDown=${shuttingDown}): ${detail}`,
+  );
   if (shuttingDown) return;
-  console.error("[monitor] uncaughtException: " + detail);
+  writeMonitorStreamSafely("[monitor] uncaughtException: " + detail + "\n");
   handleMonitorFailure("uncaughtException", err).catch((failureErr) => {
-    try {
-      // Duplicate-start lock contention exits with code 0; emit on stdout to avoid error-tail noise.
-    process.stdout.write(
-        "[monitor] uncaughtException handler failed: " + (failureErr?.message || failureErr) + "\n",
-      );
-    } catch {
-      /* best effort */
-    }
+    writeMonitorStreamSafely(
+      "[monitor] uncaughtException handler failed: " +
+        (failureErr?.message || failureErr) +
+        "\n",
+      { prefer: "stdout" },
+    );
   });
 });
 
 process.on("unhandledRejection", (reason) => {
   const msg = (reason?.code ? reason.code + ": " : "") + (reason?.message || String(reason || ""));
   // Always write breadcrumb — unhandled rejections can cause exit code 1
-  try {
-    const crashDir = config?.logDir || resolve(__dirname, "..", "logs");
-    mkdirSync(crashDir, { recursive: true });
-    const detail = reason instanceof Error ? (reason.stack || msg) : msg;
-    appendFileSync(
-      resolve(crashDir, "monitor-crash-breadcrumb.log"),
-      `[${new Date().toISOString()}] unhandledRejection (shuttingDown=${shuttingDown}): ${detail}\n`,
-    );
-  } catch { /* best effort */ }
+  const detail = reason instanceof Error ? (reason.stack || msg) : msg;
+  appendMonitorCrashBreadcrumb(
+    `[${new Date().toISOString()}] unhandledRejection (shuttingDown=${shuttingDown}): ${detail}`,
+  );
   // Always suppress stream noise
   if (isStreamNoise(msg)) {
-    console.error(
-      "[monitor] suppressed stream noise (unhandledRejection): " + msg,
+    appendMonitorCrashBreadcrumb(
+      `[${new Date().toISOString()}] unhandledRejection suppressed stream noise ` +
+        `(shuttingDown=${shuttingDown}): ${detail}`,
     );
     return;
   }
   if (shuttingDown) return;
   const err =
     reason instanceof Error ? reason : new Error(String(reason || ""));
-  console.error("[monitor] unhandledRejection: " + (err?.stack || msg));
+  writeMonitorStreamSafely("[monitor] unhandledRejection: " + (err?.stack || msg) + "\n");
   handleMonitorFailure("unhandledRejection", err).catch((failureErr) => {
-    try {
-      // Duplicate-start lock contention exits with code 0; emit on stdout to avoid error-tail noise.
-    process.stdout.write(
-        "[monitor] unhandledRejection handler failed: " + (failureErr?.message || failureErr) + "\n",
-      );
-    } catch {
-      /* best effort */
-    }
+    writeMonitorStreamSafely(
+      "[monitor] unhandledRejection handler failed: " +
+        (failureErr?.message || failureErr) +
+        "\n",
+      { prefer: "stdout" },
+    );
   });
 });
 
@@ -13395,25 +13412,10 @@ process.on("exit", (code) => {
   if (code === 0 || code === SELF_RESTART_EXIT_CODE) return;
   const ts = new Date().toISOString();
   const line = `[${ts}] process exiting with code ${code} (shuttingDown=${shuttingDown}, uptime=${Math.round(process.uptime())}s)`;
-  // Write directly to stderr — console may already be torn down at exit time
-  try {
-    // Duplicate-start lock contention exits with code 0; emit on stdout to avoid error-tail noise.
-    process.stdout.write("[monitor] " + line + "\n");
-  } catch {
-    /* best effort — stderr may be broken */
-  }
+  writeMonitorStreamSafely("[monitor] " + line + "\n", { prefer: "stdout" });
   // Persist breadcrumb to disk so the crash is always traceable even when
   // stderr output is lost (e.g., background daemon, piped output).
-  try {
-    const crashDir = config?.logDir || resolve(__dirname, "..", "logs");
-    mkdirSync(crashDir, { recursive: true });
-    appendFileSync(
-      resolve(crashDir, "monitor-crash-breadcrumb.log"),
-      line + "\n",
-    );
-  } catch {
-    /* best effort */
-  }
+  appendMonitorCrashBreadcrumb(line);
 });
 
 if (!isMonitorTestRuntime) {
@@ -13485,12 +13487,13 @@ if (!isMonitorTestRuntime) {
         : "";
     const pidSuffix = Number(ownerPid) > 0 ? ` (PID ${ownerPid})` : "";
     // Duplicate-start lock contention exits with code 0; emit on stdout to avoid error-tail noise.
-    process.stdout.write(
+    writeMonitorStreamSafely(
       "[monitor] another bosun instance holds the lock" +
         pidSuffix +
         " — duplicate start ignored (exit code 0)." +
         suffix +
         "\n",
+      { prefer: "stdout" },
     );
 
     try {
@@ -13514,11 +13517,11 @@ if (!isMonitorTestRuntime) {
     // shutting down and holding the lock briefly. Ask cli.mjs to retry instead
     // of treating this as a hard crash.
     if (isSelfRestart) {
-      // Write directly to stderr so the message reaches the terminal even when
-      // the console interceptor is redirecting to a log file.
-      // Duplicate-start lock contention exits with code 0; emit on stdout to avoid error-tail noise.
-    process.stdout.write(
+      // Write through the guarded monitor stream helper so lock-handoff retries
+      // do not crash if the parent process has already closed its pipes.
+      writeMonitorStreamSafely(
         "[monitor] self-restart lock handoff still busy — retrying startup\n",
+        { prefer: "stdout" },
       );
       process.exit(SELF_RESTART_EXIT_CODE);
     }

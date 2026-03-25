@@ -1,4 +1,8 @@
+import { mkdtempSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
+import { buildRepoCodexConfig } from "../config/repo-config.mjs";
 import {
   buildCommonMcpBlocks,
   buildSandboxPermissions,
@@ -130,6 +134,15 @@ describe("codex-config defaults", () => {
     expect(toml).toContain("use_linux_sandbox_bwrap = false");
   });
 
+  it("forces Linux bubblewrap off on Windows runtimes", () => {
+    const input = ["[features]", "use_linux_sandbox_bwrap = true", ""].join("\n");
+    const { toml } = ensureFeatureFlags(input, {
+      OS: "Windows_NT",
+      CODEX_FEATURES_BWRAP: "true",
+    });
+    expect(toml).toContain("use_linux_sandbox_bwrap = false");
+  });
+
   it("disables remote_models for Azure runtimes", () => {
     const input = ["[features]", "remote_models = true", ""].join("\n");
     const { toml } = ensureFeatureFlags(input, {
@@ -163,6 +176,22 @@ describe("codex-config defaults", () => {
     expect(result.toml).toContain('"/tmp/virtengine"');
     // .git is only added when the directory actually exists on disk
     // (normalizeWritableRoots rejects phantom .git paths)
+  });
+
+  it("builds repo Codex config without bare /tmp roots on Windows", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "repo-codex-config-"));
+    mkdirSync(join(repoRoot, ".git"), { recursive: true });
+    const tempRoot = mkdtempSync(join(tmpdir(), "repo-codex-temp-"));
+    const toml = buildRepoCodexConfig({
+      repoRoot,
+      env: {
+        OS: "Windows_NT",
+        TEMP: tempRoot,
+      },
+    });
+    expect(toml).toContain("use_linux_sandbox_bwrap = false");
+    expect(toml).toContain(`\"${tempRoot.replace(/\\/g, "\\\\")}\"`);
+    expect(toml).not.toContain('writable_roots = ["/tmp"');
   });
   it("supports legacy sandbox_permissions helper names", () => {
     const line = buildSandboxPermissions("disk-full-write-access");

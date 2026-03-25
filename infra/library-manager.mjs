@@ -1352,6 +1352,84 @@ export function upsertEntry(rootDir, data, content, options = {}) {
   return entry;
 }
 
+function cleanupDeletedSkillDependents(rootDir, entry, manifest) {
+  const removedEntries = [];
+  const deletedSourceId = String(entry?.meta?.sourceId || "").trim().toLowerCase();
+  const promptIdsToDelete = new Set();
+  const nextEntries = [];
+
+  for (const candidate of manifest.entries) {
+    if (!candidate) continue;
+
+    if (candidate.type === "agent") {
+      const profile = getEntryContent(rootDir, candidate);
+      if (!profile || typeof profile !== "object") {
+        nextEntries.push(candidate);
+        continue;
+      }
+
+      const candidateSourceId = getAgentImportSourceId(candidate, profile);
+      if (deletedSourceId && candidateSourceId && candidateSourceId === deletedSourceId) {
+        if (profile?.promptOverride) {
+          promptIdsToDelete.add(String(profile.promptOverride).trim());
+        }
+        removedEntries.push(candidate);
+        continue;
+      }
+
+      const updatedCandidate = removeDeletedSkillFromProfile(rootDir, candidate, profile, entry.id);
+      if (updatedCandidate) {
+        nextEntries.push(updatedCandidate);
+        continue;
+      }
+
+      nextEntries.push(candidate);
+      continue;
+    }
+
+    if (candidate.type === "prompt") {
+      if (shouldRemoveImportedAgentPrompt(candidate, deletedSourceId, promptIdsToDelete)) {
+        removedEntries.push(candidate);
+        continue;
+      }
+    }
+
+    nextEntries.push(candidate);
+  }
+
+  manifest.entries = nextEntries;
+  return removedEntries;
+}
+
+function getAgentImportSourceId(candidate, profile) {
+  return String(
+    profile?.importMeta?.sourceId || candidate?.meta?.sourceId || "",
+  ).trim().toLowerCase();
+}
+
+function removeDeletedSkillFromProfile(rootDir, candidate, profile, skillId) {
+  if (!Array.isArray(profile.skills) || !profile.skills.includes(skillId)) {
+    return null;
+  }
+  const updatedProfile = {
+    ...profile,
+    skills: profile.skills.filter((candidateSkillId) => candidateSkillId !== skillId),
+  };
+  writeFileSync(
+    resolve(dirForType(rootDir, candidate.type), candidate.filename),
+    JSON.stringify(updatedProfile, null, 2) + "\n",
+    "utf8",
+  );
+  return { ...candidate, updatedAt: nowISO() };
+}
+
+function shouldRemoveImportedAgentPrompt(candidate, deletedSourceId, promptIdsToDelete) {
+  const promptId = String(candidate.id || "").trim();
+  const candidateSourceId = String(candidate?.meta?.sourceId || "").trim().toLowerCase();
+  const isImportedAgentPrompt = Array.isArray(candidate.tags) && candidate.tags.includes("agent-prompt");
+  return promptIdsToDelete.has(promptId) || (deletedSourceId && candidateSourceId === deletedSourceId && isImportedAgentPrompt);
+}
+
 /**
  * Delete a library entry by id. Removes from manifest (optionally deletes file).
  */
@@ -1361,18 +1439,28 @@ export function deleteEntry(rootDir, id, { deleteFile = false, syncIndexes = tru
   if (idx < 0) return false;
 
   const entry = manifest.entries[idx];
+  const removedEntries = [entry];
   manifest.entries.splice(idx, 1);
+
+  if (entry.type === "skill") {
+    removedEntries.push(...cleanupDeletedSkillDependents(rootDir, entry, manifest));
+  }
+
   saveManifest(rootDir, manifest);
   if (syncIndexes !== false) {
-    if (entry.type === "agent") rebuildAgentProfileIndex(rootDir, manifest);
+    if (entry.type === "agent" || removedEntries.some((candidate) => candidate?.type === "agent")) {
+      rebuildAgentProfileIndex(rootDir, manifest);
+    }
     if (entry.type === "skill") rebuildSkillEntryIndex(rootDir, manifest);
   }
 
   if (deleteFile) {
-    const filePath = resolve(dirForType(rootDir, entry.type), entry.filename);
-    try {
-      unlinkSync(filePath);
-    } catch { /* file may not exist */ }
+    for (const removedEntry of removedEntries) {
+      const filePath = resolve(dirForType(rootDir, removedEntry.type), removedEntry.filename);
+      try {
+        unlinkSync(filePath);
+      } catch { /* file may not exist */ }
+    }
   }
   return true;
 }
@@ -2594,12 +2682,29 @@ function importRepositoryMcpEntries(rootDir, checkoutDir, context) {
   }
 }
 
+function resolveRepositoryImportSelection(candidates, options = {}) {
+  const counts = { agent: 0, prompt: 0, skill: 0 };
+  for (const candidate of Array.isArray(candidates) ? candidates : []) {
+    const kind = String(candidate?.kind || "").trim().toLowerCase();
+    if (Object.hasOwn(counts, kind)) counts[kind] += 1;
+  }
+
+  const hasExplicitImportAgents = Object.hasOwn(options || {}, "importAgents");
+  const hasExplicitImportSkills = Object.hasOwn(options || {}, "importSkills");
+  const hasExplicitImportPrompts = Object.hasOwn(options || {}, "importPrompts");
+  const hasExplicitImportTools = Object.hasOwn(options || {}, "importTools");
+  const skillOnlyCatalog = counts.skill > 0 && counts.agent === 0 && counts.prompt === 0;
+
+  return {
+    importAgents: hasExplicitImportAgents ? options?.importAgents !== false : !skillOnlyCatalog,
+    importSkills: hasExplicitImportSkills ? options?.importSkills !== false : counts.skill > 0,
+    importPrompts: hasExplicitImportPrompts ? options?.importPrompts !== false : !skillOnlyCatalog,
+    importTools: hasExplicitImportTools ? options?.importTools !== false : true,
+  };
+}
+
 export function importAgentProfilesFromRepository(rootDir, options = {}) {
   const { sourceId, known, repoUrl, branch } = resolveRepositoryImportSource(options);
-  const importAgents = options?.importAgents !== false;
-  const importSkills = options?.importSkills !== false;
-  const importPrompts = options?.importPrompts !== false;
-  const importTools = options?.importTools !== false;
   const includeEntries = Array.isArray(options?.includeEntries) ? new Set(options.includeEntries.map((e) => String(e || "").trim()).filter(Boolean)) : null;
   const maxProfiles = Math.max(
     1,
@@ -2612,6 +2717,7 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
 
   const checkoutDir = createRepositoryImportCheckoutDir("import", repoUrl, branch);
   const { candidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, { maxEntries: maxProfiles });
+  const { importAgents, importSkills, importPrompts, importTools } = resolveRepositoryImportSelection(candidates, options);
 
   const takenIds = new Set(
     listEntries(rootDir).map((entry) => String(entry?.id || "").trim()).filter(Boolean),

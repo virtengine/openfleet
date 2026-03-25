@@ -84,6 +84,7 @@ async function loadFreshCodexShell() {
 }
 
 const ENV_KEYS = [
+  "BOSUN_HOST_PLATFORM",
   "INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS",
   "INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN",
   "INTERNAL_EXECUTOR_STREAM_MAX_ITEM_CHARS",
@@ -94,6 +95,8 @@ const ENV_KEYS = [
   "AZURE_OPENAI_API_KEY",
   "AZURE_OPENAI_API_KEY_SWEDEN",
   "CODEX_MODEL",
+  "TEMP",
+  "TMP",
 ];
 
 let savedEnv = {};
@@ -617,6 +620,37 @@ describe("codex-shell stream safeguards", () => {
     expect(process.env.OPENAI_ORGANIZATION).toBeUndefined();
     expect(process.env.OPENAI_PROJECT).toBeUndefined();
     expect(mockCodexCtor).toHaveBeenCalledTimes(1);
+  });
+
+  it("injects sandbox workspace roots into Codex runtime config", async () => {
+    process.env.BOSUN_HOST_PLATFORM = "win32";
+    process.env.TEMP = process.cwd();
+
+    mockStartThread.mockImplementation(() => ({
+      id: "codex-test-thread-sandbox-config",
+      runStreamed: async () => ({
+        events: {
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "item.completed",
+              item: { type: "agent_message", text: "sandbox ok" },
+            };
+            yield { type: "turn.completed" };
+          },
+        },
+      }),
+    }));
+
+    const result = await execCodexPrompt("verify sandbox injection", {
+      timeoutMs: 5000,
+    });
+
+    expect(result.finalResponse).toContain("sandbox ok");
+    const ctorOptions = mockCodexCtor.mock.calls.at(-1)?.[0] || {};
+    expect(ctorOptions.config?.sandbox_mode).toBe("workspace-write");
+    expect(Array.isArray(ctorOptions.config?.sandbox_workspace_write?.writable_roots)).toBe(true);
+    expect(ctorOptions.config?.sandbox_workspace_write?.writable_roots).toContain(process.cwd());
+    expect(ctorOptions.config?.sandbox_workspace_write?.writable_roots).not.toContain("/tmp");
   });
 
 });

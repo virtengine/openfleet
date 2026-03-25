@@ -23,6 +23,7 @@
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve, dirname, parse, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
@@ -150,7 +151,52 @@ function shouldDisableRemoteModels(envOverrides = process.env) {
   }
 }
 
+function resolveRuntimePlatform(value = process.platform) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return process.platform;
+  if (raw === "win32" || raw === "windows" || raw === "windows_nt" || raw.startsWith("mingw")) {
+    return "win32";
+  }
+  if (raw === "darwin" || raw === "mac" || raw === "macos" || raw === "osx") {
+    return "darwin";
+  }
+  if (raw === "linux") {
+    return "linux";
+  }
+  return raw;
+}
+
+function resolvePlatformFromEnv(envOverrides = process.env, explicitPlatform = "") {
+  return resolveRuntimePlatform(
+    explicitPlatform ||
+    envOverrides?.BOSUN_HOST_PLATFORM ||
+    envOverrides?.npm_config_platform ||
+    envOverrides?.OS ||
+    process.platform,
+  );
+}
+
+function getDefaultSandboxTempRoots({ platform = process.platform, tempDir = "" } = {}) {
+  const resolvedPlatform = resolveRuntimePlatform(platform);
+  if (resolvedPlatform === "win32") {
+    const candidate = String(tempDir || process.env.TEMP || process.env.TMP || tmpdir() || "").trim();
+    return candidate && isAbsolute(candidate) ? [candidate] : [];
+  }
+  return ["/tmp"];
+}
+
+function shouldDisableLinuxBwrap(envOverrides = process.env) {
+  return resolvePlatformFromEnv(envOverrides) !== "linux";
+}
+
 function getRecommendedFeatureMeta(key, meta, envOverrides = process.env) {
+  if (key === "use_linux_sandbox_bwrap" && shouldDisableLinuxBwrap(envOverrides)) {
+    return {
+      ...meta,
+      default: false,
+      comment: "Linux bubblewrap sandbox (DISABLED outside Linux)",
+    };
+  }
   if (key !== "remote_models") return meta;
   if (!shouldDisableRemoteModels(envOverrides)) return meta;
   return {
@@ -459,6 +505,9 @@ export function buildFeaturesBlock(envOverrides = process.env) {
 export function ensureFeatureFlags(toml, envOverrides = process.env) {
   const added = [];
   const forcedOffFeatures = new Set(CRITICAL_ALWAYS_OFF_FEATURES);
+  if (shouldDisableLinuxBwrap(envOverrides)) {
+    forcedOffFeatures.add("use_linux_sandbox_bwrap");
+  }
   if (shouldDisableRemoteModels(envOverrides)) {
     forcedOffFeatures.add("remote_models");
   }
@@ -596,7 +645,7 @@ function formatTomlArray(values) {
   return `[${values.map((value) => `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(", ")}]`;
 }
 
-function normalizeWritableRoots(input, { repoRoot, additionalRoots, validateExistence = false } = {}) {
+function normalizeWritableRoots(input, { repoRoot, additionalRoots, validateExistence = false, platform = process.platform, tempDir = "" } = {}) {
   const roots = new Set();
   const addRoot = (value) => {
     const trimmed = String(value || "").trim();
@@ -655,8 +704,9 @@ function normalizeWritableRoots(input, { repoRoot, additionalRoots, validateExis
     }
   }
 
-  // /tmp is needed for sandbox temp files, pip installs, etc.
-  roots.add("/tmp");
+  for (const tempRoot of getDefaultSandboxTempRoots({ platform, tempDir })) {
+    addRoot(tempRoot);
+  }
 
   return Array.from(roots);
 }
@@ -712,7 +762,7 @@ export function ensureGitAncestor(dir) {
  * @param {{ worktreePath?: string, repoRoot?: string, existingRoots?: string[] }} opts
  * @returns {string[]} Merged writable roots
  */
-export function buildTaskWritableRoots({ worktreePath, repoRoot, existingRoots = [] } = {}) {
+export function buildTaskWritableRoots({ worktreePath, repoRoot, existingRoots = [], tempDir = "", platform = process.platform } = {}) {
   const roots = new Set(existingRoots.filter(r => r && isAbsolute(r) && existsSync(r)));
   const addIfExists = (p) => {
     if (p && isAbsolute(p) && existsSync(p)) roots.add(p);
@@ -741,7 +791,9 @@ export function buildTaskWritableRoots({ worktreePath, repoRoot, existingRoots =
     const parent = dirname(repoRoot);
     if (parent && parent !== repoRoot) addIfExists(parent);
   }
-  roots.add("/tmp");
+  for (const tempRoot of getDefaultSandboxTempRoots({ platform, tempDir })) {
+    addIfExists(tempRoot);
+  }
   return Array.from(roots);
 }
 
@@ -757,9 +809,17 @@ export function buildSandboxWorkspaceWrite(options = {}) {
     networkAccess = true,
     excludeTmpdirEnvVar = false,
     excludeSlashTmp = false,
+    platform = process.platform,
+    tempDir = "",
   } = options;
 
-  const desiredRoots = normalizeWritableRoots(writableRoots, { repoRoot, additionalRoots, validateExistence: true });
+  const desiredRoots = normalizeWritableRoots(writableRoots, {
+    repoRoot,
+    additionalRoots,
+    validateExistence: true,
+    platform,
+    tempDir,
+  });
   if (desiredRoots.length === 0) {
     return "";
   }
@@ -815,7 +875,7 @@ function ensureSandboxWorkspaceFlags(section, flags) {
   return { section: nextSection, changed };
 }
 
-function mergeSandboxWorkspaceRoots(section, desiredRoots, repoRoot) {
+function mergeSandboxWorkspaceRoots(section, desiredRoots, repoRoot, { platform = process.platform, tempDir = "" } = {}) {
   const rootsRegex = /^writable_roots\s*=\s*(\[[^\]]*\])\s*$/m;
   const match = section.match(rootsRegex);
   if (!match) {
@@ -830,8 +890,14 @@ function mergeSandboxWorkspaceRoots(section, desiredRoots, repoRoot) {
   }
 
   const existingRoots = parseTomlArrayLiteral(match[1]);
-  const validExisting = existingRoots.filter((root) => root === "/tmp" || existsSync(root));
-  const merged = normalizeWritableRoots(validExisting, { repoRoot, validateExistence: true });
+  const preservedRoots = new Set(getDefaultSandboxTempRoots({ platform, tempDir }));
+  const validExisting = existingRoots.filter((root) => preservedRoots.has(root) || existsSync(root));
+  const merged = normalizeWritableRoots(validExisting, {
+    repoRoot,
+    validateExistence: true,
+    platform,
+    tempDir,
+  });
   const rootsAdded = [];
   for (const root of desiredRoots) {
     if (merged.includes(root)) continue;
@@ -839,7 +905,7 @@ function mergeSandboxWorkspaceRoots(section, desiredRoots, repoRoot) {
     rootsAdded.push(root);
   }
 
-  let changed = existingRoots.some((root) => root !== "/tmp" && !existsSync(root));
+  let changed = existingRoots.some((root) => !preservedRoots.has(root) && !existsSync(root));
   const formatted = formatTomlArray(merged);
   if (formatted !== match[1]) {
     section = section.replace(rootsRegex, `writable_roots = ${formatted}`);
@@ -857,9 +923,17 @@ export function ensureSandboxWorkspaceWrite(toml, options = {}) {
     networkAccess = true,
     excludeTmpdirEnvVar = false,
     excludeSlashTmp = false,
+    platform = process.platform,
+    tempDir = "",
   } = options;
 
-  const desiredRoots = normalizeWritableRoots(writableRoots, { repoRoot, additionalRoots, validateExistence: true });
+  const desiredRoots = normalizeWritableRoots(writableRoots, {
+    repoRoot,
+    additionalRoots,
+    validateExistence: true,
+    platform,
+    tempDir,
+  });
   if (!hasSandboxWorkspaceWrite(toml)) {
     if (desiredRoots.length === 0) {
       return { toml, changed: false, added: false, rootsAdded: [] };
@@ -887,7 +961,10 @@ export function ensureSandboxWorkspaceWrite(toml, options = {}) {
     exclude_tmpdir_env_var: excludeTmpdirEnvVar,
     exclude_slash_tmp: excludeSlashTmp,
   });
-  const rootsResult = mergeSandboxWorkspaceRoots(flagsResult.section, desiredRoots, repoRoot);
+  const rootsResult = mergeSandboxWorkspaceRoots(flagsResult.section, desiredRoots, repoRoot, {
+    platform,
+    tempDir,
+  });
   if (!flagsResult.changed && !rootsResult.changed) {
     return { toml, changed: false, added: false, rootsAdded: [] };
   }
@@ -915,7 +992,7 @@ export function ensureSandboxWorkspaceWrite(toml, options = {}) {
  * @param {string} toml - The full Codex TOML configuration contents.
  * @returns {{ toml: string, changed: boolean, removed: string[] }} Result of pruning.
  */
-export function pruneStaleSandboxRoots(toml) {
+export function pruneStaleSandboxRoots(toml, options = {}) {
   if (!hasSandboxWorkspaceWrite(toml)) {
     return { toml, changed: false, removed: [] };
   }
@@ -927,8 +1004,9 @@ export function pruneStaleSandboxRoots(toml) {
   if (!match) return { toml, changed: false, removed: [] };
 
   const existing = parseTomlArrayLiteral(match[1]);
-  const valid = existing.filter((root) => root === "/tmp" || existsSync(root));
-  const removed = existing.filter((root) => root !== "/tmp" && !existsSync(root));
+  const preservedRoots = new Set(getDefaultSandboxTempRoots(options));
+  const valid = existing.filter((root) => preservedRoots.has(root) || existsSync(root));
+  const removed = existing.filter((root) => !preservedRoots.has(root) && !existsSync(root));
   if (removed.length === 0) return { toml, changed: false, removed: [] };
 
   const nextSection = sectionInfo.section.replace(

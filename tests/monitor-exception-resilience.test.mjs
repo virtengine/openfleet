@@ -83,11 +83,20 @@ describe("monitor exception resilience guards", () => {
 
   it("suppresses broken-pipe EOF writes as benign stream noise", () => {
     expect(source).toContain('msg.includes("write EOF")');
-    expect(source).toContain(
+    expect(source).toContain("appendMonitorCrashBreadcrumb(");
+    expect(source).not.toContain(
       '"[monitor] suppressed stream noise (uncaughtException): " + msg',
     );
-    expect(source).toContain(
+    expect(source).not.toContain(
       '"[monitor] suppressed stream noise (unhandledRejection): " + msg',
+    );
+  });
+
+  it("routes monitor diagnostic stream writes through guarded helpers", () => {
+    expect(source).toContain("function writeMonitorStreamSafely(");
+    expect(source).not.toContain('process.stdout.write("[monitor] uncaughtException: " + detail + "\n");');
+    expect(source).not.toContain(
+      'process.stdout.write("[monitor] " + line + "\n");',
     );
   });
 });

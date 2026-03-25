@@ -47,6 +47,7 @@ import { createRequire } from "node:module";
 import { loadConfig } from "../config/config.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "../config/repo-root.mjs";
 import { resolveCodexProfileRuntime, readCodexConfigRuntimeDefaults } from "../shell/codex-model-profiles.mjs";
+import { buildTaskWritableRoots } from "../shell/codex-config.mjs";
 import { resolveCopilotCliLaunchConfig } from "../shell/copilot-shell.mjs";
 import { getGitHubToken } from "../github/github-auth-manager.mjs";
 import {
@@ -751,7 +752,40 @@ async function withTemporaryEnv(overrides, fn) {
  * provider settings via `config` and maps the API key via `env`.
  * Otherwise strips OPENAI_BASE_URL so the SDK uses its default auth.
  */
-function buildCodexSdkOptions(envInput = process.env) {
+function normalizeCodexSandboxMode(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "workspace-write";
+  if (raw === "disk-full-write-access" || raw === "workspace-write") return "workspace-write";
+  if (raw === "disk-read-only" || raw === "read-only") return "read-only";
+  if (raw === "danger-full-access") return "danger-full-access";
+  return raw;
+}
+
+function buildInjectedCodexSandboxConfig(envInput, workingDirectory) {
+  const sandboxMode = normalizeCodexSandboxMode(
+    envInput?.CODEX_SANDBOX || envInput?.CODEX_SANDBOX_MODE || "workspace-write",
+  );
+  const config = {
+    sandbox_mode: sandboxMode,
+  };
+  if (sandboxMode === "workspace-write") {
+    config.sandbox_workspace_write = {
+      network_access: true,
+      exclude_tmpdir_env_var: false,
+      exclude_slash_tmp: false,
+      writable_roots: buildTaskWritableRoots({
+        worktreePath: workingDirectory,
+        repoRoot: getAgentRepoRoot(),
+        tempDir: envInput?.TEMP || envInput?.TMP || "",
+        platform: envInput?.BOSUN_HOST_PLATFORM || envInput?.npm_config_platform || envInput?.OS || process.platform,
+      }),
+    };
+  }
+  return config;
+}
+
+function buildCodexSdkOptions(envInput = process.env, options = {}) {
+  const workingDirectory = String(options?.workingDirectory || getAgentRepoRoot() || REPO_ROOT).trim() || REPO_ROOT;
   const resolved = resolveCodexProfileRuntime(envInput);
   const { env: resolvedEnv, configProvider } = resolved;
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
@@ -772,6 +806,8 @@ function buildCodexSdkOptions(envInput = process.env) {
   delete env.OPENAI_BASE_URL;
   delete env.OPENAI_ORGANIZATION;
   delete env.OPENAI_PROJECT;
+
+  const injectedSandboxConfig = buildInjectedCodexSandboxConfig(envInput, workingDirectory);
 
   if (isAzure) {
     // Map OPENAI_API_KEY → AZURE_OPENAI_API_KEY for Azure auth
@@ -812,6 +848,7 @@ function buildCodexSdkOptions(envInput = process.env) {
     return {
       env,
       config: {
+        ...injectedSandboxConfig,
         model_provider: providerSectionName,
         model_providers: {
           [providerSectionName]: {
@@ -828,7 +865,10 @@ function buildCodexSdkOptions(envInput = process.env) {
       },
     };
   }
-  return { env };
+  return {
+    env,
+    config: injectedSandboxConfig,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1242,7 +1282,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
       ? { ...process.env, ...envOverrides }
       : process.env;
   const codexSessionEnv = applyNodeWarningSuppressionEnv(codexRuntimeEnv);
-  const codexOpts = buildCodexSdkOptions(codexSessionEnv);
+  const codexOpts = buildCodexSdkOptions(codexSessionEnv, { workingDirectory: cwd });
   const explicitEnvModel = String(envOverrides?.CODEX_MODEL || "").trim();
   if (explicitEnvModel) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: explicitEnvModel };
@@ -3182,7 +3222,7 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
       ? { ...process.env, ...envOverrides }
       : process.env;
   const codexSessionEnv = applyNodeWarningSuppressionEnv(codexRuntimeEnv);
-  const codexOpts = buildCodexSdkOptions(codexSessionEnv);
+  const codexOpts = buildCodexSdkOptions(codexSessionEnv, { workingDirectory: cwd });
   const explicitEnvModel = String(envOverrides?.CODEX_MODEL || "").trim();
   if (explicitEnvModel) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: explicitEnvModel };
