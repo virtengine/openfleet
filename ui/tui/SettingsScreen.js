@@ -16,25 +16,69 @@ const ajv = new Ajv2020({ allErrors: true, strict: false });
 const validateConfig = ajv.compile(schema);
 
 const GROUPS = Object.freeze([
-  { label: "General", matchers: ["$schema", "projectName", "mode", "orchestrator", "log", "watch", "echoLogs", "autoFixEnabled", "activeWorkspace", "voice"] },
-  { label: "Agents", matchers: ["primaryAgent", "interactiveShellEnabled", "shellEnabled", "codexEnabled", "agent", "executor", "scheduler"] },
+  {
+    label: "General",
+    matchers: [
+      "$schema",
+      "projectName",
+      "mode",
+      "orchestrator",
+      "log",
+      "watch",
+      "echoLogs",
+      "autoFixEnabled",
+      "activeWorkspace",
+      "voice",
+      "telegramUi",
+      "cloudflare",
+    ],
+  },
+  {
+    label: "Agents",
+    matchers: [
+      "primaryAgent",
+      "interactiveShellEnabled",
+      "shellEnabled",
+      "codexEnabled",
+      "agent",
+      "executor",
+      "scheduler",
+    ],
+  },
   { label: "Workflows", matchers: ["workflow", "worktreeBootstrap"] },
-  { label: "Kanban", matchers: ["kanban", "jira"] },
-  { label: "Integrations", matchers: ["telegram", "linear", "github", "cloudflare"] },
+  { label: "Kanban", matchers: ["kanban", "jira", "linear"] },
+  {
+    label: "Integrations",
+    matchers: [
+      "telegram",
+      "github",
+      "githubProjectSync",
+      "cloudflareApiToken",
+      "cloudflareZoneId",
+      "cloudflareAccountId",
+      "cloudflareTunnelName",
+      "cloudflareTunnelId",
+      "cloudflareDns",
+      "openai",
+    ],
+  },
   { label: "Cost Rates", matchers: ["costRates"] },
 ]);
 
 const ENV_PATHS = Object.freeze({
   "kanban.backend": "KANBAN_BACKEND",
   telegramUiPort: "TELEGRAM_UI_PORT",
-    "githubProjectSync.webhookSecret": "GITHUB_WEBHOOK_SECRET",
+  telegramBotToken: "TELEGRAM_BOT_TOKEN",
+  "githubProjectSync.webhookSecret": "GITHUB_WEBHOOK_SECRET",
   "linear.apiKey": "LINEAR_API_KEY",
+  cloudflareApiToken: "CLOUDFLARE_API_TOKEN",
   "costRates.inputPer1M": "COST_RATES_INPUT_PER_1M",
   "costRates.outputPer1M": "COST_RATES_OUTPUT_PER_1M",
 });
 
 const SECRET_HINTS = ["token", "secret", "key", "password", "credential"];
 const POINTER = GLYPHS.pointer || ">";
+const LOCK = "🔒";
 
 function isSecretField(path) {
   const lower = String(path || "").toLowerCase();
@@ -42,7 +86,14 @@ function isSecretField(path) {
 }
 
 function isPrimitiveSchema(node) {
-  return Boolean(node && (node.enum || node.type === "string" || node.type === "number" || node.type === "integer" || node.type === "boolean"));
+  return Boolean(
+    node
+      && (node.enum
+        || node.type === "string"
+        || node.type === "number"
+        || node.type === "integer"
+        || node.type === "boolean"),
+  );
 }
 
 function schemaType(node) {
@@ -82,7 +133,9 @@ function flattenSchema(node, prefix = "") {
 const FLAT_FIELDS = flattenSchema(schema);
 
 function getAtPath(object, path) {
-  return String(path || "").split(".").reduce((current, key) => (current == null ? undefined : current[key]), object);
+  return String(path || "")
+    .split(".")
+    .reduce((current, key) => (current == null ? undefined : current[key]), object);
 }
 
 function setAtPath(object, path, value) {
@@ -91,7 +144,9 @@ function setAtPath(object, path, value) {
   let current = clone;
   for (let index = 0; index < parts.length - 1; index += 1) {
     const part = parts[index];
-    if (!current[part] || typeof current[part] !== "object" || Array.isArray(current[part])) current[part] = {};
+    if (!current[part] || typeof current[part] !== "object" || Array.isArray(current[part])) {
+      current[part] = {};
+    }
     current = current[part];
   }
   current[parts[parts.length - 1]] = value;
@@ -99,7 +154,7 @@ function setAtPath(object, path, value) {
 }
 
 function getGroup(path) {
-  return GROUPS.find((group) => group.matchers.some((matcher) => path === matcher || path.startsWith(`${matcher}.`) || path.includes(`${matcher}.`) || path.startsWith(matcher)))?.label || "General";
+  return GROUPS.find((group) => group.matchers.some((matcher) => path === matcher || path.startsWith(`${matcher}.`)))?.label || "General";
 }
 
 function getDefaultValue(path) {
@@ -128,7 +183,10 @@ function formatValue(path, value, showSecrets) {
 function coerceValue(text, field) {
   const value = String(text ?? "").trim();
   if (field.schema?.enum?.includes(value)) return value;
-  if (field.type === "number" || field.type === "integer") return Number(value);
+  if (field.type === "number" || field.type === "integer") {
+    if (value === "") return Number.NaN;
+    return Number(value);
+  }
   if (field.type === "boolean") return value === "true";
   if (field.type === "object" || field.type === "array") return JSON.parse(value);
   return value;
@@ -140,23 +198,38 @@ function atomicWriteJson(path, config) {
   renameSync(tempPath, path);
 }
 
+function normalizeInstancePath(instancePath = "") {
+  return String(instancePath).replace(/^\//, "").replace(/\//g, ".");
+}
+
 function formatError(errorObject, field) {
   return `Validation error for ${field.path}: ${errorObject?.message || "invalid value"}`;
 }
 
+function findFieldError(field, errors = []) {
+  return errors.find((entry) => normalizeInstancePath(entry.instancePath) === field.path)
+    || errors.find((entry) => field.path.startsWith(normalizeInstancePath(entry.instancePath)))
+    || errors[0];
+}
+
 export default function SettingsScreen({ configDir, config = {}, onConfigReload = null }) {
   const configPath = join(configDir, "bosun.config.json");
-  const [draftConfig, setDraftConfig] = useState(() => existsSync(configPath)
+  const [draftConfig, setDraftConfig] = useState(() => (existsSync(configPath)
     ? JSON.parse(readFileSync(configPath, "utf8"))
-    : structuredClone(config || {}));
+    : structuredClone(config || {})));
   const [cursor, setCursor] = useState(0);
   const [editingPath, setEditingPath] = useState("");
   const [inputValue, setInputValue] = useState("");
   const [error, setError] = useState("");
   const [showSecrets, setShowSecrets] = useState(false);
 
-  const groupedEntries = useMemo(() => GROUPS.map((group) => [group.label, FLAT_FIELDS.filter((field) => getGroup(field.path) === group.label)]), []);
-  const orderedFields = useMemo(() => groupedEntries.flatMap(([, groupFields]) => groupFields), [groupedEntries]);
+  const groupedEntries = useMemo(
+    () => GROUPS
+      .map((group) => [group.label, FLAT_FIELDS.filter((field) => getGroup(field.path) === group.label)])
+      .filter(([, fields]) => fields.length > 0),
+    [],
+  );
+  const orderedFields = useMemo(() => groupedEntries.flatMap(([, fields]) => fields), [groupedEntries]);
   const activeField = orderedFields[cursor] || null;
 
   const saveField = (field, nextValue) => {
@@ -164,7 +237,7 @@ export default function SettingsScreen({ configDir, config = {}, onConfigReload 
       const nextConfig = setAtPath(draftConfig, field.path, nextValue);
       const valid = validateConfig(nextConfig);
       if (!valid) {
-        const fieldError = validateConfig.errors?.find((entry) => String(entry.instancePath || "").replace(/^\//, "").replace(/\//g, ".") === field.path) || validateConfig.errors?.[0];
+        const fieldError = findFieldError(field, validateConfig.errors || []);
         setError(formatError(fieldError, field));
         return false;
       }
@@ -214,10 +287,14 @@ export default function SettingsScreen({ configDir, config = {}, onConfigReload 
     if (!activeField) return;
 
     const source = getSource(activeField.path, draftConfig);
+    if (source.readOnly) return;
+
     if ((key.leftArrow || key.rightArrow) && Array.isArray(activeField.schema?.enum)) {
       const values = activeField.schema.enum;
       const currentIndex = Math.max(0, values.indexOf(source.value));
-      const nextIndex = key.rightArrow ? (currentIndex + 1) % values.length : (currentIndex - 1 + values.length) % values.length;
+      const nextIndex = key.rightArrow
+        ? (currentIndex + 1) % values.length
+        : (currentIndex - 1 + values.length) % values.length;
       saveField(activeField, values[nextIndex]);
       return;
     }
@@ -251,7 +328,7 @@ export default function SettingsScreen({ configDir, config = {}, onConfigReload 
                 <${Text}>: <//>
                 ${isEditing
                   ? html`<${TextInput} value=${inputValue} onChange=${setInputValue} />`
-                  : html`<${Text} color="white">${source.readOnly ? "🔒 " : ""}${formatValue(field.path, source.value, showSecrets)}<//>`}
+                  : html`<${Text} color="white">${source.readOnly ? `${LOCK} ` : ""}${formatValue(field.path, source.value, showSecrets)}<//>`}
                 <${Text} dimColor> (${source.label})<//>
               <//>
             `;
@@ -263,7 +340,12 @@ export default function SettingsScreen({ configDir, config = {}, onConfigReload 
   `;
 }
 
-export { atomicWriteJson };
-
-
-
+export {
+  FLAT_FIELDS,
+  atomicWriteJson,
+  coerceValue,
+  formatValue,
+  getGroup,
+  getSource,
+  isSecretField,
+};

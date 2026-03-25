@@ -13286,7 +13286,11 @@ async function reloadConfig(reason) {
   }
 }
 
-const stopTuiConfigReloadListener = onConfigReload((payload = {}) => {`r`n  runDetached("config-reload:tui", () => reloadConfig(payload.reason || "tui-settings"));`r`n});`r`n`r`nprocess.on("SIGINT", async () => {
+const stopTuiConfigReloadListener = onConfigReload((payload = {}) => {
+  runDetached("config-reload:tui", () => reloadConfig(payload.reason || "tui-settings"));
+});
+
+process.on("SIGINT", async () => {
   shuttingDown = true;
   stopWorkspaceSyncTimers();
   stopAutoUpdateLoop();
