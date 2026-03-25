@@ -22965,6 +22965,12 @@ export async function startTelegramUiServer(options = {}) {
       broadcastUiEvent(["tasks", "tui"], type, task);
     }
 
+    function broadcastWorkflowStatusEvent(payload) {
+      broadcastUiEvent(["workflows", "tui"], "workflow:status", payload);
+    }
+
+    globalThis.__bosun_broadcastWorkflowStatusEvent = broadcastWorkflowStatusEvent;
+
     wsServer.on("connection", (socket, req) => {
       socket.__channels = new Set(["*"]);
       socket.__lastPong = Date.now();
@@ -23538,6 +23544,7 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
 
 
 
