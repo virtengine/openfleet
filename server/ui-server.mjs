@@ -8914,6 +8914,7 @@ function withTaskRuntimeSnapshot(task) {
   if (!task || typeof task !== "object") return task;
   const withLifetimeTotals = enrichTaskLifetimeTotals(task);
   const runtimeSnapshot = buildTaskRuntimeSnapshot(withLifetimeTotals);
+  const status = uiDeps?.getInternalExecutor?.()?.getStatus?.();
   const runtimeExecutor = uiDeps.getInternalExecutor?.() || null;
   const executorStatus = runtimeExecutor?.getStatus?.() || {};
   const contentionSummary = summarizeRepoAreaLockContention(executorStatus?.repoAreaLocks || null);
