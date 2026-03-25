@@ -146,6 +146,10 @@ function buildRuntimeLockFixture(overrides = {}) {
 const tempDirs = [];
 
 afterEach(() => {
+  delete process.env.BOSUN_STORE_PATH;
+  delete process.env.BOSUN_HOME;
+  delete process.env.REPO_ROOT;
+  delete process.env.BOSUN_TASK_EXECUTOR_RUNTIME_FILE;
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -699,6 +703,4 @@ describe("task-cli taskStats repo area lock state", () => {
     );
   });
 });
-
-
 
