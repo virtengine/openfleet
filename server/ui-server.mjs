@@ -7,7 +7,7 @@ import { get as httpsGet } from "node:https";
 import { createServer as createHttpsServer } from "node:https";
 import { networkInterfaces, homedir, userInfo as getOsUserInfo } from "node:os";
 import { connect as netConnect } from "node:net";
-import { resolve, extname, dirname, basename, relative } from "node:path";
+import { resolve, extname, dirname, basename, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { arch as osArch, platform as osPlatform } from "node:os";
@@ -2873,6 +2873,25 @@ async function buildBenchmarkSnapshot(reqUrl, providerId = "") {
       });
       if (!tasks?.length) tasks = allWorkspaceTasks;
     }
+  }
+  // Fallback: read directly from the workspace-specific kanban store JSON
+  // (cmdImport writes tasks there via BOSUN_STORE_PATH override).
+  if (matchingTasks.length === 0 && workspaceRootDir) {
+    try {
+      const wsStorePath = resolve(workspaceRootDir, ".bosun", ".cache", "kanban-state.json");
+      if (existsSync(wsStorePath)) {
+        const raw = readFileSync(wsStorePath, "utf8");
+        const storeData = JSON.parse(raw);
+        const storeTasks = Object.values(storeData?.tasks || {});
+        if (storeTasks.length) {
+          matchingTasks = filterTasksForBenchmarkMode(storeTasks, filterMode, {
+            repoRoot: workspaceRootDir,
+          });
+          if (!matchingTasks.length) matchingTasks = storeTasks;
+          if (!tasks?.length) tasks = storeTasks;
+        }
+      }
+    } catch { /* best effort */ }
   }
   const recentTasks = sortTasksByRecency(matchingTasks).slice(0, 12);
   const enrichedTasks = await applySharedStateToTasks(recentTasks);
@@ -6006,7 +6025,22 @@ function toSettingsDisplayValue(def, rawValue) {
     if (["0", "false", "no", "off"].includes(normalized)) return "false";
   }
   if (Array.isArray(rawValue)) {
-    return rawValue.map((entry) => String(entry ?? "")).join(",");
+    return rawValue.map((entry) => {
+      if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+        // Executor object → TYPE:VARIANT:WEIGHT[:MODEL|MODEL]
+        const exec = String(entry.executor || entry.name || "").toUpperCase();
+        const variant = String(entry.variant || "DEFAULT").toUpperCase();
+        const weight = Number.isFinite(entry.weight) ? entry.weight : 0;
+        const models = Array.isArray(entry.models) && entry.models.length
+          ? `:${entry.models.join("|")}`
+          : "";
+        return `${exec}:${variant}:${weight}${models}`;
+      }
+      return String(entry ?? "");
+    }).join(",");
+  }
+  if (rawValue && typeof rawValue === "object") {
+    return JSON.stringify(rawValue);
   }
   return String(rawValue);
 }
@@ -23233,6 +23267,7 @@ export function stopTelegramUiServer() {
   stopTunnel();
   stopWsHeartbeat();
   _activeSessions = [];
+  _apiCache.clear();
   // Clear injected configDir so it does not leak between server lifecycles
   // (tests start/stop servers repeatedly with different config directories).
   delete uiDeps.configDir;

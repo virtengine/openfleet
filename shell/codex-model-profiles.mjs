@@ -65,6 +65,35 @@ function hasEnvValue(env, key) {
   return Boolean(key && clean(env?.[key]));
 }
 
+function getProviderEndpointEnvKeys(sectionName, providerKind) {
+  const normalizedName = clean(sectionName).toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+  if (providerKind === "azure") {
+    const keys = ["AZURE_OPENAI_ENDPOINT"];
+    if (normalizedName) {
+      keys.push(`${normalizedName}_ENDPOINT`);
+      keys.push(`${normalizedName}_BASE_URL`);
+      if (normalizedName.startsWith("AZURE_")) {
+        const suffix = normalizedName.slice("AZURE_".length);
+        if (suffix) {
+          keys.push(`AZURE_${suffix}_ENDPOINT`);
+          keys.push(`AZURE_${suffix}_BASE_URL`);
+        }
+      }
+    }
+    return [...new Set(keys)];
+  }
+  return normalizedName ? [`${normalizedName}_BASE_URL`] : [];
+}
+
+function providerRuntimeConfigured(env, section) {
+  if (!section) return false;
+  if (!section.envKey) return true;
+  if (!hasEnvValue(env, section.envKey)) return false;
+  const providerKind = inferProviderKindFromSection(section.name, section, "openai");
+  const endpointKeys = getProviderEndpointEnvKeys(section.name, providerKind);
+  if (!endpointKeys.length) return true;
+  return endpointKeys.some((key) => hasEnvValue(env, key));
+}
 function inferProviderKindFromSection(name, section, fallback = "openai") {
   if (isAzureOpenAIBaseUrl(section?.baseUrl)) return "azure";
   const normalized = normalizeProvider(name, "");
@@ -146,12 +175,17 @@ function selectConfigProviderForRuntime(configDefaults, env, preferredProvider =
     ...section,
     provider: inferProviderKindFromSection(section.name, section, preferred || "openai"),
   }));
+  const runtimeBaseUrl = clean(env?.OPENAI_BASE_URL);
   const matchingEntries = preferred
     ? entries.filter((section) => section.provider === preferred)
     : entries;
-  const envBackedEntries = matchingEntries.filter(
-    (section) => !section.envKey || hasEnvValue(env, section.envKey),
-  );
+  const baseUrlMatchedEntries = runtimeBaseUrl
+    ? matchingEntries.filter((section) => clean(section.baseUrl) === runtimeBaseUrl)
+    : [];
+  const envBackedEntries = matchingEntries.filter((section) => providerRuntimeConfigured(env, section));
+  const baseUrlMatchedEnvBackedEntries = runtimeBaseUrl
+    ? envBackedEntries.filter((section) => clean(section.baseUrl) === runtimeBaseUrl)
+    : [];
   const preferredNames = preferred === "azure"
     ? ["azure"]
     : preferred === "openai"
@@ -174,13 +208,16 @@ function selectConfigProviderForRuntime(configDefaults, env, preferredProvider =
         ),
       };
       const preferredMatches = !preferred || configured.provider === preferred;
-      if (preferredMatches && (!configured.envKey || hasEnvValue(env, configured.envKey))) {
+      const baseUrlMatches = !runtimeBaseUrl || clean(configured.baseUrl) === runtimeBaseUrl;
+      if (preferredMatches && baseUrlMatches && providerRuntimeConfigured(env, configured)) {
         return configured;
       }
     }
   }
 
   return (
+    baseUrlMatchedEnvBackedEntries[0] ||
+    baseUrlMatchedEntries[0] ||
     findNamed(envBackedEntries) ||
     envBackedEntries[0] ||
     findNamed(matchingEntries) ||
@@ -227,8 +264,8 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
   }
 
   const profileApiKey = active.apiKey;
-  const resolvedProvider = active.provider || globalProvider;
-  const configProvider = selectConfigProviderForRuntime(
+  let resolvedProvider = active.provider || globalProvider;
+  let configProvider = selectConfigProviderForRuntime(
     configDefaults,
     sourceEnv,
     resolvedProvider,
@@ -237,6 +274,15 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
     clean(active.baseUrl) ||
     clean(env.OPENAI_BASE_URL) ||
     clean(configProvider?.baseUrl);
+
+  if (isAzureOpenAIBaseUrl(runtimeBaseUrl) || isAzureOpenAIBaseUrl(configProvider?.baseUrl)) {
+    resolvedProvider = "azure";
+    configProvider = selectConfigProviderForRuntime(
+      configDefaults,
+      sourceEnv,
+      resolvedProvider,
+    ) || configProvider;
+  }
   if (runtimeBaseUrl) {
     const normalizedBaseUrl =
       resolvedProvider === "azure"
@@ -315,3 +361,5 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
       : null,
   };
 }
+
+

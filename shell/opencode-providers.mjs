@@ -81,12 +81,123 @@ function shouldRetryProviderQueryWithoutDirectory(err) {
   if (status === 400) return true;
 
   const message = String(err?.message || "").toLowerCase();
+  const responseText = String(
+    err?.response?.data?.error?.message
+    || err?.response?.data?.message
+    || err?.cause?.message
+    || "",
+  ).toLowerCase();
+  const haystack = `${message} ${responseText}`;
   return (
-    message.includes(" 400") ||
-    message.includes("failed to list models: 400") ||
-    message.includes("bad request") ||
-    message.includes("directory")
+    haystack.includes(" 400") ||
+    haystack.includes("failed to list models: 400") ||
+    haystack.includes("bad request") ||
+    haystack.includes("directory") ||
+    haystack.includes("invalid url") ||
+    haystack.includes("unsupported") ||
+    haystack.includes("deployment") ||
+    haystack.includes("api version")
   );
+}
+
+function isIgnorableModelDiscoveryError(err) {
+  if (!err) return false;
+
+  const status = Number(
+    err?.status ?? err?.response?.status ?? err?.cause?.status ?? NaN,
+  );
+  if (status === 400) return true;
+
+  const message = String(err?.message || "").toLowerCase();
+  const responseText = String(
+    err?.response?.data?.error?.message
+    || err?.response?.data?.message
+    || err?.cause?.message
+    || "",
+  ).toLowerCase();
+  const haystack = `${message} ${responseText}`;
+  return (
+    haystack.includes("failed to list models: 400") ||
+    haystack.includes("bad request") ||
+    haystack.includes("/models") ||
+    haystack.includes("list models") ||
+    haystack.includes("invalid url") ||
+    haystack.includes("deployment") ||
+    haystack.includes("api version")
+  );
+}
+
+function buildEmptySnapshot() {
+  return {
+    providers: [],
+    connected: [],
+    connectedIds: [],
+    defaults: {},
+    allModels: [],
+    timestamp: Date.now(),
+  };
+}
+
+function isEmptySnapshot(snapshot) {
+  return Boolean(
+    snapshot
+    && Array.isArray(snapshot.providers)
+    && snapshot.providers.length === 0
+    && Array.isArray(snapshot.allModels)
+    && snapshot.allModels.length === 0,
+  );
+}
+
+function normalizeProviderMetadataEntry(entry, connectedSet, authMethods) {
+  if (!entry || typeof entry !== "object" || !entry.id) return null;
+
+  const models = Object.entries(entry.models || {}).map(([modelKey, modelValue]) => ({
+    id: modelValue?.id || modelKey,
+    name: modelValue?.name || modelKey,
+    providerID: entry.id,
+    fullId: `${entry.id}/${modelValue?.id || modelKey}`,
+    status: modelValue?.status || "active",
+    reasoning: modelValue?.reasoning ?? false,
+    toolcall: modelValue?.tool_call ?? false,
+    limit: modelValue?.limit || { context: 0, output: 0 },
+    cost: modelValue?.cost
+      ? { input: modelValue.cost.input || 0, output: modelValue.cost.output || 0 }
+      : { input: 0, output: 0 },
+  }));
+
+  return {
+    id: entry.id,
+    name: entry.name || entry.id,
+    source: "api",
+    env: Array.isArray(entry.env) ? entry.env : [],
+    connected: connectedSet.has(entry.id),
+    models,
+    authMethods: authMethods?.[entry.id] || [],
+  };
+}
+
+function buildSnapshotFromNormalizedProviderData(normalizedProviderData, authMethods = {}) {
+  if (!normalizedProviderData) return null;
+
+  const {
+    all: rawProviders = [],
+    connected: connectedIds = [],
+    default: defaults = {},
+  } = normalizedProviderData;
+
+  const connectedSet = new Set(connectedIds);
+  const providers = rawProviders
+    .map((entry) => normalizeProviderMetadataEntry(entry, connectedSet, authMethods))
+    .filter(Boolean);
+
+  return {
+    providers,
+    connected: providers.filter((provider) => provider.connected),
+    connectedIds: [...connectedSet],
+    defaults,
+    allModels: providers.flatMap((provider) => provider.models),
+    timestamp: Date.now(),
+  };
 }
 
 async function invokeProviderEndpoint(endpoint, requestOptions, context = null) {
@@ -111,6 +222,32 @@ async function invokeProviderEndpoint(endpoint, requestOptions, context = null) 
   } catch {
     return null;
   }
+}
+
+function normalizeProviderListData(data) {
+  if (!data || typeof data !== "object") return null;
+
+  if (Array.isArray(data.all)) {
+    return {
+      all: data.all,
+      connected: Array.isArray(data.connected) ? data.connected : [],
+      default: data.default && typeof data.default === "object" ? data.default : {},
+    };
+  }
+
+  if (Array.isArray(data.providers)) {
+    return {
+      all: data.providers,
+      connected: Array.isArray(data.connectedIds)
+        ? data.connectedIds
+        : Array.isArray(data.connected)
+          ? data.connected
+          : [],
+      default: data.defaults && typeof data.defaults === "object" ? data.defaults : {},
+    };
+  }
+
+  return null;
 }
 
 // ── SDK-based discovery (preferred — uses running OpenCode server) ────────────
@@ -159,51 +296,22 @@ async function discoverViaSDK(existingClient = null) {
       invokeProviderEndpoint(client?.provider?.auth, requestOptions, client?.provider),
     ]);
 
-    if (!providerRes?.data) return null;
+    const normalizedProviderData = normalizeProviderListData(providerRes?.data);
+    if (!normalizedProviderData) return null;
 
-    const { all: rawProviders = [], connected: connectedIds = [], default: defaults = {} } =
-      providerRes.data;
     const authMethods = authRes?.data || {};
-    const connectedSet = new Set(connectedIds);
-
-    const providers = rawProviders.map((p) => {
-      const models = Object.entries(p.models || {}).map(([modelKey, m]) => ({
-        id: m.id || modelKey,
-        name: m.name || modelKey,
-        providerID: p.id,
-        fullId: `${p.id}/${m.id || modelKey}`,
-        status: m.status || "active",
-        reasoning: m.reasoning ?? false,
-        toolcall: m.tool_call ?? false,
-        limit: m.limit || { context: 0, output: 0 },
-        cost: m.cost
-          ? { input: m.cost.input || 0, output: m.cost.output || 0 }
-          : { input: 0, output: 0 },
-      }));
-
-      return {
-        id: p.id,
-        name: p.name || p.id,
-        source: "api",
-        env: p.env || [],
-        connected: connectedSet.has(p.id),
-        models,
-        authMethods: authMethods[p.id] || [],
-      };
-    });
-
-    const allModels = providers.flatMap((p) => p.models);
-
-    return {
-      providers,
-      connected: providers.filter((p) => p.connected),
-      connectedIds: [...connectedSet],
-      defaults,
-      allModels,
-      timestamp: Date.now(),
-    };
+    return buildSnapshotFromNormalizedProviderData(normalizedProviderData, authMethods);
   } catch (err) {
     console.warn(`[opencode-providers] SDK discovery failed: ${err.message}`);
+
+    const fallbackProviderData = normalizeProviderListData(
+      err?.response?.data || err?.cause?.response?.data,
+    );
+    if (fallbackProviderData) {
+      console.warn("[opencode-providers] recovering provider metadata from SDK error payload");
+      return buildSnapshotFromNormalizedProviderData(fallbackProviderData, {});
+    }
+
     return null;
   }
 }
@@ -412,14 +520,14 @@ async function discoverViaCLI() {
     }
 
     console.warn("[opencode-providers] CLI discovery returned no parseable models");
-    return null;
+    return buildEmptySnapshot();
   } catch (err) {
     try {
       const fallback = await execOpencode(["models"]);
       const parsedFallback = parseBasicModelsOutput(fallback.stdout);
       if (parsedFallback.allModels.length > 0) {
         console.warn(
-          `[opencode-providers] verbose model discovery failed; using basic model list instead: ${err.message}`,
+          `[opencode-providers] verbose model discovery failed; using basic model list instead: ${err.message}` ,
         );
         return buildCliSnapshot(parsedFallback.providerMap, parsedFallback.allModels);
       }
@@ -427,11 +535,17 @@ async function discoverViaCLI() {
       // fall through to the original verbose failure below
     }
 
+    if (isIgnorableModelDiscoveryError(err)) {
+      console.warn(
+        `[opencode-providers] skipping CLI model discovery after provider returned HTTP 400: ${err.message}` ,
+      );
+      return buildEmptySnapshot();
+    }
+
     console.warn(`[opencode-providers] CLI discovery failed: ${err.message}`);
-    return null;
+    return buildEmptySnapshot();
   }
 }
-
 /**
  * Get ALL providers (including unconnected) via `opencode models --refresh`.
  * This queries models.dev for the full catalog.
@@ -454,6 +568,13 @@ async function discoverAllViaCLI() {
       timestamp: Date.now(),
     };
   } catch (err) {
+    if (isIgnorableModelDiscoveryError(err)) {
+      console.warn(
+        `[opencode-providers] skipping catalog discovery after provider returned HTTP 400: ${err.message}`,
+      );
+      return buildEmptySnapshot();
+    }
+
     try {
       const fallback = await execOpencode(["models", "--refresh"], {
         timeout: 60_000,
@@ -506,12 +627,7 @@ export async function discoverProviders(opts = {}) {
   // Try SDK first (requires running server)
   let snapshot = await discoverViaSDK(client);
 
-  const sdkSnapshotWasEmpty =
-    snapshot &&
-    Array.isArray(snapshot.providers) &&
-    snapshot.providers.length === 0 &&
-    Array.isArray(snapshot.allModels) &&
-    snapshot.allModels.length === 0;
+  const sdkSnapshotWasEmpty = isEmptySnapshot(snapshot);
 
   // Fall back to CLI
   if (!snapshot || sdkSnapshotWasEmpty) {
@@ -534,14 +650,11 @@ export async function discoverProviders(opts = {}) {
 
   if (!snapshot) {
     // Return empty snapshot — graceful degradation
-    snapshot = {
-      providers: [],
-      connected: [],
-      connectedIds: [],
-      defaults: {},
-      allModels: [],
-      timestamp: Date.now(),
-    };
+    snapshot = buildEmptySnapshot();
+  }
+
+  if (isEmptySnapshot(snapshot)) {
+    return buildEmptySnapshot();
   }
 
   _providerCache = { data: snapshot, ts: Date.now() };
@@ -652,3 +765,7 @@ export function buildExecutorEntry(providerID, modelFullId, overrides = {}) {
 export function invalidateCache() {
   _providerCache = { data: null, ts: 0 };
 }
+
+
+
+

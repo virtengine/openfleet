@@ -802,9 +802,8 @@ function buildCodexSdkOptions(envInput = process.env) {
         const otherEnvKey = (section.envKey || "").trim();
         // Only strip keys that belong to Azure-type endpoints (not OpenAI direct)
         if (!otherBaseUrl || !isAzureOpenAIBaseUrl(otherBaseUrl)) continue;
-        if (otherEnvKey && otherEnvKey !== providerEnvKey && env[otherEnvKey]) {
-          delete env[otherEnvKey];
-        }
+        if (!otherEnvKey || otherEnvKey === providerEnvKey) continue;
+        delete env[otherEnvKey];
       }
     } catch {
       // best effort — if config reading fails, don't block execution
@@ -932,6 +931,7 @@ function shouldApplySdkCooldown(error) {
   if (!error) return false;
   const message = String(error).toLowerCase();
   if (!message) return false;
+  if (message.includes("failed to list models")) return true;
   if (message.includes("protocol version mismatch")) return true;
   if (message.includes("sdk expects version") && message.includes("server reports version")) {
     return true;
@@ -4050,5 +4050,6 @@ export function getActiveThreads() {
   }
   return result;
 }
+
 
 

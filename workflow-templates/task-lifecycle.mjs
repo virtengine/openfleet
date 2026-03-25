@@ -475,9 +475,11 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     }, { x: 850, y: 1350, outputs: ["yes", "no"] }),
 
     // ── CLEANUP: Sweep task worktrees at end of lifecycle ────────────────
-    node("sweep-task-wts", "action.recover_worktree", "Sweep Task WTs", {
+    // Uses action.sweep_task_worktrees (not recover_worktree) so all worktrees
+    // belonging to this taskId are physically removed from .bosun/worktrees/
+    // once the task is complete and submitted, then git worktree prune cleans refs.
+    node("sweep-task-wts", "action.sweep_task_worktrees", "Sweep Task WTs", {
       repoRoot: "{{repoRoot}}",
-      branch: "{{branch}}",
       taskId: "{{taskId}}",
     }, { x: 200, y: 3090 }),
   ],
@@ -577,7 +579,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     author: "bosun",
     version: 2,
     createdAt: "2026-03-01T00:00:00Z",
-    templateVersion: "2.0.0",
+    templateVersion: "2.1.0",
     tags: ["task", "lifecycle", "executor", "workflow-first", "core"],
     requiredTemplates: ["template-bosun-pr-progressor"],
     replaces: {

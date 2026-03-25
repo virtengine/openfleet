@@ -260,6 +260,46 @@ describe("codex-shell stream safeguards", () => {
     expect(runAttempt).toBe(2);
   });
 
+  it("does not inject reserved openai provider sections for default OpenAI", async () => {
+    const {
+      execCodexPrompt: freshExecCodexPrompt,
+      resetThread: freshResetThread,
+      resolveCodexProfileRuntime: freshResolveCodexProfileRuntime,
+    } = await loadFreshCodexShell();
+
+    await freshResetThread();
+    freshResolveCodexProfileRuntime.mockReturnValue({
+      env: {
+        OPENAI_API_KEY: "test-key",
+        CODEX_MODEL: "gpt-5.4",
+      },
+    });
+    mockStartThread.mockImplementation(() => ({
+      id: "codex-test-thread-openai",
+      runStreamed: async () => ({
+        events: {
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "item.completed",
+              item: { type: "agent_message", text: "openai ok" },
+            };
+            yield { type: "turn.completed" };
+          },
+        },
+      }),
+    }));
+
+    const result = await freshExecCodexPrompt("openai runtime", { timeoutMs: 5000 });
+
+    expect(result.finalResponse).toContain("openai ok");
+    expect(mockCodexCtor).toHaveBeenCalledTimes(1);
+    expect(mockCodexCtor).toHaveBeenLastCalledWith(expect.objectContaining({
+      config: expect.not.objectContaining({
+        model_providers: expect.anything(),
+      }),
+    }));
+  });
+
   it("strips OPENAI_BASE_URL and configures Azure provider overrides", async () => {
     delete process.env.AZURE_OPENAI_API_KEY;
     const {
@@ -455,6 +495,43 @@ describe("codex-shell stream safeguards", () => {
           }),
         }),
       }),
+    }));
+  });
+  it("prefers the Azure provider whose endpoint matches OPENAI_BASE_URL", async () => {
+    const {
+      resolveCodexProfileRuntime: freshResolveCodexProfileRuntime,
+      readCodexConfigRuntimeDefaults: freshReadCodexConfigRuntimeDefaults,
+    } = await loadFreshCodexShell();
+
+    freshReadCodexConfigRuntimeDefaults.mockImplementation(() => ({
+      model: "gpt-5.4",
+      modelProvider: "azure-sweden",
+      providers: {
+        "azure-sweden": {
+          name: "azure-sweden",
+          baseUrl: "https://example-sweden.openai.azure.com/openai/v1",
+          envKey: "AZURE_OPENAI_API_KEY_SWEDEN",
+        },
+        "azure-us": {
+          name: "azure-us",
+          baseUrl: "https://example-resource.openai.azure.com/openai/v1",
+          envKey: "AZURE_OPENAI_API_KEY",
+        },
+      },
+    }));
+
+    const resolved = freshResolveCodexProfileRuntime({
+      OPENAI_BASE_URL: "https://example-resource.openai.azure.com/openai/v1",
+      OPENAI_API_KEY: "azure-key",
+      AZURE_OPENAI_API_KEY: "azure-key",
+      AZURE_OPENAI_API_KEY_SWEDEN: "sweden-key",
+    });
+
+    expect(resolved.provider).toBe("azure");
+    expect(resolved.configProvider).toEqual(expect.objectContaining({
+      name: "azure-us",
+      envKey: "AZURE_OPENAI_API_KEY",
+      baseUrl: "https://example-resource.openai.azure.com/openai/v1",
     }));
   });
   it("strips non-Azure OPENAI_BASE_URL before creating the SDK", async () => {

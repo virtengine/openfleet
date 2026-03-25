@@ -118,7 +118,7 @@ export function getErrorFingerprint(line) {
 /**
  * Parse -MaxParallel argument from command line arguments
  * Supports: -MaxParallel N, --maxparallel=N, --max-parallel N
- * Falls back to VK_MAX_PARALLEL or MAX_PARALLEL env vars
+ * Falls back to MAX_PARALLEL env var
  * @param {string[]} argsList - Command line arguments array
  * @returns {number|null} Maximum parallel value or null if not found
  */
@@ -150,7 +150,7 @@ export function getMaxParallelFromArgs(argsList) {
     }
   }
   const envValue = Number(
-    process.env.VK_MAX_PARALLEL || process.env.MAX_PARALLEL,
+    process.env.MAX_PARALLEL,
   );
   if (Number.isFinite(envValue) && envValue > 0) {
     return envValue;

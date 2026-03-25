@@ -134,19 +134,26 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env) {
   }
 
   const providerName = isAzure ? "azure" : "openai";
-  const config = {
-    model_providers: {
-      [providerSectionName]: isAzure
-        ? {
+  const config = isAzure
+    ? {
+        model_providers: {
+          [providerSectionName]: {
             name: "Azure OpenAI",
             base_url: baseUrl,
             env_key: providerEnvKey,
             wire_api: "responses",
             ...streamProviderOverrides,
-          }
-        : streamProviderOverrides,
-    },
-  };
+          },
+        },
+        features: {
+          remote_models: false,
+        },
+      }
+    : {};
+
+  if (!isAzure && Object.keys(streamProviderOverrides || {}).length > 0) {
+    config.model_provider = providerSectionName;
+  }
 
   if (isAzure && env.CODEX_MODEL) {
     config.model_provider = providerSectionName;
@@ -1259,3 +1266,4 @@ export async function initCodexShell() {
     );
   }
 }
+

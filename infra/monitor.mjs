@@ -3064,15 +3064,16 @@ let selfRestartWatcherEnabled = isSelfRestartWatcherEnabled();
 function buildCodexSdkOptionsForMonitor() {
   const { env: resolvedEnv } = resolveCodexProfileRuntime(process.env);
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
-  const isAzure = (() => {
-        try {
-          const parsed = new URL(baseUrl);
-          const host = String(parsed.hostname || "").toLowerCase();
-          return host === "openai.azure.com" || host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com");
-        } catch {
-          return false;
-        }
-      })();
+  const isAzureOpenAIBaseUrl = (url) => {
+    try {
+      const parsed = new URL(url);
+      const host = String(parsed.hostname || "").toLowerCase();
+      return host === "openai.azure.com" || host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com");
+    } catch {
+      return false;
+    }
+  };
+  const isAzure = isAzureOpenAIBaseUrl(baseUrl);
   const env = { ...resolvedEnv };
   // For SDK compatibility, pass Azure endpoint via provider config instead of OPENAI_BASE_URL.
   delete env.OPENAI_BASE_URL;
@@ -3080,6 +3081,20 @@ function buildCodexSdkOptionsForMonitor() {
   if (isAzure) {
     if (env.OPENAI_API_KEY && !env.AZURE_OPENAI_API_KEY) {
       env.AZURE_OPENAI_API_KEY = env.OPENAI_API_KEY;
+    }
+    try {
+      const configDefaults = readCodexConfigRuntimeDefaults();
+      const allProviders = configDefaults?.providers || {};
+      for (const [sectionName, section] of Object.entries(allProviders)) {
+        if (sectionName === "azure") continue;
+        const otherBaseUrl = (section.baseUrl || "").trim();
+        const otherEnvKey = (section.envKey || "").trim();
+        if (!otherBaseUrl || !isAzureOpenAIBaseUrl(otherBaseUrl)) continue;
+        if (!otherEnvKey || otherEnvKey === "AZURE_OPENAI_API_KEY") continue;
+        delete env[otherEnvKey];
+      }
+    } catch {
+      // best effort — if config reading fails, don't block execution
     }
     const azureModel = env.CODEX_MODEL || undefined;
     return {
@@ -13763,7 +13778,7 @@ safeSetTimeout("startup-health-checks", () => {
 
 // ── Fleet Coordination ───────────────────────────────────────────────────────
 if (fleetConfig?.enabled) {
-  const maxParallel = getMaxParallelFromArgs(scriptArgs) || 6;
+  const maxParallel = getMaxParallelFromArgs(scriptArgs) || internalExecutorConfig?.maxParallel || 6;
   void initFleet({
     repoRoot,
     localSlots: maxParallel,
