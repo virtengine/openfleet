@@ -35,15 +35,8 @@ try {
   process.exit(1);
 }
 
-// Test 3: Import sync-engine with shared state integration
-console.log("\n3. Testing sync-engine.mjs with shared state...");
-try {
-  const { SyncEngine, createSyncEngine } = await import("../infra/sync-engine.mjs");
-  console.log("   ✓ sync-engine.mjs imports successfully");
-} catch (err) {
-  console.error("   ✗ Failed to import sync-engine:", err.message);
-  process.exit(1);
-}
+// Test 3: sync-engine.mjs removed (migrated to workflow template)
+console.log("\n3. sync-engine.mjs — skipped (migrated to workflow template)");
 
 // Test 4: Import ve-orchestrator with shared state integration
 console.log("\n4. Testing ve-orchestrator.mjs with shared state...");
