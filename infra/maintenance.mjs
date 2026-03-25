@@ -614,10 +614,21 @@ const MONITOR_SCRIPT_SEGMENT_RE =
 const JS_MONITOR_LAUNCHER_RE = /\b(node(?:\.exe)?|bun|tsx|deno)\b/;
 const MONITOR_EVAL_IMPORT_RE =
   /(import|require)\s*\(\s*["'`][^"'`]*monitor\.mjs[^"'`]*["'`]\s*\)/;
-// Matches `monitor.mjs` followed only by flags (--...) and then a positional word argument,
-// indicating a sub-command invocation (e.g. `monitor.mjs agent list --json`).
-// The daemon monitor only has flag args or no args after the script name.
-const MONITOR_SUBCOMMAND_RE = /monitor\.mjs(?:\s+--\S+)*\s+[^-\s]/;
+
+function hasMonitorSubcommandInvocation(commandLine) {
+  const normalized = String(commandLine || "").toLowerCase().replace(/\\/g, "/");
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  let sawMonitorScript = false;
+  for (const token of tokens) {
+    if (!sawMonitorScript) {
+      if (token.includes("monitor.mjs")) sawMonitorScript = true;
+      continue;
+    }
+    if (token.startsWith("--")) continue;
+    return true;
+  }
+  return false;
+}
 const PID_START_TIME_TOLERANCE_MS = 90_000;
 const UNKNOWN_OWNER_MONITOR_GRACE_MS = 3 * 60 * 1000;
 const MONITOR_PROCESS_STARTED_AT = new Date().toISOString();
@@ -744,7 +755,7 @@ export function classifyMonitorCommandLine(commandLine) {
   // Sub-command invocations (e.g. `monitor.mjs agent list --json --active`) are helper
   // processes, NOT the singleton daemon monitor. Detect by a positional (non-flag) word
   // following monitor.mjs — the daemon only uses flag args (--daemon-child, --watch, …).
-  if (normalized.includes("monitor.mjs") && MONITOR_SUBCOMMAND_RE.test(normalized)) {
+  if (normalized.includes("monitor.mjs") && hasMonitorSubcommandInvocation(normalized)) {
     return "other";
   }
   if (normalized.includes(MONITOR_MARKER)) return "monitor";

@@ -120,11 +120,15 @@ async function flushStoreWrites(store) {
 /**
  * Resolve the kanban store path with priority:
  *   1. BOSUN_STORE_PATH env var (explicit override)
- *   2. Active workspace store derived from global bosun.config.json
- *   3. Repo root walked from CWD (legacy fallback)
+ *   2. Explicit REPO_ROOT env var
+ *   3. Active workspace store derived from global bosun.config.json
+ *   4. Repo root walked from CWD (legacy fallback)
  */
 function resolveKanbanStorePath() {
   if (process.env.BOSUN_STORE_PATH) return process.env.BOSUN_STORE_PATH;
+  if (process.env.REPO_ROOT) {
+    return resolve(process.env.REPO_ROOT, ".bosun", ".cache", "kanban-state.json");
+  }
 
   try {
     const bosunHome = _deriveBosunHome();

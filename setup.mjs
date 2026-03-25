@@ -2048,6 +2048,82 @@ function normalizeSetupConfiguration({
       ),
     },
   };
+  const normalizedRepoVisibility = normalizeEnum(
+    env.BOSUN_GATES_REPO_VISIBILITY,
+    ["public", "private", "unknown"],
+    String(configJson.gates?.prs?.repoVisibility || "unknown").trim().toLowerCase() || "unknown",
+  );
+  const recommendedAutomationPreference = normalizedRepoVisibility === "public"
+    ? "actions-first"
+    : "runtime-first";
+  configJson.gates = {
+    ...(configJson.gates && typeof configJson.gates === "object" ? configJson.gates : {}),
+    prs: {
+      ...(configJson.gates?.prs && typeof configJson.gates.prs === "object" ? configJson.gates.prs : {}),
+      repoVisibility: normalizedRepoVisibility,
+      automationPreference: normalizeEnum(
+        env.BOSUN_GATES_AUTOMATION_PREFERENCE,
+        ["runtime-first", "actions-first"],
+        String(configJson.gates?.prs?.automationPreference || recommendedAutomationPreference).trim().toLowerCase()
+          || recommendedAutomationPreference,
+      ),
+      githubActionsBudget: normalizeEnum(
+        env.BOSUN_GATES_ACTIONS_BUDGET,
+        ["ask-user", "available", "limited"],
+        String(configJson.gates?.prs?.githubActionsBudget || "ask-user").trim().toLowerCase() || "ask-user",
+      ),
+    },
+    checks: {
+      ...(configJson.gates?.checks && typeof configJson.gates.checks === "object" ? configJson.gates.checks : {}),
+      mode: normalizeEnum(
+        env.BOSUN_GATES_CHECK_MODE,
+        ["all", "required-only"],
+        String(configJson.gates?.checks?.mode || "all").trim().toLowerCase() || "all",
+      ),
+      requiredPatterns: normalizeCsvOrArray(configJson.gates?.checks?.requiredPatterns || []),
+      optionalPatterns: normalizeCsvOrArray(configJson.gates?.checks?.optionalPatterns || []),
+      ignorePatterns: normalizeCsvOrArray(configJson.gates?.checks?.ignorePatterns || []),
+      requireAnyRequiredCheck: parseBooleanEnvValue(
+        env.BOSUN_GATES_REQUIRE_ANY_REQUIRED_CHECK ?? configJson.gates?.checks?.requireAnyRequiredCheck,
+        true,
+      ),
+      treatPendingRequiredAsBlocking: parseBooleanEnvValue(
+        env.BOSUN_GATES_TREAT_PENDING_REQUIRED_AS_BLOCKING ?? configJson.gates?.checks?.treatPendingRequiredAsBlocking,
+        true,
+      ),
+      treatNeutralAsPass: parseBooleanEnvValue(
+        env.BOSUN_GATES_TREAT_NEUTRAL_AS_PASS ?? configJson.gates?.checks?.treatNeutralAsPass,
+        false,
+      ),
+    },
+    execution: {
+      ...(configJson.gates?.execution && typeof configJson.gates.execution === "object" ? configJson.gates.execution : {}),
+      sandboxMode: String(
+        env.CODEX_SANDBOX || configJson.gates?.execution?.sandboxMode || "workspace-write",
+      ).trim().toLowerCase(),
+      containerIsolationEnabled: parseBooleanEnvValue(
+        env.CONTAINER_ENABLED ?? configJson.gates?.execution?.containerIsolationEnabled,
+        false,
+      ),
+      containerRuntime: String(
+        env.CONTAINER_RUNTIME || configJson.gates?.execution?.containerRuntime || "auto",
+      ).trim().toLowerCase(),
+      networkAccess: String(
+        env.BOSUN_EXECUTION_NETWORK_ACCESS || configJson.gates?.execution?.networkAccess || "default",
+      ).trim().toLowerCase(),
+    },
+    runtime: {
+      ...(configJson.gates?.runtime && typeof configJson.gates.runtime === "object" ? configJson.gates.runtime : {}),
+      enforceBacklog: parseBooleanEnvValue(
+        env.BOSUN_GATES_ENFORCE_BACKLOG ?? configJson.gates?.runtime?.enforceBacklog,
+        true,
+      ),
+      agentTriggerControl: parseBooleanEnvValue(
+        env.BOSUN_GATES_AGENT_TRIGGER_CONTROL ?? configJson.gates?.runtime?.agentTriggerControl,
+        true,
+      ),
+    },
+  };
   env.EXECUTOR_MODE = normalizeEnum(
     env.EXECUTOR_MODE,
     ["internal", "hybrid"],

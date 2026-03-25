@@ -217,6 +217,124 @@
         }
       }
     },
+    "gates": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Unified safeguards for PR policy, CI/CD merge gates, executor isolation, and runtime safety posture.",
+      "properties": {
+        "prs": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "repoVisibility": {
+              "type": "string",
+              "enum": ["public", "private", "unknown"],
+              "default": "unknown",
+              "description": "Detected or operator-confirmed repository visibility used to recommend automation posture during setup."
+            },
+            "automationPreference": {
+              "type": "string",
+              "enum": ["runtime-first", "actions-first"],
+              "default": "runtime-first",
+              "description": "Whether Bosun should favor runtime-driven automation or heavier GitHub Actions assistance when both are available."
+            },
+            "githubActionsBudget": {
+              "type": "string",
+              "enum": ["ask-user", "available", "limited"],
+              "default": "ask-user",
+              "description": "Operator-supplied indication of whether GitHub Actions runtime is available for heavier PR automation."
+            }
+          }
+        },
+        "checks": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["all", "required-only"],
+              "default": "all",
+              "description": "When 'all', every non-ignored check is treated as blocking unless explicitly optional. When 'required-only', only checks matching requiredPatterns block merge."
+            },
+            "requiredPatterns": {
+              "oneOf": [
+                { "type": "array", "items": { "type": "string" } },
+                { "type": "string" }
+              ],
+              "description": "Check-name patterns Bosun must treat as required before merge when using required-only gating."
+            },
+            "optionalPatterns": {
+              "oneOf": [
+                { "type": "array", "items": { "type": "string" } },
+                { "type": "string" }
+              ],
+              "description": "Check-name patterns Bosun may ignore for merge blocking, even if they fail or remain absent."
+            },
+            "ignorePatterns": {
+              "oneOf": [
+                { "type": "array", "items": { "type": "string" } },
+                { "type": "string" }
+              ],
+              "description": "Check-name patterns Bosun should exclude from merge-gate evaluation entirely."
+            },
+            "requireAnyRequiredCheck": {
+              "type": "boolean",
+              "default": true,
+              "description": "If true, Bosun blocks merge when no required checks are present after filtering."
+            },
+            "treatPendingRequiredAsBlocking": {
+              "type": "boolean",
+              "default": true,
+              "description": "If true, pending required checks block merge."
+            },
+            "treatNeutralAsPass": {
+              "type": "boolean",
+              "default": false,
+              "description": "If true, neutral or skipped required checks count as passing for merge gating."
+            }
+          }
+        },
+        "execution": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "sandboxMode": {
+              "type": "string",
+              "description": "Operator-facing snapshot of the preferred executor sandbox mode."
+            },
+            "containerIsolationEnabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Whether container isolation is part of the expected safety posture."
+            },
+            "containerRuntime": {
+              "type": "string",
+              "description": "Preferred runtime for container isolation when enabled."
+            },
+            "networkAccess": {
+              "type": "string",
+              "description": "High-level network access posture for isolated execution."
+            }
+          }
+        },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enforceBacklog": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether newly created work should be forced through backlog safeguards before direct execution."
+            },
+            "agentTriggerControl": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether agent-trigger safeguards remain enabled for untrusted or indirect sources."
+            }
+          }
+        }
+      }
+    },
     "markdownSafety": {
       "type": "object",
       "additionalProperties": true,

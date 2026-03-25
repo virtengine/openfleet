@@ -374,24 +374,42 @@ function normalizeWorkflowTelegramText(value) {
   });
 }
 
+function isAsciiDigit(value) {
+  return value >= "0" && value <= "9";
+}
+function buildPathListingResult(pathValue, lineValue, detailValue) {
+  const path = String(pathValue || "").trim();
+  const lineText = String(lineValue || "").trim();
+  if (!path || !lineText) return null;
+  for (const char of lineText) {
+    if (!isAsciiDigit(char)) return null;
+  }
+  return {
+    path,
+    line: Number(lineText),
+    detail: String(detailValue || "").trim(),
+  };
+}
 function parsePathListingLine(line) {
   const raw = String(line || "").trim();
   if (!raw) return null;
-  const windowsMatch = raw.match(/^([A-Za-z]:\\[^:]+):(\d+):\s*(.+)?$/);
-  if (windowsMatch) {
-    return {
-      path: windowsMatch[1],
-      line: Number(windowsMatch[2]),
-      detail: String(windowsMatch[3] || "").trim(),
-    };
+  if (raw.length > 3 && raw[1] === ":" && (raw[2] === "\\" || raw[2] === "/")) {
+    const lineSep = raw.indexOf(":", 3);
+    if (lineSep !== -1) {
+      const detailSep = raw.indexOf(":", lineSep + 1);
+      if (detailSep !== -1) {
+        return buildPathListingResult(raw.slice(0, lineSep), raw.slice(lineSep + 1, detailSep), raw.slice(detailSep + 1));
+      }
+    }
   }
-  const unixMatch = raw.match(/^(\/[^:]+):(\d+):\s*(.+)?$/);
-  if (unixMatch) {
-    return {
-      path: unixMatch[1],
-      line: Number(unixMatch[2]),
-      detail: String(unixMatch[3] || "").trim(),
-    };
+  if (raw.startsWith("/")) {
+    const lineSep = raw.indexOf(":", 1);
+    if (lineSep !== -1) {
+      const detailSep = raw.indexOf(":", lineSep + 1);
+      if (detailSep !== -1) {
+        return buildPathListingResult(raw.slice(0, lineSep), raw.slice(lineSep + 1, detailSep), raw.slice(detailSep + 1));
+      }
+    }
   }
   return null;
 }

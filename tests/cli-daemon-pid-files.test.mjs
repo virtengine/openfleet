@@ -78,6 +78,12 @@ describe("cli daemon pid tracking", () => {
     expect(cliSource).toContain("duplicate daemon-child ignored");
   });
 
+  it("launches the foreground monitor via worker bootstrap instead of fork IPC", () => {
+    expect(cliSource).toContain("monitorChild = new Worker(");
+    expect(cliSource).toContain("monitorModuleUrl: pathToFileURL(monitorPath).href");
+    expect(cliSource).not.toContain("monitorChild = fork(monitorPath");
+  });
+
 
   it("propagates --config-dir/BOSUN_HOME into daemon-child env config dir", () => {
     expect(cliSource).toContain("const configDirArg = getArgValue(\"--config-dir\");");

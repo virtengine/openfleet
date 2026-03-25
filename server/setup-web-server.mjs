@@ -481,11 +481,15 @@ function resolveSetupWorkspaceAndRepoConfig(existingConfig = {}, configJson = {}
 function buildStableSetupDefaults({
   projectName,
   slug,
+  repoVisibility,
   repoRoot,
   bosunHome,
   workspacesDir,
 }) {
   const defaultWorkflowProfile = getWorkflowSetupProfile("balanced");
+  const recommendedAutomationPreference = repoVisibility === "public"
+    ? "actions-first"
+    : "runtime-first";
   return {
     projectName: projectName || slug?.split("/").pop() || "my-project",
     repoSlug: slug,
@@ -529,6 +533,32 @@ function buildStableSetupDefaults({
     prAutomation: {
       assistiveActions: {
         installOnSetup: false,
+      },
+    },
+    gates: {
+      prs: {
+        repoVisibility,
+        automationPreference: recommendedAutomationPreference,
+        githubActionsBudget: "ask-user",
+      },
+      checks: {
+        mode: "all",
+        requiredPatterns: [],
+        optionalPatterns: [],
+        ignorePatterns: [],
+        requireAnyRequiredCheck: true,
+        treatPendingRequiredAsBlocking: true,
+        treatNeutralAsPass: false,
+      },
+      execution: {
+        sandboxMode: "workspace-write",
+        containerIsolationEnabled: false,
+        containerRuntime: "auto",
+        networkAccess: "default",
+      },
+      runtime: {
+        enforceBacklog: true,
+        agentTriggerControl: true,
       },
     },
     workflowNodeMaxRetries: 3,
@@ -1585,8 +1615,50 @@ function detectProjectName(repoRoot) {
   return "";
 }
 
+function detectRepoVisibility(slug = detectRepoSlug()) {
+  const normalized = normalizeRepoSlug(slug);
+  if (!normalized || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalized)) return "unknown";
+  try {
+    const output = execSync(`gh repo view ${JSON.stringify(normalized)} --json isPrivate`, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    const parsed = JSON.parse(output || "{}");
+    if (parsed?.isPrivate === true) return "private";
+    if (parsed?.isPrivate === false) return "public";
+  } catch {
+    // best-effort only
+  }
+  return "unknown";
+}
+
+function isStackLikeResponseText(value) {
+  if (typeof value !== "string") return false;
+  const lower = value.toLowerCase();
+  return (value.includes("\n") && lower.includes(" at ")) || lower.includes("error:\n    at ");
+}
+
+function scrubResponseBody(body) {
+  if (body == null) return body;
+  if (body instanceof Error) {
+    const safeMessage = String(body.message || "Internal server error");
+    return { ok: false, error: isStackLikeResponseText(safeMessage) ? "Internal server error" : safeMessage };
+  }
+  if (typeof body === "string") {
+    return isStackLikeResponseText(body) ? "Internal server error" : body;
+  }
+  if (Array.isArray(body)) return body.map((entry) => scrubResponseBody(entry));
+  if (typeof body !== "object") return body;
+  const out = {};
+  for (const [key, value] of Object.entries(body)) {
+    if (String(key).toLowerCase() === "stack") continue;
+    out[key] = scrubResponseBody(value);
+  }
+  return out;
+}
+
 function jsonResponse(res, status, body) {
-  const data = JSON.stringify(body);
+  const data = JSON.stringify(scrubResponseBody(body));
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
@@ -1656,6 +1728,7 @@ async function handleStatus() {
   const configured = hasSetupMarkers(configDir);
   const repoRoot = detectRepoRoot();
   const slug = detectRepoSlug();
+  const repoVisibility = detectRepoVisibility(slug);
   const projectName = detectProjectName(repoRoot);
 
   let existingConfig = null;
@@ -1723,6 +1796,7 @@ async function handleStatus() {
     workspacesDir: resolveWorkspacesDir(configDir),
     repoRoot,
     slug,
+    repoVisibility,
     projectName,
     existingConfig,
     existingEnv,
@@ -1736,6 +1810,7 @@ async function handleStatus() {
 function handleDefaults() {
   const repoRoot = detectRepoRoot();
   const slug = detectRepoSlug();
+  const repoVisibility = detectRepoVisibility(slug);
   const projectName = detectProjectName(repoRoot);
   const bosunHome = resolveConfigDir();
   const workspacesDir = resolveWorkspacesDir(bosunHome);
@@ -1745,6 +1820,7 @@ function handleDefaults() {
     defaults: buildStableSetupDefaults({
       projectName,
       slug,
+      repoVisibility,
       repoRoot,
       bosunHome,
       workspacesDir,
@@ -2376,6 +2452,42 @@ function handleApply(body) {
           : {}),
         ...((configJson.prAutomation?.assistiveActions && typeof configJson.prAutomation.assistiveActions === "object")
           ? configJson.prAutomation.assistiveActions
+          : {}),
+      },
+    };
+    config.gates = {
+      ...(existingConfig.gates && typeof existingConfig.gates === "object" ? existingConfig.gates : {}),
+      ...(configJson.gates && typeof configJson.gates === "object" ? configJson.gates : {}),
+      prs: {
+        ...((existingConfig.gates?.prs && typeof existingConfig.gates.prs === "object")
+          ? existingConfig.gates.prs
+          : {}),
+        ...((configJson.gates?.prs && typeof configJson.gates.prs === "object")
+          ? configJson.gates.prs
+          : {}),
+      },
+      checks: {
+        ...((existingConfig.gates?.checks && typeof existingConfig.gates.checks === "object")
+          ? existingConfig.gates.checks
+          : {}),
+        ...((configJson.gates?.checks && typeof configJson.gates.checks === "object")
+          ? configJson.gates.checks
+          : {}),
+      },
+      execution: {
+        ...((existingConfig.gates?.execution && typeof existingConfig.gates.execution === "object")
+          ? existingConfig.gates.execution
+          : {}),
+        ...((configJson.gates?.execution && typeof configJson.gates.execution === "object")
+          ? configJson.gates.execution
+          : {}),
+      },
+      runtime: {
+        ...((existingConfig.gates?.runtime && typeof existingConfig.gates.runtime === "object")
+          ? existingConfig.gates.runtime
+          : {}),
+        ...((configJson.gates?.runtime && typeof configJson.gates.runtime === "object")
+          ? configJson.gates.runtime
           : {}),
       },
     };

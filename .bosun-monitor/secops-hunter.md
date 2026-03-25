@@ -119,3 +119,22 @@
   - `npm test -- tests/manual-flows.test.mjs tests/ui-server.test.mjs tests/voice-provider-smoke.test.mjs` passed.
 - Tooling notes:
   - No new CLI tools added; retained free stack: `semgrep`, `gitleaks`, `osv-scanner`, `trivy`, `npm audit`.
+
+## 26/03/2026 06:20:20 +11:00
+
+- Scope: Remediation pass for current CodeQL alerts `#169 #172 #173 #177 #181 #195 #199 #200 #201 #228 #229 #230 #231 #232 #233 #234 #235` plus parser blockers that were suppressing analysis coverage.
+- Files hardened: `workspace/command-diagnostics.mjs`, `workflow/workflow-nodes/transforms.mjs`, `workflow/workflow-nodes/definitions.mjs`, `infra/maintenance.mjs`, `bench/swebench/bosun-swebench.mjs`, `workflow/heavy-runner-pool.mjs`, `tests/import-check.test.mjs`, `server/setup-web-server.mjs`, `server/ui-server.mjs`, `workflow/workflow-nodes/actions.mjs`, `git/git-editor-fix.mjs`, `ui/vendor/es-module-shims.js`, `site/ui/vendor/es-module-shims.js`.
+- Security strategy:
+  - Replaced CodeQL-flagged polynomial regex parsing with bounded string/character parsers in command diagnostics, workflow path parsing, task-branch slugging, and monitor command classification.
+  - Replaced shell-string execution in heavy runner local-process leases with parsed argv execution (`spawn(..., { shell: false })`) and passed validated/quoted command text only to prefixed non-local runtimes.
+  - Narrowed `safeGit` to an allowlisted `rev-parse` subset used by SWE-bench metadata collection.
+  - Removed shell-built test invocations in `tests/import-check.test.mjs` by switching to `execFileSync(process.execPath, ...)`.
+  - Hardened setup/UI JSON response serialization so stack-like payloads and `stack` keys are scrubbed before client responses.
+  - Re-synced vendor shim escaping in UI copies so Wasm import test literals and emitted JS URL strings are safely encoded.
+  - Fixed parser blockers in `workflow/workflow-nodes/actions.mjs` and `git/git-editor-fix.mjs`, restoring full local module parse coverage.
+- Validation evidence:
+  - Full local parser sweep via Acorn + `vm.SourceTextModule` over the Bosun tree completed with `0` syntax errors and `0` module/export errors after the edits.
+  - Unable to run `npm test`, `npm run build`, `git`, `gh`, or `apply_patch` in this session because every shell-backed tool call fails with `windows sandbox: setup refresh failed with status exit code: 1`.
+- Tooling notes:
+  - Free OSS CLI stack retained: `semgrep`, `gitleaks`, `osv-scanner`, `trivy`, `npm audit`.
+  - Additional free CLI candidate worth installing next run: `grype` for package/SBOM vulnerability scanning when shell execution is available.

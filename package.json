@@ -204,6 +204,7 @@
     "desktop/preload.mjs",
     "entrypoint.mjs",
     "lib/repo-map.mjs",
+    "lib/skill-markdown-safety.mjs",
     "git/conflict-resolver.mjs",
     "git/diff-stats.mjs",
     "git/git-commit-helpers.mjs",

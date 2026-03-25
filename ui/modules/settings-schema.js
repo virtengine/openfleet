@@ -28,6 +28,7 @@ export const CATEGORIES = [
   { id: "executor",  label: "Executor / AI",        icon: "cpu", description: "Agent execution, SDK selection, parallelism, and timeouts" },
   { id: "voice",     label: "Voice Assistant",       icon: "headphones", description: "Real-time voice endpoints, provider routing, and voice behavior settings" },
   { id: "kanban",    label: "Kanban / Tasks",       icon: "clipboard", description: "Task backend, sync, labels, and project mapping" },
+  { id: "gates",     label: "Gates / Safeguards",   icon: "shield", description: "PR trust, merge gates, execution posture, and runtime safeguards" },
   { id: "github",    label: "GitHub / Git",         icon: "git", description: "Repository, auth, PR, merge, and reconciliation settings" },
   { id: "network",   label: "Network / Tunnel",     icon: "globe", description: "Cloudflare tunnel, presence, and multi-instance coordination" },
   { id: "security",  label: "Security / Sandbox",   icon: "shield", description: "Sandbox mode, container isolation, and permissions" },

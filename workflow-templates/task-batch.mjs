@@ -80,11 +80,7 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
         import(kanbanModuleUrl)
           .then(k => k.listTasks(undefined, { status: "todo" }))
           .then(tasks => {
-            const filtered = (tasks || []).filter((task) => {
-              const repository = typeof task?.repository === "string" ? task.repository.trim() : "";
-              const workspace = typeof task?.workspace === "string" ? task.workspace.trim() : "";
-              return task && task.status === "todo" && !task.draft && repository.length > 0 && workspace.length > 0;
-            });
+            const filtered = (tasks || []).filter((task) => task && task.status === "todo" && !task.draft);
             const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || "10"));
             console.log(JSON.stringify(batch.map(t => ({
               taskId: t.id,
@@ -207,11 +203,7 @@ export const TASK_BATCH_PR_TEMPLATE = {
         import(kanbanModuleUrl)
           .then(k => k.listTasks(undefined, { status: "todo" }))
           .then(tasks => {
-            const filtered = (tasks || []).filter((task) => {
-              const repository = typeof task?.repository === "string" ? task.repository.trim() : "";
-              const workspace = typeof task?.workspace === "string" ? task.workspace.trim() : "";
-              return task && task.status === "todo" && !task.draft && repository.length > 0 && workspace.length > 0;
-            });
+            const filtered = (tasks || []).filter((task) => task && task.status === "todo" && !task.draft);
             const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || "5"));
             console.log(JSON.stringify(batch.map(t => ({
               taskId: t.id,

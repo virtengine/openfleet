@@ -32,6 +32,32 @@
       "installOnSetup": false
     }
   },
+  "gates": {
+    "prs": {
+      "repoVisibility": "unknown",
+      "automationPreference": "runtime-first",
+      "githubActionsBudget": "ask-user"
+    },
+    "checks": {
+      "mode": "required-only",
+      "requiredPatterns": ["ci", "test", "build"],
+      "optionalPatterns": ["lint-optional", "preview"],
+      "ignorePatterns": ["dependabot"],
+      "requireAnyRequiredCheck": true,
+      "treatPendingRequiredAsBlocking": true,
+      "treatNeutralAsPass": false
+    },
+    "execution": {
+      "sandboxMode": "workspace-write",
+      "containerIsolationEnabled": false,
+      "containerRuntime": "auto",
+      "networkAccess": "default"
+    },
+    "runtime": {
+      "enforceBacklog": true,
+      "agentTriggerControl": true
+    }
+  },
   "workflows": [
     {
       "type": "continuation-loop",

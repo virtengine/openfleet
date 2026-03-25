@@ -6287,6 +6287,53 @@ function normalizePrAutomationPolicy(raw = {}) {
   };
 }
 
+function normalizeGatesPolicy(raw = {}) {
+  const prsRaw = raw?.prs && typeof raw.prs === "object" ? raw.prs : {};
+  const checksRaw = raw?.checks && typeof raw.checks === "object" ? raw.checks : {};
+  const executionRaw = raw?.execution && typeof raw.execution === "object" ? raw.execution : {};
+  const runtimeRaw = raw?.runtime && typeof raw.runtime === "object" ? raw.runtime : {};
+  const repoVisibilityRaw = String(prsRaw.repoVisibility || "unknown").trim().toLowerCase();
+  const automationPreferenceRaw = String(prsRaw.automationPreference || "runtime-first").trim().toLowerCase();
+  const githubActionsBudgetRaw = String(prsRaw.githubActionsBudget || "ask-user").trim().toLowerCase();
+  const checkModeRaw = String(checksRaw.mode || "all").trim().toLowerCase();
+  const listFromValue = (value) => {
+    const source = Array.isArray(value) ? value : String(value || "").split(/[\n,]/);
+    return [...new Set(source.map((entry) => String(entry || "").trim()).filter(Boolean))];
+  };
+  return {
+    prs: {
+      repoVisibility: ["public", "private", "unknown"].includes(repoVisibilityRaw)
+        ? repoVisibilityRaw
+        : "unknown",
+      automationPreference: ["runtime-first", "actions-first"].includes(automationPreferenceRaw)
+        ? automationPreferenceRaw
+        : "runtime-first",
+      githubActionsBudget: ["ask-user", "available", "limited"].includes(githubActionsBudgetRaw)
+        ? githubActionsBudgetRaw
+        : "ask-user",
+    },
+    checks: {
+      mode: ["all", "required-only"].includes(checkModeRaw) ? checkModeRaw : "all",
+      requiredPatterns: listFromValue(checksRaw.requiredPatterns),
+      optionalPatterns: listFromValue(checksRaw.optionalPatterns),
+      ignorePatterns: listFromValue(checksRaw.ignorePatterns),
+      requireAnyRequiredCheck: parseBooleanLike(checksRaw.requireAnyRequiredCheck, true),
+      treatPendingRequiredAsBlocking: parseBooleanLike(checksRaw.treatPendingRequiredAsBlocking, true),
+      treatNeutralAsPass: parseBooleanLike(checksRaw.treatNeutralAsPass, false),
+    },
+    execution: {
+      sandboxMode: String(executionRaw.sandboxMode || "workspace-write").trim().toLowerCase() || "workspace-write",
+      containerIsolationEnabled: parseBooleanLike(executionRaw.containerIsolationEnabled, false),
+      containerRuntime: String(executionRaw.containerRuntime || "auto").trim().toLowerCase() || "auto",
+      networkAccess: String(executionRaw.networkAccess || "default").trim().toLowerCase() || "default",
+    },
+    runtime: {
+      enforceBacklog: parseBooleanLike(runtimeRaw.enforceBacklog, true),
+      agentTriggerControl: parseBooleanLike(runtimeRaw.agentTriggerControl, true),
+    },
+  };
+}
+
 function validateConfigSchemaChanges(changes) {
   try {
     const schema = getConfigSchema();
@@ -8156,7 +8203,7 @@ function scrubStackTraces(payload) {
   return out;
 }
 function normalizeJsonResponsePayload(payload) {
-  return scrubStackTraces(payload);
+  return makeJsonSafe(scrubStackTraces(payload), { maxDepth: 6 });
 }
 
 function makeJsonSafe(value, options = {}) {
@@ -8272,14 +8319,29 @@ function jsonResponse(res, statusCode, payload) {
     logJsonFailure(res, statusCode, payload, diagnosticId);
   }
   const normalizedPayload = normalizeJsonResponsePayload(payload);
-  const safePayload =
-    statusCode >= 500
-      ? {
-          ok: false,
-          error: extractSafeErrorMessage(normalizedPayload),
-          diagnosticId,
-        }
-      : normalizedPayload;
+  let safePayload = normalizedPayload;
+  if (statusCode >= 500) {
+    safePayload = {
+      ok: false,
+      error: extractSafeErrorMessage(normalizedPayload),
+      diagnosticId,
+    };
+  } else if (
+    statusCode >= 400 &&
+    normalizedPayload &&
+    typeof normalizedPayload === "object" &&
+    !Array.isArray(normalizedPayload)
+  ) {
+    const hasErrorField =
+      Object.prototype.hasOwnProperty.call(normalizedPayload, "error") ||
+      Object.prototype.hasOwnProperty.call(normalizedPayload, "message");
+    if (hasErrorField) {
+      const errorText = extractSafeErrorMessage(normalizedPayload);
+      safePayload = { ...normalizedPayload };
+      if (Object.prototype.hasOwnProperty.call(safePayload, "error")) safePayload.error = errorText;
+      if (Object.prototype.hasOwnProperty.call(safePayload, "message")) safePayload.message = errorText;
+    }
+  }
   const body = JSON.stringify(safePayload);
   const headers = {
     "Content-Type": "application/json; charset=utf-8",
@@ -19541,6 +19603,7 @@ if (path === "/api/agent-logs/context") {
       kanbanBackend: runtimeKanbanBackend,
       regions,
       prAutomation: normalizePrAutomationPolicy(configData?.prAutomation),
+      gates: normalizeGatesPolicy(configData?.gates),
       tunnel: getTunnelStatus(),
       fallbackAuth: getFallbackAuthStatus(),
     });
@@ -19607,6 +19670,36 @@ if (path === "/api/agent-logs/context") {
         reason: "pr-automation-updated",
       });
       jsonResponse(res, 200, { ok: true, configPath, prAutomation });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/gates" && req.method === "GET") {
+    try {
+      const { configData } = readConfigDocument();
+      jsonResponse(res, 200, {
+        ok: true,
+        gates: normalizeGatesPolicy(configData?.gates),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/gates" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const gates = normalizeGatesPolicy(body?.gates || {});
+      const { configPath, configData } = readConfigDocument();
+      configData.gates = gates;
+      writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
+      broadcastUiEvent(["settings", "overview"], "invalidate", {
+        reason: "gates-updated",
+      });
+      jsonResponse(res, 200, { ok: true, configPath, gates });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

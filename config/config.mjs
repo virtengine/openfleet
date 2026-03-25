@@ -2063,6 +2063,138 @@ export function loadConfig(argv = process.argv, options = {}) {
       ),
     }),
   });
+  const gatesData =
+    configData.gates && typeof configData.gates === "object"
+      ? configData.gates
+      : {};
+  const gatesPrsData =
+    gatesData.prs && typeof gatesData.prs === "object"
+      ? gatesData.prs
+      : {};
+  const gatesChecksData =
+    gatesData.checks && typeof gatesData.checks === "object"
+      ? gatesData.checks
+      : {};
+  const gatesExecutionData =
+    gatesData.execution && typeof gatesData.execution === "object"
+      ? gatesData.execution
+      : {};
+  const gatesRuntimeData =
+    gatesData.runtime && typeof gatesData.runtime === "object"
+      ? gatesData.runtime
+      : {};
+  const repoVisibilityRaw = String(
+    process.env.BOSUN_GATES_REPO_VISIBILITY ||
+      gatesPrsData.repoVisibility ||
+      "unknown",
+  )
+    .trim()
+    .toLowerCase();
+  const repoVisibility = ["public", "private", "unknown"].includes(repoVisibilityRaw)
+    ? repoVisibilityRaw
+    : "unknown";
+  const automationPreferenceRaw = String(
+    process.env.BOSUN_GATES_AUTOMATION_PREFERENCE ||
+      gatesPrsData.automationPreference ||
+      (repoVisibility === "public" ? "actions-first" : "runtime-first"),
+  )
+    .trim()
+    .toLowerCase();
+  const automationPreference = ["runtime-first", "actions-first"].includes(automationPreferenceRaw)
+    ? automationPreferenceRaw
+    : (repoVisibility === "public" ? "actions-first" : "runtime-first");
+  const githubActionsBudgetRaw = String(
+    process.env.BOSUN_GATES_ACTIONS_BUDGET ||
+      gatesPrsData.githubActionsBudget ||
+      "ask-user",
+  )
+    .trim()
+    .toLowerCase();
+  const githubActionsBudget = ["ask-user", "available", "limited"].includes(githubActionsBudgetRaw)
+    ? githubActionsBudgetRaw
+    : "ask-user";
+  const checkModeRaw = String(
+    process.env.BOSUN_GATES_CHECK_MODE ||
+      gatesChecksData.mode ||
+      "all",
+  )
+    .trim()
+    .toLowerCase();
+  const checkMode = ["all", "required-only"].includes(checkModeRaw)
+    ? checkModeRaw
+    : "all";
+  const gates = Object.freeze({
+    prs: Object.freeze({
+      repoVisibility,
+      automationPreference,
+      githubActionsBudget,
+    }),
+    checks: Object.freeze({
+      mode: checkMode,
+      requiredPatterns: parseListSetting(
+        process.env.BOSUN_REQUIRED_CHECK_PATTERNS ?? gatesChecksData.requiredPatterns ?? [],
+      ),
+      optionalPatterns: parseListSetting(
+        process.env.BOSUN_OPTIONAL_CHECK_PATTERNS ?? gatesChecksData.optionalPatterns ?? [],
+      ),
+      ignorePatterns: parseListSetting(
+        process.env.BOSUN_IGNORE_CHECK_PATTERNS ?? gatesChecksData.ignorePatterns ?? [],
+      ),
+      requireAnyRequiredCheck: isEnvEnabled(
+        process.env.BOSUN_GATES_REQUIRE_ANY_REQUIRED_CHECK ?? gatesChecksData.requireAnyRequiredCheck,
+        true,
+      ),
+      treatPendingRequiredAsBlocking: isEnvEnabled(
+        process.env.BOSUN_GATES_TREAT_PENDING_REQUIRED_AS_BLOCKING ?? gatesChecksData.treatPendingRequiredAsBlocking,
+        true,
+      ),
+      treatNeutralAsPass: isEnvEnabled(
+        process.env.BOSUN_GATES_TREAT_NEUTRAL_AS_PASS ?? gatesChecksData.treatNeutralAsPass,
+        false,
+      ),
+    }),
+    execution: Object.freeze({
+      sandboxMode: String(
+        process.env.CODEX_SANDBOX ||
+          gatesExecutionData.sandboxMode ||
+          "workspace-write",
+      )
+        .trim()
+        .toLowerCase(),
+      containerIsolationEnabled: isEnvEnabled(
+        process.env.CONTAINER_ENABLED ?? gatesExecutionData.containerIsolationEnabled,
+        false,
+      ),
+      containerRuntime: String(
+        process.env.CONTAINER_RUNTIME ||
+          gatesExecutionData.containerRuntime ||
+          "auto",
+      )
+        .trim()
+        .toLowerCase(),
+      networkAccess: String(
+        process.env.BOSUN_EXECUTION_NETWORK_ACCESS ||
+          gatesExecutionData.networkAccess ||
+          "default",
+      )
+        .trim()
+        .toLowerCase(),
+    }),
+    runtime: Object.freeze({
+      enforceBacklog: isEnvEnabled(
+        process.env.BOSUN_GATES_ENFORCE_BACKLOG ??
+          gatesRuntimeData.enforceBacklog ??
+          configData.enforceBacklog,
+        true,
+      ),
+      agentTriggerControl: isEnvEnabled(
+        process.env.BOSUN_GATES_AGENT_TRIGGER_CONTROL ??
+          gatesRuntimeData.agentTriggerControl ??
+          configData.agentTriggerControl,
+        true,
+      ),
+    }),
+  });
 
   // ── Status file ──────────────────────────────────────────
   const cacheDir = resolve(
@@ -2199,6 +2331,7 @@ export function loadConfig(argv = process.argv, options = {}) {
 
     // PR automation trust policy
     prAutomation,
+    gates,
 
     // Fleet Coordination
     fleet,

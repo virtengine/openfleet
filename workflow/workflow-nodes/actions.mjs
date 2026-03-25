@@ -4756,7 +4756,7 @@ registerNodeType("action.acquire_worktree", {
     }
 
     try {
-      const findAttachedWorktreeForBranch = () => {
+      const findAttachedWorktreeForBranch = async () => {
         try {
           const output = execSync("git worktree list --porcelain", {
             cwd: repoRoot,
@@ -4783,14 +4783,6 @@ registerNodeType("action.acquire_worktree", {
               currentBranch = branchRef.replace(/^refs\/heads\//, "");
             }
           }
-        try {
-          await recordWorktreeRecoveryEvent(repoRoot, payload);
-        } catch (err) {
-          ctx.log(
-            node.id,
-            `[worktree-recovery] Warning: failed to record recovery event: ${err && err.message ? err.message : String(err)}`,
-          );
-        }
         } catch {
           // best-effort only
         }
@@ -4889,7 +4881,7 @@ registerNodeType("action.acquire_worktree", {
         if (!isExistingBranchWorktreeError(createErr)) {
           throw new Error(`Worktree creation failed: ${formatExecSyncError(createErr)}`);
         }
-        const attachedPath = findAttachedWorktreeForBranch();
+        const attachedPath = await findAttachedWorktreeForBranch();
         let recreatedAttachedWorktree = false;
         if (attachedPath && existsSync(attachedPath)) {
           if (invalidateBrokenReusableWorktree(attachedPath, "attached-branch")) {
