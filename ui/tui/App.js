@@ -10,9 +10,9 @@ import {
   MIN_TERMINAL_SIZE,
   TAB_ORDER,
 } from "./constants.js";
-import { useWebSocket } from "./useWebSocket.js";
-import { useTasks } from "./useTasks.js";
 import { useWorkflows } from "./useWorkflows.js";
+import WorkflowsScreen from "./WorkflowsScreen.js";
+import { useTasks } from "./useTasks.js";
 
 const html = htm.bind(React.createElement);
 
@@ -183,13 +183,6 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
     priority: clip(task.priority || "medium", COLUMN_WIDTHS.priority),
     title: clip(task.title || "Untitled task", COLUMN_WIDTHS.title),
   })), [combinedTasks]);
-
-  const workflowRows = useMemo(() => (workflowState.workflows || []).slice(0, 12).map((workflow) => ({
-    workflow: clip(workflow.name || workflow.id || "workflow", COLUMN_WIDTHS.workflow),
-    source: clip(workflow.source || workflow.file || "configured", 24),
-    enabled: workflow.enabled === false ? "no" : "yes",
-  })), [workflowState.workflows]);
-
   let body = null;
   if (tooSmall) {
     body = html`
@@ -236,14 +229,16 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
       <//>
     `;
   } else if (activeTab === "workflows") {
-    body = html`
-      <${ScreenFrame}
-        title="Workflows"
-        subtitle=${workflowState.loading ? "Loading configured workflows…" : `Loaded ${workflowState.workflows.length} workflow(s).`}
-      >
-        ${workflowState.error ? html`<${Text} color=${ANSI_COLORS.danger}>${workflowState.error}<//>` : renderTable(workflowRows)}
-      <//>
-    `;
+    body = workflowState.error
+      ? html`
+          <${ScreenFrame}
+            title="Workflows"
+            subtitle="Workflow screen failed to load."
+          >
+            <${Text} color=${ANSI_COLORS.danger}>${workflowState.error}<//>
+          <//>
+        `
+      : html`<${WorkflowsScreen} workflowState=${workflowState} wsState=${wsState} />`;
   } else if (activeTab === "telemetry") {
     body = html`
       <${ScreenFrame}
@@ -296,3 +291,6 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
     <//>
   `;
 }
+
+
+
