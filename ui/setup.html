@@ -1278,6 +1278,20 @@
       const [workflowDefaultTemplates, setWorkflowDefaultTemplates] = useState([]);
       const [workflowTemplateOverridesById, setWorkflowTemplateOverridesById] = useState({});
       const [workflowAutoInstall, setWorkflowAutoInstall] = useState(true);
+      const [assistiveActionsInstallOnSetup, setAssistiveActionsInstallOnSetup] = useState(false);
+      const [gatesRepoVisibility, setGatesRepoVisibility] = useState("unknown");
+      const [gatesAutomationPreference, setGatesAutomationPreference] = useState("runtime-first");
+      const [gatesGithubActionsBudget, setGatesGithubActionsBudget] = useState("ask-user");
+      const [gatesCheckMode, setGatesCheckMode] = useState("all");
+      const [gatesRequiredPatternsText, setGatesRequiredPatternsText] = useState("");
+      const [gatesOptionalPatternsText, setGatesOptionalPatternsText] = useState("");
+      const [gatesIgnorePatternsText, setGatesIgnorePatternsText] = useState("");
+      const [gatesRequireAnyRequiredCheck, setGatesRequireAnyRequiredCheck] = useState(true);
+      const [gatesTreatPendingRequiredAsBlocking, setGatesTreatPendingRequiredAsBlocking] = useState(true);
+      const [gatesTreatNeutralAsPass, setGatesTreatNeutralAsPass] = useState(false);
+      const [gatesNetworkAccess, setGatesNetworkAccess] = useState("default");
+      const [gatesEnforceBacklog, setGatesEnforceBacklog] = useState(true);
+      const [gatesAgentTriggerControl, setGatesAgentTriggerControl] = useState(true);
       const [workflowNodeMaxRetries, setWorkflowNodeMaxRetries] = useState(3);
       const [workflowNodeTimeoutMs, setWorkflowNodeTimeoutMs] = useState(600000);
       const [workflowRunStuckThresholdMs, setWorkflowRunStuckThresholdMs] = useState(300000);
@@ -1871,6 +1885,48 @@
           if (d.workflowAutoInstall != null) {
             setWorkflowAutoInstall(Boolean(d.workflowAutoInstall));
           }
+          if (d.prAutomation?.assistiveActions?.installOnSetup != null) {
+            setAssistiveActionsInstallOnSetup(Boolean(d.prAutomation.assistiveActions.installOnSetup));
+          }
+          if (d.gates?.prs?.repoVisibility) {
+            setGatesRepoVisibility(String(d.gates.prs.repoVisibility));
+          }
+          if (d.gates?.prs?.automationPreference) {
+            setGatesAutomationPreference(String(d.gates.prs.automationPreference));
+          }
+          if (d.gates?.prs?.githubActionsBudget) {
+            setGatesGithubActionsBudget(String(d.gates.prs.githubActionsBudget));
+          }
+          if (d.gates?.checks?.mode) {
+            setGatesCheckMode(String(d.gates.checks.mode));
+          }
+          if (Array.isArray(d.gates?.checks?.requiredPatterns)) {
+            setGatesRequiredPatternsText(d.gates.checks.requiredPatterns.join("\n"));
+          }
+          if (Array.isArray(d.gates?.checks?.optionalPatterns)) {
+            setGatesOptionalPatternsText(d.gates.checks.optionalPatterns.join("\n"));
+          }
+          if (Array.isArray(d.gates?.checks?.ignorePatterns)) {
+            setGatesIgnorePatternsText(d.gates.checks.ignorePatterns.join("\n"));
+          }
+          if (d.gates?.checks?.requireAnyRequiredCheck != null) {
+            setGatesRequireAnyRequiredCheck(Boolean(d.gates.checks.requireAnyRequiredCheck));
+          }
+          if (d.gates?.checks?.treatPendingRequiredAsBlocking != null) {
+            setGatesTreatPendingRequiredAsBlocking(Boolean(d.gates.checks.treatPendingRequiredAsBlocking));
+          }
+          if (d.gates?.checks?.treatNeutralAsPass != null) {
+            setGatesTreatNeutralAsPass(Boolean(d.gates.checks.treatNeutralAsPass));
+          }
+          if (d.gates?.execution?.networkAccess != null) {
+            setGatesNetworkAccess(String(d.gates.execution.networkAccess || "default"));
+          }
+          if (d.gates?.runtime?.enforceBacklog != null) {
+            setGatesEnforceBacklog(Boolean(d.gates.runtime.enforceBacklog));
+          }
+          if (d.gates?.runtime?.agentTriggerControl != null) {
+            setGatesAgentTriggerControl(Boolean(d.gates.runtime.agentTriggerControl));
+          }
           if (d.workflowNodeMaxRetries != null) {
             setWorkflowNodeMaxRetries(Number(d.workflowNodeMaxRetries) || 3);
           }
@@ -2012,6 +2068,50 @@
           }
           if (existingWorkflowDefaults.autoInstall != null) {
             setWorkflowAutoInstall(Boolean(existingWorkflowDefaults.autoInstall));
+          }
+          const existingPrAutomation = statusData.existingConfig?.prAutomation || {};
+          if (existingPrAutomation?.assistiveActions?.installOnSetup != null) {
+            setAssistiveActionsInstallOnSetup(Boolean(existingPrAutomation.assistiveActions.installOnSetup));
+          }
+          const existingGates = statusData.existingConfig?.gates || {};
+          if (existingGates?.prs?.repoVisibility) {
+            setGatesRepoVisibility(String(existingGates.prs.repoVisibility));
+          }
+          if (existingGates?.prs?.automationPreference) {
+            setGatesAutomationPreference(String(existingGates.prs.automationPreference));
+          }
+          if (existingGates?.prs?.githubActionsBudget) {
+            setGatesGithubActionsBudget(String(existingGates.prs.githubActionsBudget));
+          }
+          if (existingGates?.checks?.mode) {
+            setGatesCheckMode(String(existingGates.checks.mode));
+          }
+          if (Array.isArray(existingGates?.checks?.requiredPatterns)) {
+            setGatesRequiredPatternsText(existingGates.checks.requiredPatterns.join("\n"));
+          }
+          if (Array.isArray(existingGates?.checks?.optionalPatterns)) {
+            setGatesOptionalPatternsText(existingGates.checks.optionalPatterns.join("\n"));
+          }
+          if (Array.isArray(existingGates?.checks?.ignorePatterns)) {
+            setGatesIgnorePatternsText(existingGates.checks.ignorePatterns.join("\n"));
+          }
+          if (existingGates?.checks?.requireAnyRequiredCheck != null) {
+            setGatesRequireAnyRequiredCheck(Boolean(existingGates.checks.requireAnyRequiredCheck));
+          }
+          if (existingGates?.checks?.treatPendingRequiredAsBlocking != null) {
+            setGatesTreatPendingRequiredAsBlocking(Boolean(existingGates.checks.treatPendingRequiredAsBlocking));
+          }
+          if (existingGates?.checks?.treatNeutralAsPass != null) {
+            setGatesTreatNeutralAsPass(Boolean(existingGates.checks.treatNeutralAsPass));
+          }
+          if (existingGates?.execution?.networkAccess != null) {
+            setGatesNetworkAccess(String(existingGates.execution.networkAccess || "default"));
+          }
+          if (existingGates?.runtime?.enforceBacklog != null) {
+            setGatesEnforceBacklog(Boolean(existingGates.runtime.enforceBacklog));
+          }
+          if (existingGates?.runtime?.agentTriggerControl != null) {
+            setGatesAgentTriggerControl(Boolean(existingGates.runtime.agentTriggerControl));
           }
           const existingWorkflowEngine = statusData.existingConfig?.workflowEngine || {};
           if (existingWorkflowEngine.nodeMaxRetries != null) {
@@ -2188,6 +2288,62 @@
           }
           if (env.WORKFLOW_DEFAULT_AUTOINSTALL !== undefined) {
             setWorkflowAutoInstall(env.WORKFLOW_DEFAULT_AUTOINSTALL !== "false");
+            envLoaded = true;
+          }
+          if (env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP !== undefined) {
+            setAssistiveActionsInstallOnSetup(env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP === "true");
+            envLoaded = true;
+          }
+          if (env.BOSUN_GATES_REPO_VISIBILITY) {
+            setGatesRepoVisibility(env.BOSUN_GATES_REPO_VISIBILITY);
+            envLoaded = true;
+          }
+          if (env.BOSUN_GATES_AUTOMATION_PREFERENCE) {
+            setGatesAutomationPreference(env.BOSUN_GATES_AUTOMATION_PREFERENCE);
+            envLoaded = true;
+          }
+          if (env.BOSUN_GATES_ACTIONS_BUDGET) {
+            setGatesGithubActionsBudget(env.BOSUN_GATES_ACTIONS_BUDGET);
+            envLoaded = true;
+          }
+          if (env.BOSUN_GATES_CHECK_MODE) {
+            setGatesCheckMode(env.BOSUN_GATES_CHECK_MODE);
+            envLoaded = true;
+          }
+          if (env.BOSUN_REQUIRED_CHECK_PATTERNS !== undefined) {
+            setGatesRequiredPatternsText(String(env.BOSUN_REQUIRED_CHECK_PATTERNS || "").split(",").filter(Boolean).join("\n"));
+            envLoaded = true;
+          }
+          if (env.BOSUN_OPTIONAL_CHECK_PATTERNS !== undefined) {
+            setGatesOptionalPatternsText(String(env.BOSUN_OPTIONAL_CHECK_PATTERNS || "").split(",").filter(Boolean).join("\n"));
+            envLoaded = true;
+          }
+          if (env.BOSUN_IGNORE_CHECK_PATTERNS !== undefined) {
+            setGatesIgnorePatternsText(String(env.BOSUN_IGNORE_CHECK_PATTERNS || "").split(",").filter(Boolean).join("\n"));
+            envLoaded = true;
+          }
+          if (env.BOSUN_GATES_REQUIRE_ANY_REQUIRED_CHECK !== undefined) {
+            setGatesRequireAnyRequiredCheck(env.BOSUN_GATES_REQUIRE_ANY_REQUIRED_CHECK !== "false");
+            envLoaded = true;
+          }
+          if (env.BOSUN_GATES_TREAT_PENDING_REQUIRED_AS_BLOCKING !== undefined) {
+            setGatesTreatPendingRequiredAsBlocking(env.BOSUN_GATES_TREAT_PENDING_REQUIRED_AS_BLOCKING !== "false");
+            envLoaded = true;
+          }
+          if (env.BOSUN_GATES_TREAT_NEUTRAL_AS_PASS !== undefined) {
+            setGatesTreatNeutralAsPass(env.BOSUN_GATES_TREAT_NEUTRAL_AS_PASS === "true");
+            envLoaded = true;
+          }
+          if (env.BOSUN_EXECUTION_NETWORK_ACCESS !== undefined) {
+            setGatesNetworkAccess(String(env.BOSUN_EXECUTION_NETWORK_ACCESS || "default"));
+            envLoaded = true;
+          }
+          if (env.BOSUN_GATES_ENFORCE_BACKLOG !== undefined) {
+            setGatesEnforceBacklog(env.BOSUN_GATES_ENFORCE_BACKLOG !== "false");
+            envLoaded = true;
+          }
+          if (env.BOSUN_GATES_AGENT_TRIGGER_CONTROL !== undefined) {
+            setGatesAgentTriggerControl(env.BOSUN_GATES_AGENT_TRIGGER_CONTROL !== "false");
             envLoaded = true;
           }
           if (env.WORKFLOW_NODE_MAX_RETRIES) {
@@ -2810,6 +2966,37 @@
                   workflowTemplateOverridesById,
                   workflowTemplates,
                 ),
+              },
+              prAutomation: {
+                assistiveActions: {
+                  installOnSetup: assistiveActionsInstallOnSetup === true,
+                },
+              },
+              gates: {
+                prs: {
+                  repoVisibility: gatesRepoVisibility,
+                  automationPreference: gatesAutomationPreference,
+                  githubActionsBudget: gatesGithubActionsBudget,
+                },
+                checks: {
+                  mode: gatesCheckMode,
+                  requiredPatterns: gatesRequiredPatternsText.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean),
+                  optionalPatterns: gatesOptionalPatternsText.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean),
+                  ignorePatterns: gatesIgnorePatternsText.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean),
+                  requireAnyRequiredCheck: gatesRequireAnyRequiredCheck === true,
+                  treatPendingRequiredAsBlocking: gatesTreatPendingRequiredAsBlocking === true,
+                  treatNeutralAsPass: gatesTreatNeutralAsPass === true,
+                },
+                execution: {
+                  sandboxMode: codexSandbox,
+                  containerIsolationEnabled: containerEnabled === true,
+                  containerRuntime,
+                  networkAccess: gatesNetworkAccess,
+                },
+                runtime: {
+                  enforceBacklog: gatesEnforceBacklog === true,
+                  agentTriggerControl: gatesAgentTriggerControl === true,
+                },
               },
               workflowEngine: {
                 nodeMaxRetries: Number(workflowNodeMaxRetries) || 3,
@@ -4120,6 +4307,106 @@
             <input type="number" value=${workflowMaxConcurrentBranches} min="1" max="64"
               oninput=${(e) => setWorkflowMaxConcurrentBranches(Number(e.target.value) || 8)} />
           </div>
+        </div>
+      <//>
+
+      <${Section} title=":shield: Gates & Safeguards">
+        <div class="executor-grid">
+          <div class="form-group">
+            <label>Repository Visibility</label>
+            <select value=${gatesRepoVisibility} onchange=${(e) => setGatesRepoVisibility(e.target.value)}>
+              <option value="unknown">Unknown / not detected</option>
+              <option value="public">Public</option>
+              <option value="private">Private</option>
+            </select>
+            <div class="hint">Used to recommend Bosun’s default PR automation posture during setup.</div>
+          </div>
+          <div class="form-group">
+            <label>Automation Preference</label>
+            <select value=${gatesAutomationPreference} onchange=${(e) => setGatesAutomationPreference(e.target.value)}>
+              <option value="runtime-first">Runtime-first</option>
+              <option value="actions-first">Actions-first</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>GitHub Actions Budget</label>
+            <select value=${gatesGithubActionsBudget} onchange=${(e) => setGatesGithubActionsBudget(e.target.value)}>
+              <option value="ask-user">Ask user later</option>
+              <option value="available">Available</option>
+              <option value="limited">Limited</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Merge Check Mode</label>
+            <select value=${gatesCheckMode} onchange=${(e) => setGatesCheckMode(e.target.value)}>
+              <option value="all">All non-ignored checks block</option>
+              <option value="required-only">Only required patterns block</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${assistiveActionsInstallOnSetup}
+              onchange=${(e) => setAssistiveActionsInstallOnSetup(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Install optional repo-local GitHub Actions during setup
+          </label>
+          <div class="hint">Matches the PR Automation setting in the dashboard. These workflows are assistive only.</div>
+        </div>
+        <div class="executor-grid">
+          <div class="form-group">
+            <label>Required Check Patterns</label>
+            <textarea rows="4" value=${gatesRequiredPatternsText} oninput=${(e) => setGatesRequiredPatternsText(e.target.value)} placeholder="ci / test&#10;codeql"></textarea>
+            <div class="hint">One pattern per line or comma-separated.</div>
+          </div>
+          <div class="form-group">
+            <label>Optional Check Patterns</label>
+            <textarea rows="4" value=${gatesOptionalPatternsText} oninput=${(e) => setGatesOptionalPatternsText(e.target.value)} placeholder="preview&#10;benchmarks"></textarea>
+          </div>
+          <div class="form-group">
+            <label>Ignored Check Patterns</label>
+            <textarea rows="4" value=${gatesIgnorePatternsText} oninput=${(e) => setGatesIgnorePatternsText(e.target.value)} placeholder="housekeeping"></textarea>
+          </div>
+          <div class="form-group">
+            <label>Execution Network Access</label>
+            <input type="text" value=${gatesNetworkAccess}
+              oninput=${(e) => setGatesNetworkAccess(e.target.value || "default")}
+              placeholder="default" />
+            <div class="hint">High-level execution posture written into <code style="font-family:var(--font-mono)">gates.execution.networkAccess</code>.</div>
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;margin-bottom:8px">
+            <input type="checkbox" checked=${gatesRequireAnyRequiredCheck}
+              onchange=${(e) => setGatesRequireAnyRequiredCheck(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Block merge when no required check is present
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;margin-bottom:8px">
+            <input type="checkbox" checked=${gatesTreatPendingRequiredAsBlocking}
+              onchange=${(e) => setGatesTreatPendingRequiredAsBlocking(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Treat pending required checks as blocking
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;margin-bottom:8px">
+            <input type="checkbox" checked=${gatesTreatNeutralAsPass}
+              onchange=${(e) => setGatesTreatNeutralAsPass(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Count neutral or skipped required checks as pass
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;margin-bottom:8px">
+            <input type="checkbox" checked=${gatesEnforceBacklog}
+              onchange=${(e) => setGatesEnforceBacklog(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Enforce backlog safeguards before direct execution
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${gatesAgentTriggerControl}
+              onchange=${(e) => setGatesAgentTriggerControl(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Keep agent trigger control safeguards enabled
+          </label>
+          <div class="hint" style="margin-top:10px">Sandbox mode and container isolation are configured in the Execution and Infrastructure sections above, and are folded into the saved Gates execution posture automatically.</div>
         </div>
       <//>
 
