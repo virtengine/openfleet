@@ -21,7 +21,7 @@ You now have a **comprehensive agent work logging and analysis system** that:
    - PowerShell module for logging agent work events
    - Functions: `Start-AgentSession`, `Stop-AgentSession`, `Write-AgentError`, `Write-AgentFollowup`
    - Exports session metrics, error clusters, and summary reports
-   - Used by: `ve-orchestrator.ps1`
+   - Used by: orchestrator scripts
 
 2. **[agent-work-analyzer.mjs](../agent-work-analyzer.mjs)**
    - Real-time log stream analyzer
@@ -48,8 +48,8 @@ You now have a **comprehensive agent work logging and analysis system** that:
 
 6. **[docs/agent-logging-quickstart.md](agent-logging-quickstart.md)**
    - 5-minute installation guide
-   - Integration points in ve-orchestrator.ps1 and monitor.mjs
-   - Usage examples and troubleshooting
+   - Integration points and usage examples
+   - Troubleshooting
 
 7. **[docs/AGENT_LOGGING_SUMMARY.md](AGENT_LOGGING_SUMMARY.md)** *(this file)*
    - High-level overview and reference
@@ -66,17 +66,17 @@ You now have a **comprehensive agent work logging and analysis system** that:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    VK Agent Workspace                           │
+│                    Agent Workspace                              │
 │  Running: claude-sonnet-4-5, copilot-4o, etc.                   │
 └────────────────────────────┬────────────────────────────────────┘
                              ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│              ve-orchestrator.ps1 (Integration Points)           │
+│              Orchestrator (Integration Points)                   │
 │  ┌───────────────────────────────────────────────────────────┐  │
 │  │ Import-Module agent-work-logger.ps1                      │  │
 │  │                                                           │  │
-│  │ Submit-VKTaskAttempt → Start-AgentSession()              │  │
-│  │ Send-VKSessionFollowUp → Write-AgentFollowup()           │  │
+│  │ SubmitTaskAttempt → Start-AgentSession()                 │  │
+│  │ SendSessionFollowUp → Write-AgentFollowup()              │  │
 │  │ Sync-TrackedAttempts → Write-AgentError()                │  │
 │  │ Archive-Attempt → Stop-AgentSession()                    │  │
 │  └───────────────────────────────────────────────────────────┘  │
@@ -168,7 +168,7 @@ All logs use **JSON Lines (JSONL)** format — one JSON object per line, newline
 
 ## :rocket: Quick Start (5 Minutes)
 
-### 1. Import Logger in ve-orchestrator.ps1
+### 1. Import Logger in Orchestrator Script
 
 Add near the top (after param block):
 
@@ -179,7 +179,7 @@ Import-Module "$PSScriptRoot\lib\agent-work-logger.ps1" -Force -Global
 
 ### 2. Add Logging Calls
 
-**In `Submit-VKTaskAttempt()` (after attempt creation):**
+**In `SubmitTaskAttempt()` (after attempt creation):**
 
 ```powershell
 Start-AgentSession -AttemptId $attempt.workspace_id `
@@ -189,7 +189,7 @@ Start-AgentSession -AttemptId $attempt.workspace_id `
     -Prompt $taskPrompt -PromptType "initial"
 ```
 
-**In `Send-VKSessionFollowUp()`:**
+**In `SendSessionFollowUp()`:**
 
 ```powershell
 Write-AgentFollowup -AttemptId $attemptId -Message $message -Reason $reason
@@ -478,7 +478,7 @@ node analyze-agent-work.mjs --error-clustering --days 7
 ### Phase 1: Data Capture :check: (Complete)
 - [x] PowerShell logging module
 - [x] JSONL log format
-- [x] Integration points in ve-orchestrator.ps1
+- [x] Integration points in orchestrator scripts
 - [x] Session metrics tracking
 
 ### Phase 2: Live Analysis :check: (Complete)
@@ -497,11 +497,11 @@ node analyze-agent-work.mjs --error-clustering --days 7
 - [x] Executor comparison
 - [x] Task planning insights
 - [x] Weekly reports
-- [ ] **TODO:** VK API integration to fetch actual task titles/descriptions
+- [ ] **TODO:** API integration to fetch actual task titles/descriptions
 - [ ] **TODO:** Correlation analysis (error clusters → task characteristics)
 
 ### Phase 4: Advanced Features (Future)
-- [ ] VK session transcript capture (actual agent console output)
+- [ ] Session transcript capture (actual agent console output)
 - [ ] Session replay tool (visualize agent decisions)
 - [ ] ML-based anomaly detection (predict failures before they happen)
 - [ ] Predictive cost estimation (estimate task cost before execution)
@@ -559,7 +559,7 @@ node analyze-agent-work.mjs --error-clustering --days 7
 
 | File | Purpose | Used By |
 |------|---------|---------|
-| `lib/agent-work-logger.ps1` | Core logging module | ve-orchestrator.ps1 |
+| `lib/agent-work-logger.ps1` | Core logging module | Orchestrator scripts |
 | `agent-work-analyzer.mjs` | Live stream analysis | monitor.mjs (background) |
 | `analyze-agent-work.mjs` | Offline analytics CLI | Manual / cron |
 | `rotate-agent-logs.sh` | Log rotation/cleanup | Cron (weekly) |
@@ -583,7 +583,7 @@ You now have a **production-ready agent work logging and analysis system** that:
 6. :check: Integrates seamlessly with **existing bosun infrastructure**
 
 **Next Steps:**
-1. Integrate logging calls into ve-orchestrator.ps1 (see quickstart guide)
+1. Integrate logging calls into orchestrator scripts (see quickstart guide)
 2. Start analyzer in monitor.mjs
 3. Let it run for 1 week
 4. Run first analytics report (`--weekly-report`)

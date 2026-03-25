@@ -29,7 +29,7 @@ function getStatusPath(repoRoot) {
     }
     return resolve(repoRoot, override);
   }
-  return resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
+  return resolve(repoRoot, ".cache", "ve-orchestrator-status.json"); // legacy path kept for backward compat
 }
 
 function toIsoTimestamp(value) {

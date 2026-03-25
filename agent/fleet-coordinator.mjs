@@ -16,7 +16,7 @@
  *
  * Non-coordinator instances:
  *   - Report their presence and capacity
- *   - Pull tasks from VK backlog in the assigned order
+ *   - Pull tasks from kanban backlog in the assigned order
  *   - Contribute shared knowledge entries
  */
 
@@ -474,7 +474,7 @@ export function assignTasksToWorkstations(waves, peers, taskMap = new Map()) {
  *
  * @param {object} opts
  * @param {number} opts.totalSlots - Total parallel agent slots across fleet
- * @param {number} opts.currentBacklog - Current todo tasks in VK
+ * @param {number} opts.currentBacklog - Current todo tasks in backlog
  * @param {number} [opts.bufferMultiplier=3] - How many rounds of work to buffer
  * @param {number} [opts.minTasks=6] - Minimum backlog depth
  * @param {number} [opts.maxTasks=100] - Cap to prevent over-generation
@@ -511,7 +511,7 @@ export function calculateBacklogDepth(opts = {}) {
  * Maintenance mode means: all functional work is done, switch to
  * housekeeping (dependency updates, test coverage, refactoring, docs).
  *
- * @param {object} status - VK project status
+ * @param {object} status - Project status
  * @returns {object} { isMaintenanceMode, reason }
  */
 export function detectMaintenanceMode(status) {
@@ -560,7 +560,7 @@ const SHARED_TASKS_FILENAME = "fleet-tasks.json";
  *
  * @param {object} opts
  * @param {string} opts.repoRoot - Git repository root for persistence
- * @param {Array<object>} opts.tasks - Current tasks (from VK or orchestrator)
+ * @param {Array<object>} opts.tasks - Current tasks (from kanban or orchestrator)
  * @returns {SharedTaskList}
  */
 export async function publishTaskList({ repoRoot, tasks = [] } = {}) {

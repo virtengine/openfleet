@@ -1886,7 +1886,7 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "{{$ctx.getNodeOutput('fetch-pr-state')?.output}}\n\n" +
         "RULES:\n" +
         "1. For each MERGED PR entry with a taskId: update the kanban task to done.\n" +
-        "   Use the available bosun/vk CLI, for example:\n" +
+        "   Use the available bosun CLI, for example:\n" +
         "     node task/task-cli.mjs update <taskId> --status done\n" +
         "   Or inspect available commands with a shell-native file listing.\n" +
         "2. For each OPEN (non-draft) PR entry with a taskId: if the task is not\n" +

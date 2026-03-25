@@ -34,10 +34,10 @@
     }
   ],
   "kanban": {
-    "backend": "vk"
+    "backend": "internal"
   },
   "internalExecutor": {
-    "mode": "vk"
+    "mode": "internal"
   },
   "workflows": {
     "code-review": {

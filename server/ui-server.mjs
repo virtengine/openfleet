@@ -3293,7 +3293,7 @@ function resolveUiStatusPath() {
     }
     return resolve(resolveUiStatusRepoRoot(), override);
   }
-  return resolve(resolveUiStatusRepoRoot(), ".cache", "ve-orchestrator-status.json");
+  return resolve(resolveUiStatusRepoRoot(), ".cache", "ve-orchestrator-status.json"); // legacy path
 }
 
 const agentLogsDirCandidates = [

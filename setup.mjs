@@ -470,7 +470,7 @@ export function getDefaultOrchestratorScripts(
 ) {
   const variants = ["ps1", "sh"]
     .map((ext) => {
-      const orchestratorPath = resolve(baseDir, `ve-orchestrator.${ext}`);
+      const orchestratorPath = resolve(baseDir, `orchestrator.${ext}`);
       return {
         ext,
         orchestratorPath,
@@ -1958,7 +1958,7 @@ function normalizeSetupConfiguration({
 
   env.KANBAN_BACKEND = normalizeEnum(
     env.KANBAN_BACKEND,
-    ["internal", "vk", "github", "jira"],
+    ["internal", "github", "jira"],
     "internal",
   );
   env.KANBAN_SYNC_POLICY = normalizeEnum(
@@ -2037,7 +2037,7 @@ function normalizeSetupConfiguration({
   };
   env.EXECUTOR_MODE = normalizeEnum(
     env.EXECUTOR_MODE,
-    ["internal", "vk", "hybrid"],
+    ["internal", "hybrid"],
     "internal",
   );
 
@@ -5204,7 +5204,7 @@ async function main() {
         const preferredTag =
           variant.ext === orchestratorDefaults.preferredExt ? " (preferred)" : "";
         info(
-          `  - ve-orchestrator.${variant.ext}${preferredTag}`,
+          `  - orchestrator.${variant.ext}${preferredTag}`,
         );
       }
 

@@ -628,7 +628,7 @@ const HELP_TEXT = {
   maxParallel: "Maximum concurrent task attempts across enabled executors. Best practice: start with 2-4 and increase only after stable runs.",
   maxRetries: "Retry count before giving up on a failed task attempt. Best practice: 2-3 catches transient failures without creating loops.",
   failoverStrategy: "How Bosun chooses the next executor after failures or when rotating. Weighted-random uses weights; round-robin ignores weights.",
-  executorMode: "Internal runs agents locally; VK uses remote VirtKanban; Hybrid combines both. Best practice: use Internal unless you already operate VK.",
+  executorMode: "Internal runs agents locally; Hybrid combines local and remote. Best practice: use Internal for most setups.",
   taskDistribution: "How new tasks are assigned: weighted, round-robin, or primary-only. Best practice: choose weighted when using different executor capacities.",
   voiceProviders: "Ordered provider chain for live voice. Bosun tries top to bottom. Best practice: place most reliable/lowest latency provider first.",
   turnDetection: "How speech turn boundaries are detected. Best practice: use server_vad for most calls; semantic_vad for longer conversational pauses.",
@@ -3740,10 +3740,9 @@ function App() {
           ${labelWithHelp("Executor Mode", HELP_TEXT.executorMode)}
           <select value=${executorMode} onchange=${(e) => setExecutorMode(e.target.value)}>
             <option value="internal">Internal — bosun manages agents directly</option>
-            <option value="vk">VirtKanban (VK) — remote agent server</option>
             <option value="hybrid">Hybrid — internal + remote fallback</option>
           </select>
-          <div class="hint">Use <strong>Internal</strong> for local-first reliability. Choose VK/Hybrid only if you already run a remote VK service.</div>
+          <div class="hint">Use <strong>Internal</strong> for local-first reliability.</div>
         </div>
         <div class="form-group">
           ${labelWithHelp("Task Distribution", HELP_TEXT.taskDistribution)}
@@ -4739,17 +4738,6 @@ function App() {
           </div>
         `}
         <div class="executor-grid">
-          <div class="form-group">
-            <label>VirtKanban Base URL</label>
-            <input type="text" value=${vkBaseUrl} oninput=${(e) => setVkBaseUrl(e.target.value)}
-              placeholder="http://127.0.0.1:54089" />
-            <div class="hint">Only needed when executor mode is VK or hybrid.</div>
-          </div>
-          <div class="form-group">
-            <label>VK Recovery Port</label>
-            <input type="text" value=${vkRecoveryPort} oninput=${(e) => setVkRecoveryPort(e.target.value)}
-              placeholder="54089" />
-          </div>
         </div>
         <div class="form-group">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">

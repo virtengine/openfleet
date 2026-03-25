@@ -326,7 +326,7 @@ export function cleanupWorktrees(repoRoot) {
     console.warn(`[maintenance] git worktree prune failed: ${e.message}`);
   }
 
-  // 2. List remaining worktrees and check for stale VK temp ones
+  // 2. List remaining worktrees and check for stale temp ones
   try {
     const result = spawnSync("git", ["worktree", "list", "--porcelain"], {
       cwd: repoRoot,
@@ -1285,13 +1285,13 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
 
 /**
  * Run full maintenance sweep: stale kill, git push reap, worktree cleanup,
- * local tracking branch sync, and optionally VK task archiving.
+ * local tracking branch sync, and optionally task archiving.
  * @param {object} opts
  * @param {string} opts.repoRoot - repository root path
  * @param {number} [opts.childPid] - current orchestrator child PID to skip
  * @param {number} [opts.gitPushMaxAgeMs] - max age for git push before kill (default 5min)
  * @param {string[]} [opts.syncBranches] - local branches to fast-forward (default: ["main"])
- * @param {function} [opts.archiveCompletedTasks] - optional async function to archive VK tasks
+ * @param {function} [opts.archiveCompletedTasks] - optional async function to archive completed tasks
  * @param {object} [opts.branchCleanup] - branch cleanup options (passed to cleanupStaleBranches)
  * @param {boolean} [opts.branchCleanup.enabled=true] - enable/disable branch cleanup
  * @param {number} [opts.branchCleanup.minAgeMs] - minimum branch age before cleanup (default 24h)
@@ -1345,7 +1345,7 @@ export async function runMaintenanceSweep(opts = {}) {
     }
   }
 
-  // Optional: Archive old completed VK tasks (if provided)
+  // Optional: Archive old completed tasks (if provided)
   let tasksArchived = 0;
   if (archiveCompletedTasks && typeof archiveCompletedTasks === "function") {
     try {

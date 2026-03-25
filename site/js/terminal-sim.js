@@ -386,7 +386,7 @@
     clear: () => '__CLEAR__',
 
     ls: () => [
-      `${C.cyan('cli.mjs')}  ${C.cyan('monitor.mjs')}  ${C.cyan('config.mjs')}  ${C.cyan('setup.mjs')}  ${C.cyan('ve-orchestrator.mjs')}  ${C.dim('.env')}  ${C.dim('package.json')}`,
+      `${C.cyan('cli.mjs')}  ${C.cyan('monitor.mjs')}  ${C.cyan('config.mjs')}  ${C.cyan('setup.mjs')}  ${C.dim('.env')}  ${C.dim('package.json')}`,
     ],
     pwd: () => [`/home/user/virtengine/scripts/bosun`],
     whoami: () => [`bosun-agent`],

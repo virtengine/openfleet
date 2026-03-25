@@ -102,8 +102,7 @@ function findGitWorktrees() {
 
     // Porcelain output has blocks separated by blank lines.
     // Each block starts with "worktree <path>".
-    // We also look for "branch refs/heads/ve/..." to identify VK worktrees,
-    // but we include ALL worktrees — they all need the fix.
+    // We include ALL worktrees — they all need the fix.
     for (const line of raw.split("\n")) {
       const match = line.match(/^worktree\s+(.+)$/);
       if (match) {

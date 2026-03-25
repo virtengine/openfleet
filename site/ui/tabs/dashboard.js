@@ -334,7 +334,7 @@ export function DashboardTab() {
   const counts = status?.counts || {};
   const summary = status?.success_metrics || {};
   const execData = executor?.data;
-  const mode = executor?.mode || "vk";
+  const mode = executor?.mode || "internal";
   const defaultSdk = execData?.sdk || "auto";
   const worktreeRecovery = buildWorktreeRecoveryViewModel(
     status?.worktreeRecovery || status?.worktree_recovery || null,

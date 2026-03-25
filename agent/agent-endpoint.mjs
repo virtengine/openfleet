@@ -201,8 +201,7 @@ function isLikelyBosunCommandLine(commandLine) {
     normalized.includes("/bosun/") &&
     (normalized.includes("monitor.mjs") ||
       normalized.includes("cli.mjs") ||
-      normalized.includes("agent-endpoint.mjs") ||
-      normalized.includes("ve-orchestrator"))
+      normalized.includes("agent-endpoint.mjs"))
   ) {
     return true;
   }

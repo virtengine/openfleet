@@ -1,7 +1,7 @@
 /**
  * @module task-executor
- * @description Internal Task Executor — runs agents locally using the SDK agent pool
- * instead of delegating to VK's cloud executor. Composes kanban-adapter, agent-pool,
+ * @description Internal Task Executor — runs agents locally using the SDK agent pool.
+ * Composes kanban-adapter, agent-pool,
  * and worktree-manager to provide full task lifecycle management with configurable
  * parallelism, SDK selection, and thread persistence/resume.
  */
@@ -2250,7 +2250,7 @@ async function commentOnIssue(task, commentBody) {
 
 /**
  * @typedef {Object} TaskExecutorOptions
- * @property {string}   mode            - "internal" | "vk" | "hybrid"
+ * @property {string}   mode            - "internal" | "hybrid"
  * @property {number}   maxParallel     - Max concurrent agent slots (default: 3)
  * @property {number}   baseBranchParallelLimit - Max concurrent tasks per base branch (0 = unlimited)
  * @property {number}   repoAreaParallelLimit - Max concurrent tasks per repo area (0 = unlimited)
@@ -2260,7 +2260,7 @@ async function commentOnIssue(task, commentBody) {
  * @property {number}   maxRetries      - Retries per task via execWithRetry (default: 2)
  * @property {boolean}  autoCreatePr    - Record PR lifecycle handoff after agent completes (default: true)
  * @property {boolean}  flowReviewGateRequired - Block PR merge automation until review is approved (default: true)
- * @property {string}   projectId       - VK project ID to poll (null = auto-detect first project)
+ * @property {string}   projectId       - External project ID to poll (null = auto-detect first project)
  * @property {string}   repoRoot        - Repository root path
  * @property {string}   repoSlug        - "owner/repo" for gh CLI
  * @property {Object}   branchRouting   - Branch routing config (scopeMap/defaultBranch)
@@ -2527,7 +2527,7 @@ class TaskExecutor {
     /** @type {Set<string>} taskId set — tracks tasks where a PR has been created for their branch */
     this._prCreatedForBranch = new Set();
 
-    // Throttle repeated listTasks failures to avoid log spam during VK outages
+    // Throttle repeated listTasks failures to avoid log spam during backend outages
     this._listTasksFailureWindowStart = 0;
     this._listTasksFailureCount = 0;
     this._listTasksBackoffUntil = 0;
@@ -3905,7 +3905,7 @@ class TaskExecutor {
       const backend = String(getKanbanBackendName() || "")
         .trim()
         .toLowerCase();
-      return backend === "vk" || backend === "jira";
+      return backend === "jira";
     } catch {
       return true;
     }
@@ -6289,7 +6289,6 @@ export function isInternalExecutorEnabled() {
 
 /** Valid executor modes — "disabled"/"none"/"monitor-only" stop all task execution. */
 const VALID_EXECUTOR_MODES = [
-  "vk",
   "internal",
   "hybrid",
   "disabled",
@@ -6300,7 +6299,7 @@ const DISABLED_MODES = new Set(["disabled", "none", "monitor-only"]);
 
 /**
  * Convenience: get executor mode.
- * @returns {"vk"|"internal"|"hybrid"|"disabled"|"none"|"monitor-only"}
+ * @returns {"internal"|"hybrid"|"disabled"|"none"|"monitor-only"}
  */
 export function getExecutorMode() {
   const mode = (process.env.EXECUTOR_MODE || "").toLowerCase();

@@ -126,8 +126,8 @@
   "projectName": "my-project",
   "primaryAgent": "codex-sdk",
   "workflowFirst": false,
-  "kanban": { "backend": "vk" },
-  "internalExecutor": { "mode": "vk" },
+  "kanban": { "backend": "internal" },
+  "internalExecutor": { "mode": "internal" },
   "executors": [
     {
       "name": "codex-default",
@@ -164,12 +164,14 @@
           <tr>
             <td><strong>SDK enable/disable</strong></td>
             <td><code>CODEX_SDK_DISABLED</code>, <code>COPILOT_SDK_DISABLED</code>, <code>CLAUDE_SDK_DISABLED</code>,
-              <code>GEMINI_SDK_DISABLED</code>, <code>OPENCODE_SDK_DISABLED</code></td>
+              <code>GEMINI_SDK_DISABLED</code>, <code>OPENCODE_SDK_DISABLED</code>
+            </td>
           </tr>
           <tr>
             <td><strong>Transport</strong></td>
             <td><code>CODEX_TRANSPORT</code>, <code>COPILOT_TRANSPORT</code>, <code>CLAUDE_TRANSPORT</code>,
-              <code>GEMINI_TRANSPORT</code></td>
+              <code>GEMINI_TRANSPORT</code>
+            </td>
           </tr>
           <tr>
             <td><strong>OpenCode</strong></td>
@@ -260,7 +262,8 @@ TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK=false</code></pre>
           <tr>
             <td><strong>Jira</strong></td>
             <td><code>KANBAN_BACKEND=jira</code>, <code>JIRA_BASE_URL</code>, <code>JIRA_EMAIL</code>,
-              <code>JIRA_API_TOKEN</code></td>
+              <code>JIRA_API_TOKEN</code>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -293,7 +296,8 @@ GITHUB_PROJECT_NUMBER=3</code></pre>
           <tr>
             <td><strong>Voice</strong></td>
             <td><code>VOICE_ENABLED</code>, <code>VOICE_PROVIDER</code>, <code>VOICE_MODEL</code>,
-              <code>VOICE_DELEGATE_EXECUTOR</code></td>
+              <code>VOICE_DELEGATE_EXECUTOR</code>
+            </td>
           </tr>
           <tr>
             <td><strong>Desktop</strong></td>

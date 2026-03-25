@@ -2242,31 +2242,19 @@ function findOrchestratorScript(configDir, repoRoot) {
     (process.platform !== "win32" && !orchestratorEnv.endsWith(".ps1"));
 
   const shCandidates = [
-    resolve(configDir, "ve-orchestrator.sh"),
     resolve(configDir, "orchestrator.sh"),
-    resolve(configDir, "..", "ve-orchestrator.sh"),
     resolve(configDir, "..", "orchestrator.sh"),
-    resolve(repoRoot, "scripts", "ve-orchestrator.sh"),
     resolve(repoRoot, "scripts", "orchestrator.sh"),
-    resolve(repoRoot, "ve-orchestrator.sh"),
     resolve(repoRoot, "orchestrator.sh"),
-    resolve(process.cwd(), "ve-orchestrator.sh"),
     resolve(process.cwd(), "orchestrator.sh"),
-    resolve(process.cwd(), "scripts", "ve-orchestrator.sh"),
   ];
 
   const psCandidates = [
-    resolve(configDir, "ve-orchestrator.ps1"),
     resolve(configDir, "orchestrator.ps1"),
-    resolve(configDir, "..", "ve-orchestrator.ps1"),
     resolve(configDir, "..", "orchestrator.ps1"),
-    resolve(repoRoot, "scripts", "ve-orchestrator.ps1"),
     resolve(repoRoot, "scripts", "orchestrator.ps1"),
-    resolve(repoRoot, "ve-orchestrator.ps1"),
     resolve(repoRoot, "orchestrator.ps1"),
-    resolve(process.cwd(), "ve-orchestrator.ps1"),
     resolve(process.cwd(), "orchestrator.ps1"),
-    resolve(process.cwd(), "scripts", "ve-orchestrator.ps1"),
   ];
 
   const candidates = preferShellScript

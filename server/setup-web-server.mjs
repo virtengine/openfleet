@@ -728,7 +728,7 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
 
   envMap.KANBAN_BACKEND = normalizeEnumValue(
     pickNonEmptyValue(env.kanbanBackend, envMap.KANBAN_BACKEND, sourceEnv.KANBAN_BACKEND),
-    ["internal", "vk", "github", "jira"],
+    ["internal", "github", "jira"],
     "internal",
   );
   envMap.KANBAN_SYNC_POLICY = normalizeEnumValue(
@@ -738,7 +738,7 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
   );
   envMap.EXECUTOR_MODE = normalizeEnumValue(
     pickNonEmptyValue(env.executorMode, envMap.EXECUTOR_MODE, sourceEnv.EXECUTOR_MODE),
-    ["internal", "vk", "hybrid"],
+    ["internal", "hybrid"],
     "internal",
   );
   envMap.EXECUTOR_DISTRIBUTION = normalizeEnumValue(

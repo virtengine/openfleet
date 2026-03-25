@@ -155,7 +155,7 @@ function resolveTelegramConfigDir() {
 }
 const repoRoot = resolveRepoRoot();
 const BosunDir = __dirname;
-const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
+const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json"); // legacy path
 const telegramPollLockPath = resolve(
   repoRoot,
   ".cache",
@@ -189,12 +189,9 @@ const HISTORY_MAX_TRACKED = 10_000;                      // safety cap
 
 /** Resolve orchestrator PS1 path (region tracking functions). */
 function resolveVeKanbanPs1Path() {
-  // Legacy: region tracking lived in ve-kanban.ps1; look for orchestrator.ps1 now.
   for (const candidate of [
     resolve(BosunDir, "orchestrator.ps1"),
     resolve(repoRoot, "scripts", "bosun", "orchestrator.ps1"),
-    resolve(BosunDir, "ve-kanban.ps1"),
-    resolve(repoRoot, "scripts", "bosun", "ve-kanban.ps1"),
   ]) {
     if (existsSync(candidate)) return candidate;
   }
@@ -3814,7 +3811,7 @@ const COMMANDS = {
   },
   "/cleanup": {
     handler: cmdCleanupMerged,
-    desc: "Reconcile VK tasks with merged PRs/branches",
+    desc: "Reconcile tasks with merged PRs/branches",
   },
   "/reconcile": {
     handler: cmdCleanupMerged,
@@ -3860,7 +3857,7 @@ const COMMANDS = {
   },
   "/kanban": {
     handler: cmdKanban,
-    desc: "View/switch kanban backend: /kanban [internal|vk|github|jira]",
+    desc: "View/switch kanban backend: /kanban [internal|github|jira]",
   },
   "/autobacklog": {
     handler: cmdAutoBacklog,
@@ -3880,7 +3877,7 @@ const COMMANDS = {
   },
   "/executor": {
     handler: cmdExecutor,
-    desc: "View/manage executor mode: /executor [status|mode <vk|internal|hybrid>|slots]",
+    desc: "View/manage executor mode: /executor [status|mode <internal|hybrid>|slots]",
   },
   "/shared_workspaces": {
     handler: cmdSharedWorkspaces,
@@ -4735,7 +4732,6 @@ function normalizeStartTaskExecutor(value) {
   if (!raw) return "";
   if (raw === "auto") return "auto";
   if (["internal", "local", "agent", "pool"].includes(raw)) return "internal";
-  if (["vk", "vibe", "kanban", "cloud"].includes(raw)) return "vk";
   return "";
 }
 
@@ -4753,7 +4749,7 @@ function resolveStartTaskExecutorMode() {
       .toString()
       .trim()
       .toLowerCase();
-  if (["internal", "vk", "hybrid"].includes(raw)) return raw;
+  if (["internal", "hybrid"].includes(raw)) return raw;
   return "internal";
 }
 
@@ -4761,7 +4757,6 @@ function getStartTaskExecutorAvailability(mode) {
   const normalized = String(mode || "").trim().toLowerCase();
   return {
     internal: normalized === "internal" || normalized === "hybrid",
-    vk: normalized === "vk" || normalized === "hybrid",
   };
 }
 
@@ -4770,11 +4765,9 @@ function resolveStartTaskExecutor(requested, mode) {
   const availability = getStartTaskExecutorAvailability(mode);
   if (!normalized || normalized === "auto") {
     if (availability.internal) return "internal";
-    if (availability.vk) return "vk";
     return null;
   }
   if (normalized === "internal" && !availability.internal) return null;
-  if (normalized === "vk" && !availability.vk) return null;
   return normalized;
 }
 
@@ -4793,14 +4786,13 @@ async function promptStartTaskConfirm(chatId, details = {}) {
     return;
   }
   const executor = normalizeStartTaskExecutor(details.executor);
-  const isVk = executor === "vk";
-  const sdk = !isVk && details.sdk ? String(details.sdk).trim() : "";
-  const model = !isVk && details.model ? String(details.model).trim() : "";
+  const sdk = details.sdk ? String(details.sdk).trim() : "";
+  const model = details.model ? String(details.model).trim() : "";
   const command = buildStartTaskCommand(taskId, sdk, model, executor);
   const token = issueUiToken({ type: "cmd", command });
   const executorLabel = executor || "auto";
-  const sdkLabel = isVk ? "n/a" : sdk || "auto";
-  const modelLabel = isVk ? "n/a" : model || "default";
+  const sdkLabel = sdk || "auto";
+  const modelLabel = model || "default";
   const lines = [
     ":rocket: *Confirm Manual Start*",
     "",
@@ -4811,9 +4803,6 @@ async function promptStartTaskConfirm(chatId, details = {}) {
     `SDK: \`${sdkLabel}\``,
     `Model: \`${modelLabel}\``,
   ];
-  if (isVk) {
-    lines.push("Note: VK executor ignores SDK/model overrides.");
-  }
   const keyboard = buildKeyboard([
     [
       uiButton(":check: Start", uiTokenAction(token)),
@@ -4835,20 +4824,15 @@ async function showStartTaskExecutorPicker(chatId, taskId) {
   const mode = resolveStartTaskExecutorMode();
   const availability = getStartTaskExecutorAvailability(mode);
   const buttons = [];
-  if (availability.internal || availability.vk) {
+  if (availability.internal) {
     buttons.push({
       label: ":star: Auto (recommended)",
       executor: "auto",
     });
-  }
-  if (availability.internal) {
     buttons.push({
-      label: availability.vk ? ":cpu: Internal" : ":cpu: Internal (only)",
+      label: ":cpu: Internal (only)",
       executor: "internal",
     });
-  }
-  if (availability.vk) {
-    buttons.push({ label: ":globe: VK", executor: "vk" });
   }
   if (!buttons.length) {
     await sendReply(
@@ -4881,9 +4865,8 @@ async function showStartTaskExecutorPicker(chatId, taskId) {
     `Task: \`${safeId}\``,
     `Mode: \`${mode}\``,
     availability.internal ? ":cpu: Internal executor available" : ":cpu: Internal executor unavailable",
-    availability.vk ? ":globe: VK executor available" : ":globe: VK executor unavailable",
     "",
-    "Auto picks internal if available, otherwise VK.",
+    "Auto picks the internal executor.",
   ];
   await showStickyInteractiveMessage(chatId, lines.join("\n"), {
     parseMode: "Markdown",
@@ -6822,13 +6805,6 @@ async function handleUiAction({ chatId, messageId, data }) {
         await showStartTaskExecutorPicker(chatId, payload.taskId);
         return;
       }
-      if (executor === "vk") {
-        await promptStartTaskConfirm(chatId, {
-          taskId: payload.taskId,
-          executor,
-        });
-        return;
-      }
       await showStartTaskSdkPicker(chatId, payload.taskId, executor || "internal");
       return;
     }
@@ -7769,7 +7745,7 @@ async function cmdTasks(chatId) {
       return;
     }
 
-    // ── Fallback: read status file (legacy/VK mode) ──
+    // ── Fallback: read status file (legacy mode) ──
     const raw = await readFile(statusPath, "utf8");
     const data = JSON.parse(raw);
     const attempts = data.attempts || {};
@@ -7867,7 +7843,7 @@ async function cmdStartTask(chatId, args) {
   if (!taskId) {
     await sendReply(
       chatId,
-      "Usage: /starttask <taskId> [--executor internal|vk] [--sdk <sdk>] [--model <model>]",
+      "Usage: /starttask <taskId> [--executor internal] [--sdk <sdk>] [--model <model>]",
     );
     return;
   }
@@ -7909,7 +7885,7 @@ async function cmdStartTask(chatId, args) {
   if (executorArg && !normalizedExecutor) {
     await sendReply(
       chatId,
-      `:alert: Unknown executor "${executorArg}". Use internal or vk.`,
+      `:alert: Unknown executor "${executorArg}". Use internal.`,
     );
     return;
   }
@@ -7921,7 +7897,6 @@ async function cmdStartTask(chatId, args) {
     const availability = getStartTaskExecutorAvailability(executorMode);
     const options = [
       availability.internal ? "internal" : null,
-      availability.vk ? "vk" : null,
     ]
       .filter(Boolean)
       .join(" | ");
@@ -7936,37 +7911,6 @@ async function cmdStartTask(chatId, args) {
     const task = await adapter.getTask(taskId);
     if (!task) {
       await sendReply(chatId, `Task "${taskId}" not found.`);
-      return;
-    }
-    if (selectedExecutor === "vk") {
-      if (typeof adapter.submitTaskAttempt !== "function") {
-        await sendReply(
-          chatId,
-          `:alert: VK executor not available for current backend (${getKanbanBackendName()}).`,
-        );
-        return;
-      }
-      const attempt = await adapter.submitTaskAttempt(taskId);
-      try {
-        if (typeof adapter.updateTaskStatus === "function") {
-          await adapter.updateTaskStatus(taskId, "inprogress");
-        } else if (typeof adapter.updateTask === "function") {
-          await adapter.updateTask(taskId, { status: "inprogress" });
-        }
-      } catch (err) {
-        console.warn(
-          `[bosun] manual start failed to mark task ${taskId} inprogress: ${err.message}`,
-        );
-      }
-      const detailLines = [
-        `:check: VK executor submitted for ${task.title || task.id}.`,
-        attempt?.id ? `Attempt: ${attempt.id}` : null,
-        attempt?.branch ? `Branch: ${attempt.branch}` : null,
-      ].filter(Boolean);
-      if (sdk || model) {
-        detailLines.push("Note: SDK/model overrides are ignored for VK.");
-      }
-      await sendReply(chatId, detailLines.join("\n"));
       return;
     }
 
@@ -8424,7 +8368,7 @@ async function cmdRetry(chatId, args) {
     } else {
       await sendReply(
         chatId,
-        ":alert: Fresh session retry failed. Check logs for details (rate limit, no active attempt, or VK endpoint unavailable).",
+        ":alert: Fresh session retry failed. Check logs for details (rate limit or no active attempt).",
       );
     }
   } catch (err) {
@@ -8498,14 +8442,14 @@ async function cmdCleanupMerged(chatId, args) {
   if (!confirmFlag) {
     await sendReply(
       chatId,
-      ":alert: Cleanup will reconcile VK task statuses with PR/branch state.\nProceed?",
+      ":alert: Cleanup will reconcile task statuses with PR/branch state.\nProceed?",
       { reply_markup: buildConfirmKeyboard("cb:confirm_cleanup", "Confirm Cleanup") },
     );
     return;
   }
   await sendReply(
     chatId,
-    ":trash: Reconciling VK task statuses with PR/branch state…",
+    ":trash: Reconciling task statuses with PR/branch state…",
   );
   try {
     const result = await _reconcileTaskStatuses("manual-telegram");
@@ -9471,7 +9415,7 @@ async function cmdWorktrees(chatId, args) {
  *   /executor           — Show status (mode, active slots, SDK, etc.)
  *   /executor status    — Same as above
  *   /executor slots     — Show active task slots with details
- *   /executor mode <vk|internal|hybrid> — Show current mode (runtime switch not supported)
+ *   /executor mode <internal|hybrid> — Show current mode (runtime switch not supported)
  */
 async function cmdExecutor(chatId, args) {
   const parts = args ? args.trim().split(/\s+/) : [];
@@ -9521,7 +9465,7 @@ async function cmdExecutor(chatId, args) {
 
   if (sub === "mode") {
     const target = parts[1]?.toLowerCase();
-    if (target && ["vk", "internal", "hybrid"].includes(target)) {
+    if (target && ["internal", "hybrid"].includes(target)) {
       await sendReply(
         chatId,
         `:settings: Current mode: ${mode}\n` +
@@ -9531,7 +9475,7 @@ async function cmdExecutor(chatId, args) {
     } else {
       await sendReply(
         chatId,
-        `:settings: Current executor mode: ${mode}\n\nValid modes: vk, internal, hybrid`,
+        `:settings: Current executor mode: ${mode}\n\nValid modes: internal, hybrid`,
       );
     }
     return;
@@ -9555,11 +9499,6 @@ async function cmdExecutor(chatId, args) {
     }
   } else {
     lines.push(`Internal executor: not active`);
-    if (mode === "vk") {
-      lines.push(
-        `\n:help: Using VK executor only. Set EXECUTOR_MODE=internal or hybrid to enable.`,
-      );
-    }
   }
 
   lines.push(`\nCommands: /executor slots | /executor mode`);
@@ -9799,7 +9738,7 @@ function resolveModelSelection(workspace, preferredModel) {
   return { model: null, profile: null };
 }
 
-async function vkRequest(host, path, options = {}) {
+async function workspaceRequest(host, path, options = {}) {
   const { method = "GET", body, timeoutMs = 15000 } = options;
   const base = normalizeHost(host);
   if (!base) {
@@ -9819,14 +9758,14 @@ async function vkRequest(host, path, options = {}) {
     });
   } catch (err) {
     clearTimeout(timer);
-    throw new Error(`VK fetch error: ${err.message}`);
+    throw new Error(`Workspace fetch error: ${err.message}`);
   }
   clearTimeout(timer);
 
   const text = await res.text();
   if (!res.ok) {
     throw new Error(
-      `VK ${res.status}: ${text.slice(0, 200) || res.statusText}`,
+      `Workspace API ${res.status}: ${text.slice(0, 200) || res.statusText}`,
     );
   }
 
@@ -9835,17 +9774,17 @@ async function vkRequest(host, path, options = {}) {
     try {
       data = JSON.parse(text);
     } catch (err) {
-      throw new Error(`VK response parse error: ${err.message}`);
+      throw new Error(`Workspace response parse error: ${err.message}`);
     }
   }
   if (data && data.success === false) {
-    throw new Error(data.message || "VK API error");
+    throw new Error(data.message || "Workspace API error");
   }
   return data?.data ?? data;
 }
 
 async function getWorkspaceSummaries(host) {
-  const data = await vkRequest(host, "/api/task-attempts/summary", {
+  const data = await workspaceRequest(host, "/api/task-attempts/summary", {
     method: "POST",
     body: { archived: false },
   });
@@ -10003,7 +9942,7 @@ function pickLatestSession(sessions) {
 async function dispatchAgentMessage(workspace, message, options = {}) {
   const host = normalizeHost(workspace.host);
   const executorProfile = options.executorProfile || null;
-  const sessions = await vkRequest(
+  const sessions = await workspaceRequest(
     host,
     `/api/sessions?workspace_id=${encodeURIComponent(workspace.id)}`,
   );
@@ -10011,7 +9950,7 @@ async function dispatchAgentMessage(workspace, message, options = {}) {
   let created = false;
 
   if (!session || options.newSession) {
-    session = await vkRequest(host, "/api/sessions", {
+    session = await workspaceRequest(host, "/api/sessions", {
       method: "POST",
       body: { workspace_id: workspace.id },
     });
@@ -10022,7 +9961,7 @@ async function dispatchAgentMessage(workspace, message, options = {}) {
   }
 
   if (options.queue) {
-    await vkRequest(host, `/api/sessions/${session.id}/queue`, {
+    await workspaceRequest(host, `/api/sessions/${session.id}/queue`, {
       method: "POST",
       body: {
         message,
@@ -10032,7 +9971,7 @@ async function dispatchAgentMessage(workspace, message, options = {}) {
     return { sessionId: session.id, created, action: "queued" };
   }
 
-  await vkRequest(host, `/api/sessions/${session.id}/follow-up`, {
+  await workspaceRequest(host, `/api/sessions/${session.id}/follow-up`, {
     method: "POST",
     body: {
       prompt: message,

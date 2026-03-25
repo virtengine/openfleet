@@ -137,7 +137,7 @@ export const SETTINGS_SCHEMA = [
   { key: "VOICE_FALLBACK_MODE",            label: "Fallback Mode",              category: "voice", type: "select", defaultVal: "browser", options: ["browser", "disabled"], description: "When Tier 1 (Realtime API) is unavailable, use browser speech APIs as fallback." },
 
   // ── Kanban / Tasks ─────────────────────────────────────────
-  { key: "KANBAN_BACKEND",                 label: "Kanban Backend",             category: "kanban", type: "select", defaultVal: "internal", options: ["internal", "vk", "github", "jira"], description: "Task management backend. 'internal' uses built-in store, 'github' syncs with GitHub Issues/Projects." },
+  { key: "KANBAN_BACKEND",                 label: "Kanban Backend",             category: "kanban", type: "select", defaultVal: "internal", options: ["internal", "github", "jira"], description: "Task management backend. 'internal' uses built-in store, 'github' syncs with GitHub Issues/Projects." },
   { key: "KANBAN_SYNC_POLICY",             label: "Sync Policy",                category: "kanban", type: "select", defaultVal: "internal-primary", options: ["internal-primary", "bidirectional"], description: "How tasks sync between internal store and external backend." },
   { key: "BOSUN_TASK_LABEL",       label: "Task Label",                 category: "kanban", type: "string", defaultVal: "bosun", description: "GitHub label used to scope which issues are managed by Bosun." },
   { key: "BOSUN_ENFORCE_TASK_LABEL", label: "Enforce Task Label",       category: "kanban", type: "boolean", defaultVal: true, description: "Only pick up issues that have the task label. Prevents processing unrelated issues." },

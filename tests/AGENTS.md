@@ -19,7 +19,7 @@ Vitest and node test coverage for runtime, workflows, integrations, and UI.
 ## Fast Routing
 
 - Workflow changes -> `tests/workflow-*.test.mjs`
-- Task/kanban changes -> `tests/*task*.test.mjs`, `tests/vk-api.test.mjs`, `tests/ve-orchestrator-native.test.mjs`
+- Task/kanban changes -> `tests/*task*.test.mjs`
 - Workspace/shared-state changes -> `tests/workspace-*.test.mjs`, `tests/shared-state*.test.mjs`
 - UI/server changes -> `tests/*ui*.test.mjs`, `tests/*setup*.test.mjs`
 

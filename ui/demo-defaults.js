@@ -1139,7 +1139,7 @@
           "type": "action.run_agent",
           "label": "Sync PR State → Kanban (Fallback)",
           "config": {
-            "prompt": "You are the Bosun GitHub-Kanban sync fallback agent. A deterministic sync pass already ran.\n\nProgrammatic sync output:\n{{$ctx.getNodeOutput('sync-programmatic')?.output}}\n\nNow complete only unresolved updates.\n\nGitHub PR state:\nPR state (JSON from fetch-pr-state node output):\n{{$ctx.getNodeOutput('fetch-pr-state')?.output}}\n\nRULES:\n1. For each MERGED PR entry with a taskId: update the kanban task to done.\n   Use the available bosun/vk CLI, for example:\n     node task/task-cli.mjs update <taskId> --status done\n   Or inspect available commands with a shell-native file listing.\n2. For each OPEN (non-draft) PR entry with a taskId: if the task is not\n   already in inreview or done status, update it to inreview.\n3. Only act on entries that have a non-null taskId.\n4. Log each update and whether it succeeded.\n5. Do NOT close, merge, or modify any PR.\n6. Do NOT create new tasks — only update existing ones.",
+            "prompt": "You are the Bosun GitHub-Kanban sync fallback agent. A deterministic sync pass already ran.\n\nProgrammatic sync output:\n{{$ctx.getNodeOutput('sync-programmatic')?.output}}\n\nNow complete only unresolved updates.\n\nGitHub PR state:\nPR state (JSON from fetch-pr-state node output):\n{{$ctx.getNodeOutput('fetch-pr-state')?.output}}\n\nRULES:\n1. For each MERGED PR entry with a taskId: update the kanban task to done.\n   Use the available bosun CLI, for example:\n     node task/task-cli.mjs update <taskId> --status done\n   Or inspect available commands with a shell-native file listing.\n2. For each OPEN (non-draft) PR entry with a taskId: if the task is not\n   already in inreview or done status, update it to inreview.\n3. Only act on entries that have a non-null taskId.\n4. Log each update and whether it succeeded.\n5. Do NOT close, merge, or modify any PR.\n6. Do NOT create new tasks — only update existing ones.",
             "sdk": "auto",
             "timeoutMs": 300000,
             "continueOnError": true
@@ -10794,7 +10794,7 @@
     {
       "id": "template-sync-engine",
       "name": "Kanban Sync Engine",
-      "description": "Two-way synchronisation between internal task store and external kanban backends (VK, GitHub Issues, Jira). Pulls new/changed tasks from the external board, pushes internal status updates outward, detects conflicts, and handles rate-limit back-off.",
+      "description": "Two-way synchronisation between internal task store and external kanban backends (GitHub Issues, Jira). Pulls new/changed tasks from the external board, pushes internal status updates outward, detects conflicts, and handles rate-limit back-off.",
       "category": "reliability",
       "categoryLabel": "Reliability",
       "categoryIcon": ":shield:",
@@ -10803,7 +10803,6 @@
         "sync",
         "kanban",
         "github",
-        "vk",
         "jira",
         "bidirectional"
       ],
@@ -10829,7 +10828,6 @@
           "sync",
           "kanban",
           "github",
-          "vk",
           "jira",
           "bidirectional"
         ],
@@ -22239,7 +22237,7 @@
           "type": "action.run_agent",
           "label": "Sync PR State → Kanban (Fallback)",
           "config": {
-            "prompt": "You are the Bosun GitHub-Kanban sync fallback agent. A deterministic sync pass already ran.\n\nProgrammatic sync output:\n{{$ctx.getNodeOutput('sync-programmatic')?.output}}\n\nNow complete only unresolved updates.\n\nGitHub PR state:\nPR state (JSON from fetch-pr-state node output):\n{{$ctx.getNodeOutput('fetch-pr-state')?.output}}\n\nRULES:\n1. For each MERGED PR entry with a taskId: update the kanban task to done.\n   Use the available bosun/vk CLI, for example:\n     node task/task-cli.mjs update <taskId> --status done\n   Or inspect available commands with a shell-native file listing.\n2. For each OPEN (non-draft) PR entry with a taskId: if the task is not\n   already in inreview or done status, update it to inreview.\n3. Only act on entries that have a non-null taskId.\n4. Log each update and whether it succeeded.\n5. Do NOT close, merge, or modify any PR.\n6. Do NOT create new tasks — only update existing ones.",
+            "prompt": "You are the Bosun GitHub-Kanban sync fallback agent. A deterministic sync pass already ran.\n\nProgrammatic sync output:\n{{$ctx.getNodeOutput('sync-programmatic')?.output}}\n\nNow complete only unresolved updates.\n\nGitHub PR state:\nPR state (JSON from fetch-pr-state node output):\n{{$ctx.getNodeOutput('fetch-pr-state')?.output}}\n\nRULES:\n1. For each MERGED PR entry with a taskId: update the kanban task to done.\n   Use the available bosun CLI, for example:\n     node task/task-cli.mjs update <taskId> --status done\n   Or inspect available commands with a shell-native file listing.\n2. For each OPEN (non-draft) PR entry with a taskId: if the task is not\n   already in inreview or done status, update it to inreview.\n3. Only act on entries that have a non-null taskId.\n4. Log each update and whether it succeeded.\n5. Do NOT close, merge, or modify any PR.\n6. Do NOT create new tasks — only update existing ones.",
             "sdk": "auto",
             "timeoutMs": 300000,
             "continueOnError": true
@@ -31380,7 +31378,7 @@
     {
       "id": "wf-sync-engine",
       "name": "Kanban Sync Engine",
-      "description": "Two-way synchronisation between internal task store and external kanban backends (VK, GitHub Issues, Jira). Pulls new/changed tasks from the external board, pushes internal status updates outward, detects conflicts, and handles rate-limit back-off.",
+      "description": "Two-way synchronisation between internal task store and external kanban backends (GitHub Issues, Jira). Pulls new/changed tasks from the external board, pushes internal status updates outward, detects conflicts, and handles rate-limit back-off.",
       "category": "reliability",
       "enabled": true,
       "nodeCount": 12,
@@ -43038,8 +43036,8 @@
     "mergestrategyfix": "# Fix Required\n\n{{TASK_CONTEXT_BLOCK}}\n\n## Fix Instruction\n{{FIX_MESSAGE}}\n\n{{CI_STATUS_LINE}}\n\nAfter fixing:\n1. Run relevant checks.\n2. Commit with clear message.\n3. Push updates.\n",
     "mergestrategyreattempt": "# Task Re-Attempt\n\nA previous attempt failed.\n\n{{TASK_CONTEXT_BLOCK}}\n\nFailure reason: {{FAILURE_REASON}}\n\nStart fresh, complete task, verify, commit, and push.\n",
     "autofixfix": "You are a PowerShell expert fixing a crash in a running orchestrator script.\n\n## Error\nType: {{ERROR_TYPE}}\nFile: {{ERROR_FILE}}\nLine: {{ERROR_LINE}}\n{{ERROR_COLUMN_LINE}}\nMessage: {{ERROR_MESSAGE}}\n{{ERROR_CODE_LINE}}\nCrash reason: {{CRASH_REASON}}\n\n## Source context around line {{ERROR_LINE}}\n```powershell\n{{SOURCE_CONTEXT}}\n```\n{{RECENT_MESSAGES_CONTEXT}}\n## Instructions\n1. Read file {{ERROR_FILE}}.\n2. Identify root cause.\n3. Apply minimal safe fix only.\n4. Preserve existing behavior.\n5. Write fix directly in file.\n",
-    "autofixfallback": "You are a PowerShell expert analyzing an orchestrator crash.\nNo structured error was extracted. Termination reason: {{FALLBACK_REASON}}\n\n## Error indicators from log tail\n{{FALLBACK_ERROR_LINES}}\n\n## Last {{FALLBACK_LINE_COUNT}} lines of crash log\n```\n{{FALLBACK_TAIL}}\n```\n{{RECENT_MESSAGES_CONTEXT}}\n## Instructions\n1. Analyze likely root cause.\n2. Main script: scripts/bosun/ve-orchestrator.ps1\n3. If fixable bug exists, apply minimal safe fix.\n4. If crash is external only (OOM/SIGKILL), do not modify code.\n",
-    "autofixloop": "You are a PowerShell expert fixing a loop bug in a running orchestrator script.\n\n## Problem\nThis error repeats {{REPEAT_COUNT}} times:\n\"{{ERROR_LINE}}\"\n\n{{RECENT_MESSAGES_CONTEXT}}\n\n## Instructions\n1. Main script: scripts/bosun/ve-orchestrator.ps1\n2. Find where this error is emitted.\n3. Fix loop root cause (missing state change, missing stop condition, etc).\n4. Apply minimal safe fix only.\n5. Write fix directly in file.\n",
+    "autofixfallback": "You are a PowerShell expert analyzing an orchestrator crash.\nNo structured error was extracted. Termination reason: {{FALLBACK_REASON}}\n\n## Error indicators from log tail\n{{FALLBACK_ERROR_LINES}}\n\n## Last {{FALLBACK_LINE_COUNT}} lines of crash log\n```\n{{FALLBACK_TAIL}}\n```\n{{RECENT_MESSAGES_CONTEXT}}\n## Instructions\n1. Analyze likely root cause.\n2. Main script: {{SCRIPT_PATH}}\n3. If fixable bug exists, apply minimal safe fix.\n4. If crash is external only (OOM/SIGKILL), do not modify code.\n",
+    "autofixloop": "You are a PowerShell expert fixing a loop bug in a running orchestrator script.\n\n## Problem\nThis error repeats {{REPEAT_COUNT}} times:\n\"{{ERROR_LINE}}\"\n\n{{RECENT_MESSAGES_CONTEXT}}\n\n## Instructions\n1. Main script: {{SCRIPT_PATH}}\n2. Find where this error is emitted.\n3. Fix loop root cause (missing state change, missing stop condition, etc).\n4. Apply minimal safe fix only.\n5. Write fix directly in file.\n",
     "monitorcrashfix": "You are debugging {{PROJECT_NAME}} bosun.\n\nThe monitor process hit an unexpected exception and needs a fix.\nInspect and fix code in bosun modules.\n\nCrash info:\n{{CRASH_INFO}}\n\nRecent log context:\n{{LOG_TAIL}}\n\nInstructions:\n1. Identify root cause.\n2. Apply minimal production-safe fix.\n3. Do not refactor unrelated code.\n",
     "monitorrestartloopfix": "You are a reliability engineer debugging a crash loop in {{PROJECT_NAME}} automation.\n\nThe orchestrator is restarting repeatedly within minutes.\nDiagnose likely root cause and apply a minimal fix.\n\nTargets (edit only if needed):\n- {{SCRIPT_PATH}}\n- bosun/monitor.mjs\n- bosun/autofix.mjs\n- bosun/maintenance.mjs\n\nRecent log excerpt:\n{{LOG_TAIL}}\n\nConstraints:\n1. Prevent rapid restart loops.\n2. Keep behavior stable and production-safe.\n3. Avoid unrelated refactors.\n4. Prefer small guardrails.\n",
     "taskmanager": "# Bosun Task Manager Agent\n\nYou manage the backlog via CLI, REST API, or Node.js API.\n\n## Quick Reference\n\nCLI:\n  bosun task list [--status s] [--json]\n  bosun task create '{\"title\":\"...\"}' | --title \"...\" --priority high\n  bosun task get <id> [--json]\n  bosun task update <id> --status todo --priority critical\n  bosun task delete <id>\n  bosun task stats [--json]\n  bosun task import <file.json>\n  Planner workflow: POST /api/workflows/launch-template {\"templateId\":\"template-task-planner\"} or /plan [count] [focus]\n\nREST API (port 18432):\n  GET  /api/tasks[?status=todo]\n  GET  /api/tasks/<id>\n  POST /api/tasks/create   {\"title\":\"...\",\"description\":\"...\",\"priority\":\"high\"}\n  POST /api/tasks/<id>/update  {\"status\":\"todo\",\"priority\":\"critical\"}\n  DELETE /api/tasks/<id>\n  GET  /api/tasks/stats\n  POST /api/tasks/import   {\"tasks\":[...]}\n\nTask title format: [size] type(scope): description\nSizes: [xs] [s] [m] [l] [xl]\nTypes: feat, fix, docs, refactor, test, chore\nStatuses: draft → todo → inprogress → inreview → done\n\nSee .bosun/agents/task-manager.md for full documentation.\n",

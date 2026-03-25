@@ -419,7 +419,7 @@ export function getModelForComplexity(tier, executorType, configOverrides) {
  * an enhanced profile with the right model/variant/reasoning for the task's
  * complexity.
  *
- * @param {object} task - Task object from VK (has .title, .description, fields, metadata)
+ * @param {object} task - Task object (has .title, .description, fields, metadata)
  * @param {object} baseProfile - Executor profile from ExecutorScheduler.next()
  *   { name, executor, variant, weight, role, enabled }
  * @param {object} [complexityConfig] - Config from loadConfig().complexityRouting
@@ -693,7 +693,7 @@ function extractSizeLabel(task) {
 }
 
 /**
- * Extract numeric points from a VK task object.
+ * Extract numeric points from a task object.
  */
 function extractPoints(task) {
   if (!task) return null;
