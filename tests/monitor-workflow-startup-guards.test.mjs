@@ -102,11 +102,12 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain('"stale-dispatch-task-poll-unstick"');
     expect(monitorSource).toContain('throwOnError: true');
     expect(monitorSource).toContain('requireEngine: true');
+    const startupTaskPollHook = monitorSource.indexOf('"stale-dispatch-task-poll-unstick"');
+    expect(startupTaskPollHook).toBeGreaterThan(-1);
     expect(
       monitorSource.indexOf('internalTaskExecutor.start();'),
-    ).toBeLessThan(
-      monitorSource.indexOf('"stale-dispatch-task-poll-unstick"'),
-    );
+    ).toBeLessThan(startupTaskPollHook);
+    expect(monitorSource).not.toContain('void pollWorkflowSchedulesOnce("startup").catch((err) => {');
   });
 
   it("kicks non-task schedule polling during workflow automation startup", () => {
@@ -171,6 +172,13 @@ describe("monitor workflow startup guards", () => {
   it("uses BOSUN_PROMPT_PLANNER path before workspace-root planner fallback", () => {
     expect(monitorSource).toContain("process.env.BOSUN_PROMPT_PLANNER");
     expect(monitorSource).toContain("BOSUN_PROMPT_PLANNER=");
+  });
+
+  it("screens planner prompt fallbacks with markdown safety auditing", () => {
+    expect(monitorSource).toContain("function resolvePlannerPromptCandidate(");
+    expect(monitorSource).toContain('channel: "planner-prompt"');
+    expect(monitorSource).toContain("recordMarkdownSafetyAuditEvent(");
+    expect(monitorSource).toContain("blocked unsafe planner prompt");
   });
 
   it("guards backend task-id resolution against unresolved template tokens", () => {

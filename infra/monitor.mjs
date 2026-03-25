@@ -126,6 +126,7 @@ import {
 } from "../utils.mjs";
 import { fetchWithFallback } from "./fetch-runtime.mjs";
 import { resolveEntry, syncAutoDiscoveredLibraryEntries } from "./library-manager.mjs";
+import { evaluateMarkdownSafety, recordMarkdownSafetyAuditEvent } from "../lib/skill-markdown-safety.mjs";
 import {
   initFleet,
   refreshFleet,
@@ -1136,6 +1137,48 @@ function normalizePromptBody(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function resolvePlannerPromptCandidate(prompt, source, details, sourcePath, documentationContext = false) {
+  const normalizedPrompt = normalizePromptBody(prompt);
+  if (!normalizedPrompt) return null;
+
+  const decision = evaluateMarkdownSafety(
+    normalizedPrompt,
+    {
+      channel: "planner-prompt",
+      sourceKind: "prompt",
+      sourcePath,
+      sourceRoot: repoRoot || process.cwd(),
+      documentationContext,
+    },
+    config?.markdownSafety || {},
+  );
+  if (!decision.blocked) {
+    return {
+      prompt: normalizedPrompt,
+      source,
+      details,
+    };
+  }
+
+  recordMarkdownSafetyAuditEvent(
+    {
+      channel: "planner-prompt",
+      sourceKind: "prompt",
+      sourcePath,
+      source,
+      details,
+      reasons: decision.safety.reasons,
+      score: decision.safety.score,
+      findings: decision.safety.findings,
+    },
+    { policy: config?.markdownSafety || {}, rootDir: repoRoot || process.cwd() },
+  );
+  console.warn(
+    `[workflows] blocked unsafe planner prompt from ${sourcePath}: ${decision.safety.reasons.join(", ")}`,
+  );
+  return null;
+}
+
 function resolvePlannerPromptFallback() {
   const explicitPlannerPrompt = normalizePromptBody(agentPrompts?.planner);
   if (explicitPlannerPrompt) {
@@ -1150,13 +1193,14 @@ function resolvePlannerPromptFallback() {
   if (envPlannerPath) {
     try {
       if (existsSync(envPlannerPath)) {
-        const promptFromEnvPath = normalizePromptBody(readFileSync(envPlannerPath, "utf8"));
+        const promptFromEnvPath = resolvePlannerPromptCandidate(
+          readFileSync(envPlannerPath, "utf8"),
+          "env",
+          `BOSUN_PROMPT_PLANNER=${envPlannerPath}`,
+          envPlannerPath,
+        );
         if (promptFromEnvPath) {
-          return {
-            prompt: promptFromEnvPath,
-            source: "env",
-            details: `BOSUN_PROMPT_PLANNER=${envPlannerPath}`,
-          };
+          return promptFromEnvPath;
         }
       }
     } catch {
@@ -1172,13 +1216,14 @@ function resolvePlannerPromptFallback() {
   }
   try {
     const resolved = resolveEntry(workspaceRoot, "task-planner");
-    const promptFromLibrary = normalizePromptBody(resolved?.content);
+    const promptFromLibrary = resolvePlannerPromptCandidate(
+      resolved?.content,
+      `library:${resolved?.source || "workspace"}`,
+      "entry id task-planner",
+      resolved?.sourcePath || resolved?.path || "task-planner",
+    );
     if (promptFromLibrary) {
-      return {
-        prompt: promptFromLibrary,
-        source: `library:${resolved?.source || "workspace"}`,
-        details: "entry id task-planner",
-      };
+      return promptFromLibrary;
     }
   } catch {
     // best effort
@@ -1187,13 +1232,14 @@ function resolvePlannerPromptFallback() {
   const promptPath = resolve(workspaceRoot, ".bosun", "agents", "task-planner.md");
   try {
     if (existsSync(promptPath)) {
-      const promptFromFile = normalizePromptBody(readFileSync(promptPath, "utf8"));
+      const promptFromFile = resolvePlannerPromptCandidate(
+        readFileSync(promptPath, "utf8"),
+        "file",
+        promptPath,
+        promptPath,
+      );
       if (promptFromFile) {
-        return {
-          prompt: promptFromFile,
-          source: "file",
-          details: promptPath,
-        };
+        return promptFromFile;
       }
     }
   } catch {
@@ -14412,11 +14458,6 @@ if (isExecutorDisabled()) {
     } catch (err) {
       console.warn(`[monitor] agent endpoint creation failed: ${err.message}`);
       agentEndpoint = null;
-    }
-    if (workflowOwnsTaskExecutorLifecycle) {
-      void pollWorkflowSchedulesOnce("startup").catch((err) => {
-        console.warn(`[workflows] startup poll error: ${err?.message || err}`);
-      });
     }
 
     // ── Agent Event Bus ──

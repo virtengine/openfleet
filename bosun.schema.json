@@ -175,6 +175,103 @@
         "required": ["type"]
       }
     },
+    "prAutomation": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Trust policy for PR automation. High-risk actions default to Bosun-created PRs only; trusted human authors are opt-in.",
+      "properties": {
+        "attachMode": {
+          "type": "string",
+          "enum": ["all", "trusted-only", "disabled"],
+          "default": "all",
+          "description": "How broadly Bosun applies its low-trust attachment marker. High-risk actions remain separately gated."
+        },
+        "trustedAuthors": {
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            { "type": "string" }
+          ],
+          "description": "GitHub logins that Bosun may treat as trusted for optional non-Bosun PR automation."
+        },
+        "allowTrustedFixes": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow Bosun to auto-repair attached PRs from trusted authors."
+        },
+        "allowTrustedMerges": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow Bosun to auto-merge attached PRs from trusted authors after the normal review and CI gates."
+        },
+        "assistiveActions": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Optional repo-local GitHub Actions that add labels and comments. Bosun works without them.",
+          "properties": {
+            "installOnSetup": {
+              "type": "boolean",
+              "default": false,
+              "description": "If true, Bosun setup may copy the assistive PR attach and CI signal workflows into configured repos."
+            }
+          }
+        }
+      }
+    },
+    "markdownSafety": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Safety controls for imported or runtime-ingested markdown, including allowlisted documentation exceptions and audit logging.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "When false, markdown safety blocking is disabled while audit logging configuration remains available."
+        },
+        "auditLogPath": {
+          "type": "string",
+          "description": "Relative or absolute path for JSONL audit events describing blocked markdown content."
+        },
+        "allowlist": {
+          "type": "array",
+          "description": "Optional exceptions for known-safe repositories or paths. Documentation-only exceptions should set context=documentation.",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "repo": {
+                "type": "string",
+                "description": "Repository path, slug, or identifier substring to match."
+              },
+              "repoUrl": {
+                "type": "string",
+                "description": "Repository URL substring to match."
+              },
+              "path": {
+                "type": "string",
+                "description": "Exact normalized path to allow."
+              },
+              "pathPrefix": {
+                "type": "string",
+                "description": "Leading path segment to allow."
+              },
+              "pathSuffix": {
+                "type": "string",
+                "description": "Trailing path segment or filename to allow."
+              },
+              "context": {
+                "type": "string",
+                "enum": ["any", "documentation"],
+                "default": "any"
+              },
+              "reason": {
+                "type": "string",
+                "description": "Operator note explaining why the exception is trusted."
+              }
+            }
+          }
+        }
+      }
+    },
     "interactiveShellEnabled": { "type": "boolean" },
     "shellEnabled": { "type": "boolean" },
     "codexEnabled": { "type": "boolean" },

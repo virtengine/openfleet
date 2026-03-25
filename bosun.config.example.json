@@ -22,6 +22,16 @@
       "php": ["vendor"]
     }
   },
+  "_comment_prAutomation": "High-risk PR automation stays Bosun-created-only unless you explicitly trust specific authors.",
+  "prAutomation": {
+    "attachMode": "all",
+    "trustedAuthors": ["your-github-login"],
+    "allowTrustedFixes": false,
+    "allowTrustedMerges": false,
+    "assistiveActions": {
+      "installOnSetup": false
+    }
+  },
   "workflows": [
     {
       "type": "continuation-loop",
@@ -111,6 +121,17 @@
     "autofixLoop": ".bosun/agents/autofix-loop.md",
     "monitorCrashFix": ".bosun/agents/monitor-crash-fix.md",
     "monitorRestartLoopFix": ".bosun/agents/monitor-restart-loop-fix.md"
+  },
+  "markdownSafety": {
+    "enabled": true,
+    "auditLogPath": ".bosun/logs/markdown-safety-audit.jsonl",
+    "allowlist": [
+      {
+        "path": "AGENTS.md",
+        "context": "documentation",
+        "reason": "Trusted documentation examples that discuss hostile prompt patterns"
+      }
+    ]
   },
   "hookProfiles": {
     "enabled": true,

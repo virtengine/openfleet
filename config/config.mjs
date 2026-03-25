@@ -34,6 +34,7 @@ import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import { CONFIG_FILES } from "./config-file-names.mjs";
 import { ExecutorScheduler, loadExecutorConfig } from "./executor-config.mjs";
 import { normalizePipelineWorkflows } from "../workflow/pipeline-workflows.mjs";
+import { resolveMarkdownSafetyPolicy } from "../lib/skill-markdown-safety.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -366,6 +367,20 @@ function loadConfigFile(configDir) {
     );
   }
   return { path: null, data: null };
+}
+
+export function readConfigDocument(repoRoot) {
+  const configDir = resolveConfigDir(repoRoot || process.cwd());
+  const configFile = loadConfigFile(configDir);
+  const configData =
+    configFile?.data && typeof configFile.data === "object"
+      ? configFile.data
+      : {};
+  return {
+    configDir,
+    configPath: configFile?.path || null,
+    configData,
+  };
 }
 
 // ── CLI arg parser ───────────────────────────────────────────────────────────
@@ -2009,6 +2024,46 @@ export function loadConfig(argv = process.argv, options = {}) {
     .map((a) => a.trim())
     .filter(Boolean);
 
+  const parseListSetting = (value) => {
+    if (Array.isArray(value)) {
+      return value.map((entry) => String(entry || "").trim()).filter(Boolean);
+    }
+    return String(value || "")
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  };
+  const prAutomationData =
+    configData.prAutomation && typeof configData.prAutomation === "object"
+      ? configData.prAutomation
+      : {};
+  const prAutomation = Object.freeze({
+    attachMode: String(
+      process.env.BOSUN_PR_ATTACH_MODE ||
+        prAutomationData.attachMode ||
+        "all",
+    )
+      .trim()
+      .toLowerCase(),
+    trustedAuthors: parseListSetting(
+      process.env.BOSUN_PR_TRUSTED_AUTHORS ?? prAutomationData.trustedAuthors ?? [],
+    ),
+    allowTrustedFixes: isEnvEnabled(
+      process.env.BOSUN_PR_ALLOW_TRUSTED_FIXES ?? prAutomationData.allowTrustedFixes,
+      false,
+    ),
+    allowTrustedMerges: isEnvEnabled(
+      process.env.BOSUN_PR_ALLOW_TRUSTED_MERGES ?? prAutomationData.allowTrustedMerges,
+      false,
+    ),
+    assistiveActions: Object.freeze({
+      installOnSetup: isEnvEnabled(
+        process.env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP ?? prAutomationData?.assistiveActions?.installOnSetup,
+        false,
+      ),
+    }),
+  });
+
   // ── Status file ──────────────────────────────────────────
   const cacheDir = resolve(
     repoRoot,
@@ -2037,6 +2092,7 @@ export function loadConfig(argv = process.argv, options = {}) {
   const agentPrompts = loadAgentPrompts(configDir, repoRoot, configData);
   const agentPromptSources = agentPrompts._sources || {};
   delete agentPrompts._sources;
+  const markdownSafety = resolveMarkdownSafetyPolicy(configData, { rootDir: repoRoot });
   const agentPromptCatalog = getAgentPromptDefinitions();
 
   // ── First-run detection ──────────────────────────────────
@@ -2092,20 +2148,6 @@ export function loadConfig(argv = process.argv, options = {}) {
     // Voice assistant
     voice: Object.freeze(configData.voice || {}),
 
-    // OpenTelemetry tracing
-    tracing: Object.freeze({
-      enabled:
-        typeof configData.tracing?.enabled === "boolean"
-          ? configData.tracing.enabled
-          : Boolean(configData.tracing?.endpoint || process.env.BOSUN_OTEL_ENDPOINT || ""),
-      endpoint:
-        configData.tracing?.endpoint || process.env.BOSUN_OTEL_ENDPOINT || "",
-      sampleRate:
-        Number.isFinite(Number(configData.tracing?.sampleRate))
-          ? Number(configData.tracing.sampleRate)
-          : 1.0,
-    }),
-
     // Merge Strategy
     codexAnalyzeMergeStrategy:
       codexEnabled &&
@@ -2135,8 +2177,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     telegramVerbosity,
 
     triggerSystem,
-    workflows,
-  workflowWorktreeRecoveryCooldownMin,
+    workflowWorktreeRecoveryCooldownMin,
     worktreeBootstrap,
 
     // GitHub Reconciler
@@ -2156,12 +2197,14 @@ export function loadConfig(argv = process.argv, options = {}) {
     // Branch Routing
     branchRouting,
 
+    // PR automation trust policy
+    prAutomation,
+
     // Fleet Coordination
     fleet,
 
     // Workflow template defaults + opt-in typed workflow entries
     workflowDefaults: Object.freeze(workflowDefaults),
-    workflows,
 
     // Paths
     statusPath,
@@ -2184,6 +2227,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     agentPrompts,
     agentPromptSources,
     agentPromptCatalog,
+    markdownSafety,
 
     // First run
     isFirstRun,

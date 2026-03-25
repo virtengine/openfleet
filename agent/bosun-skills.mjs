@@ -19,6 +19,7 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
+import { analyzeSkillMarkdownSafety } from "../lib/skill-markdown-safety.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -199,6 +200,40 @@ export function scaffoldSkills(bosunHome) {
 
 // ── Index management ──────────────────────────────────────────────────────────
 
+function extractSkillFileMetadata(filePath) {
+  let content = "";
+  try {
+    content = readFileSync(filePath, "utf8");
+  } catch {
+    return { title: "", tags: [], important: false, blocked: false, safety: null };
+  }
+
+  const safety = analyzeSkillMarkdownSafety(content);
+  if (safety.blocked) {
+    return { title: "", tags: [], important: false, blocked: true, safety };
+  }
+
+  let title = "";
+  let tags = [];
+  let important = false;
+
+  const tagMatch = /<!--\s*tags:\s*(.+?)\s*-->/i.exec(content);
+  if (tagMatch) {
+    tags = tagMatch[1].split(/[,\s]+/).map((t) => t.trim().toLowerCase()).filter(Boolean);
+  }
+
+  const importantMatch = /<!--\s*(?:important|eager)\s*:\s*(true|false|yes|no|on|off|1|0)\s*-->/i.exec(content);
+  if (importantMatch) {
+    const raw = String(importantMatch[1] || "").trim().toLowerCase();
+    important = raw === "true" || raw === "yes" || raw === "on" || raw === "1";
+  }
+
+  const h1 = /^#\s+(?:Skill: )?(.+)/m.exec(content);
+  if (h1) title = h1[1].trim();
+
+  return { title, tags, important, blocked: false, safety: null };
+}
+
 /**
  * Scan the skills directory and write an up-to-date index.json.
  * The index is a lightweight manifest agents can read quickly.
@@ -209,6 +244,7 @@ export function scaffoldSkills(bosunHome) {
 export function buildSkillsIndex(skillsDir) {
   const indexPath = resolve(skillsDir, "index.json");
   const entries = [];
+  const blockedSkills = [];
 
   // Seed with built-in metadata for known files
   const builtinByFilename = Object.fromEntries(
@@ -220,35 +256,6 @@ export function buildSkillsIndex(skillsDir) {
     files = readdirSync(skillsDir).filter((f) => f.endsWith(".md"));
   } catch {
     /* directory may not exist yet */
-  }
-
-  function extractSkillFileMetadata(filePath) {
-    let content = "";
-    try {
-      content = readFileSync(filePath, "utf8");
-    } catch {
-      return { title: "", tags: [], important: false };
-    }
-
-    let title = "";
-    let tags = [];
-    let important = false;
-
-    const tagMatch = /<!--\s*tags:\s*(.+?)\s*-->/i.exec(content);
-    if (tagMatch) {
-      tags = tagMatch[1].split(/[,\s]+/).map((t) => t.trim().toLowerCase()).filter(Boolean);
-    }
-
-    const importantMatch = /<!--\s*(?:important|eager)\s*:\s*(true|false|yes|no|on|off|1|0)\s*-->/i.exec(content);
-    if (importantMatch) {
-      const raw = String(importantMatch[1] || "").trim().toLowerCase();
-      important = raw === "true" || raw === "yes" || raw === "on" || raw === "1";
-    }
-
-    const h1 = /^#\s+(?:Skill: )?(.+)/m.exec(content);
-    if (h1) title = h1[1].trim();
-
-    return { title, tags, important };
   }
 
   for (const filename of files.toSorted((a, b) => a.localeCompare(b))) {
@@ -269,6 +276,14 @@ export function buildSkillsIndex(skillsDir) {
       scope = builtin.scope;
     } else {
       const metadata = extractSkillFileMetadata(filePath);
+      if (metadata.blocked) {
+        blockedSkills.push({
+          filename,
+          score: metadata.safety?.score || 0,
+          reasons: metadata.safety?.reasons || [],
+        });
+        continue;
+      }
       if (metadata.title) title = metadata.title;
       tags = metadata.tags;
       important = metadata.important;
@@ -287,6 +302,8 @@ export function buildSkillsIndex(skillsDir) {
   const index = {
     generated: new Date().toISOString(),
     count: entries.length,
+    blockedCount: blockedSkills.length,
+    blockedSkills,
     skills: entries,
   };
 
@@ -422,6 +439,9 @@ function selectRelevantSkills(bosunHome, taskTitle, taskDescription = "", opts =
       } catch {
         return null;
       }
+
+      const safety = analyzeSkillMarkdownSafety(content);
+      if (safety.blocked) return null;
 
       return {
         filename,

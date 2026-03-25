@@ -55,12 +55,17 @@ import {
   validateWorkflowContract,
 } from "./workflow-contract.mjs";
 import { resolveAutoCommand } from "./project-detection.mjs";
-import { loadConfig } from "../config/config.mjs";
+import { loadConfig, readConfigDocument } from "../config/config.mjs";
 import { resolveHeavyRunnerPolicy, runCommandInHeavyRunnerLease } from "./heavy-runner-pool.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity, normalizeBaseBranch } from "../git/git-safety.mjs";
 import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../git/git-commit-helpers.mjs";
 import { buildArchitectEditorFrame, buildRepoTopologyContext, hasRepoMapContext } from "../lib/repo-map.mjs";
+import {
+  evaluateMarkdownSafety,
+  recordMarkdownSafetyAuditEvent,
+  resolveMarkdownSafetyPolicy,
+} from "../lib/skill-markdown-safety.mjs";
 import { getGitHubToken, invalidateTokenType } from "../github/github-auth-manager.mjs";
 import {
   CUSTOM_NODE_DIR_NAME,
@@ -91,6 +96,33 @@ const WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT = (() => {
   return Math.max(20, Math.min(500, Math.trunc(raw)));
 })();
 const BOSUN_ATTACHED_PR_LABEL = "bosun-attached";
+const BOSUN_CREATED_PR_MARKER = "<!-- bosun-created -->";
+const markdownSafetyPolicyCache = new Map();
+
+function getRepoMarkdownSafetyPolicy(repoRoot) {
+  const normalizedRoot = resolve(repoRoot || process.cwd());
+  const cached = markdownSafetyPolicyCache.get(normalizedRoot);
+  if (cached) return cached;
+  let configData = {};
+  try {
+    ({ configData } = readConfigDocument(normalizedRoot));
+  } catch {
+    configData = {};
+  }
+  const policy = resolveMarkdownSafetyPolicy(configData);
+  markdownSafetyPolicyCache.set(normalizedRoot, policy);
+  return policy;
+}
+
+function appendBosunCreatedPrFooter(body = "") {
+  const text = String(body || "");
+  if (text.includes(BOSUN_CREATED_PR_MARKER) || /auto-created by bosun/i.test(text)) {
+    return text;
+  }
+  const trimmed = text.trimEnd();
+  const footer = `${BOSUN_CREATED_PR_MARKER}\nBosun-Origin: created`;
+  return trimmed ? `${trimmed}\n\n---\n${footer}` : footer;
+}
 
 function getNonRetryableWorktreeRecoveryMs() {
   try {
@@ -5237,6 +5269,7 @@ registerBuiltinNodeType("action.create_pr", {
   async execute(node, ctx, engine) {
     const title = ctx.resolve(node.config?.title || "");
     const body = ctx.resolve(node.config?.body || "");
+    const resolvedBody = appendBosunCreatedPrFooter(body);
     const baseInput = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
     let base = String(baseInput || "main").trim() || "main";
     try {
@@ -5422,7 +5455,7 @@ registerBuiltinNodeType("action.create_pr", {
     if (repoSlug) args.push("--repo", repoSlug);
     args.push("--title", JSON.stringify(title));
     // gh pr create requires either --body (empty is allowed) or --fill* in non-interactive mode.
-    args.push("--body", JSON.stringify(String(body)));
+    args.push("--body", JSON.stringify(String(resolvedBody)));
     if (base) args.push("--base", base);
     if (branch) args.push("--head", branch);
     if (draft) args.push("--draft");
@@ -5442,7 +5475,7 @@ registerBuiltinNodeType("action.create_pr", {
         action: "pr_handoff",
         message: "gh CLI skipped in test runtime; Bosun manages pull-request lifecycle.",
         title,
-        body,
+        body: resolvedBody,
         base,
         branch: branch || null,
         draft,
@@ -5451,6 +5484,7 @@ registerBuiltinNodeType("action.create_pr", {
         cwd,
         repoSlug: repoSlug || null,
         ghError: "skipped_in_test_runtime",
+        createdByBosun: true,
         autoMerge: {
           enabled: enableAutoMerge,
           attempted: false,
@@ -5482,6 +5516,7 @@ registerBuiltinNodeType("action.create_pr", {
         labels,
         reviewers,
         output: trimmed,
+        createdByBosun: true,
         autoMerge: autoMergeState,
       };
     } catch (err) {
@@ -5513,6 +5548,7 @@ registerBuiltinNodeType("action.create_pr", {
               labels,
               reviewers,
               output: trimmed,
+              createdByBosun: true,
               autoMerge: autoMergeState,
             };
           } catch (retryErr) {
@@ -5545,7 +5581,7 @@ registerBuiltinNodeType("action.create_pr", {
         action: "pr_handoff",
         message: "gh CLI failed; Bosun manages pull-request lifecycle.",
         title,
-        body,
+        body: resolvedBody,
         base,
         branch: branch || null,
         draft,
@@ -5553,6 +5589,7 @@ registerBuiltinNodeType("action.create_pr", {
         reviewers,
         cwd,
         ghError: errorMsg,
+        createdByBosun: true,
         autoMerge: {
           enabled: enableAutoMerge,
           attempted: false,
@@ -13831,6 +13868,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
       const searchDirs = [normalizedWorktreePath || normalizedRepoRoot, normalizedRepoRoot].filter(Boolean);
       const docFiles = ["AGENTS.md", ".github/copilot-instructions.md"];
       const loaded = new Set();
+      const markdownSafetyPolicy = getRepoMarkdownSafetyPolicy(normalizedRepoRoot);
       for (const dir of searchDirs) {
         for (const doc of docFiles) {
           const fullPath = resolve(dir, doc);
@@ -13842,6 +13880,35 @@ registerBuiltinNodeType("action.build_task_prompt", {
                 doc,
               ).trim();
               if (content && content.length > 10) {
+                const decision = evaluateMarkdownSafety(
+                  content,
+                  {
+                    channel: "task-prompt-context",
+                    sourceKind: "documentation",
+                    sourcePath: doc,
+                    sourceRoot: normalizedRepoRoot,
+                    documentationContext: true,
+                  },
+                  markdownSafetyPolicy,
+                );
+                if (decision.blocked) {
+                  ctx.log(
+                    node.id,
+                    `Skipped unsafe prompt context from ${doc}: ${decision.safety.reasons.join(", ")}`,
+                  );
+                  recordMarkdownSafetyAuditEvent(
+                    {
+                      channel: "task-prompt-context",
+                      sourceKind: "documentation",
+                      sourcePath: doc,
+                      reasons: decision.safety.reasons,
+                      score: decision.safety.score,
+                      findings: decision.safety.findings,
+                    },
+                    { policy: markdownSafetyPolicy, rootDir: normalizedRepoRoot },
+                  );
+                  continue;
+                }
                 loaded.add(doc);
                 userParts.push(`## ${doc}`);
                 userParts.push(content);
