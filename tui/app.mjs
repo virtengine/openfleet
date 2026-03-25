@@ -10,6 +10,8 @@ import AgentsScreen from "./screens/agents.mjs";
 import StatusScreen from "./screens/status.mjs";
 import { readTuiHeaderConfig } from "./lib/header-config.mjs";
 import { listTasksFromApi } from "../ui/tui/tasks-screen-helpers.js";
+import CommandPalette from "./CommandPalette.js";
+import { buildCommandPaletteActions, createCommandPaletteHistoryAdapter } from "./lib/command-palette.mjs";
 
 const html = htm.bind(React.createElement);
 
@@ -36,7 +38,7 @@ function ScreenTabs({ screen }) {
           ${index < navItems.length - 1 ? html`<${Text} dimColor>  <//>` : null}
         <//>
       `)}
-      <${Text} dimColor>  [q] Quit<//>
+      <${Text} dimColor>  [Ctrl+P] Palette  [:] Command  [q] Quit<//>
     <//>
   `;
 }
@@ -50,7 +52,16 @@ function upsertById(items = [], nextItem) {
   return next;
 }
 
-export default function App({ host, port, connectOnly, initialScreen, refreshMs, wsClient }) {
+async function fetchJson(url, init = {}) {
+  const response = await fetch(url, init);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.ok === false) {
+    throw new Error(payload?.error || `Request failed: ${response.status}`);
+  }
+  return payload;
+}
+
+export default function App({ host, port, connectOnly, initialScreen, refreshMs, wsClient, historyAdapter }) {
   const { exit } = useApp();
   const [screen, setScreen] = useState(initialScreen || "status");
   const [connected, setConnected] = useState(false);
@@ -58,11 +69,14 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   const [stats, setStats] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [workflows, setWorkflows] = useState([]);
   const [error, setError] = useState(null);
   const [screenInputLocked, setScreenInputLocked] = useState(false);
   const [refreshCountdownSec, setRefreshCountdownSec] = useState(
     Math.max(0, Math.ceil(Number(refreshMs || 2000) / 1000)),
   );
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [recentActionIds, setRecentActionIds] = useState([]);
 
   const bridge = useMemo(
     () => wsClient || wsBridgeFactory({ host, port }),
@@ -72,6 +86,14 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
     () => readTuiHeaderConfig(bridge?.configDir),
     [bridge?.configDir],
   );
+  const resolvedHistory = useMemo(
+    () => historyAdapter || createCommandPaletteHistoryAdapter(),
+    [historyAdapter],
+  );
+
+  useEffect(() => {
+    void resolvedHistory.load().then(setRecentActionIds).catch(() => {});
+  }, [resolvedHistory]);
 
   useEffect(() => {
     let active = true;
@@ -92,13 +114,23 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
         if (active) setError(String(err?.message || err || "Failed to load tasks"));
       }
     };
+    const refreshWorkflows = async () => {
+      try {
+        const payload = await fetchJson(`http://${host}:${port}/api/workflows/templates`);
+        const nextWorkflows = Array.isArray(payload) ? payload : Array.isArray(payload?.templates) ? payload.templates : [];
+        if (active) setWorkflows(nextWorkflows);
+      } catch {
+        if (active) setWorkflows([]);
+      }
+    };
 
     on("connect", () => {
       setConnected(true);
       setConnectionState("connected");
       setError(null);
       resetRefreshCountdown();
-      void refreshTasks();
+      void refreshTasks().catch(() => {});
+      void refreshWorkflows().catch(() => {});
     });
     on("disconnect", () => {
       setConnected(false);
@@ -146,7 +178,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
       setSessions((previous) => previous.filter((candidate) => candidate.id !== session?.id));
     });
     on("tasks:update", () => {
-      void refreshTasks();
+      void refreshTasks().catch(() => {});
     });
     on("task:update", (task) => {
       setTasks((previous) => upsertById(previous, task));
@@ -167,7 +199,8 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
     if (typeof bridge.connect === "function") {
       bridge.connect();
     }
-    void refreshTasks();
+    void refreshTasks().catch(() => {});
+    void refreshWorkflows().catch(() => {});
 
     return () => {
       active = false;
@@ -178,7 +211,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
         bridge.disconnect();
       }
     };
-  }, [bridge, refreshMs]);
+  }, [bridge, host, port, refreshMs]);
 
   useEffect(() => {
     const intervalId = setInterval(() => {
@@ -187,7 +220,71 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
     return () => clearInterval(intervalId);
   }, []);
 
-  const handleInput = useCallback((input) => {
+  const paletteActions = useMemo(
+    () => buildCommandPaletteActions({
+      sessions,
+      tasks,
+      workflows,
+      currentScreen: screen,
+      recentActionIds,
+    }),
+    [recentActionIds, screen, sessions, tasks, workflows],
+  );
+
+  const executePaletteAction = useCallback(async (action) => {
+    try {
+      if (action.type === "navigation") {
+        setScreen(action.payload.screen);
+      } else if (action.type === "session") {
+        await fetchJson(`http://${host}:${port}/api/sessions/${encodeURIComponent(action.payload.sessionId)}/${action.command}?workspace=all`, {
+          method: "POST",
+        });
+      } else if (action.type === "task") {
+        if (action.command === "create") {
+          await fetchJson(`http://${host}:${port}/api/tasks/create`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ title: "New task from palette" }),
+          });
+        } else if (action.command === "update") {
+          await fetchJson(`http://${host}:${port}/api/tasks/update`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ id: action.payload.taskId, status: "inprogress" }),
+          });
+        } else if (action.command === "delete") {
+          await fetchJson(`http://${host}:${port}/api/tasks/${encodeURIComponent(action.payload.taskId)}`, { method: "DELETE" });
+        }
+      } else if (action.type === "workflow") {
+        await fetchJson(`http://${host}:${port}/api/workflows/${encodeURIComponent(action.payload.workflowId)}/execute`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({}),
+        });
+      } else if (action.type === "config") {
+        if (action.id.startsWith("config:refresh:")) {
+          setRefreshCountdownSec(Number(action.id.split(":").at(-1) || 2));
+        }
+      }
+      const nextRecent = await resolvedHistory.save({ actionId: action.id, recentActionIds });
+      setRecentActionIds(nextRecent);
+      setPaletteOpen(false);
+      setError(null);
+    } catch (err) {
+      setError(String(err?.message || err || "Command failed"));
+      setPaletteOpen(false);
+    }
+  }, [host, port, recentActionIds, resolvedHistory]);
+
+  const handleInput = useCallback((input, key) => {
+    if (key?.ctrl && String(input || "") === "p") {
+      setPaletteOpen(true);
+      return;
+    }
+    if (input === ":") {
+      setPaletteOpen(true);
+      return;
+    }
     if (input === "q") {
       exit();
       return;
@@ -195,9 +292,15 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
     setScreen((current) => getNextScreenForInput(current, input));
   }, [exit]);
 
-  useInput((input) => {
-    if (screenInputLocked) return;
-    handleInput(input);
+  useInput((input, key) => {
+    if (paletteOpen) return;
+    if (screenInputLocked) {
+      if (key?.ctrl && String(input || "") === "p") {
+        setPaletteOpen(true);
+      }
+      return;
+    }
+    handleInput(input, key);
   });
 
   const ScreenComponent = SCREENS[screen] || StatusScreen;
@@ -205,6 +308,14 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
 
   return html`
     <${Box} flexDirection="column" minHeight=${0}>
+      ${paletteOpen
+        ? html`<${CommandPalette}
+            visible=${paletteOpen}
+            actions=${paletteActions}
+            onClose=${() => setPaletteOpen(false)}
+            onExecute=${executePaletteAction}
+          />`
+        : null}
       <${StatusHeader}
         stats=${stats}
         connected=${connected}
