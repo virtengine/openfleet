@@ -10,6 +10,11 @@ describe("logger benign stream error handling", () => {
     expect(source).toContain("stderr stream closed");
   });
 
+  it("treats write EOF as benign broken-stream noise", () => {
+    expect(source).toContain("write EOF");
+    expect(source).toContain("isBenignBrokenPipeError");
+  });
+
   it("does not write benign stdout stream breaks to error log", () => {
     expect(source).not.toContain("stdout error: ${err?.message || err}");
     expect(source).toContain("stdout stream closed");

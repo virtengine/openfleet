@@ -956,6 +956,37 @@ describe("template drift + update behavior", () => {
     expect(refreshed.metadata.templateState.isCustomized).toBe(false);
   });
 
+  it("repairs stale derived output port metadata during template reconciliation", () => {
+    const installed = installTemplate("template-task-lifecycle", engine);
+    const wf = engine.get(installed.id);
+    const claimOk = wf.nodes.find((node) => node.id === "claim-ok");
+
+    expect(claimOk?.outputs).toEqual(["yes", "no"]);
+    expect(Array.isArray(claimOk?.outputPorts)).toBe(true);
+
+    claimOk.outputPorts = [
+      {
+        name: "default",
+        label: "default",
+        type: "Boolean",
+        description: "Boolean flag",
+        color: "#14b8a6",
+        accepts: [],
+      },
+    ];
+    engine.save(wf);
+
+    const result = reconcileInstalledTemplates(engine, { autoUpdateUnmodified: true });
+    expect(result.portMetadataRepaired).toBe(1);
+
+    const refreshed = engine.get(installed.id);
+    const refreshedClaimOk = refreshed.nodes.find((node) => node.id === "claim-ok");
+    const outputPortNames = refreshedClaimOk.outputPorts.map((port) => port.name);
+    expect(outputPortNames).toEqual(expect.arrayContaining(["default", "yes", "no"]));
+    expect(refreshed.metadata.templateState.updateAvailable).toBe(false);
+    expect(refreshed.metadata.templateState.isCustomized).toBe(false);
+  });
+
   it("does not auto-update customized workflows with updates available", () => {
     const installed = installTemplate("template-error-recovery", engine);
     const wf = engine.get(installed.id);
@@ -1401,9 +1432,15 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(fetchNode)).toContain("fixNeeded:conflicts.length+securityFailures.length+ciFailures.length");
 
     expect(getNodeCommandCode(securityNode)).toContain("/code-scanning/alerts");
+    expect(getNodeCommandCode(securityNode)).toContain("collectPrDigest");
+    expect(getNodeCommandCode(securityNode)).toContain("issueComments");
+    expect(getNodeCommandCode(securityNode)).toContain("reviewComments");
+    expect(getNodeCommandCode(securityNode)).toContain("digestSummary");
     expect(getNodeCommandCode(securityNode)).toContain("reason:'security_code_scanning_failure'");
     expect(securityAgentNode?.config?.prompt).toContain("CodeQL or GitHub code scanning");
     expect(securityAgentNode?.config?.prompt).toContain("Only fix the listed code-scanning or CodeQL findings");
+    expect(securityAgentNode?.config?.prompt).toContain("prDigest.body");
+    expect(securityAgentNode?.config?.prompt).toContain("prDigest.reviewComments");
 
     expect(watchdogTemplate.edges.find((e) => e.source === "fix-needed" && e.target === "security-fix-needed")).toBeDefined();
     expect(watchdogTemplate.edges.find((e) => e.source === "security-agent-needed" && e.target === "dispatch-security-fix-agent")).toBeDefined();
@@ -1423,8 +1460,13 @@ describe("github template CLI compatibility", () => {
     expect(command).toContain("reason:'auto_rerun_limit_reached'");
     expect(command).toContain("failedLogExcerpt");
     expect(command).toContain("failedJobs");
+    expect(command).toContain("collectPrDigest");
+    expect(command).toContain("issueComments");
+    expect(command).toContain("reviewComments");
+    expect(command).toContain("digestSummary");
 
     expect(fixAgentNode?.config?.prompt).toContain("failedCheckNames, failedRun, failedJobs, and failedLogExcerpt");
+    expect(fixAgentNode?.config?.prompt).toContain("prDigest with the PR body, files, issue comments, reviews, review comments");
   });
 
   it("PR progressor is registered as the immediate single-PR handoff workflow", () => {
@@ -1435,12 +1477,21 @@ describe("github template CLI compatibility", () => {
     const inspectNode = progressorTemplate.nodes.find((n) => n.id === "inspect-pr");
     const fixNode = progressorTemplate.nodes.find((n) => n.id === "programmatic-fix");
     const reviewNode = progressorTemplate.nodes.find((n) => n.id === "programmatic-review");
+    const fixAgentNode = progressorTemplate.nodes.find((n) => n.id === "dispatch-fix-agent");
     expect(getNodeCommandCode(inspectNode)).toContain("gh(['pr','view'");
+    expect(getNodeCommandCode(inspectNode)).toContain("collectPrDigest");
+    expect(getNodeCommandCode(inspectNode)).toContain("/issues/'+prNumber+'/comments?per_page=100");
+    expect(getNodeCommandCode(inspectNode)).toContain("/pulls/'+prNumber+'/reviews?per_page=100");
+    expect(getNodeCommandCode(inspectNode)).toContain("/pulls/'+prNumber+'/comments?per_page=100");
+    expect(getNodeCommandCode(inspectNode)).toContain("/pulls/'+prNumber+'/files?per_page=100");
+    expect(getNodeCommandCode(inspectNode)).toContain("prDigest");
+    expect(getNodeCommandCode(inspectNode)).toContain("digestSummary");
     expect(getNodeCommandCode(inspectNode)).toContain("failedCheckNames");
     expect(getNodeCommandCode(fixNode)).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
     expect(getNodeCommandCode(fixNode)).toContain("--log-failed");
     expect(getNodeCommandCode(fixNode)).toContain("reason:'auto_rerun_limit_reached'");
     expect(getNodeCommandCode(reviewNode)).toContain("mergeArgs=['pr','merge'");
+    expect(fixAgentNode?.config?.prompt).toContain("Use prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks");
   });
 
   it("task lifecycle and repair templates directly dispatch the PR progressor after inreview transitions", () => {

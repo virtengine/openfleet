@@ -403,6 +403,50 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
     };
   }
 
+  function getExpectedDerivedOutputPortNames(node = {}) {
+    const explicitOutputNames = Array.isArray(node?.outputs)
+      ? Array.from(new Set(node.outputs.map((value) => String(value || "").trim()).filter(Boolean)))
+      : [];
+    const nodeType = String(node?.type || "").trim();
+
+    if (nodeType === "condition.switch") {
+      const caseOutputs = Object.values(node?.config?.cases || {})
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+      return Array.from(new Set([
+        ...(explicitOutputNames.length > 0 ? explicitOutputNames : ["default"]),
+        ...caseOutputs,
+      ]));
+    }
+
+    if (nodeType.startsWith("condition.")) {
+      return Array.from(new Set([
+        "default",
+        ...explicitOutputNames,
+        "yes",
+        "no",
+      ]));
+    }
+
+    return explicitOutputNames;
+  }
+
+  function hasStaleDerivedPortMetadata(def = {}) {
+    for (const node of Array.isArray(def?.nodes) ? def.nodes : []) {
+      const expectedNames = getExpectedDerivedOutputPortNames(node);
+      if (!Array.isArray(expectedNames) || expectedNames.length === 0) continue;
+      const actualNames = new Set(
+        (Array.isArray(node?.outputPorts) ? node.outputPorts : [])
+          .map((port) => String(port?.name || "").trim())
+          .filter(Boolean),
+      );
+      for (const expectedName of expectedNames) {
+        if (!actualNames.has(expectedName)) return true;
+      }
+    }
+    return false;
+  }
+
   function computeWorkflowFingerprint(def = {}) {
     return hashContent(toWorkflowFingerprintPayload(def));
   }
@@ -539,6 +583,7 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
     const result = {
       scanned: 0,
       metadataUpdated: 0,
+      portMetadataRepaired: 0,
       autoUpdated: 0,
       forceUpdated: [],
       updateAvailable: [],
@@ -560,9 +605,11 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
         applyWorkflowTemplateState(def);
         const state = def.metadata?.templateState || null;
         const after = stableStringify(state);
-        if (before !== after) {
+        const repairedDerivedPorts = hasStaleDerivedPortMetadata(def);
+        if (before !== after || repairedDerivedPorts) {
           engine.save(def);
           result.metadataUpdated += 1;
+          if (repairedDerivedPorts) result.portMetadataRepaired += 1;
         }
 
         if (!state) continue;

@@ -13291,6 +13291,7 @@ process.on("SIGTERM", async () => {
 function isStreamNoise(msg) {
   return (
     msg.includes("EPIPE") ||
+    msg.includes("write EOF") ||
     msg.includes("ERR_STREAM_PREMATURE_CLOSE") ||
     msg.includes("ERR_STREAM_DESTROYED") ||
     msg.includes("stream was destroyed") ||

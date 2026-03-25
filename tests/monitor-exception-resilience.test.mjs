@@ -80,4 +80,14 @@ describe("monitor exception resilience guards", () => {
       'runDetachedDuringShutdown("containers-stop:restart-self", () =>',
     );
   });
+
+  it("suppresses broken-pipe EOF writes as benign stream noise", () => {
+    expect(source).toContain('msg.includes("write EOF")');
+    expect(source).toContain(
+      '"[monitor] suppressed stream noise (uncaughtException): " + msg',
+    );
+    expect(source).toContain(
+      '"[monitor] suppressed stream noise (unhandledRejection): " + msg',
+    );
+  });
 });

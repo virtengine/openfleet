@@ -1703,16 +1703,28 @@ async function main() {
     });
     const origStdout = process.stdout.write.bind(process.stdout);
     const origStderr = process.stderr.write.bind(process.stderr);
+    const isBenignDaemonStreamError = (err) => {
+      const message = String(err?.message || "");
+      return !!(
+        err &&
+        (err.code === "EPIPE" ||
+          err.code === "EIO" ||
+          err.code === "ERR_STREAM_DESTROYED" ||
+          err.code === "ERR_STREAM_WRITE_AFTER_END" ||
+          err.code === "ERR_STREAM_PREMATURE_CLOSE" ||
+          /\bEIO\b/.test(message) ||
+          /\bEPIPE\b/.test(message) ||
+          /\bEOF\b/.test(message) ||
+          /stream was destroyed/i.test(message) ||
+          /write after end/i.test(message) ||
+          /This socket has been ended/i.test(message))
+      );
+    };
     const safeWrite = (writeFn, chunk, args) => {
       try {
         return writeFn(chunk, ...args);
       } catch (err) {
-        if (
-          err &&
-          (err.code === "EPIPE" ||
-            err.code === "ERR_STREAM_DESTROYED" ||
-            err.code === "ERR_STREAM_WRITE_AFTER_END")
-        ) {
+        if (isBenignDaemonStreamError(err)) {
           return false;
         }
         throw err;
