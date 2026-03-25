@@ -1100,8 +1100,19 @@ class InternalAdapter {
     if (hasOwnField(patch, "dueDate") || dueDate) updates.dueDate = dueDate;
     const clearedMetaKeys = new Set();
     if (patch.meta && typeof patch.meta === "object") {
+      const baseMeta = replaceMeta ? {} : { ...(current?.meta || {}) };
+      if (!replaceMeta) {
+        const clearingBlockedState =
+          Object.prototype.hasOwnProperty.call(patch, "cooldownUntil") && patch.cooldownUntil == null &&
+          Object.prototype.hasOwnProperty.call(patch, "blockedReason") && patch.blockedReason == null;
+        if (clearingBlockedState) {
+          delete baseMeta.autoRecovery;
+          delete baseMeta.blockedReason;
+          delete baseMeta.worktreeFailure;
+        }
+      }
       updates.meta = {
-        ...(replaceMeta ? {} : (current?.meta || {})),
+        ...baseMeta,
         ...patch.meta,
         ...((assigneeProvided || assignee || assignees.length > 0)
           ? {
@@ -1118,8 +1129,8 @@ class InternalAdapter {
         ...(Array.isArray(patch.repositories) ? { repositories: patch.repositories } : {}),
         ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
       };
-      for (const key of ["autoRecovery", "worktreeFailure", "blockedReason"]) {
-        if (updates.meta?.[key] == null) {
+      for (const [key, value] of Object.entries(patch.meta)) {
+        if (value == null && Object.prototype.hasOwnProperty.call(updates.meta, key)) {
           delete updates.meta[key];
         }
       }
@@ -1146,6 +1157,13 @@ class InternalAdapter {
       };
     }
     const updated = patchInternalTask(normalizedId, updates);
+    if (patch.meta && typeof patch.meta === "object" && updates.meta && typeof updates.meta === "object") {
+      for (const [key, value] of Object.entries(patch.meta)) {
+        if (value == null && Object.prototype.hasOwnProperty.call(updates.meta, key)) {
+          delete updates.meta[key];
+        }
+      }
+    }
     if (!updated) {
       throw new Error(`[kanban] internal task not found: ${normalizedId}`);
     }

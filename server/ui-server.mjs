@@ -2107,6 +2107,17 @@ function buildTaskMetaPatch(previousMeta, metadataPatchMeta, options = {}) {
   }
   if (metadataPatchMeta && typeof metadataPatchMeta === "object") {
     Object.assign(nextMeta, metadataPatchMeta);
+    if (clearBlockedState) {
+      if (metadataPatchMeta.autoRecovery == null) {
+        delete nextMeta.autoRecovery;
+      }
+      if (metadataPatchMeta.blockedReason == null) {
+        delete nextMeta.blockedReason;
+      }
+      if (metadataPatchMeta.worktreeFailure == null) {
+        delete nextMeta.worktreeFailure;
+      }
+    }
   }
   return nextMeta;
 }
@@ -8914,6 +8925,7 @@ function withTaskRuntimeSnapshot(task) {
   if (!task || typeof task !== "object") return task;
   const withLifetimeTotals = enrichTaskLifetimeTotals(task);
   const runtimeSnapshot = buildTaskRuntimeSnapshot(withLifetimeTotals);
+  const status = uiDeps?.getInternalExecutor?.()?.getStatus?.();
   const runtimeExecutor = uiDeps.getInternalExecutor?.() || null;
   const executorStatus = runtimeExecutor?.getStatus?.() || {};
   const contentionSummary = summarizeRepoAreaLockContention(executorStatus?.repoAreaLocks || null);
@@ -12878,6 +12890,7 @@ async function handleApi(req, res, url) {
         ...(body || {}),
         workspaceId: workspaceContext.workspaceId || body?.workspaceId || "",
         workspaceDir: workspaceContext.workspaceDir || body?.workspaceDir || "",
+        workspace: workspaceContext.workspaceDir || body?.workspaceDir || body?.workspace || "",
       });
       let mode = null;
       if (body?.activateMode === true) {
@@ -14532,7 +14545,6 @@ async function handleApi(req, res, url) {
         ...(baseBranchProvided ? { baseBranch } : {}),
         ...metadataPatch.topLevel,
         ...(nextMeta ? { meta: nextMeta } : {}),
-        ...(clearsBlockedState ? { autoRecovery: null, worktreeFailure: null } : {}),
       };
       if (!hasTaskPatchValues(patch) && !baseBranchProvided && !draftProvided && !tagsProvided) {
         jsonResponse(res, 400, {
@@ -14688,7 +14700,6 @@ async function handleApi(req, res, url) {
         ...(baseBranchProvided ? { baseBranch } : {}),
         ...metadataPatch.topLevel,
         ...(nextMeta ? { meta: nextMeta } : {}),
-        ...(clearsBlockedState ? { autoRecovery: null, worktreeFailure: null } : {}),
       };
       if (!hasTaskPatchValues(patch) && !baseBranchProvided && !draftProvided && !tagsProvided) {
         jsonResponse(res, 400, {
