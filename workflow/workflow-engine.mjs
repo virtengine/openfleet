@@ -215,6 +215,14 @@ function normalizeDelegationGuardMap(raw) {
   );
 }
 
+function extractDelegationGuardMap(detail, run = null) {
+  return normalizeDelegationGuardMap(
+    detail?.data?._delegationTransitionGuards ??
+    run?.detail?.data?._delegationTransitionGuards ??
+    run?.delegationTransitionGuards,
+  );
+}
+
 export const NodeStatus = Object.freeze({
   PENDING: "pending",
   RUNNING: "running",

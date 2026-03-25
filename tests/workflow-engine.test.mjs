@@ -6858,6 +6858,14 @@ describe("delegation audit trail hydration", () => {
             timestamp: "2026-03-25T00:00:02.000Z",
           },
         ],
+        _delegationTransitionGuards: {
+          "assign:delegate:child-wf:task-1": {
+            transitionKey: "assign:delegate:child-wf:task-1",
+            type: "assign",
+            status: "completed",
+            claimToken: "claim-history",
+          },
+        },
       },
       nodeStatuses: {},
       nodeOutputs: {},
@@ -6875,6 +6883,18 @@ describe("delegation audit trail hydration", () => {
     expect(detail?.delegationAuditTrail).toEqual(detail?.delegationTrail);
     expect(detail?.latestDelegationEvent).toEqual(expect.objectContaining({ type: "handoff-complete" }));
     expect(detail?.detail?.data?._workflowDelegationTrail).toHaveLength(2);
+    expect(detail?.delegationTransitionGuards).toMatchObject({
+      "assign:delegate:child-wf:task-1": expect.objectContaining({
+        type: "assign",
+        claimToken: "claim-history",
+      }),
+    });
+    expect(detail?.detail?.data?._delegationTransitionGuards).toMatchObject({
+      "assign:delegate:child-wf:task-1": expect.objectContaining({
+        type: "assign",
+        claimToken: "claim-history",
+      }),
+    });
 
     const history = engine.getRunHistory(null, 20);
     expect(history).toEqual(expect.arrayContaining([
@@ -6889,6 +6909,9 @@ describe("delegation audit trail hydration", () => {
           expect.objectContaining({ type: "handoff-complete" }),
         ]),
         latestDelegationEvent: expect.objectContaining({ type: "handoff-complete" }),
+        delegationTransitionGuards: expect.objectContaining({
+          "assign:delegate:child-wf:task-1": expect.objectContaining({ type: "assign" }),
+        }),
       }),
     ]));
   });
