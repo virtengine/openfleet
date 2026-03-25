@@ -1117,6 +1117,11 @@ class InternalAdapter {
         ...(Array.isArray(patch.repositories) ? { repositories: patch.repositories } : {}),
         ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
       };
+      for (const key of ["autoRecovery", "worktreeFailure", "blockedReason"]) {
+        if (updates.meta?.[key] == null) {
+          delete updates.meta[key];
+        }
+      }
     } else if (baseBranch) {
       updates.meta = {
         ...(current?.meta || {}),
