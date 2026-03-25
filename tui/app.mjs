@@ -7,7 +7,7 @@ import { getNextScreenForInput } from "./lib/navigation.mjs";
 import StatusHeader from "./components/status-header.mjs";
 import TasksScreen from "./screens/tasks.mjs";
 import AgentsScreen from "./screens/agents.mjs";
-import StatusScreen from "./screens/status.mjs";
+import StatusScreen from "./screens/status.mjs";`r`nimport TelemetryScreen from "./screens/telemetry.mjs";
 import { readTuiHeaderConfig } from "./lib/header-config.mjs";
 import { listTasksFromApi } from "../ui/tui/tasks-screen-helpers.js";
 
@@ -16,14 +16,14 @@ const html = htm.bind(React.createElement);
 const SCREENS = {
   status: StatusScreen,
   tasks: TasksScreen,
-  agents: AgentsScreen,
+  agents: AgentsScreen,`r`n  telemetry: TelemetryScreen,
 };
 
 function ScreenTabs({ screen }) {
   const navItems = [
     { key: "status", num: "1", label: "Status" },
     { key: "tasks", num: "2", label: "Tasks" },
-    { key: "agents", num: "3", label: "Agents" },
+    { key: "agents", num: "3", label: "Agents" },`r`n    { key: "telemetry", num: "4", label: "Telemetry" },
   ];
 
   return html`

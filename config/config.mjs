@@ -2134,7 +2134,14 @@ export function loadConfig(argv = process.argv, options = {}) {
     telegramCommandEnabled,
     telegramVerbosity,
 
-    triggerSystem,
+    telemetry: Object.freeze({
+      costPer1kTokensUsd: Object.freeze({
+        claude: Number.isFinite(Number(configData.telemetry?.costPer1kTokensUsd?.claude)) ? Number(configData.telemetry.costPer1kTokensUsd.claude) : 0.003,
+        codex: Number.isFinite(Number(configData.telemetry?.costPer1kTokensUsd?.codex)) ? Number(configData.telemetry.costPer1kTokensUsd.codex) : 0.002,
+        gemini: Number.isFinite(Number(configData.telemetry?.costPer1kTokensUsd?.gemini)) ? Number(configData.telemetry.costPer1kTokensUsd.gemini) : 0.0001,
+        copilot: Number.isFinite(Number(configData.telemetry?.costPer1kTokensUsd?.copilot)) ? Number(configData.telemetry.costPer1kTokensUsd.copilot) : 0,
+      }),
+    }),
     workflows,
   workflowWorktreeRecoveryCooldownMin,
     worktreeBootstrap,
@@ -2280,5 +2287,4 @@ export {
   resolveAgentRepoRoot,
 };
 export default loadConfig;
-
 
