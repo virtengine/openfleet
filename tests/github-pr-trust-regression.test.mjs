@@ -37,6 +37,8 @@ describe("GitHub PR trust regressions", () => {
     const serverSource = read("server/ui-server.mjs");
     const setupWebSource = read("server/setup-web-server.mjs");
     const setupSource = read("setup.mjs");
+    const setupUiSource = read("ui/setup.html");
+    const siteSetupUiSource = read("site/ui/setup.html");
     const settingsSource = read("ui/tabs/settings.js");
     const siteSettingsSource = read("site/ui/tabs/settings.js");
 
@@ -76,8 +78,18 @@ describe("GitHub PR trust regressions", () => {
     expect(setupWebSource).toContain("function detectRepoVisibility(slug = detectRepoSlug())");
     expect(setupWebSource).toContain('automationPreference: recommendedAutomationPreference');
     expect(setupWebSource).toContain("config.gates = {");
+    expect(setupWebSource).toContain("BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP");
+    expect(setupWebSource).toContain("BOSUN_GATES_AUTOMATION_PREFERENCE");
     expect(setupSource).toContain("configJson.gates = {");
     expect(setupSource).toContain("BOSUN_GATES_AUTOMATION_PREFERENCE");
+
+    for (const source of [setupUiSource, siteSetupUiSource]) {
+      expect(source).toContain(":shield: Gates & Safeguards");
+      expect(source).toContain("assistiveActionsInstallOnSetup");
+      expect(source).toContain("BOSUN_GATES_AUTOMATION_PREFERENCE");
+      expect(source).toContain("prAutomation: {");
+      expect(source).toContain("gates: {");
+    }
 
     expect(serverSource).toContain('if (path === "/api/gates" && req.method === "GET")');
     expect(serverSource).toContain('if (path === "/api/gates" && req.method === "POST")');

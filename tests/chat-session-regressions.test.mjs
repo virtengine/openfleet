@@ -26,10 +26,12 @@ describe("chat session regressions", () => {
     expect(source).toContain("shouldFallbackToAllSessions");
     expect(source).toContain("getSessionListState");
     expect(source).toContain("sessionsError.value = hasCachedData ? null : nextErrorState;");
+    expect(source).toContain("const shouldRetainScopedSelection =");
+    expect(source).toContain('workspaceScope !== "all"');
     expect(source).toContain("selectedSessionId.value = selectedSessionStillExists ? currentSelectedSessionId : null;");
 
-    const loadMessagesBlock =
-      source.match(/export async function loadSessionMessages[\s\S]*?\n}\n\nfunction normalizePreview/)?.[0] || "";
+    const loadMessagesPattern = /export async function loadSessionMessages[\s\S]*?\n}\n\nfunction normalizePreview/;
+    const loadMessagesBlock = loadMessagesPattern.exec(source)?.[0] || "";
     expect(loadMessagesBlock).not.toContain("sessionMessages.value = [];");
     expect(loadMessagesBlock).not.toContain("sessionPagination.value = null;");
     expect(loadMessagesBlock).toContain("const shouldRetryAll = shouldFallbackToAllSessions(err, baseUrl, fallbackUrl);");
@@ -39,7 +41,9 @@ describe("chat session regressions", () => {
   it("keeps retained selection during list failures and recovers deterministically", () => {
     const source = read("ui/components/session-list.js");
     expect(source).toContain('const currentSelectedSessionId = String(selectedSessionId.value || "").trim();');
-    expect(source).toContain("const selectedSessionStillExists = !currentSelectedSessionId || sessionIds.has(currentSelectedSessionId);");
+    expect(source).toContain('const workspaceScope = String(normalizedFilter.workspace || "active").trim().toLowerCase();');
+    expect(source).toContain("const shouldRetainScopedSelection =");
+    expect(source).toContain("const selectedSessionStillExists =");
     expect(source).toContain("sessionsError.value = hasCachedData ? null : nextErrorState;");
     expect(source).toContain("const listState = getSessionListState({");
   });

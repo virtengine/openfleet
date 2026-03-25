@@ -188,7 +188,7 @@ const ALLOWED_STATE_TRANSITIONS = Object.freeze({
   backlog: new Set(["inprogress", "cancelled", "blocked"]),
   inprogress: new Set(["paused", "inreview", "done", "blocked", "cancelled", "backlog"]),
   paused: new Set(["inprogress", "cancelled", "blocked", "backlog"]),
-  inreview: new Set(["todo", "inprogress", "done", "blocked", "cancelled", "paused"]),
+  inreview: new Set(["done", "blocked", "cancelled", "paused"]),
   done: new Set([]),
   cancelled: new Set([]),
   blocked: new Set(["backlog", "inprogress", "cancelled", "paused"]),
@@ -717,6 +717,33 @@ function validateTaskTransition(currentStatus, nextStatus, options = {}) {
     toState,
     reason: `invalid_transition:${fromState}->${toState}`,
   };
+}
+
+function taskHasReviewReference(task) {
+  if (!task || typeof task !== "object") return false;
+  const prNumber = Number.parseInt(String(task.prNumber || task.pr_number || ""), 10);
+  if (Number.isFinite(prNumber) && prNumber > 0) return true;
+  if (String(task.prUrl || task.pr_url || "").trim()) return true;
+  if (Array.isArray(task.links?.prs) && task.links.prs.some((value) => String(value || "").trim())) {
+    return true;
+  }
+  return false;
+}
+
+function shouldKeepTaskInReview(task, requestedStatus, options = {}) {
+  if (!task || options.force === true || options.allowReviewExit === true) return false;
+  if (normalizeTaskStatus(task.status) !== "inreview") return false;
+  if (!taskHasReviewReference(task)) return false;
+  const nextStatus = normalizeTaskStatus(requestedStatus);
+  return nextStatus === "todo" || nextStatus === "backlog" || nextStatus === "inprogress";
+}
+
+function resolveProtectedTaskStatus(task, requestedStatus, options = {}) {
+  const nextStatus = normalizeTaskStatus(requestedStatus);
+  if (shouldKeepTaskInReview(task, nextStatus, options)) {
+    return "inreview";
+  }
+  return nextStatus;
 }
 
 function normalizeTaskStructure(rawTask = {}) {
@@ -1561,7 +1588,7 @@ export function updateTask(taskId, updates) {
       continue;
     }
     if (key === "status") {
-      task.status = normalizeTaskStatus(value);
+      task.status = resolveProtectedTaskStatus(task, value, patch);
       continue;
     }
     if (key === "type") {
@@ -1748,7 +1775,7 @@ export function setTaskStatus(taskId, status, source) {
   }
 
   const prev = normalizeTaskStatus(task.status);
-  const next = normalizeTaskStatus(status);
+  const next = resolveProtectedTaskStatus(task, status);
   const tsNow = now();
   task.status = next;
   task.updatedAt = tsNow;

@@ -194,6 +194,41 @@ function parseVoiceLaunchFromUrl() {
   };
 }
 
+function readForcedLayoutMode() {
+  if (typeof window === "undefined") return "auto";
+  const params = new URLSearchParams(window.location.search || "");
+  const requested = String(params.get("layout") || "").trim().toLowerCase();
+  if (requested === "desktop" || requested === "tablet" || requested === "mobile" || requested === "auto") {
+    return requested;
+  }
+  const path = String(window.location.pathname || "").toLowerCase();
+  if (path.endsWith("/demo.html") || path === "/demo.html") {
+    return "desktop";
+  }
+  return "auto";
+}
+
+function resolveLayoutFlags(win, forcedMode = "auto") {
+  if (!win?.matchMedia) {
+    return { isCompactNav: false, isDesktop: false, isTablet: false };
+  }
+  if (forcedMode === "desktop") {
+    return { isCompactNav: false, isDesktop: true, isTablet: false };
+  }
+  if (forcedMode === "mobile") {
+    return { isCompactNav: true, isDesktop: false, isTablet: false };
+  }
+  if (forcedMode === "tablet") {
+    return { isCompactNav: false, isDesktop: false, isTablet: true };
+  }
+  const width = Number(win.innerWidth || 0);
+  return {
+    isCompactNav: win.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`).matches,
+    isDesktop: win.matchMedia(`(min-width: ${DESKTOP_MIN_WIDTH}px)`).matches,
+    isTablet: width >= TABLET_MIN_WIDTH && width < DESKTOP_MIN_WIDTH,
+  };
+}
+
 function scrubVoiceLaunchQuery() {
   if (typeof window === "undefined" || !window.history?.replaceState) return;
   const url = new URL(window.location.href);
@@ -1721,6 +1756,8 @@ function BotControlsSheet({ open, onClose }) {
  *  App Root
  * ═══════════════════════════════════════════════ */
 function App() {
+  const forcedLayoutMode = readForcedLayoutMode();
+  const initialLayout = resolveLayoutFlags(globalThis.window, forcedLayoutMode);
   useBackendHealth();
   const { open: paletteOpen, onClose: paletteClose } = useCommandPalette();
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -1782,22 +1819,9 @@ function App() {
     readFloatingCallState(),
   );
   const resizeRef = useRef(null);
-  const [isCompactNav, setIsCompactNav] = useState(() => {
-    const win = globalThis.window;
-    if (!win?.matchMedia) return false;
-    return win.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`).matches;
-  });
-  const [isDesktop, setIsDesktop] = useState(() => {
-    const win = globalThis.window;
-    if (!win?.matchMedia) return false;
-    return win.matchMedia(`(min-width: ${DESKTOP_MIN_WIDTH}px)`).matches;
-  });
-  const [isTablet, setIsTablet] = useState(() => {
-    const win = globalThis.window;
-    if (!win?.matchMedia) return false;
-    const w = win.innerWidth;
-    return w >= TABLET_MIN_WIDTH && w < DESKTOP_MIN_WIDTH;
-  });
+  const [isCompactNav, setIsCompactNav] = useState(initialLayout.isCompactNav);
+  const [isDesktop, setIsDesktop] = useState(initialLayout.isDesktop);
+  const [isTablet, setIsTablet] = useState(initialLayout.isTablet);
   const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
   const [inspectorDrawerOpen, setInspectorDrawerOpen] = useState(false);
   const [railWidth, setRailWidth] = useState(() => {
@@ -1883,6 +1907,11 @@ function App() {
   useEffect(() => {
     const win = globalThis.window;
     if (!win?.matchMedia) return;
+    if (forcedLayoutMode !== "auto") {
+      const next = resolveLayoutFlags(win, forcedLayoutMode);
+      setIsDesktop(next.isDesktop);
+      return;
+    }
     const query = win.matchMedia(`(min-width: ${DESKTOP_MIN_WIDTH}px)`);
     const update = () => setIsDesktop(query.matches);
     update();
@@ -1890,11 +1919,16 @@ function App() {
     return () => {
       query.removeEventListener?.("change", update);
     };
-  }, []);
+  }, [forcedLayoutMode]);
 
   useEffect(() => {
     const win = globalThis.window;
     if (!win?.matchMedia) return;
+    if (forcedLayoutMode !== "auto") {
+      const next = resolveLayoutFlags(win, forcedLayoutMode);
+      setIsCompactNav(next.isCompactNav);
+      return;
+    }
     const query = win.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`);
     const update = () => setIsCompactNav(query.matches);
     update();
@@ -1902,11 +1936,16 @@ function App() {
     return () => {
       query.removeEventListener?.("change", update);
     };
-  }, []);
+  }, [forcedLayoutMode]);
 
   useEffect(() => {
     const win = globalThis.window;
     if (!win?.matchMedia) return;
+    if (forcedLayoutMode !== "auto") {
+      const next = resolveLayoutFlags(win, forcedLayoutMode);
+      setIsTablet(next.isTablet);
+      return;
+    }
     const tabletQuery = win.matchMedia(
       `(min-width: ${TABLET_MIN_WIDTH}px) and (max-width: ${DESKTOP_MIN_WIDTH - 1}px)`,
     );
@@ -1916,7 +1955,7 @@ function App() {
     return () => {
       tabletQuery.removeEventListener?.("change", update);
     };
-  }, []);
+  }, [forcedLayoutMode]);
 
 
   useEffect(() => {
@@ -2798,5 +2837,3 @@ const remountApp = () => {
 };
 globalThis.__veRemountApp = remountApp;
 mountApp();
-
-

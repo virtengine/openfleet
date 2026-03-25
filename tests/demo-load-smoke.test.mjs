@@ -303,6 +303,7 @@ describe("demo load smoke", () => {
 
     expect(landingHtml).toContain('id="demo-panel-desktop"');
     expect(landingHtml).toContain('src="ui/demo.html"');
+    expect(landingHtml).toContain('src="ui/demo.html?layout=mobile"');
     expect(demoHtml).toContain('id="app"');
     expect(demoHtml).toContain('type="module" src="app.js"');
   });

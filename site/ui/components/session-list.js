@@ -130,7 +130,15 @@ export async function loadSessions(filter = {}, _opts = {}) {
       const sessionIds = new Set(
         res.sessions.map((session) => String(session?.id || "")).filter(Boolean),
       );
-      const selectedSessionStillExists = !currentSelectedSessionId || sessionIds.has(currentSelectedSessionId);
+      const workspaceScope = String(normalizedFilter.workspace || "active").trim().toLowerCase();
+      const shouldRetainScopedSelection =
+        Boolean(currentSelectedSessionId) &&
+        workspaceScope !== "all" &&
+        !sessionIds.has(currentSelectedSessionId);
+      const selectedSessionStillExists =
+        !currentSelectedSessionId ||
+        sessionIds.has(currentSelectedSessionId) ||
+        shouldRetainScopedSelection;
       selectedSessionId.value = selectedSessionStillExists ? currentSelectedSessionId : null;
     }
     clearSessionRetryTimer();

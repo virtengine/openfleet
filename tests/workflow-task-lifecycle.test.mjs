@@ -1770,6 +1770,46 @@ describe("action.acquire_worktree", () => {
     });
   }, 15000);
 
+  it("prunes missing registered worktrees before reattaching an existing task branch", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const branch = "task/recover-missing-registered";
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "recover-missing-1",
+      branch,
+      baseBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const first = await nt.execute(node, makeCtx({}));
+    expect(first.success).toBe(true);
+    expect(first.created).toBe(true);
+
+    rmSync(first.worktreePath, { recursive: true, force: true });
+    expect(existsSync(first.worktreePath)).toBe(false);
+
+    const second = await nt.execute(node, makeCtx({}));
+    expect(second.success).toBe(true);
+    expect(typeof second.worktreePath).toBe("string");
+    expect(second.worktreePath.length).toBeGreaterThan(0);
+
+    const isGit = gitExec("git rev-parse --is-inside-work-tree", {
+      cwd: second.worktreePath,
+      encoding: "utf8",
+    }).trim();
+    expect(isGit).toBe("true");
+
+    const recovery = readWorktreeRecoveryStatus(repoDir);
+    expect(recovery?.health).toBe("recovered");
+    expect(recovery?.recentEvents?.[0]).toMatchObject({
+      outcome: "recreated",
+      reason: "poisoned_worktree",
+      branch,
+      taskId: "recover-missing-1",
+    });
+  }, 15000);
+
   it("does not record recovery noise when reusing a healthy managed worktree", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const branch = "task/reuse-healthy-managed";

@@ -2543,6 +2543,60 @@ describe("action.execute_workflow", () => {
     expect(softCtx.data.childResult).toEqual(softResult);
   });
 
+  it("sync mode reuses the parent run slot under saturation", async () => {
+    const saturatedEngine = makeTmpEngine();
+    const baselineActiveRuns = saturatedEngine.getConcurrencyStats().maxConcurrentRuns - 1;
+    saturatedEngine._runSlots = baselineActiveRuns;
+
+    const childWorkflow = makeSimpleWorkflow(
+      [
+        { id: "child-trigger", type: "trigger.workflow_call", label: "Child Trigger", config: {} },
+        { id: "child-log", type: "notify.log", label: "Child Log", config: { message: "child completed" } },
+      ],
+      [{ id: "child-edge", source: "child-trigger", target: "child-log" }],
+      { id: "child-slot-share", name: "Child Slot Share" },
+    );
+
+    const parentWorkflow = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Parent Trigger", config: {} },
+        {
+          id: "invoke-child",
+          type: "action.execute_workflow",
+          label: "Invoke Child",
+          config: {
+            workflowId: childWorkflow.id,
+            mode: "sync",
+            outputVariable: "childSummary",
+          },
+        },
+      ],
+      [{ id: "parent-edge", source: "trigger", target: "invoke-child" }],
+      { id: "parent-slot-share", name: "Parent Slot Share" },
+    );
+
+    saturatedEngine.save(childWorkflow);
+    saturatedEngine.save(parentWorkflow);
+
+    const parentCtx = await Promise.race([
+      saturatedEngine.execute(parentWorkflow.id, {}),
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("workflow execution timed out")), 1500);
+      }),
+    ]);
+
+    expect(parentCtx.data.childSummary).toMatchObject({
+      success: true,
+      mode: "sync",
+      workflowId: childWorkflow.id,
+    });
+
+    const stats = saturatedEngine.getConcurrencyStats();
+    expect(stats.activeRuns).toBe(baselineActiveRuns);
+    expect(stats.queuedRuns).toBe(0);
+    expect(stats.sharedRootRuns).toBe(0);
+  });
+
   it("sync mode includes child terminal output in the returned summary", async () => {
     const childWorkflow = {
       id: "child-terminal-wf",

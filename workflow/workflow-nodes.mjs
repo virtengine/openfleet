@@ -1487,6 +1487,124 @@ async function compactWorkflowCommandResult({
   };
 }
 
+async function runWorkflowCommandAsync({
+  command,
+  args = [],
+  cwd,
+  timeoutMs,
+  env,
+  captureOutput = true,
+  shell = false,
+  maxBuffer = 10 * 1024 * 1024,
+} = {}) {
+  return await new Promise((resolve, reject) => {
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let settled = false;
+    let timedOut = false;
+    let bufferExceeded = false;
+    let closeCode = null;
+    let closeSignal = null;
+
+    const finalizeResolve = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(result);
+    };
+
+    const finalizeReject = (error) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      reject(error);
+    };
+
+    const makeOutput = (chunks) => Buffer.concat(chunks).toString("utf8");
+    const attachProcessDetails = (error) => {
+      error.stdout = Buffer.from(makeOutput(stdoutChunks));
+      error.stderr = Buffer.from(makeOutput(stderrChunks));
+      error.status = closeCode;
+      error.signal = closeSignal;
+      error.killed = timedOut === true;
+      return error;
+    };
+
+    const child = spawn(command, args, {
+      cwd,
+      env,
+      shell,
+      stdio: captureOutput ? ["ignore", "pipe", "pipe"] : "inherit",
+      windowsHide: true,
+    });
+
+    const onChunk = (chunks, updateBytes, otherBytesGetter) => (chunk) => {
+      if (!captureOutput || !chunk) return;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      chunks.push(buffer);
+      updateBytes(buffer.length);
+      if (stdoutBytes + stderrBytes > maxBuffer && !bufferExceeded) {
+        bufferExceeded = true;
+        child.kill("SIGTERM");
+      }
+      void otherBytesGetter;
+    };
+
+    if (captureOutput) {
+      child.stdout?.on("data", onChunk(stdoutChunks, (size) => { stdoutBytes += size; }, () => stderrBytes));
+      child.stderr?.on("data", onChunk(stderrChunks, (size) => { stderrBytes += size; }, () => stdoutBytes));
+    }
+
+    child.on("error", (error) => {
+      finalizeReject(attachProcessDetails(error));
+    });
+
+    child.on("close", (code, signal) => {
+      closeCode = Number.isFinite(Number(code)) ? Number(code) : null;
+      closeSignal = signal || null;
+
+      if (timedOut) {
+        finalizeReject(attachProcessDetails(new Error(`Command timed out after ${timeoutMs}ms`)));
+        return;
+      }
+
+      if (bufferExceeded) {
+        finalizeReject(attachProcessDetails(new Error(`Command output exceeded ${maxBuffer} bytes`)));
+        return;
+      }
+
+      if (closeCode === 0) {
+        finalizeResolve({
+          stdout: makeOutput(stdoutChunks),
+          stderr: makeOutput(stderrChunks),
+          exitCode: 0,
+          signal: closeSignal,
+        });
+        return;
+      }
+
+      const stderrText = makeOutput(stderrChunks).trim();
+      const stdoutText = makeOutput(stdoutChunks).trim();
+      const fallbackMessage = closeSignal
+        ? `Command terminated by signal ${closeSignal}`
+        : `Command failed with exit code ${closeCode ?? "unknown"}`;
+      finalizeReject(
+        attachProcessDetails(new Error(stderrText || stdoutText || fallbackMessage)),
+      );
+    });
+
+    const timer = timeoutMs > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          child.kill("SIGTERM");
+        }, timeoutMs)
+      : null;
+    if (timer?.unref) timer.unref();
+  });
+}
+
 function isValidationSandboxFailureText(text) {
   return /(?:sandbox|operation not permitted|permission denied|access is denied|read-only file system|EPERM|EACCES|denied by policy|seccomp)/i.test(
     String(text || ""),
@@ -3933,25 +4051,17 @@ registerBuiltinNodeType("action.run_command", {
     }
     const startedAt = Date.now();
     try {
-      const output = usedArgv
-        ? execFileSync(command, commandArgs, {
-            cwd,
-            timeout,
-            encoding: "utf8",
-            maxBuffer: 10 * 1024 * 1024,
-            stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
-            env: commandEnv,
-          })
-        : execSync(command, {
-            cwd,
-            timeout,
-            encoding: "utf8",
-            maxBuffer: 10 * 1024 * 1024,
-            stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
-            env: commandEnv,
-          });
+      const completed = await runWorkflowCommandAsync({
+        command,
+        args: commandArgs,
+        cwd,
+        timeoutMs: timeout,
+        env: commandEnv,
+        captureOutput: node.config?.captureOutput !== false,
+        shell: !usedArgv,
+      });
       ctx.log(node.id, `Command succeeded`);
-      const parsedOutput = parseOutput(output);
+      const parsedOutput = parseOutput(completed.stdout || "");
       if (shouldParseJson || typeof parsedOutput !== "string") {
         return { success: true, output: parsedOutput, exitCode: 0 };
       }
@@ -3959,6 +4069,7 @@ registerBuiltinNodeType("action.run_command", {
         command,
         args: commandArgs,
         output: parsedOutput,
+        stderr: completed.stderr || "",
         exitCode: 0,
         durationMs: Date.now() - startedAt,
       });
@@ -6139,11 +6250,17 @@ registerBuiltinNodeType("validation.tests", {
     }
 
     try {
-      const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
+      const completed = await runWorkflowCommandAsync({
+        command,
+        cwd,
+        timeoutMs: timeout,
+        shell: true,
+      });
       ctx.log(node.id, "Tests passed");
       const compacted = await compactWorkflowCommandResult({
         command,
-        output: output?.trim() || "",
+        output: completed.stdout?.trim() || "",
+        stderr: completed.stderr || "",
         exitCode: 0,
         durationMs: Date.now() - startedAt,
       });
@@ -6266,11 +6383,18 @@ registerBuiltinNodeType("validation.build", {
     }
 
     try {
-      const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
-      const hasWarnings = /warning/i.test(output || "");
+      const completed = await runWorkflowCommandAsync({
+        command,
+        cwd,
+        timeoutMs: timeout,
+        shell: true,
+      });
+      const combinedOutput = `${completed.stdout || ""}\n${completed.stderr || ""}`;
+      const hasWarnings = /warning/i.test(combinedOutput);
       const compacted = await compactWorkflowCommandResult({
         command,
-        output: output?.trim() || "",
+        output: completed.stdout?.trim() || "",
+        stderr: completed.stderr || "",
         exitCode: 0,
         durationMs: Date.now() - startedAt,
       });
@@ -6340,10 +6464,16 @@ registerBuiltinNodeType("validation.lint", {
     }
     const startedAt = Date.now();
     try {
-      const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
+      const completed = await runWorkflowCommandAsync({
+        command,
+        cwd,
+        timeoutMs: timeout,
+        shell: true,
+      });
       const compacted = await compactWorkflowCommandResult({
         command,
-        output: output?.trim() || "",
+        output: completed.stdout?.trim() || "",
+        stderr: completed.stderr || "",
         exitCode: 0,
         durationMs: Date.now() - startedAt,
       });
@@ -11355,6 +11485,11 @@ function isExistingBranchWorktreeError(err) {
   return detail.includes("already exists") || detail.includes("is already checked out");
 }
 
+function isMissingRegisteredWorktreeError(err) {
+  const detail = formatExecSyncError(err).toLowerCase();
+  return detail.includes("missing but already registered worktree");
+}
+
 function findExistingWorktreePathForBranch(repoRoot, branch) {
   const normalizedBranch = String(branch || "").trim();
   if (!normalizedBranch) return "";
@@ -12680,6 +12815,10 @@ registerBuiltinNodeType("action.acquire_worktree", {
       // Keep managed worktree paths short on Windows to avoid MAX_PATH checkout failures.
       const worktreePath = resolve(worktreesDir, deriveManagedWorktreeDirName(taskId, branch));
 
+      if (!existsSync(worktreePath)) {
+        cleanupBrokenManagedWorktree(repoRoot, worktreePath);
+      }
+
       // Ensure long paths are enabled for this repo before checkout.
       try {
         execGitArgsSync(["config", "--local", "core.longpaths", "true"], {
@@ -12741,6 +12880,14 @@ registerBuiltinNodeType("action.acquire_worktree", {
           throw new Error(`Worktree creation failed: ${formatExecSyncError(createErr)}`);
         }
         const existingBranchWorktree = findExistingWorktreePathForBranch(repoRoot, branch);
+        if (existingBranchWorktree && !existsSync(existingBranchWorktree)) {
+          ctx.log(
+            node.id,
+            `Pruning stale registered worktree for branch ${branch}: ${existingBranchWorktree}`,
+          );
+          notePoisonedWorktree("attached-branch", existingBranchWorktree, ["missing_git_metadata"]);
+          cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
+        }
         if (existingBranchWorktree && existsSync(existingBranchWorktree)) {
           const existingWorktreeIsBroken = (
             !isValidGitWorktreePath(existingBranchWorktree) ||
@@ -12805,7 +12952,28 @@ registerBuiltinNodeType("action.acquire_worktree", {
           );
           attachedExistingBranch = true;
         } catch (reuseErr) {
+          if (isMissingRegisteredWorktreeError(reuseErr)) {
+            ctx.log(
+              node.id,
+              `Pruning missing registered worktree before retry for branch ${branch}: ${worktreePath}`,
+            );
+            notePoisonedWorktree("attached-branch", worktreePath, ["missing_git_metadata"]);
+            cleanupBrokenManagedWorktree(repoRoot, worktreePath);
+            execGitArgsSync(
+              ["worktree", "add", worktreePath, branch],
+              { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
+            );
+            attachedExistingBranch = true;
+          } else {
           const existingBranchWorktree = findExistingWorktreePathForBranch(repoRoot, branch);
+          if (existingBranchWorktree && !existsSync(existingBranchWorktree)) {
+            ctx.log(
+              node.id,
+              `Pruning stale registered worktree for branch ${branch}: ${existingBranchWorktree}`,
+            );
+            notePoisonedWorktree("attached-branch", existingBranchWorktree, ["missing_git_metadata"]);
+            cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
+          }
           if (existingBranchWorktree && existsSync(existingBranchWorktree)) {
             const existingWorktreeIsBroken = (
               !isValidGitWorktreePath(existingBranchWorktree) ||
@@ -12866,6 +13034,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
             `Worktree creation failed: ${formatExecSyncError(createErr)}; ` +
             `reuse failed: ${formatExecSyncError(reuseErr)}`,
           );
+          }
         }
       }
       if (attachedExistingBranch) {

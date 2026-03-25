@@ -261,6 +261,19 @@ function normalizeWorkflowProfile(rawValue, fallback = "balanced") {
   return fallback;
 }
 
+function normalizeSetupStringList(rawValue) {
+  const source = Array.isArray(rawValue)
+    ? rawValue
+    : String(rawValue || "").split(/\r?\n|,/);
+  const normalized = [];
+  for (const entry of source) {
+    const value = String(entry || "").trim();
+    if (!value || normalized.includes(value)) continue;
+    normalized.push(value);
+  }
+  return normalized;
+}
+
 function normalizeWorkflowTemplateIds(rawValue, fallback = []) {
   const source = Array.isArray(rawValue)
     ? rawValue
@@ -896,6 +909,118 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
   );
   envMap.WORKFLOW_DEFAULT_TEMPLATES =
     workflowTemplates.length > 0 ? workflowTemplates.join(",") : "none";
+  envMap.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.assistiveActionsInstallOnSetup,
+      envMap.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP,
+      sourceEnv.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP,
+    ),
+    false,
+  );
+  envMap.BOSUN_GATES_REPO_VISIBILITY = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.gatesRepoVisibility,
+      envMap.BOSUN_GATES_REPO_VISIBILITY,
+      sourceEnv.BOSUN_GATES_REPO_VISIBILITY,
+    ),
+    ["public", "private", "unknown"],
+    "unknown",
+  );
+  envMap.BOSUN_GATES_AUTOMATION_PREFERENCE = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.gatesAutomationPreference,
+      envMap.BOSUN_GATES_AUTOMATION_PREFERENCE,
+      sourceEnv.BOSUN_GATES_AUTOMATION_PREFERENCE,
+    ),
+    ["runtime-first", "actions-first"],
+    envMap.BOSUN_GATES_REPO_VISIBILITY === "public" ? "actions-first" : "runtime-first",
+  );
+  envMap.BOSUN_GATES_ACTIONS_BUDGET = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.gatesGithubActionsBudget,
+      envMap.BOSUN_GATES_ACTIONS_BUDGET,
+      sourceEnv.BOSUN_GATES_ACTIONS_BUDGET,
+    ),
+    ["ask-user", "available", "limited"],
+    "ask-user",
+  );
+  envMap.BOSUN_GATES_CHECK_MODE = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.gatesCheckMode,
+      envMap.BOSUN_GATES_CHECK_MODE,
+      sourceEnv.BOSUN_GATES_CHECK_MODE,
+    ),
+    ["all", "required-only"],
+    "all",
+  );
+  envMap.BOSUN_REQUIRED_CHECK_PATTERNS = normalizeSetupStringList(
+    pickNonEmptyValue(
+      env.gatesRequiredPatterns,
+      envMap.BOSUN_REQUIRED_CHECK_PATTERNS,
+      sourceEnv.BOSUN_REQUIRED_CHECK_PATTERNS,
+    ),
+  ).join(",");
+  envMap.BOSUN_OPTIONAL_CHECK_PATTERNS = normalizeSetupStringList(
+    pickNonEmptyValue(
+      env.gatesOptionalPatterns,
+      envMap.BOSUN_OPTIONAL_CHECK_PATTERNS,
+      sourceEnv.BOSUN_OPTIONAL_CHECK_PATTERNS,
+    ),
+  ).join(",");
+  envMap.BOSUN_IGNORE_CHECK_PATTERNS = normalizeSetupStringList(
+    pickNonEmptyValue(
+      env.gatesIgnorePatterns,
+      envMap.BOSUN_IGNORE_CHECK_PATTERNS,
+      sourceEnv.BOSUN_IGNORE_CHECK_PATTERNS,
+    ),
+  ).join(",");
+  envMap.BOSUN_GATES_REQUIRE_ANY_REQUIRED_CHECK = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.gatesRequireAnyRequiredCheck,
+      envMap.BOSUN_GATES_REQUIRE_ANY_REQUIRED_CHECK,
+      sourceEnv.BOSUN_GATES_REQUIRE_ANY_REQUIRED_CHECK,
+    ),
+    true,
+  );
+  envMap.BOSUN_GATES_TREAT_PENDING_REQUIRED_AS_BLOCKING = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.gatesTreatPendingRequiredAsBlocking,
+      envMap.BOSUN_GATES_TREAT_PENDING_REQUIRED_AS_BLOCKING,
+      sourceEnv.BOSUN_GATES_TREAT_PENDING_REQUIRED_AS_BLOCKING,
+    ),
+    true,
+  );
+  envMap.BOSUN_GATES_TREAT_NEUTRAL_AS_PASS = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.gatesTreatNeutralAsPass,
+      envMap.BOSUN_GATES_TREAT_NEUTRAL_AS_PASS,
+      sourceEnv.BOSUN_GATES_TREAT_NEUTRAL_AS_PASS,
+    ),
+    false,
+  );
+  envMap.BOSUN_EXECUTION_NETWORK_ACCESS = String(
+    pickNonEmptyValue(
+      env.gatesNetworkAccess,
+      envMap.BOSUN_EXECUTION_NETWORK_ACCESS,
+      sourceEnv.BOSUN_EXECUTION_NETWORK_ACCESS,
+    ) || "default",
+  ).trim() || "default";
+  envMap.BOSUN_GATES_ENFORCE_BACKLOG = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.gatesEnforceBacklog,
+      envMap.BOSUN_GATES_ENFORCE_BACKLOG,
+      sourceEnv.BOSUN_GATES_ENFORCE_BACKLOG,
+    ),
+    true,
+  );
+  envMap.BOSUN_GATES_AGENT_TRIGGER_CONTROL = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.gatesAgentTriggerControl,
+      envMap.BOSUN_GATES_AGENT_TRIGGER_CONTROL,
+      sourceEnv.BOSUN_GATES_AGENT_TRIGGER_CONTROL,
+    ),
+    true,
+  );
   envMap.WORKFLOW_NODE_MAX_RETRIES = String(
     toBoundedInt(
       pickNonEmptyValue(
