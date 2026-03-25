@@ -41,6 +41,29 @@ vi.mock("node:child_process", async (importOriginal) => {
       if (/grep|find|ls|dir|cat|type/i.test(cmd)) return "";
       return "";
     }),
+    execFileSync: vi.fn((file, args = []) => {
+      const argv = Array.isArray(args) ? args.map((value) => String(value)) : [];
+      const joined = [String(file || ""), ...argv].join(" ");
+      if (/\bgh\b/i.test(String(file || ""))) {
+        if (/\bpr\s+list\b/i.test(joined)) return "[]";
+        if (/\bpr\s+view\b/i.test(joined)) return '{"number":1,"title":"mock","mergeable":"MERGEABLE","labels":[]}';
+        if (/\bpr\s+merge\b/i.test(joined)) return "merged";
+        if (/\brelease\b/i.test(joined)) return '{"tag_name":"v0.0.0"}';
+        if (/\bissue\b/i.test(joined)) return "[]";
+        if (/\bapi\b/i.test(joined)) return "[]";
+      }
+      if (/\bnode\b/i.test(String(file || "")) && argv[0] === "-e") {
+        return '{"rerunRequested":0,"branchUpdated":0,"ciFailureCount":0,"conflictCount":0,"needsAgentCount":0,"needsAgent":[]}';
+      }
+      if (/\bnpm\b/i.test(String(file || ""))) {
+        if (/\bbuild\b/i.test(joined)) return "build ok";
+        if (/\btest\b/i.test(joined)) return "tests ok";
+        if (/\blint\b/i.test(joined)) return "lint ok";
+        if (/\baudit\b/i.test(joined)) return '{"vulnerabilities":{}}';
+      }
+      if (/\bgit\b/i.test(String(file || ""))) return "";
+      return "";
+    }),
     spawn: vi.fn(() => {
       const proc = new EventEmitter();
       proc.stdout = new EventEmitter();
