@@ -1698,10 +1698,9 @@ describe("WorkflowEngine - run history details", () => {
 
     expect(retryRunSpy).toHaveBeenCalledTimes(1);
     expect(retryRunSpy).toHaveBeenCalledWith(interruptedRunId, expect.objectContaining({
-      mode: "from_scratch",
+      mode: "from_failed",
       _decisionReason: expect.stringContaining("delegation_watchdog"),
     }));
-
     const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
     const interrupted = index.runs.find((entry) => entry.runId === interruptedRunId);
     expect(interrupted?.resumable).toBe(false);
