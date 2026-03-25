@@ -1098,6 +1098,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     trustedAuthors:         "",
     allowTrustedFixes:      false,
     allowTrustedMerges:     false,
+    delegationWatchdogTimeoutMs: 300000,
+    delegationWatchdogMaxRecoveries: 1,
   },
   nodes: [
     node("trigger", "trigger.schedule", "Poll Every 90s", {
@@ -2193,6 +2195,8 @@ export const SDK_CONFLICT_RESOLVER_TEMPLATE = {
         "7. Ensure no conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) remain",
       sdk: "auto",
       timeoutMs: "{{timeoutMs}}",
+      delegationWatchdogTimeoutMs: "{{delegationWatchdogTimeoutMs}}",
+      delegationWatchdogMaxRecoveries: "{{delegationWatchdogMaxRecoveries}}",
       failOnError: true,
       continueOnError: true,
     }, { x: 200, y: 950 }),
@@ -2305,4 +2309,6 @@ export const SDK_CONFLICT_RESOLVER_TEMPLATE = {
     },
   },
 };
+
+
 

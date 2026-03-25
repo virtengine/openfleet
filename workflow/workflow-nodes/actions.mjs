@@ -314,6 +314,8 @@ registerNodeType("action.run_agent", {
         description:
           "Optional prompt suffix template for candidate mode. Supports {{candidateIndex}} and {{candidateCount}}",
       },
+      delegationWatchdogTimeoutMs: { type: "number", default: 300000, description: "Stall threshold for delegated non-task workflows in ms" },
+      delegationWatchdogMaxRecoveries: { type: "number", default: 1, description: "Maximum watchdog recovery retries for delegated workflows" },
     },
     required: ["prompt"],
   },
@@ -530,12 +532,69 @@ registerNodeType("action.run_agent", {
             });
           }
 
-          const subRun = await engine.execute(candidate.id, {
-            ...eventPayload,
-            _agentWorkflowActive: true,
-          });
-          const subFailed = Array.isArray(subRun?.errors) && subRun.errors.length > 0;
-          const subStatus = subFailed ? "failed" : "completed";
+          const resolveDelegatedWatchdogTimeoutMs = () => {
+            const candidates = [
+              ctx.resolve(node.config?.delegationWatchdogTimeoutMs),
+              ctx.data?.delegationWatchdogTimeoutMs,
+              ctx.data?.task?.delegationWatchdogTimeoutMs,
+            ];
+            for (const value of candidates) {
+              const parsed = Number(value);
+              if (Number.isFinite(parsed) && parsed > 0) return parsed;
+            }
+            return 300000;
+          };
+          const resolveDelegatedWatchdogMaxRecoveries = () => {
+            const candidates = [
+              ctx.resolve(node.config?.delegationWatchdogMaxRecoveries),
+              ctx.data?.delegationWatchdogMaxRecoveries,
+              ctx.data?.task?.delegationWatchdogMaxRecoveries,
+            ];
+            for (const value of candidates) {
+              const parsed = Number(value);
+              if (Number.isFinite(parsed) && parsed >= 0) return Math.min(5, Math.trunc(parsed));
+            }
+            return 1;
+          };
+          const delegatedWatchdogTimeoutMs = resolveDelegatedWatchdogTimeoutMs();
+          const delegatedWatchdogMaxRecoveries = resolveDelegatedWatchdogMaxRecoveries();
+          let watchdogRetryCount = 0;
+          let subRun = null;
+          let watchdogRecovered = false;
+          let watchdogState = null;
+
+          while (true) {
+            subRun = await engine.execute(candidate.id, {
+              ...eventPayload,
+              _agentWorkflowActive: true,
+            });
+
+            const delegatedRunId = String(subRun?.runId || subRun?.id || "").trim();
+            const delegatedHistory = delegatedRunId && typeof engine.getRunHistory === "function"
+              ? engine.getRunHistory(candidate.id, 10)
+              : [];
+            watchdogState = Array.isArray(delegatedHistory)
+              ? delegatedHistory.find((entry) => String(entry?.runId || "") === delegatedRunId) || null
+              : null;
+            const stalledDelegation = Boolean(
+              subRun?.status === "running" &&
+              watchdogState?.status === "running" &&
+              (watchdogState?.isStuck === true || Number(watchdogState?.stuckMs || 0) >= delegatedWatchdogTimeoutMs)
+            );
+
+            if (!stalledDelegation) break;
+            if (watchdogRetryCount >= delegatedWatchdogMaxRecoveries) break;
+            watchdogRetryCount += 1;
+            watchdogRecovered = true;
+          }
+
+          const stalledDelegation = Boolean(
+            subRun?.status === "running" &&
+            watchdogState?.status === "running" &&
+            (watchdogState?.isStuck === true || Number(watchdogState?.stuckMs || 0) >= delegatedWatchdogTimeoutMs)
+          );
+          const subFailed = stalledDelegation || (Array.isArray(subRun?.errors) && subRun.errors.length > 0);
+          const subStatus = stalledDelegation ? "stalled" : (subFailed ? "failed" : "completed");
 
           if (tracker && taskIdForDelegate) {
             tracker.recordEvent(taskIdForDelegate, {
@@ -555,6 +614,11 @@ registerNodeType("action.run_agent", {
             subWorkflowName: candidate.name || candidate.id,
             subStatus,
             subRun,
+            watchdogRecovered,
+            recoveredFromStall: watchdogRecovered,
+            watchdogRetryCount,
+            failureKind: stalledDelegation ? "stalled_delegation" : undefined,
+            retryable: stalledDelegation ? true : undefined,
           };
         }
       }
@@ -6414,6 +6478,8 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 //  Export all registered types for introspection
 // ═══════════════════════════════════════════════════════════════════════════
+
+
 
 
 
