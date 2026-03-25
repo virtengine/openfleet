@@ -1099,8 +1099,19 @@ class InternalAdapter {
     }
     if (hasOwnField(patch, "dueDate") || dueDate) updates.dueDate = dueDate;
     if (patch.meta && typeof patch.meta === "object") {
+      const baseMeta = replaceMeta ? {} : { ...(current?.meta || {}) };
+      if (!replaceMeta) {
+        const clearingBlockedState =
+          Object.prototype.hasOwnProperty.call(patch, "cooldownUntil") && patch.cooldownUntil == null &&
+          Object.prototype.hasOwnProperty.call(patch, "blockedReason") && patch.blockedReason == null;
+        if (clearingBlockedState) {
+          delete baseMeta.autoRecovery;
+          delete baseMeta.blockedReason;
+          delete baseMeta.worktreeFailure;
+        }
+      }
       updates.meta = {
-        ...(replaceMeta ? {} : (current?.meta || {})),
+        ...baseMeta,
         ...patch.meta,
         ...((assigneeProvided || assignee || assignees.length > 0)
           ? {
