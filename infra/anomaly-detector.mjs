@@ -1,13 +1,13 @@
 /**
  * anomaly-detector.mjs — Plaintext real-time anomaly detection for agent sessions.
- * Works with VK WebSocket log streams and internal SDK/CLI event streams.
+ * Works with internal SDK/CLI event streams.
  *
  * Detects death loops, stalls, token overflows, rebase spirals, and other
  * wasteful agent behaviors by pattern-matching raw log lines. No AI inference —
  * purely regex/string-based detection for low latency.
  *
  * Integration:
- *   Wired into VkLogStream.onLine callback in monitor.mjs.
+ *   Wired into log stream callbacks in monitor.mjs.
  *   Each log line is fed to processLine(line, meta) which maintains per-process
  *   state and emits anomaly events via the onAnomaly callback.
  *
@@ -19,7 +19,7 @@
  *   - KILL action triggers at kill thresholds for all anomaly types (not just TOKEN_OVERFLOW)
  *   - Active process monitoring only (completed processes archived for analysis)
  *
- * Pattern catalog: See VK_FAILURE_PATTERN_CATALOG.md
+ * Pattern catalog: See FAILURE_PATTERN_CATALOG.md
  */
 
 import { normalizeDedupKey, stripAnsi, escapeHtml } from "../utils.mjs";
@@ -393,16 +393,16 @@ export class AnomalyDetector {
   }
 
   /**
-   * Process a single log line from VkLogStream.
+   * Process a single log line from the event stream.
    * This is the main entry point — called from the onLine callback.
    *
    * @param {string} rawLine - Raw log line
-   * @param {object} meta - Metadata from VkLogStream
-   * @param {string} meta.processId - VK execution process ID
+   * @param {object} meta - Metadata from the log stream
+   * @param {string} meta.processId - Execution process ID
    * @param {string} meta.stream - "stdout" or "stderr"
    * @param {string} [meta.taskTitle] - Task title if known
    * @param {string} [meta.branch] - Git branch if known
-   * @param {string} [meta.sessionId] - VK session ID
+   * @param {string} [meta.sessionId] - Session ID
    * @param {string} [meta.attemptId] - Attempt ID
    */
   processLine(rawLine, meta) {

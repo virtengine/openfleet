@@ -521,16 +521,13 @@
         }
       }
     },
-    "vkSpawnEnabled": {
-      "type": "boolean"
-    },
     "kanban": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "backend": {
           "type": "string",
-          "enum": ["internal", "vk", "github", "jira"]
+          "enum": ["internal", "github", "jira"]
         },
         "syncPolicy": {
           "type": "string",
@@ -975,7 +972,7 @@
       "properties": {
         "mode": {
           "type": "string",
-          "enum": ["vk", "internal", "hybrid"]
+          "enum": ["internal", "hybrid"]
         },
         "maxParallel": {
           "type": "number"

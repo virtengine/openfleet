@@ -389,7 +389,6 @@ export const TEMPLATE_MODULE_MAP = Object.freeze({
   "template-sdk-conflict-resolver":  "sdk-conflict-resolver.mjs",
   "template-sync-engine":            "sync-engine.mjs",
   "template-task-lifecycle":         "task-executor.mjs",
-  "template-ve-orchestrator-lite":   "ve-orchestrator.mjs",
 });
 
 /**

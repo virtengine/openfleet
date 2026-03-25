@@ -4,6 +4,7 @@ import {
   buildSandboxPermissions,
   ensureAgentMaxThreads,
   ensureFeatureFlags,
+  ensureModelProviderSectionsFromEnv,
   ensureSandboxWorkspaceWrite,
   ensureTrustedProjects,
   ensureTopLevelSandboxPermissions,
@@ -189,6 +190,28 @@ describe("codex-config defaults", () => {
     expect(result.provider).toBe("azure");
     expect(result.env.OPENAI_BASE_URL).toBe("https://example-resource.openai.azure.com/openai/v1");
     expect(result.active.baseUrl).toBe("https://example-resource.openai.azure.com/openai/v1");
+  });
+
+  it("rewrites stale Azure provider base_url entries to the normalized models-safe endpoint", () => {
+    const input = [
+      "[model_providers.azure]",
+      'name = "Azure OpenAI"',
+      'base_url = "https://example-resource.openai.azure.com/openai/deployments/gpt-5/chat/completions?api-version=2024-10-21"',
+      'env_key = "AZURE_OPENAI_API_KEY"',
+      'wire_api = "responses"',
+      "",
+    ].join("\n");
+
+    const result = ensureModelProviderSectionsFromEnv(input, {
+      OPENAI_BASE_URL: "https://example-resource.openai.azure.com/openai/deployments/gpt-5/chat/completions?api-version=2024-10-21",
+      OPENAI_API_KEY: "azure-key",
+      CODEX_MODEL: "gpt-5-deployment",
+    });
+
+    expect(result.added).toEqual([]);
+    expect(result.updated).toContain("azure.base_url");
+    expect(result.toml).toContain('base_url = "https://example-resource.openai.azure.com/openai/v1"');
+    expect(result.toml).not.toContain('/openai/deployments/gpt-5/chat/completions');
   });
 });
 

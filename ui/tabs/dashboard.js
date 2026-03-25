@@ -58,9 +58,10 @@ import {
   SliderControl,
 } from "../components/forms.js";
 import { StartTaskModal } from "./tasks.js";
+import { CommitGraph } from "../components/commit-graph.js";
 import {
   Button, TextField, Typography, Box, Stack, Chip, Paper,
-  IconButton, Tooltip, CircularProgress, Alert,
+  IconButton, Tooltip, CircularProgress, Alert, Skeleton,
 } from "@mui/material";
 
 /* ─── Quick Action definitions ─── */
@@ -322,6 +323,9 @@ export function DashboardTab() {
   const [now, setNow] = useState(() => new Date());
   const [recentCommits, setRecentCommits] = useState([]);
   const [flashKey, setFlashKey] = useState(0);
+  const [commitSearch, setCommitSearch] = useState("");
+  const [activitySearch, setActivitySearch] = useState("");
+  const [healthStatsReady, setHealthStatsReady] = useState(false);
   const prevCounts = useRef(null);
   const status = statusData.value;
   const executor = executorData.value;
@@ -441,6 +445,11 @@ export function DashboardTab() {
     return () => clearInterval(t);
   }, []);
 
+  useEffect(() => {
+    const t = setTimeout(() => setHealthStatsReady(true), 500);
+    return () => clearTimeout(t);
+  }, []);
+
   // ── Recent commits (graceful 404) ──
   useEffect(() => {
     apiFetch("/api/recent-commits", { _silent: true })
@@ -450,7 +459,7 @@ export function DashboardTab() {
           : Array.isArray(res)
             ? res
             : [];
-        setRecentCommits(commits.slice(0, 3));
+        setRecentCommits(commits.slice(0, 10));
       })
       .catch(() => {});
   }, []);
@@ -666,8 +675,20 @@ export function DashboardTab() {
     scheduleRefresh(150);
   }, []);
 
-  /* ── Recent activity (last 5 tasks from global tasks signal) ── */
-  const recentTasks = (tasksData.value || []).slice(0, 5);
+  const recentTasks = (tasksData.value || []).slice(0, 8);
+  const filteredTasks = activitySearch
+    ? recentTasks.filter((t) => {
+        const q = activitySearch.toLowerCase();
+        return (t.title || "").toLowerCase().includes(q) || (t.id || "").toLowerCase().includes(q);
+      })
+    : recentTasks;
+  const filteredCommits = commitSearch
+    ? recentCommits.filter((c) => {
+        const q = commitSearch.toLowerCase();
+        const msg = c.message || c.msg || c.subject || "";
+        return msg.toLowerCase().includes(q);
+      })
+    : recentCommits;
   const retryItems = Array.isArray(retryQueue.items) ? retryQueue.items : [];
 
   const formatRetryCountdown = useCallback((nextAttemptAt) => {
@@ -697,9 +718,14 @@ export function DashboardTab() {
     }
   }, []);
 
-  /* ── Loading skeleton ── */
   if (!status && !executor)
-    return html`<${Card} title="Loading…"><${SkeletonCard} count=${4} /><//>`;
+    return html`
+      <div class="dashboard-shell">
+        <div class="dashboard-grid">
+          ${Array.from({ length: 6 }, (_, i) => html`<${SkeletonCard} key=${i} />`)}
+        </div>
+      </div>
+    `;
 
   /* ── Welcome empty state ── */
   if (totalTasks === 0 && !executor) {
@@ -774,13 +800,13 @@ export function DashboardTab() {
             <div class="dashboard-health-item">
               <div class="dashboard-health-label">6h fail rate</div>
               <div class="dashboard-health-value" style="color:${healthStats?.total > 0 && healthStats.failRate > 0 ? 'var(--color-error)' : 'inherit'}">
-                ${healthStats?.total > 0 ? `${Math.round(healthStats.failRate * 100)}%` : "—"}
+                ${healthStats?.total > 0 ? `${Math.round(healthStats.failRate * 100)}%` : healthStats === null && healthStatsReady ? html`<${Skeleton} variant="text" width=${40} />` : "—"}
               </div>
             </div>
             <div class="dashboard-health-item">
               <div class="dashboard-health-label">6h runs</div>
               <div class="dashboard-health-value">
-                ${healthStats?.total > 0 ? `${healthStats.successRuns}/${healthStats.total}` : "—"}
+                ${healthStats?.total > 0 ? `${healthStats.successRuns}/${healthStats.total}` : healthStats === null && healthStatsReady ? html`<${Skeleton} variant="text" width=${50} />` : "—"}
               </div>
             </div>
             <div class="dashboard-health-item">
@@ -1084,9 +1110,18 @@ export function DashboardTab() {
           >`}
           className="dashboard-card dashboard-activity"
         >
+          <${TextField}
+            size="small"
+            variant="outlined"
+            fullWidth
+            placeholder="Filter by title or ID…"
+            value=${activitySearch}
+            onInput=${(e) => setActivitySearch(e.target.value)}
+            style=${{ marginBottom: 8 }}
+          />
           <div class="dashboard-activity-list">
-            ${recentTasks.length
-              ? recentTasks.map(
+            ${filteredTasks.length
+              ? filteredTasks.map(
                   (task) => html`
                     <div key=${task.id} class="list-item">
                       <div class="list-item-content">
@@ -1103,7 +1138,7 @@ export function DashboardTab() {
                     </div>
                   `,
                 )
-              : html`<${EmptyState} message="No recent tasks" />`}
+              : html`<${EmptyState} message=${activitySearch ? "No matching tasks" : "No recent tasks"} />`}
           </div>
         <//>
       </div>
@@ -1113,25 +1148,10 @@ export function DashboardTab() {
 
       ${recentCommits.length > 0 && html`
         <${Card}
-          title=${html`<span class="dashboard-card-title"><span class="dashboard-title-icon">${ICONS.git || resolveIcon("git")}</span>Recent Commits</span>`}
+          title=${html`<span class="dashboard-card-title"><span class="dashboard-title-icon">${ICONS.git || resolveIcon("git")}</span>Git Graph</span>`}
           className="dashboard-card dashboard-commits-card"
         >
-          <div class="dashboard-commits">
-            ${recentCommits.map((c) => {
-              // Support both structured {hash,message,author,date} and legacy/alternate field names
-              const hash = (c.hash || c.sha || '').slice(0, 7);
-              const messageRaw = c.message || c.msg || c.subject || (typeof c === 'string' ? c.split(' ').slice(1).join(' ') : '');
-              const message = normalizeCommitMessage(messageRaw);
-              const author = c.author || c.authorName || '';
-              const date = c.date || c.timestamp || c.authoredDate || '';
-              return html`
-              <div class="dashboard-commit-item" key=${hash || message}>
-                <div class="dashboard-commit-hash">${hash || '???'}</div>
-                <div class="dashboard-commit-msg">${truncate(message, 60)}</div>
-                ${(author || date) && html`<div class="dashboard-commit-meta">${author}${author && date ? ' · ' : ''}${date ? formatRelative(date) : ''}</div>`}
-              </div>`;
-            })}
-          </div>
+          <${CommitGraph} maxCommits=${40} compact=${true} />
         <//>  
       `}
 

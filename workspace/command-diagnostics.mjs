@@ -146,6 +146,14 @@ function resolveCommandKind(commandLine = "", output = "") {
   if (hasPytestFailureLine || hasPytestCollection) {
     return { family: "test", runner: "pytest" };
   }
+  if (/\b(?:npm|pnpm|yarn|bun|pip(?:3)?|poetry|composer|bundle)\b/.test(lower)
+    && /\b(?:install|add|remove|uninstall|update|upgrade|audit|outdated|dedupe|prune|ci|sync|restore|publish)\b/.test(lower)) {
+    return { family: "package-manager", runner: "package-manager" };
+  }
+  if (/\b(?:docker|kubectl|helm|terraform|ansible(?:-playbook)?|serverless|vercel|netlify|flyctl|aws|az|gcloud)\b/.test(lower)
+    && /\b(?:deploy|apply|rollout|release|sync|upgrade|promote|publish|install|plan|destroy|diff|status)\b/.test(lower)) {
+    return { family: "deploy", runner: "deploy" };
+  }
   if (/\bgit\s+diff\b/.test(lower)) return { family: "git", runner: "git-diff" };
   if (/\bgit\s+status\b/.test(lower)) return { family: "git", runner: "git-status" };
   if (/\bgit\s+(show|log|grep|rebase|merge|pull|push)\b/.test(lower)) return { family: "git", runner: "git" };
@@ -298,6 +306,70 @@ function parseGitOutput(text, runner, commandLine) {
   };
 }
 
+function parsePackageManagerOutput(text, commandLine) {
+  const deprecatedCount = countRegex(text, /\bdeprecated\b/gi);
+  const vulnerabilityMatch = text.match(/found\s+(\d+)\s+vulnerabilit(?:y|ies)/i)
+    || text.match(/(\d+)\s+vulnerabilit(?:y|ies)/i);
+  const vulnerabilityCount = vulnerabilityMatch ? Number(vulnerabilityMatch[1]) : 0;
+  const packageTokens = [];
+  for (const line of getDiagnosticLines(text)) {
+    for (const match of String(line).matchAll(/\b(@?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)?)@([~^]?[0-9][A-Za-z0-9+_.-]*)\b/g)) {
+      packageTokens.push(`${match[1]}@${match[2]}`);
+      if (packageTokens.length >= 12) break;
+    }
+    if (packageTokens.length >= 12) break;
+  }
+  const packageRefs = uniqueValues(packageTokens);
+  const summaryParts = [];
+  if (vulnerabilityCount) summaryParts.push(`${vulnerabilityCount} vulnerability${vulnerabilityCount === 1 ? "" : "ies"}`);
+  if (deprecatedCount) summaryParts.push(`${deprecatedCount} deprecated warning${deprecatedCount === 1 ? "" : "s"}`);
+  if (!summaryParts.length && packageRefs.length) {
+    summaryParts.push(`${packageRefs.length} package reference${packageRefs.length === 1 ? "" : "s"}`);
+  }
+  let rerunCommand = null;
+  if (/\baudit\b/.test(commandLine) && !/\bjson\b/.test(commandLine)) {
+    rerunCommand = `${commandLine} --json`;
+  } else if (/\binstall\b/.test(commandLine) && !/\b--verbose\b/.test(commandLine)) {
+    rerunCommand = `${commandLine} --verbose`;
+  }
+  return {
+    failedTargets: packageRefs,
+    summary: summaryParts.join(", "),
+    rerunCommand,
+  };
+}
+
+function parseDeployOutput(text, commandLine) {
+  const lines = getDiagnosticLines(text);
+  const targetRefs = [];
+  for (const line of lines) {
+    const match = line.match(/\b(?:deployment|service|release|revision|namespace|ingress|rollout)\/?([A-Za-z0-9_.-]+)?\b/i);
+    if (match) {
+      targetRefs.push((match[0] || "").trim());
+    }
+  }
+  const failures = countRegex(text, /\b(error|failed|rollback|timed out|timeout|unavailable|crashloopbackoff)\b/gi);
+  const successSignals = countRegex(text, /\b(successfully|configured|created|unchanged|available|healthy|deployed|rolled out)\b/gi);
+  const summary = failures
+    ? `${failures} deploy failure signal${failures === 1 ? "" : "s"}`
+    : successSignals
+      ? `${successSignals} deploy status signal${successSignals === 1 ? "" : "s"}`
+      : targetRefs.length
+        ? `${targetRefs.length} deploy target${targetRefs.length === 1 ? "" : "s"}`
+        : "";
+  let rerunCommand = null;
+  if (/\bkubectl\s+apply\b/.test(commandLine) && !/\brollout\s+status\b/.test(commandLine)) {
+    rerunCommand = "kubectl rollout status deployment/<name>";
+  } else if (/\bhelm\s+upgrade\b/.test(commandLine) && !/\bhelm\s+status\b/.test(commandLine)) {
+    rerunCommand = "helm status <release>";
+  }
+  return {
+    failedTargets: uniqueValues(targetRefs),
+    summary,
+    rerunCommand,
+  };
+}
+
 function parseGeneric(text) {
   const fileRefs = extractFileRefs(text, 12);
   const errorCount = countRegex(text, /\b(error|failed|fatal|panic|traceback|exception)\b/gi);
@@ -341,6 +413,12 @@ function deriveHint({ family, runner, text, exitCode, insufficientSignal }) {
   }
   if (family === "git" && exitCode !== 0) {
     return "Narrow the git view first, then inspect the full log if the failure is still unclear.";
+  }
+  if (family === "package-manager") {
+    return "Focus on the reported package warnings or rerun the package manager command with verbose or JSON output.";
+  }
+  if (family === "deploy") {
+    return "Check rollout/status for the reported deploy target before rerunning the full deployment.";
   }
   if (runner === "dotnet-test" && /cs\d+|msb\d+|nu\d+/i.test(text)) {
     return "Resolve the reported build or package diagnostics before rerunning tests.";
@@ -400,6 +478,12 @@ export async function analyzeCommandDiagnostic(payload = {}) {
     case "git-diff":
     case "git-status":
       parsed = parseGitOutput(text, runner, commandLine);
+      break;
+    case "package-manager":
+      parsed = parsePackageManagerOutput(text, commandLine);
+      break;
+    case "deploy":
+      parsed = parseDeployOutput(text, commandLine);
       break;
     default:
       parsed = parseGeneric(text);

@@ -1087,7 +1087,7 @@ describe("live tool compaction", () => {
     expect(result[0].aggregated_output).toContain("bosun --tool-log");
   });
 
-  it("classifies dotnet test output as build-family and keeps failing test anchors", async () => {
+  it("classifies dotnet test output as test-family and keeps failing test anchors", async () => {
     const lines = [];
     for (let i = 0; i < 180; i++) {
       lines.push(`Passed! helper/test-${i}.dll`);
@@ -1113,6 +1113,7 @@ describe("live tool compaction", () => {
 
     expect(result[0]._liveCompacted).toBe(true);
     expect(result[0]._liveCompactionFamily).toBe("test");
+    expect(result[0]._semanticBudgetPolicy).toMatch(/^(?:inline-excerpt|structured-delta)$/);
     expect(result[0].aggregated_output).toContain("Failed Bosun.Tests.WorkflowContextTests.ResolveTemplates");
     expect(result[0].aggregated_output).toContain("WorkflowContextTests.cs:line 42");
     expect(result[0].aggregated_output).toContain("Suggested rerun: dotnet test --filter");
@@ -1183,6 +1184,99 @@ describe("live tool compaction", () => {
     expect(result[0].aggregated_output).toContain("ERROR websocket disconnected unexpectedly");
     expect(result[0].aggregated_output).toContain("Traceback: reconnect loop exceeded budget");
     expect(result[0].aggregated_output).toContain("Repeated noise omitted:");
+  });
+
+  it("classifies compiler output as build-family and keeps file diagnostics inline", async () => {
+    const lines = [];
+    for (let i = 0; i < 180; i++) {
+      lines.push(`info bundle step ${i} ${"x".repeat(18)}`);
+    }
+    lines.push("src/runtime/router.ts:44:9 - error TS2304: Cannot find name 'missingSymbol'.");
+    lines.push("src/runtime/router.ts:45:13 - error TS2322: Type 'string' is not assignable to type 'number'.");
+    const items = [{
+      type: "command_execution",
+      command: "npm run build",
+      exit_code: 1,
+      aggregated_output: lines.join("\n"),
+    }];
+
+    const result = await runLiveCompaction(items, {
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS: "1200",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT: "5",
+    });
+
+    expect(result[0]._liveCompacted).toBe(true);
+    expect(result[0]._liveCompactionFamily).toBe("build");
+    expect(result[0].aggregated_output).toContain("TS2304");
+    expect(result[0].aggregated_output).toContain("src/runtime/router.ts:44:9");
+  });
+
+  it("classifies package manager output and surfaces package signals", async () => {
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    const compacted = await cacheModule.compactCommandOutputPayload({
+      command: "npm install",
+      output: [
+        ...Array.from({ length: 120 }, (_, i) => `fetching package-${i} ${"x".repeat(12)}`),
+        "npm WARN deprecated left-pad@1.3.0: use String.prototype.padStart()",
+        "added 342 packages, and audited 343 packages in 4s",
+        "found 2 vulnerabilities (1 low, 1 high)",
+      ].join("\n"),
+      exitCode: 0,
+    });
+
+    expect(compacted.compactionFamily).toBe("package-manager");
+    expect(compacted.budgetPolicy).toMatch(/^(?:inline-excerpt|structured-delta)$/);
+    expect(compacted.contextEnvelope?.meta?.family).toBe("package-manager");
+    expect(compacted.text).toContain("Package signals:");
+  });
+
+  it("classifies deploy output and surfaces deploy targets", async () => {
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    const compacted = await cacheModule.compactCommandOutputPayload({
+      command: "kubectl apply -f k8s/prod",
+      output: [
+        ...Array.from({ length: 120 }, (_, i) => `progress ${i} ${"x".repeat(16)}`),
+        "deployment.apps/api configured",
+        "service/api unchanged",
+        "rollout status pending for deployment/api",
+      ].join("\n"),
+      exitCode: 0,
+    });
+
+    expect(compacted.compactionFamily).toBe("deploy");
+    expect(compacted.contextEnvelope?.meta?.family).toBe("deploy");
+    expect(compacted.text).toContain("Deploy targets:");
+  });
+
+  it("preserves deploy family in fallback signal-first compaction", async () => {
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    const compacted = await cacheModule.compactCommandOutputPayload({
+      command: "kubectl apply -f k8s/prod",
+      output: Array.from({ length: 260 }, (_, i) => `noise line ${i} ${"x".repeat(20)}`).join("\n"),
+      exitCode: 0,
+    });
+
+    expect(compacted.compacted).toBe(true);
+    expect(compacted.compactionFamily).toBe("deploy");
+    expect(compacted.contextEnvelope?.meta?.family).toBe("deploy");
+  });
+
+  it("stores semantic budget decisions with cached tool logs", async () => {
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    const compacted = await cacheModule.compactCommandOutputPayload({
+      command: "dotnet test",
+      output: [
+        ...Array.from({ length: 180 }, (_, i) => `Passed! helper/test-${i}.dll`),
+        "Failed!  - Failed:     1, Passed:   9, Skipped:     0, Total:   10, Duration: 1 s",
+        "Failed Bosun.Tests.WorkflowContextTests.ResolveTemplates [148 ms]",
+      ].join("\n"),
+      exitCode: 1,
+    });
+
+    const retrieved = await cacheModule.retrieveToolLog(compacted.toolLogId);
+    expect(retrieved.found).toBe(true);
+    expect(retrieved.entry.decision?.family).toBe("test");
+    expect(retrieved.entry.decision?.budgetPolicy).toBeTruthy();
   });
 
   it("uses signal-first fallback compaction for unknown large command outputs", async () => {

@@ -388,7 +388,6 @@ async function runIsolatedProcess(options = {}) {
   });
 }
 
-// ── Public API ───────────────────────────────────────────────────────────────
 
 /**
  * Check if container mode is enabled and runtime is available.

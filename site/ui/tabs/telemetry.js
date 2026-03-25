@@ -18,6 +18,7 @@ import {
 } from "@mui/material";
 
 import {
+  telemetrySummary,
   telemetryErrors,
   telemetryAlerts,
   usageAnalytics,
@@ -28,6 +29,8 @@ import {
   loadTelemetryAlerts,
   loadUsageAnalytics,
   loadShreddingTelemetry,
+  loadRetryQueue,
+  retryQueueData,
   scheduleRefresh,
 } from "../modules/state.js";
 import {
@@ -80,6 +83,19 @@ function formatSinceDate(isoStr) {
   });
 }
 
+function formatDurationMs(ms) {
+  const value = Number(ms || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0s";
+  const seconds = Math.floor(value / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = seconds % 60;
+  if (minutes < 60) return remSeconds ? `${minutes}m ${remSeconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return remMinutes ? `${hours}h ${remMinutes}m` : `${hours}h`;
+}
+
 function severityChipColor(sev = "medium") {
   const n = String(sev).toLowerCase();
   if (n === "high" || n === "critical") return "error";
@@ -94,6 +110,7 @@ function severityChipColor(sev = "medium") {
  * `seriesMap` is `{ name: number[] }` aligned with `dates`.
  */
 function TrendLines({ dates, seriesMap, palette }) {
+  const [tooltip, setTooltip] = useState(null);
   if (!dates?.length || !seriesMap) return null;
   const entries = Object.entries(seriesMap);
   if (!entries.length) return null;
@@ -136,6 +153,7 @@ function TrendLines({ dates, seriesMap, palette }) {
   }));
 
   return html`
+    <${Box} sx=${{ position: "relative" }}>
     <svg viewBox="0 0 ${W} ${H}" class="analytics-trend-svg" aria-hidden="true"
       style="width:100%;height:auto;display:block">
       ${ySteps.map((v) => html`
@@ -155,7 +173,38 @@ function TrendLines({ dates, seriesMap, palette }) {
           stroke=${paletteColor(palette, i)} stroke-width="1.8"
           stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
       `)}
+      ${entries.map(([name, values], si) =>
+        values.map((v, di) => html`
+          <circle
+            key=${`${name}-${di}`}
+            cx=${xOf(di)}
+            cy=${yOf(v)}
+            r=${4}
+            fill="transparent"
+            stroke="transparent"
+            style="cursor:pointer"
+            onMouseEnter=${() => setTooltip({ x: xOf(di), y: yOf(v), date: dates[di], value: v, series: name, color: paletteColor(palette, si) })}
+            onMouseLeave=${() => setTooltip(null)}
+          />
+        `)
+      )}
     </svg>
+    ${tooltip ? html`
+      <${Paper} elevation=${3} sx=${{
+        position: "absolute",
+        left: `${(tooltip.x / W) * 100}%`,
+        top: `${(tooltip.y / H) * 100}%`,
+        transform: "translate(-50%, -110%)",
+        p: 0.75,
+        pointerEvents: "none",
+        whiteSpace: "nowrap",
+        zIndex: 10,
+      }}>
+        <${Typography} variant="caption" display="block" sx=${{ fontWeight: 600, color: tooltip.color }}>${tooltip.series}<//>
+        <${Typography} variant="caption" display="block">${tooltip.date}: ${tooltip.value}<//>
+      <//>
+    ` : null}
+    <//>
   `;
 }
 
@@ -244,6 +293,21 @@ function formatBytes(n) {
   return `${n}`;
 }
 
+function formatUsd(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "–";
+  if (amount === 0) return "$0.00";
+  if (Math.abs(amount) < 0.01) return `$${amount.toFixed(4)}`;
+  if (Math.abs(amount) < 1) return `$${amount.toFixed(3)}`;
+  return `$${amount.toFixed(2)}`;
+}
+
+function formatShreddingLabel(value) {
+  return String(value || "unknown")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
 /**
  * Mini inline sparkline SVG — no axes, just the shape of the data.
  */
@@ -276,6 +340,10 @@ function Sparkline({ values, color = "#818cf8" }) {
  */
 function ShreddingPanel({ period }) {
   const data = shreddingTelemetry.value;
+  const [shreddingPage, setShreddingPage] = useState(0);
+  const [shreddingSearch, setShreddingSearch] = useState("");
+
+  useEffect(() => { setShreddingPage(0); }, [shreddingSearch]);
 
   useEffect(() => {
     loadShreddingTelemetry(period).catch(() => {});
@@ -296,43 +364,93 @@ function ShreddingPanel({ period }) {
   const {
     totalEvents = 0,
     totalOriginalChars = 0,
+    totalCompressedChars = 0,
     totalSavedChars = 0,
     avgSavedPct = 0,
     sortedDates = [],
+    dailyOriginal = {},
+    dailyCompressed = {},
     dailySaved = {},
+    dailySavedTokensEstimated = {},
+    dailyCostSavedUsd = {},
+    dailyReductionPct = {},
     dailyCounts = {},
     topAgents = [],
+    stageCounts = {},
+    topCompactionFamilies = [],
+    topCommandFamilies = [],
+    liveCompaction = {},
     recentEvents = [],
     diagnostics = {},
+    totals = {},
+    estimation = {},
   } = data;
 
-  const sparkValues = sortedDates.map((d) => dailySaved[d] || 0);
+  const volumeSeriesMap = {
+    original: sortedDates.map((d) => dailyOriginal[d] || 0),
+    compressed: sortedDates.map((d) => dailyCompressed[d] || 0),
+    saved: sortedDates.map((d) => dailySaved[d] || 0),
+  };
+  const reductionSeriesMap = {
+    "reduction %": sortedDates.map((d) => dailyReductionPct[d] || 0),
+  };
+  const tokenSeriesMap = {
+    "tokens saved": sortedDates.map((d) => dailySavedTokensEstimated[d] || 0),
+  };
+  const costSeriesMap = {
+    "cost avoided": sortedDates.map((d) => dailyCostSavedUsd[d] || 0),
+  };
   const sparkCounts = sortedDates.map((d) => dailyCounts[d] || 0);
+  const stageItems = Object.entries(stageCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, count]) => ({ name: formatShreddingLabel(name), count }));
+  const liveEvents = liveCompaction?.totalEvents || stageCounts.live_tool_compaction || 0;
+  const liveSavedChars = liveCompaction?.totalSavedChars || 0;
+  const liveSavedTokensEstimated = liveCompaction?.savedTokensEstimated || 0;
+  const liveAvgSavedPct = liveCompaction?.avgSavedPct || 0;
+  const totalSavedTokensEstimated = totals?.savedTokensEstimated || 0;
+  const totalEstimatedCostSavedUsd = totals?.estimatedCostSavedUsd ?? null;
+  const hasCostEstimate = Number.isFinite(Number(totalEstimatedCostSavedUsd))
+    && Number(totalEstimatedCostSavedUsd) > 0;
+  const hasCostTrend = sortedDates.some((day) => Number(dailyCostSavedUsd?.[day] || 0) > 0);
+  const observedCostRate = estimation?.blendedCostPerMillionTokensUsd ?? null;
+
+  const filteredEvents = shreddingSearch.trim()
+    ? recentEvents.filter((ev) => {
+        const q = shreddingSearch.trim().toLowerCase();
+        return (ev.agentType || "").toLowerCase().includes(q)
+          || (ev.stage || "").toLowerCase().includes(q)
+          || (ev.compactionFamily || "").toLowerCase().includes(q)
+          || (ev.commandFamily || "").toLowerCase().includes(q);
+      })
+    : recentEvents;
+  const shreddingPageSize = 10;
+  const totalShreddingPages = Math.max(1, Math.ceil(filteredEvents.length / shreddingPageSize));
+  const clampedPage = Math.min(shreddingPage, totalShreddingPages - 1);
+  const pagedEvents = filteredEvents.slice(clampedPage * shreddingPageSize, (clampedPage + 1) * shreddingPageSize);
 
   return html`
     <${Paper} elevation=${1} sx=${{ p: 2, mb: 2 }}>
-      <!-- Header -->
       <${Stack} direction="row" justifyContent="space-between" alignItems="center" sx=${{ mb: 1.5 }}>
         <${Typography} variant="h6">✂ Context Shredding<//>
-        <${Chip} label="live" size="small" color="success" variant="outlined" />
+        <${Chip}
+          label=${liveEvents > 0 ? "live + tiered" : "tiered"}
+          size="small"
+          color=${liveEvents > 0 ? "success" : "default"}
+          variant="outlined"
+        />
       <//>
 
-      <!-- Stat cards row -->
       <${Stack} direction=${{ xs: "column", sm: "row" }} spacing=${1.5} sx=${{ mb: 2, flexWrap: "wrap" }}>
         <${AnalyticsStat} icon="✂" label="Events" value=${formatCount(totalEvents)} />
-        <${AnalyticsStat} icon="📉" label="Chars Saved"
-          value=${totalSavedChars >= 1_000_000
-            ? `${(totalSavedChars / 1_000_000).toFixed(2)} M`
-            : totalSavedChars >= 1_000
-              ? `${(totalSavedChars / 1_000).toFixed(1)} K`
-              : String(totalSavedChars)} />
+        <${AnalyticsStat} icon="📦" label="Original Chars" value=${formatBytes(totalOriginalChars)} />
+        <${AnalyticsStat} icon="🧱" label="Compressed Chars" value=${formatBytes(totalCompressedChars)} />
+        <${AnalyticsStat} icon="📉" label="Chars Saved" value=${formatBytes(totalSavedChars)} />
         <${AnalyticsStat} icon="%" label="Avg Reduction" value=${avgSavedPct > 0 ? `${avgSavedPct}%` : "–"} />
-        <${AnalyticsStat} icon="📦" label="Original Chars"
-          value=${totalOriginalChars >= 1_000_000
-            ? `${(totalOriginalChars / 1_000_000).toFixed(2)} M`
-            : totalOriginalChars >= 1_000
-              ? `${(totalOriginalChars / 1_000).toFixed(1)} K`
-              : String(totalOriginalChars)} />
+        <${AnalyticsStat} icon="🧮" label="Est. Tokens Saved" value=${formatCount(totalSavedTokensEstimated)} />
+        <${AnalyticsStat} icon="💵" label="Est. Cost Avoided" value=${hasCostEstimate ? formatUsd(totalEstimatedCostSavedUsd) : "Unavailable"} />
+        <${AnalyticsStat} icon="⚡" label="Live Events" value=${formatCount(liveEvents)} />
+        <${AnalyticsStat} icon="🧠" label="Live Saved Tokens" value=${formatCount(liveSavedTokensEstimated)} />
       <//>
 
       ${(diagnostics?.excludedSynthetic || diagnostics?.excludedNoop || diagnostics?.unknownAttribution)
@@ -346,32 +464,63 @@ function ShreddingPanel({ period }) {
         `
         : null}
 
-      <!-- Trend row: daily savings sparkline + by-agent bar -->
-      <${Stack} direction=${{ xs: "column", md: "row" }} spacing=${2} sx=${{ mb: 2 }}>
+      <${Alert} severity=${hasCostEstimate ? "success" : "info"} sx=${{ mb: 2 }}>
+        Token savings are estimated from characters using ${estimation?.charsPerToken || 4} chars per token.
+        ${hasCostEstimate
+          ? ` Cost avoided uses the observed blended session rate of ${formatUsd((observedCostRate || 0) / 1_000_000)} per token (${formatUsd(observedCostRate)} per million) across ${formatCount(estimation?.pricedSessions || 0)} priced session${(estimation?.pricedSessions || 0) === 1 ? "" : "s"}.`
+          : " Cost avoided is unavailable because recent completed sessions did not record usable token-and-cost pairs."}
+      <//>
 
-        <!-- Daily savings trend -->
+      <${Stack} direction=${{ xs: "column", md: "row" }} spacing=${2} sx=${{ mb: 2 }}>
         <${Paper} variant="outlined" sx=${{ p: 1.5, flex: 1 }}>
-          <${Typography} variant="subtitle2" gutterBottom>Chars Saved per Day<//>
-          ${sparkValues.length > 1 ? html`
+          <${Typography} variant="subtitle2" gutterBottom>Context Volume per Day<//>
+          <${Typography} variant="caption" color="text.secondary">
+            Original context versus compressed output and net savings.
+          <//>
+          ${sortedDates.length > 1 ? html`
             <${Box} sx=${{ overflow: "hidden" }}>
               <${TrendLines}
                 dates=${sortedDates}
-                seriesMap=${{ "chars saved": sparkValues }}
+                seriesMap=${volumeSeriesMap}
                 palette=${SHRED_PALETTE}
               />
             <//>
           ` : html`<${EmptyState} title="Not enough data" description="Need ≥2 days of events." />`}
         <//>
 
-        <!-- By-agent -->
         <${Paper} variant="outlined" sx=${{ p: 1.5, flex: 1 }}>
-          <${Typography} variant="subtitle2" gutterBottom>By Agent Type<//>
-          <${TopBarChart} items=${topAgents} palette=${SHRED_PALETTE} title="By Agent" />
+          <${Typography} variant="subtitle2" gutterBottom>Reduction Efficiency<//>
+          <${Typography} variant="caption" color="text.secondary">
+            Daily reduction rate with ${sparkCounts.length ? sparkCounts.reduce((sum, value) => sum + value, 0) : 0} tracked events in this window.
+          <//>
+          ${sortedDates.length > 1 ? html`
+            <${Box} sx=${{ overflow: "hidden" }}>
+              <${TrendLines}
+                dates=${sortedDates}
+                seriesMap=${reductionSeriesMap}
+                palette=${SHRED_PALETTE}
+              />
+            <//>
+          ` : html`<${EmptyState} title="Not enough data" description="Need ≥2 days of events." />`}
         <//>
 
+        <${Paper} variant="outlined" sx=${{ p: 1.5, flex: 1 }}>
+          <${Typography} variant="subtitle2" gutterBottom>Estimated Input Tokens Saved<//>
+          <${Typography} variant="caption" color="text.secondary">
+            Estimated prompt-token savings from context compaction.
+          <//>
+          ${sortedDates.length > 1 ? html`
+            <${Box} sx=${{ overflow: "hidden" }}>
+              <${TrendLines}
+                dates=${sortedDates}
+                seriesMap=${tokenSeriesMap}
+                palette=${SHRED_PALETTE}
+              />
+            <//>
+          ` : html`<${EmptyState} title="Not enough data" description="Need ≥2 days of events." />`}
+        <//>
       <//>
 
-      <!-- Reduction % gauge bar -->
       ${avgSavedPct > 0 ? html`
         <${Box} sx=${{ mb: 2 }}>
           <${Stack} direction="row" justifyContent="space-between" alignItems="center" sx=${{ mb: 0.5 }}>
@@ -390,28 +539,107 @@ function ShreddingPanel({ period }) {
         <//>
       ` : null}
 
-      <!-- Recent events table -->
+      <${Stack} direction=${{ xs: "column", md: "row" }} spacing=${2} sx=${{ mb: 2 }}>
+        <${Paper} variant="outlined" sx=${{ p: 1.5, flex: 1 }}>
+          <${Typography} variant="subtitle2" gutterBottom>Estimated Cost Avoided per Day<//>
+          ${hasCostTrend ? html`
+            <${Box} sx=${{ overflow: "hidden" }}>
+              <${TrendLines}
+                dates=${sortedDates}
+                seriesMap=${costSeriesMap}
+                palette=${SHRED_PALETTE}
+              />
+            <//>
+          ` : html`<${EmptyState} title="No cost estimate yet" description="Need recent session pricing data to project API cost savings." />`}
+        <//>
+        <${Paper} variant="outlined" sx=${{ p: 1.5, flex: 1 }}>
+          <${Typography} variant="subtitle2" gutterBottom>By Agent Type<//>
+          <${TopBarChart} items=${topAgents} palette=${SHRED_PALETTE} title="By Agent" />
+        <//>
+        <${Paper} variant="outlined" sx=${{ p: 1.5, flex: 1 }}>
+          <${Typography} variant="subtitle2" gutterBottom>By Stage<//>
+          <${TopBarChart} items=${stageItems} palette=${SHRED_PALETTE} title="By Stage" />
+        <//>
+      <//>
+
+      ${(liveEvents > 0 || topCompactionFamilies.length > 0 || topCommandFamilies.length > 0) ? html`
+        <${Stack} direction=${{ xs: "column", md: "row" }} spacing=${2} sx=${{ mb: 2 }}>
+          <${Paper} variant="outlined" sx=${{ p: 1.5, flex: 1 }}>
+            <${Typography} variant="subtitle2" gutterBottom>Live Compaction Families<//>
+            <${TopBarChart} items=${topCompactionFamilies} palette=${SHRED_PALETTE} title="Live Families" />
+          <//>
+          <${Paper} variant="outlined" sx=${{ p: 1.5, flex: 1 }}>
+            <${Typography} variant="subtitle2" gutterBottom>Live Command Families<//>
+            <${TopBarChart} items=${topCommandFamilies} palette=${SHRED_PALETTE} title="Command Families" />
+          <//>
+          <${Paper} variant="outlined" sx=${{ p: 1.5, flex: 1 }}>
+            <${Typography} variant="subtitle2" gutterBottom>Live Compaction Savings<//>
+            <${Stack} spacing=${1}>
+              <${Typography} variant="caption" color="text.secondary">
+                Saved ${formatBytes(liveSavedChars)} across ${formatCount(liveEvents)} live-compacted outputs.
+              <//>
+              <${Typography} variant="caption" color="text.secondary">
+                Estimated ${formatCount(liveSavedTokensEstimated)} input tokens avoided during live compaction.
+              <//>
+              <${Chip}
+                label=${liveAvgSavedPct > 0 ? `${liveAvgSavedPct}% average live reduction` : "Live reductions pending"}
+                size="small"
+                color=${liveAvgSavedPct >= 30 ? "success" : liveAvgSavedPct >= 10 ? "warning" : "default"}
+                variant="outlined"
+              />
+            <//>
+          <//>
+        <//>
+      ` : null}
+
       ${recentEvents.length > 0 ? html`
-        <${Typography} variant="subtitle2" gutterBottom>Recent Shredding Events<//>
+        <${Stack} direction="row" justifyContent="space-between" alignItems="center" sx=${{ mb: 1 }}>
+          <${Typography} variant="subtitle2">Recent Shredding Events<//>
+          <${TextField}
+            size="small"
+            placeholder="Filter by agent, stage, family\u2026"
+            value=${shreddingSearch}
+            onInput=${(e) => setShreddingSearch(e.target.value)}
+            sx=${{ width: 260 }}
+          />
+        <//>
         <${TableContainer}>
           <${Table} size="small">
             <${TableHead}>
               <${TableRow}>
                 <${TableCell}>Time<//>
+                <${TableCell}>Stage<//>
+                <${TableCell}>Family<//>
                 <${TableCell} align="right">Original<//>
+                <${TableCell} align="right">Compressed<//>
                 <${TableCell} align="right">Saved<//>
                 <${TableCell} align="right">Reduction<//>
+                <${TableCell} align="right">Est. Tokens<//>
+                <${TableCell} align="right">Est. Cost<//>
                 <${TableCell}>Agent<//>
               </${TableRow}>
             <//>
             <${TableBody}>
-              ${recentEvents.slice(0, 10).map((ev, i) => html`
+              ${pagedEvents.map((ev, i) => html`
                 <${TableRow} key=${i}>
                   <${TableCell}>
                     <${Typography} variant="caption">${formatRelative(ev.timestamp)}<//>
                   <//>
+                  <${TableCell}>
+                    <${Typography} variant="caption" color="text.secondary">
+                      ${formatShreddingLabel(ev.stage)}
+                    <//>
+                  <//>
+                  <${TableCell}>
+                    <${Typography} variant="caption" color="text.secondary">
+                      ${ev.compactionFamily ? formatShreddingLabel(ev.compactionFamily) : ev.commandFamily ? formatShreddingLabel(ev.commandFamily) : "–"}
+                    <//>
+                  <//>
                   <${TableCell} align="right">
                     <${Typography} variant="caption">${formatBytes(ev.originalChars)}<//>
+                  <//>
+                  <${TableCell} align="right">
+                    <${Typography} variant="caption">${formatBytes(ev.compressedChars)}<//>
                   <//>
                   <${TableCell} align="right">
                     <${Typography} variant="caption" color="success.main">
@@ -426,6 +654,14 @@ function ShreddingPanel({ period }) {
                       variant="outlined"
                     />
                   <//>
+                  <${TableCell} align="right">
+                    <${Typography} variant="caption">${formatCount(ev.estimatedSavedTokens || 0)}<//>
+                  <//>
+                  <${TableCell} align="right">
+                    <${Typography} variant="caption">
+                      ${Number.isFinite(Number(ev.estimatedCostSavedUsd)) ? formatUsd(ev.estimatedCostSavedUsd) : "–"}
+                    <//>
+                  <//>
                   <${TableCell}>
                     <${Typography} variant="caption" color="text.secondary">
                       ${ev.agentType || "–"}
@@ -436,21 +672,38 @@ function ShreddingPanel({ period }) {
             <//>
           <//>
         <//>
+        <${Stack} direction="row" justifyContent="space-between" alignItems="center" sx=${{ mt: 1 }}>
+          <${Typography} variant="caption" color="text.secondary">
+            ${filteredEvents.length > 0
+              ? `${clampedPage * shreddingPageSize + 1}\u2013${Math.min((clampedPage + 1) * shreddingPageSize, filteredEvents.length)} of ${filteredEvents.length}`
+              : "0 results"}
+          <//>
+          <${Stack} direction="row" spacing=${1}>
+            <${Button} size="small" variant="outlined" disabled=${clampedPage <= 0}
+              onClick=${() => setShreddingPage(clampedPage - 1)}>Previous<//>
+            <${Button} size="small" variant="outlined" disabled=${clampedPage >= totalShreddingPages - 1}
+              onClick=${() => setShreddingPage(clampedPage + 1)}>Next<//>
+          <//>
+        <//>
       ` : null}
     <//>
   `;
 }
-
 // ── Main exported component ──────────────────────────────────────────────────
 
 export function TelemetryTab() {
   const data = usageAnalytics.value;
+  const retryQueue = retryQueueData.value || { count: 0, items: [], stats: {} };
+  const summary = telemetrySummary.value || null;
+  const lifetimeTotals = summary?.lifetimeTotals || null;
   const [period, setPeriod] = useState(30);
   const [trendTab, setTrendTab] = useState("agents");
 
   useEffect(() => {
     loadUsageAnalytics(period).catch(() => {});
     loadShreddingTelemetry(period).catch(() => {});
+    loadRetryQueue().catch(() => {});
+    loadTelemetrySummary().catch(() => {});
   }, [period]);
 
   const trend = data?.trend;
@@ -505,6 +758,7 @@ export function TelemetryTab() {
             loadTelemetryErrors();
             loadTelemetryExecutors();
             loadTelemetryAlerts();
+            loadRetryQueue();
             scheduleRefresh(4000);
           }}>Refresh<//>
         <//>
@@ -522,7 +776,28 @@ export function TelemetryTab() {
           value=${data ? formatCount(data.avgPerDay) : "–"} />
         <${AnalyticsStat} icon="🕐" label="Last Active"
           value=${data?.lastActiveAt ? formatRelative(data.lastActiveAt) : "–"} />
+        <${AnalyticsStat} icon="↻" label="Retries Today"
+          value=${formatCount(retryQueue?.stats?.totalRetriesToday || 0)} />
+        <${AnalyticsStat} icon="⇡" label="Peak Retry Depth"
+          value=${formatCount(retryQueue?.stats?.peakRetryDepth || 0)} />
+        <${AnalyticsStat} icon="⚠" label="Exhausted Tasks"
+          value=${formatCount((retryQueue?.stats?.exhaustedTaskIds || []).length)} />
+        <${AnalyticsStat} icon="◈" label="Attempts count"
+          value=${formatCount(lifetimeTotals?.attemptsCount || 0)} />
+        <${AnalyticsStat} icon="#" label="Total tokens across all attempts"
+          value=${formatCount(lifetimeTotals?.tokenCount || 0)} />
+        <${AnalyticsStat} icon="⏱" label="Total runtime across all attempts"
+          value=${formatDurationMs(lifetimeTotals?.durationMs || 0)} />
       <//>
+
+      ${data?.diagnostics?.agentRunSource ? html`
+        <${Alert} severity="info" sx=${{ mb: 2 }}>
+          Agent Runs are currently sourced from ${data.diagnostics.agentRunSource === "completed_sessions" ? "the persistent completed-session ledger" : "session-start telemetry"}.
+          ${data.diagnostics.agentRunSource === "completed_sessions"
+            ? ` Counted ${formatCount(data.diagnostics.completedSessions || 0)} completed sessions in this window.`
+            : ` Counted ${formatCount(data.diagnostics.sessionStarts || 0)} session-start events in this window.`}
+        <//>
+      ` : null}
 
       <!-- Activity trend chart -->
       <${Paper} elevation=${1} sx=${{ p: 2, mb: 2 }}>
