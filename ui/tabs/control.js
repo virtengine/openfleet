@@ -92,7 +92,7 @@ const normalizeOutputText = (value) => {
 export function ControlTab() {
   const executor = executorData.value;
   const execData = executor?.data;
-  const mode = executor?.mode || "vk";
+  const mode = executor?.mode || "internal";
   const config = configData.value;
 
   /* Form inputs */
