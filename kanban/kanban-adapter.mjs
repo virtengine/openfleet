@@ -1098,7 +1098,6 @@ class InternalAdapter {
       updates.parentTaskId = parentTaskId;
     }
     if (hasOwnField(patch, "dueDate") || dueDate) updates.dueDate = dueDate;
-    const clearedMetaKeys = new Set();
     if (patch.meta && typeof patch.meta === "object") {
       updates.meta = {
         ...(replaceMeta ? {} : (current?.meta || {})),
@@ -1118,8 +1117,8 @@ class InternalAdapter {
         ...(Array.isArray(patch.repositories) ? { repositories: patch.repositories } : {}),
         ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
       };
-      for (const key of ["autoRecovery", "worktreeFailure", "blockedReason"]) {
-        if (updates.meta?.[key] == null) {
+      for (const [key, value] of Object.entries(patch.meta)) {
+        if (value == null && Object.prototype.hasOwnProperty.call(updates.meta, key)) {
           delete updates.meta[key];
         }
       }
@@ -1146,6 +1145,13 @@ class InternalAdapter {
       };
     }
     const updated = patchInternalTask(normalizedId, updates);
+    if (patch.meta && typeof patch.meta === "object" && updates.meta && typeof updates.meta === "object") {
+      for (const [key, value] of Object.entries(patch.meta)) {
+        if (value == null && Object.prototype.hasOwnProperty.call(updates.meta, key)) {
+          delete updates.meta[key];
+        }
+      }
+    }
     if (!updated) {
       throw new Error(`[kanban] internal task not found: ${normalizedId}`);
     }

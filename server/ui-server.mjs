@@ -2107,6 +2107,17 @@ function buildTaskMetaPatch(previousMeta, metadataPatchMeta, options = {}) {
   }
   if (metadataPatchMeta && typeof metadataPatchMeta === "object") {
     Object.assign(nextMeta, metadataPatchMeta);
+    if (clearBlockedState) {
+      if (metadataPatchMeta.autoRecovery == null) {
+        delete nextMeta.autoRecovery;
+      }
+      if (metadataPatchMeta.blockedReason == null) {
+        delete nextMeta.blockedReason;
+      }
+      if (metadataPatchMeta.worktreeFailure == null) {
+        delete nextMeta.worktreeFailure;
+      }
+    }
   }
   return nextMeta;
 }
