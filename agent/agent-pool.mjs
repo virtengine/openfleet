@@ -46,7 +46,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { loadConfig } from "../config/config.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "../config/repo-root.mjs";
-import { resolveCodexProfileRuntime } from "../shell/codex-model-profiles.mjs";
+import { resolveCodexProfileRuntime, readCodexConfigRuntimeDefaults } from "../shell/codex-model-profiles.mjs";
 import { resolveCopilotCliLaunchConfig } from "../shell/copilot-shell.mjs";
 import { getGitHubToken } from "../github/github-auth-manager.mjs";
 import {
@@ -755,19 +755,23 @@ function buildCodexSdkOptions(envInput = process.env) {
   const resolved = resolveCodexProfileRuntime(envInput);
   const { env: resolvedEnv, configProvider } = resolved;
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
-  const isAzure = (() => {
-        try {
-          const parsed = new URL(baseUrl);
-          const host = String(parsed.hostname || "").toLowerCase();
-          return host === "openai.azure.com" || host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com");
-        } catch {
-          return false;
-        }
-      })();
+  /** @param {string} url */
+  const isAzureOpenAIBaseUrl = (url) => {
+    try {
+      const parsed = new URL(url);
+      const host = String(parsed.hostname || "").toLowerCase();
+      return host === "openai.azure.com" || host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com");
+    } catch {
+      return false;
+    }
+  };
+  const isAzure = isAzureOpenAIBaseUrl(baseUrl);
   const env = { ...resolvedEnv };
   // Always strip OPENAI_BASE_URL — for Azure we use config overrides,
   // for non-Azure the CLI should use its built-in endpoint.
   delete env.OPENAI_BASE_URL;
+  delete env.OPENAI_ORGANIZATION;
+  delete env.OPENAI_PROJECT;
 
   if (isAzure) {
     // Map OPENAI_API_KEY → AZURE_OPENAI_API_KEY for Azure auth
@@ -779,6 +783,33 @@ function buildCodexSdkOptions(envInput = process.env) {
     const providerSectionName = configProvider?.name || "azure";
     const providerEnvKey = configProvider?.envKey || "AZURE_OPENAI_API_KEY";
     const azureModel = env.CODEX_MODEL || undefined;
+
+    // ── Strip env keys for non-selected Azure providers ────────────────────
+    // When config.toml defines multiple Azure providers (e.g. US + Sweden),
+    // the SDK reads config.toml and considers any provider whose env_key is
+    // set as "configured". This causes the SDK to list models from ALL
+    // providers — if a non-selected provider's endpoint returns 400 (wrong
+    // API version, missing deployment, etc.) the entire session fails.
+    // Fix: remove env keys for Azure providers we're NOT using so the SDK
+    // skips them. Only strip Azure-specific keys to avoid breaking non-Azure
+    // fallback auth paths (e.g. OPENAI_API_KEY used by SDK internally).
+    try {
+      const configDefaults = readCodexConfigRuntimeDefaults();
+      const allProviders = configDefaults?.providers || {};
+      for (const [sectionName, section] of Object.entries(allProviders)) {
+        if (sectionName === providerSectionName) continue; // keep selected provider
+        const otherBaseUrl = (section.baseUrl || "").trim();
+        const otherEnvKey = (section.envKey || "").trim();
+        // Only strip keys that belong to Azure-type endpoints (not OpenAI direct)
+        if (!otherBaseUrl || !isAzureOpenAIBaseUrl(otherBaseUrl)) continue;
+        if (otherEnvKey && otherEnvKey !== providerEnvKey && env[otherEnvKey]) {
+          delete env[otherEnvKey];
+        }
+      }
+    } catch {
+      // best effort — if config reading fails, don't block execution
+    }
+
     return {
       env,
       config: {
@@ -790,6 +821,9 @@ function buildCodexSdkOptions(envInput = process.env) {
             env_key: providerEnvKey,
             wire_api: "responses",
           },
+        },
+        features: {
+          remote_models: false,
         },
         ...(azureModel ? { model: azureModel } : {}),
       },
@@ -1222,6 +1256,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   codexOpts.config = {
     ...(codexOpts.config || {}),
     features: {
+      ...(codexOpts.config?.features || {}),
       child_agents_md: true,
       multi_agent: true,
       memories: true,
@@ -3158,6 +3193,17 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: modelOverride };
     codexOpts.config = { ...(codexOpts.config || {}), model: modelOverride };
   }
+  codexOpts.config = {
+    ...(codexOpts.config || {}),
+    features: {
+      ...(codexOpts.config?.features || {}),
+      child_agents_md: true,
+      multi_agent: true,
+      memories: true,
+      undo: true,
+      steer: true,
+    },
+  };
   const codex = new CodexClass(codexOpts);
 
   let thread;

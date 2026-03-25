@@ -1,6 +1,6 @@
 $errors = $null
 $tokens = $null
-$scriptPath = Join-Path $PSScriptRoot "ve-orchestrator.ps1"
+$scriptPath = Join-Path $PSScriptRoot "cli.mjs"
 $ast = [System.Management.Automation.Language.Parser]::ParseFile(
     $scriptPath,
     [ref]$tokens,

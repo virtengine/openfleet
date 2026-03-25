@@ -101,7 +101,7 @@ function profileRecord(env, profileName, globalProvider) {
   };
 }
 
-function readCodexConfigRuntimeDefaults() {
+export function readCodexConfigRuntimeDefaults() {
   try {
     const configPath = resolve(homedir(), ".codex", "config.toml");
     if (!existsSync(configPath)) {

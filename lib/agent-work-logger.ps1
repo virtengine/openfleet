@@ -1,5 +1,5 @@
 # Agent Work Logger - Capture all agent work to structured logs
-# Usage: Import this module in ve-orchestrator.ps1 and call logging functions
+# Usage: Import this module and call logging functions
 
 # ── Configuration ───────────────────────────────────────────────────────────
 $LogDir = Join-Path $PSScriptRoot "..\..\..\.cache\agent-work-logs"
@@ -29,7 +29,7 @@ function Write-AgentWorkLog {
     Write an event to the agent work stream log
 
     .PARAMETER AttemptId
-    The VK attempt ID (workspace ID)
+    The attempt ID (workspace ID)
 
     .PARAMETER EventType
     Type of event: session_start, session_end, agent_output, error, tool_call, followup_sent

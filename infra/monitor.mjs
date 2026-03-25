@@ -173,8 +173,6 @@ import {
   formatKnowledgeSummary,
 } from "../workspace/shared-knowledge.mjs";
 import { WorkspaceMonitor } from "../workspace/workspace-monitor.mjs";
-import { VkLogStream } from "../kanban/vk-log-stream.mjs";
-import { VKErrorResolver } from "../kanban/vk-error-resolver.mjs";
 import {
   createAnomalyDetector,
   setWorkflowEngine as bindWorkflowEngineToAnomalyDetector,
@@ -2113,14 +2111,6 @@ let {
   telegramCommandEnabled,
   repoSlug,
   repoUrlBase,
-  vkRecoveryPort,
-  vkRecoveryHost,
-  vkEndpointUrl,
-  vkPublicUrl,
-  vkTaskUrlTemplate,
-  vkRecoveryCooldownMin,
-  vkSpawnEnabled,
-  vkEnsureIntervalMs,
   kanban: kanbanConfig,
   triggerSystem: configTriggerSystem,
   agentPrompts,
@@ -2792,24 +2782,6 @@ function getActiveKanbanBackend() {
   }
 }
 
-function isVkBackendActive() {
-  return getActiveKanbanBackend() === "vk";
-}
-
-function isVkRuntimeRequired() {
-  const backend = getActiveKanbanBackend();
-  const runtimeExecutorMode = getExecutorMode();
-  return (
-    backend === "vk" ||
-    runtimeExecutorMode === "vk" ||
-    runtimeExecutorMode === "hybrid"
-  );
-}
-
-function isVkSpawnAllowed() {
-  return vkSpawnEnabled && isVkRuntimeRequired();
-}
-
 // ── Workspace monitor: track agent workspaces with git state + stuck detection ──
 const workspaceMonitor = new WorkspaceMonitor({
   cacheDir: resolve(repoRoot, ".cache", "workspace-logs"),
@@ -3034,9 +3006,7 @@ let pendingRestart = false;
 let skipNextAnalyze = false;
 let skipNextRestartCount = false;
 
-// Cached VK repo ID (lazy loaded on first PR/rebase call)
-let cachedRepoId = null;
-// Cached VK project ID (lazy loaded)
+// Cached project ID (lazy loaded)
 let cachedProjectId = null;
 let watcher = null;
 let watcherDebounce = null;
@@ -3124,6 +3094,9 @@ function buildCodexSdkOptionsForMonitor() {
             wire_api: "responses",
           },
         },
+        features: {
+          remote_models: false,
+        },
         ...(azureModel ? { model: azureModel } : {}),
       },
     };
@@ -3181,55 +3154,6 @@ function getTelegramBotStartOptions() {
     suppressPortalAutoOpen: restartReason.length > 0,
   };
 }
-let vkRecoveryLastAt = 0;
-let vkNonJsonNotifiedAt = 0;
-let vkNonJsonContentTypeLoggedAt = 0;
-let vkInvalidResponseLoggedAt = 0;
-let vkErrorBurstStartedAt = 0;
-let vkErrorBurstCount = 0;
-let vkErrorSuppressedUntil = 0;
-let vkErrorSuppressionReason = "";
-let vkErrorSuppressionMs = 0;
-const VK_ERROR_SUPPRESSION_DISABLED =
-  isTruthyFlag(process.env.VITEST) ||
-  String(process.env.NODE_ENV || "").toLowerCase() === "test";
-const VK_ERROR_BURST_WINDOW_MS = 30_000;
-const VK_ERROR_BURST_THRESHOLD = 3;
-const VK_ERROR_SUPPRESSION_MS = 60_000;
-const VK_ERROR_SUPPRESSION_MAX_MS = 5 * 60_000;
-const VK_WARNING_THROTTLE_DISABLED = VK_ERROR_SUPPRESSION_DISABLED;
-const VK_WARNING_THROTTLE_MS = 5 * 60_000;
-const vkWarningLastAt = new Map();
-let vibeKanbanProcess = null;
-let vibeKanbanStartedAt = 0;
-
-// ── VK WebSocket log stream — captures real-time agent logs from execution processes ──
-let vkLogStream = null;
-
-// ── VK Error Resolver — auto-resolves errors from VK logs ──
-let vkErrorResolver = null;
-let vkSessionDiscoveryTimer = null;
-let vkSessionDiscoveryInFlight = false;
-const vkSessionCache = new Map();
-
-const VK_SESSION_KEEP_STATUSES = new Set([
-  "running",
-  "review",
-  "manual_review",
-  "in_review",
-  "inreview",
-]);
-
-function normalizeAttemptStatus(status) {
-  return String(status || "")
-    .toLowerCase()
-    .trim()
-    .replace(/[\s-]+/g, "_");
-}
-
-function shouldKeepSessionForStatus(status) {
-  return VK_SESSION_KEEP_STATUSES.has(normalizeAttemptStatus(status));
-}
 
 // ── Anomaly detector — plaintext pattern matching for death loops, stalls, etc. ──
 let anomalyDetector = null;
@@ -3272,7 +3196,6 @@ const mergeNotified = new Set();
 const pendingMerges = new Set();
 const errorNotified = new Map();
 const mergeFailureNotified = new Map();
-const vkErrorNotified = new Map();
 const telegramDedup = new Map();
 
 // ── Deduplication tracking (utilities imported from utils.mjs) ───────────────
@@ -3467,10 +3390,6 @@ function restartSelf(reason) {
   // Now we do the same graceful shutdown as selfRestartForSourceChange().
   console.warn(`[monitor] graceful restart — ${reason || "unknown"}`);
   shuttingDown = true;
-  if (vkLogStream) {
-    vkLogStream.stop();
-    vkLogStream = null;
-  }
   const shutdownPromises = [];
   if (agentEndpoint) {
     shutdownPromises.push(
@@ -4035,7 +3954,7 @@ const infraErrorPatterns = [
   /rebase cooldown/i,
   /worktree.*has (rebase in progress|uncommitted changes)/i,
   /No worktree found/i,
-  /VK rebase (failed|unavailable)/i,
+  /rebase (failed|unavailable)/i,
   /git fetch failed in worktree/i,
   /Cannot rebase/i,
   /merge conflict.*not auto-resolvable/i,
@@ -4158,8 +4077,6 @@ const errorNoisePatterns = [
   /^\s*\[\d{2}:\d{2}:\d{2}\]\s+Merge failure reason:/i,
   /^\s*\[\d{2}:\d{2}:\d{2}\]\s+Retry merge failed for PR/i,
   /^\s*\[\d{2}:\d{2}:\d{2}\]\s+Auto-merge enable failed:/i,
-  /^\s*\[\d{2}:\d{2}:\d{2}\]\s+Failed to initialize vibe-kanban configuration/i,
-  /HTTP GET http:\/\/127\.0\.0\.1:54089\/api\/projects failed/i,
   // Stats summary line (contains "Failed" as a counter, not an error)
   /First-shot:.*Failed:/i,
   // Attempt lifecycle lines that include "failed" but are expected status updates
@@ -4191,9 +4108,8 @@ const errorNoisePatterns = [
   /Direct merge-rebase (succeeded|failed)/i,
   /Branch .* is on rebase cooldown/i,
   /Worktree .* has (rebase in progress|uncommitted changes)/i,
-  /No worktree found for .* — using VK API/i,
+  /No worktree found for .* — skipping/i,
   /Cannot rebase: (working tree is dirty|git rebase already in progress)/i,
-  /VK rebase (failed|requested|unavailable)/i,
   /git fetch failed in worktree/i,
   // ── Benign "error" mentions in summary/stats lines ──
   /errors?[=:]\s*0\b/i,
@@ -4204,21 +4120,8 @@ const errorNoisePatterns = [
   /\bsuccess\b.*\berrors?\b/i,
 ];
 
-const vkErrorPatterns = [
-  /Failed to initialize vibe-kanban configuration/i,
-  /HTTP GET http:\/\/127\.0\.0\.1:54089\/api\/projects failed/i,
-];
-
 function notifyErrorLine(line) {
   if (!telegramToken || !telegramChatId) {
-    return;
-  }
-  if (vkErrorPatterns.some((pattern) => pattern.test(line))) {
-    // Only forward VK errors when VK backend is actually active.
-    // Prevents stale stdout lines from triggering false Telegram alerts.
-    if (isVkBackendActive()) {
-      notifyVkError(line);
-    }
     return;
   }
 
@@ -4236,42 +4139,6 @@ function notifyErrorLine(line) {
   }
   errorNotified.set(key, now);
   queueErrorMessage(line.trim());
-}
-
-function notifyVkError(line) {
-  // In GitHub/Jira/internal-only modes, VK outages are non-actionable noise.
-  // Suppress alerts to avoid false-positive reliability digests.
-  if (!isVkBackendActive()) {
-    return;
-  }
-  // If the user explicitly disabled VK spawning they know VK isn't running —
-  // spamming "unreachable" every 10 minutes is pure noise.
-  if (!vkSpawnEnabled) {
-    return;
-  }
-  const key = "vibe-kanban-unavailable";
-  const now = Date.now();
-  const last = vkErrorNotified.get(key) || 0;
-  if (now - last < 10 * 60 * 1000) {
-    return;
-  }
-  vkErrorNotified.set(key, now);
-  const vkLink = formatHtmlLink(vkEndpointUrl, "VK_ENDPOINT_URL");
-  const publicLink = vkPublicUrl
-    ? formatHtmlLink(vkPublicUrl, "Public URL")
-    : null;
-  const message = [
-    `${projectName} Orchestrator Warning`,
-    "Vibe-Kanban API unreachable.",
-    `Check ${vkLink} and ensure the service is running.`,
-    publicLink ? `Open ${publicLink}.` : null,
-  ]
-    .filter(Boolean)
-    .join("\n");
-  runDetached("vk-error:notify", () =>
-    sendTelegramMessage(message, { parseMode: "HTML" }),
-  );
-  runDetached("vk-error:trigger-recovery", () => triggerVibeKanbanRecovery(line));
 }
 
 function notifyCodexTrigger(context) {
@@ -4295,7 +4162,7 @@ async function runCodexRecovery(reason) {
     const codex = new CodexClient(buildCodexSdkOptionsForMonitor());
     const thread = codex.startThread({ skipGitRepoCheck: true, workingDirectory: repoRoot, approvalPolicy: "never" });
     const prompt = `You are monitoring a Node.js orchestrator.
-A local service (vibe-kanban) is unreachable.
+A service issue was detected.
 Provide a short recovery plan and validate environment assumptions.
 Reason: ${reason}`;
     const result = await thread.run(prompt);
@@ -4307,308 +4174,6 @@ Reason: ${reason}`;
     const outPath = resolve(logDir, `codex-recovery-${nowStamp()}.txt`);
     await writeFile(outPath, `Codex recovery failed: ${message}\n`, "utf8");
     return null;
-  }
-}
-
-let vkRestartCount = 0;
-const vkMaxRestarts = 20;
-const vkRestartDelayMs = 5000;
-
-async function startVibeKanbanProcess() {
-  if (!isVkSpawnAllowed()) {
-    return;
-  }
-  if (vibeKanbanProcess && !vibeKanbanProcess.killed) {
-    return;
-  }
-
-  // ── Guard: if the API is already reachable (e.g. detached from a previous
-  // monitor instance), adopt it instead of spawning a new copy that will
-  // crash with EADDRINUSE/exit-code-1.
-  if (await isVibeKanbanOnline()) {
-    console.log(
-      `[monitor] vibe-kanban already online at ${vkEndpointUrl} — skipping spawn`,
-    );
-    vkRestartCount = 0;
-    return;
-  }
-
-  // ── Kill any stale process holding the port ───────────────────────
-  try {
-    const isWindows = process.platform === "win32";
-    let stalePid;
-    const protectedPids = new Set([String(process.pid), String(process.ppid)]);
-
-    if (isWindows) {
-      const portCheck = execSync(
-        `netstat -aon | findstr ":${vkRecoveryPort}.*LISTENING"`,
-        { encoding: "utf8", timeout: 5000, stdio: "pipe" },
-      ).trim();
-      const pidMatch = portCheck.match(/(\d+)\s*$/);
-      if (pidMatch && !protectedPids.has(pidMatch[1])) {
-        stalePid = pidMatch[1];
-      }
-    } else if (commandExists("lsof")) {
-      // Linux/macOS: use lsof when available
-      const portCheck = execSync(`lsof -ti :${vkRecoveryPort}`, {
-        encoding: "utf8",
-        timeout: 5000,
-        stdio: "pipe",
-      }).trim();
-      const pids = portCheck.split("\n").filter((p) => p.trim());
-      // Filter out own process tree to avoid self-kill
-      const safePids = pids.filter((p) => !protectedPids.has(p));
-      if (safePids.length > 0) {
-        stalePid = safePids[0];
-      } else if (pids.length > 0) {
-        console.log(
-          `[monitor] port ${vkRecoveryPort} held by own process tree (PIDs: ${pids.join(", ")}) — skipping kill`,
-        );
-      }
-    } else {
-      console.warn(
-        `[monitor] lsof not found on PATH; skipping stale PID scan for port ${vkRecoveryPort}`,
-      );
-    }
-
-    if (stalePid) {
-      console.log(
-        `[monitor] sending SIGTERM to stale process ${stalePid} on port ${vkRecoveryPort}`,
-      );
-      try {
-        if (isWindows) {
-          const killRes = spawnSync(
-            "taskkill",
-            ["/F", "/PID", String(stalePid)],
-            {
-              encoding: "utf8",
-              timeout: 5000,
-              windowsHide: true,
-              stdio: ["ignore", "pipe", "pipe"],
-            },
-          );
-          if (killRes.status !== 0) {
-            const detail = String(
-              killRes.stderr ||
-                killRes.stdout ||
-                killRes.error?.message ||
-                "taskkill failed",
-            ).toLowerCase();
-            if (
-              !detail.includes("no running instance") &&
-              !detail.includes("not found")
-            ) {
-              console.warn(
-                `[monitor] failed to kill stale PID ${stalePid} on port ${vkRecoveryPort}: ${String(
-                  killRes.stderr ||
-                    killRes.stdout ||
-                    killRes.error?.message ||
-                    `exit ${killRes.status}`,
-                ).slice(0, 200)}`,
-              );
-            }
-          }
-        } else {
-          // Graceful SIGTERM first, then escalate if still alive
-          execSync(`kill ${stalePid}`, {
-            timeout: 5000,
-            stdio: "pipe",
-          });
-        }
-      } catch {
-        /* best effort */
-      }
-      // Brief delay so the OS releases the port
-      await new Promise((r) => setTimeout(r, 1500));
-    }
-  } catch {
-    /* no process on port — fine */
-  }
-
-  const env = {
-    ...process.env,
-    PORT: vkRecoveryPort,
-    HOST: vkRecoveryHost,
-  };
-
-  // Prefer locally-installed vibe-kanban binary (from npm dependency),
-  // fall back to npx for global/remote installs.
-  const vkBin = resolve(__dirname, "node_modules", ".bin", "vibe-kanban");
-  const useLocal = existsSync(vkBin) || existsSync(vkBin + ".cmd");
-  const spawnCmd = useLocal
-    ? process.platform === "win32"
-      ? vkBin + ".cmd"
-      : vkBin
-    : "npx";
-  const spawnArgs = useLocal ? [] : ["--yes", "vibe-kanban"];
-
-  console.log(
-    `[monitor] starting vibe-kanban via ${useLocal ? "local bin" : "npx"} (HOST=${vkRecoveryHost} PORT=${vkRecoveryPort}, endpoint=${vkEndpointUrl})`,
-  );
-
-  // Use shell: true only when running through npx (string command).
-  // When using the local binary directly, avoid shell to prevent DEP0190
-  // deprecation warning ("Passing args to child process with shell true").
-  const useShell = process.platform === "win32" || !useLocal;
-  const spawnOptions = {
-    env,
-    cwd: repoRoot,
-    stdio: "ignore",
-    shell: useShell,
-    detached: true,
-  };
-  if (useShell && spawnArgs.length > 0) {
-    const shellQuote = (value) => {
-      const str = String(value);
-      if (!/\s/.test(str)) return str;
-      const escaped = str.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-      return `"${escaped}"`;
-    };
-    const fullCommand = [spawnCmd, ...spawnArgs].map(shellQuote).join(" ");
-    vibeKanbanProcess = spawn(fullCommand, spawnOptions);
-  } else if (useShell) {
-    vibeKanbanProcess = spawn(spawnCmd, spawnOptions);
-  } else {
-    vibeKanbanProcess = spawn(spawnCmd, spawnArgs, spawnOptions);
-  }
-  vibeKanbanProcess.unref();
-  vibeKanbanStartedAt = Date.now();
-
-  vibeKanbanProcess.on("error", (err) => {
-    vibeKanbanProcess = null;
-    vibeKanbanStartedAt = 0;
-    const message = err && err.message ? err.message : String(err);
-    console.warn(`[monitor] vibe-kanban spawn error: ${message}`);
-    scheduleVibeKanbanRestart();
-  });
-
-  vibeKanbanProcess.on("exit", (code, signal) => {
-    vibeKanbanProcess = null;
-    vibeKanbanStartedAt = 0;
-    const reason = signal ? `signal ${signal}` : `exit code ${code}`;
-    console.warn(`[monitor] vibe-kanban exited (${reason})`);
-    if (!shuttingDown) {
-      scheduleVibeKanbanRestart();
-    }
-  });
-}
-
-function scheduleVibeKanbanRestart() {
-  if (shuttingDown) return;
-  if (!isVkSpawnAllowed()) return;
-  vkRestartCount++;
-  if (vkRestartCount > vkMaxRestarts) {
-    console.error(
-      `[monitor] vibe-kanban exceeded ${vkMaxRestarts} restarts, giving up`,
-    );
-    if (telegramToken && telegramChatId) {
-      runDetached("vk-runtime:restart-limit-notify", () => sendTelegramMessage(
-        `Vibe-kanban exceeded ${vkMaxRestarts} restart attempts. Manual intervention required.`,
-      ));
-    }
-    return;
-  }
-  const delay = Math.min(vkRestartDelayMs * vkRestartCount, 60000);
-  console.log(
-    `[monitor] restarting vibe-kanban in ${delay}ms (attempt ${vkRestartCount}/${vkMaxRestarts})`,
-  );
-  safeSetTimeout("vk-runtime:restart", () =>
-    runDetached("vk-runtime:restart", () => startVibeKanbanProcess()), delay);
-}
-
-async function canConnectTcp(host, port, timeoutMs = 1200) {
-  return new Promise((resolve) => {
-    const socket = net.connect({ host, port: Number(port) });
-    const done = (ok) => {
-      try {
-        socket.destroy();
-      } catch {
-        /* best effort */
-      }
-      resolve(ok);
-    };
-    socket.setTimeout(timeoutMs);
-    socket.once("connect", () => done(true));
-    socket.once("timeout", () => done(false));
-    socket.once("error", () => done(false));
-  });
-}
-
-async function isVibeKanbanOnline() {
-  if (!isVkRuntimeRequired()) {
-    return false;
-  }
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 2000);
-  try {
-    const res = await fetchWithFallback(`${vkEndpointUrl}/api/projects`, {
-      signal: controller.signal,
-    });
-    // Any HTTP response means the service is up, even if auth/route fails.
-    return true;
-  } catch {
-    return await canConnectTcp(vkRecoveryHost, vkRecoveryPort);
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function ensureVibeKanbanRunning() {
-  if (!isVkRuntimeRequired()) {
-    return;
-  }
-  if (!isVkSpawnAllowed()) {
-    if (await isVibeKanbanOnline()) {
-      ensureVkLogStream();
-    }
-    return;
-  }
-  if (await isVibeKanbanOnline()) {
-    // Reset restart counter on successful health check
-    vkRestartCount = 0;
-    // Start VK log stream if not already running
-    ensureVkLogStream();
-    return;
-  }
-  // If process is alive, give it 15s grace to start up
-  if (vibeKanbanProcess && !vibeKanbanProcess.killed) {
-    const graceMs = 15000;
-    if (vibeKanbanStartedAt && Date.now() - vibeKanbanStartedAt < graceMs) {
-      return;
-    }
-    // Process alive but API not responding — kill and let auto-restart handle it
-    console.warn(
-      "[monitor] vibe-kanban process alive but API unresponsive, killing",
-    );
-    try {
-      vibeKanbanProcess.kill();
-    } catch {
-      /* best effort */
-    }
-    return;
-  }
-  // No process running — start fresh
-  await startVibeKanbanProcess();
-}
-
-function restartVibeKanbanProcess() {
-  if (!isVkSpawnAllowed()) {
-    return;
-  }
-  // Stop log stream — will restart when VK comes back online
-  if (vkLogStream) {
-    vkLogStream.stop();
-    vkLogStream = null;
-  }
-  // Just kill the process — the exit handler will auto-restart it
-  if (vibeKanbanProcess && !vibeKanbanProcess.killed) {
-    try {
-      vibeKanbanProcess.kill();
-    } catch {
-      /* best effort */
-    }
-  } else {
-    void startVibeKanbanProcess();
   }
 }
 
@@ -4631,30 +4196,14 @@ function ensureAnomalyDetector() {
         `[anomaly-detector] ${icon} ${anomaly.severity} ${anomaly.type} [${anomaly.shortId}]: ${anomaly.message}`,
       );
 
-      // Act on kill/restart actions — write signal file for the orchestrator
-      // AND directly kill the VK process WebSocket to stop further resource
-      // wastage immediately. The signal file ensures the orchestrator also
+      // Act on kill/restart actions — write signal file for the orchestrator.
+      // The signal file ensures the orchestrator also
       // archives and retries the attempt on its next loop.
       if (anomaly.action === "kill" || anomaly.action === "restart") {
         console.warn(
           `[anomaly-detector] writing signal for action="${anomaly.action}" ${anomaly.type} on process ${anomaly.shortId}`,
         );
         writeAnomalySignal(anomaly);
-
-        // Directly kill the VK log stream for this process so the agent
-        // stops consuming compute immediately. Don't wait for the
-        // orchestrator's next poll cycle.
-        if (vkLogStream && anomaly.processId) {
-          const killed = vkLogStream.killProcess(
-            anomaly.processId,
-            `anomaly: ${anomaly.type} (${anomaly.action})`,
-          );
-          if (killed) {
-            console.warn(
-              `[anomaly-detector] killed VK process stream ${anomaly.shortId} directly`,
-            );
-          }
-        }
       }
     }),
     notify: (text, options) => {
@@ -4669,10 +4218,6 @@ function ensureAnomalyDetector() {
 }
 
 function getAnomalyStatusReport() {
-  if (!isVkRuntimeRequired()) {
-    const backend = getActiveKanbanBackend();
-    return `Anomaly detector inactive (VK runtime not required; backend=${backend}, executorMode=${executorMode}).`;
-  }
   if (!anomalyDetector) {
     ensureAnomalyDetector();
   }
@@ -4682,573 +4227,12 @@ function getAnomalyStatusReport() {
 }
 
 /**
- * Ensure the VK log stream is running. Creates a new VkLogStream instance
- * if one doesn't exist, connecting to VK's execution-process WebSocket
- * endpoints to capture real-time agent stdout/stderr.
- *
- * Two log outputs:
- *   1. Raw per-process logs → .cache/agent-logs/vk-exec-{shortId}.log
- *   2. Structured session logs → logs/vk-sessions/vk-session-{stamp}-{shortId}.log
- *      (mirrors codex-exec format with task metadata headers for autofix analysis)
- *
- * Discovery model: No REST list endpoint exists for execution processes.
- * Instead, connectToSession(sessionId) is called when sessions are created
- * (see startFreshSession). On startup, we also scan active_attempts for any
- * existing session IDs to connect to.
- */
-function ensureVkLogStream() {
-  if (!isVkRuntimeRequired()) return;
-  if (vkLogStream) return;
-  console.log("[monitor] ensureVkLogStream: creating VkLogStream instance");
-
-  // Keep the detector running even when VK stream is reconnecting.
-  ensureAnomalyDetector();
-
-  const agentLogDir = resolve(repoRoot, ".cache", "agent-logs");
-  const sessionLogDir = resolve(__dirname, "..", "logs", "vk-sessions");
-  vkLogStream = new VkLogStream(vkEndpointUrl, {
-    logDir: agentLogDir,
-    sessionLogDir,
-    // Always keep VK log streaming silent in the CLI.
-    echo: false,
-    filterLine: (line) => {
-      // Drop verbose VK/Codex event chatter and token streams.
-      if (!line) return false;
-      if (line.length > 6000) return false;
-      if (line.startsWith('{"method":"codex/event/')) return false;
-      if (line.startsWith('{"method":"item/')) return false;
-      if (line.startsWith('{"method":"thread/')) return false;
-      if (line.startsWith('{"method":"account/')) return false;
-      if (line.includes('"type":"reasoning_content_delta"')) return false;
-      if (line.includes('"type":"agent_reasoning_delta"')) return false;
-      if (line.includes('"type":"token_count"')) return false;
-      if (line.includes('"type":"item_started"')) return false;
-      if (line.includes('"type":"item_completed"')) return false;
-      if (line.includes('"type":"exec_command_begin"')) return false;
-      if (line.includes('"type":"exec_command_output_delta"')) return false;
-      if (line.includes('"type":"exec_command_end"')) return false;
-      if (line.includes('"method":"codex/event/reasoning_content_delta"'))
-        return false;
-      if (line.includes('"method":"codex/event/agent_reasoning_delta"'))
-        return false;
-      if (line.includes('"method":"codex/event/token_count"')) return false;
-      if (line.includes('"method":"codex/event/item_started"')) return false;
-      if (line.includes('"method":"codex/event/item_completed"')) return false;
-      if (line.includes('"method":"codex/event/exec_command_')) return false;
-      if (line.includes('"method":"item/reasoning/summaryTextDelta"'))
-        return false;
-      if (line.includes('"method":"item/commandExecution/outputDelta"'))
-        return false;
-      if (line.includes('"method":"codex/event/agent_reasoning"')) return false;
-      return true;
-    },
-    onLine: (line, meta) => {
-      // Feed every agent log line to the anomaly detector for real-time
-      // pattern matching (death loops, token overflow, stalls, etc.).
-      if (anomalyDetector) {
-        try {
-          anomalyDetector.processLine(line, meta);
-        } catch {
-          /* detector error — non-fatal */
-        }
-      }
-
-      // Feed log lines to VK error resolver for auto-resolution
-      if (vkErrorResolver) {
-        try {
-          void vkErrorResolver.handleLogLine(line);
-        } catch (err) {
-          console.error(`[monitor] vkErrorResolver error: ${err.message}`);
-        }
-      }
-    },
-    onProcessConnected: (processId, meta) => {
-      // When a new execution process is discovered via the session stream,
-      // look up task metadata from status data and enrich the process
-      void (async () => {
-        try {
-          const statusData = await readStatusData();
-          const attempts = statusData?.attempts || {};
-          // Find the attempt that matches this session
-          // VK processes belong to sessions which belong to workspaces (= attempts)
-          for (const [attemptId, info] of Object.entries(attempts)) {
-            if (!info) continue;
-            // Match by session_id if available, or if the process was connected
-            // for a session belonging to this attempt
-            if (
-              meta.sessionId &&
-              (info.session_id === meta.sessionId ||
-                attemptId === meta.sessionId)
-            ) {
-              vkLogStream.setProcessMeta(processId, {
-                attemptId,
-                taskId: info.task_id,
-                taskTitle: info.task_title || info.name,
-                branch: info.branch,
-                sessionId: meta.sessionId,
-                executor: info.executor,
-                executorVariant: info.executor_variant,
-              });
-              break;
-            }
-          }
-        } catch {
-          /* best effort */
-        }
-      })();
-    },
-  });
-  vkLogStream.start();
-
-  // Initialize VK error resolver
-  const vkAutoResolveEnabled = config.vkAutoResolveErrors ?? true;
-  if (vkAutoResolveEnabled) {
-    console.log("[monitor] initializing VK error resolver...");
-    vkErrorResolver = new VKErrorResolver(repoRoot, vkEndpointUrl, {
-      enabled: true,
-      onResolve: (resolution) => {
-        console.log(
-          `[monitor] VK auto-resolution: ${resolution.errorType} - ${resolution.result.success ? "✓ success" : "✗ failed"}`,
-        );
-
-        // Notify via Telegram
-        const emoji = resolution.result.success ? ":bot:" : ":alert:";
-        const status = resolution.result.success ? "resolved" : "failed";
-        const branch =
-          resolution.context.branch || `PR #${resolution.context.prNumber}`;
-        notify(`${emoji} Auto-${status} ${resolution.errorType} on ${branch}`);
-      },
-    });
-    console.log("[monitor] VK error resolver initialized");
-  }
-
-  // Discover any active sessions immediately and keep polling for new sessions.
-  // Explicit catch ensures unexpected regressions never surface as unhandled rejections.
-  refreshVkSessionStreams("startup").catch((err) => {
-    console.warn(
-      `[monitor] refreshVkSessionStreams(startup) unexpected rejection: ${err?.message || err}`,
-    );
-  });
-  ensureVkSessionDiscoveryLoop();
-}
-
-function ensureVkSessionDiscoveryLoop() {
-  if (vkSessionDiscoveryTimer) return;
-  if (!Number.isFinite(vkEnsureIntervalMs) || vkEnsureIntervalMs <= 0) return;
-  vkSessionDiscoveryTimer = setInterval(() => {
-    refreshVkSessionStreams("periodic").catch((err) => {
-      console.warn(
-        `[monitor] refreshVkSessionStreams(periodic) unexpected rejection: ${err?.message || err}`,
-      );
-    });
-  }, vkEnsureIntervalMs);
-}
-
-async function refreshVkSessionStreams(reason = "manual") {
-  if (!vkLogStream) {
-    console.log(`[monitor] refreshVkSessionStreams(${reason}): no vkLogStream`);
-    return;
-  }
-  if (vkSessionDiscoveryInFlight) return;
-  vkSessionDiscoveryInFlight = true;
-
-  try {
-    // ── 1. Collect attempts from orchestrator status file ──────────────
-    const statusData = await readStatusData();
-    const statusAttempts = statusData?.attempts || {};
-    const statusDataAvailable = !!statusData;
-
-    // ── 2. Also query VK directly for all non-archived attempts ────────
-    //    The status file can be stale/incomplete (e.g. after restarts or
-    //    when attempts were submitted in previous orchestrator cycles).
-    let vkAttempts = [];
-    let vkAttemptsAvailable = false;
-    try {
-      const vkRes = await fetchVk("/api/task-attempts?archived=false");
-      if (vkRes?.success && Array.isArray(vkRes.data)) {
-        vkAttempts = vkRes.data;
-        vkAttemptsAvailable = true;
-      }
-    } catch (err) {
-      console.warn(
-        `[monitor] refreshVkSessionStreams: VK attempt fetch failed: ${err.message}`,
-      );
-    }
-
-    const allowedAttemptIds = new Set();
-    const allowedSessions = new Set();
-
-    // ── 3. Merge: build unified map of attemptId → metadata ───────────
-    /** @type {Map<string, {task_id?:string, task_title?:string, branch?:string, session_id?:string, executor?:string, executor_variant?:string}>} */
-    const mergedAttempts = new Map();
-
-    // Status file attempts (mark running + review states)
-    for (const [attemptId, info] of Object.entries(statusAttempts)) {
-      if (!attemptId || !info) continue;
-      if (!shouldKeepSessionForStatus(info.status)) continue;
-      allowedAttemptIds.add(attemptId);
-      if (info.session_id) {
-        allowedSessions.add(info.session_id);
-      }
-      mergedAttempts.set(attemptId, {
-        task_id: info.task_id,
-        task_title: info.task_title || info.name,
-        branch: info.branch,
-        session_id: info.session_id,
-        executor: info.executor,
-        executor_variant: info.executor_variant,
-        source: "status",
-      });
-    }
-
-    // VK API attempts (add any not already present from status file)
-    for (const vkAttempt of vkAttempts) {
-      if (!vkAttempt?.id) continue;
-      if (mergedAttempts.has(vkAttempt.id)) continue; // status file takes precedence
-      const vkStatus = vkAttempt.status ?? vkAttempt.state ?? "";
-      if (vkStatus && !shouldKeepSessionForStatus(vkStatus)) {
-        continue;
-      }
-      allowedAttemptIds.add(vkAttempt.id);
-      mergedAttempts.set(vkAttempt.id, {
-        task_id: vkAttempt.task_id,
-        task_title: vkAttempt.name,
-        branch: vkAttempt.branch,
-        session_id: null,
-        executor: null,
-        executor_variant: null,
-        source: "vk-api",
-      });
-    }
-
-    console.log(
-      `[monitor] refreshVkSessionStreams(${reason}): ${mergedAttempts.size} attempts ` +
-        `(${Object.values(statusAttempts).filter((i) => i?.status === "running").length} status + ` +
-        `${vkAttempts.length} vk-api, merged)`,
-    );
-
-    // Keep cached sessions for allowed attempts
-    for (const attemptId of allowedAttemptIds) {
-      const cachedSession = vkSessionCache.get(attemptId);
-      if (cachedSession) {
-        allowedSessions.add(cachedSession);
-      }
-    }
-
-    // ── 4. Discover sessions and connect ──────────────────────────────
-    for (const [attemptId, info] of mergedAttempts) {
-      let sessionId = info.session_id || vkSessionCache.get(attemptId) || null;
-
-      if (!sessionId) {
-        sessionId = await fetchLatestVkSessionId(attemptId);
-        if (sessionId) {
-          vkSessionCache.set(attemptId, sessionId);
-          console.log(
-            `[monitor] refreshVkSessionStreams: discovered session ${sessionId.slice(0, 8)} for attempt ${attemptId.slice(0, 8)} (${info.source})`,
-          );
-        }
-      }
-
-      if (!sessionId) continue; // no session yet — will retry next cycle
-
-      allowedSessions.add(sessionId);
-      vkLogStream.setProcessMeta(attemptId, {
-        attemptId,
-        taskId: info.task_id,
-        taskTitle: info.task_title,
-        branch: info.branch,
-        sessionId,
-        executor: info.executor,
-        executorVariant: info.executor_variant,
-      });
-      vkLogStream.connectToSession(sessionId);
-    }
-
-    if (statusDataAvailable || vkAttemptsAvailable) {
-      for (const attemptId of Array.from(vkSessionCache.keys())) {
-        if (!allowedAttemptIds.has(attemptId)) {
-          vkSessionCache.delete(attemptId);
-        }
-      }
-      if (vkLogStream?.pruneSessions) {
-        const pruned = vkLogStream.pruneSessions(
-          allowedSessions,
-          "session no longer active",
-        );
-        if (pruned > 0) {
-          console.log(
-            `[monitor] refreshVkSessionStreams(${reason}): pruned ${pruned} stale session streams`,
-          );
-        }
-      }
-    }
-  } catch (err) {
-    console.warn(
-      `[monitor] VK session discovery (${reason}) failed: ${err.message || err}`,
-    );
-  } finally {
-    vkSessionDiscoveryInFlight = false;
-  }
-}
-
-async function fetchLatestVkSessionId(workspaceId) {
-  const res = await fetchVk(
-    `/api/sessions?workspace_id=${encodeURIComponent(workspaceId)}`,
-  );
-  if (!res?.success || !Array.isArray(res.data)) return null;
-  const sessions = res.data;
-  if (!sessions.length) return null;
-  const ordered = sessions.slice().sort((a, b) => {
-    const aTs = Date.parse(a?.updated_at || a?.created_at || 0) || 0;
-    const bTs = Date.parse(b?.updated_at || b?.created_at || 0) || 0;
-    return bTs - aTs;
-  });
-  return ordered[0]?.id || null;
-}
-
-async function triggerVibeKanbanRecovery(reason) {
-  if (!isVkSpawnAllowed()) {
-    return;
-  }
-  const now = Date.now();
-  const cooldownMs = vkRecoveryCooldownMin * 60 * 1000;
-  if (now - vkRecoveryLastAt < cooldownMs) {
-    return;
-  }
-  vkRecoveryLastAt = now;
-
-  if (telegramToken && telegramChatId) {
-    const link = formatHtmlLink(vkEndpointUrl, "VK_ENDPOINT_URL");
-    const notice = codexEnabled
-      ? `Codex recovery triggered: vibe-kanban unreachable. Attempting restart. (${link})`
-      : `Vibe-kanban recovery triggered (Codex disabled). Attempting restart. (${link})`;
-    void sendTelegramMessage(notice, { parseMode: "HTML" });
-  }
-  await runCodexRecovery(reason || "vibe-kanban unreachable");
-  restartVibeKanbanProcess();
-}
-
-// ── VK API client ───────────────────────────────────────────────────────────
-
-/**
- * Generic HTTP client for the Vibe-Kanban REST API.
- * @param {string} path  - API path (e.g. "/api/projects")
- * @param {object} [opts] - { method, body, timeoutMs }
- * @returns {Promise<object|null>} Parsed JSON body, or null on failure.
- */
-function resetVkErrorBurst() {
-  vkErrorBurstStartedAt = 0;
-  vkErrorBurstCount = 0;
-  vkErrorSuppressedUntil = 0;
-  vkErrorSuppressionReason = "";
-  vkErrorSuppressionMs = VK_ERROR_SUPPRESSION_MS;
-}
-
-function noteVkErrorBurst(reason) {
-  if (VK_ERROR_SUPPRESSION_DISABLED) return;
-  const now = Date.now();
-  if (
-    !vkErrorBurstStartedAt ||
-    now - vkErrorBurstStartedAt > VK_ERROR_BURST_WINDOW_MS
-  ) {
-    vkErrorBurstStartedAt = now;
-    vkErrorBurstCount = 0;
-  }
-  vkErrorBurstCount += 1;
-  if (vkErrorBurstCount >= VK_ERROR_BURST_THRESHOLD) {
-    if (!vkErrorSuppressionMs) {
-      vkErrorSuppressionMs = VK_ERROR_SUPPRESSION_MS;
-    }
-    vkErrorSuppressedUntil = now + vkErrorSuppressionMs;
-    vkErrorSuppressionReason = reason || "vk-unavailable";
-    vkErrorBurstCount = 0;
-    vkErrorBurstStartedAt = now;
-    console.warn(
-      `[monitor] fetchVk suppressing VK requests for ${Math.round(
-        vkErrorSuppressionMs / 1000,
-      )}s (reason: ${vkErrorSuppressionReason})`,
-    );
-    vkErrorSuppressionMs = Math.min(
-      (vkErrorSuppressionMs || VK_ERROR_SUPPRESSION_MS) * 2,
-      VK_ERROR_SUPPRESSION_MAX_MS,
-    );
-  }
-}
-
-function shouldSuppressVkRequest(method) {
-  if (VK_ERROR_SUPPRESSION_DISABLED) return false;
-  const now = Date.now();
-  if (vkErrorSuppressedUntil && now < vkErrorSuppressedUntil) {
-    // Allow non-GET methods to attempt recovery actions.
-    return method === "GET";
-  }
-  return false;
-}
-
-function shouldLogVkWarning(key, intervalMs = VK_WARNING_THROTTLE_MS) {
-  if (VK_WARNING_THROTTLE_DISABLED) return true;
-  const now = Date.now();
-  const last = vkWarningLastAt.get(key) || 0;
-  if (now - last < intervalMs) {
-    return false;
-  }
-  vkWarningLastAt.set(key, now);
-  return true;
-}
-
-async function fetchVk(path, opts = {}) {
-  // Guard: if VK backend is not active, return null immediately instead of
-  // attempting to connect. This prevents "fetch failed" spam when using
-  // GitHub/Jira backends.
-  const backend = getActiveKanbanBackend();
-  if (backend !== "vk") {
-    // Silent return for non-VK backends to avoid polluting logs
-    return null;
-  }
-
-  const url = `${vkEndpointUrl}${path.startsWith("/") ? path : "/" + path}`;
-  const method = (opts.method || "GET").toUpperCase();
-  if (shouldSuppressVkRequest(method)) {
-    return null;
-  }
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), opts.timeoutMs || 15000);
-
-  let res;
-  try {
-    const fetchOpts = {
-      method,
-      signal: controller.signal,
-      headers: { "Content-Type": "application/json" },
-    };
-    if (opts.body && method !== "GET") {
-      fetchOpts.body = JSON.stringify(opts.body);
-    }
-    res = await fetchWithFallback(url, fetchOpts);
-  } catch (err) {
-    // Network error, timeout, abort, etc. - res is undefined
-    const msg = err?.message || String(err);
-    if (!msg.includes("abort")) {
-      if (shouldLogVkWarning("network-error")) {
-        console.warn(`[monitor] fetchVk ${method} ${path} error: ${msg}`);
-      }
-      runDetached("fetchVk:network-recovery", () =>
-        triggerVibeKanbanRecovery(
-          `fetchVk ${method} ${path} network error: ${msg}`,
-        ),
-      );
-      noteVkErrorBurst("network-error");
-    }
-    return null;
-  } finally {
-    clearTimeout(timeout);
-  }
-
-  // Safety: validate response object (guards against mock/test issues)
-  if (!res || typeof res.ok === "undefined") {
-    const now = Date.now();
-    if (now - vkInvalidResponseLoggedAt > VK_WARNING_THROTTLE_MS) {
-      vkInvalidResponseLoggedAt = now;
-      console.warn(
-        `[monitor] fetchVk ${method} ${path} error: invalid response object (res=${!!res}, res.ok=${res?.ok})`,
-      );
-    }
-    runDetached("fetchVk:invalid-response-recovery", () =>
-      triggerVibeKanbanRecovery(
-        `fetchVk ${method} ${path} invalid response object`,
-      ),
-    );
-    noteVkErrorBurst("invalid-response");
-    return null;
-  }
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    if (shouldLogVkWarning(`http-${res.status}`)) {
-      console.warn(
-        `[monitor] fetchVk ${method} ${path} failed: ${res.status} ${text.slice(0, 200)}`,
-      );
-    }
-    if (res.status >= 500) {
-      runDetached("fetchVk:http-5xx-recovery", () =>
-        triggerVibeKanbanRecovery(
-          `fetchVk ${method} ${path} HTTP ${res.status}`,
-        ),
-      );
-      noteVkErrorBurst("http-5xx");
-    }
-    return null;
-  }
-
-  const contentTypeRaw =
-    typeof res.headers?.get === "function"
-      ? res.headers.get("content-type") || res.headers.get("Content-Type")
-      : res.headers?.["content-type"] || res.headers?.["Content-Type"] || "";
-  const contentType = String(contentTypeRaw || "").toLowerCase();
-  if (!contentType.includes("application/json")) {
-    const text = await (typeof res.text === "function"
-      ? res.text().catch(() => "")
-      : "");
-    if (text) {
-      try {
-        const parsed = JSON.parse(text);
-        resetVkErrorBurst();
-        return parsed;
-      } catch {
-        // Fall through to non-JSON handling below.
-      }
-    }
-    const now = Date.now();
-    const shouldLogDetails = shouldLogVkWarning("non-json");
-    if (shouldLogDetails) {
-      vkNonJsonContentTypeLoggedAt = now;
-      console.warn(
-        `[monitor] fetchVk ${method} ${path} error: non-JSON response (${contentType || "unknown"})`,
-      );
-      if (text) {
-        console.warn(
-          `[monitor] fetchVk ${method} ${path} body: ${text.slice(0, 200)}`,
-        );
-      }
-    }
-    runDetached("fetchVk:non-json-recovery", () =>
-      triggerVibeKanbanRecovery(
-        `fetchVk ${method} ${path} non-JSON response`,
-      ),
-    );
-    noteVkErrorBurst("non-json");
-    if (now - vkNonJsonNotifiedAt > 10 * 60 * 1000) {
-      vkNonJsonNotifiedAt = now;
-      notifyVkError(
-        "Vibe-Kanban API returned HTML/non-JSON. Check VK_BASE_URL/VK_ENDPOINT_URL.",
-      );
-    }
-    return null;
-  }
-
-  try {
-    const parsed = await res.json();
-    resetVkErrorBurst();
-    return parsed;
-  } catch (err) {
-    if (shouldLogVkWarning("invalid-json")) {
-      console.warn(
-        `[monitor] fetchVk ${method} ${path} error: Invalid JSON - ${err.message}`,
-      );
-    }
-    noteVkErrorBurst("invalid-json");
-    return null;
-  }
-}
-
-/**
  * GET /api/task-attempts/:id/branch-status
  * Returns branch status data for an attempt (commits ahead/behind, conflicts, etc.)
  */
 async function fetchBranchStatus(attemptId) {
-  const res = await fetchVk(`/api/task-attempts/${attemptId}/branch-status`);
-  if (!res?.success || !Array.isArray(res.data)) return null;
-  return res.data[0] || null;
+  // Branch status is now unavailable via external API
+  return null;
 }
 
 async function getAttemptInfo(attemptId) {
@@ -5259,10 +4243,6 @@ async function getAttemptInfo(attemptId) {
     if (match) return match;
   } catch {
     /* best effort */
-  }
-  const res = await fetchVk(`/api/task-attempts/${attemptId}`);
-  if (res?.success && res.data) {
-    return res.data;
   }
   return null;
 }
@@ -5478,7 +4458,7 @@ async function getPullRequestByNumber(prNumber, repoOverride = "") {
 /**
  * Find the matching project by projectName, with caching.
  * Falls back to the first project if no name match.
- * Works with any kanban backend (VK, GitHub, Jira).
+ * Works with any kanban backend (internal, GitHub, Jira).
  */
 async function findKanbanProjectId() {
   if (cachedProjectId) return cachedProjectId;
@@ -5516,146 +4496,21 @@ async function findKanbanProjectId() {
 }
 
 /**
- * VK-specific project lookup (returns null if not using VK backend).
- * Legacy function for VK-specific code paths that haven't been migrated to kanban-adapter yet.
- */
-async function findVkProjectId() {
-  const backend = getActiveKanbanBackend();
-  if (backend !== "vk") {
-    return null;
-  }
-  return findKanbanProjectId();
-}
-
-/**
- * Fetches and caches the repo_id from VK API.
- * Uses the flat /api/repos endpoint and matches by repoRoot path or projectName.
- */
-async function getRepoId() {
-  if (cachedRepoId) return cachedRepoId;
-  if (process.env.VK_REPO_ID) {
-    cachedRepoId = process.env.VK_REPO_ID;
-    return cachedRepoId;
-  }
-
-  // Skip VK API calls if not using VK backend
-  const backend = getActiveKanbanBackend();
-  if (backend !== "vk") {
-    return null;
-  }
-
-  try {
-    // Use the flat /api/repos endpoint (not nested under projects)
-    const reposRes = await fetchVk("/api/repos");
-    if (
-      !reposRes?.success ||
-      !Array.isArray(reposRes.data) ||
-      reposRes.data.length === 0
-    ) {
-      console.warn("[monitor] Failed to fetch repos from VK API");
-      return null;
-    }
-
-    // Match by repo path (normalized for comparison)
-    const normalPath = (p) =>
-      (p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-    const targetPath = normalPath(repoRoot);
-
-    let repo = reposRes.data.find((r) => normalPath(r.path) === targetPath);
-
-    // Fallback: match by name / display_name
-    if (!repo) {
-      repo = reposRes.data.find(
-        (r) =>
-          (r.name || r.display_name || "").toLowerCase() ===
-          projectName?.toLowerCase(),
-      );
-    }
-
-    if (!repo) {
-      console.warn(
-        `[monitor] No VK repo matching path "${repoRoot}" or name "${projectName}" — ` +
-          `available: ${reposRes.data.map((r) => r.name).join(", ")}`,
-      );
-      return null;
-    }
-
-    cachedRepoId = repo.id;
-    console.log(
-      `[monitor] Cached repo_id: ${cachedRepoId.substring(0, 8)}... (${repo.name})`,
-    );
-    return cachedRepoId;
-  } catch (err) {
-    console.warn(`[monitor] Error fetching repo_id: ${err.message}`);
-    return null;
-  }
-}
-
-/**
  * POST /api/task-attempts/:id/rebase
  * Rebases the attempt's worktree onto target branch.
  */
 async function rebaseAttempt(attemptId, baseBranch) {
-  const repoId = await getRepoId();
-  if (!repoId) {
-    console.warn("[monitor] Cannot rebase: repo_id not available");
-    return {
-      success: false,
-      error: "repo_id_missing",
-      message: "repo_id not available",
-    };
-  }
-  const body = { repo_id: repoId };
-  if (baseBranch) {
-    body.old_base_branch = baseBranch;
-    body.new_base_branch = baseBranch;
-  }
-  const res = await fetchVk(`/api/task-attempts/${attemptId}/rebase`, {
-    method: "POST",
-    body,
-    timeoutMs: 60000,
-  });
-  return res;
+  // Backend removed — rebase via external API is no longer available
+  return { success: false, error: "backend_removed", message: "Backend removed" };
 }
 
 /**
  * POST /api/task-attempts/:id/pr
- * Creates a PR via the VK API (triggers prepush hooks in the worktree).
- * Can take up to 15 minutes if prepush hooks run lint/test/build.
- * @param {string} attemptId
- * @param {object} prOpts - { title, description, draft }
+ * Creates a PR via the backend API (triggers prepush hooks in the worktree).
  */
-async function createPRViaVK(attemptId, prOpts = {}) {
-  // Fetch repo_id if not cached
-  const repoId = await getRepoId();
-  if (!repoId) {
-    console.error("[monitor] Cannot create PR: repo_id not available");
-    return { success: false, error: "repo_id_missing", _elapsedMs: 0 };
-  }
-
-  const bosunCredit = "\n\n---\n*Created by [Bosun Bot](https://github.com/apps/bosun-ve)*";
-  const rawDescription = prOpts.description || "";
-  const description = rawDescription.includes("bosun-ve")
-    ? rawDescription
-    : rawDescription.trimEnd() + bosunCredit;
-
-  const body = {
-    repo_id: repoId,
-    title: prOpts.title || "",
-    description,
-    draft: prOpts.draft ?? true,
-    base: prOpts.base || process.env.VK_TARGET_BRANCH || "origin/main",
-  };
-  const startMs = Date.now();
-  const res = await fetchVk(`/api/task-attempts/${attemptId}/pr`, {
-    method: "POST",
-    body,
-    timeoutMs: 15 * 60 * 1000, // prepush hooks can take up to 15 min
-  });
-  const elapsed = Date.now() - startMs;
-  // Attach timing so callers can distinguish instant vs slow failures
-  if (res) res._elapsedMs = elapsed;
-  return { ...(res || { success: false }), _elapsedMs: elapsed };
+async function createPRViaBackend(attemptId, prOpts = {}) {
+  // Backend removed — PR creation via external API is no longer available
+  return { success: false, error: "backend_removed", _elapsedMs: 0 };
 }
 
 /**
@@ -5663,11 +4518,8 @@ async function createPRViaVK(attemptId, prOpts = {}) {
  * Auto-resolves merge conflicts after a failed rebase by accepting "ours" changes.
  */
 async function resolveConflicts(attemptId) {
-  const res = await fetchVk(
-    `/api/task-attempts/${attemptId}/resolve-conflicts`,
-    { method: "POST", body: {}, timeoutMs: 60000 },
-  );
-  return res;
+  // Backend removed
+  return null;
 }
 
 /**
@@ -5675,12 +4527,8 @@ async function resolveConflicts(attemptId) {
  * Archives a stale attempt (0 commits, many behind).
  */
 async function archiveAttempt(attemptId) {
-  const res = await fetchVk(`/api/task-attempts/${attemptId}/archive`, {
-    method: "POST",
-    body: {},
-    timeoutMs: 30000,
-  });
-  return res;
+  // Backend removed
+  return null;
 }
 
 // ── Fresh session retry system ──────────────────────────────────────────────
@@ -5702,7 +4550,7 @@ function buildRetryPrompt(attemptInfo, reason, logTail) {
   const parts = [
     `Detected a failure (${reason}). Please retry your task. If it fails again, I will start a fresh session.`,
     "",
-    "Task context (vibe-kanban):",
+    "Task context:",
     `Branch: ${attemptInfo.branch || "unknown"}`,
     `Title: ${attemptInfo.task_title || attemptInfo.name || "unknown"}`,
   ];
@@ -5714,7 +4562,7 @@ function buildRetryPrompt(attemptInfo, reason, logTail) {
   parts.push(
     "",
     "If VE_TASK_TITLE/VE_TASK_DESCRIPTION are missing, treat this as an orchestrated task:",
-    "Worktree paths often include .git/worktrees/ or a task runner path (e.g., vibe-kanban).",
+    "Worktree paths often include .git/worktrees/ or a task runner path.",
     "Tasks typically map to a ve/<id>-<slug> branch.",
     "Resume with the context above, then commit/push/PR as usual.",
   );
@@ -5730,7 +4578,7 @@ function buildRetryPrompt(attemptInfo, reason, logTail) {
 }
 
 /**
- * Get the currently active attempt info from VK status data.
+ * Get the currently active attempt info from status data.
  * @returns {Promise<object|null>} Attempt info with task context, or null
  */
 async function getActiveAttemptInfo() {
@@ -5745,20 +4593,7 @@ async function getActiveAttemptInfo() {
 
     if (!running) return null;
 
-    // Enrich with task description if available
-    if (running.task_id && !running.task_description) {
-      try {
-        const taskRes = await fetchVk(`/api/tasks/${running.task_id}`);
-        if (taskRes?.success && taskRes.data) {
-          running.task_title = running.task_title || taskRes.data.title;
-          running.task_description =
-            taskRes.data.description || taskRes.data.body || "";
-        }
-      } catch {
-        /* best effort */
-      }
-    }
-
+    // Enrich with task description if available from local data
     return running;
   } catch {
     return null;
@@ -5773,7 +4608,7 @@ const FRESH_SESSION_MAX_PER_TASK = 3; // max retries per task before giving up
 const freshSessionTaskRetries = new Map();
 
 /**
- * Start a fresh VK session in the same workspace and send a retry prompt.
+ * Start a fresh session in the same workspace and send a retry prompt.
  * This is the nuclear option when an agent is irrecoverably stuck.
  *
  * @param {string} workspaceId - The workspace/attempt UUID
@@ -5782,7 +4617,7 @@ const freshSessionTaskRetries = new Map();
  * @returns {Promise<{success: boolean, sessionId?: string, reason?: string}>}
  */
 async function startFreshSession(workspaceId, prompt, taskId) {
-  // Guard: internal executor mode runs tasks via agent-pool, not VK sessions
+  // Guard: internal executor mode runs tasks via agent-pool, not external sessions
   const execMode = configExecutorMode || getExecutorMode();
   if (execMode === "internal") {
     console.log(
@@ -5790,7 +4625,7 @@ async function startFreshSession(workspaceId, prompt, taskId) {
     );
     return {
       success: false,
-      reason: "internal executor mode — VK sessions disabled",
+      reason: "internal executor mode — external sessions disabled",
     };
   }
 
@@ -5824,53 +4659,9 @@ async function startFreshSession(workspaceId, prompt, taskId) {
   freshSessionCount += 1;
 
   try {
-    // Step 1: Create a new session for the workspace
-    const session = await fetchVk("/api/sessions", {
-      method: "POST",
-      body: { workspace_id: workspaceId },
-      timeoutMs: 15000,
-    });
-
-    if (!session?.id) {
-      console.warn("[monitor] failed to create fresh VK session");
-      return { success: false, reason: "session creation failed" };
-    }
-
-    // Step 2: Send the retry prompt as a follow-up
-    const followUp = await fetchVk(`/api/sessions/${session.id}/follow-up`, {
-      method: "POST",
-      body: { prompt },
-      timeoutMs: 15000,
-    });
-
-    if (!followUp) {
-      console.warn("[monitor] failed to send follow-up to fresh session");
-      return { success: false, reason: "follow-up send failed" };
-    }
-
-    console.log(
-      `[monitor] :check: Fresh session started: ${session.id} (retry #${freshSessionCount})`,
-    );
-
-    // Connect the VK log stream to this session for real-time log capture
-    if (vkLogStream) {
-      // Set metadata so structured session logs get proper headers
-      const attemptInfo = await getAttemptInfo(workspaceId);
-      if (attemptInfo) {
-        vkLogStream.setProcessMeta(workspaceId, {
-          attemptId: workspaceId,
-          taskId: attemptInfo.task_id,
-          taskTitle: attemptInfo.task_title || attemptInfo.name,
-          branch: attemptInfo.branch,
-          sessionId: session.id,
-          executor: attemptInfo.executor,
-          executorVariant: attemptInfo.executor_variant,
-        });
-      }
-      vkLogStream.connectToSession(session.id);
-    }
-
-    return { success: true, sessionId: session.id };
+    // External session creation removed — fresh sessions are handled by internal executor
+    console.log("[monitor] external session creation removed — use internal executor");
+    return { success: false, reason: "backend_removed" };
   } catch (err) {
     console.warn(`[monitor] fresh session error: ${err.message || err}`);
     return { success: false, reason: err.message || String(err) };
@@ -5886,17 +4677,12 @@ async function startFreshSession(workspaceId, prompt, taskId) {
  * @returns {Promise<boolean>} true if fresh session started
  */
 async function attemptFreshSessionRetry(reason, logTail) {
-  // Guard: internal executor mode runs tasks via agent-pool, not VK sessions
+  // Guard: internal executor mode runs tasks via agent-pool, not external sessions
   const execMode = configExecutorMode || getExecutorMode();
   if (execMode === "internal") {
     console.log(
       `[monitor] attemptFreshSessionRetry skipped — executor mode is "internal"`,
     );
-    return false;
-  }
-
-  if (!vkEndpointUrl) {
-    console.log("[monitor] fresh session retry skipped — no VK endpoint");
     return false;
   }
 
@@ -5936,7 +4722,7 @@ async function attemptFreshSessionRetry(reason, logTail) {
 /**
  * Calculate how long a task has been in its current state (ms).
  * Uses `updated_at` if available, otherwise `created_at`.
- * @param {object} task - VK task object with `updated_at` / `created_at`
+ * @param {object} task - Task object with `updated_at` / `created_at`
  * @returns {number} Age in milliseconds, or 0 if no timestamp available
  */
 function getTaskAgeMs(task) {
@@ -6025,53 +4811,27 @@ function resolveTaskIdForBackend(taskId, backend) {
  */
 async function fetchTasksByStatus(status) {
   const backend = getActiveKanbanBackend();
-  if (backend !== "vk") {
-    try {
-      // Internal backend uses file-based storage — no project ID required.
-      if (backend === "internal") {
-        const tasks = status
-          ? getInternalTasksByStatus(status)
-          : getAllInternalTasks();
-        return Array.isArray(tasks) ? tasks : [];
-      }
-
-      const projectId = getConfiguredKanbanProjectId(backend);
-      if (!projectId) {
-        console.warn(
-          `[monitor] No project ID configured for backend=${backend} task query`,
-        );
-        return [];
-      }
-      const tasks = await listKanbanTasks(projectId, { status });
+  try {
+    // Internal backend uses file-based storage — no project ID required.
+    if (backend === "internal") {
+      const tasks = status
+        ? getInternalTasksByStatus(status)
+        : getAllInternalTasks();
       return Array.isArray(tasks) ? tasks : [];
-    } catch (err) {
+    }
+
+    const projectId = getConfiguredKanbanProjectId(backend);
+    if (!projectId) {
       console.warn(
-        `[monitor] Error fetching tasks by status from ${backend}: ${err.message || err}`,
+        `[monitor] No project ID configured for backend=${backend} task query`,
       );
       return [];
     }
-  }
-  try {
-    // Find matching VK project
-    const projectId = await findVkProjectId();
-    if (!projectId) {
-      console.warn("[monitor] No VK project found for task query");
-      return [];
-    }
-
-    // Use flat /api/tasks endpoint with query params
-    const tasksRes = await fetchVk(
-      `/api/tasks?project_id=${projectId}&status=${status}`,
-    );
-    if (!tasksRes?.success || !Array.isArray(tasksRes.data)) {
-      console.warn(`[monitor] Failed to fetch tasks with status=${status}`);
-      return [];
-    }
-
-    return tasksRes.data;
+    const tasks = await listKanbanTasks(projectId, { status });
+    return Array.isArray(tasks) ? tasks : [];
   } catch (err) {
     console.warn(
-      `[monitor] Error fetching tasks by status: ${err.message || err}`,
+      `[monitor] Error fetching tasks by status from ${backend}: ${err.message || err}`,
     );
     return [];
   }
@@ -6079,7 +4839,7 @@ async function fetchTasksByStatus(status) {
 
 /**
  * Updates task status via active kanban backend.
- * @param {string} taskId - Task ID (UUID for VK, issue number for GitHub)
+ * @param {string} taskId - Task ID (UUID for internal, issue number for GitHub)
  * @param {string} newStatus - New status ("todo", "inprogress", "inreview", "done", "cancelled")
  * @returns {Promise<boolean>} true if successful, false otherwise
  */
@@ -6227,46 +4987,31 @@ async function updateTaskStatus(taskId, newStatus, options = {}) {
   }
 
   const backend = getActiveKanbanBackend();
-  if (backend !== "vk") {
-    const resolvedTaskId = resolveTaskIdForBackend(taskId, backend);
-    if (!resolvedTaskId) {
-      console.warn(
-        `[monitor] Skipping status update for ${taskId} — no compatible ${backend} task ID`,
-      );
-      return false;
-    }
-    try {
-      await updateKanbanTaskStatus(
-        resolvedTaskId,
-        newStatus,
-        options && typeof options === "object" ? options : {},
-      );
-      clearRecoveryCaches(taskId);
-      if (resolvedTaskId !== taskId) {
-        clearRecoveryCaches(resolvedTaskId);
-      }
-      try { queueTaskStatusWorkflowEvents(); } catch { /* workflow event errors must not break task updates */ }
-      return true;
-    } catch (err) {
-      console.warn(
-        `[monitor] Failed to update task status via ${backend} (${resolvedTaskId} -> ${newStatus}): ${err.message || err}`,
-      );
-      return false;
-    }
+  const resolvedTaskId = resolveTaskIdForBackend(taskId, backend);
+  if (!resolvedTaskId) {
+    console.warn(
+      `[monitor] Skipping status update for ${taskId} — no compatible ${backend} task ID`,
+    );
+    return false;
   }
-
-  const res = await fetchVk(`/api/tasks/${taskId}`, {
-    method: "PUT",
-    body: { status: newStatus },
-    timeoutMs: 10000,
-  });
-  const ok = res?.success === true;
-  // Clear recovery caches — task status changed, so it needs re-evaluation
-  if (ok) {
+  try {
+    await updateKanbanTaskStatus(
+      resolvedTaskId,
+      newStatus,
+      options && typeof options === "object" ? options : {},
+    );
     clearRecoveryCaches(taskId);
+    if (resolvedTaskId !== taskId) {
+      clearRecoveryCaches(resolvedTaskId);
+    }
     try { queueTaskStatusWorkflowEvents(); } catch { /* workflow event errors must not break task updates */ }
+    return true;
+  } catch (err) {
+    console.warn(
+      `[monitor] Failed to update task status via ${backend} (${resolvedTaskId} -> ${newStatus}): ${err.message || err}`,
+    );
+    return false;
   }
-  return ok;
 }
 
 function parseTaskTimestamp(value) {
@@ -6287,7 +5032,7 @@ function parseTaskTimestamp(value) {
 }
 
 /**
- * Safe recovery: re-fetches a task's live status from VK before moving it
+ * Safe recovery: re-fetches a task's live status before moving it
  * to "todo".  If the user has since cancelled/done the task, the recovery
  * is aborted.  This prevents the loop where:
  *   user cancels → monitor moves to todo → orchestrator re-dispatches.
@@ -6298,122 +5043,50 @@ function parseTaskTimestamp(value) {
  * @returns {Promise<boolean>} true if moved to todo, false if skipped/failed
  */
 async function safeRecoverTask(taskId, taskTitle, reason) {
-  // In internal executor mode, only update task status — never start VK sessions
   const execMode = configExecutorMode || getExecutorMode();
   const isInternal = execMode === "internal";
 
   try {
     const activeBackend = getActiveKanbanBackend();
-    if (activeBackend !== "vk") {
-      const localStatus = String(getInternalTask(taskId)?.status || "")
-        .trim()
-        .toLowerCase();
-      if (localStatus === "cancelled" || localStatus === "done") {
-        console.log(
-          `[monitor] safeRecover: task "${taskTitle}" is now ${localStatus} (local store) - aborting recovery`,
-        );
-        recoverySkipCache.set(taskId, {
-          resolvedStatus: localStatus,
-          timestamp: Date.now(),
-          updatedAt: "",
-          status: localStatus,
-        });
-        scheduleRecoveryCacheSave();
-        return false;
-      }
-      if (localStatus === "todo") {
-        console.log(
-          `[monitor] safeRecover: task "${taskTitle}" is already todo (local store) - no action needed`,
-        );
-        recoverySkipCache.set(taskId, {
-          resolvedStatus: localStatus,
-          timestamp: Date.now(),
-          updatedAt: "",
-          status: localStatus,
-        });
-        scheduleRecoveryCacheSave();
-        return false;
-      }
-
-      const success = await updateTaskStatus(taskId, "todo");
-      if (success) {
-        console.log(
-          `[monitor] :repeat: Recovered "${taskTitle}" from ${localStatus || "inprogress"} → todo (${reason}) [${activeBackend} backend - VK status re-fetch skipped]`,
-        );
-      } else {
-        console.warn(
-          `[monitor] safeRecover: failed to move "${taskTitle}" to todo (${reason}) [${activeBackend} backend]`,
-        );
-      }
-      return success;
-    }
-
-    const res = await fetchVk(`/api/tasks/${taskId}`);
-    const liveStatus = res?.data?.status || res?.status;
-    const liveUpdatedAt = res?.data?.updated_at || res?.data?.created_at || "";
-    if (!liveStatus) {
-      // Cache the failure so we don't re-attempt every cycle (prevents log spam).
-      // Uses a shorter TTL (5 min) so we re-check sooner than successful skips.
-      const FETCH_FAIL_BACKOFF_MS = 5 * 60 * 1000;
-      const existingSkip = recoverySkipCache.get(taskId);
-      const alreadyBackedOff =
-        existingSkip?.resolvedStatus === "fetch-failed" &&
-        Date.now() - existingSkip.timestamp < FETCH_FAIL_BACKOFF_MS;
-      if (!alreadyBackedOff) {
-        console.warn(
-          `[monitor] safeRecover: could not re-fetch status for "${taskTitle}" (${taskId.substring(0, 8)}...) — skipping (backoff ${Math.round(FETCH_FAIL_BACKOFF_MS / 60000)}min)`,
-        );
-        recoverySkipCache.set(taskId, {
-          resolvedStatus: "fetch-failed",
-          timestamp: Date.now(),
-          updatedAt: "",
-          status: "fetch-failed",
-        });
-        scheduleRecoveryCacheSave();
-      }
-      return false;
-    }
-    // If the user has moved the task out of inprogress (cancelled, done,
-    // or even already todo), do NOT touch it.
-    if (liveStatus === "cancelled" || liveStatus === "done") {
+    const localStatus = String(getInternalTask(taskId)?.status || "")
+      .trim()
+      .toLowerCase();
+    if (localStatus === "cancelled" || localStatus === "done") {
       console.log(
-        `[monitor] safeRecover: task "${taskTitle}" is now ${liveStatus} — aborting recovery`,
+        `[monitor] safeRecover: task "${taskTitle}" is now ${localStatus} (local store) - aborting recovery`,
       );
-      // Cache so we skip this task for RECOVERY_SKIP_CACHE_MS
       recoverySkipCache.set(taskId, {
-        resolvedStatus: liveStatus,
+        resolvedStatus: localStatus,
         timestamp: Date.now(),
-        updatedAt: liveUpdatedAt,
-        status: liveStatus,
+        updatedAt: "",
+        status: localStatus,
       });
       scheduleRecoveryCacheSave();
       return false;
     }
-    if (liveStatus === "todo") {
+    if (localStatus === "todo") {
       console.log(
-        `[monitor] safeRecover: task "${taskTitle}" is already todo — no action needed`,
+        `[monitor] safeRecover: task "${taskTitle}" is already todo (local store) - no action needed`,
       );
-      // Cache so we skip this task for RECOVERY_SKIP_CACHE_MS
       recoverySkipCache.set(taskId, {
-        resolvedStatus: liveStatus,
+        resolvedStatus: localStatus,
         timestamp: Date.now(),
-        updatedAt: liveUpdatedAt,
-        status: liveStatus,
+        updatedAt: "",
+        status: localStatus,
       });
       scheduleRecoveryCacheSave();
       return false;
     }
+
     const success = await updateTaskStatus(taskId, "todo");
     if (success) {
-      if (isInternal) {
-        console.log(
-          `[monitor] :repeat: Recovered "${taskTitle}" from ${liveStatus} → todo (${reason}) [internal mode — VK session skipped]`,
-        );
-      } else {
-        console.log(
-          `[monitor] :repeat: Recovered "${taskTitle}" from ${liveStatus} → todo (${reason})`,
-        );
-      }
+      console.log(
+        `[monitor] :repeat: Recovered "${taskTitle}" from ${localStatus || "inprogress"} → todo (${reason}) [${activeBackend} backend]`,
+      );
+    } else {
+      console.warn(
+        `[monitor] safeRecover: failed to move "${taskTitle}" to todo (${reason}) [${activeBackend} backend]`,
+      );
     }
     return success;
   } catch (err) {
@@ -6649,7 +5322,7 @@ async function isBranchMerged(branch, baseBranch) {
 const mergedTaskCache = new Set();
 
 /**
- * Branch-level dedup cache — VK can have duplicate tasks (different IDs)
+ * Branch-level dedup cache — backends can have duplicate tasks (different IDs)
  * pointing at the same branch. Once a branch is confirmed merged we skip
  * ALL tasks that reference it, regardless of task ID.
  * @type {Set<string>}
@@ -6850,7 +5523,7 @@ const staleBranchCooldown = new Map();
 
 /**
  * Cache for tasks whose recovery was a no-op (already todo/cancelled/done).
- * Prevents redundant VK API calls, branch/PR checks, and log spam every cycle.
+ * Prevents redundant API calls, branch/PR checks, and log spam every cycle.
  * Key = task ID, Value = { resolvedStatus: string, timestamp: number, updatedAt?: string, status?: string }.
  * Expires after RECOVERY_SKIP_CACHE_MS so we re-check periodically.
  * @type {Map<string, {resolvedStatus: string, timestamp: number, updatedAt?: string, status?: string}>}
@@ -7248,7 +5921,7 @@ async function checkMergedPRsAndUpdateTasks() {
 }
 
 async function reconcileTaskStatuses(reason = "manual") {
-  console.log(`[monitor] Reconciling VK tasks (${reason})...`);
+  console.log(`[monitor] Reconciling tasks (${reason})...`);
   return await checkMergedPRsAndUpdateTasks();
 }
 
@@ -7800,10 +6473,7 @@ async function syncEpicBranchWithDefault(epicBranch, defaultBranch) {
 
 async function checkEpicBranches(reason = "interval") {
   const backend = getActiveKanbanBackend();
-  const projectId =
-    backend === "vk"
-      ? await findVkProjectId()
-      : getConfiguredKanbanProjectId(backend);
+  const projectId = getConfiguredKanbanProjectId(backend);
   if (!projectId) return;
 
   const tasks = await listTasksForEpicCheck(projectId);
@@ -8532,16 +7202,6 @@ async function rebaseDownstreamTasks(mergedUpstreamBranch, excludeAttemptId) {
       ? statusData.active_attempts
       : Object.values(statusData?.attempts || {});
 
-    // Also fetch VK task-attempts as fallback
-    let vkAttempts = [];
-    try {
-      const vkRes = await fetchVk("/api/task-attempts");
-      const vkData = vkRes?.data ?? vkRes;
-      if (Array.isArray(vkData)) vkAttempts = vkData;
-    } catch {
-      /* best-effort */
-    }
-
     let rebasedCount = 0;
     let failedCount = 0;
     const rebaseResults = [];
@@ -8559,16 +7219,6 @@ async function rebaseDownstreamTasks(mergedUpstreamBranch, excludeAttemptId) {
 
       // Find the attempt for this task
       let attempt = attempts.find((a) => a?.task_id === task.id);
-      if (!attempt) {
-        const vkMatch = vkAttempts
-          .filter((a) => a?.task_id === task.id)
-          .sort(
-            (a, b) =>
-              new Date(b.created_at).getTime() -
-              new Date(a.created_at).getTime(),
-          );
-        if (vkMatch.length > 0) attempt = vkMatch[0];
-      }
 
       if (!attempt || attempt.id === excludeAttemptId) continue;
       if (!attempt.branch) continue;
@@ -8854,9 +7504,7 @@ async function createAssessmentSplitTasks(ctx, splitTasks) {
   }
 
   let projectId = "";
-  if (backend === "vk") {
-    projectId = await findVkProjectId();
-  } else {
+  if (backend !== "internal") {
     projectId = getConfiguredKanbanProjectId(backend) || "";
   }
 
@@ -8938,7 +7586,7 @@ async function actOnAssessment(ctx, decision) {
   switch (decision.action) {
     case "merge":
       console.log(`[${tag}] → merge`);
-      // Handled by VK cleanup script / auto-merge
+      // Handled by cleanup script / auto-merge
       break;
 
     case "reprompt_same":
@@ -9198,7 +7846,7 @@ async function runSmartPrPreCreationAssessment({
 
 // Use config-driven branch routing instead of hardcoded defaults
 const DEFAULT_TARGET_BRANCH =
-  branchRouting?.defaultBranch || process.env.VK_TARGET_BRANCH || "origin/main";
+  branchRouting?.defaultBranch || "origin/main";
 const DEFAULT_BOSUN_UPSTREAM =
   branchRouting?.scopeMap?.["bosun"] ||
   process.env.BOSUN_TASK_UPSTREAM ||
@@ -9542,7 +8190,7 @@ function resolveAttemptTargetBranch(attempt, task) {
 }
 
 /**
- * Intelligent multi-step PR creation using the VK API:
+ * Intelligent multi-step PR creation:
  *
  *   1. Check branch-status → decide action
  *   2. Stale detection: 0 commits AND far behind → rebase first, archive on error
@@ -9618,8 +8266,8 @@ async function smartPRFlow(attemptId, shortId, status) {
     // ── Step 0b: Check task description for "already completed" signals ──
     if (attemptInfo?.task_id) {
       try {
-        const taskRes = await fetchVk(`/api/tasks/${attemptInfo.task_id}`);
-        taskData = taskRes?.data || taskRes || null;
+        // Task data enrichment via local status only
+        taskData = null;
         const desc = String(
           taskData?.description || taskData?.body || "",
         ).toLowerCase();
@@ -9706,21 +8354,7 @@ async function smartPRFlow(attemptId, shortId, status) {
     // ── Resolve target branch (task-level upstream overrides) ───
     const attempt = await getAttemptInfo(attemptId);
     if (!taskData && attempt?.task_id) {
-      try {
-        const taskRes = await fetchVk(`/api/tasks/${attempt.task_id}`);
-        if (taskRes?.success && taskRes.data) {
-          taskData = taskRes.data;
-        } else if (taskRes?.data || taskRes) {
-          taskData = taskRes.data || taskRes;
-        }
-        if (taskData) {
-          attempt.task_title = attempt.task_title || taskData.title;
-          attempt.task_description =
-            taskData.description || taskData.body || "";
-        }
-      } catch {
-        /* best effort */
-      }
+      // Task enrichment is now local-only
     }
     const targetBranch = resolveAttemptTargetBranch(attempt, taskData);
 
@@ -9768,10 +8402,10 @@ async function smartPRFlow(attemptId, shortId, status) {
           );
         }
 
-        // Try VK resolve-conflicts API first (it does "accept ours")
+        // Try resolve-conflicts API first (it does "accept ours")
         const resolveResult = await resolveConflicts(attemptId);
         if (resolveResult?.success) {
-          console.log(`[monitor] ${tag}: conflicts resolved via VK API`);
+          console.log(`[monitor] ${tag}: conflicts resolved via API`);
         } else {
           const attemptInfo = await getAttemptInfo(attemptId);
           let worktreeDir =
@@ -9802,7 +8436,7 @@ async function smartPRFlow(attemptId, shortId, status) {
                 return `  - ${f}: Resolve MANUALLY (inspect both sides, merge intelligently)`;
               })
               .join("\n");
-            const prompt = `You are fixing a git rebase conflict in a Vibe-Kanban worktree.
+            const prompt = `You are fixing a git rebase conflict in a worktree.
 Worktree: ${worktreeDir || "(unknown)"}
 Attempt: ${shortId}
 Conflicted files: ${files.join(", ") || "(unknown)"}
@@ -9876,10 +8510,9 @@ Return a short summary of what you did and any files that needed manual resoluti
       }
     }
 
-    // ── Step 4: Build PR title & description from VK task ─────
+    // ── Step 4: Build PR title & description from task ─────
 
     let prTitle = attempt?.task_title || attempt?.branch || shortId;
-    prTitle = prTitle.replace(/\s*\(vibe-kanban\)$/i, "");
 
     // Build PR description from task description + auto-created footer
     let prDescription = "";
@@ -9941,9 +8574,9 @@ Return a short summary of what you did and any files that needed manual resoluti
       }
     }
 
-    // ── Step 5: Create PR via VK API ────────────────────────────
+    // ── Step 5: Create PR via backend API ────────────────────────────
     console.log(`[monitor] ${tag}: creating PR "${prTitle}"...`);
-    const prResult = await createPRViaVK(attemptId, {
+    const prResult = await createPRViaBackend(attemptId, {
       title: prTitle,
       description: prDescription,
       draft: false,
@@ -9971,11 +8604,11 @@ Return a short summary of what you did and any files that needed manual resoluti
 
     if (prResult.error === "repo_id_missing") {
       console.warn(
-        `[monitor] ${tag}: PR creation failed — repo_id missing (VK config/API issue)`,
+        `[monitor] ${tag}: PR creation failed — repo_id missing (config/API issue)`,
       );
       if (telegramToken && telegramChatId) {
         void sendTelegramMessage(
-          `:alert: Auto-PR for ${shortId} failed: repo_id missing. Check VK_BASE_URL/VK_REPO_ID.`,
+          `:alert: Auto-PR for ${shortId} failed: repo_id missing. Check kanban backend configuration.`,
         );
       }
       return;
@@ -10123,19 +8756,9 @@ async function resolveAndTriggerSmartPR(shortId, status) {
     }
 
     if (!match) {
-      // Try the full list via VK API
-      const allAttempts = await fetchVk(
-        "/api/task-attempts?status=review,error",
+      console.log(
+        `[monitor] smartPR(${shortId}): attempt not found in status data`,
       );
-      const vkMatch =
-        allAttempts?.data?.find((a) => a.id?.startsWith(shortId)) || null;
-      if (!vkMatch) {
-        console.log(
-          `[monitor] smartPR(${shortId}): attempt not found in status or VK data`,
-        );
-        return;
-      }
-      await smartPRFlow(vkMatch.id, shortId, status);
       return;
     }
     await smartPRFlow(match.id, shortId, status);
@@ -10753,27 +9376,8 @@ function buildTaskUrl(task, projectId) {
     return `https://github.com/${slug}/issues/${String(taskId).replace(/^#/, "")}`;
   }
 
-  // For VK backend
-  if (backend === "vk") {
-    const template = String(vkTaskUrlTemplate || "").trim();
-    if (template) {
-      return template
-        .replace("{projectId}", projectId || "")
-        .replace("{taskId}", taskId);
-    }
-    const base = String(vkPublicUrl || vkEndpointUrl || "").replace(/\/+$/, "");
-    if (!base || !projectId) {
-      return null;
-    }
-    return `${base}/local-projects/${projectId}/tasks/${taskId}`;
-  }
-
   // Fallback for other backends
   return null;
-}
-
-function buildVkTaskUrl(taskId, projectId) {
-  return buildTaskUrl(taskId, projectId);
 }
 
 function formatTaskLink(item) {
@@ -10892,12 +9496,6 @@ async function buildAgentResponse() {
 }
 
 async function buildBackgroundResponse() {
-  const vkOnline = isVkRuntimeRequired() ? await isVibeKanbanOnline() : false;
-  const vkStatus = isVkRuntimeRequired()
-    ? vkOnline
-      ? "online"
-      : "unreachable"
-    : "disabled";
   const now = Date.now();
   const halted =
     now < orchestratorHaltedUntil
@@ -10913,7 +9511,6 @@ async function buildBackgroundResponse() {
       ? `Orchestrator: running (pid ${currentChild.pid})`
       : "Orchestrator: stopped",
     `Monitor state: ${halted}, ${safeMode}`,
-    `Vibe-kanban: ${vkStatus}`,
   ].join("\n");
   return { text: message, parseMode: null };
 }
@@ -10923,17 +9520,10 @@ async function buildHealthResponse() {
   const updatedAt = status?.updated_at
     ? new Date(status.updated_at).toISOString()
     : "unknown";
-  const vkOnline = isVkRuntimeRequired() ? await isVibeKanbanOnline() : false;
-  const vkStatus = isVkRuntimeRequired()
-    ? vkOnline
-      ? "online"
-      : "unreachable"
-    : "disabled";
   const message = [
     `${projectName} Health`,
     `Orchestrator: ${currentChild ? "running" : "stopped"}`,
     `Status updated: ${updatedAt}`,
-    `Vibe-kanban: ${vkStatus}`,
   ].join("\n");
   return { text: message, parseMode: null };
 }
@@ -11646,7 +10236,6 @@ You have FULL READ ACCESS to the workspace. Use it.
 - Repository root: ${repoRoot}
 - Active log file: ${logPath}
 - Monitor script: scripts/bosun/monitor.mjs
-- VK endpoint: ${vkEndpointUrl || "(not set)"}
 - Git branch: ${(() => {
     try {
       return execSync("git branch --show-current", {
@@ -11672,7 +10261,7 @@ ${logTail}
 6. Common issues:
    - Path errors: worktree paths don't contain the orchestrator script
    - Mutex contention: multiple instances fighting over named mutex
-   - VK API failures: wrong HTTP method, endpoint down, auth issues
+   - API failures: wrong HTTP method, endpoint down, auth issues
    - Git rebase conflicts: agent branches conflict with main
    - Exit 64 / ENOENT: shell runtime can't locate the orchestrator target
    - SIGKILL: OOM or external termination
@@ -13411,11 +12000,11 @@ async function handleDigestSealed({ entries, text }) {
 
 async function startProcess() {
   try {
-    // Guard: never spawn VK orchestrator when executor mode is internal or disabled
+    // Guard: never spawn orchestrator when executor mode is internal or disabled
     const execMode = configExecutorMode || getExecutorMode();
     if (execMode === "internal" || isExecutorDisabled()) {
       console.log(
-        `[monitor] startProcess skipped — executor mode is "${execMode}" (VK orchestrator not needed)`,
+        `[monitor] startProcess skipped — executor mode is "${execMode}" (orchestrator not needed)`,
       );
       try {
         await ensureLogDir();
@@ -13669,7 +12258,7 @@ async function startProcess() {
           .stopMonitoring(shortId, finishStatus)
           .catch(() => {});
       }
-      // ── "No remote branch" → trigger VK-based PR flow ──────────
+      // ── "No remote branch" → trigger smart PR flow ──────────────
       const noBranchMatch = line.match(
         /No remote branch for (ve\/([0-9a-f]{4})-\S+)/i,
       );
@@ -13963,10 +12552,6 @@ function selfRestartForSourceChange(
   );
   console.log("[monitor] exiting for self-restart (fresh ESM modules)...");
   shuttingDown = true;
-  if (vkLogStream) {
-    vkLogStream.stop();
-    vkLogStream = null;
-  }
   // ── Agent isolation: by default, do NOT stop internal executor on self-restart ──
   // Task agents run as in-process SDK async iterators. Stopping the executor
   // during a normal restart is unnecessary because process.exit(75) kills them.
@@ -14369,7 +12954,6 @@ function applyConfig(nextConfig, options = {}) {
   const prevTelegramBotEnabled = telegramBotEnabled;
   const prevPreflightEnabled = preflightEnabled;
   const prevSelfRestartWatcherEnabled = selfRestartWatcherEnabled;
-  const prevVkRuntimeRequired = isVkRuntimeRequired();
 
   config = nextConfig;
   projectName = nextConfig.projectName;
@@ -14398,17 +12982,7 @@ function applyConfig(nextConfig, options = {}) {
   telegramCommandEnabled = nextConfig.telegramCommandEnabled;
   repoSlug = nextConfig.repoSlug;
   repoUrlBase = nextConfig.repoUrlBase;
-  vkRecoveryPort = nextConfig.vkRecoveryPort;
-  vkRecoveryHost = nextConfig.vkRecoveryHost;
-  vkEndpointUrl = nextConfig.vkEndpointUrl;
-  vkPublicUrl = nextConfig.vkPublicUrl;
-  vkTaskUrlTemplate = nextConfig.vkTaskUrlTemplate;
-  // Invalidate VK caches when endpoint URL changes
-  cachedRepoId = null;
   cachedProjectId = null;
-  vkRecoveryCooldownMin = nextConfig.vkRecoveryCooldownMin;
-  vkSpawnEnabled = nextConfig.vkSpawnEnabled;
-  vkEnsureIntervalMs = nextConfig.vkEnsureIntervalMs;
   kanbanBackend = String(nextConfig.kanban?.backend || kanbanBackend || "internal")
     .trim()
     .toLowerCase();
@@ -14459,31 +13033,6 @@ function applyConfig(nextConfig, options = {}) {
   agentSdk = nextConfig.agentSdk;
   envPaths = nextConfig.envPaths;
   selfRestartWatcherEnabled = isSelfRestartWatcherEnabled();
-  const nextVkRuntimeRequired = isVkRuntimeRequired();
-
-  if (prevVkRuntimeRequired && !nextVkRuntimeRequired) {
-    if (vkLogStream) {
-      vkLogStream.stop();
-      vkLogStream = null;
-    }
-    if (vkSessionDiscoveryTimer) {
-      clearInterval(vkSessionDiscoveryTimer);
-      vkSessionDiscoveryTimer = null;
-    }
-    if (vibeKanbanProcess && !vibeKanbanProcess.killed) {
-      try {
-        vibeKanbanProcess.kill();
-      } catch {
-        /* best effort */
-      }
-      vibeKanbanProcess = null;
-      vibeKanbanStartedAt = 0;
-    }
-  } else if (!prevVkRuntimeRequired && nextVkRuntimeRequired) {
-    runDetached("vk-runtime:config-reload-enable", () =>
-      ensureVibeKanbanRunning(),
-    );
-  }
 
   // ── Internal executor hot-reload ──────────────────────────────────────
   if (nextConfig.internalExecutor) {
@@ -14620,10 +13169,6 @@ async function reloadConfig(reason) {
 process.on("SIGINT", async () => {
   shuttingDown = true;
   stopWorkspaceSyncTimers();
-  if (vkLogStream) {
-    vkLogStream.stop();
-    vkLogStream = null;
-  }
   stopAutoUpdateLoop();
   stopAgentAlertTailer();
   stopAgentWorkAnalyzer();
@@ -14673,10 +13218,6 @@ process.on("exit", () => {
   stopWorkspaceSyncTimers();
   stopAgentAlertTailer();
   stopAgentWorkAnalyzer();
-  if (vkLogStream) {
-    vkLogStream.stop();
-    vkLogStream = null;
-  }
   runDetachedDuringShutdown("workspace-monitor-shutdown:exit", () =>
     workspaceMonitor.shutdown(),
   );
@@ -14688,10 +13229,6 @@ process.on("exit", () => {
 process.on("SIGTERM", async () => {
   shuttingDown = true;
   stopWorkspaceSyncTimers();
-  if (vkLogStream) {
-    vkLogStream.stop();
-    vkLogStream = null;
-  }
   stopAutoUpdateLoop();
   stopAgentAlertTailer();
   stopAgentWorkAnalyzer();
@@ -14977,13 +13514,10 @@ if (!isMonitorTestRuntime) {
 
 // ── Codex CLI config.toml: ensure global defaults + stream timeouts ─────────
 try {
-  const vkPort = config.vkRecoveryPort || "54089";
-  const vkBaseUrl = config.vkEndpointUrl || `http://127.0.0.1:${vkPort}`;
   const allowRuntimeCodexMutation = isTruthyFlag(
     process.env.BOSUN_ALLOW_RUNTIME_GLOBAL_CODEX_MUTATION,
   );
   const tomlResult = ensureCodexConfig({
-    vkBaseUrl,
     skipVk: true,
     dryRun: !allowRuntimeCodexMutation,
   });
@@ -15341,46 +13875,6 @@ if (selfRestartWatcherEnabled) {
   );
 }
 startInteractiveShell();
-if (isVkRuntimeRequired()) {
-  ensureAnomalyDetector();
-}
-if (isVkSpawnAllowed()) {
-  runDetached("vk-runtime:startup-ensure", () => ensureVibeKanbanRunning());
-}
-// When VK is externally managed (not spawned by monitor), still connect the
-// log stream so agent logs are captured to .cache/agent-logs/.
-if (isVkRuntimeRequired() && !isVkSpawnAllowed() && vkEndpointUrl) {
-  void isVibeKanbanOnline().then((online) => {
-    if (online) ensureVkLogStream();
-  }).catch((err) => {
-    console.warn(
-      `[monitor] failed VK online check for external runtime: ${err?.message || err}`,
-    );
-  });
-}
-if (
-  isVkSpawnAllowed() &&
-  Number.isFinite(vkEnsureIntervalMs) &&
-  vkEnsureIntervalMs > 0
-) {
-  safeSetInterval("vk-runtime-ensure", () => ensureVibeKanbanRunning(), vkEnsureIntervalMs);
-}
-// Periodically reconnect log stream for externally-managed VK (e.g. after VK restart).
-// Session discovery is handled by ensureVkSessionDiscoveryLoop() inside ensureVkLogStream().
-if (
-  isVkRuntimeRequired() &&
-  !isVkSpawnAllowed() &&
-  vkEndpointUrl &&
-  Number.isFinite(vkEnsureIntervalMs) &&
-  vkEnsureIntervalMs > 0
-) {
-  safeSetInterval("vk-logstream-reconnect", async () => {
-    if (!vkLogStream) {
-      const online = await isVibeKanbanOnline();
-      if (online) ensureVkLogStream();
-    }
-  }, vkEnsureIntervalMs);
-}
 void ensureCodexSdkReady().then(() => {
   if (!codexEnabled) {
     const reason = codexDisabledReason || "disabled";
@@ -15451,7 +13945,7 @@ try {
   );
 }
 
-// ── Internal Executor / VK Orchestrator startup ──────────────────────────────
+// ── Internal Executor / Orchestrator startup ──────────────────────────────────
 /** @type {import("../task/task-executor.mjs").TaskExecutor|null} */
 let internalTaskExecutor = null;
 /** @type {import("../agent/agent-endpoint.mjs").AgentEndpoint|null} */
@@ -16267,14 +14761,8 @@ if (isExecutorDisabled()) {
 
 if (isExecutorDisabled()) {
   // Already logged above
-} else if (executorMode === "vk" || executorMode === "hybrid") {
-  // Start VK orchestrator (ve-orchestrator.sh/ps1)
-  startProcess();
 } else {
-  console.log("[monitor] VK orchestrator skipped (executor mode = internal)");
-  if (!isVkRuntimeRequired()) {
-    console.log("[monitor] VK runtime not required — all VK notifications suppressed");
-  }
+  console.log("[monitor] executor mode = internal");
 }
 if (telegramCommandEnabled) {
   startTelegramCommandListener();
@@ -16301,8 +14789,6 @@ injectMonitorFunctions({
   getCurrentChild: () => currentChild,
   startProcess,
   requestFullBosunRestart: requestManualFullRestart,
-  getVibeKanbanUrl: () => vkPublicUrl || vkEndpointUrl,
-  fetchVk,
   getRepoRoot: () => repoRoot,
   startFreshSession,
   attemptFreshSessionRetry,
@@ -16444,7 +14930,6 @@ if (isContainerEnabled()) {
 
 // ── Named exports for testing ───────────────────────────────────────────────
 export {
-  fetchVk,
   updateTaskStatus,
   reconcileTaskStatuses,
   safeRecoverTask,

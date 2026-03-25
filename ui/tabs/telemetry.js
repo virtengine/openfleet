@@ -36,6 +36,9 @@ import {
 import {
   Card as LegacyCard, EmptyState, Badge,
 } from "../components/shared.js";
+import {
+  buildRepoAreaContentionViewModel,
+} from "../modules/repo-area-contention.js";
 
 // ── Colour palettes ──────────────────────────────────────────────────────────
 
@@ -110,6 +113,7 @@ function severityChipColor(sev = "medium") {
  * `seriesMap` is `{ name: number[] }` aligned with `dates`.
  */
 function TrendLines({ dates, seriesMap, palette }) {
+  const [tooltip, setTooltip] = useState(null);
   if (!dates?.length || !seriesMap) return null;
   const entries = Object.entries(seriesMap);
   if (!entries.length) return null;
@@ -152,6 +156,7 @@ function TrendLines({ dates, seriesMap, palette }) {
   }));
 
   return html`
+    <${Box} sx=${{ position: "relative" }}>
     <svg viewBox="0 0 ${W} ${H}" class="analytics-trend-svg" aria-hidden="true"
       style="width:100%;height:auto;display:block">
       ${ySteps.map((v) => html`
@@ -171,7 +176,38 @@ function TrendLines({ dates, seriesMap, palette }) {
           stroke=${paletteColor(palette, i)} stroke-width="1.8"
           stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
       `)}
+      ${entries.map(([name, values], si) =>
+        values.map((v, di) => html`
+          <circle
+            key=${`${name}-${di}`}
+            cx=${xOf(di)}
+            cy=${yOf(v)}
+            r=${4}
+            fill="transparent"
+            stroke="transparent"
+            style="cursor:pointer"
+            onMouseEnter=${() => setTooltip({ x: xOf(di), y: yOf(v), date: dates[di], value: v, series: name, color: paletteColor(palette, si) })}
+            onMouseLeave=${() => setTooltip(null)}
+          />
+        `)
+      )}
     </svg>
+    ${tooltip ? html`
+      <${Paper} elevation=${3} sx=${{
+        position: "absolute",
+        left: `${(tooltip.x / W) * 100}%`,
+        top: `${(tooltip.y / H) * 100}%`,
+        transform: "translate(-50%, -110%)",
+        p: 0.75,
+        pointerEvents: "none",
+        whiteSpace: "nowrap",
+        zIndex: 10,
+      }}>
+        <${Typography} variant="caption" display="block" sx=${{ fontWeight: 600, color: tooltip.color }}>${tooltip.series}<//>
+        <${Typography} variant="caption" display="block">${tooltip.date}: ${tooltip.value}<//>
+      <//>
+    ` : null}
+    <//>
   `;
 }
 
@@ -307,6 +343,10 @@ function Sparkline({ values, color = "#818cf8" }) {
  */
 function ShreddingPanel({ period }) {
   const data = shreddingTelemetry.value;
+  const [shreddingPage, setShreddingPage] = useState(0);
+  const [shreddingSearch, setShreddingSearch] = useState("");
+
+  useEffect(() => { setShreddingPage(0); }, [shreddingSearch]);
 
   useEffect(() => {
     loadShreddingTelemetry(period).catch(() => {});
@@ -377,6 +417,20 @@ function ShreddingPanel({ period }) {
     && Number(totalEstimatedCostSavedUsd) > 0;
   const hasCostTrend = sortedDates.some((day) => Number(dailyCostSavedUsd?.[day] || 0) > 0);
   const observedCostRate = estimation?.blendedCostPerMillionTokensUsd ?? null;
+
+  const filteredEvents = shreddingSearch.trim()
+    ? recentEvents.filter((ev) => {
+        const q = shreddingSearch.trim().toLowerCase();
+        return (ev.agentType || "").toLowerCase().includes(q)
+          || (ev.stage || "").toLowerCase().includes(q)
+          || (ev.compactionFamily || "").toLowerCase().includes(q)
+          || (ev.commandFamily || "").toLowerCase().includes(q);
+      })
+    : recentEvents;
+  const shreddingPageSize = 10;
+  const totalShreddingPages = Math.max(1, Math.ceil(filteredEvents.length / shreddingPageSize));
+  const clampedPage = Math.min(shreddingPage, totalShreddingPages - 1);
+  const pagedEvents = filteredEvents.slice(clampedPage * shreddingPageSize, (clampedPage + 1) * shreddingPageSize);
 
   return html`
     <${Paper} elevation=${1} sx=${{ p: 2, mb: 2 }}>
@@ -542,7 +596,16 @@ function ShreddingPanel({ period }) {
       ` : null}
 
       ${recentEvents.length > 0 ? html`
-        <${Typography} variant="subtitle2" gutterBottom>Recent Shredding Events<//>
+        <${Stack} direction="row" justifyContent="space-between" alignItems="center" sx=${{ mb: 1 }}>
+          <${Typography} variant="subtitle2">Recent Shredding Events<//>
+          <${TextField}
+            size="small"
+            placeholder="Filter by agent, stage, family\u2026"
+            value=${shreddingSearch}
+            onInput=${(e) => setShreddingSearch(e.target.value)}
+            sx=${{ width: 260 }}
+          />
+        <//>
         <${TableContainer}>
           <${Table} size="small">
             <${TableHead}>
@@ -560,7 +623,7 @@ function ShreddingPanel({ period }) {
               </${TableRow}>
             <//>
             <${TableBody}>
-              ${recentEvents.slice(0, 10).map((ev, i) => html`
+              ${pagedEvents.map((ev, i) => html`
                 <${TableRow} key=${i}>
                   <${TableCell}>
                     <${Typography} variant="caption">${formatRelative(ev.timestamp)}<//>
@@ -612,10 +675,87 @@ function ShreddingPanel({ period }) {
             <//>
           <//>
         <//>
+        <${Stack} direction="row" justifyContent="space-between" alignItems="center" sx=${{ mt: 1 }}>
+          <${Typography} variant="caption" color="text.secondary">
+            ${filteredEvents.length > 0
+              ? `${clampedPage * shreddingPageSize + 1}\u2013${Math.min((clampedPage + 1) * shreddingPageSize, filteredEvents.length)} of ${filteredEvents.length}`
+              : "0 results"}
+          <//>
+          <${Stack} direction="row" spacing=${1}>
+            <${Button} size="small" variant="outlined" disabled=${clampedPage <= 0}
+              onClick=${() => setShreddingPage(clampedPage - 1)}>Previous<//>
+            <${Button} size="small" variant="outlined" disabled=${clampedPage >= totalShreddingPages - 1}
+              onClick=${() => setShreddingPage(clampedPage + 1)}>Next<//>
+          <//>
+        <//>
       ` : null}
     <//>
   `;
 }
+function RepoAreaContentionPanel() {
+  const model = buildRepoAreaContentionViewModel(telemetrySummary.value?.repoAreaContention || null);
+
+  return html`
+    <${Paper} elevation=${1} sx=${{ p: 2, mb: 2 }}>
+      <${Stack} direction="row" justifyContent="space-between" alignItems="center" spacing=${1} sx=${{ mb: 1.5, flexWrap: "wrap" }}>
+        <${Box}>
+          <${Typography} variant="h6" gutterBottom>Repo-area lock contention<//>
+          <${Typography} variant="body2" color="text.secondary">${model.summary}<//>
+        <//>
+        <${Stack} direction="row" spacing=${1} alignItems="center">
+          <${Chip} size="small" color=${model.tone === "warning" ? "warning" : model.tone === "info" ? "info" : "success"} label=${model.totalEventsLabel} />
+          <${Chip} size="small" variant="outlined" label=${model.totalWaitLabel} />
+        <//>
+      <//>
+
+      ${model.hotAreas.length === 0 ? html`
+        <${EmptyState}
+          title=${model.headline}
+          description=${model.summary}
+        />
+      ` : html`
+        <${Stack} spacing=${1.25} sx=${{ mb: model.recentEvents.length ? 1.5 : 0 }}>
+          ${model.hotAreas.map((area) => html`
+            <${Paper} key=${area.area} variant="outlined" sx=${{ p: 1.25 }}>
+              <${Stack} direction="row" justifyContent="space-between" alignItems="center" spacing=${1} flexWrap="wrap">
+                <${Box}>
+                  <${Typography} variant="subtitle2">${area.area}<//>
+                  <${Typography} variant="caption" color="text.secondary">${area.avgWaitLabel} · last seen ${area.lastSeenLabel}<//>
+                <//>
+                <${Stack} direction="row" spacing=${0.75} alignItems="center" flexWrap="wrap">
+                  <${Chip} size="small" label=${area.eventsLabel} />
+                  <${Chip} size="small" variant="outlined" label=${area.waitingLabel} />
+                  <${Chip} size="small" variant="outlined" label=${area.activeLabel} />
+                  ${area.detailHref ? html`<${Button} size="small" href=${area.detailHref}>Details<//>` : null}
+                <//>
+              <//>
+            <//>
+          `)}
+        <//>
+      `}
+
+      ${model.recentEvents.length ? html`
+        <${Divider} sx=${{ my: 1.5 }} />
+        <${Typography} variant="subtitle2" gutterBottom>Recent contention samples<//>
+        <${Stack} spacing=${1}>
+          ${model.recentEvents.slice(0, 5).map((event) => html`
+            <${Stack} key=${event.taskId + event.area + (event.at || "")} direction="row" justifyContent="space-between" alignItems="center" spacing=${1}>
+              <${Box}>
+                <${Typography} variant="body2">${event.title}<//>
+                <${Typography} variant="caption" color="text.secondary">${event.subtitle}<//>
+              <//>
+              <${Stack} direction="row" spacing=${0.75} alignItems="center">
+                <${Typography} variant="caption" color="text.secondary">${event.lastSeenLabel}<//>
+                ${event.detailHref ? html`<${Button} size="small" href=${event.detailHref}>Task<//>` : null}
+              <//>
+            <//>
+          `)}
+        <//>
+      ` : null}
+    <//>
+  `;
+}
+
 // ── Main exported component ──────────────────────────────────────────────────
 
 export function TelemetryTab() {
@@ -776,6 +916,8 @@ export function TelemetryTab() {
             palette=${MCP_PALETTE} title="Top MCP Tools" />
         <//>
       <//>
+
+      <${RepoAreaContentionPanel} />
 
       <!-- Context Shredding Panel -->
       <${ShreddingPanel} period=${period} />

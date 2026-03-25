@@ -12,9 +12,6 @@ bosun-setup.ps1
 bosun-shared-workspaces
 bosun-shared-workspaces.cmd
 bosun-shared-workspaces.ps1
-vibe-kanban
-vibe-kanban.cmd
-vibe-kanban.ps1
 
 */dist/*
 

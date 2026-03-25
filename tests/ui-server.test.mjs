@@ -3097,6 +3097,75 @@ describe("ui-server mini app", () => {
     expect(listJson.statusCounts.blocked).toBeGreaterThanOrEqual(1);
   });
 
+  it("surfaces repo-area contention summaries on /api/telemetry/summary", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    mod.injectUiDependencies({
+      getInternalExecutor: () => ({
+        getStatus: () => ({
+          maxParallel: 4,
+          activeSlots: 1,
+          slots: [],
+          repoAreaLocks: {
+            areas: [
+              {
+                area: "server",
+                waitingTasks: 2,
+                activeSlots: 1,
+                effectiveLimit: 1,
+                contentionEvents: 3,
+                contentionWaitMs: 8400,
+                lastContentionAt: "2026-03-24T11:55:00.000Z",
+              },
+            ],
+            contention: {
+              events: 3,
+              waitMsTotal: 8400,
+              recent: [
+                {
+                  at: "2026-03-24T11:55:00.000Z",
+                  taskId: "task-123",
+                  area: "server",
+                  waitMs: 3200,
+                  resolutionReason: "deferred",
+                },
+              ],
+            },
+          },
+        }),
+        isPaused: () => false,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const response = await fetch("http://127.0.0.1:" + port + "/api/telemetry/summary");
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.ok).toBe(true);
+    expect(payload.repoAreaContention).toMatchObject({
+      totalEvents: 3,
+      totalWaitMs: 8400,
+      stale: false,
+    });
+    expect(payload.repoAreaContention.hotAreas[0]).toMatchObject({
+      area: "server",
+      waitingTasks: 2,
+      events: 3,
+    });
+    expect(payload.repoAreaContention.recent[0]).toMatchObject({
+      taskId: "task-123",
+      area: "server",
+    });
+  });
   it("returns a diagnosticId on task detail failures and logs the raw backend cause", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
@@ -4563,6 +4632,7 @@ describe("ui-server mini app", () => {
   });
 
 });
+
 
 
 

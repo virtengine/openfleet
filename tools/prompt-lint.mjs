@@ -1,143 +1,161 @@
-#!/usr/bin/env node
-
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
-import { relative, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import {
-  AGENT_PROMPT_DEFINITIONS,
-  DEFAULT_PROMPTS,
-  PROMPT_WORKSPACE_DIR,
-} from "../agent/agent-prompt-catalog.mjs";
-
-export const NARRATION_PHRASES = Object.freeze([
-  "I am going to",
-  "I'm going to",
-  "I’m going to",
-  "I'll",
-  "I’ll",
-  "Let me",
-  "Let me now",
-  "I have completed",
-  "I will use",
-  "I will now",
-  "First, I",
-  "Next, I",
-  "Then, I",
-  "Before I",
-  "After I",
-  "To do this, I",
+export const NARRATION_LINT_PATTERNS = Object.freeze([
+  Object.freeze({
+    id: "i-am-going-to",
+    description: 'First-person execution narration ("I am going to")',
+    pattern: /\bI am going to\b/i,
+  }),
+  Object.freeze({
+    id: "i-have-completed",
+    description: 'First-person completion narration ("I have completed")',
+    pattern: /\bI have completed\b/i,
+  }),
+  Object.freeze({
+    id: "im-noticing",
+    description: 'First-person coaching example ("I\'m noticing")',
+    pattern: /"I[''’]m noticing\b/i,
+  }),
+  Object.freeze({
+    id: "this-makes-me-think",
+    description: 'First-person coaching example ("This makes me think of")',
+    pattern: /"This makes me think of\b/i,
+  }),
+  Object.freeze({
+    id: "im-shifting",
+    description: 'First-person transition example ("I\'m shifting")',
+    pattern: /"I[''’]m shifting\b/i,
+  }),
+  Object.freeze({
+    id: "im-sending",
+    description: 'Delegation narration example ("I\'m sending that to")',
+    pattern: /"I[''’]m sending that to\b/i,
+  }),
+  Object.freeze({
+    id: "lets-make-sure",
+    description: 'Sequential explain-before-act phrase ("Let\'s make sure")',
+    pattern: /\bLet[''’]s make sure\b/i,
+  }),
+  Object.freeze({
+    id: "lets-take-each-option",
+    description: 'Sequential explain-before-act phrase ("Let\'s take each option")',
+    pattern: /\bLet[''’]s take each option\b/i,
+  }),
+  Object.freeze({
+    id: "lets-move-on",
+    description: 'Sequential transition phrase ("Let\'s move on")',
+    pattern: /\bLet[''’]s move on to\b/i,
+  }),
+  Object.freeze({
+    id: "i-will-use",
+    description: 'First-person execution narration ("I will use")',
+    pattern: /\bI will use\b/i,
+  }),
+  Object.freeze({
+    id: "i-will-now",
+    description: 'First-person execution narration ("I will now")',
+    pattern: /\bI will now\b/i,
+  }),
+  Object.freeze({
+    id: "let-me-now",
+    description: 'First-person execution narration ("Let me now")',
+    pattern: /\bLet me now\b/i,
+  }),
+  Object.freeze({
+    id: "i-noticed-example",
+    description: 'First-person coaching example ("I noticed [element]")',
+    pattern: /"I noticed \[element\]\b/i,
+  }),
+  Object.freeze({
+    id: "well-plan-adr",
+    description: 'Sequential planning narration ("We\'ll plan to finalize your ADR")',
+    pattern: /"We[''’]ll plan to finalize your ADR\b/i,
+  }),
+  Object.freeze({
+    id: "ive-placed-adr",
+    description: 'First-person completion narration ("I\'ve placed your ADR")',
+    pattern: /"I[''’]ve placed your ADR\b/i,
+  }),
+  Object.freeze({
+    id: "i-can-pick-up",
+    description: 'First-person resume narration ("I can pick up where we left off")',
+    pattern: /\bI can pick up where we left off\b/i,
+  }),
+  Object.freeze({
+    id: "i-can-connect",
+    description: 'First-person handoff narration ("I can connect you with")',
+    pattern: /\bI can connect you with\b/i,
+  }),
+  Object.freeze({
+    id: "well-work-through",
+    description: 'Sequential explain-before-act phrase ("We\'ll work through the methodology")',
+    pattern: /\bWe[''’]ll work through the methodology\b/i,
+  }),
+  Object.freeze({
+    id: "shift-focus-narration",
+    description: 'Sequential coaching narration ("It sounds like we should shift focus")',
+    pattern: /"It sounds like we should shift focus\b/i,
+  }),
 ]);
 
-function escapeRegex(text) {
-  return String(text).replace(/[.*+?^$()|[\]\\]/g, "\\$&");
-}
-
-function walkMarkdownFiles(dir) {
+function listPromptFiles(dir) {
   if (!existsSync(dir)) return [];
-  const results = [];
+  const files = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const fullPath = resolve(dir, entry.name);
+    const fullPath = join(dir, entry.name);
     if (entry.isDirectory()) {
-      results.push(...walkMarkdownFiles(fullPath));
-      continue;
-    }
-    if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
-      results.push(fullPath);
+      files.push(...listPromptFiles(fullPath));
+    } else if (entry.isFile() && entry.name.endsWith(".md")) {
+      files.push(fullPath);
     }
   }
-  return results;
+  return files.sort((a, b) => a.localeCompare(b));
 }
 
-function isGitIgnored(rootDir, relPath) {
-  try {
-    execFileSync("git", ["check-ignore", "-q", relPath], {
-      cwd: rootDir,
-      stdio: "ignore",
-    });
-    return true;
-  } catch (error) {
-    return false;
-  }
-}
+export function collectPromptLintViolations(rootDir = process.cwd(), opts = {}) {
+  const promptDir = resolve(rootDir, ".bosun", "agents");
+  const patterns = opts.patterns ?? NARRATION_LINT_PATTERNS;
+  const violations = [];
 
-export function lintPromptText(text, source = "<inline>") {
-  const issues = [];
-  const lines = String(text || "").split(/\r?\n/);
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    for (const phrase of NARRATION_PHRASES) {
-      const matcher = new RegExp("\\b" + escapeRegex(phrase) + "\\b", "i");
-      if (!matcher.test(line)) continue;
-      issues.push({
-        path: source,
-        line: index + 1,
-        phrase,
-        excerpt: line.trim(),
-      });
-      break;
-    }
-  }
-
-  return issues;
-}
-
-export function collectPromptLintTargets(rootDir = process.cwd()) {
-  const root = resolve(rootDir);
-  const targets = new Map();
-
-  for (const definition of AGENT_PROMPT_DEFINITIONS) {
-    const promptPath = PROMPT_WORKSPACE_DIR + "/" + definition.filename;
-    targets.set(promptPath, {
-      path: promptPath,
-      source: "builtin",
-      content: DEFAULT_PROMPTS[definition.key] || "",
+  for (const filePath of listPromptFiles(promptDir)) {
+    const text = readFileSync(filePath, "utf8");
+    const lines = text.split(/\r?\n/);
+    lines.forEach((line, index) => {
+      for (const rule of patterns) {
+        if (rule.pattern.test(line)) {
+          violations.push({
+            file: relative(rootDir, filePath).replace(/\\/g, "/"),
+            line: index + 1,
+            rule: rule.id,
+            description: rule.description,
+            snippet: line.trim(),
+          });
+        }
+      }
     });
   }
 
-  const promptDir = resolve(root, PROMPT_WORKSPACE_DIR);
-  for (const filePath of walkMarkdownFiles(promptDir)) {
-    const relPath = relative(root, filePath).replace(/\\/g, "/");
-    if (isGitIgnored(root, relPath)) continue;
-    targets.set(relPath, {
-      path: relPath,
-      source: "workspace",
-      content: readFileSync(filePath, "utf8"),
-    });
-  }
-
-  return [...targets.values()];
+  return violations;
 }
 
-export function lintPromptWorkspace(rootDir = process.cwd()) {
-  const targets = collectPromptLintTargets(rootDir);
-  const issues = targets.flatMap((target) => lintPromptText(target.content, target.path));
-  return {
-    ok: issues.length === 0,
-    targets,
-    issues,
-  };
+export function formatPromptLintViolations(violations) {
+  return violations
+    .map((violation) => {
+      const location = violation.file + ":" + violation.line;
+      return location + " [" + violation.rule + "] " + violation.description + "\n  " + violation.snippet;
+    })
+    .join("\n");
 }
 
-const isMain =
-  process.argv[1] &&
-  resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-
-if (isMain) {
-  const rootDir = process.argv[2] || process.cwd();
-  const result = lintPromptWorkspace(rootDir);
-
-  if (!result.ok) {
-    console.error("[prompt-lint] narration patterns detected:");
-    for (const issue of result.issues) {
-      console.error(
-        "- " + issue.path + ":" + issue.line + " (" + issue.phrase + ") " + issue.excerpt,
-      );
-    }
+const isDirectRun = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isDirectRun) {
+  const violations = collectPromptLintViolations(process.cwd());
+  if (violations.length > 0) {
+    console.error("Prompt lint failed. Remove verbose narration patterns from .bosun/agents/.\n");
+    console.error(formatPromptLintViolations(violations));
     process.exit(1);
   }
-
-  console.log("[prompt-lint] ok (" + result.targets.length + " targets)");
+  console.log("Prompt lint OK: no narration anti-patterns found in .bosun/agents");
 }

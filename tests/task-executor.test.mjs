@@ -101,6 +101,7 @@ vi.mock("node:fs", () => ({
   existsSync: vi.fn(() => false),
   appendFileSync: vi.fn(),
   mkdirSync: vi.fn(),
+  renameSync: vi.fn(),
   writeFileSync: vi.fn(),
 }));
 

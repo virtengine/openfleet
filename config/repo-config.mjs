@@ -16,7 +16,7 @@
  *
  * Usage:
  *   import { ensureRepoConfigs, printRepoConfigSummary } from "./repo-config.mjs";
- *   const result = ensureRepoConfigs("/path/to/repo", { vkBaseUrl: "..." });
+ *   const result = ensureRepoConfigs("/path/to/repo");
  *   printRepoConfigSummary(result);
  */
 
@@ -153,8 +153,8 @@ function buildInstalledMcpBlocks(repoRoot) {
       const meta = entry.meta || {};
       const safeId = String(entry.id).replace(/[^a-zA-Z0-9_-]/g, "_");
 
-      // Skip entries that are already covered by common/kanban blocks
-      if (safeId === "context7" || safeId === "microsoft-docs" || safeId === "vibe-kanban" || safeId === "vibe_kanban") {
+      // Skip entries that are already covered by common blocks
+      if (safeId === "context7" || safeId === "microsoft-docs") {
         continue;
       }
 
@@ -189,19 +189,6 @@ function buildInstalledMcpBlocks(repoRoot) {
   } catch {
     return "";
   }
-}
-
-function fallbackBuildVibeKanbanBlock({ vkBaseUrl } = {}) {
-  const baseUrl = String(vkBaseUrl || "http://127.0.0.1:54089").trim() || "http://127.0.0.1:54089";
-  return [
-    "",
-    "[mcp_servers.vibe_kanban]",
-    'command = "npx"',
-    'args = ["-y", "vibe-kanban@latest"]',
-    "[mcp_servers.vibe_kanban.env]",
-    `VK_BASE_URL = ${toTomlString(baseUrl)}`,
-    "",
-  ].join("\n");
 }
 
 function fallbackBuildAgentSdkBlock({ primary = "codex" } = {}) {
@@ -255,10 +242,6 @@ const buildSandboxWorkspaceWrite = getCodexHelper(
 const buildCommonMcpBlocks = getCodexHelper(
   "buildCommonMcpBlocks",
   fallbackBuildCommonMcpBlocks,
-);
-const buildVibeKanbanBlock = getCodexHelper(
-  "buildVibeKanbanBlock",
-  fallbackBuildVibeKanbanBlock,
 );
 const buildAgentSdkBlock = getCodexHelper(
   "buildAgentSdkBlock",
@@ -405,7 +388,7 @@ function resolveBridgePath(explicit) {
  * Build the full content of a project-level `.codex/config.toml`.
  *
  * This generates ONLY project-scoped settings:
- *   - MCP servers (vibe_kanban, context7, sequential-thinking, playwright, microsoft-docs)
+ *   - MCP servers (context7, sequential-thinking, playwright, microsoft-docs)
  *   - sandbox_mode
  *   - [sandbox_workspace_write]
  *   - [features] section
@@ -418,8 +401,6 @@ function resolveBridgePath(explicit) {
  *
  * @param {object} options
  * @param {string}  options.repoRoot       Absolute path to the repo
- * @param {string}  [options.vkBaseUrl]    VK API base URL (default: "http://127.0.0.1:54089")
- * @param {boolean} [options.skipVk]       Whether to skip the VK MCP server (default: true)
  * @param {string}  [options.primarySdk]   "codex" | "copilot" | "claude" (default: "codex")
  * @param {object}  [options.env]          Environment overrides
  * @returns {string}  TOML content
@@ -427,8 +408,6 @@ function resolveBridgePath(explicit) {
 export function buildRepoCodexConfig(options = {}) {
   const {
     repoRoot,
-    vkBaseUrl = "http://127.0.0.1:54089",
-    skipVk = true,
     primarySdk = "codex",
     env = process.env,
   } = options;
@@ -479,11 +458,6 @@ export function buildRepoCodexConfig(options = {}) {
   parts.push("");
 
   // ── MCP servers ──
-  if (!skipVk) {
-    parts.push(buildVibeKanbanBlock({ vkBaseUrl }).trim());
-    parts.push("");
-  }
-
   parts.push(buildCommonMcpBlocks().trim());
   parts.push("");
 
@@ -586,7 +560,6 @@ const CLAUDE_PERMISSIONS_ALLOW = [
   "Bash(cd:*)",
   "Bash(ls:*)",
   // MCP tools
-  "mcp__vibe_kanban__*",
   // Web access (trusted domains)
   "WebFetch(domain:github.com)",
   "WebFetch(domain:bosun.ai)",
@@ -782,8 +755,6 @@ export function buildRepoVsCodeMcpConfig() {
  *
  * @param {string} repoRoot  Absolute path to the repo directory
  * @param {object} [options]
- * @param {string}  [options.vkBaseUrl]        VK API base URL (default: "http://127.0.0.1:54089")
- * @param {boolean} [options.skipVk]           Whether to skip VK MCP server (default: true)
  * @param {string}  [options.primarySdk]       "codex" | "copilot" | "claude" (default: "codex")
  * @param {string}  [options.bosunBridgePath]  Path to agent-hook-bridge.mjs
  * @param {object}  [options.env]              Environment overrides
@@ -792,8 +763,6 @@ export function buildRepoVsCodeMcpConfig() {
  */
 export function ensureRepoConfigs(repoRoot, options = {}) {
   const {
-    vkBaseUrl = "http://127.0.0.1:54089",
-    skipVk = true,
     primarySdk = "codex",
     bosunBridgePath,
     env = process.env,
@@ -816,7 +785,7 @@ export function ensureRepoConfigs(repoRoot, options = {}) {
     const configPath = resolve(root, ".codex", "config.toml");
     result.codexConfig.path = configPath;
 
-    const generated = buildRepoCodexConfig({ repoRoot: root, vkBaseUrl, skipVk, primarySdk, env });
+    const generated = buildRepoCodexConfig({ repoRoot: root, primarySdk, env });
 
     if (existsSync(configPath)) {
       const existing = readFileSync(configPath, "utf8");

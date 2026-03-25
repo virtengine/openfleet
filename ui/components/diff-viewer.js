@@ -15,6 +15,8 @@ import {
   Button,
   Skeleton,
   Paper,
+  IconButton,
+  Tooltip,
 } from "@mui/material";
 
 const html = htm.bind(h);
@@ -211,13 +213,28 @@ function DiffHunk({ hunk }) {
   `;
 }
 
+const LARGE_HUNK_THRESHOLD = 200; // lines
+const LARGE_FILE_THRESHOLD = 500; // total lines across hunks
+const LARGE_PATCH_BYTES = 80_000; // ~80 KB patch text
+
+function countHunkLines(hunks = []) {
+  return hunks.reduce((sum, h) => sum + (Array.isArray(h?.lines) ? h.lines.length : 0), 0);
+}
+
 function DiffFile({ file, defaultExpanded = false }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
+  const [loaded, setLoaded] = useState(false);
   const chipProps = statusChipProps(file.status);
   const renameLabel = file.status === "renamed" && file.oldFilename && file.newFilename && file.oldFilename !== file.newFilename
     ? `${file.oldFilename} -> ${file.newFilename}`
     : null;
   const hasPatch = Array.isArray(file.hunks) && file.hunks.length > 0;
+  const totalLines = countHunkLines(file.hunks);
+  const patchBytes = (file.patch || "").length;
+  const isLarge = totalLines > LARGE_FILE_THRESHOLD || patchBytes > LARGE_PATCH_BYTES;
+
+  // Auto-load when not large or when user explicitly loads
+  const shouldRenderHunks = hasPatch && (!isLarge || loaded);
 
   return html`
     <${Accordion}
@@ -264,8 +281,9 @@ function DiffFile({ file, defaultExpanded = false }) {
         <${Chip} label=${chipProps.label} size="small" color=${chipProps.color} variant="outlined" sx=${{ mr: 0.5 }} />
         ${file.additions > 0 && html`<${Chip} label=${`+${file.additions}`} size="small" color="success" variant="outlined" />`}
         ${file.deletions > 0 && html`<${Chip} label=${`-${file.deletions}`} size="small" color="error" variant="outlined" />`}
+        ${isLarge && html`<${Chip} label="large" size="small" variant="outlined" sx=${{ ml: 0.5, borderColor: "rgba(251,191,36,0.5)", color: "#fbbf24" }} />`}
       <//>
-      <${AccordionDetails} sx=${{ p: 0 }}>
+      <${AccordionDetails} sx=${{ p: 0, maxHeight: "none", overflow: "visible" }}>
         ${file.binary
           ? html`
               <div style=${{
@@ -275,22 +293,44 @@ function DiffFile({ file, defaultExpanded = false }) {
                 color: "var(--text-secondary)",
               }}>Binary file diff is not rendered inline.</div>
             `
-          : hasPatch
+          : shouldRenderHunks
             ? html`
-                <div style=${{ padding: "14px" }}>
+                <div style=${{
+                  padding: "14px",
+                  maxHeight: "600px",
+                  overflowY: "auto",
+                  overflowX: "hidden",
+                }}>
                   ${file.hunks.map((hunk, index) => html`<${DiffHunk} key=${`${file.filename}-${index}`} hunk=${hunk} />`)}
                 </div>
               `
-            : html`
-                <div style=${{
-                  padding: "14px 16px",
-                  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-                  fontSize: "12px",
-                  color: "var(--text-secondary)",
-                }}>
-                  Patch body is not available for this file yet.
-                </div>
-              `}
+            : hasPatch && isLarge && !loaded
+              ? html`
+                  <div style=${{
+                    padding: "24px 16px",
+                    textAlign: "center",
+                    background: "rgba(15, 23, 42, 0.38)",
+                  }}>
+                    <${Typography} variant="body2" color="text.secondary" sx=${{ mb: 1.5 }}>
+                      Large diff — ${totalLines} lines across ${file.hunks.length} hunks
+                    <//>
+                    <${Button}
+                      variant="outlined"
+                      size="small"
+                      onClick=${(e) => { e.stopPropagation(); setLoaded(true); }}
+                    >Load diff<//>
+                  </div>
+                `
+              : html`
+                  <div style=${{
+                    padding: "14px 16px",
+                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                    fontSize: "12px",
+                    color: "var(--text-secondary)",
+                  }}>
+                    Patch body is not available for this file yet.
+                  </div>
+                `}
       <//>
     <//>
   `;

@@ -231,19 +231,6 @@ export const CURATED_MCP_CATALOG = Object.freeze([
     source: "catalog",
     homepage: "https://github.com/anthropics/google-drive-mcp-server",
   },
-  // ── Vibe Kanban (Bosun built-in) ────────────────────────────────────────
-  {
-    id: "vibe-kanban",
-    name: "Vibe Kanban",
-    description: "Bosun's integrated task and project management MCP server",
-    transport: "stdio",
-    command: "npx",
-    args: ["-y", "vibe-kanban@latest"],
-    env: { VK_BASE_URL: "http://127.0.0.1:54089" },
-    tags: ["kanban", "tasks", "bosun"],
-    source: "catalog",
-    homepage: "https://github.com/nicepkg/vibe-kanban",
-  },
 ]);
 
 // ── Catalog Queries ───────────────────────────────────────────────────────────

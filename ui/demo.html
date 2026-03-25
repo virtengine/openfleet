@@ -1421,15 +1421,15 @@
           ],
         },
         {
-          id: 'template-agent-session-monitor', name: 'Agent Session Monitor', description: 'Monitors active sessions for timeouts, inactivity, auto-continues stalled agents.', category: 'agents', categoryLabel: 'Agents', categoryIcon: ':bot:', categoryOrder: 2, tags: ['agent', 'monitor', 'session', 'health'], nodeCount: 9, edgeCount: 8, recommended: true,
+          id: 'template-agent-session-monitor', name: 'Agent Session Monitor', description: 'Monitors active agent sessions for timeouts, excessive token usage, or inactivity. Auto-continues stalled agents or escalates hung ones.', category: 'agents', categoryLabel: 'Agents', categoryIcon: ':bot:', categoryOrder: 2, tags: ['agent', 'monitor', 'session', 'health'], nodeCount: 9, edgeCount: 8, recommended: true,
           nodes: [
             { id: 'trigger', type: 'trigger.schedule', label: 'Check Every 5min', config: { cron: '*/5 * * * *' }, position: { x: 400, y: 50 } },
             { id: 'list-sessions', type: 'action.run_command', label: 'List Sessions', config: { command: 'bosun agent list --json --active' }, position: { x: 400, y: 200 } },
             { id: 'has-active', type: 'condition.expression', label: 'Any Active?', config: { expression: 'output.length > 5' }, position: { x: 400, y: 340 } },
             { id: 'check-health', type: 'action.run_command', label: 'Check Health', config: { command: 'bosun agent health --json' }, position: { x: 200, y: 490 } },
             { id: 'has-issues', type: 'condition.expression', label: 'Any Unhealthy?', config: { expression: 'output.includes("stalled")' }, position: { x: 200, y: 640 } },
-            { id: 'auto-continue', type: 'action.continue_session', label: 'Auto-Continue', config: { strategy: 'continue' }, position: { x: 100, y: 800 } },
-            { id: 'alert-hung', type: 'notify.telegram', label: 'Alert Hung', config: { message: ':dot: Agent session hung — auto-continue attempted' }, position: { x: 100, y: 950 } },
+            { id: 'auto-continue', type: 'action.continue_session', label: 'Auto-Continue Stalled', config: { prompt: 'You appear to have stalled. Please continue working on the current task.', strategy: 'continue', timeoutMs: 300000 }, position: { x: 100, y: 800 } },
+            { id: 'alert-hung', type: 'notify.telegram', label: 'Alert Hung Sessions', config: { message: ':dot: Agent session appears hung — auto-continue attempted. Check status.' }, position: { x: 100, y: 950 } },
             { id: 'all-healthy', type: 'notify.log', label: 'All Healthy', config: { level: 'info' }, position: { x: 450, y: 640 } },
             { id: 'no-sessions', type: 'notify.log', label: 'No Sessions', config: { level: 'info' }, position: { x: 600, y: 490 } },
           ],
@@ -4542,6 +4542,14 @@
         return { data: STATE.gitBranches };
       if (route === '/api/git/diff')
         return { data: STATE.gitDiff };
+      if (route === '/api/git/repos')
+        return {
+          ok: true,
+          data: (STATE.sharedWorkspaces.find(w => w.id === STATE.activeWorkspaceId)?.repos || []).map((repo) => ({
+            name: repo.name,
+            path: `/home/demo/repos/${repo.name}`,
+          })),
+        };
       if (route === '/api/recent-commits')
         return {
           ok: true,
@@ -4912,6 +4920,22 @@
           ok: true,
           events,
           total: filtered.length,
+        };
+      }
+
+      if (route === '/api/voice/dispatch-batch' && method === 'POST') {
+        const actions = Array.isArray(body?.actions) ? body.actions : [];
+        if (!actions.length) {
+          return { ok: false, error: 'actions array is required' };
+        }
+        return {
+          ok: true,
+          results: actions.map((action, index) => ({
+            ok: true,
+            actionId: String(action?.actionId || action?.id || 'demo-action-' + (index + 1)),
+            intent: String(action?.intent || action?.tool || 'unknown'),
+            status: 'completed',
+          })),
         };
       }
 

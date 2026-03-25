@@ -430,8 +430,8 @@
         "bosun-attached",
         "safety"
       ],
-      "nodeCount": 17,
-      "edgeCount": 23,
+      "nodeCount": 19,
+      "edgeCount": 26,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.schedule",
@@ -450,7 +450,7 @@
         "author": "bosun",
         "version": 4,
         "createdAt": "2025-07-01T00:00:00Z",
-        "templateVersion": "2.2.0",
+        "templateVersion": "2.3.0",
         "tags": [
           "github",
           "pr",
@@ -466,7 +466,7 @@
             "registerBuiltinHooks (PostPR block)"
           ],
           "calledFrom": [],
-          "description": "v2.2: Consolidates PR polling into one gh pr list fetch per target repo per cycle. Uses deterministic-first remediation and review/merge command nodes; agent execution is now fallback-only for unresolved conflicts or failed automatic remediation attempts. All external PRs (no bosun-attached label) remain untouched."
+          "description": "v2.3: Adds fast-path update-branch for out-of-date (BEHIND) PRs without conflicts. Consolidates PR polling into one gh pr list fetch per target repo per cycle. Uses deterministic-first remediation and review/merge command nodes; agent execution is now fallback-only for unresolved conflicts or failed automatic remediation attempts. All external PRs (no bosun-attached label) remain untouched."
         }
       },
       "nodes": [
@@ -493,7 +493,7 @@
             "command": "node",
             "args": [
               "-e",
-              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']); const SECURITY_CHECK_RE=/(^|[^a-z])(codeql|code scanning|security|sarif|codacy)([^a-z]|$)/i; function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();} function isFailedCheck(check){return FAIL_STATES.has(check?.conclusion||check?.state||'');} function isSecurityCheckName(name){return SECURITY_CHECK_RE.test(String(name||''));} function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function collectReposFromConfig(){   const repos=[];   try{     const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--label','bosun-attached','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const readyCandidates=[],conflicts=[],securityFailures=[],ciFailures=[],pending=[],drafted=[]; let newlyLabeled=0,staleLabelCleared=0,ciKicked=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const failedChecks=checks.filter(isFailedCheck);   const failedCheckNames=failedChecks.map(readCheckName).filter(Boolean);   const securityCheckNames=failedCheckNames.filter(isSecurityCheckName);   const hasFail=failedChecks.length>0;   const hasSecurityFail=securityCheckNames.length>0;   const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(isConflict){     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,mergeable:String(pr.mergeable||'').toUpperCase()});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasSecurityFail){     securityFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,securityCheckNames});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}     }   } else if(hasFail){     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url,failedCheckNames});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else {     if(hasFixLabel&&!hasPend){       try{         const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];         if(repo)rmArgs.push('--repo',repo);         execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});         staleLabelCleared++;       }catch(e){process.stderr.write('stale-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     } else if(checks.length>0&&!hasFixLabel){       if(hasPend) pending.push({n:pr.number,repo});       readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});     }     if(checks.length===0&&repo&&pr.headRefName&&!isDraft){       try{execFileSync('gh',['workflow','run','ci.yaml','--repo',repo,'--ref',pr.headRefName],{encoding:'utf8',stdio:['pipe','pipe','pipe']});ciKicked++;}       catch{}     }   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   securityFailures,   ciFailures,   pending:pending.length,   drafted:drafted.length,   newlyLabeled,   staleLabelCleared,   ciKicked,   fixNeeded:conflicts.length+securityFailures.length+ciFailures.length }));"
+              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','DIRTY']); const BEHIND_MERGEABLES=new Set(['BEHIND']); const SECURITY_CHECK_RE=/(^|[^a-z])(codeql|code scanning|security|sarif|codacy)([^a-z]|$)/i; function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();} function isFailedCheck(check){return FAIL_STATES.has(check?.conclusion||check?.state||'');} function isSecurityCheckName(name){return SECURITY_CHECK_RE.test(String(name||''));} function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function collectReposFromConfig(){   const repos=[];   try{     const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--label','bosun-attached','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const readyCandidates=[],conflicts=[],securityFailures=[],ciFailures=[],pending=[],drafted=[],behindBranches=[]; let newlyLabeled=0,staleLabelCleared=0,ciKicked=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const failedChecks=checks.filter(isFailedCheck);   const failedCheckNames=failedChecks.map(readCheckName).filter(Boolean);   const securityCheckNames=failedCheckNames.filter(isSecurityCheckName);   const hasFail=failedChecks.length>0;   const hasSecurityFail=securityCheckNames.length>0;   const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isBehind=BEHIND_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(isBehind&&!isConflict){     behindBranches.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});   }   if(isConflict){     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,mergeable:String(pr.mergeable||'').toUpperCase()});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasSecurityFail){     securityFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,securityCheckNames});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}     }   } else if(hasFail){     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url,failedCheckNames});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else {     if(hasFixLabel&&!hasPend){       try{         const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];         if(repo)rmArgs.push('--repo',repo);         execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});         staleLabelCleared++;       }catch(e){process.stderr.write('stale-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     } else if(checks.length>0&&!hasFixLabel){       if(hasPend) pending.push({n:pr.number,repo});       readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});     }     if(checks.length===0&&repo&&pr.headRefName&&!isDraft){       try{execFileSync('gh',['workflow','run','ci.yaml','--repo',repo,'--ref',pr.headRefName],{encoding:'utf8',stdio:['pipe','pipe','pipe']});ciKicked++;}       catch{}     }   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   behindBranches,   securityFailures,   ciFailures,   pending:pending.length,   drafted:drafted.length,   newlyLabeled,   staleLabelCleared,   ciKicked,   fixNeeded:conflicts.length+securityFailures.length+ciFailures.length }));"
             ],
             "continueOnError": false,
             "failOnError": true
@@ -516,6 +516,42 @@
           "position": {
             "x": 400,
             "y": 370
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "has-behind",
+          "type": "condition.expression",
+          "label": "Behind Branches?",
+          "config": {
+            "expression": "(()=>{try{const o=$ctx.getNodeOutput('fetch-and-classify')?.output;return (JSON.parse(o||'{}').behindBranches||[]).length>0;}catch(e){return false;}})()"
+          },
+          "position": {
+            "x": 400,
+            "y": 450
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "update-behind-branches",
+          "type": "action.run_command",
+          "label": "Update Behind Branches",
+          "config": {
+            "command": "node -e \" const {execFileSync}=require('child_process'); const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const behind=Array.isArray(payload.behindBranches)?payload.behindBranches:[]; let updated=0,failed=0; for(const pr of behind){   const repo=String(pr.repo||'').trim();   if(!repo){console.log('skip PR '+pr.n+' — no repo slug');continue;}   try{     execFileSync('gh',['api','repos/'+repo+'/pulls/'+pr.n+'/update-branch','--method','PUT'],{encoding:'utf8',stdio:['pipe','pipe','pipe']});     updated++;     console.log('Updated PR #'+pr.n+' ('+repo+')');   }catch(e){     failed++;     console.log('Failed to update PR #'+pr.n+' ('+repo+'): '+String(e.message||e).slice(0,200));   } } console.log(JSON.stringify({updated,failed,total:behind.length})); \"",
+            "continueOnError": true,
+            "failOnError": false,
+            "timeout": 120000,
+            "env": {
+              "BOSUN_FETCH_AND_CLASSIFY": "{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}"
+            }
+          },
+          "position": {
+            "x": 600,
+            "y": 450
           },
           "outputs": [
             "default"
@@ -794,9 +830,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "has-prs->fix-needed",
+          "id": "has-prs->has-behind",
           "source": "has-prs",
-          "target": "fix-needed",
+          "target": "has-behind",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
@@ -813,6 +849,26 @@
           "target": "review-needed",
           "sourcePort": "default",
           "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-behind->update-behind-branches",
+          "source": "has-behind",
+          "target": "update-behind-branches",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-behind->fix-needed",
+          "source": "has-behind",
+          "target": "fix-needed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "update-behind-branches->fix-needed",
+          "source": "update-behind-branches",
+          "target": "fix-needed",
+          "sourcePort": "default"
         },
         {
           "id": "fix-needed->security-fix-needed",
@@ -21526,7 +21582,7 @@
       "description": "Scans open bosun-attached PRs on a schedule. Makes one gh pr list call per target repo to fetch and classify PRs, then: labels conflicting or failing-CI PRs with bosun-needs-fix and dispatches a repair agent; sends merge candidates through a MANDATORY agent review gate that checks diff stats before any merge — preventing destructive PRs (e.g. -183k lines) from being silently auto-merged. External-contributor PRs without bosun-attached are never touched.",
       "category": "github",
       "enabled": true,
-      "nodeCount": 17,
+      "nodeCount": 19,
       "trigger": "trigger.schedule",
       "variables": {
         "mergeMethod": "merge",
@@ -21563,7 +21619,7 @@
             "command": "node",
             "args": [
               "-e",
-              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']); const SECURITY_CHECK_RE=/(^|[^a-z])(codeql|code scanning|security|sarif|codacy)([^a-z]|$)/i; function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();} function isFailedCheck(check){return FAIL_STATES.has(check?.conclusion||check?.state||'');} function isSecurityCheckName(name){return SECURITY_CHECK_RE.test(String(name||''));} function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function collectReposFromConfig(){   const repos=[];   try{     const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--label','bosun-attached','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const readyCandidates=[],conflicts=[],securityFailures=[],ciFailures=[],pending=[],drafted=[]; let newlyLabeled=0,staleLabelCleared=0,ciKicked=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const failedChecks=checks.filter(isFailedCheck);   const failedCheckNames=failedChecks.map(readCheckName).filter(Boolean);   const securityCheckNames=failedCheckNames.filter(isSecurityCheckName);   const hasFail=failedChecks.length>0;   const hasSecurityFail=securityCheckNames.length>0;   const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(isConflict){     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,mergeable:String(pr.mergeable||'').toUpperCase()});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasSecurityFail){     securityFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,securityCheckNames});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}     }   } else if(hasFail){     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url,failedCheckNames});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else {     if(hasFixLabel&&!hasPend){       try{         const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];         if(repo)rmArgs.push('--repo',repo);         execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});         staleLabelCleared++;       }catch(e){process.stderr.write('stale-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     } else if(checks.length>0&&!hasFixLabel){       if(hasPend) pending.push({n:pr.number,repo});       readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});     }     if(checks.length===0&&repo&&pr.headRefName&&!isDraft){       try{execFileSync('gh',['workflow','run','ci.yaml','--repo',repo,'--ref',pr.headRefName],{encoding:'utf8',stdio:['pipe','pipe','pipe']});ciKicked++;}       catch{}     }   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   securityFailures,   ciFailures,   pending:pending.length,   drafted:drafted.length,   newlyLabeled,   staleLabelCleared,   ciKicked,   fixNeeded:conflicts.length+securityFailures.length+ciFailures.length }));"
+              "const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','DIRTY']); const BEHIND_MERGEABLES=new Set(['BEHIND']); const SECURITY_CHECK_RE=/(^|[^a-z])(codeql|code scanning|security|sarif|codacy)([^a-z]|$)/i; function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();} function isFailedCheck(check){return FAIL_STATES.has(check?.conclusion||check?.state||'');} function isSecurityCheckName(name){return SECURITY_CHECK_RE.test(String(name||''));} function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function collectReposFromConfig(){   const repos=[];   try{     const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--label','bosun-attached','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const readyCandidates=[],conflicts=[],securityFailures=[],ciFailures=[],pending=[],drafted=[],behindBranches=[]; let newlyLabeled=0,staleLabelCleared=0,ciKicked=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const failedChecks=checks.filter(isFailedCheck);   const failedCheckNames=failedChecks.map(readCheckName).filter(Boolean);   const securityCheckNames=failedCheckNames.filter(isSecurityCheckName);   const hasFail=failedChecks.length>0;   const hasSecurityFail=securityCheckNames.length>0;   const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isBehind=BEHIND_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(isBehind&&!isConflict){     behindBranches.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});   }   if(isConflict){     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,mergeable:String(pr.mergeable||'').toUpperCase()});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasSecurityFail){     securityFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,securityCheckNames});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}     }   } else if(hasFail){     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url,failedCheckNames});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else {     if(hasFixLabel&&!hasPend){       try{         const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];         if(repo)rmArgs.push('--repo',repo);         execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});         staleLabelCleared++;       }catch(e){process.stderr.write('stale-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     } else if(checks.length>0&&!hasFixLabel){       if(hasPend) pending.push({n:pr.number,repo});       readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});     }     if(checks.length===0&&repo&&pr.headRefName&&!isDraft){       try{execFileSync('gh',['workflow','run','ci.yaml','--repo',repo,'--ref',pr.headRefName],{encoding:'utf8',stdio:['pipe','pipe','pipe']});ciKicked++;}       catch{}     }   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   behindBranches,   securityFailures,   ciFailures,   pending:pending.length,   drafted:drafted.length,   newlyLabeled,   staleLabelCleared,   ciKicked,   fixNeeded:conflicts.length+securityFailures.length+ciFailures.length }));"
             ],
             "continueOnError": false,
             "failOnError": true
@@ -21586,6 +21642,42 @@
           "position": {
             "x": 400,
             "y": 370
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "has-behind",
+          "type": "condition.expression",
+          "label": "Behind Branches?",
+          "config": {
+            "expression": "(()=>{try{const o=$ctx.getNodeOutput('fetch-and-classify')?.output;return (JSON.parse(o||'{}').behindBranches||[]).length>0;}catch(e){return false;}})()"
+          },
+          "position": {
+            "x": 400,
+            "y": 450
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "update-behind-branches",
+          "type": "action.run_command",
+          "label": "Update Behind Branches",
+          "config": {
+            "command": "node -e \" const {execFileSync}=require('child_process'); const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const behind=Array.isArray(payload.behindBranches)?payload.behindBranches:[]; let updated=0,failed=0; for(const pr of behind){   const repo=String(pr.repo||'').trim();   if(!repo){console.log('skip PR '+pr.n+' — no repo slug');continue;}   try{     execFileSync('gh',['api','repos/'+repo+'/pulls/'+pr.n+'/update-branch','--method','PUT'],{encoding:'utf8',stdio:['pipe','pipe','pipe']});     updated++;     console.log('Updated PR #'+pr.n+' ('+repo+')');   }catch(e){     failed++;     console.log('Failed to update PR #'+pr.n+' ('+repo+'): '+String(e.message||e).slice(0,200));   } } console.log(JSON.stringify({updated,failed,total:behind.length})); \"",
+            "continueOnError": true,
+            "failOnError": false,
+            "timeout": 120000,
+            "env": {
+              "BOSUN_FETCH_AND_CLASSIFY": "{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}"
+            }
+          },
+          "position": {
+            "x": 600,
+            "y": 450
           },
           "outputs": [
             "default"
@@ -21864,9 +21956,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "has-prs->fix-needed",
+          "id": "has-prs->has-behind",
           "source": "has-prs",
-          "target": "fix-needed",
+          "target": "has-behind",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
@@ -21883,6 +21975,26 @@
           "target": "review-needed",
           "sourcePort": "default",
           "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-behind->update-behind-branches",
+          "source": "has-behind",
+          "target": "update-behind-branches",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-behind->fix-needed",
+          "source": "has-behind",
+          "target": "fix-needed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "update-behind-branches->fix-needed",
+          "source": "update-behind-branches",
+          "target": "fix-needed",
+          "sourcePort": "default"
         },
         {
           "id": "fix-needed->security-fix-needed",
@@ -22012,8 +22124,8 @@
         "templateState": {
           "templateId": "template-bosun-pr-watchdog",
           "templateName": "Bosun PR Watchdog",
-          "templateVersion": "2.2.0",
-          "installedTemplateVersion": "2.2.0",
+          "templateVersion": "2.3.0",
+          "installedTemplateVersion": "2.3.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -41167,7 +41279,7 @@
       "workflowId": "wf-bosun-pr-watchdog",
       "workflowName": "Bosun PR Watchdog",
       "status": "completed",
-      "nodeCount": 17,
+      "nodeCount": 19,
       "duration": 29000,
       "errorCount": 0,
       "triggerSource": "manual",
@@ -42733,16 +42845,17 @@
       "id": "bosun-agent-api",
       "type": "skill",
       "name": "Bosun Agent Status API",
-      "description": "Built-in global skill",
+      "description": "Built-in bosun skill",
       "filename": "bosun-agent-api.md",
       "tags": [
         "bosun",
-        "api",
         "status",
         "heartbeat",
-        "endpoint"
+        "api",
+        "complete",
+        "error"
       ],
-      "scope": "global",
+      "scope": "bosun",
       "workspace": null,
       "storageScope": "global",
       "createdAt": "2026-03-01T09:00:00.000Z",
@@ -42757,17 +42870,10 @@
       "filename": "code-quality-anti-patterns.md",
       "tags": [
         "quality",
-        "code",
-        "architecture",
         "async",
         "testing",
-        "reliability",
-        "bug",
-        "crash",
-        "scope",
-        "caching",
-        "promise",
-        "module"
+        "cache",
+        "anti-pattern"
       ],
       "scope": "global",
       "workspace": null,
@@ -42787,18 +42893,7 @@
         "annotation",
         "documentation",
         "summary",
-        "inventory",
-        "codebase",
-        "onboarding",
-        "knowledge",
-        "context",
-        "skill",
-        "warn",
-        "manifest",
-        "conformity",
-        "regeneration",
-        "claude",
-        "copilot"
+        "claude"
       ],
       "scope": "global",
       "workspace": null,
@@ -42814,11 +42909,11 @@
       "description": "Built-in global skill",
       "filename": "commit-conventions.md",
       "tags": [
-        "commits",
         "git",
-        "conventional-commits",
-        "versioning",
-        "changelog"
+        "commit",
+        "commits",
+        "conventional",
+        "history"
       ],
       "scope": "global",
       "workspace": null,
@@ -42831,17 +42926,16 @@
       "id": "custom-tool-creation",
       "type": "skill",
       "name": "Custom Tool Creation & Reuse",
-      "description": "Built-in global skill",
+      "description": "Built-in bosun skill",
       "filename": "custom-tool-creation.md",
       "tags": [
+        "tool",
         "tools",
-        "custom-tool",
-        "reflect",
         "reuse",
         "automation",
-        "script"
+        "codemod"
       ],
-      "scope": "global",
+      "scope": "bosun",
       "workspace": null,
       "storageScope": "global",
       "createdAt": "2026-03-01T09:00:00.000Z",
@@ -42872,17 +42966,16 @@
       "id": "agent-coordination",
       "type": "skill",
       "name": "Multi-Agent Coordination",
-      "description": "Built-in global skill",
+      "description": "Built-in bosun skill",
       "filename": "agent-coordination.md",
       "tags": [
-        "multi-agent",
-        "parallel",
+        "agent",
         "coordination",
-        "worktree",
-        "conflict",
-        "bosun"
+        "parallel",
+        "handoff",
+        "merge-conflict"
       ],
-      "scope": "global",
+      "scope": "bosun",
       "workspace": null,
       "storageScope": "global",
       "createdAt": "2026-03-01T09:00:00.000Z",
@@ -42918,10 +43011,10 @@
       "filename": "tdd-pattern.md",
       "tags": [
         "tdd",
+        "test",
         "testing",
         "unit-test",
-        "red-green-refactor",
-        "coverage"
+        "red-green-refactor"
       ],
       "scope": "global",
       "workspace": null,
@@ -43246,16 +43339,16 @@
       "enabledTools": null,
       "enabledMcpServers": []
     },
-    "background-task-execution": "# Skill: Background Task Execution\n\n## Rules\n- Send `/heartbeat` at start, after milestones, and at least every 60s during long steps.\n- Send `/status` before work that may look stalled.\n- Verify build, targeted tests, and lint before `/complete`.\n- Review existing edits with `git status`; never discard unknown work silently.\n- On retry, inspect `LAST_ERROR` and recent commits before re-implementing.\n- Stay inside `BOSUN_WORKTREE_PATH`; never touch main or another worktree.\n",
-    "pr-workflow": "# Skill: Pull Request Workflow\n\n## Flow\n- Merge upstream base branch and `origin/main` before push.\n- Push with `git push --set-upstream origin <branch>`.\n- Hand off PR lifecycle to Bosun; do not run direct PR-create commands.\n- Never use `--no-verify`.\n- If hooks fail, fix the root cause and rerun targeted validation.\n- Use `gh pr checks` and `gh run list` to inspect CI state.\n",
-    "error-recovery": "# Skill: Error Recovery Patterns\n\n## Rules\n- Classify the failure first: compile, test, dependency, git, config, network, or OOM.\n- Apply the smallest fix that resolves the current error.\n- Fix the first compiler error before chasing follow-on failures.\n- Reproduce test failures in isolation before broad reruns.\n- Fix generators instead of generated output.\n- After two failed attempts on the same issue, report `/error` and stop looping.\n",
-    "tdd-pattern": "# Skill: Test-Driven Development\n\n## Loop\n- Start with a failing test for the requested behavior.\n- Make the smallest production change that turns the test green.\n- Refactor only after the new behavior is covered.\n- Keep tests deterministic; no real network, random data, or timer-based syncing.\n- Mock external boundaries only, never the module under test.\n- Run the narrowest relevant tests first, then adjacent coverage.\n",
-    "commit-conventions": "# Skill: Conventional Commits\n\n## Format\n- Use `<type>(<scope>): <subject>` when scope is known.\n- Allowed types: `feat`, `fix`, `docs`, `refactor`, `test`, `build`, `ci`, `chore`, `perf`.\n- Keep the subject imperative, lowercase, and without a trailing period.\n- Commit only verified logical units; split unrelated changes.\n- Avoid WIP commits unless the task explicitly asks for them.\n- Mention user-facing risk or follow-up detail in the body when needed.\n",
-    "agent-coordination": "# Skill: Multi-Agent Coordination\n\n## Rules\n- Treat branch and worktree isolation as mandatory boundaries.\n- Review `git status` before editing to understand inherited state.\n- Stage files explicitly; do not use `git add .`.\n- Merge upstream before push and resolve conflicts without discarding peer work.\n- Preserve useful intermediate commits from previous attempts.\n- Leave concise handoff notes when the next agent needs context.\n",
-    "bosun-agent-api": "# Skill: Bosun Agent Status API\n\n## Required Calls\n- Use the local status API whenever running as a Bosun-managed agent.\n- Read endpoint values from `BOSUN_ENDPOINT_PORT`, `BOSUN_TASK_ID`, and related aliases.\n- POST `/status` for milestones, `/heartbeat` during active work, `/error` on abort, and `/complete` when finished.\n- Include short, concrete notes so orchestrator logs stay useful.\n- Do not mark completion before validation passes and push state is known.\n",
-    "code-quality-anti-patterns": "# Skill: Code Quality Anti-Patterns\n\n## Avoid\n- Module-state caches inside hot functions; keep cached state at module scope.\n- Bare async fire-and-forget calls; every promise needs `await` or `.catch()`.\n- Unguarded async handlers that can crash the process.\n- Repeated dynamic `import()` in hot paths without caching.\n- Over-mocked or flaky tests that depend on order, sleep, or random data.\n- Inline flag bypasses or safety-check shortcuts that change system behavior.\n",
-    "skill-codebase-audit": "# Skill: Codebase Annotation Audit\n\n## Rules\n- Add `CLAUDE:SUMMARY` and `CLAUDE:WARN` only where they reduce future search cost.\n- Place annotations near the top of the file, after imports or shebang.\n- Audit hot paths first: entrypoints, schedulers, cross-module adapters, and risky stateful code.\n- Keep notes LEAN: documentation-only, terse, and easy to regenerate.\n- Re-audit when summaries drift or regenerated coverage drops by about 20 percent.\n",
-    "custom-tool-creation": "# Skill: Custom Tool Creation & Reuse\n\n## Rules\n- Check the custom tools library before writing new helper code.\n- Extract repeated or high-friction logic into `.bosun/tools/` when it will save future tasks.\n- Prefer categories from `analysis`, `testing`, `git`, `build`, `transform`, `search`, `validation`, and `utility`.\n- Register tools with `registerCustomTool()` and clear tags, description, and owner metadata.\n- Promote proven workspace tools to global scope when reuse crosses projects.\n- Skip one-off scripts that do not justify long-term maintenance.\n"
+    "background-task-execution": "# Skill: Background Task Execution\n\n- Send heartbeat updates before work starts, after major milestones, and during long operations.\n- Post status notes when a step runs long enough to look stalled.\n- Verify the affected code path before marking the task complete.\n- Finish only after build, tests, and any required push or PR handoff succeed.\n",
+    "pr-workflow": "# Skill: Pull Request Workflow\n\n- Fetch and merge the base branch plus `origin/main` before pushing.\n- Push the task branch and hand off PR lifecycle steps to Bosun.\n- Use a short PR description with Summary, Changes, Testing, and Notes.\n- Never bypass git hooks with `--no-verify`; fix the failing check or note unrelated breakage.\n",
+    "error-recovery": "# Skill: Error Recovery Patterns\n\n- Classify the failure first: syntax, test, dependency, git, network, config, or resource limits.\n- Fix the first real error before chasing downstream noise.\n- Prefer the smallest safe change that resolves the root cause.\n- If the error is external or flaky, retry with limits and stop rather than papering over it.\n",
+    "tdd-pattern": "# Skill: Test-Driven Development\n\n- Start with the smallest failing test that proves the target behavior.\n- Implement the minimum code required to pass that test.\n- Refactor only after the test is green.\n- Keep tests deterministic: no real network, random data, or timer-based synchronization.\n",
+    "commit-conventions": "# Skill: Conventional Commits\n\n- Use Conventional Commits such as `feat:`, `fix:`, `chore:`, or `test:`.\n- Keep the subject short, imperative, and scoped to the actual change.\n- Mention validation in the handoff or PR notes, not in the subject line.\n- Do not bundle unrelated work into the same commit message or commit.\n",
+    "agent-coordination": "# Skill: Multi-Agent Coordination\n\n- Keep scope ownership clear before editing shared files.\n- Prefer small, isolated changes that reduce merge conflict risk.\n- Leave concise status notes when handing work to another agent or retry.\n- Re-check git status before finalizing so no unrelated edits leak into the task.\n",
+    "bosun-agent-api": "# Skill: Bosun Agent Status API\n\n- POST `/status` when starting a new phase or when context changes.\n- POST `/heartbeat` during active work so Bosun does not requeue the task.\n- POST `/error` with concise failure context before aborting.\n- POST `/complete` only after verification is done and the task is truly finished.\n",
+    "code-quality-anti-patterns": "# Skill: Code Quality Anti-Patterns\n\n- Keep caches, lazy singletons, and loaded flags at module scope.\n- Await async work or attach `.catch()`; never leave floating promises.\n- Wrap hot-path callbacks and handlers in error boundaries.\n- Mock external boundaries only; avoid over-mocking the module under test.\n- Keep tests deterministic and remove dead branches instead of layering guard code.\n",
+    "skill-codebase-audit": "# Skill: Codebase Annotation Audit\n\n## Purpose\nSystematically audit and annotate a codebase so that *future* AI agents can\nnavigate it 4× faster, use 20% fewer tokens, and avoid false-positive changes.\nThis skill is **documentation-only** — it MUST NOT fix bugs, refactor code,\nor change program behavior.\n\n## Philosophy — LEAN Annotations\n\nModern AI coding SDKs (Copilot, Codex, Claude Code) already auto-compact\ncontext. Adding a memory/compaction layer on top is wasteful. What *does* help\nis **repo-level documentation** that agents read at the start of a session:\nsummaries, warnings, architectural notes, and module manifests. These cost zero\nruntime tokens and dramatically reduce exploration time.\n\n## Annotation Format\n\nUse structured comment headers that agents are trained to recognize:\n\n```\n// CLAUDE:SUMMARY — <module-name>\n// <1–3 sentence summary of purpose, key types, and public API>\n```\n\n```\n// CLAUDE:WARN — <module-name>\n// <non-obvious pitfall, race condition, or constraint agents MUST know>\n```\n\n- Place annotations at the **top of the file**, after imports / shebang.\n- Keep each annotation to ≤ 3 lines.\n- Do NOT annotate trivial files (configs, lockfiles, generated code).\n\n## 6-Phase Audit\n\n### Phase 1 — Inventory\nEnumerate every source file. For each file record:\n| Field | Value |\n|-------|-------|\n| path | relative from repo root |\n| lang | file extension / language |\n| lines | line count |\n| has_summary | yes / no |\n| has_warn | yes / no |\n| category | core / util / test / config / generated |\n\nOutput: `.bosun/audit/inventory.json`\n\n### Phase 2 — Summaries\nFor every file where `has_summary === false` and `category !== \"generated\"`:\n1. Read the file.\n2. Write a `CLAUDE:SUMMARY` comment at the top.\n3. Stage the file.\n\n### Phase 3 — Warnings\nFor every file, check for non-obvious constraints:\n- Singleton/caching requirements (must be module-scope)\n- Async fire-and-forget patterns (unhandled rejections)\n- Order-dependent initialization\n- Platform-specific behavior (Windows paths, etc.)\n\nAdd `CLAUDE:WARN` comments where found.\n\n### Phase 4 — Manifest Audit\nEnsure `AGENTS.md` (or equivalent) at repo root is accurate:\n- Lists all top-level modules with 1-line descriptions.\n- Documents build / test / lint commands.\n- Documents environment variables.\n- Documents commit conventions.\n- Lists known constraints or gotchas.\n\nIf the file is outdated or missing sections, append corrections.\n\n### Phase 5 — Conformity Check\nRe-scan all annotations and validate:\n- `CLAUDE:SUMMARY` is present in every non-trivial source file.\n- `CLAUDE:WARN` exists for files with known pitfalls.\n- No stale annotations reference symbols/functions that no longer exist.\n\nOutput: `.bosun/audit/conformity-report.json`\n\n### Phase 6 — Regeneration Schedule\nAnnotations rot. Add a `.bosun/audit/schedule.json` with:\n```json\n{\n  \"lastFullAudit\": \"<ISO timestamp>\",\n  \"nextRecommendedAudit\": \"<ISO timestamp + 30 days>\",\n  \"filesAudited\": <count>,\n  \"summariesAdded\": <count>,\n  \"warningsAdded\": <count>,\n  \"conformityScore\": <0-100>\n}\n```\n\n## Hard Rules\n\n1. **Do NOT change program behavior.** Only add/update comments and documentation.\n2. **Do NOT refactor, fix bugs, or rename symbols.** Documentation only.\n3. **Do NOT annotate generated files** (lockfiles, build output, `.min.js`, etc.).\n4. **Keep summaries ≤ 3 lines.** Agents need density, not essays.\n5. **Keep warnings actionable.** \"This is complex\" is useless.\n   \"Must call init() before query() — throws otherwise\" is helpful.\n6. **Stage files individually** — never `git add .`.\n7. **Commit with** `docs(audit): annotate <module>` — not `feat`/`fix`.\n\n## Success Metrics\n- A/B tested: annotated repos show 4× faster agent navigation.\n- 20% fewer tokens consumed per task.\n- Zero false-positive code changes from confused agents.\n",
+    "custom-tool-creation": "# Skill: Custom Tool Creation & Reuse\n\n- Reuse an existing tool before writing repetitive inline code.\n- Extract durable helpers when the same manual sequence appears more than once.\n- Store workspace tools in `.bosun/tools/` with clear titles, tags, and a narrow purpose.\n- Promote high-value helpers to global scope only when they are stable and broadly reusable.\n"
   }
 };
 })();

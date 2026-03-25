@@ -11,7 +11,11 @@ import { resolve, extname, dirname, basename, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { arch as osArch, platform as osPlatform } from "node:os";
+import { gzip as zlibGzip } from "node:zlib";
+import { promisify } from "node:util";
 import Ajv2020 from "ajv/dist/2020.js";
+
+const gzipAsync = promisify(zlibGzip);
 
 const {
   createHash,
@@ -22,6 +26,62 @@ const {
   argon2: nodeArgon2,
 } = nodeCrypto;
 const argon2 = typeof nodeArgon2 === "function" ? nodeArgon2 : null;
+
+// ── Response compression + caching helpers ──────────────────────────────────
+const GZIP_MIN_BYTES = 1024;
+const COMPRESSIBLE_TYPES = /^(text\/|application\/json|application\/javascript|image\/svg)/;
+
+function acceptsGzip(req) {
+  return String(req?.headers?.["accept-encoding"] || "").includes("gzip");
+}
+
+async function compressAndSend(req, res, statusCode, headers, body) {
+  const buf = typeof body === "string" ? Buffer.from(body) : body;
+  const ct = headers["Content-Type"] || "";
+  if (buf.length >= GZIP_MIN_BYTES && COMPRESSIBLE_TYPES.test(ct) && acceptsGzip(req)) {
+    try {
+      const compressed = await gzipAsync(buf);
+      res.writeHead(statusCode, { ...headers, "Content-Encoding": "gzip", "Vary": "Accept-Encoding" });
+      res.end(compressed);
+      return;
+    } catch { /* fall through to uncompressed */ }
+  }
+  res.writeHead(statusCode, headers);
+  res.end(buf);
+}
+
+// Lightweight TTL cache for expensive API responses
+const _apiCache = new Map();
+function getCachedApiResponse(key, ttlMs) {
+  const entry = _apiCache.get(key);
+  if (!entry) return undefined;
+  if (Date.now() - entry.ts > ttlMs) { _apiCache.delete(key); return undefined; }
+  return entry.value;
+}
+function setCachedApiResponse(key, value) {
+  _apiCache.set(key, { ts: Date.now(), value });
+  if (_apiCache.size > 200) {
+    const oldest = _apiCache.keys().next().value;
+    _apiCache.delete(oldest);
+  }
+}
+function invalidateApiCache(prefix) {
+  for (const key of _apiCache.keys()) {
+    if (key.startsWith(prefix)) _apiCache.delete(key);
+  }
+}
+
+// Static file ETag + cache header helper
+function cacheControlForPath(pathname) {
+  if (pathname.endsWith(".html")) return "no-cache";
+  if (/\.(js|mjs|css|svg|png|jpg|jpeg|gif|webp|ico|woff2?)$/i.test(pathname)) {
+    return "public, max-age=3600, stale-while-revalidate=86400";
+  }
+  return "public, max-age=300";
+}
+function computeETag(data) {
+  return `"${createHash("md5").update(data).digest("hex").slice(0, 16)}"`;
+}
 
 function getLocalLanIp() {
   const nets = networkInterfaces();
@@ -2103,9 +2163,21 @@ function buildTaskMetaPatch(previousMeta, metadataPatchMeta, options = {}) {
   if (clearBlockedState) {
     delete nextMeta.autoRecovery;
     delete nextMeta.blockedReason;
+    delete nextMeta.worktreeFailure;
   }
   if (metadataPatchMeta && typeof metadataPatchMeta === "object") {
     Object.assign(nextMeta, metadataPatchMeta);
+    if (clearBlockedState) {
+      if (metadataPatchMeta.autoRecovery == null) {
+        delete nextMeta.autoRecovery;
+      }
+      if (metadataPatchMeta.blockedReason == null) {
+        delete nextMeta.blockedReason;
+      }
+      if (metadataPatchMeta.worktreeFailure == null) {
+        delete nextMeta.worktreeFailure;
+      }
+    }
   }
   return nextMeta;
 }
@@ -2492,7 +2564,14 @@ function taskMatchesWorkspaceContext(task, workspaceContext) {
 
   const taskWorkspacePath = normalizeCandidatePath(taskWorkspaceRaw);
   const workspaceDirFilter = normalizeCandidatePath(workspaceContext?.workspaceDir);
-  return Boolean(taskWorkspacePath && workspaceDirFilter && taskWorkspacePath === workspaceDirFilter);
+  const workspaceRootFilter = normalizeCandidatePath(workspaceContext?.workspaceRoot);
+  return Boolean(
+    taskWorkspacePath
+    && (
+      (workspaceDirFilter && taskWorkspacePath === workspaceDirFilter)
+      || (workspaceRootFilter && (taskWorkspacePath === workspaceRootFilter || taskWorkspacePath.startsWith(workspaceRootFilter + sep)))
+    )
+  );
 }
 
 async function listTasksForWorkspaceContext(workspaceContext, { status = "", projectId = "" } = {}) {
@@ -2766,7 +2845,8 @@ async function buildBenchmarkSnapshot(reqUrl, providerId = "") {
   }
 
   const rawProviderId = String(providerId || "").trim().toLowerCase();
-  const modeState = readBenchmarkModeState(workspaceContext.workspaceDir || repoRoot);
+  const workspaceRootDir = workspaceContext.workspaceRoot || workspaceContext.workspaceDir || repoRoot;
+  const modeState = readBenchmarkModeState(workspaceRootDir);
   const effectiveProviderId =
     rawProviderId
     || modeState.providerId
@@ -2777,13 +2857,23 @@ async function buildBenchmarkSnapshot(reqUrl, providerId = "") {
         enabled: true,
         workspaceId: workspaceContext.workspaceId,
         workspaceDir: workspaceContext.workspaceDir,
-        repoRoot: workspaceContext.workspaceDir || repoRoot,
+        repoRoot: workspaceRootDir,
       });
 
-  const { tasks, projectId } = await listTasksForWorkspaceContext(workspaceContext);
-  const matchingTasks = filterTasksForBenchmarkMode(tasks, filterMode, {
-    repoRoot: workspaceContext.workspaceDir || repoRoot,
+  let { tasks, projectId } = await listTasksForWorkspaceContext(workspaceContext);
+  let matchingTasks = filterTasksForBenchmarkMode(tasks, filterMode, {
+    repoRoot: workspaceRootDir,
   });
+  if (matchingTasks.length === 0) {
+    const allTaskFn = getTaskStoreApiSync()?.getAllTasks;
+    if (typeof allTaskFn === "function") {
+      const allWorkspaceTasks = (allTaskFn() || []).filter((task) => taskMatchesWorkspaceContext(task, workspaceContext));
+      matchingTasks = filterTasksForBenchmarkMode(allWorkspaceTasks, filterMode, {
+        repoRoot: workspaceRootDir,
+      });
+      if (!tasks?.length) tasks = allWorkspaceTasks;
+    }
+  }
   const recentTasks = sortTasksByRecency(matchingTasks).slice(0, 12);
   const enrichedTasks = await applySharedStateToTasks(recentTasks);
   const recentWithRuntime = enrichedTasks.map((task) => withTaskRuntimeSnapshot(task));
@@ -2814,7 +2904,7 @@ async function buildBenchmarkSnapshot(reqUrl, providerId = "") {
       mode: modeState,
       filter: filterMode,
       summary: summarizeBenchmarkTasks(tasks, filterMode, {
-        repoRoot: workspaceContext.workspaceDir || repoRoot,
+        repoRoot: workspaceRootDir,
       }),
       recentTasks: recentWithRuntime,
       workflowRuns,
@@ -3014,7 +3104,7 @@ async function handleVendor(req, res, url) {
 
   const headers = {
     "Content-Type": "application/javascript; charset=utf-8",
-    "Cache-Control": "no-store",
+    "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
     "Access-Control-Allow-Origin": "*",
   };
 
@@ -3023,8 +3113,13 @@ async function handleVendor(req, res, url) {
   if (existsSync(bundledPath)) {
     try {
       const data = await readFile(bundledPath);
-      res.writeHead(200, { ...headers, "X-Bosun-Vendor": "bundled" });
-      res.end(data);
+      const etag = computeETag(data);
+      if (req.headers["if-none-match"] === etag) {
+        res.writeHead(304, { ETag: etag });
+        res.end();
+        return;
+      }
+      await compressAndSend(req, res, 200, { ...headers, "X-Bosun-Vendor": "bundled", ETag: etag }, data);
       return;
     } catch { /* fall through */ }
   }
@@ -3034,8 +3129,13 @@ async function handleVendor(req, res, url) {
   if (localPath && existsSync(localPath)) {
     try {
       const data = await readFile(localPath);
-      res.writeHead(200, { ...headers, "X-Bosun-Vendor": "node_modules" });
-      res.end(data);
+      const etag = computeETag(data);
+      if (req.headers["if-none-match"] === etag) {
+        res.writeHead(304, { ETag: etag });
+        res.end();
+        return;
+      }
+      await compressAndSend(req, res, 200, { ...headers, "X-Bosun-Vendor": "node_modules", ETag: etag }, data);
       return;
     } catch (err) {
       textResponse(res, 500, `Vendor error: ${err.message}`);
@@ -3115,11 +3215,9 @@ async function handleEsmProxy(req, res, url) {
 
   const headers = {
     "Content-Type": "application/javascript; charset=utf-8",
-    "Cache-Control": "no-store",
+    "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
     "Access-Control-Allow-Origin": "*",
   };
-
-  // ── 1. Disk cache ──────────────────────────────────────────────────────────
   const cachePath = getEsmCachePath(name, cdnUrl);
   if (existsSync(cachePath)) {
     try {
@@ -3137,8 +3235,7 @@ async function handleEsmProxy(req, res, url) {
       if (hasUnsupportedCjsRuntime(finalBody)) {
         throw new Error("cached ESM bundle contains unsupported dynamic require runtime");
       }
-      res.writeHead(200, { ...headers, "X-Bosun-Esm": "cached" });
-      res.end(finalBody);
+      await compressAndSend(req, res, 200, { ...headers, "X-Bosun-Esm": "cached" }, finalBody);
       return;
     } catch { /* fall through to live fetch */ }
   }
@@ -3169,8 +3266,7 @@ async function handleEsmProxy(req, res, url) {
       console.warn(`[ui-server] esm cache write failed: ${cacheErr.message}`);
     }
 
-    res.writeHead(200, { ...headers, "X-Bosun-Esm": "fetched" });
-    res.end(body);
+    await compressAndSend(req, res, 200, { ...headers, "X-Bosun-Esm": "fetched" }, body);
   } catch (err) {
     console.warn(`[ui-server] esm proxy failed for ${name}: ${err.message}`);
     textResponse(
@@ -3202,6 +3298,9 @@ function resolveUiStatusPath() {
 
 const agentLogsDirCandidates = [
   resolve(__dirname, "..", "logs", "agents"),
+  resolve(__dirname, "..", "logs", "copilot-sessions"),
+  resolve(__dirname, "..", "logs", "codex-sdk"),
+  resolve(__dirname, "..", "logs", "sessions"),
   resolve(repoRoot, ".cache", "agent-logs"),
 ];
 const CONFIG_SCHEMA_PATH = resolve(__dirname, "..", "bosun.schema.json");
@@ -5350,8 +5449,11 @@ function resolveUiCachePath(fileName) {
 }
 
 function isValidSessionToken(token) {
-  const normalized = String(token || "").trim();
-  return /^[a-f0-9]{64}$/i.test(normalized) && !/^(.)\1+$/.test(normalized);
+  const s = String(token || "");
+  if (!/^[a-f0-9]{64}$/i.test(s)) return false;
+  // Reject zero-entropy tokens (all identical characters, e.g. "aaaa…")
+  if (/^(.)\1+$/.test(s)) return false;
+  return true;
 }
 
 function readPersistedSessionToken() {
@@ -8056,12 +8158,26 @@ function jsonResponse(res, statusCode, payload) {
           diagnosticId,
         }
       : normalizedPayload;
-  const body = JSON.stringify(safePayload, null, 2);
-  res.writeHead(statusCode, {
+  const body = JSON.stringify(safePayload);
+  const headers = {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
-  });
-  res.end(body);
+    "Cache-Control": "no-store",
+  };
+  const req = res.__bosunRequestContext?._req;
+  if (req && body.length >= GZIP_MIN_BYTES && acceptsGzip(req)) {
+    gzipAsync(Buffer.from(body)).then(
+      (compressed) => {
+        if (res.writableEnded) return;
+        res.writeHead(statusCode, { ...headers, "Content-Encoding": "gzip", "Vary": "Accept-Encoding" });
+        res.end(compressed);
+      },
+      () => { if (!res.writableEnded) { res.writeHead(statusCode, headers); res.end(body); } },
+    );
+  } else {
+    res.writeHead(statusCode, headers);
+    res.end(body);
+  }
 }
 
 function textResponse(res, statusCode, body, contentType = "text/plain") {
@@ -8895,14 +9011,140 @@ function withTaskRuntimeSnapshot(task) {
   if (!task || typeof task !== "object") return task;
   const withLifetimeTotals = enrichTaskLifetimeTotals(task);
   const runtimeSnapshot = buildTaskRuntimeSnapshot(withLifetimeTotals);
+  const status = uiDeps?.getInternalExecutor?.()?.getStatus?.();
+  const runtimeExecutor = uiDeps.getInternalExecutor?.() || null;
+  const executorStatus = runtimeExecutor?.getStatus?.() || {};
+  const contentionSummary = summarizeRepoAreaLockContention(executorStatus?.repoAreaLocks || null);
   return {
     ...withLifetimeTotals,
     runtimeSnapshot,
     meta: {
       ...(withLifetimeTotals.meta || {}),
       runtimeSnapshot,
+      repoAreaContention: contentionSummary,
     },
+    repoAreaContention: contentionSummary,
   };
+}
+
+function safeIsoString(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const ts = Date.parse(text);
+  return Number.isFinite(ts) ? new Date(ts).toISOString() : null;
+}
+
+function summarizeRepoAreaLockHotArea(area = {}) {
+  const normalizedArea = String(area?.area || "").trim();
+  if (!normalizedArea) return null;
+  const events = Math.max(
+    0,
+    Math.trunc(Number(area?.events ?? area?.contentionEvents ?? area?.conflicts ?? 0)),
+  );
+  const waitMsTotal = Math.max(
+    0,
+    Math.trunc(Number(area?.contentionWaitMs ?? area?.waitMsTotal ?? 0)),
+  );
+  const waitingTasks = Math.max(0, Math.trunc(Number(area?.waitingTasks || 0)));
+  const activeSlots = Math.max(0, Math.trunc(Number(area?.activeSlots || 0)));
+  const effectiveLimit = Math.max(0, Math.trunc(Number(area?.effectiveLimit || 0)));
+  const lastContentionAt = safeIsoString(area?.lastContentionAt || area?.lastWaitAt || null);
+  return {
+    area: normalizedArea,
+    events,
+    waitMsTotal,
+    avgWaitMs: events > 0 ? Math.round(waitMsTotal / events) : 0,
+    waitingTasks,
+    activeSlots,
+    effectiveLimit,
+    lastContentionAt,
+    detailHref: "/api/tasks?repoArea=" + encodeURIComponent(normalizedArea) + "&contention=1",
+  };
+}
+
+export function normalizeRepoAreaLockContentionSummary(summary = null) {
+  const generatedAt = safeIsoString(summary?.generatedAt) || new Date().toISOString();
+  const stale = summary?.stale === true;
+  const staleAgeMs = Math.max(0, Math.trunc(Number(summary?.staleAgeMs || 0)));
+  const hotAreas = Array.isArray(summary?.hotAreas)
+    ? summary.hotAreas.map((area) => summarizeRepoAreaLockHotArea(area)).filter(Boolean)
+    : [];
+  const recent = Array.isArray(summary?.recent)
+    ? summary.recent
+      .map((event) => {
+        const taskId = String(event?.taskId || "").trim();
+        const area = String(event?.area || "").trim();
+        if (!taskId || !area) return null;
+        return {
+          at: safeIsoString(event?.at),
+          taskId,
+          area,
+          waitMs: Math.max(0, Math.trunc(Number(event?.waitMs || 0))),
+          resolutionReason: String(event?.resolutionReason || "unknown").trim() || "unknown",
+          detailHref: String(event?.detailHref || ("/api/tasks/detail?taskId=" + encodeURIComponent(taskId))),
+        };
+      })
+      .filter(Boolean)
+    : [];
+
+  return {
+    generatedAt,
+    totalEvents: Math.max(0, Math.trunc(Number(summary?.totalEvents || 0))),
+    totalWaitMs: Math.max(0, Math.trunc(Number(summary?.totalWaitMs || 0))),
+    stale,
+    staleAgeMs,
+    hotAreas,
+    recent,
+  };
+}
+
+export function summarizeRepoAreaLockContention(repoAreaLocks = null, options = {}) {
+  const nowValue = options?.now ? Date.parse(String(options.now)) : Date.now();
+  const now = Number.isFinite(nowValue) ? nowValue : Date.now();
+  const staleAfterMs = Math.max(
+    60000,
+    Math.trunc(Number(options?.staleAfterMs || 6 * 60 * 60 * 1000)),
+  );
+  const areas = Array.isArray(repoAreaLocks?.areas)
+    ? repoAreaLocks.areas.map((area) => summarizeRepoAreaLockHotArea(area)).filter(Boolean)
+    : [];
+  const recent = Array.isArray(repoAreaLocks?.contention?.recent)
+    ? repoAreaLocks.contention.recent
+      .map((event) => {
+        const taskId = String(event?.taskId || "").trim();
+        const area = String(event?.area || "").trim();
+        if (!taskId || !area) return null;
+        return {
+          at: safeIsoString(event?.at),
+          taskId,
+          area,
+          waitMs: Math.max(0, Math.trunc(Number(event?.waitMs || 0))),
+          resolutionReason: String(event?.resolutionReason || "unknown").trim() || "unknown",
+          detailHref: "/api/tasks/detail?taskId=" + encodeURIComponent(taskId),
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => Date.parse(String(right.at || 0)) - Date.parse(String(left.at || 0)))
+    : [];
+  const rankedAreas = areas
+    .filter((area) => area.events > 0 || area.waitingTasks > 0)
+    .sort((left, right) => right.events - left.events || right.waitingTasks - left.waitingTasks || left.area.localeCompare(right.area))
+    .slice(0, 8);
+  const lastContentionTs = [
+    ...rankedAreas.map((area) => Date.parse(String(area.lastContentionAt || 0))),
+    ...recent.map((event) => Date.parse(String(event.at || 0))),
+  ].filter((value) => Number.isFinite(value)).sort((left, right) => right - left)[0] || 0;
+  const staleAgeMs = lastContentionTs > 0 ? Math.max(0, now - lastContentionTs) : 0;
+
+  return normalizeRepoAreaLockContentionSummary({
+    generatedAt: new Date(now).toISOString(),
+    totalEvents: Math.max(0, Math.trunc(Number(repoAreaLocks?.contention?.events || 0))),
+    totalWaitMs: Math.max(0, Math.trunc(Number(repoAreaLocks?.contention?.waitMsTotal || 0))),
+    stale: lastContentionTs > 0 ? staleAgeMs > staleAfterMs : false,
+    staleAgeMs,
+    hotAreas: rankedAreas,
+    recent: recent.slice(0, 10),
+  });
 }
 
 function normalizeTaskDiagnosticText(value) {
@@ -10004,7 +10246,11 @@ function broadcastUiEvent(channels, type, payload = {}) {
     broadcastTuiSessionsSnapshot(type, payload);
   }
   if (required.includes("tasks") && type !== "tasks:update") {
+    invalidateApiCache("tasks:");
     broadcastCanonicalEvent(["tasks", "tui"], "tasks:update", buildTasksUpdatePayload(payload, { sourceEvent: type }));
+  }
+  if (required.includes("status") || type.startsWith("status")) {
+    invalidateApiCache("status");
   }
 }
 
@@ -10178,6 +10424,86 @@ async function collectUiStats() {
   };
 }
 
+/* ─── Diff Patch Parser ─── */
+
+function parseDiffPatch(rawPatch = "", statFiles = []) {
+  const statMap = new Map(statFiles.map((f) => [f.filename, f]));
+  const fileSections = rawPatch.split(/^diff --git /m).filter(Boolean);
+  const parsed = [];
+  for (const section of fileSections) {
+    const lines = section.split("\n");
+    // Extract filenames from header: a/file b/file
+    const headerMatch = lines[0]?.match(/a\/(.+?)\s+b\/(.+)/);
+    const oldFilename = headerMatch?.[1] || "";
+    const newFilename = headerMatch?.[2] || "";
+    const filename = newFilename || oldFilename;
+    // Detect status from header lines
+    let status = "modified";
+    const binary = lines.some((l) => l.startsWith("Binary files"));
+    for (const l of lines.slice(0, 8)) {
+      if (l.startsWith("new file")) { status = "added"; break; }
+      if (l.startsWith("deleted file")) { status = "deleted"; break; }
+      if (l.startsWith("rename from")) { status = "renamed"; break; }
+      if (l.startsWith("copy from")) { status = "copied"; break; }
+    }
+    // Parse hunks
+    const hunks = [];
+    let currentHunk = null;
+    let oldLine = 0;
+    let newLine = 0;
+    for (const line of lines) {
+      const hunkMatch = line.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s*@@(.*)/);
+      if (hunkMatch) {
+        if (currentHunk) hunks.push(currentHunk);
+        oldLine = parseInt(hunkMatch[1], 10);
+        newLine = parseInt(hunkMatch[2], 10);
+        currentHunk = { header: line, context: (hunkMatch[3] || "").trim(), lines: [] };
+        continue;
+      }
+      if (!currentHunk) continue;
+      if (line.startsWith("+")) {
+        currentHunk.lines.push({ type: "addition", marker: "+", content: line.slice(1), oldNumber: null, newNumber: newLine++ });
+      } else if (line.startsWith("-")) {
+        currentHunk.lines.push({ type: "deletion", marker: "-", content: line.slice(1), oldNumber: oldLine++, newNumber: null });
+      } else if (line.startsWith(" ") || line === "") {
+        currentHunk.lines.push({ type: "context", marker: " ", content: line.slice(1) || "", oldNumber: oldLine++, newNumber: newLine++ });
+      } else if (line.startsWith("\\")) {
+        currentHunk.lines.push({ type: "meta", marker: "\\", content: line.slice(1).trim(), oldNumber: null, newNumber: null });
+      }
+    }
+    if (currentHunk) hunks.push(currentHunk);
+    const st = statMap.get(filename) || {};
+    parsed.push({
+      filename,
+      oldFilename,
+      newFilename: filename,
+      status,
+      binary,
+      additions: Number(st.additions || 0),
+      deletions: Number(st.deletions || 0),
+      hunks,
+      patch: section.slice(0, 200_000), // cap individual file patch for safety
+    });
+  }
+  // Add files from stat that had no patch (binary, empty changes)
+  for (const sf of statFiles) {
+    if (!parsed.some((p) => p.filename === sf.filename)) {
+      parsed.push({
+        filename: sf.filename,
+        oldFilename: sf.filename,
+        newFilename: sf.filename,
+        status: "modified",
+        binary: false,
+        additions: sf.additions,
+        deletions: sf.deletions,
+        hunks: [],
+        patch: "",
+      });
+    }
+  }
+  return parsed;
+}
+
 /* ─── Log Streaming Helpers ─── */
 
 async function resolveAgentLogsDir() {
@@ -10189,6 +10515,15 @@ async function resolveAgentLogsDir() {
     if (existsSync(dir)) return dir;
   }
   return agentLogsDirCandidates[0];
+}
+
+async function resolveAllAgentLogDirs() {
+  const dirs = [];
+  for (const dir of agentLogsDirCandidates) {
+    const files = await readdir(dir).catch(() => null);
+    if (files?.some((f) => f.endsWith(".log"))) dirs.push(dir);
+  }
+  return dirs.length ? dirs : [agentLogsDirCandidates[0]];
 }
 
 function normalizeAgentLogName(name) {
@@ -10249,9 +10584,9 @@ async function resolveLogPath(logType, query) {
     return resolvePreferredSystemLogPath();
   }
   if (logType === "agent") {
-    const matches = await listAgentLogFiles(query, 1);
-    if (matches.length > 0) {
-      return resolve(matches[0].source, matches[0].name);
+    const matches = await listAgentLogFiles({ query, limit: 1, offset: 0, sortBy: "modified", sortDir: "desc" });
+    if ((matches?.items || []).length > 0) {
+      return resolve(matches.items[0].source, matches.items[0].name);
     }
     const agentLogsDir = await resolveAgentLogsDir();
     const files = await readdir(agentLogsDir).catch(() => []);
@@ -11599,7 +11934,17 @@ async function readCompletedSessionEntries(maxLines = 100_000) {
   const entries = await readJsonlTail(sessionLogPath, maxLines, 50_000_000);
   return {
     sessionLogPath,
-    entries: entries.filter((entry) => String(entry?.type || "completed_session") === "completed_session"),
+    entries: entries.filter((entry) => {
+      if (String(entry?.type || "completed_session") !== "completed_session") return false;
+      // Filter out test artifacts: zero tokens AND negligible duration (≤ 100ms)
+      const dur = Number(entry?.durationMs || 0);
+      const tok = Number(entry?.tokenCount || 0);
+      if (tok <= 0 && dur <= 100) return false;
+      // Filter out entries with synthetic/template taskIds from tests
+      const taskId = String(entry?.taskId || "");
+      if (/^\{\{.*\}\}$/.test(taskId)) return false;
+      return true;
+    }),
   };
 }
 
@@ -12067,10 +12412,16 @@ async function readReplayableAgentRun(attemptId) {
     events,
   };
 }
-async function listAgentLogFiles(query = "", limit = 60) {
+async function listAgentLogFiles(options = {}) {
+  const query = String(options?.query || "").trim();
+  const limit = Math.max(20, Math.min(500, Number(options?.limit || 100)));
+  const offset = Math.max(0, Number(options?.offset || 0));
+  const sortBy = String(options?.sortBy || "modified").toLowerCase();
+  const sortDir = String(options?.sortDir || "desc").toLowerCase() === "asc" ? "asc" : "desc";
+  const ageFilter = String(options?.ageFilter || "all").toLowerCase();
+  const staleDays = Math.max(1, Math.min(90, Number(options?.staleDays || 7)));
   const entries = [];
-  const agentLogsDir = await resolveAgentLogsDir();
-  const files = await readdir(agentLogsDir).catch(() => []);
+  const allDirs = await resolveAllAgentLogDirs();
   const normalizedQuery = String(query || "").trim().toLowerCase();
   const queryTerms = Array.from(new Set([
     normalizedQuery,
@@ -12094,32 +12445,96 @@ async function listAgentLogFiles(query = "", limit = 60) {
     return score;
   };
 
-  for (const name of files) {
-    if (!name.endsWith(".log")) continue;
-    try {
-      const filePath = resolve(agentLogsDir, name);
-      const info = await stat(filePath);
-      let score = 0;
-      if (queryTerms.length) {
-        const sample = await tailFile(filePath, 160, 250_000).catch(() => ({ lines: [] }));
-        score = scoreAgentLogMatch(name, sample?.lines || []);
-        if (score <= 0) continue;
+  const staleThresholdMs = staleDays * 24 * 60 * 60 * 1000;
+  const nowMs = Date.now();
+
+  for (const agentLogsDir of allDirs) {
+    const files = await readdir(agentLogsDir).catch(() => []);
+    for (const name of files) {
+      if (!name.endsWith(".log")) continue;
+      try {
+        const filePath = resolve(agentLogsDir, name);
+        const info = await stat(filePath);
+        const mtimeMs = Number(info?.mtimeMs || 0);
+        const ageMs = Math.max(0, nowMs - mtimeMs);
+        if (ageFilter === "recent" && ageMs > staleThresholdMs) continue;
+        if (ageFilter === "stale" && ageMs <= staleThresholdMs) continue;
+        let score = 0;
+        if (queryTerms.length) {
+          const sample = await tailFile(filePath, 160, 250_000).catch(() => ({ lines: [] }));
+          score = scoreAgentLogMatch(name, sample?.lines || []);
+          if (score <= 0) continue;
+        }
+        entries.push({
+          name,
+          source: agentLogsDir,
+          size: info.size,
+          mtime:
+            info.mtime?.toISOString?.() || new Date(info.mtime).toISOString(),
+          mtimeMs,
+          ageMs,
+          score,
+        });
+      } catch {
+        // ignore
       }
-      entries.push({
-        name,
-        source: agentLogsDir,
-        size: info.size,
-        mtime:
-          info.mtime?.toISOString?.() || new Date(info.mtime).toISOString(),
-        mtimeMs: info.mtimeMs,
-        score,
-      });
-    } catch {
-      // ignore
     }
   }
-  entries.sort((a, b) => (b.score || 0) - (a.score || 0) || b.mtimeMs - a.mtimeMs);
-  return entries.slice(0, limit);
+  const order = sortDir === "asc" ? 1 : -1;
+  const byScore = (a, b) => (Number(b?.score || 0) - Number(a?.score || 0));
+  const byName = (a, b) => String(a?.name || "").localeCompare(String(b?.name || ""));
+  const bySize = (a, b) => Number(a?.size || 0) - Number(b?.size || 0);
+  const byModified = (a, b) => Number(a?.mtimeMs || 0) - Number(b?.mtimeMs || 0);
+
+  entries.sort((a, b) => {
+    if (queryTerms.length && sortBy === "relevance") {
+      const scoreDiff = byScore(a, b);
+      if (scoreDiff !== 0) return scoreDiff;
+      return order * byModified(a, b);
+    }
+    if (sortBy === "name") {
+      const cmp = byName(a, b);
+      if (cmp !== 0) return order * cmp;
+      return byScore(a, b);
+    }
+    if (sortBy === "size") {
+      const cmp = bySize(a, b);
+      if (cmp !== 0) return order * cmp;
+      return byScore(a, b);
+    }
+    const cmp = byModified(a, b);
+    if (cmp !== 0) return order * cmp;
+    return byScore(a, b);
+  });
+
+  const total = entries.length;
+  const items = entries.slice(offset, offset + limit);
+  const lastItem = items.length > 0 ? items[items.length - 1] : null;
+  const firstItem = items.length > 0 ? items[0] : null;
+  const nextCursor = lastItem ? `${lastItem.mtimeMs}:${Buffer.from(lastItem.name).toString("base64url")}` : null;
+  const prevCursor = firstItem && offset > 0 ? `${firstItem.mtimeMs}:${Buffer.from(firstItem.name).toString("base64url")}` : null;
+  return {
+    items,
+    pagination: {
+      total,
+      offset,
+      limit,
+      count: items.length,
+      hasMore: offset + items.length < total,
+      nextOffset: offset + items.length,
+      nextCursor,
+      prevCursor,
+    },
+    filterSummary: {
+      query,
+      queryTerms,
+      sortBy,
+      sortDir,
+      ageFilter,
+      staleDays,
+      sources: allDirs,
+    },
+  };
 }
 
 function buildLogQueryTerms(query = "") {
@@ -12339,8 +12754,12 @@ async function handleApi(req, res, url) {
     return;
   }
   if (path === "/api/status") {
+    const cached = getCachedApiResponse("status", 2000);
+    if (cached) { jsonResponse(res, 200, cached); return; }
     const data = await readStatusSnapshot();
-    jsonResponse(res, 200, { ok: true, data });
+    const payload = { ok: true, data };
+    setCachedApiResponse("status", payload);
+    jsonResponse(res, 200, payload);
     return;
   }
 
@@ -12730,7 +13149,12 @@ async function handleApi(req, res, url) {
         });
       }
 
-      const launchResult = await launchBenchmark(providerId, body || {});
+      const launchResult = await launchBenchmark(providerId, {
+        ...(body || {}),
+        workspaceId: workspaceContext.workspaceId || body?.workspaceId || "",
+        workspaceDir: workspaceContext.workspaceDir || body?.workspaceDir || "",
+        workspace: workspaceContext.workspaceDir || body?.workspaceDir || body?.workspace || "",
+      });
       let mode = null;
       if (body?.activateMode === true) {
         const modeChange = await applyBenchmarkModeChange({
@@ -12812,6 +13236,9 @@ async function handleApi(req, res, url) {
   }
 
   if (path === "/api/tasks") {
+    const cacheKey = `tasks:${url.search}`;
+    const cached = getCachedApiResponse(cacheKey, 3000);
+    if (cached) { jsonResponse(res, 200, cached); return; }
     const status = url.searchParams.get("status") || "";
     const projectId = url.searchParams.get("project") || "";
     const workspaceQueryRaw = String(url.searchParams.get("workspace") || "").trim();
@@ -12828,7 +13255,7 @@ async function handleApi(req, res, url) {
     const repositoryFilter = (url.searchParams.get("repository") || "").trim().toLowerCase();
     const page = Math.max(0, Number(url.searchParams.get("page") || "0"));
     const pageSize = Math.min(
-      50,
+      200,
       Math.max(5, Number(url.searchParams.get("pageSize") || "15")),
     );
     try {
@@ -12910,7 +13337,7 @@ async function handleApi(req, res, url) {
       const slice = filtered.slice(start, start + pageSize);
       const enriched = await applySharedStateToTasks(slice);
       const withRuntime = enriched.map((task) => withTaskRuntimeSnapshot(task));
-      jsonResponse(res, 200, {
+      const responsePayload = {
         ok: true,
         data: withRuntime,
         page,
@@ -12920,7 +13347,9 @@ async function handleApi(req, res, url) {
         hasMore: start + slice.length < total,
         statusCounts,
         projectId: activeProject,
-      });
+      };
+      setCachedApiResponse(cacheKey, responsePayload);
+      jsonResponse(res, 200, responsePayload);
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -14381,7 +14810,6 @@ async function handleApi(req, res, url) {
         ...(clearsBlockedState
           ? { cooldownUntil: null, blockedReason: null }
           : (blockedReasonProvided ? { blockedReason } : {})),
-        ...(clearsBlockedState ? { replaceMeta: true } : {}),
         ...(baseBranchProvided ? { baseBranch } : {}),
         ...metadataPatch.topLevel,
         ...(nextMeta ? { meta: nextMeta } : {}),
@@ -14399,6 +14827,11 @@ async function handleApi(req, res, url) {
           : await adapter.updateTaskStatus(taskId, patch.status);
       const updated = withTaskMetadataTopLevel(updatedRaw);
       if (clearsBlockedState) {
+        if (updated?.meta && typeof updated.meta === "object") {
+          delete updated.meta.autoRecovery;
+          delete updated.meta.worktreeFailure;
+          delete updated.meta.blockedReason;
+        }
         resetExecutorTaskThrottleState(taskId);
       }
       const nextStatus = updated?.status || patch.status || null;
@@ -14532,7 +14965,6 @@ async function handleApi(req, res, url) {
         ...(clearsBlockedState
           ? { cooldownUntil: null, blockedReason: null }
           : (blockedReasonProvided ? { blockedReason } : {})),
-        ...(clearsBlockedState ? { replaceMeta: true } : {}),
         ...(baseBranchProvided ? { baseBranch } : {}),
         ...metadataPatch.topLevel,
         ...(nextMeta ? { meta: nextMeta } : {}),
@@ -14550,6 +14982,11 @@ async function handleApi(req, res, url) {
           : await adapter.updateTaskStatus(taskId, patch.status);
       const updated = withTaskMetadataTopLevel(updatedRaw);
       if (clearsBlockedState) {
+        if (updated?.meta && typeof updated.meta === "object") {
+          delete updated.meta.autoRecovery;
+          delete updated.meta.worktreeFailure;
+          delete updated.meta.blockedReason;
+        }
         resetExecutorTaskThrottleState(taskId);
       }
       const nextStatus = updated?.status || patch.status || null;
@@ -16265,22 +16702,49 @@ async function handleApi(req, res, url) {
     try {
       const file = normalizeAgentLogName(url.searchParams.get("file"));
       const query = url.searchParams.get("query") || "";
+      const offset = Math.max(0, Number(url.searchParams.get("offset") || "0"));
+      const limit = Math.max(20, Math.min(500, Number(url.searchParams.get("limit") || "100")));
+      const sortBy = url.searchParams.get("sortBy") || "modified";
+      const sortDir = url.searchParams.get("sortDir") || "desc";
+      const ageFilter = url.searchParams.get("age") || "all";
+      const staleDays = Math.max(1, Math.min(90, Number(url.searchParams.get("staleDays") || "7")));
       const lines = Math.min(
         1000,
         Math.max(20, Number(url.searchParams.get("lines") || "200")),
       );
       if (!file) {
-        const files = await listAgentLogFiles(query);
-        jsonResponse(res, 200, { ok: true, data: files });
+        const result = await listAgentLogFiles({
+          query,
+          offset,
+          limit,
+          sortBy,
+          sortDir,
+          ageFilter,
+          staleDays,
+        });
+        jsonResponse(res, 200, {
+          ok: true,
+          data: result.items,
+          pagination: result.pagination,
+          filterSummary: result.filterSummary,
+          serverTime: new Date().toISOString(),
+        });
         return;
       }
-      const agentLogsDir = await resolveAgentLogsDir();
-      const filePath = resolve(agentLogsDir, file);
-      if (!filePath.startsWith(agentLogsDir)) {
-        jsonResponse(res, 403, { ok: false, error: "Forbidden" });
-        return;
+      const sourceHint = url.searchParams.get("source") || "";
+      const allDirs = await resolveAllAgentLogDirs();
+      let filePath = null;
+      if (sourceHint) {
+        const candidate = resolve(sourceHint, file);
+        if (candidate.startsWith(sourceHint) && existsSync(candidate)) filePath = candidate;
       }
-      if (!existsSync(filePath)) {
+      if (!filePath) {
+        for (const dir of allDirs) {
+          const candidate = resolve(dir, file);
+          if (candidate.startsWith(dir) && existsSync(candidate)) { filePath = candidate; break; }
+        }
+      }
+      if (!filePath) {
         jsonResponse(res, 404, { ok: false, error: "Log not found" });
         return;
       }
@@ -16303,13 +16767,17 @@ async function handleApi(req, res, url) {
       // Read lifetime totals from the full JSONL log (not the capped in-memory state)
       // so the count is accurate even when sessions exceed the in-memory cap.
       const { entries: allSessions } = await readCompletedSessionEntries(200_000);
+      // Cap per-session duration at 4 hours — orphaned sessions reaped days later
+      // would otherwise inflate runtime by hundreds of hours each.
+      const MAX_SESSION_DURATION_MS = 4 * 60 * 60 * 1000;
       const lifetimeTotals = allSessions.reduce(
         (acc, session) => {
           acc.attemptsCount += 1;
           acc.tokenCount += Number(session?.tokenCount || 0);
           acc.inputTokens += Number(session?.inputTokens || 0);
           acc.outputTokens += Number(session?.outputTokens || 0);
-          acc.durationMs += Math.max(0, Number(session?.durationMs || 0));
+          const rawDur = Math.max(0, Number(session?.durationMs || 0));
+          acc.durationMs += Math.min(rawDur, MAX_SESSION_DURATION_MS);
           return acc;
         },
         { attemptsCount: 0, tokenCount: 0, inputTokens: 0, outputTokens: 0, durationMs: 0 },
@@ -16333,7 +16801,15 @@ async function handleApi(req, res, url) {
       }
 
       summary.lifetimeTotals = lifetimeTotals;
-      jsonResponse(res, 200, { ok: true, data: summary });
+      summary.repoAreaContention = summarizeRepoAreaLockContention(
+        uiDeps.getInternalExecutor?.()?.getStatus?.()?.repoAreaLocks || null,
+        { now: "2026-03-24T12:00:00.000Z" },
+      );
+      jsonResponse(res, 200, {
+        ok: true,
+        data: summary,
+        repoAreaContention: summary.repoAreaContention,
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -16775,24 +17251,43 @@ if (path === "/api/agent-logs/context") {
   if (path === "/api/agent-logs/tail") {
     try {
       const fileParam = url.searchParams.get("file") || "";
+      const sourceParam = url.searchParams.get("source") || "";
       const query = url.searchParams.get("query") || "";
       const lines = Math.min(
         1000,
         Math.max(20, Number(url.searchParams.get("lines") || "100")),
       );
-      const agentLogsDir = await resolveAgentLogsDir();
+      const allDirs = await resolveAllAgentLogDirs();
       // Prefer an explicit file name; fall back to query-based latest-file lookup
       let fileName = fileParam;
       if (!fileName) {
-        const files = await listAgentLogFiles(query);
-        if (!files.length) {
+        const files = await listAgentLogFiles({
+          query,
+          offset: 0,
+          limit: 1,
+          sortBy: "relevance",
+          sortDir: "desc",
+        });
+        if (!(files?.items || []).length) {
           jsonResponse(res, 200, { ok: true, data: null });
           return;
         }
-        fileName = files[0].name || files[0];
+        fileName = files.items[0].name || files.items[0];
       }
-      const filePath = resolve(agentLogsDir, normalizeAgentLogName(fileName));
-      if (!filePath.startsWith(agentLogsDir) || !existsSync(filePath)) {
+      const safeName = normalizeAgentLogName(fileName);
+      // Search for the file across all log directories (prefer explicit source if provided)
+      let filePath = null;
+      if (sourceParam) {
+        const candidate = resolve(sourceParam, safeName);
+        if (candidate.startsWith(sourceParam) && existsSync(candidate)) filePath = candidate;
+      }
+      if (!filePath) {
+        for (const dir of allDirs) {
+          const candidate = resolve(dir, safeName);
+          if (candidate.startsWith(dir) && existsSync(candidate)) { filePath = candidate; break; }
+        }
+      }
+      if (!filePath) {
         jsonResponse(res, 200, { ok: true, data: null });
         return;
       }
@@ -17183,6 +17678,21 @@ if (path === "/api/agent-logs/context") {
     return;
   }
 
+  /* ── Resolve git repo cwd from ?repo= query param (path-traversal safe) ── */
+  function resolveGitRepoCwd(reqUrl) {
+    const repoParam = (reqUrl.searchParams.get("repo") || "").trim();
+    if (!repoParam) return process.cwd();
+    // Sanitize: allow only simple directory name (no slashes, dots, etc.)
+    const safeName = repoParam.replace(/[^a-zA-Z0-9_-]/g, "");
+    if (!safeName) return process.cwd();
+    const parentDir = resolve(process.cwd(), "..");
+    const candidate = resolve(parentDir, safeName);
+    // Ensure the resolved path is actually inside parentDir (prevent traversal)
+    if (!candidate.startsWith(parentDir)) return process.cwd();
+    if (existsSync(resolve(candidate, ".git"))) return candidate;
+    return process.cwd();
+  }
+
   if (path === "/api/git/diff") {
     try {
       const diff = runGit("diff --stat HEAD", 15000);
@@ -17193,14 +17703,42 @@ if (path === "/api/agent-logs/context") {
     return;
   }
 
+  /* ── Discover git repos in parent directory ── */
+  if (path === "/api/git/repos") {
+    try {
+      const parentDir = resolve(process.cwd(), "..");
+      const entries = readdirSync(parentDir, { withFileTypes: true });
+      const repos = [];
+      for (const ent of entries) {
+        if (!ent.isDirectory()) continue;
+        const fullPath = resolve(parentDir, ent.name);
+        if (existsSync(resolve(fullPath, ".git"))) {
+          repos.push({ name: ent.name, path: fullPath });
+        }
+      }
+      // Sort: current repo first, then alphabetical
+      const currentName = basename(process.cwd());
+      repos.sort((a, b) => {
+        if (a.name === currentName) return -1;
+        if (b.name === currentName) return 1;
+        return a.name.localeCompare(b.name);
+      });
+      jsonResponse(res, 200, { ok: true, data: repos });
+    } catch (err) {
+      jsonResponse(res, 200, { ok: true, data: [{ name: basename(process.cwd()), path: process.cwd() }], error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/recent-commits") {
     try {
-      // Return structured objects {hash,message,author,date} using a richer git format.
-      // Falls back to parsing --oneline strings if the richer format fails.
+      const maxCount = Math.min(100, Math.max(6, Number(url.searchParams.get("count") || "40")));
+      const gitCwd = resolveGitRepoCwd(url);
+      // Return graph-friendly objects: full hash, parents (for branch lanes), decorate refs, author email
       const proc = spawnSync(
         "git",
-        ["log", "--format=%H\x1f%s\x1f%an\x1f%aI", "--max-count=6"],
-        { cwd: process.cwd(), encoding: "utf8", timeout: 10_000 },
+        ["log", "--format=%H\x1f%P\x1f%s\x1f%an\x1f%ae\x1f%aI\x1f%D", `--max-count=${maxCount}`, "--all"],
+        { cwd: gitCwd, encoding: "utf8", timeout: 15_000 },
       );
       if (proc.status === 0 && (proc.stdout || "").trim()) {
         const commits = proc.stdout
@@ -17208,21 +17746,89 @@ if (path === "/api/agent-logs/context") {
           .split("\n")
           .filter(Boolean)
           .map((line) => {
-            const [hash, message, author, date] = line.split("\x1f");
-            return { hash: (hash || "").slice(0, 7), message: message || "", author: author || "", date: date || "" };
+            const [hash, parents, message, author, email, date, refs] = line.split("\x1f");
+            return {
+              hash: (hash || "").trim(),
+              shortHash: (hash || "").slice(0, 7),
+              parents: (parents || "").trim().split(/\s+/).filter(Boolean),
+              message: message || "",
+              author: author || "",
+              email: email || "",
+              date: date || "",
+              refs: (refs || "").split(",").map((r) => r.trim()).filter(Boolean),
+            };
           });
         jsonResponse(res, 200, { ok: true, data: commits });
       } else {
         // Fallback: parse --oneline strings
-        const lines = getRecentCommits(process.cwd(), 6);
+        const lines = getRecentCommits(gitCwd, maxCount);
         const commits = lines.map((l) => {
           const sp = (l || "").indexOf(" ");
-          return { hash: sp > 0 ? l.slice(0, sp) : l.slice(0, 7), message: sp > 0 ? l.slice(sp + 1) : l, author: "", date: "" };
+          return { hash: sp > 0 ? l.slice(0, sp) : l.slice(0, 40), shortHash: (l || "").slice(0, 7), parents: [], message: sp > 0 ? l.slice(sp + 1) : l, author: "", email: "", date: "", refs: [] };
         });
         jsonResponse(res, 200, { ok: true, data: commits });
       }
     } catch (err) {
       jsonResponse(res, 200, { ok: true, data: [], error: err.message });
+    }
+    return;
+  }
+
+  if (path.startsWith("/api/commit-detail/")) {
+    try {
+      const hashParam = path.split("/api/commit-detail/")[1] || "";
+      const commitHash = hashParam.replace(/[^a-fA-F0-9]/g, "").slice(0, 40);
+      if (!commitHash || commitHash.length < 7) {
+        jsonResponse(res, 400, { ok: false, error: "Invalid commit hash" });
+        return;
+      }
+      const gitCwd = resolveGitRepoCwd(url);
+      // Get commit metadata
+      const metaProc = spawnSync(
+        "git", ["show", "--no-patch", "--format=%H\x1f%P\x1f%s\x1f%b\x1f%an\x1f%ae\x1f%aI\x1f%D", commitHash],
+        { cwd: gitCwd, encoding: "utf8", timeout: 10_000 },
+      );
+      if (metaProc.status !== 0) {
+        jsonResponse(res, 404, { ok: false, error: "Commit not found" });
+        return;
+      }
+      const [hash, parents, subject, body, author, email, date, refs] = (metaProc.stdout || "").trim().split("\x1f");
+      // Get file stats (numstat)
+      const statProc = spawnSync(
+        "git", ["diff-tree", "--no-commit-id", "-r", "--numstat", commitHash],
+        { cwd: gitCwd, encoding: "utf8", timeout: 10_000 },
+      );
+      const files = (statProc.stdout || "").trim().split("\n").filter(Boolean).map((line) => {
+        const parts = line.split("\t");
+        return { additions: parts[0] === "-" ? 0 : Number(parts[0] || 0), deletions: parts[1] === "-" ? 0 : Number(parts[1] || 0), filename: parts[2] || "" };
+      });
+      // Get the actual patch (limit size to prevent huge payloads)
+      const patchProc = spawnSync(
+        "git", ["diff-tree", "--no-commit-id", "-r", "-p", "--diff-filter=ACDMRT", commitHash],
+        { cwd: gitCwd, encoding: "utf8", timeout: 15_000, maxBuffer: 2 * 1024 * 1024 },
+      );
+      const rawPatch = (patchProc.stdout || "").slice(0, 1_500_000); // cap at ~1.5MB
+      // Parse patch into file-level hunks
+      const parsedFiles = parseDiffPatch(rawPatch, files);
+      jsonResponse(res, 200, {
+        ok: true,
+        data: {
+          hash: (hash || "").trim(),
+          shortHash: (hash || "").slice(0, 7),
+          parents: (parents || "").trim().split(/\s+/).filter(Boolean),
+          subject: subject || "",
+          body: (body || "").trim(),
+          author: author || "",
+          email: email || "",
+          date: date || "",
+          refs: (refs || "").split(",").map((r) => r.trim()).filter(Boolean),
+          files: parsedFiles,
+          totalAdditions: parsedFiles.reduce((s, f) => s + f.additions, 0),
+          totalDeletions: parsedFiles.reduce((s, f) => s + f.deletions, 0),
+        },
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
     }
     return;
   }
@@ -21642,12 +22248,12 @@ async function handleStatic(req, res, url) {
       if (existsSync(indexPath)) {
         try {
           const data = await readFile(indexPath);
-          res.writeHead(200, {
+          const headers = {
             "Content-Type": "text/html; charset=utf-8",
             "Access-Control-Allow-Origin": "*",
-            "Cache-Control": "no-store",
-          });
-          res.end(data);
+            "Cache-Control": "no-cache",
+          };
+          await compressAndSend(req, res, 200, headers, data);
           return;
         } catch (err) {
           textResponse(res, 500, `Failed to load /index.html: ${err.message}`);
@@ -21663,12 +22269,19 @@ async function handleStatic(req, res, url) {
     const ext = extname(filePath).toLowerCase();
     const contentType = MIME_TYPES[ext] || "application/octet-stream";
     const data = await readFile(filePath);
-    res.writeHead(200, {
+    const etag = computeETag(data);
+    if (req.headers["if-none-match"] === etag) {
+      res.writeHead(304, { ETag: etag });
+      res.end();
+      return;
+    }
+    const headers = {
       "Content-Type": contentType,
       "Access-Control-Allow-Origin": "*",
-      "Cache-Control": "no-store",
-    });
-    res.end(data);
+      "Cache-Control": cacheControlForPath(pathname),
+      "ETag": etag,
+    };
+    await compressAndSend(req, res, 200, headers, data);
   } catch (err) {
     textResponse(res, 500, `Failed to load ${pathname}: ${err.message}`);
   }
@@ -21792,6 +22405,7 @@ export async function startTelegramUiServer(options = {}) {
       method: String(req?.method || "GET").toUpperCase(),
       path: url.pathname,
       query: url.search || "",
+      _req: req,
     };
     const webhookPath = getGitHubWebhookPath();
 
@@ -22670,4 +23284,13 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
+
+
+
+
+
+
+
+
 

@@ -3,6 +3,7 @@ import { resolve, join, relative } from "node:path";
 import { execSync } from "node:child_process";
 import vm from "node:vm";
 import { validateImports } from "./import-check.mjs";
+import { collectPromptLintViolations, formatPromptLintViolations } from "./prompt-lint.mjs";
 
 function listTopLevelModules() {
   try {
@@ -149,6 +150,15 @@ async function main() {
   }
 
   console.log(`Imports OK: ${moduleCount} modules linked, 0 broken imports`);
+
+  const promptLintViolations = collectPromptLintViolations(process.cwd());
+  if (promptLintViolations.length > 0) {
+    console.error("\nPrompt lint failed:\n");
+    console.error(formatPromptLintViolations(promptLintViolations));
+    process.exit(1);
+  }
+
+  console.log("Prompt lint OK: no narration anti-patterns found in .bosun/agents");
 }
 
 main().catch((error) => {

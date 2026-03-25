@@ -24,7 +24,11 @@ import {
   getAgentPromptDefinitions,
   resolveAgentPrompts,
 } from "../agent/agent-prompts.mjs";
-import { resolveAgentRepoRoot, resolveRepoLocalBosunDir } from "./repo-root.mjs";
+import {
+  resolveAgentRepoRoot,
+  resolveRepoLocalBosunDir,
+  detectBosunModuleRoot,
+} from "./repo-root.mjs";
 import { applyAllCompatibility } from "../compat.mjs";
 import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import { CONFIG_FILES } from "./config-file-names.mjs";
@@ -64,23 +68,6 @@ function isBosunModuleRoot(dirPath) {
   } catch {
     return false;
   }
-}
-
-/**
- * Detect the bosun module root starting from the current file's directory,
- * walking up until a package.json with name "bosun" (or "@virtengine/bosun") is found.
- * Returns the module root path or __dirname as fallback.
- * @returns {string}
- */
-function detectBosunModuleRoot() {
-  let dir = __dirname;
-  for (let i = 0; i < 6; i++) {
-    if (isBosunModuleRoot(dir)) return dir;
-    const parent = resolve(dir, "..");
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return __dirname;
 }
 
 /**
@@ -127,11 +114,22 @@ function resolveConfigDir(repoRoot) {
   const repoLocalConfigDir = resolveRepoLocalBosunDir(repoRoot);
   if (repoLocalConfigDir) return repoLocalConfigDir;
 
-  // 3. Tests must not fall through to the user's real global Bosun home.
+  // 3. Fallback: check the bosun module's own directory for a .bosun/ config.
+  //    This ensures `bosun` (global) finds the same config as `npm start` which
+  //    explicitly passes `--config-dir .bosun`.  Without this, running from a
+  //    directory outside the module (e.g. home dir) misses workspaces, .env
+  //    vars (TELEGRAM_UI_PORT, TELEGRAM_MINIAPP_ENABLED, etc.), and task store.
+  const moduleRoot = detectBosunModuleRoot();
+  if (moduleRoot && resolve(moduleRoot) !== resolve(repoRoot || "")) {
+    const moduleLocalConfigDir = resolveRepoLocalBosunDir(moduleRoot);
+    if (moduleLocalConfigDir) return moduleLocalConfigDir;
+  }
+
+  // 4. Tests must not fall through to the user's real global Bosun home.
   const sandbox = ensureTestRuntimeSandbox();
   if (sandbox?.configDir) return sandbox.configDir;
 
-  // 4. Platform-aware user home
+  // 5. Platform-aware user home
   const preferWindowsDirs =
     process.platform === "win32" && !isWslInteropRuntime();
   const baseDir = preferWindowsDirs
@@ -890,8 +888,7 @@ function normalizeKanbanBackend(value) {
   if (
     backend === "internal" ||
     backend === "github" ||
-    backend === "jira" ||
-    backend === "vk"
+    backend === "jira"
   ) {
     return backend;
   }
@@ -1276,7 +1273,6 @@ export function loadConfig(argv = process.argv, options = {}) {
   const projectName =
     cli["project-name"] ||
     process.env.PROJECT_NAME ||
-    process.env.VK_PROJECT_NAME ||
     selectedRepository?.projectName ||
     configData.projectName ||
     detectProjectName(configDir, repoRoot);
@@ -1303,11 +1299,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     )
       .toString()
       .toLowerCase() ||
-    (String(findOrchestratorScript(configDir, repoRoot)).includes(
-      "ve-orchestrator",
-    )
-      ? "virtengine"
-      : "generic");
+    "generic";
 
   // ── Orchestrator ─────────────────────────────────────────
   const defaultScript =
@@ -1319,7 +1311,7 @@ export function loadConfig(argv = process.argv, options = {}) {
   const rawScript =
     cli.script || process.env.ORCHESTRATOR_SCRIPT || defaultScript;
   // Resolve relative paths against configDir (not cwd) so that
-  // "../ve-orchestrator.ps1" always resolves to scripts/ve-orchestrator.ps1
+  // relative script paths resolve correctly
   // regardless of what directory the process was started from.
   let scriptPath = resolve(configDir, rawScript);
   // If the resolved path doesn't exist and rawScript is just a filename (no path separators),
@@ -1687,7 +1679,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     ),
   });
   const internalExecutor = {
-    mode: ["vk", "internal", "hybrid"].includes(executorMode)
+    mode: ["internal", "hybrid"].includes(executorMode)
       ? executorMode
       : "internal",
     maxParallel: Number(
@@ -1801,39 +1793,11 @@ export function loadConfig(argv = process.argv, options = {}) {
     projectRequirements,
   };
 
-  // ── Vibe-Kanban ──────────────────────────────────────────
-  const vkRecoveryPort = process.env.VK_RECOVERY_PORT || "54089";
-  const vkRecoveryHost =
-    process.env.VK_RECOVERY_HOST || process.env.VK_HOST || "0.0.0.0";
-  const vkEndpointUrl =
-    process.env.VK_ENDPOINT_URL ||
-    process.env.VK_BASE_URL ||
-    `http://127.0.0.1:${vkRecoveryPort}`;
-  const vkPublicUrl = process.env.VK_PUBLIC_URL || process.env.VK_WEB_URL || "";
-  const vkTaskUrlTemplate = process.env.VK_TASK_URL_TEMPLATE || "";
+  // ── Tracing ──────────────────────────────────────────────
   const tracingEndpoint =
     process.env.BOSUN_OTEL_ENDPOINT || configData?.tracing?.endpoint || null;
   const tracingEnabled = configData?.tracing?.enabled ?? Boolean(tracingEndpoint);
   const tracingSampleRate = Number(configData?.tracing?.sampleRate ?? 1);
-  const vkRecoveryCooldownMin = Number(
-    process.env.VK_RECOVERY_COOLDOWN_MIN || "10",
-  );
-  const vkSpawnDefault =
-    configData.vkSpawnEnabled !== undefined
-      ? configData.vkSpawnEnabled
-      : mode !== "generic";
-  const vkRequiredByExecutor =
-    internalExecutor.mode === "vk" || internalExecutor.mode === "hybrid";
-  const vkRequiredByBoard = kanban.backend === "vk";
-  const vkRuntimeRequired = vkRequiredByExecutor || vkRequiredByBoard;
-  const vkSpawnEnabled =
-    vkRuntimeRequired &&
-    !flags.has("no-vk-spawn") &&
-    !isEnvEnabled(process.env.VK_NO_SPAWN, false) &&
-    vkSpawnDefault;
-  const vkEnsureIntervalMs = Number(
-    cli["vk-ensure-interval"] || process.env.VK_ENSURE_INTERVAL || "60000",
-  );
 
   // ── Telegram ─────────────────────────────────────────────
   const telegramToken = process.env.TELEGRAM_BOT_TOKEN || "";
@@ -1926,13 +1890,12 @@ export function loadConfig(argv = process.argv, options = {}) {
   //   }
   //
   // Env overrides:
-  //   VK_TARGET_BRANCH=origin/staging        (default branch)
   //   BRANCH_ROUTING_SCOPE_MAP=bosun:origin/ve/bosun-staging,veid:origin/staging
   //   AUTO_REBASE_ON_MERGE=true
   //   ASSESS_WITH_SDK=true
   const branchRoutingRaw = configData.branchRouting || {};
   const defaultTargetBranch =
-    process.env.VK_TARGET_BRANCH ||
+    process.env.DEFAULT_TARGET_BRANCH ||
     branchRoutingRaw.defaultBranch ||
     "origin/main";
   const scopeMapEnv = process.env.BRANCH_ROUTING_SCOPE_MAP || "";
@@ -2052,12 +2015,11 @@ export function loadConfig(argv = process.argv, options = {}) {
     repoRoot,
     configData.cacheDir || selectedRepository?.cacheDir || ".cache",
   );
-  // Default matches ve-orchestrator.ps1's $script:StatusStatePath
   const statusPath =
     process.env.STATUS_FILE ||
     configData.statusPath ||
     selectedRepository?.statusPath ||
-    resolve(cacheDir, "ve-orchestrator-status.json");
+    resolve(cacheDir, "bosun-status.json");
   const lockBase =
     configData.telegramPollLockPath ||
     selectedRepository?.telegramPollLockPath ||
@@ -2156,21 +2118,11 @@ export function loadConfig(argv = process.argv, options = {}) {
     // Autofix mode hint (informational — actual detection uses isDevMode())
     autofixMode: process.env.AUTOFIX_MODE || "auto",
 
-    // Vibe-Kanban
-    vkRecoveryPort,
-    vkRecoveryHost,
-    vkEndpointUrl,
-    vkPublicUrl,
-    vkTaskUrlTemplate,
     tracing: {
       enabled: tracingEnabled,
       endpoint: tracingEndpoint,
       sampleRate: Number.isFinite(tracingSampleRate) ? tracingSampleRate : 1,
     },
-    vkRecoveryCooldownMin,
-    vkRuntimeRequired,
-    vkSpawnEnabled,
-    vkEnsureIntervalMs,
 
     // Telegram
     telegramToken,

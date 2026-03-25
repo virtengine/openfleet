@@ -39,6 +39,8 @@ import {
   setPendingChange,
   clearPendingChange,
   sanitizeTaskText,
+  isPlaceholderTaskDescription,
+  KANBAN_PAGE_SIZE,
 } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
 import {
@@ -65,6 +67,7 @@ import {
   SkeletonCard,
   EmptyState
 } from "../components/shared.js";
+import { DiffViewer } from "../components/diff-viewer.js";
 import {
   SegmentedControl,
   SearchInput,
@@ -72,7 +75,6 @@ import {
 } from "../components/forms.js";
 import { KanbanBoard } from "../components/kanban-board.js";
 import { VoiceMicButton, VoiceMicButtonInline } from "../modules/voice.js";
-import { openWorkflowRunsView } from "./workflows.js";
 import {
   workspaces as managedWorkspaces,
   activeWorkspaceId,
@@ -84,6 +86,7 @@ import {
   Paper, CircularProgress, Skeleton, Alert, Switch, FormControlLabel,
   Menu as MuiMenu, Fab, Table, TableBody, TableCell, TableContainer,
   TableHead, TableRow, TableSortLabel, ToggleButton, ToggleButtonGroup, Badge,
+  Autocomplete,
 } from "@mui/material";
 
 /* ─── View mode toggle ─── */
@@ -983,14 +986,27 @@ async function fetchFirstAvailableDagPath(paths = []) {
   return null;
 }
 
-function buildTaskDescriptionFallback(rawTitle, rawDescription) {
+export function buildTaskDescriptionFallback(rawTitle, rawDescription) {
   const title = sanitizeTaskText(rawTitle || "");
   const description = sanitizeTaskText(rawDescription || "");
+  if (isPlaceholderTaskDescription(description)) {
+    if (!title) {
+      return "No description provided yet. Add scope, key files, and acceptance checks before dispatch.";
+    }
+    return `Implementation notes for "${title}". Include scope, key files, risks, and acceptance checks before dispatch.`;
+  }
   if (description) return description;
   if (!title) {
     return "No description provided yet. Add scope, key files, and acceptance checks before dispatch.";
   }
   return `Implementation notes for "${title}". Include scope, key files, risks, and acceptance checks before dispatch.`;
+}
+
+function buildTaskDetailPath(taskId, options = {}) {
+  const params = new URLSearchParams({ taskId: String(taskId || "") });
+  if (options.includeDag === false) params.set("includeDag", "0");
+  if (options.includeWorkflowRuns === false) params.set("includeWorkflowRuns", "0");
+  return `/api/tasks/detail?${params.toString()}`;
 }
 
 
@@ -1196,7 +1212,11 @@ export function buildTaskWorkflowRunStatusLine(run) {
 
 export async function openTaskWorkflowRun(run, deps = {}) {
   const navigate = deps.navigateTo || navigateTo;
-  const openRuns = deps.openWorkflowRunsView || openWorkflowRunsView;
+  let openRuns = deps.openWorkflowRunsView;
+  if (!openRuns) {
+    const wfMod = await import("./workflows.js");
+    openRuns = wfMod.openWorkflowRunsView;
+  }
   const workflowId = String(run?.workflowId || "").trim();
   const runId = String(run?.runId || "").trim();
   if (!runId) return false;
@@ -1231,9 +1251,12 @@ function buildTaskRelatedLinks(task) {
     "";
   const prNumber =
     task?.prNumber ||
+    task?.pr ||
     task?.pr_number ||
     task?.meta?.prNumber ||
+    task?.meta?.pr ||
     task?.meta?.pr_number ||
+    task?.meta?.pr?.number ||
     "";
   const prUrl =
     task?.prUrl ||
@@ -1244,11 +1267,70 @@ function buildTaskRelatedLinks(task) {
     "";
   const baseBranch = getTaskBaseBranch(task);
 
-  if (branch) links.push({ kind: "Branch", value: branch, url: "" });
+  if (branch) links.push({ kind: "Branch", value: branch, url: "", emphasis: true });
   if (baseBranch) links.push({ kind: "Base", value: baseBranch, url: "" });
-  if (prNumber) links.push({ kind: "PR", value: `#${prNumber}`, url: prUrl || "" });
+  if (prNumber) links.push({ kind: "PR", value: `#${prNumber}`, url: prUrl || "", emphasis: true });
   if (prUrl) links.push({ kind: "PR URL", value: prUrl, url: prUrl });
   return links;
+}
+
+function renderTaskRelatedLinks(relatedLinks, { onReviewDiff = null } = {}) {
+  if (!Array.isArray(relatedLinks) || !relatedLinks.length) {
+    if (!onReviewDiff) return "No branch or PR links recorded.";
+    return html`
+      <div style=${{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}>
+        <button
+          type="button"
+          class="task-related-link-chip"
+          onClick=${onReviewDiff}
+        >
+          ${resolveIcon("edit") || "✎"} Review Diff
+        </button>
+      </div>
+    `;
+  }
+
+  return html`
+    <div style=${{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}>
+      ${relatedLinks.map((item, index) => html`
+        ${item.url
+          ? html`
+              <a
+                key=${`task-link-${index}`}
+                class="task-related-link-chip"
+                data-emphasis=${item.emphasis ? "true" : "false"}
+                href=${item.url}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <span class="task-related-link-kind">${item.kind}</span>
+                <span class="task-related-link-value">${item.value}</span>
+              </a>
+            `
+          : html`
+              <span
+                key=${`task-link-${index}`}
+                class="task-related-link-chip"
+                data-emphasis=${item.emphasis ? "true" : "false"}
+              >
+                <span class="task-related-link-kind">${item.kind}</span>
+                <span class="task-related-link-value">${item.value}</span>
+              </span>
+            `}
+      `)}
+      ${onReviewDiff && html`
+        <button
+          type="button"
+          class="task-related-link-chip"
+          data-emphasis="true"
+          onClick=${onReviewDiff}
+        >
+          <span class="task-related-link-kind">Review</span>
+          <span class="task-related-link-value">Open Diff</span>
+        </button>
+      `}
+    </div>
+  `;
 }
 
 function buildTaskAgentList(task) {
@@ -1508,13 +1590,40 @@ export function StartTaskModal({
       <${Stack} spacing=${2}>
         ${(allowTaskIdInput || !task?.id) &&
         html`
-          <${TextField}
-            label="Task ID"
-            placeholder="e.g. task-123"
+          <${Autocomplete}
+            freeSolo
             size="small"
             fullWidth
-            value=${taskIdInput}
-            onChange=${(e) => setTaskIdInput(e.target.value)}
+            options=${(() => {
+              const STARTABLE = new Set(["draft", "backlog", "open", "new", "todo", "blocked", "error", "failed"]);
+
+              const getGroup = (s) => {
+                const lower = (s || "").toLowerCase();
+                if (lower === "draft") return "Draft";
+                if (["blocked", "error", "failed"].includes(lower)) return "Blocked";
+                return "Todo";
+              };
+              return (tasksData.value || [])
+                .filter(t => STARTABLE.has((t.status || "").toLowerCase()))
+                .map(t => ({ id: t.id, title: t.title || "(untitled)", status: t.status, group: getGroup(t.status) }))
+                .sort((a, b) => a.group.localeCompare(b.group) || (a.title || "").localeCompare(b.title || ""));
+            })()}
+            groupBy=${(opt) => opt.group || ""}
+            getOptionLabel=${(opt) => typeof opt === "string" ? opt : opt.title ? `${opt.title} (${opt.id})` : opt.id || ""}
+            isOptionEqualToValue=${(opt, val) => opt.id === (typeof val === "string" ? val : val?.id)}
+            inputValue=${taskIdInput}
+            onInputChange=${(_, val) => setTaskIdInput(val || "")}
+            onChange=${(_, val) => {
+              if (val && typeof val === "object" && val.id) {
+                setTaskIdInput(val.id);
+              } else if (typeof val === "string") {
+                setTaskIdInput(val);
+              }
+            }}
+            renderInput=${(params) => html`<${TextField} ...${params} label="Task ID" placeholder="Search or enter task ID" />`}
+            renderOption=${(props, opt) => html`<li ...${props} key=${opt.id}><${Box} sx=${{ display: "flex", flexDirection: "column" }}><${Typography} variant="body2">${opt.title}<//><${Typography} variant="caption" color="text.secondary">${opt.id}<//><//>
+            </li>`}
+            disablePortal
           />
         `}
         <${TextField}
@@ -1724,6 +1833,28 @@ function TriggerTemplateCard({
   `;
 }
 
+function sanitizeTriggerTemplatePayload(template = {}) {
+  if (!template || typeof template !== "object") {
+    return {};
+  }
+  const payload = {};
+  for (const key of [
+    "id",
+    "name",
+    "description",
+    "enabled",
+    "action",
+    "minIntervalMinutes",
+    "trigger",
+    "config",
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(template, key)) {
+      payload[key] = template[key];
+    }
+  }
+  return payload;
+}
+
 function TriggerTemplatesModal({ onClose }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1842,11 +1973,16 @@ function TriggerTemplatesModal({ onClose }) {
   }, []);
 
   const handleToggleTemplate = async (template, nextEnabled) => {
-    await persistUpdate({ template: { ...template, enabled: nextEnabled } });
+    await persistUpdate({
+      template: {
+        ...sanitizeTriggerTemplatePayload(template),
+        enabled: nextEnabled,
+      },
+    });
   };
 
   const handleSaveTemplate = async (template) => {
-    await persistUpdate({ template });
+    await persistUpdate({ template: sanitizeTriggerTemplatePayload(template) });
   };
 
   return html`
@@ -1874,6 +2010,10 @@ function TriggerTemplatesModal({ onClose }) {
               ${enabled ? "enabled" : "disabled"}
             </label>
           </div>
+
+          <${Alert} severity="info" variant="outlined" sx=${{ mt: 1.25 }}>
+            Trigger Templates are reusable automation rules. Each template watches for a trigger condition and can automatically create follow-up task work using the configured action and defaults below.
+          </${Alert}>
 
           <div class="input-row" style="margin-top:10px;">
             <${Select}
@@ -1907,7 +2047,7 @@ function TriggerTemplatesModal({ onClose }) {
         ${!loading && templates.length === 0 && html`
           <${EmptyState}
             message="No trigger templates found"
-            description="Add templates in bosun.config.json under triggerSystem.templates."
+            description="Add templates in bosun.config.json under triggerSystem.templates. These templates define automation rules that can create follow-up task work when their trigger conditions match."
           />
         `}
 
@@ -2010,7 +2150,13 @@ export function TaskProgressModal({ task, onClose }) {
     let cancelled = false;
     const poll = async () => {
       try {
-        const taskRes = await apiFetch(`/api/tasks/detail?taskId=${task.id}`, { _silent: true });
+        const taskRes = await apiFetch(
+          buildTaskDetailPath(task.id, {
+            includeDag: false,
+            includeWorkflowRuns: false,
+          }),
+          { _silent: true },
+        );
         if (!cancelled && taskRes?.data) setLiveTask(taskRes.data);
 
         const healthRes = await apiFetch(`/api/supervisor/task/${task.id}`, { _silent: true });
@@ -2208,7 +2354,13 @@ export function TaskReviewModal({ task, onClose, onStart }) {
     let cancelled = false;
     const load = async () => {
       try {
-        const taskRes = await apiFetch(`/api/tasks/detail?taskId=${task.id}`, { _silent: true });
+        const taskRes = await apiFetch(
+          buildTaskDetailPath(task.id, {
+            includeDag: false,
+            includeWorkflowRuns: false,
+          }),
+          { _silent: true },
+        );
         if (!cancelled && taskRes?.data) setLiveTask(taskRes.data);
 
         const healthRes = await apiFetch(`/api/supervisor/task/${task.id}`, { _silent: true });
@@ -2428,7 +2580,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
 }
 
 /* ─── TaskDetailModal ─── */
-export function TaskDetailModal({ task, onClose, onStart, presentation = "modal", taskCatalog = [], epicCatalog = [] }) {
+export function TaskDetailModal({ task, onClose, onStart, presentation = "modal", taskCatalog = [], epicCatalog = [], isHydrating = false }) {
   const [title, setTitle] = useState(sanitizeTaskText(task?.title || ""));
   const [description, setDescription] = useState(buildTaskDescriptionFallback(task?.title, task?.description));
   const [baseBranch, setBaseBranch] = useState(getTaskBaseBranch(task));
@@ -2527,7 +2679,18 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.workflowHistory,
     task?.workflows,
   ]);
-
+  const HISTORY_ROW_HEIGHT = 46;
+  const HISTORY_SCROLL_BUFFER = 16;
+  const historyFirstVisible = Math.floor(historyScrollTop / HISTORY_ROW_HEIGHT);
+  const historyStartIdx = Math.max(0, historyFirstVisible - HISTORY_SCROLL_BUFFER);
+  const historyVisibleCount = Math.ceil(historyViewportHeight / HISTORY_ROW_HEIGHT);
+  const historyEndIdx = Math.min(
+    historyEntries.length,
+    historyFirstVisible + historyVisibleCount + HISTORY_SCROLL_BUFFER,
+  );
+  const historyTopSpacer = historyStartIdx * HISTORY_ROW_HEIGHT;
+  const historyBottomSpacer = Math.max(0, (historyEntries.length - historyEndIdx) * HISTORY_ROW_HEIGHT);
+  const visibleHistoryEntries = historyEntries.slice(historyStartIdx, historyEndIdx);
   // ── Execution Plan state ──────────────────────────────────────────────────
   const [executionPlan, setExecutionPlan] = useState(null);
   const [executionPlanLoading, setExecutionPlanLoading] = useState(false);
@@ -2537,6 +2700,9 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   const [dryRunResults, setDryRunResults] = useState(null);
   const [fullScreen, setFullScreen] = useState(false);
   const [activeTab, setActiveTab] = useState("details");
+  const historyTableRef = useRef(null);
+  const [historyScrollTop, setHistoryScrollTop] = useState(0);
+  const [historyViewportHeight, setHistoryViewportHeight] = useState(320);
 
   const fetchExecutionPlan = useCallback((mode = "resolve") => {
     if (!task?.id) return;
@@ -2555,7 +2721,34 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       .finally(() => { setExecutionPlanLoading(false); setDryRunLoading(false); });
   }, [task?.id]);
 
-  useEffect(() => { fetchExecutionPlan("resolve"); }, [task?.id]);
+  useEffect(() => {
+    if (activeTab !== "execution") return;
+    fetchExecutionPlan("resolve");
+  }, [activeTab, fetchExecutionPlan]);
+
+  useEffect(() => {
+    if (activeTab !== "history") return;
+    const el = historyTableRef.current;
+    if (!el) return;
+    setHistoryViewportHeight(el.clientHeight || 320);
+    const onScroll = (event) => {
+      setHistoryScrollTop(event.target.scrollTop || 0);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    let resizeObserver = null;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          setHistoryViewportHeight(entry.contentRect.height || 320);
+        }
+      });
+      resizeObserver.observe(el);
+    }
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      if (resizeObserver) resizeObserver.disconnect();
+    };
+  }, [activeTab]);
 
   const handleOpenWorkflowRun = useCallback(async (run) => {
     try {
@@ -2625,16 +2818,31 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.id,
     task?.branch,
     task?.branchName,
+    task?.pr,
     task?.prNumber,
     task?.prUrl,
     task?.meta,
   ]);
+  const handleOpenReviewDiff = useCallback(() => {
+    setActiveTab("diff");
+  }, []);
   const taskAgents = useMemo(() => buildTaskAgentList(task), [
     task?.id,
     task?.assignee,
     task?.assignees,
     task?.meta,
   ]);
+  const taskDiagnostics = task?.diagnostics || task?.meta?.diagnostics || null;
+  const stableCause = taskDiagnostics?.stableCause || null;
+  const apiRecovery = taskDiagnostics?.supervisor?.apiErrorRecovery || null;
+  const hasDiagnostics = Boolean(
+    stableCause ||
+    taskDiagnostics?.lastError ||
+    taskDiagnostics?.errorPattern ||
+    taskDiagnostics?.blockedReason ||
+    taskDiagnostics?.cooldownUntil ||
+    apiRecovery,
+  );
   const canStartInfo = task?.canStart || task?.meta?.canStart || null;
   const blockedContext = task?.blockedContext || task?.meta?.blockedContext || null;
   const blockedBy = Array.isArray(blockedContext?.blockedBy)
@@ -2650,6 +2858,25 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       ? blockedContext.logEvidence.map((entry) => ({ ...entry, kind: "log" }))
       : []),
   ].slice(0, 6);
+  const lifetimeTotals = task?.lifetimeTotals
+    || task?.meta?.lifetimeTotals
+    || task?.runtimeSnapshot?.lifetimeTotals
+    || null;
+  const lifetimeAttempts = Number(lifetimeTotals?.attemptsCount || 0);
+  const lifetimeTokenCount = Number(lifetimeTotals?.tokenCount || 0);
+  const lifetimeDurationMs = Number(lifetimeTotals?.durationMs || 0);
+  const formatLifetimeDuration = (durationMs) => {
+    const value = Number(durationMs || 0);
+    if (!Number.isFinite(value) || value <= 0) return "0s";
+    const seconds = Math.floor(value / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remSeconds = seconds % 60;
+    if (minutes < 60) return remSeconds ? `${minutes}m ${remSeconds}s` : `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const remMinutes = minutes % 60;
+    return remMinutes ? `${hours}h ${remMinutes}m` : `${hours}h`;
+  };
 
   const currentDependencyIds = useMemo(() => normalizeDependencyInput(dependenciesInput), [dependenciesInput]);
   const taskCatalogOptions = useMemo(() => (taskCatalog || []).filter((entry) => toText(entry?.id) && toText(entry?.id) !== toText(task?.id)), [taskCatalog, task?.id]);
@@ -3226,7 +3453,6 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   };
 
   const handleUnblock = async () => {
-    if (!task?.id) return;
     haptic("medium");
     try {
       await apiFetch("/api/tasks/unblock", {
@@ -3236,8 +3462,8 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       showToast("Task moved back to todo", "success");
       onClose();
       scheduleRefresh(150);
-        } catch {
-      showToast("Failed to move task back to todo", "error");
+    } catch {
+      /* toast */
     }
   };
 
@@ -3329,6 +3555,12 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       <div class="task-detail-title-area" style="display:flex;gap:12px;align-items:flex-start;">
         <div style="flex:1;min-width:0;">
           <input class="task-detail-title-input" value=${title} onInput=${(e) => setTitle(e.target.value)} placeholder="Task title" />
+          ${isHydrating && html`
+            <div class="meta-text" style=${{ marginTop: "6px", display: "flex", alignItems: "center", gap: "6px" }}>
+              <${CircularProgress} size=${12} thickness=${5} />
+              <span>Refreshing task details…</span>
+            </div>
+          `}
         </div>
         <div style="display:flex;gap:6px;align-items:center;padding-top:6px;flex-shrink:0;">
           <button class="task-status-btn" data-status=${status}>
@@ -3342,7 +3574,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
           <button class="task-action-icon-btn"
             onClick=${() => setFullScreen(!fullScreen)}
             title=${fullScreen ? "Exit fullscreen" : "Fullscreen"}>
-            ${fullScreen ? "⊟" : "⊞"}
+            ${fullScreen ? resolveIcon("minimize") || "⊟" : resolveIcon("maximize") || "⊞"}
           </button>
         </div>
       </div>
@@ -3350,15 +3582,18 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       ${/* ── Tab Bar (Jira style) ── */ ""}
       <div class="task-tab-bar">
         <button class="task-tab-btn" data-active=${activeTab === "details"} onClick=${() => setActiveTab("details")}>
-          ${"✎"} Details
+          ${resolveIcon("edit") || "✎"} Details
         </button>
         <button class="task-tab-btn" data-active=${activeTab === "execution"} onClick=${() => setActiveTab("execution")}>
-          ${"▶️"} Execution Plan
+          ${resolveIcon("play")} Execution Plan
           ${executionPlan?.stageCount > 0 && html`<span class="task-tab-count">${executionPlan.stageCount}</span>`}
         </button>
         <button class="task-tab-btn" data-active=${activeTab === "history"} onClick=${() => setActiveTab("history")}>
-          ${"⏱"} History
+          ${resolveIcon("clock") || "⏱"} History
           ${historyEntries.length > 0 && html`<span class="task-tab-count">${historyEntries.length}</span>`}
+        </button>
+        <button class="task-tab-btn" data-active=${activeTab === "diff"} onClick=${() => setActiveTab("diff")}>
+          ${resolveIcon("edit") || "✎"} Diff
         </button>
       </div>
 
@@ -3374,7 +3609,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         ${(task?.status === "blocked" || canStartInfo?.canStart === false) && html`
           <div class="task-section">
             <div class="task-section-title">
-              ${task?.status === "blocked" ? "Blocked Diagnostics" : "Start Readiness"}
+              ${task?.status === "blocked" ? "Why Bosun Is Holding This Task" : "Why This Task Cannot Start Yet"}
               ${blockedContext?.workflowRunCount > 0 && html`<span class="task-tab-count">${blockedContext.workflowRunCount}</span>`}
             </div>
             <div class="task-section-body">
@@ -3383,10 +3618,13 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                   ${blockedContext?.headline || "This task cannot start yet."}
                 </div>
                 <div class="task-blocked-banner-copy">
-                  ${blockedContext?.summary || blockedContext?.reason || "Bosun is holding this task until the blocking condition is resolved."}
+                  ${blockedContext?.summary || blockedContext?.reason || "Bosun paused this task because a dependency, workflow guard, or recovery issue is still unresolved."}
                 </div>
                 ${blockedContext?.recommendation && html`
                   <div class="task-blocked-banner-copy">${blockedContext.recommendation}</div>
+                `}
+                ${blockedContext?.reason && blockedContext.reason !== blockedContext.summary && html`
+                  <div class="task-blocked-banner-copy">Recorded reason: ${blockedContext.reason}</div>
                 `}
               </div>
 
@@ -3445,6 +3683,58 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
           </div>
         `}
 
+        ${hasDiagnostics && html`
+          <div class="task-section">
+            <div class="task-section-title">Diagnostics</div>
+            <div class="task-section-body">
+              ${stableCause && html`
+                <div class="task-blocked-banner" data-category=${stableCause.severity || "diagnostic"}>
+                  <div class="task-blocked-banner-title">${stableCause.title || "Task diagnostics available"}</div>
+                  <div class="task-blocked-banner-copy">${stableCause.summary || "Bosun recorded a stable failure cause for this task."}</div>
+                  ${stableCause.code && html`
+                    <div class="task-blocked-banner-copy">Stable cause: ${stableCause.code}</div>
+                  `}
+                </div>
+              `}
+
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:12px;">
+                ${taskDiagnostics?.errorPattern && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Error pattern</div>
+                    <div class="task-comment-body">${taskDiagnostics.errorPattern}</div>
+                  </div>
+                `}
+                ${taskDiagnostics?.cooldownUntil && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Cooldown until</div>
+                    <div class="task-comment-body">${formatRelative(taskDiagnostics.cooldownUntil)}</div>
+                  </div>
+                `}
+                ${apiRecovery && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Continue attempts</div>
+                    <div class="task-comment-body">${Number(apiRecovery.continueAttempts || 0).toLocaleString("en-US")}</div>
+                  </div>
+                `}
+                ${taskDiagnostics?.blockedReason && html`
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Blocked reason</div>
+                    <div class="task-comment-body">${taskDiagnostics.blockedReason}</div>
+                  </div>
+                `}
+              </div>
+
+              ${taskDiagnostics?.lastError && html`
+                <div class="task-comments-list" style=${{ marginTop: "12px" }}>
+                  <div class="task-comment-item">
+                    <div class="task-comment-meta">Last backend error</div>
+                    <div class="task-comment-body">${taskDiagnostics.lastError}</div>
+                  </div>
+                </div>
+              `}
+            </div>
+          </div>
+        `}
         ${/* Description */ ""}
         <div class="task-section">
           <div class="task-section-title">Description</div>
@@ -3484,7 +3774,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                   }}
                 >
                   ${rewriting
-                    ? html`<span style="display:inline-block;animation:spin 0.8s linear infinite">${"⏱"}</span> Improving…`
+                    ? html`<span style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon(":clock:")}</span> Improving…`
                     : html`${iconText(":star: Improve with AI")}`
                   }
                 <//>
@@ -3534,7 +3824,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                     <div class="task-attachment-item" key=${att.id || `${name}-${index}`}>
                       ${isImage && url
                         ? html`<img class="task-attachment-thumb" src=${url} alt=${name} />`
-                        : html`<span class="task-attachment-icon">${"🔗"}</span>`}
+                        : html`<span class="task-attachment-icon">${resolveIcon(":link:")}</span>`}
                       <div class="task-attachment-meta">
                         ${url
                           ? html`<a class="task-attachment-name" href=${url} target="_blank" rel="noopener">${name}</a>`
@@ -3648,14 +3938,18 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         <div class="task-section">
           <div class="task-section-title">Tracking Overview</div>
           <div class="task-section-body">
-            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;">
               <div class="task-comment-item">
                 <div class="task-comment-meta">Assigned Agents</div>
                 <div class="task-comment-body">${taskAgents.length ? taskAgents.join(" · ") : "No agent assignment recorded."}</div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>${taskAgents.length} linked</div>
               </div>
               <div class="task-comment-item">
                 <div class="task-comment-meta">Workflow Runs</div>
                 <div class="task-comment-body">${workflowRuns.length ? `${workflowRuns.length} linked runs` : "No workflow runs linked yet."}</div>
+                <div class="task-comment-meta" style=${{ marginTop: "4px" }}>
+                  ${workflowRuns.filter((run) => String(run?.status || "").toLowerCase() === "failed").length} failed
+                </div>
               </div>
               <div class="task-comment-item">
                 <div class="task-comment-meta">Timeline Events</div>
@@ -3663,7 +3957,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
               </div>
               <div class="task-comment-item">
                 <div class="task-comment-meta">Branch / PR</div>
-                <div class="task-comment-body">${relatedLinks.length ? relatedLinks.map((item) => `${item.kind}: ${item.value}`).join(" · ") : "No branch or PR links recorded."}</div>
+                <div class="task-comment-body">${renderTaskRelatedLinks(relatedLinks, { onReviewDiff: handleOpenReviewDiff })}</div>
               </div>
             </div>
           </div>
@@ -3781,6 +4075,18 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                 inputProps=${{ min: 1, step: 1 }}
                 style=${{ width: "60px" }}
               />
+            </div>
+            <div class="task-comment-item">
+              <div class="task-comment-meta">Attempts count</div>
+              <div class="task-comment-body">${lifetimeAttempts.toLocaleString("en-US")}</div>
+            </div>
+            <div class="task-comment-item">
+              <div class="task-comment-meta">Total tokens across all attempts</div>
+              <div class="task-comment-body">${lifetimeTokenCount.toLocaleString("en-US")}</div>
+            </div>
+            <div class="task-comment-item">
+              <div class="task-comment-meta">Total runtime across all attempts</div>
+              <div class="task-comment-body">${formatLifetimeDuration(lifetimeDurationMs)}</div>
             </div>
           </div>
         </div>
@@ -4074,13 +4380,13 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
 
       </div>`}
 
-      ${/* ── EXECUTION TAB ─────────────────────────────────────────────── */ ""}
+      ${/* ── EXECUTION TAB ───────────────────────────────────────────── */ ""}
       ${activeTab === "execution" && html`<div style="display:contents;">
 
-      ${/* ── Execution Plan Visualization (Premium) ─────────────────────── */ ""}
+      ${/* ── Execution Plan Visualization (Premium) ─────────────────── */ ""}
       <div class="exec-plan-stage" style="margin:0 0 14px;">
         <div class="exec-plan-stage-header" style="background:transparent;border-bottom:none;padding:12px 16px;">
-          <span style="font-weight:700;font-size:0.9em;flex:1;">▶️ Execution Plan</span>
+          <span style="font-weight:700;font-size:0.9em;flex:1;">${resolveIcon("play")} Execution Plan</span>
           ${executionPlanLoading && html`<span style="font-size:0.8em;opacity:0.6;">Loading…</span>`}
           ${executionPlan && html`<span style="font-size:0.8em;opacity:0.6;">${executionPlan.stageCount || 0} workflows · ${executionPlan.agentRunTotal || 0} agent runs</span>`}
           ${executionPlan?.validationIssues?.length > 0 && html`
@@ -4094,21 +4400,21 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
           <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center;">
             <button style="padding:6px 14px;border-radius:6px;border:1px solid var(--border-color,#444);background:var(--color-bg-secondary,#1a1f2e);color:var(--color-text,#e0e0e0);font-size:0.8em;cursor:pointer;"
               onClick=${() => fetchExecutionPlan("resolve")} disabled=${executionPlanLoading}>
-              🔄 Refresh Plan
+              ${resolveIcon("refresh")} Refresh Plan
             </button>
             <button style="padding:6px 14px;border-radius:6px;border:1px solid #3b82f660;background:#3b82f620;color:#60a5fa;font-size:0.8em;cursor:pointer;font-weight:600;"
               onClick=${() => fetchExecutionPlan("dry-run")} disabled=${dryRunLoading || executionPlanLoading}>
-              ${dryRunLoading ? "Simulating…" : "▶️ Dry Run Simulation"}
+              ${dryRunLoading ? "Simulating…" : `${resolveIcon("play")} Dry Run Simulation`}
             </button>
             ${executionPlan?.mode === "dry-run" && html`
-              <span style="font-size:0.8em;color:#10b981;font-weight:600;">✓ Dry-run complete</span>
+              <span style="font-size:0.8em;color:#10b981;font-weight:600;">${resolveIcon("check") || "✓"} Dry-run complete</span>
             `}
           </div>
 
             ${/* ── Validation Issues ── */ ""}
             ${executionPlan?.validationIssues?.length > 0 && html`
               <div style="margin-bottom:10px;border:1px solid #ef444440;border-radius:6px;padding:8px;background:#ef444410;">
-                <div style="font-weight:600;font-size:0.8em;color:#f87171;margin-bottom:4px;">⚠️ Validation Issues</div>
+                <div style="font-weight:600;font-size:0.8em;color:#f87171;margin-bottom:4px;">${resolveIcon("warning")} Validation Issues</div>
                 ${executionPlan.validationIssues.map((issue, ii) => html`
                   <div key=${`vi-${ii}`} style="font-size:0.75em;padding:2px 0;display:flex;gap:4px;align-items:start;">
                     <span style="color:${issue.level === 'error' ? '#f87171' : '#fbbf24'};flex-shrink:0;">${issue.level === "error" ? "✗" : "⚠"}</span>
@@ -4182,7 +4488,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                                 ${/* Agent badges */ ""}
                                 ${nd.isAgentRun && nd.resolvedAgent ? html`
                                   <span class="exec-plan-skill-tag" style="background:${nodeColor}15;color:${nodeColor};border-color:${nodeColor}30;">
-                                    🤖 ${nd.resolvedAgent} ${nd.confidence ? `(${Math.round(nd.confidence * 100)}%)` : ""}
+                                    ${resolveIcon("bot")} ${nd.resolvedAgent} ${nd.confidence ? `(${Math.round(nd.confidence * 100)}%)` : ""}
                                   </span>
                                 ` : ""}
                                 ${nd.isAgentRun && !nd.resolvedAgent && nd.resolveMode === "library" ? html`
@@ -4312,7 +4618,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                                   ${/* ── Agent: Context Preview ── */ ""}
                                   ${nd.isAgentRun && nd.contextPreview ? html`
                                     <div style="margin-top:8px;padding:6px 8px;background:#1a1a2e;border-radius:6px;border:1px solid #333;">
-                                      <div style="font-size:0.85em;opacity:0.6;margin-bottom:4px;font-weight:600;">🔗 Context Injected:</div>
+                                      <div style="font-size:0.85em;opacity:0.6;margin-bottom:4px;font-weight:600;">${resolveIcon("link") || "🔗"} Context Injected:</div>
                                       <div style="display:flex;flex-wrap:wrap;gap:4px;">
                                         ${nd.contextPreview.hasTaskPrompt ? html`<span class="exec-plan-context-chip">Task Prompt (built by build_task_prompt)</span>` : ""}
                                         ${nd.contextPreview.hasPreviousOutput ? html`<span class="exec-plan-context-chip" style="background:#8b5cf615;color:#a78bfa;border-color:#8b5cf630;">Previous Agent Output</span>` : ""}
@@ -4330,7 +4636,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                                   ${/* ── Agent: resolved skills with descriptions ── */ ""}
                                   ${nd.isAgentRun && nd.resolvedSkills?.length > 0 ? html`
                                     <div style="margin-top:8px;padding:8px;background:var(--bg-surface,#0d1117);border-radius:6px;border:1px solid var(--border-color,#333);">
-                                      <div style="font-size:0.85em;opacity:0.6;margin-bottom:6px;font-weight:600;">⭐ Resolved Skills (${nd.resolvedSkills.length}):</div>
+                                      <div style="font-size:0.85em;opacity:0.6;margin-bottom:6px;font-weight:600;">${resolveIcon("star")} Resolved Skills (${nd.resolvedSkills.length}):</div>
                                       ${nd.resolvedSkills.map((sk) => html`
                                         <div style="display:flex;gap:8px;padding:4px 0;align-items:start;border-bottom:1px solid var(--border-color,#222);">
                                           <span class="exec-plan-skill-tag">${sk.name} ${sk.score ? `${Math.round(sk.score * 100)}%` : ""}</span>
@@ -4344,7 +4650,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                                   ${/* ── Agent: resolved tools ── */ ""}
                                   ${nd.isAgentRun && nd.resolvedTools && (nd.resolvedTools.builtin?.length > 0 || nd.resolvedTools.mcp?.length > 0) ? html`
                                     <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
-                                      <span style="opacity:0.6;font-size:0.85em;">🔧 Tools:</span>
+                                      <span style="opacity:0.6;font-size:0.85em;">${resolveIcon("tool")} Tools:</span>
                                       ${[...(nd.resolvedTools.builtin || []), ...(nd.resolvedTools.mcp || [])].map((t) => html`
                                         <span style="padding:1px 6px;border-radius:4px;font-size:0.75em;background:#22c55e10;color:#4ade80;border:1px solid #22c55e25;">${t}</span>
                                       `)}
@@ -4400,7 +4706,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             ${/* ── Dry-run results summary ── */ ""}
             ${dryRunResults && html`
               <div style="margin-top:10px;border:1px solid #10b98140;border-radius:8px;padding:10px;background:#10b98110;">
-                <div style="font-weight:600;font-size:0.85em;color:#10b981;margin-bottom:6px;">✓ Dry-Run Simulation Results</div>
+                <div style="font-weight:600;font-size:0.85em;color:#10b981;margin-bottom:6px;">${resolveIcon("check")} Dry-Run Simulation Results</div>
                 ${dryRunResults.map((dr) => html`
                   <div style="font-size:0.8em;padding:3px 0;display:flex;gap:8px;align-items:center;">
                     <span style="font-weight:500;">${dr.workflowName}</span>
@@ -4418,23 +4724,59 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
 
       </div>`}
 
-      ${/* ── HISTORY TAB ─────────────────────────────────────────────────── */ ""}
+      ${/* ── HISTORY TAB ─────────────────────────────────────────────── */ ""}
+      ${activeTab === "diff" && html`
+        <div class="task-comments-block modal-form-span jira-panel">
+          <div class="task-attachments-title">Review Diff</div>
+          <div style=${{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            <div class="task-comment-meta">
+              Compare the task branch or linked session against its recorded base so completed PRs stay reviewable from the task itself.
+            </div>
+            <${DiffViewer} taskId=${task?.id || ""} title=${task?.title || "Task Diff"} />
+          </div>
+        </div>
+      `}
+
       ${activeTab === "history" && html`<div style="display:contents;">
 
       ${historyEntries.length > 0 ? html`
         <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">History Timeline</div>
-          <div class="task-comments-list">
-            ${historyEntries.map((entry, index) => html`
-              <div class="task-comment-item" key=${`history-${index}`}>
-                <div class="task-comment-meta">
-                  ${entry.timestamp ? formatRelative(entry.timestamp) : "Time unknown"}
-                  ${entry.source ? ` · ${entry.source}` : ""}
-                </div>
-                <div class="task-comment-body">${entry.label}</div>
-              </div>
-            `)}
-          </div>
+          <${TableContainer} ref=${historyTableRef} component=${Paper} variant="outlined" sx=${{ maxHeight: 360, overflow: "auto" }}>
+            <${Table} size="small" stickyHeader>
+              <${TableHead}>
+                <${TableRow}>
+                  <${TableCell}>When<//>
+                  <${TableCell}>Source<//>
+                  <${TableCell}>Event<//>
+                </${TableRow}>
+              <//>
+              <${TableBody}>
+                ${historyTopSpacer > 0
+                  ? html`<${TableRow}><${TableCell} colSpan=${3} sx=${{ p: 0, border: 0, height: `${historyTopSpacer}px` }} /><//>`
+                  : null}
+                ${visibleHistoryEntries.map((entry, index) => html`
+                  <${TableRow} key=${`history-${historyStartIdx + index}`} hover>
+                    <${TableCell} sx=${{ whiteSpace: "nowrap" }}>
+                      ${entry.timestamp ? formatRelative(entry.timestamp) : "Time unknown"}
+                    <//>
+                    <${TableCell}>
+                      <${Chip}
+                        size="small"
+                        variant="outlined"
+                        color="default"
+                        label=${entry.source || "system"}
+                      />
+                    <//>
+                    <${TableCell}>${entry.label}<//>
+                  </${TableRow}>
+                `)}
+                ${historyBottomSpacer > 0
+                  ? html`<${TableRow}><${TableCell} colSpan=${3} sx=${{ p: 0, border: 0, height: `${historyBottomSpacer}px` }} /><//>`
+                  : null}
+              <//>
+            </${Table}>
+          <//>
         </div>
       ` : ""}
 
@@ -4446,9 +4788,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
               <div class="task-comment-item" key=${`link-${index}`}>
                 <div class="task-comment-meta">${item.kind}</div>
                 <div class="task-comment-body">
-                  ${item.url
-                    ? html`<a href=${item.url} target="_blank" rel="noopener">${item.value}</a>`
-                    : item.value}
+                  ${renderTaskRelatedLinks([item])}
                 </div>
               </div>
             `)}
@@ -4460,9 +4800,60 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       ${workflowRuns.length > 0 && html`
         <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">Workflow Activity</div>
-          <div class="task-comments-list">
-            ${workflowRuns.map((run, index) => renderWorkflowActivityCard(run, `wf-hist-${index}`))}
-          </div>
+          <${TableContainer} component=${Paper} variant="outlined">
+            <${Table} size="small" stickyHeader>
+              <${TableHead}>
+                <${TableRow}>
+                  <${TableCell}>Workflow<//>
+                  <${TableCell}>Run<//>
+                  <${TableCell}>Status<//>
+                  <${TableCell}>Timing<//>
+                  <${TableCell} align="right">Actions<//>
+                </${TableRow}>
+              <//>
+              <${TableBody}>
+                ${workflowRuns.map((run, index) => html`
+                  <${TableRow} key=${`wf-hist-${index}`} hover>
+                    <${TableCell}>
+                      <${Typography} variant="body2">${run.workflowName || run.workflowId || "workflow"}<//>
+                      ${run.nodeId ? html`<${Typography} variant="caption" color="text.secondary">Node: ${run.nodeId}<//>` : null}
+                    <//>
+                    <${TableCell}>
+                      <${Typography} variant="caption" sx=${{ fontFamily: "monospace" }}>
+                        ${run.runId || run.id || "-"}
+                      <//>
+                    <//>
+                    <${TableCell}>
+                      <${Chip}
+                        size="small"
+                        color=${statusChipColor(run.status || run.outcome || "default")}
+                        label=${run.status || run.outcome || "unknown"}
+                      />
+                    <//>
+                    <${TableCell}>
+                      <${Typography} variant="caption">
+                        ${run.startedAt ? formatRelative(run.startedAt) : (run.timestamp ? formatRelative(run.timestamp) : "Unknown")}
+                      <//>
+                    <//>
+                    <${TableCell} align="right">
+                      <${Stack} direction="row" spacing=${0.5} justifyContent="flex-end">
+                        ${run.hasRunLink ? html`
+                          <${Button} variant="outlined" size="small" onClick=${() => { void handleOpenWorkflowRun(run); }}>
+                            Open Run
+                          <//>
+                        ` : null}
+                        ${run.hasSessionLink ? html`
+                          <${Button} variant="text" size="small" onClick=${() => { void handleOpenWorkflowAgentHistory(run); }}>
+                            Agent
+                          <//>
+                        ` : null}
+                      <//>
+                    <//>
+                  </${TableRow}>
+                `)}
+              <//>
+            </${Table}>
+          <//>
         </div>
       `}
 
@@ -4471,7 +4862,6 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       ` : ""}
 
       </div>`}
-
 
       </div>
     <//>
@@ -4968,10 +5358,14 @@ function DagGraphSection({
                 <g
                   key=${node.id}
                   class=${`dag-node ${selected ? "dag-node-selected" : ""} ${hoverTarget ? "dag-node-hover-target" : ""} ${highlighted ? "dag-node-highlighted" : ""}`}
-                  onPointerDown=${(event) => {
-                    event.stopPropagation();
-                    if (isWireMode) handleWireNodePointerDown(node, event);
-                  }}
+                  onPointerDown=${(event) => event.stopPropagation()}
+                                    onPointerDown=${(event) => {
+                                      if (isWireMode) {
+                                        handleWireNodePointerDown(node, event);
+                                        return;
+                                      }
+                                      event.stopPropagation();
+                                    }}
                   onPointerEnter=${() => {
                     if (!wireDrag || String(node.id) === String(wireDrag.sourceId)) return;
                     wireHoverIdRef.current = String(node.id);
@@ -4982,6 +5376,7 @@ function DagGraphSection({
                     wireHoverIdRef.current = "";
                     setWireHoverId("");
                   }}
+                  onClick=${(event) => handleNodeClick(node, event)}
                   onClick=${isWireMode ? undefined : (event) => handleNodeClick(node, event)}
                   style=${{ cursor: isWireMode ? "crosshair" : node.taskId ? "pointer" : "default" }}
                 >
@@ -5031,7 +5426,9 @@ function DagGraphSection({
 export function TasksTab() {
   const [showCreate, setShowCreate] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
+  const importInputRef = useRef(null);
   const [detailTask, setDetailTask] = useState(null);
+  const [detailTaskHydrating, setDetailTaskHydrating] = useState(false);
   const [startTarget, setStartTarget] = useState(null);
   const [startAnyOpen, setStartAnyOpen] = useState(false);
   const [batchMode, setBatchMode] = useState(false);
@@ -5039,12 +5436,15 @@ export function TasksTab() {
   const [isSearching, setIsSearching] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [kanbanLoadingMore, setKanbanLoadingMore] = useState(false);
   const [listSortCol, setListSortCol] = useState("");   // active column sort in list mode
   const [listSortDir, setListSortDir] = useState("desc"); // "asc" | "desc"
   const [dagLoading, setDagLoading] = useState(false);
   const [dagError, setDagError] = useState("");
+  const [dagOrganizeFeedback, setDagOrganizeFeedback] = useState("");
+  const [dagOrganizeSuggestions, setDagOrganizeSuggestions] = useState([]);
   const [dagSprints, setDagSprints] = useState([]);
   const [dagSelectedSprint, setDagSelectedSprint] = useState("all");
   const [dagSprintGraph, setDagSprintGraph] = useState(EMPTY_DAG_GRAPH);
@@ -5055,9 +5455,8 @@ export function TasksTab() {
   const [dagAllTasks, setDagAllTasks] = useState([]);
   const [dagEpicDependencies, setDagEpicDependencies] = useState([]);
   const [dagFocusMode, setDagFocusMode] = useState("all");
-  const [dagOrganizeFeedback, setDagOrganizeFeedback] = useState("");
-  const [dagOrganizeSuggestions, setDagOrganizeSuggestions] = useState([]);
   const [showCreateSprint, setShowCreateSprint] = useState(false);
+  const detailRequestIdRef = useRef(0);
   const [editingSprint, setEditingSprint] = useState(null);
   const [createSeed, setCreateSeed] = useState(null);
   const [dagInteractionMode, setDagInteractionMode] = useState("open");
@@ -5183,7 +5582,7 @@ export function TasksTab() {
     setKanbanLoadingMore(true);
     if (tasksPage) tasksPage.value = page + 1;
     try {
-      await loadTasks({ append: true });
+      await loadTasks({ append: true, pageSize: KANBAN_PAGE_SIZE });
     } finally {
       setKanbanLoadingMore(false);
     }
@@ -5579,6 +5978,11 @@ export function TasksTab() {
     await refreshTab("tasks");
   }, [triggerServerSearch]);
 
+  const handleToggleFilters = useCallback(() => {
+    haptic();
+    setFiltersOpen((open) => !open);
+  }, []);
+
   const handleRefreshDag = useCallback(async () => {
     haptic("medium");
     setDagLoading(true);
@@ -5592,6 +5996,49 @@ export function TasksTab() {
       setDagLoading(false);
     }
   }, [loadDagViews]);
+
+  const handleAutoOrganizeDag = useCallback(async () => {
+    haptic("medium");
+    setDagLoading(true);
+    setDagError("");
+    try {
+      const result = await apiFetch("/api/tasks/dag/organize", {
+        method: "POST",
+        body: JSON.stringify(dagSelectedSprint && dagSelectedSprint !== "all"
+          ? { sprintId: dagSelectedSprint, applyDependencySuggestions: true, syncEpicDependencies: true }
+          : { applyDependencySuggestions: true, syncEpicDependencies: true }),
+      });
+      const suggestions = Array.isArray(result?.suggestions) ? result.suggestions : [];
+      const appliedDependencySuggestionCount = Number(result?.data?.appliedDependencySuggestionCount || 0);
+      const syncedEpicDependencyCount = Number(result?.data?.syncedEpicDependencyCount || 0);
+      const updatedTaskCount = Number(result?.data?.updatedTaskCount || 0);
+      const updatedSprintCount = Number(result?.data?.updatedSprintCount || 0);
+      setDagOrganizeSuggestions(suggestions);
+      setDagOrganizeFeedback(
+        [
+          `Auto-wired ${dagSelectedSprintLabel}.`,
+          updatedSprintCount > 0 ? `${updatedSprintCount} sprint order update${updatedSprintCount === 1 ? "" : "s"}.` : "",
+          updatedTaskCount > 0 ? `${updatedTaskCount} task order update${updatedTaskCount === 1 ? "" : "s"}.` : "",
+          appliedDependencySuggestionCount > 0 ? `${appliedDependencySuggestionCount} dependency edge${appliedDependencySuggestionCount === 1 ? "" : "s"} added.` : "",
+          syncedEpicDependencyCount > 0 ? `${syncedEpicDependencyCount} epic dependency set${syncedEpicDependencyCount === 1 ? "" : "s"} synced.` : "",
+          suggestions.length > 0 ? `${suggestions.length} cleanup suggestion${suggestions.length === 1 ? "" : "s"} still need review.` : "No follow-up cleanup suggestions.",
+        ].filter(Boolean).join(" "),
+      );
+      showToast(
+        appliedDependencySuggestionCount > 0 || syncedEpicDependencyCount > 0
+          ? `Auto-wired DAG · ${appliedDependencySuggestionCount + syncedEpicDependencyCount} dependency update${appliedDependencySuggestionCount + syncedEpicDependencyCount === 1 ? "" : "s"}`
+          : suggestions.length > 0
+            ? `DAG organized · ${suggestions.length} suggestions`
+            : "DAG organized",
+        "success",
+      );
+      await loadDagViews();
+    } catch (error) {
+      setDagError(error?.message || "Failed to organize DAG.");
+    } finally {
+      setDagLoading(false);
+    }
+  }, [dagSelectedSprint, dagSelectedSprintLabel, loadDagViews]);
 
   const handleCreateSprint = useCallback(() => {
     haptic("medium");
@@ -5683,6 +6130,43 @@ export function TasksTab() {
     }
   }, [dagSprintQueue, dagTaskCatalog, loadDagViews, persistSprintTaskOrder]);
 
+  const handleCreateDagEdge = useCallback(async ({ sourceNode, targetNode, graphKind }) => {
+    const srcTaskId = toText(sourceNode?.taskId || sourceNode?.id);
+    const dstTaskId = toText(targetNode?.taskId || targetNode?.id);
+
+    if (graphKind === "epic") {
+      const srcEpic = toText(sourceNode?.epicId || sourceNode?.id);
+      const dstEpic = toText(targetNode?.epicId || targetNode?.id);
+      if (!srcEpic || !dstEpic || srcEpic === dstEpic) return;
+      const existing = normalizeDependencyInput(targetNode?.dependencies || []);
+      const dependencies = normalizeDependencyInput([...existing, srcEpic]);
+      await apiFetch("/api/tasks/epic-dependencies", {
+        method: "PUT",
+        body: JSON.stringify({ epicId: dstEpic, dependencies }),
+      });
+      showToast(`Wired epic dependency: ${srcEpic} -> ${dstEpic}`, "success");
+      await loadDagViews();
+      return;
+    }
+
+    if (!srcTaskId || !dstTaskId || srcTaskId === dstTaskId) return;
+    const existing = normalizeDependencyInput(
+      targetNode?.dependencies ||
+      targetNode?.dependencyTaskIds ||
+      [],
+    );
+    const dependencies = normalizeDependencyInput([...existing, srcTaskId]);
+    await apiFetch("/api/tasks/dependencies", {
+      method: "PUT",
+      body: JSON.stringify({
+        taskId: dstTaskId,
+        dependencies,
+      }),
+    });
+    showToast(`Wired dependency: ${srcTaskId} -> ${dstTaskId}`, "success");
+    await loadDagViews();
+  }, [loadDagViews]);
+
   const handleApplyDagSuggestion = useCallback(async (entry) => {
     const suggestionType = toText(entry?.type);
     if (suggestionType !== "missing_sequential_dependency") return;
@@ -5731,43 +6215,6 @@ export function TasksTab() {
     }
   }, [dagTaskCatalog, loadDagViews]);
 
-  const handleCreateDagEdge = useCallback(async ({ sourceNode, targetNode, graphKind }) => {
-    const srcTaskId = toText(sourceNode?.taskId || sourceNode?.id);
-    const dstTaskId = toText(targetNode?.taskId || targetNode?.id);
-
-    if (graphKind === "epic") {
-      const srcEpic = toText(sourceNode?.epicId || sourceNode?.id);
-      const dstEpic = toText(targetNode?.epicId || targetNode?.id);
-      if (!srcEpic || !dstEpic || srcEpic === dstEpic) return;
-      const existing = normalizeDependencyInput(targetNode?.dependencies || []);
-      const dependencies = normalizeDependencyInput([...existing, srcEpic]);
-      await apiFetch("/api/tasks/epic-dependencies", {
-        method: "PUT",
-        body: JSON.stringify({ epicId: dstEpic, dependencies }),
-      });
-      showToast(`Wired epic dependency: ${srcEpic} -> ${dstEpic}`, "success");
-      await loadDagViews();
-      return;
-    }
-
-    if (!srcTaskId || !dstTaskId || srcTaskId === dstTaskId) return;
-    const existing = normalizeDependencyInput(
-      targetNode?.dependencies ||
-      targetNode?.dependencyTaskIds ||
-      [],
-    );
-    const dependencies = normalizeDependencyInput([...existing, srcTaskId]);
-    await apiFetch("/api/tasks/dependencies", {
-      method: "PUT",
-      body: JSON.stringify({
-        taskId: dstTaskId,
-        dependencies,
-      }),
-    });
-    showToast(`Wired dependency: ${srcTaskId} -> ${dstTaskId}`, "success");
-    await loadDagViews();
-  }, [loadDagViews]);
-
   const handleDeleteDagEdge = useCallback(async ({ sourceId, targetId, graphKind }) => {
     const srcId = toText(sourceId);
     const dstId = toText(targetId);
@@ -5801,32 +6248,6 @@ export function TasksTab() {
     haptic();
     setDagSelectedSprint(sprintId);
   }, [dagSelectedSprint]);
-
-  const handleToggleFilters = () => {
-    haptic();
-    setFiltersOpen((prev) => {
-      const next = !prev;
-      if (!next) setActionsOpen(false);
-      return next;
-    });
-  };
-
-  /* Keyboard shortcuts (mount/unmount) */
-  useEffect(() => {
-    const onKeyDown = (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
-        e.preventDefault();
-        searchRef.current?.focus?.();
-      }
-      if (e.key === "Escape" && searchRef.current &&
-          document.activeElement === searchRef.current) {
-        handleClearSearch();
-        searchRef.current.blur();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [handleClearSearch]);
 
   const handlePrev = async () => {
     if (tasksPage) tasksPage.value = Math.max(0, page - 1);
@@ -5891,11 +6312,16 @@ export function TasksTab() {
   const openDetail = async (taskId) => {
     haptic();
     const local = tasks.find((t) => t.id === taskId);
+    const requestId = ++detailRequestIdRef.current;
+    setDetailTask(local || { id: taskId, title: taskId, status: "todo", description: "" });
+    setDetailTaskHydrating(true);
     const result = await apiFetch(
-      `/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
+      buildTaskDetailPath(taskId, { includeDag: false }),
       { _silent: true },
     ).catch(() => ({ data: local }));
-    setDetailTask(result.data || local);
+    if (detailRequestIdRef.current !== requestId) return;
+    setDetailTask((prev) => ({ ...(prev || {}), ...(result.data || local || {}) }));
+    setDetailTaskHydrating(false);
   };
 
   /* ── Batch operations ── */
@@ -5979,15 +6405,78 @@ export function TasksTab() {
     setActionsOpen(false);
     haptic("medium");
     try {
-      const res = await apiFetch("/api/tasks?limit=1000", { _silent: true });
-      const allTasks = res?.data || res?.tasks || tasks;
+      const res = await apiFetch("/api/tasks/export", { _silent: true });
+      const payload = res?.data || {};
       const date = new Date().toISOString().slice(0, 10);
-      exportAsJSON(allTasks, `tasks-${date}.json`);
-      showToast(`Exported ${allTasks.length} tasks`, "success");
+      exportAsJSON(payload, `tasks-state-${date}.json`);
+      showToast(`Exported ${(payload?.tasks || []).length} tasks`, "success");
     } catch {
       showToast("Export failed", "error");
     }
     setExporting(false);
+  };
+
+  const handleImportTaskStateClick = () => {
+    setActionsOpen(false);
+    haptic("medium");
+    importInputRef.current?.click?.();
+  };
+
+  const handleImportTaskStateFile = async (event) => {
+    const file = event?.target?.files?.[0] || null;
+    if (!file) return;
+    try {
+      const raw = await file.text();
+      const parsed = JSON.parse(raw);
+      const taskList = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.tasks)
+          ? parsed.tasks
+          : Array.isArray(parsed?.backlog)
+            ? parsed.backlog
+            : Array.isArray(parsed?.data?.tasks)
+              ? parsed.data.tasks
+              : null;
+      if (!Array.isArray(taskList)) {
+        throw new Error("JSON must contain an array of tasks");
+      }
+
+      const ok = await showConfirm(
+        `Import ${taskList.length} tasks from ${file.name}? Existing task IDs will be merged and missing tasks will be created.`,
+      );
+      if (!ok) return;
+
+      setImporting(true);
+      const payload = Array.isArray(parsed)
+        ? { tasks: parsed, mode: "merge", source: { filename: file.name } }
+        : {
+            ...parsed,
+            tasks: taskList,
+            mode: "merge",
+            source: {
+              ...(parsed?.source && typeof parsed.source === "object" ? parsed.source : {}),
+              filename: file.name,
+            },
+          };
+      const res = await apiFetch("/api/tasks/import", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      const summary = res?.data?.summary || {};
+      const changedCount = Number(summary.created || 0) + Number(summary.updated || 0);
+      showToast(
+        `Imported ${Number(summary.created || 0)} new and updated ${Number(summary.updated || 0)} task${changedCount === 1 ? "" : "s"}${summary.failed ? ` (${summary.failed} failed)` : ""}`,
+        summary.failed ? "warning" : "success",
+      );
+      scheduleRefresh(150);
+    } catch (err) {
+      showToast(err?.message || "Import failed", "error");
+    } finally {
+      setImporting(false);
+      if (event?.target) {
+        event.target.value = "";
+      }
+    }
   };
 
   /* ── Render ── */
@@ -6119,7 +6608,7 @@ export function TasksTab() {
         onClick=${() => { setActionsOpen(!actionsOpen); haptic(); }}
         aria-haspopup="menu"
         aria-expanded=${actionsOpen}
-        disabled=${exporting}
+        disabled=${exporting || importing}
       >
         ${ICONS.ellipsis}
         <span class="actions-label">Actions</span>
@@ -6137,7 +6626,8 @@ export function TasksTab() {
             ${iconText(":zap: Trigger Templates")}
           <//>
           <${MenuItem} onClick=${handleExportCSV}>${iconText(":chart: Export CSV")}<//>
-          <${MenuItem} onClick=${handleExportJSON}>${iconText(":clipboard: Export JSON")}<//>
+          <${MenuItem} onClick=${handleExportJSON}>${iconText(":clipboard: Export Task State JSON")}<//>
+          <${MenuItem} onClick=${handleImportTaskStateClick}>${iconText(":inbox_tray: Import Task State JSON")}<//>
         </div>
       `}
     </div>
@@ -6145,6 +6635,13 @@ export function TasksTab() {
 
   return html`
     <div class="sticky-search">
+      <input
+        ref=${importInputRef}
+        type="file"
+        accept="application/json,.json"
+        style=${{ display: "none" }}
+        onChange=${handleImportTaskStateFile}
+      />
       <div class="tasks-toolbar">
         <div class="tasks-toolbar-row">
           <div class="sticky-search-main">
@@ -6325,6 +6822,13 @@ export function TasksTab() {
                     disabled=${dagLoading}
                   >
                     ${dagLoading ? "Refreshing…" : "Refresh DAG"}
+                  <//>
+                  <${Button}
+                    variant="text" size="small"
+                    onClick=${handleAutoOrganizeDag}
+                    disabled=${dagLoading}
+                  >
+                    Auto Wire
                   <//>
                   <${Button}
                     variant="text" size="small"
@@ -6846,14 +7350,23 @@ export function TasksTab() {
     html`
       <${TaskProgressModal}
         task=${detailTask}
-        onClose=${() => setDetailTask(null)}
+        onClose=${() => {
+          detailRequestIdRef.current += 1;
+          setDetailTask(null);
+          setDetailTaskHydrating(false);
+        }}
       />
     `}
     ${detailTask && (isDag || !isActiveStatus(detailTask.status) || !hasLiveExecutionEvidence(detailTask)) &&
     html`
       <${TaskDetailModal}
         task=${detailTask}
-        onClose=${() => setDetailTask(null)}
+        isHydrating=${detailTaskHydrating}
+        onClose=${() => {
+          detailRequestIdRef.current += 1;
+          setDetailTask(null);
+          setDetailTaskHydrating(false);
+        }}
         onStart=${(task) => openStartModal(task)}
         presentation=${isDag ? "side-sheet" : "modal"}
         taskCatalog=${dagTaskCatalog}
@@ -7454,3 +7967,16 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     <//>
   `;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+

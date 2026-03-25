@@ -1097,7 +1097,9 @@ export class WorkflowContext {
 
     return template.replace(/\{\{([A-Za-z0-9_][A-Za-z0-9_.-]*)\}\}/g, (match, path) => {
       const value = resolvePathValue(path);
-      return value != null ? String(value) : match;
+      if (value == null) return match;
+      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+      try { return JSON.stringify(value); } catch { return String(value); }
     });
   }
 
@@ -1535,6 +1537,14 @@ export class WorkflowEngine extends EventEmitter {
       outputDeltaSummary:
         result && typeof result === "object" && result.outputDeltaSummary
           ? String(result.outputDeltaSummary)
+          : undefined,
+      outputBudgetPolicy:
+        result && typeof result === "object" && result.outputBudgetPolicy
+          ? String(result.outputBudgetPolicy)
+          : undefined,
+      outputBudgetReason:
+        result && typeof result === "object" && result.outputBudgetReason
+          ? String(result.outputBudgetReason)
           : undefined,
     });
     ctx.annotateDagNode(node.id, nodePatch);

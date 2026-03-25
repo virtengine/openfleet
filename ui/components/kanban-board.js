@@ -15,6 +15,7 @@ import {
   normalizeTaskLifecycleStatus,
   classifyTaskLifecycleAction,
   mergeTaskRecords,
+  KANBAN_PAGE_SIZE,
 } from "../modules/state.js";
 import { apiFetch } from "../modules/api.js";
 import { haptic, showConfirm } from "../modules/telegram.js";
@@ -378,10 +379,13 @@ const TOUCH_DRAG_START_PX = 6;
 const TOUCH_CANCEL_PX = 14;
 
 function queueBoardTasksRefresh() {
-  const page = Number(tasksPage?.value ?? 0);
-  const append = Number.isFinite(page) && page > 0;
+  // Reset to page 0 so both the upcoming WS-triggered refresh and our own
+  // delayed refresh fetch the first page, replacing the full dataset with
+  // fresh data. Without this, a stale tasksPage > 0 causes loadTasks() to
+  // fetch only a later page and overwrite the full list, making tasks vanish.
+  if (tasksPage) tasksPage.value = 0;
   setTimeout(() => {
-    void loadTasks({ append });
+    void loadTasks({ pageSize: KANBAN_PAGE_SIZE });
   }, 500);
 }
 
@@ -888,6 +892,7 @@ function KanbanColumn({
     if (currentCol === col.id) return;
 
     const newStatus = COLUMN_TO_STATUS[col.id] || "todo";
+    const leavingDraft = currentCol === "draft" && col.id !== "draft";
     haptic("medium");
 
     const prev = cloneValue(tasksData.value);
@@ -895,13 +900,13 @@ function KanbanColumn({
       await runOptimistic(
         () => {
           tasksData.value = tasksData.value.map((t) =>
-            matchTaskId(t.id, taskId) ? { ...t, status: newStatus } : t,
+            matchTaskId(t.id, taskId) ? { ...t, status: newStatus, ...(leavingDraft ? { draft: false } : {}) } : t,
           );
         },
         async () => {
           const res = await apiFetch("/api/tasks/update", {
             method: "POST",
-            body: JSON.stringify({ taskId, status: newStatus }),
+            body: JSON.stringify({ taskId, status: newStatus, ...(leavingDraft ? { draft: false } : {}) }),
           });
           if (res?.data) {
             tasksData.value = tasksData.value.map((t) =>
