@@ -127,10 +127,93 @@ describe("project detection quality gates", () => {
   });
 });
 
+  it("records a single owner-mismatch audit event across duplicate renewal retries", async () => {
+    vi.useFakeTimers();
+    const nt = getNodeType("action.claim_task");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const claimSpy = vi.spyOn(claims, "claimTask").mockResolvedValue({
+      success: true,
+      token: "claim-token-dedupe",
+    });
+    const renewSpy = vi.spyOn(claims, "renewClaim").mockResolvedValue({
+      success: false,
+      error: "owner_mismatch",
+    });
+
+    const ctx = makeCtx({ repoRoot: "/tmp/repo-root" });
+    try {
+      const node = makeNode("action.claim_task", {
+        taskId: "task-renew-dedupe",
+        taskTitle: "Renew dedupe",
+        renewIntervalMs: 50,
+      });
+
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(60);
+      await vi.advanceTimersByTimeAsync(60);
+
+      const auditTrail = ctx.__workflowRuntimeState?.delegationAuditTrail || [];
+      const mismatchEvents = auditTrail.filter((event) => event?.type === "owner-mismatch");
+
+      expect(renewSpy).toHaveBeenCalledTimes(1);
+      expect(ctx.data._claimStolen).toBe(true);
+      expect(mismatchEvents).toHaveLength(1);
+      expect(mismatchEvents[0]).toEqual(expect.objectContaining({
+        type: "owner-mismatch",
+        taskId: "task-renew-dedupe",
+      }));
+    } finally {
+      const runtimeTimer = ctx.__workflowRuntimeState?.claimRenewTimer || ctx.data?._claimRenewTimer;
+      if (runtimeTimer) clearInterval(runtimeTimer);
+      initSpy.mockRestore();
+      claimSpy.mockRestore();
+      renewSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  Node Type Registration Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
+it("dedupes duplicate claim assignment retries", async () => {
+  const nt = getNodeType("action.claim_task");
+  const claims = await import("../task/task-claims.mjs");
+  const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+  const claimSpy = vi.spyOn(claims, "claimTask").mockResolvedValue({
+    success: true,
+    token: "claim-token-once",
+  });
+
+  const ctx = makeCtx({ repoRoot: "/tmp/repo-root" });
+  try {
+    const node = makeNode("action.claim_task", {
+      taskId: "task-claim-dedupe",
+      taskTitle: "Claim dedupe",
+      renewIntervalMs: 0,
+    });
+
+    const first = await nt.execute(node, ctx);
+    const second = await nt.execute(node, ctx);
+    const auditTrail = ctx.__workflowRuntimeState?.delegationAuditTrail || ctx.data._delegationAuditTrail || [];
+    const assignEvents = auditTrail.filter((event) => event?.type === "assign");
+
+    expect(first.success).toBe(true);
+    expect(second.success).toBe(true);
+    expect(second.deduped).toBe(true);
+    expect(claimSpy).toHaveBeenCalledTimes(1);
+    expect(assignEvents).toHaveLength(1);
+  } finally {
+    const runtimeTimer = ctx.__workflowRuntimeState?.claimRenewTimer || ctx.data?._claimRenewTimer;
+    if (runtimeTimer) clearInterval(runtimeTimer);
+    initSpy.mockRestore();
+    claimSpy.mockRestore();
+  }
+});
 describe("task lifecycle node type registration", () => {
   const LIFECYCLE_NODES = [
     "trigger.task_available",
@@ -1055,6 +1138,62 @@ describe("action.release_slot", () => {
 //  action.claim_task Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
+
+describe("delegation transition guards", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("keeps claim side effects idempotent and records audit transitions on replay", async () => {
+    const nt = getNodeType("action.claim_task");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const claimSpy = vi.spyOn(claims, "claimTask")
+      .mockResolvedValueOnce({ success: true, token: "claim-token-idem" });
+    const renewSpy = vi.spyOn(claims, "renewClaim").mockResolvedValue({ success: true });
+    const ctx = makeCtx({
+      _workflowDelegationTrail: [],
+      _workflowDelegationApplied: {},
+    });
+    const node = makeNode("action.claim_task", {
+      taskId: "task-idem-1",
+      taskTitle: "Idempotent Task",
+      renewIntervalMs: 25,
+      ttlMinutes: 5,
+      instanceId: "wf-idem-1",
+      delegationTransitionType: "assign",
+      delegationTransitionKey: "assign:task-idem-1:wf-idem-1",
+    });
+
+    const first = await nt.execute(node, ctx);
+    const second = await nt.execute(node, ctx);
+
+    expect(first).toMatchObject({ success: true, taskId: "task-idem-1" });
+    expect(second).toMatchObject({
+      success: true,
+      taskId: "task-idem-1",
+      idempotentReplay: true,
+      claimToken: "claim-token-idem",
+    });
+    expect(claimSpy).toHaveBeenCalledTimes(1);
+    expect(Array.isArray(ctx.data._workflowDelegationTrail)).toBe(true);
+    expect(ctx.data._workflowDelegationTrail).toEqual([
+      expect.objectContaining({
+        type: "assign",
+        taskId: "task-idem-1",
+        transitionKey: "assign:task-idem-1:wf-idem-1",
+      }),
+    ]);
+
+    const runtimeTimer = ctx.__workflowRuntimeState?.claimRenewTimer || ctx.data?._claimRenewTimer;
+    if (runtimeTimer) clearInterval(runtimeTimer);
+    initSpy.mockRestore();
+    claimSpy.mockRestore();
+    renewSpy.mockRestore();
+  });
+});
+
 describe("action.claim_task", () => {
   it("initializes task-claims lazily before claiming", async () => {
     const nt = getNodeType("action.claim_task");
@@ -1161,6 +1300,117 @@ describe("action.claim_task", () => {
       renewSpy.mockRestore();
       vi.useRealTimers();
     }
+  });
+
+  it("reuses an existing claim for the same idempotency key without duplicating side effects", async () => {
+    const nt = getNodeType("action.claim_task");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const claimSpy = vi.spyOn(claims, "claimTask").mockResolvedValue({
+      success: true,
+      token: "claim-token-idempotent",
+    });
+
+    try {
+      const ctx = makeCtx({ repoRoot: "/tmp/repo-root" });
+      const node = makeNode("action.claim_task", {
+        taskId: "task-idempotent-1",
+        taskTitle: "Idempotent claim",
+        renewIntervalMs: 0,
+        idempotencyKey: "claim-task-idempotent-1",
+      });
+
+      const first = await nt.execute(node, ctx);
+      const second = await nt.execute(node, ctx);
+
+      expect(first.success).toBe(true);
+      expect(second.success).toBe(true);
+      expect(second.claimToken).toBe("claim-token-idempotent");
+      expect(claimSpy).toHaveBeenCalledTimes(1);
+      expect(ctx.data._claimToken).toBe("claim-token-idempotent");
+    } finally {
+      initSpy.mockRestore();
+      claimSpy.mockRestore();
+    }
+  });
+
+  it("records ordered delegation audit events for claim and owner mismatch renewals", async () => {
+    vi.useFakeTimers();
+    const nt = getNodeType("action.claim_task");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const claimSpy = vi.spyOn(claims, "claimTask").mockResolvedValue({
+      success: true,
+      token: "claim-token-audit",
+    });
+    const renewSpy = vi.spyOn(claims, "renewClaim").mockResolvedValue({
+      success: false,
+      error: "owner_mismatch",
+    });
+
+    const ctx = makeCtx({ repoRoot: "/tmp/repo-root" });
+    try {
+      const node = makeNode("action.claim_task", {
+        taskId: "task-audit-trail",
+        taskTitle: "Audit trail task",
+        renewIntervalMs: 50,
+      });
+
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(60);
+
+      const events = Array.isArray(ctx.data?._delegationAuditTrail)
+        ? ctx.data._delegationAuditTrail
+        : [];
+      expect(events.map((entry) => entry.type)).toEqual(["assign", "owner-mismatch"]);
+      expect(events[0]).toMatchObject({
+        taskId: "task-audit-trail",
+        nodeId: node.id,
+        claimToken: "claim-token-audit",
+      });
+      expect(events[1]).toMatchObject({
+        taskId: "task-audit-trail",
+        nodeId: node.id,
+        error: "owner_mismatch",
+      });
+    } finally {
+      const runtimeTimer = ctx.__workflowRuntimeState?.claimRenewTimer || ctx.data?._claimRenewTimer;
+      if (runtimeTimer) clearInterval(runtimeTimer);
+      initSpy.mockRestore();
+      claimSpy.mockRestore();
+      renewSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("deduplicates repeated claim renewal owner mismatch events by idempotency key", async () => {
+    const ctx = makeCtx({ repoRoot: "/tmp/repo-root" });
+    ctx.data._delegationAuditTrail = [];
+    ctx.data._delegationTransitionGuards = {};
+
+    const first = ctx.recordDelegationEvent({
+      type: "owner-mismatch",
+      nodeId: "claim",
+      taskId: "task-dedupe",
+      claimToken: "claim-token-dedupe",
+      idempotencyKey: "renew:task-dedupe:claim-token-dedupe:owner-mismatch",
+      error: "owner_mismatch",
+    });
+    const second = ctx.recordDelegationEvent({
+      type: "owner-mismatch",
+      nodeId: "claim",
+      taskId: "task-dedupe",
+      claimToken: "claim-token-dedupe",
+      idempotencyKey: "renew:task-dedupe:claim-token-dedupe:owner-mismatch",
+      error: "owner_mismatch",
+    });
+
+    expect(first.recorded).toBe(true);
+    expect(second.recorded).toBe(false);
+    expect(ctx.data._delegationAuditTrail).toHaveLength(1);
+    expect(ctx.data._delegationTransitionGuards["renew:task-dedupe:claim-token-dedupe:owner-mismatch"]).toBeTruthy();
   });
 });
 
@@ -3103,6 +3353,46 @@ describe("action.release_worktree", () => {
     expect(result.success).toBe(true);
     expect(result.skipped).toBe(true);
   });
+
+  it("returns existing claim metadata when the same transition is replayed", async () => {
+    const nt = getNodeType("action.claim_task");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const claimSpy = vi.spyOn(claims, "claimTask").mockResolvedValue({
+      success: true,
+      token: "claim-replay-token",
+      claim: { claim_token: "claim-replay-token" },
+    });
+    const ctx = makeCtx({ repoRoot: "/tmp/repo-root" });
+    const node = makeNode("action.claim_task", {
+      taskId: "task-replay-1",
+      taskTitle: "Replay-safe claim",
+      instanceId: "inst-replay",
+      renewIntervalMs: 0,
+      transitionKey: "claim:task-replay-1",
+    });
+
+    try {
+      const first = await nt.execute(node, ctx);
+      const second = await nt.execute(node, ctx);
+
+      expect(first).toEqual(expect.objectContaining({
+        success: true,
+        taskId: "task-replay-1",
+        claimToken: "claim-replay-token",
+      }));
+      expect(second).toEqual(expect.objectContaining({
+        success: true,
+        taskId: "task-replay-1",
+        claimToken: "claim-replay-token",
+        replayed: true,
+      }));
+      expect(claimSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      initSpy.mockRestore();
+      claimSpy.mockRestore();
+    }
+  });
 });
 
 describe("action.sweep_task_worktrees", () => {
@@ -3200,6 +3490,41 @@ describe("action.release_claim", () => {
       );
       expect(ctx.data._claimToken).toBeNull();
       expect(ctx.data._claimInstanceId).toBeNull();
+    } finally {
+      initSpy.mockRestore();
+      releaseSpy.mockRestore();
+    }
+  });
+
+  it("skips duplicate release transition side effects on replay", async () => {
+    const nt = getNodeType("action.release_claim");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const releaseSpy = vi.spyOn(claims, "releaseTask").mockResolvedValue({ success: true });
+    const ctx = makeCtx({
+      _claimToken: "claim-release-replay",
+      _claimInstanceId: "inst-release-replay",
+      _claimRenewTimer: null,
+      repoRoot: "/tmp/repo-root",
+    });
+    const node = makeNode("action.release_claim", {
+      taskId: "task-release-replay",
+      transitionKey: "release:task-release-replay",
+    });
+
+    try {
+      const first = await nt.execute(node, ctx);
+      ctx.data._claimToken = "claim-release-replay";
+      ctx.data._claimInstanceId = "inst-release-replay";
+      const second = await nt.execute(node, ctx);
+
+      expect(first).toEqual(expect.objectContaining({ success: true, taskId: "task-release-replay" }));
+      expect(second).toEqual(expect.objectContaining({
+        success: true,
+        taskId: "task-release-replay",
+        replayed: true,
+      }));
+      expect(releaseSpy).toHaveBeenCalledTimes(1);
     } finally {
       initSpy.mockRestore();
       releaseSpy.mockRestore();
@@ -3653,3 +3978,6 @@ describe("template-task-lifecycle", () => {
     }
   });
 });
+
+
+

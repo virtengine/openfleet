@@ -2427,6 +2427,50 @@ describe("action.execute_workflow", () => {
     }
   });
 
+  it("hydrates delegation audit trail from persisted run detail into history and detail views", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "delegation-audit-hydration", name: "Delegation Audit Hydration" },
+    );
+    engine.save(wf);
+
+    const runId = "delegation-audit-run-1";
+    const startedAt = Date.now() - 5000;
+    const endedAt = startedAt + 1000;
+    const detailPath = join(engine.runsDir, `${runId}.json`);
+    const detail = {
+      startedAt,
+      endedAt,
+      duration: endedAt - startedAt,
+      status: "completed",
+      data: {
+        _workflowId: wf.id,
+        _workflowName: wf.name,
+        _delegationAuditTrail: [
+          { type: "assign", idempotencyKey: "k1", taskId: "task-1", at: startedAt + 10 },
+          { type: "claim-renew", idempotencyKey: "k2", taskId: "task-1", at: startedAt + 20 },
+          { type: "owner-mismatch", idempotencyKey: "k3", taskId: "task-1", at: startedAt + 30 },
+          { type: "handoff-complete", idempotencyKey: "k4", taskId: "task-1", at: startedAt + 40 },
+        ],
+      },
+      logs: [],
+      errors: [],
+      nodeStatuses: {},
+      nodeStatusEvents: [],
+      dagState: {},
+    };
+    writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
+
+    const historyEntry = engine.getRunHistory(wf.id, 10).find((entry) => entry.runId === runId);
+    expect(historyEntry).toBeTruthy();
+    expect(historyEntry.delegationAuditTrail).toEqual(detail.data._delegationAuditTrail);
+
+    const runDetail = engine.getRunDetail(runId);
+    expect(runDetail).toBeTruthy();
+    expect(runDetail.delegationAuditTrail).toEqual(detail.data._delegationAuditTrail);
+    expect(runDetail.detail?.data?._delegationAuditTrail).toEqual(detail.data._delegationAuditTrail);
+  });
   it("dispatch mode accepts synchronous engine return values", async () => {
     const handler = getNodeType("action.execute_workflow");
     expect(handler).toBeDefined();
@@ -4254,6 +4298,151 @@ describe("Session chaining - action.run_agent", () => {
     expect(messages.some((msg) => String(msg?.content || "").includes("Delegating to agent workflow"))).toBe(true);
     expect(messages.some((msg) => String(msg?.content || "").toLowerCase().includes("failed"))).toBe(true);
   });
+
+  it("persists ordered delegation audit trail in run detail and history", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const workflowDir = mkdtempSync(join(tmpdir(), "wf-delegation-audit-defs-"));
+    const runsDir = mkdtempSync(join(tmpdir(), "wf-delegation-audit-runs-"));
+    const auditEngine = new WorkflowEngine({ workflowDir, runsDir, detectInterruptedRuns: false });
+
+    try {
+      const delegatedWorkflow = {
+        id: "wf-audit-child",
+        name: "Audit Child",
+        enabled: true,
+        metadata: { replaces: { module: "primary-agent.mjs" } },
+        nodes: [
+          { id: "trigger", type: "trigger.task_assigned", config: { taskPattern: "audit" } },
+          { id: "end", type: "flow.end", config: { status: "completed", message: "done" } },
+        ],
+        edges: [],
+      };
+      auditEngine.save(delegatedWorkflow);
+
+      const ctx = new WorkflowContext({
+        taskId: "TASK-DELEGATE-AUDIT",
+        taskTitle: "Audit delegation history",
+        task: { id: "TASK-DELEGATE-AUDIT", title: "Audit delegation history" },
+        _workflowId: "wf-parent-audit",
+        _workflowName: "Parent Audit Workflow",
+      });
+
+      const node = {
+        id: "delegated-agent-audit",
+        type: "action.run_agent",
+        config: { prompt: "Delegate for audit" },
+      };
+
+      const result = await handler.execute(node, ctx, auditEngine);
+      expect(result).toMatchObject({
+        success: true,
+        delegated: true,
+        subWorkflowId: "wf-audit-child",
+      });
+
+      auditEngine._persistRun(ctx.id, "wf-parent-audit", ctx);
+      const detail = auditEngine.getRunDetail(ctx.id);
+      expect(Array.isArray(detail?.delegationTrail)).toBe(true);
+
+      const eventTypes = detail.delegationTrail.map((entry) => entry?.eventType);
+      expect(eventTypes).toEqual(["assign", "handoff-complete"]);
+      expect(detail.delegationTrail[0]).toEqual(expect.objectContaining({
+        taskId: "TASK-DELEGATE-AUDIT",
+        workflowNodeId: "delegated-agent-audit",
+        delegatedWorkflowId: "wf-audit-child",
+      }));
+
+      const historyEntry = auditEngine.getRunHistory("wf-parent-audit", 1)[0];
+      expect(Array.isArray(historyEntry?.delegationTrail)).toBe(true);
+      expect(historyEntry.delegationTrail.map((entry) => entry?.eventType)).toEqual(["assign", "handoff-complete"]);
+    } finally {
+      try { rmSync(workflowDir, { recursive: true, force: true }); } catch {}
+      try { rmSync(runsDir, { recursive: true, force: true }); } catch {}
+    }
+  });
+
+
+  it("exposes delegation audit trail in run history and run detail", async () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), "workflow-delegation-history-"));
+    const engine = new WorkflowEngine({
+      workflowsDir: join(tmpRoot, "workflows"),
+      runsDir: join(tmpRoot, "runs"),
+    });
+
+    const workflow = {
+      id: "wf-delegation-history",
+      name: "Delegation History Workflow",
+      trigger: "manual",
+      nodes: [
+        { id: "start", type: "trigger.manual", config: {} },
+      ],
+      edges: [],
+    };
+
+    engine.save(workflow);
+    const ctx = new WorkflowContext({
+      _workflowId: workflow.id,
+      _workflowName: workflow.name,
+    });
+    ctx.recordDelegationEvent({
+      type: "assign",
+      nodeId: "delegated-agent",
+      taskId: "TASK-HISTORY-1",
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      idempotencyKey: "assign:TASK-HISTORY-1",
+    });
+    ctx.recordDelegationEvent({
+      type: "handoff-complete",
+      nodeId: "delegated-agent",
+      taskId: "TASK-HISTORY-1",
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      idempotencyKey: "handoff:TASK-HISTORY-1",
+    });
+
+    engine._persistRun(ctx.id, workflow.id, ctx);
+    const historyEntry = engine.getRunHistory(workflow.id, 10)[0];
+    const detail = engine.getRunDetail(ctx.id);
+
+    expect(historyEntry.delegationAuditTrail.map((entry) => entry.type)).toEqual(["assign", "handoff-complete"]);
+    expect(detail.delegationAuditTrail.map((entry) => entry.type)).toEqual(["assign", "handoff-complete"]);
+    expect(detail.detail.delegationAuditTrail.map((entry) => entry.type)).toEqual(["assign", "handoff-complete"]);
+  });  it("records assign and handoff delegation events for delegated agent runs", async () => {
+    const handler = getNodeType("action.run_agent");
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      threadId: "thread-delegation-1",
+      output: "ok",
+    });
+    const ctx = new WorkflowContext({
+      taskId: "TASK-DELEGATION-AUDIT",
+      taskTitle: "Delegation audit",
+      task: { id: "TASK-DELEGATION-AUDIT", title: "Delegation audit" },
+    });
+    const engine = {
+      services: { agentPool: { launchEphemeralThread } },
+      workflows: new Map(),
+    };
+    const node = {
+      id: "delegate-agent",
+      type: "action.run_agent",
+      config: { prompt: "do the thing", sdk: "codex", model: "gpt-5" },
+    };
+
+    const result = await handler.execute(node, ctx, engine);
+    const trail = ctx.getDelegationAuditTrail();
+
+    expect(result.success).toBe(true);
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+    expect(trail.map((entry) => entry.type)).toEqual(expect.arrayContaining(["assign", "handoff-complete"]));
+    expect(trail.find((entry) => entry.type === "handoff-complete")).toEqual(expect.objectContaining({
+      taskId: "TASK-DELEGATION-AUDIT",
+      threadId: "thread-delegation-1",
+    }));
+  });
   it("records delegated runs in session tracker for task visibility", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
@@ -4511,6 +4700,113 @@ describe("Session chaining - action.run_agent", () => {
     expect(session.id).toBe("TASK-DELEGATE-REUSE");
     expect(session.status).toBe("completed");
     expect(session.metadata.workspaceDir).toBe("/tmp/test");
+  });
+
+  it("records delegation audit trail in run detail and history summaries", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "delegate", type: "action.run_agent", label: "Delegate", config: { prompt: "Handle task" } },
+      ],
+      [{ id: "e1", source: "trigger", target: "delegate" }],
+      { id: "delegation-audit-workflow", name: "Delegation Audit Workflow" },
+    );
+
+    const delegated = makeSimpleWorkflow(
+      [
+        {
+          id: "task-trigger",
+          type: "trigger.task_assigned",
+          label: "Task Assigned",
+          config: { taskPattern: "api", filter: "task.tags?.includes('backend')" },
+        },
+        { id: "done", type: "notify.log", label: "Done", config: { message: "delegated workflow done" } },
+      ],
+      [{ id: "e1", source: "task-trigger", target: "done" }],
+      {
+        id: "delegated-audit-child",
+        name: "Delegated Audit Child",
+        metadata: { replaces: { module: "primary-agent.mjs" } },
+      },
+    );
+
+    engine.save(wf);
+    engine.save(delegated);
+
+    const ctx = await engine.execute(wf.id, {
+      taskId: "TASK-AUDIT-1",
+      taskTitle: "API delegation audit",
+      agentType: "backend",
+      task: { id: "TASK-AUDIT-1", title: "API delegation audit", tags: ["backend", "api"] },
+    });
+
+    expect(ctx.errors).toEqual([]);
+    const detail = engine.getRunDetail(ctx.id);
+    expect(Array.isArray(detail?.detail?.data?._delegationAuditTrail)).toBe(true);
+    expect(detail.detail.data._delegationAuditTrail).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "assign" }),
+        expect.objectContaining({ type: "handoff-complete", status: "completed" }),
+      ]),
+    );
+
+    const summary = engine.getRunHistory(wf.id, 1)[0];
+    expect(Array.isArray(summary?.delegationAuditTrail)).toBe(true);
+    expect(summary?.latestDelegationEvent).toEqual(
+      expect.objectContaining({ type: "handoff-complete", status: "completed" }),
+    );
+  });
+
+  it("keeps delegation transition side effects idempotent across duplicate transition keys", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const execute = vi.fn().mockResolvedValue({ id: "child-run-1", errors: [] });
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-backend-idempotent",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: { taskPattern: "api", filter: "task.tags?.includes('backend')" },
+            },
+          ],
+        },
+      ]),
+      execute,
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn(),
+        },
+      },
+    };
+
+    const node = {
+      id: "delegated-idempotent-node",
+      type: "action.run_agent",
+      config: { prompt: "Handle task" },
+    };
+
+    const data = {
+      taskId: "TASK-IDEMPOTENT-1",
+      taskTitle: "API idempotency",
+      agentType: "backend",
+      task: { id: "TASK-IDEMPOTENT-1", title: "API idempotency", tags: ["backend", "api"] },
+      _delegationTransitionKey: "transition-key-1",
+    };
+
+    const first = await handler.execute(node, new WorkflowContext(data), mockEngine);
+    const second = await handler.execute(node, new WorkflowContext(data), mockEngine);
+
+    expect(first.delegated).toBe(true);
+    expect(second.delegated).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(second.runId).toBe(first.runId);
   });
 
   it("records autonomous agent recovery attempts in the execution ledger", async () => {
@@ -6378,6 +6674,51 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(childSpan.attributes["bosun.workflow.parent_run_id"]).toBe(parentCtx.id);
   });
   it("records DAGState revisions and preserves completed nodes when replanning from a failed boundary", async () => {
+  it("hydrates delegation audit trail into run detail and history read models", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+      ],
+      [],
+      { id: "wf-delegation-audit", name: "Delegation Audit Workflow" },
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, { taskId: "TASK-DELEGATION-AUDIT" });
+    ctx.__workflowRuntimeState = ctx.__workflowRuntimeState || {};
+    ctx.__workflowRuntimeState.delegationAuditTrail = [
+      {
+        type: "assign",
+        key: "assign:TASK-DELEGATION-AUDIT:agent-1",
+        taskId: "TASK-DELEGATION-AUDIT",
+        agentId: "agent-1",
+        timestamp: 1710000000000,
+      },
+      {
+        type: "handoff-complete",
+        key: "handoff-complete:TASK-DELEGATION-AUDIT:agent-1",
+        taskId: "TASK-DELEGATION-AUDIT",
+        agentId: "agent-1",
+        timestamp: 1710000001000,
+      },
+    ];
+
+    engine._persistRun(ctx.id, wf.id, ctx);
+
+    const detail = engine.getRunDetail(ctx.id);
+    const historyEntry = engine.getRunHistory(wf.id).find((entry) => entry.runId === ctx.id);
+
+    expect(detail?.detail?.delegationAuditTrail).toEqual([
+      expect.objectContaining({ type: "assign", taskId: "TASK-DELEGATION-AUDIT" }),
+      expect.objectContaining({ type: "handoff-complete", taskId: "TASK-DELEGATION-AUDIT" }),
+    ]);
+    expect(historyEntry?.delegationAuditTrail).toEqual([
+      expect.objectContaining({ type: "assign", taskId: "TASK-DELEGATION-AUDIT" }),
+      expect.objectContaining({ type: "handoff-complete", taskId: "TASK-DELEGATION-AUDIT" }),
+    ]);
+  });
+
+
     let attempts = 0;
     registerNodeType("test.replan_once", {
       describe: () => "Fails once so retry planning can revise the active DAG",
@@ -6479,5 +6820,79 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(replan.reason).toBe("issue_advisor.replan_subgraph");
   });
 });
+
+
+
+
+
+describe("delegation audit trail hydration", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("hydrates persisted delegation trail into run detail and history", async () => {
+    const runId = "delegation-hydration-run";
+    const detailPath = join(tmpDir, "runs", `${runId}.json`);
+    mkdirSync(join(tmpDir, "runs"), { recursive: true });
+    writeFileSync(detailPath, JSON.stringify({
+      data: {
+        _workflowId: "wf-delegation-history",
+        _workflowName: "Delegation History Workflow",
+        _workflowDelegationTrail: [
+          {
+            type: "assign",
+            nodeId: "delegate",
+            workflowId: "child-wf",
+            workflowName: "Child Workflow",
+            transitionKey: "assign:delegate:child-wf:task-1",
+            timestamp: "2026-03-25T00:00:00.000Z",
+          },
+          {
+            type: "handoff-complete",
+            nodeId: "delegate",
+            workflowId: "child-wf",
+            workflowName: "Child Workflow",
+            childRunId: "child-run-1",
+            transitionKey: "handoff-complete:delegate:child-run-1",
+            timestamp: "2026-03-25T00:00:02.000Z",
+          },
+        ],
+      },
+      nodeStatuses: {},
+      nodeOutputs: {},
+      errors: [],
+      status: "completed",
+      startedAt: 1742860800000,
+      endedAt: 1742860802000,
+    }, null, 2));
+
+    const detail = engine.getRunDetail(runId);
+    expect(detail?.delegationTrail).toEqual([
+      expect.objectContaining({ type: "assign", transitionKey: "assign:delegate:child-wf:task-1" }),
+      expect.objectContaining({ type: "handoff-complete", transitionKey: "handoff-complete:delegate:child-run-1" }),
+    ]);
+    expect(detail?.delegationAuditTrail).toEqual(detail?.delegationTrail);
+    expect(detail?.latestDelegationEvent).toEqual(expect.objectContaining({ type: "handoff-complete" }));
+    expect(detail?.detail?.data?._workflowDelegationTrail).toHaveLength(2);
+
+    const history = engine.getRunHistory(null, 20);
+    expect(history).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        runId,
+        delegationTrail: expect.arrayContaining([
+          expect.objectContaining({ type: "assign" }),
+          expect.objectContaining({ type: "handoff-complete" }),
+        ]),
+        delegationAuditTrail: expect.arrayContaining([
+          expect.objectContaining({ type: "assign" }),
+          expect.objectContaining({ type: "handoff-complete" }),
+        ]),
+        latestDelegationEvent: expect.objectContaining({ type: "handoff-complete" }),
+      }),
+    ]));
+  });
+});
+
 
 

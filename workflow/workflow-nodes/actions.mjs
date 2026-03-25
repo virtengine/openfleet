@@ -503,6 +503,24 @@ registerNodeType("action.run_agent", {
         });
 
         if (candidate?.id) {
+          const assignTransitionKey = ["assign", node.id, candidate.id, taskIdForDelegate || "task"].join(":");
+          const existingAssignTransition = getExistingDelegationTransition(ctx, assignTransitionKey);
+          if (existingAssignTransition?.type === "run_agent_delegate") {
+            return { ...existingAssignTransition.result };
+          }
+
+          recordDelegationAuditEvent(ctx, {
+            type: "assign",
+            eventType: "assign",
+            taskId: taskIdForDelegate || null,
+            taskTitle: taskTitleForDelegate || null,
+            workflowNodeId: node.id,
+            delegatedWorkflowId: candidate.id,
+            delegatedWorkflowName: candidate.name || candidate.id,
+            transitionKey: assignTransitionKey,
+            at: Date.now(),
+            timestamp: new Date().toISOString(),
+          });
           const tracker = taskIdForDelegate ? getSessionTracker() : null;
           if (tracker && taskIdForDelegate) {
             if (!tracker.getSessionById(taskIdForDelegate)) {
@@ -541,6 +559,19 @@ registerNodeType("action.run_agent", {
           const subFailed = Array.isArray(subRun?.errors) && subRun.errors.length > 0;
           const subStatus = subFailed ? "failed" : "completed";
 
+          recordDelegationAuditEvent(ctx, {
+            type: subFailed ? "owner-mismatch" : "handoff-complete",
+            eventType: subFailed ? "owner-mismatch" : "handoff-complete",
+            taskId: taskIdForDelegate || null,
+            taskTitle: taskTitleForDelegate || null,
+            workflowNodeId: node.id,
+            delegatedWorkflowId: candidate.id,
+            delegatedWorkflowName: candidate.name || candidate.id,
+            childRunId: subRun?.id || null,
+            transitionKey: [subFailed ? "owner-mismatch" : "handoff-complete", node.id, subRun?.id || candidate.id].join(":"),
+            at: Date.now(),
+            timestamp: new Date().toISOString(),
+          });
           if (tracker && taskIdForDelegate) {
             tracker.recordEvent(taskIdForDelegate, {
               role: "system",
@@ -552,14 +583,22 @@ registerNodeType("action.run_agent", {
             tracker.endSession(taskIdForDelegate, subFailed ? "failed" : "completed");
           }
 
-          return {
+          const delegateResult = {
             success: !subFailed,
             delegated: true,
             subWorkflowId: candidate.id,
             subWorkflowName: candidate.name || candidate.id,
             subStatus,
             subRun,
+            runId: subRun?.id || null,
           };
+          setDelegationTransitionResult(ctx, assignTransitionKey, {
+            type: "run_agent_delegate",
+            result: { ...delegateResult },
+            childRunId: subRun?.id || null,
+            delegatedWorkflowId: candidate.id,
+          });
+          return delegateResult;
         }
       }
     }
@@ -4294,6 +4333,47 @@ registerNodeType("action.release_slot", {
   },
 });
 
+function recordDelegationAuditEvent(ctx, event) {
+  if (!ctx || !event || typeof event !== "object") return null;
+  if (typeof ctx.recordDelegationEvent === "function") return ctx.recordDelegationEvent(event);
+  const data = ctx.data || (ctx.data = {});
+  const trail = Array.isArray(data._delegationAuditTrail) ? data._delegationAuditTrail : [];
+  data._delegationAuditTrail = trail;
+  data._workflowDelegationTrail = trail;
+  const key = String(event.transitionKey || event.idempotencyKey || event.key || "").trim();
+  if (key) {
+    const existing = trail.find((entry) => String(entry?.transitionKey || entry?.idempotencyKey || entry?.key || "").trim() === key);
+    if (existing) return existing;
+  }
+  const entry = { ...event };
+  trail.push(entry);
+  return {
+    ...entry,
+    recorded: true,
+  };
+}
+
+function getDelegationTransitionStore(ctx) {
+  const runtimeState = getWorkflowRuntimeState(ctx);
+  if (!runtimeState.delegationTransitionResults || typeof runtimeState.delegationTransitionResults !== "object") {
+    runtimeState.delegationTransitionResults = {};
+  }
+  return runtimeState.delegationTransitionResults;
+}
+
+function getExistingDelegationTransition(ctx, transitionKey) {
+  const key = String(transitionKey || "").trim();
+  if (!key) return null;
+  return getDelegationTransitionStore(ctx)[key] || null;
+}
+
+function setDelegationTransitionResult(ctx, transitionKey, value) {
+  const key = String(transitionKey || "").trim();
+  if (!key) return null;
+  getDelegationTransitionStore(ctx)[key] = value;
+  return value;
+}
+
 // ── action.claim_task ───────────────────────────────────────────────────────
 
 registerNodeType("action.claim_task", {
@@ -4327,6 +4407,28 @@ registerNodeType("action.claim_task", {
 
     if (!taskId) throw new Error("action.claim_task: taskId is required");
 
+    const runtimeState = getWorkflowRuntimeState(ctx);
+    if (!runtimeState.delegationTransitionResults || typeof runtimeState.delegationTransitionResults !== "object") {
+      runtimeState.delegationTransitionResults = {};
+    }
+    const delegationTransitionType = String(cfgOrCtx(node, ctx, "delegationTransitionType") || "").trim();
+    const delegationTransitionKey = String(cfgOrCtx(node, ctx, "delegationTransitionKey") || "").trim();
+    const idempotencyKey = String(
+      delegationTransitionKey ||
+      cfgOrCtx(node, ctx, "idempotencyKey", "") || `${node.id || "claim_task"}:${taskId}:${ctx.data?._workflowRunId || ctx.id || "run"}`,
+    ).trim();
+    const existingTransition = idempotencyKey
+      ? getExistingDelegationTransition(ctx, idempotencyKey)
+      : null;
+    if (existingTransition && existingTransition.type === "claim_task") {
+      if (existingTransition.claimToken) ctx.data._claimToken = existingTransition.claimToken;
+      if (existingTransition.instanceId) ctx.data._claimInstanceId = existingTransition.instanceId;
+      return {
+        ...existingTransition.result,
+        idempotentReplay: true,
+      };
+    }
+
     const claims = await ensureTaskClaimsMod();
     try {
       await ensureTaskClaimsInitialized(ctx, claims);
@@ -4359,8 +4461,19 @@ registerNodeType("action.claim_task", {
       const token = claimResult.token || claimResult.claim?.claim_token || null;
       ctx.data._claimToken = token;
       ctx.data._claimInstanceId = instanceId;
+      recordDelegationAuditEvent(ctx, {
+        type: delegationTransitionType || "assign",
+        eventType: delegationTransitionType || "assign",
+        nodeId: node.id,
+        taskId,
+        instanceId,
+        claimToken: token,
+        at: Date.now(),
+        timestamp: new Date().toISOString(),
+        transitionKey: delegationTransitionKey || [delegationTransitionType || "assign", taskId, instanceId].join(":"),
+      });
 
-      const runtimeState = getWorkflowRuntimeState(ctx);
+      const claimRuntimeState = runtimeState;
       // Start renewal timer (stored in non-serializable runtime state for cleanup by release_claim)
       const renewClaimFn =
         typeof claims.renewTaskClaim === "function"
@@ -4380,9 +4493,22 @@ registerNodeType("action.claim_task", {
               "owner_mismatch",
             ].some((entry) => reason.includes(entry));
             if (fatal) {
+              recordDelegationAuditEvent(ctx, {
+                type: reason.includes("owner_mismatch") ? "owner-mismatch" : "claim-renew",
+                eventType: reason.includes("owner_mismatch") ? "owner-mismatch" : "claim-renew",
+                nodeId: node.id,
+                taskId,
+                instanceId,
+                claimToken: token,
+                reason,
+                error: reason,
+                at: Date.now(),
+                timestamp: new Date().toISOString(),
+                transitionKey: [reason.includes("owner_mismatch") ? "owner-mismatch" : "claim-renew-fatal", taskId, instanceId, token || "none", reason].join(":"),
+              });
               ctx.log(node.id, `Claim renewal fatal: ${reason} — aborting task`);
               clearInterval(renewTimer);
-              runtimeState.claimRenewTimer = null;
+              claimRuntimeState.claimRenewTimer = null;
               ctx.data._claimRenewTimer = null;
               // Signal abort to downstream nodes via context
               ctx.data._claimStolen = true;
@@ -4392,6 +4518,19 @@ registerNodeType("action.claim_task", {
           };
           try {
             const renewResult = await renewClaimFn({ taskId, claimToken: token, instanceId, ttlMinutes });
+            if (renewResult?.success) {
+              recordDelegationAuditEvent(ctx, {
+                type: "claim-renew",
+                eventType: "claim-renew",
+                nodeId: node.id,
+                taskId,
+                instanceId,
+                claimToken: token,
+                at: Date.now(),
+                timestamp: new Date().toISOString(),
+                transitionKey: ["claim-renew", taskId, instanceId, token || "none"].join(":"),
+              });
+            }
             if (renewResult && renewResult.success === false) {
               handleClaimRenewFailure(
                 renewResult.error || renewResult.reason || "claim_renew_failed",
@@ -4403,13 +4542,22 @@ registerNodeType("action.claim_task", {
         }, renewIntervalMs);
         // Prevent timer from keeping the process alive
         if (renewTimer.unref) renewTimer.unref();
-        runtimeState.claimRenewTimer = renewTimer;
+        claimRuntimeState.claimRenewTimer = renewTimer;
         // Keep serialized context JSON-safe.
         ctx.data._claimRenewTimer = null;
       }
 
       ctx.log(node.id, `Task "${taskTitle}" claimed (ttl=${ttlMinutes}min, renew=${renewIntervalMs}ms)`);
-      return { success: true, taskId, claimToken: token, instanceId };
+      const successResult = { success: true, taskId, claimToken: token, instanceId };
+      if (idempotencyKey) {
+        setDelegationTransitionResult(ctx, idempotencyKey, {
+          type: "claim_task",
+          claimToken: token,
+          instanceId,
+          result: { ...successResult },
+        });
+      }
+      return successResult;
     }
 
     if (claimResult?.error === "task_already_claimed") {
@@ -6478,5 +6626,8 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 //  Export all registered types for introspection
 // ═══════════════════════════════════════════════════════════════════════════
+
+
+
 
 
