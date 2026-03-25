@@ -706,9 +706,9 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
   const [form, setForm] = useState(initialFormSnapshot);
   const [baseline, setBaseline] = useState(initialFormSnapshot);
   const [loading, setLoading] = useState(false);
-  const [importAgents, setImportAgents] = useState(true);
+  const [importAgents, setImportAgents] = useState(false);
   const [importSkills, setImportSkills] = useState(true);
-  const [importPrompts, setImportPrompts] = useState(true);
+  const [importPrompts, setImportPrompts] = useState(false);
   const [importTools, setImportTools] = useState(true);
   const [loadingContent, setLoadingContent] = useState(!isNew && !!entry?.id);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -2472,10 +2472,13 @@ function AgentLibraryImporter({ onImported }) {
         <input value=${repoUrl} onInput=${(e) => setRepoUrl(e.currentTarget.value)} placeholder="https://github.com/org/repo.git" />
       </label>
       <div style="margin-top:8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px;">
-        <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importAgents} onChange=${(e) => setImportAgents(Boolean(e.currentTarget.checked))} /> Agent Profiles</label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importPrompts} onChange=${(e) => setImportPrompts(Boolean(e.currentTarget.checked))} /> Prompts</label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importSkills} onChange=${(e) => setImportSkills(Boolean(e.currentTarget.checked))} /> Skills</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importAgents} onChange=${(e) => setImportAgents(Boolean(e.currentTarget.checked))} /> Bosun Agent Profiles</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importPrompts} onChange=${(e) => setImportPrompts(Boolean(e.currentTarget.checked))} /> Bosun Prompts</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importSkills} onChange=${(e) => setImportSkills(Boolean(e.currentTarget.checked))} /> Bosun Library Skills</label>
         <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importTools} onChange=${(e) => setImportTools(Boolean(e.currentTarget.checked))} /> Tools (MCP)</label>
+      </div>
+      <div style="margin-top:6px;font-size:0.77em;color:var(--text-secondary);">
+        Imported skills stay in Bosun's library and are resolved into task prompts by Bosun. They are not intended to be exported into provider-native Claude/Copilot skill folders.
       </div>
       ${selectedSource ? html`
         <div style="margin-top:8px;padding:8px 10px;border:1px solid var(--border,#333);border-radius:10px;background:var(--surface-2,rgba(255,255,255,0.03));display:flex;flex-direction:column;gap:6px;">
@@ -2544,15 +2547,46 @@ function getTrustTier(source) {
   return { label: "Unknown", color: "#6b7280", icon: "❔" };
 }
 
+export function getRecommendedMarketplaceImportPayload(previewData) {
+  const source = previewData?.source && typeof previewData.source === "object"
+    ? previewData.source
+    : {};
+  const counts = previewData?.candidatesByType && typeof previewData.candidatesByType === "object"
+    ? previewData.candidatesByType
+    : {};
+  const focuses = Array.isArray(source?.focuses)
+    ? source.focuses.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean)
+    : [];
+  const onlySkills = Number(counts.skill || 0) > 0
+    && Number(counts.agent || 0) === 0
+    && Number(counts.prompt || 0) === 0;
+  const sourceLooksSkillOnly = focuses.includes("skills")
+    && !focuses.includes("agents")
+    && !focuses.includes("prompts");
+
+  if (onlySkills || sourceLooksSkillOnly) {
+    return {
+      importAgents: false,
+      importSkills: true,
+      importPrompts: false,
+      importTools: true,
+    };
+  }
+
+  return {
+    importAgents: true,
+    importSkills: true,
+    importPrompts: true,
+    importTools: true,
+  };
+}
+
 export function buildMarketplaceImportPayload(sourceId, previewData, selectedPaths) {
   const source = previewData?.source && typeof previewData.source === "object"
     ? previewData.source
     : {};
   const payload = {
-    importAgents: true,
-    importSkills: true,
-    importPrompts: true,
-    importTools: true,
+    ...getRecommendedMarketplaceImportPayload(previewData),
     includeEntries: selectedPaths,
   };
 
@@ -2708,13 +2742,14 @@ function LibraryMarketplace({ onImported }) {
   const doImportAll = useCallback(async (sourceId) => {
     setImporting(sourceId);
     try {
-      const res = await importLibrarySource({
-        sourceId,
-        importAgents: true,
-        importSkills: true,
-        importPrompts: true,
-        importTools: true,
-      });
+      const source = sources.find((entry) => entry.id === sourceId) || null;
+      const res = await importLibrarySource(
+        buildMarketplaceImportPayload(
+          sourceId,
+          source ? { source } : { source: { id: sourceId } },
+          undefined,
+        ),
+      );
       if (!res?.ok) throw new Error(res?.error || "Import failed");
       const count = Number(res?.data?.importedCount || 0);
       showToast(`Imported ${count} entries from ${sourceId}`, "success");
@@ -2724,7 +2759,7 @@ function LibraryMarketplace({ onImported }) {
       showToast(`Import failed: ${parseApiError(err)}`, "error");
     }
     setImporting(null);
-  }, [onImported]);
+  }, [onImported, sources]);
 
   const doCustomImport = useCallback(async () => {
     if (!customUrl.trim()) return;
