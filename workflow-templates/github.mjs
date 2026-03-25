@@ -1598,6 +1598,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "- Do NOT touch PRs that are not Bosun-created or explicitly trusted by config.",
       sdk: "auto",
       timeoutMs: 1_800_000,
+      delegationWatchdogTimeoutMs: "{{delegationWatchdogTimeoutMs}}",
+      delegationWatchdogMaxRecoveries: "{{delegationWatchdogMaxRecoveries}}",
       maxRetries: 2,
       retryDelayMs: 30_000,
       continueOnError: true,
