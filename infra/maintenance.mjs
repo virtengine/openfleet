@@ -247,7 +247,7 @@ function killPid(pid, label) {
 }
 
 /**
- * Kill stale orchestrator processes (pwsh running ve-orchestrator.ps1).
+ * Kill stale orchestrator processes (pwsh running orchestrator.ps1).
  * Skips our own child if childPid is provided.
  */
 export function killStaleOrchestrators(childPid) {
@@ -257,7 +257,7 @@ export function killStaleOrchestrators(childPid) {
 
   for (const p of procs) {
     if (p.pid === myPid || p.pid === childPid) continue;
-    if (p.commandLine && p.commandLine.includes("ve-orchestrator.ps1")) {
+    if (p.commandLine && (p.commandLine.includes("ve-orchestrator.ps1") || p.commandLine.includes("orchestrator.ps1"))) {
       killPid(p.pid, "stale orchestrator");
       killed++;
     }
@@ -340,8 +340,9 @@ export function cleanupWorktrees(repoRoot) {
         const pathMatch = entry.match(/^worktree\s+(.+)/m);
         if (!pathMatch) continue;
         const wtPath = pathMatch[1].trim();
-        // Only touch vibe-kanban temp worktrees
-        if (!wtPath.includes("vibe-kanban") || wtPath === repoRoot) continue;
+        // Only touch orphaned temp worktrees
+        if (wtPath === repoRoot) continue;
+        if (!wtPath.includes("copilot-worktree")) continue;
         // Check if the path exists on disk
         if (!existsSync(wtPath)) {
           console.log(
@@ -409,7 +410,7 @@ export function cleanupWorktrees(repoRoot) {
 // ── Stale Branch Cleanup ────────────────────────────────────────────────
 
 /**
- * Clean up old local branches created by codex/vibe-kanban automation.
+ * Clean up old local branches created by codex/bosun automation.
  *
  * Targets branches matching `ve/*` and `copilot-worktree-*` patterns.
  *

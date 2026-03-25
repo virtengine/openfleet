@@ -251,7 +251,7 @@ import { resolveCodexProfileRuntime } from "../shell/codex-model-profiles.mjs";
 import { sanitizeMonitorTailForPrompt as sanitizeMonitorTailForPromptShared } from "../monitor-tail-sanitizer.mjs";
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
-// ── Anomaly signal file path (shared with ve-orchestrator.ps1) ──────────────
+// ── Anomaly signal file path (shared with orchestrator) ──────────────────────
 const ANOMALY_SIGNAL_PATH = resolve(
   __dirname,
   "..",

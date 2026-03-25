@@ -80,7 +80,7 @@ function normalizeWorkspace(workspace) {
   return {
     id,
     name: workspace.name || workspace.id || id,
-    provider: workspace.provider || "vibe-kanban",
+    provider: workspace.provider || "bosun",
     region: workspace.region || "",
     owner: workspace.owner || "",
     availability_before_lease: workspace.availability_before_lease || null,
@@ -497,7 +497,7 @@ export function formatSharedWorkspaceDetail(workspace, options = {}) {
   if (!workspace) return "Workspace not found.";
   const now = options.now ? new Date(options.now) : new Date();
   const lines = [`${workspace.id}: ${workspace.name || workspace.id}`];
-  lines.push(`provider: ${workspace.provider || "vibe-kanban"}`);
+  lines.push(`provider: ${workspace.provider || "bosun"}`);
   if (workspace.region) {
     lines.push(`region: ${workspace.region}`);
   }

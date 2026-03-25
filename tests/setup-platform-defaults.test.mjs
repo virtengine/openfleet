@@ -12,7 +12,6 @@ import {
 async function createScriptPair(dir, ext) {
   await mkdir(dir, { recursive: true });
   await writeFile(resolve(dir, `ve-orchestrator.${ext}`), "#!/usr/bin/env stub\n");
-  await writeFile(resolve(dir, `ve-kanban.${ext}`), "#!/usr/bin/env stub\n");
 }
 
 describe("setup platform defaults", () => {

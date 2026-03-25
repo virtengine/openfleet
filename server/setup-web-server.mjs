@@ -1419,21 +1419,6 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
     ),
   );
 
-  envMap.VK_BASE_URL = trimTrailingSlashes(String(
-    pickNonEmptyValue(env.vkBaseUrl, envMap.VK_BASE_URL, sourceEnv.VK_BASE_URL) ||
-      "http://127.0.0.1:54089",
-  ).trim());
-  if (!envMap.VK_BASE_URL) {
-    envMap.VK_BASE_URL = "http://127.0.0.1:54089";
-  }
-  envMap.VK_RECOVERY_PORT = String(
-    toBoundedInt(
-      pickNonEmptyValue(env.vkRecoveryPort, envMap.VK_RECOVERY_PORT, sourceEnv.VK_RECOVERY_PORT),
-      54089,
-      { min: 1, max: 65535 },
-    ),
-  );
-
   const orchestratorArgs = pickNonEmptyValue(
     env.orchestratorArgs,
     envMap.ORCHESTRATOR_ARGS,
@@ -2437,10 +2422,8 @@ function handleApply(body) {
 
     // 3. Call ensureCodexConfig to ensure ~/.codex/config.toml has global
     //    bosun settings (sandbox, feature flags, timeouts, etc.).
-    //    Vibe-Kanban MCP stays workspace-scoped in repo .codex/config.toml.
     try {
       ensureCodexConfig({
-        vkBaseUrl: env.vkBaseUrl || process.env.VK_BASE_URL || "http://127.0.0.1:54089",
         skipVk: true,
         env: { ...process.env, BOSUN_HOME: bosunHome, BOSUN_WORKSPACES_DIR: workspacesDir },
       });

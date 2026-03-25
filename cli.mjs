@@ -175,10 +175,6 @@ function showHelp() {
     Run 'bosun workflow --help' for workflow CLI examples.
     Run 'bosun tui' to launch the terminal UI.
 
-  VIBE-KANBAN
-    --no-vk-spawn               Don't auto-spawn Vibe-Kanban
-    --vk-ensure-interval <ms>   VK health check interval (default: 60000)
-
   STARTUP SERVICE
     --enable-startup             Register bosun to auto-start on login
     --disable-startup           Remove bosun from startup services

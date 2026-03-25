@@ -135,12 +135,8 @@ const MOVES = {
   "context-indexer.mjs":          "workspace/",
 
   // ── kanban/ ── Kanban / VE board ────────────────────────────────────────
-  "ve-kanban.mjs":                "kanban/",
   "kanban-adapter.mjs":           "kanban/",
-  "vibe-kanban-wrapper.mjs":      "kanban/",
-  "vk-error-resolver.mjs":       "kanban/",
-  "vk-log-stream.mjs":           "kanban/",
-  "ve-orchestrator.mjs":          "kanban/",
+
 
   // ── infra/ ── Runtime / infrastructure ──────────────────────────────────
   "monitor.mjs":                  "infra/",
@@ -171,10 +167,6 @@ const MOVES = {
 
 // ── companion non-.mjs files that travel with their .mjs counterparts ─────
 const COMPANION_MOVES = {
-  "ve-kanban.ps1":       "kanban/",
-  "ve-kanban.sh":        "kanban/",
-  "ve-orchestrator.ps1": "kanban/",
-  "ve-orchestrator.sh":  "kanban/",
   "fix-stuck-rebase.ps1":"git/",
   "rotate-agent-logs.sh":"agent/",
 };

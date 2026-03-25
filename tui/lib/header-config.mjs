@@ -14,8 +14,6 @@ function resolveProjectLabel(config = {}) {
     config?.linear?.url,
     config?.kanban?.url,
     config?.kanban?.projectUrl,
-    config?.vkPublicUrl,
-    config?.vkEndpointUrl,
     config?.projectUrl,
     config?.kanban?.projectId,
     config?.projectId,

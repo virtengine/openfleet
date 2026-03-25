@@ -1450,8 +1450,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     !isEnvEnabled(process.env.OPENCODE_SDK_DISABLED, false);
 
   // ── Internal Executor ────────────────────────────────────
-  // Allows the monitor to run tasks via agent-pool directly instead of
-  // (or alongside) the VK executor. Modes: "internal" (default), "vk", "hybrid".
+  // Allows the monitor to run tasks via agent-pool directly. Modes: "internal" (default), "hybrid".
   const kanbanBackend = normalizeKanbanBackend(
     process.env.KANBAN_BACKEND || configData.kanban?.backend || "internal",
   );
@@ -2277,8 +2276,8 @@ function findOrchestratorScript(configDir, repoRoot) {
     if (existsSync(p)) return p;
   }
   return preferShellScript
-    ? resolve(configDir, "..", "ve-orchestrator.sh")
-    : resolve(configDir, "..", "ve-orchestrator.ps1");
+    ? resolve(configDir, "..", "orchestrator.sh")
+    : resolve(configDir, "..", "orchestrator.ps1");
 }
 
 // ── Exports ──────────────────────────────────────────────────────────────────

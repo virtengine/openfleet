@@ -8,14 +8,12 @@
  * Solution: Set GIT_EDITOR=true (or GIT_EDITOR=:) for non-interactive mode
  *
  * This script ensures all agent workspaces have non-blocking git config.
- * Covers: main repo, tmpclaude-* workspaces, git worktrees (ve/*),
- *         and VK task worktrees under $TEMP/vibe-kanban/worktrees/.
+ * Covers: main repo, tmpclaude-* workspaces, and git worktrees (ve/*).
  */
 
 import { execSync } from "child_process";
 import { existsSync, readdirSync } from "fs";
 import { resolve, basename } from "path";
-import { tmpdir } from "os";
 import { fileURLToPath } from "url";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 
@@ -128,35 +126,6 @@ function findGitWorktrees() {
   return results;
 }
 
-/**
- * Scan $TEMP/vibe-kanban/worktrees/ for VK task worktree directories
- * @returns {string[]}
- */
-function findVKWorktrees() {
-  /** @type {string[]} */
-  const results = [];
-  const vkBase = resolve(tmpdir(), "vibe-kanban", "worktrees");
-
-  if (!existsSync(vkBase)) {
-    return results;
-  }
-
-  try {
-    const entries = readdirSync(vkBase, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        const candidate = resolve(vkBase, entry.name);
-        if (existsSync(resolve(candidate, ".git"))) {
-          results.push(candidate);
-        }
-      }
-    }
-  } catch (err) {
-    console.error("[git-editor-fix] Failed to scan VK worktrees:", err.message);
-  }
-  return results;
-}
-
 // ── Main functions ───────────────────────────────────────────────────────────
 
 /**
@@ -165,7 +134,6 @@ function findVKWorktrees() {
  *   1. Main repo root (REPO_ROOT)
  *   2. tmpclaude-* directories
  *   3. git worktrees (parsed from `git worktree list --porcelain`)
- *   4. VK task worktrees under $TEMP/vibe-kanban/worktrees/
  *
  * Paths are deduplicated before configuration.
  */
@@ -191,11 +159,6 @@ function fixAllWorkspaces() {
 
   // 3. Git worktrees (includes ve/* branches)
   for (const ws of findGitWorktrees()) {
-    add(ws);
-  }
-
-  // 4. VK worktrees under $TEMP
-  for (const ws of findVKWorktrees()) {
     add(ws);
   }
 

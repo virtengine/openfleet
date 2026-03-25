@@ -134,7 +134,6 @@ describe("conflict resolution strategy", () => {
     // 1. PR's declared baseRefName (most authoritative)
     // 2. Stored target_branch from submission
     // 3. Task-level upstream detection (Test-IsBosunTask → BosunTaskUpstream)
-    // 4. Fallback to VK_TARGET_BRANCH
     //
     // For bosun tasks, step 3 returns "origin/ve/bosun-generic"
     // which prevents them from ever targeting "main" automatically.
@@ -142,7 +141,7 @@ describe("conflict resolution strategy", () => {
   });
 
   it("auto-resolve strategies match between monitor.mjs and orchestrator", () => {
-    // Both monitor.mjs and ve-orchestrator.ps1 define the same patterns:
+    // Both monitor.mjs and orchestrator.ps1 define the same patterns:
     // Theirs: pnpm-lock.yaml, package-lock.json, yarn.lock, go.sum, *.lock
     // Ours: CHANGELOG.md, coverage.txt, results.txt
     const theirsPatterns = AUTO_RESOLVE_THEIRS;

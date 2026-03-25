@@ -101,14 +101,12 @@ describe("getMaxParallelFromArgs", () => {
   });
 
   it("falls back to env vars and ignores invalid values", () => {
-    process.env.VK_MAX_PARALLEL = "";
     process.env.MAX_PARALLEL = "7";
 
     expect(getMaxParallelFromArgs(["--maxparallel=0"])).toBe(7);
   });
 
   it("returns null when flag is missing and env is invalid", () => {
-    process.env.VK_MAX_PARALLEL = "-2";
     delete process.env.MAX_PARALLEL;
 
     expect(getMaxParallelFromArgs(["--other", "value"])).toBeNull();

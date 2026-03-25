@@ -823,7 +823,7 @@ export async function attemptAutoFix(opts) {
               .join("\n")
           : "(no explicit error lines — possible SIGKILL/OOM)") +
         `\n\n**Suggested action:** Review the error indicators above. ` +
-        `The main orchestrator script is \`scripts/bosun/ve-orchestrator.ps1\`. ` +
+        `The main orchestrator script is \`scripts/bosun/orchestrator.ps1\`. ` +
         `Check for PowerShell syntax errors, null references, or infinite retry loops.`;
 
       await writeFile(
@@ -1168,7 +1168,7 @@ export async function fixLoopingError(opts) {
       `• No break/continue/return after the error condition\n` +
       `• Status not updated after failure → retries the same operation\n` +
       `• Missing backoff or give-up logic after repeated failures\n\n` +
-      `**Suggested fix:** Check \`scripts/bosun/ve-orchestrator.ps1\` for the code ` +
+      `**Suggested fix:** Check \`scripts/bosun/orchestrator.ps1\` for the code ` +
       `that produces this error message and add proper exit conditions.`;
 
     await writeFile(

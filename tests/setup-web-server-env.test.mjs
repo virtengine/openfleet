@@ -290,8 +290,6 @@ describe("setup web server non-blocking env defaults", () => {
       CONTAINER_RUNTIME: "auto",
       WHATSAPP_ENABLED: "false",
       TELEGRAM_INTERVAL_MIN: "10",
-      VK_BASE_URL: "http://127.0.0.1:54089",
-      VK_RECOVERY_PORT: "54089",
       ORCHESTRATOR_ARGS: "-MaxParallel 4",
     });
   });
@@ -367,8 +365,6 @@ describe("setup web server non-blocking env defaults", () => {
         containerRuntime: "runc",
         whatsappEnabled: "sometimes",
         telegramIntervalMin: 100000,
-        vkBaseUrl: "   ",
-        vkRecoveryPort: 999999,
         orchestratorArgs: "   ",
       },
       {},
@@ -419,8 +415,6 @@ describe("setup web server non-blocking env defaults", () => {
       CONTAINER_RUNTIME: "auto",
       WHATSAPP_ENABLED: "false",
       TELEGRAM_INTERVAL_MIN: "1440",
-      VK_BASE_URL: "http://127.0.0.1:54089",
-      VK_RECOVERY_PORT: "65535",
       ORCHESTRATOR_ARGS: "-MaxParallel 1",
     });
   });
@@ -481,8 +475,6 @@ describe("setup web server non-blocking env defaults", () => {
         containerRuntime: "podman",
         whatsappEnabled: true,
         telegramIntervalMin: 42,
-        vkBaseUrl: "https://vk.example.com/",
-        vkRecoveryPort: 5500,
         orchestratorArgs: "-CustomFlag true",
       },
       {},
@@ -536,8 +528,6 @@ describe("setup web server non-blocking env defaults", () => {
       CONTAINER_RUNTIME: "podman",
       WHATSAPP_ENABLED: "true",
       TELEGRAM_INTERVAL_MIN: "42",
-      VK_BASE_URL: "https://vk.example.com",
-      VK_RECOVERY_PORT: "5500",
       ORCHESTRATOR_ARGS: "-CustomFlag true",
     });
   });

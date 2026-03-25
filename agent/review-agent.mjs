@@ -1,5 +1,5 @@
 /**
- * review-agent.mjs — Automated Code Review for Vibe-Kanban Tasks
+ * review-agent.mjs — Automated Code Review for Tasks
  *
  * Reviews PRs when tasks move to "inreview" status.
  * Only flags CRITICAL issues: security, bugs, broken functionality,

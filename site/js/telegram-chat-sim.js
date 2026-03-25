@@ -377,7 +377,7 @@
     },
 
     '/autobacklog': {
-      text: ':download: <b>Auto-Backlog</b> — Experimental\n\nStatus: <code>enabled</code>\nReplenishment threshold: <code>2</code> tasks remaining\nSource: <code>github issues + vibe-kanban</code>\n\nNext replenishment check: <code>4m 12s</code>',
+      text: ':download: <b>Auto-Backlog</b> — Experimental\n\nStatus: <code>enabled</code>\nReplenishment threshold: <code>2</code> tasks remaining\nSource: <code>github issues</code>\n\nNext replenishment check: <code>4m 12s</code>',
     },
 
     '/requirements': {

@@ -696,7 +696,7 @@ No structured error was extracted. Termination reason: {{FALLBACK_REASON}}
 {{RECENT_MESSAGES_CONTEXT}}
 ## Instructions
 1. Analyze likely root cause.
-2. Main script: scripts/bosun/ve-orchestrator.ps1
+2. Main script: scripts/bosun/orchestrator.ps1
 3. If fixable bug exists, apply minimal safe fix.
 4. If crash is external only (OOM/SIGKILL), do not modify code.
 `,
@@ -709,7 +709,7 @@ This error repeats {{REPEAT_COUNT}} times:
 {{RECENT_MESSAGES_CONTEXT}}
 
 ## Instructions
-1. Main script: scripts/bosun/ve-orchestrator.ps1
+1. Main script: scripts/bosun/orchestrator.ps1
 2. Find where this error is emitted.
 3. Fix loop root cause (missing state change, missing stop condition, etc).
 4. Apply minimal safe fix only.

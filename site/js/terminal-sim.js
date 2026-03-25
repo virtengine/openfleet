@@ -208,10 +208,7 @@
       `    ${C.cyan('task import')} <file.json>     Bulk import tasks from JSON`,
       `    ${C.cyan('task plan')} [--count N]       Trigger AI task planner`,
       '',
-      `  ${C.bold('VIBE-KANBAN')}`,
-      `    ${C.cyan('--no-vk-spawn')}               Don't auto-spawn Vibe-Kanban`,
-      `    ${C.cyan('--vk-ensure-interval')} <ms>   VK health check interval ${C.dim('(default: 60000)')}`,
-      '',
+
       `  ${C.bold('STARTUP SERVICE')}`,
       `    ${C.cyan('--enable-startup')}             Register bosun to auto-start on login`,
       `    ${C.cyan('--disable-startup')}           Remove bosun from startup services`,

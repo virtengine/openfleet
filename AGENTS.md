@@ -23,7 +23,7 @@ Open the closest module `AGENTS.md` before editing.
 - `workflow-templates/AGENTS.md` - template library used by workflow engine.
 - `task/AGENTS.md` - task execution, claims, context, archiving.
 - `workspace/AGENTS.md` - workspace/worktree/shared-state lifecycle.
-- `kanban/AGENTS.md` - Vibe-Kanban adapter and orchestrator wrappers.
+- `kanban/AGENTS.md` - Kanban adapter layer (GitHub, Jira, internal).
 - `server/AGENTS.md` - HTTP API and setup/UI servers.
 - `telegram/AGENTS.md` - Telegram/WhatsApp channels and sentinel.
 - `shell/AGENTS.md` - executor shells (Codex, Copilot, Claude, OpenCode).

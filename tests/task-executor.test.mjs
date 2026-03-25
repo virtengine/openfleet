@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 
 vi.mock("../kanban/kanban-adapter.mjs", () => ({
   getKanbanAdapter: vi.fn(),
-  getKanbanBackendName: vi.fn(() => "vk"),
+  getKanbanBackendName: vi.fn(() => "internal"),
   listTasks: vi.fn(() => []),
   listProjects: vi.fn(() => [{ id: "proj-1", name: "Test Project" }]),
   getTask: vi.fn(),
@@ -1632,7 +1632,7 @@ describe("task-executor", () => {
       const executeSpy = vi
         .spyOn(ex, "executeTask")
         .mockResolvedValue(undefined);
-      updateTaskStatus.mockRejectedValueOnce(new Error("VK unavailable"));
+      updateTaskStatus.mockRejectedValueOnce(new Error("backend unavailable"));
 
       listTasks.mockResolvedValueOnce([
         {
@@ -1772,13 +1772,13 @@ describe("task-executor", () => {
     });
 
     it("validates mode values — uses env when set", () => {
-      process.env.EXECUTOR_MODE = "vk";
+      process.env.EXECUTOR_MODE = "hybrid";
       loadConfig.mockReturnValue({
         internalExecutor: { mode: "internal" },
       });
 
       const opts = loadExecutorOptionsFromConfig();
-      expect(opts.mode).toBe("vk");
+      expect(opts.mode).toBe("hybrid");
     });
 
     it("reads from config.taskExecutor as fallback key", () => {
@@ -1817,8 +1817,8 @@ describe("task-executor", () => {
       expect(isInternalExecutorEnabled()).toBe(true);
     });
 
-    it("returns false for EXECUTOR_MODE=vk", () => {
-      process.env.EXECUTOR_MODE = "vk";
+    it("returns false when nothing configured", () => {
+      loadConfig.mockReturnValue({});
       expect(isInternalExecutorEnabled()).toBe(false);
     });
 
@@ -1834,11 +1834,6 @@ describe("task-executor", () => {
         taskExecutor: { mode: "hybrid" },
       });
       expect(isInternalExecutorEnabled()).toBe(true);
-    });
-
-    it("returns false when nothing configured", () => {
-      loadConfig.mockReturnValue({});
-      expect(isInternalExecutorEnabled()).toBe(false);
     });
 
     it("returns false when loadConfig throws", () => {
@@ -1934,7 +1929,7 @@ describe("task-executor", () => {
       }));
 
       const mod = await import("../task/task-executor.mjs");
-      const inst = mod.getTaskExecutor({ mode: "vk" });
+      const inst = mod.getTaskExecutor({ mode: "internal" });
       expect(inst).toBeInstanceOf(mod.TaskExecutor);
     });
 

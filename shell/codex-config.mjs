@@ -1106,80 +1106,7 @@ export function buildAgentSdkBlock({ primary = "codex" } = {}) {
   return buildDefaultAgentSdkBlock(primary);
 }
 
-/**
- * Build the vibe_kanban MCP server block (including env vars).
- *
- * The version is pinned from the local package.json dependency to avoid
- * slow npx re-downloads when @latest resolves to a new version.
- *
- * Only VK_BASE_URL and VK_ENDPOINT_URL are set — the MCP server reads
- * the backend port from the VK port file, so PORT/HOST env vars are not
- * needed and were removed to avoid confusion.
- *
- * @param {object} opts
- * @param {string} opts.vkBaseUrl   e.g. "http://127.0.0.1:54089"
- */
-export function buildVibeKanbanBlock({
-  vkBaseUrl = "http://127.0.0.1:54089",
-} = {}) {
-  const vkVersion = getVibeKanbanVersion();
-  return [
-    "",
-    "# ── Vibe-Kanban MCP (added by bosun) ──",
-    "[mcp_servers.vibe_kanban]",
-    "startup_timeout_sec = 120",
-    "args = [",
-    '    "-y",',
-    `    "vibe-kanban@${vkVersion}",`,
-    '    "--mcp",',
-    "]",
-    'command = "npx"',
-    'tools = ["*"]',
-    "",
-    "[mcp_servers.vibe_kanban.env]",
-    "# Ensure MCP always targets the correct VK API endpoint.",
-    `VK_BASE_URL = "${vkBaseUrl}"`,
-    `VK_ENDPOINT_URL = "${vkBaseUrl}"`,
-    "",
-  ].join("\n");
-}
 
-/**
- * Update the env vars inside an existing [mcp_servers.vibe_kanban.env] section.
- * If a key already exists with a different value, it is replaced.
- * If a key is missing, it is appended to the section.
- *
- * @param {string} toml  Current config.toml content
- * @param {object} envVars  Key-value pairs to ensure
- * @returns {string}  Updated TOML
- */
-export function updateVibeKanbanEnv(toml, envVars) {
-  const envHeader = "[mcp_servers.vibe_kanban.env]";
-  const headerIdx = toml.indexOf(envHeader);
-  if (headerIdx === -1) return toml; // section doesn't exist
-
-  // Find the end of this section (next [header] or EOF)
-  const afterHeader = headerIdx + envHeader.length;
-  const nextSection = toml.indexOf("\n[", afterHeader);
-  const sectionEnd = nextSection === -1 ? toml.length : nextSection;
-
-  let section = toml.substring(afterHeader, sectionEnd);
-
-  for (const [key, value] of Object.entries(envVars)) {
-    // Check if key already exists in section
-    const keyRegex = new RegExp(`^${escapeRegex(key)}\\s*=\\s*.*$`, "m");
-    const match = section.match(keyRegex);
-    if (match) {
-      // Replace existing value
-      section = section.replace(keyRegex, `${key} = "${value}"`);
-    } else {
-      // Append before end of section
-      section = section.trimEnd() + `\n${key} = "${value}"\n`;
-    }
-  }
-
-  return toml.substring(0, afterHeader) + section + toml.substring(sectionEnd);
-}
 
 /**
  * Scan all [model_providers.*] sections for stream_idle_timeout_ms.
@@ -1401,13 +1328,10 @@ export function ensureRetrySettings(toml, providerName) {
  * High-level: ensure the config.toml is properly configured for bosun.
  *
  * Returns an object describing what was done:
- *   { created, vkAdded, vkEnvUpdated, timeoutsFixed[], retriesAdded[],
+ *   { created, timeoutsFixed[], retriesAdded[],
  *     featuresAdded[], sandboxAdded, shellEnvAdded, commonMcpAdded, path }
  *
  * @param {object} opts
- * @param {string}  [opts.vkBaseUrl]
- * @param {boolean} [opts.skipVk]
- * @param {boolean} [opts.manageVkMcp]  Explicit opt-in to manage VK MCP in global config
  * @param {boolean} [opts.dryRun]  If true, returns result without writing
  * @param {object}  [opts.env]     Environment overrides (defaults to process.env)
  * @param {string}  [opts.primarySdk]  Primary agent SDK: "codex", "copilot", or "claude"
@@ -1500,41 +1424,21 @@ function applyAgentSdkDefaults(toml, env, primarySdk, result) {
   return nextToml;
 }
 
-function applyVibeKanbanDefaults(toml, { manageVkMcp, skipVk, vkBaseUrl }, result) {
-  let nextToml = toml;
-  const shouldManageGlobalVkMcp = Boolean(manageVkMcp) && !skipVk;
-  if (!shouldManageGlobalVkMcp) {
-    if (hasVibeKanbanMcp(nextToml)) {
-      nextToml = removeVibeKanbanMcp(nextToml);
-      result.vkRemoved = true;
-    }
-    return nextToml;
-  }
-
-  if (!hasVibeKanbanMcp(nextToml)) {
-    nextToml += buildVibeKanbanBlock({ vkBaseUrl });
-    result.vkAdded = true;
-    return nextToml;
-  }
-
-  const vkEnvValues = {
-    VK_BASE_URL: vkBaseUrl,
-    VK_ENDPOINT_URL: vkBaseUrl,
-  };
-  const beforeVkEnv = nextToml;
-  if (!hasVibeKanbanEnv(nextToml)) {
-    nextToml =
-      nextToml.trimEnd() +
-      "\n\n[mcp_servers.vibe_kanban.env]\n" +
-      'VK_BASE_URL = "' + vkBaseUrl + '"\n' +
-      'VK_ENDPOINT_URL = "' + vkBaseUrl + '"\n';
-  } else {
-    nextToml = updateVibeKanbanEnv(nextToml, vkEnvValues);
-  }
-  if (nextToml !== beforeVkEnv) {
-    result.vkEnvUpdated = true;
-  }
-  return nextToml;
+/**
+ * Strip any existing [mcp_servers.vibe_kanban] section (and sub-sections)
+ * from TOML. VK backend has been removed — this is cleanup only.
+ */
+function stripVibeKanbanMcp(toml) {
+  // Remove the entire [mcp_servers.vibe_kanban] block including sub-sections
+  // like [mcp_servers.vibe_kanban.env]. Matches from the header to the next
+  // non-vibe_kanban section or EOF.
+  return toml.replaceAll(
+    /\n?# ── Vibe-Kanban MCP[^\n]*\n(?:\[mcp_servers\.vibe_kanban[^\]]*][^[]*)+/g,
+    "",
+  ).replaceAll(
+    /\n?\[mcp_servers\.vibe_kanban[^\]]*][^[]*/g,
+    "",
+  );
 }
 
 function ensureCommonMcpDefaults(toml, result) {
@@ -1597,9 +1501,6 @@ function createEnsureCodexConfigResult() {
   return {
     path: CONFIG_PATH,
     created: false,
-    vkAdded: false,
-    vkRemoved: false,
-    vkEnvUpdated: false,
     agentSdkAdded: false,
     featuresAdded: [],
     agentMaxThreads: null,
@@ -1632,7 +1533,7 @@ function initializeCodexConfigState(result) {
   };
 }
 
-function applyEnsureCodexConfigDefaults(toml, env, primarySdk, vibeKanbanOptions, result) {
+function applyEnsureCodexConfigDefaults(toml, env, primarySdk, result) {
   const sandboxState = applySandboxDefaults(toml, env, result);
   let nextToml = sandboxState.toml;
 
@@ -1642,7 +1543,7 @@ function applyEnsureCodexConfigDefaults(toml, env, primarySdk, vibeKanbanOptions
   result.featuresAdded = featureResult.added;
   nextToml = featureResult.toml;
 
-  nextToml = applyVibeKanbanDefaults(nextToml, vibeKanbanOptions, result);
+  nextToml = stripVibeKanbanMcp(nextToml);
   nextToml = ensureCommonMcpDefaults(nextToml, result);
   nextToml = applyModelProviderDefaults(nextToml, env, result);
 
@@ -1658,9 +1559,10 @@ function persistCodexConfigIfChanged(toml, originalToml, dryRun, result) {
 }
 
 export function ensureCodexConfig({
-  vkBaseUrl = "http://127.0.0.1:54089",
-  skipVk = true,
-  manageVkMcp = false,
+  // VK params accepted for backward compat but ignored (VK backend removed)
+  vkBaseUrl,
+  skipVk,
+  manageVkMcp,
   dryRun = false,
   env = process.env,
   primarySdk,
@@ -1671,7 +1573,6 @@ export function ensureCodexConfig({
     initialToml,
     env,
     primarySdk,
-    { manageVkMcp, skipVk, vkBaseUrl },
     result,
   );
 
@@ -1688,18 +1589,6 @@ export function ensureCodexConfig({
 function logConfigSummaryHeader(result, log) {
   if (result.created) {
     log("  :edit: Created new Codex CLI config");
-  }
-
-  if (result.vkAdded) {
-    log("  :check: Added Vibe-Kanban MCP server to Codex config");
-  }
-
-  if (result.vkRemoved) {
-    log("  :trash:  Removed Vibe-Kanban MCP server from global config (workspace-scoped only)");
-  }
-
-  if (result.vkEnvUpdated) {
-    log("  :check: Updated Vibe-Kanban MCP environment variables");
   }
 
   if (result.agentSdkAdded) {

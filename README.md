@@ -108,7 +108,7 @@ Fallback admin auth (secondary path) is available and stores only Argon2id hash 
 - Persists workflow runs to disk and auto-resumes on restart
 - Monitors runs and recovers from stalled or broken states
 - Provides Telegram control and a Mini App dashboard
-- Integrates with GitHub, Jira, and Vibe-Kanban boards
+- Integrates with GitHub and Jira boards
 
 ## Autonomous Engineer Workflow Capabilities
 
@@ -228,7 +228,7 @@ npm run hooks:install
 - `server/` — setup server, Mini App backend, and API endpoints
 - `ui/` — Mini App frontend assets and operator dashboard modules
 - `telegram/` — Telegram bot, sentinel, and channel integrations
-- `github/` and `kanban/` — GitHub auth/webhooks and Vibe-Kanban adapters
+- `github/` and `kanban/` — GitHub auth/webhooks and kanban adapters
 - `workspace/` — shared workspace registry, context indexing, and worktree lifecycle
 - `shell/` and `agent/` — executor integrations, prompts, hooks, and fleet coordination
 - `site/` — marketing site and generated docs website assets

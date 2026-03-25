@@ -187,10 +187,18 @@ const HISTORY_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // run every 6 hours
 const HISTORY_INITIAL_DELAY_MS = 2 * 60 * 1000;         // wait 2 min after boot
 const HISTORY_MAX_TRACKED = 10_000;                      // safety cap
 
+/** Resolve orchestrator PS1 path (region tracking functions). */
 function resolveVeKanbanPs1Path() {
-  const modulePath = resolve(BosunDir, "ve-kanban.ps1");
-  if (existsSync(modulePath)) return modulePath;
-  return resolve(repoRoot, "scripts", "bosun", "ve-kanban.ps1");
+  // Legacy: region tracking lived in ve-kanban.ps1; look for orchestrator.ps1 now.
+  for (const candidate of [
+    resolve(BosunDir, "orchestrator.ps1"),
+    resolve(repoRoot, "scripts", "bosun", "orchestrator.ps1"),
+    resolve(BosunDir, "ve-kanban.ps1"),
+    resolve(repoRoot, "scripts", "bosun", "ve-kanban.ps1"),
+  ]) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return resolve(BosunDir, "orchestrator.ps1");
 }
 
 // ── Configuration ────────────────────────────────────────────────────────────
@@ -1243,8 +1251,6 @@ let _readStatusSummary = null;
 let _getCurrentChild = null;
 let _startProcess = null;
 let _requestFullBosunRestart = null;
-let _getVibeKanbanUrl = null;
-let _fetchVk = null;
 let _getRepoRoot = null;
 let _startFreshSession = null;
 let _attemptFreshSessionRetry = null;
@@ -1280,8 +1286,6 @@ export function injectMonitorFunctions({
   getCurrentChild,
   startProcess,
   requestFullBosunRestart,
-  getVibeKanbanUrl,
-  fetchVk,
   getRepoRoot,
   startFreshSession,
   attemptFreshSessionRetry,
@@ -1313,8 +1317,6 @@ export function injectMonitorFunctions({
   _getCurrentChild = getCurrentChild;
   _startProcess = startProcess;
   _requestFullBosunRestart = requestFullBosunRestart || null;
-  _getVibeKanbanUrl = getVibeKanbanUrl;
-  _fetchVk = fetchVk;
   _getRepoRoot = getRepoRoot;
   _startFreshSession = startFreshSession;
   _attemptFreshSessionRetry = attemptFreshSessionRetry;
@@ -5882,7 +5884,6 @@ Object.assign(UI_SCREENS, {
       buildKeyboard([
         [
           uiButton("Internal", uiCmdAction("/kanban internal")),
-          uiButton("VK", uiCmdAction("/kanban vk")),
           uiButton("GitHub", uiCmdAction("/kanban github")),
         ],
         [uiButton("Jira", uiCmdAction("/kanban jira"))],
@@ -8964,7 +8965,6 @@ async function cmdPresence(chatId) {
   const payload = buildLocalPresence({
     orchestrator_running: !!child,
     orchestrator_pid: child?.pid ?? null,
-    vk_url: _getVibeKanbanUrl ? _getVibeKanbanUrl() : null,
   });
   await notePresence(payload, {
     source: "local",
@@ -9093,7 +9093,6 @@ async function cmdKanban(chatId, backendArg) {
       "",
       "Switch backend:",
       "  /kanban internal  Internal task-store (primary)",
-      "  /kanban vk        Vibe-Kanban (secondary)",
       "  /kanban github     GitHub Issues",
       "  /kanban jira       Jira",
     ];
@@ -10971,7 +10970,6 @@ function startPresenceLoop() {
       const payload = buildLocalPresence({
         orchestrator_running: !!child,
         orchestrator_pid: child?.pid ?? null,
-        vk_url: _getVibeKanbanUrl ? _getVibeKanbanUrl() : null,
       });
 
       // Check if state changed significantly (ignore updated_at for comparison)

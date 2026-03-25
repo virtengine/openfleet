@@ -87,7 +87,6 @@ describe("template-task-archiver", () => {
     expect(t.metadata.replaces.functions).toContain("archiveTaskToFile");
     expect(t.metadata.replaces.functions).toContain("cleanupAgentSessions");
     expect(t.metadata.replaces.functions).toContain("pruneOldArchives");
-    expect(t.metadata.replaces.functions).toContain("deleteTaskFromVK");
   });
 
   it("conditional pruning path skips prune when disabled", () => {
