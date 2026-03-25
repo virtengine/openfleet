@@ -19,8 +19,11 @@ import {
   statusData,
   executorData,
   tasksData,
+  tasksLoaded,
+  tasksStatusCounts,
   projectSummary,
   loadStatus,
+  loadTasks,
   loadProjectSummary,
   loadRetryQueue,
   showToast,
@@ -32,6 +35,7 @@ import {
   setPendingChange,
   clearPendingChange,
   retryQueueData,
+  KANBAN_PAGE_SIZE,
 } from "../modules/state.js";
 import { navigateTo } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
@@ -336,15 +340,27 @@ export function DashboardTab() {
   const execData = executor?.data;
   const mode = executor?.mode || "internal";
   const defaultSdk = execData?.sdk || "auto";
+  const liveTaskCounts = tasksStatusCounts.value || {};
+  const useLiveTaskCounts = Boolean(tasksLoaded.value);
   const worktreeRecovery = buildWorktreeRecoveryViewModel(
     status?.worktreeRecovery || status?.worktree_recovery || null,
   );
 
-  const running = Number(counts.running || counts.inprogress || 0);
-  const review = Number(counts.review || counts.inreview || 0);
-  const blocked = Number(counts.error || 0);
-  const done = Number(counts.done || 0);
-  const backlog = Number(status?.backlog_remaining || counts.todo || 0);
+  const running = useLiveTaskCounts
+    ? Number(liveTaskCounts.inProgress || 0)
+    : Number(counts.running || counts.inprogress || 0);
+  const review = useLiveTaskCounts
+    ? Number(liveTaskCounts.inReview || 0)
+    : Number(counts.review || counts.inreview || 0);
+  const blocked = useLiveTaskCounts
+    ? Number(liveTaskCounts.blocked || 0)
+    : Number(counts.blocked ?? counts.error ?? 0);
+  const done = useLiveTaskCounts
+    ? Number(liveTaskCounts.done || 0)
+    : Number(counts.done || 0);
+  const backlog = useLiveTaskCounts
+    ? Number(liveTaskCounts.backlog || 0) + Number(liveTaskCounts.draft || 0)
+    : Number(status?.backlog_remaining || counts.todo || 0);
   const totalTasks = running + review + blocked + backlog + done;
   const errorRateValue = totalTasks > 0 ? (blocked / totalTasks) * 100 : 0;
   const errorRate = errorRateValue.toFixed(1);
@@ -466,6 +482,10 @@ export function DashboardTab() {
 
   useEffect(() => {
     loadRetryQueue().catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    loadTasks({ pageSize: KANBAN_PAGE_SIZE }).catch(() => {});
   }, []);
 
   // ── Flash metrics on counts change ──

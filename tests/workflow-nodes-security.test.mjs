@@ -294,6 +294,9 @@ describe("dangerous shell payload containment", () => {
     expect(Array.isArray(result.labels)).toBe(true);
     expect(result.labels).toContain("custom-label");
     expect(result.labels).toContain("bosun-attached");
+    expect(result.createdByBosun).toBe(true);
+    expect(String(result.body || "")).toContain("<!-- bosun-created -->");
+    expect(String(result.body || "")).toContain("Bosun-Origin: created");
     expect(result.autoMerge?.enabled).toBe(false);
   }, 30_000);
 

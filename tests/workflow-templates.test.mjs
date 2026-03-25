@@ -1340,7 +1340,10 @@ describe("github template CLI compatibility", () => {
     const mergeTemplate = getTemplate("template-pr-merge-strategy");
     expect(mergeTemplate).toBeDefined();
 
+    const gateNode = mergeTemplate.nodes.find((n) => n.id === "automation-eligible");
     const checkCi = mergeTemplate.nodes.find((n) => n.id === "check-ci");
+    expect(gateNode?.config?.expression).toContain("<!-- bosun-created -->");
+    expect(gateNode?.config?.expression).toContain("auto-created by bosun");
     expect(getNodeCommandCode(checkCi)).toContain("gh pr checks");
     expect(getNodeCommandCode(checkCi)).toContain("--json name,state");
     expect(getNodeCommandCode(checkCi)).not.toContain("conclusion");
@@ -1352,9 +1355,12 @@ describe("github template CLI compatibility", () => {
     // Conflict resolver is no longer recommended — Bosun PR Watchdog supersedes it.
     expect(resolverTemplate.recommended).toBeFalsy();
     expect(resolverTemplate.enabled).toBe(false);
-    // Must filter to bosun-attached PRs only — never touch external PRs.
+    // Must scan open PRs and narrow to Bosun-created provenance.
     const listNode = resolverTemplate.nodes.find((n) => n.id === "list-prs");
-    expect(getNodeCommandCode(listNode)).toContain("--label bosun-attached");
+    expect(getNodeCommandCode(listNode)).toContain("gh pr list --state open");
+    expect(getNodeCommandCode(listNode)).toContain("--json number,title,body,headRefName,baseRefName,mergeable,labels");
+    const targetNode = resolverTemplate.nodes.find((n) => n.id === "target-pr");
+    expect(String(targetNode?.config?.value || "")).toContain("<!-- bosun-created -->");
     // Must NOT contain a direct merge call — merge is deferred to watchdog.
     const hasMergeCall = resolverTemplate.nodes.some(
       (n) => typeof n.config?.command === "string" && n.config.command.includes("gh pr merge")
@@ -1407,6 +1413,13 @@ describe("github template CLI compatibility", () => {
     const notifyNode = watchdogTemplate.nodes.find((n) => n.id === "notify");
     const triggerNode = watchdogTemplate.nodes.find((n) => n.id === "trigger");
 
+    expect(getNodeCommandCode(fetchNode)).toContain("const CREATED_MARKER='<!-- bosun-created -->';");
+    expect(getNodeCommandCode(fetchNode)).toContain("const ATTACH_MODE=((String(PR_AUTOMATION?.attachMode||'all').trim().toLowerCase())||'all');");
+    expect(getNodeCommandCode(fetchNode)).toContain("const TRUSTED_AUTHORS=new Set");
+    expect(getNodeCommandCode(fetchNode)).toContain("allowTrustedFixes");
+    expect(getNodeCommandCode(fetchNode)).toContain("allowTrustedMerges");
+    expect(getNodeCommandCode(fetchNode)).toContain("skippedUntrusted");
+    expect(getNodeCommandCode(fetchNode)).toContain("attachEligible");
     expect(getNodeCommandCode(fetchNode)).toContain("pendingChecks:hasPend");
     expect(getNodeCommandCode(reviewNode)).toContain("mergeArgs.push('--auto')");
     expect(getNodeCommandCode(reviewNode)).toContain("reason:'ci_failed'");
@@ -1478,7 +1491,7 @@ describe("github template CLI compatibility", () => {
     const fixNode = progressorTemplate.nodes.find((n) => n.id === "programmatic-fix");
     const reviewNode = progressorTemplate.nodes.find((n) => n.id === "programmatic-review");
     const fixAgentNode = progressorTemplate.nodes.find((n) => n.id === "dispatch-fix-agent");
-    expect(getNodeCommandCode(inspectNode)).toContain("gh(['pr','view'");
+    expect(getNodeCommandCode(inspectNode)).toContain("['pr','view',String(prNumber),'--repo',repo");
     expect(getNodeCommandCode(inspectNode)).toContain("collectPrDigest");
     expect(getNodeCommandCode(inspectNode)).toContain("/issues/'+prNumber+'/comments?per_page=100");
     expect(getNodeCommandCode(inspectNode)).toContain("/pulls/'+prNumber+'/reviews?per_page=100");
@@ -1530,7 +1543,6 @@ describe("github template CLI compatibility", () => {
     const fetchNode = syncTemplate.nodes.find((n) => n.id === "fetch-pr-state");
     const syncNode = syncTemplate.nodes.find((n) => n.id === "sync-programmatic");
     const fetchCommand = getNodeCommandCode(fetchNode);
-    const syncCommand = getNodeCommandCode(syncNode);
     const syncArgs = Array.isArray(syncNode?.config?.args) ? syncNode.config.args.join("\n") : "";
 
     expect(watchdogFixNode?.config?.env?.BOSUN_FETCH_AND_CLASSIFY)
@@ -1544,6 +1556,9 @@ describe("github template CLI compatibility", () => {
     expect(fetchCommand).toContain("function collectReposFromConfig(){");
     expect(fetchCommand).toContain("const repoTargets=resolveRepoTargets();");
     expect(fetchCommand).toContain("if(repo){ mergedArgs.push('--repo',repo); openArgs.push('--repo',repo); }");
+    expect(fetchCommand).toContain("function isBosunCreated(pr){");
+    expect(fetchCommand).toContain("<!-- bosun-created -->");
+    expect(fetchCommand).not.toContain("--label','bosun-attached'");
     expect(fetchCommand).toContain("reposScanned: repoTargets.length");
     expect(fetchCommand).toContain("repo:p.__repo||''");
     expect(syncNode?.config?.command).toBe("node");
@@ -1560,12 +1575,12 @@ describe("github template CLI compatibility", () => {
     expect(syncArgs).toContain("function resolveTaskId(item){");
     expect(syncArgs).toContain("const taskBranch=String(task?.branchName||'').trim();");
     expect(syncArgs).toContain("task_lookup_failed");
-    expect(syncArgs).toContain("const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||\'\').trim());");
+    expect(syncArgs).toContain("const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim());");
     expect(syncArgs).not.toContain("current==='todo'||current==='inprogress'");
 
     const syncAgentNeededNode = syncTemplate.nodes.find((n) => n.id === "sync-agent-needed");
     expect(syncAgentNeededNode?.config?.expression)
-      .toContain("d.unresolved.some((item)=>String(item?.taskId||\'\').trim())");
+      .toContain("d.unresolved.some((item)=>String(item?.taskId||'').trim())");
   });
 });
 

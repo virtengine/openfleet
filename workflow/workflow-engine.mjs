@@ -2933,6 +2933,17 @@ export class WorkflowEngine extends EventEmitter {
 
     const triggered = [];
     const runIndex = this._readRunIndex();
+    const latestRunAtByWorkflow = new Map();
+    for (const entry of runIndex) {
+      const workflowId = entry?.workflowId;
+      if (!workflowId) continue;
+      const ts = Number(entry?.startedAt || entry?.completedAt || 0);
+      if (!Number.isFinite(ts) || ts <= 0) continue;
+      const previous = latestRunAtByWorkflow.get(workflowId) || 0;
+      if (ts > previous) {
+        latestRunAtByWorkflow.set(workflowId, ts);
+      }
+    }
 
     // Load workspace state for filtering
     const wsMgr = ensureWorkspaceManagerSync();
@@ -2996,13 +3007,7 @@ export class WorkflowEngine extends EventEmitter {
           intervalMs = resolvePositiveInterval(tNode.config?.intervalMs, 3600000);
         }
 
-        // Find the most recent completed run for this workflow
-        let lastRunAt = 0;
-        for (const entry of runIndex) {
-          if (entry?.workflowId !== id) continue;
-          const ts = Number(entry?.startedAt || entry?.completedAt || 0);
-          if (ts > lastRunAt) lastRunAt = ts;
-        }
+        const lastRunAt = latestRunAtByWorkflow.get(id) || 0;
 
         const elapsed = Date.now() - lastRunAt;
         if (elapsed >= intervalMs) {

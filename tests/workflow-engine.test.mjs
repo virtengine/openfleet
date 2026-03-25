@@ -3223,6 +3223,46 @@ describe("WorkflowEngine trigger evaluation", () => {
     const hits = engine.evaluateScheduleTriggers();
     expect(hits.some((h) => h.workflowId === "task-poll-interval-wf")).toBe(false);
   });
+
+  it("evaluateScheduleTriggers uses the latest run timestamp per workflow", () => {
+    const wf = makeSimpleWorkflow(
+      [
+        {
+          id: "sched-trigger-latest",
+          type: "trigger.schedule",
+          label: "Every minute",
+          config: { intervalMs: 60000 },
+        },
+      ],
+      [],
+      { id: "sched-wf-latest-run", name: "Scheduled Workflow Latest Run" },
+    );
+    engine.save(wf);
+
+    const now = Date.now();
+    const readRunIndexSpy = vi.spyOn(engine, "_readRunIndex").mockReturnValue([
+      {
+        workflowId: "sched-wf-latest-run",
+        startedAt: now - (10 * 60 * 1000),
+      },
+      {
+        workflowId: "sched-wf-latest-run",
+        startedAt: now - 15_000,
+      },
+      {
+        workflowId: "other-workflow",
+        startedAt: now - (20 * 60 * 1000),
+      },
+    ]);
+
+    const hits = engine.evaluateScheduleTriggers();
+
+    expect(readRunIndexSpy).toHaveBeenCalledTimes(1);
+    expect(hits.some((h) => h.workflowId === "sched-wf-latest-run")).toBe(false);
+
+    readRunIndexSpy.mockRestore();
+  });
+
   it("does not traverse downstream nodes when a trigger returns triggered: false", async () => {
     registerNodeType("test.should_not_run", {
       describe: () => "Fails if executed",

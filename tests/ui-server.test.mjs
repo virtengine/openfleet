@@ -241,6 +241,59 @@ describe("ui-server mini app", () => {
       rmSync(tmpStatusDir, { recursive: true, force: true });
     }
   });
+
+  it("backfills recovery-only worktrees into /api/worktrees when no live registry entry exists", async () => {
+    const tmpStatusDir = mkdtempSync(join(tmpdir(), "ui-worktree-recovery-backfill-"));
+    const statusPath = join(tmpStatusDir, "custom-status.json");
+    process.env.STATUS_FILE = statusPath;
+    writeFileSync(statusPath, JSON.stringify({
+      worktreeRecovery: {
+        health: "recovered",
+        failureStreak: 0,
+        recentEvents: [{
+          outcome: "recreated",
+          reason: "poisoned_worktree",
+          branch: "task/recovered-worktree",
+          taskId: "task-recovered-1",
+          worktreePath: join(tmpStatusDir, "worktrees", "task-recovered-1"),
+          timestamp: "2026-03-22T01:02:03.000Z",
+        }],
+      },
+    }, null, 2));
+
+    try {
+      const mod = await import("../server/ui-server.mjs");
+      mod.injectUiDependencies({
+        getInternalExecutor: () => ({
+          getStatus: () => ({ maxParallel: 2, activeSlots: 0, slots: [] }),
+          isPaused: () => false,
+        }),
+      });
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const worktrees = await fetch(`http://127.0.0.1:${port}/api/worktrees`).then((r) => r.json());
+      expect(worktrees.ok).toBe(true);
+      expect(worktrees.stats.liveTotal).toBe(0);
+      expect(worktrees.stats.recoveryLinked).toBe(1);
+      expect(worktrees.data).toContainEqual(
+        expect.objectContaining({
+          branch: "task/recovered-worktree",
+          taskKey: "task-recovered-1",
+          status: "recovered",
+          source: "recovery",
+        }),
+      );
+    } finally {
+      rmSync(tmpStatusDir, { recursive: true, force: true });
+    }
+  });
+
   it("getLocalLanIp returns a string", async () => {
     const mod = await import("../server/ui-server.mjs");
     const ip = mod.getLocalLanIp();

@@ -526,6 +526,11 @@ function buildStableSetupDefaults({
     workflowDefaultTemplates: [...defaultWorkflowProfile.templateIds],
     workflowTemplateOverridesById: {},
     workflowAutoInstall: true,
+    prAutomation: {
+      assistiveActions: {
+        installOnSetup: false,
+      },
+    },
     workflowNodeMaxRetries: 3,
     workflowNodeTimeoutMs: 600000,
     workflowRunStuckThresholdMs: 300000,
@@ -2361,6 +2366,18 @@ function handleApply(body) {
       autoInstall: workflowAutoInstall,
       templates: workflowDefaultTemplateIds,
       templateOverridesById: workflowTemplateOverridesById,
+    };
+    config.prAutomation = {
+      ...(existingConfig.prAutomation && typeof existingConfig.prAutomation === "object" ? existingConfig.prAutomation : {}),
+      ...(configJson.prAutomation && typeof configJson.prAutomation === "object" ? configJson.prAutomation : {}),
+      assistiveActions: {
+        ...((existingConfig.prAutomation?.assistiveActions && typeof existingConfig.prAutomation.assistiveActions === "object")
+          ? existingConfig.prAutomation.assistiveActions
+          : {}),
+        ...((configJson.prAutomation?.assistiveActions && typeof configJson.prAutomation.assistiveActions === "object")
+          ? configJson.prAutomation.assistiveActions
+          : {}),
+      },
     };
     config.workflowEngine = workflowEngineConfig;
 

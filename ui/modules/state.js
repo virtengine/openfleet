@@ -579,7 +579,7 @@ function _saveDashboardSnapshot() {
     const counts = s.counts || {};
     const running = Number(counts.running || counts.inprogress || 0);
     const review = Number(counts.review || counts.inreview || 0);
-    const blocked = Number(counts.error || 0);
+    const blocked = Number(counts.blocked ?? counts.error ?? 0);
     const done = Number(counts.done || 0);
     const backlog = Number(s.backlog_remaining || counts.todo || 0);
     const total = running + review + blocked + backlog + done;
@@ -638,7 +638,7 @@ export async function loadExecutor() {
   const res = await apiFetch(url, { _silent: true }).catch(() => ({
     data: fallback,
   }));
-  executorData.value = res.data ?? fallback;
+  executorData.value = res ?? fallback;
   _cacheSet(url, executorData.value);
   _markFresh("executor");
 }
@@ -1078,7 +1078,13 @@ export async function loadBenchmarks(providerId = "") {
 
 const TAB_LOADERS = {
   dashboard: () =>
-    Promise.all([loadStatus(), loadExecutor(), loadProjectSummary(), loadRetryQueue()]),
+    Promise.all([
+      loadStatus(),
+      loadExecutor(),
+      loadProjectSummary(),
+      loadRetryQueue(),
+      loadTasks({ pageSize: KANBAN_PAGE_SIZE }),
+    ]),
   tasks: () => loadTasks({ pageSize: KANBAN_PAGE_SIZE }),
   benchmarks: () => loadBenchmarks(),
   agents: () => Promise.all([loadAgents(), loadExecutor(), import("../components/session-list.js").then((m) => m.loadSessions()).catch(() => {})]),

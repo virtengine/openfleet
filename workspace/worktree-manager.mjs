@@ -29,6 +29,7 @@ import { fileURLToPath } from "node:url";
 import { loadConfig } from "../config/config.mjs";
 import { sanitizeGitEnv } from "../git/git-safety.mjs";
 import { detectProjectStack } from "../workflow/project-detection.mjs";
+import { resolvePwshRuntime } from "../shell/pwsh-runtime.mjs";
 
 // ── Path Setup ──────────────────────────────────────────────────────────────
 
@@ -476,7 +477,7 @@ function escapePowerShellLiteral(value) {
  * @param {number} [opts.timeoutMs=60000]
  */
 function removePathWithPowerShell(targetPath, opts = {}) {
-  const pwsh = process.env.PWSH_PATH || "powershell.exe";
+  const pwsh = resolvePwshRuntime({ preferBundled: true }).command;
   const extendedPath = toWindowsExtendedPath(targetPath);
   const escapedPath = escapePowerShellLiteral(extendedPath);
   const clearAttributes = opts.clearAttributes === true;

@@ -36,6 +36,7 @@ export const PR_MERGE_STRATEGY_TEMPLATE = {
     cooldownSec: 60,
     maxRetries: 3,
     baseBranch: "main",
+    requireBosunCreatedPr: true,
   },
   nodes: [
     node("trigger", "trigger.pr_event", "PR Ready for Merge Decision", {
@@ -43,24 +44,38 @@ export const PR_MERGE_STRATEGY_TEMPLATE = {
       events: ["review_requested", "approved", "opened"],
     }, { x: 400, y: 50 }),
 
+    node("load-pr-context", "action.run_command", "Load PR Context", {
+      command: "gh pr view {{prNumber}} --json body,author,title",
+    }, { x: 400, y: 140 }),
+
+    node("automation-eligible", "condition.expression", "Bosun-Created PR?", {
+      expression:
+        "(() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const body = String(pr?.body || ''); return body.includes('<!-- bosun-created -->') || /auto-created by bosun/i.test(body); })()",
+    }, { x: 400, y: 230, outputs: ["yes", "no"] }),
+
     node("check-ci", "validation.build", "Check CI Status", {
       command: "gh pr checks {{prNumber}} --json name,state",
-    }, { x: 150, y: 200 }),
+    }, { x: 150, y: 320 }),
 
     node("get-diff", "action.run_command", "Get Diff Stats", {
       command: "git diff --stat {{baseBranch}}...HEAD",
-    }, { x: 650, y: 200 }),
+    }, { x: 650, y: 320 }),
 
     node("ci-passed", "condition.expression", "CI Passed?", {
       expression:
         "(() => { const out = $ctx.getNodeOutput('check-ci'); if (!out || out.passed !== true) return false; let checks = []; try { checks = JSON.parse(out.output || '[]'); } catch { return false; } if (!Array.isArray(checks) || checks.length === 0) return false; const ok = new Set(['SUCCESS', 'PASSED', 'PASS', 'COMPLETED', 'NEUTRAL', 'SKIPPED']); return checks.every((c) => ok.has(String(c?.state || '').toUpperCase())); })()",
-    }, { x: 150, y: 350, outputs: ["yes", "no"] }),
+    }, { x: 150, y: 470, outputs: ["yes", "no"] }),
 
     node("wait-for-ci", "action.delay", "Wait for CI", {
       ms: "{{ciTimeoutMs}}",
       seconds: "{{cooldownSec}}",
       reason: "CI is still running",
-    }, { x: 150, y: 500 }),
+    }, { x: 150, y: 620 }),
+
+    node("skip-untrusted-pr", "notify.log", "Skip Non-Bosun PR", {
+      message: "PR Merge Strategy: skipping PR #{{prNumber}} because it is attached but not Bosun-created",
+      level: "info",
+    }, { x: 730, y: 230 }),
 
     node("analyze", "action.run_agent", "Analyze Merge Strategy", {
       prompt: `# PR Merge Strategy Analysis
@@ -165,8 +180,11 @@ Respond with JSON: { "action": "<choice>", "reason": "<why>", "message": "<optio
     }, { x: 400, y: 950 }),
   ],
   edges: [
-    edge("trigger", "check-ci"),
-    edge("trigger", "get-diff"),
+    edge("trigger", "load-pr-context"),
+    edge("load-pr-context", "automation-eligible"),
+    edge("automation-eligible", "check-ci", { condition: "$output?.result === true", port: "yes" }),
+    edge("automation-eligible", "get-diff", { condition: "$output?.result === true", port: "yes" }),
+    edge("automation-eligible", "skip-untrusted-pr", { condition: "$output?.result !== true", port: "no" }),
     edge("check-ci", "ci-passed"),
     edge("ci-passed", "wait-for-ci", { condition: "$output?.result !== true", port: "no" }),
     edge("ci-passed", "analyze", { condition: "$output?.result === true", port: "yes" }),
@@ -190,6 +208,7 @@ Respond with JSON: { "action": "<choice>", "reason": "<why>", "message": "<optio
     edge("action-succeeded", "notify-action-failed", { condition: "$output?.result !== true", port: "no" }),
     edge("notify-action-failed", "notify-complete"),
     edge("notify-complete", "end"),
+    edge("skip-untrusted-pr", "end"),
   ],
   metadata: {
     author: "bosun",
@@ -331,8 +350,8 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
     "(template-bosun-pr-watchdog) instead. The Watchdog consolidates conflict " +
     "resolution, CI-failure repair, diff-safety review, and merge into one " +
     "cycle with a single gh API call and a mandatory review gate before any merge. " +
-    "This template is kept for repos that do not use the bosun-attached label " +
-    "convention. It ONLY touches PRs labelled bosun-attached and never " +
+    "This template is kept for repos that do not use the assistive bosun-attached label " +
+    "convention. It only touches Bosun-created PRs and never " +
     "auto-merges directly — it resolves conflicts and then defers to the " +
     "Watchdog's review gate for the actual merge decision.",
   category: "github",
@@ -350,12 +369,12 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
       cron: "*/30 * * * *",
     }, { x: 400, y: 50 }),
 
-    // Only fetch bosun-attached PRs — never touch external-contributor PRs.
+    // Fetch all open PRs and narrow to Bosun-created provenance.
     // Includes labels so we can skip PRs already tagged bosun-needs-fix (watchdog owns those).
-    node("list-prs", "action.run_command", "List Bosun-Attached Conflicting PRs", {
+    node("list-prs", "action.run_command", "List Bosun-Created Conflicting PRs", {
       command:
-        "gh pr list --label bosun-attached --state open " +
-        "--json number,title,headRefName,baseRefName,mergeable,labels --limit {{maxConcurrentFixes}}",
+        "gh pr list --state open " +
+        "--json number,title,body,headRefName,baseRefName,mergeable,labels --limit {{maxConcurrentFixes}}",
     }, { x: 400, y: 180 }),
 
     node("target-pr", "action.set_variable", "Pick Conflict PR", {
@@ -367,8 +386,10 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
         "  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }" +
         "  if (!Array.isArray(prs)) return '';" +
         "  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);" +
+        "  const isBosunCreated = (body) => { const text = String(body || ''); return text.includes('<!-- bosun-created -->') || /auto-created by bosun/i.test(text); };" +
         "  /* Skip PRs already owned by the watchdog fix agent */" +
         "  const pr = prs.find((p) =>" +
+        "    isBosunCreated(p?.body) &&" +
         "    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&" +
         "    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')" +
         "  );" +
@@ -430,7 +451,7 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
         "Rules:\n" +
         "- Only make minimal conflict-resolution changes. No unrelated refactors.\n" +
         "- Do NOT merge, close, or approve the PR — the Bosun PR Watchdog handles merging.\n" +
-        "- Do NOT touch PRs that do not have the bosun-attached label.",
+        "- Do NOT touch PRs that are not Bosun-created.",
       sdk: "auto",
       timeoutMs: 1800000,
       failOnError: true,
@@ -450,7 +471,7 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
     }, { x: 450, y: 800 }),
 
     node("skip", "notify.log", "No Conflicts", {
-      message: "PR Conflict Resolver: no unhandled bosun-attached conflicts found",
+      message: "PR Conflict Resolver: no unhandled Bosun-created conflicts found",
       level: "info",
     }, { x: 620, y: 510 }),
   ],
@@ -477,7 +498,7 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
       functions: ["PRCleanupDaemon.run", "processCleanup", "resolveConflicts"],
       calledFrom: ["monitor.mjs:startProcess"],
       description:
-        "v2: Restricted to bosun-attached PRs only — never touches external-contributor PRs. " +
+        "v2: Restricted to Bosun-created PRs only — never touches external-contributor PRs. " +
         "Removed direct auto-merge: this template now only resolves the conflict and pushes; " +
         "the Bosun PR Watchdog (template-bosun-pr-watchdog) owns the merge decision with its " +
         "diff-safety review gate. Skips PRs already tagged bosun-needs-fix (watchdog owns those). " +
@@ -1026,11 +1047,12 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
 resetLayout();
 
 /**
- * Bosun PR Watchdog — opt-in, scheduled CI poller for bosun-owned PRs.
+ * Bosun PR Watchdog — opt-in, scheduled CI poller for Bosun-created PRs.
  *
- * Only acts on PRs labelled `bosun-attached` (applied by the
- * .github/workflows/bosun-pr-attach.yml GitHub Action when Bosun opens a PR).
- * External-contributor and human PRs that lack that label are never touched.
+ * Uses `bosun-attached` as the low-trust observation marker, but defaults all
+ * high-risk actions to PRs with Bosun-created provenance in the PR body.
+ * Human-authored PRs are only included when the operator explicitly trusts
+ * their login in `prAutomation.trustedAuthors` and enables the relevant mode.
  *
  * Per cycle:
  *   1. List all open bosun-attached PRs.
@@ -1052,7 +1074,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     "with bosun-needs-fix and dispatches a repair agent; sends merge candidates " +
     "through a MANDATORY agent review gate that checks diff stats before any " +
     "merge — preventing destructive PRs (e.g. -183k lines) from being silently " +
-    "auto-merged. External-contributor PRs without bosun-attached are never touched.",
+    "auto-merged. Attached PRs that are not Bosun-created are skipped by default unless explicitly trusted in config.",
   category: "github",
   enabled: true,
   recommended: true,
@@ -1071,6 +1093,9 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     suspiciousDeletionRatio: 3,    // e.g. deletes 3× more lines than it adds
     minDestructiveDeletions: 500,  // absolute floor — small PRs are fine even if net negative
     autoApplySuggestions:   true,  // auto-commit review suggestions before merge
+    trustedAuthors:         "",
+    allowTrustedFixes:      false,
+    allowTrustedMerges:     false,
   },
   nodes: [
     node("trigger", "trigger.schedule", "Poll Every 90s", {
@@ -1098,24 +1123,30 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "const LABEL_FIX='{{labelNeedsFix}}';",
         "const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25);",
         "const REPO_SCOPE=String('{{repoScope}}'||'auto').trim();",
-        "const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url';",
+        "const FIELDS='number,title,body,author,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url';",
         "const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']);",
         "const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']);",
         "const CONFLICT_MERGEABLES=new Set(['CONFLICTING','DIRTY']);",
         "const BEHIND_MERGEABLES=new Set(['BEHIND']);",
         "const SECURITY_CHECK_RE=/(^|[^a-z])(codeql|code scanning|security|sarif|codacy)([^a-z]|$)/i;",
+        "const CREATED_MARKER='<!-- bosun-created -->';",
         "function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();}",
         "function isFailedCheck(check){return FAIL_STATES.has(check?.conclusion||check?.state||'');}",
         "function isSecurityCheckName(name){return SECURITY_CHECK_RE.test(String(name||''));}",
         "function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];}",
+        "function normalizeList(value){if(Array.isArray(value)) return value.map((entry)=>String(entry||'').trim().toLowerCase()).filter(Boolean); return String(value||'').split(',').map((entry)=>entry.trim().toLowerCase()).filter(Boolean);}",
+        "function parseBool(value,fallback){if(value===undefined||value===null||value==='') return fallback; const raw=String(value).trim().toLowerCase(); if(['1','true','yes','on'].includes(raw)) return true; if(['0','false','no','off'].includes(raw)) return false; return fallback;}",
+        "function isBosunCreated(body){const text=String(body||''); return text.includes(CREATED_MARKER) || /auto-created by bosun/i.test(text);}",
+        "function readAuthorLogin(pr){return String(pr?.author?.login||pr?.author?.name||'').trim().toLowerCase();}",
         "function configPath(){",
         "  const home=String(process.env.BOSUN_HOME||process.env.BOSUN_PROJECT_DIR||'').trim();",
         "  return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json');",
         "}",
+        "function readBosunConfig(){ try { return JSON.parse(fs.readFileSync(configPath(),'utf8')); } catch { return {}; } }",
         "function collectReposFromConfig(){",
         "  const repos=[];",
         "  try{",
-        "    const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));",
+        "    const cfg=readBosunConfig();",
         "    const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];",
         "    if(workspaces.length>0){",
         "      const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();",
@@ -1148,6 +1179,12 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  if(envRepo) return [envRepo];",
         "  return [''];",
         "}",
+        "const BOSUN_CONFIG=readBosunConfig();",
+        "const PR_AUTOMATION=(BOSUN_CONFIG&&typeof BOSUN_CONFIG.prAutomation==='object')?BOSUN_CONFIG.prAutomation:{};",
+        "const ATTACH_MODE=((String(PR_AUTOMATION?.attachMode||'all').trim().toLowerCase())||'all');",
+        "const TRUSTED_AUTHORS=new Set([...normalizeList(PR_AUTOMATION?.trustedAuthors),...normalizeList('{{trustedAuthors}}')]);",
+        "const ALLOW_TRUSTED_FIXES=parseBool(PR_AUTOMATION?.allowTrustedFixes ?? '{{allowTrustedFixes}}', false);",
+        "const ALLOW_TRUSTED_MERGES=parseBool(PR_AUTOMATION?.allowTrustedMerges ?? '{{allowTrustedMerges}}', false);",
         "function parseRepoFromUrl(url){",
         "  const raw=String(url||'');",
         "  const marker='github.com/';",
@@ -1164,7 +1201,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "const repoErrors=[];",
         "for(const target of repoTargets){",
         "  const repo=String(target||'').trim();",
-        "  const args=['pr','list','--label','bosun-attached','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];",
+        "  const args=['pr','list','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];",
         "  if(repo) args.push('--repo',repo);",
         "  try{",
         "    const list=ghJson(args);",
@@ -1176,10 +1213,15 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "    repoErrors.push({repo:repo||'current',error:String(e?.message||e)});",
         "  }",
         "}",
-        "const readyCandidates=[],conflicts=[],securityFailures=[],ciFailures=[],pending=[],drafted=[],behindBranches=[];",
+        "const readyCandidates=[],conflicts=[],securityFailures=[],ciFailures=[],pending=[],drafted=[],behindBranches=[],skippedUntrusted=[];",
         "let newlyLabeled=0,staleLabelCleared=0,ciKicked=0;",
         "for(const pr of prs){",
         "  const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);",
+        "  const bosunCreated=isBosunCreated(pr?.body);",
+        "  const trustedAuthor=TRUSTED_AUTHORS.has(readAuthorLogin(pr));",
+        "  const attachEligible=bosunCreated || ATTACH_MODE==='all' || (ATTACH_MODE==='trusted-only' && trustedAuthor);",
+        "  const canFix=bosunCreated || (attachEligible && ALLOW_TRUSTED_FIXES && trustedAuthor);",
+        "  const canMerge=bosunCreated || (attachEligible && ALLOW_TRUSTED_MERGES && trustedAuthor);",
         "  const hasFixLabel=labels.includes(LABEL_FIX);",
         "  const checks=pr.statusCheckRollup||[];",
         "  const failedChecks=checks.filter(isFailedCheck);",
@@ -1193,22 +1235,27 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  const isDraft=pr.isDraft===true;",
         "  const repo=String(pr.__repo||'').trim();",
         "  if(isDraft){drafted.push({n:pr.number,repo});continue;}",
+        "  if(!bosunCreated && !attachEligible){skippedUntrusted.push({n:pr.number,repo,reason:'attach_policy_excluded'});continue;}",
+        "  if(!bosunCreated && !trustedAuthor){skippedUntrusted.push({n:pr.number,repo,reason:'public_observation_only'});continue;}",
         "  if(isBehind&&!isConflict){",
-        "    behindBranches.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});",
+        "    if(canFix) behindBranches.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});",
         "  }",
         "  if(isConflict){",
+        "    if(!canFix){skippedUntrusted.push({n:pr.number,repo,reason:'fix_not_allowed'});continue;}",
         "    conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,mergeable:String(pr.mergeable||'').toUpperCase()});",
         "    if(!hasFixLabel){",
         "      try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}",
         "      catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}",
         "    }",
         "  } else if(hasSecurityFail){",
+        "    if(!canFix){skippedUntrusted.push({n:pr.number,repo,reason:'security_fix_not_allowed'});continue;}",
         "    securityFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,securityCheckNames});",
         "    if(!hasFixLabel){",
         "      try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}",
         "      catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}",
         "    }",
         "  } else if(hasFail){",
+        "    if(!canFix){skippedUntrusted.push({n:pr.number,repo,reason:'ci_fix_not_allowed'});continue;}",
         "    ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url,failedCheckNames});",
         "    if(!hasFixLabel){",
         "      try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}",
@@ -1224,7 +1271,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "      }catch(e){process.stderr.write('stale-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}",
         "    } else if(checks.length>0&&!hasFixLabel){",
         "      if(hasPend) pending.push({n:pr.number,repo});",
-        "      readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});",
+        "      if(canMerge){ readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend}); } else { skippedUntrusted.push({n:pr.number,repo,reason:'merge_not_allowed'}); }",
         "    }",
         "    if(checks.length===0&&repo&&pr.headRefName&&!isDraft){",
         "      try{execFileSync('gh',['workflow','run','ci.yaml','--repo',repo,'--ref',pr.headRefName],{encoding:'utf8',stdio:['pipe','pipe','pipe']});ciKicked++;}",
@@ -1243,10 +1290,12 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  ciFailures,",
         "  pending:pending.length,",
         "  drafted:drafted.length,",
+        "  skippedUntrusted,",
         "  newlyLabeled,",
         "  staleLabelCleared,",
         "  ciKicked,",
-        "  fixNeeded:conflicts.length+securityFailures.length+ciFailures.length",
+        "  fixNeeded:conflicts.length+securityFailures.length+ciFailures.length,",
+        "  trustPolicy:{trustedAuthors:[...TRUSTED_AUTHORS],allowTrustedFixes:ALLOW_TRUSTED_FIXES,allowTrustedMerges:ALLOW_TRUSTED_MERGES}",
         "}));",
       ].join(" ")],
       continueOnError: false,
@@ -1402,14 +1451,14 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
       prompt:
         "You are a Bosun PR security remediation agent. Work only the PRs in this JSON:\n\n" +
         "{{$ctx.getNodeOutput('programmatic-security-fix')?.output}}\n\n" +
-        "Each item represents a bosun-attached PR blocked by CodeQL or GitHub code scanning.\n" +
+        "Each item represents a Bosun-created or explicitly trusted PR blocked by CodeQL or GitHub code scanning.\n" +
         "Use the supplied alert data, prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, and prDigest.checks to make the smallest safe code change that resolves the finding.\n" +
         "For each repaired PR: check out the branch, fix only the reported code-scanning issue, run targeted validation, push the branch, and remove bosun-needs-fix after success.\n\n" +
         "STRICT RULES:\n" +
         "- Only fix the listed code-scanning or CodeQL findings.\n" +
         "- No unrelated refactors, dependency churn, merges, approvals, or PR closure.\n" +
         "- If alert fetch failed, inspect the PR checks and relevant source to resolve the security failure directly.\n" +
-        "- Do NOT touch PRs that are not bosun-attached.",
+        "- Do NOT touch PRs that are not Bosun-created or explicitly trusted by config.",
       sdk: "auto",
       timeoutMs: 1_800_000,
       maxRetries: 2,
@@ -1525,7 +1574,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "STRICT RULES:\n" +
         "- Fix only CI/conflict issues. No scope creep.\n" +
         "- Do NOT merge/close/approve PRs.\n" +
-        "- Do NOT touch PRs without bosun-attached.",
+        "- Do NOT touch PRs that are not Bosun-created or explicitly trusted by config.",
       sdk: "auto",
       timeoutMs: 1_800_000,
       maxRetries: 2,
@@ -1633,7 +1682,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     }, { x: 400, y: 900 }),
 
     node("no-prs", "notify.log", "No Bosun PRs Open", {
-      message: "Bosun PR Watchdog: no open bosun-attached PRs found — idle",
+      message: "Bosun PR Watchdog: no open automation-eligible PRs found — idle",
       level: "info",
     }, { x: 700, y: 370 }),
 
@@ -1649,9 +1698,11 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "let deleted=0;",
         "for(const repo of repos){",
         "  try{",
-        "    const raw=gh(['pr','list','--repo',repo,'--state','merged','--label','bosun-attached','--json','number,headRefName','--limit','50']);",
+        "    const raw=gh(['pr','list','--repo',repo,'--state','merged','--json','number,headRefName,body','--limit','50']);",
         "    const prs=(()=>{try{return JSON.parse(raw||'[]')}catch{return []}})();",
         "    for(const pr of prs){",
+        "      const body=String(pr?.body||'');",
+        "      if(!(body.includes('<!-- bosun-created -->') || /auto-created by bosun/i.test(body))) continue;",
         "      const branch=String(pr?.headRefName||'').trim();",
         "      if(!branch||branch==='main'||branch==='master')continue;",
         "      try{gh(['api','repos/'+repo+'/git/refs/heads/'+branch,'--method','DELETE','--silent']);deleted++;}catch(e){}",
@@ -1734,7 +1785,7 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
   name: "GitHub ↔ Kanban Sync",
   description:
     "Reconciles GitHub PR state with the bosun kanban board every 5 minutes. " +
-    "Marks tasks as in-review when bosun-attached PRs open, moves them to done " +
+    "Marks tasks as in-review when Bosun-created PRs open, moves them to done " +
     "when PRs are merged, and posts completion comments via the kanban API. " +
     "Replaces the legacy github-reconciler.mjs module.",
   category: "github",
@@ -1820,16 +1871,17 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "  const m=src.match(/(?:Bosun-Task|VE-Task|Task-ID|task[_-]?id)[:\\s]+([a-zA-Z0-9_-]{4,64})/i);",
         "  return m?m[1].trim():null;",
         "}",
+        "function isBosunCreated(pr){ const body=String(pr?.body||''); return body.includes('<!-- bosun-created -->') || /auto-created by bosun/i.test(body); }",
         "const repoTargets=resolveRepoTargets();",
         "const merged=[];",
         "const open=[];",
         "for(const target of repoTargets){",
         "  const repo=String(target||'').trim();",
-        "  const mergedArgs=['pr','list','--state','merged','--label','bosun-attached','--json','number,title,body,headRefName,mergedAt,url','--limit','50'];",
-        "  const openArgs=['pr','list','--state','open','--label','bosun-attached','--json','number,title,body,headRefName,isDraft,url','--limit','50'];",
+        "  const mergedArgs=['pr','list','--state','merged','--json','number,title,body,headRefName,mergedAt,url','--limit','50'];",
+        "  const openArgs=['pr','list','--state','open','--json','number,title,body,headRefName,isDraft,url','--limit','50'];",
         "  if(repo){ mergedArgs.push('--repo',repo); openArgs.push('--repo',repo); }",
-        "  for(const pr of ghJson(mergedArgs)){ merged.push({...pr,__repo:repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim()}); }",
-        "  for(const pr of ghJson(openArgs)){ open.push({...pr,__repo:repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim()}); }",
+        "  for(const pr of ghJson(mergedArgs)){ if(isBosunCreated(pr)) merged.push({...pr,__repo:repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim()}); }",
+        "  for(const pr of ghJson(openArgs)){ if(isBosunCreated(pr)) open.push({...pr,__repo:repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim()}); }",
         "}",
         "const recentMerged=merged.filter(p=>!p.mergedAt||new Date(p.mergedAt)>=new Date(since));",
         "console.log(JSON.stringify({",

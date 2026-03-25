@@ -50,12 +50,26 @@ import { signal } from "@preact/signals";
 import htm from "htm";
 
 // Wrap h() to guard against Array/invalid types reaching createElementNS
+function normalizeRenderableType(type) {
+  if (Array.isArray(type)) return _PreactFragment;
+  if (type != null && typeof type === "object" && typeof type !== "function") {
+    if (typeof type.render === "function") return type.render;
+    return null;
+  }
+  return type;
+}
+
 function h(type, props, ...rest) {
   if (Array.isArray(type)) {
     console.warn("[h-guard] Array passed as element type — rendering as Fragment", type.length, "items");
     return _h(_PreactFragment, null, ...type);
   }
-  return _h(type, props, ...rest);
+  const normalizedType = normalizeRenderableType(type);
+  if (normalizedType == null) {
+    console.warn("[h-guard] Invalid object passed as element type — rendering empty Fragment", type);
+    return _h(_PreactFragment, props, ...rest);
+  }
+  return _h(normalizedType, props, ...rest);
 }
 const html = htm.bind(h);
 
@@ -68,6 +82,14 @@ const html = htm.bind(h);
       console.warn("[vnode-guard] Array used as element type — converting to Fragment. Items:", vnode.type.length);
       vnode.props = { children: vnode.type };
       vnode.type = _PreactFragment;
+    } else if (vnode.type != null && typeof vnode.type === "object" && typeof vnode.type !== "function") {
+      const normalizedType = normalizeRenderableType(vnode.type);
+      if (normalizedType == null) {
+        console.warn("[vnode-guard] Invalid object used as element type — converting to Fragment", vnode.type);
+        vnode.type = _PreactFragment;
+      } else {
+        vnode.type = normalizedType;
+      }
     }
     if (prev) prev(vnode);
   };
@@ -354,7 +376,18 @@ import { ChatTab } from "./tabs/chat.js";
 
 /* ── Lazy tab loading ── */
 const _lazyTabCache = {};
-const _dynamicImport = window.importShim || Function("u", "return import(u)");
+
+function resolveLazyTabComponent(mod, exportName) {
+  const direct = exportName ? mod?.[exportName] : mod?.default;
+  const fallback = Object.values(mod || {}).find((value) => normalizeRenderableType(value) != null);
+  const resolved = normalizeRenderableType(direct) != null ? direct : fallback;
+  if (normalizeRenderableType(resolved) == null) {
+    const available = Object.keys(mod || {}).join(", ") || "<none>";
+    throw new Error(`Lazy tab module did not export a renderable component for ${exportName || "default"}. Available exports: ${available}`);
+  }
+  return resolved;
+}
+
 function LazyTab({ loader, fallback, ...props }) {
   const [Comp, setComp] = useState(_lazyTabCache[loader.key] || null);
   const [err, setErr] = useState(null);
@@ -362,7 +395,7 @@ function LazyTab({ loader, fallback, ...props }) {
     if (_lazyTabCache[loader.key]) { setComp(() => _lazyTabCache[loader.key]); return; }
     let cancelled = false;
     loader().then((mod) => {
-      const C = mod.default || Object.values(mod)[0];
+      const C = resolveLazyTabComponent(mod, loader.exportName);
       _lazyTabCache[loader.key] = C;
       if (!cancelled) setComp(() => C);
     }).catch((e) => { if (!cancelled) setErr(e); });
@@ -372,28 +405,33 @@ function LazyTab({ loader, fallback, ...props }) {
   if (!Comp) return fallback || html`<div style="display:flex;justify-content:center;padding:3rem"><${CircularProgress} /></div>`;
   return html`<${Comp} ...${props} />`;
 }
-function lazyTab(tabPath, exportName) {
+function lazyTab(tabPath, exportName, nativeLoader) {
   const loader = () => {
-    return _dynamicImport(tabPath).then((m) => ({ default: exportName ? m[exportName] : m.default || Object.values(m)[0] }));
+    const importPromise =
+      window.__bosunNeedsImportShim && typeof window.importShim === "function"
+        ? window.importShim(tabPath)
+        : nativeLoader();
+    return importPromise;
   };
-  loader.key = tabPath;
+  loader.key = `${tabPath}::${exportName || "default"}`;
+  loader.exportName = exportName || "default";
   return (props) => html`<${LazyTab} loader=${loader} ...${props} />`;
 }
 
 /* ── Lazy tab definitions ── */
-const TasksTab = lazyTab("./tabs/tasks.js", "TasksTab");
-const BenchmarksTab = lazyTab("./tabs/benchmarks.js", "BenchmarksTab");
-const AgentsTab = lazyTab("./tabs/agents.js", "AgentsTab");
-const FleetSessionsTab = lazyTab("./tabs/agents.js", "FleetSessionsTab");
-const InfraTab = lazyTab("./tabs/infra.js", "InfraTab");
-const ControlTab = lazyTab("./tabs/control.js", "ControlTab");
-const LogsTab = lazyTab("./tabs/logs.js", "LogsTab");
-const TelemetryTab = lazyTab("./tabs/telemetry.js", "TelemetryTab");
-const SettingsTab = lazyTab("./tabs/settings.js", "SettingsTab");
-const WorkflowsTab = lazyTab("./tabs/workflows.js", "WorkflowsTab");
-const LibraryTab = lazyTab("./tabs/library.js", "LibraryTab");
-const LibraryMarketplaceTab = lazyTab("./tabs/library.js", "LibraryMarketplaceTab");
-const ManualFlowsTab = lazyTab("./tabs/manual-flows.js", "ManualFlowsTab");
+const TasksTab = lazyTab("./tabs/tasks.js", "TasksTab", () => import("./tabs/tasks.js"));
+const BenchmarksTab = lazyTab("./tabs/benchmarks.js", "BenchmarksTab", () => import("./tabs/benchmarks.js"));
+const AgentsTab = lazyTab("./tabs/agents.js", "AgentsTab", () => import("./tabs/agents.js"));
+const FleetSessionsTab = lazyTab("./tabs/agents.js", "FleetSessionsTab", () => import("./tabs/agents.js"));
+const InfraTab = lazyTab("./tabs/infra.js", "InfraTab", () => import("./tabs/infra.js"));
+const ControlTab = lazyTab("./tabs/control.js", "ControlTab", () => import("./tabs/control.js"));
+const LogsTab = lazyTab("./tabs/logs.js", "LogsTab", () => import("./tabs/logs.js"));
+const TelemetryTab = lazyTab("./tabs/telemetry.js", "TelemetryTab", () => import("./tabs/telemetry.js"));
+const SettingsTab = lazyTab("./tabs/settings.js", "SettingsTab", () => import("./tabs/settings.js"));
+const WorkflowsTab = lazyTab("./tabs/workflows.js", "WorkflowsTab", () => import("./tabs/workflows.js"));
+const LibraryTab = lazyTab("./tabs/library.js", "LibraryTab", () => import("./tabs/library.js"));
+const LibraryMarketplaceTab = lazyTab("./tabs/library.js", "LibraryMarketplaceTab", () => import("./tabs/library.js"));
+const ManualFlowsTab = lazyTab("./tabs/manual-flows.js", "ManualFlowsTab", () => import("./tabs/manual-flows.js"));
 
 /* ── Shared components ── */
 

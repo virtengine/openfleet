@@ -10,6 +10,7 @@ import { signal, computed, effect } from "@preact/signals";
 import { apiFetch, onWsMessage } from "../modules/api.js";
 import {
   buildSessionApiPath,
+  classifySessionRequestError,
   createSessionLoadMeta,
   deriveSessionStaleReason,
   formatSessionFreshnessTimestamp,
@@ -21,6 +22,7 @@ import {
   markSessionLoadFailure,
   markSessionLoadSuccess,
   resolveSessionWorkspaceHint,
+  shouldFallbackToAllSessions,
 } from "../modules/session-api.js";
 import { formatDate, formatRelative, truncate } from "../modules/utils.js";
 import { resolveIcon } from "../modules/icon-utils.js";

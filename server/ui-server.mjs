@@ -4770,6 +4770,62 @@ function findWorktreeMatch(worktrees, { path, branch, taskKey }) {
   return null;
 }
 
+function buildRecoveryBackfilledWorktrees(worktrees, recovery) {
+  const recentEvents = Array.isArray(recovery?.recentEvents)
+    ? recovery.recentEvents
+    : [];
+  if (!recentEvents.length) return [];
+
+  const existingPaths = new Set(
+    worktrees
+      .map((wt) => normalizeWorktreePath(wt?.path))
+      .filter(Boolean),
+  );
+  const existingBranches = new Set(
+    worktrees
+      .map((wt) => String(wt?.branch || "").trim())
+      .filter(Boolean),
+  );
+  const existingTaskKeys = new Set(
+    worktrees
+      .map((wt) => String(wt?.taskKey || "").trim())
+      .filter(Boolean),
+  );
+  const seenSynthetic = new Set();
+
+  return recentEvents.flatMap((event) => {
+    const normalizedPath = normalizeWorktreePath(event?.worktreePath);
+    const branch = String(event?.branch || "").replace(/^refs\/heads\//, "").trim();
+    const taskKey = String(event?.taskId || "").trim();
+    const outcome = String(event?.outcome || "").trim().toLowerCase();
+    if (!normalizedPath && !branch && !taskKey) return [];
+    if (normalizedPath && existingPaths.has(normalizedPath)) return [];
+    if (branch && existingBranches.has(branch)) return [];
+    if (taskKey && existingTaskKeys.has(taskKey)) return [];
+
+    const syntheticKey = normalizedPath || `${branch}::${taskKey}::${outcome}`;
+    if (seenSynthetic.has(syntheticKey)) return [];
+    seenSynthetic.add(syntheticKey);
+
+    const eventTimestamp = Date.parse(String(event?.timestamp || ""));
+    const age = Number.isFinite(eventTimestamp)
+      ? Math.max(0, Date.now() - eventTimestamp)
+      : 0;
+
+    return [{
+      path: normalizedPath || null,
+      branch: branch || null,
+      taskKey: taskKey || null,
+      age,
+      status: outcome === "recreated" ? "recovered" : "recovery_failed",
+      owner: "workflow-recovery",
+      isMainWorktree: false,
+      source: "recovery",
+      recoveryEvent: event,
+    }];
+  });
+}
+
 async function buildWorktreePeek(wt) {
   const cwd = wt?.path;
   if (!cwd) return null;
@@ -6197,6 +6253,38 @@ function updateConfigFile(changes) {
   }
   writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
   return { updated: Array.from(updated), path: configPath };
+}
+
+function parseBooleanLike(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  const raw = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  return fallback;
+}
+
+function normalizePrAutomationPolicy(raw = {}) {
+  const attachModeRaw = String(raw?.attachMode || "all").trim().toLowerCase();
+  const attachMode = ["all", "trusted-only", "disabled"].includes(attachModeRaw)
+    ? attachModeRaw
+    : "all";
+  const trustedAuthors = Array.isArray(raw?.trustedAuthors)
+    ? raw.trustedAuthors
+    : String(raw?.trustedAuthors || "")
+      .split(/[\n,]/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+
+  return {
+    attachMode,
+    trustedAuthors: [...new Set(trustedAuthors.map((entry) => String(entry || "").trim()).filter(Boolean))],
+    allowTrustedFixes: parseBooleanLike(raw?.allowTrustedFixes, false),
+    allowTrustedMerges: parseBooleanLike(raw?.allowTrustedMerges, false),
+    assistiveActions: {
+      installOnSetup: parseBooleanLike(raw?.assistiveActions?.installOnSetup, false),
+    },
+  };
 }
 
 function validateConfigSchemaChanges(changes) {
@@ -10350,13 +10438,14 @@ async function collectUiStats() {
   
   // Use orchestrator status if available, otherwise try task store
   if (orchestratorStatus?.counts) {
+    const blockedCount = Number(orchestratorStatus.counts.blocked ?? orchestratorStatus.counts.error ?? 0);
     taskStats = {
       total: (orchestratorStatus.counts.todo || 0) + (orchestratorStatus.counts.inprogress || 0) + 
              (orchestratorStatus.counts.done || 0) + (orchestratorStatus.counts.inreview || 0) +
-             (orchestratorStatus.counts.blocked || 0),
+             blockedCount,
       active: orchestratorStatus.counts.inprogress || 0,
       completed: orchestratorStatus.counts.done || 0,
-      failed: orchestratorStatus.counts.error || 0,
+      failed: blockedCount,
       queued: orchestratorStatus.counts.todo || 0,
     };
   } else {
@@ -16530,11 +16619,15 @@ async function handleApi(req, res, url) {
       const worktrees = listActiveWorktrees(repoRoot);
       const stats = await getWorktreeStats(repoRoot);
       const recovery = await readWorktreeRecoveryState(repoRoot);
+      const recoveryBackfill = buildRecoveryBackfilledWorktrees(worktrees, recovery);
       jsonResponse(res, 200, {
         ok: true,
-        data: worktrees,
+        data: [...worktrees, ...recoveryBackfill],
         stats: {
           ...stats,
+          liveTotal: Number(stats.total || 0),
+          total: Number(stats.total || 0) + recoveryBackfill.length,
+          recoveryLinked: recoveryBackfill.length,
           recovery,
         },
       });
@@ -19407,8 +19500,9 @@ if (path === "/api/agent-logs/context") {
       for (const task of tasks) {
         for (const entry of (task.statusHistory || [])) {
           if (entry.timestamp < cutoff) continue;
-          if (entry.status === "done") successRuns++;
-          else if (entry.status === "error") failedRuns++;
+          const normalizedStatus = String(entry.status || "").toLowerCase();
+          if (normalizedStatus === "done") successRuns++;
+          else if (normalizedStatus === "error" || normalizedStatus === "failed" || normalizedStatus === "blocked") failedRuns++;
         }
       }
     } catch { /* task store not loaded or unavailable */ }
@@ -19422,6 +19516,7 @@ if (path === "/api/agent-logs/context") {
     const regionEnv = (process.env.EXECUTOR_REGIONS || "").trim();
     const regions = regionEnv ? regionEnv.split(",").map((r) => r.trim()).filter(Boolean) : ["auto"];
     const pkg = JSON.parse(readFileSync(resolve(__dirname, "..", "package.json"), "utf8"));
+    const { configData } = readConfigDocument();
     let runtimeKanbanBackend = "internal";
     try {
       runtimeKanbanBackend = String(
@@ -19445,6 +19540,7 @@ if (path === "/api/agent-logs/context") {
       sdk: process.env.EXECUTOR_SDK || "auto",
       kanbanBackend: runtimeKanbanBackend,
       regions,
+      prAutomation: normalizePrAutomationPolicy(configData?.prAutomation),
       tunnel: getTunnelStatus(),
       fallbackAuth: getFallbackAuthStatus(),
     });
@@ -19481,6 +19577,36 @@ if (path === "/api/agent-logs/context") {
       }
       broadcastUiEvent(["executor", "overview"], "invalidate", { reason: "config-updated", key, value });
       jsonResponse(res, 200, { ok: true, key, value });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/pr-automation" && req.method === "GET") {
+    try {
+      const { configData } = readConfigDocument();
+      jsonResponse(res, 200, {
+        ok: true,
+        prAutomation: normalizePrAutomationPolicy(configData?.prAutomation),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/pr-automation" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const prAutomation = normalizePrAutomationPolicy(body?.prAutomation || {});
+      const { configPath, configData } = readConfigDocument();
+      configData.prAutomation = prAutomation;
+      writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
+      broadcastUiEvent(["settings", "overview"], "invalidate", {
+        reason: "pr-automation-updated",
+      });
+      jsonResponse(res, 200, { ok: true, configPath, prAutomation });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

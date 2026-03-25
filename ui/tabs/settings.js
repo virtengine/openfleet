@@ -946,7 +946,9 @@ function ServerConfigMode() {
   const serverChangeCount = useMemo(() => Object.keys(edits).length, [edits]);
   const externalPendingKeys = useMemo(() => {
     const current = pendingChanges.value || {};
-    return Object.keys(current).filter((key) => key.startsWith("settings-voice-"));
+    return Object.keys(current).filter(
+      (key) => key.startsWith("settings-") && key !== "settings-server",
+    );
   }, [pendingChanges.value]);
   const externalChangeCount = externalPendingKeys.length;
   const changeCount = serverChangeCount + externalChangeCount;
@@ -1206,6 +1208,8 @@ function ServerConfigMode() {
           ? "Voice Endpoints"
           : key === "settings-voice-providers"
             ? "Voice Providers"
+            : key === "settings-pr-automation"
+              ? "PR Automation Trust Policy"
             : key,
       oldVal: "(unsaved)",
       newVal: "Will be saved",
@@ -1593,6 +1597,9 @@ function ServerConfigMode() {
 
         <!-- GitHub Device Flow login card -->
         ${activeCategory === "github" && html`<${GitHubDeviceFlowCard} config=${serverData} />`}
+
+        <!-- PR automation trust policy editor -->
+        ${activeCategory === "github" && html`<${PrAutomationTrustEditor} />`}
 
         <!-- Context Shredding overview panel -->
         ${activeCategory === "context-shredding" && html`<${ContextShreddingPanel} getValue=${getValue} />`}
@@ -2206,6 +2213,219 @@ function AppPreferencesMode() {
           </div>
         </div>
       <//>
+    <//>
+  `;
+}
+
+function normalizeTrustedAuthorEntries(value) {
+  if (Array.isArray(value)) {
+    return [...new Set(value.map((entry) => String(entry || "").trim()).filter(Boolean))];
+  }
+  return [...new Set(
+    String(value || "")
+      .split(/[\n,]/)
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  )];
+}
+
+function normalizePrAutomationEditorState(policy = {}) {
+  const attachModeRaw = String(policy?.attachMode || "all").trim().toLowerCase();
+  const attachMode = ["all", "trusted-only", "disabled"].includes(attachModeRaw)
+    ? attachModeRaw
+    : "all";
+  const trustedAuthors = normalizeTrustedAuthorEntries(policy?.trustedAuthors);
+  return {
+    attachMode,
+    trustedAuthors,
+    trustedAuthorsText: trustedAuthors.join("\n"),
+    allowTrustedFixes: policy?.allowTrustedFixes === true,
+    allowTrustedMerges: policy?.allowTrustedMerges === true,
+    assistiveActionsInstallOnSetup: policy?.assistiveActions?.installOnSetup === true,
+  };
+}
+
+function serializePrAutomationEditorState(policy = {}) {
+  const normalized = normalizePrAutomationEditorState(policy);
+  return JSON.stringify({
+    attachMode: normalized.attachMode,
+    trustedAuthors: normalized.trustedAuthors,
+    allowTrustedFixes: normalized.allowTrustedFixes,
+    allowTrustedMerges: normalized.allowTrustedMerges,
+    assistiveActions: {
+      installOnSetup: normalized.assistiveActionsInstallOnSetup,
+    },
+  });
+}
+
+function PrAutomationTrustEditor() {
+  const [policy, setPolicy] = useState(() => normalizePrAutomationEditorState());
+  const [savedPolicy, setSavedPolicy] = useState(() => normalizePrAutomationEditorState());
+  const [loading, setLoading] = useState(true);
+  const [dirty, setDirty] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+
+  const syncDirty = useCallback((nextPolicy, baseline = savedPolicy) => {
+    setDirty(
+      serializePrAutomationEditorState(nextPolicy)
+        !== serializePrAutomationEditorState(baseline),
+    );
+  }, [savedPolicy]);
+
+  const updatePolicy = useCallback((patch) => {
+    setPolicy((prev) => {
+      const next = { ...prev, ...patch };
+      syncDirty(next);
+      return next;
+    });
+  }, [syncDirty]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiFetch("/api/pr-automation");
+        if (!(res?.ok || res?.prAutomation)) {
+          throw new Error(res?.error || "Failed to load PR automation settings");
+        }
+        const normalized = normalizePrAutomationEditorState(res?.prAutomation || {});
+        setPolicy(normalized);
+        setSavedPolicy(normalized);
+        setDirty(false);
+      } catch (err) {
+        setLoadError(err.message || "Failed to load PR automation settings");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    const key = "settings-pr-automation";
+    setPendingChange(key, dirty);
+    return () => clearPendingChange(key);
+  }, [dirty]);
+
+  const savePolicy = useCallback(async () => {
+    try {
+      const payload = normalizePrAutomationEditorState(policy);
+      const res = await apiFetch("/api/pr-automation", {
+        method: "POST",
+        body: JSON.stringify({
+          prAutomation: {
+            attachMode: payload.attachMode,
+            trustedAuthors: payload.trustedAuthors,
+            allowTrustedFixes: payload.allowTrustedFixes,
+            allowTrustedMerges: payload.allowTrustedMerges,
+            assistiveActions: {
+              installOnSetup: payload.assistiveActionsInstallOnSetup,
+            },
+          },
+        }),
+      });
+      if (!res?.ok) throw new Error(res?.error || "Save failed");
+      const normalized = normalizePrAutomationEditorState(res?.prAutomation || payload);
+      setPolicy(normalized);
+      setSavedPolicy(normalized);
+      setDirty(false);
+      setLoadError(null);
+    } catch (err) {
+      throw new Error(err?.message || "PR automation save failed");
+    }
+  }, [policy]);
+
+  const discardPolicy = useCallback(async () => {
+    setPolicy(savedPolicy);
+    setDirty(false);
+    setLoadError(null);
+  }, [savedPolicy]);
+
+  useEffect(() => {
+    return registerSettingsExternalEditor("settings-pr-automation", {
+      isDirty: () => dirty,
+      save: savePolicy,
+      discard: discardPolicy,
+    });
+  }, [dirty, savePolicy, discardPolicy]);
+
+  if (loading) return html`<${SkeletonCard} height="80px" />`;
+
+  return html`
+    <${Card} title="PR Automation Trust Policy"
+      badge=${dirty ? html`<${Badge} variant="warning">Unsaved<//>` : null}>
+      <div class="meta-text" style="margin-bottom:10px">
+        Bosun-created PRs are always eligible for high-risk automation. Use this policy to decide how broadly Bosun attaches to PRs and whether explicitly trusted human authors may receive CI repair or merge automation.
+      </div>
+      ${loadError && html`<div class="settings-banner settings-banner-warn" style="margin-bottom:10px">${loadError}</div>`}
+
+      <div style="display:grid;grid-template-columns:1fr;gap:12px">
+        <div>
+          <div class="setting-row-label">Attachment Mode</div>
+          <${Select}
+            size="small"
+            value=${policy.attachMode}
+            onChange=${(e) => updatePolicy({ attachMode: e.target.value })}
+            fullWidth
+          >
+            <${MenuItem} value="all">Attach to all matching PRs<//>
+            <${MenuItem} value="trusted-only">Attach only trusted-author PRs<//>
+            <${MenuItem} value="disabled">Disable automatic attachment<//>
+          <//>
+          <div class="meta-text" style="margin-top:4px">
+            Attachment is low-trust observation only. Bosun-created PRs keep their provenance marker regardless of this setting.
+          </div>
+        </div>
+
+        <div>
+          <div class="setting-row-label">Trusted GitHub Authors</div>
+          <${TextField}
+            multiline
+            minRows=${3}
+            size="small"
+            value=${policy.trustedAuthorsText}
+            placeholder="octocat\nmaintainer-login"
+            onInput=${(e) => updatePolicy({ trustedAuthorsText: e.target.value })}
+            fullWidth
+          />
+          <div class="meta-text" style="margin-top:4px">
+            One GitHub login per line. Bosun-created PRs do not need to appear here.
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr;gap:8px">
+          <${FormControlLabel}
+            control=${html`<${Switch}
+              checked=${policy.allowTrustedFixes}
+              onChange=${(e) => updatePolicy({ allowTrustedFixes: e.target.checked })}
+            />`}
+            label="Allow CI repair automation for trusted-author PRs"
+          />
+          <div class="meta-text" style="margin-left:14px">
+            Enables GitHub CI signaling and watchdog repair flows for attached PRs from trusted authors.
+          </div>
+
+          <${FormControlLabel}
+            control=${html`<${Switch}
+              checked=${policy.allowTrustedMerges}
+              onChange=${(e) => updatePolicy({ allowTrustedMerges: e.target.checked })}
+            />`}
+            label="Allow merge automation for trusted-author PRs"
+          />
+          <div class="meta-text" style="margin-left:14px">
+            Merge automation still requires normal review and CI gates. Leave off unless you want human-authored PRs in Bosun’s merge lane.
+          </div>
+
+          <${FormControlLabel}
+            control=${html`<${Switch}
+              checked=${policy.assistiveActionsInstallOnSetup}
+              onChange=${(e) => updatePolicy({ assistiveActionsInstallOnSetup: e.target.checked })}
+            />`}
+            label="Install optional repo-local GitHub Actions during setup"
+          />
+          <div class="meta-text" style="margin-left:14px">
+            These attach/comment workflows are assistive only. Bosun’s runtime templates continue to work without them.
+          </div>
+        </div>
+      </div>
     <//>
   `;
 }

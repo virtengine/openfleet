@@ -2035,6 +2035,19 @@ function normalizeSetupConfiguration({
       workflowTemplateIds,
     ),
   };
+  configJson.prAutomation = {
+    ...(configJson.prAutomation && typeof configJson.prAutomation === "object" ? configJson.prAutomation : {}),
+    assistiveActions: {
+      ...(configJson.prAutomation?.assistiveActions && typeof configJson.prAutomation.assistiveActions === "object"
+        ? configJson.prAutomation.assistiveActions
+        : {}),
+      installOnSetup: parseBooleanEnvValue(
+        env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP
+          ?? configJson.prAutomation?.assistiveActions?.installOnSetup,
+        false,
+      ),
+    },
+  };
   env.EXECUTOR_MODE = normalizeEnum(
     env.EXECUTOR_MODE,
     ["internal", "hybrid"],
@@ -4322,6 +4335,26 @@ async function main() {
       ),
       true,
     );
+    env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP = toBooleanEnvString(
+      await prompt.confirm(
+        "Install optional assistive GitHub Actions into configured repos during setup?",
+        parseBooleanEnvValue(
+          env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP
+            ?? configJson.prAutomation?.assistiveActions?.installOnSetup,
+          false,
+        ),
+      ),
+      false,
+    );
+    configJson.prAutomation = {
+      ...(configJson.prAutomation && typeof configJson.prAutomation === "object" ? configJson.prAutomation : {}),
+      assistiveActions: {
+        ...(configJson.prAutomation?.assistiveActions && typeof configJson.prAutomation.assistiveActions === "object"
+          ? configJson.prAutomation.assistiveActions
+          : {}),
+        installOnSetup: parseBooleanEnvValue(env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP, false),
+      },
+    };
     const workflowOverrides = await promptForWorkflowTemplateOverrides(
       prompt,
       selectedWorkflowTemplateIds,
@@ -6274,6 +6307,59 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
   const configPath = resolve(targetDir, "bosun.config.json");
   writeFileSync(configPath, JSON.stringify(configOut, null, 2) + "\n", "utf8");
   success(`Config written to ${relative(repoRoot, configPath)}`);
+
+  const installAssistiveActions = parseBooleanEnvValue(
+    env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP
+      ?? configJson.prAutomation?.assistiveActions?.installOnSetup,
+    false,
+  );
+
+  if (installAssistiveActions) {
+    heading("Assistive GitHub Actions");
+    const workflowSources = [
+      {
+        source: resolve(__dirname, ".github", "workflows", "bosun-pr-attach.yml"),
+        targetParts: [".github", "workflows", "bosun-pr-attach.yml"],
+      },
+      {
+        source: resolve(__dirname, ".github", "workflows", "bosun-pr-ci-signal.yml"),
+        targetParts: [".github", "workflows", "bosun-pr-ci-signal.yml"],
+      },
+    ];
+    const repoTargets = [];
+    const seenRepoTargets = new Set();
+    const addRepoTarget = (repoPath) => {
+      const fullPath = resolve(String(repoPath || ""));
+      if (!fullPath || seenRepoTargets.has(fullPath)) return;
+      if (!existsSync(fullPath) || !existsSync(resolve(fullPath, ".git"))) return;
+      seenRepoTargets.add(fullPath);
+      repoTargets.push(fullPath);
+    };
+
+    addRepoTarget(repoRoot);
+    const bosunDir = env.BOSUN_DIR || configDir || targetDir;
+    const workspaceRoot = resolve(bosunDir, "workspaces");
+    for (const workspace of Array.isArray(configOut.workspaces) ? configOut.workspaces : []) {
+      for (const repo of Array.isArray(workspace?.repos) ? workspace.repos : []) {
+        addRepoTarget(resolve(workspaceRoot, workspace.id || workspace.name || "", repo.name || ""));
+      }
+    }
+
+    for (const repoPath of repoTargets) {
+      for (const workflow of workflowSources) {
+        const targetPath = resolve(repoPath, ...workflow.targetParts);
+        if (existsSync(targetPath)) {
+          info(`Assistive workflow already present: ${relative(repoRoot, targetPath)}`);
+          continue;
+        }
+        mkdirSync(dirname(targetPath), { recursive: true });
+        writeFileSync(targetPath, readFileSync(workflow.source, "utf8"), "utf8");
+        success(`Installed assistive workflow: ${relative(repoRoot, targetPath)}`);
+      }
+    }
+  } else {
+    info("Assistive GitHub Actions left uninstalled. Bosun runtime workflows still operate without them.");
+  }
 
   // If the setup target directory differs from the package dir but a local .env
   // exists there without a config file, seed a config copy to avoid mismatches.
