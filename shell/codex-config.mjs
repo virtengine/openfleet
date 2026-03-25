@@ -8,10 +8,6 @@
  *   4. Sandbox permissions and shell environment policy
  *   5. Common MCP servers (context7, microsoft-docs)
  *
- * NOTE: Vibe-Kanban MCP is workspace-scoped and managed by repo-config.mjs
- * inside each repo's `.codex/config.toml`. Global config no longer auto-adds
- * `[mcp_servers.vibe_kanban]`.
- *
  * SCOPE: This manages the GLOBAL ~/.codex/config.toml which contains:
  *   - Model provider configs (API keys, base URLs) — MUST be global
  *   - Stream timeouts & retry settings — per-provider, global
@@ -40,20 +36,6 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
-/**
- * Read the vibe-kanban version from the local package.json dependency.
- * Falls back to "latest" if not found (shouldn't happen in normal usage).
- */
-function getVibeKanbanVersion() {
-  try {
-    const pkgPath = resolve(__dirname, "..", "package.json");
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-    return pkg.dependencies?.["vibe-kanban"] || "latest";
-  } catch {
-    return "latest";
-  }
-}
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -1108,77 +1090,6 @@ export { writeCodexConfig };
 export { getConfigPath };
 
 /**
- * Check whether the config already has a [mcp_servers.vibe_kanban] section.
- */
-export function hasVibeKanbanMcp(toml) {
-  return /^\[mcp_servers\.vibe_kanban\]/m.test(toml);
-}
-
-/**
- * Check whether the config already has a [mcp_servers.vibe_kanban.env] section.
- */
-export function hasVibeKanbanEnv(toml) {
-  return /^\[mcp_servers\.vibe_kanban\.env\]/m.test(toml);
-}
-
-/**
- * Remove the [mcp_servers.vibe_kanban] and [mcp_servers.vibe_kanban.env]
- * sections (and their contents) from config.toml.
- * Returns the cleaned TOML string.
- */
-export function removeVibeKanbanMcp(toml) {
-  // Line-based approach: walk lines and skip VK-related sections.
-  const lines = toml.split("\n");
-  const out = [];
-  let skipping = false;
-  // Track comment lines immediately preceding a VK section header
-  let pendingComments = [];
-
-  for (const line of lines) {
-    // Detect section headers: lines starting with [ that aren't array values
-    const isSectionHeader = /^\[[\w]/.test(line);
-    const isVkSection =
-      /^\[mcp_servers\.vibe_kanban\b/.test(line);
-
-    if (isVkSection) {
-      // Drop any pending comment lines (they belong to this VK section)
-      pendingComments = [];
-      skipping = true;
-      continue;
-    }
-
-    if (skipping && isSectionHeader) {
-      // We've reached the next non-VK section — stop skipping
-      skipping = false;
-    }
-
-    if (skipping) continue;
-
-    // Buffer comment/blank lines that might precede a VK section header
-    if (/^#.*[Vv]ibe.[Kk]anban/.test(line) || /^# ── .*[Vv]ibe.[Kk]anban/.test(line)) {
-      pendingComments.push(line);
-      continue;
-    }
-
-    // Flush pending comments (they weren't followed by a VK header)
-    if (pendingComments.length) {
-      out.push(...pendingComments);
-      pendingComments = [];
-    }
-
-    out.push(line);
-  }
-
-  // Flush any remaining pending comments
-  if (pendingComments.length) {
-    out.push(...pendingComments);
-  }
-
-  // Clean up excessive blank lines
-  return out.join("\n").replace(/\n{3,}/g, "\n\n");
-}
-
-/**
  * Check whether the config already has an [agent_sdk] section.
  */
 export function hasAgentSdkConfig(toml) {
@@ -1353,6 +1264,29 @@ function buildModelProviderSection(providerName, config = {}) {
   return lines.join("\n");
 }
 
+function setModelProviderField(toml, providerName, key, value) {
+  const header = `[model_providers.${providerName}]`;
+  const headerIdx = toml.indexOf(header);
+  if (headerIdx === -1) return toml;
+
+  const afterHeader = headerIdx + header.length;
+  const nextSection = toml.indexOf("\n[", afterHeader);
+  const sectionEnd = nextSection === -1 ? toml.length : nextSection;
+
+  let section = toml.substring(afterHeader, sectionEnd);
+  const fieldRegex = new RegExp(`^${escapeRegex(key)}\\s*=.*$`, "m");
+  const escapedValue = String(value || "").replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+  const line = `${key} = "${escapedValue}"`;
+
+  if (fieldRegex.test(section)) {
+    section = section.replace(fieldRegex, line);
+  } else {
+    section = `${section.trimEnd()}\n${line}\n`;
+  }
+
+  return toml.substring(0, afterHeader) + section + toml.substring(sectionEnd);
+}
+
 /**
  * Codex CLI built-in provider IDs that cannot be used in [model_providers.*].
  * Declaring these in config.toml causes a fatal "reserved built-in provider"
@@ -1379,8 +1313,9 @@ function migrateReservedProviderIds(toml) {
   return { toml, migrated };
 }
 
-function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
+export function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
   const added = [];
+  const updated = [];
   const { env: resolvedEnv, active } = resolveCodexProfileRuntime(env);
 
   // Migrate any legacy reserved provider IDs before adding new sections
@@ -1414,6 +1349,12 @@ function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
         model: active?.model || resolvedEnv.CODEX_MODEL || "",
       });
       added.push("azure");
+    } else if (activeBaseUrl) {
+      const updatedToml = setModelProviderField(toml, "azure", "base_url", activeBaseUrl);
+      if (updatedToml !== toml) {
+        toml = updatedToml;
+        updated.push("azure.base_url");
+      }
     }
   }
 
@@ -1421,7 +1362,7 @@ function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
   // The built-in already handles OPENAI_API_KEY.  Declaring it causes:
   //   "model_providers contains reserved built-in provider IDs: openai"
 
-  return { toml, added, migrated: migration.migrated };
+  return { toml, added, updated, migrated: migration.migrated };
 }
 
 /**

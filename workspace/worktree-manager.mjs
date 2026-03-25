@@ -1,7 +1,7 @@
 /**
  * worktree-manager.mjs — Centralized git worktree lifecycle management.
  *
- * Replaces scattered worktree operations across monitor.mjs, vk-error-resolver.mjs,
+ * Replaces scattered worktree operations across monitor.mjs,
  * maintenance.mjs, and git-editor-fix.mjs with a single, consistent API.
  *
  * Features:
@@ -1025,39 +1025,11 @@ class WorktreeManager {
       console.warn(`${TAG} git worktree prune failed: ${e.message}`);
     }
 
-    // Step 2: Find VK / vibe-kanban worktrees older than MAX_WORKTREE_AGE_MS → remove
+    // Step 2: Prune stale worktrees older than MAX_WORKTREE_AGE_MS
     const allWorktrees = this.listAllWorktrees();
 
     for (const wt of allWorktrees) {
       if (wt.isMainWorktree) continue;
-
-      // Check vibe-kanban temp worktrees
-      const isVK =
-        wt.path.includes("vibe-kanban") ||
-        (wt.branch && wt.branch.startsWith("ve/"));
-
-      if (isVK) {
-        const registryKey = this._findKeyByPath(resolve(wt.path));
-        const record = registryKey ? this.registry.get(registryKey) : null;
-        const ageMs = record
-          ? Date.now() - record.lastUsedAt
-          : _getFilesystemAgeMs(wt.path);
-
-        // Prune if age exceeds threshold or path doesn't exist
-        if (ageMs > MAX_WORKTREE_AGE_MS || !existsSync(wt.path)) {
-          console.log(
-            `${TAG} ${dryRun ? "[dry-run] would remove" : "removing"} stale VK worktree: ${wt.path}`,
-          );
-          if (!dryRun) {
-            this._forceRemoveWorktreeSync(wt.path);
-            if (registryKey) {
-              this.registry.delete(registryKey);
-              evicted++;
-            }
-            pruned++;
-          }
-        }
-      }
 
       // Step 3: copilot-worktree-YYYY-MM-DD entries older than 7 days
       const dateMatch = wt.path.match(/copilot-worktree-(\d{4}-\d{2}-\d{2})/);
@@ -1101,12 +1073,9 @@ class WorktreeManager {
     // Step 3c: catch-all — any other non-main worktree older than 7 days
     for (const wt of allWorktrees) {
       if (wt.isMainWorktree) continue;
-      const isVK =
-        wt.path.includes("vibe-kanban") ||
-        (wt.branch && wt.branch.startsWith("ve/"));
       const isCopilot = /copilot-worktree-\d{4}-\d{2}-\d{2}/.test(wt.path);
       const isPrCleanup = wt.path.includes("pr-cleanup-");
-      if (isVK || isCopilot || isPrCleanup) continue;
+      if (isCopilot || isPrCleanup) continue;
 
       const registryKey = this._findKeyByPath(resolve(wt.path));
       const record = registryKey ? this.registry.get(registryKey) : null;

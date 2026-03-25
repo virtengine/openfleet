@@ -22,6 +22,7 @@ import {
 } from "@mui/material";
 import {
   sessionMessages,
+  sessionMessagesSessionId,
   loadSessionMessages,
   loadSessions,
   sessionsData,
@@ -871,7 +872,9 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
 
   let messages = [];
   try {
-    messages = sessionMessages.value || [];
+    const boundSessionId = String(sessionMessagesSessionId.value || "");
+    const currentSessionId = String(sessionId || "");
+    messages = boundSessionId === currentSessionId ? (sessionMessages.value || []) : [];
   } catch (err) {
     console.warn("[ChatView] Failed to read sessionMessages:", err);
   }
@@ -1304,7 +1307,8 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     }
 
     const editedAt = new Date().toISOString();
-    sessionMessages.value = (sessionMessages.value || []).map((msg) =>
+    sessionMessagesSessionId.value = String(sessionId || "");
+    sessionMessages.value = ((sessionMessages.value || [])).map((msg) =>
       msg === editingMsgRef
         ? { ...msg, content: next, edited: true, editedAt }
         : msg,
@@ -1347,6 +1351,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       attachments: pendingAttachments,
       timestamp: new Date().toISOString(),
     };
+    sessionMessagesSessionId.value = String(sessionId || "");
     sessionMessages.value = [...(sessionMessages.value || []), optimistic];
     setInput("");
     setPendingAttachments([]);
@@ -1575,8 +1580,8 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
           <${Tooltip} title="Copy stream"><${IconButton} size="small" onClick=${handleCopyStream}>${resolveIcon(":clipboard:")}</${IconButton}></${Tooltip}>
           <${Tooltip} title="Export stream"><${IconButton} size="small" onClick=${handleExportStream}>${resolveIcon(":download:")}</${IconButton}></${Tooltip}>
         </${Stack}>
-      </${Box}>
-      `}
+        </${Box}>
+        `}
 
       ${embedded && html`
         <${Box} sx=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 1.5, py: 0.75, borderBottom: '1px solid', borderColor: 'divider' }}>

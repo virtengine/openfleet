@@ -59,11 +59,6 @@ describe("monitor exception resilience guards", () => {
   });
 
   it("guards startup fire-and-forget promise chains with catch handlers", () => {
-    expect(source).toContain('runDetached("vk-runtime:config-reload-enable"');
-    expect(source).toContain('runDetached("vk-runtime:startup-ensure"');
-    expect(source).toMatch(
-      /void isVibeKanbanOnline\(\)\.then\(\(online\) => \{[\s\S]*?\}\)\.catch\(\(err\) => \{/,
-    );
     expect(source).toMatch(
       /void ensureCodexSdkReady\(\)\.then\(\(\) => \{[\s\S]*?\}\)\.catch\(\(err\) => \{/,
     );

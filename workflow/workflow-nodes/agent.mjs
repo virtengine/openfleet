@@ -590,7 +590,6 @@ registerNodeType("agent.run_planner", {
         : "\n") +
       `Your response MUST be a single fenced JSON block with shape { "tasks": [...] }.\n` +
       `Do NOT include status updates, analysis notes, tool commentary, questions, or prose outside the JSON block.\n` +
-      `Do NOT reference or use legacy ve-kanban integration commands or scripts.\n` +
       `The downstream system will parse your output as JSON — any extra text will cause task creation to fail.`;
     const promptText = basePrompt
       ? `${basePrompt}${outputEnforcement}`

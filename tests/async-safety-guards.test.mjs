@@ -31,15 +31,8 @@ describe("async safety guards", () => {
     expect(monitorSource).toContain(
       'runDetached("telegram-notifier:interval-update", sendUpdate)',
     );
-    expect(monitorSource).toContain(
-      'runDetached("fetchVk:network-recovery", () =>',
-    );
     expect(monitorSource).not.toContain("void pollAgentAlerts();");
     expect(monitorSource).not.toContain('void publishTaskPlannerStatus("interval");');
-    expect(monitorSource).not.toContain('void refreshVkSessionStreams("startup");');
-    expect(monitorSource).not.toContain('void refreshVkSessionStreams("periodic");');
-    expect(monitorSource).toContain('refreshVkSessionStreams("startup").catch((err) => {');
-    expect(monitorSource).toContain('refreshVkSessionStreams("periodic").catch((err) => {');
     expect(monitorSource).not.toContain("setInterval(sendUpdate, intervalMs);");
   });
 

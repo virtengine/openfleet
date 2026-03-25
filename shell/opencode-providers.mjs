@@ -235,13 +235,25 @@ async function execOpencode(args, execOpts = {}) {
     encoding: "utf-8",
     ...execOpts,
   };
-
+  const escaped = args.map((a) => `"${a}"`).join(" ");
   if (isWindows) {
     // Use exec() on Windows to properly handle .cmd wrappers
-    const escaped = args.map((a) => `"${a}"`).join(" ");
-    return execAsync(`"${bin}" ${escaped}`, baseOpts);
+    const result = await execAsync(`"${bin}" ${escaped}`, baseOpts);
+    return typeof result === "string"
+      ? { stdout: result, stderr: "" }
+      : { stdout: result.stdout || "", stderr: result.stderr || "" };
   }
-  return execFileAsync(bin, args, baseOpts);
+  try {
+    const result = await execFileAsync(bin, args, baseOpts);
+    return typeof result === "string"
+      ? { stdout: result, stderr: "" }
+      : { stdout: result.stdout || "", stderr: result.stderr || "" };
+  } catch {
+    const result = await execAsync(`"${bin}" ${escaped}`, baseOpts);
+    return typeof result === "string"
+      ? { stdout: result, stderr: "" }
+      : { stdout: result.stdout || "", stderr: result.stderr || "" };
+  }
 }
 
 /**
@@ -317,6 +329,70 @@ function parseVerboseModelsOutput(stdout) {
 }
 
 /**
+ * Parse the basic line-based output from `opencode models`.
+ * Format: one `provider/model` entry per line.
+ * @param {string} stdout
+ * @returns {{ providerMap: Map, allModels: DiscoveredModel[] }}
+ */
+function parseBasicModelsOutput(stdout) {
+  const providerMap = new Map();
+  const allModels = [];
+  const normalized = String(stdout || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+
+  for (const rawLine of normalized.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || !line.includes("/")) continue;
+
+    const slashIdx = line.indexOf("/");
+    const providerID = line.slice(0, slashIdx).trim();
+    const modelID = line.slice(slashIdx + 1).trim();
+    if (!providerID || !modelID) continue;
+
+    const discovered = {
+      id: modelID,
+      name: modelID,
+      providerID,
+      fullId: `${providerID}/${modelID}`,
+      status: "active",
+      reasoning: false,
+      toolcall: false,
+      limit: { context: 0, output: 0 },
+      cost: { input: 0, output: 0 },
+    };
+
+    allModels.push(discovered);
+
+    if (!providerMap.has(providerID)) {
+      providerMap.set(providerID, {
+        id: providerID,
+        name: providerID,
+        source: "cli",
+        env: [],
+        connected: true,
+        models: [],
+        authMethods: [],
+      });
+    }
+
+    providerMap.get(providerID).models.push(discovered);
+  }
+
+  return { providerMap, allModels };
+}
+
+function buildCliSnapshot(providerMap, allModels) {
+  const providers = [...providerMap.values()];
+  return {
+    providers,
+    connected: providers,
+    connectedIds: providers.map((p) => p.id),
+    defaults: {},
+    allModels,
+    timestamp: Date.now(),
+  };
+}
+
+/**
  * Query providers via `opencode models --verbose` CLI command.
  * Works even without a running server. Falls back gracefully.
  * @returns {Promise<ProviderSnapshot|null>}
@@ -325,17 +401,32 @@ async function discoverViaCLI() {
   try {
     const { stdout } = await execOpencode(["models", "--verbose"]);
     const { providerMap, allModels } = parseVerboseModelsOutput(stdout);
-    const providers = [...providerMap.values()];
+    if (allModels.length > 0) {
+      return buildCliSnapshot(providerMap, allModels);
+    }
 
-    return {
-      providers,
-      connected: providers, // CLI only returns connected providers
-      connectedIds: providers.map((p) => p.id),
-      defaults: {},
-      allModels,
-      timestamp: Date.now(),
-    };
+    const fallback = await execOpencode(["models"]);
+    const parsedFallback = parseBasicModelsOutput(fallback.stdout);
+    if (parsedFallback.allModels.length > 0) {
+      return buildCliSnapshot(parsedFallback.providerMap, parsedFallback.allModels);
+    }
+
+    console.warn("[opencode-providers] CLI discovery returned no parseable models");
+    return null;
   } catch (err) {
+    try {
+      const fallback = await execOpencode(["models"]);
+      const parsedFallback = parseBasicModelsOutput(fallback.stdout);
+      if (parsedFallback.allModels.length > 0) {
+        console.warn(
+          `[opencode-providers] verbose model discovery failed; using basic model list instead: ${err.message}`,
+        );
+        return buildCliSnapshot(parsedFallback.providerMap, parsedFallback.allModels);
+      }
+    } catch {
+      // fall through to the original verbose failure below
+    }
+
     console.warn(`[opencode-providers] CLI discovery failed: ${err.message}`);
     return null;
   }
@@ -363,6 +454,29 @@ async function discoverAllViaCLI() {
       timestamp: Date.now(),
     };
   } catch (err) {
+    try {
+      const fallback = await execOpencode(["models", "--refresh"], {
+        timeout: 60_000,
+        maxBuffer: 20 * 1024 * 1024,
+      });
+      const { providerMap, allModels } = parseBasicModelsOutput(fallback.stdout);
+      if (allModels.length > 0) {
+        console.warn(
+          `[opencode-providers] verbose catalog discovery failed; using basic model list instead: ${err.message}`,
+        );
+        return {
+          providers: [...providerMap.values()],
+          connected: [],
+          connectedIds: [],
+          defaults: {},
+          allModels,
+          timestamp: Date.now(),
+        };
+      }
+    } catch {
+      // fall through to the original verbose failure below
+    }
+
     console.warn(`[opencode-providers] catalog discovery failed: ${err.message}`);
     return null;
   }
@@ -392,8 +506,15 @@ export async function discoverProviders(opts = {}) {
   // Try SDK first (requires running server)
   let snapshot = await discoverViaSDK(client);
 
+  const sdkSnapshotWasEmpty =
+    snapshot &&
+    Array.isArray(snapshot.providers) &&
+    snapshot.providers.length === 0 &&
+    Array.isArray(snapshot.allModels) &&
+    snapshot.allModels.length === 0;
+
   // Fall back to CLI
-  if (!snapshot) {
+  if (!snapshot || sdkSnapshotWasEmpty) {
     snapshot = await discoverViaCLI();
   }
 

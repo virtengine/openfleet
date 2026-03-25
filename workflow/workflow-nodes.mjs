@@ -56,6 +56,7 @@ import {
 } from "./workflow-contract.mjs";
 import { resolveAutoCommand } from "./project-detection.mjs";
 import { loadConfig } from "../config/config.mjs";
+import { resolveHeavyRunnerPolicy, runCommandInHeavyRunnerLease } from "./heavy-runner-pool.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity, normalizeBaseBranch } from "../git/git-safety.mjs";
 import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../git/git-commit-helpers.mjs";
@@ -1442,6 +1443,9 @@ async function compactWorkflowCommandResult({
     outputRetrieveCommand: compacted.retrieveCommand,
     outputCompactionFamily: compacted.compactionFamily,
     outputCommandFamily: compacted.commandFamily,
+    outputBudgetPolicy: compacted.budgetPolicy || null,
+    outputBudgetReason: compacted.budgetReason || "",
+    outputContextEnvelope: compacted.contextEnvelope || null,
     outputDiagnostics: compacted.commandDiagnostics || null,
     outputSuggestedRerun: compacted.commandDiagnostics?.suggestedRerun || null,
     outputDeltaSummary: compacted.commandDiagnostics?.deltaSummary || "",
@@ -5924,6 +5928,98 @@ Respond with exactly one of:
   },
 });
 
+function formatWorkflowArtifactRetrieveCommand(filePath, platform = process.platform) {
+  const normalizedPath = String(filePath || "");
+  if (!normalizedPath) return null;
+  if (platform === "win32") {
+    return `Get-Content -Raw "${normalizedPath.replace(/"/g, '""')}"`;
+  }
+  return `cat '${normalizedPath.replace(/'/g, `'"'"'`)}'`;
+}
+
+function buildHeavyRunnerResultExtras(result, lane) {
+  const artifacts = Array.isArray(result?.artifactPointers)
+    ? result.artifactPointers.map((artifact) => ({
+        label: artifact?.label || artifact?.kind || null,
+        path: artifact?.path || null,
+        retrieveCommand: artifact?.retrieveCommand || formatWorkflowArtifactRetrieveCommand(artifact?.path),
+      }))
+    : [];
+  const firstArtifactPath = artifacts.find((artifact) => artifact?.path)?.path || null;
+  const artifactRoot = firstArtifactPath ? dirname(firstArtifactPath) : null;
+  return {
+    isolatedRunner: {
+      lane: lane?.lane || result?.lease?.lane || "runner-pool",
+      reason: lane?.reason || result?.failureKind || "unknown",
+      provider: result?.lease?.runtime || null,
+      leaseId: result?.lease?.leaseId || null,
+      artifactRoot,
+      attempts: result?.attempts || result?.lease?.attempts || result?.lease?.attempt || 1,
+      blocked: result?.blocked === true,
+      artifacts,
+    },
+    artifactRoot,
+    artifacts,
+    artifactPaths: artifacts.map((artifact) => artifact.path).filter(Boolean),
+    artifactRetrieveCommands: artifacts
+      .map((artifact) => artifact.retrieveCommand)
+      .filter(Boolean),
+  };
+}
+
+async function executeValidationCommandWithOptionalRunner({
+  node,
+  ctx,
+  nodeType,
+  command,
+  cwd,
+  timeoutMs,
+} = {}) {
+  const runnerPolicy = resolveHeavyRunnerPolicy({
+    nodeType,
+    command,
+    timeoutMs,
+    runner: node.config?.runner || null,
+  });
+  if (runnerPolicy.lane !== "runner-pool") return null;
+
+  ctx.log(node.id, `Offloading ${runnerPolicy.intent || "validation"} to isolated ${runnerPolicy.runtime} runner pool`);
+  const run = await runCommandInHeavyRunnerLease({
+    command,
+    cwd,
+    timeoutMs,
+    intent: runnerPolicy.intent,
+    runtime: runnerPolicy.runtime,
+    retries: runnerPolicy.retries,
+    artifactRoot: runnerPolicy.artifactDir,
+    commandPrefix: runnerPolicy.commandPrefix,
+    runner: node.config?.runner || null,
+    nodeType,
+  });
+  const compacted = await compactWorkflowCommandResult({
+    command,
+    output: run.stdout || "",
+    stderr: run.stderr || "",
+    exitCode: Number.isFinite(Number(run.exitCode)) ? Number(run.exitCode) : (run.ok ? 0 : 1),
+    durationMs: Number.isFinite(Number(run.durationMs)) ? Number(run.durationMs) : 0,
+  });
+
+  return {
+    run,
+    compacted,
+    baseResult: {
+      executionLane: runnerPolicy.lane,
+      executionLaneReason: runnerPolicy.reason,
+      runnerLease: run.lease || null,
+      runnerArtifactPointers: Array.isArray(run.artifactPointers) ? run.artifactPointers : [],
+      ...buildHeavyRunnerResultExtras(run, {
+        lane: runnerPolicy.lane,
+        reason: runnerPolicy.reason,
+      }),
+    },
+  };
+}
+
 registerBuiltinNodeType("validation.tests", {
   describe: () => "Run test suite and verify results",
   schema: {
@@ -5933,45 +6029,78 @@ registerBuiltinNodeType("validation.tests", {
       cwd: { type: "string", description: "Working directory" },
       timeoutMs: { type: "number", default: 600000 },
       requiredPassRate: { type: "number", default: 1.0, description: "Minimum pass rate (0-1)" },
+      runner: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean", description: "Force isolated runner execution" },
+          runtime: { type: "string", enum: ["local-process", "local-container", "remote-sandbox"], default: "local-process" },
+          retries: { type: "number", default: 0 },
+          artifactDir: { type: "string", description: "Directory for persisted runner stdout/stderr artifacts" },
+        },
+      },
     },
   },
   async execute(node, ctx, engine) {
     const command = ctx.resolve(node.config?.command || "npm test");
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     const timeout = node.config?.timeoutMs || 600000;
+    const hasRunnerOverride = node.config?.runner != null;
 
     ctx.log(node.id, `Running tests: ${command}`);
-    const isolatedRun = await maybeRunWorkflowCommandInIsolation({
+    const startedAt = Date.now();
+    if (!hasRunnerOverride) {
+      const isolatedRun = await maybeRunWorkflowCommandInIsolation({
+        node,
+        ctx,
+        engine,
+        nodeType: "validation.tests",
+        command,
+        cwd,
+        timeoutMs: timeout,
+        commandType: "test",
+      });
+      if (isolatedRun) {
+        const failureDiagnostic = buildValidationFailureDiagnostic({
+          command,
+          status: isolatedRun.isolated?.status,
+          exitCode: isolatedRun.isolated?.exitCode,
+          stderr: isolatedRun.isolated?.stderr || isolatedRun.isolated?.error || "",
+          output: isolatedRun.isolated?.stdout || "",
+          timeoutMs: timeout,
+          blocked: isolatedRun.isolated?.blocked === true,
+          failureDiagnostic: isolatedRun.isolated?.failureDiagnostic,
+        });
+        return buildValidationResult({
+          passed: didValidationCommandPass({ ...isolatedRun.isolated, failureDiagnostic }),
+          exitCode: isolatedRun.isolated?.exitCode ?? null,
+          blocked: isolatedRun.isolated?.blocked === true,
+          compacted: isolatedRun.compacted,
+          extras: isolatedRun.extras,
+          failureDiagnostic,
+        });
+      }
+    }
+    const runnerExecution = await executeValidationCommandWithOptionalRunner({
       node,
       ctx,
-      engine,
       nodeType: "validation.tests",
       command,
       cwd,
       timeoutMs: timeout,
-      commandType: "test",
     });
-    if (isolatedRun) {
-      const failureDiagnostic = buildValidationFailureDiagnostic({
-        command,
-        status: isolatedRun.isolated?.status,
-        exitCode: isolatedRun.isolated?.exitCode,
-        stderr: isolatedRun.isolated?.stderr || isolatedRun.isolated?.error || "",
-        output: isolatedRun.isolated?.stdout || "",
-        timeoutMs: timeout,
-        blocked: isolatedRun.isolated?.blocked === true,
-        failureDiagnostic: isolatedRun.isolated?.failureDiagnostic,
-      });
-      return buildValidationResult({
-        passed: didValidationCommandPass({ ...isolatedRun.isolated, failureDiagnostic }),
-        exitCode: isolatedRun.isolated?.exitCode ?? null,
-        blocked: isolatedRun.isolated?.blocked === true,
-        compacted: isolatedRun.compacted,
-        extras: isolatedRun.extras,
-        failureDiagnostic,
-      });
+    if (runnerExecution) {
+      const { run, compacted, baseResult } = runnerExecution;
+      ctx.log(node.id, run.ok ? "Tests passed" : (run.blocked ? "Runner lease failed" : "Tests failed"), run.ok ? undefined : "error");
+      return {
+        passed: run.ok,
+        exitCode: run.exitCode,
+        blocked: run.blocked === true,
+        reason: run.blocked ? (run.failureKind || "runner_lease_failed") : undefined,
+        ...baseResult,
+        ...compacted,
+      };
     }
-    const startedAt = Date.now();
+
     try {
       const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
       ctx.log(node.id, "Tests passed");
@@ -5981,7 +6110,7 @@ registerBuiltinNodeType("validation.tests", {
         exitCode: 0,
         durationMs: Date.now() - startedAt,
       });
-      return { passed: true, ...compacted };
+      return { passed: true, executionLane: "main", ...compacted };
     } catch (err) {
       const output = (err.stdout?.toString() || "") + (err.stderr?.toString() || "");
       ctx.log(node.id, "Tests failed", "error");
@@ -5991,20 +6120,7 @@ registerBuiltinNodeType("validation.tests", {
         exitCode: err.status,
         durationMs: Date.now() - startedAt,
       });
-      const failureDiagnostic = buildValidationFailureDiagnostic({
-        command,
-        status: /(?:timed out|ETIMEDOUT|SIGTERM)/i.test(String(err?.message || "")) ? "timeout" : "error",
-        exitCode: err.status,
-        stderr: err.stderr?.toString() || err.message,
-        output,
-        timeoutMs: timeout,
-      });
-      return buildValidationResult({
-        passed: false,
-        exitCode: err.status,
-        compacted,
-        failureDiagnostic,
-      });
+      return { passed: false, exitCode: err.status, executionLane: "main", ...compacted };
     }
   },
 });
@@ -6018,6 +6134,15 @@ registerBuiltinNodeType("validation.build", {
       cwd: { type: "string" },
       timeoutMs: { type: "number", default: 600000 },
       zeroWarnings: { type: "boolean", default: false, description: "Fail on warnings too" },
+      runner: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean", description: "Force isolated runner execution" },
+          runtime: { type: "string", enum: ["local-process", "local-container", "remote-sandbox"], default: "local-process" },
+          retries: { type: "number", default: 0 },
+          artifactDir: { type: "string", description: "Directory for persisted runner stdout/stderr artifacts" },
+        },
+      },
     },
   },
   async execute(node, ctx, engine) {
@@ -6025,54 +6150,84 @@ registerBuiltinNodeType("validation.build", {
     const command = normalizeLegacyWorkflowCommand(resolvedCommand);
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     const timeout = node.config?.timeoutMs || 600000;
+    const hasRunnerOverride = node.config?.runner != null;
 
     if (command !== resolvedCommand) {
       ctx.log(node.id, `Normalized legacy command for portability: ${command}`);
     }
     ctx.log(node.id, `Building: ${command}`);
-    const isolatedRun = await maybeRunWorkflowCommandInIsolation({
+    const startedAt = Date.now();
+    if (!hasRunnerOverride) {
+      const isolatedRun = await maybeRunWorkflowCommandInIsolation({
+        node,
+        ctx,
+        engine,
+        nodeType: "validation.build",
+        command,
+        cwd,
+        timeoutMs: timeout,
+        commandType: "build",
+      });
+      if (isolatedRun) {
+        const combinedOutput = `${isolatedRun.isolated?.stdout || ""}\n${isolatedRun.isolated?.stderr || ""}`;
+        const hasWarnings = /warning/i.test(combinedOutput);
+        if (node.config?.zeroWarnings && hasWarnings) {
+          return {
+            passed: false,
+            reason: "warnings_found",
+            exitCode: isolatedRun.isolated?.exitCode ?? 0,
+            blocked: isolatedRun.isolated?.blocked === true,
+            executionLane: isolatedRun.lane?.lane || "isolated",
+            executionLaneReason: isolatedRun.lane?.reason || "isolated",
+            ...isolatedRun.extras,
+            ...isolatedRun.compacted,
+          };
+        }
+        return {
+          passed:
+            isolatedRun.isolated?.blocked !== true &&
+            Number(isolatedRun.isolated?.exitCode ?? 0) === 0,
+          exitCode: isolatedRun.isolated?.exitCode ?? null,
+          blocked: isolatedRun.isolated?.blocked === true,
+          executionLane: isolatedRun.lane?.lane || "isolated",
+          executionLaneReason: isolatedRun.lane?.reason || "isolated",
+          ...isolatedRun.extras,
+          ...isolatedRun.compacted,
+        };
+      }
+    }
+    const runnerExecution = await executeValidationCommandWithOptionalRunner({
       node,
       ctx,
-      engine,
       nodeType: "validation.build",
       command,
       cwd,
       timeoutMs: timeout,
-      commandType: "build",
     });
-    if (isolatedRun) {
-      const combinedOutput = `${isolatedRun.isolated?.stdout || ""}\n${isolatedRun.isolated?.stderr || ""}`;
+    if (runnerExecution) {
+      const { run, compacted, baseResult } = runnerExecution;
+      const combinedOutput = `${run.stdout || ""}\n${run.stderr || ""}`;
       const hasWarnings = /warning/i.test(combinedOutput);
-      if (node.config?.zeroWarnings && hasWarnings) {
+      ctx.log(node.id, run.ok ? "Build completed" : (run.blocked ? "Runner lease failed" : "Build failed"), run.ok ? undefined : "error");
+      if (run.ok && node.config?.zeroWarnings && hasWarnings) {
         return {
           passed: false,
           reason: "warnings_found",
-          exitCode: isolatedRun.isolated?.exitCode ?? 0,
-          blocked: isolatedRun.isolated?.blocked === true,
-          ...isolatedRun.compacted,
-          ...isolatedRun.extras,
+          exitCode: run.exitCode,
+          ...baseResult,
+          ...compacted,
         };
       }
-      const failureDiagnostic = buildValidationFailureDiagnostic({
-        command,
-        status: isolatedRun.isolated?.status,
-        exitCode: isolatedRun.isolated?.exitCode,
-        stderr: isolatedRun.isolated?.stderr || isolatedRun.isolated?.error || "",
-        output: isolatedRun.isolated?.stdout || "",
-        timeoutMs: timeout,
-        blocked: isolatedRun.isolated?.blocked === true,
-        failureDiagnostic: isolatedRun.isolated?.failureDiagnostic,
-      });
-      return buildValidationResult({
-        passed: didValidationCommandPass({ ...isolatedRun.isolated, failureDiagnostic }),
-        exitCode: isolatedRun.isolated?.exitCode ?? null,
-        blocked: isolatedRun.isolated?.blocked === true,
-        compacted: isolatedRun.compacted,
-        extras: isolatedRun.extras,
-        failureDiagnostic,
-      });
+      return {
+        passed: run.ok,
+        exitCode: run.exitCode,
+        blocked: run.blocked === true,
+        reason: run.blocked ? (run.failureKind || "runner_lease_failed") : undefined,
+        ...baseResult,
+        ...compacted,
+      };
     }
-    const startedAt = Date.now();
+
     try {
       const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
       const hasWarnings = /warning/i.test(output || "");
@@ -6083,9 +6238,9 @@ registerBuiltinNodeType("validation.build", {
         durationMs: Date.now() - startedAt,
       });
       if (node.config?.zeroWarnings && hasWarnings) {
-        return { passed: false, reason: "warnings_found", ...compacted };
+        return { passed: false, reason: "warnings_found", executionLane: "main", ...compacted };
       }
-      return { passed: true, ...compacted };
+      return { passed: true, executionLane: "main", ...compacted };
     } catch (err) {
       const compacted = await compactWorkflowCommandResult({
         command,
@@ -6094,20 +6249,7 @@ registerBuiltinNodeType("validation.build", {
         exitCode: err.status,
         durationMs: Date.now() - startedAt,
       });
-      const failureDiagnostic = buildValidationFailureDiagnostic({
-        command,
-        status: /(?:timed out|ETIMEDOUT|SIGTERM)/i.test(String(err?.message || "")) ? "timeout" : "error",
-        exitCode: err.status,
-        stderr: err.stderr?.toString() || err.message,
-        output: err.stdout?.toString() || "",
-        timeoutMs: timeout,
-      });
-      return buildValidationResult({
-        passed: false,
-        exitCode: err.status,
-        compacted,
-        failureDiagnostic,
-      });
+      return { passed: false, exitCode: err.status, executionLane: "main", ...compacted };
     }
   },
 });
@@ -7889,7 +8031,6 @@ registerBuiltinNodeType("agent.run_planner", {
         : "\n") +
       `Your response MUST be a single fenced JSON block with shape { "tasks": [...] }.\n` +
       `Do NOT include status updates, analysis notes, tool commentary, questions, or prose outside the JSON block.\n` +
-      `Do NOT reference or use legacy ve-kanban integration commands or scripts.\n` +
       `The downstream system will parse your output as JSON — any extra text will cause task creation to fail.`;
     const promptText = basePrompt
       ? `${basePrompt}${outputEnforcement}`
@@ -11900,7 +12041,7 @@ registerBuiltinNodeType("action.allocate_slot", {
 
     // Save env snapshot for parallel isolation (restored by release_slot)
     const envSnapshot = {};
-    const envPrefixes = ["VE_", "VK_", "BOSUN_", "COPILOT_", "CLAUDE_", "CODEX_"];
+    const envPrefixes = ["VE_", "BOSUN_", "COPILOT_", "CLAUDE_", "CODEX_"];
     for (const key of Object.keys(process.env)) {
       if (envPrefixes.some((p) => key.startsWith(p))) {
         envSnapshot[key] = process.env[key];

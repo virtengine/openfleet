@@ -19,7 +19,10 @@ import { resolveAgentSdkConfig } from "../agent/agent-sdk.mjs";
 import { loadConfig } from "../config/config.mjs";
 import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
-import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
+import {
+  resolveCodexProfileRuntime,
+  readCodexConfigRuntimeDefaults,
+} from "./codex-model-profiles.mjs";
 import {
   isTransientStreamError,
   streamRetryDelay,
@@ -94,8 +97,11 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env) {
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
   const isAzure = isAzureOpenAIBaseUrl(baseUrl);
   const env = { ...resolvedEnv };
+  const unsetEnvKeys = [];
 
   delete env.OPENAI_BASE_URL;
+  delete env.OPENAI_ORGANIZATION;
+  delete env.OPENAI_PROJECT;
 
   // Use the config.toml provider section name and env_key when available,
   // so Bosun's config override is consistent with the user's config.toml
@@ -105,6 +111,26 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env) {
 
   if (isAzure && env.OPENAI_API_KEY && !env.AZURE_OPENAI_API_KEY) {
     env.AZURE_OPENAI_API_KEY = env.OPENAI_API_KEY;
+  }
+
+  if (isAzure) {
+    try {
+      const configDefaults = readCodexConfigRuntimeDefaults();
+      const allProviders = configDefaults?.providers || {};
+      for (const [sectionName, section] of Object.entries(allProviders)) {
+        if (sectionName === providerSectionName) continue;
+        const otherBaseUrl = String(section?.baseUrl || "").trim();
+        const otherEnvKey = String(section?.envKey || "").trim();
+        if (!otherBaseUrl || !isAzureOpenAIBaseUrl(otherBaseUrl)) continue;
+        if (!otherEnvKey || otherEnvKey === providerEnvKey) continue;
+        delete env[otherEnvKey];
+        if (!unsetEnvKeys.includes(otherEnvKey)) {
+          unsetEnvKeys.push(otherEnvKey);
+        }
+      }
+    } catch {
+      // best effort — do not block SDK startup if config inspection fails
+    }
   }
 
   const providerName = isAzure ? "azure" : "openai";
@@ -132,6 +158,7 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env) {
     config,
     providerName,
     streamIdleTimeoutMs: streamProviderOverrides.stream_idle_timeout_ms,
+    unsetEnvKeys,
   };
 }
 
@@ -516,8 +543,13 @@ async function getThread() {
     };
     const runtime = buildCodexSdkRuntime(streamProviderOverrides, process.env);
 
-    Object.assign(process.env, runtime.env);
     delete process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_ORGANIZATION;
+    delete process.env.OPENAI_PROJECT;
+    for (const key of runtime.unsetEnvKeys || []) {
+      delete process.env[key];
+    }
+    Object.assign(process.env, runtime.env);
 
     codexInstance = new Cls({
       config: {
@@ -1192,6 +1224,22 @@ export async function initCodexShell() {
   // Pre-load SDK
   const Cls = await loadCodexSdk();
   if (Cls) {
+    const STREAM_IDLE_TIMEOUT_MS = 3_600_000; // 60 min — matches Azure max stream lifetime
+    const streamProviderOverrides = {
+      stream_idle_timeout_ms: STREAM_IDLE_TIMEOUT_MS,
+      stream_max_retries: 15,
+      request_max_retries: 6,
+    };
+    const runtime = buildCodexSdkRuntime(streamProviderOverrides, process.env);
+
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_ORGANIZATION;
+    delete process.env.OPENAI_PROJECT;
+    for (const key of runtime.unsetEnvKeys || []) {
+      delete process.env[key];
+    }
+    Object.assign(process.env, runtime.env);
+
     codexInstance = new Cls({
       config: {
         features: {
@@ -1201,9 +1249,10 @@ export async function initCodexShell() {
           undo: true,
           steer: true,
         },
+        ...runtime.config,
       },
     });
-    console.log("[codex-shell] initialised with Codex SDK (sub-agent features enabled)");
+    console.log(`[codex-shell] initialised with Codex SDK (provider=${runtime.providerName}, sub-agent features enabled)`);
   } else {
     console.warn(
       "[codex-shell] initialised WITHOUT Codex SDK — agent will not work",

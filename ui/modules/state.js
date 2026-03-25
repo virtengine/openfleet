@@ -372,6 +372,15 @@ export const logsLines = signal(100);
 export const gitDiff = signal(null);
 export const gitBranches = signal([]);
 export const agentLogFiles = signal([]);
+export const agentLogFilesMeta = signal({
+  total: 0,
+  offset: 0,
+  limit: 100,
+  count: 0,
+  hasMore: false,
+  nextOffset: 0,
+  filterSummary: null,
+});
 export const agentLogFile = signal("");
 export const agentLogTail = signal(null);
 export const agentLogLines = signal(200);
@@ -634,12 +643,22 @@ export async function loadExecutor() {
   _markFresh("executor");
 }
 
+/** Large page size for kanban mode to load all tasks in one request */
+export const KANBAN_PAGE_SIZE = 200;
+
 /** Load tasks with current filter/page/sort → tasksData + tasksTotalPages */
 export async function loadTasks(options = {}) {
   const append = Boolean(options?.append);
+  const pageSizeOverride = options?.pageSize;
+  // When doing a full (non-append) refresh, always reset to page 0 so we
+  // don't accidentally fetch a stale later page and overwrite the full list.
+  if (!append && tasksPage.value !== 0) {
+    tasksPage.value = 0;
+  }
+  const effectivePageSize = pageSizeOverride || tasksPageSize.value;
   const params = new URLSearchParams({
     page: String(tasksPage.value),
-    pageSize: String(tasksPageSize.value),
+    pageSize: String(effectivePageSize),
   });
   if (tasksFilter.value && tasksFilter.value !== "all")
     params.set("status", tasksFilter.value);
@@ -668,7 +687,7 @@ export async function loadTasks(options = {}) {
     : nextTasks;
   tasksTotalPages.value =
     res.totalPages ||
-    Math.max(1, Math.ceil((res.total || 0) / tasksPageSize.value));
+    Math.max(1, Math.ceil((res.total || 0) / effectivePageSize));
   tasksTotal.value = Math.max(0, Number(res.total || 0));
   tasksStatusCounts.value = {
     draft: Number(res?.statusCounts?.draft || 0),
@@ -809,17 +828,49 @@ export async function loadGit() {
 }
 
 /** Load agent log file list → agentLogFiles */
-export async function loadAgentLogFileList() {
+export async function loadAgentLogFileList(options = {}) {
+  const offset = Math.max(0, Number(options?.offset || 0));
+  const limit = Math.max(20, Math.min(500, Number(options?.limit || 100)));
+  const sortBy = String(options?.sortBy || "modified");
+  const sortDir = String(options?.sortDir || "desc");
+  const age = String(options?.age || "all");
+  const staleDays = Math.max(1, Math.min(90, Number(options?.staleDays || 7)));
   const params = new URLSearchParams();
   if (agentLogQuery.value) params.set("query", agentLogQuery.value);
+  params.set("offset", String(offset));
+  params.set("limit", String(limit));
+  params.set("sortBy", sortBy);
+  params.set("sortDir", sortDir);
+  params.set("age", age);
+  params.set("staleDays", String(staleDays));
   const path = params.toString()
     ? `/api/agent-logs?${params}`
     : "/api/agent-logs";
   const fallback = Array.isArray(agentLogFiles.value) ? agentLogFiles.value : [];
   const res = await apiFetch(path, { _silent: true }).catch(() => ({
     data: fallback,
+    pagination: {
+      total: 0,
+      offset,
+      limit,
+      count: 0,
+      hasMore: false,
+      nextOffset: 0,
+    },
   }));
   agentLogFiles.value = res.data ?? fallback;
+  const pagination = res?.pagination || {
+    total: agentLogFiles.value.length,
+    offset,
+    limit,
+    count: agentLogFiles.value.length,
+    hasMore: false,
+    nextOffset: offset + agentLogFiles.value.length,
+  };
+  agentLogFilesMeta.value = {
+    ...pagination,
+    filterSummary: res?.filterSummary || null,
+  };
 }
 
 /** Load tail of the currently selected agent log → agentLogTail */
@@ -832,6 +883,8 @@ export async function loadAgentLogTailData(options = {}) {
     file: agentLogFile.value,
     lines: String(agentLogLines.value),
   });
+  const query = String(agentLogQuery.value || "").trim();
+  if (query) params.set("query", query);
   const url = `/api/agent-logs/tail?${params}`;
   const cached = _cacheGet(url);
   const fallback = cached?.data ?? agentLogTail.value ?? null;
@@ -1026,7 +1079,7 @@ export async function loadBenchmarks(providerId = "") {
 const TAB_LOADERS = {
   dashboard: () =>
     Promise.all([loadStatus(), loadExecutor(), loadProjectSummary(), loadRetryQueue()]),
-  tasks: () => loadTasks(),
+  tasks: () => loadTasks({ pageSize: KANBAN_PAGE_SIZE }),
   benchmarks: () => loadBenchmarks(),
   agents: () => Promise.all([loadAgents(), loadExecutor(), import("../components/session-list.js").then((m) => m.loadSessions()).catch(() => {})]),
   infra: () =>

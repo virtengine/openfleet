@@ -48,6 +48,7 @@ import {
   FormControlLabel, Tooltip, Paper, Divider, CircularProgress, Alert,
   Dialog, DialogTitle, DialogContent, DialogActions,
   Tabs, Tab, Fab, Menu as MuiMenu,
+  Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
 } from "@mui/material";
 
 /* ═══════════════════════════════════════════════════════════════
@@ -5818,7 +5819,18 @@ function RunHistoryView() {
   const [workflowFilter, setWorkflowFilter] = useState("all");
   const [triggerFilter, setTriggerFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [logsPaneSearch, setLogsPaneSearch] = useState("");
+  const [errorsPaneSearch, setErrorsPaneSearch] = useState("");
+  const [ledgerPaneSearch, setLedgerPaneSearch] = useState("");
+  const [rawPaneSearch, setRawPaneSearch] = useState("");
   const normalizedSearch = String(searchQuery || "").trim().toLowerCase();
+
+  useEffect(() => {
+    setLogsPaneSearch("");
+    setErrorsPaneSearch("");
+    setLedgerPaneSearch("");
+    setRawPaneSearch("");
+  }, [selectedRunId.value]);
 
   useEffect(() => {
     const timer = setInterval(() => setNowTick(Date.now()), 1000);
@@ -5895,6 +5907,23 @@ function RunHistoryView() {
     }
     return counts;
   }, [runs]);
+
+  const runMetrics = useMemo(() => {
+    const completed = Number(runCounts.completed || 0);
+    const failed = Number(runCounts.failed || 0);
+    const settled = completed + failed;
+    const successRate = settled > 0 ? Math.round((completed / settled) * 100) : 0;
+    const stuckCount = runs.filter((run) => run?.status === "running" && run?.isStuck).length;
+    const activeNodes = runs
+      .filter((run) => run?.status === "running")
+      .reduce((sum, run) => sum + Number(run?.activeNodeCount || 0), 0);
+    return {
+      settled,
+      successRate,
+      stuckCount,
+      activeNodes,
+    };
+  }, [runs, runCounts]);
 
   const canLoadMoreRuns =
     hasMoreRuns && runs.length < WORKFLOW_RUN_MAX_FETCH;
@@ -6023,6 +6052,28 @@ function RunHistoryView() {
     const dagCounts = getRunDagCounts(selectedRun);
     const dagRevisions = Array.isArray(selectedRun?.detail?.dagState?.revisions) ? selectedRun.detail.dagState.revisions : [];
     const ledgerEvents = Array.isArray(selectedRun?.ledger?.events) ? selectedRun.ledger.events : [];
+    const normalizedLogsSearch = String(logsPaneSearch || "").trim().toLowerCase();
+    const normalizedErrorsSearch = String(errorsPaneSearch || "").trim().toLowerCase();
+    const normalizedLedgerSearch = String(ledgerPaneSearch || "").trim().toLowerCase();
+    const normalizedRawSearch = String(rawPaneSearch || "").trim().toLowerCase();
+    const filteredLogs = logs.filter((entry) => {
+      if (!normalizedLogsSearch) return true;
+      return safePrettyJson(entry).toLowerCase().includes(normalizedLogsSearch);
+    });
+    const filteredErrors = errors.filter((entry) => {
+      if (!normalizedErrorsSearch) return true;
+      return safePrettyJson(entry).toLowerCase().includes(normalizedErrorsSearch);
+    });
+    const filteredLedgerEvents = ledgerEvents.filter((event) => {
+      if (!normalizedLedgerSearch) return true;
+      const line = `${safePrettyJson(event)} ${summarizeLedgerEvent(event)}`.toLowerCase();
+      return line.includes(normalizedLedgerSearch);
+    });
+    const rawRunJson = safePrettyJson(selectedRun);
+    const rawRunLines = rawRunJson.split("\n");
+    const filteredRawLines = normalizedRawSearch
+      ? rawRunLines.filter((line) => line.toLowerCase().includes(normalizedRawSearch))
+      : rawRunLines;
     const recommendedRetryMode =
       selectedRun?.status === "failed"
         ? ((selectedRun?.issueAdvisorRecommendation === "replan_from_failed" || selectedRun?.issueAdvisorRecommendation === "replan_subgraph") ? "from_scratch" : "from_failed")
@@ -6246,20 +6297,67 @@ function RunHistoryView() {
 
         <div style="margin-top: 14px; display: grid; gap: 10px;">
           <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Run Logs (${logs.length})</summary>
-            <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(logs)}</pre>
+            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Run Logs (${filteredLogs.length}/${logs.length})</summary>
+            <${TextField}
+              size="small"
+              variant="outlined"
+              fullWidth
+              placeholder="Search run logs..."
+              value=${logsPaneSearch}
+              onInput=${(event) => setLogsPaneSearch(event.target.value)}
+              sx=${{ mt: 1, mb: 1 }}
+            />
+            ${filteredLogs.length === 0
+              ? html`<div style="margin-top: 8px; font-size: 12px; color: var(--color-text-secondary, #8b95a5);">No log entries match this filter.</div>`
+              : html`
+                <div style="display:flex; flex-direction:column; gap:6px; max-height:360px; overflow:auto;">
+                  ${filteredLogs.slice(-120).map((entry, index) => html`
+                    <div key=${`log-${index}`} style="background:#111827; border:1px solid #1f2937; border-radius:6px; padding:8px;">
+                      <pre style="margin:0; white-space:pre-wrap; word-break:break-word; font-size:11px; color:#c9d1d9;">${safePrettyJson(entry)}</pre>
+                    </div>
+                  `)}
+                </div>
+              `}
           </details>
           <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Errors (${errors.length})</summary>
-            <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #fca5a5; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(errors)}</pre>
+            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Errors (${filteredErrors.length}/${errors.length})</summary>
+            <${TextField}
+              size="small"
+              variant="outlined"
+              fullWidth
+              placeholder="Search errors..."
+              value=${errorsPaneSearch}
+              onInput=${(event) => setErrorsPaneSearch(event.target.value)}
+              sx=${{ mt: 1, mb: 1 }}
+            />
+            ${filteredErrors.length === 0
+              ? html`<div style="margin-top: 8px; font-size: 12px; color: var(--color-text-secondary, #8b95a5);">No errors match this filter.</div>`
+              : html`
+                <div style="display:flex; flex-direction:column; gap:6px; max-height:260px; overflow:auto;">
+                  ${filteredErrors.slice(-80).map((entry, index) => html`
+                    <div key=${`err-${index}`} style="background:#111827; border:1px solid #3f1f2a; border-radius:6px; padding:8px;">
+                      <pre style="margin:0; white-space:pre-wrap; word-break:break-word; font-size:11px; color:#fca5a5;">${safePrettyJson(entry)}</pre>
+                    </div>
+                  `)}
+                </div>
+              `}
           </details>
           <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Execution Ledger (${ledgerEvents.length})</summary>
-            ${ledgerEvents.length === 0
+            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Execution Ledger (${filteredLedgerEvents.length}/${ledgerEvents.length})</summary>
+            <${TextField}
+              size="small"
+              variant="outlined"
+              fullWidth
+              placeholder="Search ledger events..."
+              value=${ledgerPaneSearch}
+              onInput=${(event) => setLedgerPaneSearch(event.target.value)}
+              sx=${{ mt: 1, mb: 1 }}
+            />
+            ${filteredLedgerEvents.length === 0
               ? html`<div style="margin-top: 8px; font-size: 12px; color: var(--color-text-secondary, #8b95a5);">No ledger events recorded.</div>`
               : html`
                 <div style="margin-top: 8px; display:flex; flex-direction:column; gap:6px;">
-                  ${ledgerEvents.slice(-20).map((event, index) => html`
+                  ${filteredLedgerEvents.slice(-120).map((event, index) => html`
                     <div key=${`${event?.timestamp || "event"}-${index}`} style="background:#111827; border:1px solid #1f2937; border-radius:6px; padding:8px;">
                       <div style="font-size:11px; color:#93c5fd; margin-bottom:4px;">
                         ${event?.timestamp ? `${formatDate(event.timestamp)} (${formatRelative(event.timestamp)})` : "unknown time"}
@@ -6272,7 +6370,16 @@ function RunHistoryView() {
           </details>
           <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
             <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Raw Run JSON</summary>
-            <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(selectedRun)}</pre>
+            <${TextField}
+              size="small"
+              variant="outlined"
+              fullWidth
+              placeholder="Search raw JSON lines..."
+              value=${rawPaneSearch}
+              onInput=${(event) => setRawPaneSearch(event.target.value)}
+              sx=${{ mt: 1, mb: 1 }}
+            />
+            <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px; max-height:420px; overflow:auto;">${filteredRawLines.join("\n")}</pre>
           </details>
         </div>
       </div>
@@ -6368,6 +6475,29 @@ function RunHistoryView() {
         <span class="wf-runs-count">${totalRuns} total</span>
       </div>
 
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px;">
+        <div style="background:var(--color-bg-secondary,#1a1f2e);border:1px solid var(--color-border,#2a3040);border-radius:8px;padding:10px;">
+          <div style="font-size:11px;opacity:0.7;">Success Rate</div>
+          <div style="font-size:20px;font-weight:700;line-height:1.2;">${runMetrics.successRate}%</div>
+          <div style="font-size:11px;opacity:0.6;">${runMetrics.settled} settled runs</div>
+        </div>
+        <div style="background:var(--color-bg-secondary,#1a1f2e);border:1px solid var(--color-border,#2a3040);border-radius:8px;padding:10px;">
+          <div style="font-size:11px;opacity:0.7;">Running</div>
+          <div style="font-size:20px;font-weight:700;line-height:1.2;color:#60a5fa;">${runCounts.running}</div>
+          <div style="font-size:11px;opacity:0.6;">${runMetrics.activeNodes} active nodes</div>
+        </div>
+        <div style="background:var(--color-bg-secondary,#1a1f2e);border:1px solid var(--color-border,#2a3040);border-radius:8px;padding:10px;">
+          <div style="font-size:11px;opacity:0.7;">Failed</div>
+          <div style="font-size:20px;font-weight:700;line-height:1.2;color:#f87171;">${runCounts.failed}</div>
+          <div style="font-size:11px;opacity:0.6;">Need triage</div>
+        </div>
+        <div style="background:var(--color-bg-secondary,#1a1f2e);border:1px solid var(--color-border,#2a3040);border-radius:8px;padding:10px;">
+          <div style="font-size:11px;opacity:0.7;">Stuck Running</div>
+          <div style="font-size:20px;font-weight:700;line-height:1.2;color:${runMetrics.stuckCount > 0 ? "#fbbf24" : "#34d399"};">${runMetrics.stuckCount}</div>
+          <div style="font-size:11px;opacity:0.6;">Potential intervention</div>
+        </div>
+      </div>
+
       ${runs.length === 0 && html`
         <div style="text-align: center; padding: 40px; opacity: 0.5;">No workflow runs yet</div>
       `}
@@ -6381,73 +6511,72 @@ function RunHistoryView() {
         </div>
       `}
 
-      <div style="display: flex; flex-direction: column; gap: 8px;">
-        ${filteredRuns.map((run) => {
-          const styles = getRunStatusBadgeStyles(run.status);
-          const runName = run.workflowName || workflowNameMap.get(run.workflowId) || run.workflowId;
-          const lastActivityAt = getRunActivityAt(run);
-          const liveDuration = run.status === "running" && run.startedAt
-            ? Math.max(0, nowTick - run.startedAt)
-            : run.duration;
-          const borderColor = run.isStuck
-            ? "var(--accent-warning, #f59e0b)"
-            : (run.status === "running" ? "var(--accent, #60a5fa)" : "var(--color-border, #2a3040)");
-          const triggerLabel = getWorkflowRunTriggerLabel(run);
-          const retryBadge = run.retryOf ? formatRetryModeLabel(run.retryMode) : "";
-          const advisorBadge = run.issueAdvisorRecommendation
-            ? formatIssueAdvisorAction(run.issueAdvisorRecommendation)
-            : "";
-          return html`
-            <${Button}
-              key=${run.runId}
-              type="button"
-              variant="text"
-              size="small"
-              onClick=${() => loadRunDetail(run.runId)}
-              sx=${{ textAlign: 'left', width: '100%', background: 'var(--color-bg-secondary, #1a1f2e)', borderRadius: '8px', padding: '12px', border: '1px solid ' + borderColor, display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer', textTransform: 'none' }}
-            >
-              <span class="icon-inline" style="font-size: 16px;">
-                ${run.status === "completed" ? resolveIcon("check") : run.status === "failed" ? resolveIcon("close") : resolveIcon("clock")}
-              </span>
-              <div style="flex: 1; min-width: 0;">
-                <div style="font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                  ${runName || "Unknown workflow"}
-                </div>
-                <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                  ${formatDate(run.startedAt)} (${formatRelative(run.startedAt)}) · ${formatDuration(liveDuration)} · ${run.nodeCount || 0} nodes${run.errorCount ? ` · ${run.errorCount} errors` : ""}
-                </div>
-                <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); margin-top: 2px; display:flex; gap:10px; flex-wrap:wrap;">
-                  <span>${run.status === "running"
-                    ? `Active nodes: ${run.activeNodeCount || 0} · Last activity ${lastActivityAt ? formatRelative(lastActivityAt) : "—"}`
-                    : `Finished ${run.endedAt ? formatRelative(run.endedAt) : "—"}`}</span>
-                  <span>Trigger: ${triggerLabel}</span>
-                </div>
-                ${(advisorBadge || retryBadge) && html`
-                  <div style="font-size: 11px; color: var(--color-text-secondary, #94a3b8); margin-top: 4px; display:flex; gap:8px; flex-wrap:wrap;">
-                    ${advisorBadge ? html`<span>Advisor: ${advisorBadge}</span>` : ""}
-                    ${retryBadge ? html`<span>Retry: ${retryBadge}</span>` : ""}
-                  </div>
-                `}
-                ${run.issueAdvisorSummary && html`
-                  <div style="font-size: 11px; color: #cbd5e1; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                    ${run.issueAdvisorSummary}
-                  </div>
-                `}
-                <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); margin-top: 2px;">
-                  Run: <code>${run.runId}</code>
-                </div>
-              </div>
-              <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 4px;">
-                <span class="wf-badge" style="background: ${styles.bg}; color: ${styles.color};">
-                  ${run.status || "unknown"}
-                </span>
-                ${run.isStuck && html`<span class="wf-badge" style="background: #f59e0b2f; color: #f59e0b; border-color: #f59e0b50;">stuck</span>`}
-                ${run.retryOf && html`<span class="wf-badge" style="background:#10b98120; color:#6ee7b7;">retry</span>`}
-              </div>
-            <//>
-          `;
-        })}
-      </div>
+      <${TableContainer} component=${Paper} variant="outlined" sx=${{ maxHeight: 480, overflow: "auto" }}>
+        <${Table} size="small" stickyHeader>
+          <${TableHead}>
+            <${TableRow}>
+              <${TableCell}>Workflow<//>
+              <${TableCell}>Status<//>
+              <${TableCell}>Trigger<//>
+              <${TableCell}>Started<//>
+              <${TableCell}>Duration<//>
+              <${TableCell}>Nodes<//>
+              <${TableCell} align="right">Run ID<//>
+            </${TableRow}>
+          <//>
+          <${TableBody}>
+            ${filteredRuns.map((run) => {
+              const styles = getRunStatusBadgeStyles(run.status);
+              const runName = run.workflowName || workflowNameMap.get(run.workflowId) || run.workflowId;
+              const liveDuration = run.status === "running" && run.startedAt
+                ? Math.max(0, nowTick - run.startedAt)
+                : run.duration;
+              const triggerLabel = getWorkflowRunTriggerLabel(run);
+              return html`
+                <${TableRow}
+                  key=${run.runId}
+                  hover
+                  selected=${selectedRunId.value === run.runId}
+                  sx=${{ cursor: "pointer" }}
+                  onClick=${() => loadRunDetail(run.runId)}
+                >
+                  <${TableCell}>
+                    <${Typography} variant="body2" sx=${{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 220 }}>
+                      ${runName || "Unknown"}
+                    <//>
+                  <//>
+                  <${TableCell}>
+                    <${Stack} direction="row" spacing=${0.5} alignItems="center">
+                      <${Chip}
+                        size="small"
+                        label=${run.status || "unknown"}
+                        sx=${{ background: styles.bg, color: styles.color, fontWeight: 600, fontSize: "11px" }}
+                      />
+                      ${run.isStuck && html`<${Chip} size="small" label="stuck" color="warning" variant="outlined" />`}
+                      ${run.retryOf && html`<${Chip} size="small" label="retry" color="success" variant="outlined" />`}
+                    <//>
+                  <//>
+                  <${TableCell}>
+                    <${Typography} variant="caption">${triggerLabel}<//>
+                  <//>
+                  <${TableCell}>
+                    <${Typography} variant="caption" sx=${{ whiteSpace: "nowrap" }}>${formatRelative(run.startedAt)}<//>
+                  <//>
+                  <${TableCell}>
+                    <${Typography} variant="caption" sx=${{ whiteSpace: "nowrap" }}>${formatDuration(liveDuration)}<//>
+                  <//>
+                  <${TableCell}>
+                    <${Typography} variant="caption">${run.nodeCount || 0}${run.errorCount ? html` · <span style="color:#f87171">${run.errorCount} err</span>` : ""}<//>
+                  <//>
+                  <${TableCell} align="right">
+                    <${Typography} variant="caption" sx=${{ fontFamily: "monospace", opacity: 0.7 }}>${String(run.runId || "").slice(0, 12)}<//>
+                  <//>
+                </${TableRow}>
+              `;
+            })}
+          <//>
+        </${Table}>
+      <//>
       ${canLoadMoreRuns && html`
         <div style="display: flex; justify-content: center; margin-top: 12px;">
           <${Button}

@@ -208,6 +208,8 @@ describe("primary-agent runtime safeguards", () => {
               agent: 1,
               tool: 1,
             }),
+            budgetPolicies: expect.any(Object),
+            toolFamilies: expect.any(Object),
           }),
         }),
       }),
