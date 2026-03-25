@@ -124,6 +124,39 @@ function appendBosunCreatedPrFooter(body = "") {
   return trimmed ? `${trimmed}\n\n---\n${footer}` : footer;
 }
 
+function taskHasReviewReference(task) {
+  if (!task || typeof task !== "object") return false;
+  const prNumber = Number.parseInt(String(task.prNumber || task.pr_number || ""), 10);
+  if (Number.isFinite(prNumber) && prNumber > 0) return true;
+  if (String(task.prUrl || task.pr_url || "").trim()) return true;
+  if (Array.isArray(task.links?.prs) && task.links.prs.some((value) => String(value || "").trim())) {
+    return true;
+  }
+  return false;
+}
+
+function shouldKeepTaskInReview(task, requestedStatus) {
+  if (!taskHasReviewReference(task)) return false;
+  if (String(task?.status || "").trim().toLowerCase() !== "inreview") return false;
+  const nextStatus = String(requestedStatus || "").trim().toLowerCase();
+  return nextStatus === "todo" || nextStatus === "inprogress" || nextStatus === "backlog";
+}
+
+function normalizeTaskAvailableStatuses(rawStatus) {
+  const values = Array.isArray(rawStatus)
+    ? rawStatus
+    : String(rawStatus == null ? "todo" : rawStatus).split(",");
+  const normalized = values
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(Boolean)
+    .map((value) => {
+      if (value === "review" || value === "in-review") return "inreview";
+      if (value === "backlog") return "todo";
+      return value;
+    });
+  return Array.from(new Set(normalized.length > 0 ? normalized : ["todo"]));
+}
+
 function getNonRetryableWorktreeRecoveryMs() {
   try {
     const config = loadConfig();
@@ -1485,124 +1518,6 @@ async function compactWorkflowCommandResult({
     outputInsufficientSignal: compacted.commandDiagnostics?.insufficientSignal === true,
     items: compacted.item ? [compacted.item] : [],
   };
-}
-
-async function runWorkflowCommandAsync({
-  command,
-  args = [],
-  cwd,
-  timeoutMs,
-  env,
-  captureOutput = true,
-  shell = false,
-  maxBuffer = 10 * 1024 * 1024,
-} = {}) {
-  return await new Promise((resolve, reject) => {
-    const stdoutChunks = [];
-    const stderrChunks = [];
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
-    let settled = false;
-    let timedOut = false;
-    let bufferExceeded = false;
-    let closeCode = null;
-    let closeSignal = null;
-
-    const finalizeResolve = (result) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      resolve(result);
-    };
-
-    const finalizeReject = (error) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      reject(error);
-    };
-
-    const makeOutput = (chunks) => Buffer.concat(chunks).toString("utf8");
-    const attachProcessDetails = (error) => {
-      error.stdout = Buffer.from(makeOutput(stdoutChunks));
-      error.stderr = Buffer.from(makeOutput(stderrChunks));
-      error.status = closeCode;
-      error.signal = closeSignal;
-      error.killed = timedOut === true;
-      return error;
-    };
-
-    const child = spawn(command, args, {
-      cwd,
-      env,
-      shell,
-      stdio: captureOutput ? ["ignore", "pipe", "pipe"] : "inherit",
-      windowsHide: true,
-    });
-
-    const onChunk = (chunks, updateBytes, otherBytesGetter) => (chunk) => {
-      if (!captureOutput || !chunk) return;
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
-      chunks.push(buffer);
-      updateBytes(buffer.length);
-      if (stdoutBytes + stderrBytes > maxBuffer && !bufferExceeded) {
-        bufferExceeded = true;
-        child.kill("SIGTERM");
-      }
-      void otherBytesGetter;
-    };
-
-    if (captureOutput) {
-      child.stdout?.on("data", onChunk(stdoutChunks, (size) => { stdoutBytes += size; }, () => stderrBytes));
-      child.stderr?.on("data", onChunk(stderrChunks, (size) => { stderrBytes += size; }, () => stdoutBytes));
-    }
-
-    child.on("error", (error) => {
-      finalizeReject(attachProcessDetails(error));
-    });
-
-    child.on("close", (code, signal) => {
-      closeCode = Number.isFinite(Number(code)) ? Number(code) : null;
-      closeSignal = signal || null;
-
-      if (timedOut) {
-        finalizeReject(attachProcessDetails(new Error(`Command timed out after ${timeoutMs}ms`)));
-        return;
-      }
-
-      if (bufferExceeded) {
-        finalizeReject(attachProcessDetails(new Error(`Command output exceeded ${maxBuffer} bytes`)));
-        return;
-      }
-
-      if (closeCode === 0) {
-        finalizeResolve({
-          stdout: makeOutput(stdoutChunks),
-          stderr: makeOutput(stderrChunks),
-          exitCode: 0,
-          signal: closeSignal,
-        });
-        return;
-      }
-
-      const stderrText = makeOutput(stderrChunks).trim();
-      const stdoutText = makeOutput(stdoutChunks).trim();
-      const fallbackMessage = closeSignal
-        ? `Command terminated by signal ${closeSignal}`
-        : `Command failed with exit code ${closeCode ?? "unknown"}`;
-      finalizeReject(
-        attachProcessDetails(new Error(stderrText || stdoutText || fallbackMessage)),
-      );
-    });
-
-    const timer = timeoutMs > 0
-      ? setTimeout(() => {
-          timedOut = true;
-          child.kill("SIGTERM");
-        }, timeoutMs)
-      : null;
-    if (timer?.unref) timer.unref();
-  });
 }
 
 function isValidationSandboxFailureText(text) {
@@ -4051,17 +3966,25 @@ registerBuiltinNodeType("action.run_command", {
     }
     const startedAt = Date.now();
     try {
-      const completed = await runWorkflowCommandAsync({
-        command,
-        args: commandArgs,
-        cwd,
-        timeoutMs: timeout,
-        env: commandEnv,
-        captureOutput: node.config?.captureOutput !== false,
-        shell: !usedArgv,
-      });
+      const output = usedArgv
+        ? execFileSync(command, commandArgs, {
+            cwd,
+            timeout,
+            encoding: "utf8",
+            maxBuffer: 10 * 1024 * 1024,
+            stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
+            env: commandEnv,
+          })
+        : execSync(command, {
+            cwd,
+            timeout,
+            encoding: "utf8",
+            maxBuffer: 10 * 1024 * 1024,
+            stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
+            env: commandEnv,
+          });
       ctx.log(node.id, `Command succeeded`);
-      const parsedOutput = parseOutput(completed.stdout || "");
+      const parsedOutput = parseOutput(output);
       if (shouldParseJson || typeof parsedOutput !== "string") {
         return { success: true, output: parsedOutput, exitCode: 0 };
       }
@@ -4069,7 +3992,6 @@ registerBuiltinNodeType("action.run_command", {
         command,
         args: commandArgs,
         output: parsedOutput,
-        stderr: completed.stderr || "",
         exitCode: 0,
         durationMs: Date.now() - startedAt,
       });
@@ -5075,7 +4997,7 @@ registerBuiltinNodeType("action.update_task_status", {
   },
   async execute(node, ctx, engine) {
     let taskId = ctx.resolve(node.config?.taskId || "");
-    const status = node.config?.status;
+    let status = node.config?.status;
     const kanban = engine.services?.kanban;
     const workflowEvent = ctx.resolve(node.config?.workflowEvent || "");
     const workflowData =
@@ -5114,6 +5036,22 @@ registerBuiltinNodeType("action.update_task_status", {
         taskId: unresolvedValue,
         status,
       };
+    }
+
+    let currentTask =
+      ctx.data?.task && String(ctx.data.task.id || "").trim() === String(taskId)
+        ? ctx.data.task
+        : null;
+    if (!currentTask && typeof kanban?.getTask === "function") {
+      try {
+        currentTask = await kanban.getTask(taskId);
+      } catch {
+        currentTask = null;
+      }
+    }
+    if (shouldKeepTaskInReview(currentTask, status)) {
+      status = "inreview";
+      updateOptions.previousStatus = updateOptions.previousStatus || "inreview";
     }
 
     if (kanban?.updateTaskStatus) {
@@ -6250,17 +6188,11 @@ registerBuiltinNodeType("validation.tests", {
     }
 
     try {
-      const completed = await runWorkflowCommandAsync({
-        command,
-        cwd,
-        timeoutMs: timeout,
-        shell: true,
-      });
+      const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
       ctx.log(node.id, "Tests passed");
       const compacted = await compactWorkflowCommandResult({
         command,
-        output: completed.stdout?.trim() || "",
-        stderr: completed.stderr || "",
+        output: output?.trim() || "",
         exitCode: 0,
         durationMs: Date.now() - startedAt,
       });
@@ -6383,18 +6315,11 @@ registerBuiltinNodeType("validation.build", {
     }
 
     try {
-      const completed = await runWorkflowCommandAsync({
-        command,
-        cwd,
-        timeoutMs: timeout,
-        shell: true,
-      });
-      const combinedOutput = `${completed.stdout || ""}\n${completed.stderr || ""}`;
-      const hasWarnings = /warning/i.test(combinedOutput);
+      const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
+      const hasWarnings = /warning/i.test(output || "");
       const compacted = await compactWorkflowCommandResult({
         command,
-        output: completed.stdout?.trim() || "",
-        stderr: completed.stderr || "",
+        output: output?.trim() || "",
         exitCode: 0,
         durationMs: Date.now() - startedAt,
       });
@@ -6464,16 +6389,10 @@ registerBuiltinNodeType("validation.lint", {
     }
     const startedAt = Date.now();
     try {
-      const completed = await runWorkflowCommandAsync({
-        command,
-        cwd,
-        timeoutMs: timeout,
-        shell: true,
-      });
+      const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });
       const compacted = await compactWorkflowCommandResult({
         command,
-        output: completed.stdout?.trim() || "",
-        stderr: completed.stderr || "",
+        output: output?.trim() || "",
         exitCode: 0,
         durationMs: Date.now() - startedAt,
       });
@@ -11727,7 +11646,7 @@ const STRICT_START_GUARD_MISSING_TASK = /^(1|true|yes|on)$/i.test(
 
 registerBuiltinNodeType("trigger.task_available", {
   describe: () =>
-    "Polling trigger that fires when todo tasks are available. Handles " +
+    "Polling trigger that fires when queued tasks are available. Handles " +
     "slot limits, anti-thrash filtering, cooldowns, task sorting (fire " +
     "tasks first), and listTasks retry with backoff.",
   schema: {
@@ -11737,6 +11656,11 @@ registerBuiltinNodeType("trigger.task_available", {
       pollIntervalMs: { type: "number", default: 30000, description: "Poll interval in ms" },
       projectId: { type: "string", description: "Kanban project ID (optional)" },
       status: { type: "string", default: "todo", description: "Status to poll for" },
+      statuses: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional ordered status list to poll, e.g. [\"inreview\", \"todo\"]",
+      },
       filterCodexScoped: { type: "boolean", default: true, description: "Only codex-scoped tasks" },
       filterDrafts: { type: "boolean", default: true, description: "Exclude draft tasks" },
       listRetries: { type: "number", default: 3, description: "Retries for listTasks calls" },
@@ -11750,7 +11674,8 @@ registerBuiltinNodeType("trigger.task_available", {
   },
   async execute(node, ctx, engine) {
     const maxParallel = node.config?.maxParallel ?? 3;
-    const status = node.config?.status ?? "todo";
+    const statuses = normalizeTaskAvailableStatuses(node.config?.statuses ?? node.config?.status ?? "todo");
+    const status = statuses[0] || "todo";
     const projectId = cfgOrCtx(node, ctx, "projectId") || undefined;
     const filterDrafts = node.config?.filterDrafts !== false;
     const listRetries = node.config?.listRetries ?? 3;
@@ -11777,19 +11702,33 @@ registerBuiltinNodeType("trigger.task_available", {
     for (let attempt = 0; attempt <= listRetries; attempt++) {
       try {
         const kanban = ctx.data?._services?.kanban || engine?.services?.kanban;
-        if (status === "todo") {
+        if (statuses.includes("todo")) {
           try {
             await recoverTimedBlockedWorkflowTasks({ kanban, ctx, node, projectId });
           } catch (recoveryErr) {
             ctx.log(node.id, `Blocked task recovery warning: ${recoveryErr?.message || recoveryErr}`);
           }
         }
+        const fetchedTasks = [];
         if (kanban?.listTasks) {
-          tasks = await kanban.listTasks(projectId, { status });
+          for (const requestedStatus of statuses) {
+            const listed = await kanban.listTasks(projectId, { status: requestedStatus });
+            fetchedTasks.push(...(Array.isArray(listed) ? listed : []));
+          }
         } else {
           const ka = await ensureKanbanAdapterMod();
-          tasks = await ka.listTasks(projectId, { status });
+          for (const requestedStatus of statuses) {
+            const listed = await ka.listTasks(projectId, { status: requestedStatus });
+            fetchedTasks.push(...(Array.isArray(listed) ? listed : []));
+          }
         }
+        const seenTaskIds = new Set();
+        tasks = fetchedTasks.filter((task) => {
+          const taskId = String(task?.id || task?.task_id || "").trim();
+          if (!taskId || seenTaskIds.has(taskId)) return false;
+          seenTaskIds.add(taskId);
+          return true;
+        });
         lastErr = null;
         break;
       } catch (err) {
@@ -11808,7 +11747,8 @@ registerBuiltinNodeType("trigger.task_available", {
 
     // Client-side status filter (backend may not respect status param)
     if (tasks?.length > 0) {
-      tasks = tasks.filter((t) => t.status === status);
+      const allowedStatuses = new Set(statuses);
+      tasks = tasks.filter((t) => allowedStatuses.has(String(t?.status || "").trim().toLowerCase()));
     }
     // Draft filter
     if (filterDrafts && tasks?.length > 0) {
@@ -11845,7 +11785,7 @@ registerBuiltinNodeType("trigger.task_available", {
     });
 
     let persistedOwnershipFilteredCount = 0;
-    if (status === "todo" && tasks.length > 0) {
+    if (statuses.includes("todo") && tasks.length > 0) {
       const persistedOwnedTaskIds = await getPersistedOwnedTaskIds(node, ctx);
       if (persistedOwnedTaskIds.size > 0) {
         const beforeFilterCount = tasks.length;
@@ -12005,8 +11945,14 @@ registerBuiltinNodeType("trigger.task_available", {
       }
     }
 
-    // Sort: fire tasks first, then by priority, then by created date
+    // Sort: inreview first, then fire tasks, then by priority, then by created date
     tasks.sort((a, b) => {
+      const aStatus = String(a?.status || "").trim().toLowerCase();
+      const bStatus = String(b?.status || "").trim().toLowerCase();
+      const aInReview = aStatus === "inreview";
+      const bInReview = bStatus === "inreview";
+      if (aInReview && !bInReview) return -1;
+      if (!aInReview && bInReview) return 1;
       const aFire = (a.labels || []).some((l) => typeof l === "string" ? l.includes("fire") : l?.name?.includes("fire"));
       const bFire = (b.labels || []).some((l) => typeof l === "string" ? l.includes("fire") : l?.name?.includes("fire"));
       if (aFire && !bFire) return -1;

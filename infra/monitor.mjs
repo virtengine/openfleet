@@ -5929,19 +5929,18 @@ async function checkMergedPRsAndUpdateTasks() {
         }
       }
       if (!prNumber) {
-        // inreview tasks with no discoverable PR are stuck — reset them to todo
-        // so the workflow can retry PR creation. Allow a grace period of 2 minutes
-        // to avoid racing with a very recently created inreview status.
+        // Keep inreview tasks sticky and proactively re-dispatch them instead of
+        // bouncing them back to todo. Allow a grace period to avoid racing a
+        // freshly created PR that is not discoverable yet.
         if (allowsInreviewMergeCheck) {
           const updatedAt = Date.parse(task?.updatedAt || task?.updated_at || "");
           const ageMs = Number.isFinite(updatedAt) ? Date.now() - updatedAt : Infinity;
           if (ageMs > 2 * 60 * 1000) {
             console.warn(
-              `[monitor] review reconcile: inreview task ${taskId} has no discoverable PR — resetting to todo`,
+              `[monitor] review reconcile: inreview task ${taskId} has no discoverable PR — re-dispatching inreview repair`,
             );
-            try { setInternalTaskStatus(taskId, "todo", "review-reconcile-no-pr"); } catch { /* best-effort */ }
-            try { await updateTaskStatus(taskId, "todo"); } catch { /* best-effort */ }
-            summary.resetNopr = (summary.resetNopr || 0) + 1;
+            redispatchInReviewTask(task, "review-reconcile-no-pr");
+            summary.redispatchedNoPr = (summary.redispatchedNoPr || 0) + 1;
           }
         }
         continue;
@@ -6993,6 +6992,36 @@ async function queueFlowReview(taskId, ctx, reason = "") {
     );
     return false;
   }
+}
+
+function redispatchInReviewTask(task, reason, extra = {}) {
+  const taskId = String(task?.id || "").trim();
+  if (!taskId) return false;
+  const taskTitle = String(task?.title || taskId).trim() || taskId;
+  const branch = String(task?.branchName || task?.branch || extra.branch || "").trim() || null;
+  const worktreePath = String(task?.worktreePath || task?.meta?.worktreePath || extra.worktreePath || "").trim() || null;
+  const prNumber =
+    parsePositivePrNumber(extra.prNumber) ||
+    parsePositivePrNumber(task?.prNumber) ||
+    parsePositivePrNumber(task?.pr_number) ||
+    null;
+  const prUrl = String(extra.prUrl || task?.prUrl || task?.pr_url || "").trim() || null;
+  queueWorkflowEvent(
+    "task.assigned",
+    {
+      taskId,
+      taskTitle,
+      taskStatus: "inreview",
+      branch,
+      worktreePath,
+      prNumber,
+      prUrl,
+      reviewRedispatchReason: String(reason || "inreview_redispatch").trim() || "inreview_redispatch",
+      ...extra,
+    },
+    { dedupKey: `workflow-event:task.assigned:${taskId}:inreview:${String(reason || "inreview_redispatch").trim() || "inreview_redispatch"}` },
+  );
+  return true;
 }
 
 function parsePositivePrNumber(value) {
@@ -14566,27 +14595,11 @@ if (isExecutorDisabled()) {
           }
 
           console.warn(
-            `[monitor] supervisor dispatch-fix: no active session for ${normalizedTaskId}; resetting task to todo`,
+            `[monitor] supervisor dispatch-fix: no active session for ${normalizedTaskId}; re-dispatching inreview session`,
           );
-          try {
-            setInternalTaskStatus(
-              normalizedTaskId,
-              "todo",
-              "review-fix-redispatch",
-            );
-          } catch {
-            /* best-effort */
-          }
-          void updateTaskStatus(normalizedTaskId, "todo", {
-            source: "review-fix-redispatch",
+          redispatchInReviewTask(task || { id: normalizedTaskId, title: normalizedTaskId }, "review-fix-redispatch", {
+            reviewIssueCount: issueCount,
             workflowEvent: "task.review_fix_requested",
-            workflowData: {
-              reviewIssueCount: issueCount,
-            },
-          }).catch((err) => {
-            console.warn(
-              `[monitor] supervisor dispatch-fix transition failed for ${normalizedTaskId}: ${err?.message || err}`,
-            );
           });
         },
       });
@@ -14701,7 +14714,7 @@ if (isExecutorDisabled()) {
           const pending = getTasksPendingReview();
           if (Array.isArray(pending) && pending.length > 0) {
             let requeued = 0;
-            let resetToTodo = 0;
+            let redispatchedMissingRefs = 0;
             for (const task of pending) {
               const taskId = String(task?.id || "").trim();
               if (!taskId) continue;
@@ -14744,19 +14757,12 @@ if (isExecutorDisabled()) {
               const hasReviewReference = Boolean(prUrl || prNumber);
               if (!hasReviewReference) {
                 console.warn(
-                  `[monitor] review rehydrate reset ${taskId} to todo: missing prUrl/prNumber`,
+                  `[monitor] review rehydrate redispatch ${taskId}: missing prUrl/prNumber`,
                 );
-                try {
-                  setInternalTaskStatus(taskId, "todo", "review-agent-rehydrate");
-                } catch {
-                  /* best-effort */
-                }
-                try {
-                  await updateTaskStatus(taskId, "todo");
-                } catch {
-                  /* best-effort */
-                }
-                resetToTodo += 1;
+                redispatchInReviewTask(task, "review-agent-rehydrate", {
+                  branch: branchName || null,
+                });
+                redispatchedMissingRefs += 1;
                 continue;
               }
               await reviewAgent.queueReview({
@@ -14779,9 +14785,9 @@ if (isExecutorDisabled()) {
                 `[monitor] review agent rehydrated ${requeued} inreview task(s) from task-store`,
               );
             }
-            if (resetToTodo > 0) {
+            if (redispatchedMissingRefs > 0) {
               console.warn(
-                `[monitor] review agent reset ${resetToTodo} stale inreview task(s) to todo due missing review references`,
+                `[monitor] review agent redispatched ${redispatchedMissingRefs} inreview task(s) with missing review references`,
               );
             }
           }

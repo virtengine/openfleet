@@ -250,6 +250,42 @@ describe("trigger.task_available", () => {
     expect(ctx.data.branch.startsWith("task/abc123-")).toBe(true);
   });
 
+  it("polls ordered statuses and prioritizes inreview tasks ahead of todo", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const listTasks = vi.fn(async (_projectId, { status } = {}) => {
+      if (status === "inreview") {
+        return [
+          { id: "review-1", title: "Review first", status: "inreview", createdAt: "2026-03-03T00:00:00.000Z" },
+        ];
+      }
+      if (status === "todo") {
+        return [
+          { id: "todo-1", title: "Todo second", status: "todo", createdAt: "2026-03-01T00:00:00.000Z" },
+        ];
+      }
+      return [];
+    });
+    const ctx = makeCtx({ activeSlotCount: 0 });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      statuses: ["inreview", "todo"],
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: {
+          listTasks,
+        },
+      },
+    });
+
+    expect(listTasks).toHaveBeenCalledTimes(2);
+    expect(result.triggered).toBe(true);
+    expect(result.selectedTaskId).toBe("review-1");
+    expect(result.tasks.map((task) => task.id)).toEqual(["review-1"]);
+    expect(ctx.data.taskId).toBe("review-1");
+  });
+
   it("resolves repoRoot to matching sibling repository when task repository differs", async () => {
     const nt = getNodeType("trigger.task_available");
     const workspaceRoot = mkdtempSync(join(tmpdir(), "wf-task-repo-root-"));

@@ -686,6 +686,32 @@ describe("task-store sprint and DAG primitives", () => {
     expect(forced.toStatus).toBe("inprogress");
     expect(ts.getTask("epic-a-task-1")?.status).toBe("inprogress");
   });
+  
+  it("keeps PR-backed inreview tasks sticky when generic status updates try to demote them", async () => {
+    const dir = makeTempDir("task-store-sticky-review-");
+    const storePath = join(dir, "kanban-state.json");
+    
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+    
+    ts.addTask({
+      id: "review-task",
+      title: "Review task",
+      status: "inreview",
+      prNumber: 42,
+      prUrl: "https://github.com/virtengine/bosun/pull/42",
+    });
+    
+    ts.setTaskStatus("review-task", "todo", "test");
+    expect(ts.getTask("review-task")?.status).toBe("inreview");
+    
+    ts.updateTask("review-task", { status: "inprogress" });
+    expect(ts.getTask("review-task")?.status).toBe("inreview");
+    
+    ts.setTaskStatus("review-task", "done", "test");
+    expect(ts.getTask("review-task")?.status).toBe("done");
+  });
 });
 
 describe("task-store comment handling", () => {

@@ -82,7 +82,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     node("trigger", "trigger.task_available", "Poll for Tasks", {
       maxParallel: "{{maxParallel}}",
       pollIntervalMs: "{{pollIntervalMs}}",
-      status: "todo",
+      statuses: ["inreview", "todo"],
       filterCodexScoped: true,
       filterDrafts: true,
     }, { x: 400, y: 50 }),
