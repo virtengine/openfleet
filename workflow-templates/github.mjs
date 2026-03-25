@@ -933,6 +933,8 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "- If you repair the PR, remove the bosun-needs-fix label.\n",
       sdk: "auto",
       timeoutMs: 1_800_000,
+      delegationWatchdogTimeoutMs: "{{delegationWatchdogTimeoutMs}}",
+      delegationWatchdogMaxRecoveries: "{{delegationWatchdogMaxRecoveries}}",
       maxRetries: 2,
       retryDelayMs: 30_000,
       continueOnError: true,
