@@ -30,7 +30,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { getTaskLifetimeTotals } from \
+import { getTaskLifetimeTotals } from "./task-stats.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1021,22 +1021,37 @@ export async function taskImport(source) {
     throw new Error("Source must be a file path or array of task objects");
   }
 
-  try {
-    tasks = validateTaskBatchPayload(tasks).map((item) => ({
-      id: item.taskId,
-      title: item.taskTitle,
-      status: item.status,
-      branch: item.branch,
-      scope: item.scope,
-      repository: item.repository,
-      workspace: item.workspace,
-    }));
-  } catch (error) {
-    if (typeof source === "string") {
-      const summary = summarizeTaskBatchPayloadForLog(tasks);
-      throw new Error(`${error.message}; summary=${JSON.stringify(summary)}`);
+  // Support both legacy plain task objects and new task-batch payloads.
+  // Detect batch-like payloads (with taskId/taskTitle fields) and only then
+  // apply batch validation + remapping to preserve backwards compatibility.
+  const looksLikeBatchPayload =
+    Array.isArray(tasks) &&
+    tasks.length > 0 &&
+    tasks.every(
+      (item) =>
+        item &&
+        typeof item === "object" &&
+        ("taskId" in item || "taskTitle" in item),
+    );
+
+  if (looksLikeBatchPayload) {
+    try {
+      tasks = validateTaskBatchPayload(tasks).map((item) => ({
+        id: item.taskId,
+        title: item.taskTitle,
+        status: item.status,
+        branch: item.branch,
+        scope: item.scope,
+        repository: item.repository,
+        workspace: item.workspace,
+      }));
+    } catch (error) {
+      if (typeof source === "string") {
+        const summary = summarizeTaskBatchPayloadForLog(tasks);
+        throw new Error(`${error.message}; summary=${JSON.stringify(summary)}`);
+      }
+      throw error;
     }
-    throw error;
   }
 
   let created = 0;
@@ -1765,23 +1780,4 @@ if (process.argv[1] && resolve(process.argv[1]) === __filename) {
     process.exit(1);
   });
 }
-async function cliCreateBatch(args) {
-  const payloadFile = getArgValue(args, "--payload-file") || args.find((a) => !a.startsWith("--"));
-  if (!payloadFile) {
-    console.error("  Error: payload file required. Usage: bosun task create-batch --payload-file <path.json>");
-    process.exit(1);
-  }
 
-  if (!existsSync(resolve(payloadFile))) {
-    console.error(`  Error: file not found: ${payloadFile}`);
-    process.exit(1);
-  }
-
-  try {
-    const result = await taskImport(payloadFile);
-    console.log(JSON.stringify(result, null, 2));
-  } catch (err) {
-    console.error(`  Error: ${err.message}`);
-    process.exit(1);
-  }
-}
