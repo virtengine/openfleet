@@ -1098,6 +1098,7 @@ class InternalAdapter {
       updates.parentTaskId = parentTaskId;
     }
     if (hasOwnField(patch, "dueDate") || dueDate) updates.dueDate = dueDate;
+
     if (patch.meta && typeof patch.meta === "object") {
       const baseMeta = replaceMeta ? {} : { ...(current?.meta || {}) };
       if (!replaceMeta) {
