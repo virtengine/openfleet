@@ -707,7 +707,7 @@ You have FULL ACCESS to:
 
 Key files:
   ${REPO_ROOT} — Repository root
-  .cache/ve-orchestrator-status.json — Live status data (if enabled)
+  .cache/orchestrator-status.json — Live status data (if enabled)
   scripts/bosun/logs/ — Monitor logs (if available)
   AGENTS.md — Repo guide for agents
 `;

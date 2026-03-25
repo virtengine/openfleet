@@ -7,11 +7,15 @@ import { get as httpsGet } from "node:https";
 import { createServer as createHttpsServer } from "node:https";
 import { networkInterfaces, homedir, userInfo as getOsUserInfo } from "node:os";
 import { connect as netConnect } from "node:net";
-import { resolve, extname, dirname, basename, relative } from "node:path";
+import { resolve, extname, dirname, basename, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { arch as osArch, platform as osPlatform } from "node:os";
+import { gzip as zlibGzip } from "node:zlib";
+import { promisify } from "node:util";
 import Ajv2020 from "ajv/dist/2020.js";
+
+const gzipAsync = promisify(zlibGzip);
 
 const {
   createHash,
@@ -22,6 +26,62 @@ const {
   argon2: nodeArgon2,
 } = nodeCrypto;
 const argon2 = typeof nodeArgon2 === "function" ? nodeArgon2 : null;
+
+// ── Response compression + caching helpers ──────────────────────────────────
+const GZIP_MIN_BYTES = 1024;
+const COMPRESSIBLE_TYPES = /^(text\/|application\/json|application\/javascript|image\/svg)/;
+
+function acceptsGzip(req) {
+  return String(req?.headers?.["accept-encoding"] || "").includes("gzip");
+}
+
+async function compressAndSend(req, res, statusCode, headers, body) {
+  const buf = typeof body === "string" ? Buffer.from(body) : body;
+  const ct = headers["Content-Type"] || "";
+  if (buf.length >= GZIP_MIN_BYTES && COMPRESSIBLE_TYPES.test(ct) && acceptsGzip(req)) {
+    try {
+      const compressed = await gzipAsync(buf);
+      res.writeHead(statusCode, { ...headers, "Content-Encoding": "gzip", "Vary": "Accept-Encoding" });
+      res.end(compressed);
+      return;
+    } catch { /* fall through to uncompressed */ }
+  }
+  res.writeHead(statusCode, headers);
+  res.end(buf);
+}
+
+// Lightweight TTL cache for expensive API responses
+const _apiCache = new Map();
+function getCachedApiResponse(key, ttlMs) {
+  const entry = _apiCache.get(key);
+  if (!entry) return undefined;
+  if (Date.now() - entry.ts > ttlMs) { _apiCache.delete(key); return undefined; }
+  return entry.value;
+}
+function setCachedApiResponse(key, value) {
+  _apiCache.set(key, { ts: Date.now(), value });
+  if (_apiCache.size > 200) {
+    const oldest = _apiCache.keys().next().value;
+    _apiCache.delete(oldest);
+  }
+}
+function invalidateApiCache(prefix) {
+  for (const key of _apiCache.keys()) {
+    if (key.startsWith(prefix)) _apiCache.delete(key);
+  }
+}
+
+// Static file ETag + cache header helper
+function cacheControlForPath(pathname) {
+  if (pathname.endsWith(".html")) return "no-cache";
+  if (/\.(js|mjs|css|svg|png|jpg|jpeg|gif|webp|ico|woff2?)$/i.test(pathname)) {
+    return "public, max-age=3600, stale-while-revalidate=86400";
+  }
+  return "public, max-age=300";
+}
+function computeETag(data) {
+  return `"${createHash("md5").update(data).digest("hex").slice(0, 16)}"`;
+}
 
 function getLocalLanIp() {
   const nets = networkInterfaces();
@@ -162,6 +222,7 @@ import {
   addSessionEventListener,
   addSessionStateListener,
 } from "../infra/session-tracker.mjs";
+import { withIncomingTraceContext } from "../infra/tracing.mjs";
 import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import {
   addSessionAccumulationListener,
@@ -246,6 +307,10 @@ const TASK_STORE_DAG_EXPORTS = Object.freeze({
 });
 const TASK_STORE_GET_TASK_EXPORTS = ["getTaskById", "getTask"];
 const TASK_STORE_COMMENT_EXPORTS = ["getTaskComments", "listTaskComments"];
+const TASK_STORE_RUN_EXPORTS = {
+  list: ["getTaskRuns", "listTaskRuns"],
+  append: ["appendTaskRun", "addTaskRun"],
+};
 const TASK_STORE_DEPENDENCY_EXPORTS = {
   add: ["addTaskDependency"],
   remove: ["removeTaskDependency"],
@@ -1275,6 +1340,26 @@ export function _testInjectWorkflowEngine(mockModule, mockEngine) {
   _wfEngineByWorkspace.clear();
 }
 
+function traceHttpServerAction(req, span = {}, fn) {
+  return withIncomingTraceContext(
+    req?.headers || {},
+    {
+      name: span.name || "bosun.http.request",
+      method: req?.method || span.method,
+      route: span.route,
+      target: span.target || span.route,
+      workflowId: span.workflowId,
+      workflowRunId: span.workflowRunId,
+      taskId: span.taskId,
+      agentId: span.agentId,
+      attributes: {
+        ...(span.attributes && typeof span.attributes === "object" ? span.attributes : {}),
+      },
+    },
+    fn,
+  );
+}
+
 let workflowEventDedupWindowMs = (() => {
   const parsed = Number.parseInt(process.env.WORKFLOW_EVENT_DEDUP_WINDOW_MS || "15000", 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return 15_000;
@@ -1519,9 +1604,11 @@ async function getWorkflowEngineModule() {
           // Resume any runs that were interrupted by a previous shutdown.
           // This must happen AFTER services are wired so node executors work.
           if (typeof engine.resumeInterruptedRuns === "function") {
-            engine.resumeInterruptedRuns().catch((err) => {
-              console.warn("[workflows] Failed to resume interrupted runs:", err.message);
-            });
+            setTimeout(() => {
+              engine.resumeInterruptedRuns().catch((err) => {
+                console.warn("[workflows] Failed to resume interrupted runs:", err.message);
+              });
+            }, 0);
           }
         } else {
           _wfRecommendedInstalled = true;
@@ -1792,7 +1879,7 @@ async function collectWorkflowRunsForTask(taskId, reqUrl, limit = 40) {
   const normalizedTaskId = String(taskId || "").trim();
   if (!normalizedTaskId) return [];
   try {
-    const wfCtx = await getWorkflowRequestContext(reqUrl);
+    const wfCtx = await getWorkflowRequestContext(reqUrl, { bootstrapTemplates: false });
     if (!wfCtx?.ok || !wfCtx.engine) return [];
     const engine = wfCtx.engine;
     const summaries = engine.getRunHistory ? engine.getRunHistory(null, 240) : [];
@@ -2076,9 +2163,21 @@ function buildTaskMetaPatch(previousMeta, metadataPatchMeta, options = {}) {
   if (clearBlockedState) {
     delete nextMeta.autoRecovery;
     delete nextMeta.blockedReason;
+    delete nextMeta.worktreeFailure;
   }
   if (metadataPatchMeta && typeof metadataPatchMeta === "object") {
     Object.assign(nextMeta, metadataPatchMeta);
+    if (clearBlockedState) {
+      if (metadataPatchMeta.autoRecovery == null) {
+        delete nextMeta.autoRecovery;
+      }
+      if (metadataPatchMeta.blockedReason == null) {
+        delete nextMeta.blockedReason;
+      }
+      if (metadataPatchMeta.worktreeFailure == null) {
+        delete nextMeta.worktreeFailure;
+      }
+    }
   }
   return nextMeta;
 }
@@ -2126,7 +2225,7 @@ function maybeBootstrapWorkspaceWorkflowTemplates(engine, workspaceKey, workspac
   }
 }
 
-async function getWorkflowRequestContext(reqUrl) {
+async function getWorkflowRequestContext(reqUrl, options = {}) {
   const workspaceContext = resolveWorkspaceContextFromRequest(reqUrl, { allowAll: false });
   if (!workspaceContext) {
     return { ok: false, status: 400, error: "Unknown workspace. Set a valid workspace query value." };
@@ -2145,6 +2244,7 @@ async function getWorkflowRequestContext(reqUrl) {
       engine = new wfMod.WorkflowEngine({
         workflowDir: paths.workflowDir,
         runsDir: paths.runsDir,
+        detectInterruptedRuns: false,
         services: _wfServices || {},
         onTaskWorkflowEvent: handleTaskWorkflowTraceEvent,
       });
@@ -2159,11 +2259,13 @@ async function getWorkflowRequestContext(reqUrl) {
     attachWorkflowEngineLiveBridge(engine);
     _wfEngineByWorkspace.set(workspaceKey, engine);
   }
-  maybeBootstrapWorkspaceWorkflowTemplates(
-    engine,
-    workspaceKey,
-    workspaceContext.workspaceId || workspaceKey,
-  );
+  if (options.bootstrapTemplates !== false) {
+    maybeBootstrapWorkspaceWorkflowTemplates(
+      engine,
+      workspaceKey,
+      workspaceContext.workspaceId || workspaceKey,
+    );
+  }
   return {
     ok: true,
     wfMod,
@@ -2462,7 +2564,14 @@ function taskMatchesWorkspaceContext(task, workspaceContext) {
 
   const taskWorkspacePath = normalizeCandidatePath(taskWorkspaceRaw);
   const workspaceDirFilter = normalizeCandidatePath(workspaceContext?.workspaceDir);
-  return Boolean(taskWorkspacePath && workspaceDirFilter && taskWorkspacePath === workspaceDirFilter);
+  const workspaceRootFilter = normalizeCandidatePath(workspaceContext?.workspaceRoot);
+  return Boolean(
+    taskWorkspacePath
+    && (
+      (workspaceDirFilter && taskWorkspacePath === workspaceDirFilter)
+      || (workspaceRootFilter && (taskWorkspacePath === workspaceRootFilter || taskWorkspacePath.startsWith(workspaceRootFilter + sep)))
+    )
+  );
 }
 
 async function listTasksForWorkspaceContext(workspaceContext, { status = "", projectId = "" } = {}) {
@@ -2490,7 +2599,7 @@ function sortTasksByRecency(tasks = []) {
 async function collectBenchmarkWorkflowRuns(reqUrl, taskIds = new Set(), limit = 12) {
   if (!(taskIds instanceof Set) || taskIds.size === 0) return [];
   try {
-    const wfCtx = await getWorkflowRequestContext(reqUrl);
+    const wfCtx = await getWorkflowRequestContext(reqUrl, { bootstrapTemplates: false });
     if (!wfCtx?.ok || !wfCtx.engine) return [];
     const summaries = wfCtx.engine.getRunHistory ? wfCtx.engine.getRunHistory(null, 240) : [];
     const runs = [];
@@ -2736,7 +2845,8 @@ async function buildBenchmarkSnapshot(reqUrl, providerId = "") {
   }
 
   const rawProviderId = String(providerId || "").trim().toLowerCase();
-  const modeState = readBenchmarkModeState(workspaceContext.workspaceDir || repoRoot);
+  const workspaceRootDir = workspaceContext.workspaceRoot || workspaceContext.workspaceDir || repoRoot;
+  const modeState = readBenchmarkModeState(workspaceRootDir);
   const effectiveProviderId =
     rawProviderId
     || modeState.providerId
@@ -2747,13 +2857,42 @@ async function buildBenchmarkSnapshot(reqUrl, providerId = "") {
         enabled: true,
         workspaceId: workspaceContext.workspaceId,
         workspaceDir: workspaceContext.workspaceDir,
-        repoRoot: workspaceContext.workspaceDir || repoRoot,
+        repoRoot: workspaceRootDir,
       });
 
-  const { tasks, projectId } = await listTasksForWorkspaceContext(workspaceContext);
-  const matchingTasks = filterTasksForBenchmarkMode(tasks, filterMode, {
-    repoRoot: workspaceContext.workspaceDir || repoRoot,
+  let { tasks, projectId } = await listTasksForWorkspaceContext(workspaceContext);
+  let matchingTasks = filterTasksForBenchmarkMode(tasks, filterMode, {
+    repoRoot: workspaceRootDir,
   });
+  if (matchingTasks.length === 0) {
+    const allTaskFn = getTaskStoreApiSync()?.getAllTasks;
+    if (typeof allTaskFn === "function") {
+      const allWorkspaceTasks = (allTaskFn() || []).filter((task) => taskMatchesWorkspaceContext(task, workspaceContext));
+      matchingTasks = filterTasksForBenchmarkMode(allWorkspaceTasks, filterMode, {
+        repoRoot: workspaceRootDir,
+      });
+      if (!tasks?.length) tasks = allWorkspaceTasks;
+    }
+  }
+  // Fallback: read directly from the workspace-specific kanban store JSON
+  // (cmdImport writes tasks there via BOSUN_STORE_PATH override).
+  if (matchingTasks.length === 0 && workspaceRootDir) {
+    try {
+      const wsStorePath = resolve(workspaceRootDir, ".bosun", ".cache", "kanban-state.json");
+      if (existsSync(wsStorePath)) {
+        const raw = readFileSync(wsStorePath, "utf8");
+        const storeData = JSON.parse(raw);
+        const storeTasks = Object.values(storeData?.tasks || {});
+        if (storeTasks.length) {
+          matchingTasks = filterTasksForBenchmarkMode(storeTasks, filterMode, {
+            repoRoot: workspaceRootDir,
+          });
+          if (!matchingTasks.length) matchingTasks = storeTasks;
+          if (!tasks?.length) tasks = storeTasks;
+        }
+      }
+    } catch { /* best effort */ }
+  }
   const recentTasks = sortTasksByRecency(matchingTasks).slice(0, 12);
   const enrichedTasks = await applySharedStateToTasks(recentTasks);
   const recentWithRuntime = enrichedTasks.map((task) => withTaskRuntimeSnapshot(task));
@@ -2784,7 +2923,7 @@ async function buildBenchmarkSnapshot(reqUrl, providerId = "") {
       mode: modeState,
       filter: filterMode,
       summary: summarizeBenchmarkTasks(tasks, filterMode, {
-        repoRoot: workspaceContext.workspaceDir || repoRoot,
+        repoRoot: workspaceRootDir,
       }),
       recentTasks: recentWithRuntime,
       workflowRuns,
@@ -2984,7 +3123,7 @@ async function handleVendor(req, res, url) {
 
   const headers = {
     "Content-Type": "application/javascript; charset=utf-8",
-    "Cache-Control": "no-store",
+    "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
     "Access-Control-Allow-Origin": "*",
   };
 
@@ -2993,8 +3132,13 @@ async function handleVendor(req, res, url) {
   if (existsSync(bundledPath)) {
     try {
       const data = await readFile(bundledPath);
-      res.writeHead(200, { ...headers, "X-Bosun-Vendor": "bundled" });
-      res.end(data);
+      const etag = computeETag(data);
+      if (req.headers["if-none-match"] === etag) {
+        res.writeHead(304, { ETag: etag });
+        res.end();
+        return;
+      }
+      await compressAndSend(req, res, 200, { ...headers, "X-Bosun-Vendor": "bundled", ETag: etag }, data);
       return;
     } catch { /* fall through */ }
   }
@@ -3004,8 +3148,13 @@ async function handleVendor(req, res, url) {
   if (localPath && existsSync(localPath)) {
     try {
       const data = await readFile(localPath);
-      res.writeHead(200, { ...headers, "X-Bosun-Vendor": "node_modules" });
-      res.end(data);
+      const etag = computeETag(data);
+      if (req.headers["if-none-match"] === etag) {
+        res.writeHead(304, { ETag: etag });
+        res.end();
+        return;
+      }
+      await compressAndSend(req, res, 200, { ...headers, "X-Bosun-Vendor": "node_modules", ETag: etag }, data);
       return;
     } catch (err) {
       textResponse(res, 500, `Vendor error: ${err.message}`);
@@ -3085,11 +3234,9 @@ async function handleEsmProxy(req, res, url) {
 
   const headers = {
     "Content-Type": "application/javascript; charset=utf-8",
-    "Cache-Control": "no-store",
+    "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
     "Access-Control-Allow-Origin": "*",
   };
-
-  // ── 1. Disk cache ──────────────────────────────────────────────────────────
   const cachePath = getEsmCachePath(name, cdnUrl);
   if (existsSync(cachePath)) {
     try {
@@ -3107,8 +3254,7 @@ async function handleEsmProxy(req, res, url) {
       if (hasUnsupportedCjsRuntime(finalBody)) {
         throw new Error("cached ESM bundle contains unsupported dynamic require runtime");
       }
-      res.writeHead(200, { ...headers, "X-Bosun-Esm": "cached" });
-      res.end(finalBody);
+      await compressAndSend(req, res, 200, { ...headers, "X-Bosun-Esm": "cached" }, finalBody);
       return;
     } catch { /* fall through to live fetch */ }
   }
@@ -3139,8 +3285,7 @@ async function handleEsmProxy(req, res, url) {
       console.warn(`[ui-server] esm cache write failed: ${cacheErr.message}`);
     }
 
-    res.writeHead(200, { ...headers, "X-Bosun-Esm": "fetched" });
-    res.end(body);
+    await compressAndSend(req, res, 200, { ...headers, "X-Bosun-Esm": "fetched" }, body);
   } catch (err) {
     console.warn(`[ui-server] esm proxy failed for ${name}: ${err.message}`);
     textResponse(
@@ -3152,10 +3297,29 @@ async function handleEsmProxy(req, res, url) {
   }
 }
 
-const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
 const logsDir = resolve(__dirname, "..", "logs");
+function resolveUiStatusRepoRoot() {
+  return resolve(process.cwd());
+}
+
+function resolveUiStatusPath() {
+  const override = String(process.env.STATUS_FILE || "").trim();
+  if (override) {
+    const isWindowsAbsolute = /^[a-zA-Z]:[\\/]/.test(override) || override.startsWith("\\\\");
+    const isPosixAbsolute = override.startsWith("/");
+    if (isWindowsAbsolute || isPosixAbsolute) {
+      return resolve(override);
+    }
+    return resolve(resolveUiStatusRepoRoot(), override);
+  }
+  return resolve(resolveUiStatusRepoRoot(), ".cache", "orchestrator-status.json");
+}
+
 const agentLogsDirCandidates = [
   resolve(__dirname, "..", "logs", "agents"),
+  resolve(__dirname, "..", "logs", "copilot-sessions"),
+  resolve(__dirname, "..", "logs", "codex-sdk"),
+  resolve(__dirname, "..", "logs", "sessions"),
   resolve(repoRoot, ".cache", "agent-logs"),
 ];
 const CONFIG_SCHEMA_PATH = resolve(__dirname, "..", "bosun.schema.json");
@@ -4606,6 +4770,62 @@ function findWorktreeMatch(worktrees, { path, branch, taskKey }) {
   return null;
 }
 
+function buildRecoveryBackfilledWorktrees(worktrees, recovery) {
+  const recentEvents = Array.isArray(recovery?.recentEvents)
+    ? recovery.recentEvents
+    : [];
+  if (!recentEvents.length) return [];
+
+  const existingPaths = new Set(
+    worktrees
+      .map((wt) => normalizeWorktreePath(wt?.path))
+      .filter(Boolean),
+  );
+  const existingBranches = new Set(
+    worktrees
+      .map((wt) => String(wt?.branch || "").trim())
+      .filter(Boolean),
+  );
+  const existingTaskKeys = new Set(
+    worktrees
+      .map((wt) => String(wt?.taskKey || "").trim())
+      .filter(Boolean),
+  );
+  const seenSynthetic = new Set();
+
+  return recentEvents.flatMap((event) => {
+    const normalizedPath = normalizeWorktreePath(event?.worktreePath);
+    const branch = String(event?.branch || "").replace(/^refs\/heads\//, "").trim();
+    const taskKey = String(event?.taskId || "").trim();
+    const outcome = String(event?.outcome || "").trim().toLowerCase();
+    if (!normalizedPath && !branch && !taskKey) return [];
+    if (normalizedPath && existingPaths.has(normalizedPath)) return [];
+    if (branch && existingBranches.has(branch)) return [];
+    if (taskKey && existingTaskKeys.has(taskKey)) return [];
+
+    const syntheticKey = normalizedPath || `${branch}::${taskKey}::${outcome}`;
+    if (seenSynthetic.has(syntheticKey)) return [];
+    seenSynthetic.add(syntheticKey);
+
+    const eventTimestamp = Date.parse(String(event?.timestamp || ""));
+    const age = Number.isFinite(eventTimestamp)
+      ? Math.max(0, Date.now() - eventTimestamp)
+      : 0;
+
+    return [{
+      path: normalizedPath || null,
+      branch: branch || null,
+      taskKey: taskKey || null,
+      age,
+      status: outcome === "recreated" ? "recovered" : "recovery_failed",
+      owner: "workflow-recovery",
+      isMainWorktree: false,
+      source: "recovery",
+      recoveryEvent: event,
+    }];
+  });
+}
+
 async function buildWorktreePeek(wt) {
   const cwd = wt?.path;
   if (!cwd) return null;
@@ -4984,17 +5204,26 @@ function getLiveSessionSnapshot({ includeHidden = false } = {}) {
 }
 
 function broadcastSessionsSnapshot(sessions = getLiveSessionSnapshot()) {
-  const normalized = Array.isArray(sessions) ? sessions : [];
-  broadcastUiEvent(["sessions", "tui"], "sessions:update", {
-    sessions: normalized,
-  });
+  const normalized = buildSessionsUpdatePayload(Array.isArray(sessions) ? sessions : []);
+  broadcastCanonicalEvent(["sessions", "tui"], "sessions:update", normalized);
 }
 
 function updateActiveSessions(sessions) {
   _activeSessions = Array.isArray(sessions) ? sessions : [];
   broadcastSessionsSnapshot(_activeSessions);
   for (const session of _activeSessions) {
-    broadcastUiEvent(["sessions", "tui"], "session:update", session);
+    const sessionEvent = buildSessionEventPayload({
+      sessionId: session?.id,
+      taskId: session?.taskId,
+      session,
+      event: {
+        kind: "state",
+        reason: "active-sessions-updated",
+      },
+    });
+    if (sessionEvent.sessionId && sessionEvent.taskId) {
+      broadcastCanonicalEvent(["sessions", "tui"], "session:event", sessionEvent);
+    }
   }
 }
 
@@ -5295,7 +5524,11 @@ function resolveUiCachePath(fileName) {
 }
 
 function isValidSessionToken(token) {
-  return /^[a-f0-9]{64}$/i.test(String(token || ""));
+  const s = String(token || "");
+  if (!/^[a-f0-9]{64}$/i.test(s)) return false;
+  // Reject zero-entropy tokens (all identical characters, e.g. "aaaa…")
+  if (/^(.)\1+$/.test(s)) return false;
+  return true;
 }
 
 function readPersistedSessionToken() {
@@ -5777,7 +6010,7 @@ const SETTINGS_KNOWN_KEYS = [
   "BOSUN_GITHUB_WEBHOOK_SECRET", "BOSUN_GITHUB_USER_TOKEN",
   "GITHUB_PROJECT_WEBHOOK_PATH", "GITHUB_PROJECT_WEBHOOK_SECRET", "GITHUB_PROJECT_WEBHOOK_REQUIRE_SIGNATURE",
   "GITHUB_PROJECT_SYNC_ALERT_FAILURE_THRESHOLD", "GITHUB_PROJECT_SYNC_RATE_LIMIT_ALERT_THRESHOLD",
-  "VK_TARGET_BRANCH", "CODEX_ANALYZE_MERGE_STRATEGY", "DEPENDABOT_AUTO_MERGE",
+  "CODEX_ANALYZE_MERGE_STRATEGY", "DEPENDABOT_AUTO_MERGE",
   "GH_RECONCILE_ENABLED",
   "CLOUDFLARE_TUNNEL_NAME", "CLOUDFLARE_TUNNEL_CREDENTIALS", "CLOUDFLARE_BASE_DOMAIN",
   "CLOUDFLARE_TUNNEL_HOSTNAME", "CLOUDFLARE_USERNAME_HOSTNAME_POLICY",
@@ -5848,7 +6081,22 @@ function toSettingsDisplayValue(def, rawValue) {
     if (["0", "false", "no", "off"].includes(normalized)) return "false";
   }
   if (Array.isArray(rawValue)) {
-    return rawValue.map((entry) => String(entry ?? "")).join(",");
+    return rawValue.map((entry) => {
+      if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+        // Executor object → TYPE:VARIANT:WEIGHT[:MODEL|MODEL]
+        const exec = String(entry.executor || entry.name || "").toUpperCase();
+        const variant = String(entry.variant || "DEFAULT").toUpperCase();
+        const weight = Number.isFinite(entry.weight) ? entry.weight : 0;
+        const models = Array.isArray(entry.models) && entry.models.length
+          ? `:${entry.models.join("|")}`
+          : "";
+        return `${exec}:${variant}:${weight}${models}`;
+      }
+      return String(entry ?? "");
+    }).join(",");
+  }
+  if (rawValue && typeof rawValue === "object") {
+    return JSON.stringify(rawValue);
   }
   return String(rawValue);
 }
@@ -6005,6 +6253,85 @@ function updateConfigFile(changes) {
   }
   writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
   return { updated: Array.from(updated), path: configPath };
+}
+
+function parseBooleanLike(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  const raw = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  return fallback;
+}
+
+function normalizePrAutomationPolicy(raw = {}) {
+  const attachModeRaw = String(raw?.attachMode || "all").trim().toLowerCase();
+  const attachMode = ["all", "trusted-only", "disabled"].includes(attachModeRaw)
+    ? attachModeRaw
+    : "all";
+  const trustedAuthors = Array.isArray(raw?.trustedAuthors)
+    ? raw.trustedAuthors
+    : String(raw?.trustedAuthors || "")
+      .split(/[\n,]/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+
+  return {
+    attachMode,
+    trustedAuthors: [...new Set(trustedAuthors.map((entry) => String(entry || "").trim()).filter(Boolean))],
+    allowTrustedFixes: parseBooleanLike(raw?.allowTrustedFixes, false),
+    allowTrustedMerges: parseBooleanLike(raw?.allowTrustedMerges, false),
+    assistiveActions: {
+      installOnSetup: parseBooleanLike(raw?.assistiveActions?.installOnSetup, false),
+    },
+  };
+}
+
+function normalizeGatesPolicy(raw = {}) {
+  const prsRaw = raw?.prs && typeof raw.prs === "object" ? raw.prs : {};
+  const checksRaw = raw?.checks && typeof raw.checks === "object" ? raw.checks : {};
+  const executionRaw = raw?.execution && typeof raw.execution === "object" ? raw.execution : {};
+  const runtimeRaw = raw?.runtime && typeof raw.runtime === "object" ? raw.runtime : {};
+  const repoVisibilityRaw = String(prsRaw.repoVisibility || "unknown").trim().toLowerCase();
+  const automationPreferenceRaw = String(prsRaw.automationPreference || "runtime-first").trim().toLowerCase();
+  const githubActionsBudgetRaw = String(prsRaw.githubActionsBudget || "ask-user").trim().toLowerCase();
+  const checkModeRaw = String(checksRaw.mode || "all").trim().toLowerCase();
+  const listFromValue = (value) => {
+    const source = Array.isArray(value) ? value : String(value || "").split(/[\n,]/);
+    return [...new Set(source.map((entry) => String(entry || "").trim()).filter(Boolean))];
+  };
+  return {
+    prs: {
+      repoVisibility: ["public", "private", "unknown"].includes(repoVisibilityRaw)
+        ? repoVisibilityRaw
+        : "unknown",
+      automationPreference: ["runtime-first", "actions-first"].includes(automationPreferenceRaw)
+        ? automationPreferenceRaw
+        : "runtime-first",
+      githubActionsBudget: ["ask-user", "available", "limited"].includes(githubActionsBudgetRaw)
+        ? githubActionsBudgetRaw
+        : "ask-user",
+    },
+    checks: {
+      mode: ["all", "required-only"].includes(checkModeRaw) ? checkModeRaw : "all",
+      requiredPatterns: listFromValue(checksRaw.requiredPatterns),
+      optionalPatterns: listFromValue(checksRaw.optionalPatterns),
+      ignorePatterns: listFromValue(checksRaw.ignorePatterns),
+      requireAnyRequiredCheck: parseBooleanLike(checksRaw.requireAnyRequiredCheck, true),
+      treatPendingRequiredAsBlocking: parseBooleanLike(checksRaw.treatPendingRequiredAsBlocking, true),
+      treatNeutralAsPass: parseBooleanLike(checksRaw.treatNeutralAsPass, false),
+    },
+    execution: {
+      sandboxMode: String(executionRaw.sandboxMode || "workspace-write").trim().toLowerCase() || "workspace-write",
+      containerIsolationEnabled: parseBooleanLike(executionRaw.containerIsolationEnabled, false),
+      containerRuntime: String(executionRaw.containerRuntime || "auto").trim().toLowerCase() || "auto",
+      networkAccess: String(executionRaw.networkAccess || "default").trim().toLowerCase() || "default",
+    },
+    runtime: {
+      enforceBacklog: parseBooleanLike(runtimeRaw.enforceBacklog, true),
+      agentTriggerControl: parseBooleanLike(runtimeRaw.agentTriggerControl, true),
+    },
+  };
 }
 
 function validateConfigSchemaChanges(changes) {
@@ -7876,7 +8203,7 @@ function scrubStackTraces(payload) {
   return out;
 }
 function normalizeJsonResponsePayload(payload) {
-  return scrubStackTraces(payload);
+  return makeJsonSafe(scrubStackTraces(payload), { maxDepth: 6 });
 }
 
 function makeJsonSafe(value, options = {}) {
@@ -7992,20 +8319,49 @@ function jsonResponse(res, statusCode, payload) {
     logJsonFailure(res, statusCode, payload, diagnosticId);
   }
   const normalizedPayload = normalizeJsonResponsePayload(payload);
-  const safePayload =
-    statusCode >= 500
-      ? {
-          ok: false,
-          error: extractSafeErrorMessage(normalizedPayload),
-          diagnosticId,
-        }
-      : normalizedPayload;
-  const body = JSON.stringify(safePayload, null, 2);
-  res.writeHead(statusCode, {
+  let safePayload = normalizedPayload;
+  if (statusCode >= 500) {
+    safePayload = {
+      ok: false,
+      error: extractSafeErrorMessage(normalizedPayload),
+      diagnosticId,
+    };
+  } else if (
+    statusCode >= 400 &&
+    normalizedPayload &&
+    typeof normalizedPayload === "object" &&
+    !Array.isArray(normalizedPayload)
+  ) {
+    const hasErrorField =
+      Object.prototype.hasOwnProperty.call(normalizedPayload, "error") ||
+      Object.prototype.hasOwnProperty.call(normalizedPayload, "message");
+    if (hasErrorField) {
+      const errorText = extractSafeErrorMessage(normalizedPayload);
+      safePayload = { ...normalizedPayload };
+      if (Object.prototype.hasOwnProperty.call(safePayload, "error")) safePayload.error = errorText;
+      if (Object.prototype.hasOwnProperty.call(safePayload, "message")) safePayload.message = errorText;
+    }
+  }
+  const body = JSON.stringify(safePayload);
+  const headers = {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
-  });
-  res.end(body);
+    "Cache-Control": "no-store",
+  };
+  const req = res.__bosunRequestContext?._req;
+  if (req && body.length >= GZIP_MIN_BYTES && acceptsGzip(req)) {
+    gzipAsync(Buffer.from(body)).then(
+      (compressed) => {
+        if (res.writableEnded) return;
+        res.writeHead(statusCode, { ...headers, "Content-Encoding": "gzip", "Vary": "Accept-Encoding" });
+        res.end(compressed);
+      },
+      () => { if (!res.writableEnded) { res.writeHead(statusCode, headers); res.end(body); } },
+    );
+  } else {
+    res.writeHead(statusCode, headers);
+    res.end(body);
+  }
 }
 
 function textResponse(res, statusCode, body, contentType = "text/plain") {
@@ -8839,14 +9195,140 @@ function withTaskRuntimeSnapshot(task) {
   if (!task || typeof task !== "object") return task;
   const withLifetimeTotals = enrichTaskLifetimeTotals(task);
   const runtimeSnapshot = buildTaskRuntimeSnapshot(withLifetimeTotals);
+  const status = uiDeps?.getInternalExecutor?.()?.getStatus?.();
+  const runtimeExecutor = uiDeps.getInternalExecutor?.() || null;
+  const executorStatus = runtimeExecutor?.getStatus?.() || {};
+  const contentionSummary = summarizeRepoAreaLockContention(executorStatus?.repoAreaLocks || null);
   return {
     ...withLifetimeTotals,
     runtimeSnapshot,
     meta: {
       ...(withLifetimeTotals.meta || {}),
       runtimeSnapshot,
+      repoAreaContention: contentionSummary,
     },
+    repoAreaContention: contentionSummary,
   };
+}
+
+function safeIsoString(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const ts = Date.parse(text);
+  return Number.isFinite(ts) ? new Date(ts).toISOString() : null;
+}
+
+function summarizeRepoAreaLockHotArea(area = {}) {
+  const normalizedArea = String(area?.area || "").trim();
+  if (!normalizedArea) return null;
+  const events = Math.max(
+    0,
+    Math.trunc(Number(area?.events ?? area?.contentionEvents ?? area?.conflicts ?? 0)),
+  );
+  const waitMsTotal = Math.max(
+    0,
+    Math.trunc(Number(area?.contentionWaitMs ?? area?.waitMsTotal ?? 0)),
+  );
+  const waitingTasks = Math.max(0, Math.trunc(Number(area?.waitingTasks || 0)));
+  const activeSlots = Math.max(0, Math.trunc(Number(area?.activeSlots || 0)));
+  const effectiveLimit = Math.max(0, Math.trunc(Number(area?.effectiveLimit || 0)));
+  const lastContentionAt = safeIsoString(area?.lastContentionAt || area?.lastWaitAt || null);
+  return {
+    area: normalizedArea,
+    events,
+    waitMsTotal,
+    avgWaitMs: events > 0 ? Math.round(waitMsTotal / events) : 0,
+    waitingTasks,
+    activeSlots,
+    effectiveLimit,
+    lastContentionAt,
+    detailHref: "/api/tasks?repoArea=" + encodeURIComponent(normalizedArea) + "&contention=1",
+  };
+}
+
+export function normalizeRepoAreaLockContentionSummary(summary = null) {
+  const generatedAt = safeIsoString(summary?.generatedAt) || new Date().toISOString();
+  const stale = summary?.stale === true;
+  const staleAgeMs = Math.max(0, Math.trunc(Number(summary?.staleAgeMs || 0)));
+  const hotAreas = Array.isArray(summary?.hotAreas)
+    ? summary.hotAreas.map((area) => summarizeRepoAreaLockHotArea(area)).filter(Boolean)
+    : [];
+  const recent = Array.isArray(summary?.recent)
+    ? summary.recent
+      .map((event) => {
+        const taskId = String(event?.taskId || "").trim();
+        const area = String(event?.area || "").trim();
+        if (!taskId || !area) return null;
+        return {
+          at: safeIsoString(event?.at),
+          taskId,
+          area,
+          waitMs: Math.max(0, Math.trunc(Number(event?.waitMs || 0))),
+          resolutionReason: String(event?.resolutionReason || "unknown").trim() || "unknown",
+          detailHref: String(event?.detailHref || ("/api/tasks/detail?taskId=" + encodeURIComponent(taskId))),
+        };
+      })
+      .filter(Boolean)
+    : [];
+
+  return {
+    generatedAt,
+    totalEvents: Math.max(0, Math.trunc(Number(summary?.totalEvents || 0))),
+    totalWaitMs: Math.max(0, Math.trunc(Number(summary?.totalWaitMs || 0))),
+    stale,
+    staleAgeMs,
+    hotAreas,
+    recent,
+  };
+}
+
+export function summarizeRepoAreaLockContention(repoAreaLocks = null, options = {}) {
+  const nowValue = options?.now ? Date.parse(String(options.now)) : Date.now();
+  const now = Number.isFinite(nowValue) ? nowValue : Date.now();
+  const staleAfterMs = Math.max(
+    60000,
+    Math.trunc(Number(options?.staleAfterMs || 6 * 60 * 60 * 1000)),
+  );
+  const areas = Array.isArray(repoAreaLocks?.areas)
+    ? repoAreaLocks.areas.map((area) => summarizeRepoAreaLockHotArea(area)).filter(Boolean)
+    : [];
+  const recent = Array.isArray(repoAreaLocks?.contention?.recent)
+    ? repoAreaLocks.contention.recent
+      .map((event) => {
+        const taskId = String(event?.taskId || "").trim();
+        const area = String(event?.area || "").trim();
+        if (!taskId || !area) return null;
+        return {
+          at: safeIsoString(event?.at),
+          taskId,
+          area,
+          waitMs: Math.max(0, Math.trunc(Number(event?.waitMs || 0))),
+          resolutionReason: String(event?.resolutionReason || "unknown").trim() || "unknown",
+          detailHref: "/api/tasks/detail?taskId=" + encodeURIComponent(taskId),
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => Date.parse(String(right.at || 0)) - Date.parse(String(left.at || 0)))
+    : [];
+  const rankedAreas = areas
+    .filter((area) => area.events > 0 || area.waitingTasks > 0)
+    .sort((left, right) => right.events - left.events || right.waitingTasks - left.waitingTasks || left.area.localeCompare(right.area))
+    .slice(0, 8);
+  const lastContentionTs = [
+    ...rankedAreas.map((area) => Date.parse(String(area.lastContentionAt || 0))),
+    ...recent.map((event) => Date.parse(String(event.at || 0))),
+  ].filter((value) => Number.isFinite(value)).sort((left, right) => right - left)[0] || 0;
+  const staleAgeMs = lastContentionTs > 0 ? Math.max(0, now - lastContentionTs) : 0;
+
+  return normalizeRepoAreaLockContentionSummary({
+    generatedAt: new Date(now).toISOString(),
+    totalEvents: Math.max(0, Math.trunc(Number(repoAreaLocks?.contention?.events || 0))),
+    totalWaitMs: Math.max(0, Math.trunc(Number(repoAreaLocks?.contention?.waitMsTotal || 0))),
+    stale: lastContentionTs > 0 ? staleAgeMs > staleAfterMs : false,
+    staleAgeMs,
+    hotAreas: rankedAreas,
+    recent: recent.slice(0, 10),
+  });
 }
 
 function normalizeTaskDiagnosticText(value) {
@@ -9543,6 +10025,106 @@ function summarizeOutputLines(value, maxLines = 3, maxChars = 140) {
   return lines;
 }
 
+function summarizeTrajectoryText(value, maxLength = 160) {
+  const text = String(value ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (!text) return null;
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+}
+
+function classifyTrajectorySessionEvent(event = {}) {
+  const payload = event && typeof event === "object" ? event : {};
+  const role = String(payload?.role || payload?.message?.role || "").trim().toLowerCase();
+  const type = String(payload?.type || payload?.message?.type || payload?.event?.kind || "").trim().toLowerCase();
+  if (role === "user") return "user";
+  if (role === "assistant") return "assistant";
+  if (type.includes("tool") && (type.includes("result") || type.includes("output"))) return "tool_result";
+  if (type.includes("tool")) return "tool_call";
+  if (type.includes("reason") || type.includes("thinking")) return "reasoning";
+  if (type === "error") return "status";
+  return "event";
+}
+
+function buildTrajectoryStepFromSessionEvent(event = {}) {
+  const normalizedType = classifyTrajectorySessionEvent(event);
+  const message = event?.message && typeof event.message === "object" ? event.message : event;
+  const content = message?.content ?? event?.content ?? null;
+  const summary = summarizeTrajectoryText(
+    message?.summary || event?.summary || content || event?.label || event?.reason || event?.type || "Run event recorded.",
+  ) || "Run event recorded.";
+  return {
+    id: String(event?.id || message?.id || `step-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`),
+    at: String(event?.timestamp || message?.timestamp || event?.at || new Date().toISOString()),
+    type: normalizedType,
+    summary,
+    payload: {
+      role: message?.role || event?.role || null,
+      type: message?.type || event?.type || null,
+      content: typeof content === "string" ? content : null,
+      reason: event?.reason || null,
+    },
+    event: event && typeof event === "object" ? { ...event } : null,
+  };
+}
+
+function buildTaskRunSummary(steps = [], fallback = "Run recorded.") {
+  const ordered = Array.isArray(steps) ? steps : [];
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const summary = summarizeTrajectoryText(ordered[index]?.summary || "");
+    if (summary) return summary;
+  }
+  return fallback;
+}
+
+async function buildReplayableTaskRuns(task, tracker = null, limit = 5) {
+  const sessionIds = collectTaskDiffSessionIds(task);
+  const { value: storedRunsRaw } = await callTaskStoreFunction(TASK_STORE_RUN_EXPORTS.list, [task?.id]);
+  const storedRuns = storedRunsRaw;
+  const runs = Array.isArray(storedRuns) ? storedRuns.map((run) => ({
+    ...run,
+    summary: run.summary || buildTaskRunSummary(run.steps, run.status === "failed" ? "Run failed." : "Run completed."),
+  })) : [];
+  const seenRunIds = new Set(runs.map((entry) => String(entry?.runId || "")).filter(Boolean));
+  for (const sessionId of sessionIds) {
+    const session = tracker?.getSession?.(sessionId);
+    if (!session) continue;
+    const events = Array.isArray(session?.events) ? session.events : [];
+    const steps = events.map((event) => buildTrajectoryStepFromSessionEvent(event)).filter(Boolean);
+    if (steps.length === 0) continue;
+    const runId = String(sessionId || session?.id || "").trim();
+    if (!runId || seenRunIds.has(runId)) continue;
+    seenRunIds.add(runId);
+    runs.push({
+      runId,
+      startedAt: String(session?.createdAt || steps[0]?.at || new Date().toISOString()),
+      endedAt: session?.status === "active" ? null : String(session?.updatedAt || steps.at(-1)?.at || new Date().toISOString()),
+      status: String(session?.status || "completed"),
+      taskKey: String(task?.id || session?.taskId || "").trim() || null,
+      sdk: String(session?.executor || session?.sdk || session?.metadata?.resolvedSdk || "").trim() || null,
+      threadId: String(session?.threadId || session?.metadata?.threadId || "").trim() || null,
+      resumeThreadId: String(session?.metadata?.resumeThreadId || session?.threadId || "").trim() || null,
+      replayable: true,
+      outcome: session?.status === "failed" ? "failed" : "completed",
+      summary: buildTaskRunSummary(steps, session?.status === "failed" ? "Run failed." : "Run completed."),
+      steps,
+      meta: {
+        sessionId: runId,
+        source: "session-tracker",
+      },
+    });
+  }
+  runs.sort((left, right) => Date.parse(String(right?.startedAt || 0)) - Date.parse(String(left?.startedAt || 0)));
+  return runs.slice(0, Math.max(1, Number(limit) || 5));
+}
+
 function buildWorkflowNodeOutputPreview(nodeType, output = null) {
   if (output == null) return { lines: [] };
   const type = String(nodeType || "").trim().toLowerCase();
@@ -9848,7 +10430,11 @@ function broadcastUiEvent(channels, type, payload = {}) {
     broadcastTuiSessionsSnapshot(type, payload);
   }
   if (required.includes("tasks") && type !== "tasks:update") {
+    invalidateApiCache("tasks:");
     broadcastCanonicalEvent(["tasks", "tui"], "tasks:update", buildTasksUpdatePayload(payload, { sourceEvent: type }));
+  }
+  if (required.includes("status") || type.startsWith("status")) {
+    invalidateApiCache("status");
   }
 }
 
@@ -9896,7 +10482,7 @@ async function collectUiStats() {
 
   // Try to read status from the monitor's status file first
   let orchestratorStatus = null;
-  const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
+  const statusPath = resolveUiStatusPath();
   try {
     if (existsSync(statusPath)) {
       const raw = await readFile(statusPath, "utf8");
@@ -9914,13 +10500,14 @@ async function collectUiStats() {
   
   // Use orchestrator status if available, otherwise try task store
   if (orchestratorStatus?.counts) {
+    const blockedCount = Number(orchestratorStatus.counts.blocked ?? orchestratorStatus.counts.error ?? 0);
     taskStats = {
       total: (orchestratorStatus.counts.todo || 0) + (orchestratorStatus.counts.inprogress || 0) + 
              (orchestratorStatus.counts.done || 0) + (orchestratorStatus.counts.inreview || 0) +
-             (orchestratorStatus.counts.blocked || 0),
+             blockedCount,
       active: orchestratorStatus.counts.inprogress || 0,
       completed: orchestratorStatus.counts.done || 0,
-      failed: orchestratorStatus.counts.error || 0,
+      failed: blockedCount,
       queued: orchestratorStatus.counts.todo || 0,
     };
   } else {
@@ -10022,6 +10609,86 @@ async function collectUiStats() {
   };
 }
 
+/* ─── Diff Patch Parser ─── */
+
+function parseDiffPatch(rawPatch = "", statFiles = []) {
+  const statMap = new Map(statFiles.map((f) => [f.filename, f]));
+  const fileSections = rawPatch.split(/^diff --git /m).filter(Boolean);
+  const parsed = [];
+  for (const section of fileSections) {
+    const lines = section.split("\n");
+    // Extract filenames from header: a/file b/file
+    const headerMatch = lines[0]?.match(/a\/(.+?)\s+b\/(.+)/);
+    const oldFilename = headerMatch?.[1] || "";
+    const newFilename = headerMatch?.[2] || "";
+    const filename = newFilename || oldFilename;
+    // Detect status from header lines
+    let status = "modified";
+    const binary = lines.some((l) => l.startsWith("Binary files"));
+    for (const l of lines.slice(0, 8)) {
+      if (l.startsWith("new file")) { status = "added"; break; }
+      if (l.startsWith("deleted file")) { status = "deleted"; break; }
+      if (l.startsWith("rename from")) { status = "renamed"; break; }
+      if (l.startsWith("copy from")) { status = "copied"; break; }
+    }
+    // Parse hunks
+    const hunks = [];
+    let currentHunk = null;
+    let oldLine = 0;
+    let newLine = 0;
+    for (const line of lines) {
+      const hunkMatch = line.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s*@@(.*)/);
+      if (hunkMatch) {
+        if (currentHunk) hunks.push(currentHunk);
+        oldLine = parseInt(hunkMatch[1], 10);
+        newLine = parseInt(hunkMatch[2], 10);
+        currentHunk = { header: line, context: (hunkMatch[3] || "").trim(), lines: [] };
+        continue;
+      }
+      if (!currentHunk) continue;
+      if (line.startsWith("+")) {
+        currentHunk.lines.push({ type: "addition", marker: "+", content: line.slice(1), oldNumber: null, newNumber: newLine++ });
+      } else if (line.startsWith("-")) {
+        currentHunk.lines.push({ type: "deletion", marker: "-", content: line.slice(1), oldNumber: oldLine++, newNumber: null });
+      } else if (line.startsWith(" ") || line === "") {
+        currentHunk.lines.push({ type: "context", marker: " ", content: line.slice(1) || "", oldNumber: oldLine++, newNumber: newLine++ });
+      } else if (line.startsWith("\\")) {
+        currentHunk.lines.push({ type: "meta", marker: "\\", content: line.slice(1).trim(), oldNumber: null, newNumber: null });
+      }
+    }
+    if (currentHunk) hunks.push(currentHunk);
+    const st = statMap.get(filename) || {};
+    parsed.push({
+      filename,
+      oldFilename,
+      newFilename: filename,
+      status,
+      binary,
+      additions: Number(st.additions || 0),
+      deletions: Number(st.deletions || 0),
+      hunks,
+      patch: section.slice(0, 200_000), // cap individual file patch for safety
+    });
+  }
+  // Add files from stat that had no patch (binary, empty changes)
+  for (const sf of statFiles) {
+    if (!parsed.some((p) => p.filename === sf.filename)) {
+      parsed.push({
+        filename: sf.filename,
+        oldFilename: sf.filename,
+        newFilename: sf.filename,
+        status: "modified",
+        binary: false,
+        additions: sf.additions,
+        deletions: sf.deletions,
+        hunks: [],
+        patch: "",
+      });
+    }
+  }
+  return parsed;
+}
+
 /* ─── Log Streaming Helpers ─── */
 
 async function resolveAgentLogsDir() {
@@ -10033,6 +10700,15 @@ async function resolveAgentLogsDir() {
     if (existsSync(dir)) return dir;
   }
   return agentLogsDirCandidates[0];
+}
+
+async function resolveAllAgentLogDirs() {
+  const dirs = [];
+  for (const dir of agentLogsDirCandidates) {
+    const files = await readdir(dir).catch(() => null);
+    if (files?.some((f) => f.endsWith(".log"))) dirs.push(dir);
+  }
+  return dirs.length ? dirs : [agentLogsDirCandidates[0]];
 }
 
 function normalizeAgentLogName(name) {
@@ -10093,9 +10769,9 @@ async function resolveLogPath(logType, query) {
     return resolvePreferredSystemLogPath();
   }
   if (logType === "agent") {
-    const matches = await listAgentLogFiles(query, 1);
-    if (matches.length > 0) {
-      return resolve(matches[0].source, matches[0].name);
+    const matches = await listAgentLogFiles({ query, limit: 1, offset: 0, sortBy: "modified", sortDir: "desc" });
+    if ((matches?.items || []).length > 0) {
+      return resolve(matches.items[0].source, matches.items[0].name);
     }
     const agentLogsDir = await resolveAgentLogsDir();
     const files = await readdir(agentLogsDir).catch(() => []);
@@ -10928,6 +11604,7 @@ async function handleDeviceFlowPoll(req, res) {
 
 async function readStatusSnapshot() {
   try {
+    const statusPath = resolveUiStatusPath();
     const raw = await readFile(statusPath, "utf8");
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") {
@@ -11442,7 +12119,17 @@ async function readCompletedSessionEntries(maxLines = 100_000) {
   const entries = await readJsonlTail(sessionLogPath, maxLines, 50_000_000);
   return {
     sessionLogPath,
-    entries: entries.filter((entry) => String(entry?.type || "completed_session") === "completed_session"),
+    entries: entries.filter((entry) => {
+      if (String(entry?.type || "completed_session") !== "completed_session") return false;
+      // Filter out test artifacts: zero tokens AND negligible duration (≤ 100ms)
+      const dur = Number(entry?.durationMs || 0);
+      const tok = Number(entry?.tokenCount || 0);
+      if (tok <= 0 && dur <= 100) return false;
+      // Filter out entries with synthetic/template taskIds from tests
+      const taskId = String(entry?.taskId || "");
+      if (/^\{\{.*\}\}$/.test(taskId)) return false;
+      return true;
+    }),
   };
 }
 
@@ -11751,10 +12438,175 @@ function resolveAgentWorkLogDir() {
   return candidates[0];
 }
 
-async function listAgentLogFiles(query = "", limit = 60) {
+function clampRunSummaryText(value, maxLength = 220) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+function summarizeTrajectoryEvent(event = {}) {
+  const type = String(event?.event_type || event?.type || "event").trim() || "event";
+  const data = event?.data && typeof event.data === "object" ? event.data : {};
+  if (type === "session_start") {
+    return clampRunSummaryText(`Started ${String(event.executor || event.model || "agent").trim() || "agent"} run for ${String(event.task_title || event.taskId || "task").trim() || "task"}`);
+  }
+  if (type === "session_end") {
+    const status = String(data?.completion_status || event?.status || "completed").trim() || "completed";
+    return clampRunSummaryText(`Finished run with status ${status}`);
+  }
+  if (type === "tool_call") {
+    const toolName = String(data?.tool_name || event?.tool_name || "tool").trim() || "tool";
+    return clampRunSummaryText(`Called ${toolName}`);
+  }
+  if (type === "tool_result") {
+    const toolName = String(data?.tool_name || event?.tool_name || "tool").trim() || "tool";
+    const status = String(data?.status || event?.status || "completed").trim() || "completed";
+    return clampRunSummaryText(`${toolName} returned ${status}`);
+  }
+  if (type === "error") {
+    const message = String(data?.error_message || event?.error_message || event?.message || "error").trim() || "error";
+    return clampRunSummaryText(`Error: ${message}`);
+  }
+  if (type === "usage") {
+    const totalTokens = numberOrZero(data?.total_tokens || data?.tokens || event?.total_tokens);
+    if (totalTokens > 0) return clampRunSummaryText(`Used ${totalTokens} tokens`);
+  }
+  if (type === "agent_output") {
+    const output = String(data?.output || event?.output || "").trim();
+    if (output) return clampRunSummaryText(output);
+  }
+  return clampRunSummaryText(type.replace(/_/g, " "));
+}
+
+function toTrajectoryReplayEvent(event = {}, index = 0) {
+  const timestamp = event?.timestamp || event?.recordedAt || null;
+  const eventType = String(event?.event_type || event?.type || "event").trim() || "event";
+  const data = event?.data && typeof event.data === "object" ? event.data : {};
+  return {
+    index,
+    timestamp,
+    type: eventType,
+    summary: summarizeTrajectoryEvent(event),
+    attemptId: String(event?.attempt_id || event?.attemptId || "").trim() || null,
+    taskId: String(event?.taskId || "").trim() || null,
+    taskTitle: String(event?.task_title || event?.taskTitle || "").trim() || null,
+    executor: String(event?.executor || event?.model || "").trim() || null,
+    data: makeJsonSafe(data, { maxDepth: 4 }),
+  };
+}
+
+function buildReplayOverview(events = []) {
+  const totals = {
+    events: events.length,
+    toolCalls: 0,
+    toolResults: 0,
+    outputs: 0,
+    errors: 0,
+    usageEvents: 0,
+  };
+  const shortSteps = [];
+  for (const event of events) {
+    if (event.type === "tool_call") totals.toolCalls += 1;
+    if (event.type === "tool_result") totals.toolResults += 1;
+    if (event.type === "agent_output") totals.outputs += 1;
+    if (event.type === "error") totals.errors += 1;
+    if (event.type === "usage") totals.usageEvents += 1;
+    if (shortSteps.length >= 12) continue;
+    if (["session_start", "tool_call", "tool_result", "error", "session_end"].includes(event.type)) {
+      shortSteps.push(event.summary);
+      continue;
+    }
+    if (event.type === "agent_output" && shortSteps.length < 6) shortSteps.push(event.summary);
+  }
+  return { totals, shortSteps };
+}
+
+async function listReplayableAgentRuns(options = {}) {
+  const logDir = resolveAgentWorkLogDir();
+  const sessionsDir = resolve(logDir, "agent-sessions");
+  const limit = Math.max(1, Math.min(100, Number(options.limit) || 25));
+  const taskIdFilter = String(options.taskId || "").trim();
+  const files = await readdir(sessionsDir).catch(() => []);
+  const runs = [];
+
+  for (const name of files) {
+    if (!name.endsWith(".jsonl")) continue;
+    const attemptId = name.replace(/\.jsonl$/i, "");
+    const filePath = resolve(sessionsDir, name);
+    const entries = await readJsonlTail(filePath, 5000, 10000000).catch(() => []);
+    if (!entries.length) continue;
+    const replayEvents = entries.map((entry, index) => toTrajectoryReplayEvent(entry, index));
+    const first = replayEvents[0] || null;
+    const last = replayEvents[replayEvents.length - 1] || null;
+    const taskId = String(first?.taskId || last?.taskId || "").trim() || null;
+    if (taskIdFilter && taskId !== taskIdFilter) continue;
+    const startedAt = first?.timestamp || null;
+    const endedAt = last?.type === "session_end" ? last.timestamp : null;
+    const overview = buildReplayOverview(replayEvents);
+    runs.push({
+      attemptId,
+      taskId,
+      taskTitle: first?.taskTitle || last?.taskTitle || null,
+      executor: first?.executor || last?.executor || null,
+      startedAt,
+      endedAt,
+      status: last?.type === "session_end"
+        ? String(last?.data?.completion_status || "completed")
+        : "in_progress",
+      eventCount: replayEvents.length,
+      shortSteps: overview.shortSteps,
+      totals: overview.totals,
+    });
+  }
+
+  runs.sort((a, b) => {
+    const aTs = Date.parse(String(a.endedAt || a.startedAt || 0)) || 0;
+    const bTs = Date.parse(String(b.endedAt || b.startedAt || 0)) || 0;
+    return bTs - aTs;
+  });
+  return runs.slice(0, limit);
+}
+
+async function readReplayableAgentRun(attemptId) {
+  const normalizedAttemptId = String(attemptId || "").trim();
+  if (!normalizedAttemptId) return null;
+  // Ensure attemptId cannot perform path traversal or escape the intended directory.
+  // Only allow simple identifiers composed of letters, digits, underscore, and dash.
+  if (!/^[a-zA-Z0-9_-]+$/.test(normalizedAttemptId)) return null;
+  const filePath = resolve(resolveAgentWorkLogDir(), "agent-sessions", `${normalizedAttemptId}.jsonl`);
+  if (!existsSync(filePath)) return null;
+  const entries = await readJsonlTail(filePath, 20000, 25000000).catch(() => []);
+  if (!entries.length) return null;
+  const events = entries.map((entry, index) => toTrajectoryReplayEvent(entry, index));
+  const first = events[0] || null;
+  const last = events[events.length - 1] || null;
+  const overview = buildReplayOverview(events);
+  return {
+    attemptId: normalizedAttemptId,
+    taskId: first?.taskId || last?.taskId || null,
+    taskTitle: first?.taskTitle || last?.taskTitle || null,
+    executor: first?.executor || last?.executor || null,
+    startedAt: first?.timestamp || null,
+    endedAt: last?.type === "session_end" ? last.timestamp : null,
+    status: last?.type === "session_end"
+      ? String(last?.data?.completion_status || "completed")
+      : "in_progress",
+    shortSteps: overview.shortSteps,
+    totals: overview.totals,
+    events,
+  };
+}
+async function listAgentLogFiles(options = {}) {
+  const query = String(options?.query || "").trim();
+  const limit = Math.max(20, Math.min(500, Number(options?.limit || 100)));
+  const offset = Math.max(0, Number(options?.offset || 0));
+  const sortBy = String(options?.sortBy || "modified").toLowerCase();
+  const sortDir = String(options?.sortDir || "desc").toLowerCase() === "asc" ? "asc" : "desc";
+  const ageFilter = String(options?.ageFilter || "all").toLowerCase();
+  const staleDays = Math.max(1, Math.min(90, Number(options?.staleDays || 7)));
   const entries = [];
-  const agentLogsDir = await resolveAgentLogsDir();
-  const files = await readdir(agentLogsDir).catch(() => []);
+  const allDirs = await resolveAllAgentLogDirs();
   const normalizedQuery = String(query || "").trim().toLowerCase();
   const queryTerms = Array.from(new Set([
     normalizedQuery,
@@ -11778,32 +12630,96 @@ async function listAgentLogFiles(query = "", limit = 60) {
     return score;
   };
 
-  for (const name of files) {
-    if (!name.endsWith(".log")) continue;
-    try {
-      const filePath = resolve(agentLogsDir, name);
-      const info = await stat(filePath);
-      let score = 0;
-      if (queryTerms.length) {
-        const sample = await tailFile(filePath, 160, 250_000).catch(() => ({ lines: [] }));
-        score = scoreAgentLogMatch(name, sample?.lines || []);
-        if (score <= 0) continue;
+  const staleThresholdMs = staleDays * 24 * 60 * 60 * 1000;
+  const nowMs = Date.now();
+
+  for (const agentLogsDir of allDirs) {
+    const files = await readdir(agentLogsDir).catch(() => []);
+    for (const name of files) {
+      if (!name.endsWith(".log")) continue;
+      try {
+        const filePath = resolve(agentLogsDir, name);
+        const info = await stat(filePath);
+        const mtimeMs = Number(info?.mtimeMs || 0);
+        const ageMs = Math.max(0, nowMs - mtimeMs);
+        if (ageFilter === "recent" && ageMs > staleThresholdMs) continue;
+        if (ageFilter === "stale" && ageMs <= staleThresholdMs) continue;
+        let score = 0;
+        if (queryTerms.length) {
+          const sample = await tailFile(filePath, 160, 250_000).catch(() => ({ lines: [] }));
+          score = scoreAgentLogMatch(name, sample?.lines || []);
+          if (score <= 0) continue;
+        }
+        entries.push({
+          name,
+          source: agentLogsDir,
+          size: info.size,
+          mtime:
+            info.mtime?.toISOString?.() || new Date(info.mtime).toISOString(),
+          mtimeMs,
+          ageMs,
+          score,
+        });
+      } catch {
+        // ignore
       }
-      entries.push({
-        name,
-        source: agentLogsDir,
-        size: info.size,
-        mtime:
-          info.mtime?.toISOString?.() || new Date(info.mtime).toISOString(),
-        mtimeMs: info.mtimeMs,
-        score,
-      });
-    } catch {
-      // ignore
     }
   }
-  entries.sort((a, b) => (b.score || 0) - (a.score || 0) || b.mtimeMs - a.mtimeMs);
-  return entries.slice(0, limit);
+  const order = sortDir === "asc" ? 1 : -1;
+  const byScore = (a, b) => (Number(b?.score || 0) - Number(a?.score || 0));
+  const byName = (a, b) => String(a?.name || "").localeCompare(String(b?.name || ""));
+  const bySize = (a, b) => Number(a?.size || 0) - Number(b?.size || 0);
+  const byModified = (a, b) => Number(a?.mtimeMs || 0) - Number(b?.mtimeMs || 0);
+
+  entries.sort((a, b) => {
+    if (queryTerms.length && sortBy === "relevance") {
+      const scoreDiff = byScore(a, b);
+      if (scoreDiff !== 0) return scoreDiff;
+      return order * byModified(a, b);
+    }
+    if (sortBy === "name") {
+      const cmp = byName(a, b);
+      if (cmp !== 0) return order * cmp;
+      return byScore(a, b);
+    }
+    if (sortBy === "size") {
+      const cmp = bySize(a, b);
+      if (cmp !== 0) return order * cmp;
+      return byScore(a, b);
+    }
+    const cmp = byModified(a, b);
+    if (cmp !== 0) return order * cmp;
+    return byScore(a, b);
+  });
+
+  const total = entries.length;
+  const items = entries.slice(offset, offset + limit);
+  const lastItem = items.length > 0 ? items[items.length - 1] : null;
+  const firstItem = items.length > 0 ? items[0] : null;
+  const nextCursor = lastItem ? `${lastItem.mtimeMs}:${Buffer.from(lastItem.name).toString("base64url")}` : null;
+  const prevCursor = firstItem && offset > 0 ? `${firstItem.mtimeMs}:${Buffer.from(firstItem.name).toString("base64url")}` : null;
+  return {
+    items,
+    pagination: {
+      total,
+      offset,
+      limit,
+      count: items.length,
+      hasMore: offset + items.length < total,
+      nextOffset: offset + items.length,
+      nextCursor,
+      prevCursor,
+    },
+    filterSummary: {
+      query,
+      queryTerms,
+      sortBy,
+      sortDir,
+      ageFilter,
+      staleDays,
+      sources: allDirs,
+    },
+  };
 }
 
 function buildLogQueryTerms(query = "") {
@@ -12023,8 +12939,12 @@ async function handleApi(req, res, url) {
     return;
   }
   if (path === "/api/status") {
+    const cached = getCachedApiResponse("status", 2000);
+    if (cached) { jsonResponse(res, 200, cached); return; }
     const data = await readStatusSnapshot();
-    jsonResponse(res, 200, { ok: true, data });
+    const payload = { ok: true, data };
+    setCachedApiResponse("status", payload);
+    jsonResponse(res, 200, payload);
     return;
   }
 
@@ -12414,7 +13334,12 @@ async function handleApi(req, res, url) {
         });
       }
 
-      const launchResult = await launchBenchmark(providerId, body || {});
+      const launchResult = await launchBenchmark(providerId, {
+        ...(body || {}),
+        workspaceId: workspaceContext.workspaceId || body?.workspaceId || "",
+        workspaceDir: workspaceContext.workspaceDir || body?.workspaceDir || "",
+        workspace: workspaceContext.workspaceDir || body?.workspaceDir || body?.workspace || "",
+      });
       let mode = null;
       if (body?.activateMode === true) {
         const modeChange = await applyBenchmarkModeChange({
@@ -12496,6 +13421,9 @@ async function handleApi(req, res, url) {
   }
 
   if (path === "/api/tasks") {
+    const cacheKey = `tasks:${url.search}`;
+    const cached = getCachedApiResponse(cacheKey, 3000);
+    if (cached) { jsonResponse(res, 200, cached); return; }
     const status = url.searchParams.get("status") || "";
     const projectId = url.searchParams.get("project") || "";
     const workspaceQueryRaw = String(url.searchParams.get("workspace") || "").trim();
@@ -12512,7 +13440,7 @@ async function handleApi(req, res, url) {
     const repositoryFilter = (url.searchParams.get("repository") || "").trim().toLowerCase();
     const page = Math.max(0, Number(url.searchParams.get("page") || "0"));
     const pageSize = Math.min(
-      50,
+      200,
       Math.max(5, Number(url.searchParams.get("pageSize") || "15")),
     );
     try {
@@ -12594,7 +13522,7 @@ async function handleApi(req, res, url) {
       const slice = filtered.slice(start, start + pageSize);
       const enriched = await applySharedStateToTasks(slice);
       const withRuntime = enriched.map((task) => withTaskRuntimeSnapshot(task));
-      jsonResponse(res, 200, {
+      const responsePayload = {
         ok: true,
         data: withRuntime,
         page,
@@ -12604,7 +13532,9 @@ async function handleApi(req, res, url) {
         hasMore: start + slice.length < total,
         statusCounts,
         projectId: activeProject,
-      });
+      };
+      setCachedApiResponse(cacheKey, responsePayload);
+      jsonResponse(res, 200, responsePayload);
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -12679,6 +13609,15 @@ async function handleApi(req, res, url) {
           workspaceDir: workspaceContext?.workspaceDir || repoRoot,
         });
         const diagnostics = buildTaskDiagnostics(detailTask, supervisorDiagnostics);
+        const replayRuns = await buildReplayableTaskRuns(detailTask, getSessionTracker(), 8);
+        if (replayRuns.length > 0) {
+          detailTask.runs = replayRuns;
+          detailTask.meta = {
+            ...(detailTask.meta || {}),
+            latestRunSummary: replayRuns[0]?.summary || null,
+            replayRunCount: replayRuns.length,
+          };
+        }
 
         detailTask.meta = {
           ...(detailTask.meta || {}),
@@ -12726,7 +13665,7 @@ async function handleApi(req, res, url) {
       }
 
       const mode = url.searchParams.get("mode") || "resolve"; // "resolve" | "dry-run"
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       const engine = wfCtx.ok ? wfCtx.engine : null;
 
       // Resolve library roots for skill resolution
@@ -13960,11 +14899,14 @@ async function handleApi(req, res, url) {
       }
 
       const wasPaused = executor.isPaused?.();
-      executor.executeTask(startedTask, {
+      traceHttpServerAction(req, {
+        route: "/api/tasks/start",
+        taskId,
+      }, () => executor.executeTask(startedTask, {
         ...(sdk ? { sdk } : {}),
         ...(model ? { model } : {}),
         force: forceStart || manualOverride,
-      }).catch((error) => {
+      })).catch((error) => {
         console.warn(
           `[telegram-ui] failed to execute task ${taskId}: ${error.message}`,
         );
@@ -14053,7 +14995,6 @@ async function handleApi(req, res, url) {
         ...(clearsBlockedState
           ? { cooldownUntil: null, blockedReason: null }
           : (blockedReasonProvided ? { blockedReason } : {})),
-        ...(clearsBlockedState ? { replaceMeta: true } : {}),
         ...(baseBranchProvided ? { baseBranch } : {}),
         ...metadataPatch.topLevel,
         ...(nextMeta ? { meta: nextMeta } : {}),
@@ -14071,6 +15012,11 @@ async function handleApi(req, res, url) {
           : await adapter.updateTaskStatus(taskId, patch.status);
       const updated = withTaskMetadataTopLevel(updatedRaw);
       if (clearsBlockedState) {
+        if (updated?.meta && typeof updated.meta === "object") {
+          delete updated.meta.autoRecovery;
+          delete updated.meta.worktreeFailure;
+          delete updated.meta.blockedReason;
+        }
         resetExecutorTaskThrottleState(taskId);
       }
       const nextStatus = updated?.status || patch.status || null;
@@ -14204,7 +15150,6 @@ async function handleApi(req, res, url) {
         ...(clearsBlockedState
           ? { cooldownUntil: null, blockedReason: null }
           : (blockedReasonProvided ? { blockedReason } : {})),
-        ...(clearsBlockedState ? { replaceMeta: true } : {}),
         ...(baseBranchProvided ? { baseBranch } : {}),
         ...metadataPatch.topLevel,
         ...(nextMeta ? { meta: nextMeta } : {}),
@@ -14222,6 +15167,11 @@ async function handleApi(req, res, url) {
           : await adapter.updateTaskStatus(taskId, patch.status);
       const updated = withTaskMetadataTopLevel(updatedRaw);
       if (clearsBlockedState) {
+        if (updated?.meta && typeof updated.meta === "object") {
+          delete updated.meta.autoRecovery;
+          delete updated.meta.worktreeFailure;
+          delete updated.meta.blockedReason;
+        }
         resetExecutorTaskThrottleState(taskId);
       }
       const nextStatus = updated?.status || patch.status || null;
@@ -15731,11 +16681,15 @@ async function handleApi(req, res, url) {
       const worktrees = listActiveWorktrees(repoRoot);
       const stats = await getWorktreeStats(repoRoot);
       const recovery = await readWorktreeRecoveryState(repoRoot);
+      const recoveryBackfill = buildRecoveryBackfilledWorktrees(worktrees, recovery);
       jsonResponse(res, 200, {
         ok: true,
-        data: worktrees,
+        data: [...worktrees, ...recoveryBackfill],
         stats: {
           ...stats,
+          liveTotal: Number(stats.total || 0),
+          total: Number(stats.total || 0) + recoveryBackfill.length,
+          recoveryLinked: recoveryBackfill.length,
           recovery,
         },
       });
@@ -15937,22 +16891,49 @@ async function handleApi(req, res, url) {
     try {
       const file = normalizeAgentLogName(url.searchParams.get("file"));
       const query = url.searchParams.get("query") || "";
+      const offset = Math.max(0, Number(url.searchParams.get("offset") || "0"));
+      const limit = Math.max(20, Math.min(500, Number(url.searchParams.get("limit") || "100")));
+      const sortBy = url.searchParams.get("sortBy") || "modified";
+      const sortDir = url.searchParams.get("sortDir") || "desc";
+      const ageFilter = url.searchParams.get("age") || "all";
+      const staleDays = Math.max(1, Math.min(90, Number(url.searchParams.get("staleDays") || "7")));
       const lines = Math.min(
         1000,
         Math.max(20, Number(url.searchParams.get("lines") || "200")),
       );
       if (!file) {
-        const files = await listAgentLogFiles(query);
-        jsonResponse(res, 200, { ok: true, data: files });
+        const result = await listAgentLogFiles({
+          query,
+          offset,
+          limit,
+          sortBy,
+          sortDir,
+          ageFilter,
+          staleDays,
+        });
+        jsonResponse(res, 200, {
+          ok: true,
+          data: result.items,
+          pagination: result.pagination,
+          filterSummary: result.filterSummary,
+          serverTime: new Date().toISOString(),
+        });
         return;
       }
-      const agentLogsDir = await resolveAgentLogsDir();
-      const filePath = resolve(agentLogsDir, file);
-      if (!filePath.startsWith(agentLogsDir)) {
-        jsonResponse(res, 403, { ok: false, error: "Forbidden" });
-        return;
+      const sourceHint = url.searchParams.get("source") || "";
+      const allDirs = await resolveAllAgentLogDirs();
+      let filePath = null;
+      if (sourceHint) {
+        const candidate = resolve(sourceHint, file);
+        if (candidate.startsWith(sourceHint) && existsSync(candidate)) filePath = candidate;
       }
-      if (!existsSync(filePath)) {
+      if (!filePath) {
+        for (const dir of allDirs) {
+          const candidate = resolve(dir, file);
+          if (candidate.startsWith(dir) && existsSync(candidate)) { filePath = candidate; break; }
+        }
+      }
+      if (!filePath) {
         jsonResponse(res, 404, { ok: false, error: "Log not found" });
         return;
       }
@@ -15975,13 +16956,17 @@ async function handleApi(req, res, url) {
       // Read lifetime totals from the full JSONL log (not the capped in-memory state)
       // so the count is accurate even when sessions exceed the in-memory cap.
       const { entries: allSessions } = await readCompletedSessionEntries(200_000);
+      // Cap per-session duration at 4 hours — orphaned sessions reaped days later
+      // would otherwise inflate runtime by hundreds of hours each.
+      const MAX_SESSION_DURATION_MS = 4 * 60 * 60 * 1000;
       const lifetimeTotals = allSessions.reduce(
         (acc, session) => {
           acc.attemptsCount += 1;
           acc.tokenCount += Number(session?.tokenCount || 0);
           acc.inputTokens += Number(session?.inputTokens || 0);
           acc.outputTokens += Number(session?.outputTokens || 0);
-          acc.durationMs += Math.max(0, Number(session?.durationMs || 0));
+          const rawDur = Math.max(0, Number(session?.durationMs || 0));
+          acc.durationMs += Math.min(rawDur, MAX_SESSION_DURATION_MS);
           return acc;
         },
         { attemptsCount: 0, tokenCount: 0, inputTokens: 0, outputTokens: 0, durationMs: 0 },
@@ -16005,7 +16990,15 @@ async function handleApi(req, res, url) {
       }
 
       summary.lifetimeTotals = lifetimeTotals;
-      jsonResponse(res, 200, { ok: true, data: summary });
+      summary.repoAreaContention = summarizeRepoAreaLockContention(
+        uiDeps.getInternalExecutor?.()?.getStatus?.()?.repoAreaLocks || null,
+        { now: "2026-03-24T12:00:00.000Z" },
+      );
+      jsonResponse(res, 200, {
+        ok: true,
+        data: summary,
+        repoAreaContention: summary.repoAreaContention,
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -16296,7 +17289,33 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (path === "/api/agent-logs/context") {
+    if (path === "/api/agent-runs") {
+    try {
+      const limit = Number(url.searchParams.get("limit") || "25");
+      const taskId = String(url.searchParams.get("taskId") || "").trim();
+      const data = await listReplayableAgentRuns({ limit, taskId });
+      jsonResponse(res, 200, { ok: true, data });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path.startsWith("/api/agent-runs/")) {
+    try {
+      const attemptId = decodeURIComponent(path.slice("/api/agent-runs/".length));
+      const data = await readReplayableAgentRun(attemptId);
+      if (!data) {
+        jsonResponse(res, 404, { ok: false, error: "run not found" });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, data });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+if (path === "/api/agent-logs/context") {
     try {
       const query = url.searchParams.get("query") || "";
       if (!query) {
@@ -16421,24 +17440,43 @@ async function handleApi(req, res, url) {
   if (path === "/api/agent-logs/tail") {
     try {
       const fileParam = url.searchParams.get("file") || "";
+      const sourceParam = url.searchParams.get("source") || "";
       const query = url.searchParams.get("query") || "";
       const lines = Math.min(
         1000,
         Math.max(20, Number(url.searchParams.get("lines") || "100")),
       );
-      const agentLogsDir = await resolveAgentLogsDir();
+      const allDirs = await resolveAllAgentLogDirs();
       // Prefer an explicit file name; fall back to query-based latest-file lookup
       let fileName = fileParam;
       if (!fileName) {
-        const files = await listAgentLogFiles(query);
-        if (!files.length) {
+        const files = await listAgentLogFiles({
+          query,
+          offset: 0,
+          limit: 1,
+          sortBy: "relevance",
+          sortDir: "desc",
+        });
+        if (!(files?.items || []).length) {
           jsonResponse(res, 200, { ok: true, data: null });
           return;
         }
-        fileName = files[0].name || files[0];
+        fileName = files.items[0].name || files.items[0];
       }
-      const filePath = resolve(agentLogsDir, normalizeAgentLogName(fileName));
-      if (!filePath.startsWith(agentLogsDir) || !existsSync(filePath)) {
+      const safeName = normalizeAgentLogName(fileName);
+      // Search for the file across all log directories (prefer explicit source if provided)
+      let filePath = null;
+      if (sourceParam) {
+        const candidate = resolve(sourceParam, safeName);
+        if (candidate.startsWith(sourceParam) && existsSync(candidate)) filePath = candidate;
+      }
+      if (!filePath) {
+        for (const dir of allDirs) {
+          const candidate = resolve(dir, safeName);
+          if (candidate.startsWith(dir) && existsSync(candidate)) { filePath = candidate; break; }
+        }
+      }
+      if (!filePath) {
         jsonResponse(res, 200, { ok: true, data: null });
         return;
       }
@@ -16829,6 +17867,21 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  /* ── Resolve git repo cwd from ?repo= query param (path-traversal safe) ── */
+  function resolveGitRepoCwd(reqUrl) {
+    const repoParam = (reqUrl.searchParams.get("repo") || "").trim();
+    if (!repoParam) return process.cwd();
+    // Sanitize: allow only simple directory name (no slashes, dots, etc.)
+    const safeName = repoParam.replace(/[^a-zA-Z0-9_-]/g, "");
+    if (!safeName) return process.cwd();
+    const parentDir = resolve(process.cwd(), "..");
+    const candidate = resolve(parentDir, safeName);
+    // Ensure the resolved path is actually inside parentDir (prevent traversal)
+    if (!candidate.startsWith(parentDir)) return process.cwd();
+    if (existsSync(resolve(candidate, ".git"))) return candidate;
+    return process.cwd();
+  }
+
   if (path === "/api/git/diff") {
     try {
       const diff = runGit("diff --stat HEAD", 15000);
@@ -16839,14 +17892,42 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  /* ── Discover git repos in parent directory ── */
+  if (path === "/api/git/repos") {
+    try {
+      const parentDir = resolve(process.cwd(), "..");
+      const entries = readdirSync(parentDir, { withFileTypes: true });
+      const repos = [];
+      for (const ent of entries) {
+        if (!ent.isDirectory()) continue;
+        const fullPath = resolve(parentDir, ent.name);
+        if (existsSync(resolve(fullPath, ".git"))) {
+          repos.push({ name: ent.name, path: fullPath });
+        }
+      }
+      // Sort: current repo first, then alphabetical
+      const currentName = basename(process.cwd());
+      repos.sort((a, b) => {
+        if (a.name === currentName) return -1;
+        if (b.name === currentName) return 1;
+        return a.name.localeCompare(b.name);
+      });
+      jsonResponse(res, 200, { ok: true, data: repos });
+    } catch (err) {
+      jsonResponse(res, 200, { ok: true, data: [{ name: basename(process.cwd()), path: process.cwd() }], error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/recent-commits") {
     try {
-      // Return structured objects {hash,message,author,date} using a richer git format.
-      // Falls back to parsing --oneline strings if the richer format fails.
+      const maxCount = Math.min(100, Math.max(6, Number(url.searchParams.get("count") || "40")));
+      const gitCwd = resolveGitRepoCwd(url);
+      // Return graph-friendly objects: full hash, parents (for branch lanes), decorate refs, author email
       const proc = spawnSync(
         "git",
-        ["log", "--format=%H\x1f%s\x1f%an\x1f%aI", "--max-count=6"],
-        { cwd: process.cwd(), encoding: "utf8", timeout: 10_000 },
+        ["log", "--format=%H\x1f%P\x1f%s\x1f%an\x1f%ae\x1f%aI\x1f%D", `--max-count=${maxCount}`, "--all"],
+        { cwd: gitCwd, encoding: "utf8", timeout: 15_000 },
       );
       if (proc.status === 0 && (proc.stdout || "").trim()) {
         const commits = proc.stdout
@@ -16854,21 +17935,89 @@ async function handleApi(req, res, url) {
           .split("\n")
           .filter(Boolean)
           .map((line) => {
-            const [hash, message, author, date] = line.split("\x1f");
-            return { hash: (hash || "").slice(0, 7), message: message || "", author: author || "", date: date || "" };
+            const [hash, parents, message, author, email, date, refs] = line.split("\x1f");
+            return {
+              hash: (hash || "").trim(),
+              shortHash: (hash || "").slice(0, 7),
+              parents: (parents || "").trim().split(/\s+/).filter(Boolean),
+              message: message || "",
+              author: author || "",
+              email: email || "",
+              date: date || "",
+              refs: (refs || "").split(",").map((r) => r.trim()).filter(Boolean),
+            };
           });
         jsonResponse(res, 200, { ok: true, data: commits });
       } else {
         // Fallback: parse --oneline strings
-        const lines = getRecentCommits(process.cwd(), 6);
+        const lines = getRecentCommits(gitCwd, maxCount);
         const commits = lines.map((l) => {
           const sp = (l || "").indexOf(" ");
-          return { hash: sp > 0 ? l.slice(0, sp) : l.slice(0, 7), message: sp > 0 ? l.slice(sp + 1) : l, author: "", date: "" };
+          return { hash: sp > 0 ? l.slice(0, sp) : l.slice(0, 40), shortHash: (l || "").slice(0, 7), parents: [], message: sp > 0 ? l.slice(sp + 1) : l, author: "", email: "", date: "", refs: [] };
         });
         jsonResponse(res, 200, { ok: true, data: commits });
       }
     } catch (err) {
       jsonResponse(res, 200, { ok: true, data: [], error: err.message });
+    }
+    return;
+  }
+
+  if (path.startsWith("/api/commit-detail/")) {
+    try {
+      const hashParam = path.split("/api/commit-detail/")[1] || "";
+      const commitHash = hashParam.replace(/[^a-fA-F0-9]/g, "").slice(0, 40);
+      if (!commitHash || commitHash.length < 7) {
+        jsonResponse(res, 400, { ok: false, error: "Invalid commit hash" });
+        return;
+      }
+      const gitCwd = resolveGitRepoCwd(url);
+      // Get commit metadata
+      const metaProc = spawnSync(
+        "git", ["show", "--no-patch", "--format=%H\x1f%P\x1f%s\x1f%b\x1f%an\x1f%ae\x1f%aI\x1f%D", commitHash],
+        { cwd: gitCwd, encoding: "utf8", timeout: 10_000 },
+      );
+      if (metaProc.status !== 0) {
+        jsonResponse(res, 404, { ok: false, error: "Commit not found" });
+        return;
+      }
+      const [hash, parents, subject, body, author, email, date, refs] = (metaProc.stdout || "").trim().split("\x1f");
+      // Get file stats (numstat)
+      const statProc = spawnSync(
+        "git", ["diff-tree", "--no-commit-id", "-r", "--numstat", commitHash],
+        { cwd: gitCwd, encoding: "utf8", timeout: 10_000 },
+      );
+      const files = (statProc.stdout || "").trim().split("\n").filter(Boolean).map((line) => {
+        const parts = line.split("\t");
+        return { additions: parts[0] === "-" ? 0 : Number(parts[0] || 0), deletions: parts[1] === "-" ? 0 : Number(parts[1] || 0), filename: parts[2] || "" };
+      });
+      // Get the actual patch (limit size to prevent huge payloads)
+      const patchProc = spawnSync(
+        "git", ["diff-tree", "--no-commit-id", "-r", "-p", "--diff-filter=ACDMRT", commitHash],
+        { cwd: gitCwd, encoding: "utf8", timeout: 15_000, maxBuffer: 2 * 1024 * 1024 },
+      );
+      const rawPatch = (patchProc.stdout || "").slice(0, 1_500_000); // cap at ~1.5MB
+      // Parse patch into file-level hunks
+      const parsedFiles = parseDiffPatch(rawPatch, files);
+      jsonResponse(res, 200, {
+        ok: true,
+        data: {
+          hash: (hash || "").trim(),
+          shortHash: (hash || "").slice(0, 7),
+          parents: (parents || "").trim().split(/\s+/).filter(Boolean),
+          subject: subject || "",
+          body: (body || "").trim(),
+          author: author || "",
+          email: email || "",
+          date: date || "",
+          refs: (refs || "").split(",").map((r) => r.trim()).filter(Boolean),
+          files: parsedFiles,
+          totalAdditions: parsedFiles.reduce((s, f) => s + f.additions, 0),
+          totalDeletions: parsedFiles.reduce((s, f) => s + f.deletions, 0),
+        },
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
     }
     return;
   }
@@ -16879,7 +18028,7 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/workflows") {
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -16901,7 +18050,7 @@ async function handleApi(req, res, url) {
   if (path === "/api/workflows/save") {
     try {
       const body = await readJsonBody(req);
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -16912,6 +18061,24 @@ async function handleApi(req, res, url) {
       }
       const saved = await engine.save(body);
       jsonResponse(res, 200, { ok: true, workflow: saved });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workflows/import") {
+    try {
+      const body = await readJsonBody(req);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
+      if (!wfCtx.ok) {
+        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+        return;
+      }
+      const engine = wfCtx.engine;
+      const workflowPayload = body?.workflow ?? body;
+      const imported = await engine.import(workflowPayload);
+      jsonResponse(res, 200, { ok: true, workflow: imported });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -16941,7 +18108,7 @@ async function handleApi(req, res, url) {
         return;
       }
 
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17001,7 +18168,12 @@ async function handleApi(req, res, url) {
       if (!shouldWait) {
         const dispatchedAt = new Date().toISOString();
         Promise.resolve()
-          .then(() => engine.execute(workflowId, executeInput, { force: true }))
+          .then(() => traceHttpServerAction(req, {
+            route: "/api/workflows/launch-template",
+            workflowId,
+            taskId: executeInput.taskId,
+            attributes: { "bosun.template.id": templateId },
+          }, () => engine.execute(workflowId, executeInput, { force: true })))
           .then((ctx) => {
             const runStatus = Array.isArray(ctx?.errors) && ctx.errors.length > 0 ? "failed" : "completed";
             console.log(`[workflows] Template launch finished template=${templateId} workflow=${workflowId} status=${runStatus}`);
@@ -17026,7 +18198,12 @@ async function handleApi(req, res, url) {
         return;
       }
 
-      const result = await engine.execute(workflowId, executeInput, { force: true });
+      const result = await traceHttpServerAction(req, {
+        route: "/api/workflows/launch-template",
+        workflowId,
+        taskId: executeInput.taskId,
+        attributes: { "bosun.template.id": templateId },
+      }, () => engine.execute(workflowId, executeInput, { force: true }));
       jsonResponse(res, 200, {
         ok: true,
         mode: "sync",
@@ -17046,7 +18223,7 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/workflows/templates") {
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17063,7 +18240,7 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/workflows/detect-project") {
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       const rootDir = wfCtx.ok ? (wfCtx.workspaceContext?.workspaceDir || process.cwd()) : process.cwd();
       let detected = { stacks: [], primary: null, commands: {}, frameworks: [], isMonorepo: false };
       try {
@@ -17080,7 +18257,7 @@ async function handleApi(req, res, url) {
   if (path === "/api/workflows/install-template") {
     try {
       const body = await readJsonBody(req);
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17097,7 +18274,7 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/workflows/reflow-template-layouts" && req.method === "POST") {
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17122,7 +18299,7 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/workflows/template-updates") {
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17159,7 +18336,7 @@ async function handleApi(req, res, url) {
 
   if (path.startsWith("/api/workflows/") && path.endsWith("/template-update")) {
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17187,7 +18364,7 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/workflows/node-types") {
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17221,7 +18398,7 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/workflows/runs") {
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17268,7 +18445,7 @@ async function handleApi(req, res, url) {
 
   if (path.startsWith("/api/workflows/runs/")) {
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17546,7 +18723,7 @@ async function handleApi(req, res, url) {
     const action = segments[1] || "";
 
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx.ok) {
         jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
         return;
@@ -17564,7 +18741,11 @@ async function handleApi(req, res, url) {
         if (!shouldWait) {
           const dispatchedAt = new Date().toISOString();
           Promise.resolve()
-            .then(() => engine.execute(workflowId, executeInput))
+            .then(() => traceHttpServerAction(req, {
+              route: `/api/workflows/${workflowId}/execute`,
+              workflowId,
+              taskId: executeInput.taskId,
+            }, () => engine.execute(workflowId, executeInput)))
             .then((ctx) => {
               const runStatus = Array.isArray(ctx?.errors) && ctx.errors.length > 0 ? "failed" : "completed";
               console.log(
@@ -17585,7 +18766,11 @@ async function handleApi(req, res, url) {
           return;
         }
 
-        const result = await engine.execute(workflowId, executeInput);
+        const result = await traceHttpServerAction(req, {
+          route: `/api/workflows/${workflowId}/execute`,
+          workflowId,
+          taskId: executeInput.taskId,
+        }, () => engine.execute(workflowId, executeInput));
         jsonResponse(res, 200, { ok: true, result, mode: "sync" });
         return;
       }
@@ -17936,7 +19121,7 @@ async function handleApi(req, res, url) {
       }
 
       // Check workflow exists and is enabled
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx?.ok) {
         jsonResponse(res, 503, { ok: false, error: "Workflow engine unavailable" });
         return;
@@ -17966,7 +19151,11 @@ async function handleApi(req, res, url) {
       };
 
       Promise.resolve()
-        .then(() => wfCtx.engine.execute(webhookWorkflowId, eventPayload))
+        .then(() => traceHttpServerAction(req, {
+          route: path,
+          workflowId: webhookWorkflowId,
+          attributes: { "bosun.trigger.type": "webhook" },
+        }, () => wfCtx.engine.execute(webhookWorkflowId, eventPayload)))
         .then((result) => {
           const status = Array.isArray(result?.errors) && result.errors.length > 0 ? "failed" : "completed";
           console.log(`[webhooks] run ${status} workflow=${webhookWorkflowId} runId=${result?.id || runId}`);
@@ -17992,7 +19181,7 @@ async function handleApi(req, res, url) {
     const subAction = webhookMgmtMatch[2] || "";
 
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx?.ok) {
         jsonResponse(res, wfCtx.status || 503, { ok: false, error: wfCtx.error });
         return;
@@ -18068,7 +19257,7 @@ async function handleApi(req, res, url) {
     const wfId = scheduleMgmtMatch[1];
 
     try {
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       if (!wfCtx?.ok) {
         jsonResponse(res, wfCtx.status || 503, { ok: false, error: wfCtx.error });
         return;
@@ -18240,7 +19429,7 @@ async function handleApi(req, res, url) {
       }
       const mf = await import("../workflow/manual-flows.mjs");
       const ctx = resolveActiveWorkspaceExecutionContext();
-      const wfCtx = await getWorkflowRequestContext(url);
+      const wfCtx = await getWorkflowRequestContext(url, { bootstrapTemplates: false });
       const repository = String(
         executionContext?.repository ||
           executionContext?.targetRepo ||
@@ -18373,8 +19562,9 @@ async function handleApi(req, res, url) {
       for (const task of tasks) {
         for (const entry of (task.statusHistory || [])) {
           if (entry.timestamp < cutoff) continue;
-          if (entry.status === "done") successRuns++;
-          else if (entry.status === "error") failedRuns++;
+          const normalizedStatus = String(entry.status || "").toLowerCase();
+          if (normalizedStatus === "done") successRuns++;
+          else if (normalizedStatus === "error" || normalizedStatus === "failed" || normalizedStatus === "blocked") failedRuns++;
         }
       }
     } catch { /* task store not loaded or unavailable */ }
@@ -18388,6 +19578,7 @@ async function handleApi(req, res, url) {
     const regionEnv = (process.env.EXECUTOR_REGIONS || "").trim();
     const regions = regionEnv ? regionEnv.split(",").map((r) => r.trim()).filter(Boolean) : ["auto"];
     const pkg = JSON.parse(readFileSync(resolve(__dirname, "..", "package.json"), "utf8"));
+    const { configData } = readConfigDocument();
     let runtimeKanbanBackend = "internal";
     try {
       runtimeKanbanBackend = String(
@@ -18411,6 +19602,8 @@ async function handleApi(req, res, url) {
       sdk: process.env.EXECUTOR_SDK || "auto",
       kanbanBackend: runtimeKanbanBackend,
       regions,
+      prAutomation: normalizePrAutomationPolicy(configData?.prAutomation),
+      gates: normalizeGatesPolicy(configData?.gates),
       tunnel: getTunnelStatus(),
       fallbackAuth: getFallbackAuthStatus(),
     });
@@ -18447,6 +19640,66 @@ async function handleApi(req, res, url) {
       }
       broadcastUiEvent(["executor", "overview"], "invalidate", { reason: "config-updated", key, value });
       jsonResponse(res, 200, { ok: true, key, value });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/pr-automation" && req.method === "GET") {
+    try {
+      const { configData } = readConfigDocument();
+      jsonResponse(res, 200, {
+        ok: true,
+        prAutomation: normalizePrAutomationPolicy(configData?.prAutomation),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/pr-automation" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const prAutomation = normalizePrAutomationPolicy(body?.prAutomation || {});
+      const { configPath, configData } = readConfigDocument();
+      configData.prAutomation = prAutomation;
+      writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
+      broadcastUiEvent(["settings", "overview"], "invalidate", {
+        reason: "pr-automation-updated",
+      });
+      jsonResponse(res, 200, { ok: true, configPath, prAutomation });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/gates" && req.method === "GET") {
+    try {
+      const { configData } = readConfigDocument();
+      jsonResponse(res, 200, {
+        ok: true,
+        gates: normalizeGatesPolicy(configData?.gates),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/gates" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const gates = normalizeGatesPolicy(body?.gates || {});
+      const { configPath, configData } = readConfigDocument();
+      configData.gates = gates;
+      writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
+      broadcastUiEvent(["settings", "overview"], "invalidate", {
+        reason: "gates-updated",
+      });
+      jsonResponse(res, 200, { ok: true, configPath, gates });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -18818,7 +20071,10 @@ async function handleApi(req, res, url) {
         }
         nextTask = await adapter.getTask(taskId);
       }
-      executor.executeTask(nextTask || { ...task, status: "todo" }).catch((error) => {
+      traceHttpServerAction(req, {
+        route: path,
+        taskId,
+      }, () => executor.executeTask(nextTask || { ...task, status: "todo" })).catch((error) => {
         console.warn(
           `[telegram-ui] failed to retry task ${taskId}: ${error.message}`,
         );
@@ -18970,7 +20226,10 @@ async function handleApi(req, res, url) {
           jsonResponse(res, 404, { ok: false, error: "Task not found." });
           return;
         }
-        executor.executeTask(task, { force: true }).catch((error) => {
+        traceHttpServerAction(req, {
+          route: path,
+          taskId,
+        }, () => executor.executeTask(task, { force: true })).catch((error) => {
           console.warn(
             `[telegram-ui] dispatch failed for ${taskId}: ${error.message}`,
           );
@@ -21242,12 +22501,12 @@ async function handleStatic(req, res, url) {
       if (existsSync(indexPath)) {
         try {
           const data = await readFile(indexPath);
-          res.writeHead(200, {
+          const headers = {
             "Content-Type": "text/html; charset=utf-8",
             "Access-Control-Allow-Origin": "*",
-            "Cache-Control": "no-store",
-          });
-          res.end(data);
+            "Cache-Control": "no-cache",
+          };
+          await compressAndSend(req, res, 200, headers, data);
           return;
         } catch (err) {
           textResponse(res, 500, `Failed to load /index.html: ${err.message}`);
@@ -21263,12 +22522,19 @@ async function handleStatic(req, res, url) {
     const ext = extname(filePath).toLowerCase();
     const contentType = MIME_TYPES[ext] || "application/octet-stream";
     const data = await readFile(filePath);
-    res.writeHead(200, {
+    const etag = computeETag(data);
+    if (req.headers["if-none-match"] === etag) {
+      res.writeHead(304, { ETag: etag });
+      res.end();
+      return;
+    }
+    const headers = {
       "Content-Type": contentType,
       "Access-Control-Allow-Origin": "*",
-      "Cache-Control": "no-store",
-    });
-    res.end(data);
+      "Cache-Control": cacheControlForPath(pathname),
+      "ETag": etag,
+    };
+    await compressAndSend(req, res, 200, headers, data);
   } catch (err) {
     textResponse(res, 500, `Failed to load ${pathname}: ${err.message}`);
   }
@@ -21392,6 +22658,7 @@ export async function startTelegramUiServer(options = {}) {
       method: String(req?.method || "GET").toUpperCase(),
       path: url.pathname,
       query: url.search || "",
+      _req: req,
     };
     const webhookPath = getGitHubWebhookPath();
 
@@ -22219,6 +23486,7 @@ export function stopTelegramUiServer() {
   stopTunnel();
   stopWsHeartbeat();
   _activeSessions = [];
+  _apiCache.clear();
   // Clear injected configDir so it does not leak between server lifecycles
   // (tests start/stop servers repeatedly with different config directories).
   delete uiDeps.configDir;
@@ -22270,3 +23538,13 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
+
+
+
+
+
+
+
+
+

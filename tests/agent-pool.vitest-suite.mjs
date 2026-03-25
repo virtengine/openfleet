@@ -468,6 +468,39 @@ describe("launchEphemeralThread", () => {
     expect(typeof result.error).toBe("string");
   });
 
+  it("tries fallback when Codex model listing returns 400", async () => {
+    process.env.BOSUN_AGENT_POOL_FALLBACK_ORDER = "codex,copilot";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.COPILOT_API_KEY = "test-key";
+    process.env.CLAUDE_API_KEY = "";
+    process.env.ANTHROPIC_API_KEY = "";
+
+    setCodexLauncherMock(async () => ({
+      success: false,
+      output: "",
+      items: [],
+      error: "Failed to list models: 400",
+      sdk: "codex",
+    }));
+    setCopilotLauncherMock(async () => ({
+      success: true,
+      output: "copilot fallback ok",
+      items: [],
+      error: null,
+      sdk: "copilot",
+    }));
+
+    const result = await launchEphemeralThread(
+      "test prompt",
+      process.cwd(),
+      5000,
+      { sdk: "codex" },
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.sdk).toBe("copilot");
+    expect(result.output).toContain("copilot fallback ok");
+  });
   it("tries fallback when primary SDK not available", async () => {
     // Set codex as primary, disable it, have copilot available in fallback
     // Since both will fail (SDKs not installed), verify it tries multiple
@@ -882,6 +915,28 @@ describe("launchEphemeralThread", () => {
         }),
       }),
     );
+  });
+
+  it("disables remote model discovery for Azure Codex pool launches", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_BASE_URL = "https://example-resource.openai.azure.com/openai/v1";
+    process.env.OPENAI_API_KEY = "azure-key";
+    process.env.CODEX_MODEL = "gpt-5.4";
+    setPoolSdk("codex");
+
+    const result = await launchEphemeralThread("test prompt", process.cwd(), 5000, {
+      sdk: "codex",
+    });
+
+    expect(result.success).toBe(true);
+    const codexCtorOpts = mockCodexCtor.mock.calls.at(-1)?.[0];
+    expect(codexCtorOpts?.config).toEqual(expect.objectContaining({
+      features: expect.objectContaining({
+        remote_models: false,
+      }),
+      model_provider: "azure",
+      model: "gpt-5.4",
+    }));
   });
 
   it("accepts copilot output when sendAndWait times out waiting for session.idle", async () => {
@@ -1581,3 +1636,4 @@ describe("resolution and launch integration", () => {
     expect(result.error).toMatch(/all sdks are disabled/i);
   });
 });
+

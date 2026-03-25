@@ -10,16 +10,19 @@ import { signal, computed, effect } from "@preact/signals";
 import { apiFetch, onWsMessage } from "../modules/api.js";
 import {
   buildSessionApiPath,
+  classifySessionRequestError,
   createSessionLoadMeta,
   deriveSessionStaleReason,
   formatSessionFreshnessTimestamp,
   getSessionLifecycleState,
   getSessionManualRetryState,
+  getSessionListState,
   getSessionRecencyTimestamp,
   getSessionRuntimeState,
   markSessionLoadFailure,
   markSessionLoadSuccess,
   resolveSessionWorkspaceHint,
+  shouldFallbackToAllSessions,
 } from "../modules/session-api.js";
 import { formatDate, formatRelative, truncate } from "../modules/utils.js";
 import { resolveIcon } from "../modules/icon-utils.js";
@@ -120,15 +123,23 @@ export async function loadSessions(filter = {}, _opts = {}) {
       if (value == null || value === "") continue;
       params.set(key, String(value));
     }
+    const currentSelectedSessionId = String(selectedSessionId.value || "").trim();
     const res = await apiFetch(`/api/sessions?${params}`, { _silent: true });
     if (res?.sessions) {
       sessionsData.value = res.sessions;
       const sessionIds = new Set(
         res.sessions.map((session) => String(session?.id || "")).filter(Boolean),
       );
-      if (selectedSessionId.value && !sessionIds.has(String(selectedSessionId.value))) {
-        selectedSessionId.value = null;
-      }
+      const workspaceScope = String(normalizedFilter.workspace || "active").trim().toLowerCase();
+      const shouldRetainScopedSelection =
+        Boolean(currentSelectedSessionId) &&
+        workspaceScope !== "all" &&
+        !sessionIds.has(currentSelectedSessionId);
+      const selectedSessionStillExists =
+        !currentSelectedSessionId ||
+        sessionIds.has(currentSelectedSessionId) ||
+        shouldRetainScopedSelection;
+      selectedSessionId.value = selectedSessionStillExists ? currentSelectedSessionId : null;
     }
     clearSessionRetryTimer();
     const responseMeta = createSessionLoadMeta({
@@ -146,8 +157,9 @@ export async function loadSessions(filter = {}, _opts = {}) {
     });
     sessionLoadMeta.value = nextMeta;
     scheduleSessionRetry(nextMeta);
+    const nextErrorState = classifySessionRequestError(error);
     const hasCachedData = Array.isArray(sessionsData.peek()) && sessionsData.peek().length > 0;
-    sessionsError.value = hasCachedData || Boolean(nextMeta.lastSuccessAt) ? null : "unavailable";
+    sessionsError.value = hasCachedData ? null : nextErrorState;
   } finally {
     sessionsLoading.value = false;
   }
@@ -163,26 +175,7 @@ function _bindSessionStore(targetId, messages, pagination) {
 export async function loadSessionMessages(id, opts = {}) {
   const targetSessionId = String(id || "").trim();
   if (!targetSessionId) return { ok: false, error: "invalid" };
-  const parseApiError = (err) => {
-    const raw = String(err?.message || "").trim();
-    if (!raw) return "";
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed.error === "string") {
-        return String(parsed.error).trim();
-      }
-    } catch {
-      // Not a JSON API error body.
-    }
-    return raw;
-  };
-  const isScopedSessionNotFound = (err) => {
-    const message = parseApiError(err).toLowerCase();
-    return (
-      message.includes("session not found") ||
-      message.includes("request failed (404)")
-    );
-  };
+
   const buildMessagesUrl = (path, limit, offset) => {
     try {
       const parsed = new URL(path, globalThis.location?.origin || "http://localhost");
@@ -217,10 +210,7 @@ export async function loadSessionMessages(id, opts = {}) {
     try {
       res = await fetchSessionAtPath(baseUrl, limit, opts.offset);
     } catch (err) {
-      const shouldRetryAll =
-        Boolean(fallbackUrl) &&
-        fallbackUrl !== baseUrl &&
-        isScopedSessionNotFound(err);
+      const shouldRetryAll = shouldFallbackToAllSessions(err, baseUrl, fallbackUrl);
       if (!shouldRetryAll) throw err;
       res = await fetchSessionAtPath(fallbackUrl, limit, opts.offset);
     }
@@ -927,7 +917,12 @@ export function SessionList({
   const loadMeta = sessionLoadMeta.value || createSessionLoadMeta();
   const isLoadingSessions = sessionsLoading.value === true;
   const error = sessionsError.value;
-  const showStaleBanner = Boolean(loadMeta.stale && (loadMeta.lastSuccessAt || allSessions.length > 0));
+  const listState = getSessionListState({
+    sessions: allSessions,
+    error,
+    loadMeta,
+  });
+  const showStaleBanner = listState.key === "stale";
   const [retryCountdownNow, setRetryCountdownNow] = useState(() => Date.now());
   const hasSearch = search.trim().length > 0;
   const resolvedSessionView =
@@ -1193,7 +1188,7 @@ export function SessionList({
       ? "Manual retry is disabled while automatic backoff is active."
       : "");
 
-  if (error && !showStaleBanner) {
+  if (listState.isError && !showStaleBanner) {
     return html`
       <${Paper} elevation=${0} sx=${{ height: "100%", display: "flex", flexDirection: "column" }}>
         <${Box} sx=${{ p: 1.5, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1201,8 +1196,8 @@ export function SessionList({
         </${Box}>
         <${Divider} />
         <${Box} sx=${{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", p: 3, gap: 1.5 }}>
-          <${Alert} severity="error" variant="outlined" sx=${{ mb: 1 }}>
-            Sessions not available
+          <${Alert} severity=${listState.key === "not_found" ? "info" : "error"} variant="outlined" sx=${{ mb: 1 }}>
+            ${listState.message || "Sessions not available"}
           </${Alert}>
           <${Button}
             variant="outlined"
@@ -1452,4 +1447,5 @@ export function SessionList({
     </${Paper}>
   `;
 }
+
 

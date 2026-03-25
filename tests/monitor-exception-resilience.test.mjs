@@ -59,11 +59,6 @@ describe("monitor exception resilience guards", () => {
   });
 
   it("guards startup fire-and-forget promise chains with catch handlers", () => {
-    expect(source).toContain('runDetached("vk-runtime:config-reload-enable"');
-    expect(source).toContain('runDetached("vk-runtime:startup-ensure"');
-    expect(source).toMatch(
-      /void isVibeKanbanOnline\(\)\.then\(\(online\) => \{[\s\S]*?\}\)\.catch\(\(err\) => \{/,
-    );
     expect(source).toMatch(
       /void ensureCodexSdkReady\(\)\.then\(\(\) => \{[\s\S]*?\}\)\.catch\(\(err\) => \{/,
     );
@@ -83,6 +78,25 @@ describe("monitor exception resilience guards", () => {
     );
     expect(source).toContain(
       'runDetachedDuringShutdown("containers-stop:restart-self", () =>',
+    );
+  });
+
+  it("suppresses broken-pipe EOF writes as benign stream noise", () => {
+    expect(source).toContain('msg.includes("write EOF")');
+    expect(source).toContain("appendMonitorCrashBreadcrumb(");
+    expect(source).not.toContain(
+      '"[monitor] suppressed stream noise (uncaughtException): " + msg',
+    );
+    expect(source).not.toContain(
+      '"[monitor] suppressed stream noise (unhandledRejection): " + msg',
+    );
+  });
+
+  it("routes monitor diagnostic stream writes through guarded helpers", () => {
+    expect(source).toContain("function writeMonitorStreamSafely(");
+    expect(source).not.toContain('process.stdout.write("[monitor] uncaughtException: " + detail + "\n");');
+    expect(source).not.toContain(
+      'process.stdout.write("[monitor] " + line + "\n");',
     );
   });
 });

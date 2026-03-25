@@ -1,6 +1,6 @@
 /**
  * @fileoverview Real-time workspace monitoring and log streaming
- * Tracks VK workspace sessions, streams logs, detects stuck agents, caches state
+ * Tracks workspace sessions, streams logs, detects stuck agents, caches state
  */
 
 import { existsSync } from "node:fs";

@@ -68,16 +68,16 @@ try {
   process.exit(1);
 }
 
-// Test that VK adapter still works (doesn't have new methods, but shouldn't fail)
+// Test that internal adapter works as expected
 try {
-  setKanbanBackend("vk");
-  const vkAdapter = getKanbanAdapter();
-  if (vkAdapter.persistSharedStateToIssue) {
-    throw new Error("VKAdapter should not have persistSharedStateToIssue");
+  setKanbanBackend("internal");
+  const adapter = getKanbanAdapter();
+  if (adapter.persistSharedStateToIssue) {
+    throw new Error("Adapter should not have persistSharedStateToIssue");
   }
-  console.log("✓ VKAdapter unaffected by changes");
+  console.log("✓ Kanban adapter unaffected by changes");
 } catch (err) {
-  console.error("✗ VKAdapter validation failed:", err.message);
+  console.error("✗ Kanban adapter validation failed:", err.message);
   process.exit(1);
 }
 

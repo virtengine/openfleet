@@ -83,7 +83,7 @@ describe("monitor workflow startup guards", () => {
     expect(
       monitorSource.indexOf("const requestedAgentEndpointPort = resolveMonitorAgentEndpointPort(repoRoot);"),
     ).toBeLessThan(
-      monitorSource.indexOf('void pollWorkflowSchedulesOnce("startup").catch((err) => {'),
+      monitorSource.indexOf("agentEndpoint = createAgentEndpoint({"),
     );
   });
 
@@ -92,27 +92,48 @@ describe("monitor workflow startup guards", () => {
     expect(
       monitorSource.indexOf("let pollWorkflowSchedulesOnce = async () => {}"),
     ).toBeLessThan(
-      monitorSource.indexOf('void pollWorkflowSchedulesOnce("startup", { includeTaskPoll: false }).catch((err) => {'),
+      monitorSource.indexOf('"stale-dispatch-unstick"'),
     );
     expect(monitorSource).toContain('pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(');
     expect(monitorSource).toContain('const includeTaskPoll = opts?.includeTaskPoll !== false;');
     expect(monitorSource).not.toContain('_lastRunAt: Date.now()');
     expect(monitorSource).toContain('if (triggerNode?.type === "trigger.task_available" || triggerNode?.type === "trigger.task_low") {');
-    expect(monitorSource).toContain('void pollWorkflowSchedulesOnce("startup", { includeTaskPoll: false }).catch((err) => {');
-    expect(monitorSource).toContain('void pollWorkflowSchedulesOnce("startup").catch((err) => {');
+    expect(monitorSource).toContain('"stale-dispatch-unstick"');
+    expect(monitorSource).toContain('"stale-dispatch-task-poll-unstick"');
+    expect(monitorSource).toContain('throwOnError: true');
+    expect(monitorSource).toContain('requireEngine: true');
+    const startupTaskPollHook = monitorSource.indexOf('"stale-dispatch-task-poll-unstick"');
+    expect(startupTaskPollHook).toBeGreaterThan(-1);
     expect(
       monitorSource.indexOf('internalTaskExecutor.start();'),
-    ).toBeLessThan(
-      monitorSource.indexOf('void pollWorkflowSchedulesOnce("startup").catch((err) => {'),
-    );
+    ).toBeLessThan(startupTaskPollHook);
+    expect(monitorSource).not.toContain('void pollWorkflowSchedulesOnce("startup").catch((err) => {');
   });
 
   it("kicks non-task schedule polling during workflow automation startup", () => {
     expect(
       monitorSource.indexOf('await ensureWorkflowAutomationEngine().catch(() => {});'),
     ).toBeLessThan(
-      monitorSource.indexOf('void pollWorkflowSchedulesOnce("startup", { includeTaskPoll: false }).catch((err) => {'),
+      monitorSource.indexOf('"stale-dispatch-unstick"'),
     );
+  });
+
+  it("defines bounded workflow recovery policy and structured telemetry", () => {
+    expect(monitorSource).toContain("const DEFAULT_WORKFLOW_RECOVERY_POLICY = Object.freeze({");
+    expect(monitorSource).toContain("function normalizeWorkflowRecoveryPolicy(candidate = {})");
+    expect(monitorSource).toContain("applyWorkflowRecoveryPolicy(configWorkflowRecovery, \"startup-config\")");
+    expect(monitorSource).toContain("applyWorkflowRecoveryPolicy(");
+    expect(monitorSource).toContain("emitWorkflowRecoveryTelemetry(\"policy_updated\"");
+    expect(monitorSource).toContain("emitWorkflowRecoveryTelemetry(\"attempt\"");
+    expect(monitorSource).toContain("emitWorkflowRecoveryTelemetry(\"suppressed\"");
+    expect(monitorSource).toContain("emitWorkflowRecoveryTelemetry(\"retry_scheduled\"");
+    expect(monitorSource).toContain("emitWorkflowRecoveryTelemetry(\"escalated\"");
+    expect(monitorSource).toContain("component: \"monitor.workflow-recovery\"");
+  });
+
+  it("runs workflow-history unstick through the same bounded self-healing policy", () => {
+    expect(monitorSource).toContain('"workflow-history-unstick"');
+    expect(monitorSource).toContain("engine?.resumeInterruptedRuns");
   });
 
   it("allows workflow automation init retries after transient startup failure", () => {
@@ -153,6 +174,13 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain("BOSUN_PROMPT_PLANNER=");
   });
 
+  it("screens planner prompt fallbacks with markdown safety auditing", () => {
+    expect(monitorSource).toContain("function resolvePlannerPromptCandidate(");
+    expect(monitorSource).toContain('channel: "planner-prompt"');
+    expect(monitorSource).toContain("recordMarkdownSafetyAuditEvent(");
+    expect(monitorSource).toContain("blocked unsafe planner prompt");
+  });
+
   it("guards backend task-id resolution against unresolved template tokens", () => {
     expect(monitorSource).toContain("function hasUnresolvedTemplateToken(value)");
     expect(monitorSource).toContain("if (!rawId || hasUnresolvedTemplateToken(rawId)) return null;");
@@ -172,14 +200,13 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain("updateInternalTask(taskId, {");
     expect(monitorSource).toContain("const hasReviewReference = Boolean(prUrl || prNumber);");
     expect(monitorSource).toContain(
-      "review rehydrate reset ${taskId} to todo: missing prUrl/prNumber",
+      "review rehydrate redispatch ${taskId}: missing prUrl/prNumber",
     );
-    expect(monitorSource).toContain("setInternalTaskStatus(taskId, \"todo\", \"review-agent-rehydrate\")");
-    expect(monitorSource).toContain("await updateTaskStatus(taskId, \"todo\");");
+    expect(monitorSource).toContain("redispatchInReviewTask(task, \"review-agent-rehydrate\"");
     expect(monitorSource).toContain("dispatchFixTask: (taskId, issues) => {");
     expect(monitorSource).toContain("supervisor dispatch-fix: no active session");
     expect(monitorSource).toContain("review-fix-redispatch");
-    expect(monitorSource).toContain("workflowEvent: \"task.review_fix_requested\"");
+    expect(monitorSource).toContain("re-dispatching inreview session");
   });
 
   it("resolves repo slug from task/PR context before flow-gate merge and review rehydrate", () => {
@@ -269,7 +296,7 @@ describe("workflow-engine interrupted run deduplication", () => {
   });
 
   it("reads taskId from detail.data.taskId or detail.inputData.taskId", () => {
-    expect(engineSource).toContain("d.data?.taskId || d.inputData?.taskId");
+    expect(engineSource).toContain("this._resolveRunTaskIdentity(run, d)?.taskId");
   });
 
   it("bounds orphan interrupted-run scans so archived run details do not stall startup", () => {

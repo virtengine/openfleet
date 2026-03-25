@@ -12,6 +12,18 @@ const files = [
 
 for (const { relPath, source } of files) {
   describe(`tasks DAG render stability (${relPath})`, () => {
+    it("declares history virtualization state before derived scroll calculations", () => {
+      const scrollStateIdx = source.indexOf("const [historyScrollTop, setHistoryScrollTop] = useState(0);");
+      const viewportStateIdx = source.indexOf("const [historyViewportHeight, setHistoryViewportHeight] = useState(320);");
+      const derivedIdx = source.indexOf("const historyFirstVisible = Math.floor(historyScrollTop / HISTORY_ROW_HEIGHT);");
+
+      expect(scrollStateIdx).toBeGreaterThan(-1);
+      expect(viewportStateIdx).toBeGreaterThan(-1);
+      expect(derivedIdx).toBeGreaterThan(-1);
+      expect(scrollStateIdx).toBeLessThan(derivedIdx);
+      expect(viewportStateIdx).toBeLessThan(derivedIdx);
+    });
+
     it("uses explicit null fallbacks for optional DAG children", () => {
       expect(source).toContain("${dagError ? html`");
       expect(source).toContain("${dagLoading ? html`");

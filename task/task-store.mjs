@@ -5,7 +5,7 @@
  * Provides an in-memory cache with auto-persist on every mutation.
  */
 
-import { resolve, dirname, basename } from "node:path";
+import { resolve, dirname, basename, posix as posixPath } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
@@ -147,6 +147,8 @@ const MAX_ERROR_LENGTH = 1000;
 const MAX_TASK_TIMELINE = 300;
 const MAX_TASK_COMMENTS = 200;
 const MAX_WORKFLOW_RUN_LINKS = 200;
+const MAX_TASK_RUN_STEPS = 120;
+const MAX_TASK_RUNS = 20;
 const ATOMIC_RENAME_FALLBACK_CODES = new Set(["EPERM", "EACCES", "EBUSY", "EXDEV"]);
 const TERMINAL_TASK_STATUSES = new Set(["done", "cancelled"]);
 const SPRINT_ORDER_MODES = new Set(["parallel", "sequential"]);
@@ -186,11 +188,23 @@ const ALLOWED_STATE_TRANSITIONS = Object.freeze({
   backlog: new Set(["inprogress", "cancelled", "blocked"]),
   inprogress: new Set(["paused", "inreview", "done", "blocked", "cancelled", "backlog"]),
   paused: new Set(["inprogress", "cancelled", "blocked", "backlog"]),
-  inreview: new Set(["todo", "inprogress", "done", "blocked", "cancelled", "paused"]),
+  inreview: new Set(["done", "blocked", "cancelled", "paused"]),
   done: new Set([]),
   cancelled: new Set([]),
   blocked: new Set(["backlog", "inprogress", "cancelled", "paused"]),
 });
+
+function createWorkspaceStorageCollisionError(kind, canonicalKey, existingRaw, incomingRaw) {
+  const err = new Error(
+    `${kind} key collision after normalization: "${existingRaw}" conflicts with "${incomingRaw}" (canonical="${canonicalKey}")`,
+  );
+  err.code = "TASK_STORE_KEY_COLLISION";
+  err.kind = kind;
+  err.canonicalKey = canonicalKey;
+  err.existingRaw = existingRaw;
+  err.incomingRaw = incomingRaw;
+  return err;
+}
 
 // ---------------------------------------------------------------------------
 // In-memory state
@@ -299,6 +313,175 @@ function normalizeTaskStatus(rawStatus) {
   if (value === "completed") return "done";
   if (value === "canceled") return "cancelled";
   return value;
+}
+
+export function normalizeWorkspaceStorageKey(rawKey) {
+  const value = String(rawKey ?? "").trim();
+  if (!value) return "";
+  const unifiedSeparators = value.replace(/[\\]+/g, "/");
+  let normalized = posixPath.normalize(unifiedSeparators);
+  if (normalized === ".") return "";
+  normalized = normalized.replace(/^\.\/+/, "");
+  if (normalized.length > 1 && normalized.endsWith("/")) {
+    normalized = normalized.slice(0, -1);
+  }
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isLikelyUrl(value) {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(String(value || "").trim());
+}
+
+const PORTABLE_TASK_PATH_KEYS = Object.freeze([
+  "archivePath",
+  "archiveDir",
+  "artifactPath",
+  "artifactsDir",
+  "attachmentPath",
+  "attachmentsDir",
+  "exportPath",
+  "exportDir",
+  "importPath",
+  "importDir",
+]);
+
+export function normalizePortableTaskPath(rawPath) {
+  if (rawPath == null) return "";
+  const value = String(rawPath).trim();
+  if (!value || isLikelyUrl(value)) return value;
+  return normalizeWorkspaceStorageKey(value).toLowerCase();
+}
+
+function normalizePortablePathValue(rawPath) {
+  return normalizePortableTaskPath(rawPath);
+}
+
+function normalizePortablePathList(rawPaths) {
+  const values = Array.isArray(rawPaths) ? rawPaths : [rawPaths];
+  const normalized = [];
+  const seen = new Set();
+  for (const entry of values) {
+    const canonical = normalizePortablePathValue(entry);
+    if (!canonical || seen.has(canonical)) continue;
+    seen.add(canonical);
+    normalized.push(canonical);
+  }
+  return normalized;
+}
+
+export function getTaskAttachmentCanonicalKey(attachment = {}) {
+  if (!attachment || typeof attachment !== "object") return "";
+  const url = String(attachment.url || attachment.uri || "").trim();
+  if (url) return `url:${url}`;
+  const location = normalizePortablePathValue(
+    attachment.filePath || attachment.path || attachment.localPath || "",
+  );
+  if (location) return `path:${location}`;
+  if (attachment.id) return `id:${attachment.id}`;
+  return `raw:${JSON.stringify(attachment)}`;
+}
+
+export function normalizeTaskAttachmentRecord(rawAttachment) {
+  if (!rawAttachment || typeof rawAttachment !== "object") return null;
+  const normalized = { ...rawAttachment };
+  const canonicalLocation = normalizePortablePathValue(
+    normalized.filePath || normalized.path || normalized.localPath || "",
+  );
+  if (canonicalLocation) {
+    normalized.filePath = canonicalLocation;
+    if (Object.prototype.hasOwnProperty.call(normalized, "path")) {
+      normalized.path = canonicalLocation;
+    }
+    if (Object.prototype.hasOwnProperty.call(normalized, "localPath")) {
+      normalized.localPath = canonicalLocation;
+    }
+  }
+  return normalized;
+}
+
+export function normalizeTaskAttachments(rawAttachments, options = {}) {
+  const values = Array.isArray(rawAttachments) ? rawAttachments : [];
+  const normalized = [];
+  const seen = new Set();
+  for (const value of values) {
+    const attachment = normalizeTaskAttachmentRecord(value);
+    if (!attachment) continue;
+    const key = getTaskAttachmentCanonicalKey(attachment);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(attachment);
+  }
+  if (options.limit && normalized.length > options.limit) {
+    return normalized.slice(0, options.limit);
+  }
+  return normalized;
+}
+
+function normalizeTaskPathPayload(rawPayload = {}, taskId = "", options = {}) {
+  if (!isPlainObject(rawPayload)) return {};
+  const normalized = { ...rawPayload };
+  for (const key of PORTABLE_TASK_PATH_KEYS) {
+    if (typeof normalized[key] === "string") {
+      normalized[key] = normalizePortablePathValue(normalized[key]);
+    }
+  }
+  if (options.includeWorkspace === true && typeof normalized.workspace === "string") {
+    normalized.workspace = normalizeWorkspaceStorageKey(normalized.workspace) || null;
+  }
+  if (options.includeRepository === true && typeof normalized.repository === "string") {
+    normalized.repository = normalizeWorkspaceStorageKey(normalized.repository) || null;
+  }
+  if (options.includeRepositories === true && normalized.repositories != null) {
+    normalized.repositories = normalizeWorkspaceStorageKeys(normalized.repositories, {
+      kind: `task:${taskId || "<unknown-task>"}:repositories`,
+    });
+  }
+  if (normalized.attachments != null) {
+    normalized.attachments = normalizeTaskAttachments(normalized.attachments, {
+      kind: `task:${taskId || "<unknown-task>"}:${options.attachmentKind || "attachments"}`,
+    });
+  }
+  if (normalized.filePaths != null) {
+    normalized.filePaths = normalizePortablePathList(normalized.filePaths);
+  }
+  if (normalized.paths != null) {
+    normalized.paths = normalizePortablePathList(normalized.paths);
+  }
+  return normalized;
+}
+
+function normalizeTaskMeta(rawMeta = {}, taskId = "") {
+  return normalizeTaskPathPayload(rawMeta, taskId, {
+    includeWorkspace: true,
+    includeRepository: true,
+    attachmentKind: "meta.attachments",
+  });
+}
+
+export function normalizeWorkspaceStorageKeys(rawKeys, options = {}) {
+  const kind = String(options.kind || "workspace-rooted storage").trim();
+  const values = Array.isArray(rawKeys) ? rawKeys : [rawKeys];
+  const seen = new Map();
+  const normalized = [];
+  for (const value of values) {
+    const raw = String(value ?? "").trim();
+    if (!raw) continue;
+    const canonical = normalizeWorkspaceStorageKey(raw);
+    if (!canonical) continue;
+    const existingRaw = seen.get(canonical);
+    if (existingRaw && existingRaw !== raw) {
+      throw createWorkspaceStorageCollisionError(kind, canonical, existingRaw, raw);
+    }
+    if (!existingRaw) {
+      seen.set(canonical, raw);
+      normalized.push(canonical);
+    }
+  }
+  return normalized;
 }
 
 function normalizeLifecycleState(rawStatus) {
@@ -411,6 +594,106 @@ function normalizeWorkflowRunLinks(rawRuns) {
   return normalized.slice(-MAX_WORKFLOW_RUN_LINKS);
 }
 
+function summarizeTrajectoryStepText(value, maxLength = 160) {
+  const text = String(value ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (!text) return null;
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+}
+
+function buildTrajectoryStepSummary(step = {}) {
+  const type = String(step?.type || "event").trim().toLowerCase();
+  const payload = step?.payload && typeof step.payload === "object" ? step.payload : {};
+  const event = step?.event && typeof step.event === "object" ? step.event : {};
+
+  if (type === "thread") {
+    const resumed = payload?.resumed === true || event?.resumed === true;
+    const sdk = String(payload?.sdk || event?.sdk || "agent").trim() || "agent";
+    return resumed ? `Resumed ${sdk} session.` : `Started ${sdk} session.`;
+  }
+  if (type === "assistant") {
+    return summarizeTrajectoryStepText(
+      payload?.summary || payload?.message || payload?.content || event?.summary || event?.content || "Assistant responded.",
+    ) || "Assistant responded.";
+  }
+  if (type === "user") {
+    return summarizeTrajectoryStepText(
+      payload?.summary || payload?.message || payload?.content || event?.summary || event?.content || "User prompt recorded.",
+    ) || "User prompt recorded.";
+  }
+  if (type === "tool_call") {
+    const toolName = String(payload?.toolName || payload?.tool || event?.toolName || event?.tool || "tool").trim() || "tool";
+    return `Called ${toolName}.`;
+  }
+  if (type === "tool_result") {
+    const toolName = String(payload?.toolName || payload?.tool || event?.toolName || event?.tool || "tool").trim() || "tool";
+    const status = String(payload?.status || event?.status || "ok").trim().toLowerCase();
+    return status === "error" || status === "failed" ? `${toolName} returned an error.` : `${toolName} completed.`;
+  }
+  if (type === "reasoning") {
+    return summarizeTrajectoryStepText(payload?.summary || payload?.text || event?.summary || event?.text || "Reasoning updated.") || "Reasoning updated.";
+  }
+  if (type === "status") {
+    return summarizeTrajectoryStepText(payload?.summary || payload?.message || event?.summary || event?.message || "Run status changed.") || "Run status changed.";
+  }
+  return summarizeTrajectoryStepText(
+    step?.summary || payload?.summary || payload?.message || event?.summary || event?.message || "Run event recorded.",
+  ) || "Run event recorded.";
+}
+
+function normalizeTaskRunStep(step = {}, index = 0) {
+  return {
+    id: String(step?.id || `step-${Date.now()}-${index}-${Math.random().toString(16).slice(2, 8)}`),
+    at: String(step?.at || step?.timestamp || now()),
+    type: String(step?.type || "event"),
+    summary: summarizeTrajectoryStepText(step?.summary || buildTrajectoryStepSummary(step)) || "Run event recorded.",
+    payload: step?.payload && typeof step.payload === "object" ? { ...step.payload } : null,
+    event: step?.event && typeof step.event === "object" ? { ...step.event } : null,
+  };
+}
+
+function normalizeTaskRunSteps(rawSteps) {
+  const values = Array.isArray(rawSteps) ? rawSteps : [];
+  const normalized = values.map((step, index) => normalizeTaskRunStep(step, index)).filter(Boolean);
+  if (normalized.length <= MAX_TASK_RUN_STEPS) return normalized;
+  return normalized.slice(-MAX_TASK_RUN_STEPS);
+}
+
+function normalizeTaskRuns(rawRuns) {
+  const values = Array.isArray(rawRuns) ? rawRuns : [];
+  const normalized = [];
+  for (const entry of values) {
+    if (!entry || typeof entry !== "object") continue;
+    const runId = String(entry.runId || entry.id || "").trim();
+    if (!runId) continue;
+    normalized.push({
+      runId,
+      startedAt: String(entry.startedAt || entry.createdAt || now()),
+      endedAt: entry.endedAt != null ? String(entry.endedAt) : null,
+      status: entry.status != null ? String(entry.status) : "running",
+      taskKey: entry.taskKey != null ? String(entry.taskKey) : null,
+      sdk: entry.sdk != null ? String(entry.sdk) : null,
+      threadId: entry.threadId != null ? String(entry.threadId) : null,
+      resumeThreadId: entry.resumeThreadId != null ? String(entry.resumeThreadId) : null,
+      replayable: entry.replayable !== false,
+      outcome: entry.outcome != null ? String(entry.outcome) : null,
+      summary: summarizeTrajectoryStepText(entry.summary || entry.title || "") || null,
+      steps: normalizeTaskRunSteps(entry.steps),
+      meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
+    });
+  }
+  if (normalized.length <= MAX_TASK_RUNS) return normalized;
+  return normalized.slice(-MAX_TASK_RUNS);
+}
+
 function validateTaskTransition(currentStatus, nextStatus, options = {}) {
   const fromStatus = normalizeTaskStatus(currentStatus);
   const toStatus = normalizeTaskStatus(nextStatus);
@@ -436,56 +719,118 @@ function validateTaskTransition(currentStatus, nextStatus, options = {}) {
   };
 }
 
+function taskHasReviewReference(task) {
+  if (!task || typeof task !== "object") return false;
+  const prNumber = Number.parseInt(String(task.prNumber || task.pr_number || ""), 10);
+  if (Number.isFinite(prNumber) && prNumber > 0) return true;
+  if (String(task.prUrl || task.pr_url || "").trim()) return true;
+  if (Array.isArray(task.links?.prs) && task.links.prs.some((value) => String(value || "").trim())) {
+    return true;
+  }
+  return false;
+}
+
+function shouldKeepTaskInReview(task, requestedStatus, options = {}) {
+  if (!task || options.force === true || options.allowReviewExit === true) return false;
+  if (normalizeTaskStatus(task.status) !== "inreview") return false;
+  if (!taskHasReviewReference(task)) return false;
+  const nextStatus = normalizeTaskStatus(requestedStatus);
+  return nextStatus === "todo" || nextStatus === "backlog" || nextStatus === "inprogress";
+}
+
+function resolveProtectedTaskStatus(task, requestedStatus, options = {}) {
+  const nextStatus = normalizeTaskStatus(requestedStatus);
+  if (shouldKeepTaskInReview(task, nextStatus, options)) {
+    return "inreview";
+  }
+  return nextStatus;
+}
+
 function normalizeTaskStructure(rawTask = {}) {
   const base = defaultTask(rawTask);
+  const taskId = String(base?.id || rawTask?.id || "").trim() || "<unknown-task>";
+  const normalizedBase = normalizeTaskPathPayload(base, taskId, {
+    attachmentKind: "attachments",
+  });
+  const workspaceKey = normalizeWorkspaceStorageKey(normalizedBase.workspace);
+  const repositoryKey = normalizeWorkspaceStorageKey(normalizedBase.repository);
+  const repositoryKeys = normalizeWorkspaceStorageKeys(normalizedBase.repositories || [], {
+    kind: `task:${taskId}:repositories`,
+  });
+  const scopedRepositoryKeys = normalizeWorkspaceStorageKeys(
+    [repositoryKey, ...repositoryKeys],
+    { kind: `task:${taskId}:workspace-rooted` },
+  );
+  const attachments = normalizeTaskAttachments(normalizedBase.attachments, {
+    kind: `task:${taskId}:attachments`,
+  });
+  const normalizedMeta = normalizeTaskMeta(normalizedBase.meta, taskId);
   const normalized = {
-    ...base,
-    status: normalizeTaskStatus(base.status),
-    type: normalizeTaskType(base.type),
-    epicId: base.epicId ? String(base.epicId) : null,
-    parentTaskId: base.parentTaskId ? String(base.parentTaskId) : null,
-    childTaskIds: uniqueStringList(base.childTaskIds || []),
-    dependencyTaskIds: uniqueStringList(base.dependencyTaskIds || []),
-    blockedByTaskIds: uniqueStringList(base.blockedByTaskIds || []),
-    dependsOn: uniqueStringList(base.dependsOn || base.dependencyTaskIds || []),
-    assignees: uniqueStringList(base.assignees || []),
-    watchers: uniqueStringList(base.watchers || []),
+    ...normalizedBase,
+    status: normalizeTaskStatus(normalizedBase.status),
+    type: normalizeTaskType(normalizedBase.type),
+    epicId: normalizedBase.epicId ? String(normalizedBase.epicId) : null,
+    parentTaskId: normalizedBase.parentTaskId ? String(normalizedBase.parentTaskId) : null,
+    childTaskIds: uniqueStringList(normalizedBase.childTaskIds || []),
+    dependencyTaskIds: uniqueStringList(normalizedBase.dependencyTaskIds || []),
+    blockedByTaskIds: uniqueStringList(normalizedBase.blockedByTaskIds || []),
+    dependsOn: uniqueStringList(
+      normalizedBase.dependsOn || normalizedBase.dependencyTaskIds || [],
+    ),
+    assignees: uniqueStringList(normalizedBase.assignees || []),
+    watchers: uniqueStringList(normalizedBase.watchers || []),
     links: {
-      branches: uniqueStringList(base.links?.branches || []),
-      prs: uniqueStringList(base.links?.prs || []),
-      workflows: uniqueStringList(base.links?.workflows || []),
+      branches: uniqueStringList(normalizedBase.links?.branches || []),
+      prs: uniqueStringList(normalizedBase.links?.prs || []),
+      workflows: uniqueStringList(normalizedBase.links?.workflows || []),
     },
     comments: normalizeTaskComments(
-      Array.isArray(base.comments) && base.comments.length
-        ? base.comments
-        : Array.isArray(base.meta?.comments)
-          ? base.meta.comments
+      Array.isArray(normalizedBase.comments) && normalizedBase.comments.length
+        ? normalizedBase.comments
+        : Array.isArray(normalizedBase.meta?.comments)
+          ? normalizedBase.meta.comments
           : [],
     ),
     timeline: normalizeTimelineEvents(
-      Array.isArray(base.timeline)
-        ? base.timeline
-        : Array.isArray(base.meta?.timeline)
-          ? base.meta.timeline
+      Array.isArray(normalizedBase.timeline)
+        ? normalizedBase.timeline
+        : Array.isArray(normalizedBase.meta?.timeline)
+          ? normalizedBase.meta.timeline
           : [],
     ),
     workflowRuns: normalizeWorkflowRunLinks(
-      Array.isArray(base.workflowRuns)
-        ? base.workflowRuns
-        : Array.isArray(base.meta?.workflowRuns)
-          ? base.meta.workflowRuns
+      Array.isArray(normalizedBase.workflowRuns)
+        ? normalizedBase.workflowRuns
+        : Array.isArray(normalizedBase.meta?.workflowRuns)
+          ? normalizedBase.meta.workflowRuns
           : [],
     ),
-    stateVersion: Number.isFinite(Number(base.stateVersion))
-      ? Number(base.stateVersion)
+    runs: normalizeTaskRuns(
+      Array.isArray(normalizedBase.runs)
+        ? normalizedBase.runs
+        : Array.isArray(normalizedBase.meta?.runs)
+          ? normalizedBase.meta.runs
+          : [],
+    ),
+    stateVersion: Number.isFinite(Number(normalizedBase.stateVersion))
+      ? Number(normalizedBase.stateVersion)
       : 2,
-    sprintId: normalizeSprintId(base.sprintId),
-    sprintOrder: normalizeSprintOrder(base.sprintOrder),
+    sprintId: normalizeSprintId(normalizedBase.sprintId),
+    sprintOrder: normalizeSprintOrder(normalizedBase.sprintOrder),
+    workspace: workspaceKey || null,
+    repository: repositoryKey || null,
+    repositories: scopedRepositoryKeys,
+    attachments,
+    meta: normalizedMeta,
   };
   if (normalized.status === "draft") {
     normalized.draft = true;
   }
   return normalized;
+}
+
+export function normalizeTaskStorageRecord(rawTask = {}) {
+  return normalizeTaskStructure(rawTask);
 }
 
 function pushTaskTimeline(task, event = {}) {
@@ -556,6 +901,7 @@ function defaultTask(overrides = {}) {
     comments: [],
     timeline: [],
     workflowRuns: [],
+    runs: [],
     links: { branches: [], prs: [], workflows: [] },
     stateVersion: 2,
 
@@ -1197,6 +1543,7 @@ export function updateTask(taskId, updates) {
     repositories: (next) => { task.repositories = next; },
     baseBranch: (next) => { task.baseBranch = next; },
     branchName: (next) => { task.branchName = next; },
+    prLinkage: (next) => { task.prLinkage = next; },
     prNumber: (next) => { task.prNumber = next; },
     prUrl: (next) => { task.prUrl = next; },
     epicId: (next) => { task.epicId = next; },
@@ -1234,8 +1581,14 @@ export function updateTask(taskId, updates) {
       task.tags = normalizeTags(value);
       continue;
     }
+    if (key === "attachments") {
+      task.attachments = normalizeTaskAttachments(value, {
+        kind: `task:${taskId}:attachments`,
+      });
+      continue;
+    }
     if (key === "status") {
-      task.status = normalizeTaskStatus(value);
+      task.status = resolveProtectedTaskStatus(task, value, patch);
       continue;
     }
     if (key === "type") {
@@ -1260,6 +1613,10 @@ export function updateTask(taskId, updates) {
     }
     if (key === "workflowRuns") {
       task.workflowRuns = normalizeWorkflowRunLinks(value);
+      continue;
+    }
+    if (key === "runs") {
+      task.runs = normalizeTaskRuns(value);
       continue;
     }
     if (key === "assignees") { task.assignees = uniqueStringList(value); continue; }
@@ -1418,7 +1775,7 @@ export function setTaskStatus(taskId, status, source) {
   }
 
   const prev = normalizeTaskStatus(task.status);
-  const next = normalizeTaskStatus(status);
+  const next = resolveProtectedTaskStatus(task, status);
   const tsNow = now();
   task.status = next;
   task.updatedAt = tsNow;
@@ -1639,6 +1996,25 @@ export function appendTaskTimelineEvent(taskId, event = {}) {
   markTaskTouched(task, event?.source || "task-store");
   saveStore();
   return normalizedEvent;
+}
+
+export function getTaskRuns(taskId) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return [];
+  return Array.isArray(task.runs) ? [...task.runs] : [];
+}
+
+export function appendTaskRun(taskId, run = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return null;
+  const nextRun = normalizeTaskRuns([run])[0] || null;
+  if (!nextRun) return null;
+  task.runs = normalizeTaskRuns([...(Array.isArray(task.runs) ? task.runs : []), nextRun]);
+  markTaskTouched(task, run?.source || "task-run");
+  saveStore();
+  return nextRun;
 }
 
 export function addTaskComment(taskId, comment = {}) {
@@ -2841,3 +3217,4 @@ export function getStaleInReviewTasks(maxAgeMs) {
     (t) => t.status === "inreview" && t.lastActivityAt < cutoff,
   );
 }
+

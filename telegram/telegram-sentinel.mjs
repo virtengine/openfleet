@@ -166,7 +166,7 @@ const SENTINEL_MONITOR_RECOVERY_FILE = resolve(
   "sentinel-monitor-recovery.json",
 );
 const MONITOR_POLL_LOCK_FILE = resolve(cacheDir, "telegram-getupdates.lock");
-const STATUS_FILE = resolve(cacheDir, "ve-orchestrator-status.json");
+const STATUS_FILE = resolve(cacheDir, "orchestrator-status.json");
 
 const TAG = "[sentinel]";
 const POLL_TIMEOUT_S = 30;

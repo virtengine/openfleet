@@ -14,7 +14,7 @@ Captures **all agent work** into structured logs and enables:
 ## Architecture Quick View
 
 ```
-VK Agent → ve-orchestrator.ps1 → agent-work-logger.ps1 → .cache/agent-work-logs/*.jsonl
+Agent → orchestrator → agent-work-logger.ps1 → .cache/agent-work-logs/*.jsonl
                                                                       ↓
                                             agent-work-analyzer.mjs (live analysis)
                                                                       ↓
@@ -23,27 +23,27 @@ VK Agent → ve-orchestrator.ps1 → agent-work-logger.ps1 → .cache/agent-work
 
 ## Installation (5 Minutes)
 
-### Step 1: Enable Logging in ve-orchestrator.ps1
+### Step 1: Enable Logging in Orchestrator Script
 
-Add to the **top of ve-orchestrator.ps1** (after param block, before main logic):
+Add to the **top of your orchestrator script** (after param block, before main logic):
 
 ```powershell
 # Import agent work logger
 $AgentLoggerPath = Join-Path $PSScriptRoot "lib\agent-work-logger.ps1"
 if (Test-Path $AgentLoggerPath) {
     Import-Module $AgentLoggerPath -Force -Global
-    Write-Host "[ve-orchestrator] Agent work logger loaded" -ForegroundColor Green
+    Write-Host "[orchestrator] Agent work logger loaded" -ForegroundColor Green
 } else {
-    Write-Warning "[ve-orchestrator] Agent work logger not found at $AgentLoggerPath"
+    Write-Warning "[orchestrator] Agent work logger not found at $AgentLoggerPath"
 }
 ```
 
 ### Step 2: Integrate Logging Calls
 
-#### In `Submit-VKTaskAttempt()` - After attempt creation (~line 2735)
+#### In `SubmitTaskAttempt()` - After attempt creation
 
 ```powershell
-# After: $attempt = New-VKAttempt ...
+# After: $attempt = New-Attempt ...
 
 # Log session start
 Start-AgentSession -AttemptId $attempt.workspace_id `
@@ -68,10 +68,10 @@ Start-AgentSession -AttemptId $attempt.workspace_id `
     -PromptType "initial"
 ```
 
-#### In `Send-VKSessionFollowUp()` - After followup sent (~line 2510)
+#### In `SendSessionFollowUp()` - After followup sent
 
 ```powershell
-# After: Send-VKSessionFollowUp ...
+# After: SendSessionFollowUp ...
 
 # Log followup
 Write-AgentFollowup -AttemptId $attemptId `
@@ -79,7 +79,7 @@ Write-AgentFollowup -AttemptId $attemptId `
     -Reason $reason
 ```
 
-#### In `Sync-TrackedAttempts()` - When error detected (~line 3020)
+#### In `Sync-TrackedAttempts()` - When error detected
 
 ```powershell
 # When detecting error from summary text:
@@ -91,7 +91,7 @@ if ($errorFound) {
 }
 ```
 
-#### In `Archive-Attempt()` - When archiving (~line 2670)
+#### In `Archive-Attempt()` - When archiving
 
 ```powershell
 # After archiving logic:
@@ -211,8 +211,8 @@ Add to `.env`:
 AGENT_WORK_LOGGING_ENABLED=true
 AGENT_WORK_ANALYZER_ENABLED=true
 
-# Optional: enrich missing task metadata from VK (default: true)
-AGENT_WORK_LOGGING_ENRICH_VK=true
+# Optional: enrich missing task metadata (default: true)
+AGENT_WORK_LOGGING_ENRICH=true
 # Cache file (auto-managed): .cache/agent-work-logs/task-metadata.json
 
 # Detection thresholds
@@ -497,7 +497,7 @@ ls -t .cache/agent-work-logs/agent-sessions/*.jsonl | tail -n +101 | xargs rm -f
 - [ ] Task planning insights
 
 ### Future Enhancements
-- [ ] VK API integration (capture actual agent console output)
+- [ ] API integration (capture actual agent console output)
 - [ ] Session replay tool (visualize agent decisions)
 - [ ] ML-based anomaly detection
 - [ ] Predictive failure alerts (detect likely failures early)

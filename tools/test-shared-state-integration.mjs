@@ -35,29 +35,11 @@ try {
   process.exit(1);
 }
 
-// Test 3: Import sync-engine with shared state integration
-console.log("\n3. Testing sync-engine.mjs with shared state...");
-try {
-  const { SyncEngine, createSyncEngine } = await import("../infra/sync-engine.mjs");
-  console.log("   ✓ sync-engine.mjs imports successfully");
-} catch (err) {
-  console.error("   ✗ Failed to import sync-engine:", err.message);
-  process.exit(1);
-}
+// Test 3: sync-engine.mjs removed (migrated to workflow template)
+console.log("\n3. sync-engine.mjs — skipped (migrated to workflow template)");
 
-// Test 4: Import ve-orchestrator with shared state integration
-console.log("\n4. Testing ve-orchestrator.mjs with shared state...");
-try {
-  const { parseOrchestratorArgs, runOrchestrator } =
-    await import("../kanban/ve-orchestrator.mjs");
-  console.log("   ✓ ve-orchestrator.mjs imports successfully");
-} catch (err) {
-  console.error("   ✗ Failed to import ve-orchestrator:", err.message);
-  process.exit(1);
-}
-
-// Test 5: Verify environment variables are read correctly
-console.log("\n5. Testing environment variable defaults...");
+// Test 4 (was 5): Verify environment variables are read correctly
+console.log("\n4. Testing environment variable defaults...");
 const envTests = [
   {
     key: "SHARED_STATE_ENABLED",
@@ -86,8 +68,8 @@ for (const test of envTests) {
 }
 console.log("   ✓ All environment variables have valid defaults");
 
-// Test 6: Test basic shared state operations
-console.log("\n6. Testing basic shared state operations...");
+// Test 5 (was 6): Test basic shared state operations
+console.log("\n5. Testing basic shared state operations...");
 try {
   const { claimTaskInSharedState, releaseSharedState, getSharedState } =
     await import("../workspace/shared-state-manager.mjs");
@@ -134,9 +116,6 @@ console.log("\n✓ All integration tests passed!");
 console.log("\nShared state manager is properly integrated with:");
 console.log("  - task-claims.mjs (claim, renew, release)");
 console.log("  - sync-engine.mjs (conflict detection, state sync)");
-console.log(
-  "  - ve-orchestrator.mjs (retry checks, stale sweeps, completion tracking)",
-);
 console.log("\nEnvironment variables configured in .env.example:");
 console.log("  - SHARED_STATE_ENABLED");
 console.log("  - SHARED_STATE_HEARTBEAT_INTERVAL_MS");

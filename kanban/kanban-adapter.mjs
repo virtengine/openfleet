@@ -3,7 +3,6 @@
  *
  * Provides a common interface over multiple task-tracking backends:
  *   - Internal Store          — default, source-of-truth local kanban
- *   - Vibe-Kanban (VK)       — optional external adapter
  *   - GitHub Issues           — native GitHub integration with shared state persistence
  *   - Jira                    — enterprise project management via Jira REST v3
  *
@@ -11,7 +10,7 @@
  * Code execution is handled separately by agent-pool.mjs.
  *
  * Configuration:
- *   - `KANBAN_BACKEND` env var: "internal" | "vk" | "github" | "jira" (default: "internal")
+ *   - `KANBAN_BACKEND` env var: "internal" | "github" | "jira" (default: "internal")
  *   - `bosun.config.json` → `kanban.backend` field
  *
  * EXPORTS:
@@ -62,6 +61,7 @@ import {
   setTaskStatus as setInternalTaskStatus,
   removeTask as removeInternalTask,
   updateTask as patchInternalTask,
+  waitForStoreWrites,
 } from "../task/task-store.mjs";
 import {
   listTaskAttachments,
@@ -105,7 +105,6 @@ const TAG = "[kanban]";
 
 /** Map from various backend status strings to our canonical set */
 const STATUS_MAP = {
-  // VK statuses
   todo: "todo",
   draft: "draft",
   inprogress: "inprogress",
@@ -673,6 +672,101 @@ function extractMarkdownLinks(text) {
   return results;
 }
 
+function normalizePrLinkageEntry(entry = {}, fallback = {}) {
+  const safeEntry = entry && typeof entry === "object" ? entry : {};
+  const safeFallback = fallback && typeof fallback === "object" ? fallback : {};
+  const branchName = typeof (safeEntry.branchName ?? safeFallback.branchName) === "string"
+    ? String(safeEntry.branchName ?? safeFallback.branchName).trim()
+    : "";
+  const prUrl = typeof (safeEntry.prUrl ?? safeFallback.prUrl) === "string"
+    ? String(safeEntry.prUrl ?? safeFallback.prUrl).trim()
+    : "";
+  const parsedPrNumber = Number.parseInt(String(safeEntry.prNumber ?? safeFallback.prNumber ?? ""), 10);
+  const prNumber = Number.isFinite(parsedPrNumber) && parsedPrNumber > 0 ? parsedPrNumber : null;
+  if (!branchName && !prUrl && !prNumber) return null;
+  return {
+    branchName: branchName || null,
+    prUrl: prUrl || null,
+    prNumber,
+    source: typeof (safeEntry.source ?? safeFallback.source) === "string" && String(safeEntry.source ?? safeFallback.source).trim()
+      ? String(safeEntry.source ?? safeFallback.source).trim()
+      : null,
+    freshness: typeof (safeEntry.freshness ?? safeFallback.freshness) === "string" && String(safeEntry.freshness ?? safeFallback.freshness).trim()
+      ? String(safeEntry.freshness ?? safeFallback.freshness).trim()
+      : null,
+    linkedAt: typeof (safeEntry.linkedAt ?? safeFallback.linkedAt) === "string" && String(safeEntry.linkedAt ?? safeFallback.linkedAt).trim()
+      ? String(safeEntry.linkedAt ?? safeFallback.linkedAt).trim()
+      : null,
+    updatedAt: typeof (safeEntry.updatedAt ?? safeFallback.updatedAt) === "string" && String(safeEntry.updatedAt ?? safeFallback.updatedAt).trim()
+      ? String(safeEntry.updatedAt ?? safeFallback.updatedAt).trim()
+      : null,
+  };
+}
+
+function mergePrLinkageRecords(...sources) {
+  const merged = [];
+  const indexByKey = new Map();
+  const buildKey = (entry) => {
+    const branchName = String(entry?.branchName || "").trim().toLowerCase();
+    const prUrl = String(entry?.prUrl || "").trim().toLowerCase();
+    const prNumber = Number.isFinite(entry?.prNumber) ? entry.prNumber : "";
+    return [branchName, prNumber, prUrl].join("|");
+  };
+  for (const source of sources) {
+    const entries = Array.isArray(source) ? source : [];
+    for (const rawEntry of entries) {
+      const entry = normalizePrLinkageEntry(rawEntry);
+      if (!entry) continue;
+      const key = buildKey(entry);
+      if (!key) continue;
+      if (indexByKey.has(key)) {
+        const idx = indexByKey.get(key);
+        merged[idx] = normalizePrLinkageEntry({ ...merged[idx], ...entry }, merged[idx]);
+        continue;
+      }
+      indexByKey.set(key, merged.length);
+      merged.push(entry);
+    }
+  }
+  return merged;
+}
+
+function buildPrLinkagePatch(options = {}, currentTask = null) {
+  const branchName = typeof options?.branchName === "string" ? options.branchName.trim() : "";
+  const prUrl = typeof options?.prUrl === "string" ? options.prUrl.trim() : "";
+  const prNumber = options?.prNumber == null || options?.prNumber === ""
+    ? null
+    : Number.parseInt(String(options.prNumber), 10);
+  const source = typeof options?.source === "string" && options.source.trim() ? options.source.trim() : null;
+  const freshness = typeof options?.freshness === "string" && options.freshness.trim() ? options.freshness.trim() : null;
+  const currentMeta = currentTask?.meta && typeof currentTask.meta === "object" ? currentTask.meta : {};
+  const currentLinkage = mergePrLinkageRecords(currentTask?.prLinkage, currentMeta?.prLinkage);
+  const nextEntry = normalizePrLinkageEntry({
+    branchName,
+    prUrl,
+    prNumber: Number.isFinite(prNumber) && prNumber > 0 ? prNumber : null,
+    source,
+    freshness,
+    updatedAt: new Date().toISOString(),
+    linkedAt: currentLinkage[0]?.linkedAt || new Date().toISOString(),
+  }, currentTask || {});
+  if (!nextEntry) return {};
+  const prLinkage = mergePrLinkageRecords(currentLinkage, [nextEntry]);
+  return {
+    ...(nextEntry.branchName ? { branchName: nextEntry.branchName } : {}),
+    ...(nextEntry.prUrl ? { prUrl: nextEntry.prUrl } : {}),
+    ...(Number.isFinite(nextEntry.prNumber) && nextEntry.prNumber > 0 ? { prNumber: nextEntry.prNumber } : {}),
+    prLinkage,
+    meta: {
+      ...currentMeta,
+      prLinkage,
+      prLinkageSource: nextEntry.source || currentMeta.prLinkageSource || null,
+      prLinkageFreshness: nextEntry.freshness || currentMeta.prLinkageFreshness || null,
+      prLinkageUpdatedAt: nextEntry.updatedAt || currentMeta.prLinkageUpdatedAt || null,
+    },
+  };
+}
+
 function extractAttachmentsFromText(text, meta = {}) {
   const links = extractMarkdownLinks(text);
   const attachments = [];
@@ -792,6 +886,8 @@ class InternalAdapter {
       existingAttachments,
       localAttachments,
     );
+    const prLinkage = mergePrLinkageRecords(task.prLinkage, task.meta?.prLinkage, [normalizePrLinkageEntry(task, task)]);
+    const primaryPrLinkage = prLinkage[0] || null;
     return {
       id: String(task.id || ""),
       title: recoveredTitle || "",
@@ -816,9 +912,10 @@ class InternalAdapter {
             ? task.meta.repositories
             : [],
       baseBranch,
-      branchName: task.branchName || null,
-      prNumber: task.prNumber || null,
-      prUrl: task.prUrl || null,
+      branchName: task.branchName || primaryPrLinkage?.branchName || null,
+      prLinkage,
+      prNumber: task.prNumber || primaryPrLinkage?.prNumber || null,
+      prUrl: task.prUrl || primaryPrLinkage?.prUrl || null,
       taskUrl: task.taskUrl || null,
       createdAt: task.createdAt || null,
       updatedAt: task.updatedAt || null,
@@ -836,6 +933,10 @@ class InternalAdapter {
         statusHistory: Array.isArray(task.statusHistory) ? task.statusHistory : (Array.isArray(task.meta?.statusHistory) ? task.meta.statusHistory : []),
         comments: normalizedComments,
         attachments: mergedAttachments,
+        prLinkage,
+        prLinkageSource: primaryPrLinkage?.source || task.meta?.prLinkageSource || null,
+        prLinkageFreshness: primaryPrLinkage?.freshness || task.meta?.prLinkageFreshness || null,
+        prLinkageUpdatedAt: primaryPrLinkage?.updatedAt || task.meta?.prLinkageUpdatedAt || null,
       },
     };
   }
@@ -895,7 +996,8 @@ class InternalAdapter {
     if (!updated) {
       throw new Error(`[kanban] internal task not found: ${normalizedId}`);
     }
-    const linkagePatch = {};
+    const current = getInternalTask(normalizedId);
+    const linkagePatch = buildPrLinkagePatch(options, current);
     const branchName =
       typeof options?.branchName === "string" ? options.branchName.trim() : "";
     const prUrl = typeof options?.prUrl === "string" ? options.prUrl.trim() : "";
@@ -908,8 +1010,10 @@ class InternalAdapter {
     if (Number.isFinite(prNumber) && prNumber > 0) linkagePatch.prNumber = prNumber;
     if (Object.keys(linkagePatch).length > 0) {
       const patched = patchInternalTask(normalizedId, linkagePatch);
+      await waitForStoreWrites();
       if (patched) return this._normalizeTask(patched);
     }
+    await waitForStoreWrites();
     return this._normalizeTask(updated);
   }
 
@@ -992,9 +1096,21 @@ class InternalAdapter {
       updates.parentTaskId = parentTaskId;
     }
     if (hasOwnField(patch, "dueDate") || dueDate) updates.dueDate = dueDate;
+
     if (patch.meta && typeof patch.meta === "object") {
+      const baseMeta = replaceMeta ? {} : { ...(current?.meta || {}) };
+      if (!replaceMeta) {
+        const clearingBlockedState =
+          Object.prototype.hasOwnProperty.call(patch, "cooldownUntil") && patch.cooldownUntil == null &&
+          Object.prototype.hasOwnProperty.call(patch, "blockedReason") && patch.blockedReason == null;
+        if (clearingBlockedState) {
+          delete baseMeta.autoRecovery;
+          delete baseMeta.blockedReason;
+          delete baseMeta.worktreeFailure;
+        }
+      }
       updates.meta = {
-        ...(replaceMeta ? {} : (current?.meta || {})),
+        ...baseMeta,
         ...patch.meta,
         ...((assigneeProvided || assignee || assignees.length > 0)
           ? {
@@ -1011,6 +1127,11 @@ class InternalAdapter {
         ...(Array.isArray(patch.repositories) ? { repositories: patch.repositories } : {}),
         ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
       };
+      for (const [key, value] of Object.entries(patch.meta)) {
+        if (value == null && Object.prototype.hasOwnProperty.call(updates.meta, key)) {
+          delete updates.meta[key];
+        }
+      }
     } else if (baseBranch) {
       updates.meta = {
         ...(current?.meta || {}),
@@ -1018,10 +1139,33 @@ class InternalAdapter {
         baseBranch,
       };
     }
+    const directLinkage = mergePrLinkageRecords(current?.prLinkage, current?.meta?.prLinkage, patch.prLinkage, patch.meta?.prLinkage, [normalizePrLinkageEntry(patch, patch)]);
+    if (directLinkage.length > 0) {
+      const primaryPrLinkage = directLinkage[0] || null;
+      updates.prLinkage = directLinkage;
+      updates.branchName = updates.branchName ?? primaryPrLinkage?.branchName ?? null;
+      updates.prUrl = updates.prUrl ?? primaryPrLinkage?.prUrl ?? null;
+      updates.prNumber = updates.prNumber ?? primaryPrLinkage?.prNumber ?? null;
+      updates.meta = {
+        ...(updates.meta || current?.meta || {}),
+        prLinkage: directLinkage,
+        prLinkageSource: primaryPrLinkage?.source || updates.meta?.prLinkageSource || current?.meta?.prLinkageSource || null,
+        prLinkageFreshness: primaryPrLinkage?.freshness || updates.meta?.prLinkageFreshness || current?.meta?.prLinkageFreshness || null,
+        prLinkageUpdatedAt: primaryPrLinkage?.updatedAt || updates.meta?.prLinkageUpdatedAt || current?.meta?.prLinkageUpdatedAt || null,
+      };
+    }
     const updated = patchInternalTask(normalizedId, updates);
+    if (patch.meta && typeof patch.meta === "object" && updates.meta && typeof updates.meta === "object") {
+      for (const [key, value] of Object.entries(patch.meta)) {
+        if (value == null && Object.prototype.hasOwnProperty.call(updates.meta, key)) {
+          delete updates.meta[key];
+        }
+      }
+    }
     if (!updated) {
       throw new Error(`[kanban] internal task not found: ${normalizedId}`);
     }
+    await waitForStoreWrites();
     return this._normalizeTask(updated);
   }
 
@@ -1108,6 +1252,7 @@ class InternalAdapter {
     if (!created) {
       throw new Error("[kanban] internal task creation failed");
     }
+    await waitForStoreWrites();
     return this._normalizeTask(created);
   }
 
@@ -1366,279 +1511,6 @@ function extractTagsFromLabels(labels, extraSystem = []) {
       !extra.has(label) &&
       !isUpstreamLabel(label),
   );
-}
-
-// ---------------------------------------------------------------------------
-// VK Adapter (Vibe-Kanban)
-// ---------------------------------------------------------------------------
-
-class VKAdapter {
-  constructor() {
-    this.name = "vk";
-    this._fetchVk = null;
-  }
-
-  /**
-   * Lazy-load the fetchVk helper from monitor.mjs or fall back to a minimal
-   * implementation using the VK endpoint URL from config.
-   */
-  async _getFetchVk() {
-    if (this._fetchVk) return this._fetchVk;
-
-    // Try importing a standalone vk-api module first
-    try {
-      const mod = await import("../vk-api.mjs");
-      const fn = mod.fetchVk || mod.default?.fetchVk || mod.default;
-      if (typeof fn === "function") {
-        this._fetchVk = fn;
-        return this._fetchVk;
-      }
-    } catch {
-      // Not available — build a minimal fetch wrapper
-    }
-
-    // Minimal fetch wrapper using config
-    const cfg = loadConfig();
-    const baseUrl = cfg.vkEndpointUrl || "http://127.0.0.1:54089";
-    this._fetchVk = async (path, opts = {}) => {
-      const url = `${baseUrl}${path.startsWith("/") ? path : "/" + path}`;
-      const method = (opts.method || "GET").toUpperCase();
-      const controller = new AbortController();
-      const timeout = setTimeout(
-        () => controller.abort(),
-        opts.timeoutMs || 15_000,
-      );
-
-      let res;
-      try {
-        const fetchOpts = {
-          method,
-          signal: controller.signal,
-          headers: { "Content-Type": "application/json" },
-        };
-        if (opts.body && method !== "GET") {
-          fetchOpts.body =
-            typeof opts.body === "string"
-              ? opts.body
-              : JSON.stringify(opts.body);
-        }
-        res = await fetchWithFallback(url, fetchOpts);
-      } catch (err) {
-        // Network error, timeout, abort - res is undefined
-        throw new Error(
-          `VK API ${method} ${path} network error: ${err.message || err}`,
-        );
-      } finally {
-        clearTimeout(timeout);
-      }
-
-      if (!res || typeof res.ok === "undefined") {
-        throw new Error(
-          `VK API ${method} ${path} invalid response object (res=${!!res}, res.ok=${res?.ok})`,
-        );
-      }
-
-      if (!res.ok) {
-        const text =
-          typeof res.text === "function"
-            ? await res.text().catch(() => "")
-            : "";
-        throw new Error(
-          `VK API ${method} ${path} failed: ${res.status} ${text.slice(0, 200)}`,
-        );
-      }
-
-      const contentTypeRaw =
-        typeof res.headers?.get === "function"
-          ? res.headers.get("content-type") || res.headers.get("Content-Type")
-          : res.headers?.["content-type"] ||
-            res.headers?.["Content-Type"] ||
-            "";
-      const contentType = String(contentTypeRaw || "").toLowerCase();
-
-      if (contentType && !contentType.includes("application/json")) {
-        const text =
-          typeof res.text === "function"
-            ? await res.text().catch(() => "")
-            : "";
-        // VK sometimes mislabels JSON as text/plain in proxy setups.
-        if (text) {
-          try {
-            return JSON.parse(text);
-          } catch {
-            // Fall through to explicit non-JSON error below.
-          }
-        }
-        throw new Error(
-          `VK API ${method} ${path} non-JSON response (${contentType})`,
-        );
-      }
-
-      try {
-        return await res.json();
-      } catch (err) {
-        throw new Error(
-          `VK API ${method} ${path} invalid JSON: ${err.message}`,
-        );
-      }
-    };
-    return this._fetchVk;
-  }
-
-  async listProjects() {
-    const fetchVk = await this._getFetchVk();
-    const result = await fetchVk("/api/projects");
-    const projects = extractArrayPayload(result, ["projects", "items", "results"]);
-    const normalized = [];
-    for (const project of projects) {
-      if (!project || typeof project !== "object" || Array.isArray(project)) continue;
-      const idRaw =
-        project.id ??
-        project.project_id ??
-        project.task_id ??
-        project.key ??
-        project.number;
-      const id = String(idRaw || "").trim();
-      if (!id) continue;
-      normalized.push({
-        id,
-        name: project.name || project.title || id,
-        meta: project,
-        backend: "vk",
-      });
-    }
-    return normalized;
-  }
-
-  async listTasks(projectId, filters = {}) {
-    const fetchVk = await this._getFetchVk();
-    // Use /api/tasks?project_id=... (query param style) instead of
-    // /api/projects/:id/tasks which gets caught by the SPA catch-all.
-    const params = [`project_id=${encodeURIComponent(projectId)}`];
-    if (filters.status)
-      params.push(`status=${encodeURIComponent(filters.status)}`);
-    if (filters.limit) params.push(`limit=${filters.limit}`);
-    const url = `/api/tasks?${params.join("&")}`;
-    const result = await fetchVk(url);
-    const tasks = extractArrayPayload(result, ["tasks", "items", "results"]);
-    return tasks.map((t) => this._normaliseTask(t, projectId));
-  }
-
-  async getTask(taskId) {
-    const fetchVk = await this._getFetchVk();
-    const result = await fetchVk(`/api/tasks/${taskId}`);
-    const task = result?.data || result;
-    return this._normaliseTask(task);
-  }
-
-  async updateTaskStatus(taskId, status) {
-    return this.updateTask(taskId, { status });
-  }
-
-  async updateTask(taskId, patch = {}) {
-    const fetchVk = await this._getFetchVk();
-    const body = {};
-    const baseBranch = resolveBaseBranchInput(patch);
-    if (typeof patch.status === "string" && patch.status.trim()) {
-      body.status = patch.status.trim();
-    }
-    if (typeof patch.title === "string") {
-      body.title = patch.title;
-    }
-    if (typeof patch.description === "string") {
-      body.description = patch.description;
-    }
-    if (typeof patch.priority === "string" && patch.priority.trim()) {
-      body.priority = patch.priority.trim();
-    }
-    if (Array.isArray(patch.tags) || typeof patch.tags === "string") {
-      body.tags = normalizeTags(patch.tags ?? patch.labels);
-    }
-    if (typeof patch.draft === "boolean") {
-      body.draft = patch.draft;
-      if (!patch.status) body.status = patch.draft ? "draft" : "todo";
-    }
-    if (baseBranch) {
-      body.base_branch = baseBranch;
-    }
-    if (Object.keys(body).length === 0) {
-      return this.getTask(taskId);
-    }
-    const result = await fetchVk(`/api/tasks/${taskId}`, {
-      method: "PUT",
-      body,
-    });
-    const task = result?.data || result;
-    return this._normaliseTask(task);
-  }
-
-  async createTask(projectIdOrTaskData, taskDataArg = {}) {
-    const { projectId, taskData } = resolveCreateTaskInput(
-      projectIdOrTaskData,
-      taskDataArg,
-    );
-    const fetchVk = await this._getFetchVk();
-    const tags = normalizeTags(taskData?.tags || taskData?.labels || []);
-    const draft = Boolean(taskData?.draft || taskData?.status === "draft");
-    const baseBranch = resolveBaseBranchInput(taskData);
-    const payload = {
-      ...taskData,
-      status: draft ? "draft" : taskData?.status,
-      ...(tags.length ? { tags } : {}),
-      ...(draft ? { draft: true } : {}),
-      ...(baseBranch ? { base_branch: baseBranch } : {}),
-    };
-    // Use /api/tasks with project_id in body instead of
-    // /api/projects/:id/tasks which gets caught by the SPA catch-all.
-    const result = await fetchVk(`/api/tasks`, {
-      method: "POST",
-      body: { ...payload, project_id: projectId },
-    });
-    const task = result?.data || result;
-    return this._normaliseTask(task, projectId);
-  }
-
-  async deleteTask(taskId) {
-    const fetchVk = await this._getFetchVk();
-    await fetchVk(`/api/tasks/${taskId}`, { method: "DELETE" });
-    return true;
-  }
-
-  async addComment(_taskId, _body) {
-    return false; // VK backend doesn't support issue comments
-  }
-
-  _normaliseTask(raw, projectId = null) {
-    if (!raw) return null;
-    const tags = normalizeTags(raw.tags || raw.labels || raw.meta?.tags || []);
-    const draft = Boolean(raw.draft || raw.isDraft || raw.status === "draft");
-    const baseBranch = normalizeBranchName(
-      raw.base_branch ||
-        raw.baseBranch ||
-        raw.upstream_branch ||
-        raw.upstream ||
-        raw.target_branch ||
-        raw.targetBranch ||
-        raw.meta?.base_branch ||
-        raw.meta?.baseBranch,
-    );
-    return {
-      id: raw.id || raw.task_id || "",
-      title: raw.title || raw.name || "",
-      description: raw.description || raw.body || "",
-      status: normaliseStatus(raw.status),
-      assignee: raw.assignee || raw.assigned_to || null,
-      priority: raw.priority || null,
-      tags,
-      draft,
-      projectId: raw.project_id || projectId,
-      baseBranch,
-      branchName: raw.branch_name || raw.branchName || null,
-      prNumber: raw.pr_number || raw.prNumber || null,
-      meta: raw,
-      backend: "vk",
-    };
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -5968,7 +5840,6 @@ class JiraAdapter {
 
 const ADAPTERS = {
   internal: () => new InternalAdapter(),
-  vk: () => new VKAdapter(),
   github: () => new GitHubIssuesAdapter(),
   jira: () => new JiraAdapter(),
 };
@@ -6011,13 +5882,12 @@ function resolveBackendName() {
 
 /**
  * Get the active kanban adapter.
- * @returns {InternalAdapter|VKAdapter|GitHubIssuesAdapter|JiraAdapter} Adapter instance.
+ * @returns {InternalAdapter|GitHubIssuesAdapter|JiraAdapter} Adapter instance.
  */
 export function getKanbanAdapter() {
   const name = resolveBackendName();
   if (activeAdapter && activeBackendName === name) return activeAdapter;
   if (name === "internal") activeAdapter = ADAPTERS.internal();
-  else if (name === "vk") activeAdapter = ADAPTERS.vk();
   else if (name === "github") activeAdapter = ADAPTERS.github();
   else if (name === "jira") activeAdapter = ADAPTERS.jira();
   else throw new Error(`${TAG} unknown kanban backend: ${name}`);
@@ -6028,7 +5898,7 @@ export function getKanbanAdapter() {
 
 /**
  * Switch the kanban backend at runtime.
- * @param {string} name Backend name ("internal", "vk", "github", "jira").
+ * @param {string} name Backend name ("internal", "github", "jira").
  */
 export function setKanbanBackend(name) {
   const normalised = (name || "").trim().toLowerCase();
@@ -6198,3 +6068,4 @@ export async function unmarkTaskIgnored(taskId) {
   );
   return false;
 }
+

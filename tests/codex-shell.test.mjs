@@ -28,6 +28,7 @@ vi.mock("../config/repo-root.mjs", () => ({
 
 vi.mock("../shell/codex-model-profiles.mjs", () => ({
   resolveCodexProfileRuntime: vi.fn(() => ({ env: {} })),
+  readCodexConfigRuntimeDefaults: vi.fn(() => ({ model: "", modelProvider: "", providers: {} })),
 }));
 
 vi.mock("../config/config.mjs", () => ({
@@ -66,7 +67,10 @@ const {
   execCodexPrompt,
   resetThread,
 } = await import("../shell/codex-shell.mjs");
-const { resolveCodexProfileRuntime } = await import("../shell/codex-model-profiles.mjs");
+const {
+  resolveCodexProfileRuntime,
+  readCodexConfigRuntimeDefaults,
+} = await import("../shell/codex-model-profiles.mjs");
 
 async function loadFreshCodexShell() {
   vi.resetModules();
@@ -75,17 +79,24 @@ async function loadFreshCodexShell() {
   return {
     ...shellModule,
     resolveCodexProfileRuntime: profileModule.resolveCodexProfileRuntime,
+    readCodexConfigRuntimeDefaults: profileModule.readCodexConfigRuntimeDefaults,
   };
 }
 
 const ENV_KEYS = [
+  "BOSUN_HOST_PLATFORM",
   "INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS",
   "INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN",
   "INTERNAL_EXECUTOR_STREAM_MAX_ITEM_CHARS",
   "OPENAI_BASE_URL",
   "OPENAI_API_KEY",
+  "OPENAI_ORGANIZATION",
+  "OPENAI_PROJECT",
   "AZURE_OPENAI_API_KEY",
+  "AZURE_OPENAI_API_KEY_SWEDEN",
   "CODEX_MODEL",
+  "TEMP",
+  "TMP",
 ];
 
 let savedEnv = {};
@@ -113,6 +124,7 @@ describe("codex-shell stream safeguards", () => {
     mockCodexCtor.mockReset();
     mockStartThread.mockReset();
     resolveCodexProfileRuntime.mockReturnValue({ env: {} });
+    readCodexConfigRuntimeDefaults.mockReturnValue({ model: "", modelProvider: "", providers: {} });
     await resetThread();
   });
 
@@ -251,6 +263,46 @@ describe("codex-shell stream safeguards", () => {
     expect(runAttempt).toBe(2);
   });
 
+  it("does not inject reserved openai provider sections for default OpenAI", async () => {
+    const {
+      execCodexPrompt: freshExecCodexPrompt,
+      resetThread: freshResetThread,
+      resolveCodexProfileRuntime: freshResolveCodexProfileRuntime,
+    } = await loadFreshCodexShell();
+
+    await freshResetThread();
+    freshResolveCodexProfileRuntime.mockReturnValue({
+      env: {
+        OPENAI_API_KEY: "test-key",
+        CODEX_MODEL: "gpt-5.4",
+      },
+    });
+    mockStartThread.mockImplementation(() => ({
+      id: "codex-test-thread-openai",
+      runStreamed: async () => ({
+        events: {
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "item.completed",
+              item: { type: "agent_message", text: "openai ok" },
+            };
+            yield { type: "turn.completed" };
+          },
+        },
+      }),
+    }));
+
+    const result = await freshExecCodexPrompt("openai runtime", { timeoutMs: 5000 });
+
+    expect(result.finalResponse).toContain("openai ok");
+    expect(mockCodexCtor).toHaveBeenCalledTimes(1);
+    expect(mockCodexCtor).toHaveBeenLastCalledWith(expect.objectContaining({
+      config: expect.not.objectContaining({
+        model_providers: expect.anything(),
+      }),
+    }));
+  });
+
   it("strips OPENAI_BASE_URL and configures Azure provider overrides", async () => {
     delete process.env.AZURE_OPENAI_API_KEY;
     const {
@@ -303,6 +355,188 @@ describe("codex-shell stream safeguards", () => {
     }));
   });
 
+  it("removes non-selected Azure provider env keys before SDK startup", async () => {
+    process.env.AZURE_OPENAI_API_KEY_SWEDEN = "sweden-key";
+    const {
+      execCodexPrompt: freshExecCodexPrompt,
+      resetThread: freshResetThread,
+      resolveCodexProfileRuntime: freshResolveCodexProfileRuntime,
+      readCodexConfigRuntimeDefaults: freshReadCodexConfigRuntimeDefaults,
+    } = await loadFreshCodexShell();
+
+    await freshResetThread();
+    freshResolveCodexProfileRuntime.mockReturnValue({
+      env: {
+        OPENAI_BASE_URL: "https://example-resource.openai.azure.com/openai/v1",
+        OPENAI_API_KEY: "azure-key",
+        CODEX_MODEL: "gpt-5.4",
+        AZURE_OPENAI_API_KEY_SWEDEN: "sweden-key",
+      },
+      configProvider: {
+        name: "azure-us",
+        envKey: "AZURE_OPENAI_API_KEY",
+      },
+    });
+    freshReadCodexConfigRuntimeDefaults.mockReturnValue({
+      model: "gpt-5.4",
+      modelProvider: "azure-us",
+      providers: {
+        "azure-us": {
+          name: "azure-us",
+          baseUrl: "https://example-resource.openai.azure.com/openai/v1",
+          envKey: "AZURE_OPENAI_API_KEY",
+        },
+        "azure-sweden": {
+          name: "azure-sweden",
+          baseUrl: "https://example-sweden.openai.azure.com/openai/v1",
+          envKey: "AZURE_OPENAI_API_KEY_SWEDEN",
+        },
+      },
+    });
+    mockStartThread.mockImplementation(() => ({
+      id: "codex-test-thread-azure-multi-provider",
+      runStreamed: async () => ({
+        events: {
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "item.completed",
+              item: { type: "agent_message", text: "azure provider sanitized" },
+            };
+            yield { type: "turn.completed" };
+          },
+        },
+      }),
+    }));
+
+    const result = await freshExecCodexPrompt("azure runtime multi-provider", { timeoutMs: 5000 });
+
+    expect(result.finalResponse).toContain("azure provider sanitized");
+    expect(process.env.AZURE_OPENAI_API_KEY_SWEDEN).toBeUndefined();
+    expect(mockCodexCtor).toHaveBeenCalledTimes(1);
+    expect(mockCodexCtor).toHaveBeenLastCalledWith(expect.objectContaining({
+      config: expect.objectContaining({
+        model_provider: "azure-us",
+        model: "gpt-5.4",
+        model_providers: expect.objectContaining({
+          "azure-us": expect.objectContaining({
+            base_url: "https://example-resource.openai.azure.com/openai/v1",
+            env_key: "AZURE_OPENAI_API_KEY",
+          }),
+        }),
+      }),
+    }));
+  });
+
+  it("sanitizes Azure provider env keys during init preload", async () => {
+    process.env.AZURE_OPENAI_API_KEY_SWEDEN = "sweden-key";
+    const {
+      execCodexPrompt: freshExecCodexPrompt,
+      initCodexShell: freshInitCodexShell,
+      resetThread: freshResetThread,
+      resolveCodexProfileRuntime: freshResolveCodexProfileRuntime,
+      readCodexConfigRuntimeDefaults: freshReadCodexConfigRuntimeDefaults,
+    } = await loadFreshCodexShell();
+
+    await freshResetThread();
+    freshResolveCodexProfileRuntime.mockReturnValue({
+      env: {
+        OPENAI_BASE_URL: "https://example-resource.openai.azure.com/openai/v1",
+        OPENAI_API_KEY: "azure-key",
+        CODEX_MODEL: "gpt-5.4",
+        AZURE_OPENAI_API_KEY_SWEDEN: "sweden-key",
+      },
+      configProvider: {
+        name: "azure-us",
+        envKey: "AZURE_OPENAI_API_KEY",
+      },
+    });
+    freshReadCodexConfigRuntimeDefaults.mockReturnValue({
+      model: "gpt-5.4",
+      modelProvider: "azure-us",
+      providers: {
+        "azure-us": {
+          name: "azure-us",
+          baseUrl: "https://example-resource.openai.azure.com/openai/v1",
+          envKey: "AZURE_OPENAI_API_KEY",
+        },
+        "azure-sweden": {
+          name: "azure-sweden",
+          baseUrl: "https://example-sweden.openai.azure.com/openai/v1",
+          envKey: "AZURE_OPENAI_API_KEY_SWEDEN",
+        },
+      },
+    });
+    mockStartThread.mockImplementation(() => ({
+      id: "codex-test-thread-init-preload",
+      runStreamed: async () => ({
+        events: {
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "item.completed",
+              item: { type: "agent_message", text: "init preload ok" },
+            };
+            yield { type: "turn.completed" };
+          },
+        },
+      }),
+    }));
+
+    await freshInitCodexShell();
+    const result = await freshExecCodexPrompt("azure init preload", { timeoutMs: 5000 });
+
+    expect(result.finalResponse).toContain("init preload ok");
+    expect(process.env.AZURE_OPENAI_API_KEY_SWEDEN).toBeUndefined();
+    expect(mockCodexCtor).toHaveBeenCalledTimes(1);
+    expect(mockCodexCtor).toHaveBeenLastCalledWith(expect.objectContaining({
+      config: expect.objectContaining({
+        model_provider: "azure-us",
+        model: "gpt-5.4",
+        model_providers: expect.objectContaining({
+          "azure-us": expect.objectContaining({
+            base_url: "https://example-resource.openai.azure.com/openai/v1",
+            env_key: "AZURE_OPENAI_API_KEY",
+          }),
+        }),
+      }),
+    }));
+  });
+  it("prefers the Azure provider whose endpoint matches OPENAI_BASE_URL", async () => {
+    const {
+      resolveCodexProfileRuntime: freshResolveCodexProfileRuntime,
+      readCodexConfigRuntimeDefaults: freshReadCodexConfigRuntimeDefaults,
+    } = await loadFreshCodexShell();
+
+    freshReadCodexConfigRuntimeDefaults.mockImplementation(() => ({
+      model: "gpt-5.4",
+      modelProvider: "azure-sweden",
+      providers: {
+        "azure-sweden": {
+          name: "azure-sweden",
+          baseUrl: "https://example-sweden.openai.azure.com/openai/v1",
+          envKey: "AZURE_OPENAI_API_KEY_SWEDEN",
+        },
+        "azure-us": {
+          name: "azure-us",
+          baseUrl: "https://example-resource.openai.azure.com/openai/v1",
+          envKey: "AZURE_OPENAI_API_KEY",
+        },
+      },
+    }));
+
+    const resolved = freshResolveCodexProfileRuntime({
+      OPENAI_BASE_URL: "https://example-resource.openai.azure.com/openai/v1",
+      OPENAI_API_KEY: "azure-key",
+      AZURE_OPENAI_API_KEY: "azure-key",
+      AZURE_OPENAI_API_KEY_SWEDEN: "sweden-key",
+    });
+
+    expect(resolved.provider).toBe("azure");
+    expect(resolved.configProvider).toEqual(expect.objectContaining({
+      name: "azure-us",
+      envKey: "AZURE_OPENAI_API_KEY",
+      baseUrl: "https://example-resource.openai.azure.com/openai/v1",
+    }));
+  });
   it("strips non-Azure OPENAI_BASE_URL before creating the SDK", async () => {
     const {
       execCodexPrompt: freshExecCodexPrompt,
@@ -349,4 +583,74 @@ describe("codex-shell stream safeguards", () => {
       }),
     }));
   });
+
+  it("strips optional OpenAI organization and project headers before SDK startup", async () => {
+    const {
+      execCodexPrompt: freshExecCodexPrompt,
+      resetThread: freshResetThread,
+      resolveCodexProfileRuntime: freshResolveCodexProfileRuntime,
+    } = await loadFreshCodexShell();
+
+    await freshResetThread();
+    freshResolveCodexProfileRuntime.mockReturnValue({
+      env: {
+        OPENAI_API_KEY: "openai-key",
+        OPENAI_ORGANIZATION: "org_stale",
+        OPENAI_PROJECT: "proj_stale",
+      },
+    });
+    mockStartThread.mockImplementation(() => ({
+      id: "codex-test-thread-header-sanitize",
+      runStreamed: async () => ({
+        events: {
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "item.completed",
+              item: { type: "agent_message", text: "sanitized ok" },
+            };
+            yield { type: "turn.completed" };
+          },
+        },
+      }),
+    }));
+
+    const result = await freshExecCodexPrompt("sanitize optional headers", { timeoutMs: 5000 });
+
+    expect(result.finalResponse).toContain("sanitized ok");
+    expect(process.env.OPENAI_ORGANIZATION).toBeUndefined();
+    expect(process.env.OPENAI_PROJECT).toBeUndefined();
+    expect(mockCodexCtor).toHaveBeenCalledTimes(1);
+  });
+
+  it("injects sandbox workspace roots into Codex runtime config", async () => {
+    process.env.BOSUN_HOST_PLATFORM = "win32";
+    process.env.TEMP = process.cwd();
+
+    mockStartThread.mockImplementation(() => ({
+      id: "codex-test-thread-sandbox-config",
+      runStreamed: async () => ({
+        events: {
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "item.completed",
+              item: { type: "agent_message", text: "sandbox ok" },
+            };
+            yield { type: "turn.completed" };
+          },
+        },
+      }),
+    }));
+
+    const result = await execCodexPrompt("verify sandbox injection", {
+      timeoutMs: 5000,
+    });
+
+    expect(result.finalResponse).toContain("sandbox ok");
+    const ctorOptions = mockCodexCtor.mock.calls.at(-1)?.[0] || {};
+    expect(ctorOptions.config?.sandbox_mode).toBe("workspace-write");
+    expect(Array.isArray(ctorOptions.config?.sandbox_workspace_write?.writable_roots)).toBe(true);
+    expect(ctorOptions.config?.sandbox_workspace_write?.writable_roots).toContain(process.cwd());
+    expect(ctorOptions.config?.sandbox_workspace_write?.writable_roots).not.toContain("/tmp");
+  });
+
 });

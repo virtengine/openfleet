@@ -1,9 +1,14 @@
+import { mkdtempSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
+import { buildRepoCodexConfig } from "../config/repo-config.mjs";
 import {
   buildCommonMcpBlocks,
   buildSandboxPermissions,
   ensureAgentMaxThreads,
   ensureFeatureFlags,
+  ensureModelProviderSectionsFromEnv,
   ensureSandboxWorkspaceWrite,
   ensureTrustedProjects,
   ensureTopLevelSandboxPermissions,
@@ -129,6 +134,35 @@ describe("codex-config defaults", () => {
     expect(toml).toContain("use_linux_sandbox_bwrap = false");
   });
 
+  it("forces Linux bubblewrap off on Windows runtimes", () => {
+    const input = ["[features]", "use_linux_sandbox_bwrap = true", ""].join("\n");
+    const { toml } = ensureFeatureFlags(input, {
+      OS: "Windows_NT",
+      CODEX_FEATURES_BWRAP: "true",
+    });
+    expect(toml).toContain("use_linux_sandbox_bwrap = false");
+  });
+
+  it("disables remote_models for Azure runtimes", () => {
+    const input = ["[features]", "remote_models = true", ""].join("\n");
+    const { toml } = ensureFeatureFlags(input, {
+      OPENAI_BASE_URL: "https://example-resource.openai.azure.com/openai/v1",
+      OPENAI_API_KEY: "azure-key",
+      CODEX_MODEL: "gpt-5-deployment",
+    });
+    expect(toml).toContain("remote_models = false");
+  });
+
+  it("keeps remote_models enabled for non-Azure runtimes", () => {
+    const input = ["[features]", "remote_models = true", ""].join("\n");
+    const { toml } = ensureFeatureFlags(input, {
+      OPENAI_BASE_URL: "https://api.openai.com/v1",
+      OPENAI_API_KEY: "openai-key",
+      CODEX_MODEL: "gpt-5.4",
+    });
+    expect(toml).toContain("remote_models = true");
+  });
+
   it("adds sandbox workspace-write defaults with repo roots", () => {
     const input = ["[features]", "child_agents_md = true", ""].join("\n");
     const result = ensureSandboxWorkspaceWrite(input, {
@@ -143,6 +177,34 @@ describe("codex-config defaults", () => {
     // .git is only added when the directory actually exists on disk
     // (normalizeWritableRoots rejects phantom .git paths)
   });
+
+  it("builds repo Codex config without bare /tmp roots on Windows", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "repo-codex-config-"));
+    mkdirSync(join(repoRoot, ".git"), { recursive: true });
+    const tempRoot = mkdtempSync(join(tmpdir(), "repo-codex-temp-"));
+    const toml = buildRepoCodexConfig({
+      repoRoot,
+      env: {
+        OS: "Windows_NT",
+        TEMP: tempRoot,
+      },
+    });
+    expect(toml).toContain("use_linux_sandbox_bwrap = false");
+    expect(toml).toContain(`\"${tempRoot.replace(/\\/g, "\\\\")}\"`);
+    expect(toml).not.toContain('writable_roots = ["/tmp"');
+  });
+
+  it("honors legacy CODEX_SANDBOX env when building repo Codex config", () => {
+    const toml = buildRepoCodexConfig({
+      repoRoot: "/tmp/virtengine",
+      env: {
+        CODEX_SANDBOX: "danger-full-access",
+      },
+    });
+
+    expect(toml).toContain('sandbox_mode = "danger-full-access"');
+  });
+
   it("supports legacy sandbox_permissions helper names", () => {
     const line = buildSandboxPermissions("disk-full-write-access");
     expect(line).toContain('sandbox_mode = "workspace-write"');
@@ -170,6 +232,29 @@ describe("codex-config defaults", () => {
     expect(result.env.OPENAI_BASE_URL).toBe("https://example-resource.openai.azure.com/openai/v1");
     expect(result.active.baseUrl).toBe("https://example-resource.openai.azure.com/openai/v1");
   });
+
+  it("rewrites stale Azure provider base_url entries to the normalized models-safe endpoint", () => {
+    const input = [
+      "[model_providers.azure]",
+      'name = "Azure OpenAI"',
+      'base_url = "https://example-resource.openai.azure.com/openai/deployments/gpt-5/chat/completions?api-version=2024-10-21"',
+      'env_key = "AZURE_OPENAI_API_KEY"',
+      'wire_api = "responses"',
+      "",
+    ].join("\n");
+
+    const result = ensureModelProviderSectionsFromEnv(input, {
+      OPENAI_BASE_URL: "https://example-resource.openai.azure.com/openai/deployments/gpt-5/chat/completions?api-version=2024-10-21",
+      OPENAI_API_KEY: "azure-key",
+      CODEX_MODEL: "gpt-5-deployment",
+    });
+
+    expect(result.added).toEqual([]);
+    expect(result.updated).toContain("azure.base_url");
+    expect(result.toml).toContain('base_url = "https://example-resource.openai.azure.com/openai/v1"');
+    expect(result.toml).not.toContain('/openai/deployments/gpt-5/chat/completions');
+  });
 });
+
 
 

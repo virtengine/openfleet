@@ -19,6 +19,7 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
+import { analyzeSkillMarkdownSafety } from "../lib/skill-markdown-safety.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -78,77 +79,7 @@ export const BUILTIN_SKILLS = [
     tags: ["background", "task", "reliability", "heartbeat", "stall", "completion"],
     important: true,
     scope: "global",
-    content: `# Skill: Background Task Execution
-
-## Purpose
-Ensure coding tasks that run autonomously in the background complete reliably
-without stalling, losing state, or silently failing.
-
-## Heartbeat & Claim Renewal
-
-When a task agent runs without an interactive terminal, bosun monitors liveness
-via a heartbeat endpoint. **Always POST a heartbeat while work is in progress:**
-
-\`\`\`
-POST http://127.0.0.1:<ENDPOINT_PORT>/api/tasks/<TASK_ID>/heartbeat {}
-\`\`\`
-
-POST this:
-- At startup before any work begins
-- After every major milestone (file edited, test run, build completed)
-- At most every 60 seconds during long-running operations (builds, installs)
-
-Failure to heartbeat causes the orchestrator to re-queue the task — wasting
-compute and creating merge conflicts. Don't skip it.
-
-## No-Progress Detection
-
-Bosun detects stalls via a configurable window (default 10 min). If your agent
-is about to spend > 5 minutes on a single step (e.g., a large dependency install),
-heartbeat mid-step and log a status message so the orchestrator knows you're alive.
-
-\`\`\`
-POST /api/tasks/<TASK_ID>/status { "status": "inprogress", "note": "Installing deps..." }
-\`\`\`
-
-## Verification Before Completion
-
-**Never mark a task complete without verifying**:
-1. Build succeeds (at minimum, re-check changed files compile/parse cleanly).
-2. Tests pass for the affected module (or full suite if cheap).
-3. No lint/format regressions introduced.
-4. Branch was pushed and PR opened (if applicable).
-
-\`\`\`
-POST /api/tasks/<TASK_ID>/complete { "hasCommits": true }
-\`\`\`
-
-## Handling Stale State
-
-If git shows unexpected staged/unstaged changes on startup:
-1. Run \`git status\` to understand what's there.
-2. If changes belong to your task: stage, commit, and push.
-3. If changes are leftover from a previous failed run: stash them or clean
-   (only if they don't belong to the current task's scope).
-
-Never silently discard local changes — they may be work from a previous attempt.
-
-## Recovery after Crash
-
-The orchestrator will re-queue a task if the agent crashes unexpectedly.
-On restart, the retry prompt includes \`LAST_ERROR\` — read it before acting.
-
-1. Check \`git log --oneline -5\` to see how far the previous attempt got.
-2. If commits exist: verify and push rather than re-implementing.
-3. If no commits: start implementation from scratch with lessons from the error.
-
-## Parallelism Safety
-
-Multiple bosun agents can run simultaneously in separate git worktrees.
-**Never operate on the main branch or another agent's worktree path.**
-
-Your worktree path is provided via \`BOSUN_WORKTREE_PATH\`. Stay inside it.
-`,
+    content: readBuiltinSkillFile("background-task-execution.md"),
   },
   {
     filename: "pr-workflow.md",
@@ -156,62 +87,7 @@ Your worktree path is provided via \`BOSUN_WORKTREE_PATH\`. Stay inside it.
     tags: ["pr", "pull-request", "github", "review", "ci", "merge"],
     important: true,
     scope: "global",
-    content: `# Skill: Pull Request Workflow
-
-## Standard Bosun Lifecycle Flow
-
-After committing all changes on your task branch:
-
-\`\`\`bash
-# Merge upstream changes first (base branch + main)
-git fetch origin
-git merge origin/<base-branch> --no-edit 2>/dev/null || true
-git merge origin/main --no-edit 2>/dev/null || true
-
-# Resolve any conflicts, commit, then push
-git push --set-upstream origin <branch-name>
-
-# Hand off PR lifecycle to Bosun manager (no direct PR-create command)
-echo "PR lifecycle handoff ready for <branch-name>"
-\`\`\`
-
-Bosun manages PR lifecycle (create/update/merge) after handoff.
-
-## PR Description Template
-
-\`\`\`markdown
-## Summary
-<What was changed and why>
-
-## Changes
-- <file or component>: <what changed>
-- <file or component>: <what changed>
-
-## Testing
-- <what tests were run / added>
-
-## Notes
-<Any non-obvious side-effects or follow-ups required>
-\`\`\`
-
-## Pre-Push Hooks
-
-Bosun installs pre-push hooks that run build + test validation.
-**Never use \`--no-verify\`** — if hooks fail, fix the issues first.
-
-If the hook runs \`npm test\` or \`dotnet test\` and fails:
-1. Read the test output carefully.
-2. Fix the root cause (not just suppress the error).
-3. If the failure is in an unrelated existing test, note it in the lifecycle handoff context
-   and run a targeted test to confirm your changes don't regress it.
-
-## Reviewing CI Status
-
-\`\`\`bash
-gh pr checks <number>  # show check statuses
-gh run list --limit 5  # recent workflow runs
-\`\`\`
-`,
+    content: readBuiltinSkillFile("pr-workflow.md"),
   },
   {
     filename: "error-recovery.md",
@@ -219,697 +95,66 @@ gh run list --limit 5  # recent workflow runs
     tags: ["error", "recovery", "retry", "debug", "failure"],
     important: true,
     scope: "global",
-    content: `# Skill: Error Recovery Patterns
-
-## Error Classification
-
-Before applying a fix, classify the error. Different error types require
-different recovery strategies:
-
-| Type | Symptoms | Strategy |
-|------|----------|----------|
-| **Compile/Syntax** | Build fails, parse errors | Fix source code, re-build |
-| **Test Failure** | Tests fail, assertions wrong | Root-cause analysis, fix logic |
-| **Missing Dependency** | Import/require not found | Install package, update lock file |
-| **Git Conflict** | Merge conflict markers | Resolve preserving both intents |
-| **Network/Timeout** | API calls fail intermittently | Retry with backoff, then abort |
-| **Config Error** | Env var missing, path wrong | Check .env, ensure scaffold exists |
-| **OOM/Kill** | Process killed, no error | Reduce batch size, no code fix |
-
-## Minimal-Fix Principle
-
-Apply the **smallest change** that fixes the problem. Do not refactor surrounding
-code. Do not "clean up" unrelated areas. Reviewers will reject broad changes
-that mask the actual fix.
-
-## Build Errors
-
-1. Read the compiler output from the top — first error often causes the rest.
-2. Fix one issue at a time; rebuild to see downstream errors dissolve.
-3. If the error is in generated code: fix the generator, not the generated output.
-
-## Test Failures
-
-1. Run only the failing test in isolation: \`npm test -- --grep "<test name>"\`
-2. Add a \`console.log\` or debug breakpoint to understand the actual vs expected values.
-3. Fix the production code, then verify the test passes alone and as part of the suite.
-
-## Import / Dependency Errors
-
-\`\`\`bash
-# Node.js
-npm install <package>          # add to dependencies
-npm ci                         # clean install from lockfile
-
-# Python
-pip install <package>
-\`\`\`
-
-For missing peer dependencies, check the package README for install instructions
-before blindly installing.
-
-## The "Works Locally, Fails in CI" Pattern
-
-- Check environment variables: CI may not have secrets that your local .env has.
-- Check working directory: CI often runs from repo root; relative paths may differ.
-- Check Node/runtime version: CI may use a different version than local.
-
-## When to Escalate
-
-If after 2 fix attempts the same error persists, POST to the error endpoint and
-stop rather than entering an infinite loop:
-\`\`\`
-POST /api/tasks/<TASK_ID>/error { "error": "<detailed error message + stack trace>" }
-\`\`\`
-This lets the orchestrator decide whether to retry with a different executor,
-escalate to human review, or re-queue with updated context.
-`,
+    content: readBuiltinSkillFile("error-recovery.md"),
   },
   {
     filename: "tdd-pattern.md",
     title: "Test-Driven Development",
-    tags: ["tdd", "testing", "unit-test", "red-green-refactor", "coverage"],
+    tags: ["tdd", "test", "testing", "unit-test", "red-green-refactor"],
+    important: true,
     scope: "global",
-    content: `# Skill: Test-Driven Development
-
-## The Red-Green-Refactor Cycle
-
-For every meaningful behavior change, follow this cycle:
-
-1. **Red** — Write a failing test that describes the expected behavior.
-   Confirm it fails for the *right* reason (wrong behavior, not a setup error).
-
-2. **Green** — Write the minimum production code to make the test pass.
-   Resist the urge to add extra logic not tested by the current red test.
-
-3. **Refactor** — Clean up code while keeping tests green.
-   Extract helpers, rename for clarity, remove duplication.
-
-Commit at each stable green point, not just at the end.
-
-## Test Quality Checklist
-
-- Tests assert *behavior*, not *implementation details* (avoid testing private methods).
-- Each test covers exactly one scenario (a test with multiple \`assert\` calls
-  for unrelated things is likely two tests).
-- Tests are deterministic — no random data, no clock-dependent assertions without mocking.
-- Avoid \`sleep\`/\`wait\` in tests; use event-driven assertions or mock timers.
-
-## Naming Convention
-
-\`\`\`
-<unit>_<scenario>_<expectedOutcome>
-  e.g. parseDate_invalidString_throwsArgumentError
-       createTask_withTitle_returnsTaskWithId
-\`\`\`
-
-Or BDD-style:
-\`\`\`
-describe('<unit>') {
-  it('should <expected outcome> when <condition>')
-}
-\`\`\`
-
-## What to Test
-
-| Worth testing | Skip or defer |
-|---------------|---------------|
-| Business logic / domain rules | Third-party library internals |
-| Edge cases that caused past bugs | UI pixel layout |
-| Complex parsing / transformation | One-liner getters with no logic |
-| Auth / permissions checks | Framework boilerplate |
-
-## Running Tests Efficiently
-
-\`\`\`bash
-# Run only tests touching changed files (Jest)
-npx jest --onlyChanged
-
-# Run a single test file
-npx jest path/to/test.spec.ts
-
-# Run tests matching a name pattern
-npx jest -t "parseDate"
-\`\`\`
-
-Always run the full suite as a final gate before pushing.
-`,
+    content: readBuiltinSkillFile("tdd-pattern.md"),
   },
   {
     filename: "commit-conventions.md",
     title: "Conventional Commits",
-    tags: ["commits", "git", "conventional-commits", "versioning", "changelog"],
+    tags: ["git", "commit", "commits", "conventional", "history"],
+    important: true,
     scope: "global",
-    content: `# Skill: Conventional Commits
-
-## Format
-
-\`\`\`
-<type>(<scope>): <short description>
-
-[optional body — explain WHY, not WHAT]
-
-[optional footer — BREAKING CHANGE, Closes #123, Co-authored-by: ...]
-\`\`\`
-
-## Types
-
-| Type | When to use |
-|------|-------------|
-| **feat** | New feature or capability |
-| **fix** | Bug fix |
-| **refactor** | Code restructure without behavior change |
-| **perf** | Performance improvement |
-| **test** | Adding/fixing tests only |
-| **docs** | Documentation only |
-| **chore** | Build system, deps, tooling (no prod code) |
-| **ci** | CI/CD pipeline changes |
-| **revert** | Reverts a previous commit |
-| **style** | Formatting/lint only |
-
-## Scope
-
-The scope is the **module or area** affected:
-- Use the directory or package name: \`feat(auth):\`, \`fix(api):\`, \`chore(deps):\`
-- For bosun tasks, use the task's module or feature: \`feat(task-executor):\`
-- Omit scope for cross-cutting changes: \`chore: update node version\`
-
-## Rules for Bosun Agents
-
-1. **Stage files individually** — never \`git add .\`
-   \`\`\`bash
-   git add src/specific/changed/file.ts
-   git add tests/specific/test.ts
-   \`\`\`
-
-2. **One logical change per commit** — don't bundle unrelated fixes.
-
-3. **Body explains intent** when the short description isn't obvious:
-   \`\`\`
-   fix(task-executor): prevent double-completion on retry
-
-   The heartbeat timer fired after task completion, causing a second
-   POST /complete that overwrote the done status. Cancel the timer on success.
-   \`\`\`
-
-4. **Breaking changes** go in the footer:
-   \`\`\`
-   BREAKING CHANGE: EXECUTORS env format changed from CSV to JSON.
-   Migrate by running: bosun migrate-config
-   \`\`\`
-
-## Common Mistakes to Avoid
-
-- :close: \`git commit -m "fix stuff"\` — too vague
-- :close: \`git commit -m "WIP: not done yet"\` — commit only complete, testable units
-- :close: \`git commit -am "…"\` — stages all tracked changes indiscriminately
-- :check: \`git add src/auth/login.ts && git commit -m "fix(auth): handle empty token gracefully"\`
-`,
+    content: readBuiltinSkillFile("commit-conventions.md"),
   },
   {
     filename: "agent-coordination.md",
     title: "Multi-Agent Coordination",
-    tags: ["multi-agent", "parallel", "coordination", "worktree", "conflict", "bosun"],
+    tags: ["agent", "coordination", "parallel", "handoff", "merge-conflict"],
+    important: true,
     scope: "bosun",
-    content: `# Skill: Multi-Agent Coordination
-
-## How Bosun Runs Agents in Parallel
-
-Bosun uses **git worktrees** to run multiple agents simultaneously without
-conflict. Each agent gets its own isolated directory:
-
-\`\`\`
-<workspace>/
-  main-repo/          ← original checkout (main branch)
-  .bosun-worktrees/
-    task-001-feature-x/   ← Agent A works here
-    task-002-fix-y/       ← Agent B works here
-\`\`\`
-
-Each worktree is on its own branch. Agent A's commits never touch Agent B's
-directory, and vice-versa.
-
-## Rules for Agents in Worktrees
-
-1. **Never navigate outside your worktree** — use \`BOSUN_WORKTREE_PATH\` as your root.
-2. **Never modify files in another agent's worktree** — not even to "help".
-3. **Never switch branches inside your worktree** — your branch was pre-set.
-4. **Never run \`git worktree add/remove\`** — bosun manages the worktree lifecycle.
-
-## Merge Order and Base Branches
-
-Each task has a \`base_branch\` (often a module branch like \`origin/auth\`).
-Your branch was created from that base — not from \`main\` directly.
-
-Merge order on completion:
-1. Merge upstream base branch changes into your branch (keeps drift low).
-2. Merge main (catches global changes like dep bumps).
-3. Push and hand off lifecycle targeting the base branch.
-
-The orchestrator then merges the base branch into main after CI.
-
-## Shared State
-
-Bosun uses a **shared state manager** to coordinate claims, heartbeats, and task
-statuses across agents. All communication goes through HTTP:
-
-\`\`\`
-http://127.0.0.1:<ENDPOINT_PORT>/api/tasks/<TASK_ID>/...
-\`\`\`
-
-Do not read/write the task store files directly — use the API endpoints.
-
-## File-Level Conflict Avoidance
-
-The planner intentionally keeps task file overlap low. If you notice your task
-would require editing the same file as another active task:
-
-1. Check if the other task is still in-progress via \`GET /api/tasks?status=inprogress\`.
-2. If it is, focus only on non-overlapping changes and note the dependency.
-3. If it isn't, proceed normally — git will handle the merge.
-
-## Detecting & Resolving Conflicts
-
-If \`git merge\` reports conflicts:
-\`\`\`bash
-git status                         # see conflicting files
-git diff --diff-filter=U           # see conflict markers
-\`\`\`
-
-Resolution heuristics:
-- **Lockfiles** (\`package-lock.json\`, \`yarn.lock\`): \`git checkout --theirs <file>\`, then \`npm ci\`
-- **Changelogs / coverage reports**: \`git checkout --ours <file>\`
-- **Source files**: merge by intent — preserve both changes where both are correct.
-
-After merging \`git add <resolved>\` and \`git commit\` (no message needed for merge commits).
-`,
+    content: readBuiltinSkillFile("agent-coordination.md"),
   },
   {
     filename: "bosun-agent-api.md",
     title: "Bosun Agent Status API",
-    tags: ["bosun", "api", "status", "heartbeat", "endpoint"],
+    tags: ["bosun", "status", "heartbeat", "api", "complete", "error"],
+    important: true,
     scope: "bosun",
-    content: `# Skill: Bosun Agent Status API
-
-Bosun exposes a local HTTP API for agents to report progress, errors, and
-completion. You MUST use this API when running as a bosun-managed agent.
-
-## Endpoint Base
-
-\`http://127.0.0.1:<ENDPOINT_PORT>/api/tasks/<TASK_ID>/\`
-
-Both \`ENDPOINT_PORT\` and \`TASK_ID\` are injected into your environment as
-\`BOSUN_ENDPOINT_PORT\` / \`VE_ENDPOINT_PORT\` and \`BOSUN_TASK_ID\` / \`VK_TASK_ID\`.
-
-## Required Calls
-
-### Startup
-\`\`\`bash
-curl -sX POST http://127.0.0.1:$BOSUN_ENDPOINT_PORT/api/tasks/$BOSUN_TASK_ID/heartbeat \\
-  -H "Content-Type: application/json" -d '{}'
-\`\`\`
-
-### Periodic Heartbeat (every ≤ 60 seconds during active work)
-Same as startup.
-
-### Status Update
-\`\`\`bash
-curl -sX POST http://127.0.0.1:$BOSUN_ENDPOINT_PORT/api/tasks/$BOSUN_TASK_ID/status \\
-  -H "Content-Type: application/json" \\
-  -d '{"status": "inprogress", "note": "Running tests..."}'
-\`\`\`
-Status values: \`todo → inprogress → inreview → done\`
-
-### Completion (after successful push + PR)
-\`\`\`bash
-curl -sX POST http://127.0.0.1:$BOSUN_ENDPOINT_PORT/api/tasks/$BOSUN_TASK_ID/complete \\
-  -H "Content-Type: application/json" \\
-  -d '{"hasCommits": true}'
-\`\`\`
-
-### Error (fatal failure only — do not retry after posting an error)
-\`\`\`bash
-curl -sX POST http://127.0.0.1:$BOSUN_ENDPOINT_PORT/api/tasks/$BOSUN_TASK_ID/error \\
-  -H "Content-Type: application/json" \\
-  -d '{"error": "Build failed: <details>"}'
-\`\`\`
-
-## Environment Variables Available to Agents
-
-| Variable | Alias | Description |
-|----------|-------|-------------|
-| \`BOSUN_TASK_ID\` | \`VK_TASK_ID\` | Current task identifier |
-| \`BOSUN_TASK_TITLE\` | \`VK_TASK_TITLE\` | Human-readable title |
-| \`BOSUN_TASK_DESCRIPTION\` | \`VK_TASK_DESCRIPTION\` | Full task description |
-| \`BOSUN_BRANCH_NAME\` | \`VK_BRANCH_NAME\` | Git branch for this task |
-| \`BOSUN_WORKTREE_PATH\` | \`VK_WORKTREE_PATH\` | Absolute path to worktree root |
-| \`BOSUN_ENDPOINT_PORT\` | \`VE_ENDPOINT_PORT\` | API server port |
-| \`BOSUN_SDK\` | \`VE_SDK\` | SDK/executor type (COPILOT/CODEX/CLAUDE_CODE) |
-| \`BOSUN_MANAGED\` | \`VE_MANAGED\` | Set to "1" when running under bosun |
-`,
+    content: readBuiltinSkillFile("bosun-agent-api.md"),
   },
   {
     filename: "code-quality-anti-patterns.md",
     title: "Code Quality Anti-Patterns",
-    tags: ["quality", "code", "architecture", "async", "testing", "reliability", "bug", "crash", "scope", "caching", "promise", "module"],
+    tags: ["quality", "async", "testing", "cache", "anti-pattern"],
+    important: true,
     scope: "global",
-    content: `# Skill: Code Quality Anti-Patterns
-
-## Purpose
-Prevent common coding mistakes that cause crashes, flaky behavior, memory leaks,
-and hard-to-diagnose production failures. Every pattern below has caused real
-outages — treat each as a hard rule, not a suggestion.
-
----
-
-## 1. Module-Scope vs Function-Scope — Caching & Singletons
-
-**Rule:** Variables that cache module-level state (lazy singletons, loaded
-configs, memoized results) MUST be declared at **module scope**, never inside
-a function that runs repeatedly.
-
-### Bad — re-initializes on every call
-\`\`\`js
-export function handleRequest(req, res) {
-  let _engine;           // ← reset to undefined on EVERY call
-  let _loaded = false;   // ← never stays true across calls
-  if (!_loaded) {
-    _engine = await loadEngine();
-    _loaded = true;
-  }
-  // ...
-}
-\`\`\`
-
-### Good — persists across calls
-\`\`\`js
-let _engine;
-let _loaded = false;
-
-export function handleRequest(req, res) {
-  if (!_loaded) {
-    _engine = await loadEngine();
-    _loaded = true;
-  }
-  // ...
-}
-\`\`\`
-
-**Why:** Placing cache variables inside a function body causes:
-- Repeated expensive initialization (import, parse, connect) on every call
-- Log spam from repeated init messages
-- Potential memory leaks from orphaned resources
-- Race conditions when multiple concurrent calls all see \`_loaded === false\`
-
-**Checklist:**
-- [ ] Lazy singletons: module scope
-- [ ] Memoization caches: module scope (or a \`Map\`/\`WeakMap\` at module scope)
-- [ ] "loaded" / "initialized" flags: module scope
-- [ ] Config objects read once from disk: module scope
-
----
-
-## 2. Async Fire-and-Forget — Always Handle Rejections
-
-**Rule:** NEVER use bare \`void asyncFn()\` or call an async function without
-either \`await\`-ing or chaining \`.catch()\`. Unhandled promise rejections crash
-Node.js processes.
-
-### Bad — unhandled rejection → crash
-\`\`\`js
-void dispatchEvent(data);    // if dispatchEvent is async and throws → crash
-asyncCleanup();              // no await, no catch → crash
-\`\`\`
-
-### Good — always handle the rejection
-\`\`\`js
-await dispatchEvent(data);                           // preferred: await it
-dispatchEvent(data).catch(() => {});                  // fire-and-forget OK
-dispatchEvent(data).catch(err => log.warn(err));      // fire-and-forget with logging
-\`\`\`
-
-**Why:** Since Node.js 15+, unhandled promise rejections terminate the process
-with exit code 1. A single \`void asyncFn()\` in a hot path can cause a
-crash → restart → crash loop that takes down the entire system.
-
-**Checklist:**
-- [ ] Every async call is \`await\`-ed OR has a \`.catch()\` handler
-- [ ] No bare \`void asyncFn()\` patterns
-- [ ] Event dispatch functions wrapped in try/catch at the top level
-- [ ] setInterval/setTimeout callbacks that call async functions use \`.catch()\`
-
----
-
-## 3. Error Boundaries & Defensive Coding
-
-**Rule:** Any function called from a hot path (HTTP handlers, event loops,
-timers) MUST have a top-level try/catch that prevents a single failure from
-crashing the entire process.
-
-### Bad — one bad event kills the server
-\`\`\`js
-router.post('/webhook', async (req, res) => {
-  const data = parsePayload(req.body);
-  await processAllWebhooks(data);
-  res.json({ ok: true });
-});
-\`\`\`
-
-### Good — contained failure
-\`\`\`js
-router.post('/webhook', async (req, res) => {
-  try {
-    const data = parsePayload(req.body);
-    await processAllWebhooks(data);
-    res.json({ ok: true });
-  } catch (err) {
-    log.error('webhook handler failed', err);
-    res.status(500).json({ error: 'internal' });
-  }
-});
-\`\`\`
-
----
-
-## 4. Testing Anti-Patterns
-
-### Over-Mocking
-**Rule:** Tests should validate real behavior, not just confirm that mocks
-return what you told them to return.
-
-- Mock only external boundaries (network, filesystem, clock).
-- Never mock the module under test.
-- If you need > 3 mocks for a single test, the code under test probably needs
-  refactoring, not more mocks.
-- Prefer integration tests with real instances over unit tests with heavy mocking.
-
-### Flaky Tests
-**Rule:** Tests must be deterministic and reproducible.
-
-- No \`Math.random()\` or \`Date.now()\` without mocking.
-- No network calls to real servers.
-- No \`setTimeout\`/\`sleep\` for synchronization — use proper async patterns.
-- No implicit ordering dependencies between tests.
-- If a test creates global state, clean it up in \`afterEach\`.
-
-### Assertion Quality
-- Test ONE behavior per test case.
-- Assert on observable outputs, not internal state.
-- Check error cases, not just happy paths.
-- Use descriptive test names: \`parseDate_invalidInput_throwsError\`
-  not \`test parseDate 3\`.
-
----
-
-## 5. Architectural Patterns
-
-### Initialization Guards
-When a module has expensive async initialization, use a promise-based
-deduplication pattern to prevent multiple concurrent initializations:
-
-\`\`\`js
-let _initPromise = null;
-
-async function ensureInit() {
-  if (!_initPromise) {
-    _initPromise = doExpensiveInit(); // called ONCE
-  }
-  return _initPromise;
-}
-\`\`\`
-
-### Import/Require in Module Scope
-Dynamic \`import()\` calls should be cached at module scope.
-Never put \`import()\` inside a frequently-called function without caching.
-
-### Guard Clauses for Optional Features
-When calling into optional subsystems (plugins, workflow engines, etc.),
-always check that the subsystem is enabled before invoking:
-
-\`\`\`js
-if (!config.featureEnabled) return;
-const engine = await getEngine();
-if (!engine) return;
-await engine.process(data);
-\`\`\`
-
----
-
-## Quick Reference: Red Flags in Code Review
-
-| Pattern | Risk | Fix |
-|---------|------|-----|
-| \`let x\` inside function body used as cache | Re-init every call | Hoist to module scope |
-| \`void asyncFn()\` | Unhandled rejection → crash | \`await\` or \`.catch()\` |
-| Async callback without try/catch | Uncaught exception → crash | Wrap in try/catch |
-| \`import()\` inside hot function, no cache | Repeated I/O, log spam | Cache at module scope |
-| Test mocking the module under test | Test proves nothing | Mock only boundaries |
-| \`setTimeout\`/\`sleep\` in tests | Flaky | Use async events/mocks |
-| No error case tests | False confidence | Add negative test cases |
-| \`git add .\` | Stages unrelated files | Stage files individually |
-`,
+    content: readBuiltinSkillFile("code-quality-anti-patterns.md"),
   },
   {
     filename: "skill-codebase-audit.md",
     title: "Codebase Annotation Audit",
-    tags: [
-      "audit", "annotation", "documentation", "summary", "inventory",
-      "codebase", "onboarding", "knowledge", "context", "skill", "warn",
-      "manifest", "conformity", "regeneration", "claude", "copilot",
-    ],
+    tags: ["audit", "annotation", "documentation", "summary", "claude"],
+    important: true,
     scope: "global",
     content: readBuiltinSkillFile("skill-codebase-audit.md"),
   },
   {
     filename: "custom-tool-creation.md",
     title: "Custom Tool Creation & Reuse",
-    tags: ["tools", "custom-tool", "reflect", "reuse", "automation", "script"],
-    scope: "global",
-    content: `# Skill: Custom Tool Creation & Reuse
-
-## Purpose
-Bosun agents can author and persist **executable helper scripts** in
-\`.bosun/tools/\` that survive beyond a single session. This avoids repeating
-the same inline logic across tasks and lets the whole agent team benefit from
-tools discovered during previous runs.
-
-Inspired by the Live-SWE-agent architecture: agents that can create tools
-solve more complex tasks and accumulate institutional knowledge over time.
-
-## When to Create a Custom Tool
-
-Create a custom tool when you find yourself:
-- Writing the same ≥ 10-line utility more than once across tasks
-- Needing a project-specific helper that \`npm run *\` or built-in tools don't cover
-- Doing complex pattern matching / analysis that would be easier with a dedicated script
-- Building a test generator or codemod that future tasks will need
-
-**Do NOT** create a tool for single-use throwaway logic — keep it inline.
-
-## Tool Storage Layout
-
-\`\`\`
-<workspace>/
-  .bosun/tools/
-    index.json             ← manifest (id, title, description, tags, category, lang)
-    <tool-id>.mjs          ← Node.js ES module scripts
-    <tool-id>.sh           ← bash scripts
-    <tool-id>.py           ← Python 3 scripts
-
-~/.bosun/tools/            ← global scope (shared across all workspaces)
-\`\`\`
-
-## Registering a Tool (via Bosun SDK)
-
-Import \`registerCustomTool\` from \`./agent-custom-tools.mjs\`:
-
-\`\`\`js
-import { registerCustomTool } from "./agent-custom-tools.mjs";
-
-await registerCustomTool(rootDir, {
-  title:       "Find unused exports",
-  description: "Scans src/ for exports that are never imported elsewhere",
-  category:    "analysis",   // one of: analysis|testing|git|build|transform|search|validation|utility
-  lang:        "mjs",
-  tags:        ["unused", "exports", "dead-code"],
-  createdBy:   agentId,
-  taskId:      taskId,
-  script: \`#!/usr/bin/env node
-import { readFileSync, readdirSync } from "node:fs";
-import { resolve } from "node:path";
-// ... implementation ...
-\`,
-});
-\`\`\`
-
-## Discovering Available Tools
-
-At task start, the agent system prompt includes a **Custom Tools Library** block
-listing all tools by category. Always check it before writing repetitive code.
-
-You can also query directly:
-\`\`\`js
-import { listCustomTools, getCustomTool } from "./agent-custom-tools.mjs";
-
-const tools = listCustomTools(rootDir, { category: "analysis" });
-const { entry, script } = getCustomTool(rootDir, "find-unused-exports");
-\`\`\`
-
-## Invoking a Tool
-
-\`\`\`js
-import { invokeCustomTool } from "./agent-custom-tools.mjs";
-
-const { stdout, stderr, exitCode } = await invokeCustomTool(
-  rootDir,
-  "find-unused-exports",
-  ["--dir", "src"],
-  { timeout: 15000 }
-);
-\`\`\`
-
-## Promoting to Global Scope
-
-If a tool proves valuable across projects, promote it so all workspaces see it:
-
-\`\`\`js
-import { promoteToGlobal } from "./agent-custom-tools.mjs";
-await promoteToGlobal(rootDir, "find-unused-exports");
-\`\`\`
-
-## Reflect Checklist (run at end of each task)
-
-Before marking a task complete, reflect:
-
-1. Did I write any utility code I'd write again?
-   → Extract it into a custom tool.
-2. Did an existing tool help me? (usage stats are tracked automatically)
-3. Is there a workspace tool that deserves global promotion?
-4. Did I discover a pattern the current skill set doesn't cover?
-   → Write a new skill (Markdown knowledge) or tool (executable) as appropriate.
-
-## Tool Categories
-
-| Category    | Use for                                                     |
-|-------------|-------------------------------------------------------------|
-| analysis    | Codebase inspection, metrics, dependency graphs             |
-| testing     | Test generation, assertion helpers, coverage reporters       |
-| git         | Multi-step git operations, branch utilities                 |
-| build       | Compile, bundle, transpile helpers beyond npm scripts       |
-| transform   | Codemods, formatters, data reshaping                        |
-| search      | Grep/ripgrep wrappers, semantic search, ref-tracing         |
-| validation  | Linting, type-checking, schema validation                   |
-| utility     | Miscellaneous helpers not covered by any other category     |
-`,
+    tags: ["tool", "tools", "reuse", "automation", "codemod"],
+    important: true,
+    scope: "bosun",
+    content: readBuiltinSkillFile("custom-tool-creation.md"),
   },
 ];
 
-// ── Skills directory helpers ──────────────────────────────────────────────────
-
-/**
- * Returns the skills directory path for a given bosun home.
- * Global skills: BOSUN_HOME/.bosun/skills/
- */
 export function getSkillsDir(bosunHome) {
   return resolve(bosunHome, ".bosun", "skills");
 }
@@ -955,6 +200,40 @@ export function scaffoldSkills(bosunHome) {
 
 // ── Index management ──────────────────────────────────────────────────────────
 
+function extractSkillFileMetadata(filePath) {
+  let content = "";
+  try {
+    content = readFileSync(filePath, "utf8");
+  } catch {
+    return { title: "", tags: [], important: false, blocked: false, safety: null };
+  }
+
+  const safety = analyzeSkillMarkdownSafety(content);
+  if (safety.blocked) {
+    return { title: "", tags: [], important: false, blocked: true, safety };
+  }
+
+  let title = "";
+  let tags = [];
+  let important = false;
+
+  const tagMatch = /<!--\s*tags:\s*(.+?)\s*-->/i.exec(content);
+  if (tagMatch) {
+    tags = tagMatch[1].split(/[,\s]+/).map((t) => t.trim().toLowerCase()).filter(Boolean);
+  }
+
+  const importantMatch = /<!--\s*(?:important|eager)\s*:\s*(true|false|yes|no|on|off|1|0)\s*-->/i.exec(content);
+  if (importantMatch) {
+    const raw = String(importantMatch[1] || "").trim().toLowerCase();
+    important = raw === "true" || raw === "yes" || raw === "on" || raw === "1";
+  }
+
+  const h1 = /^#\s+(?:Skill: )?(.+)/m.exec(content);
+  if (h1) title = h1[1].trim();
+
+  return { title, tags, important, blocked: false, safety: null };
+}
+
 /**
  * Scan the skills directory and write an up-to-date index.json.
  * The index is a lightweight manifest agents can read quickly.
@@ -965,6 +244,7 @@ export function scaffoldSkills(bosunHome) {
 export function buildSkillsIndex(skillsDir) {
   const indexPath = resolve(skillsDir, "index.json");
   const entries = [];
+  const blockedSkills = [];
 
   // Seed with built-in metadata for known files
   const builtinByFilename = Object.fromEntries(
@@ -976,35 +256,6 @@ export function buildSkillsIndex(skillsDir) {
     files = readdirSync(skillsDir).filter((f) => f.endsWith(".md"));
   } catch {
     /* directory may not exist yet */
-  }
-
-  function extractSkillFileMetadata(filePath) {
-    let content = "";
-    try {
-      content = readFileSync(filePath, "utf8");
-    } catch {
-      return { title: "", tags: [], important: false };
-    }
-
-    let title = "";
-    let tags = [];
-    let important = false;
-
-    const tagMatch = /<!--\s*tags:\s*(.+?)\s*-->/i.exec(content);
-    if (tagMatch) {
-      tags = tagMatch[1].split(/[,\s]+/).map((t) => t.trim().toLowerCase()).filter(Boolean);
-    }
-
-    const importantMatch = /<!--\s*(?:important|eager)\s*:\s*(true|false|yes|no|on|off|1|0)\s*-->/i.exec(content);
-    if (importantMatch) {
-      const raw = String(importantMatch[1] || "").trim().toLowerCase();
-      important = raw === "true" || raw === "yes" || raw === "on" || raw === "1";
-    }
-
-    const h1 = /^#\s+(?:Skill: )?(.+)/m.exec(content);
-    if (h1) title = h1[1].trim();
-
-    return { title, tags, important };
   }
 
   for (const filename of files.toSorted((a, b) => a.localeCompare(b))) {
@@ -1025,6 +276,14 @@ export function buildSkillsIndex(skillsDir) {
       scope = builtin.scope;
     } else {
       const metadata = extractSkillFileMetadata(filePath);
+      if (metadata.blocked) {
+        blockedSkills.push({
+          filename,
+          score: metadata.safety?.score || 0,
+          reasons: metadata.safety?.reasons || [],
+        });
+        continue;
+      }
       if (metadata.title) title = metadata.title;
       tags = metadata.tags;
       important = metadata.important;
@@ -1043,6 +302,8 @@ export function buildSkillsIndex(skillsDir) {
   const index = {
     generated: new Date().toISOString(),
     count: entries.length,
+    blockedCount: blockedSkills.length,
+    blockedSkills,
     skills: entries,
   };
 
@@ -1104,6 +365,101 @@ export function loadSkillsIndex(bosunHome) {
   }
 }
 
+const DEFAULT_SKILLS_MAX_CHARS = 4000;
+
+function normalizeKeywordText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function buildKeywordMatcher(title, description = "", labels = []) {
+  const labelList = Array.isArray(labels)
+    ? labels
+    : String(labels || "")
+      .split(",")
+      .map((label) => label.trim())
+      .filter(Boolean);
+  const keywordText = normalizeKeywordText([title, description, ...labelList].join(" "));
+  const keywords = new Set(keywordText.split(/\s+/).filter(Boolean));
+  return {
+    keywordText,
+    paddedKeywordText: " " + keywordText + " ",
+    keywords,
+  };
+}
+
+function tagMatchesKeyword(tag, matcher) {
+  const normalizedTag = normalizeKeywordText(tag);
+  if (!normalizedTag) return false;
+
+  const tagTokens = normalizedTag.split(/\s+/).filter(Boolean);
+  if (tagTokens.length === 0) return false;
+  if (tagTokens.length === 1) {
+    return matcher.keywords.has(tagTokens[0]);
+  }
+
+  return matcher.paddedKeywordText.includes(" " + normalizedTag + " ")
+    || tagTokens.every((token) => matcher.keywords.has(token));
+}
+
+function countSkillTagMatches(tags, matcher) {
+  if (!Array.isArray(tags) || tags.length === 0) return 0;
+  let matches = 0;
+  for (const tag of tags) {
+    if (tagMatchesKeyword(tag, matcher)) matches += 1;
+  }
+  return matches;
+}
+
+function resolveSkillCharBudget(maxChars) {
+  const resolved = Number(maxChars ?? process.env.BOSUN_SKILLS_MAX_CHARS);
+  return Number.isFinite(resolved) && resolved >= 0
+    ? Math.floor(resolved)
+    : DEFAULT_SKILLS_MAX_CHARS;
+}
+
+function selectRelevantSkills(bosunHome, taskTitle, taskDescription = "", opts = {}) {
+  const index = loadSkillsIndex(bosunHome);
+  if (!index?.skills?.length) return [];
+
+  const matcher = buildKeywordMatcher(taskTitle, taskDescription, opts.labels || []);
+  if (!matcher.keywordText) return [];
+
+  const skillsDir = getSkillsDir(bosunHome);
+  return index.skills
+    .map(({ filename, title, tags, important }) => {
+      const matchCount = countSkillTagMatches(tags, matcher);
+      if (matchCount <= 0) return null;
+
+      let content = "";
+      try {
+        content = readFileSync(resolve(skillsDir, filename), "utf8");
+      } catch {
+        return null;
+      }
+
+      const safety = analyzeSkillMarkdownSafety(content);
+      if (safety.blocked) return null;
+
+      return {
+        filename,
+        title,
+        tags,
+        important: important === true,
+        matchCount,
+        content,
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) =>
+      right.matchCount - left.matchCount
+      || Number(right.important === true) - Number(left.important === true)
+      || String(left.filename).localeCompare(String(right.filename)),
+    );
+}
+
 /**
  * Find skills relevant to a given task by matching tags against the task title
  * and description.
@@ -1125,72 +481,66 @@ export function loadSkillsIndex(bosunHome) {
  * @returns {Array<{filename:string,title:string,tags:string[],content:string}>}
  */
 export function findRelevantSkills(bosunHome, taskTitle, taskDescription = "", opts = {}) {
-  const index = loadSkillsIndex(bosunHome);
-  if (!index?.skills?.length) return [];
+  const matched = selectRelevantSkills(bosunHome, taskTitle, taskDescription, opts);
 
-  const searchText = `${taskTitle} ${taskDescription}`.toLowerCase();
-  const skillsDir = getSkillsDir(bosunHome);
-
-  const matched = index.skills
-    .filter(({ tags }) =>
-      tags.some((tag) => searchText.includes(tag)),
-    )
-    .map(({ filename, title, tags, important }) => {
-      let content = "";
-      try {
-        content = readFileSync(resolve(skillsDir, filename), "utf8");
-      } catch { /* skip unreadable files */ }
-      return { filename, title, tags, important: important === true, content };
-    })
-    .filter(({ content }) => !!content);
-
-  // Emit analytics events for each loaded skill
-  for (const skill of matched) {
-    const skillName = skill.filename.replace(/\.md$/i, "");
-    emitSkillInvokeEvent(skillName, skill.title, opts);
+  if (opts.emitAnalytics !== false) {
+    for (const skill of matched) {
+      const skillName = skill.filename.replace(/\.md$/i, "");
+      emitSkillInvokeEvent(skillName, skill.title, opts);
+    }
   }
 
   return matched;
 }
 
-export function buildRelevantSkillsPromptBlock(bosunHome, taskTitle, taskDescription = "", opts = {}) {
-  const {
-    maxListed = 8,
-    includeMatchedSummary = true,
-  } = opts;
-  const matched = findRelevantSkills(bosunHome, taskTitle, taskDescription, opts);
-  if (!matched.length) return "";
+export function loadSkillsForTask(bosunHome, task, opts = {}) {
+  const taskTitle = String(task?.title || task?.name || "").trim();
+  const taskDescription = String(task?.description || task?.body || "").trim();
+  const labels = opts.labels ?? task?.labels ?? [];
+  const matched = selectRelevantSkills(bosunHome, taskTitle, taskDescription, {
+    ...opts,
+    labels,
+  });
+  if (matched.length === 0) return "";
 
-  const importantMatches = matched.filter((skill) => skill.important);
-  const summaryMatches = matched.slice(0, Math.max(1, maxListed));
+  const maxChars = resolveSkillCharBudget(opts.maxChars);
+  if (maxChars <= 0) return "";
+
   const lines = ["## Skills Context", ""];
-
-  if (importantMatches.length > 0) {
-    lines.push(
-      "These matched skills are marked important, so their contents are loaded directly below.",
+  const included = [];
+  for (const skill of matched) {
+    const importantLabel = skill.important ? " [important]" : "";
+    const blockLines = [
+      "### Skill: " + skill.title + " (`" + skill.filename + "`)" + importantLabel,
+      skill.content.trim(),
       "",
-    );
-    for (const skill of importantMatches) {
-      lines.push(`### Skill: ${skill.title} (\`${skill.filename}\`)`);
-      lines.push(skill.content.trim());
-      lines.push("");
-    }
+    ];
+    const candidate = lines.concat(blockLines).join("\n").trim();
+    if (candidate.length > maxChars) continue;
+    lines.push(...blockLines);
+    included.push(skill);
   }
 
-  if (includeMatchedSummary) {
-    lines.push("Matched skill files:");
-    for (const skill of summaryMatches) {
-      const tags = Array.isArray(skill.tags) && skill.tags.length > 0
-        ? ` — tags: ${skill.tags.join(", ")}`
-        : "";
-      const importantLabel = skill.important ? " [important]" : "";
-      lines.push(`- \`${skill.filename}\` — ${skill.title}${importantLabel}${tags}`);
+  if (included.length === 0) return "";
+
+  if (opts.emitAnalytics !== false) {
+    for (const skill of included) {
+      const skillName = skill.filename.replace(/\.md$/i, "");
+      emitSkillInvokeEvent(skillName, skill.title, opts);
     }
-    lines.push("");
-    lines.push("Load non-important matched skills on demand if you need their details.");
-    lines.push("");
   }
 
   return lines.join("\n").trim();
 }
 
+export function buildRelevantSkillsPromptBlock(bosunHome, taskTitle, taskDescription = "", opts = {}) {
+  return loadSkillsForTask(
+    bosunHome,
+    {
+      title: taskTitle,
+      description: taskDescription,
+      labels: opts.labels || [],
+    },
+    opts,
+  );
+}

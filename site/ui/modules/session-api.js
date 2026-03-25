@@ -210,6 +210,58 @@ export function deriveSessionStaleReason(error) {
     message: raw,
   };
 }
+export function classifySessionRequestError(error) {
+  const raw = String(error?.message || error || "").trim();
+  const lower = raw.toLowerCase();
+  const code = String(error?.code || "").trim().toLowerCase();
+  const status = Number(error?.status || error?.statusCode || 0);
+  if (!raw && !code && !status) {
+    return {
+      raw,
+      isNotFound: false,
+      isTransient: false,
+      key: null,
+    };
+  }
+  const isNotFound =
+    status === 404
+    || code === "not_found"
+    || lower.includes("not_found")
+    || lower.includes("session not found")
+    || lower.includes("request failed (404)")
+    || lower.includes("not found");
+  const isTransient =
+    !isNotFound && (
+      code === "request_failed"
+      || code === "timeout"
+      || code === "offline"
+      || status === 408
+      || status === 429
+      || status >= 500
+      || lower.includes("timeout")
+      || lower.includes("timed out")
+      || lower.includes("network")
+      || lower.includes("offline")
+      || lower.includes("request failed")
+      || lower.includes("gateway")
+      || lower.includes("unavailable")
+    );
+  return {
+    raw,
+    isNotFound,
+    isTransient,
+    key: isNotFound ? "not_found" : isTransient ? "unavailable" : "fatal",
+  };
+}
+
+export function isScopedSessionNotFound(error) {
+  return classifySessionRequestError(error).isNotFound;
+}
+
+export function shouldFallbackToAllSessions(error, primaryPath, fallbackPath) {
+  if (!fallbackPath || fallbackPath === primaryPath) return false;
+  return isScopedSessionNotFound(error);
+}
 
 export function getSessionManualRetryState(meta, options = {}) {
   const now = Number(options?.now || Date.now()) || Date.now();
@@ -298,6 +350,52 @@ export function resetSessionRetryMeta(previousMeta) {
     retryDelayMs: 0,
     nextRetryAt: null,
     retriesExhausted: false,
+  };
+}
+
+export function getSessionListState(input = {}) {
+  const sessions = Array.isArray(input?.sessions) ? input.sessions.filter(Boolean) : [];
+  const loadMeta = createSessionLoadMeta(input?.loadMeta || {});
+  const hasSessions = sessions.length > 0;
+  const isStale = Boolean(loadMeta.stale && (loadMeta.lastSuccessAt || hasSessions));
+  const errorState = input?.error && typeof input.error === "object"
+    ? input.error
+    : classifySessionRequestError(input?.error);
+  const errorKey = String(errorState?.key || "").trim().toLowerCase() || null;
+
+  if (isStale) {
+    return {
+      key: "stale",
+      isError: false,
+      canRetry: true,
+      hasSessions,
+      message: "Session list is showing stale data.",
+    };
+  }
+  if (errorKey === "not_found") {
+    return {
+      key: "not_found",
+      isError: true,
+      canRetry: true,
+      hasSessions: false,
+      message: "Sessions not found",
+    };
+  }
+  if (errorKey) {
+    return {
+      key: errorKey,
+      isError: true,
+      canRetry: true,
+      hasSessions,
+      message: errorKey === "fatal" ? "Sessions failed to load" : "Sessions not available",
+    };
+  }
+  return {
+    key: "ready",
+    isError: false,
+    canRetry: false,
+    hasSessions,
+    message: "",
   };
 }
 
@@ -454,6 +552,8 @@ export function buildSessionApiPath(sessionId, action = "", opts = {}) {
   const qs = params.toString();
   return qs ? `${path}?${qs}` : path;
 }
+
+
 
 
 

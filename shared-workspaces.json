@@ -6,7 +6,7 @@
     {
       "id": "cloud-01",
       "name": "Cloud Workspace 01",
-      "provider": "vibe-kanban",
+      "provider": "bosun",
       "region": "us-west-2",
       "availability": "available",
       "lease_ttl_minutes": 120,

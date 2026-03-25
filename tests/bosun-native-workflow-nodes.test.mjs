@@ -184,6 +184,36 @@ describe("action.bosun_tool", () => {
     // but toolId resolution should work
     expect(result.toolId).toBe("nonexistent");
   });
+
+  it("records Bosun tool execution in the execution ledger when engine hook exists", async () => {
+    const handler = getNodeType("action.bosun_tool");
+    makeTmpDir();
+    const ctx = new WorkflowContext({ repoRoot: tmpDir });
+    const recordLedgerEvent = vi.fn();
+    const node = {
+      id: "t-ledger",
+      type: "action.bosun_tool",
+      config: { toolId: "nonexistent-tool-xyz" },
+    };
+
+    const result = await handler.execute(node, ctx, { _recordLedgerEvent: recordLedgerEvent });
+
+    expect(result.success).toBe(false);
+    expect(recordLedgerEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "tool.started",
+        executionKind: "tool",
+        toolId: "nonexistent-tool-xyz",
+      }),
+    );
+    expect(recordLedgerEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "tool.failed",
+        executionKind: "tool",
+        toolId: "nonexistent-tool-xyz",
+      }),
+    );
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -292,6 +322,84 @@ describe("action.build_task_prompt", () => {
     expect(userPrompt).toContain("# Task: Task 89d82c54-c804-45f7-8018-137de0702ddb");
     expect(userPrompt).toContain("Task ID: 89d82c54-c804-45f7-8018-137de0702ddb");
     expect(userPrompt).not.toContain("# Task: Untitled task");
+  });
+
+  it("injects workflow continuation guidance from issue advisor into task prompts", async () => {
+    const handler = getNodeType("action.build_task_prompt");
+    const repoRoot = makeTmpDir();
+    const node = {
+      id: "prompt-issue-advisor",
+      type: "action.build_task_prompt",
+      config: {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        taskDescription: "{{taskDescription}}",
+        includeAgentsMd: false,
+        includeStatusEndpoint: false,
+      },
+    };
+    const ctx = new WorkflowContext({
+      taskId: "TASK-IA",
+      taskTitle: "Recover validation failure",
+      taskDescription: "Continue task execution after validation failed.",
+      repoRoot,
+      worktreePath: join(repoRoot, ".bosun", "worktrees", "task-ia"),
+    });
+    ctx.data._issueAdvisor = {
+      recommendedAction: "replan_subgraph",
+      summary: "Tests failed after dependency changes.",
+      nextStepGuidance: "Preserve completed work and replan the impacted downstream subgraph before continuing.",
+    };
+    ctx.data._plannerFeedback = {
+      dagStateSummary: {
+        revisionCount: 2,
+        counts: { completed: 2, failed: 1, pending: 3 },
+      },
+    };
+
+    const result = await handler.execute(node, ctx);
+    const userPrompt = result.userPrompt || result.prompt;
+
+    expect(userPrompt).toContain("## Workflow Continuation Context");
+    expect(userPrompt).toContain("Issue Advisor Action");
+    expect(userPrompt).toContain("replan_subgraph");
+    expect(userPrompt).toContain("DAG Revisions");
+  });
+});
+
+describe("action.continue_session", () => {
+  it("prepends issue-advisor guidance to continuation prompts", async () => {
+    const handler = getNodeType("action.continue_session");
+    const continueSession = vi.fn().mockResolvedValue({
+      success: true,
+      output: "continued",
+      threadId: "thread-1",
+    });
+    const engine = {
+      services: {
+        agentPool: { continueSession },
+      },
+    };
+    const ctx = new WorkflowContext({ sessionId: "thread-1" });
+    ctx.data._issueAdvisor = {
+      recommendedAction: "spawn_fix_step",
+      summary: "Review feedback requested a targeted patch before resuming.",
+      nextStepGuidance: "Preserve completed work and insert a targeted fix step before resuming downstream execution.",
+    };
+    ctx.data._plannerFeedback = {
+      dagStateSummary: { counts: { completed: 2, failed: 1, pending: 0 } },
+    };
+
+    const result = await handler.execute({
+      id: "continue-1",
+      type: "action.continue_session",
+      config: { prompt: "Continue fixing the issue." },
+    }, ctx, engine);
+
+    expect(result.success).toBe(true);
+    expect(continueSession).toHaveBeenCalledTimes(1);
+    expect(continueSession.mock.calls[0][1]).toContain("Issue-advisor continuation context");
+    expect(continueSession.mock.calls[0][1]).toContain("spawn_fix_step");
   });
 });
 
@@ -1233,3 +1341,4 @@ describe("cross-node data piping", () => {
     expect(invokeOutput.workflowId).toBe("chain-child-wf");
   });
 });
+

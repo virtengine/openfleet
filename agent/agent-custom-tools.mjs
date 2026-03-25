@@ -47,7 +47,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { copyFile, writeFile } from "node:fs/promises";
+import { copyFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -212,7 +212,10 @@ function safeReadIndex(storeDir) {
   if (!existsSync(idx)) return [];
   try {
     const parsed = JSON.parse(readFileSync(idx, "utf8"));
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((entry) => sanitizeIndexEntry(entry))
+      .filter(Boolean);
   } catch {
     return [];
   }
@@ -241,6 +244,77 @@ function slugify(name) {
 
 function scriptPath(storeDir, id, lang) {
   return resolve(storeDir, `${id}.${lang}`);
+}
+
+function isPlainObject(value) {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeStringList(values, { lowercase = true } = {}) {
+  if (!Array.isArray(values)) return [];
+  const normalized = values
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean)
+    .map((value) => (lowercase ? value.toLowerCase() : value));
+  return Array.from(new Set(normalized));
+}
+
+function normalizeUsageCount(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
+}
+
+function normalizeToolId(toolId) {
+  if (typeof toolId !== "string") return null;
+  const trimmed = toolId.trim();
+  if (!trimmed) return null;
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,59}$/.test(trimmed)) return null;
+  return trimmed;
+}
+
+function sanitizeIndexEntry(raw) {
+  if (!isPlainObject(raw)) return null;
+
+  const id = normalizeToolId(raw.id);
+  const lang = VALID_LANGS.includes(raw.lang) ? raw.lang : null;
+  if (!id || !lang) return null;
+
+  const category = TOOL_CATEGORIES.includes(raw.category)
+    ? raw.category
+    : "utility";
+  const skills = normalizeStringList(raw.skills, { lowercase: false });
+  const agents = normalizeStringList(raw.agents, { lowercase: false });
+  const templates = normalizeStringList(raw.templates, { lowercase: false });
+
+  return {
+    ...raw,
+    id,
+    title: typeof raw.title === "string" && raw.title.trim() ? raw.title : id,
+    description: typeof raw.description === "string" ? raw.description : "",
+    tags: normalizeStringList(raw.tags),
+    category,
+    lang,
+    createdBy: typeof raw.createdBy === "string" && raw.createdBy.trim()
+      ? raw.createdBy
+      : "agent",
+    createdAt: typeof raw.createdAt === "string" && raw.createdAt.trim()
+      ? raw.createdAt
+      : nowISO(),
+    updatedAt: typeof raw.updatedAt === "string" && raw.updatedAt.trim()
+      ? raw.updatedAt
+      : nowISO(),
+    usageCount: normalizeUsageCount(raw.usageCount),
+    ...(typeof raw.lastUsed === "string" && raw.lastUsed.trim()
+      ? { lastUsed: raw.lastUsed }
+      : {}),
+    ...(skills.length > 0 ? { skills } : {}),
+    ...(agents.length > 0 ? { agents } : {}),
+    ...(templates.length > 0 ? { templates } : {}),
+    ...(raw.autoInject ? { autoInject: true } : {}),
+    ...(typeof raw.version === "string" && raw.version.trim()
+      ? { version: raw.version }
+      : {}),
+  };
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -302,6 +376,9 @@ export function listCustomTools(rootDir, opts = {}) {
     includeBuiltins = true,
   } = opts;
 
+  const requestedTags = normalizeStringList(tags);
+  const searchQuery = typeof search === "string" ? search.trim().toLowerCase() : "";
+
   let entries = [];
 
   // Workspace tools
@@ -339,23 +416,24 @@ export function listCustomTools(rootDir, opts = {}) {
   if (category) {
     entries = entries.filter((e) => e.category === category);
   }
-  if (tags.length > 0) {
+  if (requestedTags.length > 0) {
     entries = entries.filter((e) =>
-      tags.some((t) => (e.tags || []).includes(t)),
+      requestedTags.some((t) => (e.tags || []).includes(t)),
     );
   }
-  if (search) {
-    const q = search.toLowerCase();
+  if (searchQuery) {
     entries = entries.filter(
       (e) =>
-        e.id.includes(q) ||
-        e.title.toLowerCase().includes(q) ||
-        e.description.toLowerCase().includes(q) ||
-        (e.tags || []).some((t) => t.includes(q)),
+        e.id.toLowerCase().includes(searchQuery) ||
+        e.title.toLowerCase().includes(searchQuery) ||
+        e.description.toLowerCase().includes(searchQuery) ||
+        (e.tags || []).some((t) => t.toLowerCase().includes(searchQuery)),
     );
   }
 
-  return entries.sort((a, b) => b.usageCount - a.usageCount);
+  return entries.sort(
+    (a, b) => normalizeUsageCount(b.usageCount) - normalizeUsageCount(a.usageCount),
+  );
 }
 
 /**
@@ -366,11 +444,14 @@ export function listCustomTools(rootDir, opts = {}) {
  * @returns {{ entry: CustomToolEntry, script: string }|null}
  */
 export function getCustomTool(rootDir, toolId) {
+  const normalizedToolId = normalizeToolId(toolId);
+  if (!normalizedToolId) return null;
+
   // Workspace-scoped takes precedence, then global, then builtin
   for (const isGlobal of [false, true]) {
     const storeDir = getToolStore(rootDir, { global: isGlobal });
     const index = safeReadIndex(storeDir);
-    const entry = index.find((e) => e.id === toolId);
+    const entry = index.find((e) => e.id === normalizedToolId);
     if (!entry) continue;
 
     const sPath = scriptPath(storeDir, entry.id, entry.lang);
@@ -383,7 +464,7 @@ export function getCustomTool(rootDir, toolId) {
   }
 
   // Fall back to built-in tools shipped with bosun
-  const builtinDef = BUILTIN_TOOLS.find((b) => b.id === toolId);
+  const builtinDef = BUILTIN_TOOLS.find((b) => b.id === normalizedToolId);
   if (builtinDef) {
     const sPath = resolve(BUILTIN_TOOLS_DIR, `${builtinDef.id}.${builtinDef.lang}`);
     if (existsSync(sPath)) {
@@ -414,6 +495,10 @@ export function getCustomTool(rootDir, toolId) {
  * @returns {CustomToolEntry}
  */
 export function registerCustomTool(rootDir, def) {
+  if (!isPlainObject(def)) {
+    throw new TypeError("registerCustomTool: definition object is required");
+  }
+
   const {
     title,
     description,
@@ -449,19 +534,29 @@ export function registerCustomTool(rootDir, def) {
     );
   }
 
+  const explicitId = def.id == null ? null : normalizeToolId(def.id);
+  if (def.id != null && !explicitId) {
+    throw new TypeError(
+      "registerCustomTool: id must match /^[A-Za-z0-9][A-Za-z0-9_-]{0,59}$/ and must not contain path separators",
+    );
+  }
+
   const storeDir = getToolStore(rootDir, { global: isGlobal });
   const index = safeReadIndex(storeDir);
 
-  const id = def.id || slugify(title) || `tool-${Date.now()}`;
+  const id = explicitId || slugify(title) || `tool-${Date.now()}`;
   const existingIdx = index.findIndex((e) => e.id === id);
   const now = nowISO();
+  const normalizedSkills = normalizeStringList(skills, { lowercase: false });
+  const normalizedAgents = normalizeStringList(agents, { lowercase: false });
+  const normalizedTemplates = normalizeStringList(templates, { lowercase: false });
 
   /** @type {CustomToolEntry} */
   const entry = {
     id,
     title,
     description: description || "",
-    tags: Array.from(new Set(tags.map((t) => String(t).toLowerCase()))),
+    tags: normalizeStringList(tags),
     category,
     lang,
     createdBy,
@@ -474,9 +569,9 @@ export function registerCustomTool(rootDir, def) {
       : {}),
     scope: isGlobal ? "global" : "workspace",
     // Affinity metadata (persisted for future skill/agent matching)
-    ...(skills.length > 0 ? { skills } : {}),
-    ...(agents.length > 0 ? { agents } : {}),
-    ...(templates.length > 0 ? { templates } : {}),
+    ...(normalizedSkills.length > 0 ? { skills: normalizedSkills } : {}),
+    ...(normalizedAgents.length > 0 ? { agents: normalizedAgents } : {}),
+    ...(normalizedTemplates.length > 0 ? { templates: normalizedTemplates } : {}),
     ...(autoInject ? { autoInject } : {}),
     ...(version ? { version } : {}),
   };
@@ -518,6 +613,10 @@ export async function invokeCustomTool(rootDir, toolId, args = [], opts = {}) {
     throw new Error(`invokeCustomTool: tool "${toolId}" not found`);
   }
 
+  const cliArgs = Array.isArray(args)
+    ? args.map((arg) => String(arg))
+    : [String(args)];
+
   const { entry } = result;
   let sPath;
   if (entry.scope === "builtin") {
@@ -536,15 +635,15 @@ export async function invokeCustomTool(rootDir, toolId, args = [], opts = {}) {
   switch (entry.lang) {
     case "mjs":
       cmd = process.execPath; // use same node binary
-      cmdArgs = [sPath, ...args];
+      cmdArgs = [sPath, ...cliArgs];
       break;
     case "sh":
       cmd = process.platform === "win32" ? "bash" : "/bin/sh";
-      cmdArgs = [sPath, ...args];
+      cmdArgs = [sPath, ...cliArgs];
       break;
     case "py":
-      cmd = "python3";
-      cmdArgs = [sPath, ...args];
+      cmd = process.platform === "win32" ? "python" : "python3";
+      cmdArgs = [sPath, ...cliArgs];
       break;
     default:
       throw new Error(`invokeCustomTool: unsupported lang "${entry.lang}"`);
@@ -601,10 +700,13 @@ export async function invokeCustomTool(rootDir, toolId, args = [], opts = {}) {
  * @returns {Promise<void>}
  */
 export async function recordToolUsage(rootDir, toolId) {
+  const normalizedToolId = normalizeToolId(toolId);
+  if (!normalizedToolId) return;
+
   for (const isGlobal of [false, true]) {
     const storeDir = getToolStore(rootDir, { global: isGlobal });
     const index = safeReadIndex(storeDir);
-    const idx = index.findIndex((e) => e.id === toolId);
+    const idx = index.findIndex((e) => e.id === normalizedToolId);
     if (idx < 0) continue;
     index[idx].usageCount = (index[idx].usageCount ?? 0) + 1;
     index[idx].lastUsed = nowISO();
@@ -622,9 +724,12 @@ export async function recordToolUsage(rootDir, toolId) {
  * @returns {boolean} true if the tool was found and removed
  */
 export function deleteCustomTool(rootDir, toolId, { global: isGlobal = false } = {}) {
+  const normalizedToolId = normalizeToolId(toolId);
+  if (!normalizedToolId) return false;
+
   const storeDir = getToolStore(rootDir, { global: isGlobal });
   const index = safeReadIndex(storeDir);
-  const idx = index.findIndex((e) => e.id === toolId);
+  const idx = index.findIndex((e) => e.id === normalizedToolId);
   if (idx < 0) return false;
 
   const entry = index[idx];
@@ -651,9 +756,14 @@ export function deleteCustomTool(rootDir, toolId, { global: isGlobal = false } =
  * @returns {Promise<CustomToolEntry>} the entry as it now exists in global scope
  */
 export async function promoteToGlobal(rootDir, toolId) {
+  const normalizedToolId = normalizeToolId(toolId);
+  if (!normalizedToolId) {
+    throw new Error(`promoteToGlobal: workspace tool "${toolId}" not found`);
+  }
+
   const wsStore = getToolStore(rootDir, { global: false });
   const wsIndex = safeReadIndex(wsStore);
-  const wsEntry = wsIndex.find((e) => e.id === toolId);
+  const wsEntry = wsIndex.find((e) => e.id === normalizedToolId);
   if (!wsEntry) {
     throw new Error(
       `promoteToGlobal: workspace tool "${toolId}" not found`,
@@ -676,7 +786,7 @@ export async function promoteToGlobal(rootDir, toolId) {
 
   // Upsert in global index
   const globalEntry = { ...wsEntry, scope: "global", updatedAt: nowISO() };
-  const existingIdx = globalIndex.findIndex((e) => e.id === toolId);
+  const existingIdx = globalIndex.findIndex((e) => e.id === normalizedToolId);
   if (existingIdx >= 0) {
     globalIndex[existingIdx] = globalEntry;
   } else {
@@ -722,6 +832,8 @@ export function getToolsPromptBlock(rootDir, opts = {}) {
       template,
       limit,
       includeBuiltins,
+      category,
+      tags,
     });
     const affinityIds = new Set(affinityTools.map((t) => t.id));
     const remaining = listCustomTools(rootDir, { category, tags, includeBuiltins })
@@ -746,12 +858,12 @@ export function getToolsPromptBlock(rootDir, opts = {}) {
     "## Custom Tools Library",
     "",
     discoveryMode
-      ? "Only eagerly-loaded tools are listed below. Use the MCP discovery tools to find the rest at runtime."
-      : "The following reusable helper scripts are available. Run them via",
+      ? "- Eager tools only below. Discover the rest at runtime."
+      : "- Run tools via `node <tool>.mjs`, `bash <tool>.sh`, or `python3 <tool>.py`.",
     discoveryMode
-      ? "Use `search`, then `get_schema`, then `execute` for tools not listed here. Use `call_discovered_tool` only for simple direct calls."
-      : "`node <tool>.mjs`, `bash <tool>.sh`, or `python3 <tool>.py`.",
-    "Built-in tools live in `bosun/tools/`; workspace tools in `.bosun/tools/`.",
+      ? "- Use `search`, then `get_schema`, then `execute` for tools not listed here."
+      : "- Check this library before writing new helper code.",
+    "- Built-in tools: `bosun/tools/`; workspace tools: `.bosun/tools/`.",
     "",
   ];
 
@@ -791,16 +903,13 @@ export function getToolsPromptBlock(rootDir, opts = {}) {
     lines.push(
       "---",
       "",
-      "**Reflect:** Before writing repetitive inline code, check if an existing",
-      "custom tool covers the need. If you encounter a pattern that future agents",
-      "(or yourself on retry) would benefit from having as a persistent script,",
-      "save it to `.bosun/tools/` and register it via the Bosun SDK so the whole",
-      "team benefits. Good candidates: analysis helpers, test generators, codemods,",
-      "build/lint wrappers that differ from what `npm run *` provides.",
+      "Reflect:",
+      "- Check existing tools before writing new helpers.",
+      "- Promote repeated analysis, test, build, transform, or search logic into `.bosun/tools/`.",
+      "- Skip one-off scripts.",
       "",
     );
   }
-
   return lines.join("\n");
 }
 
@@ -931,3 +1040,4 @@ export function getAffinityTools(rootDir, opts = {}) {
     .slice(0, limit)
     .map((s) => s.tool);
 }
+

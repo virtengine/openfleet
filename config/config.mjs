@@ -24,12 +24,17 @@ import {
   getAgentPromptDefinitions,
   resolveAgentPrompts,
 } from "../agent/agent-prompts.mjs";
-import { resolveAgentRepoRoot, resolveRepoLocalBosunDir } from "./repo-root.mjs";
+import {
+  resolveAgentRepoRoot,
+  resolveRepoLocalBosunDir,
+  detectBosunModuleRoot,
+} from "./repo-root.mjs";
 import { applyAllCompatibility } from "../compat.mjs";
 import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import { CONFIG_FILES } from "./config-file-names.mjs";
 import { ExecutorScheduler, loadExecutorConfig } from "./executor-config.mjs";
 import { normalizePipelineWorkflows } from "../workflow/pipeline-workflows.mjs";
+import { resolveMarkdownSafetyPolicy } from "../lib/skill-markdown-safety.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -64,23 +69,6 @@ function isBosunModuleRoot(dirPath) {
   } catch {
     return false;
   }
-}
-
-/**
- * Detect the bosun module root starting from the current file's directory,
- * walking up until a package.json with name "bosun" (or "@virtengine/bosun") is found.
- * Returns the module root path or __dirname as fallback.
- * @returns {string}
- */
-function detectBosunModuleRoot() {
-  let dir = __dirname;
-  for (let i = 0; i < 6; i++) {
-    if (isBosunModuleRoot(dir)) return dir;
-    const parent = resolve(dir, "..");
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return __dirname;
 }
 
 /**
@@ -127,11 +115,22 @@ function resolveConfigDir(repoRoot) {
   const repoLocalConfigDir = resolveRepoLocalBosunDir(repoRoot);
   if (repoLocalConfigDir) return repoLocalConfigDir;
 
-  // 3. Tests must not fall through to the user's real global Bosun home.
+  // 3. Fallback: check the bosun module's own directory for a .bosun/ config.
+  //    This ensures `bosun` (global) finds the same config as `npm start` which
+  //    explicitly passes `--config-dir .bosun`.  Without this, running from a
+  //    directory outside the module (e.g. home dir) misses workspaces, .env
+  //    vars (TELEGRAM_UI_PORT, TELEGRAM_MINIAPP_ENABLED, etc.), and task store.
+  const moduleRoot = detectBosunModuleRoot();
+  if (moduleRoot && resolve(moduleRoot) !== resolve(repoRoot || "")) {
+    const moduleLocalConfigDir = resolveRepoLocalBosunDir(moduleRoot);
+    if (moduleLocalConfigDir) return moduleLocalConfigDir;
+  }
+
+  // 4. Tests must not fall through to the user's real global Bosun home.
   const sandbox = ensureTestRuntimeSandbox();
   if (sandbox?.configDir) return sandbox.configDir;
 
-  // 4. Platform-aware user home
+  // 5. Platform-aware user home
   const preferWindowsDirs =
     process.platform === "win32" && !isWslInteropRuntime();
   const baseDir = preferWindowsDirs
@@ -370,6 +369,20 @@ function loadConfigFile(configDir) {
   return { path: null, data: null };
 }
 
+export function readConfigDocument(repoRoot) {
+  const configDir = resolveConfigDir(repoRoot || process.cwd());
+  const configFile = loadConfigFile(configDir);
+  const configData =
+    configFile?.data && typeof configFile.data === "object"
+      ? configFile.data
+      : {};
+  return {
+    configDir,
+    configPath: configFile?.path || null,
+    configData,
+  };
+}
+
 // ── CLI arg parser ───────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
@@ -452,6 +465,24 @@ function parseEnvBoolean(value, defaultValue) {
   if (["true", "1", "yes", "y", "on"].includes(raw)) return true;
   if (["false", "0", "no", "n", "off"].includes(raw)) return false;
   return defaultValue;
+}
+
+function parseBoundedInteger(value, defaultValue, { min = null, max = null } = {}) {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  if (!Number.isFinite(parsed)) return defaultValue;
+  if (Number.isFinite(min) && parsed < min) return defaultValue;
+  if (Number.isFinite(max) && parsed > max) return defaultValue;
+  return parsed;
+}
+
+function parseBoundedNumber(value, defaultValue, { min = null, max = null } = {}) {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return defaultValue;
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed)) return defaultValue;
+  if (Number.isFinite(min) && parsed < min) return defaultValue;
+  if (Number.isFinite(max) && parsed > max) return defaultValue;
+  return parsed;
 }
 
 function isEnvEnabled(value, defaultValue = false) {
@@ -872,8 +903,7 @@ function normalizeKanbanBackend(value) {
   if (
     backend === "internal" ||
     backend === "github" ||
-    backend === "jira" ||
-    backend === "vk"
+    backend === "jira"
   ) {
     return backend;
   }
@@ -1258,7 +1288,6 @@ export function loadConfig(argv = process.argv, options = {}) {
   const projectName =
     cli["project-name"] ||
     process.env.PROJECT_NAME ||
-    process.env.VK_PROJECT_NAME ||
     selectedRepository?.projectName ||
     configData.projectName ||
     detectProjectName(configDir, repoRoot);
@@ -1285,11 +1314,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     )
       .toString()
       .toLowerCase() ||
-    (String(findOrchestratorScript(configDir, repoRoot)).includes(
-      "ve-orchestrator",
-    )
-      ? "virtengine"
-      : "generic");
+    "generic";
 
   // ── Orchestrator ─────────────────────────────────────────
   const defaultScript =
@@ -1301,7 +1326,7 @@ export function loadConfig(argv = process.argv, options = {}) {
   const rawScript =
     cli.script || process.env.ORCHESTRATOR_SCRIPT || defaultScript;
   // Resolve relative paths against configDir (not cwd) so that
-  // "../ve-orchestrator.ps1" always resolves to scripts/ve-orchestrator.ps1
+  // relative script paths resolve correctly
   // regardless of what directory the process was started from.
   let scriptPath = resolve(configDir, rawScript);
   // If the resolved path doesn't exist and rawScript is just a filename (no path separators),
@@ -1440,8 +1465,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     !isEnvEnabled(process.env.OPENCODE_SDK_DISABLED, false);
 
   // ── Internal Executor ────────────────────────────────────
-  // Allows the monitor to run tasks via agent-pool directly instead of
-  // (or alongside) the VK executor. Modes: "internal" (default), "vk", "hybrid".
+  // Allows the monitor to run tasks via agent-pool directly. Modes: "internal" (default), "hybrid".
   const kanbanBackend = normalizeKanbanBackend(
     process.env.KANBAN_BACKEND || configData.kanban?.backend || "internal",
   );
@@ -1578,6 +1602,10 @@ export function loadConfig(argv = process.argv, options = {}) {
   validateKanbanBackendConfig({ kanbanBackend, kanban, jira });
 
   const internalExecutorConfig = configData.internalExecutor || {};
+  const workflowRecoveryConfig =
+    configData.workflowRecovery && typeof configData.workflowRecovery === "object"
+      ? configData.workflowRecovery
+      : {};
   const envInternalExecutorParallel = configFileHadInvalidJson
     ? undefined
     : process.env.INTERNAL_EXECUTOR_PARALLEL;
@@ -1629,8 +1657,43 @@ export function loadConfig(argv = process.argv, options = {}) {
     String(reviewAgentToggleRaw).trim() !== ""
       ? isEnvEnabled(reviewAgentToggleRaw, true)
       : internalExecutorConfig.reviewAgentEnabled !== false;
+  const workflowRecoveryMaxAttempts = parseBoundedInteger(
+    process.env.WORKFLOW_RECOVERY_MAX_ATTEMPTS ??
+      workflowRecoveryConfig.maxAttempts,
+    5,
+    { min: 1, max: 20 },
+  );
+  const workflowRecoveryEscalationThreshold = parseBoundedInteger(
+    process.env.WORKFLOW_RECOVERY_ESCALATION_THRESHOLD ??
+      workflowRecoveryConfig.escalationWarnAfterAttempts ??
+      workflowRecoveryConfig.escalationThreshold,
+    3,
+    { min: 1, max: workflowRecoveryMaxAttempts },
+  );
+  const workflowRecovery = Object.freeze({
+    maxAttempts: workflowRecoveryMaxAttempts,
+    escalationWarnAfterAttempts: workflowRecoveryEscalationThreshold,
+    baseBackoffMs: parseBoundedInteger(
+      process.env.WORKFLOW_RECOVERY_BACKOFF_BASE_MS ??
+        workflowRecoveryConfig.baseBackoffMs,
+      5000,
+      { min: 50, max: 60_000 },
+    ),
+    maxBackoffMs: parseBoundedInteger(
+      process.env.WORKFLOW_RECOVERY_BACKOFF_MAX_MS ??
+        workflowRecoveryConfig.maxBackoffMs,
+      60_000,
+      { min: 1000, max: 30 * 60 * 1000 },
+    ),
+    jitterRatio: parseBoundedNumber(
+      process.env.WORKFLOW_RECOVERY_BACKOFF_JITTER_RATIO ??
+        workflowRecoveryConfig.jitterRatio,
+      0.2,
+      { min: 0, max: 0.9 },
+    ),
+  });
   const internalExecutor = {
-    mode: ["vk", "internal", "hybrid"].includes(executorMode)
+    mode: ["internal", "hybrid"].includes(executorMode)
       ? executorMode
       : "internal",
     maxParallel: Number(
@@ -1744,35 +1807,11 @@ export function loadConfig(argv = process.argv, options = {}) {
     projectRequirements,
   };
 
-  // ── Vibe-Kanban ──────────────────────────────────────────
-  const vkRecoveryPort = process.env.VK_RECOVERY_PORT || "54089";
-  const vkRecoveryHost =
-    process.env.VK_RECOVERY_HOST || process.env.VK_HOST || "0.0.0.0";
-  const vkEndpointUrl =
-    process.env.VK_ENDPOINT_URL ||
-    process.env.VK_BASE_URL ||
-    `http://127.0.0.1:${vkRecoveryPort}`;
-  const vkPublicUrl = process.env.VK_PUBLIC_URL || process.env.VK_WEB_URL || "";
-  const vkTaskUrlTemplate = process.env.VK_TASK_URL_TEMPLATE || "";
-  const vkRecoveryCooldownMin = Number(
-    process.env.VK_RECOVERY_COOLDOWN_MIN || "10",
-  );
-  const vkSpawnDefault =
-    configData.vkSpawnEnabled !== undefined
-      ? configData.vkSpawnEnabled
-      : mode !== "generic";
-  const vkRequiredByExecutor =
-    internalExecutor.mode === "vk" || internalExecutor.mode === "hybrid";
-  const vkRequiredByBoard = kanban.backend === "vk";
-  const vkRuntimeRequired = vkRequiredByExecutor || vkRequiredByBoard;
-  const vkSpawnEnabled =
-    vkRuntimeRequired &&
-    !flags.has("no-vk-spawn") &&
-    !isEnvEnabled(process.env.VK_NO_SPAWN, false) &&
-    vkSpawnDefault;
-  const vkEnsureIntervalMs = Number(
-    cli["vk-ensure-interval"] || process.env.VK_ENSURE_INTERVAL || "60000",
-  );
+  // ── Tracing ──────────────────────────────────────────────
+  const tracingEndpoint =
+    process.env.BOSUN_OTEL_ENDPOINT || configData?.tracing?.endpoint || null;
+  const tracingEnabled = configData?.tracing?.enabled ?? Boolean(tracingEndpoint);
+  const tracingSampleRate = Number(configData?.tracing?.sampleRate ?? 1);
 
   // ── Telegram ─────────────────────────────────────────────
   const telegramToken = process.env.TELEGRAM_BOT_TOKEN || "";
@@ -1865,13 +1904,12 @@ export function loadConfig(argv = process.argv, options = {}) {
   //   }
   //
   // Env overrides:
-  //   VK_TARGET_BRANCH=origin/staging        (default branch)
   //   BRANCH_ROUTING_SCOPE_MAP=bosun:origin/ve/bosun-staging,veid:origin/staging
   //   AUTO_REBASE_ON_MERGE=true
   //   ASSESS_WITH_SDK=true
   const branchRoutingRaw = configData.branchRouting || {};
   const defaultTargetBranch =
-    process.env.VK_TARGET_BRANCH ||
+    process.env.DEFAULT_TARGET_BRANCH ||
     branchRoutingRaw.defaultBranch ||
     "origin/main";
   const scopeMapEnv = process.env.BRANCH_ROUTING_SCOPE_MAP || "";
@@ -1986,17 +2024,188 @@ export function loadConfig(argv = process.argv, options = {}) {
     .map((a) => a.trim())
     .filter(Boolean);
 
+  const parseListSetting = (value) => {
+    if (Array.isArray(value)) {
+      return value.map((entry) => String(entry || "").trim()).filter(Boolean);
+    }
+    return String(value || "")
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  };
+  const prAutomationData =
+    configData.prAutomation && typeof configData.prAutomation === "object"
+      ? configData.prAutomation
+      : {};
+  const prAutomation = Object.freeze({
+    attachMode: String(
+      process.env.BOSUN_PR_ATTACH_MODE ||
+        prAutomationData.attachMode ||
+        "all",
+    )
+      .trim()
+      .toLowerCase(),
+    trustedAuthors: parseListSetting(
+      process.env.BOSUN_PR_TRUSTED_AUTHORS ?? prAutomationData.trustedAuthors ?? [],
+    ),
+    allowTrustedFixes: isEnvEnabled(
+      process.env.BOSUN_PR_ALLOW_TRUSTED_FIXES ?? prAutomationData.allowTrustedFixes,
+      false,
+    ),
+    allowTrustedMerges: isEnvEnabled(
+      process.env.BOSUN_PR_ALLOW_TRUSTED_MERGES ?? prAutomationData.allowTrustedMerges,
+      false,
+    ),
+    assistiveActions: Object.freeze({
+      installOnSetup: isEnvEnabled(
+        process.env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP ?? prAutomationData?.assistiveActions?.installOnSetup,
+        false,
+      ),
+    }),
+  });
+  const gatesData =
+    configData.gates && typeof configData.gates === "object"
+      ? configData.gates
+      : {};
+  const gatesPrsData =
+    gatesData.prs && typeof gatesData.prs === "object"
+      ? gatesData.prs
+      : {};
+  const gatesChecksData =
+    gatesData.checks && typeof gatesData.checks === "object"
+      ? gatesData.checks
+      : {};
+  const gatesExecutionData =
+    gatesData.execution && typeof gatesData.execution === "object"
+      ? gatesData.execution
+      : {};
+  const gatesRuntimeData =
+    gatesData.runtime && typeof gatesData.runtime === "object"
+      ? gatesData.runtime
+      : {};
+  const repoVisibilityRaw = String(
+    process.env.BOSUN_GATES_REPO_VISIBILITY ||
+      gatesPrsData.repoVisibility ||
+      "unknown",
+  )
+    .trim()
+    .toLowerCase();
+  const repoVisibility = ["public", "private", "unknown"].includes(repoVisibilityRaw)
+    ? repoVisibilityRaw
+    : "unknown";
+  const automationPreferenceRaw = String(
+    process.env.BOSUN_GATES_AUTOMATION_PREFERENCE ||
+      gatesPrsData.automationPreference ||
+      (repoVisibility === "public" ? "actions-first" : "runtime-first"),
+  )
+    .trim()
+    .toLowerCase();
+  const automationPreference = ["runtime-first", "actions-first"].includes(automationPreferenceRaw)
+    ? automationPreferenceRaw
+    : (repoVisibility === "public" ? "actions-first" : "runtime-first");
+  const githubActionsBudgetRaw = String(
+    process.env.BOSUN_GATES_ACTIONS_BUDGET ||
+      gatesPrsData.githubActionsBudget ||
+      "ask-user",
+  )
+    .trim()
+    .toLowerCase();
+  const githubActionsBudget = ["ask-user", "available", "limited"].includes(githubActionsBudgetRaw)
+    ? githubActionsBudgetRaw
+    : "ask-user";
+  const checkModeRaw = String(
+    process.env.BOSUN_GATES_CHECK_MODE ||
+      gatesChecksData.mode ||
+      "all",
+  )
+    .trim()
+    .toLowerCase();
+  const checkMode = ["all", "required-only"].includes(checkModeRaw)
+    ? checkModeRaw
+    : "all";
+  const gates = Object.freeze({
+    prs: Object.freeze({
+      repoVisibility,
+      automationPreference,
+      githubActionsBudget,
+    }),
+    checks: Object.freeze({
+      mode: checkMode,
+      requiredPatterns: parseListSetting(
+        process.env.BOSUN_REQUIRED_CHECK_PATTERNS ?? gatesChecksData.requiredPatterns ?? [],
+      ),
+      optionalPatterns: parseListSetting(
+        process.env.BOSUN_OPTIONAL_CHECK_PATTERNS ?? gatesChecksData.optionalPatterns ?? [],
+      ),
+      ignorePatterns: parseListSetting(
+        process.env.BOSUN_IGNORE_CHECK_PATTERNS ?? gatesChecksData.ignorePatterns ?? [],
+      ),
+      requireAnyRequiredCheck: isEnvEnabled(
+        process.env.BOSUN_GATES_REQUIRE_ANY_REQUIRED_CHECK ?? gatesChecksData.requireAnyRequiredCheck,
+        true,
+      ),
+      treatPendingRequiredAsBlocking: isEnvEnabled(
+        process.env.BOSUN_GATES_TREAT_PENDING_REQUIRED_AS_BLOCKING ?? gatesChecksData.treatPendingRequiredAsBlocking,
+        true,
+      ),
+      treatNeutralAsPass: isEnvEnabled(
+        process.env.BOSUN_GATES_TREAT_NEUTRAL_AS_PASS ?? gatesChecksData.treatNeutralAsPass,
+        false,
+      ),
+    }),
+    execution: Object.freeze({
+      sandboxMode: String(
+        process.env.CODEX_SANDBOX ||
+          gatesExecutionData.sandboxMode ||
+          "workspace-write",
+      )
+        .trim()
+        .toLowerCase(),
+      containerIsolationEnabled: isEnvEnabled(
+        process.env.CONTAINER_ENABLED ?? gatesExecutionData.containerIsolationEnabled,
+        false,
+      ),
+      containerRuntime: String(
+        process.env.CONTAINER_RUNTIME ||
+          gatesExecutionData.containerRuntime ||
+          "auto",
+      )
+        .trim()
+        .toLowerCase(),
+      networkAccess: String(
+        process.env.BOSUN_EXECUTION_NETWORK_ACCESS ||
+          gatesExecutionData.networkAccess ||
+          "default",
+      )
+        .trim()
+        .toLowerCase(),
+    }),
+    runtime: Object.freeze({
+      enforceBacklog: isEnvEnabled(
+        process.env.BOSUN_GATES_ENFORCE_BACKLOG ??
+          gatesRuntimeData.enforceBacklog ??
+          configData.enforceBacklog,
+        true,
+      ),
+      agentTriggerControl: isEnvEnabled(
+        process.env.BOSUN_GATES_AGENT_TRIGGER_CONTROL ??
+          gatesRuntimeData.agentTriggerControl ??
+          configData.agentTriggerControl,
+        true,
+      ),
+    }),
+  });
+
   // ── Status file ──────────────────────────────────────────
   const cacheDir = resolve(
     repoRoot,
     configData.cacheDir || selectedRepository?.cacheDir || ".cache",
   );
-  // Default matches ve-orchestrator.ps1's $script:StatusStatePath
   const statusPath =
     process.env.STATUS_FILE ||
     configData.statusPath ||
     selectedRepository?.statusPath ||
-    resolve(cacheDir, "ve-orchestrator-status.json");
+    resolve(cacheDir, "bosun-status.json");
   const lockBase =
     configData.telegramPollLockPath ||
     selectedRepository?.telegramPollLockPath ||
@@ -2015,6 +2224,7 @@ export function loadConfig(argv = process.argv, options = {}) {
   const agentPrompts = loadAgentPrompts(configDir, repoRoot, configData);
   const agentPromptSources = agentPrompts._sources || {};
   delete agentPrompts._sources;
+  const markdownSafety = resolveMarkdownSafetyPolicy(configData, { rootDir: repoRoot });
   const agentPromptCatalog = getAgentPromptDefinitions();
 
   // ── First-run detection ──────────────────────────────────
@@ -2059,6 +2269,7 @@ export function loadConfig(argv = process.argv, options = {}) {
 
     // Internal Executor
     internalExecutor,
+    workflowRecovery,
     executorMode: internalExecutor.mode,
     kanban,
     kanbanSource,
@@ -2080,16 +2291,11 @@ export function loadConfig(argv = process.argv, options = {}) {
     // Autofix mode hint (informational — actual detection uses isDevMode())
     autofixMode: process.env.AUTOFIX_MODE || "auto",
 
-    // Vibe-Kanban
-    vkRecoveryPort,
-    vkRecoveryHost,
-    vkEndpointUrl,
-    vkPublicUrl,
-    vkTaskUrlTemplate,
-    vkRecoveryCooldownMin,
-    vkRuntimeRequired,
-    vkSpawnEnabled,
-    vkEnsureIntervalMs,
+    tracing: {
+      enabled: tracingEnabled,
+      endpoint: tracingEndpoint,
+      sampleRate: Number.isFinite(tracingSampleRate) ? tracingSampleRate : 1,
+    },
 
     // Telegram
     telegramToken,
@@ -2103,8 +2309,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     telegramVerbosity,
 
     triggerSystem,
-    workflows,
-  workflowWorktreeRecoveryCooldownMin,
+    workflowWorktreeRecoveryCooldownMin,
     worktreeBootstrap,
 
     // GitHub Reconciler
@@ -2124,12 +2329,15 @@ export function loadConfig(argv = process.argv, options = {}) {
     // Branch Routing
     branchRouting,
 
+    // PR automation trust policy
+    prAutomation,
+    gates,
+
     // Fleet Coordination
     fleet,
 
     // Workflow template defaults + opt-in typed workflow entries
     workflowDefaults: Object.freeze(workflowDefaults),
-    workflows,
 
     // Paths
     statusPath,
@@ -2152,6 +2360,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     agentPrompts,
     agentPromptSources,
     agentPromptCatalog,
+    markdownSafety,
 
     // First run
     isFirstRun,
@@ -2210,31 +2419,19 @@ function findOrchestratorScript(configDir, repoRoot) {
     (process.platform !== "win32" && !orchestratorEnv.endsWith(".ps1"));
 
   const shCandidates = [
-    resolve(configDir, "ve-orchestrator.sh"),
     resolve(configDir, "orchestrator.sh"),
-    resolve(configDir, "..", "ve-orchestrator.sh"),
     resolve(configDir, "..", "orchestrator.sh"),
-    resolve(repoRoot, "scripts", "ve-orchestrator.sh"),
     resolve(repoRoot, "scripts", "orchestrator.sh"),
-    resolve(repoRoot, "ve-orchestrator.sh"),
     resolve(repoRoot, "orchestrator.sh"),
-    resolve(process.cwd(), "ve-orchestrator.sh"),
     resolve(process.cwd(), "orchestrator.sh"),
-    resolve(process.cwd(), "scripts", "ve-orchestrator.sh"),
   ];
 
   const psCandidates = [
-    resolve(configDir, "ve-orchestrator.ps1"),
     resolve(configDir, "orchestrator.ps1"),
-    resolve(configDir, "..", "ve-orchestrator.ps1"),
     resolve(configDir, "..", "orchestrator.ps1"),
-    resolve(repoRoot, "scripts", "ve-orchestrator.ps1"),
     resolve(repoRoot, "scripts", "orchestrator.ps1"),
-    resolve(repoRoot, "ve-orchestrator.ps1"),
     resolve(repoRoot, "orchestrator.ps1"),
-    resolve(process.cwd(), "ve-orchestrator.ps1"),
     resolve(process.cwd(), "orchestrator.ps1"),
-    resolve(process.cwd(), "scripts", "ve-orchestrator.ps1"),
   ];
 
   const candidates = preferShellScript
@@ -2244,8 +2441,8 @@ function findOrchestratorScript(configDir, repoRoot) {
     if (existsSync(p)) return p;
   }
   return preferShellScript
-    ? resolve(configDir, "..", "ve-orchestrator.sh")
-    : resolve(configDir, "..", "ve-orchestrator.ps1");
+    ? resolve(configDir, "..", "orchestrator.sh")
+    : resolve(configDir, "..", "orchestrator.ps1");
 }
 
 // ── Exports ──────────────────────────────────────────────────────────────────
@@ -2260,3 +2457,5 @@ export {
   resolveAgentRepoRoot,
 };
 export default loadConfig;
+
+

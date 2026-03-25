@@ -2,7 +2,7 @@
  *  Tab: Infra — worktrees, shared workspaces, presence
  * ────────────────────────────────────────────────────────────── */
 import { h } from "preact";
-import { useState } from "preact/hooks";
+import { useState, useMemo } from "preact/hooks";
 import htm from "htm";
 
 const html = htm.bind(h);
@@ -22,6 +22,7 @@ import {
 } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
 import { cloneValue, formatRelative, formatBytes, downloadFile } from "../modules/utils.js";
+import { buildWorktreeRecoveryViewModel } from "../modules/worktree-recovery.js";
 import {
   Card as LegacyCard,
   Badge as LegacyBadge,
@@ -78,6 +79,9 @@ export function InfraTab() {
     ? wtRaw
     : wtRaw?.worktrees || wtRaw?.data || [];
   const wStats = (wtRaw && !Array.isArray(wtRaw) ? wtRaw.stats : null) || {};
+  const recovery = buildWorktreeRecoveryViewModel(wStats.recovery || null);
+  const liveWorktreeTotal = Number(wStats.liveTotal ?? wStats.total ?? wts.length ?? 0);
+  const hasRecoveryOnlySignal = liveWorktreeTotal === 0 && recovery.events.length > 0;
 
   /* Shared workspaces */
   const swRaw = sharedWorkspaces?.value;
@@ -97,6 +101,36 @@ export function InfraTab() {
   const [sharedNote, setSharedNote] = useState("");
   const [expandedWt, setExpandedWt] = useState(null);
   const [worktreeDetails, setWorktreeDetails] = useState({});
+  const [wtSearch, setWtSearch] = useState("");
+  const [wtSort, setWtSort] = useState("age");
+
+  const filteredWts = useMemo(() => {
+    let list = wts;
+    if (wtSearch.trim()) {
+      const q = wtSearch.trim().toLowerCase();
+      list = list.filter((wt) =>
+        (wt.branch || "").toLowerCase().includes(q) ||
+        (wt.path || "").toLowerCase().includes(q) ||
+        (wt.taskKey || "").toLowerCase().includes(q) ||
+        (wt.status || "").toLowerCase().includes(q),
+      );
+    }
+    const sorted = [...list];
+    switch (wtSort) {
+      case "age-asc":
+        sorted.sort((a, b) => (b.age || 0) - (a.age || 0));
+        break;
+      case "branch":
+        sorted.sort((a, b) => (a.branch || "").localeCompare(b.branch || ""));
+        break;
+      case "status":
+        sorted.sort((a, b) => (a.status || "").localeCompare(b.status || ""));
+        break;
+      default:
+        sorted.sort((a, b) => (a.age || 0) - (b.age || 0));
+    }
+    return sorted;
+  }, [wts, wtSearch, wtSort]);
 
   /* ── Worktree actions ── */
   const handlePrune = async () => {
@@ -522,8 +556,8 @@ export function InfraTab() {
             <!-- Stats row -->
             <${Stack} direction="row" spacing=${2}>
               <${Paper} variant="outlined" sx=${{ p: 1.5, textAlign: "center", flex: 1 }}>
-                <${Typography} variant="h5">${wStats.total ?? wts.length}<//>
-                <${Typography} variant="caption" color="text.secondary">Total<//>
+                <${Typography} variant="h5">${liveWorktreeTotal}<//>
+                <${Typography} variant="caption" color="text.secondary">Live Total<//>
               <//>
               <${Paper} variant="outlined" sx=${{ p: 1.5, textAlign: "center", flex: 1 }}>
                 <${Typography} variant="h5" sx=${{ color: "success.main" }}>${wStats.active ?? 0}<//>
@@ -533,6 +567,62 @@ export function InfraTab() {
                 <${Typography} variant="h5" sx=${{ color: "warning.main" }}>${wStats.stale ?? 0}<//>
                 <${Typography} variant="caption" color="text.secondary">Stale<//>
               <//>
+            <//>
+
+            <${Paper} variant="outlined" sx=${{ p: 1.5 }}>
+              <${Stack} direction="row" justifyContent="space-between" alignItems="flex-start" spacing=${1}>
+                <${Box}>
+                  <${Typography} fontWeight=${600}>Recovery Diagnostics<//>
+                  <${Typography} variant="body2" color="text.secondary">${recovery.headline}<//>
+                  <${Typography} variant="caption" color="text.secondary">${recovery.summary}<//>
+                <//>
+                <${Chip}
+                  label=${recovery.health}
+                  size="small"
+                  color=${recovery.tone === "error" ? "error" : recovery.tone === "warning" ? "warning" : "success"}
+                  variant="outlined"
+                />
+              <//>
+              ${hasRecoveryOnlySignal && html`
+                <${Alert} severity="info" sx=${{ mt: 1 }}>
+                  Live totals only count registry-managed worktrees that are still active. Recovery events can reference recreated workflow worktrees that no longer appear in the live registry.
+                <//>
+              `}
+              ${recovery.events.slice(0, 4).map((event) => html`
+                <${Paper} key=${event.key} variant="outlined" sx=${{ p: 1, mt: 1, bgcolor: "background.default" }}>
+                  <${Typography} variant="body2" fontWeight=${600}>${event.title}<//>
+                  <${Typography} variant="caption" color="text.secondary">${event.detail}<//>
+                  ${event.error && html`<${Typography} variant="caption" color="error.main" sx=${{ display: "block", mt: 0.5 }}>${event.error}<//>`}
+                <//>
+              `)}
+            <//>
+
+            <${Stack} direction="row" spacing=${1} alignItems="center">
+              <${TextField}
+                size="small"
+                fullWidth
+                placeholder="Search worktrees…"
+                value=${wtSearch}
+                onInput=${(e) => setWtSearch(e.target.value)}
+                InputProps=${{ startAdornment: html`<${InputAdornment} position="start">${resolveIcon(":search:")}<//>` }}
+              />
+              <${FormControl} size="small" sx=${{ minWidth: 130 }}>
+                <${Select}
+                  value=${wtSort}
+                  onChange=${(e) => setWtSort(e.target.value)}
+                  displayEmpty
+                >
+                  <${MenuItem} value="age">Newest first<//>
+                  <${MenuItem} value="age-asc">Oldest first<//>
+                  <${MenuItem} value="branch">Branch A–Z<//>
+                  <${MenuItem} value="status">Status<//>
+                <//>
+              <//>
+              <${Chip}
+                label=${`${filteredWts.length} of ${wts.length}`}
+                size="small"
+                variant="outlined"
+              />
             <//>
 
             <${Stack} direction="row" spacing=${1}>
@@ -549,20 +639,20 @@ export function InfraTab() {
               <//>
             <//>
 
-            ${wts.map((wt, idx) => {
-              const key = wt?.path || wt?.branch || wt?.taskKey || String(idx);
+            ${filteredWts.map((wt) => {
+              const key = wt?.path || wt?.branch || wt?.taskKey;
               const detail = worktreeDetails[key] || {};
               const detailLoading = Boolean(detail?.loading);
               const detailError = detail?.error;
               return html`
-                <${Card} key=${wt.branch || wt.path || idx} variant="outlined" sx=${{ bgcolor: "background.paper" }}>
+                <${Card} key=${key} variant="outlined" sx=${{ bgcolor: "background.paper" }}>
                   <${CardContent}
                     sx=${{ cursor: "pointer" }}
                     onClick=${() => {
                       haptic();
-                      const nextOpen = expandedWt === idx ? null : idx;
+                      const nextOpen = expandedWt === key ? null : key;
                       setExpandedWt(nextOpen);
-                      if (nextOpen === idx) loadWorktreePeek(wt);
+                      if (nextOpen === key) loadWorktreePeek(wt);
                     }}
                   >
                     <${Stack} direction="row" justifyContent="space-between" alignItems="center">
@@ -584,9 +674,15 @@ export function InfraTab() {
                       Age ${ageString(wt.age)}${wt.taskKey ? ` · ${wt.taskKey}` : ""}${wt.owner ? ` · Owner ${wt.owner}` : ""}
                     <//>
 
-                    ${expandedWt === idx && html`
+                    ${expandedWt === key && html`
                       <${Box} sx=${{ mt: 1 }}>
-                        ${detailLoading && html`<${CircularProgress} size=${16} /> <${Typography} variant="caption">Loading worktree details…<//>`}
+                        ${detailLoading && html`
+                          <${Stack} spacing=${0.5}>
+                            <${Skeleton} variant="rounded" height=${60} />
+                            <${Skeleton} variant="text" width="60%" />
+                            <${Skeleton} variant="text" width="40%" />
+                          <//>
+                        `}
                         ${detailError && html`<${Alert} severity="error" variant="outlined" sx=${{ mt: 0.5 }}>${detailError}<//>`}
                         ${detail.gitStatus && html`<${Paper} variant="outlined" sx=${{ p: 1, mt: 0.5, fontFamily: "monospace", fontSize: "0.8em", whiteSpace: "pre-wrap" }}>${detail.gitStatus}<//>`}
                         ${detail.lastCommit && html`<${Typography} variant="caption" color="text.secondary" sx=${{ display: "block", mt: 0.5 }}>Last commit: ${detail.lastCommit?.slice(0, 80)}<//>`}
@@ -614,7 +710,7 @@ export function InfraTab() {
                 <//>
               `;
             })}
-            ${!wts.length && html`<${EmptyState} message="No worktrees tracked." />`}
+            ${!filteredWts.length && html`<${EmptyState} message=${wtSearch ? "No worktrees match filter." : "No worktrees tracked."} />`}
           <//>
         <//>
       <//>

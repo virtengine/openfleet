@@ -269,7 +269,7 @@ Regardless of installation method, the first visit to `https://localhost:3080` l
 
 1. **Project identity** — repository name and workspace shape.
 2. **Executor defaults** — Codex, Copilot, Claude, Gemini, or OpenCode.
-3. **Task backend** — internal, GitHub Issues, Jira, or Vibe-Kanban.
+3. **Task backend** — internal, GitHub Issues, or Jira.
 4. **Control surfaces** — Telegram Mini App, sentinel, desktop settings.
 5. **Credentials** — API keys, tokens, and integration secrets.
 

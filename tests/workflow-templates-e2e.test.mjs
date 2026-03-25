@@ -1052,20 +1052,6 @@ describe("workflow-templates E2E execution", () => {
     });
   });
 
-  describe("VE Orchestrator Lite (template-ve-orchestrator-lite)", () => {
-    it("runs lightweight orchestration flow", async () => {
-      const installed = installTemplate("template-ve-orchestrator-lite", engine);
-      const ctx = await engine.execute(installed.id, {
-        taskId: "TASK-VE-1",
-        taskTitle: "Quick fix",
-        executor: "codex",
-      }, { force: true });
-
-      expect(ctx).toBeDefined();
-      expect(ctx.errors).toEqual([]);
-    });
-  });
-
   // ═══════════════════════════════════════════════════════════════════════
   //  Cross-Cutting Tests
   // ═══════════════════════════════════════════════════════════════════════

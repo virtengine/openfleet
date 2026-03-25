@@ -718,6 +718,78 @@ function maskValue(val) {
   return "••••••" + s.slice(-4);
 }
 
+const EXECUTOR_SECTION_ORDER = [
+  "Runtime & Pool",
+  "Routing & Planning",
+  "SDK Availability",
+  "Provider Credentials",
+  "Codex Models",
+  "Claude Models",
+  "Gemini Models",
+  "Other",
+];
+
+const EXECUTOR_SECTION_DESCRIPTIONS = {
+  "Runtime & Pool": "Core runtime behavior for the internal executor pool, including parallelism, SDK selection, and timeouts.",
+  "Routing & Planning": "How Bosun distributes tasks, chooses fallback executors, and shapes planning behavior.",
+  "SDK Availability": "Enable or disable SDK families from the runtime picker and task execution pool.",
+  "Provider Credentials": "API credentials used by executor backends.",
+  "Codex Models": "Codex-specific model, profile, and subagent settings.",
+  "Claude Models": "Claude-specific model settings.",
+  "Gemini Models": "Gemini-specific model settings.",
+  "Other": "Additional executor settings.",
+};
+
+function getExecutorSection(def) {
+  const key = String(def?.key || "");
+  if (!key) return "Other";
+  if ([
+    "EXECUTOR_MODE",
+    "INTERNAL_EXECUTOR_PARALLEL",
+    "INTERNAL_EXECUTOR_SDK",
+    "INTERNAL_EXECUTOR_TIMEOUT_MS",
+    "INTERNAL_EXECUTOR_MAX_RETRIES",
+    "INTERNAL_EXECUTOR_POLL_MS",
+    "PRIMARY_AGENT",
+  ].includes(key)) return "Runtime & Pool";
+  if ([
+    "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED",
+    "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
+    "EXECUTORS",
+    "EXECUTOR_DISTRIBUTION",
+    "FAILOVER_STRATEGY",
+    "COMPLEXITY_ROUTING_ENABLED",
+    "PROJECT_REQUIREMENTS_PROFILE",
+  ].includes(key)) return "Routing & Planning";
+  if (key.endsWith("_SDK_DISABLED")) return "SDK Availability";
+  if (key.endsWith("API_KEY")) return "Provider Credentials";
+  if (key.startsWith("CODEX_")) return "Codex Models";
+  if (key.startsWith("CLAUDE_")) return "Claude Models";
+  if (key.startsWith("GEMINI_") || key.startsWith("GOOGLE_")) return "Gemini Models";
+  return "Other";
+}
+
+function groupExecutorSettings(defs = []) {
+  const groups = new Map();
+  for (const def of defs) {
+    const section = getExecutorSection(def);
+    if (!groups.has(section)) groups.set(section, []);
+    groups.get(section).push(def);
+  }
+  return EXECUTOR_SECTION_ORDER
+    .filter((section) => groups.has(section))
+    .map((section) => ({
+      title: section,
+      description: EXECUTOR_SECTION_DESCRIPTIONS[section] || "",
+      defs: groups.get(section),
+    }));
+}
+
+function formatCountdownSeconds(ms) {
+  const remaining = Math.max(0, Number(ms) || 0);
+  return Math.ceil(remaining / 1000);
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  ServerConfigMode — .env management UI
  * ═══════════════════════════════════════════════════════════════ */
@@ -750,8 +822,10 @@ function ServerConfigMode() {
   /* Save flow */
   const [saving, setSaving] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [restartCountdown, setRestartCountdown] = useState(null);
 
   const tooltipTimer = useRef(null);
+  const restartCountdownTimer = useRef(null);
 
   /* ─── Load server settings on mount ─── */
   const fetchSettings = useCallback(async (opts = {}) => {
@@ -801,6 +875,16 @@ function ServerConfigMode() {
 
   useEffect(() => { fetchSettings(); }, [fetchSettings]);
 
+  const clearRestartCountdown = useCallback(() => {
+    if (restartCountdownTimer.current) {
+      clearInterval(restartCountdownTimer.current);
+      restartCountdownTimer.current = null;
+    }
+    setRestartCountdown(null);
+  }, []);
+
+  useEffect(() => () => clearRestartCountdown(), [clearRestartCountdown]);
+
   /* ─── Grouped settings with search + advanced filter ─── */
   const grouped = useMemo(() => getGroupedSettings(showAdvanced), [showAdvanced]);
   const isContextShreddingSetting = useCallback((def) => {
@@ -830,6 +914,15 @@ function ServerConfigMode() {
     [edits, serverData],
   );
 
+  const getReloadDelayMs = useCallback(
+    (changes = null) => {
+      const raw = changes?.ENV_RELOAD_DELAY_MS ?? getValue("ENV_RELOAD_DELAY_MS") ?? "";
+      const parsed = Number.parseInt(String(raw || ""), 10);
+      return Number.isFinite(parsed) ? Math.max(500, parsed) : 5000;
+    },
+    [getValue],
+  );
+
   /* ─── Determine if a value matches its default ─── */
   const isDefault = useCallback(
     (def) => {
@@ -853,7 +946,9 @@ function ServerConfigMode() {
   const serverChangeCount = useMemo(() => Object.keys(edits).length, [edits]);
   const externalPendingKeys = useMemo(() => {
     const current = pendingChanges.value || {};
-    return Object.keys(current).filter((key) => key.startsWith("settings-voice-"));
+    return Object.keys(current).filter(
+      (key) => key.startsWith("settings-") && key !== "settings-server",
+    );
   }, [pendingChanges.value]);
   const externalChangeCount = externalPendingKeys.length;
   const changeCount = serverChangeCount + externalChangeCount;
@@ -880,6 +975,22 @@ function ServerConfigMode() {
       return def?.restart;
     });
   }, [edits]);
+
+  const restartCountdownSeconds = restartCountdown
+    ? formatCountdownSeconds(restartCountdown.remainingMs)
+    : null;
+
+  useEffect(() => {
+    if (!restartCountdown) return undefined;
+    if (restartCountdown.remainingMs > 0 || !wsConnected.value) return undefined;
+    const timer = setTimeout(() => {
+      setRestartCountdown((current) => {
+        if (!current || current.remainingMs > 0) return current;
+        return null;
+      });
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [restartCountdown, wsConnected.value]);
 
   /* ─── Handlers ─── */
   const handleChange = useCallback(
@@ -959,6 +1070,7 @@ function ServerConfigMode() {
         changes[key] = value;
       }
       const changeKeys = Object.keys(changes);
+      const restartDelayMs = getReloadDelayMs(changes);
       if (changeKeys.length > 0) {
         let res;
         try {
@@ -1017,7 +1129,29 @@ function ServerConfigMode() {
       showToast("Settings saved successfully", "success");
       haptic("medium");
       if (hasRestartSetting && changeKeys.length > 0) {
-        showToast("Settings take effect after auto-reload (~2 seconds)", "info");
+        if (restartCountdownTimer.current) {
+          clearInterval(restartCountdownTimer.current);
+        }
+        setRestartCountdown({
+          remainingMs: restartDelayMs,
+          totalMs: restartDelayMs,
+          keys: changeKeys.filter((key) => {
+            const def = SETTINGS_SCHEMA.find((entry) => entry.key === key);
+            return def?.restart;
+          }),
+        });
+        restartCountdownTimer.current = setInterval(() => {
+          setRestartCountdown((current) => {
+            if (!current) return current;
+            const nextRemaining = Math.max(0, current.remainingMs - 1000);
+            if (nextRemaining <= 0 && restartCountdownTimer.current) {
+              clearInterval(restartCountdownTimer.current);
+              restartCountdownTimer.current = null;
+            }
+            return { ...current, remainingMs: nextRemaining };
+          });
+        }, 1000);
+        showToast(`Restart-sensitive settings saved. Reload countdown started (${formatCountdownSeconds(restartDelayMs)}s).`, "info");
       }
     } catch (err) {
       let parsed = null;
@@ -1035,7 +1169,7 @@ function ServerConfigMode() {
     } finally {
       setSaving(false);
     }
-  }, [edits, hasRestartSetting, serverMeta, fetchSettings]);
+  }, [edits, hasRestartSetting, serverMeta, fetchSettings, getReloadDelayMs]);
 
   const handleCancelSave = useCallback(() => {
     setConfirmOpen(false);
@@ -1074,6 +1208,8 @@ function ServerConfigMode() {
           ? "Voice Endpoints"
           : key === "settings-voice-providers"
             ? "Voice Providers"
+            : key === "settings-pr-automation"
+              ? "PR Automation Trust Policy"
             : key,
       oldVal: "(unsaved)",
       newVal: "Will be saved",
@@ -1341,6 +1477,26 @@ function ServerConfigMode() {
       </div>
     `}
 
+    ${restartCountdown &&
+    html`
+      <div class="settings-banner ${restartCountdownSeconds <= 2 ? "settings-banner-warn" : "settings-banner-info"}">
+        <span>${resolveIcon(":refresh:")}</span>
+        <span class="settings-banner-text">
+          <strong>
+            ${restartCountdownSeconds > 0
+              ? `Reload scheduled in ${restartCountdownSeconds}s`
+              : wsOk
+                ? "Reload window elapsed"
+                : "Reloading now"}
+          </strong>
+          ${restartCountdown.keys?.length
+            ? ` — Applying restart-sensitive changes: ${restartCountdown.keys.slice(0, 3).join(", ")}${restartCountdown.keys.length > 3 ? ` +${restartCountdown.keys.length - 3} more` : ""}.`
+            : " — Applying restart-sensitive configuration updates."}
+          ${!wsOk ? " Connection may drop briefly while Bosun restarts." : " Connection may briefly reset while Bosun reloads."}
+        </span>
+      </div>
+    `}
+
     <!-- Search bar -->
     <div class="settings-search">
       <${SearchInput}
@@ -1442,6 +1598,12 @@ function ServerConfigMode() {
         <!-- GitHub Device Flow login card -->
         ${activeCategory === "github" && html`<${GitHubDeviceFlowCard} config=${serverData} />`}
 
+        <!-- Gates and safeguards editors -->
+        ${activeCategory === "gates" && html`
+          <${GatesEditor} />
+          <${PrAutomationTrustEditor} />
+        `}
+
         <!-- Context Shredding overview panel -->
         ${activeCategory === "context-shredding" && html`<${ContextShreddingPanel} getValue=${getValue} />`}
 
@@ -1469,11 +1631,19 @@ function ServerConfigMode() {
                 </div>
               <//>
             `
-          : html`
-              <${Card}>
-                ${catDefs.map((def) => renderSetting(def))}
-              <//>
-            `}
+          : activeCategory === "executor"
+            ? groupExecutorSettings(catDefs).map((section) => html`
+                <${Card} key=${section.title}>
+                  <div class="card-subtitle mb-sm" style="font-size:13px;font-weight:700">${section.title}</div>
+                  ${section.description && html`<div class="meta-text mb-sm">${section.description}</div>`}
+                  ${section.defs.map((def) => renderSetting(def))}
+                <//>
+              `)
+            : html`
+                <${Card}>
+                  ${catDefs.map((def) => renderSetting(def))}
+                <//>
+              `}
       `;
     })()}
 
@@ -1493,7 +1663,15 @@ function ServerConfigMode() {
     <div class=${`settings-save-bar ${changeCount > 0 ? 'settings-save-bar--dirty' : 'settings-save-bar--clean'}`}>
       <div class="save-bar-info">
         <span class=${`setting-modified-dot ${changeCount === 0 ? 'setting-modified-dot--clean' : ''}`}></span>
-        <span>${changeCount > 0 ? `${changeCount} unsaved change${changeCount !== 1 ? "s" : ""}` : "All changes saved"}</span>
+        <span>
+          ${changeCount > 0
+            ? `${changeCount} unsaved change${changeCount !== 1 ? "s" : ""}`
+            : restartCountdownSeconds != null
+              ? restartCountdownSeconds > 0
+                ? `Reload scheduled in ${restartCountdownSeconds}s`
+                : (wsOk ? "Waiting for runtime reload" : "Restarting now")
+              : "All changes saved"}
+        </span>
       </div>
       <div class="save-bar-actions">
         ${changeCount > 0 && html`
@@ -1537,7 +1715,7 @@ function ServerConfigMode() {
             <div class="settings-banner settings-banner-warn" style="margin-top:8px">
               <span>${resolveIcon(":refresh:")}</span>
               <span class="settings-banner-text">
-                Some changes require a restart. The server will auto-reload (~2 seconds).
+                Some changes require a restart. Bosun will begin reloading after about ${formatCountdownSeconds(getReloadDelayMs(edits))}s, and the countdown will stay visible after save.
               </span>
             </div>
           `}
@@ -1623,9 +1801,6 @@ function AppPreferencesMode() {
   const [notifyErrors, setNotifyErrors] = useState(true);
   const [notifyComplete, setNotifyComplete] = useState(true);
   const [debugMode, setDebugMode] = useState(false);
-  const [defaultMaxParallel, setDefaultMaxParallel] = useState(4);
-  const [defaultSdk, setDefaultSdk] = useState("auto");
-  const [defaultRegion, setDefaultRegion] = useState("auto");
   const [showRawJson, setShowRawJson] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
@@ -1683,16 +1858,13 @@ function AppPreferencesMode() {
   useEffect(() => {
     (async () => {
       try {
-        const [fs, ct, nu, ne, nc, dm, dmp, ds, dr] = await Promise.all([
+        const [fs, ct, nu, ne, nc, dm] = await Promise.all([
           cloudGet("fontSize"),
           cloudGet("colorTheme"),
           cloudGet("notifyUpdates"),
           cloudGet("notifyErrors"),
           cloudGet("notifyComplete"),
           cloudGet("debugMode"),
-          cloudGet("defaultMaxParallel"),
-          cloudGet("defaultSdk"),
-          cloudGet("defaultRegion"),
         ]);
         if (fs) {
           setFontSize(fs);
@@ -1706,9 +1878,6 @@ function AppPreferencesMode() {
         if (ne != null) setNotifyErrors(ne);
         if (nc != null) setNotifyComplete(nc);
         if (dm != null) setDebugMode(dm);
-        if (dmp != null) setDefaultMaxParallel(dmp);
-        if (ds) setDefaultSdk(ds);
-        if (dr) setDefaultRegion(dr);
       } catch (err) {
         console.warn('[AppPrefs] Failed to load preferences:', err);
       } finally {
@@ -1745,31 +1914,6 @@ function AppPreferencesMode() {
     showToast("Theme saved", "success");
   };
 
-  const handleDefaultMaxParallel = (v) => {
-    const val = Math.max(1, Math.min(20, Number(v)));
-    setDefaultMaxParallel(val);
-    cloudSet("defaultMaxParallel", val);
-    console.log('[AppPrefs] Saved: defaultMaxParallel', val);
-    haptic();
-    showToast("Preference saved", "success");
-  };
-
-  const handleDefaultSdk = (v) => {
-    setDefaultSdk(v);
-    cloudSet("defaultSdk", v);
-    console.log('[AppPrefs] Saved: defaultSdk', v);
-    haptic();
-    showToast("Preference saved", "success");
-  };
-
-  const handleDefaultRegion = (v) => {
-    setDefaultRegion(v);
-    cloudSet("defaultRegion", v);
-    console.log('[AppPrefs] Saved: defaultRegion', v);
-    haptic();
-    showToast("Preference saved", "success");
-  };
-
   /* Clear cache */
   const handleClearCache = async () => {
     const ok = await showConfirm("Clear all cached data and preferences?");
@@ -1782,9 +1926,6 @@ function AppPreferencesMode() {
       "notifyErrors",
       "notifyComplete",
       "debugMode",
-      "defaultMaxParallel",
-      "defaultSdk",
-      "defaultRegion",
     ];
     for (const k of keys) cloudRemove(k);
     showToast("Cache cleared — reload to apply", "success");
@@ -1802,9 +1943,6 @@ function AppPreferencesMode() {
       "notifyErrors",
       "notifyComplete",
       "debugMode",
-      "defaultMaxParallel",
-      "defaultSdk",
-      "defaultRegion",
     ];
     for (const k of keys) cloudRemove(k);
     setFontSize("medium");
@@ -1812,9 +1950,6 @@ function AppPreferencesMode() {
     setNotifyErrors(true);
     setNotifyComplete(true);
     setDebugMode(false);
-    setDefaultMaxParallel(4);
-    setDefaultSdk("auto");
-    setDefaultRegion("auto");
     setColorTheme("system");
     document.documentElement.removeAttribute("data-theme");
     document.documentElement.setAttribute(THEME_LOCK_ATTR, "system");
@@ -1982,52 +2117,6 @@ function AppPreferencesMode() {
       <//>
     <//>
 
-    <!-- ─── Executor Defaults ─── -->
-    <${Collapsible} title=${iconText(":settings: Executor Defaults")} defaultOpen=${false}>
-      <${Card}>
-        <div class="card-subtitle mb-sm">Default Max Parallel</div>
-        <div class="range-row mb-md">
-          <${Slider}
-            min=${1}
-            max=${20}
-            step=${1}
-            value=${defaultMaxParallel}
-            onChange=${(e, v) => setDefaultMaxParallel(v)}
-            onChangeCommitted=${(e, v) => handleDefaultMaxParallel(v)}
-          />
-          <span class="pill">${defaultMaxParallel}</span>
-        </div>
-
-        <div class="card-subtitle mb-sm">Default SDK</div>
-        <${SegmentedControl}
-          options=${[
-            { value: "codex", label: "Codex" },
-            { value: "copilot", label: "Copilot" },
-            { value: "claude", label: "Claude" },
-            { value: "auto", label: "Auto" },
-          ]}
-          value=${defaultSdk}
-          onChange=${handleDefaultSdk}
-        />
-
-        <div class="card-subtitle mt-md mb-sm">Default Region</div>
-        ${(() => {
-          const regions = configData.value?.regions || ["auto"];
-          const regionOptions = regions.map((r) => ({
-            value: r,
-            label: r.charAt(0).toUpperCase() + r.slice(1),
-          }));
-          return regions.length > 1
-            ? html`<${SegmentedControl}
-                options=${regionOptions}
-                value=${defaultRegion}
-                onChange=${handleDefaultRegion}
-              />`
-            : html`<div class="meta-text">Region: ${regions[0]}</div>`;
-        })()}
-      <//>
-    <//>
-
     <!-- ─── Advanced ─── -->
     <${Collapsible} title=${iconText(":settings: Advanced")} defaultOpen=${false}>
       <${Card}>
@@ -2127,6 +2216,508 @@ function AppPreferencesMode() {
           </div>
         </div>
       <//>
+    <//>
+  `;
+}
+
+function normalizeTrustedAuthorEntries(value) {
+  if (Array.isArray(value)) {
+    return [...new Set(value.map((entry) => String(entry || "").trim()).filter(Boolean))];
+  }
+  return [...new Set(
+    String(value || "")
+      .split(/[\n,]/)
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  )];
+}
+
+function normalizeGatePatternEntries(value) {
+  if (Array.isArray(value)) {
+    return [...new Set(value.map((entry) => String(entry || "").trim()).filter(Boolean))];
+  }
+  return [...new Set(
+    String(value || "")
+      .split(/[\n,]/)
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  )];
+}
+
+function normalizeGatesEditorState(policy = {}) {
+  const prs = policy?.prs && typeof policy.prs === "object" ? policy.prs : {};
+  const checks = policy?.checks && typeof policy.checks === "object" ? policy.checks : {};
+  const execution = policy?.execution && typeof policy.execution === "object" ? policy.execution : {};
+  const runtime = policy?.runtime && typeof policy.runtime === "object" ? policy.runtime : {};
+  const requiredPatterns = normalizeGatePatternEntries(
+    policy?.requiredPatternsText ?? policy?.requiredPatterns ?? checks.requiredPatterns,
+  );
+  const optionalPatterns = normalizeGatePatternEntries(
+    policy?.optionalPatternsText ?? policy?.optionalPatterns ?? checks.optionalPatterns,
+  );
+  const ignorePatterns = normalizeGatePatternEntries(
+    policy?.ignorePatternsText ?? policy?.ignorePatterns ?? checks.ignorePatterns,
+  );
+  const repoVisibilityRaw = String(policy?.repoVisibility ?? prs.repoVisibility ?? "unknown").trim().toLowerCase();
+  const automationPreferenceRaw = String(policy?.automationPreference ?? prs.automationPreference ?? "runtime-first").trim().toLowerCase();
+  const githubActionsBudgetRaw = String(policy?.githubActionsBudget ?? prs.githubActionsBudget ?? "ask-user").trim().toLowerCase();
+  const modeRaw = String(policy?.mode ?? checks.mode ?? "all").trim().toLowerCase();
+  return {
+    repoVisibility: ["public", "private", "unknown"].includes(repoVisibilityRaw) ? repoVisibilityRaw : "unknown",
+    automationPreference: ["runtime-first", "actions-first"].includes(automationPreferenceRaw) ? automationPreferenceRaw : "runtime-first",
+    githubActionsBudget: ["ask-user", "available", "limited"].includes(githubActionsBudgetRaw) ? githubActionsBudgetRaw : "ask-user",
+    mode: ["all", "required-only"].includes(modeRaw) ? modeRaw : "all",
+    requiredPatterns,
+    requiredPatternsText: requiredPatterns.join("\n"),
+    optionalPatterns,
+    optionalPatternsText: optionalPatterns.join("\n"),
+    ignorePatterns,
+    ignorePatternsText: ignorePatterns.join("\n"),
+    requireAnyRequiredCheck: (policy?.requireAnyRequiredCheck ?? checks.requireAnyRequiredCheck) !== false,
+    treatPendingRequiredAsBlocking: (policy?.treatPendingRequiredAsBlocking ?? checks.treatPendingRequiredAsBlocking) !== false,
+    treatNeutralAsPass: (policy?.treatNeutralAsPass ?? checks.treatNeutralAsPass) === true,
+    sandboxMode: String(policy?.sandboxMode ?? execution.sandboxMode ?? "workspace-write").trim().toLowerCase() || "workspace-write",
+    containerIsolationEnabled: (policy?.containerIsolationEnabled ?? execution.containerIsolationEnabled) === true,
+    containerRuntime: String(policy?.containerRuntime ?? execution.containerRuntime ?? "auto").trim().toLowerCase() || "auto",
+    networkAccess: String(policy?.networkAccess ?? execution.networkAccess ?? "default").trim().toLowerCase() || "default",
+    enforceBacklog: (policy?.enforceBacklog ?? runtime.enforceBacklog) !== false,
+    agentTriggerControl: (policy?.agentTriggerControl ?? runtime.agentTriggerControl) !== false,
+  };
+}
+
+function serializeGatesEditorState(policy = {}) {
+  const normalized = normalizeGatesEditorState(policy);
+  return JSON.stringify({
+    prs: {
+      repoVisibility: normalized.repoVisibility,
+      automationPreference: normalized.automationPreference,
+      githubActionsBudget: normalized.githubActionsBudget,
+    },
+    checks: {
+      mode: normalized.mode,
+      requiredPatterns: normalized.requiredPatterns,
+      optionalPatterns: normalized.optionalPatterns,
+      ignorePatterns: normalized.ignorePatterns,
+      requireAnyRequiredCheck: normalized.requireAnyRequiredCheck,
+      treatPendingRequiredAsBlocking: normalized.treatPendingRequiredAsBlocking,
+      treatNeutralAsPass: normalized.treatNeutralAsPass,
+    },
+    execution: {
+      sandboxMode: normalized.sandboxMode,
+      containerIsolationEnabled: normalized.containerIsolationEnabled,
+      containerRuntime: normalized.containerRuntime,
+      networkAccess: normalized.networkAccess,
+    },
+    runtime: {
+      enforceBacklog: normalized.enforceBacklog,
+      agentTriggerControl: normalized.agentTriggerControl,
+    },
+  });
+}
+
+function GatesEditor() {
+  const [policy, setPolicy] = useState(() => normalizeGatesEditorState());
+  const [savedPolicy, setSavedPolicy] = useState(() => normalizeGatesEditorState());
+  const [loading, setLoading] = useState(true);
+  const [dirty, setDirty] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+
+  const syncDirty = useCallback((nextPolicy, baseline = savedPolicy) => {
+    setDirty(serializeGatesEditorState(nextPolicy) !== serializeGatesEditorState(baseline));
+  }, [savedPolicy]);
+
+  const updatePolicy = useCallback((patch) => {
+    setPolicy((prev) => {
+      const next = { ...prev, ...patch };
+      syncDirty(next);
+      return next;
+    });
+  }, [syncDirty]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiFetch("/api/gates");
+        if (!(res?.ok || res?.gates)) {
+          throw new Error(res?.error || "Failed to load gates settings");
+        }
+        const normalized = normalizeGatesEditorState(res?.gates || {});
+        setPolicy(normalized);
+        setSavedPolicy(normalized);
+        setDirty(false);
+      } catch (err) {
+        setLoadError(err.message || "Failed to load gates settings");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    const key = "settings-gates";
+    setPendingChange(key, dirty);
+    return () => clearPendingChange(key);
+  }, [dirty]);
+
+  const savePolicy = useCallback(async () => {
+    try {
+      const payload = normalizeGatesEditorState(policy);
+      const res = await apiFetch("/api/gates", {
+        method: "POST",
+        body: JSON.stringify({
+          gates: {
+            prs: {
+              repoVisibility: payload.repoVisibility,
+              automationPreference: payload.automationPreference,
+              githubActionsBudget: payload.githubActionsBudget,
+            },
+            checks: {
+              mode: payload.mode,
+              requiredPatterns: payload.requiredPatterns,
+              optionalPatterns: payload.optionalPatterns,
+              ignorePatterns: payload.ignorePatterns,
+              requireAnyRequiredCheck: payload.requireAnyRequiredCheck,
+              treatPendingRequiredAsBlocking: payload.treatPendingRequiredAsBlocking,
+              treatNeutralAsPass: payload.treatNeutralAsPass,
+            },
+            execution: {
+              sandboxMode: payload.sandboxMode,
+              containerIsolationEnabled: payload.containerIsolationEnabled,
+              containerRuntime: payload.containerRuntime,
+              networkAccess: payload.networkAccess,
+            },
+            runtime: {
+              enforceBacklog: payload.enforceBacklog,
+              agentTriggerControl: payload.agentTriggerControl,
+            },
+          },
+        }),
+      });
+      if (!res?.ok) throw new Error(res?.error || "Save failed");
+      const normalized = normalizeGatesEditorState(res?.gates || payload);
+      setPolicy(normalized);
+      setSavedPolicy(normalized);
+      setDirty(false);
+      setLoadError(null);
+    } catch (err) {
+      throw new Error(err?.message || "Gates save failed");
+    }
+  }, [policy]);
+
+  const discardPolicy = useCallback(async () => {
+    setPolicy(savedPolicy);
+    setDirty(false);
+    setLoadError(null);
+  }, [savedPolicy]);
+
+  useEffect(() => {
+    return registerSettingsExternalEditor("settings-gates", {
+      isDirty: () => dirty,
+      save: savePolicy,
+      discard: discardPolicy,
+    });
+  }, [dirty, savePolicy, discardPolicy]);
+
+  if (loading) return html`<${SkeletonCard} height="120px" />`;
+
+  return html`
+    <${Card} title="Gates And Safeguards"
+      badge=${dirty ? html`<${Badge} variant="warning">Unsaved<//>` : null}>
+      <div class="meta-text" style="margin-bottom:10px">
+        Centralize Bosun’s blocking policy here: recommended PR automation posture, which CI checks actually gate merge, and the execution/runtime safety stance operators expect Bosun to honor.
+      </div>
+      ${loadError && html`<div class="settings-banner settings-banner-warn" style="margin-bottom:10px">${loadError}</div>`}
+
+      <div style="display:grid;grid-template-columns:1fr;gap:14px">
+        <div>
+          <div class="setting-row-label">Repository Visibility</div>
+          <${Select} size="small" value=${policy.repoVisibility} onChange=${(e) => updatePolicy({ repoVisibility: e.target.value })} fullWidth>
+            <${MenuItem} value="unknown">Unknown / not detected<//>
+            <${MenuItem} value="public">Public repository<//>
+            <${MenuItem} value="private">Private repository<//>
+          <//>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+          <div>
+            <div class="setting-row-label">Automation Preference</div>
+            <${Select} size="small" value=${policy.automationPreference} onChange=${(e) => updatePolicy({ automationPreference: e.target.value })} fullWidth>
+              <${MenuItem} value="runtime-first">Runtime-first<//>
+              <${MenuItem} value="actions-first">Actions-first<//>
+            <//>
+            <div class="meta-text" style="margin-top:4px">Use as Bosun’s recommended posture, not a forced mode switch.</div>
+          </div>
+
+          <div>
+            <div class="setting-row-label">GitHub Actions Budget</div>
+            <${Select} size="small" value=${policy.githubActionsBudget} onChange=${(e) => updatePolicy({ githubActionsBudget: e.target.value })} fullWidth>
+              <${MenuItem} value="ask-user">Ask user during setup<//>
+              <${MenuItem} value="available">Runtime budget available<//>
+              <${MenuItem} value="limited">Runtime budget limited<//>
+            <//>
+          </div>
+        </div>
+
+        <div>
+          <div class="setting-row-label">Merge Check Mode</div>
+          <${Select} size="small" value=${policy.mode} onChange=${(e) => updatePolicy({ mode: e.target.value })} fullWidth>
+            <${MenuItem} value="all">All non-ignored checks block by default<//>
+            <${MenuItem} value="required-only">Only required patterns block merge<//>
+          <//>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+          <div>
+            <div class="setting-row-label">Required Check Patterns</div>
+            <${TextField} multiline minRows=${3} size="small" value=${policy.requiredPatternsText} onInput=${(e) => updatePolicy({ requiredPatternsText: e.target.value })} placeholder="ci / test\ncodeql" fullWidth />
+          </div>
+          <div>
+            <div class="setting-row-label">Optional Check Patterns</div>
+            <${TextField} multiline minRows=${3} size="small" value=${policy.optionalPatternsText} onInput=${(e) => updatePolicy({ optionalPatternsText: e.target.value })} placeholder="preview\nbenchmark" fullWidth />
+          </div>
+          <div>
+            <div class="setting-row-label">Ignored Check Patterns</div>
+            <${TextField} multiline minRows=${3} size="small" value=${policy.ignorePatternsText} onInput=${(e) => updatePolicy({ ignorePatternsText: e.target.value })} placeholder="stale\nauto-merge housekeeping" fullWidth />
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr;gap:8px">
+          <${FormControlLabel} control=${html`<${Switch} checked=${policy.requireAnyRequiredCheck} onChange=${(e) => updatePolicy({ requireAnyRequiredCheck: e.target.checked })} />`} label="Block when no required check is present" />
+          <${FormControlLabel} control=${html`<${Switch} checked=${policy.treatPendingRequiredAsBlocking} onChange=${(e) => updatePolicy({ treatPendingRequiredAsBlocking: e.target.checked })} />`} label="Treat pending required checks as blocking" />
+          <${FormControlLabel} control=${html`<${Switch} checked=${policy.treatNeutralAsPass} onChange=${(e) => updatePolicy({ treatNeutralAsPass: e.target.checked })} />`} label="Count neutral or skipped required checks as pass" />
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+          <div>
+            <div class="setting-row-label">Sandbox Mode</div>
+            <${Select} size="small" value=${policy.sandboxMode} onChange=${(e) => updatePolicy({ sandboxMode: e.target.value })} fullWidth>
+              <${MenuItem} value="workspace-write">Workspace write<//>
+              <${MenuItem} value="read-only">Read only<//>
+              <${MenuItem} value="danger-full-access">Danger full access<//>
+            <//>
+          </div>
+          <div>
+            <div class="setting-row-label">Container Runtime</div>
+            <${Select} size="small" value=${policy.containerRuntime} onChange=${(e) => updatePolicy({ containerRuntime: e.target.value })} fullWidth>
+              <${MenuItem} value="auto">Auto<//>
+              <${MenuItem} value="docker">Docker<//>
+              <${MenuItem} value="podman">Podman<//>
+              <${MenuItem} value="container">Container helper<//>
+            <//>
+          </div>
+          <div>
+            <div class="setting-row-label">Network Access</div>
+            <${TextField} size="small" value=${policy.networkAccess} onInput=${(e) => updatePolicy({ networkAccess: e.target.value })} placeholder="default" fullWidth />
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr;gap:8px">
+          <${FormControlLabel} control=${html`<${Switch} checked=${policy.containerIsolationEnabled} onChange=${(e) => updatePolicy({ containerIsolationEnabled: e.target.checked })} />`} label="Expect container isolation for agent execution" />
+          <${FormControlLabel} control=${html`<${Switch} checked=${policy.enforceBacklog} onChange=${(e) => updatePolicy({ enforceBacklog: e.target.checked })} />`} label="Enforce backlog safeguards before direct execution" />
+          <${FormControlLabel} control=${html`<${Switch} checked=${policy.agentTriggerControl} onChange=${(e) => updatePolicy({ agentTriggerControl: e.target.checked })} />`} label="Keep agent trigger control safeguards enabled" />
+        </div>
+      </div>
+    <//>
+  `;
+}
+
+function normalizePrAutomationEditorState(policy = {}) {
+  const attachModeRaw = String(policy?.attachMode || "all").trim().toLowerCase();
+  const attachMode = ["all", "trusted-only", "disabled"].includes(attachModeRaw)
+    ? attachModeRaw
+    : "all";
+  const trustedAuthors = normalizeTrustedAuthorEntries(policy?.trustedAuthors);
+  return {
+    attachMode,
+    trustedAuthors,
+    trustedAuthorsText: trustedAuthors.join("\n"),
+    allowTrustedFixes: policy?.allowTrustedFixes === true,
+    allowTrustedMerges: policy?.allowTrustedMerges === true,
+    assistiveActionsInstallOnSetup: policy?.assistiveActions?.installOnSetup === true,
+  };
+}
+
+function serializePrAutomationEditorState(policy = {}) {
+  const normalized = normalizePrAutomationEditorState(policy);
+  return JSON.stringify({
+    attachMode: normalized.attachMode,
+    trustedAuthors: normalized.trustedAuthors,
+    allowTrustedFixes: normalized.allowTrustedFixes,
+    allowTrustedMerges: normalized.allowTrustedMerges,
+    assistiveActions: {
+      installOnSetup: normalized.assistiveActionsInstallOnSetup,
+    },
+  });
+}
+
+function PrAutomationTrustEditor() {
+  const [policy, setPolicy] = useState(() => normalizePrAutomationEditorState());
+  const [savedPolicy, setSavedPolicy] = useState(() => normalizePrAutomationEditorState());
+  const [loading, setLoading] = useState(true);
+  const [dirty, setDirty] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+
+  const syncDirty = useCallback((nextPolicy, baseline = savedPolicy) => {
+    setDirty(
+      serializePrAutomationEditorState(nextPolicy)
+        !== serializePrAutomationEditorState(baseline),
+    );
+  }, [savedPolicy]);
+
+  const updatePolicy = useCallback((patch) => {
+    setPolicy((prev) => {
+      const next = { ...prev, ...patch };
+      syncDirty(next);
+      return next;
+    });
+  }, [syncDirty]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiFetch("/api/pr-automation");
+        if (!(res?.ok || res?.prAutomation)) {
+          throw new Error(res?.error || "Failed to load PR automation settings");
+        }
+        const normalized = normalizePrAutomationEditorState(res?.prAutomation || {});
+        setPolicy(normalized);
+        setSavedPolicy(normalized);
+        setDirty(false);
+      } catch (err) {
+        setLoadError(err.message || "Failed to load PR automation settings");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    const key = "settings-pr-automation";
+    setPendingChange(key, dirty);
+    return () => clearPendingChange(key);
+  }, [dirty]);
+
+  const savePolicy = useCallback(async () => {
+    try {
+      const payload = normalizePrAutomationEditorState(policy);
+      const res = await apiFetch("/api/pr-automation", {
+        method: "POST",
+        body: JSON.stringify({
+          prAutomation: {
+            attachMode: payload.attachMode,
+            trustedAuthors: payload.trustedAuthors,
+            allowTrustedFixes: payload.allowTrustedFixes,
+            allowTrustedMerges: payload.allowTrustedMerges,
+            assistiveActions: {
+              installOnSetup: payload.assistiveActionsInstallOnSetup,
+            },
+          },
+        }),
+      });
+      if (!res?.ok) throw new Error(res?.error || "Save failed");
+      const normalized = normalizePrAutomationEditorState(res?.prAutomation || payload);
+      setPolicy(normalized);
+      setSavedPolicy(normalized);
+      setDirty(false);
+      setLoadError(null);
+    } catch (err) {
+      throw new Error(err?.message || "PR automation save failed");
+    }
+  }, [policy]);
+
+  const discardPolicy = useCallback(async () => {
+    setPolicy(savedPolicy);
+    setDirty(false);
+    setLoadError(null);
+  }, [savedPolicy]);
+
+  useEffect(() => {
+    return registerSettingsExternalEditor("settings-pr-automation", {
+      isDirty: () => dirty,
+      save: savePolicy,
+      discard: discardPolicy,
+    });
+  }, [dirty, savePolicy, discardPolicy]);
+
+  if (loading) return html`<${SkeletonCard} height="80px" />`;
+
+  return html`
+    <${Card} title="PR Automation Trust Policy"
+      badge=${dirty ? html`<${Badge} variant="warning">Unsaved<//>` : null}>
+      <div class="meta-text" style="margin-bottom:10px">
+        Bosun-created PRs are always eligible for high-risk automation. Use this policy to decide how broadly Bosun attaches to PRs and whether explicitly trusted human authors may receive CI repair or merge automation.
+      </div>
+      ${loadError && html`<div class="settings-banner settings-banner-warn" style="margin-bottom:10px">${loadError}</div>`}
+
+      <div style="display:grid;grid-template-columns:1fr;gap:12px">
+        <div>
+          <div class="setting-row-label">Attachment Mode</div>
+          <${Select}
+            size="small"
+            value=${policy.attachMode}
+            onChange=${(e) => updatePolicy({ attachMode: e.target.value })}
+            fullWidth
+          >
+            <${MenuItem} value="all">Attach to all matching PRs<//>
+            <${MenuItem} value="trusted-only">Attach only trusted-author PRs<//>
+            <${MenuItem} value="disabled">Disable automatic attachment<//>
+          <//>
+          <div class="meta-text" style="margin-top:4px">
+            Attachment is low-trust observation only. Bosun-created PRs keep their provenance marker regardless of this setting.
+          </div>
+        </div>
+
+        <div>
+          <div class="setting-row-label">Trusted GitHub Authors</div>
+          <${TextField}
+            multiline
+            minRows=${3}
+            size="small"
+            value=${policy.trustedAuthorsText}
+            placeholder="octocat\nmaintainer-login"
+            onInput=${(e) => updatePolicy({ trustedAuthorsText: e.target.value })}
+            fullWidth
+          />
+          <div class="meta-text" style="margin-top:4px">
+            One GitHub login per line. Bosun-created PRs do not need to appear here.
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr;gap:8px">
+          <${FormControlLabel}
+            control=${html`<${Switch}
+              checked=${policy.allowTrustedFixes}
+              onChange=${(e) => updatePolicy({ allowTrustedFixes: e.target.checked })}
+            />`}
+            label="Allow CI repair automation for trusted-author PRs"
+          />
+          <div class="meta-text" style="margin-left:14px">
+            Enables GitHub CI signaling and watchdog repair flows for attached PRs from trusted authors.
+          </div>
+
+          <${FormControlLabel}
+            control=${html`<${Switch}
+              checked=${policy.allowTrustedMerges}
+              onChange=${(e) => updatePolicy({ allowTrustedMerges: e.target.checked })}
+            />`}
+            label="Allow merge automation for trusted-author PRs"
+          />
+          <div class="meta-text" style="margin-left:14px">
+            Merge automation still requires normal review and CI gates. Leave off unless you want human-authored PRs in Bosun’s merge lane.
+          </div>
+
+          <${FormControlLabel}
+            control=${html`<${Switch}
+              checked=${policy.assistiveActionsInstallOnSetup}
+              onChange=${(e) => updatePolicy({ assistiveActionsInstallOnSetup: e.target.checked })}
+            />`}
+            label="Install optional repo-local GitHub Actions during setup"
+          />
+          <div class="meta-text" style="margin-left:14px">
+            These attach/comment workflows are assistive only. Bosun’s runtime templates continue to work without them.
+          </div>
+        </div>
+      </div>
     <//>
   `;
 }

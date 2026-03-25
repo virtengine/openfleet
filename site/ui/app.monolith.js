@@ -786,7 +786,7 @@ function DashboardTab() {
   const counts = status?.counts || {};
   const summary = status?.success_metrics || {};
   const execData = executor?.data;
-  const mode = executor?.mode || "vk";
+  const mode = executor?.mode || "internal";
   const running = Number(counts.running || 0);
   const review = Number(counts.review || 0);
   const blocked = Number(counts.error || 0);
@@ -1875,7 +1875,7 @@ function InfraTab() {
 function ControlTab() {
   const executor = executorData.value;
   const execData = executor?.data;
-  const mode = executor?.mode || "vk";
+  const mode = executor?.mode || "internal";
 
   const [commandInput, setCommandInput] = useState("");
   const [startTaskInput, setStartTaskInput] = useState("");
@@ -2137,7 +2137,6 @@ function ControlTab() {
       <${SegmentedControl}
         options=${[
           { value: "internal", label: "Internal" },
-          { value: "vk", label: "VK" },
           { value: "github", label: "GitHub" },
           { value: "jira", label: "Jira" },
         ]}

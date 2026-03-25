@@ -31,6 +31,14 @@ function waitFor(condition, { timeoutMs = 3000, intervalMs = 25 } = {}) {
   });
 }
 
+function findLatestMessage(messages, predicate) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (predicate(message)) return message;
+  }
+  return undefined;
+}
+
 describe("ui-server TUI websocket bridge", () => {
   const ENV_KEYS = [
     "TELEGRAM_UI_TLS_DISABLE",
@@ -171,7 +179,12 @@ describe("ui-server TUI websocket bridge", () => {
     tracker.recordEvent("task-1", { role: "assistant", content: "hello from tui bridge" });
 
     const sessionEvent = await waitFor(() => messages.find((message) => message.type === "session:event" && message.payload?.taskId === "task-1" && message.payload?.event?.kind === "message"));
-    const sessionsUpdate = await waitFor(() => messages.findLast?.((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1")) || [...messages].reverse().find((message) => message.type === "sessions:update" && Array.isArray(message.payload) && message.payload.some((session) => session.taskId === "task-1")));
+    const sessionsUpdate = await waitFor(() => findLatestMessage(
+      messages,
+      (message) => message.type === "sessions:update"
+        && Array.isArray(message.payload)
+        && message.payload.some((session) => session.taskId === "task-1"),
+    ));
 
     tracker.endSession("task-1", "completed");
 
@@ -184,6 +197,59 @@ describe("ui-server TUI websocket bridge", () => {
     expect(validateSessions(sessionsUpdate.payload), JSON.stringify(validateSessions.errors || [])).toBe(true);
     expect(validateSessionEvent(endedEvent.payload), JSON.stringify(validateSessionEvent.errors || [])).toBe(true);
     expect(validateSessions(endedSnapshot.payload), JSON.stringify(validateSessions.errors || [])).toBe(true);
+
+    ws.close();
+  }, 10000);
+
+  it("emits canonical sessions:update snapshots for session API mutations", async () => {
+    const mod = await import("../server/ui-server.mjs");
+    mod.injectUiDependencies({ configDir });
+
+    const server = await mod.startTelegramUiServer({
+      port: 0,
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+    const token = mod.getSessionToken();
+
+    const messages = [];
+    const wsUrl = "ws://127.0.0.1:" + port + "/ws";
+    const ws = new WebSocket(wsUrl, {
+      headers: { Authorization: "Bearer " + token },
+    });
+    ws.on("message", (raw) => {
+      messages.push(JSON.parse(String(raw)));
+    });
+
+    await new Promise((resolve, reject) => {
+      ws.once("open", resolve);
+      ws.once("error", reject);
+    });
+
+    const createUrl = "http://127.0.0.1:" + port + "/api/sessions/create";
+    const createResponse = await fetch(createUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ type: "primary", prompt: "hello from ws regression" }),
+    });
+    const createJson = await createResponse.json();
+
+    expect(createResponse.status).toBe(200);
+    expect(createJson.ok).toBe(true);
+
+    const snapshot = await waitFor(() => findLatestMessage(
+      messages,
+      (message) => message.type === "sessions:update"
+        && Array.isArray(message.payload)
+        && message.payload.some((session) => session.id === createJson.session?.id),
+    ));
+
+    expect(validateSessions(snapshot.payload), JSON.stringify(validateSessions.errors || [])).toBe(true);
 
     ws.close();
   }, 10000);

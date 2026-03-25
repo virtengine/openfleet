@@ -44,6 +44,7 @@ import {
 import { getTemplate } from "./workflow-templates.mjs";
 import { WorkflowExecutionLedger } from "./execution-ledger.mjs";
 import { buildWorkflowStatusPayload } from "../infra/tui-bridge.mjs";
+import { getCurrentTraceContext, traceWorkflowNode, traceWorkflowRun } from "../infra/tracing.mjs";
 
 // Lazy-loaded workspace manager for workspace-aware scheduling
 let _workspaceManagerMod = null;
@@ -66,6 +67,7 @@ function ensureWorkspaceManagerSync() {
 const TAG = "[workflow-engine]";
 const WORKFLOW_DIR_NAME = "workflows";
 const WORKFLOW_RUNS_DIR = "workflow-runs";
+const WORKFLOW_TRAJECTORIES_DIR = "trajectories";
 function readBoundedEnvInt(name, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
   const parsed = Number(process.env[name]);
   if (!Number.isFinite(parsed)) return fallback;
@@ -138,6 +140,15 @@ const ACTIVE_RUNS_INDEX = "_active-runs.json";const MAX_TASK_TRACE_EVENTS_PER_RU
   { min: 20, max: 5000 },
 );
 
+function resolveWorkflowRootRunId(inputData = {}, opts = {}) {
+  return String(
+    opts?._rootRunId ||
+      inputData?._workflowRootRunId ||
+      inputData?._rootRunId ||
+      "",
+  ).trim() || null;
+}
+
 function resolveNodeTimeoutMs(node, resolvedConfig) {
   const candidates = [
     resolvedConfig?.timeout,
@@ -157,6 +168,28 @@ function resolveNodeTimeoutMs(node, resolvedConfig) {
   }
 
   return NODE_TIMEOUT_MS;
+}
+
+function resolveTraceTaskId(data = {}) {
+  return String(
+    data?.taskId ||
+      data?.task?.id ||
+      data?.taskDetail?.id ||
+      data?.taskInfo?.id ||
+      "",
+  ).trim() || null;
+}
+
+function resolveTraceAgentId(data = {}, fallback = "") {
+  return String(
+    data?.agentId ||
+      data?.agentProfile ||
+      data?.task?.assignee ||
+      data?.taskDetail?.assignee ||
+      data?.taskInfo?.assignee ||
+      fallback ||
+      "",
+  ).trim() || null;
 }
 
 // ── Node Status ─────────────────────────────────────────────────────────────
@@ -268,15 +301,115 @@ function normalizeHandlerMetadata(handler) {
   return normalized;
 }
 
+function buildNamedPorts(names = [], direction = "output") {
+  return Array.from(new Set((Array.isArray(names) ? names : [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)))
+    .map((name, index) => normalizePortDescriptor({ name, label: name, type: "Any" }, direction, index));
+}
+
+function inferLlmParseOutputPorts(node) {
+  const outputPortField = String(node?.config?.outputPort || "").trim();
+  if (!outputPortField) return [];
+
+  const keywordPorts = Array.isArray(node?.config?.keywords?.[outputPortField])
+    ? node.config.keywords[outputPortField]
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean)
+    : [];
+
+  const pattern = String(node?.config?.patterns?.[outputPortField] || "").trim();
+  const match = pattern.match(/\(([^()]+)\)/);
+  const patternPorts = match
+    ? match[1]
+      .split("|")
+      .map((value) => value.replace(/^\?:/, "").trim().toLowerCase())
+      .filter((value) => value && !value.includes("\\"))
+    : [];
+
+  return Array.from(new Set([...keywordPorts, ...patternPorts]));
+}
+
+function getConfiguredNodeInputs(node) {
+  return buildNamedPorts(node?.inputs, "input");
+}
+
+function getConfiguredNodeOutputs(node) {
+  const explicitOutputNames = Array.isArray(node?.outputs)
+    ? Array.from(new Set(node.outputs.map((value) => String(value || "").trim()).filter(Boolean)))
+    : [];
+
+  if (node?.type === "condition.switch") {
+    const caseOutputs = Object.values(node?.config?.cases || {})
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+    const mergedOutputs = Array.from(new Set([
+      ...(explicitOutputNames.length > 0 ? explicitOutputNames : ["default"]),
+      ...caseOutputs,
+    ]));
+    return buildNamedPorts(mergedOutputs, "output");
+  }
+
+  if (String(node?.type || "").startsWith("condition.")) {
+    const mergedOutputs = Array.from(new Set([
+      "default",
+      ...(explicitOutputNames.length > 0 ? explicitOutputNames : []),
+      "yes",
+      "no",
+    ]));
+    return buildNamedPorts(mergedOutputs, "output");
+  }
+
+  if (node?.type === "transform.llm_parse") {
+    const inferredOutputs = inferLlmParseOutputPorts(node);
+    const mergedOutputs = Array.from(new Set([
+      ...(explicitOutputNames.length > 0 ? explicitOutputNames : ["default"]),
+      ...inferredOutputs,
+    ]));
+    return buildNamedPorts(mergedOutputs, "output");
+  }
+
+  return buildNamedPorts(explicitOutputNames, "output");
+}
+
 function resolveNodePorts(node) {
-  const handler = node?.type ? _nodeTypeRegistry.get(node.type) : null;
+  const rawHandler = node?.type ? _nodeTypeRegistry.get(node.type) : null;
+  const handler = rawHandler ? normalizeHandlerMetadata(rawHandler) : null;
   const handlerPorts = handler?.ports || {};
   const inputPorts = normalizePortList(node?.inputPorts, "input");
   const outputPorts = normalizePortList(node?.outputPorts, "output");
+  const configuredInputs = getConfiguredNodeInputs(node);
+  const configuredOutputs = getConfiguredNodeOutputs(node);
+  const handlerInputs = normalizePortList(handlerPorts.inputs, "input");
+  const handlerOutputs = normalizePortList(handlerPorts.outputs, "output");
+
+  // Merge explicit outputPorts with configuredOutputs so that type-specific
+  // ports (yes/no for conditions, case names for switches, etc.) are always
+  // present even when outputPorts was auto-persisted with only "default".
+  let resolvedOutputs;
+  if (outputPorts.length > 0 && configuredOutputs.length > 0) {
+    const existingNames = new Set(outputPorts.map((p) => p.name));
+    const additional = configuredOutputs.filter((p) => !existingNames.has(p.name));
+    resolvedOutputs = [...outputPorts, ...additional];
+  } else if (outputPorts.length > 0) {
+    resolvedOutputs = outputPorts;
+  } else if (configuredOutputs.length > 0) {
+    resolvedOutputs = configuredOutputs;
+  } else if (handlerOutputs.length > 0) {
+    resolvedOutputs = handlerOutputs;
+  } else {
+    resolvedOutputs = [normalizePortDescriptor({ name: "default", label: "default", type: "Any" }, "output", 0)];
+  }
 
   return {
-    inputs: inputPorts.length > 0 ? inputPorts : normalizePortList(handlerPorts.inputs, "input"),
-    outputs: outputPorts.length > 0 ? outputPorts : normalizePortList(handlerPorts.outputs, "output"),
+    inputs: inputPorts.length > 0
+      ? inputPorts
+      : (configuredInputs.length > 0
+        ? configuredInputs
+        : (handlerInputs.length > 0
+          ? handlerInputs
+          : [normalizePortDescriptor({ name: "default", label: "default", type: "Any" }, "input", 0)])),
+    outputs: resolvedOutputs,
   };
 }
 
@@ -284,13 +417,50 @@ function resolvePortByName(ports, requestedName, direction) {
   if (!Array.isArray(ports) || ports.length === 0) return null;
   const normalizedName = String(requestedName || "").trim();
   if (!normalizedName) return ports[0];
-  const matched = ports.find((port) => port.name === normalizedName);
-  if (matched) return matched;
-  return normalizePortDescriptor({
-    name: normalizedName,
-    label: normalizedName,
-    type: "Any",
-  }, direction, 0);
+  const directMatch = ports.find((port) => port.name === normalizedName);
+  if (directMatch) return directMatch;
+
+  if (direction === "output") {
+    if (normalizedName === "true") {
+      return ports.find((port) => port.name === "yes") || null;
+    }
+    if (normalizedName === "false") {
+      return ports.find((port) => port.name === "no") || null;
+    }
+  }
+
+  return null;
+}
+
+function resolveRequestedPortName(edge, key, alias) {
+  return String(edge?.[key] ?? edge?.[alias] ?? "").trim();
+}
+
+function buildUnknownPortValidationIssue(edge, direction, requestedPortName, availablePorts = []) {
+  const safeRequestedPortName = String(requestedPortName || "").trim() || "default";
+  const portLabel = direction === "output" ? "output" : "input";
+  const availableNames = (Array.isArray(availablePorts) ? availablePorts : [])
+    .map((port) => String(port?.name || "").trim())
+    .filter(Boolean);
+  const availableSuffix = availableNames.length
+    ? ` Available ${portLabel} ports: ${availableNames.join(", ")}.`
+    : "";
+
+  return {
+    edgeId: edge.id || `${edge.source}->${edge.target}`,
+    source: edge.source,
+    target: edge.target,
+    sourcePort: direction === "output"
+      ? safeRequestedPortName
+      : String(resolveRequestedPortName(edge, "sourcePort", "fromPort") || "default").trim() || "default",
+    targetPort: direction === "input"
+      ? safeRequestedPortName
+      : String(resolveRequestedPortName(edge, "targetPort", "toPort") || "default").trim() || "default",
+    sourceType: null,
+    targetType: null,
+    severity: "error",
+    message: `Unknown ${portLabel} port "${safeRequestedPortName}" on edge ${edge.id || `${edge.source}->${edge.target}`}.${availableSuffix}`,
+  };
 }
 
 function isWildcardPortType(type) {
@@ -363,18 +533,37 @@ function hydrateWorkflowEdge(edge, nodeMap, issues) {
   const targetNode = nodeMap.get(edge.target);
   const sourcePorts = resolveNodePorts(sourceNode);
   const targetPorts = resolveNodePorts(targetNode);
-  const sourcePort = resolvePortByName(sourcePorts.outputs, edge.sourcePort || "default", "output");
-  const targetPort = resolvePortByName(targetPorts.inputs, edge.targetPort || "default", "input");
-  const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
+  const requestedSourcePortName = resolveRequestedPortName(edge, "sourcePort", "fromPort");
+  const requestedTargetPortName = resolveRequestedPortName(edge, "targetPort", "toPort");
+  const sourcePort = resolvePortByName(
+    sourcePorts.outputs,
+    requestedSourcePortName || "default",
+    "output",
+  );
+  const targetPort = resolvePortByName(
+    targetPorts.inputs,
+    requestedTargetPortName || "default",
+    "input",
+  );
 
-  if (!compatibility.compatible) {
-    issues.push(buildPortValidationIssue(edge, sourcePort, targetPort, compatibility));
+  if (requestedSourcePortName && !sourcePort) {
+    issues.push(buildUnknownPortValidationIssue(edge, "output", requestedSourcePortName, sourcePorts.outputs));
+  }
+  if (requestedTargetPortName && !targetPort) {
+    issues.push(buildUnknownPortValidationIssue(edge, "input", requestedTargetPortName, targetPorts.inputs));
+  }
+
+  if (sourcePort && targetPort) {
+    const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
+    if (!compatibility.compatible) {
+      issues.push(buildPortValidationIssue(edge, sourcePort, targetPort, compatibility));
+    }
   }
 
   return {
     ...edge,
-    sourcePort: sourcePort?.name || String(edge.sourcePort || "default").trim() || "default",
-    targetPort: targetPort?.name || String(edge.targetPort || "default").trim() || "default",
+    sourcePort: sourcePort?.name || requestedSourcePortName || "default",
+    targetPort: targetPort?.name || requestedTargetPortName || "default",
     sourcePortType: sourcePort?.type || null,
     targetPortType: targetPort?.type || null,
   };
@@ -402,10 +591,201 @@ function hydrateWorkflowDefinition(def, { strict = false } = {}) {
   return normalized;
 }
 
+function cloneRunSnapshot(value) {
+  try {
+    if (typeof structuredClone === "function") return structuredClone(value);
+  } catch {}
+  return JSON.parse(JSON.stringify(value));
+}
+
 function cleanObject(value = {}) {
   return Object.fromEntries(
     Object.entries(value).filter(([, entry]) => entry !== undefined),
   );
+}
+
+function normalizeDagText(value, maxLength = 240) {
+  const text = String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return "";
+  if (!Number.isFinite(maxLength) || maxLength <= 0 || text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function cloneDagGraphNode(node = {}) {
+  return {
+    nodeId: String(node.nodeId || "").trim(),
+    label: node.label || null,
+    type: node.type || null,
+    status: node.status || NodeStatus.PENDING,
+    dependencies: Array.isArray(node.dependencies) ? [...node.dependencies] : [],
+    attempts: Number(node.attempts || 0) || 0,
+    lastError: node.lastError || null,
+    issueFindingCount: Array.isArray(node.issueFindings) ? node.issueFindings.length : 0,
+    completionEvidenceCount: Array.isArray(node.completionEvidence) ? node.completionEvidence.length : 0,
+  };
+}
+
+function buildDagGraphSnapshot(dagState = {}) {
+  const nodes = Object.values(dagState?.nodes || {})
+    .map((node) => cloneDagGraphNode(node))
+    .filter((node) => node.nodeId);
+  const edges = Array.isArray(dagState?.edges)
+    ? dagState.edges
+      .map((edge) => ({
+        edgeId: String(edge?.edgeId || edge?.id || `${edge?.source || ""}->${edge?.target || ""}`).trim(),
+        source: String(edge?.source || "").trim(),
+        target: String(edge?.target || "").trim(),
+        label: edge?.label || null,
+        condition: edge?.condition || null,
+      }))
+      .filter((edge) => edge.source && edge.target)
+    : [];
+  return { nodes, edges };
+}
+
+function detectDagFindingSource(node = {}, result = {}, errorMessage = "") {
+  const nodeType = String(node?.type || "").trim().toLowerCase();
+  const reason = String(result?.reason || "").trim().toLowerCase();
+  const combined = `${errorMessage} ${result?.output || ""} ${result?.stderr || ""} ${result?.reviewOutput || ""}`.toLowerCase();
+
+  if (nodeType.includes("model_review") || reason.includes("manual_review") || combined.includes("changes requested")) {
+    return "review";
+  }
+  if (
+    nodeType.startsWith("validation.") ||
+    combined.includes("validation") ||
+    combined.includes("tests red") ||
+    combined.includes("test failed")
+  ) {
+    return "validation";
+  }
+  if (
+    combined.includes("dependency") ||
+    combined.includes("module not found") ||
+    combined.includes("cannot find module") ||
+    combined.includes("api changed") ||
+    combined.includes("contract") ||
+    combined.includes("schema")
+  ) {
+    return "workflow_diagnostics";
+  }
+  return "execution";
+}
+
+function detectDagRecommendedAction(node = {}, result = {}, errorMessage = "") {
+  const reason = String(result?.reason || "").trim().toLowerCase();
+  const combined = `${errorMessage} ${result?.output || ""} ${result?.stderr || ""} ${result?.reviewOutput || ""}`.toLowerCase();
+  const source = detectDagFindingSource(node, result, errorMessage);
+
+  if (
+    combined.includes("timeout") ||
+    combined.includes("timed out") ||
+    combined.includes("temporar") ||
+    combined.includes("network") ||
+    combined.includes("econnreset") ||
+    combined.includes("service unavailable") ||
+    combined.includes("rate limit")
+  ) {
+    return "rerun_same_step";
+  }
+  if (source === "review") {
+    return "spawn_fix_step";
+  }
+  if (
+    source === "workflow_diagnostics" ||
+    combined.includes("dependency") ||
+    combined.includes("module not found") ||
+    combined.includes("cannot find module") ||
+    combined.includes("api changed") ||
+    combined.includes("schema") ||
+    combined.includes("contract")
+  ) {
+    return "replan_subgraph";
+  }
+  if (reason === "manual_review_required") {
+    return "spawn_fix_step";
+  }
+  if (source === "validation") {
+    return "replan_from_failed";
+  }
+  return "inspect_failure";
+}
+
+function collectDagIssueFindings(node = {}, result = undefined, errorMessage = "") {
+  const output = result && typeof result === "object" ? result : {};
+  const message = normalizeDagText(
+    errorMessage || output?.reviewOutput || output?.stderr || output?.output || output?.reason || "",
+    260,
+  );
+  const failed = Boolean(errorMessage) || output?.passed === false || output?._failed === true;
+  if (!failed || !message) return [];
+
+  const source = detectDagFindingSource(node, output, message);
+  const recommendedAction = detectDagRecommendedAction(node, output, message);
+  return [cleanObject({
+    nodeId: node?.id || node?.nodeId || null,
+    label: node?.label || null,
+    source,
+    severity: source === "review" ? "high" : (source === "workflow_diagnostics" ? "high" : "medium"),
+    summary: message,
+    reason: output?.reason || null,
+    exitCode: Number.isFinite(Number(output?.exitCode)) ? Number(output.exitCode) : null,
+    command: normalizeDagText(output?.command || "", 140) || null,
+    recommendedAction,
+    suggestedRerun: output?.outputSuggestedRerun || output?.outputDiagnostics?.suggestedRerun || null,
+  })];
+}
+
+function collectDagCompletionEvidence(node = {}, result = undefined) {
+  const output = result && typeof result === "object" ? result : {};
+  const passed = output?.passed !== false && output?._failed !== true;
+  if (!passed) return [];
+
+  const evidence = [];
+  const summary = normalizeDagText(
+    output?.summary || output?.outputHint || output?.narrative || output?.output || output?.reviewPath || "",
+    220,
+  );
+  if (summary) {
+    evidence.push({
+      nodeId: node?.id || node?.nodeId || null,
+      label: node?.label || null,
+      kind: "summary",
+      summary,
+    });
+  }
+  const command = normalizeDagText(output?.command || "", 140);
+  if (command) {
+    evidence.push(cleanObject({
+      nodeId: node?.id || node?.nodeId || null,
+      label: node?.label || null,
+      kind: "command",
+      command,
+      exitCode: Number.isFinite(Number(output?.exitCode)) ? Number(output.exitCode) : 0,
+    }));
+  }
+  const artifactPath = normalizeDagText(output?.reviewPath || output?.evidenceDir || output?.path || "", 180);
+  if (artifactPath) {
+    evidence.push({
+      nodeId: node?.id || node?.nodeId || null,
+      label: node?.label || null,
+      kind: "artifact",
+      path: artifactPath,
+    });
+  }
+  return evidence;
+}
+
+function summarizeDagEvidence(evidence = [], limit = 3) {
+  if (!Array.isArray(evidence) || evidence.length === 0) return [];
+  return evidence.slice(0, Math.max(1, limit)).map((entry) => {
+    if (entry?.summary) return entry.summary;
+    if (entry?.command) return `Command: ${entry.command}`;
+    if (entry?.path) return `Artifact: ${entry.path}`;
+    return normalizeDagText(JSON.stringify(entry), 140);
+  }).filter(Boolean);
 }
 /**
  * Register a node type handler.
@@ -531,6 +911,43 @@ export function listNodeTypes() {
  * Runtime context passed through workflow execution.
  * Accumulates data from each node's output.
  */
+function collectValidationFailures(detail = {}) {
+  const nodeOutputs = detail?.nodeOutputs && typeof detail.nodeOutputs === "object"
+    ? detail.nodeOutputs
+    : {};
+  const dagNodes = detail?.dagState?.nodes && typeof detail.dagState.nodes === "object"
+    ? detail.dagState.nodes
+    : {};
+  return Object.entries(nodeOutputs)
+    .map(([nodeId, output]) => {
+      if (!output || typeof output !== "object") return null;
+      const diagnostic = output.failureDiagnostic && typeof output.failureDiagnostic === "object"
+        ? output.failureDiagnostic
+        : null;
+      const failureKind = String(output.failureKind || diagnostic?.category || "").trim();
+      const hasRetryability = typeof output.retryable === "boolean" || typeof diagnostic?.retryable === "boolean";
+      if (!failureKind && !diagnostic && !hasRetryability) return null;
+      return {
+        nodeId,
+        nodeType: dagNodes?.[nodeId]?.type || null,
+        nodeLabel: dagNodes?.[nodeId]?.label || null,
+        failureKind: failureKind || diagnostic?.category || null,
+        retryable: typeof output.retryable === "boolean"
+          ? output.retryable
+          : diagnostic?.retryable === true,
+        blocked: output.blocked === true || diagnostic?.blocked === true,
+        exitCode: diagnostic?.exitCode ?? output.exitCode ?? null,
+        summary:
+          diagnostic?.summary ||
+          output.outputHint ||
+          output.outputDiagnostics?.summary ||
+          null,
+        detail: diagnostic?.detail || null,
+      };
+    })
+    .filter(Boolean);
+}
+
 export class WorkflowContext {
   constructor(initialData = {}) {
     this.id = randomUUID();
@@ -701,14 +1118,16 @@ export class WorkflowContext {
 
     return template.replace(/\{\{([A-Za-z0-9_][A-Za-z0-9_.-]*)\}\}/g, (match, path) => {
       const value = resolvePathValue(path);
-      return value != null ? String(value) : match;
+      if (value == null) return match;
+      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+      try { return JSON.stringify(value); } catch { return String(value); }
     });
   }
 
   /** Get a serializable summary of the execution */
   toJSON(endedAt = Date.now()) {
     const finishedAt = Number.isFinite(endedAt) ? endedAt : Date.now();
-    return {
+    const detail = {
       id: this.id,
       startedAt: this.startedAt,
       endedAt: finishedAt,
@@ -724,7 +1143,22 @@ export class WorkflowContext {
       nodeInputs: { ...this._nodeInputs },
       dagState: this.data?._dagState || null,
       issueAdvisor: this.data?._issueAdvisor || null,
+      replayTrajectory: this.data?._replayTrajectory || null,
+      stepSummaries: Array.isArray(this.data?._replayTrajectory?.steps)
+        ? this.data._replayTrajectory.steps.map((s) => ({
+            nodeId: s.nodeId,
+            label: s.label,
+            status: s.status,
+            summary: s.summary,
+          }))
+        : [],
     };
+    const validationFailures = collectValidationFailures(detail);
+    if (validationFailures.length > 0) {
+      detail.validationFailures = validationFailures;
+      detail.latestValidationFailure = validationFailures.at(-1) || null;
+    }
+    return detail;
   }
 }
 
@@ -753,7 +1187,9 @@ export class WorkflowEngine extends EventEmitter {
       sandbox?.runsDir,
     );
     this._configDir = opts.configDir || process.cwd();
-    this.detectInterruptedRuns = opts.detectInterruptedRuns !== false;
+    this.detectInterruptedRuns = opts.detectInterruptedRuns !== false &&
+      process.env.WORKFLOW_DETECT_INTERRUPTED_RUNS !== "0" &&
+      process.env.WORKFLOW_DETECT_INTERRUPTED_RUNS !== "false";
     this.services = opts.services || {};
     this._workflows = new Map();
     this._activeRuns = new Map();
@@ -777,6 +1213,7 @@ export class WorkflowEngine extends EventEmitter {
     // ── Concurrency control ───────────────────────────────────────────
     this._runSlots = 0;              // current number of executing runs
     this._runQueue = [];             // FIFO queue of { resolve, reject, args }
+    this._rootRunSlotRefs = new Map(); // rootRunId -> nested executions sharing a single slot
     this._runIndexCache = null;      // cached run index (invalidated on writes)
     this._runIndexCacheMtime = 0;    // mtime of the cached index file
     this._executionLedger = new WorkflowExecutionLedger({ runsDir: this.runsDir });
@@ -793,14 +1230,22 @@ export class WorkflowEngine extends EventEmitter {
 
   _initializeDagState(def, ctx, extra = {}) {
     const dependencyMap = new Map();
+    const edges = [];
     for (const node of def?.nodes || []) {
       dependencyMap.set(node.id, []);
     }
     for (const edge of def?.edges || []) {
-      if (!edge?.target || edge.backEdge === true) continue;
+      if (!edge?.source || !edge?.target || edge.backEdge === true) continue;
       const deps = dependencyMap.get(edge.target) || [];
       deps.push(edge.source);
       dependencyMap.set(edge.target, deps);
+      edges.push({
+        edgeId: String(edge.id || `${edge.source}->${edge.target}`),
+        source: edge.source,
+        target: edge.target,
+        label: edge.label || null,
+        condition: edge.condition || null,
+      });
     }
 
     const nowIso = new Date(ctx.startedAt).toISOString();
@@ -813,9 +1258,11 @@ export class WorkflowEngine extends EventEmitter {
       parentRunId: extra.parentRunId || ctx.data?._workflowParentRunId || null,
       retryOf: extra.retryOf || ctx.data?._retryOf || null,
       retryMode: extra.retryMode || null,
+      revisionReason: extra.revisionReason || null,
       createdAt: nowIso,
       updatedAt: nowIso,
       status: WorkflowStatus.RUNNING,
+      revisions: [],
       counts: {
         total: Array.isArray(def?.nodes) ? def.nodes.length : 0,
         pending: Array.isArray(def?.nodes) ? def.nodes.length : 0,
@@ -824,6 +1271,7 @@ export class WorkflowEngine extends EventEmitter {
         failed: 0,
         skipped: 0,
       },
+      edges,
       nodes: Object.fromEntries(
         (def?.nodes || []).map((node) => [
           node.id,
@@ -836,6 +1284,8 @@ export class WorkflowEngine extends EventEmitter {
             attempts: 0,
             lastError: null,
             outputSummary: null,
+            issueFindings: [],
+            completionEvidence: [],
             startedAt: null,
             endedAt: null,
             updatedAt: nowIso,
@@ -850,6 +1300,63 @@ export class WorkflowEngine extends EventEmitter {
     return dagState;
   }
 
+  _recordDagRevision(ctx, revision = {}) {
+    const dagState = ctx?.data?._dagState;
+    if (!dagState || typeof dagState !== "object" || !dagState.nodes || typeof dagState.nodes !== "object") {
+      return null;
+    }
+    if (!Array.isArray(dagState.revisions)) dagState.revisions = [];
+    const nodes = Object.values(dagState.nodes);
+    const counts = {
+      total: nodes.length,
+      pending: nodes.filter((node) => node?.status === NodeStatus.PENDING).length,
+      running: nodes.filter((node) => node?.status === NodeStatus.RUNNING || node?.status === NodeStatus.WAITING).length,
+      completed: nodes.filter((node) => node?.status === NodeStatus.COMPLETED).length,
+      failed: nodes.filter((node) => node?.status === NodeStatus.FAILED).length,
+      skipped: nodes.filter((node) => node?.status === NodeStatus.SKIPPED).length,
+    };
+    const completedNodeIds = nodes.filter((node) => node?.status === NodeStatus.COMPLETED).map((node) => node.nodeId);
+    const failedNodeIds = nodes.filter((node) => node?.status === NodeStatus.FAILED).map((node) => node.nodeId);
+    const pendingNodeIds = nodes
+      .filter((node) => node?.status === NodeStatus.PENDING || node?.status === NodeStatus.WAITING)
+      .map((node) => node.nodeId);
+    const graphBefore = revision.graphBefore && typeof revision.graphBefore === "object"
+      ? revision.graphBefore
+      : (dagState.revisions.length > 0 ? dagState.revisions[dagState.revisions.length - 1]?.graphAfter || null : null);
+    const graphAfter = revision.graphAfter && typeof revision.graphAfter === "object"
+      ? revision.graphAfter
+      : buildDagGraphSnapshot(dagState);
+    const issueFindings = nodes.flatMap((node) => Array.isArray(node?.issueFindings) ? node.issueFindings : []);
+    const completionEvidence = nodes.flatMap((node) => Array.isArray(node?.completionEvidence) ? node.completionEvidence : []);
+    const snapshot = {
+      index: dagState.revisions.length,
+      recordedAt: new Date().toISOString(),
+      reason: revision.reason || "update",
+      sourceRunId: revision.sourceRunId || null,
+      retryMode: dagState.retryMode || null,
+      status: dagState.status || WorkflowStatus.RUNNING,
+      counts,
+      preservedCompletedNodeIds: Array.isArray(revision.preservedCompletedNodeIds)
+        ? [...new Set(revision.preservedCompletedNodeIds.map((id) => String(id || "").trim()).filter(Boolean))]
+        : completedNodeIds,
+      focusNodeIds: Array.isArray(revision.focusNodeIds)
+        ? [...new Set(revision.focusNodeIds.map((id) => String(id || "").trim()).filter(Boolean))]
+        : (failedNodeIds.length ? failedNodeIds : pendingNodeIds),
+      failedNodeIds,
+      pendingNodeIds,
+      issueFindingCount: issueFindings.length,
+      completionEvidenceCount: completionEvidence.length,
+      issueFindingsPreview: issueFindings.slice(0, 6),
+      completionEvidencePreview: completionEvidence.slice(0, 6),
+      graphBefore,
+      graphAfter,
+      edgeCount: Array.isArray(dagState.edges) ? dagState.edges.length : 0,
+      nodeCount: nodes.length,
+    };
+    dagState.revisions.push(snapshot);
+    dagState.updatedAt = snapshot.recordedAt;
+    return snapshot;
+  }
   _refreshDagState(ctx, status = null) {
     const dagState = ctx?.data?._dagState;
     if (!dagState || typeof dagState !== "object" || !dagState.nodes || typeof dagState.nodes !== "object") {
@@ -872,18 +1379,47 @@ export class WorkflowEngine extends EventEmitter {
     const pendingNodes = nodes.filter((node) => node?.status === NodeStatus.PENDING || node?.status === NodeStatus.WAITING);
     const firstFailed = failedNodes[0] || null;
     const firstPending = pendingNodes[0] || null;
+    const issueFindings = nodes.flatMap((node) => Array.isArray(node?.issueFindings) ? node.issueFindings : []);
+    const completionEvidence = nodes.flatMap((node) => Array.isArray(node?.completionEvidence) ? node.completionEvidence : []);
+    const firstFinding = issueFindings[0] || null;
 
     let recommendedAction = "continue";
     let summary = "Workflow is ready to continue.";
     if (failedNodes.length > 0) {
-      recommendedAction = counts.completed > 0 ? "replan_from_failed" : "inspect_failure";
-      summary = firstFailed?.lastError
-        ? `Failed at ${firstFailed.label || firstFailed.nodeId}: ${firstFailed.lastError}`
-        : `Workflow has ${failedNodes.length} failed node(s).`;
+      const preferredAction = firstFinding?.recommendedAction || null;
+      recommendedAction = preferredAction;
+      if (!recommendedAction || (recommendedAction === "inspect_failure" && counts.completed > 0)) {
+        recommendedAction = counts.completed > 0 ? "replan_from_failed" : "inspect_failure";
+      }
+      summary = firstFinding?.summary
+        ? `Failed at ${firstFailed?.label || firstFailed?.nodeId || "a workflow step"}: ${firstFinding.summary}`
+        : (firstFailed?.lastError
+            ? `Failed at ${firstFailed.label || firstFailed.nodeId}: ${firstFailed.lastError}`
+            : `Workflow has ${failedNodes.length} failed node(s).`);
     } else if (pendingNodes.length > 0 && counts.completed > 0) {
       recommendedAction = "resume_remaining";
       summary = `Resume from ${firstPending?.label || firstPending?.nodeId || "the next pending node"}.`;
     }
+
+    const nextStepGuidance = failedNodes.length > 0
+      ? [
+        recommendedAction === "rerun_same_step"
+          ? "Preserve completed work and rerun the same failed step with the suggested command or fix."
+          : (recommendedAction === "spawn_fix_step"
+              ? "Preserve completed work and insert a targeted fix step before resuming downstream execution."
+              : (recommendedAction === "replan_subgraph"
+                  ? "Preserve completed work and replan the impacted downstream subgraph before continuing."
+                  : "Preserve completed work and replan from the failed boundary.")),
+        firstFailed?.label ? `Focus next on ${firstFailed.label}.` : null,
+        firstFinding?.suggestedRerun ? `Suggested rerun: ${firstFinding.suggestedRerun}` : null,
+        firstFailed?.lastError ? `Address failure: ${firstFailed.lastError}` : null,
+      ].filter(Boolean).join(" ")
+      : (pendingNodes.length > 0 && counts.completed > 0
+        ? [
+          "Preserve completed work and continue from the next pending node.",
+          firstPending?.label ? `Next step: ${firstPending.label}.` : null,
+        ].filter(Boolean).join(" ")
+        : "Plan is healthy; continue executing the remaining graph.");
 
     const issueAdvisor = {
       status: dagState.status,
@@ -892,14 +1428,28 @@ export class WorkflowEngine extends EventEmitter {
       failedNodeCount: failedNodes.length,
       pendingNodeCount: pendingNodes.length,
       completedNodeCount: counts.completed,
-      suggestedRerun: firstFailed?.suggestedRerun || null,
+      suggestedRerun: firstFailed?.suggestedRerun || firstFinding?.suggestedRerun || null,
+      retryDecisionClass:
+        recommendedAction === "rerun_same_step"
+          ? "rerun_same_step"
+          : (recommendedAction === "spawn_fix_step"
+              ? "spawn_fix_step"
+              : ((recommendedAction === "replan_subgraph" || recommendedAction === "replan_from_failed")
+                  ? "replan_entire_subgraph"
+                  : "inspect_failure")),
       failedNodes: failedNodes.slice(0, 6).map((node) => ({
         nodeId: node.nodeId,
         label: node.label || null,
         error: node.lastError || null,
         attempts: node.attempts || 0,
+        issueFindings: Array.isArray(node.issueFindings) ? node.issueFindings.slice(0, 3) : [],
+        completionEvidence: Array.isArray(node.completionEvidence) ? node.completionEvidence.slice(0, 3) : [],
       })),
+      issueFindings: issueFindings.slice(0, 8),
+      completionEvidence: completionEvidence.slice(0, 8),
       updatedAt: dagState.updatedAt,
+      nextStepGuidance,
+      dagRevisionCount: Array.isArray(dagState.revisions) ? dagState.revisions.length : 0,
     };
 
     ctx.data._issueAdvisor = issueAdvisor;
@@ -910,14 +1460,70 @@ export class WorkflowEngine extends EventEmitter {
     ctx.data._plannerFeedback = {
       ...existingFeedback,
       issueAdvisor,
+      issueAdvisorSummary: [summary, nextStepGuidance].filter(Boolean).join("\n"),
       dagStateSummary: {
+        revisionCount: Array.isArray(dagState.revisions) ? dagState.revisions.length : 0,
         runId: dagState.runId,
         workflowId: dagState.workflowId,
         status: dagState.status,
         counts,
+        issueFindingCount: issueFindings.length,
+        completionEvidenceCount: completionEvidence.length,
+        graph: buildDagGraphSnapshot(dagState),
       },
     };
     return issueAdvisor;
+  }
+
+  _buildStepSummary(node, { status = null, result = undefined, error = null } = {}) {
+    const nodeId = String(node?.id || "").trim() || null;
+    const label = String(node?.label || nodeId || "step").trim();
+    const normalizedStatus = String(status || "unknown").trim().toLowerCase() || "unknown";
+    let detail = null;
+    if (error) {
+      detail = String(error).trim();
+    } else if (result !== undefined) {
+      detail = this._summarizeTaskTraceNodeResult(result);
+    }
+    if (!detail) {
+      detail = normalizedStatus === "completed"
+        ? "Step completed successfully."
+        : (normalizedStatus === "failed" ? "Step failed." : `Step ${normalizedStatus}.`);
+    }
+    return {
+      nodeId,
+      label,
+      status: normalizedStatus,
+      summary: `${label}: ${detail}`,
+    };
+  }
+
+  _appendReplayTrajectoryStep(ctx, node, { status = null, result = undefined, error = null, attempt = undefined } = {}) {
+    if (!ctx || !node?.id) return;
+    const timing = ctx.getNodeTiming(node.id) || {};
+    const outputSummary = result !== undefined ? this._summarizeTaskTraceNodeResult(result) : null;
+    const replay =
+      ctx.data?._replayTrajectory && typeof ctx.data._replayTrajectory === "object"
+        ? ctx.data._replayTrajectory
+        : { runId: ctx.id, restoredFrom: ctx.data?._restoredFrom || null, steps: [] };
+    const step = {
+      nodeId: node.id,
+      type: node.type || null,
+      label: node.label || null,
+      status: status || null,
+      attempt: Number.isFinite(Number(attempt)) ? Number(attempt) : ctx.getRetryCount(node.id),
+      startedAt: Number.isFinite(Number(timing.startedAt)) ? Number(timing.startedAt) : null,
+      endedAt: Number.isFinite(Number(timing.endedAt)) ? Number(timing.endedAt) : null,
+      input: ctx.getNodeInput(node.id) || null,
+      outputSummary,
+      error: error ? String(error) : null,
+      summary: this._buildStepSummary(node, { status, result, error }).summary,
+    };
+    replay.runId = ctx.id;
+    replay.restoredFrom = ctx.data?._restoredFrom || replay.restoredFrom || null;
+    replay.steps = Array.isArray(replay.steps) ? replay.steps.filter((entry) => entry?.nodeId !== node.id) : [];
+    replay.steps.push(step);
+    ctx.data._replayTrajectory = replay;
   }
 
   _recordDagNodeOutcome(ctx, node, {
@@ -928,11 +1534,18 @@ export class WorkflowEngine extends EventEmitter {
   } = {}) {
     if (!ctx || !node?.id) return;
     const timing = ctx.getNodeTiming(node.id) || {};
+    const issueFindings = collectDagIssueFindings(node, result, error ? String(error) : "");
+    const completionEvidence = collectDagCompletionEvidence(node, result);
+    const existingDagNode = ctx.data?._dagState?.nodes?.[node.id] || {};
     const nodePatch = cleanObject({
       status,
       attempts: Number.isFinite(Number(attempt)) ? Number(attempt) : ctx.getRetryCount(node.id),
       lastError: error ? String(error) : null,
       outputSummary: result !== undefined ? this._summarizeTaskTraceNodeResult(result) : undefined,
+      issueFindings: issueFindings.length > 0 ? issueFindings : (status === NodeStatus.COMPLETED ? [] : (existingDagNode.issueFindings || undefined)),
+      completionEvidence: completionEvidence.length > 0
+        ? [...(Array.isArray(existingDagNode.completionEvidence) ? existingDagNode.completionEvidence : []), ...completionEvidence]
+        : (status === NodeStatus.FAILED ? (existingDagNode.completionEvidence || undefined) : undefined),
       startedAt: Number.isFinite(Number(timing.startedAt)) ? new Date(Number(timing.startedAt)).toISOString() : null,
       endedAt: Number.isFinite(Number(timing.endedAt)) ? new Date(Number(timing.endedAt)).toISOString() : null,
       suggestedRerun:
@@ -947,8 +1560,17 @@ export class WorkflowEngine extends EventEmitter {
         result && typeof result === "object" && result.outputDeltaSummary
           ? String(result.outputDeltaSummary)
           : undefined,
+      outputBudgetPolicy:
+        result && typeof result === "object" && result.outputBudgetPolicy
+          ? String(result.outputBudgetPolicy)
+          : undefined,
+      outputBudgetReason:
+        result && typeof result === "object" && result.outputBudgetReason
+          ? String(result.outputBudgetReason)
+          : undefined,
     });
     ctx.annotateDagNode(node.id, nodePatch);
+    this._appendReplayTrajectoryStep(ctx, node, { status, result, error, attempt });
     const workflowStatus = error
       ? WorkflowStatus.FAILED
       : (ctx.data?._workflowTerminalStatus || WorkflowStatus.RUNNING);
@@ -961,6 +1583,28 @@ export class WorkflowEngine extends EventEmitter {
     } catch (err) {
       console.warn(`${TAG} execution ledger write failed: ${String(err?.message || err)}`);
     }
+  }
+
+  _buildLedgerTaskMeta(ctx, extra = {}) {
+    const taskId = String(
+      ctx?.data?.taskId ||
+      ctx?.data?.task?.id ||
+      ctx?.data?.taskInfo?.id ||
+      ctx?.data?.taskDetail?.id ||
+      "",
+    ).trim();
+    const taskTitle = String(
+      ctx?.data?.taskTitle ||
+      ctx?.data?.task?.title ||
+      ctx?.data?.taskInfo?.title ||
+      ctx?.data?.taskDetail?.title ||
+      "",
+    ).trim();
+    return cleanObject({
+      ...extra,
+      taskId: taskId || undefined,
+      taskTitle: taskTitle || undefined,
+    });
   }
 
 
@@ -1179,6 +1823,7 @@ export class WorkflowEngine extends EventEmitter {
     if (!taskContext) return null;
 
     const nowMs = Date.now();
+    const activeTrace = getCurrentTraceContext();
     const event = {
       eventType: String(kind || "").trim(),
       timestamp: new Date(nowMs).toISOString(),
@@ -1198,6 +1843,9 @@ export class WorkflowEngine extends EventEmitter {
       branch: taskContext.branch,
       prNumber: taskContext.prNumber,
       prUrl: taskContext.prUrl,
+      traceId: activeTrace?.traceId || null,
+      spanId: activeTrace?.spanId || null,
+      parentSpanId: activeTrace?.parentSpanId || null,
       meta: extra && typeof extra === "object" ? extra : null,
     };
 
@@ -1387,8 +2035,62 @@ export class WorkflowEngine extends EventEmitter {
       activeRuns: this._runSlots,
       maxConcurrentRuns: MAX_CONCURRENT_RUNS,
       queuedRuns: this._runQueue.length,
+      sharedRootRuns: this._rootRunSlotRefs.size,
       maxConcurrentBranches: MAX_CONCURRENT_BRANCHES,
     };
+  }
+
+  async _acquireRunSlot({ workflowId, workflowName, inputData = {}, opts = {} } = {}) {
+    const rootRunId = resolveWorkflowRootRunId(inputData, opts);
+    if (rootRunId && this._rootRunSlotRefs.has(rootRunId)) {
+      this._rootRunSlotRefs.set(rootRunId, (this._rootRunSlotRefs.get(rootRunId) || 0) + 1);
+      return { rootRunId, shared: true };
+    }
+
+    if (this._runSlots >= MAX_CONCURRENT_RUNS) {
+      this.emit("run:queued", {
+        workflowId,
+        name: workflowName,
+        queueDepth: this._runQueue.length + 1,
+        rootRunId,
+      });
+      await new Promise((resolve, reject) => {
+        this._runQueue.push({ resolve, reject, rootRunId });
+      });
+    }
+
+    this._runSlots++;
+    if (rootRunId) {
+      this._rootRunSlotRefs.set(rootRunId, 1);
+    }
+    return { rootRunId, shared: false };
+  }
+
+  _releaseRunSlot(slotLease = null) {
+    if (slotLease?.rootRunId && this._rootRunSlotRefs.has(slotLease.rootRunId)) {
+      const remainingRefs = (this._rootRunSlotRefs.get(slotLease.rootRunId) || 0) - 1;
+      if (remainingRefs > 0) {
+        this._rootRunSlotRefs.set(slotLease.rootRunId, remainingRefs);
+        return;
+      }
+      this._rootRunSlotRefs.delete(slotLease.rootRunId);
+    }
+
+    if (slotLease?.shared) {
+      return;
+    }
+
+    this._runSlots = Math.max(0, this._runSlots - 1);
+    if (this._runQueue.length > 0) {
+      const next = this._runQueue.shift();
+      next.resolve();
+    }
+  }
+
+  _adoptRunSlotRootId(slotLease = null, runId = null) {
+    if (!slotLease || slotLease.shared || slotLease.rootRunId || !runId) return;
+    slotLease.rootRunId = String(runId);
+    this._rootRunSlotRefs.set(slotLease.rootRunId, 1);
   }
 
   // ── Execution ─────────────────────────────────────────────────────────
@@ -1402,31 +2104,46 @@ export class WorkflowEngine extends EventEmitter {
    * @returns {Promise<WorkflowContext>}
    */
   async execute(workflowId, inputData = {}, opts = {}) {
-    const def = this.get(workflowId);
-    if (!def) throw new Error(`${TAG} Workflow "${workflowId}" not found`);
+    const persistedDef = this.get(workflowId);
+    if (!persistedDef) throw new Error(`${TAG} Workflow "${workflowId}" not found`);
+    const def = hydrateWorkflowDefinition(persistedDef, { strict: true });
     if (def.enabled === false && !opts.force) {
       throw new Error(`${TAG} Workflow "${def.name}" is disabled`);
     }
 
-    // ── Concurrency gate ──────────────────────────────────────────────
-    // If we're at capacity, queue this run and wait for a slot.
-    if (this._runSlots >= MAX_CONCURRENT_RUNS) {
-      this.emit("run:queued", { workflowId, name: def.name, queueDepth: this._runQueue.length + 1 });
-      await new Promise((resolve, reject) => {
-        this._runQueue.push({ resolve, reject });
-      });
-    }
-    this._runSlots++;
+    const slotLease = await this._acquireRunSlot({
+      workflowId,
+      workflowName: def.name,
+      inputData,
+      opts,
+    });
 
     try {
-      return await this._executeInner(def, workflowId, inputData, opts);
+      return await traceWorkflowRun(
+        {
+          workflowId,
+          name: def.name,
+          triggerSource: inputData?._triggerSource || null,
+          taskId: resolveTraceTaskId(inputData),
+          agentId: resolveTraceAgentId(inputData),
+          parentRunId: opts._parentRunId || inputData?._workflowParentRunId || inputData?._parentRunId || null,
+          rootRunId: opts._rootRunId || inputData?._workflowRootRunId || inputData?._rootRunId || null,
+        },
+        async (span) => {
+          const ctx = await this._executeInner(def, workflowId, inputData, {
+            ...opts,
+            _slotLease: slotLease,
+          });
+          span.attributes["bosun.workflow.run_id"] = ctx?.id || span.attributes["bosun.workflow.run_id"];
+          span.attributes["bosun.workflow.parent_run_id"] =
+            ctx?.data?._workflowParentRunId || span.attributes["bosun.workflow.parent_run_id"];
+          span.attributes["bosun.workflow.root_run_id"] =
+            ctx?.data?._workflowRootRunId || ctx?.id || span.attributes["bosun.workflow.root_run_id"];
+          return ctx;
+        },
+      );
     } finally {
-      this._runSlots--;
-      // Wake the next queued run, if any
-      if (this._runQueue.length > 0) {
-        const next = this._runQueue.shift();
-        next.resolve();
-      }
+      this._releaseRunSlot(slotLease);
     }
   }
 
@@ -1461,25 +2178,40 @@ export class WorkflowEngine extends EventEmitter {
       throw new Error(`${TAG} Inline workflow "${normalized.name}" is disabled`);
     }
 
-    if (this._runSlots >= MAX_CONCURRENT_RUNS) {
-      this.emit("run:queued", { workflowId: normalized.id, name: normalized.name, queueDepth: this._runQueue.length + 1 });
-      await new Promise((resolve, reject) => {
-        this._runQueue.push({ resolve, reject });
-      });
-    }
-    this._runSlots++;
+    const slotLease = await this._acquireRunSlot({
+      workflowId: normalized.id,
+      workflowName: normalized.name,
+      inputData,
+      opts,
+    });
 
     try {
-      return await this._executeInner(normalized, normalized.id, inputData, {
-        ...opts,
-        force: true,
-      });
+      return await traceWorkflowRun(
+        {
+          workflowId: normalized.id,
+          name: normalized.name,
+          triggerSource: inputData?._triggerSource || normalized.trigger || null,
+          taskId: resolveTraceTaskId(inputData),
+          agentId: resolveTraceAgentId(inputData, opts.sourceNodeId || ""),
+          parentRunId: opts._parentRunId || inputData?._workflowParentRunId || inputData?._parentRunId || null,
+          rootRunId: opts._rootRunId || inputData?._workflowRootRunId || inputData?._rootRunId || null,
+        },
+        async (span) => {
+          const ctx = await this._executeInner(normalized, normalized.id, inputData, {
+            ...opts,
+            _slotLease: slotLease,
+            force: true,
+          });
+          span.attributes["bosun.workflow.run_id"] = ctx?.id || span.attributes["bosun.workflow.run_id"];
+          span.attributes["bosun.workflow.parent_run_id"] =
+            ctx?.data?._workflowParentRunId || span.attributes["bosun.workflow.parent_run_id"];
+          span.attributes["bosun.workflow.root_run_id"] =
+            ctx?.data?._workflowRootRunId || ctx?.id || span.attributes["bosun.workflow.root_run_id"];
+          return ctx;
+        },
+      );
     } finally {
-      this._runSlots--;
-      if (this._runQueue.length > 0) {
-        const next = this._runQueue.shift();
-        next.resolve();
-      }
+      this._releaseRunSlot(slotLease);
     }
   }
 
@@ -1497,7 +2229,9 @@ export class WorkflowEngine extends EventEmitter {
       ...initialData,
       _workflowId: workflowId,
       _workflowName: def.name,
+      _workflowDefinitionSnapshot: cloneRunSnapshot(def),
       ...(opts._decisionReason ? { _retryDecisionReason: opts._decisionReason } : {}),
+      ...(opts._parentExecutionId ? { _workflowParentExecutionId: opts._parentExecutionId } : {}),
     });
     ctx.variables = { ...def.variables };
     this._initializeDagState(def, ctx, {
@@ -1516,6 +2250,7 @@ export class WorkflowEngine extends EventEmitter {
     });
 
     const runId = ctx.id;
+    this._adoptRunSlotRootId(opts?._slotLease, runId);
     this._activeRuns.set(runId, {
       workflowId,
       workflowName: def.name,
@@ -1547,12 +2282,13 @@ export class WorkflowEngine extends EventEmitter {
       parentRunId: ctx.data?._workflowParentRunId || null,
       retryOf: ctx.data?._retryOf || null,
       retryMode: opts._retryMode || null,
+      parentExecutionId: ctx.data?._workflowParentExecutionId || null,
       status: WorkflowStatus.RUNNING,
-      meta: {
+      meta: this._buildLedgerTaskMeta(ctx, {
         triggerSource: ctx.data?._triggerSource || null,
         targetRepo: ctx.data?._targetRepo || null,
         decisionReason: opts._decisionReason || null,
-      },
+      }),
     });
     await this._emitTaskTraceEvent("workflow.run.start", {
       ctx,
@@ -1611,12 +2347,13 @@ export class WorkflowEngine extends EventEmitter {
         parentRunId: ctx.data?._workflowParentRunId || null,
         retryOf: ctx.data?._retryOf || null,
         retryMode: opts._retryMode || null,
+        parentExecutionId: ctx.data?._workflowParentExecutionId || null,
         status,
         durationMs: Date.now() - ctx.startedAt,
         summary: ctx.data?._issueAdvisor?.summary || null,
-        meta: {
+        meta: this._buildLedgerTaskMeta(ctx, {
           decisionReason: opts._decisionReason || null,
-        },
+        }),
       });
       await this._emitTaskTraceEvent("workflow.run.end", {
         ctx,
@@ -1649,13 +2386,14 @@ export class WorkflowEngine extends EventEmitter {
         parentRunId: ctx.data?._workflowParentRunId || null,
         retryOf: ctx.data?._retryOf || null,
         retryMode: opts._retryMode || null,
+        parentExecutionId: ctx.data?._workflowParentExecutionId || null,
         status: WorkflowStatus.FAILED,
         durationMs: Date.now() - ctx.startedAt,
         error: err.message,
         summary: ctx.data?._issueAdvisor?.summary || null,
-        meta: {
+        meta: this._buildLedgerTaskMeta(ctx, {
           decisionReason: opts._decisionReason || null,
-        },
+        }),
       });
       await this._emitTaskTraceEvent("workflow.run.error", {
         ctx,
@@ -1750,6 +2488,7 @@ export class WorkflowEngine extends EventEmitter {
         _parentRunId: runId,
         _rootRunId: originalRootRunId,
         _retryMode: mode,
+        _dagRevisionReason: "retry_replan_subgraph",
         force: true,
       });
       return { retryRunId: ctx.id, mode, originalRunId: runId, ctx };
@@ -1780,8 +2519,11 @@ export class WorkflowEngine extends EventEmitter {
     });
 
     // Pre-populate nodes that already succeeded.
+    const preservedCompletedNodeIds = [];
+    const focusNodeIds = [];
     for (const [nodeId, status] of Object.entries(nodeStatuses)) {
       if (status === NodeStatus.COMPLETED) {
+        preservedCompletedNodeIds.push(nodeId);
         ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
         if (nodeOutputs[nodeId] !== undefined) {
           ctx.setNodeOutput(nodeId, nodeOutputs[nodeId]);
@@ -1790,9 +2532,24 @@ export class WorkflowEngine extends EventEmitter {
           status: NodeStatus.COMPLETED,
           result: nodeOutputs[nodeId],
         });
+      } else if (status) {
+        focusNodeIds.push(nodeId);
       }
       // Reset failed / skipped nodes so the DAG will re-run them.
     }
+
+    this._recordDagRevision(ctx, {
+      reason: "retry_resume",
+      sourceRunId: runId,
+      preservedCompletedNodeIds,
+    });
+
+    this._recordDagRevision(ctx, {
+      reason: mode === "from_failed" ? "retry_replan_from_failed" : `retry_${mode}`,
+      sourceRunId: runId,
+      preservedCompletedNodeIds,
+      focusNodeIds,
+    });
 
     const retryRunId = ctx.id;
     this._activeRuns.set(retryRunId, {
@@ -1822,9 +2579,9 @@ export class WorkflowEngine extends EventEmitter {
       retryOf: runId,
       retryMode: mode,
       status: WorkflowStatus.RUNNING,
-      meta: {
+      meta: this._buildLedgerTaskMeta(ctx, {
         decisionReason,
-      },
+      }),
     });
     await this._emitTaskTraceEvent("workflow.run.start", {
       ctx,
@@ -2000,6 +2757,15 @@ export class WorkflowEngine extends EventEmitter {
     if (issueAdvisor?.recommendedAction === "resume_remaining") {
       mode = "from_failed";
       reason = "issue_advisor.resume_remaining";
+    } else if (issueAdvisor?.recommendedAction === "rerun_same_step") {
+      mode = "from_failed";
+      reason = "issue_advisor.rerun_same_step";
+    } else if (issueAdvisor?.recommendedAction === "spawn_fix_step") {
+      mode = "from_failed";
+      reason = "issue_advisor.spawn_fix_step";
+    } else if (issueAdvisor?.recommendedAction === "replan_subgraph") {
+      mode = "from_scratch";
+      reason = "issue_advisor.replan_subgraph";
     } else if (issueAdvisor?.recommendedAction === "replan_from_failed") {
       mode = "from_scratch";
       reason = "issue_advisor.replan_from_failed";
@@ -2223,6 +2989,17 @@ export class WorkflowEngine extends EventEmitter {
 
     const triggered = [];
     const runIndex = this._readRunIndex();
+    const latestRunAtByWorkflow = new Map();
+    for (const entry of runIndex) {
+      const workflowId = entry?.workflowId;
+      if (!workflowId) continue;
+      const ts = Number(entry?.startedAt || entry?.completedAt || 0);
+      if (!Number.isFinite(ts) || ts <= 0) continue;
+      const previous = latestRunAtByWorkflow.get(workflowId) || 0;
+      if (ts > previous) {
+        latestRunAtByWorkflow.set(workflowId, ts);
+      }
+    }
 
     // Load workspace state for filtering
     const wsMgr = ensureWorkspaceManagerSync();
@@ -2286,13 +3063,7 @@ export class WorkflowEngine extends EventEmitter {
           intervalMs = resolvePositiveInterval(tNode.config?.intervalMs, 3600000);
         }
 
-        // Find the most recent completed run for this workflow
-        let lastRunAt = 0;
-        for (const entry of runIndex) {
-          if (entry?.workflowId !== id) continue;
-          const ts = Number(entry?.startedAt || entry?.completedAt || 0);
-          if (ts > lastRunAt) lastRunAt = ts;
-        }
+        const lastRunAt = latestRunAtByWorkflow.get(id) || 0;
 
         const elapsed = Date.now() - lastRunAt;
         if (elapsed >= intervalMs) {
@@ -2330,6 +3101,7 @@ export class WorkflowEngine extends EventEmitter {
 
     let runs = [...active, ...persisted.filter((run) => !activeRunIds.has(run.runId))];
     if (workflowId) runs = runs.filter((r) => r.workflowId === workflowId);
+    runs = runs.map((run) => this.getRunDetail(run.runId) || run);
     runs.sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
     if (hasLimit) {
       return runs.slice(0, Math.floor(normalizedLimit));
@@ -2504,6 +3276,29 @@ export class WorkflowEngine extends EventEmitter {
     };
   }
 
+  _buildExecutionTree(runGraph, startRunId) {
+    if (!runGraph || !Array.isArray(runGraph.runs) || runGraph.runs.length === 0) return null;
+    const runMap = new Map(runGraph.runs.map((entry) => [entry.runId, { ...entry, children: [] }]));
+    for (const edge of Array.isArray(runGraph.edges) ? runGraph.edges : []) {
+      if (edge?.type !== "parent-child") continue;
+      const parent = runMap.get(edge.parentRunId);
+      const child = runMap.get(edge.childRunId);
+      if (parent && child) parent.children.push(child);
+    }
+    const requestedRunId = String(startRunId || runGraph.requestedRunId || runGraph.rootRunId || "").trim();
+    return runMap.get(requestedRunId) || runMap.get(runGraph.rootRunId) || null;
+  }
+
+  _decorateRunDetail(run) {
+    if (!run?.runId) return run;
+    const runGraph = this.getRunGraph(run.runId);
+    return {
+      ...run,
+      runGraph,
+      executionTree: this._buildExecutionTree(runGraph, run.runId),
+    };
+  }
+
   /** Get full run detail for a specific runId */
   getRunDetail(runId) {
     const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
@@ -2514,11 +3309,11 @@ export class WorkflowEngine extends EventEmitter {
     if (activeRun?.ctx) {
       const summary = this._buildActiveRunSummary(normalizedRunId, activeRun);
       if (!summary) return null;
-      return {
+      return this._decorateRunDetail({
         ...summary,
         detail: this._serializeRunContext(activeRun.ctx, true),
         ledger,
-      };
+      });
     }
 
     const detailPath = resolve(this.runsDir, `${normalizedRunId}.json`);
@@ -2537,7 +3332,7 @@ export class WorkflowEngine extends EventEmitter {
           status: summary.status || WorkflowStatus.COMPLETED,
           detail,
         });
-        return { ...summary, ...recomputed, detail, ledger };
+        return this._decorateRunDetail({ ...summary, ...recomputed, detail, ledger });
       }
       const terminalRaw = String(detail?.data?._workflowTerminalStatus || "")
         .trim()
@@ -2556,7 +3351,7 @@ export class WorkflowEngine extends EventEmitter {
         status,
         detail,
       });
-      return { ...computed, detail, ledger };
+      return this._decorateRunDetail({ ...computed, detail, ledger });
     } catch {
       return null;
     }
@@ -2566,6 +3361,19 @@ export class WorkflowEngine extends EventEmitter {
     const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
     if (!normalizedRunId) return null;
     return this._executionLedger.getRunLedger(normalizedRunId);
+  }
+
+  getRunGraph(runId) {
+    const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
+    if (!normalizedRunId) return null;
+    return this._executionLedger.buildRunGraph(normalizedRunId);
+  }
+
+  diffRunGraphs(baseRunId, comparisonRunId) {
+    const normalizedBaseRunId = basename(String(baseRunId || "")).replace(/\.json$/i, "");
+    const normalizedComparisonRunId = basename(String(comparisonRunId || "")).replace(/\.json$/i, "");
+    if (!normalizedBaseRunId || !normalizedComparisonRunId) return null;
+    return this._executionLedger.diffRunGraphs(normalizedBaseRunId, normalizedComparisonRunId);
   }
 
   getRetryOptions(runId) {
@@ -2713,9 +3521,16 @@ export class WorkflowEngine extends EventEmitter {
     const detail = run.detail || {};
     const workflowId = run.workflowId || detail.data?._workflowId;
     const snapshotsDir = resolve(this.runsDir, "snapshots");
+    const trajectoriesDir = resolve(this.runsDir, WORKFLOW_TRAJECTORIES_DIR);
     mkdirSync(snapshotsDir, { recursive: true });
+    mkdirSync(trajectoriesDir, { recursive: true });
     const snapshotId = runId;
     const snapshotPath = resolve(snapshotsDir, `${snapshotId}.json`);
+    const trajectoryPath = resolve(trajectoriesDir, `${snapshotId}.json`);
+    const replayTrajectory =
+      detail.replayTrajectory && typeof detail.replayTrajectory === "object"
+        ? detail.replayTrajectory
+        : { runId, restoredFrom: detail?.data?._restoredFrom || null, steps: [] };
     const snapshot = {
       snapshotId,
       runId,
@@ -2728,9 +3543,12 @@ export class WorkflowEngine extends EventEmitter {
       retryAttempts: detail.retryAttempts || {},
       variables: detail.data || {},
       errors: detail.errors || [],
+      replayTrajectory,
+      stepSummaries: detail.stepSummaries || [],
     };
     writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2), "utf8");
-    return { snapshotId, path: snapshotPath };
+    writeFileSync(trajectoryPath, JSON.stringify(replayTrajectory, null, 2), "utf8");
+    return { snapshotId, path: snapshotPath, trajectoryPath };
   }
 
   /**
@@ -2770,19 +3588,36 @@ export class WorkflowEngine extends EventEmitter {
     ctx.data._workflowId = workflowId;
     ctx.data._workflowName = def.name;
     ctx.data._restoredFrom = snapshotId;
+    ctx.data._replayTrajectory = {
+      runId: ctx.id,
+      restoredFrom: snapshotId,
+      steps: Array.isArray(snapshot.replayTrajectory?.steps)
+        ? snapshot.replayTrajectory.steps.map((step) => ({ ...step }))
+        : [],
+    };
     ctx.variables = { ...def.variables, ...(opts.variables || {}) };
 
     // Pre-seed completed nodes from snapshot
     const nodeStatuses = snapshot.nodeStatuses || {};
     const nodeOutputs = snapshot.nodeOutputs || {};
+    const preservedCompletedNodeIds = [];
+    const focusNodeIds = [];
     for (const [nodeId, status] of Object.entries(nodeStatuses)) {
       if (status === "completed") {
+        preservedCompletedNodeIds.push(nodeId);
         ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
         if (nodeOutputs[nodeId] !== undefined) {
           ctx.setNodeOutput(nodeId, nodeOutputs[nodeId]);
         }
       }
     }
+
+    this._recordDagRevision(ctx, {
+      reason: (opts.mode === "from_failed") ? "retry_replan_from_failed" : `retry_${opts.mode || "snapshot"}`,
+      sourceRunId: snapshotId,
+      preservedCompletedNodeIds,
+      focusNodeIds,
+    });
 
     const retryRunId = ctx.id;
     this._activeRuns.set(retryRunId, {
@@ -2831,11 +3666,13 @@ export class WorkflowEngine extends EventEmitter {
       try {
         const data = JSON.parse(readFileSync(resolve(snapshotsDir, file), "utf8"));
         if (workflowId && data.workflowId !== workflowId) continue;
+        const trajectoryFile = resolve(snapshotsDir, "..", WORKFLOW_TRAJECTORIES_DIR, `${data.snapshotId}.json`);
         snapshots.push({
           snapshotId: data.snapshotId,
           runId: data.runId,
           workflowId: data.workflowId,
           createdAt: data.createdAt,
+          hasTrajectory: existsSync(trajectoryFile),
         });
       } catch {
         // skip corrupt snapshot files
@@ -2919,6 +3756,7 @@ export class WorkflowEngine extends EventEmitter {
       });
     };
     const markNodeSkipped = (nodeId, reason = "skipped", payload = {}) => {
+      if (ctx.getNodeStatus(nodeId) === NodeStatus.COMPLETED) return;
       const node = nodeMap.get(nodeId) || null;
       ctx.setNodeStatus(nodeId, NodeStatus.SKIPPED);
       this._recordDagNodeOutcome(ctx, node || { id: nodeId }, {
@@ -2951,8 +3789,10 @@ export class WorkflowEngine extends EventEmitter {
     // If nodes are already marked COMPLETED in the context (pre-seeded by
     // retryRun), treat them as already executed so the DAG skips them and
     // begins from the first un-completed node.
+    const preservedCompletedNodeIds = [];
     for (const [nodeId, status] of ctx.nodeStatuses) {
       if (status === NodeStatus.COMPLETED) {
+        preservedCompletedNodeIds.push(nodeId);
         executed.add(nodeId);
       }
     }
@@ -3302,10 +4142,22 @@ export class WorkflowEngine extends EventEmitter {
         const edges = adjacency.get(nodeId) || [];
         const sourceOutput = ctx.getNodeOutput(nodeId);
         const triggerBlocked = node?.type?.startsWith("trigger.") && sourceOutput?.triggered === false;
+        const explicitEdgePorts = new Set(
+          edges
+            .map((edge) => String(edge?.sourcePort || "default").trim() || "default")
+            .filter((portName) => portName && portName !== "default"),
+        );
+        const inferredConditionPort =
+          !sourceOutput?.matchedPort
+          && !sourceOutput?.port
+          && node?.type?.startsWith("condition.")
+          && typeof sourceOutput?.result === "boolean"
+          ? (sourceOutput.result ? "yes" : "no")
+          : null;
         const selectedPortRaw =
           sourceOutput?.matchedPort ??
           sourceOutput?.port ??
-          null;
+          (inferredConditionPort && explicitEdgePorts.has(inferredConditionPort) ? inferredConditionPort : null);
         const selectedPort =
           typeof selectedPortRaw === "string" && selectedPortRaw.trim()
             ? selectedPortRaw.trim()
@@ -3413,6 +4265,11 @@ export class WorkflowEngine extends EventEmitter {
             if ((incomingSatisfiedCount.get(targetNodeId) || 0) > 0) {
               ready.add(targetNodeId);
             } else {
+              const priorStatus = ctx.getNodeStatus(targetNodeId);
+              if (!matched && priorStatus === NodeStatus.COMPLETED) {
+                executed.add(targetNodeId);
+                return;
+              }
               markNodeSkipped(targetNodeId, skipInfo?.reason || "skipped", skipInfo?.payload || {});
               executed.add(targetNodeId);
               const skippedNode = nodeMap.get(targetNodeId);
@@ -3502,7 +4359,10 @@ export class WorkflowEngine extends EventEmitter {
             const subgraph = this._collectSubgraph(edge.target, adjacency);
             for (const nid of subgraph) {
               executed.delete(nid);
-              ctx.setNodeStatus(nid, NodeStatus.PENDING);
+              const priorStatus = ctx.getNodeStatus(nid);
+              if (nid === edge.target || priorStatus !== NodeStatus.COMPLETED) {
+                ctx.setNodeStatus(nid, NodeStatus.PENDING);
+              }
               incomingSatisfiedCount.set(nid, 0);
               // Restore in-degree for nodes in the subgraph so they schedule
               // correctly on this new iteration.
@@ -3556,48 +4416,63 @@ export class WorkflowEngine extends EventEmitter {
       return { _dryRun: true, type: node.type, config: resolvedConfig };
     }
 
-    // ── Capability pre-flight check ──────────────────────────────────────
-    // Verify required services are present AFTER the dryRun early-return so
-    // dry-run tests work without needing real service dependencies wired up.
-    const requiredCapabilities = this._getNodeRequiredCapabilities(node.type);
-    const missingCapabilities = [];
-    for (const cap of requiredCapabilities) {
-      if (!this._hasCapability(cap)) {
-        missingCapabilities.push(cap);
-      }
-    }
-    if (missingCapabilities.length > 0) {
-      const detail = `Node "${node.label || node.id}" (${node.type}) requires capabilities: [${missingCapabilities.join(", ")}] which are not available. ` +
-        `Check that the required services (agent pool, kanban adapter, etc.) are configured and the agent has the necessary permissions.`;
-      ctx.log(node.id, detail, "error");
-      const capErr = new Error(detail);
-      capErr.retryable = false; // missing service is permanent — don't waste time retrying
-      throw capErr;
-    }
+    return traceWorkflowNode(
+      {
+        workflowId: ctx?.data?._workflowId || null,
+        workflowRunId: ctx?.id || null,
+        rootRunId: ctx?.data?._workflowRootRunId || ctx?.id || null,
+        parentRunId: ctx?.data?._workflowParentRunId || null,
+        nodeId: node.id,
+        nodeType: node.type,
+        nodeLabel: node.label || null,
+        taskId: resolveTraceTaskId(ctx?.data),
+        agentId: resolveTraceAgentId(ctx?.data, resolvedConfig?.agentProfile || node.id),
+      },
+      async () => {
+        // ── Capability pre-flight check ──────────────────────────────────────
+        // Verify required services are present AFTER the dryRun early-return so
+        // dry-run tests work without needing real service dependencies wired up.
+        const requiredCapabilities = this._getNodeRequiredCapabilities(node.type);
+        const missingCapabilities = [];
+        for (const cap of requiredCapabilities) {
+          if (!this._hasCapability(cap)) {
+            missingCapabilities.push(cap);
+          }
+        }
+        if (missingCapabilities.length > 0) {
+          const detail = `Node "${node.label || node.id}" (${node.type}) requires capabilities: [${missingCapabilities.join(", ")}] which are not available. ` +
+            `Check that the required services (agent pool, kanban adapter, etc.) are configured and the agent has the necessary permissions.`;
+          ctx.log(node.id, detail, "error");
+          const capErr = new Error(detail);
+          capErr.retryable = false; // missing service is permanent — don't waste time retrying
+          throw capErr;
+        }
 
-    // Execute with timeout — clear timer on completion to avoid resource leaks
-    const timeout = resolveNodeTimeoutMs(node, resolvedConfig);
-    let timer;
-    ctx.setNodeTiming(node.id, "startedAt", Date.now());
-    try {
-      const result = await Promise.race([
-        handler.execute(
-          { ...node, config: resolvedConfig },
-          ctx,
-          this
-        ),
-        new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`Node "${node.label || node.id}" timed out after ${timeout}ms`)), timeout);
-        }),
-      ]);
-      ctx.setNodeTiming(node.id, "endedAt", Date.now());
-      return result;
-    } catch (err) {
-      ctx.setNodeTiming(node.id, "endedAt", Date.now());
-      throw err;
-    } finally {
-      clearTimeout(timer);
-    }
+        // Execute with timeout — clear timer on completion to avoid resource leaks
+        const timeout = resolveNodeTimeoutMs(node, resolvedConfig);
+        let timer;
+        ctx.setNodeTiming(node.id, "startedAt", Date.now());
+        try {
+          const result = await Promise.race([
+            handler.execute(
+              { ...node, config: resolvedConfig },
+              ctx,
+              this
+            ),
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error(`Node "${node.label || node.id}" timed out after ${timeout}ms`)), timeout);
+            }),
+          ]);
+          ctx.setNodeTiming(node.id, "endedAt", Date.now());
+          return result;
+        } catch (err) {
+          ctx.setNodeTiming(node.id, "endedAt", Date.now());
+          throw err;
+        } finally {
+          clearTimeout(timer);
+        }
+      },
+    );
   }
 
   _resolveConfig(config, ctx) {
@@ -3791,6 +4666,11 @@ export class WorkflowEngine extends EventEmitter {
 
   _serializeRunContext(ctx, isRunning = false) {
     const detail = ctx.toJSON(Date.now());
+    if (ctx?.data?._dagState) detail.dagState = ctx.data._dagState;
+    if (ctx?.data?._issueAdvisor) detail.issueAdvisor = ctx.data._issueAdvisor;
+    if (ctx?.data?._workflowDefinitionSnapshot) {
+      detail.workflowDefinition = cloneRunSnapshot(ctx.data._workflowDefinitionSnapshot);
+    }
     if (isRunning) {
       detail.endedAt = null;
       detail.duration = Math.max(0, Date.now() - Number(ctx?.startedAt || Date.now()));
@@ -3848,6 +4728,8 @@ export class WorkflowEngine extends EventEmitter {
     const retryDecisionReason = detail?.data?._retryDecisionReason || null;
     const issueAdvisorRecommendation = detail?.issueAdvisor?.recommendedAction || null;
     const issueAdvisorSummary = detail?.issueAdvisor?.summary || null;
+    const dagRevisionCount = Array.isArray(detail?.dagState?.revisions) ? detail.dagState.revisions.length : 0;
+    const validationFailures = collectValidationFailures(detail);
 
     return {
       runId,
@@ -3881,6 +4763,13 @@ export class WorkflowEngine extends EventEmitter {
       retryDecisionReason,
       issueAdvisorRecommendation,
       issueAdvisorSummary,
+      dagRevisionCount,
+      ...(validationFailures.length > 0
+        ? {
+            validationFailures,
+            latestValidationFailure: validationFailures.at(-1) || null,
+          }
+        : {}),
     };
   }
 
@@ -4205,6 +5094,7 @@ export class WorkflowEngine extends EventEmitter {
    */
   async resumeInterruptedRuns() {
     if (this._resumingRuns) return;
+    if (!this.detectInterruptedRuns) return;
     this._resumingRuns = true;
 
     try {
@@ -4228,13 +5118,37 @@ export class WorkflowEngine extends EventEmitter {
       // and mark older duplicates as not-resumable before we even try them.
       const runDetailCache = new Map(); // runId → parsed detail
       const latestByTaskId = new Map(); // taskId → run entry (highest startedAt)
+      const ledgerTaskEntries = this._executionLedger.listTaskRunEntries();
+      const ledgerTaskIdByRunId = new Map();
+      for (const entry of ledgerTaskEntries) {
+        if (!entry?.runId || !entry?.taskId) continue;
+        ledgerTaskIdByRunId.set(entry.runId, entry.taskId);
+        const previous = latestByTaskId.get(entry.taskId);
+        const entryTime = typeof entry.startedAt === "number"
+          ? entry.startedAt
+          : (Date.parse(entry.startedAt || entry.updatedAt || "") || 0);
+        const previousTime = previous
+          ? (typeof previous.startedAt === "number"
+              ? previous.startedAt
+              : (Date.parse(previous.startedAt || previous.updatedAt || "") || 0))
+          : 0;
+        const candidate = {
+          runId: entry.runId,
+          startedAt: entry.startedAt || entry.updatedAt || null,
+          updatedAt: entry.updatedAt || null,
+          status: entry.status || null,
+        };
+        if (!previous || entryTime >= previousTime) {
+          latestByTaskId.set(entry.taskId, candidate);
+        }
+      }
       for (const run of allRuns) {
         const dp = resolve(this.runsDir, `${run.runId}.json`);
         if (!existsSync(dp)) continue;
         try {
           const d = JSON.parse(readFileSync(dp, "utf8"));
           runDetailCache.set(run.runId, d);
-          const tid = d.data?.taskId || d.inputData?.taskId;
+          const tid = ledgerTaskIdByRunId.get(run.runId) || this._resolveRunTaskIdentity(run, d)?.taskId || "";
           if (!tid) continue;
           const prev = latestByTaskId.get(tid);
           if (!prev || (run.startedAt || 0) >= (prev.startedAt || 0)) {
@@ -4249,7 +5163,7 @@ export class WorkflowEngine extends EventEmitter {
       let dedupedCount = 0;
       for (const run of runs) {
         const d = runDetailCache.get(run.runId);
-        const tid = d?.data?.taskId || d?.inputData?.taskId;
+        const tid = this._resolveRunTaskIdentity(run, d)?.taskId || "";
         if (!tid) continue;
         const latest = latestByTaskId.get(tid);
         if (latest && latest.runId !== run.runId) {
@@ -4266,7 +5180,7 @@ export class WorkflowEngine extends EventEmitter {
       for (const run of runs) {
         // Skip runs that were marked as duplicates above
         const _runDetail = runDetailCache.get(run.runId);
-        const _tid = _runDetail?.data?.taskId || _runDetail?.inputData?.taskId;
+        const _tid = this._resolveRunTaskIdentity(run, _runDetail)?.taskId || "";
         if (_tid) {
           const latest = latestByTaskId.get(_tid);
           if (latest && latest.runId !== run.runId) continue;
@@ -4318,6 +5232,22 @@ export class WorkflowEngine extends EventEmitter {
     } finally {
       this._resumingRuns = false;
     }
+  }
+
+  _resolveRunTaskIdentity(runSummary, detail = null) {
+    const detailTaskId = String(
+      detail?.data?.taskId || detail?.inputData?.taskId || detail?.taskId || "",
+    ).trim();
+    if (detailTaskId) {
+      return {
+        taskId: detailTaskId,
+        taskTitle: String(detail?.data?.taskTitle || detail?.inputData?.taskTitle || "").trim() || null,
+        source: "detail",
+      };
+    }
+    const ledgerIdentity = this._executionLedger.getTaskIdentity(runSummary?.runId || detail?.id || "");
+    if (ledgerIdentity?.taskId) return ledgerIdentity;
+    return null;
   }
 
   /**
@@ -4464,3 +5394,7 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+
+
+
+

@@ -118,7 +118,6 @@ import {
 // Task Lifecycle (workflow-first core)
 import {
   TASK_LIFECYCLE_TEMPLATE,
-  VE_ORCHESTRATOR_LITE_TEMPLATE,
 } from "../workflow-templates/task-lifecycle.mjs";
 
 // Task Batch (parallel dispatch)
@@ -211,7 +210,6 @@ export {
   CICD_TASK_TEMPLATE,
   DESIGN_TASK_TEMPLATE,
   TASK_LIFECYCLE_TEMPLATE,
-  VE_ORCHESTRATOR_LITE_TEMPLATE,
   TASK_BATCH_PROCESSOR_TEMPLATE,
   TASK_BATCH_PR_TEMPLATE,
   RESEARCH_AGENT_TEMPLATE,
@@ -308,7 +306,6 @@ const BUILTIN_WORKFLOW_TEMPLATES = [
   DESIGN_TASK_TEMPLATE,
   // ── Task Lifecycle (workflow-first core) ──
   TASK_LIFECYCLE_TEMPLATE,
-  VE_ORCHESTRATOR_LITE_TEMPLATE,
   // ── Task Batch (parallel dispatch) ──
   TASK_BATCH_PROCESSOR_TEMPLATE,
   TASK_BATCH_PR_TEMPLATE,
@@ -404,6 +401,50 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
       nodes: Array.isArray(def.nodes) ? def.nodes.map((node) => toFingerprintNode(node)) : [],
       edges: Array.isArray(def.edges) ? def.edges.map((edgeDef) => toFingerprintEdge(edgeDef)) : [],
     };
+  }
+
+  function getExpectedDerivedOutputPortNames(node = {}) {
+    const explicitOutputNames = Array.isArray(node?.outputs)
+      ? Array.from(new Set(node.outputs.map((value) => String(value || "").trim()).filter(Boolean)))
+      : [];
+    const nodeType = String(node?.type || "").trim();
+
+    if (nodeType === "condition.switch") {
+      const caseOutputs = Object.values(node?.config?.cases || {})
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+      return Array.from(new Set([
+        ...(explicitOutputNames.length > 0 ? explicitOutputNames : ["default"]),
+        ...caseOutputs,
+      ]));
+    }
+
+    if (nodeType.startsWith("condition.")) {
+      return Array.from(new Set([
+        "default",
+        ...explicitOutputNames,
+        "yes",
+        "no",
+      ]));
+    }
+
+    return explicitOutputNames;
+  }
+
+  function hasStaleDerivedPortMetadata(def = {}) {
+    for (const node of Array.isArray(def?.nodes) ? def.nodes : []) {
+      const expectedNames = getExpectedDerivedOutputPortNames(node);
+      if (!Array.isArray(expectedNames) || expectedNames.length === 0) continue;
+      const actualNames = new Set(
+        (Array.isArray(node?.outputPorts) ? node.outputPorts : [])
+          .map((port) => String(port?.name || "").trim())
+          .filter(Boolean),
+      );
+      for (const expectedName of expectedNames) {
+        if (!actualNames.has(expectedName)) return true;
+      }
+    }
+    return false;
   }
 
   function computeWorkflowFingerprint(def = {}) {
@@ -542,6 +583,7 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
     const result = {
       scanned: 0,
       metadataUpdated: 0,
+      portMetadataRepaired: 0,
       autoUpdated: 0,
       forceUpdated: [],
       updateAvailable: [],
@@ -563,9 +605,11 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
         applyWorkflowTemplateState(def);
         const state = def.metadata?.templateState || null;
         const after = stableStringify(state);
-        if (before !== after) {
+        const repairedDerivedPorts = hasStaleDerivedPortMetadata(def);
+        if (before !== after || repairedDerivedPorts) {
           engine.save(def);
           result.metadataUpdated += 1;
+          if (repairedDerivedPorts) result.portMetadataRepaired += 1;
         }
 
         if (!state) continue;
@@ -1258,6 +1302,11 @@ function coerceTemplateVariableValue(rawValue, defaultValue) {
     return rawValue && typeof rawValue === "object" ? rawValue : defaultValue;
   }
   if (rawValue === undefined || rawValue === null) return defaultValue;
+  // Guard against objects being coerced to "[object Object]" when the
+  // default is a string (or when no type branch matched).
+  if (rawValue && typeof rawValue === "object") {
+    try { return JSON.stringify(rawValue); } catch { return defaultValue; }
+  }
   return String(rawValue);
 }
 

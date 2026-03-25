@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 
 vi.mock("../kanban/kanban-adapter.mjs", () => ({
   getKanbanAdapter: vi.fn(),
-  getKanbanBackendName: vi.fn(() => "vk"),
+  getKanbanBackendName: vi.fn(() => "internal"),
   listTasks: vi.fn(() => []),
   listProjects: vi.fn(() => [{ id: "proj-1", name: "Test Project" }]),
   getTask: vi.fn(),
@@ -101,6 +101,7 @@ vi.mock("node:fs", () => ({
   existsSync: vi.fn(() => false),
   appendFileSync: vi.fn(),
   mkdirSync: vi.fn(),
+  renameSync: vi.fn(),
   writeFileSync: vi.fn(),
 }));
 
@@ -371,6 +372,9 @@ describe("task-executor", () => {
         expect.objectContaining({
           enabled: true,
           configuredLimit: 2,
+          fairQueue: expect.objectContaining({
+            policy: "round_robin_oldest_wait",
+          }),
           totals: expect.objectContaining({
             conflicts: 2,
             blockedDispatches: 2,
@@ -384,6 +388,7 @@ describe("task-executor", () => {
           }),
         }),
       );
+      expect(status.repoAreaLocks.worker).toBeInstanceOf(Array);
       expect(status.repoAreaLocks.areas).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -422,6 +427,27 @@ describe("task-executor", () => {
         { id: "t2", repo_areas: ["infra"] },
       ], 2);
       expect(selected.map((task) => task.id)).toEqual(["t1", "t2"]);
+    });
+
+    it("applies fair queue ordering across mixed repo-area candidates", () => {
+      const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 2 });
+      const selected = ex._selectTasksForBaseBranchLimit(
+        [
+          { id: "infra-1", repo_areas: ["infra"] },
+          { id: "infra-2", repo_areas: ["infra"] },
+          { id: "workflow-1", repo_areas: ["workflow"] },
+          { id: "workflow-2", repo_areas: ["workflow"] },
+        ],
+        2,
+      );
+
+      expect(selected.map((task) => task.id)).toEqual(["infra-1", "workflow-1"]);
+      expect(ex.getStatus().repoAreaLocks.lastDispatch).toEqual(
+        expect.objectContaining({
+          policy: "round_robin_oldest_wait",
+          selectedCount: 2,
+        }),
+      );
     });
 
     it("reduces effective repo area cap when active failures are high", () => {
@@ -620,6 +646,16 @@ describe("task-executor", () => {
           }),
         ]),
       );
+      expect(ex.getStatus().repoAreaLocks.worker).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            area: "infra",
+            waitSamples: 1,
+            lastWaitMs: 1500,
+            maxWaitMs: 1500,
+          }),
+        ]),
+      );
       expect(ex.getStatus().repoAreaLocks.contention).toEqual(
         expect.objectContaining({
           events: 1,
@@ -632,6 +668,57 @@ describe("task-executor", () => {
             }),
           ]),
         }),
+      );
+    });
+
+    it("tracks starvation counters per repo area and worker", () => {
+      const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 1 });
+      const now = Date.now();
+      ex._activeSlots.set("active-1", {
+        taskId: "active-1",
+        repoAreas: ["infra"],
+        attempt: 1,
+        startedAt: now - 2_000,
+        status: "running",
+      });
+
+      let tick = now;
+      vi.spyOn(Date, "now").mockImplementation(() => {
+        tick += 100;
+        return tick;
+      });
+
+      expect(
+        ex._selectTasksForBaseBranchLimit([{ id: "t1", repo_areas: ["infra"] }], 1),
+      ).toEqual([]);
+      expect(
+        ex._selectTasksForBaseBranchLimit([{ id: "t1", repo_areas: ["infra"] }], 1),
+      ).toEqual([]);
+      expect(
+        ex._selectTasksForBaseBranchLimit([{ id: "t1", repo_areas: ["infra"] }], 1),
+      ).toEqual([]);
+
+      const status = ex.getStatus().repoAreaLocks;
+      expect(status.lastDispatch.starvationEvents).toBeGreaterThanOrEqual(1);
+      expect(status.lastDispatch.starvingAreas).toContain("infra");
+      expect(status.areas).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            area: "infra",
+            starvationEvents: 1,
+            starvingTasks: 1,
+            maxStarvationCycles: 3,
+          }),
+        ]),
+      );
+      expect(status.worker).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            area: "infra",
+            starvationEvents: 1,
+            maxStarvationCycles: 3,
+          }),
+        ]),
       );
     });
 
@@ -971,7 +1058,7 @@ describe("task-executor", () => {
       ex.pause();
 
       const pauseWriteCall = writeFileSync.mock.calls.find(([filePath]) =>
-        String(filePath || "").includes("ve-orchestrator-pause.json"),
+        String(filePath || "").includes("orchestrator-pause.json"),
       );
       expect(pauseWriteCall).toBeDefined();
       const pausePayload = JSON.parse(pauseWriteCall[1]);
@@ -1005,7 +1092,7 @@ describe("task-executor", () => {
       expect(typeof pauseInfo.pausedAt).toBe("number");
 
       const pauseWriteCall = writeFileSync.mock.calls.find(([filePath]) =>
-        String(filePath || "").includes("ve-orchestrator-pause.json"),
+        String(filePath || "").includes("orchestrator-pause.json"),
       );
       expect(pauseWriteCall).toBeDefined();
       const pausePayload = JSON.parse(pauseWriteCall[1]);
@@ -1545,7 +1632,7 @@ describe("task-executor", () => {
       const executeSpy = vi
         .spyOn(ex, "executeTask")
         .mockResolvedValue(undefined);
-      updateTaskStatus.mockRejectedValueOnce(new Error("VK unavailable"));
+      updateTaskStatus.mockRejectedValueOnce(new Error("backend unavailable"));
 
       listTasks.mockResolvedValueOnce([
         {
@@ -1685,13 +1772,13 @@ describe("task-executor", () => {
     });
 
     it("validates mode values — uses env when set", () => {
-      process.env.EXECUTOR_MODE = "vk";
+      process.env.EXECUTOR_MODE = "hybrid";
       loadConfig.mockReturnValue({
         internalExecutor: { mode: "internal" },
       });
 
       const opts = loadExecutorOptionsFromConfig();
-      expect(opts.mode).toBe("vk");
+      expect(opts.mode).toBe("hybrid");
     });
 
     it("reads from config.taskExecutor as fallback key", () => {
@@ -1730,8 +1817,8 @@ describe("task-executor", () => {
       expect(isInternalExecutorEnabled()).toBe(true);
     });
 
-    it("returns false for EXECUTOR_MODE=vk", () => {
-      process.env.EXECUTOR_MODE = "vk";
+    it("returns false when nothing configured", () => {
+      loadConfig.mockReturnValue({});
       expect(isInternalExecutorEnabled()).toBe(false);
     });
 
@@ -1747,11 +1834,6 @@ describe("task-executor", () => {
         taskExecutor: { mode: "hybrid" },
       });
       expect(isInternalExecutorEnabled()).toBe(true);
-    });
-
-    it("returns false when nothing configured", () => {
-      loadConfig.mockReturnValue({});
-      expect(isInternalExecutorEnabled()).toBe(false);
     });
 
     it("returns false when loadConfig throws", () => {
@@ -1847,7 +1929,7 @@ describe("task-executor", () => {
       }));
 
       const mod = await import("../task/task-executor.mjs");
-      const inst = mod.getTaskExecutor({ mode: "vk" });
+      const inst = mod.getTaskExecutor({ mode: "internal" });
       expect(inst).toBeInstanceOf(mod.TaskExecutor);
     });
 

@@ -19,6 +19,7 @@
  * @property {string}  [unit]      - Display unit (e.g., 'ms', 'min', 'sec')
  * @property {boolean} [restart]   - If true, changing requires process restart
  * @property {boolean} [advanced]  - If true, hidden unless "Show advanced" is on
+ * @property {string}  [section]   - Optional UI subsection label within a category
  */
 
 export const CATEGORIES = [
@@ -27,6 +28,7 @@ export const CATEGORIES = [
   { id: "executor",  label: "Executor / AI",        icon: "cpu", description: "Agent execution, SDK selection, parallelism, and timeouts" },
   { id: "voice",     label: "Voice Assistant",       icon: "headphones", description: "Real-time voice endpoints, provider routing, and voice behavior settings" },
   { id: "kanban",    label: "Kanban / Tasks",       icon: "clipboard", description: "Task backend, sync, labels, and project mapping" },
+  { id: "gates",     label: "Gates / Safeguards",   icon: "shield", description: "PR trust, merge gates, execution posture, and runtime safeguards" },
   { id: "github",    label: "GitHub / Git",         icon: "git", description: "Repository, auth, PR, merge, and reconciliation settings" },
   { id: "network",   label: "Network / Tunnel",     icon: "globe", description: "Cloudflare tunnel, presence, and multi-instance coordination" },
   { id: "security",  label: "Security / Sandbox",   icon: "shield", description: "Sandbox mode, container isolation, and permissions" },
@@ -81,7 +83,7 @@ export const SETTINGS_SCHEMA = [
   { key: "TELEGRAM_UI_FALLBACK_AUTH_TRANSIENT_COOLDOWN_MS", label: "Fallback Cooldown", category: "miniapp", type: "number", defaultVal: 5000, min: 1000, max: 60000, unit: "ms", description: "Cooldown when fallback auth backend returns transient errors.", advanced: true },
 
   // ── Executor / AI ──────────────────────────────────────────
-  { key: "EXECUTOR_MODE",                  label: "Executor Mode",              category: "executor", type: "select", defaultVal: "internal", options: ["vk", "internal", "hybrid"], description: "Task execution mode. 'internal' uses built-in agent pool, 'vk' delegates to Vibe-Kanban, 'hybrid' uses both.", restart: true },
+  { key: "EXECUTOR_MODE",                  label: "Executor Mode",              category: "executor", type: "select", defaultVal: "internal", options: ["internal", "hybrid"], description: "Task execution mode. 'internal' uses built-in agent pool, 'hybrid' combines multiple execution strategies.", restart: true },
   { key: "INTERNAL_EXECUTOR_PARALLEL",     label: "Max Parallel Agents",        category: "executor", type: "number", defaultVal: 3, min: 1, max: 20, description: "Maximum number of concurrent agent execution slots." },
   { key: "INTERNAL_EXECUTOR_SDK",          label: "Default SDK",                category: "executor", type: "select", defaultVal: "auto", options: ["auto", "codex", "copilot", "claude", "gemini", "opencode"], description: "Default AI SDK for task execution. 'auto' selects based on availability and task complexity." },
   { key: "INTERNAL_EXECUTOR_TIMEOUT_MS",   label: "Task Timeout",               category: "executor", type: "number", defaultVal: 5400000, min: 60000, max: 14400000, unit: "ms", description: "Maximum time a single task execution can run (default: 90 min)." },
@@ -136,7 +138,7 @@ export const SETTINGS_SCHEMA = [
   { key: "VOICE_FALLBACK_MODE",            label: "Fallback Mode",              category: "voice", type: "select", defaultVal: "browser", options: ["browser", "disabled"], description: "When Tier 1 (Realtime API) is unavailable, use browser speech APIs as fallback." },
 
   // ── Kanban / Tasks ─────────────────────────────────────────
-  { key: "KANBAN_BACKEND",                 label: "Kanban Backend",             category: "kanban", type: "select", defaultVal: "internal", options: ["internal", "vk", "github", "jira"], description: "Task management backend. 'internal' uses built-in store, 'github' syncs with GitHub Issues/Projects." },
+  { key: "KANBAN_BACKEND",                 label: "Kanban Backend",             category: "kanban", type: "select", defaultVal: "internal", options: ["internal", "github", "jira"], description: "Task management backend. 'internal' uses built-in store, 'github' syncs with GitHub Issues/Projects." },
   { key: "KANBAN_SYNC_POLICY",             label: "Sync Policy",                category: "kanban", type: "select", defaultVal: "internal-primary", options: ["internal-primary", "bidirectional"], description: "How tasks sync between internal store and external backend." },
   { key: "BOSUN_TASK_LABEL",       label: "Task Label",                 category: "kanban", type: "string", defaultVal: "bosun", description: "GitHub label used to scope which issues are managed by Bosun." },
   { key: "BOSUN_ENFORCE_TASK_LABEL", label: "Enforce Task Label",       category: "kanban", type: "boolean", defaultVal: true, description: "Only pick up issues that have the task label. Prevents processing unrelated issues." },
@@ -179,7 +181,7 @@ export const SETTINGS_SCHEMA = [
   { key: "GITHUB_PROJECT_SYNC_RATE_LIMIT_ALERT_THRESHOLD", label: "Rate Limit Alert Threshold", category: "github", type: "number", defaultVal: 3, min: 1, max: 20, description: "Rate-limit events before triggering an alert.", advanced: true },
   { key: "GITHUB_DEFAULT_ASSIGNEE",        label: "Default Assignee",           category: "github", type: "string", description: "GitHub username to assign new issues to. Uses authenticated user if not set." },
   { key: "GITHUB_AUTO_ASSIGN_CREATOR",     label: "Auto-Assign Creator",        category: "github", type: "boolean", defaultVal: true, description: "Automatically assign the authenticated user when creating issues." },
-  { key: "VK_TARGET_BRANCH",               label: "Target Branch",              category: "github", type: "string", defaultVal: "origin/main", description: "Default base branch for PR comparisons and merge targets." },
+  { key: "BOSUN_TARGET_BRANCH",            label: "Target Branch",              category: "github", type: "string", defaultVal: "origin/main", description: "Default base branch for PR comparisons and merge targets." },
   { key: "CODEX_ANALYZE_MERGE_STRATEGY",   label: "Merge Analysis",             category: "github", type: "boolean", defaultVal: true, description: "Enable intelligent merge strategy analysis for PRs." },
   { key: "DEPENDABOT_AUTO_MERGE",          label: "Dependabot Auto-Merge",      category: "github", type: "boolean", defaultVal: true, description: "Automatically merge passing Dependabot PRs." },
   { key: "GH_RECONCILE_ENABLED",           label: "Issue Reconciler",           category: "github", type: "boolean", defaultVal: true, description: "Auto-close issues when their associated PR is merged." },
@@ -248,6 +250,7 @@ export const SETTINGS_SCHEMA = [
   { key: "SELF_RESTART_WATCH_ENABLED",     label: "Self-Restart Watcher",       category: "advanced", type: "boolean", description: "Auto-restart when source files change. Defaults to true in devmode." },
   { key: "MAX_PARALLEL",                   label: "Global Max Parallel",        category: "advanced", type: "number", defaultVal: 6, min: 1, max: 50, description: "Global maximum parallel task slots across all executors." },
   { key: "RESTART_DELAY_MS",               label: "Restart Delay",              category: "advanced", type: "number", defaultVal: 180000, min: 1000, max: 1800000, unit: "ms", description: "Delay before restarting after a crash." },
+  { key: "ENV_RELOAD_DELAY_MS",            label: "Settings Reload Delay",      category: "advanced", type: "number", defaultVal: 5000, min: 500, max: 60000, unit: "ms", description: "Quiet period before Bosun reloads runtime config after .env or settings changes. Higher values make restart-sensitive saves less abrupt." },
   { key: "SHARED_STATE_ENABLED",           label: "Shared State",               category: "advanced", type: "boolean", defaultVal: true, description: "Enable distributed task coordination for multi-instance setups." },
   { key: "WORKFLOW_AUTOMATION_ENABLED",    label: "Workflow Automation",        category: "advanced", type: "boolean", defaultVal: true, description: "Enable event-driven workflow auto-triggers from monitor events." },
   { key: "SHARED_STATE_STALE_THRESHOLD_MS", label: "Stale Threshold",           category: "advanced", type: "number", defaultVal: 300000, min: 60000, max: 1800000, unit: "ms", description: "Time before a heartbeat is considered stale.", advanced: true },
@@ -272,6 +275,14 @@ export const SETTINGS_SCHEMA = [
   { key: "CONTEXT_SHREDDING_MSG_TIER1_MAX_AGE",      label: "Message Summary Turns",              category: "context-shredding", type: "number",  defaultVal: 4,     min: 1, max: 20,   unit: "turns", description: "Turns within which agent messages get a moderate summary. Messages older than this become a one-line breadcrumb.", advanced: true },
   { key: "CONTEXT_SHREDDING_MSG_MIN_COMPRESS_CHARS", label: "Min Message Chars to Compress",      category: "context-shredding", type: "number",  defaultVal: 120,   min: 0, max: 2000, unit: "chars", description: "Agent messages shorter than this are never compressed.", advanced: true },
   { key: "CONTEXT_SHREDDING_USER_MSG_FULL_TURNS",    label: "User Message Full-Text Turns",       category: "context-shredding", type: "number",  defaultVal: 1,     min: 0, max: 10,   unit: "turns", description: "Turns during which the full user prompt is preserved. After this, only a short summary is kept.", advanced: true },
+  { key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED", label: "Live Tool Compaction",          category: "context-shredding", type: "boolean", defaultVal: false, description: "Enable command-aware compaction of large tool outputs before they are stored in the active turn. Falls back to raw output on low confidence or unsafe shapes." },
+  { key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MODE",    label: "Live Compaction Mode",          category: "context-shredding", type: "select",  defaultVal: "auto", options: ["off", "auto", "aggressive"], description: "off disables live compaction, auto compacts only when pressure or signal justify it, and aggressive favors stronger reduction for noisy command families.", advanced: true },
+  { key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS", label: "Live Compaction Minimum Size", category: "context-shredding", type: "number",  defaultVal: 4000, min: 500, max: 500000, unit: "chars", description: "Minimum output size before live compaction is considered.", advanced: true },
+  { key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_TARGET_CHARS", label: "Live Compaction Target Size", category: "context-shredding", type: "number", defaultVal: 1800, min: 200, max: 50000, unit: "chars", description: "Target upper bound for compacted live command output before retrieval hints and metadata.", advanced: true },
+  { key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT", label: "Live Compaction Min Savings", category: "context-shredding", type: "number", defaultVal: 15, min: 0, max: 95, unit: "%", description: "Discard compacted output if it does not save at least this much space.", advanced: true },
+  { key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_RUNTIME_MS", label: "Live Compaction Min Runtime", category: "context-shredding", type: "number", defaultVal: 2000, min: 0, max: 3600000, unit: "ms", description: "When command duration metadata is present, require at least this runtime before compacting in auto mode.", advanced: true },
+  { key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_BLOCK_STRUCTURED_OUTPUT", label: "Skip Structured Output", category: "context-shredding", type: "boolean", defaultVal: true, description: "Avoid live compaction for likely JSON or other structured outputs where exact bytes matter more than size.", advanced: true },
+  { key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS", label: "Live Compaction Allowlist", category: "context-shredding", type: "text", defaultVal: "grep,rg,find,findstr,select-string,ag,ack,sift,fd,where,which,ls,dir,tree,git,go,npm,pnpm,yarn,npx,bun,node,python,python3,pytest,pip,pip3,poetry,docker,kubectl,helm,terraform,ansible,ansible-playbook,journalctl,tail,get-content,cargo,gradle,maven,mvn,javac,tsc,jest,vitest,deno,make,cmake,bazel,buck,nx,turbo,rush,composer,bundle", description: "Comma-separated command or tool families eligible for live compaction. Commands outside the allowlist pass through untouched.", advanced: true },
   { key: "CONTEXT_SHREDDING_PROFILES",               label: "Per-Type Profiles (JSON)",           category: "context-shredding", type: "text",    defaultVal: "",    description: 'JSON object with per-interaction-type or per-agent-type overrides. Example: { "perType": { "voice": { "fullContextTurns": 6 } }, "perAgent": { "claude-sdk": { "tier1MaxAge": 8 } } }', advanced: true },
 ];
 

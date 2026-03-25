@@ -28,11 +28,12 @@ describe("config.mjs bosun module root helpers — source structure", () => {
     );
   });
 
-  it("defines detectBosunModuleRoot function", () => {
-    assert.match(
-      src,
-      /function\s+detectBosunModuleRoot\s*\(/,
-      "should define detectBosunModuleRoot()",
+  it("imports or defines detectBosunModuleRoot function", () => {
+    const hasLocalDef = /function\s+detectBosunModuleRoot\s*\(/.test(src);
+    const hasImport = /import\s+\{[^}]*detectBosunModuleRoot[^}]*\}\s+from/.test(src);
+    assert.ok(
+      hasLocalDef || hasImport,
+      "should define or import detectBosunModuleRoot()",
     );
   });
 
@@ -161,10 +162,15 @@ describe("resolveDefaultWatchPath — filesystem behavior", () => {
 // ── detectBosunModuleRoot behavior ───────────────────────────────────────
 
 describe("detectBosunModuleRoot — source behavior", () => {
+  // detectBosunModuleRoot is now imported from repo-root.mjs rather than
+  // defined locally in config.mjs.  Verify the import is present and the
+  // canonical source in repo-root.mjs is well-formed.
+  const repoRootSrc = readFileSync(resolve(process.cwd(), "config/repo-root.mjs"), "utf8");
+
   it("detectBosunModuleRoot uses __dirname or import.meta.url to find the module root", () => {
-    const funcIdx = src.indexOf("function detectBosunModuleRoot");
-    assert.ok(funcIdx !== -1, "detectBosunModuleRoot should be defined");
-    const snippet = src.slice(funcIdx, funcIdx + 400);
+    const funcIdx = repoRootSrc.indexOf("function detectBosunModuleRoot");
+    assert.ok(funcIdx !== -1, "detectBosunModuleRoot should be defined in repo-root.mjs");
+    const snippet = repoRootSrc.slice(funcIdx, funcIdx + 400);
     const usesDir =
       snippet.includes("__dirname") ||
       snippet.includes("import.meta") ||
@@ -176,9 +182,9 @@ describe("detectBosunModuleRoot — source behavior", () => {
   });
 
   it("detectBosunModuleRoot returns a directory path string", () => {
-    const funcIdx = src.indexOf("function detectBosunModuleRoot");
+    const funcIdx = repoRootSrc.indexOf("function detectBosunModuleRoot");
     assert.ok(funcIdx !== -1);
-    const snippet = src.slice(funcIdx, funcIdx + 400);
+    const snippet = repoRootSrc.slice(funcIdx, funcIdx + 400);
     // Should return a resolved path
     assert.ok(
       snippet.includes("return") || snippet.includes("resolve"),

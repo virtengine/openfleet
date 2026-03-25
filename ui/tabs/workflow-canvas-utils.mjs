@@ -9,6 +9,38 @@ function normalizeGraphValue(value) {
   return Array.isArray(value) ? deepClone(value) : [];
 }
 
+function normalizeGroupList(groups = []) {
+  return normalizeGraphValue(groups)
+    .map((group) => ({
+      ...group,
+      id: String(group?.id || "").trim(),
+      label: String(group?.label || group?.name || "Group").trim() || "Group",
+      color: String(group?.color || "#60a5fa").trim() || "#60a5fa",
+      nodeIds: [...new Set((Array.isArray(group?.nodeIds) ? group.nodeIds : [])
+        .map((id) => String(id || "").trim())
+        .filter(Boolean))],
+      collapsed: group?.collapsed === true,
+    }))
+    .filter((group) => group.id && group.nodeIds.length > 0);
+}
+
+function escapeRegex(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function resolveHistoryGroupsAndLimit(groupsOrLimit, limitMaybe) {
+  if (Array.isArray(groupsOrLimit)) {
+    return {
+      groups: groupsOrLimit,
+      limit: Number.isFinite(Number(limitMaybe)) ? Math.max(1, Math.floor(Number(limitMaybe))) : 50,
+    };
+  }
+  return {
+    groups: [],
+    limit: Number.isFinite(Number(groupsOrLimit)) ? Math.max(1, Math.floor(Number(groupsOrLimit))) : 50,
+  };
+}
+
 function subsequenceScore(needle, haystack) {
   if (!needle || !haystack) return 0;
   let position = 0;
@@ -147,49 +179,284 @@ function extractPreviewTokenCount(value) {
   return null;
 }
 
-export function createGraphSnapshot(nodes = [], edges = []) {
+function toNodeTypeMap(nodeTypes = []) {
+  if (nodeTypes instanceof Map) return nodeTypes;
+  return new Map((Array.isArray(nodeTypes) ? nodeTypes : []).map((type) => [type?.type, type]));
+}
+
+function normalizePortDescriptor(port, direction, index) {
+  const fallbackName = index === 0 ? "default" : `${direction}-${index + 1}`;
+  if (!port || typeof port !== "object") {
+    return {
+      name: fallbackName,
+      label: fallbackName,
+      type: "Any",
+      description: "",
+      accepts: [],
+      color: null,
+    };
+  }
   return {
-    nodes: normalizeGraphValue(nodes),
-    edges: normalizeGraphValue(edges),
+    ...port,
+    name: String(port.name || fallbackName).trim() || fallbackName,
+    label: String(port.label || port.name || fallbackName).trim() || fallbackName,
+    type: String(port.type || "Any").trim() || "Any",
+    description: String(port.description || "").trim(),
+    accepts: Array.isArray(port.accepts)
+      ? Array.from(new Set(port.accepts.map((value) => String(value || "").trim()).filter(Boolean)))
+      : [],
+    color: typeof port.color === "string" && port.color.trim() ? port.color.trim() : null,
   };
 }
 
-export function serializeGraphSnapshot(nodesOrSnapshot = [], maybeEdges = []) {
+function resolvePortByName(ports, requestedName) {
+  const normalizedName = String(requestedName || "").trim() || "default";
+  return (Array.isArray(ports) ? ports : []).find((port) => port.name === normalizedName) || null;
+}
+
+function isWildcardPortType(type) {
+  const normalized = String(type || "").trim();
+  return normalized === "*" || normalized === "Any";
+}
+
+function isPortConnectionCompatible(sourcePort, targetPort) {
+  if (!sourcePort || !targetPort) return { compatible: true, reason: null };
+  const sourceType = String(sourcePort.type || "Any").trim() || "Any";
+  const targetType = String(targetPort.type || "Any").trim() || "Any";
+  const accepted = new Set(
+    [targetType, ...(Array.isArray(targetPort.accepts) ? targetPort.accepts : [])]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  );
+  if (isWildcardPortType(sourceType) || isWildcardPortType(targetType) || accepted.has("*") || accepted.has("Any")) {
+    return { compatible: true, reason: null };
+  }
+  if (sourceType === targetType || accepted.has(sourceType)) {
+    return { compatible: true, reason: null };
+  }
+  return {
+    compatible: false,
+    reason: `${sourcePort.label || sourcePort.name} emits ${sourceType}, but ${targetPort.label || targetPort.name} expects ${targetType}`,
+  };
+}
+
+function buildUnknownPortIssue(edge, direction, requestedPortName, availablePorts = []) {
+  const portLabel = direction === "output" ? "source" : "target";
+  const availableNames = (Array.isArray(availablePorts) ? availablePorts : [])
+    .map((port) => String(port?.name || "").trim())
+    .filter(Boolean);
+  const availableSuffix = availableNames.length ? ` Available ports: ${availableNames.join(", ")}.` : "";
+  return {
+    code: direction === "output" ? "unknown-output-port" : "unknown-input-port",
+    edgeId: edge.id || `${edge.source}->${edge.target}`,
+    source: edge.source,
+    target: edge.target,
+    sourcePort: direction === "output"
+      ? requestedPortName
+      : String(edge?.sourcePort ?? edge?.fromPort ?? "").trim() || "default",
+    targetPort: direction === "input"
+      ? requestedPortName
+      : String(edge?.targetPort ?? edge?.toPort ?? "").trim() || "default",
+    sourceType: null,
+    targetType: null,
+    severity: "error",
+    message: `Unknown ${portLabel} port "${requestedPortName}" on edge ${edge.id || `${edge.source}->${edge.target}`}.${availableSuffix}`,
+  };
+}
+
+export function createGraphSnapshot(nodes = [], edges = [], groups = []) {
+  const safeNodes = normalizeGraphValue(nodes);
+  return {
+    nodes: safeNodes,
+    edges: hydrateCanvasEdges(safeNodes, normalizeGraphValue(edges)),
+    groups: normalizeGroupList(groups),
+  };
+}
+
+export function serializeGraphSnapshot(nodesOrSnapshot = [], maybeEdges = [], maybeGroups = []) {
   if (
     nodesOrSnapshot &&
     typeof nodesOrSnapshot === "object" &&
     !Array.isArray(nodesOrSnapshot) &&
-    ("nodes" in nodesOrSnapshot || "edges" in nodesOrSnapshot)
+    ("nodes" in nodesOrSnapshot || "edges" in nodesOrSnapshot || "groups" in nodesOrSnapshot)
   ) {
-    return JSON.stringify(createGraphSnapshot(nodesOrSnapshot.nodes, nodesOrSnapshot.edges));
+    return JSON.stringify(createGraphSnapshot(nodesOrSnapshot.nodes, nodesOrSnapshot.edges, nodesOrSnapshot.groups));
   }
-  return JSON.stringify(createGraphSnapshot(nodesOrSnapshot, maybeEdges));
+  return JSON.stringify(createGraphSnapshot(nodesOrSnapshot, maybeEdges, maybeGroups));
 }
 
 export function parseGraphSnapshot(snapshot) {
   if (!snapshot) return createGraphSnapshot();
   try {
     const parsed = typeof snapshot === "string" ? JSON.parse(snapshot) : snapshot;
-    return createGraphSnapshot(parsed?.nodes, parsed?.edges);
+    const edges = Array.isArray(parsed?.edges) ? parsed.edges : [];
+    const shouldHydratePorts = edges.some((edge) => {
+      if (!edge || typeof edge !== "object") return false;
+      return ["sourcePort", "targetPort", "fromPort", "toPort"].some((key) => Object.prototype.hasOwnProperty.call(edge, key));
+    });
+    const normalizedEdges = shouldHydratePorts
+      ? edges.map((edge) => {
+        if (!edge || typeof edge !== "object") return edge;
+        const sourcePort = String(edge.sourcePort ?? edge.fromPort ?? "").trim() || "default";
+        const targetPort = String(edge.targetPort ?? edge.toPort ?? "").trim() || "default";
+        const nextEdge = { ...edge, sourcePort, targetPort };
+        delete nextEdge.fromPort;
+        delete nextEdge.toPort;
+        return nextEdge;
+      })
+      : edges;
+    return createGraphSnapshot(parsed?.nodes, normalizedEdges, parsed?.groups);
   } catch {
     return createGraphSnapshot();
   }
 }
 
+export function resolveCanvasNodePorts(node, nodeTypes = []) {
+  const typeInfo = toNodeTypeMap(nodeTypes).get(node?.type) || null;
+  const typePorts = typeInfo?.ports || {};
+  const typeInputs = Array.isArray(typeInfo?.inputs) ? typeInfo.inputs : typePorts.inputs;
+  const typeOutputs = Array.isArray(typeInfo?.outputs) ? typeInfo.outputs : typePorts.outputs;
+  const nodeInputs = Array.isArray(node?.inputs) ? node.inputs : null;
+  const nodeOutputs = Array.isArray(node?.outputs) ? node.outputs : null;
+  const inputSource = Array.isArray(node?.inputPorts) && node.inputPorts.length
+    ? node.inputPorts
+    : (nodeInputs && nodeInputs.length ? nodeInputs : typeInputs);
+  const outputSource = Array.isArray(node?.outputPorts) && node.outputPorts.length
+    ? node.outputPorts
+    : (nodeOutputs && nodeOutputs.length ? nodeOutputs : typeOutputs);
+  const inputs = (Array.isArray(inputSource) ? inputSource : [])
+    .map((port, index) => normalizePortDescriptor(port, "input", index));
+  const outputs = (Array.isArray(outputSource) ? outputSource : [])
+    .map((port, index) => normalizePortDescriptor(port, "output", index));
+  return {
+    inputs: inputs.length ? inputs : [normalizePortDescriptor(null, "input", 0)],
+    outputs: outputs.length ? outputs : [normalizePortDescriptor(null, "output", 0)],
+  };
+}
+
+export function hydrateCanvasEdges(nodes = [], edges = [], nodeTypes = []) {
+  const nodeTypeMap = toNodeTypeMap(nodeTypes);
+  const nodeMap = new Map((Array.isArray(nodes) ? nodes : []).map((node) => [node.id, node]));
+  return (Array.isArray(edges) ? edges : []).map((edge) => {
+    const sourceNode = nodeMap.get(edge?.source);
+    const targetNode = nodeMap.get(edge?.target);
+    const sourcePorts = resolveCanvasNodePorts(sourceNode, nodeTypeMap).outputs;
+    const targetPorts = resolveCanvasNodePorts(targetNode, nodeTypeMap).inputs;
+    const requestedSourcePort = String(edge?.sourcePort ?? edge?.fromPort ?? "").trim() || "default";
+    const requestedTargetPort = String(edge?.targetPort ?? edge?.toPort ?? "").trim() || "default";
+    const sourcePort = resolvePortByName(sourcePorts, requestedSourcePort);
+    const targetPort = resolvePortByName(targetPorts, requestedTargetPort);
+    const normalized = {
+      ...edge,
+      sourcePort: sourcePort?.name || requestedSourcePort,
+      targetPort: targetPort?.name || requestedTargetPort,
+      sourcePortType: sourcePort?.type || String(edge?.sourcePortType || "").trim() || "Any",
+      targetPortType: targetPort?.type || String(edge?.targetPortType || "").trim() || "Any",
+    };
+    delete normalized.fromPort;
+    delete normalized.toPort;
+    return normalized;
+  });
+}
+
+function inspectCanvasEdgePortBinding(edge, nodeMap, nodeTypeMap) {
+  const sourceNode = nodeMap.get(edge?.source);
+  const targetNode = nodeMap.get(edge?.target);
+  const sourcePorts = resolveCanvasNodePorts(sourceNode, nodeTypeMap).outputs;
+  const targetPorts = resolveCanvasNodePorts(targetNode, nodeTypeMap).inputs;
+  const requestedSourcePortName = String(edge?.sourcePort ?? edge?.fromPort ?? "").trim() || "default";
+  const requestedTargetPortName = String(edge?.targetPort ?? edge?.toPort ?? "").trim() || "default";
+  const sourcePort = resolvePortByName(sourcePorts, requestedSourcePortName);
+  const targetPort = resolvePortByName(targetPorts, requestedTargetPortName);
+  const issues = [];
+
+  if (!sourcePort) {
+    issues.push(buildUnknownPortIssue(edge, "output", requestedSourcePortName, sourcePorts));
+  }
+  if (!targetPort) {
+    issues.push(buildUnknownPortIssue(edge, "input", requestedTargetPortName, targetPorts));
+  }
+
+  if (sourcePort && targetPort) {
+    const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
+    if (!compatibility.compatible) {
+      issues.push({
+        code: "invalid-port-binding",
+        edgeId: edge.id || `${edge.source}->${edge.target}`,
+        source: edge.source,
+        target: edge.target,
+        sourcePort: sourcePort.name,
+        targetPort: targetPort.name,
+        sourceType: sourcePort.type,
+        targetType: targetPort.type,
+        severity: "error",
+        message: compatibility.reason,
+      });
+    }
+  }
+
+  return {
+    edge,
+    sourceNode,
+    targetNode,
+    sourcePorts,
+    targetPorts,
+    sourcePort,
+    targetPort,
+    requestedSourcePortName,
+    requestedTargetPortName,
+    issues,
+  };
+}
+
+export function inspectCanvasEdgePorts(edge, nodes = [], nodeTypes = []) {
+  const nodeTypeMap = toNodeTypeMap(nodeTypes);
+  const nodeMap = new Map((Array.isArray(nodes) ? nodes : []).map((node) => [node.id, node]));
+  return inspectCanvasEdgePortBinding(edge, nodeMap, nodeTypeMap);
+}
+
+export function canUpdateCanvasEdgePortMapping(edge, patch = {}, nodes = [], nodeTypes = []) {
+  const validation = inspectCanvasEdgePorts({ ...edge, ...patch }, nodes, nodeTypes);
+  const changedSourcePort = Object.prototype.hasOwnProperty.call(patch, "sourcePort")
+    || Object.prototype.hasOwnProperty.call(patch, "fromPort");
+  const changedTargetPort = Object.prototype.hasOwnProperty.call(patch, "targetPort")
+    || Object.prototype.hasOwnProperty.call(patch, "toPort");
+  const blockingIssue = validation.issues.find((issue) => (
+    (issue?.code === "unknown-output-port" && changedSourcePort)
+    || (issue?.code === "unknown-input-port" && changedTargetPort)
+  )) || null;
+  return {
+    allowed: !blockingIssue,
+    blockingIssue,
+    validation,
+  };
+}
+
+export function validateCanvasEdgePorts(nodes = [], edges = [], nodeTypes = []) {
+  const nodeTypeMap = toNodeTypeMap(nodeTypes);
+  const nodeMap = new Map((Array.isArray(nodes) ? nodes : []).map((node) => [node.id, node]));
+  const issues = [];
+  for (const edge of Array.isArray(edges) ? edges : []) {
+    issues.push(...inspectCanvasEdgePortBinding(edge, nodeMap, nodeTypeMap).issues);
+  }
+  return issues;
+}
+
 export const HISTORY_LIMIT = 50;
 export const HISTORY_COMMIT_DEBOUNCE_MS = 220;
 
-export function createHistoryState(nodes = [], edges = []) {
+export function createHistoryState(nodes = [], edges = [], groups = []) {
   return {
     past: [],
-    present: serializeGraphSnapshot(nodes, edges),
+    present: serializeGraphSnapshot(nodes, edges, groups),
     future: [],
   };
 }
 
-export function pushHistorySnapshot(history, nodes, edges, limit = 50) {
+export function pushHistorySnapshot(history, nodes, edges, groupsOrLimit = [], limitMaybe = 50) {
   const safeHistory = history || createHistoryState();
-  const nextPresent = serializeGraphSnapshot(nodes, edges);
+  const { groups, limit } = resolveHistoryGroupsAndLimit(groupsOrLimit, limitMaybe);
+  const nextPresent = serializeGraphSnapshot(nodes, edges, groups);
   if (nextPresent === safeHistory.present) return safeHistory;
   const nextPast = [...safeHistory.past, safeHistory.present];
   if (nextPast.length > limit) nextPast.splice(0, nextPast.length - limit);
@@ -231,6 +498,279 @@ export function redoHistory(history, limit = 50) {
       future,
     },
     snapshot: parseGraphSnapshot(nextPresent),
+  };
+}
+
+function replaceSelectedNodeReferences(value, selectedNodeIds, executeNodeId) {
+  if (typeof value === "string") {
+    let nextValue = value;
+    for (const nodeId of selectedNodeIds) {
+      const pattern = new RegExp(`\\{\\{\\s*${escapeRegex(nodeId)}(\\.[^}]*)?\\s*\\}\\}`, "g");
+      nextValue = nextValue.replace(
+        pattern,
+        (_match, pathSuffix = "") => `{{${executeNodeId}.output.nodeOutputs.${nodeId}${pathSuffix || ""}}}`,
+      );
+    }
+    return nextValue;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => replaceSelectedNodeReferences(entry, selectedNodeIds, executeNodeId));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, replaceSelectedNodeReferences(entry, selectedNodeIds, executeNodeId)]),
+    );
+  }
+  return value;
+}
+
+export function createNodeGroup(graph = {}, selectedNodeIds = [], options = {}) {
+  const snapshot = createGraphSnapshot(graph.nodes, graph.edges, graph.groups);
+  const nodeIds = [...new Set((Array.isArray(selectedNodeIds) ? selectedNodeIds : []).map((id) => String(id || "").trim()).filter(Boolean))];
+  if (!nodeIds.length) return snapshot;
+  const groupId = String(options.id || `group-${Date.now()}`).trim();
+  const nextGroup = {
+    id: groupId,
+    label: String(options.label || options.name || "New Group").trim() || "New Group",
+    color: String(options.color || "#60a5fa").trim() || "#60a5fa",
+    nodeIds,
+    collapsed: options.collapsed === true,
+  };
+  return createGraphSnapshot(snapshot.nodes, snapshot.edges, [...snapshot.groups.filter((group) => group.id !== groupId), nextGroup]);
+}
+
+export function toggleWorkflowGroupCollapsed(graph = {}, groupId, collapsed = null) {
+  const snapshot = createGraphSnapshot(graph.nodes, graph.edges, graph.groups);
+  const normalizedId = String(groupId || "").trim();
+  return createGraphSnapshot(
+    snapshot.nodes,
+    snapshot.edges,
+    snapshot.groups.map((group) => group.id === normalizedId
+      ? { ...group, collapsed: collapsed == null ? !group.collapsed : collapsed === true }
+      : group),
+  );
+}
+
+export function moveWorkflowGroupByDelta(graph = {}, groupId, deltaX = 0, deltaY = 0) {
+  const snapshot = createGraphSnapshot(graph.nodes, graph.edges, graph.groups);
+  const group = snapshot.groups.find((entry) => entry.id === String(groupId || "").trim());
+  if (!group) return snapshot;
+  const memberSet = new Set(group.nodeIds);
+  return createGraphSnapshot(
+    snapshot.nodes.map((node) => memberSet.has(node.id)
+      ? {
+          ...node,
+          position: {
+            x: Number(node?.position?.x || 0) + Number(deltaX || 0),
+            y: Number(node?.position?.y || 0) + Number(deltaY || 0),
+          },
+        }
+      : node),
+    snapshot.edges,
+    snapshot.groups,
+  );
+}
+
+export function resolveWorkflowGroupBounds(graph = {}, groupId, options = {}) {
+  const snapshot = createGraphSnapshot(graph.nodes, graph.edges, graph.groups);
+  const group = options.groupOverride || snapshot.groups.find((entry) => entry.id === String(groupId || "").trim());
+  const memberNodes = snapshot.nodes.filter((node) => group?.nodeIds?.includes(node.id));
+  if (!group || memberNodes.length === 0) {
+    return { x: 0, y: 0, width: 240, height: 120 };
+  }
+  const paddingX = Number(options.paddingX ?? 28);
+  const paddingTop = Number(options.paddingTop ?? 42);
+  const paddingBottom = Number(options.paddingBottom ?? 22);
+  const nodeWidth = Number(options.nodeWidth ?? 220);
+  const nodeHeight = Number(options.nodeHeight ?? 118);
+  const minX = Math.min(...memberNodes.map((node) => Number(node?.position?.x || 0)));
+  const minY = Math.min(...memberNodes.map((node) => Number(node?.position?.y || 0)));
+  const maxX = Math.max(...memberNodes.map((node) => Number(node?.position?.x || 0) + nodeWidth));
+  const maxY = Math.max(...memberNodes.map((node) => Number(node?.position?.y || 0) + nodeHeight));
+  return {
+    x: minX - paddingX,
+    y: minY - paddingTop,
+    width: Math.max(220, (maxX - minX) + (paddingX * 2)),
+    height: Math.max(110, (maxY - minY) + paddingTop + paddingBottom),
+  };
+}
+
+function buildGroupProxyNode(group, memberNodes = []) {
+  const bounds = resolveWorkflowGroupBounds({ nodes: memberNodes }, group.id, { groupOverride: group });
+  return {
+    id: group.id,
+    type: "__group__",
+    label: group.label,
+    color: group.color,
+    position: { x: bounds.x, y: bounds.y },
+    size: { width: bounds.width, height: bounds.height },
+    inputPorts: [{ name: "default", label: "In", type: "Any", color: group.color }],
+    outputPorts: [{ name: "default", label: "Out", type: "Any", color: group.color }],
+    outputs: ["default"],
+    isGroupProxy: true,
+    groupId: group.id,
+    memberNodeIds: [...group.nodeIds],
+  };
+}
+
+export function buildCollapsedGraph(graph = {}) {
+  const snapshot = createGraphSnapshot(graph.nodes, graph.edges, graph.groups);
+  const collapsedGroups = snapshot.groups.filter((group) => group.collapsed);
+  if (!collapsedGroups.length) {
+    return {
+      visibleNodes: snapshot.nodes,
+      visibleEdges: snapshot.edges,
+      visibleGroups: snapshot.groups,
+      collapsedGroups: [],
+    };
+  }
+
+  const collapsedNodeToGroup = new Map();
+  for (const group of collapsedGroups) {
+    for (const nodeId of group.nodeIds) collapsedNodeToGroup.set(nodeId, group);
+  }
+
+  const visibleNodes = snapshot.nodes.filter((node) => !collapsedNodeToGroup.has(node.id));
+  for (const group of collapsedGroups) {
+    const memberNodes = snapshot.nodes.filter((node) => group.nodeIds.includes(node.id));
+    visibleNodes.push(buildGroupProxyNode(group, memberNodes));
+  }
+
+  const visibleEdges = [];
+  const seenEdges = new Set();
+  for (const edge of snapshot.edges) {
+    const sourceGroup = collapsedNodeToGroup.get(edge.source) || null;
+    const targetGroup = collapsedNodeToGroup.get(edge.target) || null;
+    if (sourceGroup && targetGroup && sourceGroup.id === targetGroup.id) continue;
+
+    const normalizedEdge = {
+      ...edge,
+      source: sourceGroup ? sourceGroup.id : edge.source,
+      target: targetGroup ? targetGroup.id : edge.target,
+      sourcePort: sourceGroup ? "default" : edge.sourcePort,
+      targetPort: targetGroup ? "default" : edge.targetPort,
+      originalEdgeIds: [edge.id],
+    };
+    const dedupeKey = `${normalizedEdge.source}:${normalizedEdge.sourcePort || "default"}->${normalizedEdge.target}:${normalizedEdge.targetPort || "default"}`;
+    if (seenEdges.has(dedupeKey)) {
+      const existing = visibleEdges.find((entry) => `${entry.source}:${entry.sourcePort || "default"}->${entry.target}:${entry.targetPort || "default"}` === dedupeKey);
+      if (existing) existing.originalEdgeIds = [...new Set([...(existing.originalEdgeIds || []), edge.id])];
+      continue;
+    }
+    seenEdges.add(dedupeKey);
+    visibleEdges.push(normalizedEdge);
+  }
+
+  return {
+    visibleNodes,
+    visibleEdges,
+    visibleGroups: snapshot.groups,
+    collapsedGroups,
+  };
+}
+
+export function convertSelectionToSubworkflow(parentWorkflow = {}, selectedNodeIds = [], options = {}) {
+  const snapshot = createGraphSnapshot(parentWorkflow.nodes, parentWorkflow.edges, parentWorkflow.groups);
+  const selectedIds = [...new Set((Array.isArray(selectedNodeIds) ? selectedNodeIds : []).map((id) => String(id || "").trim()).filter(Boolean))];
+  const selectedIdSet = new Set(selectedIds);
+  if (!selectedIds.length) {
+    return {
+      parentWorkflow: { ...parentWorkflow, ...snapshot },
+      childWorkflow: null,
+      executeNode: null,
+    };
+  }
+
+  const selectedNodes = snapshot.nodes.filter((node) => selectedIdSet.has(node.id));
+  const selectedEdges = snapshot.edges.filter((edge) => selectedIdSet.has(edge.source) && selectedIdSet.has(edge.target));
+  const incomingEdges = snapshot.edges.filter((edge) => !selectedIdSet.has(edge.source) && selectedIdSet.has(edge.target));
+  const outgoingEdges = snapshot.edges.filter((edge) => selectedIdSet.has(edge.source) && !selectedIdSet.has(edge.target));
+  const remainingEdges = snapshot.edges.filter((edge) => !selectedIdSet.has(edge.source) && !selectedIdSet.has(edge.target));
+  const remainingNodes = snapshot.nodes.filter((node) => !selectedIdSet.has(node.id));
+  const rootNodes = selectedNodes.filter((node) => !selectedEdges.some((edge) => edge.target === node.id));
+  const leafNodes = selectedNodes.filter((node) => !selectedEdges.some((edge) => edge.source === node.id));
+  const childWorkflowId = String(options.childWorkflowId || `${parentWorkflow.id || "workflow"}-child-${Date.now()}`);
+  const executeNodeId = String(options.executeNodeId || `execute-${childWorkflowId}`);
+  const triggerNodeId = String(options.triggerNodeId || "workflow-call");
+  const endNodeId = String(options.endNodeId || "workflow-end");
+  const minX = Math.min(...selectedNodes.map((node) => Number(node?.position?.x || 0)));
+  const minY = Math.min(...selectedNodes.map((node) => Number(node?.position?.y || 0)));
+  const maxX = Math.max(...selectedNodes.map((node) => Number(node?.position?.x || 0)));
+  const maxY = Math.max(...selectedNodes.map((node) => Number(node?.position?.y || 0)));
+
+  const triggerNode = {
+    id: triggerNodeId,
+    type: "trigger.workflow_call",
+    label: "Workflow Call",
+    config: { inputs: {} },
+    position: { x: minX - 260, y: minY },
+    outputs: ["default"],
+  };
+  const endNode = {
+    id: endNodeId,
+    type: "flow.end",
+    label: "Workflow End",
+    config: {
+      status: "completed",
+      output: {
+        nodeOutputs: Object.fromEntries(selectedIds.map((nodeId) => [nodeId, `{{${nodeId}}}`])),
+      },
+    },
+    position: { x: maxX + 260, y: maxY },
+    outputs: ["default"],
+  };
+  const executeNode = {
+    id: executeNodeId,
+    type: "action.execute_workflow",
+    label: String(options.executeNodeLabel || options.childName || "Execute Sub-workflow"),
+    config: {
+      workflowId: childWorkflowId,
+      mode: "sync",
+      input: Object.fromEntries([...new Set(incomingEdges.map((edge) => edge.source))].map((nodeId) => [nodeId, `{{${nodeId}}}`])),
+    },
+    position: {
+      x: Math.round(selectedNodes.reduce((sum, node) => sum + Number(node?.position?.x || 0), 0) / selectedNodes.length),
+      y: Math.round(selectedNodes.reduce((sum, node) => sum + Number(node?.position?.y || 0), 0) / selectedNodes.length),
+    },
+    outputs: ["default"],
+  };
+
+  return {
+    executeNode,
+    childWorkflow: {
+      id: childWorkflowId,
+      name: String(options.childName || "Sub-workflow"),
+      description: String(options.childDescription || `Extracted from ${parentWorkflow.name || parentWorkflow.id || "workflow"}`),
+      trigger: "trigger.workflow_call",
+      enabled: true,
+      nodes: [triggerNode, ...selectedNodes, endNode],
+      edges: [
+        ...selectedEdges,
+        ...rootNodes.map((node, index) => ({ id: `edge-${triggerNodeId}-${node.id}-${index}`, source: triggerNodeId, target: node.id })),
+        ...leafNodes.map((node, index) => ({ id: `edge-${node.id}-${endNodeId}-${index}`, source: node.id, target: endNodeId })),
+      ],
+      groups: snapshot.groups.filter((group) => group.nodeIds.every((nodeId) => selectedIdSet.has(nodeId))),
+      variables: {},
+      metadata: { extractedFromWorkflowId: parentWorkflow.id || null },
+    },
+    parentWorkflow: {
+      ...parentWorkflow,
+      nodes: [
+        ...remainingNodes.map((node) => ({
+          ...node,
+          config: replaceSelectedNodeReferences(node.config || {}, selectedIds, executeNodeId),
+        })),
+        executeNode,
+      ],
+      edges: [
+        ...remainingEdges,
+        ...incomingEdges.map((edge, index) => ({ ...edge, id: `${edge.id || "edge"}-to-${executeNodeId}-${index}`, target: executeNodeId, targetPort: "default" })),
+        ...outgoingEdges.map((edge, index) => ({ ...edge, id: `${executeNodeId}-to-${edge.id || "edge"}-${index}`, source: executeNodeId, sourcePort: "default" })),
+      ],
+      groups: snapshot.groups
+        .map((group) => ({ ...group, nodeIds: group.nodeIds.filter((nodeId) => !selectedIdSet.has(nodeId)) }))
+        .filter((group) => group.nodeIds.length > 0),
+    },
   };
 }
 
@@ -313,7 +853,6 @@ export function buildNodeStatusesFromRunDetail(run) {
     statuses[nodeId] = status;
   }
 
-  // Backfill older runs that only recorded nodeId in logs.
   if (Object.keys(statuses).length === 0) {
     const fallbackStatus = run?.status === "failed"
       ? "failed"
@@ -347,3 +886,6 @@ export function resolveNodeOutputPreview(_nodeType, livePreview = null, rawOutpu
     tokenCount: extractPreviewTokenCount(rawOutput),
   };
 }
+
+
+

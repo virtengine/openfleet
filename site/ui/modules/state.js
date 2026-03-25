@@ -54,6 +54,7 @@ const CACHE_TTL = {
   benchmarks: 8000,
   telemetry: 15000,
   analytics: 30000,
+  "retry-queue": 5000,
 };
 
 function _cacheKey(url) { return url; }
@@ -63,6 +64,60 @@ function _cacheFresh(url, group) {
   const e = _apiCache.get(url);
   return e ? (Date.now() - e.fetchedAt) < (CACHE_TTL[group] || 10000) : false;
 }
+function mergeTaskLinkageRecords(...sources) {
+  const merged = [];
+  const indexByKey = new Map();
+  const keyFor = (record) => {
+    if (!record || typeof record !== "object") return "";
+    const branchName = String(record.branchName || "").trim().toLowerCase();
+    const prUrl = String(record.prUrl || "").trim().toLowerCase();
+    const prNumber = Number.parseInt(String(record.prNumber ?? ""), 10);
+    return [branchName, Number.isFinite(prNumber) && prNumber > 0 ? prNumber : "", prUrl].join("|");
+  };
+  for (const source of sources) {
+    const records = Array.isArray(source) ? source : [];
+    for (const record of records) {
+      if (!record || typeof record !== "object") continue;
+      const normalized = { ...record };
+      const key = keyFor(normalized);
+      if (!key) continue;
+      if (indexByKey.has(key)) {
+        const idx = indexByKey.get(key);
+        merged[idx] = { ...merged[idx], ...normalized };
+        continue;
+      }
+      indexByKey.set(key, merged.length);
+      merged.push(normalized);
+    }
+  }
+  return merged;
+}
+
+export function mergeTaskRecords(existingTask, incomingTask) {
+  const merged = { ...(existingTask || {}), ...(incomingTask || {}) };
+  const existingMeta = existingTask?.meta && typeof existingTask.meta === "object" ? existingTask.meta : {};
+  const incomingMeta = incomingTask?.meta && typeof incomingTask.meta === "object" ? incomingTask.meta : {};
+  merged.meta = { ...existingMeta, ...incomingMeta };
+  const linkage = mergeTaskLinkageRecords(
+    existingTask?.prLinkage,
+    existingMeta?.prLinkage,
+    incomingTask?.prLinkage,
+    incomingMeta?.prLinkage,
+  );
+  if (linkage.length > 0) {
+    merged.prLinkage = linkage;
+    merged.meta.prLinkage = linkage;
+    const primaryLinkage = linkage[0] || null;
+    if (primaryLinkage?.branchName) merged.branchName = primaryLinkage.branchName;
+    if (primaryLinkage?.prUrl) merged.prUrl = primaryLinkage.prUrl;
+    if (Number.isFinite(primaryLinkage?.prNumber) && primaryLinkage.prNumber > 0) merged.prNumber = primaryLinkage.prNumber;
+    merged.meta.prLinkageSource = primaryLinkage?.source || incomingMeta?.prLinkageSource || existingMeta?.prLinkageSource || null;
+    merged.meta.prLinkageFreshness = primaryLinkage?.freshness || incomingMeta?.prLinkageFreshness || existingMeta?.prLinkageFreshness || null;
+    merged.meta.prLinkageUpdatedAt = primaryLinkage?.updatedAt || incomingMeta?.prLinkageUpdatedAt || existingMeta?.prLinkageUpdatedAt || null;
+  }
+  return merged;
+}
+
 function _cacheClearGroup(group) {
   for (const k of _apiCache.keys()) {
     if (k.includes(group) || group === '*') _apiCache.delete(k);
@@ -102,27 +157,50 @@ function synthesizeTaskDescription(task) {
   return `Implementation notes for "${title}". Include scope, key files, risks, and acceptance checks before dispatch.`;
 }
 
+function normalizeTaskDiagnosticsForUi(diagnostics) {
+  if (!diagnostics || typeof diagnostics !== "object") return diagnostics;
+  const stableCause = diagnostics.stableCause && typeof diagnostics.stableCause === "object"
+    ? {
+        ...diagnostics.stableCause,
+        code: sanitizeTaskText(diagnostics.stableCause.code || ""),
+        title: sanitizeTaskText(diagnostics.stableCause.title || ""),
+        summary: sanitizeTaskText(diagnostics.stableCause.summary || ""),
+      }
+    : diagnostics.stableCause;
+  return {
+    ...diagnostics,
+    stableCause,
+    lastError: sanitizeTaskText(diagnostics.lastError || "") || null,
+    errorPattern: sanitizeTaskText(diagnostics.errorPattern || "") || null,
+    blockedReason: sanitizeTaskText(diagnostics.blockedReason || "") || null,
+  };
+}
+
 function normalizeTaskForUi(task) {
   if (!task || typeof task !== "object") return task;
-  const title = sanitizeTaskText(task.title || "");
-  const rawDescription = sanitizeTaskText(task.description || "");
+  const hydratedTask = mergeTaskRecords(null, task);
+  const title = sanitizeTaskText(hydratedTask.title || "");
+  const rawDescription = sanitizeTaskText(hydratedTask.description || "");
   const description = isPlaceholderTaskDescription(rawDescription) ? "" : rawDescription;
-  const meta = task.meta && typeof task.meta === "object"
+  const diagnostics = normalizeTaskDiagnosticsForUi(hydratedTask.diagnostics);
+  const meta = hydratedTask.meta && typeof hydratedTask.meta === "object"
     ? {
-        ...task.meta,
-        title: task.meta.title != null ? sanitizeTaskText(task.meta.title) : task.meta.title,
+        ...hydratedTask.meta,
+        title: hydratedTask.meta.title != null ? sanitizeTaskText(hydratedTask.meta.title) : hydratedTask.meta.title,
         description:
-          task.meta.description != null
-            ? (isPlaceholderTaskDescription(task.meta.description)
+          hydratedTask.meta.description != null
+            ? (isPlaceholderTaskDescription(hydratedTask.meta.description)
               ? ""
-              : sanitizeTaskText(task.meta.description))
-            : task.meta.description,
+              : sanitizeTaskText(hydratedTask.meta.description))
+            : hydratedTask.meta.description,
+        diagnostics: normalizeTaskDiagnosticsForUi(hydratedTask.meta.diagnostics),
       }
-    : task.meta;
+    : hydratedTask.meta;
   return {
-    ...task,
+    ...hydratedTask,
     title,
-    description: description || synthesizeTaskDescription({ ...task, title }),
+    description: description || synthesizeTaskDescription({ ...hydratedTask, title }),
+    diagnostics,
     meta,
   };
 }
@@ -141,7 +219,7 @@ function mergeTaskPages(existingTasks = [], incomingTasks = []) {
       if (key) indexById.set(key, merged.length - 1);
       continue;
     }
-    merged[indexById.get(key)] = { ...merged[indexById.get(key)], ...task };
+    merged[indexById.get(key)] = mergeTaskRecords(merged[indexById.get(key)], task);
   }
   return merged;
 }
@@ -171,6 +249,39 @@ export const tasksSort = signal("updated");
 export const tasksTotalPages = signal(1);
 export const tasksTotal = signal(0);
 export const tasksStatusCounts = signal({ draft: 0, backlog: 0, blocked: 0, inProgress: 0, inReview: 0, done: 0 });
+
+// ── Retry Queue
+export const retryQueueData = signal({ count: 0, items: [] });
+export const retryQueueLoaded = signal(false);
+
+function normalizeRetryQueuePayload(payload) {
+  return {
+    count: Number(payload?.count || 0),
+    items: Array.isArray(payload?.items) ? payload.items : [],
+    stats: payload?.stats && typeof payload.stats === "object"
+      ? {
+          totalRetriesToday: Number(payload.stats.totalRetriesToday || 0),
+          peakRetryDepth: Number(payload.stats.peakRetryDepth || 0),
+          exhaustedTaskIds: Array.isArray(payload.stats.exhaustedTaskIds) ? payload.stats.exhaustedTaskIds : [],
+        }
+      : {
+          totalRetriesToday: 0,
+          peakRetryDepth: 0,
+          exhaustedTaskIds: [],
+        },
+  };
+}
+
+export async function loadRetryQueue() {
+  const url = "/api/retry-queue";
+  if (_cacheFresh(url, "retry-queue")) return;
+  const res = await apiFetch(url, { _silent: true }).catch(() => ({ ok: false, items: [], count: 0, stats: null }));
+  retryQueueData.value = normalizeRetryQueuePayload(res);
+  _cacheSet(url, retryQueueData.value);
+  _markFresh("retry-queue");
+  retryQueueLoaded.value = true;
+}
+
 const TASK_IGNORE_LABEL = "codex:ignore";
 const TASK_TEMPLATE_PLACEHOLDER_RE = /^\{\{\s*[\w.-]+\s*\}\}$/;
 const TASK_TEXT_REPLACEMENTS = [
@@ -188,7 +299,6 @@ const TASK_TEXT_REPLACEMENTS = [
   [/\u00E2\u20AC\u00A6/g, "..."],
   [/\u00C2/g, " "],
 ];
-
 const TASK_LIFECYCLE_IN_PROGRESS = new Set([
   "inprogress",
   "in-progress",
@@ -210,8 +320,10 @@ export function normalizeTaskLifecycleStatus(status) {
   const raw = String(status || "").trim().toLowerCase();
   if (!raw) return "todo";
   if (TASK_LIFECYCLE_IN_PROGRESS.has(raw)) return "inprogress";
-  if (raw === "inreview" || raw === "in-review" || raw === "review") return "inreview";
-  if (raw === "done" || raw === "completed" || raw === "merged" || raw === "closed") return "done";
+  if (raw === "inreview" || raw === "in-review" || raw === "review")
+    return "inreview";
+  if (raw === "done" || raw === "completed" || raw === "merged" || raw === "closed")
+    return "done";
   if (raw === "cancelled" || raw === "canceled") return "cancelled";
   if (raw === "blocked") return "blocked";
   if (TASK_LIFECYCLE_BACKLOG.has(raw)) return raw === "draft" ? "draft" : "todo";
@@ -223,10 +335,10 @@ export function classifyTaskLifecycleAction(currentStatus, nextStatus) {
   const next = normalizeTaskLifecycleStatus(nextStatus);
   if (prev === next) return "noop";
   if (next === "inprogress" && prev !== "inprogress") return "start";
-  if (prev === "inprogress" && (next === "todo" || next === "draft")) return "pause";
+  if (prev === "inprogress" && (next === "todo" || next === "draft"))
+    return "pause";
   return "update";
 }
-
 
 
 // ── Agents
@@ -246,6 +358,15 @@ export const logsLines = signal(100);
 export const gitDiff = signal(null);
 export const gitBranches = signal([]);
 export const agentLogFiles = signal([]);
+export const agentLogFilesMeta = signal({
+  total: 0,
+  offset: 0,
+  limit: 100,
+  count: 0,
+  hasMore: false,
+  nextOffset: 0,
+  filterSummary: null,
+});
 export const agentLogFile = signal("");
 export const agentLogTail = signal(null);
 export const agentLogLines = signal(200);
@@ -444,7 +565,7 @@ function _saveDashboardSnapshot() {
     const counts = s.counts || {};
     const running = Number(counts.running || counts.inprogress || 0);
     const review = Number(counts.review || counts.inreview || 0);
-    const blocked = Number(counts.error || 0);
+    const blocked = Number(counts.blocked ?? counts.error ?? 0);
     const done = Number(counts.done || 0);
     const backlog = Number(s.backlog_remaining || counts.todo || 0);
     const total = running + review + blocked + backlog + done;
@@ -497,21 +618,32 @@ export async function loadExecutor() {
   const url = "/api/executor";
   const cached = _cacheGet(url);
   if (_cacheFresh(url, "executor")) return;
+  const fallback = cached?.data ?? executorData.value ?? null;
   if (cached) executorData.value = cached.data;
   const res = await apiFetch(url, { _silent: true }).catch(() => ({
-    data: null,
+    data: fallback,
   }));
-  executorData.value = res ?? null;
+  executorData.value = res ?? fallback;
   _cacheSet(url, executorData.value);
   _markFresh("executor");
 }
 
+/** Large page size for kanban mode to load all tasks in one request */
+export const KANBAN_PAGE_SIZE = 200;
+
 /** Load tasks with current filter/page/sort → tasksData + tasksTotalPages */
 export async function loadTasks(options = {}) {
   const append = Boolean(options?.append);
+  const pageSizeOverride = options?.pageSize;
+  // When doing a full (non-append) refresh, always reset to page 0 so we
+  // don't accidentally fetch a stale later page and overwrite the full list.
+  if (!append && tasksPage.value !== 0) {
+    tasksPage.value = 0;
+  }
+  const effectivePageSize = pageSizeOverride || tasksPageSize.value;
   const params = new URLSearchParams({
     page: String(tasksPage.value),
-    pageSize: String(tasksPageSize.value),
+    pageSize: String(effectivePageSize),
   });
   if (tasksFilter.value && tasksFilter.value !== "all")
     params.set("status", tasksFilter.value);
@@ -521,11 +653,16 @@ export async function loadTasks(options = {}) {
   if (tasksSort.value) params.set("sort", tasksSort.value);
 
   const res = await apiFetch(`/api/tasks?${params}`, { _silent: true }).catch(
-    () => ({
-      data: [],
-      total: 0,
-      totalPages: 1,
-    }),
+    (err) => {
+      console.warn("[state] loadTasks fetch failed, keeping previous data:", err?.message || err);
+      return {
+        data: tasksData.value || [],
+        total: tasksTotal.value || 0,
+        totalPages: tasksTotalPages.value || 1,
+        statusCounts: tasksStatusCounts.value || {},
+        _fetchFailed: true,
+      };
+    },
   );
   const nextTasks = Array.isArray(res.data)
     ? res.data.map(normalizeTaskForUi)
@@ -535,7 +672,7 @@ export async function loadTasks(options = {}) {
     : nextTasks;
   tasksTotalPages.value =
     res.totalPages ||
-    Math.max(1, Math.ceil((res.total || 0) / tasksPageSize.value));
+    Math.max(1, Math.ceil((res.total || 0) / effectivePageSize));
   tasksTotal.value = Math.max(0, Number(res.total || 0));
   tasksStatusCounts.value = {
     draft: Number(res?.statusCounts?.draft || 0),
@@ -630,9 +767,10 @@ export async function loadInfra() {
 }
 
 /** Load system logs → logsData */
-export async function loadLogs() {
+export async function loadLogs(options = {}) {
   const url = `/api/logs?lines=${logsLines.value}`;
-  if (_cacheFresh(url, "logs")) return;
+  const force = Boolean(options?.force);
+  if (!force && _cacheFresh(url, "logs")) return;
   const res = await apiFetch(url, { _silent: true }).catch(() => ({ data: null }));
   logsData.value = res.data ?? res ?? null;
   _cacheSet(url, logsData.value);
@@ -659,20 +797,52 @@ export async function loadGit() {
 }
 
 /** Load agent log file list → agentLogFiles */
-export async function loadAgentLogFileList() {
+export async function loadAgentLogFileList(options = {}) {
+  const offset = Math.max(0, Number(options?.offset || 0));
+  const limit = Math.max(20, Math.min(500, Number(options?.limit || 100)));
+  const sortBy = String(options?.sortBy || "modified");
+  const sortDir = String(options?.sortDir || "desc");
+  const age = String(options?.age || "all");
+  const staleDays = Math.max(1, Math.min(90, Number(options?.staleDays || 7)));
   const params = new URLSearchParams();
   if (agentLogQuery.value) params.set("query", agentLogQuery.value);
+  params.set("offset", String(offset));
+  params.set("limit", String(limit));
+  params.set("sortBy", sortBy);
+  params.set("sortDir", sortDir);
+  params.set("age", age);
+  params.set("staleDays", String(staleDays));
   const path = params.toString()
     ? `/api/agent-logs?${params}`
     : "/api/agent-logs";
   const res = await apiFetch(path, { _silent: true }).catch(() => ({
     data: [],
+    pagination: {
+      total: 0,
+      offset,
+      limit,
+      count: 0,
+      hasMore: false,
+      nextOffset: 0,
+    },
   }));
   agentLogFiles.value = res.data || [];
+  const pagination = res?.pagination || {
+    total: agentLogFiles.value.length,
+    offset,
+    limit,
+    count: agentLogFiles.value.length,
+    hasMore: false,
+    nextOffset: offset + agentLogFiles.value.length,
+  };
+  agentLogFilesMeta.value = {
+    ...pagination,
+    filterSummary: res?.filterSummary || null,
+  };
 }
 
 /** Load tail of the currently selected agent log → agentLogTail */
-export async function loadAgentLogTailData() {
+export async function loadAgentLogTailData(options = {}) {
   if (!agentLogFile.value) {
     agentLogTail.value = null;
     return;
@@ -681,10 +851,22 @@ export async function loadAgentLogTailData() {
     file: agentLogFile.value,
     lines: String(agentLogLines.value),
   });
-  const res = await apiFetch(`/api/agent-logs/tail?${params}`, {
+  const query = String(agentLogQuery.value || "").trim();
+  if (query) params.set("query", query);
+  const url = `/api/agent-logs/tail?${params}`;
+  if (!options?.force && _cacheFresh(url, "logs")) {
+    const cached = _cacheGet(url);
+    if (cached) {
+      agentLogTail.value = cached.data;
+      return;
+    }
+  }
+  const res = await apiFetch(url, {
     _silent: true,
   }).catch(() => ({ data: null }));
   agentLogTail.value = res.data ?? res ?? null;
+  _cacheSet(url, agentLogTail.value);
+  _markFresh("logs");
 }
 
 /**
@@ -847,8 +1029,14 @@ export async function loadBenchmarks(providerId = "") {
 
 const TAB_LOADERS = {
   dashboard: () =>
-    Promise.all([loadStatus(), loadExecutor(), loadProjectSummary()]),
-  tasks: () => loadTasks(),
+    Promise.all([
+      loadStatus(),
+      loadExecutor(),
+      loadProjectSummary(),
+      loadRetryQueue(),
+      loadTasks({ pageSize: KANBAN_PAGE_SIZE }),
+    ]),
+  tasks: () => loadTasks({ pageSize: KANBAN_PAGE_SIZE }),
   benchmarks: () => loadBenchmarks(),
   agents: () => Promise.all([loadAgents(), loadExecutor(), import("../components/session-list.js").then((m) => m.loadSessions()).catch(() => {})]),
   infra: () =>
@@ -868,6 +1056,7 @@ const TAB_LOADERS = {
       loadTelemetryExecutors(),
       loadTelemetryAlerts(),
       loadUsageAnalytics(30),
+      loadRetryQueue(),
     ]),
   settings: () => Promise.all([loadStatus(), loadConfig()]),
 };
@@ -953,20 +1142,28 @@ export function scheduleRefresh(ms = 5000) {
 /* ─── WebSocket invalidation listener ─── */
 
 const WS_CHANNEL_MAP = {
-  dashboard: ["overview", "executor", "tasks", "agents"],
+  dashboard: ["overview", "executor", "tasks", "agents", "retry-queue"],
   tasks: ["tasks"],
   benchmarks: ["benchmarks", "tasks", "executor", "workflows", "workspaces", "library"],
   agents: ["agents", "executor"],
   infra: ["worktrees", "workspaces", "presence"],
   control: ["executor", "overview"],
   logs: ["*"],
-  telemetry: ["*"],
+  marketplace: ["library"],
+  telemetry: ["*", "retry-queue"],
   settings: ["overview"],
 };
 
 /** Start listening for WS invalidation messages and auto-refreshing. */
 export function initWsInvalidationListener() {
   onWsMessage((msg) => {
+    if (msg?.type === "retry-queue-updated") {
+      retryQueueData.value = normalizeRetryQueuePayload(msg?.payload);
+      _cacheSet("/api/retry-queue", retryQueueData.value);
+      _markFresh("retry-queue");
+      retryQueueLoaded.value = true;
+      return;
+    }
     if (msg?.type !== "invalidate") return;
     const channels = Array.isArray(msg.channels) ? msg.channels : [];
     // Clear cache for invalidated channels so next fetch is fresh
@@ -988,3 +1185,4 @@ export function initWsInvalidationListener() {
       });
   });
 }
+

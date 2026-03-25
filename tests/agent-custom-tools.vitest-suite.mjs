@@ -311,6 +311,8 @@ describe("getToolsPromptBlock", () => {
   it("includes reflect hint by default", () => {
     const block = getToolsPromptBlock(tmpRoot);
     expect(block).toContain("Reflect:");
+    expect(block).toContain("- Check existing tools before writing new helpers.");
+    expect(block).not.toContain("Before writing repetitive inline code");
   });
 
   it("omits reflect hint when emitReflectHint=false", () => {
@@ -555,6 +557,18 @@ describe("registerCustomTool affinity fields", () => {
     expect(entry.version).toBe("2.1.0");
   });
 
+  it("normalises and deduplicates affinity arrays before persisting", () => {
+    const entry = registerCustomTool(tmpRoot, makeTool({
+      id: "normalised-affinity-tool",
+      skills: ["tdd-pattern.md", "tdd-pattern.md", ""],
+      agents: ["primary-agent", "primary-agent", "  "],
+      templates: ["task-lifecycle", "task-lifecycle", null],
+    }));
+
+    expect(entry.skills).toEqual(["tdd-pattern.md"]);
+    expect(entry.agents).toEqual(["primary-agent"]);
+    expect(entry.templates).toEqual(["task-lifecycle"]);
+  });
   it("omits empty affinity arrays from entry to keep index lean", () => {
     const entry = registerCustomTool(tmpRoot, makeTool({ id: "lean-tool" }));
     // When no skills/agents/templates provided, they are omitted (not empty arrays)
@@ -743,4 +757,5 @@ describe("getToolsPromptBlock affinity", () => {
     expect(block).not.toContain("not-eager.mjs");
   });
 });
+
 

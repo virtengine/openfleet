@@ -28,6 +28,12 @@ import {
   clearWellKnownAgentSourceProbeCache,
   probeWellKnownAgentSources,
 } from "./library-manager-well-known-sources.mjs";
+import {
+  evaluateMarkdownSafety,
+  recordMarkdownSafetyAuditEvent,
+  resolveMarkdownSafetyPolicy,
+} from "../lib/skill-markdown-safety.mjs";
+import { readConfigDocument } from "../config/config.mjs";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -203,6 +209,49 @@ const FRAMEWORK_DOMAIN_MAP = Object.freeze({
 export const RESOURCE_TYPES = Object.freeze(["prompt", "agent", "skill", "mcp", "custom-tool", "hook"]);
 export const AGENT_LIBRARY_CATEGORIES = Object.freeze(["task", "interactive", "voice"]);
 export const INTERACTIVE_AGENT_MODES = Object.freeze(["ask", "agent", "plan", "web", "instant", "custom", "voice"]);
+
+const SAFETY_SCREENED_IMPORT_KINDS = new Set(["agent", "prompt", "skill"]);
+
+function resolveRepositoryMarkdownSafetyPolicy(rootDir, options = {}) {
+  if (options?.markdownSafetyPolicy) {
+    return resolveMarkdownSafetyPolicy(options.markdownSafetyPolicy);
+  }
+  if (options?.configData) {
+    return resolveMarkdownSafetyPolicy(options.configData);
+  }
+  if (rootDir) {
+    try {
+      const { configData } = readConfigDocument(rootDir);
+      return resolveMarkdownSafetyPolicy(configData);
+    } catch {
+      // Fall through to defaults.
+    }
+  }
+  return resolveMarkdownSafetyPolicy({});
+}
+
+function auditBlockedImportCandidates(blockedCandidates, options = {}) {
+  if (!Array.isArray(blockedCandidates) || blockedCandidates.length === 0) return;
+  const policy = resolveRepositoryMarkdownSafetyPolicy(options?.rootDir, options);
+  recordMarkdownSafetyAuditEvent(
+    {
+      channel: options?.channel || "library-import",
+      sourceKind: "repository-import",
+      sourceRepo: options?.repoUrl || options?.sourceId || "",
+      sourcePath: options?.repoUrl || options?.sourceId || "repository-import",
+      branch: options?.branch || "",
+      blockedCount: blockedCandidates.length,
+      candidates: blockedCandidates.map((candidate) => ({
+        kind: candidate.kind,
+        path: candidate.relPath,
+        reasons: candidate.safety?.reasons || [],
+        score: candidate.safety?.score || 0,
+      })),
+      reasons: blockedCandidates.flatMap((candidate) => candidate.safety?.reasons || []),
+    },
+    { policy, rootDir: options?.rootDir || process.cwd() },
+  );
+}
 
 export function normalizeAgentProfileType(rawType, options = {}) {
   const value = String(rawType || "").trim().toLowerCase();
@@ -1352,6 +1401,84 @@ export function upsertEntry(rootDir, data, content, options = {}) {
   return entry;
 }
 
+function cleanupDeletedSkillDependents(rootDir, entry, manifest) {
+  const removedEntries = [];
+  const deletedSourceId = String(entry?.meta?.sourceId || "").trim().toLowerCase();
+  const promptIdsToDelete = new Set();
+  const nextEntries = [];
+
+  for (const candidate of manifest.entries) {
+    if (!candidate) continue;
+
+    if (candidate.type === "agent") {
+      const profile = getEntryContent(rootDir, candidate);
+      if (!profile || typeof profile !== "object") {
+        nextEntries.push(candidate);
+        continue;
+      }
+
+      const candidateSourceId = getAgentImportSourceId(candidate, profile);
+      if (deletedSourceId && candidateSourceId && candidateSourceId === deletedSourceId) {
+        if (profile?.promptOverride) {
+          promptIdsToDelete.add(String(profile.promptOverride).trim());
+        }
+        removedEntries.push(candidate);
+        continue;
+      }
+
+      const updatedCandidate = removeDeletedSkillFromProfile(rootDir, candidate, profile, entry.id);
+      if (updatedCandidate) {
+        nextEntries.push(updatedCandidate);
+        continue;
+      }
+
+      nextEntries.push(candidate);
+      continue;
+    }
+
+    if (candidate.type === "prompt") {
+      if (shouldRemoveImportedAgentPrompt(candidate, deletedSourceId, promptIdsToDelete)) {
+        removedEntries.push(candidate);
+        continue;
+      }
+    }
+
+    nextEntries.push(candidate);
+  }
+
+  manifest.entries = nextEntries;
+  return removedEntries;
+}
+
+function getAgentImportSourceId(candidate, profile) {
+  return String(
+    profile?.importMeta?.sourceId || candidate?.meta?.sourceId || "",
+  ).trim().toLowerCase();
+}
+
+function removeDeletedSkillFromProfile(rootDir, candidate, profile, skillId) {
+  if (!Array.isArray(profile.skills) || !profile.skills.includes(skillId)) {
+    return null;
+  }
+  const updatedProfile = {
+    ...profile,
+    skills: profile.skills.filter((candidateSkillId) => candidateSkillId !== skillId),
+  };
+  writeFileSync(
+    resolve(dirForType(rootDir, candidate.type), candidate.filename),
+    JSON.stringify(updatedProfile, null, 2) + "\n",
+    "utf8",
+  );
+  return { ...candidate, updatedAt: nowISO() };
+}
+
+function shouldRemoveImportedAgentPrompt(candidate, deletedSourceId, promptIdsToDelete) {
+  const promptId = String(candidate.id || "").trim();
+  const candidateSourceId = String(candidate?.meta?.sourceId || "").trim().toLowerCase();
+  const isImportedAgentPrompt = Array.isArray(candidate.tags) && candidate.tags.includes("agent-prompt");
+  return promptIdsToDelete.has(promptId) || (deletedSourceId && candidateSourceId === deletedSourceId && isImportedAgentPrompt);
+}
+
 /**
  * Delete a library entry by id. Removes from manifest (optionally deletes file).
  */
@@ -1361,18 +1488,28 @@ export function deleteEntry(rootDir, id, { deleteFile = false, syncIndexes = tru
   if (idx < 0) return false;
 
   const entry = manifest.entries[idx];
+  const removedEntries = [entry];
   manifest.entries.splice(idx, 1);
+
+  if (entry.type === "skill") {
+    removedEntries.push(...cleanupDeletedSkillDependents(rootDir, entry, manifest));
+  }
+
   saveManifest(rootDir, manifest);
   if (syncIndexes !== false) {
-    if (entry.type === "agent") rebuildAgentProfileIndex(rootDir, manifest);
+    if (entry.type === "agent" || removedEntries.some((candidate) => candidate?.type === "agent")) {
+      rebuildAgentProfileIndex(rootDir, manifest);
+    }
     if (entry.type === "skill") rebuildSkillEntryIndex(rootDir, manifest);
   }
 
   if (deleteFile) {
-    const filePath = resolve(dirForType(rootDir, entry.type), entry.filename);
-    try {
-      unlinkSync(filePath);
-    } catch { /* file may not exist */ }
+    for (const removedEntry of removedEntries) {
+      const filePath = resolve(dirForType(rootDir, removedEntry.type), removedEntry.filename);
+      try {
+        unlinkSync(filePath);
+      } catch { /* file may not exist */ }
+    }
   }
   return true;
 }
@@ -2155,7 +2292,7 @@ function createRepositoryImportCheckoutDir(prefix, repoUrl, branch) {
   const checkoutWarning = /clone succeeded.*checkout failed/i.test(cloneStderr);
   if (clone.status === 0 || checkoutWarning) return checkoutDir;
 
-  rmSync(checkoutDir, { recursive: true, force: true });
+  rmSync(checkoutDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
   if (/repository not found/i.test(cloneStderr)) {
     throw new Error(`Repository not found: ${repoUrl}`);
   }
@@ -2206,8 +2343,10 @@ function collectRepositoryImportMarkdownCandidates(checkoutDir, options = {}) {
     1,
     Math.min(2000, Number.parseInt(String(options?.maxEntries ?? "500"), 10) || 500),
   );
+  const markdownSafetyPolicy = resolveRepositoryMarkdownSafetyPolicy(options?.rootDir, options);
 
   const files = walkFilesRecursive(checkoutDir);
+  const blockedCandidates = [];
   const candidates = sortImportedMarkdownCandidates(
     files
       .filter((fullPath) => /\.md$/i.test(fullPath))
@@ -2223,7 +2362,7 @@ function collectRepositoryImportMarkdownCandidates(checkoutDir, options = {}) {
           return null;
         }
         const kind = inferImportedEntryKind(relPath, fileName, parsed.attrs);
-        return buildImportedMarkdownCandidate({
+        const candidate = buildImportedMarkdownCandidate({
           fullPath,
           relPath,
           fileName,
@@ -2233,11 +2372,37 @@ function collectRepositoryImportMarkdownCandidates(checkoutDir, options = {}) {
           kind,
           selected: true,
         });
+        if (!candidate) return null;
+        if (SAFETY_SCREENED_IMPORT_KINDS.has(candidate.kind)) {
+          const decision = evaluateMarkdownSafety(
+            raw,
+            {
+              channel: options?.channel || "library-import",
+              sourceKind: candidate.kind,
+              sourcePath: relPath,
+              sourceRepo: options?.repoUrl || options?.sourceId || "",
+              sourceRepoUrl: options?.repoUrl || "",
+              sourceRoot: options?.rootDir || checkoutDir,
+              documentationContext: false,
+            },
+            markdownSafetyPolicy,
+          );
+          if (decision.blocked) {
+            blockedCandidates.push({
+              ...candidate,
+              selected: false,
+              blocked: true,
+              safety: decision.safety,
+            });
+            return null;
+          }
+        }
+        return candidate;
       })
       .filter(Boolean),
   ).slice(0, maxEntries);
 
-  return { files, candidates };
+  return { files, candidates, blockedCandidates };
 }
 
 function listRepositoryMcpConfigFiles(checkoutDir, { includeLegacy = false } = {}) {
@@ -2368,11 +2533,23 @@ export function scanRepositoryForImport(options = {}) {
   const checkoutDir = createRepositoryImportCheckoutDir("scan", repoUrl, branch);
 
   try {
-    const { files, candidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, { maxEntries });
+    const { files, candidates, blockedCandidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, {
+      ...options,
+      channel: "library-import-preview",
+      maxEntries,
+      repoUrl,
+      branch,
+      sourceId,
+    });
 
     const byType = { agent: 0, prompt: 0, skill: 0, mcp: 0 };
     for (const candidate of candidates) {
       byType[candidate.kind] = (byType[candidate.kind] || 0) + 1;
+    }
+
+    const blockedByType = { agent: 0, prompt: 0, skill: 0, mcp: 0 };
+    for (const candidate of blockedCandidates) {
+      blockedByType[candidate.kind] = (blockedByType[candidate.kind] || 0) + 1;
     }
 
     appendRepositoryMcpImportCandidates(candidates, files, checkoutDir, byType);
@@ -2397,6 +2574,14 @@ export function scanRepositoryForImport(options = {}) {
       intraDuplicateMap[relPath] = peers;
     }
 
+    auditBlockedImportCandidates(blockedCandidates, {
+      ...options,
+      channel: "library-import-preview",
+      repoUrl,
+      branch,
+      sourceId,
+    });
+
     return {
       ok: true,
       source: known ? { id: known.id, name: known.name } : { id: sourceId || "custom", name: repoUrl },
@@ -2405,11 +2590,13 @@ export function scanRepositoryForImport(options = {}) {
       totalCandidates: candidates.length,
       candidatesByType: byType,
       candidates,
+      blockedCandidates,
+      blockedCandidatesByType: blockedByType,
       duplicates: duplicateMap,
       intraDuplicates: intraDuplicateMap,
     };
   } finally {
-    rmSync(checkoutDir, { recursive: true, force: true });
+    try { rmSync(checkoutDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }); } catch {}
   }
 }
 
@@ -2594,12 +2781,29 @@ function importRepositoryMcpEntries(rootDir, checkoutDir, context) {
   }
 }
 
+function resolveRepositoryImportSelection(candidates, options = {}) {
+  const counts = { agent: 0, prompt: 0, skill: 0 };
+  for (const candidate of Array.isArray(candidates) ? candidates : []) {
+    const kind = String(candidate?.kind || "").trim().toLowerCase();
+    if (Object.hasOwn(counts, kind)) counts[kind] += 1;
+  }
+
+  const hasExplicitImportAgents = Object.hasOwn(options || {}, "importAgents");
+  const hasExplicitImportSkills = Object.hasOwn(options || {}, "importSkills");
+  const hasExplicitImportPrompts = Object.hasOwn(options || {}, "importPrompts");
+  const hasExplicitImportTools = Object.hasOwn(options || {}, "importTools");
+  const skillOnlyCatalog = counts.skill > 0 && counts.agent === 0 && counts.prompt === 0;
+
+  return {
+    importAgents: hasExplicitImportAgents ? options?.importAgents !== false : !skillOnlyCatalog,
+    importSkills: hasExplicitImportSkills ? options?.importSkills !== false : counts.skill > 0,
+    importPrompts: hasExplicitImportPrompts ? options?.importPrompts !== false : !skillOnlyCatalog,
+    importTools: hasExplicitImportTools ? options?.importTools !== false : true,
+  };
+}
+
 export function importAgentProfilesFromRepository(rootDir, options = {}) {
   const { sourceId, known, repoUrl, branch } = resolveRepositoryImportSource(options);
-  const importAgents = options?.importAgents !== false;
-  const importSkills = options?.importSkills !== false;
-  const importPrompts = options?.importPrompts !== false;
-  const importTools = options?.importTools !== false;
   const includeEntries = Array.isArray(options?.includeEntries) ? new Set(options.includeEntries.map((e) => String(e || "").trim()).filter(Boolean)) : null;
   const maxProfiles = Math.max(
     1,
@@ -2611,7 +2815,16 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
   );
 
   const checkoutDir = createRepositoryImportCheckoutDir("import", repoUrl, branch);
-  const { candidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, { maxEntries: maxProfiles });
+  const { candidates, blockedCandidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, {
+    ...options,
+    channel: "library-import-apply",
+    maxEntries: maxProfiles,
+    repoUrl,
+    branch,
+    rootDir,
+    sourceId,
+  });
+  const { importAgents, importSkills, importPrompts, importTools } = resolveRepositoryImportSelection(candidates, options);
 
   const takenIds = new Set(
     listEntries(rootDir).map((entry) => String(entry?.id || "").trim()).filter(Boolean),
@@ -2652,12 +2865,20 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
       });
     }
   } finally {
-
-    rmSync(checkoutDir, { recursive: true, force: true });
+    try { rmSync(checkoutDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }); } catch {}
   }
 
   if (needsAgentIndexRefresh) rebuildAgentProfileIndex(rootDir);
   if (needsSkillIndexRefresh) rebuildSkillEntryIndex(rootDir);
+
+  auditBlockedImportCandidates(blockedCandidates, {
+    ...options,
+    channel: "library-import-apply",
+    repoUrl,
+    branch,
+    rootDir,
+    sourceId,
+  });
 
   return {
     ok: true,
@@ -2667,6 +2888,7 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
     importedCount: imported.length,
     importedByType,
     imported,
+    blockedCandidates,
   };
 }
 

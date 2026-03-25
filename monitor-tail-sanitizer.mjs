@@ -1,7 +1,6 @@
 export function sanitizeMonitorTailForPrompt(tail, backend) {
   const text = String(tail || "");
   if (!text) return text;
-  if (String(backend || "").toLowerCase() === "vk") return text;
 
   const fixtureTokens = [
     "/api/tasks/999",
@@ -70,7 +69,7 @@ export function sanitizeMonitorTailForPrompt(tail, backend) {
 
   return [
     filtered.join("\n"),
-    "[monitor] (sanitized benign tail noise for non-VK backend)",
+    "[monitor] (sanitized benign tail noise)",
   ]
     .filter(Boolean)
     .join("\n");

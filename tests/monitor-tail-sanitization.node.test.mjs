@@ -25,7 +25,7 @@ test("monitor prompt tail sanitizes benign sqlite/trace/dirty-diverged noise", (
   assert.match(sanitizerSrc, /pattern\.test\(normalizedDecolorized\)/);
   assert.match(sanitizerSrc, /const fixtureTokensLower = fixtureTokens\.map\(\(token\) =>/);
   assert.match(sanitizerSrc, /normalizedDecolorizedLower\.includes\(token\)/);
-  assert.match(sanitizerSrc, /sanitized benign tail noise for non-VK backend/);
+  assert.match(sanitizerSrc, /sanitized benign tail noise/);
 });
 
 test("monitor tail window defaults to 3x interval bounded to 10-20m", () => {

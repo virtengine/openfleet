@@ -12,7 +12,7 @@
  * Security: Only accepts messages from the configured TELEGRAM_CHAT_ID.
  */
 
-import { execSync, spawnSync } from "node:child_process";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import {
   mkdir,
@@ -155,7 +155,7 @@ function resolveTelegramConfigDir() {
 }
 const repoRoot = resolveRepoRoot();
 const BosunDir = __dirname;
-const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
+const statusPath = resolve(repoRoot, ".cache", "orchestrator-status.json");
 const telegramPollLockPath = resolve(
   repoRoot,
   ".cache",
@@ -187,10 +187,15 @@ const HISTORY_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // run every 6 hours
 const HISTORY_INITIAL_DELAY_MS = 2 * 60 * 1000;         // wait 2 min after boot
 const HISTORY_MAX_TRACKED = 10_000;                      // safety cap
 
+/** Resolve orchestrator PS1 path (region tracking functions). */
 function resolveVeKanbanPs1Path() {
-  const modulePath = resolve(BosunDir, "ve-kanban.ps1");
-  if (existsSync(modulePath)) return modulePath;
-  return resolve(repoRoot, "scripts", "bosun", "ve-kanban.ps1");
+  for (const candidate of [
+    resolve(BosunDir, "orchestrator.ps1"),
+    resolve(repoRoot, "scripts", "bosun", "orchestrator.ps1"),
+  ]) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return resolve(BosunDir, "orchestrator.ps1");
 }
 
 // ── Configuration ────────────────────────────────────────────────────────────
@@ -1243,8 +1248,6 @@ let _readStatusSummary = null;
 let _getCurrentChild = null;
 let _startProcess = null;
 let _requestFullBosunRestart = null;
-let _getVibeKanbanUrl = null;
-let _fetchVk = null;
 let _getRepoRoot = null;
 let _startFreshSession = null;
 let _attemptFreshSessionRetry = null;
@@ -1264,6 +1267,7 @@ let _getErrorDetector = null;
 let _getPrCleanupDaemon = null;
 let _getWorkspaceMonitor = null;
 let _getMonitorMonitorStatus = null;
+let _getTuiMonitorStats = null;
 let _getTaskStoreStats = null;
 let _getTasksPendingReview = null;
 let _triggerTaskPlanner = null;
@@ -1279,8 +1283,6 @@ export function injectMonitorFunctions({
   getCurrentChild,
   startProcess,
   requestFullBosunRestart,
-  getVibeKanbanUrl,
-  fetchVk,
   getRepoRoot,
   startFreshSession,
   attemptFreshSessionRetry,
@@ -1300,6 +1302,7 @@ export function injectMonitorFunctions({
   getPrCleanupDaemon,
   getWorkspaceMonitor,
   getMonitorMonitorStatus,
+  getTuiMonitorStats,
   getTaskStoreStats,
   getTasksPendingReview,
   triggerTaskPlanner,
@@ -1311,8 +1314,6 @@ export function injectMonitorFunctions({
   _getCurrentChild = getCurrentChild;
   _startProcess = startProcess;
   _requestFullBosunRestart = requestFullBosunRestart || null;
-  _getVibeKanbanUrl = getVibeKanbanUrl;
-  _fetchVk = fetchVk;
   _getRepoRoot = getRepoRoot;
   _startFreshSession = startFreshSession;
   _attemptFreshSessionRetry = attemptFreshSessionRetry;
@@ -1332,6 +1333,7 @@ export function injectMonitorFunctions({
   _getPrCleanupDaemon = getPrCleanupDaemon || null;
   _getWorkspaceMonitor = getWorkspaceMonitor || null;
   _getMonitorMonitorStatus = getMonitorMonitorStatus || null;
+  _getTuiMonitorStats = getTuiMonitorStats || null;
   _getTaskStoreStats = getTaskStoreStats || null;
   _getTasksPendingReview = getTasksPendingReview || null;
   _triggerTaskPlanner = triggerTaskPlanner || null;
@@ -3809,7 +3811,7 @@ const COMMANDS = {
   },
   "/cleanup": {
     handler: cmdCleanupMerged,
-    desc: "Reconcile VK tasks with merged PRs/branches",
+    desc: "Reconcile tasks with merged PRs/branches",
   },
   "/reconcile": {
     handler: cmdCleanupMerged,
@@ -3855,7 +3857,7 @@ const COMMANDS = {
   },
   "/kanban": {
     handler: cmdKanban,
-    desc: "View/switch kanban backend: /kanban [internal|vk|github|jira]",
+    desc: "View/switch kanban backend: /kanban [internal|github|jira]",
   },
   "/autobacklog": {
     handler: cmdAutoBacklog,
@@ -3875,7 +3877,7 @@ const COMMANDS = {
   },
   "/executor": {
     handler: cmdExecutor,
-    desc: "View/manage executor mode: /executor [status|mode <vk|internal|hybrid>|slots]",
+    desc: "View/manage executor mode: /executor [status|mode <internal|hybrid>|slots]",
   },
   "/shared_workspaces": {
     handler: cmdSharedWorkspaces,
@@ -4730,7 +4732,6 @@ function normalizeStartTaskExecutor(value) {
   if (!raw) return "";
   if (raw === "auto") return "auto";
   if (["internal", "local", "agent", "pool"].includes(raw)) return "internal";
-  if (["vk", "vibe", "kanban", "cloud"].includes(raw)) return "vk";
   return "";
 }
 
@@ -4748,7 +4749,7 @@ function resolveStartTaskExecutorMode() {
       .toString()
       .trim()
       .toLowerCase();
-  if (["internal", "vk", "hybrid"].includes(raw)) return raw;
+  if (["internal", "hybrid"].includes(raw)) return raw;
   return "internal";
 }
 
@@ -4756,7 +4757,6 @@ function getStartTaskExecutorAvailability(mode) {
   const normalized = String(mode || "").trim().toLowerCase();
   return {
     internal: normalized === "internal" || normalized === "hybrid",
-    vk: normalized === "vk" || normalized === "hybrid",
   };
 }
 
@@ -4765,11 +4765,9 @@ function resolveStartTaskExecutor(requested, mode) {
   const availability = getStartTaskExecutorAvailability(mode);
   if (!normalized || normalized === "auto") {
     if (availability.internal) return "internal";
-    if (availability.vk) return "vk";
     return null;
   }
   if (normalized === "internal" && !availability.internal) return null;
-  if (normalized === "vk" && !availability.vk) return null;
   return normalized;
 }
 
@@ -4788,14 +4786,13 @@ async function promptStartTaskConfirm(chatId, details = {}) {
     return;
   }
   const executor = normalizeStartTaskExecutor(details.executor);
-  const isVk = executor === "vk";
-  const sdk = !isVk && details.sdk ? String(details.sdk).trim() : "";
-  const model = !isVk && details.model ? String(details.model).trim() : "";
+  const sdk = details.sdk ? String(details.sdk).trim() : "";
+  const model = details.model ? String(details.model).trim() : "";
   const command = buildStartTaskCommand(taskId, sdk, model, executor);
   const token = issueUiToken({ type: "cmd", command });
   const executorLabel = executor || "auto";
-  const sdkLabel = isVk ? "n/a" : sdk || "auto";
-  const modelLabel = isVk ? "n/a" : model || "default";
+  const sdkLabel = sdk || "auto";
+  const modelLabel = model || "default";
   const lines = [
     ":rocket: *Confirm Manual Start*",
     "",
@@ -4806,9 +4803,6 @@ async function promptStartTaskConfirm(chatId, details = {}) {
     `SDK: \`${sdkLabel}\``,
     `Model: \`${modelLabel}\``,
   ];
-  if (isVk) {
-    lines.push("Note: VK executor ignores SDK/model overrides.");
-  }
   const keyboard = buildKeyboard([
     [
       uiButton(":check: Start", uiTokenAction(token)),
@@ -4830,20 +4824,15 @@ async function showStartTaskExecutorPicker(chatId, taskId) {
   const mode = resolveStartTaskExecutorMode();
   const availability = getStartTaskExecutorAvailability(mode);
   const buttons = [];
-  if (availability.internal || availability.vk) {
+  if (availability.internal) {
     buttons.push({
       label: ":star: Auto (recommended)",
       executor: "auto",
     });
-  }
-  if (availability.internal) {
     buttons.push({
-      label: availability.vk ? ":cpu: Internal" : ":cpu: Internal (only)",
+      label: ":cpu: Internal (only)",
       executor: "internal",
     });
-  }
-  if (availability.vk) {
-    buttons.push({ label: ":globe: VK", executor: "vk" });
   }
   if (!buttons.length) {
     await sendReply(
@@ -4876,9 +4865,8 @@ async function showStartTaskExecutorPicker(chatId, taskId) {
     `Task: \`${safeId}\``,
     `Mode: \`${mode}\``,
     availability.internal ? ":cpu: Internal executor available" : ":cpu: Internal executor unavailable",
-    availability.vk ? ":globe: VK executor available" : ":globe: VK executor unavailable",
     "",
-    "Auto picks internal if available, otherwise VK.",
+    "Auto picks the internal executor.",
   ];
   await showStickyInteractiveMessage(chatId, lines.join("\n"), {
     parseMode: "Markdown",
@@ -5879,7 +5867,6 @@ Object.assign(UI_SCREENS, {
       buildKeyboard([
         [
           uiButton("Internal", uiCmdAction("/kanban internal")),
-          uiButton("VK", uiCmdAction("/kanban vk")),
           uiButton("GitHub", uiCmdAction("/kanban github")),
         ],
         [uiButton("Jira", uiCmdAction("/kanban jira"))],
@@ -6818,13 +6805,6 @@ async function handleUiAction({ chatId, messageId, data }) {
         await showStartTaskExecutorPicker(chatId, payload.taskId);
         return;
       }
-      if (executor === "vk") {
-        await promptStartTaskConfirm(chatId, {
-          taskId: payload.taskId,
-          executor,
-        });
-        return;
-      }
       await showStartTaskSdkPicker(chatId, payload.taskId, executor || "internal");
       return;
     }
@@ -7112,7 +7092,7 @@ async function loadWorkspaceStatusData(workspacePath) {
     const workspaceStatusPath = resolve(
       workspacePath,
       ".cache",
-      "ve-orchestrator-status.json",
+      "orchestrator-status.json",
     );
     const raw = await readFile(workspaceStatusPath, "utf8").catch(() => null);
     return raw ? JSON.parse(raw) : null;
@@ -7765,7 +7745,7 @@ async function cmdTasks(chatId) {
       return;
     }
 
-    // ── Fallback: read status file (legacy/VK mode) ──
+    // ── Fallback: read status file (legacy mode) ──
     const raw = await readFile(statusPath, "utf8");
     const data = JSON.parse(raw);
     const attempts = data.attempts || {};
@@ -7863,7 +7843,7 @@ async function cmdStartTask(chatId, args) {
   if (!taskId) {
     await sendReply(
       chatId,
-      "Usage: /starttask <taskId> [--executor internal|vk] [--sdk <sdk>] [--model <model>]",
+      "Usage: /starttask <taskId> [--executor internal] [--sdk <sdk>] [--model <model>]",
     );
     return;
   }
@@ -7905,7 +7885,7 @@ async function cmdStartTask(chatId, args) {
   if (executorArg && !normalizedExecutor) {
     await sendReply(
       chatId,
-      `:alert: Unknown executor "${executorArg}". Use internal or vk.`,
+      `:alert: Unknown executor "${executorArg}". Use internal.`,
     );
     return;
   }
@@ -7917,7 +7897,6 @@ async function cmdStartTask(chatId, args) {
     const availability = getStartTaskExecutorAvailability(executorMode);
     const options = [
       availability.internal ? "internal" : null,
-      availability.vk ? "vk" : null,
     ]
       .filter(Boolean)
       .join(" | ");
@@ -7932,37 +7911,6 @@ async function cmdStartTask(chatId, args) {
     const task = await adapter.getTask(taskId);
     if (!task) {
       await sendReply(chatId, `Task "${taskId}" not found.`);
-      return;
-    }
-    if (selectedExecutor === "vk") {
-      if (typeof adapter.submitTaskAttempt !== "function") {
-        await sendReply(
-          chatId,
-          `:alert: VK executor not available for current backend (${getKanbanBackendName()}).`,
-        );
-        return;
-      }
-      const attempt = await adapter.submitTaskAttempt(taskId);
-      try {
-        if (typeof adapter.updateTaskStatus === "function") {
-          await adapter.updateTaskStatus(taskId, "inprogress");
-        } else if (typeof adapter.updateTask === "function") {
-          await adapter.updateTask(taskId, { status: "inprogress" });
-        }
-      } catch (err) {
-        console.warn(
-          `[bosun] manual start failed to mark task ${taskId} inprogress: ${err.message}`,
-        );
-      }
-      const detailLines = [
-        `:check: VK executor submitted for ${task.title || task.id}.`,
-        attempt?.id ? `Attempt: ${attempt.id}` : null,
-        attempt?.branch ? `Branch: ${attempt.branch}` : null,
-      ].filter(Boolean);
-      if (sdk || model) {
-        detailLines.push("Note: SDK/model overrides are ignored for VK.");
-      }
-      await sendReply(chatId, detailLines.join("\n"));
       return;
     }
 
@@ -8420,7 +8368,7 @@ async function cmdRetry(chatId, args) {
     } else {
       await sendReply(
         chatId,
-        ":alert: Fresh session retry failed. Check logs for details (rate limit, no active attempt, or VK endpoint unavailable).",
+        ":alert: Fresh session retry failed. Check logs for details (rate limit or no active attempt).",
       );
     }
   } catch (err) {
@@ -8494,14 +8442,14 @@ async function cmdCleanupMerged(chatId, args) {
   if (!confirmFlag) {
     await sendReply(
       chatId,
-      ":alert: Cleanup will reconcile VK task statuses with PR/branch state.\nProceed?",
+      ":alert: Cleanup will reconcile task statuses with PR/branch state.\nProceed?",
       { reply_markup: buildConfirmKeyboard("cb:confirm_cleanup", "Confirm Cleanup") },
     );
     return;
   }
   await sendReply(
     chatId,
-    ":trash: Reconciling VK task statuses with PR/branch state…",
+    ":trash: Reconciling task statuses with PR/branch state…",
   );
   try {
     const result = await _reconcileTaskStatuses("manual-telegram");
@@ -8723,6 +8671,136 @@ function runPwsh(psScript, timeoutMs = 15000) {
   return result.stdout;
 }
 
+function runPwshAsync(psScript, timeoutMs = 15000) {
+  const isWin = process.platform === "win32";
+  const pwsh = isWin
+    ? "powershell.exe"
+    : resolvePwshRuntime({ preferBundled: true }).command;
+  const script = `& { ${psScript} }`;
+
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(pwsh, ["-NoProfile", "-Command", script], {
+      cwd: repoRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const finish = (err, value = "") => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err) rejectPromise(err);
+      else resolvePromise(value);
+    };
+
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.once("error", (err) => {
+      finish(new Error(err.message));
+    });
+    child.once("close", (code) => {
+      if (code !== 0) {
+        finish(
+          new Error(
+            (stderr || stdout || "").trim() ||
+              `powershell command failed (exit ${code})`,
+          ),
+        );
+        return;
+      }
+      finish(null, stdout);
+    });
+
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(new Error(`powershell command timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+}
+
+const HEALTH_REGION_CACHE_TTL_MS = Math.max(
+  1000,
+  Number(process.env.TELEGRAM_HEALTH_REGION_CACHE_TTL_MS || "30000") || 30000,
+);
+
+let healthRegionCache = {
+  value: null,
+  expiresAt: 0,
+  inFlight: null,
+};
+
+function resetHealthRegionCacheForTest() {
+  healthRegionCache = {
+    value: null,
+    expiresAt: 0,
+    inFlight: null,
+  };
+}
+
+async function loadExecutorRegionStatus() {
+  const regionScript = [
+    `. '${resolveVeKanbanPs1Path()}';`,
+    "Initialize-CodexRegionTracking;",
+    "Get-RegionStatus | ConvertTo-Json",
+  ].join(" ");
+  const regionResult = await runPwshAsync(regionScript, 10000);
+  return JSON.parse(regionResult);
+}
+
+function refreshHealthRegionCache(loader) {
+  if (healthRegionCache.inFlight) {
+    return healthRegionCache.inFlight;
+  }
+
+  const pending = Promise.resolve()
+    .then(() => loader())
+    .then((value) => {
+      healthRegionCache.value = value;
+      healthRegionCache.expiresAt = Date.now() + HEALTH_REGION_CACHE_TTL_MS;
+      return value;
+    })
+    .finally(() => {
+      if (healthRegionCache.inFlight === pending) {
+        healthRegionCache.inFlight = null;
+      }
+    });
+
+  healthRegionCache.inFlight = pending;
+  return pending;
+}
+
+async function getCachedExecutorRegionStatus(options = {}) {
+  const forceRefresh = options.forceRefresh === true;
+  const loader = typeof options.loader === "function"
+    ? options.loader
+    : loadExecutorRegionStatus;
+  const now = Date.now();
+
+  if (!forceRefresh && healthRegionCache.value && healthRegionCache.expiresAt > now) {
+    return healthRegionCache.value;
+  }
+
+  if (!forceRefresh && healthRegionCache.value) {
+    safeDetach("health-region-refresh", refreshHealthRegionCache(loader));
+    return healthRegionCache.value;
+  }
+
+  return refreshHealthRegionCache(loader);
+}
+
+export const __executorHealthTestApi = {
+  getCachedExecutorRegionStatus,
+  resetHealthRegionCacheForTest,
+};
+
 async function readStatusSnapshot() {
   try {
     const raw = await readFile(statusPath, "utf8");
@@ -8933,13 +9011,7 @@ async function cmdHealth(chatId) {
 
     // Add region info
     try {
-      const regionScript = [
-        `. '${resolveVeKanbanPs1Path()}';`,
-        "Initialize-CodexRegionTracking;",
-        "Get-RegionStatus | ConvertTo-Json",
-      ].join(" ");
-      const regionResult = runPwsh(regionScript, 10000);
-      const region = JSON.parse(regionResult);
+      const region = await getCachedExecutorRegionStatus();
       lines.push(
         "",
         `:globe: Region: ${region.active_region?.toUpperCase()} ${region.override ? `(override: ${region.override})` : "(auto)"}`,
@@ -8961,7 +9033,6 @@ async function cmdPresence(chatId) {
   const payload = buildLocalPresence({
     orchestrator_running: !!child,
     orchestrator_pid: child?.pid ?? null,
-    vk_url: _getVibeKanbanUrl ? _getVibeKanbanUrl() : null,
   });
   await notePresence(payload, {
     source: "local",
@@ -9090,7 +9161,6 @@ async function cmdKanban(chatId, backendArg) {
       "",
       "Switch backend:",
       "  /kanban internal  Internal task-store (primary)",
-      "  /kanban vk        Vibe-Kanban (secondary)",
       "  /kanban github     GitHub Issues",
       "  /kanban jira       Jira",
     ];
@@ -9469,7 +9539,7 @@ async function cmdWorktrees(chatId, args) {
  *   /executor           — Show status (mode, active slots, SDK, etc.)
  *   /executor status    — Same as above
  *   /executor slots     — Show active task slots with details
- *   /executor mode <vk|internal|hybrid> — Show current mode (runtime switch not supported)
+ *   /executor mode <internal|hybrid> — Show current mode (runtime switch not supported)
  */
 async function cmdExecutor(chatId, args) {
   const parts = args ? args.trim().split(/\s+/) : [];
@@ -9519,7 +9589,7 @@ async function cmdExecutor(chatId, args) {
 
   if (sub === "mode") {
     const target = parts[1]?.toLowerCase();
-    if (target && ["vk", "internal", "hybrid"].includes(target)) {
+    if (target && ["internal", "hybrid"].includes(target)) {
       await sendReply(
         chatId,
         `:settings: Current mode: ${mode}\n` +
@@ -9529,7 +9599,7 @@ async function cmdExecutor(chatId, args) {
     } else {
       await sendReply(
         chatId,
-        `:settings: Current executor mode: ${mode}\n\nValid modes: vk, internal, hybrid`,
+        `:settings: Current executor mode: ${mode}\n\nValid modes: internal, hybrid`,
       );
     }
     return;
@@ -9553,11 +9623,6 @@ async function cmdExecutor(chatId, args) {
     }
   } else {
     lines.push(`Internal executor: not active`);
-    if (mode === "vk") {
-      lines.push(
-        `\n:help: Using VK executor only. Set EXECUTOR_MODE=internal or hybrid to enable.`,
-      );
-    }
   }
 
   lines.push(`\nCommands: /executor slots | /executor mode`);
@@ -9797,7 +9862,7 @@ function resolveModelSelection(workspace, preferredModel) {
   return { model: null, profile: null };
 }
 
-async function vkRequest(host, path, options = {}) {
+async function workspaceRequest(host, path, options = {}) {
   const { method = "GET", body, timeoutMs = 15000 } = options;
   const base = normalizeHost(host);
   if (!base) {
@@ -9817,14 +9882,14 @@ async function vkRequest(host, path, options = {}) {
     });
   } catch (err) {
     clearTimeout(timer);
-    throw new Error(`VK fetch error: ${err.message}`);
+    throw new Error(`Workspace fetch error: ${err.message}`);
   }
   clearTimeout(timer);
 
   const text = await res.text();
   if (!res.ok) {
     throw new Error(
-      `VK ${res.status}: ${text.slice(0, 200) || res.statusText}`,
+      `Workspace API ${res.status}: ${text.slice(0, 200) || res.statusText}`,
     );
   }
 
@@ -9833,17 +9898,17 @@ async function vkRequest(host, path, options = {}) {
     try {
       data = JSON.parse(text);
     } catch (err) {
-      throw new Error(`VK response parse error: ${err.message}`);
+      throw new Error(`Workspace response parse error: ${err.message}`);
     }
   }
   if (data && data.success === false) {
-    throw new Error(data.message || "VK API error");
+    throw new Error(data.message || "Workspace API error");
   }
   return data?.data ?? data;
 }
 
 async function getWorkspaceSummaries(host) {
-  const data = await vkRequest(host, "/api/task-attempts/summary", {
+  const data = await workspaceRequest(host, "/api/task-attempts/summary", {
     method: "POST",
     body: { archived: false },
   });
@@ -10001,7 +10066,7 @@ function pickLatestSession(sessions) {
 async function dispatchAgentMessage(workspace, message, options = {}) {
   const host = normalizeHost(workspace.host);
   const executorProfile = options.executorProfile || null;
-  const sessions = await vkRequest(
+  const sessions = await workspaceRequest(
     host,
     `/api/sessions?workspace_id=${encodeURIComponent(workspace.id)}`,
   );
@@ -10009,7 +10074,7 @@ async function dispatchAgentMessage(workspace, message, options = {}) {
   let created = false;
 
   if (!session || options.newSession) {
-    session = await vkRequest(host, "/api/sessions", {
+    session = await workspaceRequest(host, "/api/sessions", {
       method: "POST",
       body: { workspace_id: workspace.id },
     });
@@ -10020,7 +10085,7 @@ async function dispatchAgentMessage(workspace, message, options = {}) {
   }
 
   if (options.queue) {
-    await vkRequest(host, `/api/sessions/${session.id}/queue`, {
+    await workspaceRequest(host, `/api/sessions/${session.id}/queue`, {
       method: "POST",
       body: {
         message,
@@ -10030,7 +10095,7 @@ async function dispatchAgentMessage(workspace, message, options = {}) {
     return { sessionId: session.id, created, action: "queued" };
   }
 
-  await vkRequest(host, `/api/sessions/${session.id}/follow-up`, {
+  await workspaceRequest(host, `/api/sessions/${session.id}/follow-up`, {
     method: "POST",
     body: {
       prompt: message,
@@ -10968,7 +11033,6 @@ function startPresenceLoop() {
       const payload = buildLocalPresence({
         orchestrator_running: !!child,
         orchestrator_pid: child?.pid ?? null,
-        vk_url: _getVibeKanbanUrl ? _getVibeKanbanUrl() : null,
       });
 
       // Check if state changed significantly (ignore updated_at for comparison)
@@ -11633,6 +11697,7 @@ export async function startTelegramBot(options = {}) {
         dependencies: {
           execPrimaryPrompt,
           getInternalExecutor: _getInternalExecutor,
+          getTuiMonitorStats: _getTuiMonitorStats,
           getExecutorMode: _getExecutorMode,
           getAgentEventBus: _getAgentEventBus,
           handleUiCommand: handleUiCommand,
@@ -12052,17 +12117,32 @@ export function startStatusFileWriter(intervalMs = 30000) {
         reviewTasks = [];
       }
 
+      const draftCount = Number(storeStats?.draft || 0);
+      const todoCount = Number(storeStats?.todo || 0);
+      const inprogressCount = Number(storeStats?.inprogress || 0);
+      const reviewCount = Number(storeStats?.inreview || reviewTasks.length || 0);
+      const doneCount = Number(storeStats?.done || 0);
+      const blockedCount = Number(storeStats?.blocked || 0);
+
       data.attempts = attempts;
       data.last_executor_sync = new Date().toISOString();
       data.executor_mode = status.mode || "unknown";
       data.active_slots = `${status.activeSlots}/${status.maxParallel}`;
       data.review_tasks = reviewTasks;
       data.manual_review_tasks = [];
+      data.backlog_remaining = draftCount + todoCount;
       if (!data.counts || typeof data.counts !== "object") data.counts = {};
-      data.counts.running = Number(status.activeSlots || 0);
-      data.counts.review = Number(storeStats?.inreview || reviewTasks.length);
-      data.counts.error = Number(storeStats?.blocked || 0);
+      data.counts.draft = draftCount;
+      data.counts.todo = todoCount + draftCount;
+      data.counts.running = Number(status.activeSlots || inprogressCount || 0);
+      data.counts.inprogress = inprogressCount;
+      data.counts.review = reviewCount;
+      data.counts.inreview = reviewCount;
+      data.counts.done = doneCount;
+      data.counts.blocked = blockedCount;
+      data.counts.error = blockedCount;
       data.counts.manual_review = 0;
+      data.counts.total = draftCount + todoCount + inprogressCount + reviewCount + doneCount + blockedCount;
 
       const { writeFile } = await import("node:fs/promises");
       await writeFile(statusPath, JSON.stringify(data, null, 2));
@@ -12080,4 +12160,3 @@ export function stopStatusFileWriter() {
     _statusWriterTimer = null;
   }
 }
-

@@ -60,10 +60,12 @@ describe("context-cache", () => {
         tool_name: `tool_${i}`,
         arguments: { file: `src/file${i}.ts`, query: "search term" },
         output: `Output from tool ${i}: ${"x".repeat(textSize)}`,
+        force: true,
       });
       items.push({
         type: "agent_message",
         text: `Agent response after tool ${i}`,
+        force: true,
       });
     }
     return items;
@@ -144,6 +146,7 @@ describe("context-cache", () => {
       // Keep 5 turns full — should compress very little
       const result = await contextCache.cacheAndCompressItems(items, {
         fullContextTurns: 5,
+        force: true,
       });
 
       const cached = result.filter((it) => it._cachedLogId !== undefined);
@@ -301,6 +304,101 @@ describe("context-cache", () => {
     });
   });
 
+
+  describe("semantic live tool compaction", () => {
+    it("routes dotnet test output to the test family with stable policy metadata", async () => {
+      const output = [
+        "Determining projects to restore...",
+        "All projects are up-to-date for restore.",
+        "tests/Foo.Tests/WidgetTests.cs(42,13): error CS1002: ; expected [tests/Foo.Tests/Foo.Tests.csproj]",
+        "Failed!  - Failed:     1, Passed:   128, Skipped:     0, Total:   129, Duration: 2 s",
+      ].join("\n") + "\n" + "x".repeat(7000);
+
+      const item = {
+        type: "command_execution",
+        command: "dotnet test --no-restore",
+        aggregated_output: output,
+      };
+
+      const [result] = await contextCache.maybeCompressSessionItems([item], {
+        liveToolCompactionEnabled: true,
+        liveToolCompactionMode: "aggressive",
+        liveToolCompactionMinChars: 1000,
+        liveToolCompactionTargetChars: 1400,
+        liveToolCompactionMinSavingsPct: 5,
+        force: true,
+      });
+
+      expect(result._liveCompacted).toBe(true);
+      expect(result._liveCompactionFamily).toBe("build");
+      expect(result._liveCompactionPolicy).toBeDefined();
+      expect(result._liveCompactionPolicy.family).toBe("build");
+      expect(result._liveCompactionPolicy.budget.decision).toBe("summary_with_delta");
+      expect(result._liveCompactionPolicy.why.join(" ")).toContain("family:build");
+      expect(result.aggregated_output).toContain("CS1002");
+    });
+
+    it("routes package manager install noise to retrievable artifact policy", async () => {
+      const output = [
+        "added 842 packages in 31s",
+        "187 packages are looking for funding",
+        "found 0 vulnerabilities",
+        ...Array.from({ length: 120 }, (_, i) => `npm notice chunk ${i} ${"z".repeat(80)}`),
+      ].join("\n");
+
+      const item = {
+        type: "command_execution",
+        command: "npm install",
+        aggregated_output: output,
+      };
+
+      const [result] = await contextCache.maybeCompressSessionItems([item], {
+        liveToolCompactionEnabled: true,
+        liveToolCompactionMode: "aggressive",
+        liveToolCompactionMinChars: 1000,
+        liveToolCompactionTargetChars: 1200,
+        liveToolCompactionMinSavingsPct: 5,
+        force: true,
+      });
+
+      expect(result._liveCompacted).toBe(true);
+      expect(result._liveCompactionFamily).toBe("package-manager");
+      expect(result._liveCompactionPolicy.budget.decision).toBe("artifact_summary");
+      expect(result._cachedLogId).toBeDefined();
+      expect(result.aggregated_output).toContain("bosun --tool-log");
+    });
+
+    it("routes noisy docker deploy output to deploy policy and exposes rationale", async () => {
+      const output = [
+        "#1 [internal] load build definition from Dockerfile",
+        "#2 exporting to image",
+        "#3 pushing layers",
+        "service api  Recreated",
+        "service api  Started",
+        ...Array.from({ length: 140 }, (_, i) => `deploy progress ${i} ${"y".repeat(60)}`),
+      ].join("\n");
+
+      const item = {
+        type: "command_execution",
+        command: "docker compose up --build -d",
+        aggregated_output: output,
+      };
+
+      const [result] = await contextCache.maybeCompressSessionItems([item], {
+        liveToolCompactionEnabled: true,
+        liveToolCompactionMode: "aggressive",
+        liveToolCompactionMinChars: 1000,
+        liveToolCompactionTargetChars: 1300,
+        liveToolCompactionMinSavingsPct: 5,
+        force: true,
+      });
+
+      expect(result._liveCompacted).toBe(true);
+      expect(result._liveCompactionFamily).toBe("deploy");
+      expect(result._liveCompactionPolicy.reason).toMatch(/artifact|delta|summary/i);
+      expect(result._liveCompactionPolicy.why.length).toBeGreaterThan(1);
+    });
+  });
   // ── retrieveToolLog ────────────────────────────────────────────────────
 
   describe("retrieveToolLog", () => {
@@ -510,14 +608,16 @@ describe("context-cache", () => {
           type: "user_message",
           role: "user",
           text: `User request turn ${i}: ${"Please implement the feature that does something useful. ".repeat(10)}`,
-        });
+          force: true,
+      });
         // Tool output  
         items.push({
           type: "function_call_output",
           tool_name: `tool_${i}`,
           arguments: { file: `src/file${i}.ts` },
           output: `Output from tool ${i}: ${"x".repeat(500)}`,
-        });
+          force: true,
+      });
         // Agent thinking/response
         items.push({
           type: "agent_message",
@@ -527,7 +627,8 @@ describe("context-cache", () => {
             `3. Run the tests\n` +
             `4. Commit the changes\n` +
             `${"Detailed reasoning about the implementation approach. ".repeat(5)}`,
-        });
+          force: true,
+      });
       }
       return items;
     }
@@ -578,6 +679,7 @@ describe("context-cache", () => {
         type: "agent_message",
         text: "I have read AGENTS.md and will follow the CRITICAL rules: MUST NOT skip tests, NEVER use --no-verify, always use conventional commits.",
         _pinned: true,
+        force: true,
       });
 
       const result = await contextCache.compressAllItems(items);
@@ -595,6 +697,7 @@ describe("context-cache", () => {
       items.unshift({
         type: "agent_message",
         text: "## Instructions\nCRITICAL: Module-scope caching is MANDATORY. Error boundaries MUST wrap all async work.",
+        force: true,
       });
 
       const result = await contextCache.compressAllItems(items);
@@ -790,6 +893,7 @@ describe("context-cache", () => {
         tool_name: "read_file",
         arguments: { filePath: "src/core.ts", startLine: 10, endLine: 15 },
         output: "function handleRequest() { return true; }",
+        force: true,
       });
       items.push({ type: "agent_message", text: "Found the handler." });
 
@@ -799,7 +903,8 @@ describe("context-cache", () => {
           type: "function_call_output",
           tool_name: `tool_${i}`,
           output: `Short output ${i}: ` + "y".repeat(300),
-        });
+          force: true,
+      });
         items.push({ type: "agent_message", text: `Done step ${i}.` });
       }
 
@@ -829,6 +934,7 @@ describe("context-cache", () => {
         tool_name: "grep_search",
         arguments: { query: "match" },
         output: searchLines.join("\n"),
+        force: true,
       });
       items.push({ type: "agent_message", text: "Found many results." });
 
@@ -838,7 +944,8 @@ describe("context-cache", () => {
           type: "function_call_output",
           tool_name: `tool_${i}`,
           output: `Step ${i} output: ` + "z".repeat(400),
-        });
+          force: true,
+      });
         items.push({ type: "agent_message", text: `Step ${i} done.` });
       }
 
@@ -884,6 +991,7 @@ describe("live tool compaction", () => {
         agentType: "codex-sdk",
         force: false,
         skip: false,
+        force: true,
       });
     } finally {
       for (const key of keys) {
@@ -979,7 +1087,7 @@ describe("live tool compaction", () => {
     expect(result[0].aggregated_output).toContain("bosun --tool-log");
   });
 
-  it("classifies dotnet test output as build-family and keeps failing test anchors", async () => {
+  it("classifies dotnet test output as test-family and keeps failing test anchors", async () => {
     const lines = [];
     for (let i = 0; i < 180; i++) {
       lines.push(`Passed! helper/test-${i}.dll`);
@@ -1004,7 +1112,8 @@ describe("live tool compaction", () => {
     });
 
     expect(result[0]._liveCompacted).toBe(true);
-    expect(result[0]._liveCompactionFamily).toBe("build");
+    expect(result[0]._liveCompactionFamily).toBe("test");
+    expect(result[0]._semanticBudgetPolicy).toMatch(/^(?:inline-excerpt|structured-delta)$/);
     expect(result[0].aggregated_output).toContain("Failed Bosun.Tests.WorkflowContextTests.ResolveTemplates");
     expect(result[0].aggregated_output).toContain("WorkflowContextTests.cs:line 42");
     expect(result[0].aggregated_output).toContain("Suggested rerun: dotnet test --filter");
@@ -1077,6 +1186,99 @@ describe("live tool compaction", () => {
     expect(result[0].aggregated_output).toContain("Repeated noise omitted:");
   });
 
+  it("classifies compiler output as build-family and keeps file diagnostics inline", async () => {
+    const lines = [];
+    for (let i = 0; i < 180; i++) {
+      lines.push(`info bundle step ${i} ${"x".repeat(18)}`);
+    }
+    lines.push("src/runtime/router.ts:44:9 - error TS2304: Cannot find name 'missingSymbol'.");
+    lines.push("src/runtime/router.ts:45:13 - error TS2322: Type 'string' is not assignable to type 'number'.");
+    const items = [{
+      type: "command_execution",
+      command: "npm run build",
+      exit_code: 1,
+      aggregated_output: lines.join("\n"),
+    }];
+
+    const result = await runLiveCompaction(items, {
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS: "1200",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT: "5",
+    });
+
+    expect(result[0]._liveCompacted).toBe(true);
+    expect(result[0]._liveCompactionFamily).toBe("build");
+    expect(result[0].aggregated_output).toContain("TS2304");
+    expect(result[0].aggregated_output).toContain("src/runtime/router.ts:44:9");
+  });
+
+  it("classifies package manager output and surfaces package signals", async () => {
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    const compacted = await cacheModule.compactCommandOutputPayload({
+      command: "npm install",
+      output: [
+        ...Array.from({ length: 120 }, (_, i) => `fetching package-${i} ${"x".repeat(12)}`),
+        "npm WARN deprecated left-pad@1.3.0: use String.prototype.padStart()",
+        "added 342 packages, and audited 343 packages in 4s",
+        "found 2 vulnerabilities (1 low, 1 high)",
+      ].join("\n"),
+      exitCode: 0,
+    });
+
+    expect(compacted.compactionFamily).toBe("package-manager");
+    expect(compacted.budgetPolicy).toMatch(/^(?:inline-excerpt|structured-delta)$/);
+    expect(compacted.contextEnvelope?.meta?.family).toBe("package-manager");
+    expect(compacted.text).toContain("Package signals:");
+  });
+
+  it("classifies deploy output and surfaces deploy targets", async () => {
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    const compacted = await cacheModule.compactCommandOutputPayload({
+      command: "kubectl apply -f k8s/prod",
+      output: [
+        ...Array.from({ length: 120 }, (_, i) => `progress ${i} ${"x".repeat(16)}`),
+        "deployment.apps/api configured",
+        "service/api unchanged",
+        "rollout status pending for deployment/api",
+      ].join("\n"),
+      exitCode: 0,
+    });
+
+    expect(compacted.compactionFamily).toBe("deploy");
+    expect(compacted.contextEnvelope?.meta?.family).toBe("deploy");
+    expect(compacted.text).toContain("Deploy targets:");
+  });
+
+  it("preserves deploy family in fallback signal-first compaction", async () => {
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    const compacted = await cacheModule.compactCommandOutputPayload({
+      command: "kubectl apply -f k8s/prod",
+      output: Array.from({ length: 260 }, (_, i) => `noise line ${i} ${"x".repeat(20)}`).join("\n"),
+      exitCode: 0,
+    });
+
+    expect(compacted.compacted).toBe(true);
+    expect(compacted.compactionFamily).toBe("deploy");
+    expect(compacted.contextEnvelope?.meta?.family).toBe("deploy");
+  });
+
+  it("stores semantic budget decisions with cached tool logs", async () => {
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    const compacted = await cacheModule.compactCommandOutputPayload({
+      command: "dotnet test",
+      output: [
+        ...Array.from({ length: 180 }, (_, i) => `Passed! helper/test-${i}.dll`),
+        "Failed!  - Failed:     1, Passed:   9, Skipped:     0, Total:   10, Duration: 1 s",
+        "Failed Bosun.Tests.WorkflowContextTests.ResolveTemplates [148 ms]",
+      ].join("\n"),
+      exitCode: 1,
+    });
+
+    const retrieved = await cacheModule.retrieveToolLog(compacted.toolLogId);
+    expect(retrieved.found).toBe(true);
+    expect(retrieved.entry.decision?.family).toBe("test");
+    expect(retrieved.entry.decision?.budgetPolicy).toBeTruthy();
+  });
+
   it("uses signal-first fallback compaction for unknown large command outputs", async () => {
     const cacheModule = await import("../workspace/context-cache.mjs");
     const compacted = await cacheModule.compactCommandOutputPayload({
@@ -1139,6 +1341,8 @@ describe("live tool compaction", () => {
     expect(compacted.text).toContain("Hint: Signal coverage is low.");
   });
 });
+
+
 
 
 

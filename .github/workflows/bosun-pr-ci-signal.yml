@@ -26,7 +26,53 @@ jobs:
             const prNumber = Number(pullRequests[0]?.number || 0);
             const failureMarker = "<!-- bosun-ci-failure -->";
             const attachedLabel = "bosun-attached";
+            const createdMarker = "<!-- bosun-created -->";
             const needsFixLabel = "bosun-needs-fix";
+
+            const normalizeList = (value) => {
+              if (Array.isArray(value)) {
+                return value
+                  .map((entry) => String(entry || "").trim().toLowerCase())
+                  .filter(Boolean);
+              }
+              return String(value || "")
+                .split(/[\n,]/)
+                .map((entry) => entry.trim().toLowerCase())
+                .filter(Boolean);
+            };
+
+            const parseBool = (value, fallback = false) => {
+              if (value === undefined || value === null || value === "") return fallback;
+              const raw = String(value).trim().toLowerCase();
+              if (["1", "true", "yes", "on"].includes(raw)) return true;
+              if (["0", "false", "no", "off"].includes(raw)) return false;
+              return fallback;
+            };
+
+            const loadBosunConfig = async (ref) => {
+              const candidates = ["bosun.config.json", ".bosun.json", "bosun.json"];
+              for (const path of candidates) {
+                try {
+                  const response = await github.rest.repos.getContent({
+                    owner,
+                    repo,
+                    path,
+                    ref,
+                  });
+                  const file = response?.data;
+                  if (!file || Array.isArray(file) || !file.content) continue;
+                  const raw = Buffer.from(file.content, file.encoding || "base64").toString("utf8");
+                  return JSON.parse(raw);
+                } catch (err) {
+                  if (err?.status !== 404) {
+                    core.warning(
+                      `Unable to read ${path} for PR trust policy: ${String(err?.message || err)}`,
+                    );
+                  }
+                }
+              }
+              return {};
+            };
 
             if (!prNumber) {
               core.info("No PR is associated with this CI run; skipping.");
@@ -43,6 +89,30 @@ jobs:
               .filter(Boolean);
             if (!labels.includes(attachedLabel)) {
               core.info(`PR #${prNumber} is not labeled '${attachedLabel}'; skipping.`);
+              return;
+            }
+            const prBody = String(pr.body || "");
+            const isBosunCreated =
+              prBody.includes(createdMarker) || /auto-created by bosun/i.test(prBody);
+            const bosunConfig = await loadBosunConfig(pr.head?.sha || run.head_sha || context.sha);
+            const prAutomation =
+              bosunConfig?.prAutomation && typeof bosunConfig.prAutomation === "object"
+                ? bosunConfig.prAutomation
+                : {};
+            const trustedAuthors = new Set(normalizeList(prAutomation.trustedAuthors));
+            const allowTrustedFixes = parseBool(prAutomation.allowTrustedFixes, false);
+            const authorLogin = String(pr.user?.login || pr.user?.name || "").trim().toLowerCase();
+            const isTrustedAuthor = trustedAuthors.has(authorLogin);
+            const canSignalFix = isBosunCreated || (allowTrustedFixes && isTrustedAuthor);
+            const automationScope = isBosunCreated
+              ? "Bosun-created"
+              : isTrustedAuthor && allowTrustedFixes
+                ? "trusted-author"
+                : "untrusted";
+            if (!canSignalFix) {
+              core.info(
+                `PR #${prNumber} is attached but not Bosun-created or trusted for repair; skipping high-risk CI signaling.`,
+              );
               return;
             }
 
@@ -148,8 +218,9 @@ jobs:
 
               const body = [
                 failureMarker,
-                "Bosun CI signal: attached PR currently has failing checks.",
+                `Bosun CI signal: ${automationScope === "trusted-author" ? "trusted-author PR" : "Bosun-created PR"} currently has failing checks.`,
                 "",
+                `- Automation scope: ${automationScope}`,
                 `- Workflow: ${run.name || "CI"}`,
                 `- Conclusion: ${conclusion || "unknown"}`,
                 `- Run: ${run.html_url || ""}`,

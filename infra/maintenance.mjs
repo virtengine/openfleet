@@ -247,7 +247,7 @@ function killPid(pid, label) {
 }
 
 /**
- * Kill stale orchestrator processes (pwsh running ve-orchestrator.ps1).
+ * Kill stale orchestrator processes (pwsh running orchestrator.ps1).
  * Skips our own child if childPid is provided.
  */
 export function killStaleOrchestrators(childPid) {
@@ -257,7 +257,7 @@ export function killStaleOrchestrators(childPid) {
 
   for (const p of procs) {
     if (p.pid === myPid || p.pid === childPid) continue;
-    if (p.commandLine && p.commandLine.includes("ve-orchestrator.ps1")) {
+    if (p.commandLine && p.commandLine.includes("orchestrator.ps1")) {
       killPid(p.pid, "stale orchestrator");
       killed++;
     }
@@ -326,7 +326,7 @@ export function cleanupWorktrees(repoRoot) {
     console.warn(`[maintenance] git worktree prune failed: ${e.message}`);
   }
 
-  // 2. List remaining worktrees and check for stale VK temp ones
+  // 2. List remaining worktrees and check for stale temp ones
   try {
     const result = spawnSync("git", ["worktree", "list", "--porcelain"], {
       cwd: repoRoot,
@@ -340,8 +340,9 @@ export function cleanupWorktrees(repoRoot) {
         const pathMatch = entry.match(/^worktree\s+(.+)/m);
         if (!pathMatch) continue;
         const wtPath = pathMatch[1].trim();
-        // Only touch vibe-kanban temp worktrees
-        if (!wtPath.includes("vibe-kanban") || wtPath === repoRoot) continue;
+        // Only touch orphaned temp worktrees
+        if (wtPath === repoRoot) continue;
+        if (!wtPath.includes("copilot-worktree")) continue;
         // Check if the path exists on disk
         if (!existsSync(wtPath)) {
           console.log(
@@ -409,7 +410,7 @@ export function cleanupWorktrees(repoRoot) {
 // ── Stale Branch Cleanup ────────────────────────────────────────────────
 
 /**
- * Clean up old local branches created by codex/vibe-kanban automation.
+ * Clean up old local branches created by codex/bosun automation.
  *
  * Targets branches matching `ve/*` and `copilot-worktree-*` patterns.
  *
@@ -613,10 +614,21 @@ const MONITOR_SCRIPT_SEGMENT_RE =
 const JS_MONITOR_LAUNCHER_RE = /\b(node(?:\.exe)?|bun|tsx|deno)\b/;
 const MONITOR_EVAL_IMPORT_RE =
   /(import|require)\s*\(\s*["'`][^"'`]*monitor\.mjs[^"'`]*["'`]\s*\)/;
-// Matches `monitor.mjs` followed only by flags (--...) and then a positional word argument,
-// indicating a sub-command invocation (e.g. `monitor.mjs agent list --json`).
-// The daemon monitor only has flag args or no args after the script name.
-const MONITOR_SUBCOMMAND_RE = /monitor\.mjs(?:\s+--\S+)*\s+[^-\s]/;
+
+function hasMonitorSubcommandInvocation(commandLine) {
+  const normalized = String(commandLine || "").toLowerCase().replace(/\\/g, "/");
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  let sawMonitorScript = false;
+  for (const token of tokens) {
+    if (!sawMonitorScript) {
+      if (token.includes("monitor.mjs")) sawMonitorScript = true;
+      continue;
+    }
+    if (token.startsWith("--")) continue;
+    return true;
+  }
+  return false;
+}
 const PID_START_TIME_TOLERANCE_MS = 90_000;
 const UNKNOWN_OWNER_MONITOR_GRACE_MS = 3 * 60 * 1000;
 const MONITOR_PROCESS_STARTED_AT = new Date().toISOString();
@@ -743,7 +755,7 @@ export function classifyMonitorCommandLine(commandLine) {
   // Sub-command invocations (e.g. `monitor.mjs agent list --json --active`) are helper
   // processes, NOT the singleton daemon monitor. Detect by a positional (non-flag) word
   // following monitor.mjs — the daemon only uses flag args (--daemon-child, --watch, …).
-  if (normalized.includes("monitor.mjs") && MONITOR_SUBCOMMAND_RE.test(normalized)) {
+  if (normalized.includes("monitor.mjs") && hasMonitorSubcommandInvocation(normalized)) {
     return "other";
   }
   if (normalized.includes(MONITOR_MARKER)) return "monitor";
@@ -1284,13 +1296,13 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
 
 /**
  * Run full maintenance sweep: stale kill, git push reap, worktree cleanup,
- * local tracking branch sync, and optionally VK task archiving.
+ * local tracking branch sync, and optionally task archiving.
  * @param {object} opts
  * @param {string} opts.repoRoot - repository root path
  * @param {number} [opts.childPid] - current orchestrator child PID to skip
  * @param {number} [opts.gitPushMaxAgeMs] - max age for git push before kill (default 5min)
  * @param {string[]} [opts.syncBranches] - local branches to fast-forward (default: ["main"])
- * @param {function} [opts.archiveCompletedTasks] - optional async function to archive VK tasks
+ * @param {function} [opts.archiveCompletedTasks] - optional async function to archive completed tasks
  * @param {object} [opts.branchCleanup] - branch cleanup options (passed to cleanupStaleBranches)
  * @param {boolean} [opts.branchCleanup.enabled=true] - enable/disable branch cleanup
  * @param {number} [opts.branchCleanup.minAgeMs] - minimum branch age before cleanup (default 24h)
@@ -1344,7 +1356,7 @@ export async function runMaintenanceSweep(opts = {}) {
     }
   }
 
-  // Optional: Archive old completed VK tasks (if provided)
+  // Optional: Archive old completed tasks (if provided)
   let tasksArchived = 0;
   if (archiveCompletedTasks && typeof archiveCompletedTasks === "function") {
     try {

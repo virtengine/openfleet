@@ -6,7 +6,7 @@
  *   - Deterministic duplicate claim resolution
  *   - Persistent claim tokens
  *   - Integration with presence.mjs for fleet coordination
- *   - Telegram/VK channel announcement support
+ *   - Telegram channel announcement support
  *
  * Architecture:
  *   - Claims are stored in .cache/bosun/task-claims.json

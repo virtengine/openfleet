@@ -24,9 +24,10 @@ import {
   unlinkSync,
   mkdirSync,
 } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { execFileSync, execSync, fork, spawn } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { execFileSync, execSync, spawn } from "node:child_process";
 import os from "node:os";
+import { Worker } from "node:worker_threads";
 import { createDaemonCrashTracker } from "./infra/daemon-restart-policy.mjs";
 import { ensureTestRuntimeSandbox } from "./infra/test-runtime.mjs";
 import {
@@ -34,7 +35,11 @@ import {
   detectLegacySetup,
   migrateFromLegacy,
 } from "./compat.mjs";
-import { resolveRepoLocalBosunDir, resolveRepoRoot } from "./config/repo-root.mjs";
+import {
+  resolveRepoLocalBosunDir,
+  resolveRepoRoot,
+  detectBosunModuleRoot,
+} from "./config/repo-root.mjs";
 
 const MONITOR_START_MAX_WAIT_MS = Math.max(
   0,
@@ -79,6 +84,8 @@ function showHelp() {
   COMMANDS
     workflow list              List declarative pipeline workflows
     workflow run <name>        Run a declarative pipeline workflow
+    workflow nodes             Inspect custom workflow node plugin health
+    tui                        Launch the terminal UI
     audit <command>            Run codebase annotation audit tools (scan|generate|warn|manifest|index|trim|conformity|migrate)
     --setup                    Launch the web-based setup wizard (default)
     --setup-terminal            Run the legacy terminal setup wizard
@@ -167,10 +174,7 @@ function showHelp() {
     workflow run <name>         Run a declarative fresh-context workflow
 
     Run 'bosun workflow --help' for workflow CLI examples.
-
-  VIBE-KANBAN
-    --no-vk-spawn               Don't auto-spawn Vibe-Kanban
-    --vk-ensure-interval <ms>   VK health check interval (default: 60000)
+    Run 'bosun tui' to launch the terminal UI.
 
   STARTUP SERVICE
     --enable-startup             Register bosun to auto-start on login
@@ -267,6 +271,17 @@ function resolveConfigDirForCli() {
       : resolveRepoRoot({ cwd: process.cwd() });
   const repoLocalConfigDir = resolveRepoLocalBosunDir(repoRoot);
   if (repoLocalConfigDir) return repoLocalConfigDir;
+
+  // Fallback: check the bosun module's own directory for a .bosun/ config.
+  // This ensures `bosun` (global) finds the same config as `npm start` which
+  // explicitly passes `--config-dir .bosun`.  Without this, running `bosun`
+  // from a directory outside the module (e.g. home dir) would miss workspace
+  // config, .env vars (TELEGRAM_UI_PORT, etc.), and task store data.
+  const moduleRoot = detectBosunModuleRoot();
+  if (moduleRoot && resolve(moduleRoot) !== resolve(repoRoot || "")) {
+    const moduleLocalConfigDir = resolveRepoLocalBosunDir(moduleRoot);
+    if (moduleLocalConfigDir) return moduleLocalConfigDir;
+  }
 
   const sandbox = ensureTestRuntimeSandbox();
   if (sandbox?.configDir) return sandbox.configDir;
@@ -1425,6 +1440,12 @@ async function main() {
     process.exit(0);
   }
 
+  if (args[0] === "tui") {
+    const { runBosunTui } = await import("./bosun-tui.mjs");
+    const exitCode = await runBosunTui(args.slice(1));
+    process.exit(exitCode ?? 0);
+  }
+
   // Handle --help
   if (args.includes("--help") || args.includes("-h")) {
     showHelp();
@@ -1683,16 +1704,28 @@ async function main() {
     });
     const origStdout = process.stdout.write.bind(process.stdout);
     const origStderr = process.stderr.write.bind(process.stderr);
+    const isBenignDaemonStreamError = (err) => {
+      const message = String(err?.message || "");
+      return !!(
+        err &&
+        (err.code === "EPIPE" ||
+          err.code === "EIO" ||
+          err.code === "ERR_STREAM_DESTROYED" ||
+          err.code === "ERR_STREAM_WRITE_AFTER_END" ||
+          err.code === "ERR_STREAM_PREMATURE_CLOSE" ||
+          /\bEIO\b/.test(message) ||
+          /\bEPIPE\b/.test(message) ||
+          /\bEOF\b/.test(message) ||
+          /stream was destroyed/i.test(message) ||
+          /write after end/i.test(message) ||
+          /This socket has been ended/i.test(message))
+      );
+    };
     const safeWrite = (writeFn, chunk, args) => {
       try {
         return writeFn(chunk, ...args);
       } catch (err) {
-        if (
-          err &&
-          (err.code === "EPIPE" ||
-            err.code === "ERR_STREAM_DESTROYED" ||
-            err.code === "ERR_STREAM_WRITE_AFTER_END")
-        ) {
+        if (isBenignDaemonStreamError(err)) {
           return false;
         }
         throw err;
@@ -2546,16 +2579,37 @@ function runMonitor({ restartReason = "" } = {}) {
         } else {
           delete childEnv.BOSUN_MONITOR_RESTART_REASON;
         }
-        monitorChild = fork(monitorPath, process.argv.slice(2), {
-          stdio: "inherit",
-          execArgv: ["--max-old-space-size=4096", "--trace-warnings"],
-          env: childEnv,
-          windowsHide: IS_DAEMON_CHILD && process.platform === "win32",
+        monitorChild = new Worker(
+          `
+            import { workerData } from "node:worker_threads";
+
+            process.argv.splice(0, process.argv.length, ...workerData.argv);
+            Object.assign(process.env, workerData.env);
+            await import(workerData.monitorModuleUrl);
+          `,
+          {
+            eval: true,
+            type: "module",
+            stdout: true,
+            stderr: true,
+            workerData: {
+              argv: [process.execPath, monitorPath, ...process.argv.slice(2)],
+              env: childEnv,
+              monitorModuleUrl: pathToFileURL(monitorPath).href,
+            },
+          },
+        );
+        monitorChild.stdout?.on("data", (chunk) => {
+          process.stdout.write(chunk);
+        });
+        monitorChild.stderr?.on("data", (chunk) => {
+          process.stderr.write(chunk);
         });
         daemonCrashTracker.markStart();
 
-        monitorChild.on("exit", (code, signal) => {
-          const childPid = monitorChild?.pid ?? null;
+        monitorChild.on("exit", (code) => {
+          const childPid = process.pid;
+          const signal = null;
           monitorChild = null;
           if (code === SELF_RESTART_EXIT_CODE) {
             console.log(
@@ -2676,9 +2730,7 @@ function runMonitor({ restartReason = "" } = {}) {
         });
 
         monitorChild.on("error", (err) => {
-          monitorChild = null;
           console.error(`\n  :close: Monitor failed to start: ${err.message}`);
-          sendCrashNotification(1, null).finally(() => reject(err));
         });
       })
       .catch((err) => {
@@ -2699,7 +2751,11 @@ process.on("SIGTERM", () => {
   gracefulShutdown = true;
   if (!monitorChild) process.exit(0);
   try {
-    monitorChild.kill("SIGTERM");
+    if (typeof monitorChild.kill === "function") {
+      monitorChild.kill("SIGTERM");
+    } else if (typeof monitorChild.terminate === "function") {
+      monitorChild.terminate().catch(() => {});
+    }
   } catch {
     /* best effort */
   }

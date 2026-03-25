@@ -19,16 +19,25 @@ import { formatDate, formatDuration, formatRelative } from "../modules/utils.js"
 import {
   HISTORY_LIMIT,
   HISTORY_COMMIT_DEBOUNCE_MS,
+  buildCollapsedGraph,
   buildNodeStatusesFromRunDetail,
+  convertSelectionToSubworkflow,
   createHistoryState,
+  createNodeGroup,
   getNodeSearchMetadata,
+  hydrateCanvasEdges,
+  moveWorkflowGroupByDelta,
   parseGraphSnapshot,
   pushHistorySnapshot,
   redoHistory,
   resolveNodeOutputPreview,
+  resolveWorkflowGroupBounds,
   searchNodeTypes,
   serializeGraphSnapshot,
+  toggleWorkflowGroupCollapsed,
   undoHistory,
+  validateCanvasEdgePorts,
+  canUpdateCanvasEdgePortMapping,
 } from "./workflow-canvas-utils.mjs";
 import { createSession } from "../components/session-list.js";
 import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
@@ -39,6 +48,7 @@ import {
   FormControlLabel, Tooltip, Paper, Divider, CircularProgress, Alert,
   Dialog, DialogTitle, DialogContent, DialogActions,
   Tabs, Tab, Fab, Menu as MuiMenu,
+  Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
 } from "@mui/material";
 
 /* ═══════════════════════════════════════════════════════════════
@@ -336,6 +346,9 @@ function formatRetryDecisionReason(reason) {
 function formatIssueAdvisorAction(action) {
   const normalized = String(action || "").trim().toLowerCase();
   if (normalized === "replan_from_failed") return "Replan from failed node";
+  if (normalized === "replan_subgraph") return "Replan downstream subgraph";
+  if (normalized === "rerun_same_step") return "Rerun same step";
+  if (normalized === "spawn_fix_step") return "Spawn targeted fix step";
   if (normalized === "resume_remaining") return "Resume remaining work";
   if (normalized === "inspect_failure") return "Inspect failure first";
   if (normalized === "continue") return "Continue";
@@ -677,7 +690,10 @@ async function loadNodeTypes() {
   }
 }
 
-async function saveWorkflow(def) {
+async function saveWorkflow(def, options = {}) {
+  const activate = options?.activate !== false;
+  const toastMessage = options?.toastMessage ?? "Workflow saved";
+  const suppressToast = options?.suppressToast === true;
   try {
     const data = await apiFetch("/api/workflows/save", {
       method: "POST",
@@ -685,38 +701,35 @@ async function saveWorkflow(def) {
       body: JSON.stringify(def),
     });
     if (data?.workflow) {
-      activeWorkflow.value = data.workflow;
-      showToast("Workflow saved", "success");
+      if (activate) {
+        activeWorkflow.value = data.workflow;
+        setRouteParams({ workflowId: data.workflow.id }, { replace: true, skipGuard: true });
+      }
+      if (!suppressToast) showToast(toastMessage, "success");
       loadWorkflows();
-      setRouteParams({ workflowId: data.workflow.id }, { replace: true, skipGuard: true });
     }
     return data?.workflow;
   } catch (err) {
-    showToast("Failed to save workflow", "error");
+    if (!suppressToast) showToast(`Failed to save workflow: ${err?.message || err}`, "error");
   }
 }
 
 async function exportWorkflow(workflow) {
-  if (!workflow?.id) return;
+  if (!workflow) return;
   try {
-    const bundle = await apiFetch(`/api/workflows/${encodeURIComponent(workflow.id)}/export`);
-    if (!bundle?.files) throw new Error("No export data received");
-
-    const content = JSON.stringify({
-      _bosunExport: true,
-      projectName: bundle.projectName,
-      metadata: bundle.metadata,
-      files: bundle.files,
-    }, null, 2);
+    const content = JSON.stringify(workflow, null, 2);
+    try {
+      await navigator?.clipboard?.writeText(content);
+      showToast("Workflow JSON copied to clipboard", "success");
+    } catch {}
 
     const blob = new Blob([content], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${bundle.projectName || "workflow"}-export.json`;
+    a.download = `${workflow.name || workflow.id || "workflow"}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    showToast("Workflow exported successfully", "success");
   } catch (err) {
     showToast("Export failed: " + (err.message || err), "error");
   }
@@ -1908,12 +1921,14 @@ function isPortConnectionCompatible(sourcePort, targetPort) {
 function resolveNodePorts(node, nodeTypeMap) {
   const typeInfo = nodeTypeMap.get(node?.type) || null;
   const typePorts = typeInfo?.ports || {};
+  const typeInputs = Array.isArray(typeInfo?.inputs) ? typeInfo.inputs : typePorts.inputs;
+  const typeOutputs = Array.isArray(typeInfo?.outputs) ? typeInfo.outputs : typePorts.outputs;
   const inputSource = Array.isArray(node?.inputPorts) && node.inputPorts.length
     ? node.inputPorts
-    : typePorts.inputs;
+    : typeInputs;
   const outputSource = Array.isArray(node?.outputPorts) && node.outputPorts.length
     ? node.outputPorts
-    : typePorts.outputs;
+    : typeOutputs;
   const inputs = (Array.isArray(inputSource) ? inputSource : [])
     .map((port, index) => normalizePortDescriptor(port, "input", index));
   const outputs = (Array.isArray(outputSource) ? outputSource : [])
@@ -1921,6 +1936,81 @@ function resolveNodePorts(node, nodeTypeMap) {
   return {
     inputs: inputs.length ? inputs : [normalizePortDescriptor(null, "input", 0)],
     outputs: outputs.length ? outputs : [normalizePortDescriptor(null, "output", 0)],
+  };
+}
+
+function resolveRequestedEdgePortName(edge, primaryKey, legacyKey) {
+  if (!edge || typeof edge !== "object") return "";
+  for (const key of [primaryKey, legacyKey]) {
+    if (!key || !Object.prototype.hasOwnProperty.call(edge, key)) continue;
+    const value = String(edge[key] || "").trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function resolveEdgePortDescriptor(ports, requestedName) {
+  if (!Array.isArray(ports) || ports.length === 0) return null;
+  const normalizedName = String(requestedName || "").trim();
+  if (!normalizedName) return ports[0] || null;
+  return ports.find((port) => port.name === normalizedName) || null;
+}
+
+function buildUnknownEdgePortMessage(edge, direction, requestedName, ports = []) {
+  const safeName = String(requestedName || "").trim();
+  const label = direction === "output" ? "output" : "input";
+  const available = (Array.isArray(ports) ? ports : [])
+    .map((port) => String(port?.name || "").trim())
+    .filter(Boolean);
+  const suffix = available.length ? ` Available ${label} ports: ${available.join(", ")}.` : "";
+  const edgeId = edge?.id || `${edge?.source || "?"}->${edge?.target || "?"}`;
+  return `Unknown ${label} port "${safeName}" on edge ${edgeId}.${suffix}`;
+}
+
+function validateEdgePortMapping(edge, nodeLookup, nodeTypeMap) {
+  const sourceNode = nodeLookup.get(edge?.source) || null;
+  const targetNode = nodeLookup.get(edge?.target) || null;
+  const sourcePorts = resolveNodePorts(sourceNode, nodeTypeMap).outputs;
+  const targetPorts = resolveNodePorts(targetNode, nodeTypeMap).inputs;
+  const requestedSourcePortName = resolveRequestedEdgePortName(edge, "sourcePort", "fromPort");
+  const requestedTargetPortName = resolveRequestedEdgePortName(edge, "targetPort", "toPort");
+  const sourcePort = resolveEdgePortDescriptor(sourcePorts, requestedSourcePortName || "default");
+  const targetPort = resolveEdgePortDescriptor(targetPorts, requestedTargetPortName || "default");
+  const issues = [];
+
+  if (requestedSourcePortName && !sourcePort) {
+    issues.push({
+      code: "unknown-output-port",
+      message: buildUnknownEdgePortMessage(edge, "output", requestedSourcePortName, sourcePorts),
+    });
+  }
+  if (requestedTargetPortName && !targetPort) {
+    issues.push({
+      code: "unknown-input-port",
+      message: buildUnknownEdgePortMessage(edge, "input", requestedTargetPortName, targetPorts),
+    });
+  }
+
+  if (sourcePort && targetPort) {
+    const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
+    if (!compatibility.compatible) {
+      issues.push({
+        code: "invalid-port-binding",
+        message: `Invalid port binding: ${compatibility.reason || "Port types are incompatible"}`,
+      });
+    }
+  }
+
+  return {
+    issues,
+    sourceNode,
+    targetNode,
+    sourcePorts,
+    targetPorts,
+    sourcePort,
+    targetPort,
+    requestedSourcePortName,
+    requestedTargetPortName,
   };
 }
 
@@ -1982,6 +2072,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const canvasRef = useRef(null);
   const [nodes, setNodes] = useState(workflow?.nodes || []);
   const [edges, setEdges] = useState(workflow?.edges || []);
+  const [groups, setGroups] = useState(workflow?.groups || []);
   const [dragState, setDragState] = useState(null);
   const [panStart, setPanStart] = useState(null);
   const [connecting, setConnecting] = useState(null);
@@ -1998,7 +2089,11 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const [connectionHint, setConnectionHint] = useState(null);
   const [portHoverHint, setPortHoverHint] = useState(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState(new Set());
-  const [historyState, setHistoryState] = useState(() => createHistoryState(workflow?.nodes || [], workflow?.edges || []));
+  const [selectedGroupId, setSelectedGroupId] = useState(null);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importJsonText, setImportJsonText] = useState("");
+  const [inlinePreview, setInlinePreview] = useState(null);
+  const [historyState, setHistoryState] = useState(() => createHistoryState(workflow?.nodes || [], workflow?.edges || [], workflow?.groups || []));
   const [marquee, setMarquee] = useState(null);
   const [liveHighlightEnabled, setLiveHighlightEnabled] = useState(true);
   const [liveRun, setLiveRun] = useState(null);
@@ -2016,6 +2111,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const multiDragRef = useRef({});
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
+  const groupsRef = useRef(groups);
   const historyRef = useRef(historyState);
   const historyTimerRef = useRef(null);
   const historyPendingSnapshotRef = useRef(null);
@@ -2032,12 +2128,17 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     ? Math.max(0, liveNowTick - Number(liveRun.startedAt))
     : Number(liveRun?.duration) || 0;
   const workflowSnapshotKey = useMemo(
-    () => serializeGraphSnapshot(workflow?.nodes || [], workflow?.edges || []),
-    [workflow?.nodes, workflow?.edges],
+    () => serializeGraphSnapshot(workflow?.nodes || [], workflow?.edges || [], workflow?.groups || []),
+    [workflow?.nodes, workflow?.edges, workflow?.groups],
   );
   const nodeTypeMap = useMemo(
     () => new Map((availableNodeTypes || []).map((type) => [type.type, type])),
     [availableNodeTypes],
+  );
+  const currentSelectedEdgeId = selectedEdgeId.value;
+  const selectedEdge = useMemo(
+    () => edges.find((edge) => edge.id === currentSelectedEdgeId) || null,
+    [currentSelectedEdgeId, edges],
   );
   const ensureNodePortMetadata = useCallback((node) => {
     const ports = resolveNodePorts(node, nodeTypeMap);
@@ -2051,11 +2152,31 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const normalizeNodesForCanvas = useCallback((nodeList = []) => (
     (Array.isArray(nodeList) ? nodeList : []).map((node) => ensureNodePortMetadata(node))
   ), [ensureNodePortMetadata]);
+  const nodeLookup = useMemo(
+    () => new Map((nodes || []).map((node) => [node.id, node])),
+    [nodes],
+  );
+  const normalizeEdgesForCanvas = useCallback((edgeList = [], nodeList = nodesRef.current || []) => (
+    hydrateCanvasEdges(normalizeNodesForCanvas(nodeList), edgeList, nodeTypeMap)
+  ), [nodeTypeMap, normalizeNodesForCanvas]);
+  const edgePortValidationIssues = useMemo(() => (
+    validateCanvasEdgePorts(nodes, normalizeEdgesForCanvas(edges, nodes), nodeTypeMap)
+  ), [edges, nodeTypeMap, nodes, normalizeEdgesForCanvas]);
+  const reportEdgeValidationIssues = useCallback(() => {
+    if (!edgePortValidationIssues.length) return false;
+    const firstIssue = edgePortValidationIssues[0] || null;
+    if (firstIssue?.edgeId) {
+      selectedEdgeId.value = firstIssue.edgeId;
+    }
+    showToast(firstIssue?.message || "Workflow has invalid edge port bindings", "error");
+    return true;
+  }, [edgePortValidationIssues]);
   const createWorkflowSnapshotForCopilot = useCallback(() => ({
     ...(workflow || {}),
     nodes: normalizeNodesForCanvas(nodesRef.current || []),
-    edges: Array.isArray(edgesRef.current) ? [...edgesRef.current] : [],
-  }), [normalizeNodesForCanvas, workflow]);
+    edges: normalizeEdgesForCanvas(edgesRef.current || []),
+    groups: Array.isArray(groupsRef.current) ? [...groupsRef.current] : [],
+  }), [normalizeEdgesForCanvas, normalizeNodesForCanvas, workflow]);
   const openWorkflowCopilotFromCanvas = useCallback(async ({
     intent = "explain",
     nodeId = "",
@@ -2097,7 +2218,8 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
 
   useEffect(() => {
     const nextNodes = normalizeNodesForCanvas(workflow?.nodes || []);
-    const nextEdges = workflow?.edges || [];
+    const nextEdges = normalizeEdgesForCanvas(workflow?.edges || []);
+    const nextGroups = workflow?.groups || [];
     if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
     historyPendingSnapshotRef.current = null;
     nodesRef.current = nextNodes;
@@ -2108,12 +2230,13 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     historyRef.current = nextHistory;
     setHistoryState(nextHistory);
     setSelectedNodeIds(new Set());
+    setSelectedGroupId(null);
     selectedNodeId.value = null;
     selectedEdgeId.value = null;
     setEditingNode(null);
     setContextMenu(null);
     setShowNodePalette(false);
-  }, [workflow?.id, workflowSnapshotKey, normalizeNodesForCanvas]);
+  }, [normalizeEdgesForCanvas, workflow?.id, workflowSnapshotKey, normalizeNodesForCanvas]);
 
   useEffect(() => {
     if (!workflow?.id) {
@@ -2408,6 +2531,19 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     };
   }, [liveHighlightEnabled, workflow?.id, workflow?.name]);
 
+  const renderGraph = useMemo(() => buildCollapsedGraph({ nodes, edges, groups }), [nodes, edges, groups]);
+  const renderNodes = renderGraph.visibleNodes || [];
+  const renderEdges = renderGraph.visibleEdges || [];
+  const activeGroup = useMemo(() => {
+    if (selectedGroupId) {
+      return (groups || []).find((group) => group.id === selectedGroupId) || null;
+    }
+    if (!selectedNodeIds.size) return null;
+    return (groups || []).find((group) => {
+      const selected = [...selectedNodeIds];
+      return selected.every((nodeId) => group.nodeIds.includes(nodeId));
+    }) || null;
+  }, [groups, selectedGroupId, selectedNodeIds]);
   // Canvas dimensions
   const NODE_W = 220;
   const NODE_H = 118;
@@ -2434,54 +2570,63 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     historyTimerRef.current = null;
     const snapshot = parseGraphSnapshot(historyPendingSnapshotRef.current);
     historyPendingSnapshotRef.current = null;
-    const nextHistory = pushHistorySnapshot(historyRef.current, snapshot.nodes, snapshot.edges, HISTORY_LIMIT);
+    const nextHistory = pushHistorySnapshot(historyRef.current, snapshot.nodes, snapshot.edges, snapshot.groups || [], HISTORY_LIMIT);
     if (nextHistory !== historyRef.current) setHistory(nextHistory);
     return nextHistory;
   }, [setHistory]);
 
   const scheduleHistoryCommit = useCallback((nextNodes, nextEdges) => {
-    historyPendingSnapshotRef.current = serializeGraphSnapshot(nextNodes, nextEdges);
+    historyPendingSnapshotRef.current = serializeGraphSnapshot(nextNodes, nextEdges, groupsRef.current || []);
     if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
     historyTimerRef.current = setTimeout(() => {
       const snapshot = parseGraphSnapshot(historyPendingSnapshotRef.current);
       historyPendingSnapshotRef.current = null;
       historyTimerRef.current = null;
-      const nextHistory = pushHistorySnapshot(historyRef.current, snapshot.nodes, snapshot.edges, HISTORY_LIMIT);
+      const nextHistory = pushHistorySnapshot(historyRef.current, snapshot.nodes, snapshot.edges, snapshot.groups || [], HISTORY_LIMIT);
       if (nextHistory !== historyRef.current) setHistory(nextHistory);
     }, HISTORY_COMMIT_DEBOUNCE_MS);
   }, [setHistory]);
 
-  const scheduleSave = useCallback((nextNodes, nextEdges) => {
+  const scheduleSave = useCallback((nextNodes, nextEdges, nextGroups = groupsRef.current || []) => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    const snapshot = serializeGraphSnapshot(normalizeNodesForCanvas(nextNodes), nextEdges);
+    const snapshot = serializeGraphSnapshot(normalizeNodesForCanvas(nextNodes), normalizeEdgesForCanvas(nextEdges, nextNodes), groupsRef.current || []);
     saveTimer.current = setTimeout(() => {
       if (!workflow?.id) return;
       const latest = parseGraphSnapshot(snapshot);
-      saveWorkflow({ ...workflow, nodes: normalizeNodesForCanvas(latest.nodes), edges: latest.edges });
+      saveWorkflow({
+        ...workflow,
+        nodes: normalizeNodesForCanvas(latest.nodes),
+        edges: normalizeEdgesForCanvas(latest.edges, latest.nodes),
+        groups: latest.groups || nextGroups,
+      });
     }, 1500);
-  }, [normalizeNodesForCanvas, workflow]);
+  }, [normalizeEdgesForCanvas, normalizeNodesForCanvas, workflow]);
 
   const applyGraphChange = useCallback((updater, options = {}) => {
     const currentNodes = nodesRef.current;
     const currentEdges = edgesRef.current;
-    const nextGraph = updater({ nodes: currentNodes, edges: currentEdges });
+    const currentGroups = groupsRef.current;
+    const nextGraph = updater({ nodes: currentNodes, edges: currentEdges, groups: currentGroups });
     if (!nextGraph) return null;
     const nextNodes = normalizeNodesForCanvas(nextGraph.nodes ?? currentNodes);
     const nextEdges = nextGraph.edges ?? currentEdges;
-    if (nextNodes === currentNodes && nextEdges === currentEdges) return null;
+    const nextGroups = nextGraph.groups ?? currentGroups;
+    if (nextNodes === currentNodes && nextEdges === currentEdges && nextGroups === currentGroups) return null;
     nodesRef.current = nextNodes;
     edgesRef.current = nextEdges;
     setNodes(nextNodes);
     setEdges(nextEdges);
-    scheduleSave(nextNodes, nextEdges);
+    setGroups(nextGroups);
+    groupsRef.current = nextGroups;
+    scheduleSave(nextNodes, nextEdges, nextGroups);
     if (options.history === "debounced") {
       scheduleHistoryCommit(nextNodes, nextEdges);
     } else if (options.history !== "skip") {
       flushPendingHistory();
-      const nextHistory = pushHistorySnapshot(historyRef.current, nextNodes, nextEdges, HISTORY_LIMIT);
+      const nextHistory = pushHistorySnapshot(historyRef.current, nextNodes, nextEdges, nextGroups, HISTORY_LIMIT);
       if (nextHistory !== historyRef.current) setHistory(nextHistory);
     }
-    return { nodes: nextNodes, edges: nextEdges };
+    return { nodes: nextNodes, edges: nextEdges, groups: nextGroups };
   }, [flushPendingHistory, normalizeNodesForCanvas, scheduleHistoryCommit, scheduleSave, setHistory]);
 
   const getDefaultInsertPoint = useCallback(() => {
@@ -2508,18 +2653,22 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const applyHistorySnapshot = useCallback((snapshot) => {
     const nextNodes = normalizeNodesForCanvas(snapshot?.nodes || []);
     const nextEdges = snapshot?.edges || [];
+    const nextGroups = snapshot?.groups || [];
     if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
     historyPendingSnapshotRef.current = null;
     nodesRef.current = nextNodes;
     edgesRef.current = nextEdges;
+    groupsRef.current = nextGroups;
     setNodes(nextNodes);
     setEdges(nextEdges);
+    setGroups(nextGroups);
     setSelectedNodeIds(new Set());
+    setSelectedGroupId(null);
     selectedNodeId.value = null;
     selectedEdgeId.value = null;
     setEditingNode(null);
     setContextMenu(null);
-    scheduleSave(nextNodes, nextEdges);
+    scheduleSave(nextNodes, nextEdges, nextGroups);
   }, [normalizeNodesForCanvas, scheduleSave]);
 
   const undoCanvas = useCallback(() => {
@@ -2620,6 +2769,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
             edges: currentEdges.filter((edge) => !ids.has(edge.source) && !ids.has(edge.target)),
           }));
           setSelectedNodeIds(new Set());
+    setSelectedGroupId(null);
           selectedNodeId.value = null;
           setEditingNode(null);
           return;
@@ -2673,11 +2823,24 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       return;
     }
     if (dragState) {
+      if (dragState.kind === "group") {
+        const deltaX = canvasPos.x - dragState.anchorX;
+        const deltaY = canvasPos.y - dragState.anchorY;
+        applyGraphChange(({ nodes: currentNodes, edges: currentEdges, groups: currentGroups }) => (
+          moveWorkflowGroupByDelta(
+            { nodes: currentNodes, edges: currentEdges, groups: currentGroups },
+            dragState.groupId,
+            deltaX,
+            deltaY,
+          )
+        ), { history: "debounced" });
+        return;
+      }
       const newPrimaryX = canvasPos.x - dragState.offsetX;
       const newPrimaryY = canvasPos.y - dragState.offsetY;
       const deltaX = newPrimaryX - dragState.startX;
       const deltaY = newPrimaryY - dragState.startY;
-      applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+      applyGraphChange(({ nodes: currentNodes, edges: currentEdges, groups: currentGroups }) => ({
         nodes: currentNodes.map((node) => {
           if (node.id === dragState.nodeId) {
             return { ...node, position: { x: newPrimaryX, y: newPrimaryY } };
@@ -2689,6 +2852,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
           return node;
         }),
         edges: currentEdges,
+        groups: currentGroups,
       }), { history: "debounced" });
     }
   }, [applyGraphChange, toCanvas, panStart, dragState]);
@@ -2704,6 +2868,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         selectedNodeId.value = null;
         selectedEdgeId.value = null;
         setSelectedNodeIds(new Set());
+    setSelectedGroupId(null);
       }
       setEditingNode(null);
       setContextMenu(null);
@@ -2806,6 +2971,62 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
 
   // ── Node interaction ──────────────────────────────────────
 
+  const startGroupDrag = useCallback((groupId, clientX, clientY) => {
+    const normalizedGroupId = String(groupId || "").trim();
+    if (!normalizedGroupId) return false;
+    const group = (groups || []).find((entry) => entry.id === normalizedGroupId) || null;
+    if (!group) return false;
+    const canvasPos = toCanvas(clientX, clientY);
+    const startPositions = Object.fromEntries(
+      (nodes || [])
+        .filter((entry) => group.nodeIds?.includes(entry.id))
+        .map((entry) => [entry.id, { x: entry.position?.x || 0, y: entry.position?.y || 0 }]),
+    );
+    setSelectedGroupId(group.id);
+    setSelectedNodeIds(new Set(group.nodeIds || []));
+    selectedNodeId.value = null;
+    selectedEdgeId.value = null;
+    setEditingNode(null);
+    setContextMenu(null);
+    setDragState({
+      kind: "group",
+      groupId: group.id,
+      anchorX: canvasPos.x,
+      anchorY: canvasPos.y,
+      startPositions,
+    });
+    return true;
+  }, [groups, nodes, toCanvas]);
+
+  const onGroupMouseDown = useCallback((groupId, e) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    startGroupDrag(groupId, e.clientX, e.clientY);
+  }, [startGroupDrag]);
+
+  const onGroupPointerDown = useCallback((groupId, e) => {
+    if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
+    e.stopPropagation();
+    if (startGroupDrag(groupId, e.clientX, e.clientY)) {
+      try {
+        canvasRef.current?.setPointerCapture?.(e.pointerId);
+      } catch {}
+      e.preventDefault();
+    }
+  }, [startGroupDrag]);
+
+  const onGroupContextMenu = useCallback((groupId, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const group = (groups || []).find((entry) => entry.id === String(groupId || "").trim()) || null;
+    if (!group) return;
+    setSelectedGroupId(group.id);
+    setSelectedNodeIds(new Set(group.nodeIds || []));
+    selectedNodeId.value = null;
+    selectedEdgeId.value = null;
+    setContextMenu({ x: e.clientX, y: e.clientY, groupId: group.id });
+  }, [groups]);
+
   const onNodeMouseDown = useCallback((nodeId, e) => {
     e.stopPropagation();
     let newSelectedIds;
@@ -2826,8 +3047,14 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       selectedNodeId.value = nodeId;
     }
     setContextMenu(null);
+    const proxyNode = renderNodes.find((entry) => entry.id === nodeId && entry.isGroupProxy);
+    if (proxyNode) {
+      startGroupDrag(proxyNode.groupId, e.clientX, e.clientY);
+      return;
+    }
     const canvasPos = toCanvas(e.clientX, e.clientY);
-    const node = nodes.find(n => n.id === nodeId);
+    setSelectedGroupId(null);
+    const node = nodes.find((n) => n.id === nodeId);
     if (node) {
       // Store start positions for all nodes in the drag group
       multiDragRef.current = {};
@@ -2843,13 +3070,24 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         startY: node.position?.y || 0,
       });
     }
-  }, [nodes, toCanvas, selectedNodeIds]);
+  }, [nodes, renderNodes, selectedNodeIds, startGroupDrag, toCanvas]);
 
   const onNodePointerDown = useCallback((nodeId, e) => {
     if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
     e.stopPropagation();
+    const proxyNode = renderNodes.find((entry) => entry.id === nodeId && entry.isGroupProxy);
+    if (proxyNode) {
+      if (startGroupDrag(proxyNode.groupId, e.clientX, e.clientY)) {
+        try {
+          canvasRef.current?.setPointerCapture?.(e.pointerId);
+        } catch {}
+        e.preventDefault();
+      }
+      return;
+    }
     const newSelectedIds = new Set([nodeId]);
     setSelectedNodeIds(newSelectedIds);
+    setSelectedGroupId(null);
     selectedNodeId.value = nodeId;
     setContextMenu(null);
     const canvasPos = toCanvas(e.clientX, e.clientY);
@@ -2868,7 +3106,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       canvasRef.current?.setPointerCapture?.(e.pointerId);
     } catch {}
     e.preventDefault();
-  }, [nodes, toCanvas]);
+  }, [nodes, renderNodes, startGroupDrag, toCanvas]);
 
   const onNodeDoubleClick = useCallback((nodeId) => {
     setEditingNode(nodeId);
@@ -2877,9 +3115,15 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const onNodeContextMenu = useCallback((nodeId, e) => {
     e.preventDefault();
     e.stopPropagation();
+    const proxyNode = renderNodes.find((entry) => entry.id === nodeId && entry.isGroupProxy);
+    if (proxyNode) {
+      onGroupContextMenu(proxyNode.groupId, e);
+      return;
+    }
     selectedNodeId.value = nodeId;
+    setSelectedGroupId(null);
     setContextMenu({ x: e.clientX, y: e.clientY, nodeId });
-  }, []);
+  }, [onGroupContextMenu, renderNodes]);
 
   // ── Port / connection interaction ─────────────────────────
 
@@ -2907,7 +3151,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     });
   }, []);
 
-  const getNodeById = useCallback((nodeId) => nodesRef.current.find((node) => node.id === nodeId) || null, []);
+  const getNodeById = useCallback((nodeId) => (renderNodes.find((node) => node.id === nodeId) || nodesRef.current.find((node) => node.id === nodeId) || null), [renderNodes]);
 
   const getOutputPortDescriptor = useCallback((nodeId, portName = "default") => {
     const node = getNodeById(nodeId);
@@ -2922,6 +3166,68 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     const ports = resolveNodePorts(node, nodeTypeMap).inputs;
     return ports.find((port) => port.name === portName) || ports[0] || null;
   }, [getNodeById, nodeTypeMap]);
+
+  const getEdgePortBindingState = useCallback((edge) => {
+    if (!edge) return null;
+    const validation = validateEdgePortMapping(edge, nodeLookup, nodeTypeMap);
+    return {
+      edge,
+      sourceNode: validation.sourceNode,
+      targetNode: validation.targetNode,
+      sourcePorts: validation.sourcePorts,
+      targetPorts: validation.targetPorts,
+      requestedSourcePort: validation.requestedSourcePortName || validation.sourcePort?.name || "default",
+      requestedTargetPort: validation.requestedTargetPortName || validation.targetPort?.name || "default",
+      sourcePort: validation.sourcePort,
+      targetPort: validation.targetPort,
+      validationErrors: validation.issues.map((issue) => issue.message),
+    };
+  }, [nodeLookup, nodeTypeMap]);
+
+  const updateEdgePortMapping = useCallback((edgeId, patch = {}) => {
+    const edge = edgesRef.current.find((entry) => entry.id === edgeId) || null;
+    if (!edge) return false;
+
+    const patchCheck = canUpdateCanvasEdgePortMapping(edge, patch, nodesRef.current, nodeTypeMap);
+    if (!patchCheck.allowed) {
+      showToast(patchCheck.blockingIssue?.message || "Invalid port binding", "error");
+      return false;
+    }
+
+    const validation = patchCheck.validation;
+    const nextSourcePortName = validation.sourcePort?.name || validation.requestedSourcePortName || "default";
+    const nextTargetPortName = validation.targetPort?.name || validation.requestedTargetPortName || "default";
+    const nextEdgeId = `${edge.source}:${nextSourcePortName}->${edge.target}:${nextTargetPortName}`;
+    const duplicate = edgesRef.current.some((entry) => (
+      entry.id !== edgeId
+      && entry.source === edge.source
+      && entry.target === edge.target
+      && String(entry.sourcePort ?? entry.fromPort ?? "default").trim() === nextSourcePortName
+      && String(entry.targetPort ?? entry.toPort ?? "default").trim() === nextTargetPortName
+    ));
+    if (duplicate) {
+      showToast("An edge with the selected port binding already exists", "error");
+      return false;
+    }
+
+    applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+      nodes: currentNodes,
+      edges: currentEdges.map((entry) => {
+        if (entry.id !== edgeId) return entry;
+        return {
+          ...entry,
+          ...patch,
+          id: nextEdgeId,
+          sourcePort: nextSourcePortName,
+          targetPort: nextTargetPortName,
+          sourcePortType: validation.sourcePort?.type || "Any",
+          targetPortType: validation.targetPort?.type || "Any",
+        };
+      }),
+    }));
+    selectedEdgeId.value = nextEdgeId;
+    return true;
+  }, [applyGraphChange, nodeTypeMap]);
 
   const onOutputPortMouseDown = useCallback((nodeId, portName, e) => {
     e.stopPropagation();
@@ -3094,6 +3400,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     }), { history: "debounced" });
   }, [applyGraphChange]);
 
+
   useEffect(() => () => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
@@ -3114,27 +3421,128 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     return undefined;
   }, [connecting]);
 
+  const handleCreateGroup = useCallback(() => {
+    const nodeIds = [...selectedNodeIds].filter(Boolean);
+    if (nodeIds.length < 2) return;
+    const label = window.prompt("Group name", "New Group");
+    if (label == null) return;
+    const nextGroupId = `group-${Date.now()}`;
+    applyGraphChange(({ nodes: currentNodes, edges: currentEdges, groups: currentGroups }) => ({
+      nodes: currentNodes,
+      edges: currentEdges,
+      groups: createNodeGroup({ nodes: currentNodes, edges: currentEdges, groups: currentGroups }, nodeIds, {
+        id: nextGroupId,
+        label,
+        color: "#8b5cf6",
+      }).groups,
+    }));
+    setSelectedGroupId(nextGroupId);
+  }, [applyGraphChange, selectedNodeIds]);
+
+  const handleToggleActiveGroup = useCallback(() => {
+    if (!activeGroup) return;
+    applyGraphChange(({ nodes: currentNodes, edges: currentEdges, groups: currentGroups }) => ({
+      nodes: currentNodes,
+      edges: currentEdges,
+      groups: toggleWorkflowGroupCollapsed({ nodes: currentNodes, edges: currentEdges, groups: currentGroups }, activeGroup.id).groups,
+    }));
+    setSelectedGroupId(activeGroup.id);
+  }, [activeGroup, applyGraphChange]);
+
+  const handleImportWorkflowJson = useCallback(async () => {
+    try {
+      const parsed = JSON.parse(importJsonText);
+      const payload = parsed?.workflow ? parsed : { workflow: parsed };
+      const data = await apiFetch("/api/workflows/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (data?.workflow) {
+        activeWorkflow.value = data.workflow;
+        viewMode.value = "canvas";
+        setImportDialogOpen(false);
+        setImportJsonText("");
+        showToast("Workflow imported", "success");
+        loadWorkflows();
+      }
+    } catch (err) {
+      showToast("Import failed: " + (err.message || err), "error");
+    }
+  }, [importJsonText]);
+
+  const handleImportWorkflowFile = useCallback(async (event) => {
+    const file = event?.target?.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    setImportJsonText(text);
+    setImportDialogOpen(true);
+    event.target.value = "";
+  }, []);
+
+  const handleConvertToSubworkflow = useCallback(async () => {
+    const nodeIds = [...selectedNodeIds].filter(Boolean);
+    if (!workflow?.id || nodeIds.length === 0) return;
+    const childName = window.prompt("New sub-workflow name", `${workflow.name || "Workflow"} Sub-workflow`);
+    if (childName == null) return;
+    const converted = convertSelectionToSubworkflow({ ...workflow, nodes, edges, groups }, nodeIds, {
+      childWorkflowId: `sub-${Date.now()}`,
+      childName,
+      executeNodeId: `execute-sub-${Date.now()}`,
+      executeNodeLabel: childName,
+    });
+    const savedChild = await saveWorkflow(converted.childWorkflow, { activate: false, suppressToast: true });
+    if (!savedChild?.id) return;
+    const parentWithSavedId = {
+      ...converted.parentWorkflow,
+      nodes: converted.parentWorkflow.nodes.map((node) => (
+        node.id === converted.executeNode.id
+          ? { ...node, config: { ...(node.config || {}), workflowId: savedChild.id } }
+          : node
+      )),
+    };
+    const savedParent = await saveWorkflow(parentWithSavedId, { toastMessage: "Sub-workflow created" });
+    if (savedParent) {
+      setSelectedNodeIds(new Set([converted.executeNode.id]));
+      selectedNodeId.value = converted.executeNode.id;
+      setSelectedGroupId(null);
+    }
+  }, [convertSelectionToSubworkflow, edges, groups, nodes, selectedNodeIds, workflow]);
+
+  const handleExpandInline = useCallback(async () => {
+    const selectedId = String(selectedNodeId.value || "").trim();
+    const node = nodes.find((entry) => entry.id === selectedId) || null;
+    const workflowId = String(node?.config?.workflowId || "").trim();
+    if (!workflowId) return;
+    try {
+      const data = await apiFetch(`/api/workflows/${encodeURIComponent(workflowId)}`);
+      if (data?.workflow) setInlinePreview(data.workflow);
+    } catch (err) {
+      showToast("Failed to load inline workflow preview", "error");
+    }
+  }, [nodes]);
   // ── Render helpers ────────────────────────────────────────
 
   const getNodeCenter = (nodeId) => {
-    const n = nodes.find((value) => value.id === nodeId);
+    const n = renderNodes.find((value) => value.id === nodeId);
     if (!n) return { x: 0, y: 0 };
-    return { x: (n.position?.x || 0) + NODE_W / 2, y: (n.position?.y || 0) + NODE_H / 2 };
+    const width = Number(n?.size?.width || NODE_W);
+    const height = Number(n?.size?.height || NODE_H);
+    return { x: (n.position?.x || 0) + width / 2, y: (n.position?.y || 0) + height / 2 };
   };
 
   const getNodePortPosition = (nodeId, direction, portName = "default") => {
-    const n = nodes.find((value) => value.id === nodeId);
+    const n = renderNodes.find((value) => value.id === nodeId);
     if (!n) return { x: 0, y: 0 };
     const ports = resolveNodePorts(n, nodeTypeMap)[direction === "input" ? "inputs" : "outputs"];
-    const index = Math.max(
-      0,
-      ports.findIndex((port) => port.name === portName),
-    );
+    const index = Math.max(0, ports.findIndex((port) => port.name === portName));
     const spread = 24;
-    const centerY = NODE_H / 2 + 10;
+    const width = Number(n?.size?.width || NODE_W);
+    const height = Number(n?.size?.height || NODE_H);
+    const centerY = height / 2 + 10;
     const offsetY = (index - ((ports.length - 1) / 2)) * spread;
     return {
-      x: (n.position?.x || 0) + (direction === "input" ? 0 : NODE_W),
+      x: (n.position?.x || 0) + (direction === "input" ? 0 : width),
       y: (n.position?.y || 0) + centerY + offsetY,
     };
   };
@@ -3174,7 +3582,16 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         <${Button} variant="contained" size="small" onClick=${() => openNodePalette()} sx=${{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <span style="font-size: 18px;">+</span> Add Node /
         <//>
-        <${Button} variant="outlined" size="small" onClick=${() => { if (workflow) saveWorkflow({ ...workflow, nodes: normalizeNodesForCanvas(nodesRef.current), edges: edgesRef.current }); }}>
+        <${Button} variant="outlined" size="small" onClick=${() => {
+          if (!workflow) return;
+          if (reportEdgeValidationIssues()) return;
+          saveWorkflow({
+            ...workflow,
+            nodes: normalizeNodesForCanvas(nodesRef.current),
+            edges: normalizeEdgesForCanvas(edgesRef.current, nodesRef.current),
+            groups: groupsRef.current,
+          });
+        }}>
           <span class="btn-icon">${resolveIcon("save")}</span>
           Save
         <//>
@@ -3186,6 +3603,9 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
             if (!workflow?.id) return;
             if (workflow?.enabled === false) {
               showToast("Workflow is paused. Resume it before running.", "warning");
+              return;
+            }
+            if (reportEdgeValidationIssues()) {
               return;
             }
             openExecuteDialog(workflow.id);
@@ -3206,10 +3626,16 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
           <span class="btn-icon">${resolveIcon("settings")}</span>
           Code
         <//>
-        <${Button} variant="outlined" size="small" onClick=${() => exportWorkflow(workflow)}>
+        <${Button} variant="outlined" size="small" onClick=${() => exportWorkflow({ ...workflow, nodes, edges, groups })}>
           <span class="btn-icon">${resolveIcon("save")}</span>
           Export
         <//>
+        <input type="file" accept="application/json,.json" style="display:none;" id="workflow-import-file" onChange=${handleImportWorkflowFile} />
+        <${Button} variant="outlined" size="small" onClick=${() => setImportDialogOpen(true)}>
+          <span class="btn-icon">${resolveIcon("download")}</span>
+          Import
+        <//>
+        <${Button} variant="text" size="small" onClick=${() => document.getElementById("workflow-import-file")?.click()}>Upload JSON<//>
         ${workflow?.metadata?.installedFrom && html`<${Button}
           variant="outlined"
           size="small"
@@ -3234,6 +3660,10 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         <${Button} variant="text" size="small" disabled=${historyState.future.length === 0} onClick=${redoCanvas}>Redo<//>
         <${Button} variant="text" size="small" onClick=${() => setShowShortcutOverlay(true)}>Shortcuts ?<//>
         <div style="flex:1;"></div>
+        ${selectedNodeIds.size > 1 && html`<${Button} variant="text" size="small" onClick=${handleCreateGroup}>Create Group<//>`}
+        ${activeGroup && html`<${Button} variant="text" size="small" onClick=${handleToggleActiveGroup}>${activeGroup.collapsed ? "Expand Group" : "Collapse Group"}<//>`}
+        ${selectedNodeIds.size > 0 && html`<${Button} variant="text" size="small" onClick=${handleConvertToSubworkflow}>Convert to Sub-workflow<//>`}
+        ${(() => { const selected = nodes.find((entry) => entry.id === selectedNodeId.value); return selected && ["action.execute_workflow", "flow.universal"].includes(selected.type); })() && html`<${Button} variant="text" size="small" onClick=${handleExpandInline}>Expand Inline<//>`}
         ${selectedNodeIds.size > 1 && html`
           <span class="wf-badge" style="font-size: 11px; background: #3b82f640; color: #60a5fa; border: 1px solid #3b82f660;">
             ${selectedNodeIds.size} nodes selected · Del to delete
@@ -3368,8 +3798,40 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
 
         <g transform="translate(${pan.x} ${pan.y}) scale(${zoom})">
 
+          <!-- Groups -->
+          ${(groups || []).filter((group) => group.collapsed !== true).map((group) => {
+            const bounds = resolveWorkflowGroupBounds({ nodes, groups }, group.id);
+            const isSelected = selectedGroupId === group.id;
+            return html`
+              <g key=${group.id}>
+                <rect
+                  x=${bounds.x}
+                  y=${bounds.y}
+                  width=${bounds.width}
+                  height=${bounds.height}
+                  rx="16"
+                  fill=${group.color + "18"}
+                  stroke=${isSelected ? group.color : (group.color + "88")}
+                  stroke-width=${isSelected ? 2.2 : 1.4}
+                  style="cursor: grab;"
+                  onMouseDown=${(e) => onGroupMouseDown(group.id, e)}
+                  onPointerDown=${(e) => onGroupPointerDown(group.id, e)}
+                  onContextMenu=${(e) => onGroupContextMenu(group.id, e)}
+                />
+                <text
+                  x=${bounds.x + 14}
+                  y=${bounds.y + 22}
+                  fill=${group.color}
+                  font-size="12"
+                  font-weight="700"
+                  style="pointer-events: none; user-select: none;"
+                >${group.label}</text>
+              </g>
+            `;
+          })}
+
           <!-- Edges -->
-          ${edges.map(edge => {
+          ${renderEdges.map(edge => {
             const sourcePort = getOutputPortDescriptor(edge.source, edge.sourcePort || "default");
             const from = getNodePortPosition(edge.source, "output", edge.sourcePort || "default");
             const to = getNodePortPosition(edge.target, "input", edge.targetPort || "default");
@@ -3379,7 +3841,17 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
             const edgePath = curvePath(from.x, from.y, to.x, to.y);
             const isActiveFlow = liveHighlightEnabled && liveEdgeActivity[edge.id];
             return html`
-              <g key=${edge.id} class="wf-edge" onClick=${(e) => { e.stopPropagation(); selectedEdgeId.value = edge.id; }}>
+              <g
+                key=${edge.id}
+                class="wf-edge"
+                onClick=${(e) => {
+                  e.stopPropagation();
+                  selectedEdgeId.value = edge.id;
+                  selectedNodeId.value = null;
+                  setSelectedNodeIds(new Set());
+                  setEditingNode(null);
+                }}
+              >
                 <path
                   d=${edgePath}
                   fill="none"
@@ -3461,7 +3933,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
           `}
 
           <!-- Nodes -->
-          ${nodes.map(node => {
+          ${renderNodes.map(node => {
             const meta = getNodeMeta(node.type);
             const typeInfo = nodeTypeMap.get(node.type) || null;
             const ports = resolveNodePorts(node, nodeTypeMap);
@@ -3710,34 +4182,184 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       <!-- Context Menu -->
       ${contextMenu && html`
         <div class="wf-context-menu" style="position: fixed; left: ${contextMenu.x}px; top: ${contextMenu.y}px; z-index: 50;">
-          <${MenuItem}
-            onClick=${() => {
-              const node = nodes.find((entry) => entry.id === contextMenu.nodeId) || null;
-              setContextMenu(null);
-              openWorkflowCopilotFromCanvas({
-                intent: "node",
-                nodeId: contextMenu.nodeId,
-                title: `Ask Bosun about node ${node?.label || contextMenu.nodeId}`.trim(),
-                successToast: "Opened node copilot chat",
-              });
-            }}
-          >
-            <span class="btn-icon">${resolveIcon("bot")}</span>
-            Ask Bosun About Node
-          <//>
-          <${MenuItem} onClick=${() => { setEditingNode(contextMenu.nodeId); setContextMenu(null); }}>
-            <span class="btn-icon">${resolveIcon("settings")}</span>
-            Edit Config
-          <//>
-          <${MenuItem} onClick=${() => duplicateNode(contextMenu.nodeId)}>
-            <span class="btn-icon">${resolveIcon("clipboard")}</span>
-            Duplicate
-          <//>
-          <${MenuItem} onClick=${() => { deleteNode(contextMenu.nodeId); }} sx=${{ color: '#ef4444' }}>
-            <span class="btn-icon">${resolveIcon("trash")}</span>
-            Delete
-          <//>
+          ${contextMenu.groupId ? html`
+            <${MenuItem} onClick=${() => { handleToggleActiveGroup(); setContextMenu(null); }}>
+              <span class="btn-icon">${resolveIcon(activeGroup?.collapsed ? "play" : "pause")}</span>
+              ${activeGroup?.collapsed ? "Expand Group" : "Collapse Group"}
+            <//>
+          ` : html`
+            <${MenuItem}
+              onClick=${() => {
+                const node = nodes.find((entry) => entry.id === contextMenu.nodeId) || null;
+                setContextMenu(null);
+                openWorkflowCopilotFromCanvas({
+                  intent: "node",
+                  nodeId: contextMenu.nodeId,
+                  title: `Ask Bosun about node ${node?.label || contextMenu.nodeId}`.trim(),
+                  successToast: "Opened node copilot chat",
+                });
+              }}
+            >
+              <span class="btn-icon">${resolveIcon("bot")}</span>
+              Ask Bosun About Node
+            <//>
+            <${MenuItem} onClick=${() => { setEditingNode(contextMenu.nodeId); setContextMenu(null); }}>
+              <span class="btn-icon">${resolveIcon("settings")}</span>
+              Edit Config
+            <//>
+            <${MenuItem} onClick=${() => duplicateNode(contextMenu.nodeId)}>
+              <span class="btn-icon">${resolveIcon("clipboard")}</span>
+              Duplicate
+            <//>
+          `}
+          ${selectedNodeIds.size > 1 && html`
+            <${MenuItem} onClick=${() => { handleCreateGroup(); setContextMenu(null); }}>
+              <span class="btn-icon">${resolveIcon("plus")}</span>
+              Create Group
+            <//>
+          `}
+          ${activeGroup && !contextMenu.groupId && html`
+            <${MenuItem} onClick=${() => { handleToggleActiveGroup(); setContextMenu(null); }}>
+              <span class="btn-icon">${resolveIcon(activeGroup.collapsed ? "play" : "pause")}</span>
+              ${activeGroup.collapsed ? "Expand Group" : "Collapse Group"}
+            <//>
+          `}
+          ${!contextMenu.groupId && html`
+            <${MenuItem} onClick=${() => { deleteNode(contextMenu.nodeId); }} sx=${{ color: '#ef4444' }}>
+              <span class="btn-icon">${resolveIcon("trash")}</span>
+              Delete
+            <//>
+          `}
         </div>
+      `}
+
+      <${Dialog} open=${importDialogOpen} onClose=${() => setImportDialogOpen(false)} maxWidth="md" fullWidth>
+        <${DialogTitle}>Import Workflow JSON</${DialogTitle}>
+        <${DialogContent}>
+          <textarea value=${importJsonText} onInput=${(e) => setImportJsonText(e.target.value)} style="width:100%; min-height:260px; font-family:monospace; font-size:12px; background:#0f172a; color:#e2e8f0; border:1px solid #334155; border-radius:8px; padding:12px;" placeholder='{"name":"Imported Workflow","nodes":[],"edges":[]}' />
+        </${DialogContent}>
+        <${DialogActions}>
+          <${Button} onClick=${() => setImportDialogOpen(false)}>Cancel<//>
+          <${Button} variant="contained" onClick=${handleImportWorkflowJson}>Import<//>
+        </${DialogActions}>
+      </${Dialog}>
+
+      <${Dialog} open=${Boolean(inlinePreview)} onClose=${() => setInlinePreview(null)} maxWidth="lg" fullWidth>
+        <${DialogTitle}>Inline Sub-workflow Preview</${DialogTitle}>
+        <${DialogContent}>
+          ${inlinePreview && html`
+            <div style="font-size:12px; color:var(--color-text-secondary,#94a3b8); margin-bottom:10px;">${inlinePreview.name} · ${inlinePreview.nodes?.length || 0} nodes · ${inlinePreview.edges?.length || 0} edges</div>
+            <svg viewBox="0 0 1200 480" style="width:100%; height:420px; background:#0f1117; border:1px solid #1f2937; border-radius:10px;">
+              ${(inlinePreview.edges || []).map((edge) => {
+                const source = (inlinePreview.nodes || []).find((node) => node.id === edge.source);
+                const target = (inlinePreview.nodes || []).find((node) => node.id === edge.target);
+                if (!source || !target) return null;
+                const x1 = (source.position?.x || 0) + 220;
+                const y1 = (source.position?.y || 0) + 59;
+                const x2 = (target.position?.x || 0);
+                const y2 = (target.position?.y || 0) + 59;
+                return html`<path d=${curvePath(x1, y1, x2, y2)} fill="none" stroke="#64748b" stroke-width="2" />`;
+              })}
+              ${(inlinePreview.nodes || []).map((node) => html`
+                <g key=${node.id} transform="translate(${node.position?.x || 0} ${node.position?.y || 0})">
+                  <rect width="220" height="118" rx="10" fill="#111827" stroke="#334155" />
+                  <text x="110" y="24" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="700">${stripEmoji(node.label || node.type).slice(0, 28)}</text>
+                  <text x="110" y="42" text-anchor="middle" fill="#94a3b8" font-size="11">${node.type}</text>
+                </g>
+              `)}
+            </svg>
+          `}
+        </${DialogContent}>
+      </${Dialog}>
+
+      ${!editingNode && selectedEdge && html`
+        ${(() => {
+          const binding = getEdgePortBindingState(selectedEdge);
+          if (!binding) return null;
+          const sourceLabel = binding.sourceNode?.label || binding.edge.source;
+          const targetLabel = binding.targetNode?.label || binding.edge.target;
+          const sourceOptions = binding.sourcePorts.some((port) => port.name === binding.requestedSourcePort)
+            ? binding.sourcePorts
+            : [{ name: binding.requestedSourcePort, label: `${binding.requestedSourcePort} (missing)` }, ...binding.sourcePorts];
+          const targetOptions = binding.targetPorts.some((port) => port.name === binding.requestedTargetPort)
+            ? binding.targetPorts
+            : [{ name: binding.requestedTargetPort, label: `${binding.requestedTargetPort} (missing)` }, ...binding.targetPorts];
+          return html`
+            <div class="wf-config-panel" style="position: absolute; top: 0; right: 0; width: 380px; height: 100%; background: var(--color-bg, #0d1117); border-left: 1px solid var(--color-border, #2a3040); z-index: 25; overflow-y: auto; padding: 16px;">
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                <span class="icon-inline" style="font-size: 20px; color: #60a5fa;">${resolveIcon("git-branch") || ICONS.dot}</span>
+                <div style="flex: 1;">
+                  <div style="font-size: 16px; font-weight: 700; color: var(--color-text, white);">Port Bindings</div>
+                  <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5);">${sourceLabel} → ${targetLabel}</div>
+                </div>
+                <${IconButton} size="small" onClick=${() => { selectedEdgeId.value = null; }}>
+                  ${resolveIcon("close") || "✕"}
+                </${IconButton}>
+              </div>
+
+              <div style="display: grid; gap: 12px; margin-bottom: 16px;">
+                <div>
+                  <label style="display: block; font-size: 12px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 6px;">Source Port</label>
+                  <select
+                    class="wf-input"
+                    value=${binding.requestedSourcePort}
+                    onChange=${(e) => updateEdgePortMapping(binding.edge.id, { sourcePort: e.target.value })}
+                  >
+                    ${sourceOptions.map((port) => html`<option key=${port.name} value=${port.name}>${port.label || port.name}</option>`)}
+                  </select>
+                </div>
+                <div>
+                  <label style="display: block; font-size: 12px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 6px;">Target Port</label>
+                  <select
+                    class="wf-input"
+                    value=${binding.requestedTargetPort}
+                    onChange=${(e) => updateEdgePortMapping(binding.edge.id, { targetPort: e.target.value })}
+                  >
+                    ${targetOptions.map((port) => html`<option key=${port.name} value=${port.name}>${port.label || port.name}</option>`)}
+                  </select>
+                </div>
+              </div>
+
+              ${binding.validationErrors.length > 0 && html`
+                <div style="margin-bottom: 16px; border: 1px solid #7f1d1d; background: #450a0a; color: #fecaca; border-radius: 8px; padding: 10px 12px;">
+                  <div style="font-size: 12px; font-weight: 700; margin-bottom: 6px;">Validation Error</div>
+                  <div style="display: grid; gap: 4px; font-size: 12px;">
+                    ${binding.validationErrors.map((message) => html`<div key=${message}>${message}</div>`)}
+                  </div>
+                </div>
+              `}
+
+              <div style="display: grid; gap: 8px; margin-bottom: 16px;">
+                <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5);">
+                  <strong style="color: var(--color-text, white);">Edge ID:</strong> ${binding.edge.id}
+                </div>
+                <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5);">
+                  <strong style="color: var(--color-text, white);">Source:</strong> ${binding.edge.source}
+                </div>
+                <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5);">
+                  <strong style="color: var(--color-text, white);">Target:</strong> ${binding.edge.target}
+                </div>
+                ${binding.edge.condition && html`
+                  <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5);">
+                    <strong style="color: var(--color-text, white);">Condition:</strong> ${binding.edge.condition}
+                  </div>
+                `}
+                ${binding.edge.backEdge && html`
+                  <div style="font-size: 12px; color: #fbbf24;">Back-edge routing enabled</div>
+                `}
+              </div>
+
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <${Button} variant="outlined" size="small" onClick=${() => { selectedEdgeId.value = null; }}>
+                  Close
+                </${Button}>
+                <${Button} variant="outlined" color="error" size="small" onClick=${() => deleteEdge(binding.edge.id)}>
+                  Delete Edge
+                </${Button}>
+              </div>
+            </div>
+          `;
+        })()}
       `}
 
       <!-- Node Config Editor (side panel) -->
@@ -5197,7 +5819,18 @@ function RunHistoryView() {
   const [workflowFilter, setWorkflowFilter] = useState("all");
   const [triggerFilter, setTriggerFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [logsPaneSearch, setLogsPaneSearch] = useState("");
+  const [errorsPaneSearch, setErrorsPaneSearch] = useState("");
+  const [ledgerPaneSearch, setLedgerPaneSearch] = useState("");
+  const [rawPaneSearch, setRawPaneSearch] = useState("");
   const normalizedSearch = String(searchQuery || "").trim().toLowerCase();
+
+  useEffect(() => {
+    setLogsPaneSearch("");
+    setErrorsPaneSearch("");
+    setLedgerPaneSearch("");
+    setRawPaneSearch("");
+  }, [selectedRunId.value]);
 
   useEffect(() => {
     const timer = setInterval(() => setNowTick(Date.now()), 1000);
@@ -5274,6 +5907,23 @@ function RunHistoryView() {
     }
     return counts;
   }, [runs]);
+
+  const runMetrics = useMemo(() => {
+    const completed = Number(runCounts.completed || 0);
+    const failed = Number(runCounts.failed || 0);
+    const settled = completed + failed;
+    const successRate = settled > 0 ? Math.round((completed / settled) * 100) : 0;
+    const stuckCount = runs.filter((run) => run?.status === "running" && run?.isStuck).length;
+    const activeNodes = runs
+      .filter((run) => run?.status === "running")
+      .reduce((sum, run) => sum + Number(run?.activeNodeCount || 0), 0);
+    return {
+      settled,
+      successRate,
+      stuckCount,
+      activeNodes,
+    };
+  }, [runs, runCounts]);
 
   const canLoadMoreRuns =
     hasMoreRuns && runs.length < WORKFLOW_RUN_MAX_FETCH;
@@ -5400,10 +6050,33 @@ function RunHistoryView() {
         ? selectedRun.detail.issueAdvisor
         : null;
     const dagCounts = getRunDagCounts(selectedRun);
+    const dagRevisions = Array.isArray(selectedRun?.detail?.dagState?.revisions) ? selectedRun.detail.dagState.revisions : [];
     const ledgerEvents = Array.isArray(selectedRun?.ledger?.events) ? selectedRun.ledger.events : [];
+    const normalizedLogsSearch = String(logsPaneSearch || "").trim().toLowerCase();
+    const normalizedErrorsSearch = String(errorsPaneSearch || "").trim().toLowerCase();
+    const normalizedLedgerSearch = String(ledgerPaneSearch || "").trim().toLowerCase();
+    const normalizedRawSearch = String(rawPaneSearch || "").trim().toLowerCase();
+    const filteredLogs = logs.filter((entry) => {
+      if (!normalizedLogsSearch) return true;
+      return safePrettyJson(entry).toLowerCase().includes(normalizedLogsSearch);
+    });
+    const filteredErrors = errors.filter((entry) => {
+      if (!normalizedErrorsSearch) return true;
+      return safePrettyJson(entry).toLowerCase().includes(normalizedErrorsSearch);
+    });
+    const filteredLedgerEvents = ledgerEvents.filter((event) => {
+      if (!normalizedLedgerSearch) return true;
+      const line = `${safePrettyJson(event)} ${summarizeLedgerEvent(event)}`.toLowerCase();
+      return line.includes(normalizedLedgerSearch);
+    });
+    const rawRunJson = safePrettyJson(selectedRun);
+    const rawRunLines = rawRunJson.split("\n");
+    const filteredRawLines = normalizedRawSearch
+      ? rawRunLines.filter((line) => line.toLowerCase().includes(normalizedRawSearch))
+      : rawRunLines;
     const recommendedRetryMode =
       selectedRun?.status === "failed"
-        ? (selectedRun?.issueAdvisorRecommendation === "replan_from_failed" ? "from_scratch" : "from_failed")
+        ? ((selectedRun?.issueAdvisorRecommendation === "replan_from_failed" || selectedRun?.issueAdvisorRecommendation === "replan_subgraph") ? "from_scratch" : "from_failed")
         : "";
     const recommendedRetryLabel = formatRetryModeLabel(recommendedRetryMode);
 
@@ -5522,7 +6195,9 @@ function RunHistoryView() {
               <div><b>Completed:</b> ${dagCounts.completed}/${dagCounts.nodeCount}</div>
               <div><b>Failed:</b> ${dagCounts.failed} · <b>Skipped:</b> ${dagCounts.skipped} · <b>Active:</b> ${dagCounts.active}</div>
               <div><b>Recommendation:</b> ${formatIssueAdvisorAction(issueAdvisor?.recommendedAction)}</div>
+              <div><b>Decision Class:</b> ${formatIssueAdvisorAction(issueAdvisor?.retryDecisionClass || issueAdvisor?.recommendedAction)}</div>
               <div style="margin-top: 6px; color: #e5e7eb;">${issueAdvisor?.summary || "No issue-advisor summary recorded for this run."}</div>
+              ${issueAdvisor?.nextStepGuidance && html`<div style="margin-top: 6px; color: #cbd5e1;">${issueAdvisor.nextStepGuidance}</div>`}
             </div>
           </div>
 
@@ -5551,6 +6226,24 @@ function RunHistoryView() {
             </div>
           </div>
         </div>
+
+        <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;">
+          <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">DAG Revisions (${dagRevisions.length})</summary>
+          <div style="display:flex; flex-direction:column; gap:8px; margin-top:8px;">
+            ${dagRevisions.length === 0 && html`<div style="font-size:12px; opacity:0.6;">No DAG revision history recorded.</div>`}
+            ${dagRevisions.map((revision) => html`
+              <div style="border:1px solid #334155; border-radius:6px; padding:8px; background:#0f172a; font-size:12px; color:#cbd5e1;">
+                <div><b>Revision ${revision.index}:</b> ${revision.reason || "update"}</div>
+                <div><b>Recorded:</b> ${formatDate(revision.recordedAt)}</div>
+                <div><b>Counts:</b> completed=${Number(revision?.counts?.completed || 0)}, failed=${Number(revision?.counts?.failed || 0)}, pending=${Number(revision?.counts?.pending || 0)}</div>
+                <div><b>Preserved:</b> ${(Array.isArray(revision?.preservedCompletedNodeIds) && revision.preservedCompletedNodeIds.length) ? revision.preservedCompletedNodeIds.join(", ") : "—"}</div>
+                <div><b>Focus:</b> ${(Array.isArray(revision?.focusNodeIds) && revision.focusNodeIds.length) ? revision.focusNodeIds.join(", ") : "—"}</div>
+                <div><b>Graph Before:</b> nodes=${Array.isArray(revision?.graphBefore?.nodes) ? revision.graphBefore.nodes.length : 0}, edges=${Array.isArray(revision?.graphBefore?.edges) ? revision.graphBefore.edges.length : 0}</div>
+                <div><b>Graph After:</b> nodes=${Array.isArray(revision?.graphAfter?.nodes) ? revision.graphAfter.nodes.length : 0}, edges=${Array.isArray(revision?.graphAfter?.edges) ? revision.graphAfter.edges.length : 0}</div>
+              </div>
+            `)}
+          </div>
+        </details>
 
         <div style="display: flex; flex-direction: column; gap: 10px;">
           <h3 style="margin: 0; font-size: 14px; color: var(--color-text-secondary, #8b95a5);">Node Execution</h3>
@@ -5604,20 +6297,67 @@ function RunHistoryView() {
 
         <div style="margin-top: 14px; display: grid; gap: 10px;">
           <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Run Logs (${logs.length})</summary>
-            <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(logs)}</pre>
+            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Run Logs (${filteredLogs.length}/${logs.length})</summary>
+            <${TextField}
+              size="small"
+              variant="outlined"
+              fullWidth
+              placeholder="Search run logs..."
+              value=${logsPaneSearch}
+              onInput=${(event) => setLogsPaneSearch(event.target.value)}
+              sx=${{ mt: 1, mb: 1 }}
+            />
+            ${filteredLogs.length === 0
+              ? html`<div style="margin-top: 8px; font-size: 12px; color: var(--color-text-secondary, #8b95a5);">No log entries match this filter.</div>`
+              : html`
+                <div style="display:flex; flex-direction:column; gap:6px; max-height:360px; overflow:auto;">
+                  ${filteredLogs.slice(-120).map((entry, index) => html`
+                    <div key=${`log-${index}`} style="background:#111827; border:1px solid #1f2937; border-radius:6px; padding:8px;">
+                      <pre style="margin:0; white-space:pre-wrap; word-break:break-word; font-size:11px; color:#c9d1d9;">${safePrettyJson(entry)}</pre>
+                    </div>
+                  `)}
+                </div>
+              `}
           </details>
           <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Errors (${errors.length})</summary>
-            <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #fca5a5; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(errors)}</pre>
+            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Errors (${filteredErrors.length}/${errors.length})</summary>
+            <${TextField}
+              size="small"
+              variant="outlined"
+              fullWidth
+              placeholder="Search errors..."
+              value=${errorsPaneSearch}
+              onInput=${(event) => setErrorsPaneSearch(event.target.value)}
+              sx=${{ mt: 1, mb: 1 }}
+            />
+            ${filteredErrors.length === 0
+              ? html`<div style="margin-top: 8px; font-size: 12px; color: var(--color-text-secondary, #8b95a5);">No errors match this filter.</div>`
+              : html`
+                <div style="display:flex; flex-direction:column; gap:6px; max-height:260px; overflow:auto;">
+                  ${filteredErrors.slice(-80).map((entry, index) => html`
+                    <div key=${`err-${index}`} style="background:#111827; border:1px solid #3f1f2a; border-radius:6px; padding:8px;">
+                      <pre style="margin:0; white-space:pre-wrap; word-break:break-word; font-size:11px; color:#fca5a5;">${safePrettyJson(entry)}</pre>
+                    </div>
+                  `)}
+                </div>
+              `}
           </details>
           <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
-            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Execution Ledger (${ledgerEvents.length})</summary>
-            ${ledgerEvents.length === 0
+            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Execution Ledger (${filteredLedgerEvents.length}/${ledgerEvents.length})</summary>
+            <${TextField}
+              size="small"
+              variant="outlined"
+              fullWidth
+              placeholder="Search ledger events..."
+              value=${ledgerPaneSearch}
+              onInput=${(event) => setLedgerPaneSearch(event.target.value)}
+              sx=${{ mt: 1, mb: 1 }}
+            />
+            ${filteredLedgerEvents.length === 0
               ? html`<div style="margin-top: 8px; font-size: 12px; color: var(--color-text-secondary, #8b95a5);">No ledger events recorded.</div>`
               : html`
                 <div style="margin-top: 8px; display:flex; flex-direction:column; gap:6px;">
-                  ${ledgerEvents.slice(-20).map((event, index) => html`
+                  ${filteredLedgerEvents.slice(-120).map((event, index) => html`
                     <div key=${`${event?.timestamp || "event"}-${index}`} style="background:#111827; border:1px solid #1f2937; border-radius:6px; padding:8px;">
                       <div style="font-size:11px; color:#93c5fd; margin-bottom:4px;">
                         ${event?.timestamp ? `${formatDate(event.timestamp)} (${formatRelative(event.timestamp)})` : "unknown time"}
@@ -5630,7 +6370,16 @@ function RunHistoryView() {
           </details>
           <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
             <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Raw Run JSON</summary>
-            <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(selectedRun)}</pre>
+            <${TextField}
+              size="small"
+              variant="outlined"
+              fullWidth
+              placeholder="Search raw JSON lines..."
+              value=${rawPaneSearch}
+              onInput=${(event) => setRawPaneSearch(event.target.value)}
+              sx=${{ mt: 1, mb: 1 }}
+            />
+            <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px; max-height:420px; overflow:auto;">${filteredRawLines.join("\n")}</pre>
           </details>
         </div>
       </div>
@@ -5726,6 +6475,29 @@ function RunHistoryView() {
         <span class="wf-runs-count">${totalRuns} total</span>
       </div>
 
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px;">
+        <div style="background:var(--color-bg-secondary,#1a1f2e);border:1px solid var(--color-border,#2a3040);border-radius:8px;padding:10px;">
+          <div style="font-size:11px;opacity:0.7;">Success Rate</div>
+          <div style="font-size:20px;font-weight:700;line-height:1.2;">${runMetrics.successRate}%</div>
+          <div style="font-size:11px;opacity:0.6;">${runMetrics.settled} settled runs</div>
+        </div>
+        <div style="background:var(--color-bg-secondary,#1a1f2e);border:1px solid var(--color-border,#2a3040);border-radius:8px;padding:10px;">
+          <div style="font-size:11px;opacity:0.7;">Running</div>
+          <div style="font-size:20px;font-weight:700;line-height:1.2;color:#60a5fa;">${runCounts.running}</div>
+          <div style="font-size:11px;opacity:0.6;">${runMetrics.activeNodes} active nodes</div>
+        </div>
+        <div style="background:var(--color-bg-secondary,#1a1f2e);border:1px solid var(--color-border,#2a3040);border-radius:8px;padding:10px;">
+          <div style="font-size:11px;opacity:0.7;">Failed</div>
+          <div style="font-size:20px;font-weight:700;line-height:1.2;color:#f87171;">${runCounts.failed}</div>
+          <div style="font-size:11px;opacity:0.6;">Need triage</div>
+        </div>
+        <div style="background:var(--color-bg-secondary,#1a1f2e);border:1px solid var(--color-border,#2a3040);border-radius:8px;padding:10px;">
+          <div style="font-size:11px;opacity:0.7;">Stuck Running</div>
+          <div style="font-size:20px;font-weight:700;line-height:1.2;color:${runMetrics.stuckCount > 0 ? "#fbbf24" : "#34d399"};">${runMetrics.stuckCount}</div>
+          <div style="font-size:11px;opacity:0.6;">Potential intervention</div>
+        </div>
+      </div>
+
       ${runs.length === 0 && html`
         <div style="text-align: center; padding: 40px; opacity: 0.5;">No workflow runs yet</div>
       `}
@@ -5739,73 +6511,72 @@ function RunHistoryView() {
         </div>
       `}
 
-      <div style="display: flex; flex-direction: column; gap: 8px;">
-        ${filteredRuns.map((run) => {
-          const styles = getRunStatusBadgeStyles(run.status);
-          const runName = run.workflowName || workflowNameMap.get(run.workflowId) || run.workflowId;
-          const lastActivityAt = getRunActivityAt(run);
-          const liveDuration = run.status === "running" && run.startedAt
-            ? Math.max(0, nowTick - run.startedAt)
-            : run.duration;
-          const borderColor = run.isStuck
-            ? "var(--accent-warning, #f59e0b)"
-            : (run.status === "running" ? "var(--accent, #60a5fa)" : "var(--color-border, #2a3040)");
-          const triggerLabel = getWorkflowRunTriggerLabel(run);
-          const retryBadge = run.retryOf ? formatRetryModeLabel(run.retryMode) : "";
-          const advisorBadge = run.issueAdvisorRecommendation
-            ? formatIssueAdvisorAction(run.issueAdvisorRecommendation)
-            : "";
-          return html`
-            <${Button}
-              key=${run.runId}
-              type="button"
-              variant="text"
-              size="small"
-              onClick=${() => loadRunDetail(run.runId)}
-              sx=${{ textAlign: 'left', width: '100%', background: 'var(--color-bg-secondary, #1a1f2e)', borderRadius: '8px', padding: '12px', border: '1px solid ' + borderColor, display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer', textTransform: 'none' }}
-            >
-              <span class="icon-inline" style="font-size: 16px;">
-                ${run.status === "completed" ? resolveIcon("check") : run.status === "failed" ? resolveIcon("close") : resolveIcon("clock")}
-              </span>
-              <div style="flex: 1; min-width: 0;">
-                <div style="font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                  ${runName || "Unknown workflow"}
-                </div>
-                <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                  ${formatDate(run.startedAt)} (${formatRelative(run.startedAt)}) · ${formatDuration(liveDuration)} · ${run.nodeCount || 0} nodes${run.errorCount ? ` · ${run.errorCount} errors` : ""}
-                </div>
-                <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); margin-top: 2px; display:flex; gap:10px; flex-wrap:wrap;">
-                  <span>${run.status === "running"
-                    ? `Active nodes: ${run.activeNodeCount || 0} · Last activity ${lastActivityAt ? formatRelative(lastActivityAt) : "—"}`
-                    : `Finished ${run.endedAt ? formatRelative(run.endedAt) : "—"}`}</span>
-                  <span>Trigger: ${triggerLabel}</span>
-                </div>
-                ${(advisorBadge || retryBadge) && html`
-                  <div style="font-size: 11px; color: var(--color-text-secondary, #94a3b8); margin-top: 4px; display:flex; gap:8px; flex-wrap:wrap;">
-                    ${advisorBadge ? html`<span>Advisor: ${advisorBadge}</span>` : ""}
-                    ${retryBadge ? html`<span>Retry: ${retryBadge}</span>` : ""}
-                  </div>
-                `}
-                ${run.issueAdvisorSummary && html`
-                  <div style="font-size: 11px; color: #cbd5e1; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                    ${run.issueAdvisorSummary}
-                  </div>
-                `}
-                <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); margin-top: 2px;">
-                  Run: <code>${run.runId}</code>
-                </div>
-              </div>
-              <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 4px;">
-                <span class="wf-badge" style="background: ${styles.bg}; color: ${styles.color};">
-                  ${run.status || "unknown"}
-                </span>
-                ${run.isStuck && html`<span class="wf-badge" style="background: #f59e0b2f; color: #f59e0b; border-color: #f59e0b50;">stuck</span>`}
-                ${run.retryOf && html`<span class="wf-badge" style="background:#10b98120; color:#6ee7b7;">retry</span>`}
-              </div>
-            <//>
-          `;
-        })}
-      </div>
+      <${TableContainer} component=${Paper} variant="outlined" sx=${{ maxHeight: 480, overflow: "auto" }}>
+        <${Table} size="small" stickyHeader>
+          <${TableHead}>
+            <${TableRow}>
+              <${TableCell}>Workflow<//>
+              <${TableCell}>Status<//>
+              <${TableCell}>Trigger<//>
+              <${TableCell}>Started<//>
+              <${TableCell}>Duration<//>
+              <${TableCell}>Nodes<//>
+              <${TableCell} align="right">Run ID<//>
+            </${TableRow}>
+          <//>
+          <${TableBody}>
+            ${filteredRuns.map((run) => {
+              const styles = getRunStatusBadgeStyles(run.status);
+              const runName = run.workflowName || workflowNameMap.get(run.workflowId) || run.workflowId;
+              const liveDuration = run.status === "running" && run.startedAt
+                ? Math.max(0, nowTick - run.startedAt)
+                : run.duration;
+              const triggerLabel = getWorkflowRunTriggerLabel(run);
+              return html`
+                <${TableRow}
+                  key=${run.runId}
+                  hover
+                  selected=${selectedRunId.value === run.runId}
+                  sx=${{ cursor: "pointer" }}
+                  onClick=${() => loadRunDetail(run.runId)}
+                >
+                  <${TableCell}>
+                    <${Typography} variant="body2" sx=${{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 220 }}>
+                      ${runName || "Unknown"}
+                    <//>
+                  <//>
+                  <${TableCell}>
+                    <${Stack} direction="row" spacing=${0.5} alignItems="center">
+                      <${Chip}
+                        size="small"
+                        label=${run.status || "unknown"}
+                        sx=${{ background: styles.bg, color: styles.color, fontWeight: 600, fontSize: "11px" }}
+                      />
+                      ${run.isStuck && html`<${Chip} size="small" label="stuck" color="warning" variant="outlined" />`}
+                      ${run.retryOf && html`<${Chip} size="small" label="retry" color="success" variant="outlined" />`}
+                    <//>
+                  <//>
+                  <${TableCell}>
+                    <${Typography} variant="caption">${triggerLabel}<//>
+                  <//>
+                  <${TableCell}>
+                    <${Typography} variant="caption" sx=${{ whiteSpace: "nowrap" }}>${formatRelative(run.startedAt)}<//>
+                  <//>
+                  <${TableCell}>
+                    <${Typography} variant="caption" sx=${{ whiteSpace: "nowrap" }}>${formatDuration(liveDuration)}<//>
+                  <//>
+                  <${TableCell}>
+                    <${Typography} variant="caption">${run.nodeCount || 0}${run.errorCount ? html` · <span style="color:#f87171">${run.errorCount} err</span>` : ""}<//>
+                  <//>
+                  <${TableCell} align="right">
+                    <${Typography} variant="caption" sx=${{ fontFamily: "monospace", opacity: 0.7 }}>${String(run.runId || "").slice(0, 12)}<//>
+                  <//>
+                </${TableRow}>
+              `;
+            })}
+          <//>
+        </${Table}>
+      <//>
       ${canLoadMoreRuns && html`
         <div style="display: flex; justify-content: center; margin-top: 12px;">
           <${Button}
@@ -6270,3 +7041,5 @@ export function WorkflowsTab() {
     </div>
   `;
 }
+
+

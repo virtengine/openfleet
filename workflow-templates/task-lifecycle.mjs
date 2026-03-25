@@ -8,7 +8,6 @@
  *
  * Templates:
  *   - Task Lifecycle (full task execution pipeline)
- *   - VE Orchestrator Lite (simplified task lifecycle for ve-orchestrator)
  *
  * DAG overview (full):
  *   trigger.task_available
@@ -83,7 +82,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     node("trigger", "trigger.task_available", "Poll for Tasks", {
       maxParallel: "{{maxParallel}}",
       pollIntervalMs: "{{pollIntervalMs}}",
-      status: "todo",
+      statuses: ["inreview", "todo"],
       filterCodexScoped: true,
       filterDrafts: true,
     }, { x: 400, y: 50 }),
@@ -198,6 +197,12 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     node("claim-stolen", "condition.expression", "Claim Stolen?", {
       expression: "$data._claimStolen === true",
     }, { x: 200, y: 1610, outputs: ["yes", "no"] }),
+
+    // ── Auto-commit dirty worktree (safety net) ────────────────────────
+    node("auto-commit-dirty", "action.auto_commit_dirty", "Auto Commit Dirty", {
+      worktreePath: "{{worktreePath}}",
+      taskId: "{{taskId}}",
+    }, { x: 120, y: 1680 }),
 
     // ── Detect new commits ───────────────────────────────────────────────
     node("detect-commits", "action.detect_new_commits", "Detect Commits", {
@@ -470,9 +475,11 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     }, { x: 850, y: 1350, outputs: ["yes", "no"] }),
 
     // ── CLEANUP: Sweep task worktrees at end of lifecycle ────────────────
-    node("sweep-task-wts", "action.recover_worktree", "Sweep Task WTs", {
+    // Uses action.sweep_task_worktrees (not recover_worktree) so all worktrees
+    // belonging to this taskId are physically removed from .bosun/worktrees/
+    // once the task is complete and submitted, then git worktree prune cleans refs.
+    node("sweep-task-wts", "action.sweep_task_worktrees", "Sweep Task WTs", {
       repoRoot: "{{repoRoot}}",
-      branch: "{{branch}}",
       taskId: "{{taskId}}",
     }, { x: 200, y: 3090 }),
   ],
@@ -496,7 +503,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("run-agent-implement", "claim-stolen"),
 
     // Post-agent: check claim
-    edge("claim-stolen", "detect-commits", { condition: "$output?.result !== true", port: "no" }),
+    edge("claim-stolen", "auto-commit-dirty", { condition: "$output?.result !== true", port: "no" }),
+    edge("auto-commit-dirty", "detect-commits"),
     edge("detect-commits", "has-commits"),
 
     // Success path (has commits)
@@ -571,7 +579,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     author: "bosun",
     version: 2,
     createdAt: "2026-03-01T00:00:00Z",
-    templateVersion: "2.0.0",
+    templateVersion: "2.1.0",
     tags: ["task", "lifecycle", "executor", "workflow-first", "core"],
     requiredTemplates: ["template-bosun-pr-progressor"],
     replaces: {
@@ -588,253 +596,6 @@ export const TASK_LIFECYCLE_TEMPLATE = {
         "Replaces the entire TaskExecutor.executeTask() monolith with a " +
         "composable DAG workflow. Each step (claim, worktree, agent, PR) " +
         "is an independent workflow node with explicit success/failure branches.",
-    },
-  },
-};
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  VE Orchestrator Lite — Simplified Task Lifecycle
-// ═══════════════════════════════════════════════════════════════════════════
-
-resetLayout();
-
-export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
-  id: "template-ve-orchestrator-lite",
-  name: "VE Orchestrator Lite",
-  description:
-    "Simplified task lifecycle for lightweight deployments. Same core " +
-    "flow as the full Task Lifecycle (slot → claim → worktree → agent → " +
-    "push → PR) but with fewer failure branches and no anti-thrash.",
-  category: "task-execution",
-  enabled: true,
-  recommended: false,
-  trigger: "trigger.task_available",
-  variables: {
-    maxParallel: 2,
-    pollIntervalMs: 30000,
-    defaultSdk: "auto",
-    defaultTargetBranch: "origin/main",
-    taskTimeoutMs: 21600000,
-    maxRetries: 1,
-    protectedBranches: ["main", "master", "develop", "production"],
-  },
-  nodes: [
-    // ── Trigger ──────────────────────────────────────────────────────────
-    node("trigger", "trigger.task_available", "Poll Tasks", {
-      maxParallel: "{{maxParallel}}",
-      pollIntervalMs: "{{pollIntervalMs}}",
-      status: "todo",
-    }, { x: 400, y: 50 }),
-
-    // ── Slot check ───────────────────────────────────────────────────────
-    node("check-slots", "condition.slot_available", "Slots?", {
-      maxParallel: "{{maxParallel}}",
-    }, { x: 400, y: 180 }),
-
-    // ── Allocate slot ────────────────────────────────────────────────────
-    node("allocate-slot", "action.allocate_slot", "Allocate Slot", {
-      taskId: "{{taskId}}",
-      taskTitle: "{{taskTitle}}",
-      branch: "{{branch}}",
-      baseBranch: "{{defaultTargetBranch}}",
-    }, { x: 400, y: 310 }),
-
-    // ── Claim ────────────────────────────────────────────────────────────
-    node("claim", "action.claim_task", "Claim Task", {
-      taskId: "{{taskId}}",
-      taskTitle: "{{taskTitle}}",
-    }, { x: 400, y: 440 }),
-
-    // ── Claim check ──────────────────────────────────────────────────────
-    node("claim-check", "condition.expression", "Claimed?", {
-      expression: "$ctx.getNodeOutput('claim')?.success === true",
-    }, { x: 400, y: 570, outputs: ["yes", "no"] }),
-
-    // ── Set inprogress ───────────────────────────────────────────────────
-    node("set-inprogress", "action.update_task_status", "In-Progress", {
-      taskId: "{{taskId}}",
-      status: "inprogress",
-    }, { x: 300, y: 700 }),
-
-    // ── Acquire worktree ─────────────────────────────────────────────────
-    node("acquire-worktree", "action.acquire_worktree", "Worktree", {
-      repoRoot: "{{repoRoot}}",
-      branch: "{{branch}}",
-      taskId: "{{taskId}}",
-      baseBranch: "{{defaultTargetBranch}}",
-    }, { x: 300, y: 830 }),
-
-    // ── Resolve executor ─────────────────────────────────────────────────
-    node("resolve", "action.resolve_executor", "Resolve SDK", {
-      taskId: "{{taskId}}",
-      taskTitle: "{{taskTitle}}",
-      taskDescription: "{{taskDescription}}",
-      repoRoot: "{{repoRoot}}",
-      workspace: "{{workspace}}",
-      defaultSdk: "{{defaultSdk}}",
-    }, { x: 300, y: 960 }),
-
-    // ── Record HEAD ──────────────────────────────────────────────────────
-    node("record-head", "action.run_command", "Record HEAD", {
-      command: "git rev-parse HEAD",
-      cwd: "{{worktreePath}}",
-    }, { x: 300, y: 1090 }),
-
-    node("read-workflow-contract", "read-workflow-contract", "Read WORKFLOW.md", {
-      repoRoot: "{{repoRoot}}",
-      worktreePath: "{{worktreePath}}",
-    }, { x: 300, y: 1220 }),
-
-    node("workflow-contract-validation", "workflow-contract-validation", "Validate WORKFLOW.md", {
-      repoRoot: "{{repoRoot}}",
-      worktreePath: "{{worktreePath}}",
-    }, { x: 300, y: 1350 }),
-
-    // ── Build prompt ─────────────────────────────────────────────────────
-    node("prompt", "action.build_task_prompt", "Build Prompt", {
-      taskTitle: "{{taskTitle}}",
-      taskDescription: "{{taskDescription}}",
-      worktreePath: "{{worktreePath}}",
-      repoRoot: "{{repoRoot}}",
-      workspace: "{{workspace}}",
-      repository: "{{repository}}",
-      repositories: "{{repositories}}",
-    }, { x: 300, y: 1480 }),
-
-    // ── Run agent ────────────────────────────────────────────────────────
-    agentPhase("agent", "Run Agent", "{{_taskPrompt}}", {}, { x: 300, y: 1610 }),
-
-    // ── Detect commits ───────────────────────────────────────────────────
-    node("commits", "action.detect_new_commits", "Check Commits", {
-      worktreePath: "{{worktreePath}}",
-      baseBranch: "{{defaultTargetBranch}}",
-    }, { x: 300, y: 1480 }),
-
-    // ── Has commits? ─────────────────────────────────────────────────────
-    node("has-commits", "condition.expression", "Commits?", {
-      expression: "$ctx.getNodeOutput('commits')?.hasCommits === true",
-    }, { x: 300, y: 1610, outputs: ["yes", "no"] }),
-
-    // ── Push branch ──────────────────────────────────────────────────────
-    node("push", "action.push_branch", "Push", {
-      worktreePath: "{{worktreePath}}",
-      branch: "{{branch}}",
-      baseBranch: "{{defaultTargetBranch}}",
-      protectedBranches: "{{protectedBranches}}",
-    }, { x: 180, y: 1740 }),
-
-    // ── PR creation ──────────────────────────────────────────────────────
-    node("pr", "action.create_pr", "Create PR", {
-      title: "{{taskTitle}}",
-      body: "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
-      base: "{{defaultTargetBranch}}",
-      branch: "{{branch}}",
-      cwd: "{{worktreePath}}",
-    }, { x: 180, y: 1870 }),
-
-    node("pr-created", "condition.expression", "PR Linked?", {
-      expression: "Boolean($ctx.getNodeOutput('pr')?.success === true && ($ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl))",
-    }, { x: 180, y: 1935, outputs: ["yes", "no"] }),
-
-    // ── Set inreview ─────────────────────────────────────────────────────
-    node("set-inreview", "action.update_task_status", "In-Review", {
-      taskId: "{{taskId}}",
-      status: "inreview",
-    }, { x: 180, y: 2000 }),
-
-    // ── No commits → todo ────────────────────────────────────────────────
-    node("set-todo", "action.update_task_status", "Back to Todo", {
-      taskId: "{{taskId}}",
-      status: "todo",
-    }, { x: 480, y: 1740 }),
-
-    node("join-outcomes", "flow.join", "Join Outcome Paths", {
-      mode: "all",
-      sourceNodeIds: ["set-inreview", "set-todo"],
-      includeSkipped: true,
-    }, { x: 300, y: 2040 }),
-
-    // ── Cleanup: release worktree ────────────────────────────────────────
-    node("release-worktree", "action.release_worktree", "Release WT", {
-      worktreePath: "{{worktreePath}}",
-      repoRoot: "{{repoRoot}}",
-      taskId: "{{taskId}}",
-    }, { x: 300, y: 2180 }),
-
-    // ── Cleanup: release claim ───────────────────────────────────────────
-    node("release-claim", "action.release_claim", "Release Claim", {
-      taskId: "{{taskId}}",
-    }, { x: 300, y: 2310 }),
-
-    // ── Cleanup: release slot ────────────────────────────────────────────
-    node("release-slot", "action.release_slot", "Release Slot", {
-      taskId: "{{taskId}}",
-    }, { x: 300, y: 2440 }),
-
-    // ── Skip (already claimed) ───────────────────────────────────────────
-    node("release-slot-skip", "action.release_slot", "Release (Skip)", {
-      taskId: "{{taskId}}",
-    }, { x: 600, y: 700 }),
-
-    node("skip-log", "notify.log", "Log Skipped", {
-      message: "Task {{taskTitle}} already claimed — skipping",
-      level: "info",
-    }, { x: 600, y: 830 }),
-  ],
-  edges: [
-    // Main flow
-    edge("trigger", "check-slots"),
-    edge("check-slots", "allocate-slot", { condition: "$output?.result === true" }),
-    edge("allocate-slot", "claim"),
-    edge("claim", "claim-check"),
-    edge("claim-check", "set-inprogress", { condition: "$output?.result === true", port: "yes" }),
-    edge("set-inprogress", "acquire-worktree"),
-    edge("acquire-worktree", "resolve"),
-    edge("resolve", "record-head"),
-    edge("record-head", "read-workflow-contract"),
-    edge("read-workflow-contract", "workflow-contract-validation"),
-    edge("workflow-contract-validation", "prompt"),
-    edge("prompt", "agent"),
-    edge("agent", "commits"),
-    edge("commits", "has-commits"),
-
-    // Success path
-    edge("has-commits", "push", { condition: "$output?.result === true", port: "yes" }),
-    edge("push", "pr"),
-    edge("pr", "pr-created"),
-    edge("pr-created", "set-inreview", { condition: "$output?.result === true", port: "yes" }),
-    edge("pr-created", "set-todo", { condition: "$output?.result !== true", port: "no" }),
-    edge("set-inreview", "join-outcomes"),
-
-    // No commits path
-    edge("has-commits", "set-todo", { condition: "$output?.result !== true", port: "no" }),
-    edge("set-todo", "join-outcomes"),
-
-    // Shared cleanup
-    edge("join-outcomes", "release-worktree"),
-    edge("release-worktree", "release-claim"),
-    edge("release-claim", "release-slot"),
-
-    // Claim failed
-    edge("claim-check", "release-slot-skip", { condition: "$output?.result !== true", port: "no" }),
-    edge("release-slot-skip", "skip-log"),
-  ],
-  metadata: {
-    author: "bosun",
-    version: 2,
-    createdAt: "2026-03-01T00:00:00Z",
-    templateVersion: "2.0.0",
-    tags: ["task", "lifecycle", "lite", "ve-orchestrator"],
-    replaces: {
-      module: "ve-orchestrator.mjs",
-      functions: [
-        "fillCapacity",
-        "reconcileMergedAttempts",
-      ],
-      calledFrom: ["ve-orchestrator.mjs:main"],
-      description:
-        "Replaces the lightweight ve-orchestrator.mjs with a workflow-first " +
-        "equivalent. Same execution model, fewer branches.",
     },
   },
 };

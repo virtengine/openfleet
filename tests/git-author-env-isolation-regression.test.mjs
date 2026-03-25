@@ -30,11 +30,9 @@ describe("git author env isolation regression", () => {
     const gitSafety = read("git/git-safety.mjs");
     const worktreeManager = read("workspace/worktree-manager.mjs");
     const taskExecutor = read("task/task-executor.mjs");
-    const resolver = read("kanban/vk-error-resolver.mjs");
 
     expect(gitSafety).toContain("export function sanitizeGitEnv");
     expect(worktreeManager).toContain("return sanitizeGitEnv(process.env, GIT_ENV);");
     expect(taskExecutor).toContain('env: sanitizeGitEnv()');
-    expect(resolver).toContain("env: sanitizeGitEnv(process.env, opts.env || {})");
   });
 });

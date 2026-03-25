@@ -274,10 +274,13 @@ describe("Snapshot create / restore lifecycle", () => {
     expect(snap).toBeTruthy();
     expect(snap.snapshotId).toBe(ctx.id);
     expect(existsSync(snap.path)).toBe(true);
+    expect(snap.trajectoryPath).toBeTruthy();
+    expect(existsSync(snap.trajectoryPath)).toBe(true);
 
     const snapshots = engine.listSnapshots(wf.id);
     expect(snapshots.length).toBeGreaterThanOrEqual(1);
     expect(snapshots[0].snapshotId).toBe(ctx.id);
+    expect(snapshots[0].hasTrajectory).toBe(true);
   });
 
   it("returns null for snapshot of unknown run", () => {
@@ -299,8 +302,43 @@ describe("Snapshot create / restore lifecycle", () => {
 
     const result = await engine.restoreFromSnapshot(ctx.id);
     expect(result.runId).toBeTruthy();
-    expect(result.runId).not.toBe(ctx.id); // New run ID
+    expect(result.runId).not.toBe(ctx.id);
     expect(result.workflowId).toBe(wf.id);
+    expect(result.ctx?.data?._replayTrajectory?.restoredFrom).toBe(ctx.id);
+  });
+
+  it("persists trajectory replay data and short step summaries in run detail", async () => {
+    const wf = makeWorkflow(
+      [
+        { id: "n1", type: PASS_TYPE, label: "Collect Inputs", config: { prompt: "hello" } },
+        { id: "n2", type: PASS_TYPE, label: "Produce Output", config: { prompt: "world" } },
+      ],
+      [{ id: "e1", source: "n1", target: "n2" }],
+    );
+    engine.save(wf);
+
+    const ctx = await engine.execute(wf.id);
+    const run = engine.getRunDetail(ctx.id);
+
+    expect(run?.detail?.replayTrajectory).toBeTruthy();
+    expect(run.detail.replayTrajectory.runId).toBe(ctx.id);
+    expect(Array.isArray(run.detail.replayTrajectory.steps)).toBe(true);
+    expect(run.detail.replayTrajectory.steps).toHaveLength(2);
+    expect(run.detail.replayTrajectory.steps[0]).toMatchObject({
+      nodeId: "n1",
+      label: "Collect Inputs",
+      status: "completed",
+    });
+
+    expect(Array.isArray(run.detail.stepSummaries)).toBe(true);
+    expect(run.detail.stepSummaries).toHaveLength(2);
+    expect(run.detail.stepSummaries[0]).toMatchObject({
+      nodeId: "n1",
+      label: "Collect Inputs",
+      status: "completed",
+    });
+    expect(typeof run.detail.stepSummaries[0].summary).toBe("string");
+    expect(run.detail.stepSummaries[0].summary.length).toBeGreaterThan(0);
   });
 
   it("listSnapshots returns empty for no-snapshot workflow", () => {
@@ -313,3 +351,5 @@ describe("Snapshot create / restore lifecycle", () => {
     await expect(e.restoreFromSnapshot("missing")).rejects.toThrow(/not found/);
   });
 });
+
+

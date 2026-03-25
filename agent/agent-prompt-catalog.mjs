@@ -696,7 +696,7 @@ No structured error was extracted. Termination reason: {{FALLBACK_REASON}}
 {{RECENT_MESSAGES_CONTEXT}}
 ## Instructions
 1. Analyze likely root cause.
-2. Main script: scripts/bosun/ve-orchestrator.ps1
+2. Main script: scripts/bosun/orchestrator.ps1
 3. If fixable bug exists, apply minimal safe fix.
 4. If crash is external only (OOM/SIGKILL), do not modify code.
 `,
@@ -709,7 +709,7 @@ This error repeats {{REPEAT_COUNT}} times:
 {{RECENT_MESSAGES_CONTEXT}}
 
 ## Instructions
-1. Main script: scripts/bosun/ve-orchestrator.ps1
+1. Main script: scripts/bosun/orchestrator.ps1
 2. Find where this error is emitted.
 3. Fix loop root cause (missing state change, missing stop condition, etc).
 4. Apply minimal safe fix only.
@@ -909,7 +909,7 @@ Examples:
 - For numbers, say them naturally: "You have 12 tasks in the backlog."
 - When tasks or agents are busy, keep the user informed.
 - For long outputs (code, logs), summarize the key points vocally.
-- When delegating to an agent, let the user know: "I'm sending that to Codex now."
+- When delegating to an agent, say: "Sending that to Codex now."
 
 ## Error Handling
 
@@ -938,7 +938,7 @@ Be concise. Lead with answers. Summarize long outputs.
 
   customToolReflect: `## Reflect: Custom Tool Extraction
 
-Before closing this task, reflect on the work you just completed:
+Before closing the task, check for reusable tooling:
 
 1. **Did you write any utility code (≥ 10 lines) that you'd write again?**
    If yes — extract it into a persistent custom tool in \`.bosun/tools/\`.
@@ -948,7 +948,7 @@ Before closing this task, reflect on the work you just completed:
    If yes — package it as a custom tool so future agents skip the re-derivation.
 
 3. **Did an existing custom tool help you?**
-   Consider whether it should be promoted to global scope (\`promoteToGlobal\`).
+   Consider promoting it to global scope (\`promoteToGlobal\`).
 
 4. **What category does the extracted logic fall into?**
    analysis | testing | git | build | transform | search | validation | utility
@@ -962,7 +962,7 @@ registerCustomTool(rootDir, {
 });
 \`\`\`
 
-Only extract if the tool has clear reuse value. Skip one-off logic.
+Extract only when reuse is clear. Skip one-off logic.
 `,
 
   customToolsContext: `{{CUSTOM_TOOLS_BLOCK}}

@@ -457,15 +457,57 @@ function isProcessAlive(pid) {
   }
 }
 
-function getDaemonPid() {
-  try {
-    if (!existsSync(DAEMON_PID_FILE)) return null;
-    const pid = parseInt(readFileSync(DAEMON_PID_FILE, "utf8").trim(), 10);
-    if (!Number.isFinite(pid)) return null;
-    return isProcessAlive(pid) ? pid : null;
-  } catch {
-    return null;
+/**
+ * Collect all candidate PID file paths for the bosun daemon.
+ * The daemon may be running from different working directories, each
+ * writing its PID file to a different .cache location.
+ */
+function getDaemonPidFileCandidates() {
+  const candidates = new Set();
+  // 1. Original fixed location
+  candidates.add(DAEMON_PID_FILE);
+  // 2. Bosun module root's .cache
+  const bosunRoot = resolveBosunRoot();
+  candidates.add(resolve(bosunRoot, ".cache", "bosun-daemon.pid"));
+  candidates.add(resolve(bosunRoot, ".cache", "bosun.pid"));
+  // 3. Agent endpoint port file (sibling to PID files)
+  const portFilePath = resolve(bosunRoot, ".cache", "agent-endpoint-port");
+  if (existsSync(portFilePath)) {
+    // Port file exists — there's likely a running instance
+    const portDir = dirname(portFilePath);
+    candidates.add(resolve(portDir, "bosun-daemon.pid"));
+    candidates.add(resolve(portDir, "bosun.pid"));
   }
+  // 4. Global npm install location
+  const npmGlobal = process.env.APPDATA
+    ? resolve(process.env.APPDATA, "npm", "node_modules", "bosun", ".cache")
+    : null;
+  if (npmGlobal) {
+    candidates.add(resolve(npmGlobal, "bosun-daemon.pid"));
+    candidates.add(resolve(npmGlobal, "bosun.pid"));
+  }
+  // 5. NVM-based install location
+  const nvmDir = process.env.NVM_SYMLINK || process.env.NVM_HOME;
+  if (nvmDir) {
+    const nvmModules = resolve(nvmDir, "node_modules", "bosun", ".cache");
+    candidates.add(resolve(nvmModules, "bosun-daemon.pid"));
+    candidates.add(resolve(nvmModules, "bosun.pid"));
+  }
+  return [...candidates];
+}
+
+function getDaemonPid() {
+  for (const pidFile of getDaemonPidFileCandidates()) {
+    try {
+      if (!existsSync(pidFile)) continue;
+      const pid = parseInt(readFileSync(pidFile, "utf8").trim(), 10);
+      if (!Number.isFinite(pid)) continue;
+      if (isProcessAlive(pid)) return pid;
+    } catch {
+      // try next candidate
+    }
+  }
+  return null;
 }
 
 function findGhostDaemonPids() {
@@ -1341,7 +1383,28 @@ async function loadUiServerModule() {
 }
 
 function buildDaemonUiBaseUrl() {
-  const rawPort = Number(process.env.TELEGRAM_UI_PORT || "");
+  let rawPort = Number(process.env.TELEGRAM_UI_PORT || "");
+  // If TELEGRAM_UI_PORT isn't in the process env, try reading it from the
+  // bosun module's .env so the desktop detects the daemon's actual port even
+  // when launched outside the bosun working directory.
+  if (!(Number.isFinite(rawPort) && rawPort > 0)) {
+    try {
+      const bosunRoot = resolveBosunRoot();
+      const envCandidates = [
+        resolve(bosunRoot, ".bosun", ".env"),
+        resolve(bosunRoot, ".env"),
+      ];
+      for (const envPath of envCandidates) {
+        if (!existsSync(envPath)) continue;
+        const content = readFileSync(envPath, "utf8");
+        const match = content.match(/^TELEGRAM_UI_PORT\s*=\s*(\d+)/m);
+        if (match) {
+          rawPort = Number(match[1]);
+          break;
+        }
+      }
+    } catch { /* ignore */ }
+  }
   const port = Number.isFinite(rawPort) && rawPort > 0
     ? rawPort
     : DEFAULT_TELEGRAM_UI_PORT;
@@ -1414,11 +1477,26 @@ function spawnDetachedDaemon() {
   if (!existsSync(cliPath)) {
     throw new Error(`CLI not found at ${cliPath}`);
   }
+  const bosunRoot = resolveBosunRoot();
+  // Resolve the config directory so the spawned daemon loads the correct
+  // .env (TELEGRAM_UI_PORT, TELEGRAM_MINIAPP_ENABLED, etc.) and workspace
+  // configuration, regardless of which CWD the desktop app was launched from.
+  const configDirCandidates = [
+    resolve(bosunRoot, ".bosun"),
+    bosunRoot,
+  ];
+  const configDir = configDirCandidates.find((d) =>
+    existsSync(resolve(d, ".env")) || existsSync(resolve(d, "bosun.config.json")),
+  );
+  const spawnArgs = [cliPath, "--daemon", "--no-update-check"];
+  if (configDir) {
+    spawnArgs.push("--config-dir", configDir);
+  }
   const child = spawn(
     process.execPath,
-    [cliPath, "--daemon", "--no-update-check"],
+    spawnArgs,
     {
-      cwd: resolveBosunRoot(),
+      cwd: bosunRoot,
       detached: true,
       stdio: "ignore",
       windowsHide: true,
@@ -1442,6 +1520,19 @@ async function ensureDaemonRunning() {
   const daemonBaseUrl = buildDaemonUiBaseUrl();
   if (await probeUiServer(daemonBaseUrl)) return;
 
+  // Also try common alternative ports — the daemon may be running on a
+  // different port than DEFAULT_TELEGRAM_UI_PORT if it loaded its own .env.
+  const altPorts = [4400, 3080, 3443].filter(
+    (p) => !daemonBaseUrl.includes(`:${p}`),
+  );
+  for (const port of altPorts) {
+    const altUrl = daemonBaseUrl.replace(/:\d+$/, `:${port}`);
+    if (await probeUiServer(altUrl)) {
+      console.log(`[desktop] found running daemon on alternative port ${port}`);
+      return;
+    }
+  }
+
   const ghostPids = findGhostDaemonPids();
   // If a daemon is starting naturally, give it a short window first.
   const existingPid = getDaemonPid();
@@ -1449,16 +1540,25 @@ async function ensureDaemonRunning() {
     return;
   }
 
+  // If we found a running bosun process but its UI isn't responding,
+  // log a warning so it's diagnosable — the process may have been started
+  // without TELEGRAM_UI_PORT set.
+  if (existingPid || ghostPids.length > 0) {
+    const pids = [existingPid, ...ghostPids].filter(Boolean);
+    console.log(
+      `[desktop] existing bosun process(es) detected (PIDs: ${pids.join(", ")}) ` +
+      `but UI not reachable at ${daemonBaseUrl} — may have been started without TELEGRAM_UI_PORT`,
+    );
+    bosunDaemonWasOffline = true;
+    return;
+  }
+
   const autoStart = parseBoolEnv(process.env.BOSUN_DESKTOP_AUTO_START_DAEMON, true);
   if (!autoStart) return;
 
   try {
-    if (!existingPid && ghostPids.length === 0) {
-      const pid = spawnDetachedDaemon();
-      console.log(`[desktop] started bosun daemon in background (pid ${pid})`);
-    } else {
-      console.log("[desktop] existing bosun background process detected; not starting another instance");
-    }
+    const pid = spawnDetachedDaemon();
+    console.log(`[desktop] started bosun daemon in background (pid ${pid})`);
   } catch (error) {
     console.warn("[desktop] failed to auto-start daemon:", error?.message || error);
     return;

@@ -701,7 +701,7 @@ Advanced meeting/session template that demonstrates:
 
 > `template-task-planner`
 
-Takes a high-level natural-language goal and breaks it into atomic Kanban tasks, creating GitHub Issues or Vibe Kanban cards via the configured backend.
+Takes a high-level natural-language goal and breaks it into atomic Kanban tasks, creating GitHub Issues via the configured backend.
 
 **Trigger:** `trigger.manual`  
 **Key variables:** `projectGoal`, `maxTasks` (10)

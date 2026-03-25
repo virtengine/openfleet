@@ -48,10 +48,17 @@ import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../../agent/agent-tool-config.mjs";
 import { getToolsPromptBlock } from "../../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../../agent/bosun-skills.mjs";
+import { readConfigDocument } from "../../config/config.mjs";
 import { getSessionTracker } from "../../infra/session-tracker.mjs";
 import { recordWorktreeRecoveryEvent } from "../../infra/worktree-recovery-state.mjs";
 import { normalizeBaseBranch } from "../../git/git-safety.mjs";
 import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../../git/git-commit-helpers.mjs";
+import { buildArchitectEditorFrame, hasRepoMapContext } from "../../lib/repo-map.mjs";
+import {
+  evaluateMarkdownSafety,
+  recordMarkdownSafetyAuditEvent,
+  resolveMarkdownSafetyPolicy,
+} from "../../lib/skill-markdown-safety.mjs";
 import {
   appendKnowledgeEntry,
   buildKnowledgeEntry,
@@ -113,6 +120,34 @@ import {
 
 // CLAUDE:SUMMARY — workflow-nodes/actions
 // Implements built-in workflow action nodes, including task prompt assembly and execution helpers.
+const BOSUN_CREATED_PR_MARKER = "<!-- bosun-created -->";
+const markdownSafetyPolicyCache = new Map();
+
+function getRepoMarkdownSafetyPolicy(repoRoot) {
+  const normalizedRoot = resolve(repoRoot || process.cwd());
+  const cached = markdownSafetyPolicyCache.get(normalizedRoot);
+  if (cached) return cached;
+  let configData = {};
+  try {
+    ({ configData } = readConfigDocument(normalizedRoot));
+  } catch {
+    configData = {};
+  }
+  const policy = resolveMarkdownSafetyPolicy(configData);
+  markdownSafetyPolicyCache.set(normalizedRoot, policy);
+  return policy;
+}
+
+function appendBosunCreatedPrFooter(body = "") {
+  const text = String(body || "");
+  if (text.includes(BOSUN_CREATED_PR_MARKER) || /auto-created by bosun/i.test(text)) {
+    return text;
+  }
+  const trimmed = text.trimEnd();
+  const footer = `${BOSUN_CREATED_PR_MARKER}\nBosun-Origin: created`;
+  return trimmed ? `${trimmed}\n\n---\n${footer}` : footer;
+}
+
 const HTML_TEXT_BREAK_TAGS = new Set([
   "address",
   "article",
@@ -249,6 +284,11 @@ registerNodeType("action.run_agent", {
       model: { type: "string", description: "Optional model override for the selected SDK" },
       taskId: { type: "string", description: "Optional task ID used for task metadata lookup" },
       cwd: { type: "string", description: "Working directory for the agent" },
+      mode: { type: "string", enum: ["ask", "agent", "plan", "web", "instant"], default: "agent", description: "Optional framing mode for the agent run" },
+      executionRole: { type: "string", enum: ["architect", "editor"], description: "Optional architect/editor execution role override" },
+      architectPlan: { type: "string", description: "Approved architect plan passed into editor/verify phases" },
+      repoMapQuery: { type: "string", description: "Optional query used to select a compact repo map" },
+      repoMapFileLimit: { type: "number", default: 12, description: "Maximum repo-map files to include" },
       timeoutMs: { type: "number", default: 3600000, description: "Agent timeout in ms" },
       agentProfile: { type: "string", description: "Agent profile name (e.g., 'frontend', 'backend')" },
       includeTaskContext: { type: "boolean", default: true, description: "Append task comments/attachments if available" },
@@ -302,6 +342,13 @@ registerNodeType("action.run_agent", {
     const timeoutMs = Number.isFinite(resolvedTimeout) && resolvedTimeout > 0
       ? resolvedTimeout
       : 3600000;
+    const effectiveMode = String(ctx.resolve(node.config?.mode || "agent") || "agent").trim().toLowerCase() || "agent";
+    const architectPlan = String(
+      ctx.resolve(node.config?.architectPlan || "") ||
+      ctx.data?.architectPlan ||
+      ctx.data?.planSummary ||
+      "",
+    ).trim();
     const includeTaskContext =
       node.config?.includeTaskContext !== false &&
       ctx.data?._taskIncludeContext !== false;
@@ -346,6 +393,38 @@ registerNodeType("action.run_agent", {
     const effectiveSystemPrompt = String(configuredSystemPrompt || "").trim();
     assertStableSystemPrompt(effectiveSystemPrompt);
     let finalPrompt = prompt;
+    const promptHasRepoMapContext = hasRepoMapContext(finalPrompt);
+    const architectEditorFrame = buildArchitectEditorFrame({
+      executionRole: ctx.resolve(node.config?.executionRole || ""),
+      architectPlan,
+      planSummary: architectPlan,
+      includeRepoMap: !promptHasRepoMapContext,
+      repoMap: node.config?.repoMap || ctx.data?.repoMap || null,
+      repoMapFileLimit: node.config?.repoMapFileLimit,
+      repoMapQuery: ctx.resolve(node.config?.repoMapQuery || ""),
+      query: trackedTaskTitle || ctx.data?.taskDescription || prompt,
+      prompt,
+      taskTitle: trackedTaskTitle,
+      taskDescription:
+        ctx.data?.taskDescription ||
+        ctx.data?.task?.description ||
+        ctx.data?.task?.body ||
+        ctx.data?.taskDetail?.description ||
+        ctx.data?.taskInfo?.description ||
+        "",
+      changedFiles:
+        (Array.isArray(ctx.data?.changedFiles) ? ctx.data.changedFiles : null) ||
+        (Array.isArray(ctx.data?.task?.changedFiles) ? ctx.data.task.changedFiles : null) ||
+        [],
+      cwd,
+      repoRoot: ctx.data?.repoRoot || cwd,
+    }, effectiveMode);
+    if (
+      architectEditorFrame &&
+      !String(finalPrompt || "").includes("## Architect/Editor Execution")
+    ) {
+      finalPrompt = `${architectEditorFrame}\n\n${finalPrompt}`;
+    }
     const promptHasTaskContext =
       ctx.data?._taskPromptIncludesTaskContext === true ||
       String(finalPrompt || "").includes("## Task Context");
@@ -1679,6 +1758,7 @@ registerNodeType("action.create_pr", {
   async execute(node, ctx) {
     const title = ctx.resolve(node.config?.title || "");
     const body = ctx.resolve(node.config?.body || "");
+    const resolvedBody = appendBosunCreatedPrFooter(body);
     const baseInput = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
     let base = String(baseInput || "main").trim() || "main";
     try {
@@ -1761,7 +1841,7 @@ registerNodeType("action.create_pr", {
     const args = ["gh", "pr", "create"];
     args.push("--title", JSON.stringify(title));
     // gh pr create requires either --body (empty is allowed) or --fill* in non-interactive mode.
-    args.push("--body", JSON.stringify(String(body)));
+    args.push("--body", JSON.stringify(String(resolvedBody)));
     if (base) args.push("--base", base);
     if (branch) args.push("--head", branch);
     if (repoSlug) args.push("--repo", repoSlug);
@@ -1791,6 +1871,7 @@ registerNodeType("action.create_pr", {
         labels,
         reviewers,
         output: trimmed,
+        createdByBosun: true,
       };
     } catch (err) {
       const errorMsg = err?.stderr?.toString?.()?.trim() || err?.message || String(err);
@@ -1812,7 +1893,7 @@ registerNodeType("action.create_pr", {
         action: "pr_handoff",
         message: "gh CLI failed; Bosun manages pull-request lifecycle.",
         title,
-        body,
+        body: resolvedBody,
         base,
         branch: branch || null,
         draft,
@@ -1820,6 +1901,7 @@ registerNodeType("action.create_pr", {
         reviewers,
         cwd,
         ghError: errorMsg,
+        createdByBosun: true,
       };
     }
   },
@@ -2225,12 +2307,30 @@ registerNodeType("action.continue_session", {
     const prompt = ctx.resolve(node.config?.prompt || "Continue working on the current task.");
     const timeout = node.config?.timeoutMs || 1800000;
     const strategy = node.config?.strategy || "continue";
+    const issueAdvisor =
+      ctx.data?._issueAdvisor && typeof ctx.data._issueAdvisor === "object"
+        ? ctx.data._issueAdvisor
+        : null;
+    const dagStateSummary =
+      ctx.data?._plannerFeedback?.dagStateSummary && typeof ctx.data._plannerFeedback.dagStateSummary === "object"
+        ? ctx.data._plannerFeedback.dagStateSummary
+        : null;
+    const continuationPrefix = issueAdvisor
+      ? [
+        "Issue-advisor continuation context:",
+        `- Recommendation: ${issueAdvisor.recommendedAction || "continue"}`,
+        issueAdvisor.summary ? `- Summary: ${issueAdvisor.summary}` : null,
+        issueAdvisor.nextStepGuidance ? `- Guidance: ${issueAdvisor.nextStepGuidance}` : null,
+        dagStateSummary?.counts ? `- DAG counts: completed=${Number(dagStateSummary.counts.completed ?? 0) || 0}, failed=${Number(dagStateSummary.counts.failed ?? 0) || 0}, pending=${Number(dagStateSummary.counts.pending ?? 0) || 0}` : null,
+      ].filter(Boolean).join("\n") + "\n\n"
+      : "";
+    const enrichedPrompt = continuationPrefix ? `${continuationPrefix}${prompt}` : prompt;
 
     ctx.log(node.id, `Continuing session ${sessionId} (strategy: ${strategy})`);
 
     const agentPool = engine.services?.agentPool;
     if (agentPool?.continueSession) {
-      const result = await agentPool.continueSession(sessionId, prompt, { timeout, strategy });
+      const result = await agentPool.continueSession(sessionId, enrichedPrompt, { timeout, strategy });
 
       // Propagate session ID for downstream chaining
       const threadId = result.threadId || sessionId;
@@ -2243,12 +2343,12 @@ registerNodeType("action.continue_session", {
     // Fallback: use ephemeral thread with continuation context
     if (agentPool?.launchEphemeralThread) {
       const continuation = strategy === "retry"
-        ? `Start over on this task. Previous attempt failed.\n\n${prompt}`
+        ? `Start over on this task. Previous attempt failed.\n\n${enrichedPrompt}`
         : strategy === "refine"
-        ? `Refine your previous work. Specifically:\n\n${prompt}`
+        ? `Refine your previous work. Specifically:\n\n${enrichedPrompt}`
         : strategy === "finish_up"
-        ? `Wrap up the current task. Commit, push, and hand off PR lifecycle to Bosun. Ensure tests pass.\n\n${prompt}`
-        : `Continue where you left off.\n\n${prompt}`;
+        ? `Wrap up the current task. Commit, push, and hand off PR lifecycle to Bosun. Ensure tests pass.\n\n${enrichedPrompt}`
+        : `Continue where you left off.\n\n${enrichedPrompt}`;
 
       const result = await agentPool.launchEphemeralThread(continuation, ctx.data?.worktreePath || process.cwd(), timeout);
 
@@ -4656,7 +4756,7 @@ registerNodeType("action.acquire_worktree", {
     }
 
     try {
-      const findAttachedWorktreeForBranch = () => {
+      const findAttachedWorktreeForBranch = async () => {
         try {
           const output = execSync("git worktree list --porcelain", {
             cwd: repoRoot,
@@ -4683,14 +4783,6 @@ registerNodeType("action.acquire_worktree", {
               currentBranch = branchRef.replace(/^refs\/heads\//, "");
             }
           }
-        try {
-          await recordWorktreeRecoveryEvent(repoRoot, payload);
-        } catch (err) {
-          ctx.log(
-            node.id,
-            `[worktree-recovery] Warning: failed to record recovery event: ${err && err.message ? err.message : String(err)}`,
-          );
-        }
         } catch {
           // best-effort only
         }
@@ -4789,7 +4881,7 @@ registerNodeType("action.acquire_worktree", {
         if (!isExistingBranchWorktreeError(createErr)) {
           throw new Error(`Worktree creation failed: ${formatExecSyncError(createErr)}`);
         }
-        const attachedPath = findAttachedWorktreeForBranch();
+        const attachedPath = await findAttachedWorktreeForBranch();
         let recreatedAttachedWorktree = false;
         if (attachedPath && existsSync(attachedPath)) {
           if (invalidateBrokenReusableWorktree(attachedPath, "attached-branch")) {
@@ -5180,6 +5272,8 @@ registerNodeType("action.build_task_prompt", {
       repository: primaryRepository,
       repositories: allowedRepositories.join(", "),
       retryReason: normalizedRetryReason,
+      issueAdvisorSummary: normalizeString(ctx.data?._issueAdvisor?.summary || ctx.data?._plannerFeedback?.issueAdvisorSummary || ""),
+      issueAdvisorRecommendation: normalizeString(ctx.data?._issueAdvisor?.recommendedAction || ""),
     };
     const renderCustomTemplate = (template) => {
       const lookup = new Map();
@@ -5300,6 +5394,14 @@ registerNodeType("action.build_task_prompt", {
       };
     }
 
+    const workflowIssueAdvisor =
+      ctx.data?._issueAdvisor && typeof ctx.data._issueAdvisor === "object"
+        ? ctx.data._issueAdvisor
+        : null;
+    const workflowDagStateSummary =
+      ctx.data?._plannerFeedback?.dagStateSummary && typeof ctx.data._plannerFeedback.dagStateSummary === "object"
+        ? ctx.data._plannerFeedback.dagStateSummary
+        : null;
     const userParts = [];
     const stripPromptMemorySection = (content, docName) => {
       const text = String(content || "");
@@ -5335,6 +5437,18 @@ registerNodeType("action.build_task_prompt", {
     if (normalizedTaskDescription) {
       userParts.push("## Description");
       userParts.push(normalizedTaskDescription);
+      userParts.push("");
+    }
+
+    if (workflowIssueAdvisor || workflowDagStateSummary) {
+      userParts.push("## Workflow Continuation Context");
+      if (workflowIssueAdvisor?.recommendedAction) userParts.push(`- **Issue Advisor Action:** ${workflowIssueAdvisor.recommendedAction}`);
+      if (workflowIssueAdvisor?.summary) userParts.push(`- **Issue Advisor Summary:** ${workflowIssueAdvisor.summary}`);
+      if (workflowIssueAdvisor?.nextStepGuidance) userParts.push(`- **Next-Step Guidance:** ${workflowIssueAdvisor.nextStepGuidance}`);
+      if (workflowDagStateSummary?.counts) {
+        userParts.push(`- **DAG Counts:** completed=${Number(workflowDagStateSummary.counts.completed ?? 0) || 0}, failed=${Number(workflowDagStateSummary.counts.failed ?? 0) || 0}, pending=${Number(workflowDagStateSummary.counts.pending ?? 0) || 0}`);
+      }
+      if (workflowDagStateSummary?.revisionCount !== undefined) userParts.push(`- **DAG Revisions:** ${workflowDagStateSummary.revisionCount}`);
       userParts.push("");
     }
 
@@ -5394,6 +5508,7 @@ registerNodeType("action.build_task_prompt", {
       const searchDirs = [normalizedWorktreePath || normalizedRepoRoot, normalizedRepoRoot].filter(Boolean);
       const docFiles = ["AGENTS.md", ".github/copilot-instructions.md"];
       const loaded = new Set();
+      const markdownSafetyPolicy = getRepoMarkdownSafetyPolicy(normalizedRepoRoot);
       for (const dir of searchDirs) {
         for (const doc of docFiles) {
           const fullPath = resolve(dir, doc);
@@ -5405,6 +5520,35 @@ registerNodeType("action.build_task_prompt", {
                 doc,
               ).trim();
               if (content && content.length > 10) {
+                const decision = evaluateMarkdownSafety(
+                  content,
+                  {
+                    channel: "task-prompt-context",
+                    sourceKind: "documentation",
+                    sourcePath: doc,
+                    sourceRoot: normalizedRepoRoot,
+                    documentationContext: true,
+                  },
+                  markdownSafetyPolicy,
+                );
+                if (decision.blocked) {
+                  ctx.log(
+                    node.id,
+                    `Skipped unsafe prompt context from ${doc}: ${decision.safety.reasons.join(", ")}`,
+                  );
+                  recordMarkdownSafetyAuditEvent(
+                    {
+                      channel: "task-prompt-context",
+                      sourceKind: "documentation",
+                      sourcePath: doc,
+                      reasons: decision.safety.reasons,
+                      score: decision.safety.score,
+                      findings: decision.safety.findings,
+                    },
+                    { policy: markdownSafetyPolicy, rootDir: normalizedRepoRoot },
+                  );
+                  continue;
+                }
                 loaded.add(doc);
                 userParts.push(`## ${doc}`);
                 userParts.push(content);
@@ -5757,6 +5901,85 @@ registerNodeType("action.persist_memory", {
         scopeLevel: entry.scopeLevel,
       };
     }
+  },
+});
+
+// ── action.auto_commit_dirty ────────────────────────────────────────────────
+// Safety net: if the agent left uncommitted work in the worktree, stage + commit
+// so that detect_new_commits can see it and the work isn't silently destroyed.
+
+registerNodeType("action.auto_commit_dirty", {
+  describe: () =>
+    "Check the worktree for uncommitted changes and auto-commit them so " +
+    "downstream nodes (detect_new_commits, push_branch) can pick them up. " +
+    "This prevents agent work from being silently destroyed when the worktree is released.",
+  schema: {
+    type: "object",
+    properties: {
+      worktreePath: { type: "string", description: "Worktree to check" },
+      taskId: { type: "string", description: "Task ID for commit message" },
+      commitMessage: { type: "string", description: "Override commit message" },
+    },
+    required: ["worktreePath"],
+  },
+  async execute(node, ctx) {
+    const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
+    const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "unknown";
+
+    if (!worktreePath) {
+      ctx.log(node.id, "auto_commit_dirty: no worktreePath — skipping");
+      return { success: false, committed: false, reason: "no worktreePath" };
+    }
+
+    // Check for uncommitted changes (tracked modified + untracked)
+    let porcelain = "";
+    try {
+      porcelain = execGitArgsSync(["status", "--porcelain"], {
+        cwd: worktreePath, encoding: "utf8", timeout: 10000,
+      }).trim();
+    } catch (err) {
+      ctx.log(node.id, `git status failed: ${err.message}`);
+      return { success: false, committed: false, reason: err.message };
+    }
+
+    if (!porcelain) {
+      ctx.log(node.id, "Worktree clean — nothing to auto-commit");
+      return { success: true, committed: false, reason: "clean" };
+    }
+
+    const dirtyCount = porcelain.split("\n").filter(Boolean).length;
+    ctx.log(node.id, `Found ${dirtyCount} dirty file(s) — auto-committing`);
+
+    // Stage everything
+    try {
+      execGitArgsSync(["add", "-A"], {
+        cwd: worktreePath, encoding: "utf8", timeout: 15000,
+      });
+    } catch (err) {
+      ctx.log(node.id, `git add -A failed: ${err.message}`);
+      return { success: false, committed: false, reason: `git add failed: ${err.message}` };
+    }
+
+    // Commit
+    const message = cfgOrCtx(node, ctx, "commitMessage")
+      || `chore: auto-commit agent work (${taskId.substring(0, 12)})`;
+    try {
+      execGitArgsSync(
+        ["-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "--no-verify", "-m", message],
+        { cwd: worktreePath, encoding: "utf8", timeout: 20000 },
+      );
+    } catch (err) {
+      const errText = (err.stderr || err.stdout || err.message || "").toLowerCase();
+      if (errText.includes("nothing to commit")) {
+        ctx.log(node.id, "Nothing to commit after staging (all changes already committed)");
+        return { success: true, committed: false, reason: "nothing_to_commit" };
+      }
+      ctx.log(node.id, `git commit failed: ${err.message}`);
+      return { success: false, committed: false, reason: `git commit failed: ${err.message}` };
+    }
+
+    ctx.log(node.id, `Auto-committed ${dirtyCount} file(s) for task ${taskId.substring(0, 12)}`);
+    return { success: true, committed: true, dirtyCount };
   },
 });
 
@@ -6189,3 +6412,7 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 //  Export all registered types for introspection
 // ═══════════════════════════════════════════════════════════════════════════
+
+
+
+

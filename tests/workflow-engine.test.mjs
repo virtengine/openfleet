@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
@@ -475,6 +475,81 @@ describe("WorkflowEngine - loop.for_each", () => {
       failCount: 0,
     });
   });
+
+  it("dispatches child workflows without waiting for completion when mode=dispatch", async () => {
+    let releaseRuns;
+    const blocker = new Promise((resolve) => {
+      releaseRuns = resolve;
+    });
+    let startedCount = 0;
+    let startedTwo;
+    const twoStarted = new Promise((resolve) => {
+      startedTwo = resolve;
+    });
+
+    registerNodeType("test.long_running_loop_child", {
+      describe: () => "Long running child node for loop dispatch mode",
+      schema: { type: "object", properties: {} },
+      async execute(node, ctx) {
+        ctx.log(node.id, "loop child entered");
+        startedCount += 1;
+        if (startedCount >= 2) startedTwo();
+        await blocker;
+        return { ok: true };
+      },
+    });
+
+    const child = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Child Start", config: {} },
+        { id: "wait", type: "test.long_running_loop_child", label: "Child Wait", config: {} },
+      ],
+      [{ id: "c1", source: "trigger", target: "wait" }],
+      { id: "child-loop-dispatch", name: "Child Loop Dispatch" },
+    );
+
+    const parent = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "loop",
+          type: "loop.for_each",
+          label: "Dispatch Items",
+          config: {
+            items: "[1,2]",
+            variable: "item",
+            workflowId: child.id,
+            mode: "dispatch",
+            maxConcurrent: 2,
+          },
+        },
+      ],
+      [{ id: "p1", source: "trigger", target: "loop" }],
+      { id: "parent-loop-dispatch", name: "Parent Loop Dispatch" },
+    );
+
+    engine.save(child);
+    engine.save(parent);
+    const ctx = await engine.execute(parent.id, {});
+    expect(ctx.errors).toEqual([]);
+    expect(ctx.getNodeOutput("loop")).toMatchObject({
+      count: 2,
+      successCount: 2,
+      failCount: 0,
+    });
+    expect(ctx.getNodeOutput("loop").results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ queued: true, mode: "dispatch", workflowId: child.id }),
+      ]),
+    );
+
+    await twoStarted;
+    const history = engine.getRunHistory(child.id, 10);
+    expect(history.filter((entry) => entry.status === WorkflowStatus.RUNNING).length).toBeGreaterThanOrEqual(2);
+
+    releaseRuns();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
 });
 
 describe("WorkflowEngine - source port routing", () => {
@@ -556,6 +631,269 @@ describe("WorkflowEngine - source port routing", () => {
     expect(visited).toEqual(["shared"]);
     expect(result.getNodeStatus("shared")).toBe(NodeStatus.COMPLETED);
   });
+
+  it("preserves mixed legacy and explicit port graphs during execution", async () => {
+    const visited = [];
+    registerNodeType("test.capture_mixed_ports", {
+      describe: () => "Capture mixed legacy/explicit routing",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        visited.push(node.id);
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "switch",
+          type: "condition.switch",
+          label: "Switch",
+          config: {
+            value: "'left'",
+            cases: {
+              left: "left-port",
+              right: "right-port",
+            },
+          },
+        },
+        { id: "left", type: "test.capture_mixed_ports", label: "Left", config: {} },
+        { id: "audit", type: "test.capture_mixed_ports", label: "Audit", config: {} },
+        { id: "right", type: "test.capture_mixed_ports", label: "Right", config: {} },
+      ],
+      [
+        { id: "legacy-trigger", source: "trigger", target: "switch" },
+        { id: "explicit-left", source: "switch", target: "left", sourcePort: "left-port" },
+        { id: "legacy-audit", source: "trigger", target: "audit" },
+        { id: "explicit-right", source: "switch", target: "right", sourcePort: "right-port" },
+      ],
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {});
+    expect(result.errors).toEqual([]);
+    expect(visited.sort()).toEqual(["audit", "left"]);
+  });
+
+  it("rejects unknown explicit source and target ports before execution", () => {
+    registerNodeType("test.port_source", {
+      describe: () => "Source node with explicit ports",
+      schema: { type: "object", properties: {} },
+      outputs: [
+        { name: "default", type: "Any" },
+        { name: "success", type: "JSON" },
+      ],
+      async execute() {
+        return { ok: true, matchedPort: "success", port: "success" };
+      },
+    });
+
+    registerNodeType("test.port_target", {
+      describe: () => "Target node with explicit ports",
+      schema: { type: "object", properties: {} },
+      inputs: [
+        { name: "default", type: "Any" },
+        { name: "payload", type: "JSON" },
+      ],
+      async execute() {
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "source", type: "test.port_source", label: "Source", config: {} },
+        { id: "target", type: "test.port_target", label: "Target", config: {} },
+      ],
+      [
+        { id: "legacy-start", source: "trigger", target: "source" },
+        {
+          id: "invalid-binding",
+          source: "source",
+          target: "target",
+          sourcePort: "missing-output",
+          targetPort: "missing-input",
+        },
+      ],
+    );
+
+    expect(() => engine.save(wf)).toThrow(/Workflow port validation failed/i);
+    expect(() => engine.save(wf)).toThrow(/missing-output/i);
+    expect(() => engine.save(wf)).toThrow(/missing-input/i);
+  });
+
+  it("honors explicit source port mappings across branch and back-edge retries", async () => {
+    const visitLog = [];
+
+    registerNodeType("test.branch_with_retry", {
+      describe: () => "Branches between retry and done ports",
+      schema: { type: "object", properties: {} },
+      outputs: [
+        { name: "retry", label: "Retry", type: "JSON" },
+        { name: "done", label: "Done", type: "JSON" },
+      ],
+      async execute(_node, ctx) {
+        const attempt = Number(ctx.data.branchAttempt || 0) + 1;
+        ctx.data.branchAttempt = attempt;
+        visitLog.push(`branch:${attempt}`);
+        return {
+          ok: true,
+          attempt,
+          matchedPort: attempt === 1 ? "retry" : "done",
+          port: attempt === 1 ? "retry" : "done",
+        };
+      },
+    });
+
+    registerNodeType("test.capture_retry_branch", {
+      describe: () => "Retry branch marker",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        visitLog.push("review");
+        return { ok: true };
+      },
+    });
+
+    registerNodeType("test.capture_done_branch", {
+      describe: () => "Done branch marker",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        visitLog.push("complete");
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "branch", type: "test.branch_with_retry", label: "Branch", config: {} },
+        { id: "review", type: "test.capture_retry_branch", label: "Review", config: {} },
+        { id: "complete", type: "test.capture_done_branch", label: "Complete", config: {} },
+      ],
+      [
+        { id: "start", source: "trigger", target: "branch" },
+        { id: "retry-path", source: "branch", target: "review", sourcePort: "retry" },
+        { id: "retry-loop", source: "review", target: "branch", backEdge: true },
+        { id: "done-path", source: "branch", target: "complete", sourcePort: "done" },
+      ],
+      { name: "Explicit Port Back Edge Workflow" },
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {});
+
+    expect(result.errors).toEqual([]);
+    expect(visitLog).toEqual(["branch:1", "review", "branch:2", "complete"]);
+    expect(result.getNodeStatus("review")).toBe(NodeStatus.COMPLETED);
+    expect(result.getNodeStatus("complete")).toBe(NodeStatus.COMPLETED);
+  });
+  it("accepts legacy condition port aliases alongside explicit yes/no routing", () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "guard",
+          type: "condition.expression",
+          label: "Guard",
+          config: { expression: "true" },
+        },
+        { id: "default-path", type: "notify.log", label: "Default", config: { message: "default" } },
+        { id: "yes-path", type: "notify.log", label: "Yes", config: { message: "yes" } },
+        { id: "no-path", type: "notify.log", label: "No", config: { message: "no" } },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "guard" },
+        { id: "e2", source: "guard", target: "default-path" },
+        { id: "e3", source: "guard", target: "yes-path", sourcePort: "true" },
+        { id: "e4", source: "guard", target: "no-path", sourcePort: "false" },
+      ],
+    );
+
+    expect(() => engine.save(wf)).not.toThrow();
+  });
+
+  it("infers transform.llm_parse ports from configured output fields", () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "src", type: "transform.template", label: "Source", config: { template: "VERDICT: CORRECT" } },
+        {
+          id: "parse",
+          type: "transform.llm_parse",
+          label: "Parse Verdict",
+          config: {
+            input: "src",
+            patterns: { verdict: "VERDICT:\\s*(CORRECT|MINOR|CRITICAL)" },
+            outputPort: "verdict",
+          },
+        },
+        { id: "done", type: "notify.log", label: "Done", config: { message: "done" } },
+        { id: "retry", type: "notify.log", label: "Retry", config: { message: "retry" } },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "src" },
+        { id: "e2", source: "src", target: "parse" },
+        { id: "e3", source: "parse", target: "done", sourcePort: "correct" },
+        { id: "e4", source: "parse", target: "retry", sourcePort: "minor" },
+      ],
+    );
+
+    expect(() => engine.save(wf)).not.toThrow();
+  });
+
+  it("rejects executing loaded workflows that still carry invalid explicit ports", async () => {
+    registerNodeType("test.execute_port_source", {
+      describe: () => "Source node with explicit ports",
+      schema: { type: "object", properties: {} },
+      outputs: [{ name: "success", type: "JSON" }],
+      async execute() {
+        return { ok: true, matchedPort: "success", port: "success" };
+      },
+    });
+
+    registerNodeType("test.execute_port_target", {
+      describe: () => "Target node with explicit ports",
+      schema: { type: "object", properties: {} },
+      inputs: [{ name: "payload", type: "JSON" }],
+      async execute() {
+        return { ok: true };
+      },
+    });
+
+    const workflowId = "wf-invalid-execute-port-bindings";
+    const persisted = {
+      id: workflowId,
+      name: "Invalid Execute Port Bindings",
+      enabled: true,
+      nodes: [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "source", type: "test.execute_port_source", label: "Source", config: {} },
+        { id: "target", type: "test.execute_port_target", label: "Target", config: {} },
+      ],
+      edges: [
+        { id: "legacy-start", source: "trigger", target: "source" },
+        {
+          id: "invalid-binding",
+          source: "source",
+          target: "target",
+          sourcePort: "missing-output",
+          targetPort: "missing-input",
+        },
+      ],
+      metadata: {},
+      variables: {},
+    };
+
+    mkdirSync(join(tmpDir, "workflows"), { recursive: true });
+    writeFileSync(join(tmpDir, "workflows", workflowId + ".json"), JSON.stringify(persisted, null, 2));
+    engine.load();
+
+    await expect(engine.execute(workflowId, {})).rejects.toThrow(/Workflow port validation failed/i);
+    await expect(engine.execute(workflowId, {})).rejects.toThrow(/missing-output/i);
+  });
+
 });
 
 // ── Run History / Detail Tests ──────────────────────────────────────────────
@@ -636,6 +974,79 @@ describe("WorkflowEngine - run history details", () => {
     expect(detail?.detail?.issueAdvisor?.recommendedAction).toBe("replan_from_failed");
     expect(detail?.detail?.issueAdvisor?.failedNodes?.[0]?.nodeId).toBe("fail");
     expect(detail?.detail?.issueAdvisor?.summary).toContain("Fail Step");
+    expect(detail?.detail?.issueAdvisor?.retryDecisionClass).toBe("replan_entire_subgraph");
+    expect(detail?.detail?.issueAdvisor?.issueFindings?.[0]?.source).toBe("validation");
+    expect(Array.isArray(detail?.detail?.dagState?.edges)).toBe(true);
+    expect(detail?.detail?.dagState?.edges?.[0]?.source).toBe("trigger");
+  });
+
+  it("threads validation diagnostics into run detail and history summaries", async () => {
+    makeTmpEngine({
+      scheduler: {
+        selectWorkflowLane: vi.fn().mockReturnValue({
+          lane: "isolated",
+          reason: "workflow_node:validation.tests",
+          heavy: true,
+        }),
+      },
+      isolatedRunner: {
+        run: vi.fn().mockResolvedValue({
+          status: "timeout",
+          stdout: "",
+          stderr: "validation exceeded limit",
+          exitCode: null,
+          duration: 1005,
+          provider: "process",
+          leaseId: "runner-timeout",
+          failureDiagnostic: {
+            category: "timeout",
+            retryable: true,
+            summary: "Validation timed out after 1000ms.",
+            status: "timeout",
+          },
+        }),
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "validate", type: "validation.tests", label: "Validate", config: { command: "npm test", timeoutMs: 1000 } },
+      ],
+      [{ id: "e1", source: "trigger", target: "validate" }],
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+
+    expect(ctx.getNodeOutput("validate")?.failureKind).toBe("timeout");
+    expect(ctx.getNodeOutput("validate")?.retryable).toBe(true);
+
+    const detail = engine.getRunDetail(ctx.id);
+    expect(detail?.detail?.validationFailures).toEqual([
+      expect.objectContaining({
+        nodeId: "validate",
+        nodeType: "validation.tests",
+        failureKind: "timeout",
+        retryable: true,
+      }),
+    ]);
+    expect(detail?.latestValidationFailure).toEqual(
+      expect.objectContaining({
+        nodeId: "validate",
+        failureKind: "timeout",
+        retryable: true,
+      }),
+    );
+
+    const summary = engine.getRunHistory(wf.id).at(-1);
+    expect(summary?.validationFailures).toEqual([
+      expect.objectContaining({
+        nodeId: "validate",
+        failureKind: "timeout",
+        retryable: true,
+      }),
+    ]);
   });
 
   it("returns retry options with an issue-advisor recommendation", async () => {
@@ -1043,6 +1454,111 @@ describe("WorkflowEngine - run history details", () => {
     expect(interrupted.resumeResult).toBe("duplicate_task_run");
   });
 
+  it("deduplicates interrupted runs from ledger task identity when detail files omit task ids", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-resume-ledger-dedupe", name: "Resume Ledger Dedupe Workflow" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const olderRunId = "run-ledger-older";
+    const newerRunId = "run-ledger-newer";
+    const taskId = "task-ledger-identity-1";
+
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [
+          {
+            runId: olderRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 1000,
+            endedAt: null,
+            resumable: true,
+          },
+          {
+            runId: newerRunId,
+            workflowId: wf.id,
+            workflowName: wf.name,
+            status: WorkflowStatus.PAUSED,
+            startedAt: 2000,
+            endedAt: null,
+            resumable: true,
+          },
+        ],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${olderRunId}.json`),
+      JSON.stringify({
+        id: olderRunId,
+        startedAt: 1000,
+        endedAt: null,
+        data: { _workflowId: wf.id, _workflowName: wf.name },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${newerRunId}.json`),
+      JSON.stringify({
+        id: newerRunId,
+        startedAt: 2000,
+        endedAt: null,
+        data: { _workflowId: wf.id, _workflowName: wf.name },
+        nodeStatuses: { trigger: NodeStatus.RUNNING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    engine._executionLedger.appendEvent({
+      eventType: "run.start",
+      runId: olderRunId,
+      workflowId: wf.id,
+      workflowName: wf.name,
+      status: WorkflowStatus.RUNNING,
+      timestamp: new Date(1000).toISOString(),
+      meta: { taskId, taskTitle: "Ledger Task" },
+    });
+    engine._executionLedger.appendEvent({
+      eventType: "run.start",
+      runId: newerRunId,
+      workflowId: wf.id,
+      workflowName: wf.name,
+      status: WorkflowStatus.RUNNING,
+      timestamp: new Date(2000).toISOString(),
+      meta: { taskId, taskTitle: "Ledger Task" },
+    });
+
+    const retrySpy = vi.spyOn(engine, "retryRun").mockResolvedValue({ resumed: true });
+
+    await engine.resumeInterruptedRuns();
+
+    expect(retrySpy).toHaveBeenCalledTimes(1);
+    expect(retrySpy).toHaveBeenCalledWith(
+      newerRunId,
+      expect.objectContaining({ mode: expect.any(String) }),
+    );
+
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const older = index.runs.find((entry) => entry.runId === olderRunId);
+    expect(older).toBeTruthy();
+    expect(older.resumable).toBe(false);
+    expect(older.resumeResult).toBe("duplicate_task_run");
+  });
+
   it("refreshes migrated task-lifecycle defaults when retrying an interrupted run", async () => {
     const wf = makeSimpleWorkflow(
       [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
@@ -1271,74 +1787,7 @@ describe("WorkflowEngine - run history details", () => {
     expect(interrupted.resumeResult).toBe("duplicate_task_run");
   });
 
-  it("refreshes migrated task-lifecycle defaults when retrying an interrupted run", async () => {
-    const wf = makeSimpleWorkflow(
-      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
-      [],
-      {
-        id: "wf-resume-migrated-default",
-        name: "Resume Migrated Default",
-        variables: { prePrValidationCommand: "auto" },
-      },
-    );
-    wf.metadata = {
-      ...(wf.metadata || {}),
-      installedFrom: "template-task-lifecycle",
-    };
-    engine.save(wf);
 
-    const runsDir = join(tmpDir, "runs");
-    const interruptedRunId = "run-stale-quality-gate";
-
-    writeFileSync(
-      join(runsDir, "index.json"),
-      JSON.stringify({
-        runs: [
-          {
-            runId: interruptedRunId,
-            workflowId: wf.id,
-            workflowName: wf.name,
-            status: WorkflowStatus.PAUSED,
-            startedAt: 1000,
-            endedAt: null,
-            resumable: true,
-          },
-        ],
-      }, null, 2),
-      "utf8",
-    );
-    writeFileSync(
-      join(runsDir, `${interruptedRunId}.json`),
-      JSON.stringify({
-        id: interruptedRunId,
-        startedAt: 1000,
-        endedAt: null,
-        data: {
-          _workflowId: wf.id,
-          _workflowName: wf.name,
-          taskId: "task-shared-1",
-          prePrValidationCommand: "npm run prepush:check",
-        },
-        nodeStatuses: { trigger: NodeStatus.COMPLETED },
-        nodeStatusEvents: [],
-        logs: [],
-        errors: [],
-      }, null, 2),
-      "utf8",
-    );
-    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
-
-    const executeDagSpy = vi.spyOn(engine, "_executeDag").mockResolvedValue();
-
-    const { retryRunId } = await engine.retryRun(interruptedRunId, { mode: "from_failed" });
-
-    expect(executeDagSpy).toHaveBeenCalledTimes(1);
-    const resumedCtx = executeDagSpy.mock.calls[0][3];
-    expect(resumedCtx.data.prePrValidationCommand).toBe("auto");
-
-    const resumedRun = engine.getRunDetail(retryRunId);
-    expect(resumedRun?.detail?.data?.prePrValidationCommand).toBe("auto");
-  });
 
   it("refreshes migrated task-lifecycle defaults for fresh task-lifecycle executions", async () => {
     const wf = makeSimpleWorkflow(
@@ -1852,6 +2301,24 @@ describe("action.execute_workflow", () => {
     expect(childDetail.detail?.dagState?.rootRunId).toBe(parentCtx.id);
     expect(childDetail.ledger?.parentRunId).toBe(parentCtx.id);
     expect(childDetail.ledger?.rootRunId).toBe(parentCtx.id);
+
+    const parentDetail = engine.getRunDetail(parentCtx.id);
+    expect(parentDetail?.executionTree?.runId).toBe(parentCtx.id);
+    expect(parentDetail?.executionTree?.children?.map((entry) => entry.runId)).toContain(output.runId);
+    expect(parentDetail?.runGraph?.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "parent-child",
+          parentRunId: parentCtx.id,
+          childRunId: output.runId,
+        }),
+      ]),
+    );
+    expect(
+      parentDetail?.runGraph?.timeline?.some(
+        (entry) => entry?.runId === output.runId && entry?.eventType === "run.start",
+      ),
+    ).toBe(true);
   });
 
   it("sync mode resolves installed template aliases via metadata.installedFrom", async () => {
@@ -2075,6 +2542,125 @@ describe("action.execute_workflow", () => {
     });
     expect(softCtx.data.childResult).toEqual(softResult);
   });
+
+  it("sync mode reuses the parent run slot under saturation", async () => {
+    const saturatedEngine = makeTmpEngine();
+    const baselineActiveRuns = saturatedEngine.getConcurrencyStats().maxConcurrentRuns - 1;
+    saturatedEngine._runSlots = baselineActiveRuns;
+
+    const childWorkflow = makeSimpleWorkflow(
+      [
+        { id: "child-trigger", type: "trigger.workflow_call", label: "Child Trigger", config: {} },
+        { id: "child-log", type: "notify.log", label: "Child Log", config: { message: "child completed" } },
+      ],
+      [{ id: "child-edge", source: "child-trigger", target: "child-log" }],
+      { id: "child-slot-share", name: "Child Slot Share" },
+    );
+
+    const parentWorkflow = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Parent Trigger", config: {} },
+        {
+          id: "invoke-child",
+          type: "action.execute_workflow",
+          label: "Invoke Child",
+          config: {
+            workflowId: childWorkflow.id,
+            mode: "sync",
+            outputVariable: "childSummary",
+          },
+        },
+      ],
+      [{ id: "parent-edge", source: "trigger", target: "invoke-child" }],
+      { id: "parent-slot-share", name: "Parent Slot Share" },
+    );
+
+    saturatedEngine.save(childWorkflow);
+    saturatedEngine.save(parentWorkflow);
+
+    const parentCtx = await Promise.race([
+      saturatedEngine.execute(parentWorkflow.id, {}),
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("workflow execution timed out")), 1500);
+      }),
+    ]);
+
+    expect(parentCtx.data.childSummary).toMatchObject({
+      success: true,
+      mode: "sync",
+      workflowId: childWorkflow.id,
+    });
+
+    const stats = saturatedEngine.getConcurrencyStats();
+    expect(stats.activeRuns).toBe(baselineActiveRuns);
+    expect(stats.queuedRuns).toBe(0);
+    expect(stats.sharedRootRuns).toBe(0);
+  });
+
+  it("sync mode includes child terminal output in the returned summary", async () => {
+    const childWorkflow = {
+      id: "child-terminal-wf",
+      name: "Child Terminal Workflow",
+      trigger: "trigger.workflow_call",
+      nodes: [
+        {
+          id: "trigger",
+          type: "trigger.workflow_call",
+          label: "Trigger",
+          config: { inputs: { payload: { type: "string", required: false } } },
+        },
+        {
+          id: "finish",
+          type: "flow.end",
+          label: "Finish",
+          config: {
+            status: "completed",
+            message: "done",
+            output: {
+              nodeOutputs: {
+                finish: "{{payload}}",
+              },
+            },
+          },
+        },
+      ],
+      edges: [{ id: "edge-trigger-finish", source: "trigger", target: "finish" }],
+    };
+
+    const parentWorkflow = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start Parent", config: {} },
+        {
+          id: "invoke-child",
+          type: "action.execute_workflow",
+          label: "Invoke Child",
+          config: {
+            workflowId: "child-terminal-wf",
+            mode: "sync",
+            input: { payload: "{{payload}}" },
+          },
+        },
+      ],
+      [{ id: "edge-parent-child", source: "trigger", target: "invoke-child" }],
+      { id: "parent-terminal-wf", name: "Parent Terminal Workflow" },
+    );
+
+    engine.save(childWorkflow);
+    engine.save(parentWorkflow);
+
+    const parentCtx = await engine.execute(parentWorkflow.id, { payload: "hello child" });
+    const output = parentCtx.getNodeOutput("invoke-child");
+    expect(output).toMatchObject({
+      success: true,
+      status: "completed",
+      message: "done",
+      output: {
+        nodeOutputs: {
+          finish: "hello child",
+        },
+      },
+    });
+  });
 });
 
 describe("action.inline_workflow and executeDefinition", () => {
@@ -2203,6 +2789,44 @@ describe("action.inline_workflow and executeDefinition", () => {
     expect(childDetail?.detail?.dagState?.rootRunId).toBe(parentCtx.id);
     expect(childDetail?.ledger?.parentRunId).toBe(parentCtx.id);
     expect(childDetail?.ledger?.rootRunId).toBe(parentCtx.id);
+  });
+
+  it("persists the workflow definition snapshot with each historical run", async () => {
+    const workflow = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Trigger", config: {} },
+        {
+          id: "finish",
+          type: "flow.end",
+          label: "Finish",
+          config: { status: "completed", output: { ok: true } },
+        },
+      ],
+      [{ id: "edge-trigger-finish", source: "trigger", target: "finish" }],
+      { id: "snapshot-wf", name: "Snapshot Workflow" },
+    );
+
+    engine.save(workflow);
+    const ctx = await engine.execute(workflow.id, {});
+
+    const updatedWorkflow = {
+      ...workflow,
+      name: "Snapshot Workflow Updated",
+      description: "changed after run",
+    };
+    engine.save(updatedWorkflow);
+
+    const detail = engine.getRunDetail(ctx.id);
+    expect(detail?.detail?.workflowDefinition).toMatchObject({
+      id: "snapshot-wf",
+      name: "Snapshot Workflow",
+      nodes: expect.arrayContaining([
+        expect.objectContaining({ id: "trigger", type: "trigger.manual" }),
+        expect.objectContaining({ id: "finish", type: "flow.end" }),
+      ]),
+      edges: [expect.objectContaining({ id: "edge-trigger-finish", source: "trigger", target: "finish" })],
+    });
+    expect(detail?.detail?.workflowDefinition?.name).not.toBe("Snapshot Workflow Updated");
   });
 
   it("dispatch mode queues embedded workflows without waiting for completion", async () => {
@@ -2653,6 +3277,46 @@ describe("WorkflowEngine trigger evaluation", () => {
     const hits = engine.evaluateScheduleTriggers();
     expect(hits.some((h) => h.workflowId === "task-poll-interval-wf")).toBe(false);
   });
+
+  it("evaluateScheduleTriggers uses the latest run timestamp per workflow", () => {
+    const wf = makeSimpleWorkflow(
+      [
+        {
+          id: "sched-trigger-latest",
+          type: "trigger.schedule",
+          label: "Every minute",
+          config: { intervalMs: 60000 },
+        },
+      ],
+      [],
+      { id: "sched-wf-latest-run", name: "Scheduled Workflow Latest Run" },
+    );
+    engine.save(wf);
+
+    const now = Date.now();
+    const readRunIndexSpy = vi.spyOn(engine, "_readRunIndex").mockReturnValue([
+      {
+        workflowId: "sched-wf-latest-run",
+        startedAt: now - (10 * 60 * 1000),
+      },
+      {
+        workflowId: "sched-wf-latest-run",
+        startedAt: now - 15_000,
+      },
+      {
+        workflowId: "other-workflow",
+        startedAt: now - (20 * 60 * 1000),
+      },
+    ]);
+
+    const hits = engine.evaluateScheduleTriggers();
+
+    expect(readRunIndexSpy).toHaveBeenCalledTimes(1);
+    expect(hits.some((h) => h.workflowId === "sched-wf-latest-run")).toBe(false);
+
+    readRunIndexSpy.mockRestore();
+  });
+
   it("does not traverse downstream nodes when a trigger returns triggered: false", async () => {
     registerNodeType("test.should_not_run", {
       describe: () => "Fails if executed",
@@ -3117,6 +3781,53 @@ describe("Session chaining - action.run_agent", () => {
     expect((session.messages || []).some((msg) => String(msg.content || "").includes("Task run completed."))).toBe(true);
   });
 
+  it("prepends architect/editor framing and repo maps for workflow agent runs", async () => {
+    const handler = getNodeType("action.run_agent");
+    const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: "done",
+      sdk: "codex",
+      items: [],
+      threadId: "thread-architect-editor",
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+
+    const node = {
+      id: "run-agent-architect-editor",
+      type: "action.run_agent",
+      config: {
+        prompt: "Apply the approved plan",
+        autoRecover: false,
+        executionRole: "editor",
+        architectPlan: "1. Update prompt framing\n2. Validate runtime tests",
+        repoMap: {
+          root: "C:/repo",
+          files: [
+            { path: "agent/primary-agent.mjs", summary: "primary agent runtime", symbols: ["execPrimaryPrompt"] },
+          ],
+        },
+      },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
+    expect(sentPrompt).toContain("## Architect/Editor Execution");
+    expect(sentPrompt).toContain("You are the editor phase.");
+    expect(sentPrompt).toContain("## Architect Plan");
+    expect(sentPrompt).toContain("Root: C:/repo");
+    expect(sentPrompt).toContain("agent/primary-agent.mjs");
+    expect(sentPrompt).toContain("Apply the approved plan");
+  });
+
   it("throws when agent execution returns success=false when failOnError=true", async () => {
     const handler = getNodeType("action.run_agent");
     const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
@@ -3403,6 +4114,74 @@ describe("Session chaining - action.run_agent", () => {
     expect(launchEphemeralThread).not.toHaveBeenCalled();
   });
 
+  it("marks delegated task sessions as failed when the delegated workflow fails", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      taskId: "TASK-DELEGATE-FAIL",
+      taskTitle: "Backend migration failed",
+      workspaceId: "virtengine-gh",
+      task: {
+        id: "TASK-DELEGATE-FAIL",
+        title: "Backend migration failed",
+        tags: ["backend"],
+        branchName: "feat/backend-failure",
+      },
+    });
+
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-backend-fail",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: {
+                taskPattern: "backend",
+                filter: "task.tags?.includes('backend')",
+              },
+            },
+          ],
+        },
+      ]),
+      execute: vi.fn().mockResolvedValue({
+        errors: [new Error("delegated workflow crashed")],
+        status: "failed",
+        message: "delegated workflow crashed",
+      }),
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn(),
+        },
+      },
+    };
+
+    const node = {
+      id: "delegated-session-fail-node",
+      type: "action.run_agent",
+      config: { prompt: "Handle task via delegated workflow", failOnError: false },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result.success).toBe(false);
+    expect(result.delegated).toBe(true);
+
+    const tracker = getSessionTracker();
+    const session = tracker.getSessionById("TASK-DELEGATE-FAIL");
+    expect(session).toBeTruthy();
+    expect(session.type).toBe("task");
+    expect(session.status).toBe("failed");
+    expect(session.metadata.branch).toBe("feat/backend-failure");
+
+    const messages = Array.isArray(session.messages) ? session.messages : [];
+    expect(messages.some((msg) => String(msg?.content || "").includes("Delegating to agent workflow"))).toBe(true);
+    expect(messages.some((msg) => String(msg?.content || "").toLowerCase().includes("failed"))).toBe(true);
+  });
   it("records delegated runs in session tracker for task visibility", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
@@ -3467,6 +4246,280 @@ describe("Session chaining - action.run_agent", () => {
     const messages = Array.isArray(session.messages) ? session.messages : [];
     expect(messages.some((msg) => String(msg?.content || "").includes("Delegating to agent workflow"))).toBe(true);
     expect(messages.some((msg) => String(msg?.content || "").includes("Backend Agent\" completed"))).toBe(true);
+  });
+  it("keeps delegated completion visible even when the child workflow ends without explicit output", async () => {
+    const childWorkflow = {
+      id: "child-visible-without-output",
+      name: "Child Visible Without Output",
+      enabled: true,
+      nodes: [
+        { id: "start", type: "trigger.manual", config: {} },
+        { id: "finish", type: "flow.end", config: { status: "completed", message: "child done" } },
+      ],
+      edges: [{ id: "e1", source: "start", target: "finish" }],
+    };
+
+    const parentWorkflow = {
+      id: "parent-visible-without-output",
+      name: "Parent Visible Without Output",
+      enabled: true,
+      nodes: [
+        { id: "trigger", type: "trigger.manual", config: {} },
+        {
+          id: "delegate",
+          type: "flow.universal",
+          config: {
+            workflowId: childWorkflow.id,
+            mode: "sync",
+            inheritContext: true,
+          },
+        },
+        {
+          id: "finish",
+          type: "flow.end",
+          config: {
+            status: "{{delegate.status || 'completed'}}",
+            message: "{{delegate.message || 'delegated workflow completed'}}",
+          },
+        },
+      ],
+      edges: [
+        { id: "e1", source: "trigger", target: "delegate" },
+        { id: "e2", source: "delegate", target: "finish" },
+      ],
+    };
+
+    engine.save(childWorkflow);
+    engine.save(parentWorkflow);
+
+    await engine.execute(parentWorkflow.id, {
+      taskId: "task-visible-no-output",
+      taskTitle: "Visible without output",
+      workspaceId: "virtengine-gh",
+      task: {
+        id: "task-visible-no-output",
+        title: "Visible without output",
+        branchName: "feat/visible-no-output",
+      },
+    });
+
+    const tracker = getSessionTracker();
+    const session = tracker.getSessionById("task-visible-no-output");
+    expect(session).toBeTruthy();
+    expect(session.status).toBe("completed");
+    expect(session.metadata.branch).toBe("feat/visible-no-output");
+    expect(Array.isArray(session.messages)).toBe(true);
+    expect(session.messages.some((msg) => String(msg?.content || "").includes("completed"))).toBe(true);
+  });
+
+  it("marks delegated task session failed when delegated workflow returns errors", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      taskId: "TASK-DELEGATE-FAIL",
+      taskTitle: "Backend migration failed",
+      workspaceId: "virtengine-gh",
+      task: {
+        id: "TASK-DELEGATE-FAIL",
+        title: "Backend migration failed",
+        tags: ["backend"],
+        branchName: "feat/backend-fail",
+      },
+    });
+
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-backend",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: {
+                taskPattern: "backend",
+                filter: "task.tags?.includes('backend')",
+              },
+            },
+          ],
+        },
+      ]),
+      execute: vi.fn().mockResolvedValue({
+        errors: [new Error("delegated workflow failed")],
+      }),
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn(),
+        },
+      },
+    };
+
+    const node = {
+      id: "delegated-session-failed-node",
+      type: "action.run_agent",
+      config: { prompt: "Handle task via delegated workflow" },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result.success).toBe(false);
+    expect(result.delegated).toBe(true);
+    expect(result.subStatus).toBe("failed");
+
+    const tracker = getSessionTracker();
+    const session = tracker.getSessionById("TASK-DELEGATE-FAIL");
+    expect(session).toBeTruthy();
+    expect(session.status).toBe("failed");
+
+    const messages = Array.isArray(session.messages) ? session.messages : [];
+    expect(messages.some((msg) => String(msg?.content || "").includes("Delegating to agent workflow"))).toBe(true);
+    expect(messages.some((msg) => String(msg?.content || "").includes("failed"))).toBe(true);
+  });
+
+  it("preserves existing task session visibility when delegated workflow reuses current session id", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      taskId: "TASK-DELEGATE-REUSE",
+      taskTitle: "Reuse visible session",
+      sessionId: "TASK-DELEGATE-REUSE",
+      workspaceId: "virtengine-gh",
+      worktreePath: "/tmp/test",
+      task: {
+        id: "TASK-DELEGATE-REUSE",
+        title: "Reuse visible session",
+        tags: ["backend"],
+        branchName: "feat/reuse-session",
+      },
+    });
+
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-backend",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: {
+                taskPattern: "backend",
+                filter: "task.tags?.includes('backend')",
+              },
+            },
+          ],
+        },
+      ]),
+      execute: vi.fn().mockResolvedValue({ errors: [] }),
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn(),
+        },
+      },
+    };
+
+    const node = {
+      id: "delegated-session-visible-node",
+      type: "action.run_agent",
+      config: { prompt: "Handle task via delegated workflow" },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result.success).toBe(true);
+    expect(result.delegated).toBe(true);
+
+    const tracker = getSessionTracker();
+    const session = tracker.getSessionById("TASK-DELEGATE-REUSE");
+    expect(session).toBeTruthy();
+    expect(session.id).toBe("TASK-DELEGATE-REUSE");
+    expect(session.status).toBe("completed");
+    expect(session.metadata.workspaceDir).toBe("/tmp/test");
+  });
+
+  it("records autonomous agent recovery attempts in the execution ledger", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      _workflowId: "workflow-ledger-parent",
+      _workflowName: "Workflow Ledger Parent",
+      taskId: "TASK-LEDGER-AGENT",
+      taskTitle: "Ledger agent task",
+      sessionId: "session-ledger-1",
+      worktreePath: "/tmp/ledger-agent",
+    });
+
+    const recordLedgerEvent = vi.fn();
+    const continueSession = vi.fn().mockResolvedValue({ success: false, error: "session expired" });
+    const execWithRetry = vi.fn().mockResolvedValue({
+      success: true,
+      output: "done",
+      sdk: "codex",
+      items: [],
+      threadId: "thread-ledger-1",
+      attempts: 2,
+      continues: 1,
+      resumed: true,
+    });
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([]),
+      _recordLedgerEvent: recordLedgerEvent,
+      services: {
+        agentPool: {
+          continueSession,
+          execWithRetry,
+          launchEphemeralThread: vi.fn(),
+        },
+      },
+    };
+
+    const node = {
+      id: "agent-ledger-node",
+      type: "action.run_agent",
+      config: { prompt: "Do task work", autoRecover: true, continueOnSession: true },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(continueSession).toHaveBeenCalledTimes(1);
+    expect(execWithRetry).toHaveBeenCalledTimes(1);
+    expect(recordLedgerEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "agent.started",
+        executionKind: "agent",
+        executionKey: "agent:agent-ledger-node:auto",
+      }),
+    );
+    expect(recordLedgerEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "recovery.attempted",
+        executionKind: "recovery",
+        meta: expect.objectContaining({ strategy: "continue_session" }),
+      }),
+    );
+    expect(recordLedgerEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "recovery.failed",
+        executionKind: "recovery",
+        meta: expect.objectContaining({ strategy: "continue_session" }),
+      }),
+    );
+    expect(recordLedgerEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "agent.completed",
+        executionKind: "agent",
+        meta: expect.objectContaining({
+          threadId: "thread-ledger-1",
+          resumed: true,
+        }),
+      }),
+    );
   });
 
   it("does not delegate agent workflows when task context is missing", async () => {
@@ -3768,6 +4821,133 @@ it("agent.run_planner appends planner feedback context from workflow data", asyn
   expect(sentPrompt).toContain("Planner feedback context:");
   expect(sentPrompt).toContain("Previous run skipped high-risk tasks in workflow area.");
 });
+it("agent.run_planner injects compact repo topology when enabled", async () => {
+  const handler = getNodeType("agent.run_planner");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({
+    taskTitle: "Improve workflow planning",
+    taskDescription: "Inject repo topology into planner prompts",
+    repoMap: {
+      root: "C:/repo",
+      files: [
+        { path: "workflow/workflow-engine.mjs", summary: "workflow runtime" },
+        { path: "workflow/workflow-nodes.mjs", summary: "workflow nodes" },
+        { path: "tests/workflow-engine.test.mjs", summary: "workflow runtime coverage" },
+      ],
+    },
+  });
+  const launchEphemeralThread = vi.fn().mockResolvedValue({
+    success: true,
+    output: '{"tasks":[]}',
+    sdk: "codex",
+    items: [],
+    threadId: "planner-thread-topology",
+  });
+  const mockEngine = {
+    services: {
+      agentPool: {
+        launchEphemeralThread,
+      },
+      prompts: {
+        planner: "Planner prompt",
+      },
+    },
+  };
+
+  const node = {
+    id: "planner-topology",
+    type: "agent.run_planner",
+    config: {
+      taskCount: 2,
+      repoMapQuery: "{{taskTitle}} {{taskDescription}}",
+      repoMapFileLimit: 3,
+    },
+  };
+
+  await handler.execute(node, ctx, mockEngine);
+  const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
+  expect(sentPrompt).toContain("## Repo Topology");
+  expect(sentPrompt).toContain("Areas: workflow (2), tests (1)");
+  expect(sentPrompt).toContain("owner: workflow");
+  expect(sentPrompt).toContain("adjacent: workflow/workflow-nodes.mjs, tests/workflow-engine.test.mjs");
+});
+
+it("agent.run_planner avoids duplicating repo topology blocks", async () => {
+  const handler = getNodeType("agent.run_planner");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({
+    repoMap: {
+      root: "C:/repo",
+      files: [{ path: "workflow/workflow-engine.mjs", summary: "workflow runtime" }],
+    },
+  });
+  const launchEphemeralThread = vi.fn().mockResolvedValue({
+    success: true,
+    output: '{"tasks":[]}',
+    sdk: "codex",
+    items: [],
+    threadId: "planner-thread-no-dup",
+  });
+
+  await handler.execute({
+    id: "planner-no-dup",
+    type: "agent.run_planner",
+    config: {
+      taskCount: 1,
+      prompt: "## Repo Topology\n- Root: C:/repo\n\nPlan carefully.",
+      repoMapQuery: "workflow planning",
+    },
+  }, ctx, {
+    services: {
+      agentPool: { launchEphemeralThread },
+      prompts: { planner: "Planner prompt" },
+    },
+  });
+
+  const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
+  expect((sentPrompt.match(/## Repo Topology/g) || [])).toHaveLength(1);
+});
+
+it("action.run_agent avoids duplicating repo topology in architect/editor framing", async () => {
+  const handler = getNodeType("action.run_agent");
+  const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
+  const launchEphemeralThread = vi.fn().mockResolvedValue({
+    success: true,
+    output: "done",
+    sdk: "codex",
+    items: [],
+    threadId: "thread-repo-topology-dedupe",
+  });
+
+  await handler.execute({
+    id: "run-agent-topology-dedupe",
+    type: "action.run_agent",
+    config: {
+      prompt: "## Repo Topology\n- Root: C:/repo\n\nApply the approved plan",
+      autoRecover: false,
+      executionRole: "editor",
+      architectPlan: "1. Update prompt framing\n2. Validate runtime tests",
+      repoMap: {
+        root: "C:/repo",
+        files: [
+          { path: "workflow/workflow-engine.mjs", summary: "workflow runtime" },
+          { path: "workflow/workflow-nodes.mjs", summary: "workflow nodes" },
+        ],
+      },
+    },
+  }, ctx, {
+    services: {
+      agentPool: { launchEphemeralThread },
+    },
+  });
+
+  const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
+  expect(sentPrompt).toContain("## Architect/Editor Execution");
+  expect((sentPrompt.match(/## Repo Topology/g) || [])).toHaveLength(1);
+});
+
 it("agent.run_planner fails immediately when planner dependencies are unavailable", async () => {
   const handler = getNodeType("agent.run_planner");
   expect(handler).toBeDefined();
@@ -5025,4 +6205,209 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     const reread = engine.getTaskTraceEvents(ctx.id);
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
+
+  it("emits nested task and agent spans for task-backed agent nodes", async () => {
+    const tracing = await import("../infra/tracing.mjs");
+    await tracing.setupTracing("http://collector.example/v1/traces");
+
+    const workflow = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "agent", type: "action.run_agent", label: "Run Agent", config: { prompt: "Ship the fix" } },
+      ],
+      [{ id: "e1", source: "trigger", target: "agent" }],
+      { id: "wf-agent-task-trace", name: "Agent Task Trace" },
+    );
+
+    engine.save(workflow);
+    engine.services.agentPool = {
+      launchEphemeralThread: vi.fn(async () => ({
+        success: true,
+        output: "done",
+        threadId: "thread-trace-1",
+      })),
+    };
+
+    await engine.execute(workflow.id, {
+      taskId: "TASK-AGENT-TRACE",
+      task: { id: "TASK-AGENT-TRACE", title: "Trace agent task", assignee: "agent-primary" },
+    });
+
+    const finishedSpans = tracing.getFinishedSpans();
+    const nodeSpan = finishedSpans.find(
+      (span) => span.name === "bosun.workflow.node" && span.attributes["bosun.workflow.node.id"] === "agent",
+    );
+    const taskSpan = finishedSpans.find(
+      (span) => span.name === "bosun.task.execute" && span.attributes["bosun.task.id"] === "TASK-AGENT-TRACE",
+    );
+    const agentSpan = finishedSpans.find(
+      (span) => span.name === "bosun.agent.session" && span.attributes["bosun.task.id"] === "TASK-AGENT-TRACE",
+    );
+
+    expect(nodeSpan).toBeDefined();
+    expect(taskSpan).toBeDefined();
+    expect(agentSpan).toBeDefined();
+    expect(taskSpan.traceId).toBe(nodeSpan.traceId);
+    expect(taskSpan.parentSpanId).toBe(nodeSpan.spanId);
+    expect(agentSpan.parentSpanId).toBe(taskSpan.spanId);
+    expect(taskSpan.attributes).toEqual(expect.objectContaining({
+      "bosun.workflow.id": workflow.id,
+      "bosun.task.id": "TASK-AGENT-TRACE",
+      "bosun.agent.id": "agent",
+    }));
+  });
+
+  it("preserves a single trace across parent and child workflow execution", async () => {
+    const tracing = await import("../infra/tracing.mjs");
+    await tracing.setupTracing("http://collector.example/v1/traces");
+
+    const child = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+      ],
+      [],
+      { id: "wf-child-trace", name: "Child Trace Workflow" },
+    );
+
+    const parent = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "child",
+          type: "flow.universal",
+          label: "Child",
+          config: { workflowId: child.id, mode: "sync", inheritContext: true },
+        },
+      ],
+      [{ id: "e1", source: "trigger", target: "child" }],
+      { id: "wf-parent-trace", name: "Parent Trace Workflow" },
+    );
+
+    engine.save(child);
+    engine.save(parent);
+
+    const parentCtx = await engine.execute(parent.id, { taskId: "TASK-WF-TRACE" });
+
+    const finishedSpans = tracing.getFinishedSpans();
+    const workflowSpans = finishedSpans.filter((span) => span.name === "bosun.workflow.run");
+    const nodeSpans = finishedSpans.filter((span) => span.name === "bosun.workflow.node");
+    const parentSpan = workflowSpans.find((span) => span.attributes["bosun.workflow.id"] === parent.id);
+    const childSpan = workflowSpans.find((span) => span.attributes["bosun.workflow.id"] === child.id);
+    const childNodeSpan = nodeSpans.find((span) => span.attributes["bosun.workflow.node.id"] === "child");
+
+    expect(parentCtx.errors).toEqual([]);
+    expect(parentSpan).toBeDefined();
+    expect(childSpan).toBeDefined();
+    expect(childNodeSpan).toBeDefined();
+    expect(childSpan.traceId).toBe(parentSpan.traceId);
+    expect(childSpan.parentSpanId).toBe(childNodeSpan.spanId);
+    expect(parentSpan.attributes["bosun.task.id"]).toBe("TASK-WF-TRACE");
+    expect(childSpan.attributes["bosun.task.id"]).toBe("TASK-WF-TRACE");
+    expect(childSpan.attributes["bosun.workflow.parent_run_id"]).toBe(parentCtx.id);
+  });
+  it("records DAGState revisions and preserves completed nodes when replanning from a failed boundary", async () => {
+    let attempts = 0;
+    registerNodeType("test.replan_once", {
+      describe: () => "Fails once so retry planning can revise the active DAG",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        attempts += 1;
+        if (attempts === 1) throw new Error("validation failed: tests red");
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "build", type: "test.replan_once", label: "Build", config: { maxRetries: 0 } },
+        { id: "verify", type: "test.replan_once", label: "Verify", config: { maxRetries: 0 } },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "build" },
+        { id: "e2", source: "build", target: "verify" },
+      ],
+      { autoRetry: { enabled: false } },
+    );
+
+    engine.save(wf);
+    const firstCtx = await engine.execute(wf.id, {});
+    expect(firstCtx.errors.length).toBeGreaterThan(0);
+    const firstRun = engine.getRunHistory(wf.id).at(-1);
+    expect(firstRun?.detail?.dagState?.status).toBe("failed");
+    expect(firstRun?.detail?.issueAdvisor?.recommendedAction).toBe("replan_from_failed");
+
+    const retry = await engine.retryRun(firstRun.runId, { mode: "from_failed" });
+    expect(retry.mode).toBe("from_failed");
+
+    const runs = engine.getRunHistory(wf.id);
+    const retriedRun = runs.find((entry) => entry.runId === retry.retryRunId);
+    expect(retriedRun?.detail?.dagState?.retryOf).toBe(firstRun.runId);
+    expect(retriedRun?.detail?.dagState?.retryMode).toBe("from_failed");
+    expect(retriedRun?.detail?.dagState?.revisions?.length).toBeGreaterThanOrEqual(2);
+
+    const [initialRevision, replanRevision] = retriedRun.detail.dagState.revisions;
+    expect(initialRevision.reason).toBe("retry_resume");
+    expect(replanRevision.reason).toBe("retry_replan_from_failed");
+    expect(initialRevision.counts.completed).toBe(1);
+    expect(replanRevision.counts.completed).toBe(1);
+    expect(replanRevision.preservedCompletedNodeIds).toContain("trigger");
+    expect(replanRevision.focusNodeIds).toContain("build");
+    expect(Array.isArray(replanRevision.graphAfter?.nodes)).toBe(true);
+    expect(Array.isArray(replanRevision.graphAfter?.edges)).toBe(true);
+    expect(replanRevision.graphAfter?.edges?.[0]?.source).toBe("trigger");
+    expect(retriedRun.detail.issueAdvisor.recommendedAction).toBe("continue");
+
+    const diff = engine.diffRunGraphs(firstRun.runId, retry.retryRunId);
+    expect(diff?.baseRunId).toBe(firstRun.runId);
+    expect(diff?.comparisonRunId).toBe(retry.retryRunId);
+    expect(diff?.executionDelta?.changed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          executionKey: "node:build",
+          executionKind: "node",
+          nodeId: "build",
+          baseStatus: NodeStatus.FAILED,
+          comparisonStatus: NodeStatus.COMPLETED,
+        }),
+      ]),
+    );
+  });
+
+  it("distinguishes rerun, fix-step, and subgraph replan retry decisions", () => {
+    const rerun = engine._chooseRetryModeFromDetail({
+      issueAdvisor: { recommendedAction: "resume_remaining", summary: "Resume from verify." },
+      dagState: { counts: { completed: 2, failed: 0, pending: 1 } },
+    });
+    expect(rerun.mode).toBe("from_failed");
+    expect(rerun.reason).toBe("issue_advisor.resume_remaining");
+
+    const rerunSameStep = engine._chooseRetryModeFromDetail({
+      issueAdvisor: { recommendedAction: "rerun_same_step", summary: "Rerun the timed out test step." },
+      dagState: { counts: { completed: 2, failed: 1, pending: 0 } },
+    });
+    expect(rerunSameStep.mode).toBe("from_failed");
+    expect(rerunSameStep.reason).toBe("issue_advisor.rerun_same_step");
+
+    const fixStep = engine._chooseRetryModeFromDetail({
+      issueAdvisor: {
+        recommendedAction: "spawn_fix_step",
+        summary: "Add a targeted fix step before retrying verify.",
+      },
+      dagState: { counts: { completed: 2, failed: 1, pending: 0 } },
+    });
+    expect(fixStep.mode).toBe("from_failed");
+    expect(fixStep.reason).toBe("issue_advisor.spawn_fix_step");
+
+    const replan = engine._chooseRetryModeFromDetail({
+      issueAdvisor: { recommendedAction: "replan_subgraph", summary: "Replan downstream nodes." },
+      dagState: { counts: { completed: 1, failed: 1, pending: 2 } },
+    });
+    expect(replan.mode).toBe("from_scratch");
+    expect(replan.reason).toBe("issue_advisor.replan_subgraph");
+  });
 });
+
+
+
+

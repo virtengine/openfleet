@@ -2,8 +2,8 @@
  * task-batch.mjs — Task Batch Processor Workflow Template
  *
  * Picks up multiple tasks from the kanban backlog and dispatches them in
- * parallel using the loop.for_each fan-out node. Each task is executed via
- * the Task Lifecycle sub-workflow (template-task-lifecycle).
+ * parallel using the loop.for_each fan-out node. Each task lifecycle is
+ * dispatched without blocking the batch run on full child completion.
  *
  * Templates:
  *   - TASK_BATCH_PROCESSOR_TEMPLATE (primary batch dispatch)
@@ -13,8 +13,8 @@
  *   trigger.task_available
  *     → condition.expression (is coordinator or solo?)
  *       → action.run_command (list todo tasks)
- *         → loop.for_each (fan-out, maxConcurrent tasks at a time)
- *           → sub-workflow: template-task-lifecycle per task
+ *         → loop.for_each (fan-out, maxConcurrent dispatches at a time)
+ *           → dispatch sub-workflow: template-task-lifecycle per task
  *         → action.set_variable (record batch results)
  *           → condition.expression (any failures?)
  *             → notify.telegram (failure alert)
@@ -136,11 +136,7 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
         import(kanbanModuleUrl)
           .then(k => k.listTasks(undefined, { status: "todo" }))
           .then(tasks => {
-            const filtered = (tasks || []).filter((task) => {
-              const repository = typeof task?.repository === "string" ? task.repository.trim() : "";
-              const workspace = typeof task?.workspace === "string" ? task.workspace.trim() : "";
-              return task && task.status === "todo" && !task.draft && repository.length > 0 && workspace.length > 0;
-            });
+            const filtered = (tasks || []).filter((task) => task && task.status === "todo" && !task.draft);
             const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || "10"));
             const payload = batch.map(t => ({
               taskId: t.id,
@@ -168,11 +164,12 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
 
     // ── Fan-out: dispatch each task to the lifecycle workflow ─────────────
     node("dispatch-tasks", "loop.for_each", "Dispatch Tasks", {
-      items: "{{query-tasks.output}}",
+      items: "$ctx.getNodeOutput('query-tasks')?.output || []",
       itemVariable: "currentTask",
       indexVariable: "taskIndex",
       maxConcurrent: "{{maxConcurrent}}",
       workflowId: "{{subWorkflow}}",
+      mode: "dispatch",
     }, { x: 400, y: 440 }),
 
     node("join-dispatch", "flow.join", "Join Dispatch Branches", {
@@ -203,7 +200,7 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
   ],
   edges: [
     edge("trigger", "check-coordinator"),
-    edge("check-coordinator", "query-tasks", { condition: "result.result === true" }),
+    edge("check-coordinator", "query-tasks", { condition: "$output === true || $output?.result === true || $output?.value === true" }),
     edge("query-tasks", "dispatch-tasks"),
     edge("dispatch-tasks", "join-dispatch"),
     edge("join-dispatch", "record-results"),
@@ -270,11 +267,7 @@ export const TASK_BATCH_PR_TEMPLATE = {
         import(kanbanModuleUrl)
           .then(k => k.listTasks(undefined, { status: "todo" }))
           .then(tasks => {
-            const filtered = (tasks || []).filter((task) => {
-              const repository = typeof task?.repository === "string" ? task.repository.trim() : "";
-              const workspace = typeof task?.workspace === "string" ? task.workspace.trim() : "";
-              return task && task.status === "todo" && !task.draft && repository.length > 0 && workspace.length > 0;
-            });
+            const filtered = (tasks || []).filter((task) => task && task.status === "todo" && !task.draft);
             const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || "5"));
             console.log(JSON.stringify(batch.map(t => ({
               taskId: t.id,
@@ -300,8 +293,8 @@ export const TASK_BATCH_PR_TEMPLATE = {
 
     // ── Fan-out: per-task agent + PR ─────────────────────────────────────
     node("for-each-task", "loop.for_each", "Process Each Task", {
-      items: "{{query-tasks.output}}",
-      itemVariable: "task",
+      items: "$ctx.getNodeOutput('query-tasks')?.output || []",
+      variable: "task",
       indexVariable: "idx",
       maxConcurrent: "{{maxConcurrent}}",
     }, { x: 400, y: 310 }),

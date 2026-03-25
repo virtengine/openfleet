@@ -73,10 +73,11 @@ function sessionMessagesToLogLines(sessionPayload) {
 }
 
 function detailLines(sessionPayload) {
-  const session = sessionPayload?.session || {};
+  const session = sessionPayload?.session || sessionPayload || {};
   return [
     `ID        ${session.id || "-"}`,
     `Status    ${session.status || "-"}`,
+    `Title     ${session.title || session.taskTitle || "-"}`,
     `Type      ${session.type || "-"}`,
     `Workspace ${session.metadata?.workspaceId || session.workspaceId || "-"}`,
     `Path      ${session.metadata?.workspaceDir || session.workspaceDir || "-"}`,
@@ -87,7 +88,7 @@ function detailLines(sessionPayload) {
   ];
 }
 
-export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080 }) {
+export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080, sessions, stats = null }) {
   const resolvedHost = wsBridge?.host || host;
   const resolvedPort = wsBridge?.port || port;
   const { stdout } = useStdout();
@@ -102,6 +103,11 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
   const [confirmKill, setConfirmKill] = React.useState(false);
   const [statusLine, setStatusLine] = React.useState("");
   const [clockMs, setClockMs] = React.useState(Date.now());
+
+  const selectedSession = React.useMemo(
+    () => entries.find((entry) => entry.id === selectedId)?.session || entries[0]?.session || null,
+    [entries, selectedId],
+  );
 
   const applyRetryQueue = React.useCallback((payload) => {
     setRetryQueue({
@@ -132,18 +138,77 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
       const now = Date.now();
       applyRetryQueue(retryPayload);
       applySessionSnapshot(sessionsPayload.sessions || [], now);
+      setStatusLine("");
     } catch (error) {
       setStatusLine(error.message || String(error));
     }
   }, [applyRetryQueue, applySessionSnapshot, resolvedHost, resolvedPort]);
 
+
+  React.useEffect(() => {
+    applySessionSnapshot(sessions, Date.now());
+  }, [applySessionSnapshot, sessions]);
+
+  React.useEffect(() => {
+    if (stats?.retryQueue) {
+      applyRetryQueue(stats.retryQueue);
+    }
+  }, [applyRetryQueue, stats]);
+  const moveSelection = React.useCallback((direction) => {
+    if (!entries.length) return;
+    const currentIndex = Math.max(0, entries.findIndex((entry) => entry.id === selectedId));
+    const nextIndex = (currentIndex + direction + entries.length) % entries.length;
+    setSelectedId(entries[nextIndex]?.id || "");
+  }, [entries, selectedId]);
+
+  const openDetail = React.useCallback(async () => {
+    if (!selectedSession) return;
+    setDetailView(detailLines(selectedSession));
+    setLogLines([]);
+    setDiffView(null);
+    setConfirmKill(false);
+  }, [selectedSession]);
+
+  const loadLogs = React.useCallback(async () => {
+    if (!selectedSession?.id) return;
+    try {
+      const payload = await fetchJson(resolvedHost, resolvedPort, `/api/sessions/${encodeURIComponent(selectedSession.id)}?workspace=all`);
+      setLogLines(sessionMessagesToLogLines(payload));
+      setDetailView(null);
+      setDiffView(null);
+      setStatusLine(`Loaded logs for ${describeSelection(selectedSession)}`);
+    } catch (error) {
+      setStatusLine(error.message || String(error));
+    }
+  }, [resolvedHost, resolvedPort, selectedSession]);
+
+  const loadDiff = React.useCallback(async () => {
+    if (!selectedSession?.id) return;
+    try {
+      const payload = await fetchJson(resolvedHost, resolvedPort, `/api/sessions/${encodeURIComponent(selectedSession.id)}/diff?workspace=all`);
+      setDiffView(summarizeDiff(payload));
+      setDetailView(null);
+      setLogLines([]);
+      setStatusLine(`Loaded diff for ${describeSelection(selectedSession)}`);
+    } catch (error) {
+      setStatusLine(error.message || String(error));
+    }
+  }, [resolvedHost, resolvedPort, selectedSession]);
+
+  const runAction = React.useCallback(async (action) => {
+    if (!selectedSession?.id) return;
+    try {
+      await fetchJson(resolvedHost, resolvedPort, sessionActionPath(selectedSession.id, action), { method: "POST" });
+      setStatusLine(`${action} requested for ${describeSelection(selectedSession)}`);
+      setConfirmKill(false);
+    } catch (error) {
+      setStatusLine(error.message || String(error));
+    }
+  }, [resolvedHost, resolvedPort, selectedSession]);
+
   React.useEffect(() => {
     let active = true;
-    const load = async () => {
-      if (!active) return;
-      await refreshData();
-    };
-    void load();
+    void refreshData();
     const intervalId = setInterval(() => {
       const now = Date.now();
       setClockMs(now);
@@ -152,6 +217,9 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     return () => {
       active = false;
       clearInterval(intervalId);
+      if (!active) {
+        return;
+      }
     };
   }, [refreshData]);
 
@@ -166,7 +234,80 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
             : [];
         applySessionSnapshot(sessions, Date.now());
       }),
+      wsBridge.on("session:event", (payload) => {
+        const session = payload?.session;
+        if (!session?.id) return;
+        const nextSessions = Array.isArray(liveSessionsRef.current)
+          ? [...liveSessionsRef.current]
+          : [];
+        const existingIndex = nextSessions.findIndex((candidate) => candidate.id === session.id);
+        if (existingIndex >= 0) nextSessions[existingIndex] = session;
+        else nextSessions.unshift(session);
+        applySessionSnapshot(nextSessions, Date.now());
 
+        if (selectedId === session.id) {
+          setDetailView(detailLines(payload));
+          const hasMessages = Array.isArray(payload?.session?.messages);
+          const isMessageEvent = payload?.event?.kind === "message";
+          if (hasMessages || isMessageEvent) {
+            setLogLines(sessionMessagesToLogLines(payload));
+          }
+        }
+      }),
+      wsBridge.on("retry:update", applyRetryQueue),
+      wsBridge.on("retry-queue-updated", applyRetryQueue),
+    ];
+
+    return () => {
+      handlers.forEach((unsubscribe) => {
+        if (typeof unsubscribe === "function") unsubscribe();
+      });
+    };
+  }, [applyRetryQueue, applySessionSnapshot, wsBridge]);
+
+  useInput((input, key) => {
+    if (confirmKill) {
+      if (input === "y" || input === "Y") {
+        void runAction("kill");
+        return;
+      }
+      setConfirmKill(false);
+      return;
+    }
+
+    if (key.upArrow) {
+      moveSelection(-1);
+      return;
+    }
+    if (key.downArrow) {
+      moveSelection(1);
+      return;
+    }
+    if (key.return) {
+      void openDetail();
+      return;
+    }
+    if (input === "k" || input === "K") {
+      setConfirmKill(true);
+      return;
+    }
+    if (input === "p" || input === "P") {
+      void runAction("pause");
+      return;
+    }
+    if (input === "r" || input === "R") {
+      void runAction("resume");
+      return;
+    }
+    if (input === "l" || input === "L") {
+      void loadLogs();
+      return;
+    }
+    if (input === "d" || input === "D") {
+      void loadDiff();
+      return;
+    }
+    if (input === "c" || input === "C") {
       if (selectedSession?.id) {
         stdout.write(buildOsc52CopySequence(selectedSession.id));
         setStatusLine(`Copied ${selectedSession.id}`);
@@ -262,7 +403,7 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
         ? html`
             <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
               <${Text} bold>Detail<//>
-              ${detailView.map((line) => html`<${Text} key=${line}>${line}<//>`)}
+              ${detailView.map((line) => html`<${Text} key=${line}>${line}<//>`) }
             <//>
           `
         : null}
@@ -309,3 +450,7 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     <//>
   `;
 }
+
+
+
+

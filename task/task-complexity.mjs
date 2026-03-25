@@ -38,7 +38,7 @@ export const COMPLEXITY_TIERS = Object.freeze({
 });
 
 /**
- * Map task size labels (from ve-orchestrator.ps1 Get-TaskSizeInfo) to
+ * Map task size labels (from orchestrator Get-TaskSizeInfo) to
  * complexity tiers. The size→complexity mapping is intentionally simple.
  */
 export const SIZE_TO_COMPLEXITY = Object.freeze({
@@ -419,7 +419,7 @@ export function getModelForComplexity(tier, executorType, configOverrides) {
  * an enhanced profile with the right model/variant/reasoning for the task's
  * complexity.
  *
- * @param {object} task - Task object from VK (has .title, .description, fields, metadata)
+ * @param {object} task - Task object (has .title, .description, fields, metadata)
  * @param {object} baseProfile - Executor profile from ExecutorScheduler.next()
  *   { name, executor, variant, weight, role, enabled }
  * @param {object} [complexityConfig] - Config from loadConfig().complexityRouting
@@ -629,8 +629,8 @@ export function assessCompletionConfidence({
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Extract size label from a VK task object.
- * Mirrors the logic in Get-TaskSizeInfo (ve-orchestrator.ps1).
+ * Extract size label from a task object.
+ * Mirrors the logic in Get-TaskSizeInfo (orchestrator.ps1).
  */
 function extractSizeLabel(task) {
   if (!task) return null;
@@ -693,7 +693,7 @@ function extractSizeLabel(task) {
 }
 
 /**
- * Extract numeric points from a VK task object.
+ * Extract numeric points from a task object.
  */
 function extractPoints(task) {
   if (!task) return null;
@@ -718,7 +718,7 @@ function extractPoints(task) {
 
 /**
  * Convert numeric story points to a size label.
- * Mirrors Resolve-TaskSizeFromPoints in ve-orchestrator.ps1.
+ * Mirrors Resolve-TaskSizeFromPoints in orchestrator.ps1.
  */
 function pointsToSize(points) {
   if (points <= 1) return "xs";

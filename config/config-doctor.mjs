@@ -286,11 +286,11 @@ export function runConfigDoctor(options = {}) {
   }
 
   const backend = String(effective.KANBAN_BACKEND || "internal").toLowerCase();
-  if (!["internal", "vk", "github", "jira"].includes(backend)) {
+  if (!["internal", "github", "jira"].includes(backend)) {
     issues.errors.push({
       code: "KANBAN_BACKEND",
       message: `Invalid KANBAN_BACKEND: ${effective.KANBAN_BACKEND}`,
-      fix: "Use one of: internal, vk, github, jira",
+      fix: "Use one of: internal, github, jira",
     });
   }
 
@@ -358,11 +358,11 @@ export function runConfigDoctor(options = {}) {
   }
 
   const mode = String(effective.EXECUTOR_MODE || "internal").toLowerCase();
-  if (!["internal", "vk", "hybrid"].includes(mode)) {
+  if (!["internal", "hybrid"].includes(mode)) {
     issues.errors.push({
       code: "EXECUTOR_MODE",
       message: `Invalid EXECUTOR_MODE: ${effective.EXECUTOR_MODE}`,
-      fix: "Use one of: internal, vk, hybrid",
+      fix: "Use one of: internal, hybrid",
     });
   }
 
@@ -400,26 +400,6 @@ export function runConfigDoctor(options = {}) {
         message: `KANBAN_BACKEND=jira is missing required config: ${missing.join(", ")}`,
         fix:
           "Set required JIRA_* variables (and project key), or switch KANBAN_BACKEND=internal.",
-      });
-    }
-  }
-
-  const vkNeeded = backend === "vk" || mode === "vk" || mode === "hybrid";
-  if (vkNeeded) {
-    const vkBaseUrl = effective.VK_BASE_URL || "";
-    const vkPort = effective.VK_RECOVERY_PORT || "";
-    if (vkBaseUrl && !isUrl(vkBaseUrl)) {
-      issues.errors.push({
-        code: "VK_BASE_URL",
-        message: `Invalid VK_BASE_URL: ${vkBaseUrl}`,
-        fix: "Use a full URL, e.g. http://127.0.0.1:54089",
-      });
-    }
-    if (vkPort && !isPositiveInt(vkPort)) {
-      issues.errors.push({
-        code: "VK_RECOVERY_PORT",
-        message: `Invalid VK_RECOVERY_PORT: ${vkPort}`,
-        fix: "Use a positive integer port, e.g. VK_RECOVERY_PORT=54089",
       });
     }
   }

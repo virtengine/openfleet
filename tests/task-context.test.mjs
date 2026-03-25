@@ -34,7 +34,6 @@ describe("task-context", () => {
     it("reads task id aliases", () => {
       expect(resolveBosunTaskId({ VE_TASK_ID: "ve-1" })).toBe("ve-1");
       expect(resolveBosunTaskId({ BOSUN_TASK_ID: "bs-1" })).toBe("bs-1");
-      expect(resolveBosunTaskId({ VK_TASK_ID: "vk-1" })).toBe("vk-1");
       expect(resolveBosunTaskId({})).toBe("");
     });
 

@@ -12,6 +12,7 @@ describe("container-runner", () => {
     it("exports all expected functions", async () => {
       const mod = await import("../infra/container-runner.mjs");
       const expected = [
+        "formatArtifactRetrieveCommand",
         "isContainerEnabled",
         "getContainerStatus",
         "checkContainerRuntime",
@@ -19,6 +20,11 @@ describe("container-runner", () => {
         "runInContainer",
         "stopAllContainers",
         "cleanupOrphanedContainers",
+        "isIsolatedRunnerPoolEnabled",
+        "getIsolatedRunnerPoolStatus",
+        "acquireRunnerLease",
+        "releaseRunnerLease",
+        "runInIsolatedRunner",
       ];
       for (const name of expected) {
         expect(typeof mod[name]).toBe("function");
@@ -169,6 +175,136 @@ describe("container-runner", () => {
 
       expect(source).toContain("activeContainers");
       expect(source).toContain("new Map()");
+    });
+
+    it("builds shell-safe artifact retrieval commands on POSIX", async () => {
+      const mod = await import("../infra/container-runner.mjs");
+
+      expect(
+        mod.formatArtifactRetrieveCommand("/tmp/a\\b\"c'd.txt", "linux"),
+      ).toBe(`cat '/tmp/a\\b"c'"'"'d.txt'`);
+    });
+  });
+});
+
+describe("isolated runner pool", () => {
+  it("exposes enabled status and lease capacity", async () => {
+    const mod = await import("../infra/container-runner.mjs");
+    const status = mod.getIsolatedRunnerPoolStatus();
+    expect(status.enabled).toBe(true);
+    expect(status.maxConcurrent).toBeGreaterThan(0);
+  });
+
+  it("persists artifacts for isolated runs", async () => {
+    const mod = await import("../infra/container-runner.mjs");
+    const result = await mod.runInIsolatedRunner({
+      command: process.execPath,
+      args: ["-e", "console.log('runner ok'); console.error('runner err')"],
+      cwd: process.cwd(),
+    });
+
+    expect(result.status).toBe("success");
+    expect(Array.isArray(result.artifacts)).toBe(true);
+    expect(result.artifacts.some((artifact) => /stdout\.log$/i.test(artifact.path))).toBe(true);
+    expect(result.artifacts.some((artifact) => /metadata\.json$/i.test(artifact.path))).toBe(true);
+  });
+
+  it("surfaces blocked evidence when lease acquisition stays saturated", async () => {
+    const mod = await import("../infra/container-runner.mjs");
+    const heldLease = mod.acquireRunnerLease({ taskId: "held-lease" });
+    const extraLeases = [];
+    const target = mod.getIsolatedRunnerPoolStatus().maxConcurrent;
+    for (let index = 1; index < target; index += 1) {
+      const lease = mod.acquireRunnerLease({ taskId: `held-${index}` });
+      if (lease) extraLeases.push(lease);
+    }
+
+    const result = await mod.runInIsolatedRunner({
+      command: process.execPath,
+      args: ["-e", "console.log('never runs')"],
+      cwd: process.cwd(),
+      maxAttempts: 1,
+    });
+
+    expect(result.blocked).toBe(true);
+    expect(result.artifacts.some((artifact) => /metadata\.json$/i.test(artifact.path))).toBe(true);
+
+    mod.releaseRunnerLease(heldLease);
+    for (const lease of extraLeases) mod.releaseRunnerLease(lease);
+  });
+
+  it("classifies command exit failures with stable diagnostics", async () => {
+    const mod = await import("../infra/container-runner.mjs");
+    const result = await mod.runInIsolatedRunner({
+      command: process.execPath,
+      args: ["-e", "console.error('test command failed'); process.exit(2)"],
+      cwd: process.cwd(),
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.failureDiagnostic).toMatchObject({
+      category: "command_failure",
+      retryable: false,
+      exitCode: 2,
+      status: "error",
+    });
+  });
+
+  it("classifies execution timeouts as retryable failures", async () => {
+    const mod = await import("../infra/container-runner.mjs");
+    const result = await mod.runInIsolatedRunner({
+      command: process.execPath,
+      args: ["-e", "setTimeout(() => {}, 200)"],
+      cwd: process.cwd(),
+      timeoutMs: 25,
+    });
+
+    expect(result.status).toBe("timeout");
+    expect(result.failureDiagnostic).toMatchObject({
+      category: "timeout",
+      retryable: true,
+      status: "timeout",
+    });
+  });
+
+  it("classifies sandbox-style permission errors as non-retryable", async () => {
+    const mod = await import("../infra/container-runner.mjs");
+    const result = await mod.runInIsolatedRunner({
+      command: "sandbox-check",
+      cwd: process.cwd(),
+      execute: async () => ({
+        status: "error",
+        stdout: "",
+        stderr: "Operation not permitted: sandbox denied write access",
+        exitCode: 126,
+        duration: 5,
+      }),
+    });
+
+    expect(result.failureDiagnostic).toMatchObject({
+      category: "sandbox_error",
+      retryable: false,
+      exitCode: 126,
+    });
+  });
+
+  it("classifies runner startup failures as bootstrap failures", async () => {
+    const mod = await import("../infra/container-runner.mjs");
+    const result = await mod.runInIsolatedRunner({
+      command: "missing-binary",
+      cwd: process.cwd(),
+      execute: async () => ({
+        status: "error",
+        stdout: "",
+        stderr: "spawn missing-binary ENOENT",
+        exitCode: -1,
+        duration: 2,
+      }),
+    });
+
+    expect(result.failureDiagnostic).toMatchObject({
+      category: "bootstrap_failure",
+      status: "error",
     });
   });
 });

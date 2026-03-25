@@ -8,10 +8,6 @@
  *   4. Sandbox permissions and shell environment policy
  *   5. Common MCP servers (context7, microsoft-docs)
  *
- * NOTE: Vibe-Kanban MCP is workspace-scoped and managed by repo-config.mjs
- * inside each repo's `.codex/config.toml`. Global config no longer auto-adds
- * `[mcp_servers.vibe_kanban]`.
- *
  * SCOPE: This manages the GLOBAL ~/.codex/config.toml which contains:
  *   - Model provider configs (API keys, base URLs) — MUST be global
  *   - Stream timeouts & retry settings — per-provider, global
@@ -27,6 +23,7 @@
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve, dirname, parse, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
@@ -40,20 +37,6 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
-/**
- * Read the vibe-kanban version from the local package.json dependency.
- * Falls back to "latest" if not found (shouldn't happen in normal usage).
- */
-function getVibeKanbanVersion() {
-  try {
-    const pkgPath = resolve(__dirname, "..", "package.json");
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-    return pkg.dependencies?.["vibe-kanban"] || "latest";
-  } catch {
-    return "latest";
-  }
-}
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -159,6 +142,69 @@ const CRITICAL_ALWAYS_ON_FEATURES = new Set([
 const CRITICAL_ALWAYS_OFF_FEATURES = new Set([
   "enable_request_compression",
 ]);
+
+function shouldDisableRemoteModels(envOverrides = process.env) {
+  try {
+    return resolveCodexProfileRuntime(envOverrides).provider === "azure";
+  } catch {
+    return false;
+  }
+}
+
+function resolveRuntimePlatform(value = process.platform) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return process.platform;
+  if (raw === "win32" || raw === "windows" || raw === "windows_nt" || raw.startsWith("mingw")) {
+    return "win32";
+  }
+  if (raw === "darwin" || raw === "mac" || raw === "macos" || raw === "osx") {
+    return "darwin";
+  }
+  if (raw === "linux") {
+    return "linux";
+  }
+  return raw;
+}
+
+function resolvePlatformFromEnv(envOverrides = process.env, explicitPlatform = "") {
+  return resolveRuntimePlatform(
+    explicitPlatform ||
+    envOverrides?.BOSUN_HOST_PLATFORM ||
+    envOverrides?.npm_config_platform ||
+    envOverrides?.OS ||
+    process.platform,
+  );
+}
+
+function getDefaultSandboxTempRoots({ platform = process.platform, tempDir = "" } = {}) {
+  const resolvedPlatform = resolveRuntimePlatform(platform);
+  if (resolvedPlatform === "win32") {
+    const candidate = String(tempDir || process.env.TEMP || process.env.TMP || tmpdir() || "").trim();
+    return candidate && isAbsolute(candidate) ? [candidate] : [];
+  }
+  return ["/tmp"];
+}
+
+function shouldDisableLinuxBwrap(envOverrides = process.env) {
+  return resolvePlatformFromEnv(envOverrides) !== "linux";
+}
+
+function getRecommendedFeatureMeta(key, meta, envOverrides = process.env) {
+  if (key === "use_linux_sandbox_bwrap" && shouldDisableLinuxBwrap(envOverrides)) {
+    return {
+      ...meta,
+      default: false,
+      comment: "Linux bubblewrap sandbox (DISABLED outside Linux)",
+    };
+  }
+  if (key !== "remote_models") return meta;
+  if (!shouldDisableRemoteModels(envOverrides)) return meta;
+  return {
+    ...meta,
+    default: false,
+    comment: "Remote model support (DISABLED for Azure - model listing returns HTTP 400)",
+  };
+}
 
 function parsePositiveInt(value) {
   const parsed = Number.parseInt(String(value ?? "").trim(), 10);
@@ -434,12 +480,13 @@ export function buildFeaturesBlock(envOverrides = process.env) {
   ];
 
   for (const [key, meta] of Object.entries(RECOMMENDED_FEATURES)) {
-    let enabled = meta.default;
+    const resolvedMeta = getRecommendedFeatureMeta(key, meta, envOverrides);
+    let enabled = resolvedMeta.default;
     // Check env override
-    if (meta.envVar && envOverrides[meta.envVar] !== undefined) {
-      enabled = parseBoolEnv(envOverrides[meta.envVar]);
+    if (resolvedMeta.envVar && envOverrides[resolvedMeta.envVar] !== undefined) {
+      enabled = parseBoolEnv(envOverrides[resolvedMeta.envVar]);
     }
-    if (meta.comment) lines.push(`# ${meta.comment}`);
+    if (resolvedMeta.comment) lines.push(`# ${resolvedMeta.comment}`);
     lines.push(`${key} = ${enabled}`);
   }
 
@@ -457,6 +504,13 @@ export function buildFeaturesBlock(envOverrides = process.env) {
  */
 export function ensureFeatureFlags(toml, envOverrides = process.env) {
   const added = [];
+  const forcedOffFeatures = new Set(CRITICAL_ALWAYS_OFF_FEATURES);
+  if (shouldDisableLinuxBwrap(envOverrides)) {
+    forcedOffFeatures.add("use_linux_sandbox_bwrap");
+  }
+  if (shouldDisableRemoteModels(envOverrides)) {
+    forcedOffFeatures.add("remote_models");
+  }
 
   if (!hasFeaturesSection(toml)) {
     toml += buildFeaturesBlock(envOverrides);
@@ -473,15 +527,16 @@ export function ensureFeatureFlags(toml, envOverrides = process.env) {
   let section = toml.substring(afterHeader, sectionEnd);
 
   for (const [key, meta] of Object.entries(RECOMMENDED_FEATURES)) {
+    const resolvedMeta = getRecommendedFeatureMeta(key, meta, envOverrides);
     const keyRegex = new RegExp(`^${escapeRegex(key)}\\s*=`, "m");
     const hasEnvOverride =
-      meta.envVar && envOverrides[meta.envVar] !== undefined;
+      resolvedMeta.envVar && envOverrides[resolvedMeta.envVar] !== undefined;
     const envValue = hasEnvOverride
-      ? parseBoolEnv(envOverrides[meta.envVar])
+      ? parseBoolEnv(envOverrides[resolvedMeta.envVar])
       : null;
 
     if (!keyRegex.test(section)) {
-      const enabled = hasEnvOverride ? envValue : meta.default;
+      const enabled = hasEnvOverride ? envValue : resolvedMeta.default;
       section = section.trimEnd() + `\n${key} = ${enabled}\n`;
       added.push(key);
       continue;
@@ -509,7 +564,7 @@ export function ensureFeatureFlags(toml, envOverrides = process.env) {
 
     // Force certain features OFF regardless of what is in the file.
     // (e.g. enable_request_compression corrupts JSON bodies on Azure wire_api=responses)
-    if (CRITICAL_ALWAYS_OFF_FEATURES.has(key)) {
+    if (forcedOffFeatures.has(key)) {
       const enabledRegex = new RegExp(
         `^(${escapeRegex(key)}\\s*=\\s*)true\\b.*$`,
         "m",
@@ -590,7 +645,7 @@ function formatTomlArray(values) {
   return `[${values.map((value) => `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(", ")}]`;
 }
 
-function normalizeWritableRoots(input, { repoRoot, additionalRoots, validateExistence = false } = {}) {
+function normalizeWritableRoots(input, { repoRoot, additionalRoots, validateExistence = false, platform = process.platform, tempDir = "" } = {}) {
   const roots = new Set();
   const addRoot = (value) => {
     const trimmed = String(value || "").trim();
@@ -649,8 +704,9 @@ function normalizeWritableRoots(input, { repoRoot, additionalRoots, validateExis
     }
   }
 
-  // /tmp is needed for sandbox temp files, pip installs, etc.
-  roots.add("/tmp");
+  for (const tempRoot of getDefaultSandboxTempRoots({ platform, tempDir })) {
+    addRoot(tempRoot);
+  }
 
   return Array.from(roots);
 }
@@ -706,7 +762,7 @@ export function ensureGitAncestor(dir) {
  * @param {{ worktreePath?: string, repoRoot?: string, existingRoots?: string[] }} opts
  * @returns {string[]} Merged writable roots
  */
-export function buildTaskWritableRoots({ worktreePath, repoRoot, existingRoots = [] } = {}) {
+export function buildTaskWritableRoots({ worktreePath, repoRoot, existingRoots = [], tempDir = "", platform = process.platform } = {}) {
   const roots = new Set(existingRoots.filter(r => r && isAbsolute(r) && existsSync(r)));
   const addIfExists = (p) => {
     if (p && isAbsolute(p) && existsSync(p)) roots.add(p);
@@ -735,7 +791,9 @@ export function buildTaskWritableRoots({ worktreePath, repoRoot, existingRoots =
     const parent = dirname(repoRoot);
     if (parent && parent !== repoRoot) addIfExists(parent);
   }
-  roots.add("/tmp");
+  for (const tempRoot of getDefaultSandboxTempRoots({ platform, tempDir })) {
+    addIfExists(tempRoot);
+  }
   return Array.from(roots);
 }
 
@@ -751,9 +809,17 @@ export function buildSandboxWorkspaceWrite(options = {}) {
     networkAccess = true,
     excludeTmpdirEnvVar = false,
     excludeSlashTmp = false,
+    platform = process.platform,
+    tempDir = "",
   } = options;
 
-  const desiredRoots = normalizeWritableRoots(writableRoots, { repoRoot, additionalRoots, validateExistence: true });
+  const desiredRoots = normalizeWritableRoots(writableRoots, {
+    repoRoot,
+    additionalRoots,
+    validateExistence: true,
+    platform,
+    tempDir,
+  });
   if (desiredRoots.length === 0) {
     return "";
   }
@@ -809,7 +875,7 @@ function ensureSandboxWorkspaceFlags(section, flags) {
   return { section: nextSection, changed };
 }
 
-function mergeSandboxWorkspaceRoots(section, desiredRoots, repoRoot) {
+function mergeSandboxWorkspaceRoots(section, desiredRoots, repoRoot, { platform = process.platform, tempDir = "" } = {}) {
   const rootsRegex = /^writable_roots\s*=\s*(\[[^\]]*\])\s*$/m;
   const match = section.match(rootsRegex);
   if (!match) {
@@ -824,8 +890,14 @@ function mergeSandboxWorkspaceRoots(section, desiredRoots, repoRoot) {
   }
 
   const existingRoots = parseTomlArrayLiteral(match[1]);
-  const validExisting = existingRoots.filter((root) => root === "/tmp" || existsSync(root));
-  const merged = normalizeWritableRoots(validExisting, { repoRoot, validateExistence: true });
+  const preservedRoots = new Set(getDefaultSandboxTempRoots({ platform, tempDir }));
+  const validExisting = existingRoots.filter((root) => preservedRoots.has(root) || existsSync(root));
+  const merged = normalizeWritableRoots(validExisting, {
+    repoRoot,
+    validateExistence: true,
+    platform,
+    tempDir,
+  });
   const rootsAdded = [];
   for (const root of desiredRoots) {
     if (merged.includes(root)) continue;
@@ -833,7 +905,7 @@ function mergeSandboxWorkspaceRoots(section, desiredRoots, repoRoot) {
     rootsAdded.push(root);
   }
 
-  let changed = existingRoots.some((root) => root !== "/tmp" && !existsSync(root));
+  let changed = existingRoots.some((root) => !preservedRoots.has(root) && !existsSync(root));
   const formatted = formatTomlArray(merged);
   if (formatted !== match[1]) {
     section = section.replace(rootsRegex, `writable_roots = ${formatted}`);
@@ -851,9 +923,17 @@ export function ensureSandboxWorkspaceWrite(toml, options = {}) {
     networkAccess = true,
     excludeTmpdirEnvVar = false,
     excludeSlashTmp = false,
+    platform = process.platform,
+    tempDir = "",
   } = options;
 
-  const desiredRoots = normalizeWritableRoots(writableRoots, { repoRoot, additionalRoots, validateExistence: true });
+  const desiredRoots = normalizeWritableRoots(writableRoots, {
+    repoRoot,
+    additionalRoots,
+    validateExistence: true,
+    platform,
+    tempDir,
+  });
   if (!hasSandboxWorkspaceWrite(toml)) {
     if (desiredRoots.length === 0) {
       return { toml, changed: false, added: false, rootsAdded: [] };
@@ -881,7 +961,10 @@ export function ensureSandboxWorkspaceWrite(toml, options = {}) {
     exclude_tmpdir_env_var: excludeTmpdirEnvVar,
     exclude_slash_tmp: excludeSlashTmp,
   });
-  const rootsResult = mergeSandboxWorkspaceRoots(flagsResult.section, desiredRoots, repoRoot);
+  const rootsResult = mergeSandboxWorkspaceRoots(flagsResult.section, desiredRoots, repoRoot, {
+    platform,
+    tempDir,
+  });
   if (!flagsResult.changed && !rootsResult.changed) {
     return { toml, changed: false, added: false, rootsAdded: [] };
   }
@@ -909,7 +992,7 @@ export function ensureSandboxWorkspaceWrite(toml, options = {}) {
  * @param {string} toml - The full Codex TOML configuration contents.
  * @returns {{ toml: string, changed: boolean, removed: string[] }} Result of pruning.
  */
-export function pruneStaleSandboxRoots(toml) {
+export function pruneStaleSandboxRoots(toml, options = {}) {
   if (!hasSandboxWorkspaceWrite(toml)) {
     return { toml, changed: false, removed: [] };
   }
@@ -921,8 +1004,9 @@ export function pruneStaleSandboxRoots(toml) {
   if (!match) return { toml, changed: false, removed: [] };
 
   const existing = parseTomlArrayLiteral(match[1]);
-  const valid = existing.filter((root) => root === "/tmp" || existsSync(root));
-  const removed = existing.filter((root) => root !== "/tmp" && !existsSync(root));
+  const preservedRoots = new Set(getDefaultSandboxTempRoots(options));
+  const valid = existing.filter((root) => preservedRoots.has(root) || existsSync(root));
+  const removed = existing.filter((root) => !preservedRoots.has(root) && !existsSync(root));
   if (removed.length === 0) return { toml, changed: false, removed: [] };
 
   const nextSection = sectionInfo.section.replace(
@@ -1084,77 +1168,6 @@ export { writeCodexConfig };
 export { getConfigPath };
 
 /**
- * Check whether the config already has a [mcp_servers.vibe_kanban] section.
- */
-export function hasVibeKanbanMcp(toml) {
-  return /^\[mcp_servers\.vibe_kanban\]/m.test(toml);
-}
-
-/**
- * Check whether the config already has a [mcp_servers.vibe_kanban.env] section.
- */
-export function hasVibeKanbanEnv(toml) {
-  return /^\[mcp_servers\.vibe_kanban\.env\]/m.test(toml);
-}
-
-/**
- * Remove the [mcp_servers.vibe_kanban] and [mcp_servers.vibe_kanban.env]
- * sections (and their contents) from config.toml.
- * Returns the cleaned TOML string.
- */
-export function removeVibeKanbanMcp(toml) {
-  // Line-based approach: walk lines and skip VK-related sections.
-  const lines = toml.split("\n");
-  const out = [];
-  let skipping = false;
-  // Track comment lines immediately preceding a VK section header
-  let pendingComments = [];
-
-  for (const line of lines) {
-    // Detect section headers: lines starting with [ that aren't array values
-    const isSectionHeader = /^\[[\w]/.test(line);
-    const isVkSection =
-      /^\[mcp_servers\.vibe_kanban\b/.test(line);
-
-    if (isVkSection) {
-      // Drop any pending comment lines (they belong to this VK section)
-      pendingComments = [];
-      skipping = true;
-      continue;
-    }
-
-    if (skipping && isSectionHeader) {
-      // We've reached the next non-VK section — stop skipping
-      skipping = false;
-    }
-
-    if (skipping) continue;
-
-    // Buffer comment/blank lines that might precede a VK section header
-    if (/^#.*[Vv]ibe.[Kk]anban/.test(line) || /^# ── .*[Vv]ibe.[Kk]anban/.test(line)) {
-      pendingComments.push(line);
-      continue;
-    }
-
-    // Flush pending comments (they weren't followed by a VK header)
-    if (pendingComments.length) {
-      out.push(...pendingComments);
-      pendingComments = [];
-    }
-
-    out.push(line);
-  }
-
-  // Flush any remaining pending comments
-  if (pendingComments.length) {
-    out.push(...pendingComments);
-  }
-
-  // Clean up excessive blank lines
-  return out.join("\n").replace(/\n{3,}/g, "\n\n");
-}
-
-/**
  * Check whether the config already has an [agent_sdk] section.
  */
 export function hasAgentSdkConfig(toml) {
@@ -1171,80 +1184,7 @@ export function buildAgentSdkBlock({ primary = "codex" } = {}) {
   return buildDefaultAgentSdkBlock(primary);
 }
 
-/**
- * Build the vibe_kanban MCP server block (including env vars).
- *
- * The version is pinned from the local package.json dependency to avoid
- * slow npx re-downloads when @latest resolves to a new version.
- *
- * Only VK_BASE_URL and VK_ENDPOINT_URL are set — the MCP server reads
- * the backend port from the VK port file, so PORT/HOST env vars are not
- * needed and were removed to avoid confusion.
- *
- * @param {object} opts
- * @param {string} opts.vkBaseUrl   e.g. "http://127.0.0.1:54089"
- */
-export function buildVibeKanbanBlock({
-  vkBaseUrl = "http://127.0.0.1:54089",
-} = {}) {
-  const vkVersion = getVibeKanbanVersion();
-  return [
-    "",
-    "# ── Vibe-Kanban MCP (added by bosun) ──",
-    "[mcp_servers.vibe_kanban]",
-    "startup_timeout_sec = 120",
-    "args = [",
-    '    "-y",',
-    `    "vibe-kanban@${vkVersion}",`,
-    '    "--mcp",',
-    "]",
-    'command = "npx"',
-    'tools = ["*"]',
-    "",
-    "[mcp_servers.vibe_kanban.env]",
-    "# Ensure MCP always targets the correct VK API endpoint.",
-    `VK_BASE_URL = "${vkBaseUrl}"`,
-    `VK_ENDPOINT_URL = "${vkBaseUrl}"`,
-    "",
-  ].join("\n");
-}
 
-/**
- * Update the env vars inside an existing [mcp_servers.vibe_kanban.env] section.
- * If a key already exists with a different value, it is replaced.
- * If a key is missing, it is appended to the section.
- *
- * @param {string} toml  Current config.toml content
- * @param {object} envVars  Key-value pairs to ensure
- * @returns {string}  Updated TOML
- */
-export function updateVibeKanbanEnv(toml, envVars) {
-  const envHeader = "[mcp_servers.vibe_kanban.env]";
-  const headerIdx = toml.indexOf(envHeader);
-  if (headerIdx === -1) return toml; // section doesn't exist
-
-  // Find the end of this section (next [header] or EOF)
-  const afterHeader = headerIdx + envHeader.length;
-  const nextSection = toml.indexOf("\n[", afterHeader);
-  const sectionEnd = nextSection === -1 ? toml.length : nextSection;
-
-  let section = toml.substring(afterHeader, sectionEnd);
-
-  for (const [key, value] of Object.entries(envVars)) {
-    // Check if key already exists in section
-    const keyRegex = new RegExp(`^${escapeRegex(key)}\\s*=\\s*.*$`, "m");
-    const match = section.match(keyRegex);
-    if (match) {
-      // Replace existing value
-      section = section.replace(keyRegex, `${key} = "${value}"`);
-    } else {
-      // Append before end of section
-      section = section.trimEnd() + `\n${key} = "${value}"\n`;
-    }
-  }
-
-  return toml.substring(0, afterHeader) + section + toml.substring(sectionEnd);
-}
 
 /**
  * Scan all [model_providers.*] sections for stream_idle_timeout_ms.
@@ -1329,6 +1269,29 @@ function buildModelProviderSection(providerName, config = {}) {
   return lines.join("\n");
 }
 
+function setModelProviderField(toml, providerName, key, value) {
+  const header = `[model_providers.${providerName}]`;
+  const headerIdx = toml.indexOf(header);
+  if (headerIdx === -1) return toml;
+
+  const afterHeader = headerIdx + header.length;
+  const nextSection = toml.indexOf("\n[", afterHeader);
+  const sectionEnd = nextSection === -1 ? toml.length : nextSection;
+
+  let section = toml.substring(afterHeader, sectionEnd);
+  const fieldRegex = new RegExp(`^${escapeRegex(key)}\\s*=.*$`, "m");
+  const escapedValue = String(value || "").replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+  const line = `${key} = "${escapedValue}"`;
+
+  if (fieldRegex.test(section)) {
+    section = section.replace(fieldRegex, line);
+  } else {
+    section = `${section.trimEnd()}\n${line}\n`;
+  }
+
+  return toml.substring(0, afterHeader) + section + toml.substring(sectionEnd);
+}
+
 /**
  * Codex CLI built-in provider IDs that cannot be used in [model_providers.*].
  * Declaring these in config.toml causes a fatal "reserved built-in provider"
@@ -1355,8 +1318,9 @@ function migrateReservedProviderIds(toml) {
   return { toml, migrated };
 }
 
-function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
+export function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
   const added = [];
+  const updated = [];
   const { env: resolvedEnv, active } = resolveCodexProfileRuntime(env);
 
   // Migrate any legacy reserved provider IDs before adding new sections
@@ -1390,6 +1354,12 @@ function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
         model: active?.model || resolvedEnv.CODEX_MODEL || "",
       });
       added.push("azure");
+    } else if (activeBaseUrl) {
+      const updatedToml = setModelProviderField(toml, "azure", "base_url", activeBaseUrl);
+      if (updatedToml !== toml) {
+        toml = updatedToml;
+        updated.push("azure.base_url");
+      }
     }
   }
 
@@ -1397,7 +1367,7 @@ function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
   // The built-in already handles OPENAI_API_KEY.  Declaring it causes:
   //   "model_providers contains reserved built-in provider IDs: openai"
 
-  return { toml, added, migrated: migration.migrated };
+  return { toml, added, updated, migrated: migration.migrated };
 }
 
 /**
@@ -1436,13 +1406,10 @@ export function ensureRetrySettings(toml, providerName) {
  * High-level: ensure the config.toml is properly configured for bosun.
  *
  * Returns an object describing what was done:
- *   { created, vkAdded, vkEnvUpdated, timeoutsFixed[], retriesAdded[],
+ *   { created, timeoutsFixed[], retriesAdded[],
  *     featuresAdded[], sandboxAdded, shellEnvAdded, commonMcpAdded, path }
  *
  * @param {object} opts
- * @param {string}  [opts.vkBaseUrl]
- * @param {boolean} [opts.skipVk]
- * @param {boolean} [opts.manageVkMcp]  Explicit opt-in to manage VK MCP in global config
  * @param {boolean} [opts.dryRun]  If true, returns result without writing
  * @param {object}  [opts.env]     Environment overrides (defaults to process.env)
  * @param {string}  [opts.primarySdk]  Primary agent SDK: "codex", "copilot", or "claude"
@@ -1466,7 +1433,7 @@ function resolveSandboxWorkspaceOptions(env) {
 function applySandboxDefaults(toml, env, result) {
   const sandboxModeResult = ensureTopLevelSandboxMode(
     toml,
-    env.CODEX_SANDBOX_MODE,
+    env.CODEX_SANDBOX_MODE || env.CODEX_SANDBOX,
   );
   let nextToml = sandboxModeResult.toml;
   if (sandboxModeResult.changed) {
@@ -1535,43 +1502,6 @@ function applyAgentSdkDefaults(toml, env, primarySdk, result) {
   return nextToml;
 }
 
-function applyVibeKanbanDefaults(toml, { manageVkMcp, skipVk, vkBaseUrl }, result) {
-  let nextToml = toml;
-  const shouldManageGlobalVkMcp = Boolean(manageVkMcp) && !skipVk;
-  if (!shouldManageGlobalVkMcp) {
-    if (hasVibeKanbanMcp(nextToml)) {
-      nextToml = removeVibeKanbanMcp(nextToml);
-      result.vkRemoved = true;
-    }
-    return nextToml;
-  }
-
-  if (!hasVibeKanbanMcp(nextToml)) {
-    nextToml += buildVibeKanbanBlock({ vkBaseUrl });
-    result.vkAdded = true;
-    return nextToml;
-  }
-
-  const vkEnvValues = {
-    VK_BASE_URL: vkBaseUrl,
-    VK_ENDPOINT_URL: vkBaseUrl,
-  };
-  const beforeVkEnv = nextToml;
-  if (!hasVibeKanbanEnv(nextToml)) {
-    nextToml =
-      nextToml.trimEnd() +
-      "\n\n[mcp_servers.vibe_kanban.env]\n" +
-      'VK_BASE_URL = "' + vkBaseUrl + '"\n' +
-      'VK_ENDPOINT_URL = "' + vkBaseUrl + '"\n';
-  } else {
-    nextToml = updateVibeKanbanEnv(nextToml, vkEnvValues);
-  }
-  if (nextToml !== beforeVkEnv) {
-    result.vkEnvUpdated = true;
-  }
-  return nextToml;
-}
-
 function ensureCommonMcpDefaults(toml, result) {
   let nextToml = toml;
   for (const definition of COMMON_MCP_SERVER_DEFS) {
@@ -1632,9 +1562,6 @@ function createEnsureCodexConfigResult() {
   return {
     path: CONFIG_PATH,
     created: false,
-    vkAdded: false,
-    vkRemoved: false,
-    vkEnvUpdated: false,
     agentSdkAdded: false,
     featuresAdded: [],
     agentMaxThreads: null,
@@ -1667,7 +1594,7 @@ function initializeCodexConfigState(result) {
   };
 }
 
-function applyEnsureCodexConfigDefaults(toml, env, primarySdk, vibeKanbanOptions, result) {
+function applyEnsureCodexConfigDefaults(toml, env, primarySdk, result) {
   const sandboxState = applySandboxDefaults(toml, env, result);
   let nextToml = sandboxState.toml;
 
@@ -1677,7 +1604,6 @@ function applyEnsureCodexConfigDefaults(toml, env, primarySdk, vibeKanbanOptions
   result.featuresAdded = featureResult.added;
   nextToml = featureResult.toml;
 
-  nextToml = applyVibeKanbanDefaults(nextToml, vibeKanbanOptions, result);
   nextToml = ensureCommonMcpDefaults(nextToml, result);
   nextToml = applyModelProviderDefaults(nextToml, env, result);
 
@@ -1693,9 +1619,6 @@ function persistCodexConfigIfChanged(toml, originalToml, dryRun, result) {
 }
 
 export function ensureCodexConfig({
-  vkBaseUrl = "http://127.0.0.1:54089",
-  skipVk = true,
-  manageVkMcp = false,
   dryRun = false,
   env = process.env,
   primarySdk,
@@ -1706,7 +1629,6 @@ export function ensureCodexConfig({
     initialToml,
     env,
     primarySdk,
-    { manageVkMcp, skipVk, vkBaseUrl },
     result,
   );
 
@@ -1723,18 +1645,6 @@ export function ensureCodexConfig({
 function logConfigSummaryHeader(result, log) {
   if (result.created) {
     log("  :edit: Created new Codex CLI config");
-  }
-
-  if (result.vkAdded) {
-    log("  :check: Added Vibe-Kanban MCP server to Codex config");
-  }
-
-  if (result.vkRemoved) {
-    log("  :trash:  Removed Vibe-Kanban MCP server from global config (workspace-scoped only)");
-  }
-
-  if (result.vkEnvUpdated) {
-    log("  :check: Updated Vibe-Kanban MCP environment variables");
   }
 
   if (result.agentSdkAdded) {
@@ -1853,5 +1763,6 @@ function parseBoolEnv(value) {
   if (["0", "false", "no", "off", "n"].includes(raw)) return false;
   return true;
 }
+
 
 

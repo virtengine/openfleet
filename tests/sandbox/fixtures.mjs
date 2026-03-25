@@ -310,7 +310,6 @@ export const TEMPLATE_FIXTURES = {
   "template-code-quality-striker":       { scenario: scenarios.greenPR(202),      inputVars: {} },
   "template-continuation-loop":         { scenario: scenarios.kanbanState(),     inputVars: { taskId: "TASK-1", worktreePath: "/tmp/wt/task-1", pollIntervalMs: 1, maxTurns: 1, stuckThresholdMs: 1, onStuck: "pause", terminalStates: ["done", "cancelled"] } },
   "template-task-lifecycle":              { scenario: scenarios.greenPR(98),      inputVars: { taskId: "TASK-7", worktreePath: "/tmp/wt/task-7", branch: "feat/task-7", baseBranch: "main", prNumber: 98 } },
-  "template-ve-orchestrator-lite":        { scenario: scenarios.kanbanState(),     inputVars: { maxConcurrent: 2 } },
   "template-task-batch-processor":        { scenario: scenarios.kanbanState(),     inputVars: { batchSize: 3 } },
   "template-task-batch-pr":              { scenario: scenarios.greenPR(99),      inputVars: { prNumber: 99, branch: "feat/batch", worktreePath: "/tmp/wt/batch", baseBranch: "main" } },
   "template-research-agent":             { scenario: scenarios.kanbanState(),     inputVars: { problem: "Prove the Pythagorean theorem", domain: "mathematics", maxIterations: 3 } },

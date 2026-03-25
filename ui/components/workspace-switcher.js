@@ -11,6 +11,10 @@ import htm from "htm";
 import { apiFetch, onWsMessage } from "../modules/api.js";
 import { haptic } from "../modules/telegram.js";
 import { Modal } from "./shared.js";
+import {
+  WorkspaceExecutorSettingsFields,
+  formatWorkspaceExecutorSummary,
+} from "./workspace-executor-settings.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   Card, CardContent, CardActions,
@@ -160,7 +164,7 @@ async function setWorkspaceState(workspaceId, state) {
   return res;
 }
 
-async function setWorkspaceExecutors(workspaceId, executors) {
+export async function setWorkspaceExecutors(workspaceId, executors) {
   const res = await apiFetch("/api/workspaces/executors", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -460,7 +464,11 @@ function ExecutorConfigPanel({ ws }) {
         ${resolveIcon("settings")} ${" "}Executors ${expanded ? "▾" : "▸"}
         ${!expanded && html`
           <${Chip}
-            label="${execs.maxConcurrent || 3} slots · ${execs.pool || "shared"}"
+            label=${formatWorkspaceExecutorSummary({
+              maxConcurrent: execs.maxConcurrent || 3,
+              pool: execs.pool || "shared",
+              weight: execs.weight || 1.0,
+            })}
             size="small"
             variant="outlined"
             sx=${{ ml: 0.5, height: 18, fontSize: "10px" }}
@@ -469,81 +477,20 @@ function ExecutorConfigPanel({ ws }) {
       <//>
 
       <${Collapse} in=${expanded}>
-        <${Stack} spacing=${1.5} sx=${{ pt: 1, pb: 0.5, px: 0.5 }}>
-
-          <${Box}>
-            <${Typography} variant="caption" color="text.secondary" sx=${{ mb: 0.5, display: "block" }}>
-              Max Concurrent Executors: ${maxConcurrent}
-            <//>
-            <${Slider}
-              value=${maxConcurrent}
-              onChange=${(_e, v) => setMaxConcurrent(v)}
-              min=${1}
-              max=${10}
-              step=${1}
-              marks=${[
-                { value: 1, label: "1" },
-                { value: 3, label: "3" },
-                { value: 5, label: "5" },
-                { value: 10, label: "10" },
-              ]}
-              size="small"
-              sx=${{ maxWidth: 240 }}
-            />
-          <//>
-
-
-          <${Stack} direction="row" spacing=${1} alignItems="center">
-            <${Typography} variant="caption" color="text.secondary">Pool:<//>
-            <${ToggleButtonGroup}
-              value=${pool}
-              exclusive
-              onChange=${(_e, v) => { if (v) setPool(v); }}
-              size="small"
-              sx=${{ height: 26 }}
-            >
-              <${ToggleButton} value="shared" sx=${{ px: 1, fontSize: "11px", textTransform: "none" }}>
-                <${Tooltip} title="Shares executor capacity across workspaces">
-                  <span>Shared</span>
-                <//>
-              <//>
-              <${ToggleButton} value="dedicated" sx=${{ px: 1, fontSize: "11px", textTransform: "none" }}>
-                <${Tooltip} title="Dedicated executor pool — isolated from other workspaces">
-                  <span>Dedicated</span>
-                <//>
-              <//>
-            <//>
-          <//>
-
-
-          ${pool === "shared" && html`
-            <${Box}>
-              <${Typography} variant="caption" color="text.secondary" sx=${{ mb: 0.5, display: "block" }}>
-                Priority Weight: ${weight.toFixed(1)}×
-              <//>
-              <${Slider}
-                value=${weight}
-                onChange=${(_e, v) => setWeight(v)}
-                min=${0.1}
-                max=${5.0}
-                step=${0.1}
-                size="small"
-                sx=${{ maxWidth: 200 }}
-              />
-            <//>
-          `}
-
-
-          ${hasChanges && html`
-            <${Button}
-              size="small"
-              variant="contained"
-              onClick=${handleSave}
-              disabled=${saving}
-              startIcon=${saving ? html`<${CircularProgress} size=${14} />` : null}
-              sx=${{ alignSelf: "flex-start", textTransform: "none", fontSize: "12px" }}
-            >${saving ? "Saving…" : "Save Executor Config"}<//>
-          `}
+        <${Box} sx=${{ pt: 1, pb: 0.5, px: 0.5 }}>
+          <${WorkspaceExecutorSettingsFields}
+            title="Workspace Executors"
+            maxConcurrent=${maxConcurrent}
+            pool=${pool}
+            weight=${weight}
+            onMaxConcurrentChange=${setMaxConcurrent}
+            onPoolChange=${setPool}
+            onWeightChange=${setWeight}
+            saving=${saving}
+            hasChanges=${hasChanges}
+            onSave=${handleSave}
+            saveLabel="Save Executor Config"
+          />
         <//>
       <//>
     <//>

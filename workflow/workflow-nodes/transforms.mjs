@@ -380,6 +380,37 @@ function pickTaskString(...values) {
   }
   return "";
 }
+function filterAsciiAlphaNumeric(value, maxLength = Number.POSITIVE_INFINITY) {
+  let out = "";
+  for (const char of String(value || "")) {
+    const code = char.charCodeAt(0);
+    const isDigit = code >= 48 && code <= 57;
+    const isUpper = code >= 65 && code <= 90;
+    const isLower = code >= 97 && code <= 122;
+    if (!isDigit && !isUpper && !isLower) continue;
+    out += char;
+    if (out.length >= maxLength) break;
+  }
+  return out;
+}
+function slugifyTaskBranchSegment(value, maxLength = 48) {
+  let out = "";
+  let pendingDash = false;
+  for (const rawChar of String(value || "").toLowerCase()) {
+    const code = rawChar.charCodeAt(0);
+    const isDigit = code >= 48 && code <= 57;
+    const isLower = code >= 97 && code <= 122;
+    if (isDigit || isLower) {
+      if (pendingDash && out.length > 0 && out.length < maxLength) out += "-";
+      pendingDash = false;
+      out += rawChar;
+      if (out.length >= maxLength) break;
+      continue;
+    }
+    pendingDash = out.length > 0;
+  }
+  return out;
+}
 function deriveTaskBranch(task = {}) {
   const explicit = pickTaskString(
     task?.branch,
@@ -388,12 +419,8 @@ function deriveTaskBranch(task = {}) {
     task?.metadata?.branch,
   );
   if (explicit) return explicit;
-  const taskId = pickTaskString(task?.id, task?.task_id).replace(/[^a-zA-Z0-9]/g, "").slice(0, 12);
-  const titleSlug = pickTaskString(task?.title, "task")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48);
+  const taskId = filterAsciiAlphaNumeric(pickTaskString(task?.id, task?.task_id), 12);
+  const titleSlug = slugifyTaskBranchSegment(pickTaskString(task?.title, "task"), 48);
   const suffix = titleSlug || "task";
   if (taskId) return `task/${taskId}-${suffix}`;
   return `task/${suffix}`;

@@ -715,7 +715,7 @@ export class ErrorDetector {
 
 CRITICAL: Do NOT create another plan. Do NOT ask for permission. Implement the changes NOW.
 
-Your previous output ended with planning but no code changes were made. This is a Vibe-Kanban autonomous task — you must implement, test, commit, and push without any human interaction.
+Your previous output ended with planning but no code changes were made. This is an autonomous task — you must implement, test, commit, and push without any human interaction.
 
 Previous output summary:
 ${outputSummary}

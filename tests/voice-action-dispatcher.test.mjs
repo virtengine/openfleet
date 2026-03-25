@@ -111,12 +111,20 @@ const {
   getActionManifest,
   getVoiceActionPromptSection,
 } = await import("../voice/voice-action-dispatcher.mjs");
+const { executeToolCall } = await import("../voice/voice-tools.mjs");
+const {
+  clearVisionSessionState,
+  getVoiceTurnTrace,
+  formatVoiceTurnTrace,
+} = await import("../voice/vision-session-state.mjs");
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe("voice-action-dispatcher", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clearVisionSessionState("trace-mismatch");
+    clearVisionSessionState("trace-duplicate");
   });
 
   // ── Registry ───────────────────────────────────────────────
@@ -210,6 +218,23 @@ describe("voice-action-dispatcher", () => {
       const result = await dispatchVoiceAction({ action: "system.status", params: {} });
       expect(typeof result.durationMs).toBe("number");
       expect(result.durationMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it("prevents duplicate dispatches within the same turn", async () => {
+      const intent = {
+        action: "tool.call",
+        params: { toolName: "list_tasks", args: { status: "todo" } },
+        id: "dup-tool-1",
+      };
+      const context = { sessionId: "voice-session-dup", turnId: "turn-dup-1" };
+
+      const first = await dispatchVoiceAction(intent, context);
+      const second = await dispatchVoiceAction(intent, context);
+
+      expect(first.ok).toBe(true);
+      expect(second.ok).toBe(false);
+      expect(second.error).toMatch(/duplicate/i);
+      expect(vi.mocked(executeToolCall)).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -607,5 +632,46 @@ describe("voice-action-dispatcher", () => {
       const results = await dispatchVoiceActions(null);
       expect(results).toEqual([]);
     });
+
+    it("records mismatch reasons without leaking sensitive params", async () => {
+      const result = await dispatchVoiceAction(
+        {
+          action: "nonexistent",
+          params: { apiKey: "sk-top-secret", token: "bearer-secret" },
+        },
+        { sessionId: "trace-mismatch", traceTurns: true },
+      );
+      expect(result.ok).toBe(false);
+
+      const trace = getVoiceTurnTrace("trace-mismatch");
+      expect(trace?.turns?.length).toBeGreaterThan(0);
+      expect(trace?.turns?.at(-1)?.events?.some((event) => event.reason === "unknown_action")).toBe(true);
+
+      const replay = formatVoiceTurnTrace("trace-mismatch");
+      expect(replay).toContain("unknown_action");
+      expect(replay).not.toContain("sk-top-secret");
+      expect(replay).not.toContain("bearer-secret");
+    });
+
+    it("prevents duplicate dispatches within a traced batch", async () => {
+      const results = await dispatchVoiceActions(
+        [
+          { action: "task.stats", params: { token: "secret-value" }, id: "dup-1" },
+          { action: "task.stats", params: { token: "secret-value" }, id: "dup-1" },
+        ],
+        { sessionId: "trace-duplicate", traceTurns: true },
+      );
+
+      expect(results).toHaveLength(2);
+      expect(results[0].ok).toBe(true);
+      expect(results[1].ok).toBe(false);
+      expect(results[1].error).toMatch(/duplicate/i);
+
+      const replay = formatVoiceTurnTrace("trace-duplicate");
+      expect(replay).toContain("duplicate_dispatch");
+      expect(replay).not.toContain("secret-value");
+    });
   });
 });
+
+

@@ -24,7 +24,7 @@ The system currently tracks:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    VK Agent Workspace                           │
+│                    Agent Workspace                              │
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │  Agent Session (Codex/Copilot/etc.)                      │   │
 │  │  - Console output                                        │   │
@@ -227,19 +227,19 @@ The system currently tracks:
 
 **Goal:** Start capturing agent output streams
 
-#### 1.1 VK Session Output Capture
+#### 1.1 Session Output Capture
 
-**Option A: VK API Enhancement (Preferred)**
+**Option A: API Enhancement (Preferred)**
 - Add endpoint: `GET /api/sessions/{session_id}/stream` - Server-sent events for live output
 - Add endpoint: `GET /api/sessions/{session_id}/transcript` - Full conversation history
-- Modify VK to persist session logs alongside workspace state
+- Persist session logs alongside workspace state
 
 **Option B: Process Wrapper (Fallback)**
-- Wrap VK agent process launch with stdout/stderr capture
+- Wrap agent process launch with stdout/stderr capture
 - Stream output to `.cache/agent-work-logs/agent-work-stream.jsonl`
 - Parse structured output if available (JSON mode)
 
-**Implementation in ve-orchestrator.ps1:**
+**Implementation in orchestrator script:**
 ```powershell
 function Start-AgentWorkLogger {
     param($AttemptId, $SessionId, $Executor, $TaskMetadata)
@@ -281,21 +281,21 @@ function Write-AgentWorkLog {
 
 #### 1.2 Integration Points
 
-**In `Submit-VKTaskAttempt()` (ve-kanban.ps1:450):**
+**In `SubmitTaskAttempt()`:**
 ```powershell
 # After session creation, start logger
 Start-AgentWorkLogger -AttemptId $attemptId -SessionId $sessionId `
     -Executor $executor -TaskMetadata $task
 ```
 
-**In `Send-VKSessionFollowUp()` (ve-kanban.ps1:580):**
+**In `SendSessionFollowUp()`:**
 ```powershell
 # Log followup message
 Write-AgentWorkLog -AttemptId $attemptId -EventType "followup_sent" `
     -Data @{ prompt = $message; followup_reason = $reason }
 ```
 
-**In `Sync-TrackedAttempts()` (ve-orchestrator.ps1:2950):**
+**In `Sync-TrackedAttempts()`:**
 ```powershell
 # When detecting errors from summaries
 Write-AgentWorkLog -AttemptId $attemptId -EventType "error" `
@@ -791,7 +791,7 @@ echo "Agent work logs rotated: $(date)"
 ## Next Steps
 
 1. **Review this design doc** - Confirm approach aligns with goals
-2. **Prototype log capture** - Start with minimal JSONL logging in ve-orchestrator.ps1
+2. **Prototype log capture** - Start with minimal JSONL logging in orchestrator script
 3. **Validate log format** - Ensure all required metadata is captured
 4. **Build analyzer PoC** - Simple tail + pattern matching
 5. **Iterate based on findings** - Refine error patterns, alert thresholds

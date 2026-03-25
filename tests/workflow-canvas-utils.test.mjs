@@ -1,12 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildCollapsedGraph,
+  convertSelectionToSubworkflow,
   createHistoryState,
+  createNodeGroup,
+  hydrateCanvasEdges,
+  moveWorkflowGroupByDelta,
   parseGraphSnapshot,
   pushHistorySnapshot,
   redoHistory,
   searchNodeTypes,
   serializeGraphSnapshot,
+  toggleWorkflowGroupCollapsed,
   undoHistory,
+  validateCanvasEdgePorts,
+  canUpdateCanvasEdgePortMapping,
 } from "../ui/tabs/workflow-canvas-utils.mjs";
 
 function makeNode(id, x = 0, y = 0) {
@@ -150,7 +158,89 @@ describe("workflow canvas history", () => {
     const parsed = parseGraphSnapshot(snapshot);
 
     expect(parsed.nodes).toEqual(nodes);
-    expect(parsed.edges).toEqual(edges);
+    expect(parsed.edges).toEqual([
+      {
+        id: "e1",
+        source: "n1",
+        target: "n2",
+        condition: "ok",
+        sourcePort: "default",
+        targetPort: "default",
+        sourcePortType: "Any",
+        targetPortType: "Any",
+      },
+    ]);
+  });
+
+  it("snapshot serialization preserves mixed legacy and explicit edge ports", () => {
+    const nodes = [makeNode("n1", 40, 80), makeNode("n2", 140, 80), makeNode("n3", 240, 80)];
+    const edges = [
+      { id: "legacy-edge", source: "n1", target: "n2" },
+      {
+        id: "explicit-edge",
+        source: "n2",
+        target: "n3",
+        sourcePort: "success",
+        targetPort: "payload",
+        sourcePortType: "JSON",
+        targetPortType: "JSON",
+      },
+    ];
+
+    const snapshot = serializeGraphSnapshot(nodes, edges);
+    const parsed = parseGraphSnapshot(snapshot);
+
+    expect(parsed.edges).toEqual([
+      {
+        id: "legacy-edge",
+        source: "n1",
+        target: "n2",
+        sourcePort: "default",
+        targetPort: "default",
+        sourcePortType: "Any",
+        targetPortType: "Any",
+      },
+      {
+        id: "explicit-edge",
+        source: "n2",
+        target: "n3",
+        sourcePort: "success",
+        targetPort: "payload",
+        sourcePortType: "JSON",
+        targetPortType: "JSON",
+      },
+    ]);
+  });
+
+  it("parses legacy edge aliases into explicit default port bindings", () => {
+    const parsed = parseGraphSnapshot(JSON.stringify({
+      nodes: [makeNode("n1", 10, 20), makeNode("n2", 30, 40)],
+      edges: [
+        { id: "legacy-edge", source: "n1", target: "n2", fromPort: "success" },
+        { id: "legacy-default", source: "n2", target: "n1" },
+      ],
+    }));
+
+    expect(parsed.edges).toEqual([
+      {
+        id: "legacy-edge",
+        source: "n1",
+        target: "n2",
+        sourcePort: "success",
+        targetPort: "default",
+        sourcePortType: "Any",
+        targetPortType: "Any",
+      },
+      {
+        id: "legacy-default",
+        source: "n2",
+        target: "n1",
+        sourcePort: "default",
+        targetPort: "default",
+        sourcePortType: "Any",
+        targetPortType: "Any",
+      },
+    ]);
   });
 
   it("undo/redo restores node move, edge creation, and config edits", () => {
@@ -208,4 +298,277 @@ describe("workflow canvas history", () => {
     const redoConfig = redoHistory(redoEdge.history, 50);
     expect(redoConfig.snapshot.nodes[0].config).toEqual({ prompt: "hello" });
   });
+
+  it("snapshot serialization round-trips groups alongside nodes and edges", () => {
+    const nodes = [makeNode("n1", 40, 80)];
+    const edges = [{ id: "e1", source: "n1", target: "n2", condition: "ok" }];
+    const groups = [{ id: "group-1", label: "Group 1", color: "#60a5fa", nodeIds: ["n1"], collapsed: false }];
+
+    const snapshot = serializeGraphSnapshot(nodes, edges, groups);
+    const parsed = parseGraphSnapshot(snapshot);
+
+    expect(parsed.nodes).toEqual(nodes);
+    expect(parsed.edges).toEqual([
+      {
+        id: "e1",
+        source: "n1",
+        target: "n2",
+        condition: "ok",
+        sourcePort: "default",
+        targetPort: "default",
+        sourcePortType: "Any",
+        targetPortType: "Any",
+      },
+    ]);
+    expect(parsed.groups).toEqual(groups);
+  });
+
+  it("creates groups, collapses them into a proxy node, and moves children together", () => {
+    const graph = {
+      nodes: [makeNode("a", 20, 40), makeNode("b", 280, 40), makeNode("c", 560, 40)],
+      edges: [
+        { id: "edge-a-b", source: "a", target: "b", sourcePort: "default" },
+        { id: "edge-b-c", source: "b", target: "c", sourcePort: "default" },
+      ],
+      groups: [],
+    };
+
+    const created = createNodeGroup(graph, ["a", "b"], { id: "group-ab", label: "Core", color: "#8b5cf6" });
+    expect(created.groups).toHaveLength(1);
+    expect(created.groups[0]).toMatchObject({
+      id: "group-ab",
+      label: "Core",
+      color: "#8b5cf6",
+      nodeIds: ["a", "b"],
+      collapsed: false,
+    });
+
+    const collapsed = toggleWorkflowGroupCollapsed(created, "group-ab", true);
+    expect(collapsed.groups[0].collapsed).toBe(true);
+
+    const collapsedGraph = buildCollapsedGraph(collapsed);
+    expect(collapsedGraph.visibleNodes.map((node) => node.id)).toEqual(["c", "group-ab"]);
+    expect(collapsedGraph.visibleEdges).toEqual([
+      expect.objectContaining({ source: "group-ab", target: "c", originalEdgeIds: ["edge-b-c"] }),
+    ]);
+
+    const moved = moveWorkflowGroupByDelta(collapsed, "group-ab", 120, 50);
+    expect(moved.nodes.find((node) => node.id === "a")?.position).toEqual({ x: 140, y: 90 });
+    expect(moved.nodes.find((node) => node.id === "b")?.position).toEqual({ x: 400, y: 90 });
+  });
+
+  it("extracts selected nodes into a child workflow and rewrites downstream references", () => {
+    const parentWorkflow = {
+      id: "parent-workflow",
+      name: "Parent Workflow",
+      nodes: [
+        makeNode("source", 20, 40),
+        { ...makeNode("transform", 260, 40), config: { prompt: "{{source.output}}" } },
+        { ...makeNode("summarize", 500, 40), config: { value: "{{transform.result}}" } },
+        { ...makeNode("publish", 780, 40), config: { message: "{{summarize.result}}" } },
+      ],
+      edges: [
+        { id: "edge-source-transform", source: "source", target: "transform", sourcePort: "default" },
+        { id: "edge-transform-summarize", source: "transform", target: "summarize", sourcePort: "default" },
+        { id: "edge-summarize-publish", source: "summarize", target: "publish", sourcePort: "default" },
+      ],
+      groups: [],
+      variables: {},
+    };
+
+    const converted = convertSelectionToSubworkflow(parentWorkflow, ["transform", "summarize"], {
+      childWorkflowId: "child-workflow",
+      childName: "Child Workflow",
+      executeNodeId: "execute-child",
+    });
+
+    expect(converted.childWorkflow.id).toBe("child-workflow");
+    expect(converted.childWorkflow.nodes.map((node) => node.id)).toEqual(
+      expect.arrayContaining(["workflow-call", "transform", "summarize", "workflow-end"]),
+    );
+    expect(converted.childWorkflow.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: "workflow-call", target: "transform" }),
+        expect.objectContaining({ source: "transform", target: "summarize" }),
+        expect.objectContaining({ source: "summarize", target: "workflow-end" }),
+      ]),
+    );
+
+    const executeNode = converted.parentWorkflow.nodes.find((node) => node.id === "execute-child");
+    expect(executeNode).toMatchObject({
+      type: "action.execute_workflow",
+      config: {
+        workflowId: "child-workflow",
+        mode: "sync",
+        input: { source: "{{source}}" },
+      },
+    });
+    expect(converted.parentWorkflow.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: "source", target: "execute-child" }),
+        expect.objectContaining({ source: "execute-child", target: "publish" }),
+      ]),
+    );
+    expect(converted.parentWorkflow.nodes.find((node) => node.id === "publish")?.config?.message)
+      .toBe("{{execute-child.output.nodeOutputs.summarize.result}}");
+  });
+  it("hydrates legacy and explicit edge port bindings from runtime node metadata", () => {
+    const nodeTypes = [
+      {
+        type: "test.router",
+        ports: {
+          outputs: [
+            { name: "default", label: "Default", type: "Any" },
+            { name: "success", label: "Success", type: "JSON" },
+          ],
+        },
+      },
+      {
+        type: "test.consumer",
+        ports: {
+          inputs: [
+            { name: "default", label: "Default", type: "Any" },
+            { name: "payload", label: "Payload", type: "JSON" },
+          ],
+        },
+      },
+    ];
+    const nodes = [
+      { id: "source", type: "test.router", label: "Source", config: {} },
+      { id: "target", type: "test.consumer", label: "Target", config: {} },
+    ];
+    const edges = [
+      { id: "legacy", source: "source", target: "target" },
+      { id: "explicit", source: "source", target: "target", sourcePort: "success", targetPort: "payload" },
+    ];
+
+    const hydrated = hydrateCanvasEdges(nodes, edges, nodeTypes);
+
+    expect(hydrated).toEqual([
+      expect.objectContaining({
+        id: "legacy",
+        sourcePort: "default",
+        targetPort: "default",
+        sourcePortType: "Any",
+        targetPortType: "Any",
+      }),
+      expect.objectContaining({
+        id: "explicit",
+        sourcePort: "success",
+        targetPort: "payload",
+        sourcePortType: "JSON",
+        targetPortType: "JSON",
+      }),
+    ]);
+  });
+
+  it("reports clear validation errors for invalid explicit edge bindings", () => {
+    const nodeTypes = [
+      {
+        type: "test.router",
+        ports: {
+          outputs: [{ name: "success", label: "Success", type: "JSON" }],
+        },
+      },
+      {
+        type: "test.consumer",
+        ports: {
+          inputs: [{ name: "count", label: "Count", type: "Number" }],
+        },
+      },
+    ];
+    const nodes = [
+      { id: "source", type: "test.router", label: "Source", config: {} },
+      { id: "target", type: "test.consumer", label: "Target", config: {} },
+    ];
+
+    const issues = validateCanvasEdgePorts(nodes, [
+      {
+        id: "bad-edge",
+        source: "source",
+        target: "target",
+        sourcePort: "missing-output",
+        targetPort: "missing-input",
+      },
+    ], nodeTypes);
+
+    expect(issues).toHaveLength(2);
+    expect(issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        edgeId: "bad-edge",
+        sourcePort: "missing-output",
+        targetPort: "missing-input",
+        severity: "error",
+        message: expect.stringContaining("Unknown source port \"missing-output\""),
+      }),
+      expect.objectContaining({
+        edgeId: "bad-edge",
+        sourcePort: "missing-output",
+        targetPort: "missing-input",
+        severity: "error",
+        message: expect.stringContaining("Unknown target port \"missing-input\""),
+      }),
+    ]));
+  });
+  it("allows repairing stale explicit bindings one side at a time", () => {
+    const nodeTypes = [
+      {
+        type: "test.router",
+        ports: {
+          outputs: [
+            { name: "default", label: "Default", type: "Any" },
+            { name: "success", label: "Success", type: "JSON" },
+          ],
+        },
+      },
+      {
+        type: "test.consumer",
+        ports: {
+          inputs: [
+            { name: "default", label: "Default", type: "Any" },
+            { name: "payload", label: "Payload", type: "JSON" },
+          ],
+        },
+      },
+    ];
+    const nodes = [
+      { id: "source", type: "test.router", label: "Source", config: {} },
+      { id: "target", type: "test.consumer", label: "Target", config: {} },
+    ];
+    const staleEdge = {
+      id: "stale-edge",
+      source: "source",
+      target: "target",
+      sourcePort: "missing-output",
+      targetPort: "missing-input",
+    };
+
+    const repairSource = canUpdateCanvasEdgePortMapping(staleEdge, { sourcePort: "success" }, nodes, nodeTypes);
+    expect(repairSource.allowed).toBe(true);
+    expect(repairSource.blockingIssue).toBeNull();
+    expect(repairSource.validation.requestedSourcePortName).toBe("success");
+    expect(repairSource.validation.requestedTargetPortName).toBe("missing-input");
+
+    const repairTarget = canUpdateCanvasEdgePortMapping(staleEdge, { targetPort: "payload" }, nodes, nodeTypes);
+    expect(repairTarget.allowed).toBe(true);
+    expect(repairTarget.blockingIssue).toBeNull();
+    expect(repairTarget.validation.requestedSourcePortName).toBe("missing-output");
+    expect(repairTarget.validation.requestedTargetPortName).toBe("payload");
+
+    const invalidSource = canUpdateCanvasEdgePortMapping(staleEdge, { sourcePort: "still-missing" }, nodes, nodeTypes);
+    expect(invalidSource.allowed).toBe(false);
+    expect(invalidSource.blockingIssue).toEqual(expect.objectContaining({
+      code: "unknown-output-port",
+      message: expect.stringContaining("Unknown source port \"still-missing\""),
+    }));
+
+    const invalidTarget = canUpdateCanvasEdgePortMapping(staleEdge, { targetPort: "still-missing" }, nodes, nodeTypes);
+    expect(invalidTarget.allowed).toBe(false);
+    expect(invalidTarget.blockingIssue).toEqual(expect.objectContaining({
+      code: "unknown-input-port",
+      message: expect.stringContaining("Unknown target port \"still-missing\""),
+    }));
+  });
+
 });
+

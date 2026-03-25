@@ -199,6 +199,8 @@ const ENV_KEYS = [
   "CLAUDE_SDK_DISABLED",
   "OPENAI_API_KEY",
   "OPENAI_BASE_URL",
+  "OPENAI_ORGANIZATION",
+  "OPENAI_PROJECT",
   "CODEX_MODEL_PROFILE",
   "CODEX_MODEL",
   "AZURE_OPENAI_API_KEY",
@@ -247,6 +249,8 @@ function clearSdkEnv() {
   delete process.env.CLAUDE_SDK_DISABLED;
   delete process.env.OPENAI_API_KEY;
   delete process.env.OPENAI_BASE_URL;
+  delete process.env.OPENAI_ORGANIZATION;
+  delete process.env.OPENAI_PROJECT;
   delete process.env.CODEX_MODEL_PROFILE;
   delete process.env.CODEX_MODEL;
   delete process.env.AZURE_OPENAI_API_KEY;
@@ -505,6 +509,39 @@ describe("launchEphemeralThread", () => {
     expect(typeof result.error).toBe("string");
   });
 
+  it("tries fallback when Codex model listing returns 400", async () => {
+    process.env.BOSUN_AGENT_POOL_FALLBACK_ORDER = "codex,copilot";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.COPILOT_API_KEY = "test-key";
+    process.env.CLAUDE_API_KEY = "";
+    process.env.ANTHROPIC_API_KEY = "";
+
+    setCodexLauncherMock(async () => ({
+      success: false,
+      output: "",
+      items: [],
+      error: "Failed to list models: 400",
+      sdk: "codex",
+    }));
+    setCopilotLauncherMock(async () => ({
+      success: true,
+      output: "copilot fallback ok",
+      items: [],
+      error: null,
+      sdk: "copilot",
+    }));
+
+    const result = await launchEphemeralThread(
+      "test prompt",
+      process.cwd(),
+      5000,
+      { sdk: "codex" },
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.sdk).toBe("copilot");
+    expect(result.output).toContain("copilot fallback ok");
+  });
   it("tries fallback when primary SDK not available", async () => {
     // Set codex as primary, disable it, have copilot available in fallback
     // Since both will fail (SDKs not installed), verify it tries multiple
@@ -973,6 +1010,73 @@ describe("launchEphemeralThread", () => {
     expect(codexCtorOpts.env?.CODEX_MODEL ?? codexCtorOpts.config?.model).toBe("gpt-5.3-codex");
   });
 
+  it("disables remote model discovery for Azure Codex pool launches", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_BASE_URL = "https://example-resource.openai.azure.com/openai/v1";
+    process.env.OPENAI_API_KEY = "azure-key";
+    process.env.CODEX_MODEL = "gpt-5.4";
+    setPoolSdk("codex");
+
+    const result = await launchEphemeralThread("test prompt", process.cwd(), 5000, {
+      sdk: "codex",
+    });
+
+    expect(result.success).toBe(true);
+    const codexCtorOpts = mockCodexCtor.mock.calls.at(-1)?.[0];
+    expect(codexCtorOpts?.config).toEqual(expect.objectContaining({
+      features: expect.objectContaining({
+        remote_models: false,
+      }),
+      model: "gpt-5.4",
+    }));
+    expect(codexCtorOpts?.config?.model_provider).toMatch(/^azure/);
+  });
+
+  it("removes non-selected Azure provider env keys for Codex pool launches", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_BASE_URL = "https://example-resource.openai.azure.com/openai/v1";
+    process.env.OPENAI_API_KEY = "azure-key";
+    process.env.AZURE_OPENAI_API_KEY_SWEDEN = "sweden-key";
+    process.env.CODEX_MODEL = "gpt-5.4";
+    setPoolSdk("codex");
+
+    const { writeFileSync, mkdirSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const codexDir = join(isolatedHomeDir, ".codex");
+    mkdirSync(codexDir, { recursive: true });
+    writeFileSync(join(codexDir, "config.toml"), [
+      'model = "gpt-5.4"',
+      'model_provider = "azure-us"',
+      '',
+      '[model_providers.azure-us]',
+      'base_url = "https://example-resource.openai.azure.com/openai/v1"',
+      'env_key = "AZURE_OPENAI_API_KEY"',
+      '',
+      '[model_providers.azure-sweden]',
+      'base_url = "https://example-sweden.openai.azure.com/openai/v1"',
+      'env_key = "AZURE_OPENAI_API_KEY_SWEDEN"',
+      '',
+    ].join("`n"), "utf8");
+
+    const result = await launchEphemeralThread("test prompt", process.cwd(), 5000, {
+      sdk: "codex",
+    });
+
+    expect(result.success).toBe(true);
+    expect(process.env.AZURE_OPENAI_API_KEY_SWEDEN).toBeUndefined();
+    const codexCtorOpts = mockCodexCtor.mock.calls.at(-1)?.[0];
+    expect(codexCtorOpts?.config).toEqual(expect.objectContaining({
+      model_provider: "azure-us",
+      model: "gpt-5.4",
+      model_providers: expect.objectContaining({
+        "azure-us": expect.objectContaining({
+          env_key: "AZURE_OPENAI_API_KEY",
+          base_url: "https://example-resource.openai.azure.com/openai/v1",
+        }),
+      }),
+    }));
+  });
+
   it("accepts copilot output when sendAndWait times out waiting for session.idle", async () => {
     process.env.__MOCK_COPILOT_AVAILABLE = "1";
     process.env.CODEX_SDK_DISABLED = "1";
@@ -1213,6 +1317,32 @@ describe("launchOrResumeThread", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/timeout after 25ms/i);
+  });
+
+
+  it("strips optional OpenAI organization and project headers from Codex SDK env", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.OPENAI_ORGANIZATION = "org_stale";
+    process.env.OPENAI_PROJECT = "proj_stale";
+    process.env.COPILOT_SDK_DISABLED = "1";
+    process.env.CLAUDE_SDK_DISABLED = "1";
+    setPoolSdk("codex");
+
+    const result = await launchOrResumeThread(
+      "sanitize optional headers",
+      process.cwd(),
+      5000,
+      {
+        sdk: "codex",
+      },
+    );
+
+    expect(result.success).toBe(true);
+    expect(mockCodexCtor).toHaveBeenCalledTimes(1);
+    const [opts] = mockCodexCtor.mock.calls.at(-1);
+    expect(opts.env.OPENAI_ORGANIZATION).toBeUndefined();
+    expect(opts.env.OPENAI_PROJECT).toBeUndefined();
   });
 
   it("uses INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS for stalled codex streams", async () => {
@@ -1733,3 +1863,5 @@ describe("resolution and launch integration", () => {
   });
 });
 }
+
+

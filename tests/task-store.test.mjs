@@ -686,6 +686,32 @@ describe("task-store sprint and DAG primitives", () => {
     expect(forced.toStatus).toBe("inprogress");
     expect(ts.getTask("epic-a-task-1")?.status).toBe("inprogress");
   });
+  
+  it("keeps PR-backed inreview tasks sticky when generic status updates try to demote them", async () => {
+    const dir = makeTempDir("task-store-sticky-review-");
+    const storePath = join(dir, "kanban-state.json");
+    
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+    
+    ts.addTask({
+      id: "review-task",
+      title: "Review task",
+      status: "inreview",
+      prNumber: 42,
+      prUrl: "https://github.com/virtengine/bosun/pull/42",
+    });
+    
+    ts.setTaskStatus("review-task", "todo", "test");
+    expect(ts.getTask("review-task")?.status).toBe("inreview");
+    
+    ts.updateTask("review-task", { status: "inprogress" });
+    expect(ts.getTask("review-task")?.status).toBe("inreview");
+    
+    ts.setTaskStatus("review-task", "done", "test");
+    expect(ts.getTask("review-task")?.status).toBe("done");
+  });
 });
 
 describe("task-store comment handling", () => {
@@ -755,6 +781,45 @@ describe("task-store comment handling", () => {
         meta: { severity: "info" },
       }),
     ]);
+  });
+
+
+  it("normalizes replayable runs with short step summaries", async () => {
+    const dir = makeTempDir("task-store-runs-");
+    const storePath = join(dir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({ id: "task-runs", title: "Replay task", status: "inprogress" });
+    const appended = ts.appendTaskRun("task-runs", {
+      runId: "run-1",
+      startedAt: "2026-03-22T10:00:00.000Z",
+      status: "failed",
+      sdk: "codex",
+      threadId: "thread-123",
+      steps: [
+        { type: "thread", payload: { sdk: "codex", resumed: true } },
+        { type: "tool_call", payload: { toolName: "exec_command" } },
+        { type: "assistant", payload: { content: "Implemented the change and hit a test failure that needs a retry." } },
+      ],
+    });
+
+    expect(appended).toMatchObject({
+      runId: "run-1",
+      sdk: "codex",
+      threadId: "thread-123",
+      replayable: true,
+      status: "failed",
+    });
+    expect(appended.steps).toHaveLength(3);
+    expect(appended.steps[0]).toMatchObject({ type: "thread", summary: "Resumed codex session." });
+    expect(appended.steps[1]).toMatchObject({ type: "tool_call", summary: "Called exec_command." });
+    expect(appended.steps[2].summary).toContain("Implemented the change");
+
+    expect(ts.getTaskRuns("task-runs")).toHaveLength(1);
+    expect(ts.getTask("task-runs").runs[0].steps[1].summary).toBe("Called exec_command.");
   });
 
   it("updates, appends, and caps normalized task comments", async () => {

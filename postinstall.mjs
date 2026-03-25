@@ -349,7 +349,6 @@ async function main() {
   }
 
   // npm-installed tools (bundled with this package)
-  console.log(`  :check: vibe-kanban (bundled)`);
   console.log(`  :check: @openai/codex-sdk (bundled)`);
   console.log(`  :check: @github/copilot-sdk (bundled)`);
   console.log(`  :check: @anthropic-ai/claude-agent-sdk (bundled)`);

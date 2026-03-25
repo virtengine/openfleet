@@ -11,6 +11,10 @@ import htm from "htm";
 import { apiFetch, onWsMessage } from "../modules/api.js";
 import { haptic } from "../modules/telegram.js";
 import { Modal } from "./shared.js";
+import {
+  WorkspaceExecutorSettingsFields,
+  formatWorkspaceExecutorSummary,
+} from "./workspace-executor-settings.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   Card, CardContent, CardActions,
@@ -160,7 +164,7 @@ async function setWorkspaceState(workspaceId, state) {
   return res;
 }
 
-async function setWorkspaceExecutors(workspaceId, executors) {
+export async function setWorkspaceExecutors(workspaceId, executors) {
   const res = await apiFetch("/api/workspaces/executors", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -348,7 +352,6 @@ function AddRepoForm({ workspaceId }) {
   `;
 }
 
-// ─── Single workspace card in the management panel ─────────
 // ─── Workspace state toggle ─────────────────────────────────
 function WorkspaceStateToggle({ ws, compact = false }) {
   const [saving, setSaving] = useState(false);
@@ -426,6 +429,7 @@ function ExecutorConfigPanel({ ws }) {
   const [pool, setPool] = useState(execs.pool || "shared");
   const [weight, setWeight] = useState(execs.weight || 1.0);
 
+  // Sync state with ws props when they change
   useEffect(() => {
     const e = ws.executors || {};
     setMaxConcurrent(e.maxConcurrent || 3);
@@ -457,10 +461,14 @@ function ExecutorConfigPanel({ ws }) {
         onClick=${() => { haptic("light"); setExpanded(!expanded); }}
         sx=${{ textTransform: "none", fontSize: "11px", color: "text.secondary", px: 0.5 }}
       >
-        ⚙️ Executors ${expanded ? "▾" : "▸"}
+        ${resolveIcon("settings")} ${" "}Executors ${expanded ? "▾" : "▸"}
         ${!expanded && html`
           <${Chip}
-            label="${execs.maxConcurrent || 3} slots · ${execs.pool || "shared"}"
+            label=${formatWorkspaceExecutorSummary({
+              maxConcurrent: execs.maxConcurrent || 3,
+              pool: execs.pool || "shared",
+              weight: execs.weight || 1.0,
+            })}
             size="small"
             variant="outlined"
             sx=${{ ml: 0.5, height: 18, fontSize: "10px" }}
@@ -469,93 +477,35 @@ function ExecutorConfigPanel({ ws }) {
       <//>
 
       <${Collapse} in=${expanded}>
-        <${Stack} spacing=${1.5} sx=${{ pt: 1, pb: 0.5, px: 0.5 }}>
-          <!-- Max concurrent executors -->
-          <${Box}>
-            <${Typography} variant="caption" color="text.secondary" sx=${{ mb: 0.5, display: "block" }}>
-              Max Concurrent Executors: ${maxConcurrent}
-            <//>
-            <${Slider}
-              value=${maxConcurrent}
-              onChange=${(_e, v) => setMaxConcurrent(v)}
-              min=${1}
-              max=${10}
-              step=${1}
-              marks=${[
-                { value: 1, label: "1" },
-                { value: 3, label: "3" },
-                { value: 5, label: "5" },
-                { value: 10, label: "10" },
-              ]}
-              size="small"
-              sx=${{ maxWidth: 240 }}
-            />
-          <//>
-
-          <!-- Pool mode -->
-          <${Stack} direction="row" spacing=${1} alignItems="center">
-            <${Typography} variant="caption" color="text.secondary">Pool:<//>
-            <${ToggleButtonGroup}
-              value=${pool}
-              exclusive
-              onChange=${(_e, v) => { if (v) setPool(v); }}
-              size="small"
-              sx=${{ height: 26 }}
-            >
-              <${ToggleButton} value="shared" sx=${{ px: 1, fontSize: "11px", textTransform: "none" }}>
-                <${Tooltip} title="Shares executor capacity across workspaces">
-                  <span>Shared</span>
-                <//>
-              <//>
-              <${ToggleButton} value="dedicated" sx=${{ px: 1, fontSize: "11px", textTransform: "none" }}>
-                <${Tooltip} title="Dedicated executor pool — isolated from other workspaces">
-                  <span>Dedicated</span>
-                <//>
-              <//>
-            <//>
-          <//>
-
-          <!-- Weight (only for shared pool) -->
-          ${pool === "shared" && html`
-            <${Box}>
-              <${Typography} variant="caption" color="text.secondary" sx=${{ mb: 0.5, display: "block" }}>
-                Priority Weight: ${weight.toFixed(1)}×
-              <//>
-              <${Slider}
-                value=${weight}
-                onChange=${(_e, v) => setWeight(v)}
-                min=${0.1}
-                max=${5.0}
-                step=${0.1}
-                size="small"
-                sx=${{ maxWidth: 200 }}
-              />
-            <//>
-          `}
-
-          <!-- Save button -->
-          ${hasChanges && html`
-            <${Button}
-              size="small"
-              variant="contained"
-              onClick=${handleSave}
-              disabled=${saving}
-              startIcon=${saving ? html`<${CircularProgress} size=${14} />` : null}
-              sx=${{ alignSelf: "flex-start", textTransform: "none", fontSize: "12px" }}
-            >${saving ? "Saving…" : "Save Executor Config"}<//>
-          `}
+        <${Box} sx=${{ pt: 1, pb: 0.5, px: 0.5 }}>
+          <${WorkspaceExecutorSettingsFields}
+            title="Workspace Executors"
+            maxConcurrent=${maxConcurrent}
+            pool=${pool}
+            weight=${weight}
+            onMaxConcurrentChange=${setMaxConcurrent}
+            onPoolChange=${setPool}
+            onWeightChange=${setWeight}
+            saving=${saving}
+            hasChanges=${hasChanges}
+            onSave=${handleSave}
+            saveLabel="Save Executor Config"
+          />
         <//>
       <//>
     <//>
   `;
 }
 
+// ─── Single workspace card in the management panel ─────────
 function WorkspaceCard({ ws }) {
   const isActive = ws.id === activeWorkspaceId.value;
   const [pulling, setPulling] = useState(false);
   const [delConfirm, setDelConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [activating, setActivating] = useState(false);
+  const wsState = ws.state || "active";
+  const stateCfg = STATE_CONFIG[wsState];
 
   const handleSetActive = useCallback(async () => {
     setActivating(true);
@@ -597,26 +547,42 @@ function WorkspaceCard({ ws }) {
       variant="outlined"
       sx=${{
         mb: 2,
-        borderColor: isActive ? "primary.main" : "divider",
+        borderColor: wsState === "disabled" ? "action.disabled"
+          : isActive ? "primary.main" : "divider",
         borderWidth: isActive ? 2 : 1,
+        opacity: wsState === "disabled" ? 0.6 : 1,
+        transition: "opacity 0.2s, border-color 0.2s",
       }}
     >
       <${CardContent} sx=${{ pb: 0 }}>
         <${Stack} direction="row" justifyContent="space-between" alignItems="center">
           <${Stack} direction="row" spacing=${1} alignItems="center">
+            <${Tooltip} title="${stateCfg.label}: ${stateCfg.desc}">
+              <span style="color: ${stateCfg.color}; font-size: 16px;">${stateCfg.icon}</span>
+            <//>
             <${Typography} variant="subtitle1" fontWeight="bold">${ws.name}<//>
             ${isActive && html`
               <${Chip} label="Active" size="small" color="primary" />
             `}
+            ${wsState === "paused" && html`
+              <${Chip} label="Paused" size="small"
+                sx=${{ bgcolor: "#f59e0b22", color: "#f59e0b", fontWeight: 600, fontSize: "10px" }}
+              />
+            `}
+            ${wsState === "disabled" && html`
+              <${Chip} label="Disabled" size="small"
+                sx=${{ bgcolor: "#71717a22", color: "#71717a", fontWeight: 600, fontSize: "10px" }}
+              />
+            `}
           <//>
         <//>
 
-        <!-- State toggle row -->
+
         <${Box} sx=${{ mt: 1.5, mb: 0.5 }}>
           <${WorkspaceStateToggle} ws=${ws} />
         <//>
 
-        <!-- Executor config -->
+
         <${ExecutorConfigPanel} ws=${ws} />
       <//>
 
@@ -752,8 +718,37 @@ export function WorkspaceManager({ open, onClose }) {
   const wsList = workspaces.value;
   const loading = workspacesLoading.value;
 
+  // Compute state summary counts
+  const stateCounts = { active: 0, paused: 0, disabled: 0 };
+  wsList.forEach((ws) => {
+    const s = ws.state || "active";
+    if (stateCounts[s] !== undefined) stateCounts[s]++;
+  });
+
   return html`
     <${Modal} title="Manage Workspaces" open=${open} onClose=${onClose}>
+
+      ${wsList.length > 0 && html`
+        <${Stack} direction="row" spacing=${1.5} sx=${{ mb: 2 }} alignItems="center">
+          ${Object.entries(STATE_CONFIG).map(([key, cfg]) => html`
+            <${Chip}
+              key=${key}
+              icon=${html`<span style="color: ${cfg.color}; font-size: 12px; margin-left: 8px;">${cfg.icon}</span>`}
+              label="${stateCounts[key] || 0} ${cfg.label}"
+              size="small"
+              variant=${stateCounts[key] > 0 ? "filled" : "outlined"}
+              sx=${{
+                fontSize: "11px",
+                fontWeight: 500,
+                bgcolor: stateCounts[key] > 0 ? cfg.color + "18" : undefined,
+                borderColor: cfg.color + "40",
+                color: stateCounts[key] > 0 ? cfg.color : "text.secondary",
+              }}
+            />
+          `)}
+        <//>
+      `}
+
       <${Box} sx=${{ mb: 2 }}>
         <${Button}
           size="small"
@@ -894,7 +889,11 @@ export function WorkspaceSwitcher() {
       >
         ${switchingId
           ? html`<${CircularProgress} size=${16} sx=${{ mr: 1 }} />`
-          : null
+          : currentWs
+            ? html`<span style="color: ${STATE_CONFIG[currentWs.state || "active"].color}; margin-right: 4px;">
+                ${STATE_CONFIG[currentWs.state || "active"].icon}
+              </span>`
+            : null
         }
         ${currentWs?.name || currentId || "Select Workspace"}
       <//>
@@ -904,13 +903,33 @@ export function WorkspaceSwitcher() {
         open=${Boolean(menuAnchor)}
         onClose=${handleMenuClose}
       >
-        ${wsList.map((ws) => html`
-          <${MenuItem}
-            key=${ws.id}
-            selected=${ws.id === currentId}
-            onClick=${() => handleSelect(ws.id)}
-          >${ws.name || ws.id}<//>
-        `)}
+        ${wsList.map((ws) => {
+          const st = STATE_CONFIG[ws.state || "active"];
+          return html`
+            <${MenuItem}
+              key=${ws.id}
+              selected=${ws.id === currentId}
+              onClick=${() => handleSelect(ws.id)}
+              sx=${{
+                opacity: ws.state === "disabled" ? 0.5 : 1,
+                gap: 1,
+              }}
+            >
+              <span style="color: ${st.color}; font-size: 12px; width: 16px; text-align: center;">${st.icon}</span>
+              ${ws.name || ws.id}
+              ${ws.state === "paused" && html`
+                <${Chip} label="paused" size="small"
+                  sx=${{ ml: 0.5, height: 16, fontSize: "9px", bgcolor: "#f59e0b22", color: "#f59e0b" }}
+                />
+              `}
+              ${ws.state === "disabled" && html`
+                <${Chip} label="off" size="small"
+                  sx=${{ ml: 0.5, height: 16, fontSize: "9px", bgcolor: "#71717a22", color: "#71717a" }}
+                />
+              `}
+            <//>
+          `;
+        })}
         <${Divider} />
         <${MenuItem} onClick=${() => handleSelect("__manage__")}>
           Manage Workspaces

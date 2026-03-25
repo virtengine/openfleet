@@ -46,7 +46,8 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { loadConfig } from "../config/config.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "../config/repo-root.mjs";
-import { resolveCodexProfileRuntime } from "../shell/codex-model-profiles.mjs";
+import { resolveCodexProfileRuntime, readCodexConfigRuntimeDefaults } from "../shell/codex-model-profiles.mjs";
+import { buildTaskWritableRoots } from "../shell/codex-config.mjs";
 import { resolveCopilotCliLaunchConfig } from "../shell/copilot-shell.mjs";
 import { getGitHubToken } from "../github/github-auth-manager.mjs";
 import {
@@ -751,23 +752,62 @@ async function withTemporaryEnv(overrides, fn) {
  * provider settings via `config` and maps the API key via `env`.
  * Otherwise strips OPENAI_BASE_URL so the SDK uses its default auth.
  */
-function buildCodexSdkOptions(envInput = process.env) {
+function normalizeCodexSandboxMode(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "workspace-write";
+  if (raw === "disk-full-write-access" || raw === "workspace-write") return "workspace-write";
+  if (raw === "disk-read-only" || raw === "read-only") return "read-only";
+  if (raw === "danger-full-access") return "danger-full-access";
+  return raw;
+}
+
+function buildInjectedCodexSandboxConfig(envInput, workingDirectory) {
+  const sandboxMode = normalizeCodexSandboxMode(
+    envInput?.CODEX_SANDBOX || envInput?.CODEX_SANDBOX_MODE || "workspace-write",
+  );
+  const config = {
+    sandbox_mode: sandboxMode,
+  };
+  if (sandboxMode === "workspace-write") {
+    config.sandbox_workspace_write = {
+      network_access: true,
+      exclude_tmpdir_env_var: false,
+      exclude_slash_tmp: false,
+      writable_roots: buildTaskWritableRoots({
+        worktreePath: workingDirectory,
+        repoRoot: getAgentRepoRoot(),
+        tempDir: envInput?.TEMP || envInput?.TMP || "",
+        platform: envInput?.BOSUN_HOST_PLATFORM || envInput?.npm_config_platform || envInput?.OS || process.platform,
+      }),
+    };
+  }
+  return config;
+}
+
+function buildCodexSdkOptions(envInput = process.env, options = {}) {
+  const workingDirectory = String(options?.workingDirectory || getAgentRepoRoot() || REPO_ROOT).trim() || REPO_ROOT;
   const resolved = resolveCodexProfileRuntime(envInput);
   const { env: resolvedEnv, configProvider } = resolved;
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
-  const isAzure = (() => {
-        try {
-          const parsed = new URL(baseUrl);
-          const host = String(parsed.hostname || "").toLowerCase();
-          return host === "openai.azure.com" || host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com");
-        } catch {
-          return false;
-        }
-      })();
+  /** @param {string} url */
+  const isAzureOpenAIBaseUrl = (url) => {
+    try {
+      const parsed = new URL(url);
+      const host = String(parsed.hostname || "").toLowerCase();
+      return host === "openai.azure.com" || host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com");
+    } catch {
+      return false;
+    }
+  };
+  const isAzure = isAzureOpenAIBaseUrl(baseUrl);
   const env = { ...resolvedEnv };
   // Always strip OPENAI_BASE_URL — for Azure we use config overrides,
   // for non-Azure the CLI should use its built-in endpoint.
   delete env.OPENAI_BASE_URL;
+  delete env.OPENAI_ORGANIZATION;
+  delete env.OPENAI_PROJECT;
+
+  const injectedSandboxConfig = buildInjectedCodexSandboxConfig(envInput, workingDirectory);
 
   if (isAzure) {
     // Map OPENAI_API_KEY → AZURE_OPENAI_API_KEY for Azure auth
@@ -779,9 +819,36 @@ function buildCodexSdkOptions(envInput = process.env) {
     const providerSectionName = configProvider?.name || "azure";
     const providerEnvKey = configProvider?.envKey || "AZURE_OPENAI_API_KEY";
     const azureModel = env.CODEX_MODEL || undefined;
+
+    // ── Strip env keys for non-selected Azure providers ────────────────────
+    // When config.toml defines multiple Azure providers (e.g. US + Sweden),
+    // the SDK reads config.toml and considers any provider whose env_key is
+    // set as "configured". This causes the SDK to list models from ALL
+    // providers — if a non-selected provider's endpoint returns 400 (wrong
+    // API version, missing deployment, etc.) the entire session fails.
+    // Fix: remove env keys for Azure providers we're NOT using so the SDK
+    // skips them. Only strip Azure-specific keys to avoid breaking non-Azure
+    // fallback auth paths (e.g. OPENAI_API_KEY used by SDK internally).
+    try {
+      const configDefaults = readCodexConfigRuntimeDefaults();
+      const allProviders = configDefaults?.providers || {};
+      for (const [sectionName, section] of Object.entries(allProviders)) {
+        if (sectionName === providerSectionName) continue; // keep selected provider
+        const otherBaseUrl = (section.baseUrl || "").trim();
+        const otherEnvKey = (section.envKey || "").trim();
+        // Only strip keys that belong to Azure-type endpoints (not OpenAI direct)
+        if (!otherBaseUrl || !isAzureOpenAIBaseUrl(otherBaseUrl)) continue;
+        if (!otherEnvKey || otherEnvKey === providerEnvKey) continue;
+        delete env[otherEnvKey];
+      }
+    } catch {
+      // best effort — if config reading fails, don't block execution
+    }
+
     return {
       env,
       config: {
+        ...injectedSandboxConfig,
         model_provider: providerSectionName,
         model_providers: {
           [providerSectionName]: {
@@ -791,11 +858,17 @@ function buildCodexSdkOptions(envInput = process.env) {
             wire_api: "responses",
           },
         },
+        features: {
+          remote_models: false,
+        },
         ...(azureModel ? { model: azureModel } : {}),
       },
     };
   }
-  return { env };
+  return {
+    env,
+    config: injectedSandboxConfig,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -898,6 +971,7 @@ function shouldApplySdkCooldown(error) {
   if (!error) return false;
   const message = String(error).toLowerCase();
   if (!message) return false;
+  if (message.includes("failed to list models")) return true;
   if (message.includes("protocol version mismatch")) return true;
   if (message.includes("sdk expects version") && message.includes("server reports version")) {
     return true;
@@ -1208,7 +1282,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
       ? { ...process.env, ...envOverrides }
       : process.env;
   const codexSessionEnv = applyNodeWarningSuppressionEnv(codexRuntimeEnv);
-  const codexOpts = buildCodexSdkOptions(codexSessionEnv);
+  const codexOpts = buildCodexSdkOptions(codexSessionEnv, { workingDirectory: cwd });
   const explicitEnvModel = String(envOverrides?.CODEX_MODEL || "").trim();
   if (explicitEnvModel) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: explicitEnvModel };
@@ -1222,6 +1296,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   codexOpts.config = {
     ...(codexOpts.config || {}),
     features: {
+      ...(codexOpts.config?.features || {}),
       child_agents_md: true,
       multi_agent: true,
       memories: true,
@@ -3147,7 +3222,7 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
       ? { ...process.env, ...envOverrides }
       : process.env;
   const codexSessionEnv = applyNodeWarningSuppressionEnv(codexRuntimeEnv);
-  const codexOpts = buildCodexSdkOptions(codexSessionEnv);
+  const codexOpts = buildCodexSdkOptions(codexSessionEnv, { workingDirectory: cwd });
   const explicitEnvModel = String(envOverrides?.CODEX_MODEL || "").trim();
   if (explicitEnvModel) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: explicitEnvModel };
@@ -3158,6 +3233,17 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: modelOverride };
     codexOpts.config = { ...(codexOpts.config || {}), model: modelOverride };
   }
+  codexOpts.config = {
+    ...(codexOpts.config || {}),
+    features: {
+      ...(codexOpts.config?.features || {}),
+      child_agents_md: true,
+      multi_agent: true,
+      memories: true,
+      undo: true,
+      steer: true,
+    },
+  };
   const codex = new CodexClass(codexOpts);
 
   let thread;
@@ -4004,5 +4090,6 @@ export function getActiveThreads() {
   }
   return result;
 }
+
 
 

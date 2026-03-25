@@ -19,7 +19,11 @@ import { resolveAgentSdkConfig } from "../agent/agent-sdk.mjs";
 import { loadConfig } from "../config/config.mjs";
 import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
-import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
+import {
+  resolveCodexProfileRuntime,
+  readCodexConfigRuntimeDefaults,
+} from "./codex-model-profiles.mjs";
+import { buildTaskWritableRoots } from "./codex-config.mjs";
 import {
   isTransientStreamError,
   streamRetryDelay,
@@ -88,14 +92,49 @@ function isAzureOpenAIBaseUrl(value) {
   }
 }
 
-function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env) {
+function normalizeCodexSandboxMode(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "workspace-write";
+  if (raw === "disk-full-write-access" || raw === "workspace-write") return "workspace-write";
+  if (raw === "disk-read-only" || raw === "read-only") return "read-only";
+  if (raw === "danger-full-access") return "danger-full-access";
+  return raw;
+}
+
+function buildInjectedSandboxConfig(envInput, workingDirectory) {
+  const sandboxMode = normalizeCodexSandboxMode(
+    envInput?.CODEX_SANDBOX || envInput?.CODEX_SANDBOX_MODE || "workspace-write",
+  );
+  const config = {
+    sandbox_mode: sandboxMode,
+  };
+  if (sandboxMode === "workspace-write") {
+    config.sandbox_workspace_write = {
+      network_access: true,
+      exclude_tmpdir_env_var: false,
+      exclude_slash_tmp: false,
+      writable_roots: buildTaskWritableRoots({
+        worktreePath: workingDirectory,
+        repoRoot: REPO_ROOT,
+        tempDir: envInput?.TEMP || envInput?.TMP || "",
+        platform: envInput?.BOSUN_HOST_PLATFORM || envInput?.npm_config_platform || envInput?.OS || process.platform,
+      }),
+    };
+  }
+  return config;
+}
+
+function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, workingDirectory = DEFAULT_WORKING_DIRECTORY) {
   const resolved = resolveCodexProfileRuntime(envInput);
   const { env: resolvedEnv, configProvider } = resolved;
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
   const isAzure = isAzureOpenAIBaseUrl(baseUrl);
   const env = { ...resolvedEnv };
+  const unsetEnvKeys = [];
 
   delete env.OPENAI_BASE_URL;
+  delete env.OPENAI_ORGANIZATION;
+  delete env.OPENAI_PROJECT;
 
   // Use the config.toml provider section name and env_key when available,
   // so Bosun's config override is consistent with the user's config.toml
@@ -107,20 +146,49 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env) {
     env.AZURE_OPENAI_API_KEY = env.OPENAI_API_KEY;
   }
 
+  if (isAzure) {
+    try {
+      const configDefaults = readCodexConfigRuntimeDefaults();
+      const allProviders = configDefaults?.providers || {};
+      for (const [sectionName, section] of Object.entries(allProviders)) {
+        if (sectionName === providerSectionName) continue;
+        const otherBaseUrl = String(section?.baseUrl || "").trim();
+        const otherEnvKey = String(section?.envKey || "").trim();
+        if (!otherBaseUrl || !isAzureOpenAIBaseUrl(otherBaseUrl)) continue;
+        if (!otherEnvKey || otherEnvKey === providerEnvKey) continue;
+        delete env[otherEnvKey];
+        if (!unsetEnvKeys.includes(otherEnvKey)) {
+          unsetEnvKeys.push(otherEnvKey);
+        }
+      }
+    } catch {
+      // best effort — do not block SDK startup if config inspection fails
+    }
+  }
+
   const providerName = isAzure ? "azure" : "openai";
-  const config = {
-    model_providers: {
-      [providerSectionName]: isAzure
-        ? {
+  const config = isAzure
+    ? {
+        model_providers: {
+          [providerSectionName]: {
             name: "Azure OpenAI",
             base_url: baseUrl,
             env_key: providerEnvKey,
             wire_api: "responses",
             ...streamProviderOverrides,
-          }
-        : streamProviderOverrides,
-    },
-  };
+          },
+        },
+        features: {
+          remote_models: false,
+        },
+      }
+    : {};
+
+  Object.assign(config, buildInjectedSandboxConfig(envInput, workingDirectory));
+
+  if (!isAzure && Object.keys(streamProviderOverrides || {}).length > 0) {
+    config.model_provider = providerSectionName;
+  }
 
   if (isAzure && env.CODEX_MODEL) {
     config.model_provider = providerSectionName;
@@ -132,6 +200,7 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env) {
     config,
     providerName,
     streamIdleTimeoutMs: streamProviderOverrides.stream_idle_timeout_ms,
+    unsetEnvKeys,
   };
 }
 
@@ -469,7 +538,7 @@ You have FULL ACCESS to:
 
 Key files:
   ${REPO_ROOT} — Repository root
-  .cache/ve-orchestrator-status.json — Live status data (if enabled)
+  .cache/orchestrator-status.json — Live status data (if enabled)
   scripts/bosun/logs/ — Monitor logs (if available)
   AGENTS.md — Repo guide for agents
 `;
@@ -514,21 +583,27 @@ async function getThread() {
       stream_max_retries: 15,
       request_max_retries: 6,
     };
-    const runtime = buildCodexSdkRuntime(streamProviderOverrides, process.env);
+    const runtime = buildCodexSdkRuntime(streamProviderOverrides, process.env, getWorkingDirectory());
 
-    Object.assign(process.env, runtime.env);
     delete process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_ORGANIZATION;
+    delete process.env.OPENAI_PROJECT;
+    for (const key of runtime.unsetEnvKeys || []) {
+      delete process.env[key];
+    }
+    Object.assign(process.env, runtime.env);
 
     codexInstance = new Cls({
       config: {
+        ...runtime.config,
         features: {
+          ...(runtime.config?.features || {}),
           child_agents_md: true,
           multi_agent: true,
           memories: true,
           undo: true,
           steer: true,
         },
-        ...runtime.config,
       },
     });
 
@@ -1192,9 +1267,27 @@ export async function initCodexShell() {
   // Pre-load SDK
   const Cls = await loadCodexSdk();
   if (Cls) {
+    const STREAM_IDLE_TIMEOUT_MS = 3_600_000; // 60 min — matches Azure max stream lifetime
+    const streamProviderOverrides = {
+      stream_idle_timeout_ms: STREAM_IDLE_TIMEOUT_MS,
+      stream_max_retries: 15,
+      request_max_retries: 6,
+    };
+    const runtime = buildCodexSdkRuntime(streamProviderOverrides, process.env, getWorkingDirectory());
+
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_ORGANIZATION;
+    delete process.env.OPENAI_PROJECT;
+    for (const key of runtime.unsetEnvKeys || []) {
+      delete process.env[key];
+    }
+    Object.assign(process.env, runtime.env);
+
     codexInstance = new Cls({
       config: {
+        ...runtime.config,
         features: {
+          ...(runtime.config?.features || {}),
           child_agents_md: true,
           multi_agent: true,
           memories: true,
@@ -1203,10 +1296,11 @@ export async function initCodexShell() {
         },
       },
     });
-    console.log("[codex-shell] initialised with Codex SDK (sub-agent features enabled)");
+    console.log(`[codex-shell] initialised with Codex SDK (provider=${runtime.providerName}, sub-agent features enabled)`);
   } else {
     console.warn(
       "[codex-shell] initialised WITHOUT Codex SDK — agent will not work",
     );
   }
 }
+

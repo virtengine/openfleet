@@ -695,12 +695,6 @@ describe("guaranteed: behavioral contracts", () => {
     harness.assertions.noEngineErrors(ctx);
   });
 
-  it("template-ve-orchestrator-lite: runs lightweight orchestration", async () => {
-    const { harness, fixtures } = setupHarness("template-ve-orchestrator-lite");
-    const { ctx } = await harness.run({ ...fixtures.inputVars });
-    harness.assertions.noEngineErrors(ctx);
-  });
-
   it("template-task-batch-processor: processes a batch of tasks", async () => {
     const { harness, fixtures } = setupHarness("template-task-batch-processor");
     const { ctx } = await harness.run({ ...fixtures.inputVars });

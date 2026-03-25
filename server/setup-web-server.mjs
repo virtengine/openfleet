@@ -66,6 +66,19 @@ function buildModelsProbeRequest({ apiKey = "", baseUrl = "" } = {}) {
     }
 
     if (lowerPath.endsWith("/models")) {
+      if (isAzure) {
+        if (lowerPath.endsWith("/openai/v1/models")) {
+          parsed.pathname = "/openai/v1/models";
+          parsed.search = "";
+          return { endpoint: parsed.toString(), headers };
+        }
+
+        parsed.pathname = "/openai/models";
+        parsed.search = "";
+        parsed.searchParams.set("api-version", "2024-10-21");
+        return { endpoint: parsed.toString(), headers };
+      }
+
       return { endpoint: parsed.toString(), headers };
     }
 
@@ -246,6 +259,19 @@ function normalizeWorkflowProfile(rawValue, fallback = "balanced") {
   const normalized = String(rawValue || "").trim().toLowerCase();
   if (WORKFLOW_SETUP_PROFILE_IDS.has(normalized)) return normalized;
   return fallback;
+}
+
+function normalizeSetupStringList(rawValue) {
+  const source = Array.isArray(rawValue)
+    ? rawValue
+    : String(rawValue || "").split(/\r?\n|,/);
+  const normalized = [];
+  for (const entry of source) {
+    const value = String(entry || "").trim();
+    if (!value || normalized.includes(value)) continue;
+    normalized.push(value);
+  }
+  return normalized;
 }
 
 function normalizeWorkflowTemplateIds(rawValue, fallback = []) {
@@ -468,11 +494,15 @@ function resolveSetupWorkspaceAndRepoConfig(existingConfig = {}, configJson = {}
 function buildStableSetupDefaults({
   projectName,
   slug,
+  repoVisibility,
   repoRoot,
   bosunHome,
   workspacesDir,
 }) {
   const defaultWorkflowProfile = getWorkflowSetupProfile("balanced");
+  const recommendedAutomationPreference = repoVisibility === "public"
+    ? "actions-first"
+    : "runtime-first";
   return {
     projectName: projectName || slug?.split("/").pop() || "my-project",
     repoSlug: slug,
@@ -513,6 +543,37 @@ function buildStableSetupDefaults({
     workflowDefaultTemplates: [...defaultWorkflowProfile.templateIds],
     workflowTemplateOverridesById: {},
     workflowAutoInstall: true,
+    prAutomation: {
+      assistiveActions: {
+        installOnSetup: false,
+      },
+    },
+    gates: {
+      prs: {
+        repoVisibility,
+        automationPreference: recommendedAutomationPreference,
+        githubActionsBudget: "ask-user",
+      },
+      checks: {
+        mode: "all",
+        requiredPatterns: [],
+        optionalPatterns: [],
+        ignorePatterns: [],
+        requireAnyRequiredCheck: true,
+        treatPendingRequiredAsBlocking: true,
+        treatNeutralAsPass: false,
+      },
+      execution: {
+        sandboxMode: "workspace-write",
+        containerIsolationEnabled: false,
+        containerRuntime: "auto",
+        networkAccess: "default",
+      },
+      runtime: {
+        enforceBacklog: true,
+        agentTriggerControl: true,
+      },
+    },
     workflowNodeMaxRetries: 3,
     workflowNodeTimeoutMs: 600000,
     workflowRunStuckThresholdMs: 300000,
@@ -715,7 +776,7 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
 
   envMap.KANBAN_BACKEND = normalizeEnumValue(
     pickNonEmptyValue(env.kanbanBackend, envMap.KANBAN_BACKEND, sourceEnv.KANBAN_BACKEND),
-    ["internal", "vk", "github", "jira"],
+    ["internal", "github", "jira"],
     "internal",
   );
   envMap.KANBAN_SYNC_POLICY = normalizeEnumValue(
@@ -725,7 +786,7 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
   );
   envMap.EXECUTOR_MODE = normalizeEnumValue(
     pickNonEmptyValue(env.executorMode, envMap.EXECUTOR_MODE, sourceEnv.EXECUTOR_MODE),
-    ["internal", "vk", "hybrid"],
+    ["internal", "hybrid"],
     "internal",
   );
   envMap.EXECUTOR_DISTRIBUTION = normalizeEnumValue(
@@ -848,6 +909,118 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
   );
   envMap.WORKFLOW_DEFAULT_TEMPLATES =
     workflowTemplates.length > 0 ? workflowTemplates.join(",") : "none";
+  envMap.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.assistiveActionsInstallOnSetup,
+      envMap.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP,
+      sourceEnv.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP,
+    ),
+    false,
+  );
+  envMap.BOSUN_GATES_REPO_VISIBILITY = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.gatesRepoVisibility,
+      envMap.BOSUN_GATES_REPO_VISIBILITY,
+      sourceEnv.BOSUN_GATES_REPO_VISIBILITY,
+    ),
+    ["public", "private", "unknown"],
+    "unknown",
+  );
+  envMap.BOSUN_GATES_AUTOMATION_PREFERENCE = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.gatesAutomationPreference,
+      envMap.BOSUN_GATES_AUTOMATION_PREFERENCE,
+      sourceEnv.BOSUN_GATES_AUTOMATION_PREFERENCE,
+    ),
+    ["runtime-first", "actions-first"],
+    envMap.BOSUN_GATES_REPO_VISIBILITY === "public" ? "actions-first" : "runtime-first",
+  );
+  envMap.BOSUN_GATES_ACTIONS_BUDGET = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.gatesGithubActionsBudget,
+      envMap.BOSUN_GATES_ACTIONS_BUDGET,
+      sourceEnv.BOSUN_GATES_ACTIONS_BUDGET,
+    ),
+    ["ask-user", "available", "limited"],
+    "ask-user",
+  );
+  envMap.BOSUN_GATES_CHECK_MODE = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.gatesCheckMode,
+      envMap.BOSUN_GATES_CHECK_MODE,
+      sourceEnv.BOSUN_GATES_CHECK_MODE,
+    ),
+    ["all", "required-only"],
+    "all",
+  );
+  envMap.BOSUN_REQUIRED_CHECK_PATTERNS = normalizeSetupStringList(
+    pickNonEmptyValue(
+      env.gatesRequiredPatterns,
+      envMap.BOSUN_REQUIRED_CHECK_PATTERNS,
+      sourceEnv.BOSUN_REQUIRED_CHECK_PATTERNS,
+    ),
+  ).join(",");
+  envMap.BOSUN_OPTIONAL_CHECK_PATTERNS = normalizeSetupStringList(
+    pickNonEmptyValue(
+      env.gatesOptionalPatterns,
+      envMap.BOSUN_OPTIONAL_CHECK_PATTERNS,
+      sourceEnv.BOSUN_OPTIONAL_CHECK_PATTERNS,
+    ),
+  ).join(",");
+  envMap.BOSUN_IGNORE_CHECK_PATTERNS = normalizeSetupStringList(
+    pickNonEmptyValue(
+      env.gatesIgnorePatterns,
+      envMap.BOSUN_IGNORE_CHECK_PATTERNS,
+      sourceEnv.BOSUN_IGNORE_CHECK_PATTERNS,
+    ),
+  ).join(",");
+  envMap.BOSUN_GATES_REQUIRE_ANY_REQUIRED_CHECK = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.gatesRequireAnyRequiredCheck,
+      envMap.BOSUN_GATES_REQUIRE_ANY_REQUIRED_CHECK,
+      sourceEnv.BOSUN_GATES_REQUIRE_ANY_REQUIRED_CHECK,
+    ),
+    true,
+  );
+  envMap.BOSUN_GATES_TREAT_PENDING_REQUIRED_AS_BLOCKING = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.gatesTreatPendingRequiredAsBlocking,
+      envMap.BOSUN_GATES_TREAT_PENDING_REQUIRED_AS_BLOCKING,
+      sourceEnv.BOSUN_GATES_TREAT_PENDING_REQUIRED_AS_BLOCKING,
+    ),
+    true,
+  );
+  envMap.BOSUN_GATES_TREAT_NEUTRAL_AS_PASS = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.gatesTreatNeutralAsPass,
+      envMap.BOSUN_GATES_TREAT_NEUTRAL_AS_PASS,
+      sourceEnv.BOSUN_GATES_TREAT_NEUTRAL_AS_PASS,
+    ),
+    false,
+  );
+  envMap.BOSUN_EXECUTION_NETWORK_ACCESS = String(
+    pickNonEmptyValue(
+      env.gatesNetworkAccess,
+      envMap.BOSUN_EXECUTION_NETWORK_ACCESS,
+      sourceEnv.BOSUN_EXECUTION_NETWORK_ACCESS,
+    ) || "default",
+  ).trim() || "default";
+  envMap.BOSUN_GATES_ENFORCE_BACKLOG = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.gatesEnforceBacklog,
+      envMap.BOSUN_GATES_ENFORCE_BACKLOG,
+      sourceEnv.BOSUN_GATES_ENFORCE_BACKLOG,
+    ),
+    true,
+  );
+  envMap.BOSUN_GATES_AGENT_TRIGGER_CONTROL = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.gatesAgentTriggerControl,
+      envMap.BOSUN_GATES_AGENT_TRIGGER_CONTROL,
+      sourceEnv.BOSUN_GATES_AGENT_TRIGGER_CONTROL,
+    ),
+    true,
+  );
   envMap.WORKFLOW_NODE_MAX_RETRIES = String(
     toBoundedInt(
       pickNonEmptyValue(
@@ -1406,21 +1579,6 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
     ),
   );
 
-  envMap.VK_BASE_URL = trimTrailingSlashes(String(
-    pickNonEmptyValue(env.vkBaseUrl, envMap.VK_BASE_URL, sourceEnv.VK_BASE_URL) ||
-      "http://127.0.0.1:54089",
-  ).trim());
-  if (!envMap.VK_BASE_URL) {
-    envMap.VK_BASE_URL = "http://127.0.0.1:54089";
-  }
-  envMap.VK_RECOVERY_PORT = String(
-    toBoundedInt(
-      pickNonEmptyValue(env.vkRecoveryPort, envMap.VK_RECOVERY_PORT, sourceEnv.VK_RECOVERY_PORT),
-      54089,
-      { min: 1, max: 65535 },
-    ),
-  );
-
   const orchestratorArgs = pickNonEmptyValue(
     env.orchestratorArgs,
     envMap.ORCHESTRATOR_ARGS,
@@ -1582,8 +1740,50 @@ function detectProjectName(repoRoot) {
   return "";
 }
 
+function detectRepoVisibility(slug = detectRepoSlug()) {
+  const normalized = normalizeRepoSlug(slug);
+  if (!normalized || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalized)) return "unknown";
+  try {
+    const output = execSync(`gh repo view ${JSON.stringify(normalized)} --json isPrivate`, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    const parsed = JSON.parse(output || "{}");
+    if (parsed?.isPrivate === true) return "private";
+    if (parsed?.isPrivate === false) return "public";
+  } catch {
+    // best-effort only
+  }
+  return "unknown";
+}
+
+function isStackLikeResponseText(value) {
+  if (typeof value !== "string") return false;
+  const lower = value.toLowerCase();
+  return (value.includes("\n") && lower.includes(" at ")) || lower.includes("error:\n    at ");
+}
+
+function scrubResponseBody(body) {
+  if (body == null) return body;
+  if (body instanceof Error) {
+    const safeMessage = String(body.message || "Internal server error");
+    return { ok: false, error: isStackLikeResponseText(safeMessage) ? "Internal server error" : safeMessage };
+  }
+  if (typeof body === "string") {
+    return isStackLikeResponseText(body) ? "Internal server error" : body;
+  }
+  if (Array.isArray(body)) return body.map((entry) => scrubResponseBody(entry));
+  if (typeof body !== "object") return body;
+  const out = {};
+  for (const [key, value] of Object.entries(body)) {
+    if (String(key).toLowerCase() === "stack") continue;
+    out[key] = scrubResponseBody(value);
+  }
+  return out;
+}
+
 function jsonResponse(res, status, body) {
-  const data = JSON.stringify(body);
+  const data = JSON.stringify(scrubResponseBody(body));
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
@@ -1653,6 +1853,7 @@ async function handleStatus() {
   const configured = hasSetupMarkers(configDir);
   const repoRoot = detectRepoRoot();
   const slug = detectRepoSlug();
+  const repoVisibility = detectRepoVisibility(slug);
   const projectName = detectProjectName(repoRoot);
 
   let existingConfig = null;
@@ -1720,6 +1921,7 @@ async function handleStatus() {
     workspacesDir: resolveWorkspacesDir(configDir),
     repoRoot,
     slug,
+    repoVisibility,
     projectName,
     existingConfig,
     existingEnv,
@@ -1733,6 +1935,7 @@ async function handleStatus() {
 function handleDefaults() {
   const repoRoot = detectRepoRoot();
   const slug = detectRepoSlug();
+  const repoVisibility = detectRepoVisibility(slug);
   const projectName = detectProjectName(repoRoot);
   const bosunHome = resolveConfigDir();
   const workspacesDir = resolveWorkspacesDir(bosunHome);
@@ -1742,6 +1945,7 @@ function handleDefaults() {
     defaults: buildStableSetupDefaults({
       projectName,
       slug,
+      repoVisibility,
       repoRoot,
       bosunHome,
       workspacesDir,
@@ -2148,7 +2352,7 @@ function handleApply(body) {
       GITHUB_REPO: env.repoSlug || "",
       ORCHESTRATOR_ARGS: env.orchestratorArgs || "",
       EXECUTORS: env.executors || "",
-      VK_PROJECT_DIR: bosunHome,
+      BOSUN_PROJECT_DIR: bosunHome,
     };
 
     applyTelegramMiniAppSetupEnv(envMap, env, process.env);
@@ -2364,6 +2568,54 @@ function handleApply(body) {
       templates: workflowDefaultTemplateIds,
       templateOverridesById: workflowTemplateOverridesById,
     };
+    config.prAutomation = {
+      ...(existingConfig.prAutomation && typeof existingConfig.prAutomation === "object" ? existingConfig.prAutomation : {}),
+      ...(configJson.prAutomation && typeof configJson.prAutomation === "object" ? configJson.prAutomation : {}),
+      assistiveActions: {
+        ...((existingConfig.prAutomation?.assistiveActions && typeof existingConfig.prAutomation.assistiveActions === "object")
+          ? existingConfig.prAutomation.assistiveActions
+          : {}),
+        ...((configJson.prAutomation?.assistiveActions && typeof configJson.prAutomation.assistiveActions === "object")
+          ? configJson.prAutomation.assistiveActions
+          : {}),
+      },
+    };
+    config.gates = {
+      ...(existingConfig.gates && typeof existingConfig.gates === "object" ? existingConfig.gates : {}),
+      ...(configJson.gates && typeof configJson.gates === "object" ? configJson.gates : {}),
+      prs: {
+        ...((existingConfig.gates?.prs && typeof existingConfig.gates.prs === "object")
+          ? existingConfig.gates.prs
+          : {}),
+        ...((configJson.gates?.prs && typeof configJson.gates.prs === "object")
+          ? configJson.gates.prs
+          : {}),
+      },
+      checks: {
+        ...((existingConfig.gates?.checks && typeof existingConfig.gates.checks === "object")
+          ? existingConfig.gates.checks
+          : {}),
+        ...((configJson.gates?.checks && typeof configJson.gates.checks === "object")
+          ? configJson.gates.checks
+          : {}),
+      },
+      execution: {
+        ...((existingConfig.gates?.execution && typeof existingConfig.gates.execution === "object")
+          ? existingConfig.gates.execution
+          : {}),
+        ...((configJson.gates?.execution && typeof configJson.gates.execution === "object")
+          ? configJson.gates.execution
+          : {}),
+      },
+      runtime: {
+        ...((existingConfig.gates?.runtime && typeof existingConfig.gates.runtime === "object")
+          ? existingConfig.gates.runtime
+          : {}),
+        ...((configJson.gates?.runtime && typeof configJson.gates.runtime === "object")
+          ? configJson.gates.runtime
+          : {}),
+      },
+    };
     config.workflowEngine = workflowEngineConfig;
 
     if (configJson.executorMode)               config.executorMode               = configJson.executorMode;
@@ -2424,11 +2676,8 @@ function handleApply(body) {
 
     // 3. Call ensureCodexConfig to ensure ~/.codex/config.toml has global
     //    bosun settings (sandbox, feature flags, timeouts, etc.).
-    //    Vibe-Kanban MCP stays workspace-scoped in repo .codex/config.toml.
     try {
       ensureCodexConfig({
-        vkBaseUrl: env.vkBaseUrl || process.env.VK_BASE_URL || "http://127.0.0.1:54089",
-        skipVk: true,
         env: { ...process.env, BOSUN_HOME: bosunHome, BOSUN_WORKSPACES_DIR: workspacesDir },
       });
     } catch (err) {

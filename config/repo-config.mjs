@@ -16,11 +16,12 @@
  *
  * Usage:
  *   import { ensureRepoConfigs, printRepoConfigSummary } from "./repo-config.mjs";
- *   const result = ensureRepoConfigs("/path/to/repo", { vkBaseUrl: "..." });
+ *   const result = ensureRepoConfigs("/path/to/repo");
  *   printRepoConfigSummary(result);
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -58,13 +59,40 @@ function parseWritableRootsInput(value) {
   return [];
 }
 
+function resolveConfigPlatform(env = process.env) {
+  const raw = String(
+    env?.BOSUN_HOST_PLATFORM ||
+    env?.npm_config_platform ||
+    env?.OS ||
+    process.platform,
+  ).trim().toLowerCase();
+  if (raw === "win32" || raw === "windows" || raw === "windows_nt" || raw.startsWith("mingw")) {
+    return "win32";
+  }
+  if (raw === "darwin" || raw === "mac" || raw === "macos" || raw === "osx") {
+    return "darwin";
+  }
+  if (raw === "linux") {
+    return "linux";
+  }
+  return process.platform;
+}
+
+function getFallbackSandboxTempRoots(env = process.env, platform = resolveConfigPlatform(env)) {
+  if (platform === "win32") {
+    const candidate = String(env?.TEMP || env?.TMP || tmpdir() || "").trim();
+    return candidate && isAbsolute(candidate) ? [candidate] : [];
+  }
+  return ["/tmp"];
+}
+
 function fallbackBuildSandboxMode(envValue) {
   const mode = String(envValue || "workspace-write").trim() || "workspace-write";
   return `\n# Sandbox mode (added by bosun)\nsandbox_mode = "${mode}"\n`;
 }
 
 function fallbackBuildSandboxWorkspaceWrite(options = {}) {
-  const { writableRoots, repoRoot } = options;
+  const { writableRoots, repoRoot, platform = process.platform, tempDir = "" } = options;
   const roots = new Set();
 
   for (const entry of parseWritableRootsInput(writableRoots)) {
@@ -84,7 +112,10 @@ function fallbackBuildSandboxWorkspaceWrite(options = {}) {
     const parent = dirname(repoRoot);
     if (parent && parent !== repoRoot) roots.add(parent);
   }
-  roots.add("/tmp");
+  const sandboxEnv = tempDir ? { TEMP: tempDir } : process.env;
+  for (const tempRoot of getFallbackSandboxTempRoots(sandboxEnv, platform)) {
+    if (isAbsolute(tempRoot)) roots.add(tempRoot);
+  }
 
   if (!roots.size) return "";
   return [
@@ -99,7 +130,8 @@ function fallbackBuildSandboxWorkspaceWrite(options = {}) {
   ].join("\n");
 }
 
-function fallbackBuildFeaturesBlock() {
+function fallbackBuildFeaturesBlock(envOverrides = process.env) {
+  const disableLinuxBwrap = resolveConfigPlatform(envOverrides) !== "linux";
   return [
     "",
     "# Feature flags (compat fallback)",
@@ -110,6 +142,7 @@ function fallbackBuildFeaturesBlock() {
     "memories = true",
     "shell_tool = true",
     "unified_exec = true",
+    `use_linux_sandbox_bwrap = ${disableLinuxBwrap ? "false" : "true"}`,
     "",
   ].join("\n");
 }
@@ -153,8 +186,8 @@ function buildInstalledMcpBlocks(repoRoot) {
       const meta = entry.meta || {};
       const safeId = String(entry.id).replace(/[^a-zA-Z0-9_-]/g, "_");
 
-      // Skip entries that are already covered by common/kanban blocks
-      if (safeId === "context7" || safeId === "microsoft-docs" || safeId === "vibe-kanban" || safeId === "vibe_kanban") {
+      // Skip entries that are already covered by common blocks
+      if (safeId === "context7" || safeId === "microsoft-docs") {
         continue;
       }
 
@@ -189,19 +222,6 @@ function buildInstalledMcpBlocks(repoRoot) {
   } catch {
     return "";
   }
-}
-
-function fallbackBuildVibeKanbanBlock({ vkBaseUrl } = {}) {
-  const baseUrl = String(vkBaseUrl || "http://127.0.0.1:54089").trim() || "http://127.0.0.1:54089";
-  return [
-    "",
-    "[mcp_servers.vibe_kanban]",
-    'command = "npx"',
-    'args = ["-y", "vibe-kanban@latest"]',
-    "[mcp_servers.vibe_kanban.env]",
-    `VK_BASE_URL = ${toTomlString(baseUrl)}`,
-    "",
-  ].join("\n");
 }
 
 function fallbackBuildAgentSdkBlock({ primary = "codex" } = {}) {
@@ -255,10 +275,6 @@ const buildSandboxWorkspaceWrite = getCodexHelper(
 const buildCommonMcpBlocks = getCodexHelper(
   "buildCommonMcpBlocks",
   fallbackBuildCommonMcpBlocks,
-);
-const buildVibeKanbanBlock = getCodexHelper(
-  "buildVibeKanbanBlock",
-  fallbackBuildVibeKanbanBlock,
 );
 const buildAgentSdkBlock = getCodexHelper(
   "buildAgentSdkBlock",
@@ -405,7 +421,7 @@ function resolveBridgePath(explicit) {
  * Build the full content of a project-level `.codex/config.toml`.
  *
  * This generates ONLY project-scoped settings:
- *   - MCP servers (vibe_kanban, context7, sequential-thinking, playwright, microsoft-docs)
+ *   - MCP servers (context7, sequential-thinking, playwright, microsoft-docs)
  *   - sandbox_mode
  *   - [sandbox_workspace_write]
  *   - [features] section
@@ -418,8 +434,6 @@ function resolveBridgePath(explicit) {
  *
  * @param {object} options
  * @param {string}  options.repoRoot       Absolute path to the repo
- * @param {string}  [options.vkBaseUrl]    VK API base URL (default: "http://127.0.0.1:54089")
- * @param {boolean} [options.skipVk]       Whether to skip the VK MCP server (default: true)
  * @param {string}  [options.primarySdk]   "codex" | "copilot" | "claude" (default: "codex")
  * @param {object}  [options.env]          Environment overrides
  * @returns {string}  TOML content
@@ -427,8 +441,6 @@ function resolveBridgePath(explicit) {
 export function buildRepoCodexConfig(options = {}) {
   const {
     repoRoot,
-    vkBaseUrl = "http://127.0.0.1:54089",
-    skipVk = true,
     primarySdk = "codex",
     env = process.env,
   } = options;
@@ -441,9 +453,10 @@ export function buildRepoCodexConfig(options = {}) {
     "# ~/.codex/config.toml and are NOT duplicated here.",
     "",
   ];
+  const platform = resolveConfigPlatform(env);
 
   // ── Sandbox mode ──
-  parts.push(buildSandboxMode(env.CODEX_SANDBOX_MODE || undefined).trim());
+  parts.push(buildSandboxMode(env.CODEX_SANDBOX_MODE || env.CODEX_SANDBOX || undefined).trim());
   parts.push("");
 
   // ── Sandbox workspace write ──
@@ -451,6 +464,8 @@ export function buildRepoCodexConfig(options = {}) {
     const workspaceWriteBlock = buildSandboxWorkspaceWrite({
       writableRoots: env.CODEX_SANDBOX_WRITABLE_ROOTS || "",
       repoRoot,
+      platform,
+      tempDir: env.TEMP || env.TMP || "",
     });
     if (workspaceWriteBlock) {
       parts.push(workspaceWriteBlock.trim());
@@ -479,11 +494,6 @@ export function buildRepoCodexConfig(options = {}) {
   parts.push("");
 
   // ── MCP servers ──
-  if (!skipVk) {
-    parts.push(buildVibeKanbanBlock({ vkBaseUrl }).trim());
-    parts.push("");
-  }
-
   parts.push(buildCommonMcpBlocks().trim());
   parts.push("");
 
@@ -586,7 +596,6 @@ const CLAUDE_PERMISSIONS_ALLOW = [
   "Bash(cd:*)",
   "Bash(ls:*)",
   // MCP tools
-  "mcp__vibe_kanban__*",
   // Web access (trusted domains)
   "WebFetch(domain:github.com)",
   "WebFetch(domain:bosun.ai)",
@@ -782,8 +791,6 @@ export function buildRepoVsCodeMcpConfig() {
  *
  * @param {string} repoRoot  Absolute path to the repo directory
  * @param {object} [options]
- * @param {string}  [options.vkBaseUrl]        VK API base URL (default: "http://127.0.0.1:54089")
- * @param {boolean} [options.skipVk]           Whether to skip VK MCP server (default: true)
  * @param {string}  [options.primarySdk]       "codex" | "copilot" | "claude" (default: "codex")
  * @param {string}  [options.bosunBridgePath]  Path to agent-hook-bridge.mjs
  * @param {object}  [options.env]              Environment overrides
@@ -792,8 +799,6 @@ export function buildRepoVsCodeMcpConfig() {
  */
 export function ensureRepoConfigs(repoRoot, options = {}) {
   const {
-    vkBaseUrl = "http://127.0.0.1:54089",
-    skipVk = true,
     primarySdk = "codex",
     bosunBridgePath,
     env = process.env,
@@ -816,7 +821,7 @@ export function ensureRepoConfigs(repoRoot, options = {}) {
     const configPath = resolve(root, ".codex", "config.toml");
     result.codexConfig.path = configPath;
 
-    const generated = buildRepoCodexConfig({ repoRoot: root, vkBaseUrl, skipVk, primarySdk, env });
+    const generated = buildRepoCodexConfig({ repoRoot: root, primarySdk, env });
 
     if (existsSync(configPath)) {
       const existing = readFileSync(configPath, "utf8");

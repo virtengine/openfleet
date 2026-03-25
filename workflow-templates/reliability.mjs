@@ -1254,7 +1254,7 @@ export const SYNC_ENGINE_TEMPLATE = {
   name: "Kanban Sync Engine",
   description:
     "Two-way synchronisation between internal task store and external " +
-    "kanban backends (VK, GitHub Issues, Jira). Pulls new/changed tasks " +
+    "kanban backends (GitHub Issues, Jira). Pulls new/changed tasks " +
     "from the external board, pushes internal status updates outward, " +
     "detects conflicts, and handles rate-limit back-off.",
   category: "reliability",
@@ -1376,7 +1376,7 @@ export const SYNC_ENGINE_TEMPLATE = {
     version: 1,
     createdAt: "2025-06-01T00:00:00Z",
     templateVersion: "1.0.1",
-    tags: ["sync", "kanban", "github", "vk", "jira", "bidirectional"],
+    tags: ["sync", "kanban", "github", "jira", "bidirectional"],
     replaces: {
       module: "sync-engine.mjs",
       functions: [

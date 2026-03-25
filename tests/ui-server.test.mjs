@@ -76,6 +76,7 @@ describe("ui-server mini app", () => {
     "FLEET_ENABLED",
     "FLEET_SYNC_INTERVAL_MS",
     "OPENAI_API_KEY",
+    "STATUS_FILE",
     "BOSUN_ENV_NO_OVERRIDE",
   ];
   let envSnapshot = {};
@@ -129,7 +130,7 @@ describe("ui-server mini app", () => {
   it("surfaces worktree recovery state through status, infra, and worktree endpoints", async () => {
     const repoRoot = process.cwd();
     const statusDir = resolve(repoRoot, ".cache");
-    const statusPath = resolve(statusDir, "ve-orchestrator-status.json");
+    const statusPath = resolve(statusDir, "orchestrator-status.json");
     const hadStatusFile = existsSync(statusPath);
     const previousStatus = hadStatusFile ? readFileSync(statusPath, "utf8") : null;
     mkdirSync(statusDir, { recursive: true });
@@ -196,6 +197,103 @@ describe("ui-server mini app", () => {
     }
   });
 
+  it("honors STATUS_FILE overrides for worktree recovery status", async () => {
+    const tmpStatusDir = mkdtempSync(join(tmpdir(), "ui-status-file-"));
+    const statusPath = join(tmpStatusDir, "custom-status.json");
+    process.env.STATUS_FILE = statusPath;
+    writeFileSync(statusPath, JSON.stringify({
+      worktreeRecovery: {
+        health: "recovered",
+        failureStreak: 0,
+        recentEvents: [{
+          outcome: "recreated",
+          reason: "poisoned_worktree",
+          branch: "task/healed-worktree",
+          taskId: "task-healed-1",
+          timestamp: "2026-03-22T01:02:03.000Z",
+        }],
+      },
+    }, null, 2));
+
+    try {
+      const mod = await import("../server/ui-server.mjs");
+      mod.injectUiDependencies({
+        getInternalExecutor: () => ({
+          getStatus: () => ({ maxParallel: 2, activeSlots: 0, slots: [] }),
+          isPaused: () => false,
+        }),
+      });
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const status = await fetch(`http://127.0.0.1:${port}/api/status`).then((r) => r.json());
+      expect(status.ok).toBe(true);
+      expect(status.data.worktreeRecovery).toMatchObject({
+        health: "recovered",
+        recentEvents: [expect.objectContaining({ outcome: "recreated" })],
+      });
+    } finally {
+      rmSync(tmpStatusDir, { recursive: true, force: true });
+    }
+  });
+
+  it("backfills recovery-only worktrees into /api/worktrees when no live registry entry exists", async () => {
+    const tmpStatusDir = mkdtempSync(join(tmpdir(), "ui-worktree-recovery-backfill-"));
+    const statusPath = join(tmpStatusDir, "custom-status.json");
+    process.env.STATUS_FILE = statusPath;
+    writeFileSync(statusPath, JSON.stringify({
+      worktreeRecovery: {
+        health: "recovered",
+        failureStreak: 0,
+        recentEvents: [{
+          outcome: "recreated",
+          reason: "poisoned_worktree",
+          branch: "task/recovered-worktree",
+          taskId: "task-recovered-1",
+          worktreePath: join(tmpStatusDir, "worktrees", "task-recovered-1"),
+          timestamp: "2026-03-22T01:02:03.000Z",
+        }],
+      },
+    }, null, 2));
+
+    try {
+      const mod = await import("../server/ui-server.mjs");
+      mod.injectUiDependencies({
+        getInternalExecutor: () => ({
+          getStatus: () => ({ maxParallel: 2, activeSlots: 0, slots: [] }),
+          isPaused: () => false,
+        }),
+      });
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const worktrees = await fetch(`http://127.0.0.1:${port}/api/worktrees`).then((r) => r.json());
+      expect(worktrees.ok).toBe(true);
+      expect(worktrees.stats.liveTotal).toBe(0);
+      expect(worktrees.stats.recoveryLinked).toBe(1);
+      expect(worktrees.data).toContainEqual(
+        expect.objectContaining({
+          branch: "task/recovered-worktree",
+          taskKey: "task-recovered-1",
+          status: "recovered",
+          source: "recovery",
+        }),
+      );
+    } finally {
+      rmSync(tmpStatusDir, { recursive: true, force: true });
+    }
+  });
+
   it("getLocalLanIp returns a string", async () => {
     const mod = await import("../server/ui-server.mjs");
     const ip = mod.getLocalLanIp();
@@ -224,6 +322,23 @@ describe("ui-server mini app", () => {
     expect(response.headers.get("location")).toBe("/chat?launch=meeting&call=video");
     expect(response.headers.get("set-cookie") || "").toContain("ve_session=");
   });
+  it("regenerates zero-entropy session tokens before issuing browser auth", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_UI_TOKEN = "a".repeat(64);
+    vi.resetModules();
+    const mod = await import("../server/ui-server.mjs");
+    await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const token = mod.getSessionToken();
+    expect(token).toMatch(/^[a-f0-9]{64}$/i);
+    expect(token).not.toBe("a".repeat(64));
+    delete process.env.BOSUN_UI_TOKEN;
+  });
+
 
   it("bootstraps local static requests into a session cookie", async () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
@@ -1735,6 +1850,54 @@ describe("ui-server mini app", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   }, 15000);
 
+  it("imports exported workflow JSON through the mini app API", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const importResponse = await fetch(`http://127.0.0.1:${port}/api/workflows/import`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        workflow: {
+          id: "workflow-original-id",
+          name: "Imported Workflow",
+          description: "Round-tripped from JSON",
+          enabled: true,
+          nodes: [
+            { id: "trigger", type: "trigger.manual", label: "Trigger", config: {}, position: { x: 20, y: 20 } },
+            { id: "finish", type: "flow.end", label: "Finish", config: { status: "completed" }, position: { x: 260, y: 20 } },
+          ],
+          edges: [{ id: "edge-trigger-finish", source: "trigger", target: "finish" }],
+          groups: [{ id: "group-1", label: "Imported Group", color: "#60a5fa", nodeIds: ["trigger", "finish"], collapsed: false }],
+          variables: { greeting: "hi" },
+        },
+      }),
+    });
+    const importJson = await importResponse.json();
+    expect(importResponse.status).toBe(200);
+    expect(importJson.ok).toBe(true);
+    expect(importJson.workflow.id).not.toBe("workflow-original-id");
+    expect(importJson.workflow.name).toBe("Imported Workflow");
+    expect(importJson.workflow.groups).toEqual([
+      expect.objectContaining({ id: "group-1", label: "Imported Group", nodeIds: ["trigger", "finish"] }),
+    ]);
+
+    const fetched = await fetch(`http://127.0.0.1:${port}/api/workflows/${encodeURIComponent(importJson.workflow.id)}`).then((r) => r.json());
+    expect(fetched.ok).toBe(true);
+    expect(fetched.workflow.variables).toEqual({ greeting: "hi" });
+    expect(fetched.workflow.groups).toEqual([
+      expect.objectContaining({ id: "group-1", label: "Imported Group", nodeIds: ["trigger", "finish"] }),
+    ]);
+  }, 15000);
+
   it("previews and imports custom library repositories through the API", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
@@ -2451,6 +2614,138 @@ describe("ui-server mini app", () => {
     expect(detail.data.workflowRuns.some((run) => run.workflowId === workflowId)).toBe(true);
   }, 20000);
 
+  it("preserves incoming trace headers for workflow and task API actions", async () => {
+    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-trace-context-"));
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.EXECUTOR_MODE = "internal";
+    process.env.BOSUN_HOME = isolatedDir;
+    process.env.BOSUN_DIR = isolatedDir;
+    process.env.CODEX_MONITOR_HOME = isolatedDir;
+    process.env.CODEX_MONITOR_DIR = isolatedDir;
+
+    const tracing = await import("../infra/tracing.mjs");
+    await tracing.setupTracing("http://collector.example/v1/traces");
+    const mod = await import("../server/ui-server.mjs");
+    const executeTask = vi.fn(async (task) => tracing.traceTaskExecution({ taskId: task.id }, async () => ({ ok: true })));
+    mod.injectUiDependencies({
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 2, activeSlots: 0, slots: [] }),
+        executeTask,
+        isPaused: () => false,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const workflowId = `wf-trace-context-${Date.now()}`;
+    const saveWorkflow = await fetch(`http://127.0.0.1:${port}/api/workflows/save`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: workflowId,
+        name: "Trace context workflow",
+        enabled: true,
+        nodes: [
+          { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        ],
+        edges: [],
+      }),
+    }).then((r) => r.json());
+    expect(saveWorkflow.ok).toBe(true);
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "Trace task", description: "propagate trace headers" }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+    const taskId = created.data.id;
+
+    const traceparent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+
+    const workflowRun = await fetch(`http://127.0.0.1:${port}/api/workflows/${encodeURIComponent(workflowId)}/execute`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        traceparent,
+      },
+      body: JSON.stringify({ waitForCompletion: true, taskId }),
+    }).then((r) => r.json());
+    expect(workflowRun.ok).toBe(true);
+
+    const taskRun = await fetch(`http://127.0.0.1:${port}/api/tasks/start`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        traceparent,
+      },
+      body: JSON.stringify({ taskId, force: true }),
+    }).then((r) => r.json());
+    expect(taskRun.ok).toBe(true);
+
+    expect(executeTask).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const finishedSpans = tracing.getFinishedSpans();
+    const workflowSpan = finishedSpans.find((span) => span.name === "bosun.workflow.run" && span.attributes["bosun.workflow.id"] === workflowId);
+    const taskSpan = finishedSpans.find((span) => span.name === "bosun.task.execute" && span.attributes["bosun.task.id"] === taskId);
+
+    expect(workflowSpan).toBeDefined();
+    expect(taskSpan).toBeDefined();
+    expect(workflowSpan.traceId).toBe("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(taskSpan.traceId).toBe("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  }, 20000);
+
+  it("includes replayable task runs and a latest run summary on task detail", async () => {
+    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-task-runs-"));
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_HOME = isolatedDir;
+    process.env.BOSUN_DIR = isolatedDir;
+    process.env.CODEX_MONITOR_HOME = isolatedDir;
+    process.env.CODEX_MONITOR_DIR = isolatedDir;
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const taskStore = await import("../task/task-store.mjs");
+    taskStore.addTask({ id: "task-replay-1", title: "Replay me", status: "blocked" });
+    taskStore.appendTaskRun("task-replay-1", {
+      runId: "run-replay-1",
+      startedAt: "2026-03-22T10:00:00.000Z",
+      status: "failed",
+      sdk: "codex",
+      threadId: "thread-replay-1",
+      steps: [
+        { type: "thread", payload: { sdk: "codex", resumed: false } },
+        { type: "assistant", payload: { content: "Investigated the failure and need a follow-up turn." } },
+      ],
+    });
+
+    const detail = await fetch(`http://127.0.0.1:${port}/api/tasks/detail?taskId=task-replay-1`).then((r) => r.json());
+    expect(detail.ok).toBe(true);
+    expect(Array.isArray(detail.data.runs)).toBe(true);
+    expect(detail.data.runs[0]).toMatchObject({
+      runId: "run-replay-1",
+      sdk: "codex",
+      threadId: "thread-replay-1",
+      replayable: true,
+      status: "failed",
+    });
+    expect(detail.data.runs[0].steps[0].summary).toBe("Started codex session.");
+    expect(detail.data.meta.latestRunSummary).toContain("Investigated the failure");
+  }, 20000);
+
   it("preserves stored workflow session links while adding primary session ids from workflow detail", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-workflow-merge-"));
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -2855,6 +3150,75 @@ describe("ui-server mini app", () => {
     expect(listJson.statusCounts.blocked).toBeGreaterThanOrEqual(1);
   });
 
+  it("surfaces repo-area contention summaries on /api/telemetry/summary", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    mod.injectUiDependencies({
+      getInternalExecutor: () => ({
+        getStatus: () => ({
+          maxParallel: 4,
+          activeSlots: 1,
+          slots: [],
+          repoAreaLocks: {
+            areas: [
+              {
+                area: "server",
+                waitingTasks: 2,
+                activeSlots: 1,
+                effectiveLimit: 1,
+                contentionEvents: 3,
+                contentionWaitMs: 8400,
+                lastContentionAt: "2026-03-24T11:55:00.000Z",
+              },
+            ],
+            contention: {
+              events: 3,
+              waitMsTotal: 8400,
+              recent: [
+                {
+                  at: "2026-03-24T11:55:00.000Z",
+                  taskId: "task-123",
+                  area: "server",
+                  waitMs: 3200,
+                  resolutionReason: "deferred",
+                },
+              ],
+            },
+          },
+        }),
+        isPaused: () => false,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const response = await fetch("http://127.0.0.1:" + port + "/api/telemetry/summary");
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.ok).toBe(true);
+    expect(payload.repoAreaContention).toMatchObject({
+      totalEvents: 3,
+      totalWaitMs: 8400,
+      stale: false,
+    });
+    expect(payload.repoAreaContention.hotAreas[0]).toMatchObject({
+      area: "server",
+      waitingTasks: 2,
+      events: 3,
+    });
+    expect(payload.repoAreaContention.recent[0]).toMatchObject({
+      taskId: "task-123",
+      area: "server",
+    });
+  });
   it("returns a diagnosticId on task detail failures and logs the raw backend cause", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
@@ -3935,6 +4299,172 @@ describe("ui-server mini app", () => {
     }
   });
 
+  it("lists replayable agent runs with short step summaries", async () => {
+    const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-runs-"));
+    const previousRepoRoot = process.env.REPO_ROOT;
+    process.env.REPO_ROOT = isolatedRepoRoot;
+    vi.resetModules();
+
+    const sessionsDir = join(isolatedRepoRoot, ".cache", "agent-work-logs", "agent-sessions");
+    mkdirSync(sessionsDir, { recursive: true });
+    const attemptId = "attempt-replay-1";
+    const now = new Date();
+    writeFileSync(
+      join(sessionsDir, `${attemptId}.jsonl`),
+      `${[
+        {
+          timestamp: new Date(now.getTime() - 60_000).toISOString(),
+          attempt_id: attemptId,
+          event_type: "session_start",
+          taskId: "task-123",
+          task_title: "Replayable task",
+          executor: "codex",
+        },
+        {
+          timestamp: new Date(now.getTime() - 50_000).toISOString(),
+          attempt_id: attemptId,
+          event_type: "tool_call",
+          taskId: "task-123",
+          task_title: "Replayable task",
+          executor: "codex",
+          data: { tool_name: "web.search" },
+        },
+        {
+          timestamp: new Date(now.getTime() - 40_000).toISOString(),
+          attempt_id: attemptId,
+          event_type: "tool_result",
+          taskId: "task-123",
+          task_title: "Replayable task",
+          executor: "codex",
+          data: { tool_name: "web.search", status: "completed" },
+        },
+        {
+          timestamp: new Date(now.getTime() - 30_000).toISOString(),
+          attempt_id: attemptId,
+          event_type: "session_end",
+          taskId: "task-123",
+          task_title: "Replayable task",
+          executor: "codex",
+          data: { completion_status: "failed" },
+        },
+      ].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/agent-runs?limit=10`);
+      const payload = await response.json();
+      expect(payload.ok).toBe(true);
+      expect(Array.isArray(payload.data)).toBe(true);
+      expect(payload.data[0]).toEqual(expect.objectContaining({
+        attemptId,
+        taskId: "task-123",
+        taskTitle: "Replayable task",
+        executor: "codex",
+        status: "failed",
+        eventCount: 4,
+      }));
+      expect(payload.data[0].shortSteps).toEqual(expect.arrayContaining([
+        expect.stringContaining("Started codex run"),
+        expect.stringContaining("Called web.search"),
+        expect.stringContaining("web.search returned completed"),
+        expect.stringContaining("Finished run with status failed"),
+      ]));
+    } finally {
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
+      rmSync(isolatedRepoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("returns replayable trajectory details for a single agent run", async () => {
+    const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-run-detail-"));
+    const previousRepoRoot = process.env.REPO_ROOT;
+    process.env.REPO_ROOT = isolatedRepoRoot;
+    vi.resetModules();
+
+    const sessionsDir = join(isolatedRepoRoot, ".cache", "agent-work-logs", "agent-sessions");
+    mkdirSync(sessionsDir, { recursive: true });
+    const attemptId = "attempt-replay-detail";
+    const now = new Date();
+    writeFileSync(
+      join(sessionsDir, `${attemptId}.jsonl`),
+      `${[
+        {
+          timestamp: new Date(now.getTime() - 45_000).toISOString(),
+          attempt_id: attemptId,
+          event_type: "session_start",
+          taskId: "task-456",
+          task_title: "Replay detail task",
+          executor: "claude",
+        },
+        {
+          timestamp: new Date(now.getTime() - 30_000).toISOString(),
+          attempt_id: attemptId,
+          event_type: "agent_output",
+          taskId: "task-456",
+          task_title: "Replay detail task",
+          executor: "claude",
+          data: { output: "Investigated failure and prepared patch." },
+        },
+        {
+          timestamp: new Date(now.getTime() - 15_000).toISOString(),
+          attempt_id: attemptId,
+          event_type: "error",
+          taskId: "task-456",
+          task_title: "Replay detail task",
+          executor: "claude",
+          data: { error_message: "Context window exhausted" },
+        },
+      ].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/agent-runs/${attemptId}`);
+      const payload = await response.json();
+      expect(payload.ok).toBe(true);
+      expect(payload.data).toEqual(expect.objectContaining({
+        attemptId,
+        taskId: "task-456",
+        taskTitle: "Replay detail task",
+        executor: "claude",
+        status: "in_progress",
+      }));
+      expect(payload.data.shortSteps).toEqual(expect.arrayContaining([
+        expect.stringContaining("Started claude run"),
+        expect.stringContaining("Investigated failure and prepared patch."),
+        expect.stringContaining("Error: Context window exhausted"),
+      ]));
+      expect(payload.data.totals.errors).toBe(1);
+      expect(payload.data.events[1]).toEqual(expect.objectContaining({
+        type: "agent_output",
+        summary: "Investigated failure and prepared patch.",
+      }));
+    } finally {
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
+      rmSync(isolatedRepoRoot, { recursive: true, force: true });
+    }
+  });
   it("serves benchmark snapshots and persists benchmark mode for the active workspace", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-ui-benchmark-mode-"));
@@ -4155,5 +4685,10 @@ describe("ui-server mini app", () => {
   });
 
 });
+
+
+
+
+
 
 

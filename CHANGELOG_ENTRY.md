@@ -65,7 +65,7 @@
 - Breaking changes: none
 - Default issue-based behavior is unchanged
 - Projects v2 path is opt-in (`GITHUB_PROJECT_MODE=kanban`)
-- VK and Jira adapters are unaffected
+- Jira adapter is unaffected
 
 ### Dependencies
 

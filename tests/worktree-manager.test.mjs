@@ -986,7 +986,7 @@ describe("worktree-manager", () => {
       expect(pruneCalls.length).toBeGreaterThanOrEqual(1);
     });
 
-    it("removes VK worktrees older than MAX_WORKTREE_AGE_MS", async () => {
+    it("removes stale worktrees older than MAX_WORKTREE_AGE_MS", async () => {
       const stalePath = "/fake/repo/.cache/worktrees/ve-stale";
       mgr.registry.set("task-stale", {
         path: stalePath,

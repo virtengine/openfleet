@@ -27,6 +27,14 @@ import {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+/** Extract the full command code from a node config, supporting both old
+ *  `command: "node -e \"code\""` format and new `command: "node", args: ["-e", code]` format. */
+function getNodeCommandCode(node) {
+  const c = node?.config;
+  if (Array.isArray(c?.args)) return [c.command, ...c.args].join(" ");
+  return c?.command || "";
+}
+
 let tmpDir;
 let engine;
 
@@ -237,6 +245,46 @@ describe("workflow-templates", () => {
     expect(Array.isArray(WORKFLOW_TEMPLATES)).toBe(true);
     expect(WORKFLOW_TEMPLATES.length).toBeGreaterThanOrEqual(24);
     expect(Object.isFrozen(WORKFLOW_TEMPLATES)).toBe(true);
+  });
+
+  it("task execution templates carry architect/editor phase framing", () => {
+    const template = getTemplate("template-task-fullstack");
+    expect(template).toBeTruthy();
+
+    const planNode = template.nodes.find((node) => node.id === "plan-architecture");
+    const backendNode = template.nodes.find((node) => node.id === "implement-backend");
+    const frontendNode = template.nodes.find((node) => node.id === "implement-frontend");
+    const verifyNode = template.nodes.find((node) => node.id === "integration-test");
+
+    expect(planNode?.config?.mode).toBe("plan");
+    expect(planNode?.config?.executionRole).toBe("architect");
+    expect(planNode?.config?.repoMapQuery).toBe("{{taskTitle}} {{taskDescription}}");
+    expect(planNode?.config?.repoMapFileLimit).toBe(8);
+    expect(backendNode?.config?.executionRole).toBe("editor");
+    expect(backendNode?.config?.repoMapFileLimit).toBe(8);
+    expect(frontendNode?.config?.executionRole).toBe("editor");
+    expect(frontendNode?.config?.repoMapFileLimit).toBe(8);
+    expect(verifyNode?.config?.executionRole).toBe("editor");
+    expect(verifyNode?.config?.repoMapFileLimit).toBe(8);
+    expect(String(backendNode?.config?.architectPlan || "")).toContain("plan-architecture");
+    expect(String(frontendNode?.config?.architectPlan || "")).toContain("plan-architecture");
+    expect(String(verifyNode?.config?.architectPlan || "")).toContain("plan-architecture");
+  });
+
+  it("planning templates opt into bounded repo topology context", () => {
+    const planner = getTemplate("template-task-planner");
+    const replenish = getTemplate("template-task-replenish");
+
+    expect(planner).toBeTruthy();
+    expect(replenish).toBeTruthy();
+
+    const plannerNode = planner.nodes.find((node) => node.id === "run-planner");
+    const replenishNode = replenish.nodes.find((node) => node.id === "run-planner");
+
+    expect(plannerNode?.config?.repoMapQuery).toBe("{{plannerContext}} {{prompt}}");
+    expect(plannerNode?.config?.repoMapFileLimit).toBe(8);
+    expect(replenishNode?.config?.repoMapQuery).toBe("{{plannerContext}} {{prompt}}");
+    expect(replenishNode?.config?.repoMapFileLimit).toBe(8);
   });
 
   it("every template has required fields", () => {
@@ -582,8 +630,8 @@ describe("workflow-templates", () => {
     expect(stuckEvent?.type).toBe("action.emit_event");
     expect(endTerminal?.type).toBe("flow.end");
     expect(endMaxTurns?.type).toBe("flow.end");
-    expect(captureProgress?.config?.command).toContain("git status --porcelain=v1");
-    expect(captureProgress?.config?.command).toContain("statusDigest");
+    expect(getNodeCommandCode(captureProgress)).toContain("git status --porcelain=v1");
+    expect(getNodeCommandCode(captureProgress)).toContain("statusDigest");
     expect(deriveSignature?.config?.value).toContain("statusDigest");
     expect(resetStuckRetries?.config?.value).toContain("stuckRetryCount");
     expect(stuckRetryBudget?.config?.expression).toContain("maxStuckAutoRetries");
@@ -753,15 +801,15 @@ describe("template API functions", () => {
     };
     const noisyPrefix = "[session-tracker] initialized (maxMessages=300)\n";
 
-    expect(listNode?.config?.command).toContain("session-tracker.mjs");
-    expect(listNode?.config?.command).toContain("pathToFileURL");
-    expect(listNode?.config?.command).toContain(".bosun");
-    expect(listNode?.config?.command).toContain("workspaces");
-    expect(listNode?.config?.command).not.toContain("import('./infra/session-tracker.mjs')");
-    expect(listNode?.config?.command).not.toContain("bosun agent list");
-    expect(healthNode?.config?.command).toContain("session-tracker.mjs");
-    expect(healthNode?.config?.command).toContain("path.resolve(cwd, '..', '..', '..', '..')");
-    expect(healthNode?.config?.command).not.toContain("bosun agent health");
+    expect(getNodeCommandCode(listNode)).toContain("session-tracker.mjs");
+    expect(getNodeCommandCode(listNode)).toContain("pathToFileURL");
+    expect(getNodeCommandCode(listNode)).toContain(".bosun");
+    expect(getNodeCommandCode(listNode)).toContain("workspaces");
+    expect(getNodeCommandCode(listNode)).not.toContain("import('./infra/session-tracker.mjs')");
+    expect(getNodeCommandCode(listNode)).not.toContain("bosun agent list");
+    expect(getNodeCommandCode(healthNode)).toContain("session-tracker.mjs");
+    expect(getNodeCommandCode(healthNode)).toContain("path.resolve(cwd, '..', '..', '..', '..')");
+    expect(getNodeCommandCode(healthNode)).not.toContain("bosun agent health");
     expect(hasActiveNode?.config?.expression).toContain("JSON.parse");
     expect(hasIssuesNode?.config?.expression).toContain("JSON.parse");
     expect(hasIssuesNode?.config?.expression).toContain("idleMs");
@@ -908,6 +956,37 @@ describe("template drift + update behavior", () => {
     expect(refreshed.metadata.templateState.isCustomized).toBe(false);
   });
 
+  it("repairs stale derived output port metadata during template reconciliation", () => {
+    const installed = installTemplate("template-task-lifecycle", engine);
+    const wf = engine.get(installed.id);
+    const claimOk = wf.nodes.find((node) => node.id === "claim-ok");
+
+    expect(claimOk?.outputs).toEqual(["yes", "no"]);
+    expect(Array.isArray(claimOk?.outputPorts)).toBe(true);
+
+    claimOk.outputPorts = [
+      {
+        name: "default",
+        label: "default",
+        type: "Boolean",
+        description: "Boolean flag",
+        color: "#14b8a6",
+        accepts: [],
+      },
+    ];
+    engine.save(wf);
+
+    const result = reconcileInstalledTemplates(engine, { autoUpdateUnmodified: true });
+    expect(result.portMetadataRepaired).toBe(1);
+
+    const refreshed = engine.get(installed.id);
+    const refreshedClaimOk = refreshed.nodes.find((node) => node.id === "claim-ok");
+    const outputPortNames = refreshedClaimOk.outputPorts.map((port) => port.name);
+    expect(outputPortNames).toEqual(expect.arrayContaining(["default", "yes", "no"]));
+    expect(refreshed.metadata.templateState.updateAvailable).toBe(false);
+    expect(refreshed.metadata.templateState.isCustomized).toBe(false);
+  });
+
   it("does not auto-update customized workflows with updates available", () => {
     const installed = installTemplate("template-error-recovery", engine);
     const wf = engine.get(installed.id);
@@ -1040,6 +1119,27 @@ describe("workflow setup profiles", () => {
     expect(notifyNode?.config?.message).toContain("{{batchResult.failCount}}");
     expect(logNode?.type).toBe("notify.log");
     expect(logNode?.config?.message).toContain("{{batchResult.successCount}}/{{batchResult.totalItems}}");
+  });
+
+  it("dispatches task-batch lifecycle fan-out without waiting for child completion", () => {
+    const batchProcessor = getTemplate("template-task-batch-processor");
+    const dispatchLoop = batchProcessor?.nodes?.find((node) => node.id === "dispatch-tasks");
+    const coordinatorEdge = batchProcessor?.edges?.find((edge) => edge.source === "check-coordinator" && edge.target === "query-tasks");
+
+    expect(dispatchLoop?.config?.items).toBe("$ctx.getNodeOutput('query-tasks')?.output || []");
+    expect(dispatchLoop?.config?.workflowId).toBe("{{subWorkflow}}");
+    expect(dispatchLoop?.config?.mode).toBe("dispatch");
+    expect(coordinatorEdge?.condition).toBe("$output === true || $output?.result === true || $output?.value === true");
+  });
+
+  it("uses JavaScript loop expressions for both task-batch templates", () => {
+    const batchProcessor = getTemplate("template-task-batch-processor");
+    const batchPr = getTemplate("template-task-batch-pr");
+
+    expect(batchProcessor?.nodes?.find((node) => node.id === "dispatch-tasks")?.config?.items)
+      .toBe("$ctx.getNodeOutput('query-tasks')?.output || []");
+    expect(batchPr?.nodes?.find((node) => node.id === "for-each-task")?.config?.items)
+      .toBe("$ctx.getNodeOutput('query-tasks')?.output || []");
   });
 
   it("exposes built-in setup profiles with template selections", () => {
@@ -1201,11 +1301,11 @@ describe("health check template reliability behavior", () => {
     const checkGit = template.nodes.find((n) => n.id === "check-git");
     const checkAgents = template.nodes.find((n) => n.id === "check-agents");
 
-    expect(checkGit?.config?.command).toContain("node -e");
-    expect(checkGit?.config?.command).not.toMatch(/\bgrep\b/);
-    expect(checkAgents?.config?.command).toContain("node -e");
-    expect(checkAgents?.config?.command).not.toContain("2>/dev/null");
-    expect(checkAgents?.config?.command).toContain("bosun --daemon-status");
+    expect(getNodeCommandCode(checkGit)).toContain("node -e");
+    expect(getNodeCommandCode(checkGit)).not.toMatch(/\bgrep\b/);
+    expect(getNodeCommandCode(checkAgents)).toContain("node -e");
+    expect(getNodeCommandCode(checkAgents)).not.toContain("2>/dev/null");
+    expect(getNodeCommandCode(checkAgents)).toContain("bosun --daemon-status");
   });
 
   it("flags issues when command checks fail even without doctor ERROR/CRITICAL text", () => {
@@ -1240,10 +1340,13 @@ describe("github template CLI compatibility", () => {
     const mergeTemplate = getTemplate("template-pr-merge-strategy");
     expect(mergeTemplate).toBeDefined();
 
+    const gateNode = mergeTemplate.nodes.find((n) => n.id === "automation-eligible");
     const checkCi = mergeTemplate.nodes.find((n) => n.id === "check-ci");
-    expect(checkCi?.config?.command).toContain("gh pr checks");
-    expect(checkCi?.config?.command).toContain("--json name,state");
-    expect(checkCi?.config?.command).not.toContain("conclusion");
+    expect(gateNode?.config?.expression).toContain("<!-- bosun-created -->");
+    expect(gateNode?.config?.expression).toContain("auto-created by bosun");
+    expect(getNodeCommandCode(checkCi)).toContain("gh pr checks");
+    expect(getNodeCommandCode(checkCi)).toContain("--json name,state");
+    expect(getNodeCommandCode(checkCi)).not.toContain("conclusion");
   });
 
   it("conflict resolver is superseded by watchdog and defers merge to it", () => {
@@ -1252,9 +1355,12 @@ describe("github template CLI compatibility", () => {
     // Conflict resolver is no longer recommended — Bosun PR Watchdog supersedes it.
     expect(resolverTemplate.recommended).toBeFalsy();
     expect(resolverTemplate.enabled).toBe(false);
-    // Must filter to bosun-attached PRs only — never touch external PRs.
+    // Must scan open PRs and narrow to Bosun-created provenance.
     const listNode = resolverTemplate.nodes.find((n) => n.id === "list-prs");
-    expect(listNode?.config?.command).toContain("--label bosun-attached");
+    expect(getNodeCommandCode(listNode)).toContain("gh pr list --state open");
+    expect(getNodeCommandCode(listNode)).toContain("--json number,title,body,headRefName,baseRefName,mergeable,labels");
+    const targetNode = resolverTemplate.nodes.find((n) => n.id === "target-pr");
+    expect(String(targetNode?.config?.value || "")).toContain("<!-- bosun-created -->");
     // Must NOT contain a direct merge call — merge is deferred to watchdog.
     const hasMergeCall = resolverTemplate.nodes.some(
       (n) => typeof n.config?.command === "string" && n.config.command.includes("gh pr merge")
@@ -1307,12 +1413,26 @@ describe("github template CLI compatibility", () => {
     const notifyNode = watchdogTemplate.nodes.find((n) => n.id === "notify");
     const triggerNode = watchdogTemplate.nodes.find((n) => n.id === "trigger");
 
-    expect(fetchNode?.config?.command).toContain("pendingChecks:hasPend");
-    expect(reviewNode?.config?.command).toContain("mergeArgs.push('--auto')");
-    expect(reviewNode?.config?.command).toContain("reason:'ci_failed'");
-    expect(reviewNode?.config?.command).toContain("reason:'ci_pending'");
-    expect(reviewNode?.config?.command).toContain("--json','name,state,bucket'");
-    expect(reviewNode?.config?.command).not.toContain("name,state,conclusion");
+    expect(getNodeCommandCode(fetchNode)).toContain("const CREATED_MARKER='<!-- bosun-created -->';");
+    expect(getNodeCommandCode(fetchNode)).toContain("const ATTACH_MODE=((String(PR_AUTOMATION?.attachMode||'all').trim().toLowerCase())||'all');");
+    expect(getNodeCommandCode(fetchNode)).toContain("const TRUSTED_AUTHORS=new Set");
+    expect(getNodeCommandCode(fetchNode)).toContain("allowTrustedFixes");
+    expect(getNodeCommandCode(fetchNode)).toContain("allowTrustedMerges");
+    expect(getNodeCommandCode(fetchNode)).toContain("const CHECK_MODE=((String(CHECK_GATES?.mode||'all').trim().toLowerCase())||'all');");
+    expect(getNodeCommandCode(fetchNode)).toContain("REQUIRED_CHECK_PATTERNS");
+    expect(getNodeCommandCode(fetchNode)).toContain("OPTIONAL_CHECK_PATTERNS");
+    expect(getNodeCommandCode(fetchNode)).toContain("IGNORE_CHECK_PATTERNS");
+    expect(getNodeCommandCode(fetchNode)).toContain("evaluateCheckGates(checks");
+    expect(getNodeCommandCode(fetchNode)).toContain("skippedUntrusted");
+    expect(getNodeCommandCode(fetchNode)).toContain("attachEligible");
+    expect(getNodeCommandCode(fetchNode)).toContain("pendingChecks:hasPend");
+    expect(getNodeCommandCode(reviewNode)).toContain("mergeArgs.push('--auto')");
+    expect(getNodeCommandCode(reviewNode)).toContain("reason:'ci_failed'");
+    expect(getNodeCommandCode(reviewNode)).toContain("reason:'ci_pending'");
+    expect(getNodeCommandCode(reviewNode)).toContain("reason:'no_required_checks'");
+    expect(getNodeCommandCode(reviewNode)).toContain("const CHECK_MODE=((String(CHECK_GATES?.mode||'all').trim().toLowerCase())||'all');");
+    expect(getNodeCommandCode(reviewNode)).toContain("--json','name,state,bucket'");
+    expect(getNodeCommandCode(reviewNode)).not.toContain("name,state,conclusion");
     expect(notifyNode?.type).toBe("notify.log");
     expect(notifyNode?.config?.message).not.toContain("{{fixNeeded}}");
     expect(notifyNode?.config?.message).not.toContain("{{readyCandidates}}");
@@ -1326,15 +1446,21 @@ describe("github template CLI compatibility", () => {
     const securityNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-security-fix");
     const securityAgentNode = watchdogTemplate.nodes.find((n) => n.id === "dispatch-security-fix-agent");
 
-    expect(fetchNode?.config?.command).toContain("SECURITY_CHECK_RE");
-    expect(fetchNode?.config?.command).toContain("securityFailures");
-    expect(fetchNode?.config?.command).toContain("securityCheckNames");
-    expect(fetchNode?.config?.command).toContain("fixNeeded:conflicts.length+securityFailures.length+ciFailures.length");
+    expect(getNodeCommandCode(fetchNode)).toContain("SECURITY_CHECK_RE");
+    expect(getNodeCommandCode(fetchNode)).toContain("securityFailures");
+    expect(getNodeCommandCode(fetchNode)).toContain("securityCheckNames");
+    expect(getNodeCommandCode(fetchNode)).toContain("fixNeeded:conflicts.length+securityFailures.length+ciFailures.length");
 
-    expect(securityNode?.config?.command).toContain("/code-scanning/alerts");
-    expect(securityNode?.config?.command).toContain("reason:'security_code_scanning_failure'");
+    expect(getNodeCommandCode(securityNode)).toContain("/code-scanning/alerts");
+    expect(getNodeCommandCode(securityNode)).toContain("collectPrDigest");
+    expect(getNodeCommandCode(securityNode)).toContain("issueComments");
+    expect(getNodeCommandCode(securityNode)).toContain("reviewComments");
+    expect(getNodeCommandCode(securityNode)).toContain("digestSummary");
+    expect(getNodeCommandCode(securityNode)).toContain("reason:'security_code_scanning_failure'");
     expect(securityAgentNode?.config?.prompt).toContain("CodeQL or GitHub code scanning");
     expect(securityAgentNode?.config?.prompt).toContain("Only fix the listed code-scanning or CodeQL findings");
+    expect(securityAgentNode?.config?.prompt).toContain("prDigest.body");
+    expect(securityAgentNode?.config?.prompt).toContain("prDigest.reviewComments");
 
     expect(watchdogTemplate.edges.find((e) => e.source === "fix-needed" && e.target === "security-fix-needed")).toBeDefined();
     expect(watchdogTemplate.edges.find((e) => e.source === "security-agent-needed" && e.target === "dispatch-security-fix-agent")).toBeDefined();
@@ -1345,7 +1471,7 @@ describe("github template CLI compatibility", () => {
     const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
     const fixNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-fix");
     const fixAgentNode = watchdogTemplate.nodes.find((n) => n.id === "dispatch-fix-agent");
-    const command = fixNode?.config?.command || "";
+    const command = getNodeCommandCode(fixNode);
 
     expect(command).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
     expect(command).toContain("databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt");
@@ -1354,8 +1480,13 @@ describe("github template CLI compatibility", () => {
     expect(command).toContain("reason:'auto_rerun_limit_reached'");
     expect(command).toContain("failedLogExcerpt");
     expect(command).toContain("failedJobs");
+    expect(command).toContain("collectPrDigest");
+    expect(command).toContain("issueComments");
+    expect(command).toContain("reviewComments");
+    expect(command).toContain("digestSummary");
 
     expect(fixAgentNode?.config?.prompt).toContain("failedCheckNames, failedRun, failedJobs, and failedLogExcerpt");
+    expect(fixAgentNode?.config?.prompt).toContain("prDigest with the PR body, files, issue comments, reviews, review comments");
   });
 
   it("PR progressor is registered as the immediate single-PR handoff workflow", () => {
@@ -1366,12 +1497,21 @@ describe("github template CLI compatibility", () => {
     const inspectNode = progressorTemplate.nodes.find((n) => n.id === "inspect-pr");
     const fixNode = progressorTemplate.nodes.find((n) => n.id === "programmatic-fix");
     const reviewNode = progressorTemplate.nodes.find((n) => n.id === "programmatic-review");
-    expect(inspectNode?.config?.command).toContain("gh(['pr','view'");
-    expect(inspectNode?.config?.command).toContain("failedCheckNames");
-    expect(fixNode?.config?.command).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
-    expect(fixNode?.config?.command).toContain("--log-failed");
-    expect(fixNode?.config?.command).toContain("reason:'auto_rerun_limit_reached'");
-    expect(reviewNode?.config?.command).toContain("mergeArgs=['pr','merge'");
+    const fixAgentNode = progressorTemplate.nodes.find((n) => n.id === "dispatch-fix-agent");
+    expect(getNodeCommandCode(inspectNode)).toContain("['pr','view',String(prNumber),'--repo',repo");
+    expect(getNodeCommandCode(inspectNode)).toContain("collectPrDigest");
+    expect(getNodeCommandCode(inspectNode)).toContain("/issues/'+prNumber+'/comments?per_page=100");
+    expect(getNodeCommandCode(inspectNode)).toContain("/pulls/'+prNumber+'/reviews?per_page=100");
+    expect(getNodeCommandCode(inspectNode)).toContain("/pulls/'+prNumber+'/comments?per_page=100");
+    expect(getNodeCommandCode(inspectNode)).toContain("/pulls/'+prNumber+'/files?per_page=100");
+    expect(getNodeCommandCode(inspectNode)).toContain("prDigest");
+    expect(getNodeCommandCode(inspectNode)).toContain("digestSummary");
+    expect(getNodeCommandCode(inspectNode)).toContain("failedCheckNames");
+    expect(getNodeCommandCode(fixNode)).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
+    expect(getNodeCommandCode(fixNode)).toContain("--log-failed");
+    expect(getNodeCommandCode(fixNode)).toContain("reason:'auto_rerun_limit_reached'");
+    expect(getNodeCommandCode(reviewNode)).toContain("mergeArgs=['pr','merge'");
+    expect(fixAgentNode?.config?.prompt).toContain("Use prDigest.body, prDigest.files, prDigest.issueComments, prDigest.reviews, prDigest.reviewComments, prDigest.checks");
   });
 
   it("task lifecycle and repair templates directly dispatch the PR progressor after inreview transitions", () => {
@@ -1409,8 +1549,8 @@ describe("github template CLI compatibility", () => {
     const watchdogReviewNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-review");
     const fetchNode = syncTemplate.nodes.find((n) => n.id === "fetch-pr-state");
     const syncNode = syncTemplate.nodes.find((n) => n.id === "sync-programmatic");
-    const fetchCommand = fetchNode?.config?.command || "";
-    const syncCommand = syncNode?.config?.command || "";
+    const fetchCommand = getNodeCommandCode(fetchNode);
+    const syncArgs = Array.isArray(syncNode?.config?.args) ? syncNode.config.args.join("\n") : "";
 
     expect(watchdogFixNode?.config?.env?.BOSUN_FETCH_AND_CLASSIFY)
       .toBe("{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}");
@@ -1423,28 +1563,31 @@ describe("github template CLI compatibility", () => {
     expect(fetchCommand).toContain("function collectReposFromConfig(){");
     expect(fetchCommand).toContain("const repoTargets=resolveRepoTargets();");
     expect(fetchCommand).toContain("if(repo){ mergedArgs.push('--repo',repo); openArgs.push('--repo',repo); }");
+    expect(fetchCommand).toContain("function isBosunCreated(pr){");
+    expect(fetchCommand).toContain("<!-- bosun-created -->");
+    expect(fetchCommand).not.toContain("--label','bosun-attached'");
     expect(fetchCommand).toContain("reposScanned: repoTargets.length");
     expect(fetchCommand).toContain("repo:p.__repo||''");
-    expect(syncCommand).toContain("const maxBuffer=25*1024*1024;");
-    expect(syncCommand).toContain("const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':'';");
-    expect(syncCommand).toContain("const taskRunner=cliPath?'cli':(taskCli?'task-cli':'');");
-    expect(syncCommand).toContain("['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']");
-    expect(syncCommand).toContain("reviewStatus");
-    expect(syncCommand).toContain("runTask(['update',id,'--status','inreview'])");
-    expect(syncCommand).toContain("parseJsonObject(raw)");
-    expect(syncCommand).toContain(String.raw`const candidate=lines.slice(start).join('\n').trim();`);
-    expect(syncCommand).toContain("token==='['||token==='{'");
-    expect(syncCommand).toContain("const task=parseJsonObject(raw)");
-    expect(syncCommand).toContain("function listTasks(){");
-    expect(syncCommand).toContain("function resolveTaskId(item){");
-    expect(syncCommand).toContain("const taskBranch=String(task?.branchName||'').trim();");
-    expect(syncCommand).toContain("task_lookup_failed");
-    expect(syncCommand).toContain("const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||\'\').trim());");
-    expect(syncCommand).not.toContain("current==='todo'||current==='inprogress'");
+    expect(syncNode?.config?.command).toBe("node");
+    expect(syncArgs).toContain("const cliPath=fs.existsSync('cli.mjs')?'cli.mjs':'';");
+    expect(syncArgs).toContain("const taskRunner=cliPath?'cli':(taskCli?'task-cli':'');");
+    expect(syncArgs).toContain("['cli.mjs','task',...args,'--config-dir','.bosun','--repo-root','.']");
+    expect(syncArgs).toContain("reviewStatus");
+    expect(syncArgs).toContain("runTask(['update',id,'--status','inreview'])");
+    expect(syncArgs).toContain("parseJsonObject(raw)");
+    expect(syncArgs).toContain(String.raw`const candidate=lines.slice(start).join('\n').trim();`);
+    expect(syncArgs).toContain("token==='['||token==='{'||token.startsWith('[{')");
+    expect(syncArgs).toContain("const task=parseJsonObject(raw)");
+    expect(syncArgs).toContain("function listTasks(){");
+    expect(syncArgs).toContain("function resolveTaskId(item){");
+    expect(syncArgs).toContain("const taskBranch=String(task?.branchName||'').trim();");
+    expect(syncArgs).toContain("task_lookup_failed");
+    expect(syncArgs).toContain("const actionableUnresolved=unresolved.filter((item)=>String(item?.taskId||'').trim());");
+    expect(syncArgs).not.toContain("current==='todo'||current==='inprogress'");
 
     const syncAgentNeededNode = syncTemplate.nodes.find((n) => n.id === "sync-agent-needed");
     expect(syncAgentNeededNode?.config?.expression)
-      .toContain("d.unresolved.some((item)=>String(item?.taskId||\'\').trim())");
+      .toContain("d.unresolved.some((item)=>String(item?.taskId||'').trim())");
   });
 });
 

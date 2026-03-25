@@ -9,7 +9,6 @@
  *   - Environment file generation (.env + bosun.config.json)
  *   - Executor/model configuration (N executors with weights & failover)
  *   - Multi-repo setup (separate backend/frontend repos)
- *   - Vibe-Kanban auto-wiring (project, repos, executor profiles, agent appends)
  *   - Prompt template scaffolding (.bosun/agents/*.md)
  *   - First-run auto-detection (launches automatically on virgin installs)
  *
@@ -471,13 +470,11 @@ export function getDefaultOrchestratorScripts(
 ) {
   const variants = ["ps1", "sh"]
     .map((ext) => {
-      const orchestratorPath = resolve(baseDir, `ve-orchestrator.${ext}`);
-      const kanbanPath = resolve(baseDir, `ve-kanban.${ext}`);
+      const orchestratorPath = resolve(baseDir, `orchestrator.${ext}`);
       return {
         ext,
         orchestratorPath,
-        kanbanPath,
-        available: existsSync(orchestratorPath) && existsSync(kanbanPath),
+        available: existsSync(orchestratorPath),
       };
     })
     .filter((variant) => variant.available);
@@ -618,8 +615,7 @@ export function applyEnvFileToProcess(envPath, options = {}) {
 /**
  * Check if a binary exists in the package's own node_modules/.bin/.
  * When installed globally, npm only symlinks the top-level package's bin
- * entries to the global path — transitive dependency binaries (like
- * vibe-kanban) live here instead.
+ * entries to the global path — transitive dependency binaries live here instead.
  */
 function bundledBinExists(cmd) {
   const base = resolve(__dirname, "node_modules", ".bin", cmd);
@@ -1962,7 +1958,7 @@ function normalizeSetupConfiguration({
 
   env.KANBAN_BACKEND = normalizeEnum(
     env.KANBAN_BACKEND,
-    ["internal", "vk", "github", "jira"],
+    ["internal", "github", "jira"],
     "internal",
   );
   env.KANBAN_SYNC_POLICY = normalizeEnum(
@@ -2039,9 +2035,98 @@ function normalizeSetupConfiguration({
       workflowTemplateIds,
     ),
   };
+  configJson.prAutomation = {
+    ...(configJson.prAutomation && typeof configJson.prAutomation === "object" ? configJson.prAutomation : {}),
+    assistiveActions: {
+      ...(configJson.prAutomation?.assistiveActions && typeof configJson.prAutomation.assistiveActions === "object"
+        ? configJson.prAutomation.assistiveActions
+        : {}),
+      installOnSetup: parseBooleanEnvValue(
+        env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP
+          ?? configJson.prAutomation?.assistiveActions?.installOnSetup,
+        false,
+      ),
+    },
+  };
+  const normalizedRepoVisibility = normalizeEnum(
+    env.BOSUN_GATES_REPO_VISIBILITY,
+    ["public", "private", "unknown"],
+    String(configJson.gates?.prs?.repoVisibility || "unknown").trim().toLowerCase() || "unknown",
+  );
+  const recommendedAutomationPreference = normalizedRepoVisibility === "public"
+    ? "actions-first"
+    : "runtime-first";
+  configJson.gates = {
+    ...(configJson.gates && typeof configJson.gates === "object" ? configJson.gates : {}),
+    prs: {
+      ...(configJson.gates?.prs && typeof configJson.gates.prs === "object" ? configJson.gates.prs : {}),
+      repoVisibility: normalizedRepoVisibility,
+      automationPreference: normalizeEnum(
+        env.BOSUN_GATES_AUTOMATION_PREFERENCE,
+        ["runtime-first", "actions-first"],
+        String(configJson.gates?.prs?.automationPreference || recommendedAutomationPreference).trim().toLowerCase()
+          || recommendedAutomationPreference,
+      ),
+      githubActionsBudget: normalizeEnum(
+        env.BOSUN_GATES_ACTIONS_BUDGET,
+        ["ask-user", "available", "limited"],
+        String(configJson.gates?.prs?.githubActionsBudget || "ask-user").trim().toLowerCase() || "ask-user",
+      ),
+    },
+    checks: {
+      ...(configJson.gates?.checks && typeof configJson.gates.checks === "object" ? configJson.gates.checks : {}),
+      mode: normalizeEnum(
+        env.BOSUN_GATES_CHECK_MODE,
+        ["all", "required-only"],
+        String(configJson.gates?.checks?.mode || "all").trim().toLowerCase() || "all",
+      ),
+      requiredPatterns: normalizeCsvOrArray(configJson.gates?.checks?.requiredPatterns || []),
+      optionalPatterns: normalizeCsvOrArray(configJson.gates?.checks?.optionalPatterns || []),
+      ignorePatterns: normalizeCsvOrArray(configJson.gates?.checks?.ignorePatterns || []),
+      requireAnyRequiredCheck: parseBooleanEnvValue(
+        env.BOSUN_GATES_REQUIRE_ANY_REQUIRED_CHECK ?? configJson.gates?.checks?.requireAnyRequiredCheck,
+        true,
+      ),
+      treatPendingRequiredAsBlocking: parseBooleanEnvValue(
+        env.BOSUN_GATES_TREAT_PENDING_REQUIRED_AS_BLOCKING ?? configJson.gates?.checks?.treatPendingRequiredAsBlocking,
+        true,
+      ),
+      treatNeutralAsPass: parseBooleanEnvValue(
+        env.BOSUN_GATES_TREAT_NEUTRAL_AS_PASS ?? configJson.gates?.checks?.treatNeutralAsPass,
+        false,
+      ),
+    },
+    execution: {
+      ...(configJson.gates?.execution && typeof configJson.gates.execution === "object" ? configJson.gates.execution : {}),
+      sandboxMode: String(
+        env.CODEX_SANDBOX || configJson.gates?.execution?.sandboxMode || "workspace-write",
+      ).trim().toLowerCase(),
+      containerIsolationEnabled: parseBooleanEnvValue(
+        env.CONTAINER_ENABLED ?? configJson.gates?.execution?.containerIsolationEnabled,
+        false,
+      ),
+      containerRuntime: String(
+        env.CONTAINER_RUNTIME || configJson.gates?.execution?.containerRuntime || "auto",
+      ).trim().toLowerCase(),
+      networkAccess: String(
+        env.BOSUN_EXECUTION_NETWORK_ACCESS || configJson.gates?.execution?.networkAccess || "default",
+      ).trim().toLowerCase(),
+    },
+    runtime: {
+      ...(configJson.gates?.runtime && typeof configJson.gates.runtime === "object" ? configJson.gates.runtime : {}),
+      enforceBacklog: parseBooleanEnvValue(
+        env.BOSUN_GATES_ENFORCE_BACKLOG ?? configJson.gates?.runtime?.enforceBacklog,
+        true,
+      ),
+      agentTriggerControl: parseBooleanEnvValue(
+        env.BOSUN_GATES_AGENT_TRIGGER_CONTROL ?? configJson.gates?.runtime?.agentTriggerControl,
+        true,
+      ),
+    },
+  };
   env.EXECUTOR_MODE = normalizeEnum(
     env.EXECUTOR_MODE,
-    ["internal", "vk", "hybrid"],
+    ["internal", "hybrid"],
     "internal",
   );
 
@@ -2141,11 +2226,6 @@ function normalizeSetupConfiguration({
     env.CODEX_SANDBOX_PERMISSIONS || "disk-full-write-access";
   env.CODEX_SANDBOX_WRITABLE_ROOTS =
     env.CODEX_SANDBOX_WRITABLE_ROOTS || buildDefaultWritableRoots(repoRoot);
-
-  env.VK_BASE_URL = env.VK_BASE_URL || "http://127.0.0.1:54089";
-  env.VK_RECOVERY_PORT = String(
-    toPositiveInt(env.VK_RECOVERY_PORT || "54089", 54089),
-  );
 
   env.CODEX_TRANSPORT = normalizeEnum(
     env.CODEX_TRANSPORT || process.env.CODEX_TRANSPORT,
@@ -2401,7 +2481,7 @@ After committing:
 ## Overview
 
 - Repository: \`${repoSlug}\`
-- Task management: Vibe-Kanban (auto-configured by bosun)
+- Task management: Internal board (auto-configured by bosun)
 
 ## Build & Test
 
@@ -2425,130 +2505,6 @@ Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, rev
 
 Linting and formatting are enforced before commit.
 Tests and builds are verified before push.
-`;
-}
-
-// ── VK Auto-Configuration ────────────────────────────────────────────────────
-
-function generateVkSetupScript(config) {
-  const repoRoot = config.repoRoot.replace(/\\/g, "/");
-  const monitorDir = config.monitorDir.replace(/\\/g, "/");
-
-  return `#!/usr/bin/env bash
-# Auto-generated by bosun setup
-# VK workspace setup script for: ${config.projectName}
-
-set -euo pipefail
-
-echo "Setting up workspace for ${config.projectName}..."
-
-# ── PATH propagation ──────────────────────────────────────────────────────────
-# Ensure common tool directories are on PATH so agents can find gh, pwsh, node,
-# go, etc. without using full absolute paths. The host user's PATH may not be
-# inherited by the workspace shell.
-_add_to_path() { case ":\$PATH:" in *":\$1:"*) ;; *) export PATH="\$1:\$PATH" ;; esac; }
-
-for _dir in \\
-  /usr/local/bin \\
-  /usr/local/sbin \\
-  /usr/bin \\
-  "\$HOME/.local/bin" \\
-  "\$HOME/bin" \\
-  "\$HOME/go/bin" \\
-  "\$HOME/.cargo/bin" \\
-  /snap/bin \\
-  /opt/homebrew/bin; do
-  [ -d "\$_dir" ] && _add_to_path "\$_dir"
-done
-
-# Windows-specific paths (Git Bash / MSYS2 environment)
-case "\$(uname -s 2>/dev/null)" in
-  MINGW*|MSYS*|CYGWIN*)
-    for _wdir in \\
-      "/c/Program Files/GitHub CLI" \\
-      "/c/Program Files/PowerShell/7" \\
-      "/c/Program Files/nodejs"; do
-      [ -d "\$_wdir" ] && _add_to_path "\$_wdir"
-    done
-    ;;
-esac
-
-# ── Git credential guard ─────────────────────────────────────────────────────
-# NEVER run 'gh auth setup-git' inside a workspace — it writes the container's
-# gh path into .git/config, corrupting pushes from other environments.
-# Rely on GH_TOKEN/GITHUB_TOKEN env vars or the global credential helper.
-if git config --local credential.helper &>/dev/null; then
-  _local_helper=\$(git config --local credential.helper)
-  if echo "\$_local_helper" | grep -qE '/home/.*/gh(\\.exe)?|/tmp/.*/gh'; then
-    echo "  [setup] Removing stale local credential.helper: \$_local_helper"
-    git config --local --unset credential.helper || true
-  fi
-fi
-
-# ── Git worktree cleanup ─────────────────────────────────────────────────────
-# Prune stale worktree references to prevent path corruption errors.
-# This happens when worktree directories are deleted but git metadata remains.
-if [ -f ".git" ]; then
-  _gitdir=\$(cat .git | sed 's/^gitdir: //')
-  _repo_root=\$(dirname "\$_gitdir" | xargs dirname | xargs dirname)
-  if [ -d "\$_repo_root/.git/worktrees" ]; then
-    echo "  [setup] Pruning stale worktrees..."
-    ( cd "\$_repo_root" && git worktree prune -v 2>&1 | sed 's/^/  [prune] /' ) || true
-  fi
-fi
-
-# ── GitHub auth verification ─────────────────────────────────────────────────
-if command -v gh &>/dev/null; then
-  echo "  [setup] gh CLI found at: \$(command -v gh)"
-  gh auth status 2>/dev/null || echo "  [setup] gh not authenticated — ensure GH_TOKEN is set"
-else
-  echo "  [setup] WARNING: gh CLI not found on PATH"
-  echo "  [setup] Current PATH: \$PATH"
-fi
-
-# Install dependencies
-if [ -f "package.json" ]; then
-  if command -v pnpm &>/dev/null; then
-    pnpm install
-  elif command -v npm &>/dev/null; then
-    npm install
-  fi
-fi
-
-# Install bosun dependencies
-if [ -d "${relative(config.repoRoot, monitorDir)}" ]; then
-  cd "${relative(config.repoRoot, monitorDir)}"
-  if command -v pnpm &>/dev/null; then
-    pnpm install
-  elif command -v npm &>/dev/null; then
-    npm install
-  fi
-  cd -
-fi
-
-echo "Workspace setup complete."
-`;
-}
-
-function generateVkCleanupScript(config) {
-  return `#!/usr/bin/env bash
-# Auto-generated by bosun setup
-# VK workspace cleanup script for: ${config.projectName}
-
-set -euo pipefail
-
-echo "Cleaning up workspace for ${config.projectName}..."
-
-# Hand off PR lifecycle if branch has commits
-BRANCH=$(git branch --show-current 2>/dev/null || true)
-if [ -n "$BRANCH" ] && [ "$BRANCH" != "main" ] && [ "$BRANCH" != "master" ]; then
-  COMMITS=$(git log main.."$BRANCH" --oneline 2>/dev/null | wc -l || echo 0)
-  if [ "$COMMITS" -gt 0 ]; then
-    echo "Branch $BRANCH has $COMMITS commit(s) — PR lifecycle will be managed by Bosun."
-  fi
-fi
-
-echo "Cleanup complete."
 `;
 }
 
@@ -2650,20 +2606,6 @@ async function main() {
     commandExists("gh"),
     "Recommended: https://cli.github.com/",
   );
-  const hasVk = check(
-    "Vibe-Kanban CLI",
-    commandExists("vibe-kanban") || bundledBinExists("vibe-kanban"),
-    "Bundled with bosun as a dependency",
-  );
-
-  if (!hasVk) {
-    warn(
-      "vibe-kanban not found. This is bundled with bosun, so this is unexpected.",
-    );
-    info("Try reinstalling:");
-    console.log("     npm uninstall -g bosun");
-    console.log("     npm install -g bosun\n");
-  }
 
   if (!hasNode) {
     console.error("\n  Node.js 18+ is required. Aborting.\n");
@@ -4279,26 +4221,21 @@ async function main() {
         "Select task board backend:",
         [
           "Internal Store (internal, recommended primary)",
-          "Vibe-Kanban (vk)",
           "GitHub Issues (github)",
           "Jira Issues (jira)",
         ],
-        backendDefault === "vk"
-          ? 1
-          : backendDefault === "github"
-            ? 2
+        backendDefault === "github"
+            ? 1
             : backendDefault === "jira"
-              ? 3
+              ? 2
               : 0,
       );
       selectedKanbanBackend =
         backendIdx === 1
-          ? "vk"
+          ? "github"
           : backendIdx === 2
-            ? "github"
-            : backendIdx === 3
-              ? "jira"
-              : "internal";
+            ? "jira"
+            : "internal";
 
       if (selectedKanbanBackend !== "github") break;
 
@@ -4309,7 +4246,7 @@ async function main() {
         `GitHub auth is required to auto-detect projects, create boards, and sync issues. ${ghStatus.reason || ""}`.trim(),
       );
       info(
-        "If you do not plan to use GitHub as the task manager, pick Internal, Jira, or Vibe-Kanban.",
+        "If you do not plan to use GitHub as the task manager, pick Internal or Jira.",
       );
       info("Authenticate with GitHub using: gh auth login");
       const ghActionIdx = await prompt.choose(
@@ -4360,21 +4297,10 @@ async function main() {
       "Select execution mode:",
       [
         "Internal executor (recommended)",
-        "VK executor/orchestrator",
-        "Hybrid (internal + VK)",
       ],
-      selectedKanbanBackend === "internal" ||
-      selectedKanbanBackend === "github" ||
-      selectedKanbanBackend === "jira"
-        ? 0
-        : modeDefault === "hybrid"
-          ? 2
-          : modeDefault === "internal"
-            ? 0
-            : 1,
+      0,
     );
-    const selectedExecutorMode =
-      execModeIdx === 0 ? "internal" : execModeIdx === 1 ? "vk" : "hybrid";
+    const selectedExecutorMode = "internal";
     env.EXECUTOR_MODE = selectedExecutorMode;
     configJson.internalExecutor = {
       ...(configJson.internalExecutor || {}),
@@ -4485,6 +4411,26 @@ async function main() {
       ),
       true,
     );
+    env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP = toBooleanEnvString(
+      await prompt.confirm(
+        "Install optional assistive GitHub Actions into configured repos during setup?",
+        parseBooleanEnvValue(
+          env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP
+            ?? configJson.prAutomation?.assistiveActions?.installOnSetup,
+          false,
+        ),
+      ),
+      false,
+    );
+    configJson.prAutomation = {
+      ...(configJson.prAutomation && typeof configJson.prAutomation === "object" ? configJson.prAutomation : {}),
+      assistiveActions: {
+        ...(configJson.prAutomation?.assistiveActions && typeof configJson.prAutomation.assistiveActions === "object"
+          ? configJson.prAutomation.assistiveActions
+          : {}),
+        installOnSetup: parseBooleanEnvValue(env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP, false),
+      },
+    };
     const workflowOverrides = await promptForWorkflowTemplateOverrides(
       prompt,
       selectedWorkflowTemplateIds,
@@ -4496,11 +4442,6 @@ async function main() {
       templates: selectedWorkflowTemplateIds,
       templateOverridesById: workflowOverrides,
     };
-
-    const vkNeeded =
-      selectedKanbanBackend === "vk" ||
-      selectedExecutorMode === "vk" ||
-      selectedExecutorMode === "hybrid";
 
     if (selectedKanbanBackend === "github") {
       const githubRepoChoices = selectedWorkspaceChoice
@@ -5310,30 +5251,6 @@ async function main() {
       success("Jira backend configured.");
     }
 
-    if (vkNeeded) {
-      if (isAdvancedSetup) {
-        env.VK_BASE_URL = await prompt.ask(
-          "VK API URL",
-          process.env.VK_BASE_URL || "http://127.0.0.1:54089",
-        );
-        env.VK_RECOVERY_PORT = await prompt.ask(
-          "VK port",
-          process.env.VK_RECOVERY_PORT || "54089",
-        );
-      } else {
-        env.VK_BASE_URL = process.env.VK_BASE_URL || "http://127.0.0.1:54089";
-        env.VK_RECOVERY_PORT = process.env.VK_RECOVERY_PORT || "54089";
-      }
-      const spawnVk = await prompt.confirm(
-        "Auto-spawn vibe-kanban if not running?",
-        true,
-      );
-      if (!spawnVk) env.VK_NO_SPAWN = "true";
-    } else {
-      env.VK_NO_SPAWN = "true";
-      info("VK runtime disabled (not selected as board or executor).");
-    }
-
     // ── Codex CLI Config (config.toml) ─────────────────────
     heading("Codex CLI Config");
     console.log(chalk.dim("  ~/.codex/config.toml — agent-level config\n"));
@@ -5348,10 +5265,6 @@ async function main() {
     } else {
       info(`Found existing config: ${configTomlPath}`);
     }
-
-    info(
-      "Vibe-Kanban MCP is workspace-scoped and will only be written to repo .codex/config.toml when VK runtime is selected and configured.",
-    );
 
     // Check stream timeouts
     const timeouts = auditStreamTimeouts(existingToml);
@@ -5400,7 +5313,7 @@ async function main() {
         const preferredTag =
           variant.ext === orchestratorDefaults.preferredExt ? " (preferred)" : "";
         info(
-          `  - ve-orchestrator.${variant.ext} + ve-kanban.${variant.ext}${preferredTag}`,
+          `  - orchestrator.${variant.ext}${preferredTag}`,
         );
       }
 
@@ -5416,14 +5329,14 @@ async function main() {
         success(`Using default ${basename(selectedDefault.orchestratorPath)}`);
       } else {
         const customPath = await prompt.ask(
-          "Path to your custom orchestrator script (or leave blank for Vibe-Kanban direct mode)",
+          "Path to your custom orchestrator script",
           "",
         );
         if (customPath) {
           env.ORCHESTRATOR_SCRIPT = customPath;
         } else {
           info(
-            "No orchestrator script configured. bosun will manage tasks directly via Vibe-Kanban.",
+            "No orchestrator script configured. bosun will manage tasks directly.",
           );
         }
       }
@@ -5441,7 +5354,7 @@ async function main() {
         );
       } else {
         info(
-          "No orchestrator script configured. bosun will manage tasks directly via Vibe-Kanban.",
+          "No orchestrator script configured. bosun will manage tasks directly.",
         );
       }
     }
@@ -5637,57 +5550,6 @@ async function main() {
         enabled: false,
       };
       info("Hook scaffolding skipped by user selection.");
-    }
-
-    // ── VK Auto-Wiring ────────────────────────────────────
-    if (vkNeeded) {
-      heading("Vibe-Kanban Auto-Configuration");
-      const autoWireVk = isAdvancedSetup
-        ? await prompt.confirm(
-            "Auto-configure Vibe-Kanban project, repos, and executor profiles?",
-            true,
-          )
-        : true;
-
-      if (autoWireVk) {
-        const vkConfig = {
-          projectName: env.PROJECT_NAME,
-          repoRoot,
-          monitorDir: __dirname,
-        };
-
-        // Generate VK scripts
-        const setupScript = generateVkSetupScript(vkConfig);
-        const cleanupScript = generateVkCleanupScript(vkConfig);
-
-        // Get current PATH for VK executor profiles
-        const currentPath = process.env.PATH || "";
-
-        // Write to config for VK API auto-wiring
-        configJson.vkAutoConfig = {
-          setupScript,
-          cleanupScript,
-          executorProfiles: configJson.executors.map((e) => ({
-            executor: e.executor,
-            variant: e.variant,
-            environmentVariables: {
-              PATH: currentPath,
-              // Ensure GitHub token is available in workspace
-              GH_TOKEN: "${GH_TOKEN}",
-              GITHUB_TOKEN: "${GITHUB_TOKEN}",
-            },
-          })),
-        };
-
-        info("VK configuration will be applied on first launch.");
-        info("Setup and cleanup scripts generated for your workspace.");
-        info(
-          `PATH environment variable configured for ${configJson.executors.length} executor profile(s)`,
-        );
-      }
-    } else {
-      info("Skipping VK auto-configuration (VK not selected).");
-      delete configJson.vkAutoConfig;
     }
 
     // ── Per-workspace kanban wiring ───────────────────────
@@ -6171,8 +6033,6 @@ async function runNonInteractive({
     process.env.INTERNAL_EXECUTOR_REPLENISH_MIN_NEW_TASKS || "1";
   env.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS =
     process.env.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS || "2";
-  env.VK_BASE_URL = process.env.VK_BASE_URL || "http://127.0.0.1:54089";
-  env.VK_RECOVERY_PORT = process.env.VK_RECOVERY_PORT || "54089";
   env.GITHUB_REPO_OWNER =
     process.env.GITHUB_REPO_OWNER || (slug ? String(slug).split("/")[0] : "");
   env.GITHUB_REPO_NAME =
@@ -6437,14 +6297,6 @@ async function runNonInteractive({
     }
   }
 
-  if (
-    (env.KANBAN_BACKEND || "").toLowerCase() !== "vk" &&
-    !["vk", "hybrid"].includes((env.EXECUTOR_MODE || "").toLowerCase())
-  ) {
-    env.VK_NO_SPAWN = "true";
-    delete configJson.vkAutoConfig;
-  }
-
   // ── Workspace bootstrap ────────────────────────────────────────────────
   // If workspaces are configured, auto-clone repos and verify .git
   if (Array.isArray(configJson.workspaces) && configJson.workspaces.length > 0) {
@@ -6528,11 +6380,62 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
   // ── bosun.config.json ──────────────────────────
   // Write config with schema reference for editor autocomplete
   const configOut = { $schema: "./bosun.schema.json", ...configJson };
-  // Keep vkAutoConfig in config file for monitor to apply on first launch
-  // (includes executorProfiles with environment variables like PATH)
   const configPath = resolve(targetDir, "bosun.config.json");
   writeFileSync(configPath, JSON.stringify(configOut, null, 2) + "\n", "utf8");
   success(`Config written to ${relative(repoRoot, configPath)}`);
+
+  const installAssistiveActions = parseBooleanEnvValue(
+    env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP
+      ?? configJson.prAutomation?.assistiveActions?.installOnSetup,
+    false,
+  );
+
+  if (installAssistiveActions) {
+    heading("Assistive GitHub Actions");
+    const workflowSources = [
+      {
+        source: resolve(__dirname, ".github", "workflows", "bosun-pr-attach.yml"),
+        targetParts: [".github", "workflows", "bosun-pr-attach.yml"],
+      },
+      {
+        source: resolve(__dirname, ".github", "workflows", "bosun-pr-ci-signal.yml"),
+        targetParts: [".github", "workflows", "bosun-pr-ci-signal.yml"],
+      },
+    ];
+    const repoTargets = [];
+    const seenRepoTargets = new Set();
+    const addRepoTarget = (repoPath) => {
+      const fullPath = resolve(String(repoPath || ""));
+      if (!fullPath || seenRepoTargets.has(fullPath)) return;
+      if (!existsSync(fullPath) || !existsSync(resolve(fullPath, ".git"))) return;
+      seenRepoTargets.add(fullPath);
+      repoTargets.push(fullPath);
+    };
+
+    addRepoTarget(repoRoot);
+    const bosunDir = env.BOSUN_DIR || configDir || targetDir;
+    const workspaceRoot = resolve(bosunDir, "workspaces");
+    for (const workspace of Array.isArray(configOut.workspaces) ? configOut.workspaces : []) {
+      for (const repo of Array.isArray(workspace?.repos) ? workspace.repos : []) {
+        addRepoTarget(resolve(workspaceRoot, workspace.id || workspace.name || "", repo.name || ""));
+      }
+    }
+
+    for (const repoPath of repoTargets) {
+      for (const workflow of workflowSources) {
+        const targetPath = resolve(repoPath, ...workflow.targetParts);
+        if (existsSync(targetPath)) {
+          info(`Assistive workflow already present: ${relative(repoRoot, targetPath)}`);
+          continue;
+        }
+        mkdirSync(dirname(targetPath), { recursive: true });
+        writeFileSync(targetPath, readFileSync(workflow.source, "utf8"), "utf8");
+        success(`Installed assistive workflow: ${relative(repoRoot, targetPath)}`);
+      }
+    }
+  } else {
+    info("Assistive GitHub Actions left uninstalled. Bosun runtime workflows still operate without them.");
+  }
 
   // If the setup target directory differs from the package dir but a local .env
   // exists there without a config file, seed a config copy to avoid mismatches.
@@ -6569,17 +6472,6 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
     warn(`Could not update Copilot MCP config: ${copilotMcpResult.error}`);
   }
 
-  const vkPort = env.VK_RECOVERY_PORT || "54089";
-  const vkBaseUrl = String(
-    env.VK_BASE_URL || `http://127.0.0.1:${vkPort}`,
-  ).trim();
-  const kanbanIsVk =
-    String(env.KANBAN_BACKEND || "").trim().toLowerCase() === "vk" ||
-    ["vk", "hybrid"].includes(
-      String(env.EXECUTOR_MODE || "").trim().toLowerCase(),
-    );
-  const includeWorkspaceVkMcp = kanbanIsVk && vkBaseUrl.length > 0;
-
   // Derive primary SDK from executor configuration.
   const primaryExecutor = (configJson.executors || []).find(
     (e) => e.role === "primary",
@@ -6594,8 +6486,6 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
       "codex"
     : "codex";
   const repoConfigOptions = {
-    vkBaseUrl,
-    skipVk: !includeWorkspaceVkMcp,
     primarySdk,
   };
 
@@ -6637,12 +6527,7 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
 
   // ── Codex CLI config.toml ─────────────────────────────
   heading("Codex CLI Config");
-  info(
-    "Global ~/.codex/config.toml will not include Vibe-Kanban MCP (workspace-only policy).",
-  );
   const tomlResult = ensureCodexConfig({
-    vkBaseUrl,
-    skipVk: true,
     dryRun: false,
     primarySdk,
     env: {

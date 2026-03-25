@@ -30,8 +30,14 @@ import {
   scheduleRefresh,
 } from "../modules/state.js";
 import { navigateTo } from "../modules/router.js";
+import {
+  activeWorkspaceId,
+  loadWorkspaces,
+  workspaces as managedWorkspaces,
+} from "../components/workspace-switcher.js";
 import { ICONS } from "../modules/icons.js";
 import { formatRelative, truncate } from "../modules/utils.js";
+import { resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import {
   Card,
   Badge,
@@ -47,6 +53,7 @@ import {
   selectedSessionId,
   sessionsData,
   sessionMessages,
+  sessionMessagesSessionId,
 } from "../components/session-list.js";
 import { ChatView } from "../components/chat-view.js";
 import { DiffViewer } from "../components/diff-viewer.js";
@@ -126,6 +133,162 @@ function fleetThreadKey(thread, index) {
   return `thread-${index}:${taskKey}:${id}`;
 }
 
+function resolveFleetEntrySessionId(entry) {
+  const sessionId = String(entry?.session?.id || "").trim();
+  if (sessionId) return sessionId;
+  if (entry?.isTaskFallback || entry?.slot?.synthetic) return "";
+  return String(entry?.slot?.sessionId || "").trim();
+}
+
+function buildSessionLogQueryParts(values = []) {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => String(value || "").trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function buildSessionLogQuery(values = []) {
+  return buildSessionLogQueryParts(values).join(" ");
+}
+
+function isSessionSignalAction(action = {}) {
+  const level = String(action?.level || "").toLowerCase();
+  const label = String(action?.label || "");
+  return (
+    level === "error"
+    || /(warn|error|failed|exception|timeout|anomal|retry|blocked|fatal)/i.test(label)
+  );
+}
+
+function buildSessionFocusedLogText(entry, rawLogText = "") {
+  const lines = [];
+  const session = entry?.session || null;
+  const insights = session?.insights || null;
+  const totals = insights?.totals || null;
+  const recentActions = Array.isArray(insights?.recentActions) ? insights.recentActions : [];
+  const signalActions = recentActions.filter(isSessionSignalAction);
+  const editedFiles = Array.isArray(insights?.activityDiff?.files) ? insights.activityDiff.files : [];
+  const queryParts = buildSessionLogQueryParts([
+    entry?.slot?.taskId,
+    entry?.session?.taskId,
+    entry?.session?.id,
+    entry?.slot?.branch,
+    entry?.session?.branch,
+  ]);
+
+  lines.push("Session-focused signals");
+  lines.push("=====================");
+  lines.push(
+    `Session: ${session?.title || session?.taskTitle || entry?.slot?.taskTitle || entry?.slot?.taskId || entry?.session?.id || "unknown"}`,
+  );
+  if (queryParts.length) {
+    lines.push(`Keys: ${queryParts.join(" | ")}`);
+  }
+  if (totals) {
+    lines.push(
+      `Totals: ${totals.messages || 0} messages, ${totals.toolCalls || 0} tool calls, ${totals.errors || 0} errors`,
+    );
+  }
+  if (signalActions.length) {
+    lines.push("");
+    lines.push("Warnings / errors");
+    lines.push("-----------------");
+    signalActions.slice(0, 8).forEach((action) => {
+      lines.push(`- [${String(action.timestamp || "").replace("T", " ").replace("Z", "")}] ${action.label}`);
+    });
+  }
+  if (editedFiles.length) {
+    lines.push("");
+    lines.push("Touched files");
+    lines.push("-------------");
+    editedFiles.slice(0, 8).forEach((file) => {
+      lines.push(`- ${file.path} (${file.edits || 0} edits)`);
+    });
+  }
+
+  const raw = String(rawLogText || "").trim();
+  if (raw) {
+    lines.push("");
+    lines.push("Raw focused log lines");
+    lines.push("---------------------");
+    lines.push(raw);
+  } else if (!signalActions.length) {
+    lines.push("");
+    lines.push("No session-specific warnings or log lines found yet.");
+  }
+
+  return lines.join("\n");
+}
+
+const FLEET_SESSION_SCOPE = Object.freeze({
+  all: "all",
+  active: "active",
+  historic: "historic",
+});
+
+function getFleetEntryTitle(entry) {
+  return (
+    entry?.slot?.taskTitle
+    || entry?.session?.taskTitle
+    || entry?.session?.title
+    || entry?.session?.taskId
+    || entry?.session?.id
+    || "(untitled)"
+  );
+}
+
+function getFleetEntryStatus(entry) {
+  return String(
+    entry?.slot?.status
+    || entry?.session?.status
+    || (entry?.isHistory ? "historic" : "unknown"),
+  ).toLowerCase();
+}
+
+function isFleetEntryActive(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  const status = getFleetEntryStatus(entry);
+  return status === "active" || status === "running" || status === "busy" || status === "inprogress";
+}
+
+function getFleetEntryTimestamp(entry) {
+  return new Date(
+    entry?.slot?.startedAt
+    || entry?.session?.lastActiveAt
+    || entry?.session?.updatedAt
+    || entry?.session?.createdAt
+    || entry?.session?.startedAt
+    || 0,
+  ).getTime() || 0;
+}
+
+function getFleetEntrySearchBlob(entry) {
+  return [
+    getFleetEntryTitle(entry),
+    entry?.slot?.taskId,
+    entry?.session?.taskId,
+    entry?.session?.id,
+    entry?.slot?.branch,
+    entry?.session?.branch,
+    entry?.slot?.status,
+    entry?.session?.status,
+  ]
+    .map((part) => String(part || "").toLowerCase())
+    .join(" ");
+}
+
+function getFleetEntryRelativeTime(entry) {
+  const raw =
+    entry?.slot?.startedAt
+    || entry?.session?.lastActiveAt
+    || entry?.session?.updatedAt
+    || entry?.session?.createdAt
+    || entry?.session?.startedAt;
+  return raw ? formatRelative(raw) : "";
+}
 /* ─── Workspace Viewer Modal ─── */
 function WorkspaceViewer({ agent, onClose }) {
   const [logText, setLogText] = useState("Loading…");
@@ -147,7 +310,11 @@ function WorkspaceViewer({ agent, onClose }) {
   const [expandedModelResponse, setExpandedModelResponse] = useState(false);
   const logRef = useRef(null);
 
-  const query = agent.branch || agent.taskId || agent.sessionId || "";
+  const query = buildSessionLogQuery([
+    agent.sessionId,
+    agent.taskId,
+    agent.branch,
+  ]);
   const linkedSession =
     (sessionsData.value || []).find((s) => {
       if (!s) return false;
@@ -345,7 +512,9 @@ function WorkspaceViewer({ agent, onClose }) {
     const actionHistory = contextData?.actionHistory || contextData?.toolHistory || [];
     const fileAccess = contextData?.fileAccessSummary || null;
     const fileAccessFiles = fileAccess?.files || [];
-    const streamMessages = sessionMessages.value || [];
+    const streamMessages = String(sessionMessagesSessionId.value || "") === String(sessionId || "")
+      ? (sessionMessages.value || [])
+      : [];
     const latestModelResponse =
       streamMessages
         .slice()
@@ -1123,12 +1292,46 @@ export function AgentsTab() {
 
   const [expandedSlot, setExpandedSlot] = useState(null);
   const [selectedAgent, setSelectedAgent] = useState(null);
+  const [fleetSearch, setFleetSearch] = useState("");
+  const [sessionSearch, setSessionSearch] = useState("");
   const [isCompact, setIsCompact] = useState(() => {
     try { return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false; }
     catch { return false; }
   });
   const dispatchInputRef = useRef(null);
   const workspaceTarget = agentWorkspaceTarget.value;
+  const activeWorkspace = (managedWorkspaces.value || []).find(
+    (entry) => String(entry?.id || "").trim() === String(activeWorkspaceId.value || "").trim(),
+  ) || null;
+  const activeWorkspaceExecutors = activeWorkspace?.executors || null;
+
+  const filteredSlots = useMemo(() => {
+    const q = fleetSearch.trim().toLowerCase();
+    if (!q) return slots;
+    return slots.filter((slot, i) => {
+      const blob = getFleetEntrySearchBlob({ slot, session: null });
+      return blob.includes(q);
+    });
+  }, [slots, fleetSearch]);
+
+  const allSessions = sessionsData.value || [];
+  const activeSessionCount = allSessions.filter((session) => {
+    if (!session || typeof session !== "object") return false;
+    if (session.active === true) return true;
+    const status = String(session.status || session.state || "").trim().toLowerCase();
+    return ["active", "running", "busy", "working", "inprogress", "streaming"].includes(status);
+  }).length;
+  const workloadActiveCount = Math.max(activeSlots, activeSessionCount);
+  const filteredSessions = useMemo(() => {
+    const q = sessionSearch.trim().toLowerCase();
+    if (!q) return allSessions;
+    return allSessions.filter((s) => {
+      const blob = [
+        s?.title, s?.taskTitle, s?.id, s?.taskId, s?.branch, s?.status,
+      ].map((p) => String(p || "").toLowerCase()).join(" ");
+      return blob.includes(q);
+    });
+  }, [allSessions, sessionSearch]);
 
   useEffect(() => {
     const current = selectedSessionId.value;
@@ -1179,6 +1382,10 @@ export function AgentsTab() {
     }
     agentWorkspaceTarget.value = null;
   }, [workspaceTarget, slots]);
+
+  useEffect(() => {
+    loadWorkspaces().catch(() => {});
+  }, []);
 
   useEffect(() => {
     let mq;
@@ -1263,13 +1470,13 @@ export function AgentsTab() {
   const healthLabel =
     statusCounts.error > 0
       ? "Needs Attention"
-      : activeSlots > 0
+      : workloadActiveCount > 0
         ? "Healthy"
         : "Idle";
   const healthColor =
     statusCounts.error > 0
       ? "var(--color-error)"
-      : activeSlots > 0
+      : workloadActiveCount > 0
         ? "var(--color-done)"
         : "var(--text-secondary)";
   const healthSubtext =
@@ -1277,10 +1484,18 @@ export function AgentsTab() {
       ? `${statusCounts.error} slot${statusCounts.error === 1 ? "" : "s"} reporting errors`
       : activeSlots > 0
         ? `${statusCounts.running || activeSlots} active · ${idleSlots} idle`
+        : activeSessionCount > 0
+          ? `${activeSessionCount} active session${activeSessionCount === 1 ? "" : "s"} · awaiting slot telemetry`
         : "No active workloads";
   const lastErrorSlot = slots.find((slot) => slot.lastError);
+  const workspaceHeader = activeWorkspace
+    ? `${activeWorkspace.name || activeWorkspace.id} · ${String(activeWorkspaceExecutors?.pool || "shared")} pool`
+    : "All workspaces · shared pool";
+  const workspaceHeaderDetail = activeWorkspace
+    ? `${Number(activeWorkspaceExecutors?.maxConcurrent || maxParallel || 0) || maxParallel || 0} configured slots`
+    : `${maxParallel || 0} runtime slots visible`;
   const fleetMetrics = [
-    { label: "Active", value: activeSlots },
+    { label: "Active", value: workloadActiveCount },
     { label: "Idle", value: idleSlots },
     { label: "Errors", value: statusCounts.error },
     { label: "Completed", value: totalCompleted },
@@ -1312,6 +1527,9 @@ export function AgentsTab() {
           subtitle="Capacity, health, and quick actions"
           className="fleet-overview-card"
         >
+          <div class="fleet-subtext" style=${{ marginBottom: "0.75rem" }}>
+            Workspace: ${workspaceHeader} · ${workspaceHeaderDetail}
+          </div>
           <div class="fleet-hero">
             <div class="fleet-health">
               <div class="fleet-label">Health</div>
@@ -1421,8 +1639,15 @@ export function AgentsTab() {
                 ? `${activeSlots} active · ${freeSlots} free`
                 : "No active slots"}
             </div>
-            ${slots.length
-                ? slots.map(
+            <${TextField}
+              size="small" variant="outlined" placeholder="Filter by task, branch, status…"
+              value=${fleetSearch}
+              onInput=${(e) => setFleetSearch(e?.target?.value || "")}
+              fullWidth
+              sx=${{ mb: 1, "& .MuiInputBase-input": { fontSize: "0.82rem" } }}
+            />
+            ${filteredSlots.length
+                ? filteredSlots.map(
                     (slot, i) => html`
                     <div
                       key=${fleetSlotKey(i, slot)}
@@ -1526,11 +1751,61 @@ export function AgentsTab() {
                   </div>
                 `,
               )
-            : html`<${EmptyState} message=${activeSlots > 0
-              ? "Active slots reported, but slot details haven't arrived yet."
-              : "No active agents."} />`}
+            : html`<${EmptyState} message=${fleetSearch.trim()
+              ? "No slots match this search."
+              : activeSlots > 0
+                ? "Active slots reported, but slot details haven't arrived yet."
+                : "No active agents."} />`}
         <//>
       <//>
+      </div>
+
+      <div class="fleet-span">
+        <${Card} className="fleet-sessions-card">
+          <${Collapsible}
+            title=${`Sessions · ${allSessions.length} total`}
+            defaultOpen=${!isCompact}
+          >
+            <${TextField}
+              size="small" variant="outlined" placeholder="Filter sessions by title, ID, task…"
+              value=${sessionSearch}
+              onInput=${(e) => setSessionSearch(e?.target?.value || "")}
+              fullWidth
+              sx=${{ mb: 1, "& .MuiInputBase-input": { fontSize: "0.82rem" } }}
+            />
+            ${filteredSessions.length
+              ? filteredSessions.map((s) => html`
+                <div
+                  key=${s.id}
+                  class="task-card fleet-agent-card"
+                  style="cursor:pointer"
+                  onClick=${() => {
+                    haptic();
+                    selectedSessionId.value = s.id;
+                    navigateTo("agents");
+                  }}
+                >
+                  <div class="task-card-header">
+                    <div>
+                      <div class="task-card-title">
+                        <${StatusDot} status=${s.status || "idle"} />
+                        ${truncate(s.title || s.taskTitle || s.taskId || s.id || "(untitled)", 60)}
+                      </div>
+                      <div class="task-card-meta">
+                        ${s.id || "?"}
+                        ${s.taskId ? ` · ${s.taskId}` : ""}
+                        ${s.branch ? ` · ${s.branch}` : ""}
+                      </div>
+                    </div>
+                    <${Badge} status=${s.status || "idle"} text=${s.status || "idle"} />
+                  </div>
+                </div>
+              `)
+              : html`<${EmptyState} message=${sessionSearch.trim()
+                ? "No sessions match this search."
+                : "No sessions yet."} />`}
+          <//>
+        <//>
       </div>
 
       ${agents.length > 0 &&
@@ -1567,15 +1842,20 @@ export function AgentsTab() {
 }
 
 /* ─── Context Viewer for session detail tab ─── */
-function ContextViewer({ sessionId }) {
+function ContextViewer({ query, sessionId = "", taskId = "", branch = "" }) {
   const [ctx, setCtx] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const intervalRef = useRef(null);
 
   const fetchContext = useCallback(() => {
-    if (!sessionId) return;
-    apiFetch(`/api/agent-context?query=${encodeURIComponent(sessionId)}`, { _silent: true })
+    if (!query && !sessionId && !taskId && !branch) return;
+    const params = new URLSearchParams();
+    if (query) params.set("query", String(query));
+    if (sessionId) params.set("sessionId", String(sessionId));
+    if (taskId) params.set("taskId", String(taskId));
+    if (branch) params.set("branch", String(branch));
+    apiFetch(`/api/agent-context?${params.toString()}`, { _silent: true })
       .then((res) => {
         const d = res.data ?? res ?? null;
         setCtx(d);
@@ -1586,7 +1866,7 @@ function ContextViewer({ sessionId }) {
         setLoading(false);
         setError(err.message || "Failed to load context");
       });
-  }, [sessionId]);
+  }, [query, sessionId, taskId, branch]);
 
   useEffect(() => {
     setLoading(true);
@@ -1676,9 +1956,21 @@ function ContextViewer({ sessionId }) {
   }
 
   if (!ctx?.context) {
-    return html`<div class="chat-view chat-empty-state">
+    const sessionMeta = ctx?.session || null;
+    const matches = Array.isArray(ctx?.matches) ? ctx.matches.filter(Boolean) : [];
+    return html`<div class="chat-view chat-empty-state" style="padding:16px; align-items:flex-start; text-align:left;">
       <div class="session-empty-icon">${resolveIcon(":clipboard:")}</div>
-      <div class="session-empty-text">No context available for this session</div>
+      <div class="session-empty-text">No workspace context available yet</div>
+      ${sessionMeta && html`
+        <div class="meta-text mt-sm">
+          Session: <span class="mono">${sessionMeta.id || sessionMeta.taskId || "unknown"}</span>
+          ${sessionMeta.status ? ` · ${sessionMeta.status}` : ""}
+        </div>
+      `}
+      ${matches.length > 0 && html`
+        <div class="meta-text mt-sm">Matches: ${matches.slice(0, 3).join(" · ")}</div>
+      `}
+      <div class="meta-text mt-sm">Context is captured once a linked worktree is available.</div>
     </div>`;
   }
 
@@ -1790,30 +2082,10 @@ function ContextViewer({ sessionId }) {
 }
 
 /* ─── Fleet Full Session View ─── */
-function getFleetEntryStatus(entry) {
-  return String(
-    entry?.slot?.status
-    || entry?.session?.status
-    || (entry?.isHistory ? "history" : "unknown"),
-  ).toLowerCase();
-}
-
-function isFleetEntryActive(entry) {
-  if (!entry || typeof entry !== "object") return false;
-  const status = getFleetEntryStatus(entry);
-  return status === "active" || status === "running" || status === "busy" || status === "inprogress";
-}
-
-function resolveFleetEntrySessionId(entry) {
-  const sessionId = String(entry?.session?.id || "").trim();
-  if (sessionId) return sessionId;
-  if (entry?.isTaskFallback || entry?.slot?.synthetic) return "";
-  return String(entry?.slot?.sessionId || "").trim();
-}
-
 function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, onForceStop }) {
   const [detailTab, setDetailTab] = useState("stream");
-  const [sessionScope, setSessionScope] = useState("active");
+  const [sessionScope, setSessionScope] = useState(FLEET_SESSION_SCOPE.all);
+  const [sessionSearch, setSessionSearch] = useState("");
   const [selectedEntryKey, setSelectedEntryKey] = useState(null);
   const [logText, setLogText] = useState("(no logs yet)");
   const logRef = useRef(null);
@@ -1879,11 +2151,7 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
         isTaskFallback: true,
       }));
 
-    return [...slotEntries, ...fallbackEntries].sort((a, b) => {
-      const aScore = new Date(a.slot?.startedAt || a.session?.lastActiveAt || 0).getTime() || 0;
-      const bScore = new Date(b.slot?.startedAt || b.session?.lastActiveAt || 0).getTime() || 0;
-      return bScore - aScore;
-    });
+    return [...slotEntries, ...fallbackEntries].sort((a, b) => getFleetEntryTimestamp(b) - getFleetEntryTimestamp(a));
   }, [slots, allSessions, taskFallbackEntries]);
 
   const historyEntries = useMemo(() => {
@@ -1910,42 +2178,36 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
         session,
         isHistory: true,
       }))
-      .sort((a, b) => {
-        const aScore =
-          new Date(
-            a.session?.lastActiveAt
-            || a.session?.updatedAt
-            || a.session?.createdAt
-            || a.session?.startedAt
-            || 0,
-          ).getTime() || 0;
-        const bScore =
-          new Date(
-            b.session?.lastActiveAt
-            || b.session?.updatedAt
-            || b.session?.createdAt
-            || b.session?.startedAt
-            || 0,
-          ).getTime() || 0;
-        return bScore - aScore;
-      });
+      .sort((a, b) => getFleetEntryTimestamp(b) - getFleetEntryTimestamp(a));
   }, [allSessions, entries]);
 
-  const allEntries = useMemo(() => [...entries, ...historyEntries], [entries, historyEntries]);
-  const activeCount = useMemo(
-    () => allEntries.filter((entry) => isFleetEntryActive(entry)).length,
-    [allEntries],
+  const allEntries = useMemo(
+    () => [...entries, ...historyEntries].sort((a, b) => getFleetEntryTimestamp(b) - getFleetEntryTimestamp(a)),
+    [entries, historyEntries],
   );
-  const historyCount = useMemo(
-    () => allEntries.filter((entry) => !isFleetEntryActive(entry)).length,
-    [allEntries],
-  );
-  const visibleEntries = useMemo(() => {
-    if (sessionScope === "history") {
+
+  const scopeCounts = useMemo(() => {
+    const allCount = allEntries.length;
+    const activeCount = allEntries.filter((entry) => isFleetEntryActive(entry)).length;
+    const historicCount = allCount - activeCount;
+    return { allCount, activeCount, historicCount };
+  }, [allEntries]);
+
+  const scopedEntries = useMemo(() => {
+    if (sessionScope === FLEET_SESSION_SCOPE.active) {
+      return allEntries.filter((entry) => isFleetEntryActive(entry));
+    }
+    if (sessionScope === FLEET_SESSION_SCOPE.historic) {
       return allEntries.filter((entry) => !isFleetEntryActive(entry));
     }
-    return allEntries.filter((entry) => isFleetEntryActive(entry));
+    return allEntries;
   }, [allEntries, sessionScope]);
+
+  const visibleEntries = useMemo(() => {
+    const query = sessionSearch.trim().toLowerCase();
+    if (!query) return scopedEntries;
+    return scopedEntries.filter((entry) => getFleetEntrySearchBlob(entry).includes(query));
+  }, [scopedEntries, sessionSearch]);
 
   /* Build a stable fingerprint so the effect only fires when entries actually
      change rather than on every render (entries is now memoised but we still
@@ -1959,26 +2221,44 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
     }
     const existing = visibleEntries.some((entry) => entry.key === selectedEntryKey);
     if (!existing) setSelectedEntryKey(visibleEntries[0].key);
-  }, [entriesFingerprint, sessionScope]);
+  }, [entriesFingerprint, sessionScope, sessionSearch]);
 
   const selectedEntry =
     visibleEntries.find((entry) => entry.key === selectedEntryKey)
     || visibleEntries[0]
     || null;
-  const sessionId = resolveFleetEntrySessionId(selectedEntry) || null;
-  const contextId = sessionId || selectedEntry?.slot?.taskId || null;
+  const resolvedSessionId = resolveFleetEntrySessionId(selectedEntry);
+  const streamSessionId = resolvedSessionId || null;
+  const diffSessionId = resolvedSessionId || null;
+  const contextSessionId = resolvedSessionId || "";
+  const contextTaskId =
+    selectedEntry?.slot?.taskId
+    || selectedEntry?.session?.taskId
+    || "";
+  const contextBranch =
+    selectedEntry?.slot?.branch
+    || selectedEntry?.session?.branch
+    || "";
+  const contextQuery = buildSessionLogQuery([
+    contextSessionId,
+    contextTaskId,
+    contextBranch,
+  ]);
+  const diffWorkspace = resolveSessionWorkspaceHint(selectedEntry?.session || null, "all") || "all";
 
   useEffect(() => {
-    if (sessionId) selectedSessionId.value = sessionId;
-  }, [sessionId]);
+    if (streamSessionId) selectedSessionId.value = streamSessionId;
+  }, [streamSessionId]);
 
   useEffect(() => {
-    const query =
-      selectedEntry?.slot?.branch ||
-      selectedEntry?.slot?.taskId ||
-      selectedEntry?.session?.taskId ||
-      selectedEntry?.session?.id ||
-      "";
+    const query = buildSessionLogQuery([
+      selectedEntry?.session?.id,
+      selectedEntry?.slot?.sessionId,
+      selectedEntry?.slot?.taskId,
+      selectedEntry?.session?.taskId,
+      selectedEntry?.slot?.branch,
+      selectedEntry?.session?.branch,
+    ]);
     if (!query) {
       setLogText("(no logs yet)");
       return undefined;
@@ -2009,6 +2289,8 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
     };
   }, [selectedEntry?.key]);
 
+  const focusedLogText = buildSessionFocusedLogText(selectedEntry, logText);
+
   return html`
     <${Card}
       title="Fleet Session View"
@@ -2017,62 +2299,102 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
     >
       <div class="fleet-fullview">
         <div class="fleet-slot-rail">
-          <div class="fleet-session-scope">
+          <div class="fleet-session-rail-header">
+            <div class="fleet-session-rail-title">Sessions</div>
+            <div class="fleet-session-rail-subtitle">${scopeCounts.allCount} total</div>
+          </div>
+          <div class="fleet-session-search">
+            <input
+              class="fleet-session-search-input"
+              type="text"
+              placeholder="Search task, session, branch..."
+              value=${sessionSearch}
+              onInput=${(e) => setSessionSearch(e?.target?.value || "")}
+            />
+          </div>
+          <div class="fleet-session-scope fleet-session-filter">
             <${Button} variant="text" size="small"
-              className=${`fleet-session-scope-btn ${sessionScope === "active" ? "active" : ""}`}
+              className=${`fleet-session-scope-btn fleet-session-filter-btn ${sessionScope === FLEET_SESSION_SCOPE.all ? "active" : ""}`}
               onClick=${() => {
                 haptic();
-                setSessionScope("active");
+                setSessionScope(FLEET_SESSION_SCOPE.all);
               }}
             >
-              Active (${activeCount})
+              All (${scopeCounts.allCount})
             <//>
             <${Button} variant="text" size="small"
-              className=${`fleet-session-scope-btn ${sessionScope === "history" ? "active" : ""}`}
+              className=${`fleet-session-scope-btn fleet-session-filter-btn ${sessionScope === FLEET_SESSION_SCOPE.active ? "active" : ""}`}
               onClick=${() => {
                 haptic();
-                setSessionScope("history");
+                setSessionScope(FLEET_SESSION_SCOPE.active);
               }}
             >
-              History (${historyCount})
+              Active (${scopeCounts.activeCount})
+            <//>
+            <${Button} variant="text" size="small"
+              className=${`fleet-session-scope-btn fleet-session-filter-btn ${sessionScope === FLEET_SESSION_SCOPE.historic ? "active" : ""}`}
+              onClick=${() => {
+                haptic();
+                setSessionScope(FLEET_SESSION_SCOPE.historic);
+              }}
+            >
+              Historic (${scopeCounts.historicCount})
             <//>
           </div>
-          ${visibleEntries.length === 0
-            ? html`<div class="meta-text">${sessionScope === "history" ? "No historic sessions" : "No active slots"}</div>`
-            : html`${visibleEntries.map((entry) => html`
-                <${Button} variant="text" size="small"
-                  key=${entry.key}
-                  className=${`fleet-slot-item ${selectedEntry?.key === entry.key ? "active" : ""} ${entry.isHistory ? "history" : ""}`}
-                  onClick=${() => {
-                    haptic();
-                    setSelectedEntryKey(entry.key);
-                    setDetailTab("stream");
-                  }}
-                >
-                  <div class="fleet-slot-item-title">
-                    <${StatusDot} status=${entry.slot?.status || entry.session?.status || "busy"} />
-                    ${truncate(
-                      entry.slot?.taskTitle
-                      || entry.session?.taskTitle
-                      || entry.session?.title
-                      || entry.session?.taskId
-                      || entry.session?.id
-                      || "(untitled)",
-                      50,
-                    )}
-                  </div>
-                  <div class="fleet-slot-item-meta">
-                    ${entry.isHistory
-                      ? `Session ${entry.session?.id || "unknown"} · ${entry.session?.status || "unknown"}`
-                      : entry.isTaskFallback
-                        ? `Task only · ${entry.slot?.status || "unknown"} · ${entry.slot?.taskId || "no-task-id"}`
-                        : `Slot ${(entry.index ?? 0) + 1} · ${entry.slot?.taskId || "no-task-id"}`}
-                    ${entry.isHistory && (entry.session?.lastActiveAt || entry.session?.updatedAt || entry.session?.createdAt)
-                      ? ` · ${formatRelative(entry.session?.lastActiveAt || entry.session?.updatedAt || entry.session?.createdAt)}`
-                      : ""}
-                  </div>
-                <//>
-              `)}`}
+          <div class="fleet-slot-list-scroll">
+            ${visibleEntries.length === 0
+              ? html`<div class="meta-text fleet-session-empty">
+                  ${sessionSearch.trim()
+                    ? "No sessions match this search."
+                    : sessionScope === FLEET_SESSION_SCOPE.active
+                      ? "No active sessions"
+                      : sessionScope === FLEET_SESSION_SCOPE.historic
+                        ? "No historic sessions"
+                        : "No sessions yet"}
+                </div>`
+              : html`${visibleEntries.map((entry) => {
+                  const entryStatus = getFleetEntryStatus(entry);
+                  const relativeTime = getFleetEntryRelativeTime(entry);
+                  return html`
+                    <${Button} variant="text" size="small"
+                      key=${entry.key}
+                      className=${`fleet-slot-item ${selectedEntry?.key === entry.key ? "active" : ""} ${entry.isHistory ? "history" : ""}`}
+                      onClick=${() => {
+                        haptic();
+                        setSelectedEntryKey(entry.key);
+                        setDetailTab("stream");
+                      }}
+                    >
+                      <div class="fleet-slot-item-header">
+                        <div class="fleet-slot-item-title">
+                          <${StatusDot} status=${entry.slot?.status || entry.session?.status || "busy"} />
+                          ${truncate(getFleetEntryTitle(entry), 58)}
+                        </div>
+                        ${relativeTime
+                          ? html`<div class="fleet-slot-item-time">${relativeTime}</div>`
+                          : null}
+                      </div>
+                      <div class="fleet-slot-item-meta fleet-slot-item-meta-primary">
+                        ${entry.isHistory
+                          ? `Session ${entry.session?.id || "unknown"}`
+                          : entry.isTaskFallback
+                            ? `Task only · ${entry.slot?.taskId || "no-task-id"}`
+                            : `Slot ${(entry.index ?? 0) + 1} · ${entry.slot?.taskId || "no-task-id"}`}
+                      </div>
+                      <div class="fleet-slot-item-meta fleet-slot-item-meta-secondary">
+                        <span class=${`fleet-slot-state-badge ${isFleetEntryActive(entry) ? "active" : "historic"}`}>
+                          ${entryStatus || "unknown"}
+                        </span>
+                        ${entry.slot?.branch
+                          ? html`<span class="fleet-slot-meta-branch">${entry.slot.branch}</span>`
+                          : entry.session?.branch
+                            ? html`<span class="fleet-slot-meta-branch">${entry.session.branch}</span>`
+                            : null}
+                      </div>
+                    <//>
+                  `;
+                })}`}
+          </div>
         </div>
         <div class="session-detail fleet-session-detail">
           ${selectedEntry
@@ -2132,8 +2454,8 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                 </div>
                 <div class="fleet-session-body">
                   ${detailTab === "stream"
-                    ? sessionId
-                      ? html`<${ChatView} sessionId=${sessionId} readOnly=${true} />`
+                    ? streamSessionId
+                      ? html`<${ChatView} sessionId=${streamSessionId} readOnly=${true} />`
                       : html`
                           <div class="chat-view chat-empty-state">
                             <div class="session-empty-icon">${resolveIcon(":chat:")}</div>
@@ -2141,8 +2463,13 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                           </div>
                         `
                     : detailTab === "context"
-                      ? contextId
-                        ? html`<${ContextViewer} sessionId=${contextId} />`
+                      ? (contextQuery || contextSessionId || contextTaskId || contextBranch)
+                        ? html`<${ContextViewer}
+                            query=${contextQuery}
+                            sessionId=${contextSessionId}
+                            taskId=${contextTaskId}
+                            branch=${contextBranch}
+                          />`
                         : html`
                             <div class="chat-view chat-empty-state">
                               <div class="session-empty-icon">${resolveIcon(":clipboard:")}</div>
@@ -2150,8 +2477,12 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                             </div>
                           `
                       : detailTab === "diff"
-                        ? sessionId
-                          ? html`<${DiffViewer} sessionId=${sessionId} />`
+                        ? diffSessionId
+                          ? html`<${DiffViewer}
+                              sessionId=${diffSessionId}
+                              workspace=${diffWorkspace}
+                              activitySummary=${selectedEntry?.session?.insights?.activityDiff || null}
+                            />`
                           : html`
                               <div class="chat-view chat-empty-state">
                                 <div class="session-empty-icon">${resolveIcon(":edit:")}</div>
@@ -2159,7 +2490,7 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                               </div>
                             `
                         : detailTab === "logs"
-                          ? html`<div class="workspace-log fleet-session-log" ref=${logRef}>${logText}</div>`
+                          ? html`<div class="workspace-log fleet-session-log" ref=${logRef}>${focusedLogText}</div>`
                           : null}
                 </div>
               `

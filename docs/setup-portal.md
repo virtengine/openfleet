@@ -41,7 +41,7 @@ bosun --setup-terminal
 
 Both modes write identical output files. Use `--setup-terminal` in SSH sessions, containers, or CI pipelines where a browser is unavailable.
 
-The web portal runs on **port 3456** by default. Set `VK_RECOVERY_PORT` in your environment to change it. It binds only to `127.0.0.1` — it is not accessible from the network unless you tunnel it.
+The web portal runs on **port 3456** by default. Set `BOSUN_UI_PORT` in your environment to change it. It binds only to `127.0.0.1` — it is not accessible from the network unless you tunnel it.
 
 ---
 
@@ -338,8 +338,8 @@ Settings for containerisation, tunneling, and runtime extras.
 | ------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------- |
 | `CONTAINER_ENABLED` | false                   | Run each agent session inside a Docker/Podman container for filesystem isolation.                        |
 | `CONTAINER_RUNTIME` | `docker`                | Container runtime: `docker` or `podman`.                                                                 |
-| `VK_BASE_URL`       | `http://localhost:3456` | Public-facing base URL for the Bosun dashboard. Used when generating share links or Telegram deep links. |
-| `VK_RECOVERY_PORT`  | 3456                    | HTTP port the setup wizard and dashboard listen on. Change if 3456 is already in use.                    |
+| `BOSUN_BASE_URL`    | `http://localhost:3456` | Public-facing base URL for the Bosun dashboard. Used when generating share links or Telegram deep links. |
+| `BOSUN_UI_PORT`     | 3456                    | HTTP port the setup wizard and dashboard listen on. Change if 3456 is already in use.                    |
 | `WHATSAPP_ENABLED`  | false                   | Experimental: enables WhatsApp notification support via a WhatsApp API gateway.                          |
 
 ---
@@ -509,7 +509,7 @@ Complete alphabetical reference for every variable the setup wizard may write.
 | `TELEGRAM_INTERVAL_MIN`                    | Telegram          | 1                              | Polling interval in minutes                |
 | `TELEGRAM_UI_ALLOW_UNSAFE`                 | Telegram          | false                          | Allow HTTP tunnels                         |
 | `TELEGRAM_UI_TUNNEL`                       | Telegram          | `auto`                         | Tunnel mode: `auto` or `disabled`          |
-| `VK_BASE_URL`                              | Infrastructure    | `http://localhost:3456`        | Dashboard base URL                         |
-| `VK_PROJECT_DIR`                           | Project           | _(cwd)_                        | Absolute path to the project root          |
-| `VK_RECOVERY_PORT`                         | Infrastructure    | 3456                           | Dashboard HTTP port                        |
+| `BOSUN_BASE_URL`                           | Infrastructure    | `http://localhost:3456`        | Dashboard base URL                         |
+| `BOSUN_PROJECT_DIR`                        | Project           | _(cwd)_                        | Absolute path to the project root          |
+| `BOSUN_UI_PORT`                            | Infrastructure    | 3456                           | Dashboard HTTP port                        |
 | `WHATSAPP_ENABLED`                         | Infrastructure    | false                          | Enable WhatsApp notifications              |

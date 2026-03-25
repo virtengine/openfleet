@@ -2,17 +2,20 @@
  *  Kanban Board Component — GitHub Projects-style task board
  * ────────────────────────────────────────────────────────────── */
 import { h } from "preact";
-import { useState, useCallback, useRef, useEffect, useMemo } from "preact/hooks";
+import { useState, useCallback, useRef, useEffect, useMemo, useLayoutEffect } from "preact/hooks";
 import htm from "htm";
 import { signal, computed } from "@preact/signals";
 import {
   tasksData,
   tasksLoaded,
+  tasksPage,
   showToast,
   runOptimistic,
   loadTasks,
   normalizeTaskLifecycleStatus,
   classifyTaskLifecycleAction,
+  mergeTaskRecords,
+  KANBAN_PAGE_SIZE,
 } from "../modules/state.js";
 import { apiFetch } from "../modules/api.js";
 import { haptic, showConfirm } from "../modules/telegram.js";
@@ -66,13 +69,15 @@ const PRIORITY_LABELS = {
 };
 
 const LOAD_MORE_THRESHOLD_PX = 140;
-const KANBAN_BOARD_FILTER_SCHEMA_VERSION = 1;
-const KANBAN_BOARD_FILTER_STORAGE_PREFIX = "ve-kanban-board-filters";
+const AUTO_LOAD_MAX_TASKS = 300;
+const KANBAN_BOARD_FILTER_SCHEMA_VERSION = 2;
+const KANBAN_BOARD_FILTER_STORAGE_PREFIX = "kanban-board-filters";
 const KANBAN_BOARD_FILTER_LEGACY_KEY = "ve-kanban-board-filters";
 const KANBAN_BOARD_GLOBAL_SCOPE = "global";
 const DEFAULT_BOARD_FILTERS = Object.freeze({ repo: "", assignee: "", priority: "", search: "" });
 const BOARD_FILTER_KEYS = ["repo", "assignee", "priority", "search"];
 const ALLOWED_PRIORITIES = new Set(["critical", "high", "medium", "low"]);
+const MAX_FILTER_SEARCH_LENGTH = 120;
 
 function matchTaskId(a, b) {
   return String(a) === String(b);
@@ -103,13 +108,14 @@ export function sanitizeBoardFilters(filters, options = {}) {
   for (const key of BOARD_FILTER_KEYS) {
     result[key] = trimFilterValue(raw[key]);
   }
+  result.search = result.search.slice(0, MAX_FILTER_SEARCH_LENGTH);
 
   if (!ALLOWED_PRIORITIES.has(result.priority)) result.priority = "";
 
   const repoSet = options?.allowedRepos instanceof Set ? options.allowedRepos : null;
   const assigneeSet = options?.allowedAssignees instanceof Set ? options.allowedAssignees : null;
-  if (repoSet && result.repo && !repoSet.has(result.repo)) result.repo = "";
-  if (assigneeSet && result.assignee && !assigneeSet.has(result.assignee)) result.assignee = "";
+  if (repoSet && repoSet.size > 0 && result.repo && !repoSet.has(result.repo)) result.repo = "";
+  if (assigneeSet && assigneeSet.size > 0 && result.assignee && !assigneeSet.has(result.assignee)) result.assignee = "";
   return result;
 }
 
@@ -122,42 +128,94 @@ function areBoardFiltersEqual(a, b) {
   );
 }
 
-function readRawPersistedBoardFilters(storage, key) {
+function readRawPersistedBoardFilters(storage, key, workspaceScope) {
   const raw = storage?.getItem?.(key);
-  if (!raw) return null;
+  if (!raw) return { filters: null, invalid: false, exists: false };
   try {
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return null;
-    if (parsed.version !== KANBAN_BOARD_FILTER_SCHEMA_VERSION) return null;
-    if (!parsed.filters || typeof parsed.filters !== "object") return null;
-    return parsed.filters;
+    if (!parsed || typeof parsed !== "object") return { filters: null, invalid: true, exists: true };
+    if (parsed.version !== KANBAN_BOARD_FILTER_SCHEMA_VERSION) return { filters: null, invalid: true, exists: true };
+    const payloadWorkspace = normalizeBoardWorkspaceScope(parsed.workspace);
+    if (payloadWorkspace !== normalizeBoardWorkspaceScope(workspaceScope)) {
+      return { filters: null, invalid: true, exists: true };
+    }
+    if (!parsed.filters || typeof parsed.filters !== "object") {
+      return { filters: null, invalid: true, exists: true };
+    }
+    return { filters: parsed.filters, invalid: false, exists: true };
   } catch {
-    return null;
+    return { filters: null, invalid: true, exists: true };
   }
+}
+
+function shouldRewritePersistedBoardFilters(rawFilters, sanitized) {
+  if (!rawFilters || typeof rawFilters !== "object") return true;
+  for (const key of BOARD_FILTER_KEYS) {
+    if (trimFilterValue(rawFilters[key]) !== sanitized[key]) return true;
+  }
+  return false;
 }
 
 export function readPersistedBoardFilters({ storage, workspaceId, validateWith } = {}) {
   const resolvedStorage = getBoardFilterStorage(storage);
   if (!resolvedStorage) return { ...DEFAULT_BOARD_FILTERS };
 
-  const scopedKey = buildBoardFilterStorageKey(workspaceId);
-  let rawFilters = readRawPersistedBoardFilters(resolvedStorage, scopedKey);
-  if (!rawFilters) {
-    rawFilters = readRawPersistedBoardFilters(resolvedStorage, KANBAN_BOARD_FILTER_LEGACY_KEY);
+  const workspaceScope = normalizeBoardWorkspaceScope(workspaceId);
+  const scopedKey = buildBoardFilterStorageKey(workspaceScope);
+  const scopedResult = readRawPersistedBoardFilters(resolvedStorage, scopedKey, workspaceScope);
+  if (scopedResult.invalid) {
+    persistBoardFilters({
+      storage: resolvedStorage,
+      workspaceId: workspaceScope,
+      filters: DEFAULT_BOARD_FILTERS,
+    });
+    return { ...DEFAULT_BOARD_FILTERS };
   }
-  return sanitizeBoardFilters(rawFilters || DEFAULT_BOARD_FILTERS, validateWith);
+
+  let rawFilters = scopedResult.filters;
+  if (!rawFilters && workspaceScope === KANBAN_BOARD_GLOBAL_SCOPE) {
+    const legacyResult = readRawPersistedBoardFilters(
+      resolvedStorage,
+      KANBAN_BOARD_FILTER_LEGACY_KEY,
+      workspaceScope,
+    );
+    rawFilters = legacyResult.filters;
+    if (rawFilters) {
+      persistBoardFilters({
+        storage: resolvedStorage,
+        workspaceId: workspaceScope,
+        filters: rawFilters,
+      });
+    } else if (legacyResult.invalid) {
+      resolvedStorage?.removeItem?.(KANBAN_BOARD_FILTER_LEGACY_KEY);
+    }
+  }
+
+  const sanitized = sanitizeBoardFilters(rawFilters || DEFAULT_BOARD_FILTERS, validateWith);
+  if (
+    rawFilters &&
+    shouldRewritePersistedBoardFilters(rawFilters, sanitized)
+  ) {
+    persistBoardFilters({
+      storage: resolvedStorage,
+      workspaceId: workspaceScope,
+      filters: sanitized,
+    });
+  }
+  return sanitized;
 }
 
 export function persistBoardFilters({ storage, workspaceId, filters } = {}) {
   const resolvedStorage = getBoardFilterStorage(storage);
   if (!resolvedStorage) return false;
+  const workspaceScope = normalizeBoardWorkspaceScope(workspaceId);
   const payload = {
     version: KANBAN_BOARD_FILTER_SCHEMA_VERSION,
-    workspace: normalizeBoardWorkspaceScope(workspaceId),
+    workspace: workspaceScope,
     filters: sanitizeBoardFilters(filters),
   };
   try {
-    resolvedStorage.setItem(buildBoardFilterStorageKey(workspaceId), JSON.stringify(payload));
+    resolvedStorage.setItem(buildBoardFilterStorageKey(workspaceScope), JSON.stringify(payload));
     return true;
   } catch {
     return false;
@@ -193,6 +251,60 @@ function getTaskBaseBranch(task) {
   );
 }
 
+function getTaskPrLinkage(task) {
+  if (!task) return [];
+  const records = [];
+  const seen = new Set();
+  const append = (record) => {
+    if (!record || typeof record !== "object") return;
+    const branchName = String(record.branchName || "").trim();
+    const prUrl = String(record.prUrl || "").trim();
+    const prNumber = Number.parseInt(String(record.prNumber ?? ""), 10);
+    if (!branchName && !prUrl && !(Number.isFinite(prNumber) && prNumber > 0)) return;
+    const normalized = {
+      branchName,
+      prUrl,
+      prNumber: Number.isFinite(prNumber) && prNumber > 0 ? prNumber : null,
+      source: String(record.source || task?.meta?.prLinkageSource || "").trim(),
+      freshness: String(record.freshness || task?.meta?.prLinkageFreshness || "").trim(),
+      linkedAt: String(record.linkedAt || "").trim(),
+      updatedAt: String(record.updatedAt || task?.meta?.prLinkageUpdatedAt || "").trim(),
+    };
+    const key = [normalized.branchName.toLowerCase(), normalized.prNumber || "", normalized.prUrl.toLowerCase()].join("|");
+    if (seen.has(key)) return;
+    seen.add(key);
+    records.push(normalized);
+  };
+  (Array.isArray(task.prLinkage) ? task.prLinkage : []).forEach(append);
+  (Array.isArray(task?.meta?.prLinkage) ? task.meta.prLinkage : []).forEach(append);
+  append(task);
+  return records;
+}
+
+function getPrimaryTaskPrLinkage(task) {
+  return getTaskPrLinkage(task)[0] || null;
+}
+
+function formatPrLinkageFreshnessLabel(linkage) {
+  const freshness = String(linkage?.freshness || "").trim().toLowerCase();
+  const timestamp = String(linkage?.updatedAt || linkage?.linkedAt || "").trim();
+  const relative = timestamp ? formatRelative(timestamp) : "";
+  if (freshness === "stale") {
+    return relative ? `PR freshness: Stale (${relative})` : "PR freshness: Stale";
+  }
+  if (freshness === "fresh") {
+    return relative ? `PR freshness: Fresh (${relative})` : "PR freshness: Fresh";
+  }
+  if (relative) {
+    return `PR freshness: Updated ${relative}`;
+  }
+  return "PR freshness: Linked";
+}
+
+function getTaskRuntimeSnapshot(task) {
+  return task?.runtimeSnapshot || task?.meta?.runtimeSnapshot || null;
+}
+
 function getTaskBlockedPreview(task) {
   const direct = String(
     task?.blockedReason ||
@@ -214,6 +326,23 @@ function getTaskBlockedPreview(task) {
     }
   }
   return "";
+}
+
+function getTaskEpic(task) {
+  return String(task?.epic || task?.epicName || task?.meta?.epic || task?.meta?.epicName || "").trim();
+}
+
+function getTaskSprint(task) {
+  return String(task?.sprintName || task?.sprint || task?.meta?.sprintName || task?.meta?.sprintId || "").trim();
+}
+
+function getTaskStoryPoints(task) {
+  const value = task?.storyPoints ?? task?.story_points ?? task?.points ?? task?.meta?.storyPoints;
+  return Number.isFinite(Number(value)) && String(value).trim() !== "" ? String(value) : "";
+}
+
+function getTaskDueDate(task) {
+  return String(task?.dueDate || task?.due_date || task?.meta?.dueDate || "").trim();
 }
 
 /* ─── Derived column data ─── */
@@ -248,6 +377,17 @@ let _touchSuppressClickUntil = 0;
 const TOUCH_DRAG_DELAY_MS = 180;
 const TOUCH_DRAG_START_PX = 6;
 const TOUCH_CANCEL_PX = 14;
+
+function queueBoardTasksRefresh() {
+  // Reset to page 0 so both the upcoming WS-triggered refresh and our own
+  // delayed refresh fetch the first page, replacing the full dataset with
+  // fresh data. Without this, a stale tasksPage > 0 causes loadTasks() to
+  // fetch only a later page and overwrite the full list, making tasks vanish.
+  if (tasksPage) tasksPage.value = 0;
+  setTimeout(() => {
+    void loadTasks({ pageSize: KANBAN_PAGE_SIZE });
+  }, 500);
+}
 
 /* ─── Touch drag helpers ─── */
 
@@ -359,7 +499,7 @@ async function executeBoardTransition(task, newStatus, columnLabel) {
         const merged = detail?.data || startRes?.data || null;
         if (merged) {
           tasksData.value = tasksData.value.map((t) =>
-            matchTaskId(t.id, taskId) ? { ...t, ...merged } : t,
+            matchTaskId(t.id, taskId) ? mergeTaskRecords(t, merged) : t,
           );
         }
         return startRes;
@@ -377,7 +517,7 @@ async function executeBoardTransition(task, newStatus, columnLabel) {
       });
       if (res?.data) {
         tasksData.value = tasksData.value.map((t) =>
-          matchTaskId(t.id, taskId) ? { ...t, ...res.data } : t,
+          matchTaskId(t.id, taskId) ? mergeTaskRecords(t, res.data) : t,
         );
       }
       return res;
@@ -388,7 +528,7 @@ async function executeBoardTransition(task, newStatus, columnLabel) {
   );
 
   showToast(`Moved to ${columnLabel || "updated status"}`, "success");
-  setTimeout(() => loadTasks(), 500);
+  queueBoardTasksRefresh();
   return { ok: true, cancelled: false, action: decision.action, status: optimisticStatus };
 }
 
@@ -530,7 +670,13 @@ function KanbanCard({ task, onOpen }) {
   const priorityLabel = PRIORITY_LABELS[task.priority] || null;
   const tags = getTaskTags(task);
   const baseBranch = getTaskBaseBranch(task);
+  const runtime = getTaskRuntimeSnapshot(task);
+  const epic = getTaskEpic(task);
+  const sprint = getTaskSprint(task);
+  const storyPoints = getTaskStoryPoints(task);
+  const dueDate = getTaskDueDate(task);
   const blockedPreview = getTaskBlockedPreview(task);
+  const prLinkage = getPrimaryTaskPrLinkage(task);
   const repoName = task.repo || task.repository || "";
   const issueNum = task.issueNumber || task.issue_number || (typeof task.id === "string" && /^\d+$/.test(task.id) ? task.id : null);
   const hasAgent = Boolean(
@@ -579,6 +725,12 @@ function KanbanCard({ task, onOpen }) {
           ${priorityLabel && html`
             <${Chip} label=${priorityLabel} size="small" sx=${{ backgroundColor: priorityColor, color: '#fff', height: 18, fontSize: '0.65rem' }} />
           `}
+          ${runtime?.state === "running" && html`
+            <${Chip} label="LIVE" size="small" color="success" sx=${{ height: 18, fontSize: '0.65rem' }} />
+          `}
+          ${runtime?.state === "queued" && html`
+            <${Chip} label="QUEUED" size="small" color="warning" sx=${{ height: 18, fontSize: '0.65rem' }} />
+          `}
         </${Stack}>
         <${Typography} variant="body2" fontWeight=${500}>${truncate(task.title || "(untitled)", 80)}</${Typography}>
         ${task.description && html`
@@ -588,6 +740,22 @@ function KanbanCard({ task, onOpen }) {
           <${Typography} variant="caption" sx=${{ display: 'block', mt: 0.5, color: 'var(--color-error, #ef4444)', fontWeight: 600 }}>
             ${truncate(blockedPreview || "Blocked task. Open details for diagnostics.", 96)}
           </${Typography}>
+        `}
+        ${(epic || sprint || storyPoints || dueDate) && html`
+          <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" sx=${{ mt: 0.75 }}>
+            ${epic && html`<${Chip} label=${`Epic: ${truncate(epic, 18)}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+            ${sprint && html`<${Chip} label=${`Sprint: ${truncate(sprint, 18)}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+            ${storyPoints && html`<${Chip} label=${`${storyPoints} pts`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+            ${dueDate && html`<${Chip} label=${`Due: ${truncate(dueDate, 18)}`} size="small" variant="outlined" color="warning" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+          </${Stack}>
+        `}
+        ${prLinkage && html`
+          <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" sx=${{ mt: 0.75 }}>
+            ${prLinkage.prNumber && html`<${Chip} label=${`PR #${prLinkage.prNumber}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+            ${prLinkage.branchName && html`<${Chip} label=${`Branch: ${truncate(prLinkage.branchName, 18)}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+            ${prLinkage.source && html`<${Chip} label=${`PR source: ${truncate(prLinkage.source, 16)}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+            ${(prLinkage.freshness || prLinkage.updatedAt || prLinkage.linkedAt) && html`<${Chip} label=${formatPrLinkageFreshnessLabel(prLinkage)} size="small" color=${prLinkage.freshness === "stale" ? "warning" : "success"} sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+          </${Stack}>
         `}
         ${baseBranch && html`
           <${Typography} variant="caption" color="text.secondary" sx=${{ display: 'block', mt: 0.5 }}>Base: ${truncate(baseBranch, 24)}</${Typography}>
@@ -620,22 +788,86 @@ function KanbanColumn({
   hasMoreTasks = false,
   loadingMoreTasks = false,
   onLoadMoreTasks = null,
+  autoLoadMore = true,
+  globalTaskCount = 0,
 }) {
   const [showCreate, setShowCreate] = useState(false);
   const inputRef = useRef(null);
+  const cardsRef = useRef(null);
+  const tailSentinelRef = useRef(null);
+  const lastAutoLoadCountRef = useRef(-1);
 
   useEffect(() => {
     if (showCreate && inputRef.current) inputRef.current.focus();
   }, [showCreate]);
 
+  const triggerLoadMore = useCallback(() => {
+    if (!hasMoreTasks || loadingMoreTasks || typeof onLoadMoreTasks !== "function") return false;
+    void onLoadMoreTasks();
+    return true;
+  }, [hasMoreTasks, loadingMoreTasks, onLoadMoreTasks]);
+
+  useEffect(() => {
+    if (!autoLoadMore || !hasMoreTasks || typeof onLoadMoreTasks !== "function") {
+      lastAutoLoadCountRef.current = -1;
+      return;
+    }
+    const root = cardsRef.current;
+    const sentinel = tailSentinelRef.current;
+    if (!root || !sentinel || typeof IntersectionObserver !== "function") return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const key = globalTaskCount;
+          if (lastAutoLoadCountRef.current === key || loadingMoreTasks) continue;
+          lastAutoLoadCountRef.current = key;
+          void onLoadMoreTasks();
+        }
+      },
+      {
+        root,
+        rootMargin: "0px 0px 160px 0px",
+        threshold: 0,
+      },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [autoLoadMore, hasMoreTasks, loadingMoreTasks, onLoadMoreTasks, globalTaskCount]);
+
+  useLayoutEffect(() => {
+    const root = cardsRef.current;
+    if (!autoLoadMore || !root || !hasMoreTasks || loadingMoreTasks || typeof onLoadMoreTasks !== "function") return;
+    const remaining = root.scrollHeight - root.scrollTop - root.clientHeight;
+    const underfilled = root.scrollHeight <= root.clientHeight + LOAD_MORE_THRESHOLD_PX;
+    if (!underfilled && remaining > LOAD_MORE_THRESHOLD_PX) return;
+    const key = globalTaskCount;
+    if (lastAutoLoadCountRef.current === key) return;
+    lastAutoLoadCountRef.current = key;
+    void onLoadMoreTasks();
+  }, [autoLoadMore, hasMoreTasks, loadingMoreTasks, onLoadMoreTasks, globalTaskCount, showCreate]);
+
   const onCardsScroll = useCallback((event) => {
+    if (!autoLoadMore) return;
     const el = event?.currentTarget;
     if (!el) return;
     const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
     if (remaining > LOAD_MORE_THRESHOLD_PX) return;
-    if (!hasMoreTasks || loadingMoreTasks || typeof onLoadMoreTasks !== "function") return;
-    void onLoadMoreTasks();
-  }, [hasMoreTasks, loadingMoreTasks, onLoadMoreTasks]);
+    lastAutoLoadCountRef.current = globalTaskCount;
+    triggerLoadMore();
+  }, [autoLoadMore, globalTaskCount, triggerLoadMore]);
+
+  const onCardsWheel = useCallback((event) => {
+    const el = event?.currentTarget;
+    if (!el) return;
+    if (Math.abs(event.deltaY) < Math.abs(event.deltaX || 0)) return;
+    const canScroll = el.scrollHeight > el.clientHeight + 1;
+    if (!canScroll) return;
+    const atTop = el.scrollTop <= 0;
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+    if ((event.deltaY < 0 && atTop) || (event.deltaY > 0 && atBottom)) return;
+    event.stopPropagation();
+  }, []);
 
   const onDragOver = useCallback((e) => {
     e.preventDefault();
@@ -660,6 +892,7 @@ function KanbanColumn({
     if (currentCol === col.id) return;
 
     const newStatus = COLUMN_TO_STATUS[col.id] || "todo";
+    const leavingDraft = currentCol === "draft" && col.id !== "draft";
     haptic("medium");
 
     const prev = cloneValue(tasksData.value);
@@ -667,17 +900,17 @@ function KanbanColumn({
       await runOptimistic(
         () => {
           tasksData.value = tasksData.value.map((t) =>
-            matchTaskId(t.id, taskId) ? { ...t, status: newStatus } : t,
+            matchTaskId(t.id, taskId) ? { ...t, status: newStatus, ...(leavingDraft ? { draft: false } : {}) } : t,
           );
         },
         async () => {
           const res = await apiFetch("/api/tasks/update", {
             method: "POST",
-            body: JSON.stringify({ taskId, status: newStatus }),
+            body: JSON.stringify({ taskId, status: newStatus, ...(leavingDraft ? { draft: false } : {}) }),
           });
           if (res?.data) {
             tasksData.value = tasksData.value.map((t) =>
-              matchTaskId(t.id, taskId) ? { ...t, ...res.data } : t,
+              matchTaskId(t.id, taskId) ? mergeTaskRecords(t, res.data) : t,
             );
           }
           return res;
@@ -687,7 +920,7 @@ function KanbanColumn({
         },
       );
       showToast(`Moved to ${col.title}`, "success");
-      setTimeout(() => loadTasks(), 500);
+      queueBoardTasksRefresh();
     } catch (err) {
       showToast(err?.message || "Failed to move task", "error");
     }
@@ -705,9 +938,11 @@ function KanbanColumn({
   }, [col.id]);
 
   const isOver = dragOverCol.value === col.id || touchOverCol.value === col.id;
-  const countLabel = Number.isFinite(Number(totalCount)) && Number(totalCount) > 0
-    ? Number(totalCount)
-    : (hasMoreTasks ? `${tasks.length}+` : tasks.length);
+  const liveCount = tasks.length;
+  const serverCount = Number.isFinite(Number(totalCount)) && Number(totalCount) > 0 ? Number(totalCount) : 0;
+  const countLabel = hasMoreTasks
+    ? (serverCount > liveCount ? `${liveCount}/${serverCount}` : `${liveCount}+`)
+    : liveCount;
 
   return html`
     <div
@@ -722,7 +957,12 @@ function KanbanColumn({
         <${Chip} label=${countLabel} size="small" />
         <${IconButton} size="small" onClick=${() => { setShowCreate(!showCreate); haptic(); }} title=${"Add task to " + col.title}>+</${IconButton}>
       </${Box}>
-      <div class="kanban-cards" onScroll=${onCardsScroll}>
+      <div
+        ref=${cardsRef}
+        class="kanban-cards"
+        onScroll=${onCardsScroll}
+        onWheel=${onCardsWheel}
+      >
         ${showCreate && html`
           <${TextField}
             inputRef=${inputRef}
@@ -741,10 +981,23 @@ function KanbanColumn({
           : html`<${Typography} variant="body2" color="text.secondary" sx=${{ textAlign: 'center', py: 2 }}>Drop tasks here</${Typography}>`
         }
         ${hasMoreTasks && html`
-          <div class="kanban-tail-sentinel"></div>
-          <div class="kanban-load-more">${loadingMoreTasks ? "Loading more tasks..." : "Scroll down to load more"}</div>
+          <div ref=${tailSentinelRef} class="kanban-tail-sentinel"></div>
         `}
       </div>
+      ${hasMoreTasks && html`
+        <div class="kanban-column-footer">
+          <button
+            type="button"
+            class="kanban-load-more"
+            onClick=${() => triggerLoadMore()}
+            disabled=${loadingMoreTasks}
+            aria-label=${loadingMoreTasks ? `Loading more ${col.title} tasks` : `Load more ${col.title} tasks`}
+          >
+            <span class="kanban-load-more-label">${loadingMoreTasks ? "Loading more tasks..." : `Load more ${col.title}`}</span>
+            <span class="kanban-load-more-icon" aria-hidden="true">⌄</span>
+          </button>
+        </div>
+      `}
       <div class="kanban-scroll-fade"></div>
     </div>
   `;
@@ -885,6 +1138,7 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
 /* ─── KanbanBoard (main export) ─── */
 export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks = false, onLoadMoreTasks = null, columnTotals = {}, totalTasks = 0, workspaceId = "" }) {
   const workspaceScope = normalizeBoardWorkspaceScope(workspaceId);
+  const [hydratedWorkspaceScope, setHydratedWorkspaceScope] = useState(workspaceScope);
   const [filters, setFilters] = useState(() => readPersistedBoardFilters({ workspaceId: workspaceScope }));
   const allTasks = tasksData.value || [];
   const boardTasksLoaded = Boolean(tasksLoaded.value);
@@ -906,9 +1160,15 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
   }, [allTasks]);
 
   useEffect(() => {
-    const hydrated = readPersistedBoardFilters({ workspaceId: workspaceScope });
+    const hydrated = readPersistedBoardFilters({
+      workspaceId: workspaceScope,
+      validateWith: boardTasksLoaded
+        ? { allowedRepos: knownRepos, allowedAssignees: knownAssignees }
+        : undefined,
+    });
     setFilters((prev) => (areBoardFiltersEqual(prev, hydrated) ? prev : hydrated));
-  }, [workspaceScope]);
+    setHydratedWorkspaceScope(workspaceScope);
+  }, [boardTasksLoaded, knownAssignees, knownRepos, workspaceScope]);
 
   useEffect(() => {
     if (!boardTasksLoaded) return;
@@ -922,8 +1182,9 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
   }, [boardTasksLoaded, knownRepos, knownAssignees]);
 
   useEffect(() => {
+    if (hydratedWorkspaceScope !== workspaceScope) return;
     persistBoardFilters({ workspaceId: workspaceScope, filters });
-  }, [workspaceScope, filters]);
+  }, [workspaceScope, hydratedWorkspaceScope, filters]);
 
   const filteredTasks = useMemo(() => {
     let tasks = allTasks;
@@ -952,10 +1213,19 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
     return result;
   }, [filteredTasks]);
 
+  const hasBoardFilters = Boolean(filters.repo || filters.assignee || filters.priority || filters.search);
+  const resolvedTotalTasks = Number.isFinite(Number(totalTasks)) && Number(totalTasks) > 0
+    ? Number(totalTasks)
+    : allTasks.length;
+  const autoLoadMore = !hasBoardFilters && resolvedTotalTasks <= AUTO_LOAD_MAX_TASKS;
+
   return html`
     <${Box} className="kanban-container">
       <${KanbanFilter} tasks=${allTasks} filters=${filters} onFilterChange=${setFilters} />
-      <${Box} sx=${{ px: 1, pb: 0.5, color: "text.secondary", fontSize: 12 }}>Total tasks: ${Number.isFinite(Number(totalTasks)) && Number(totalTasks) > 0 ? totalTasks : allTasks.length}</${Box}>
+      <${Box} sx=${{ px: 1, pb: 0.5, color: "text.secondary", fontSize: 12 }}>
+        Total tasks: ${resolvedTotalTasks}
+        ${!autoLoadMore ? " · Auto-load paused for large boards (use Load more per column)." : ""}
+      </${Box}>
       <${Box} className="kanban-board" sx=${{ display: 'flex', gap: 2, overflowX: 'auto', pb: 1 }}>
         ${COLUMNS.map((col) => html`
           <${KanbanColumn}
@@ -966,6 +1236,8 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
             hasMoreTasks=${hasMoreTasks}
             loadingMoreTasks=${loadingMoreTasks}
             onLoadMoreTasks=${onLoadMoreTasks}
+            autoLoadMore=${autoLoadMore}
+            globalTaskCount=${allTasks.length}
             onOpen=${onOpenTask}
           />
         `)}
@@ -973,7 +1245,5 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
     </${Box}>
   `;
 }
-
-
 
 

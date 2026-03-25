@@ -250,9 +250,9 @@
 
 **A**: Yes, as long as Projects v2 is enabled. The `gh` CLI supports GitHub Enterprise via `GH_HOST` environment variable.
 
-### Q: What if I'm already using Vibe-Kanban or Jira?
+### Q: What if I'm already using Jira?
 
-**A**: No conflict. This adds GitHub Projects v2 as an option. Existing VK and Jira adapters are unchanged.
+**A**: No conflict. This adds GitHub Projects v2 as an option. The existing Jira adapter is unchanged.
 
 ---
 

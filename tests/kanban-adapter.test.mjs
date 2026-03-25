@@ -644,223 +644,6 @@ describe("kanban-adapter github backend", () => {
   });
 });
 
-describe("kanban-adapter vk backend fallback fetch", () => {
-  const originalFetch = globalThis.fetch;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    loadConfigMock.mockReturnValue({
-      vkEndpointUrl: "http://127.0.0.1:54089",
-      kanban: { backend: "vk" },
-    });
-    setKanbanBackend("vk");
-    globalThis.fetch = originalFetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  it("throws a descriptive error for invalid fetch response objects", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(undefined);
-
-    const adapter = getKanbanAdapter();
-    await expect(
-      adapter.listTasks("proj-1", { status: "todo" }),
-    ).rejects.toThrow(/invalid response object/);
-  });
-
-  it("accepts JSON payloads mislabeled as text/plain", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      headers: new Map([["content-type", "text/plain"]]),
-      text: async () =>
-        JSON.stringify({
-          data: [{ id: "task-1", title: "Task One", status: "todo" }],
-        }),
-    });
-
-    const adapter = getKanbanAdapter();
-    const tasks = await adapter.listTasks("proj-1", { status: "todo" });
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0]).toMatchObject({
-      id: "task-1",
-      title: "Task One",
-      status: "todo",
-      backend: "vk",
-    });
-  });
-
-  it("normalizes nested /api/projects payloads before mapping", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      headers: {
-        get: (name) =>
-          String(name || "").toLowerCase() === "content-type"
-            ? "application/json"
-            : null,
-      },
-      json: async () => ({
-        data: {
-          projects: [{ id: "proj-1", name: "Project One" }],
-        },
-      }),
-    });
-
-    const adapter = getKanbanAdapter();
-    const projects = await adapter.listProjects();
-    expect(projects).toHaveLength(1);
-    expect(projects[0]).toMatchObject({
-      id: "proj-1",
-      name: "Project One",
-      backend: "vk",
-    });
-  });
-
-  it("normalizes object-map /api/projects payloads before mapping", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      headers: {
-        get: (name) =>
-          String(name || "").toLowerCase() === "content-type"
-            ? "application/json"
-            : null,
-      },
-      json: async () => ({
-        data: {
-          projects: {
-            first: { id: "proj-1", name: "Project One" },
-            second: { id: "proj-2", title: "Project Two" },
-          },
-        },
-      }),
-    });
-
-    const adapter = getKanbanAdapter();
-    const projects = await adapter.listProjects();
-    expect(projects).toHaveLength(2);
-    expect(projects[0]).toMatchObject({
-      id: "proj-1",
-      name: "Project One",
-      backend: "vk",
-    });
-    expect(projects[1]).toMatchObject({
-      id: "proj-2",
-      name: "Project Two",
-      backend: "vk",
-    });
-  });
-  it("normalizes nested /api/tasks payloads before mapping", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      headers: {
-        get: (name) =>
-          String(name || "").toLowerCase() === "content-type"
-            ? "application/json"
-            : null,
-      },
-      json: async () => ({
-        data: {
-          tasks: [{ id: "task-nested-1", title: "Nested Task", status: "todo" }],
-        },
-      }),
-    });
-
-    const adapter = getKanbanAdapter();
-    const tasks = await adapter.listTasks("proj-1", { status: "todo" });
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0]).toMatchObject({
-      id: "task-nested-1",
-      title: "Nested Task",
-      status: "todo",
-      backend: "vk",
-    });
-  });
-
-  it("supports payload-only createTask calls for the vk adapter", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      headers: {
-        get: (name) =>
-          String(name || "").toLowerCase() === "content-type"
-            ? "application/json"
-            : null,
-      },
-      json: async () => ({
-        data: {
-          id: "vk-task-1",
-          title: "payload-only vk task",
-          description: "desc",
-          status: "todo",
-          project_id: "proj-1",
-        },
-      }),
-    });
-
-    const adapter = getKanbanAdapter();
-    const task = await adapter.createTask({
-      projectId: "proj-1",
-      title: "payload-only vk task",
-      description: "desc",
-      status: "todo",
-    });
-
-    expect(task).toMatchObject({
-      id: "vk-task-1",
-      title: "payload-only vk task",
-      description: "desc",
-      status: "todo",
-      projectId: "proj-1",
-      backend: "vk",
-    });
-    const request = globalThis.fetch.mock.calls.at(-1);
-    const requestBody = typeof request?.[1]?.body === "string" ? JSON.parse(request[1].body) : request?.[1]?.body;
-    expect(requestBody?.project_id).toBe("proj-1");
-    expect(requestBody?.projectId).toBeUndefined();
-  });
-
-  it("supports payload-only exported createTask helper calls for the vk adapter", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      headers: {
-        get: (name) =>
-          String(name || "").toLowerCase() === "content-type"
-            ? "application/json"
-            : null,
-      },
-      json: async () => ({
-        data: {
-          id: "vk-task-2",
-          title: "payload-only vk helper task",
-          description: "desc",
-          status: "todo",
-          project_id: "proj-2",
-        },
-      }),
-    });
-
-    const task = await createKanbanTask({
-      projectId: "proj-2",
-      title: "payload-only vk helper task",
-      description: "desc",
-      status: "todo",
-    });
-
-    expect(task).toMatchObject({
-      id: "vk-task-2",
-      title: "payload-only vk helper task",
-      description: "desc",
-      status: "todo",
-      projectId: "proj-2",
-      backend: "vk",
-    });
-    const request = globalThis.fetch.mock.calls.at(-1);
-    const requestBody = typeof request?.[1]?.body === "string" ? JSON.parse(request[1].body) : request?.[1]?.body;
-    expect(requestBody?.project_id).toBe("proj-2");
-    expect(requestBody?.projectId).toBeUndefined();
-  });
-});
-
 describe("kanban-adapter jira backend", () => {
   const originalKanbanBackend = process.env.KANBAN_BACKEND;
   const originalJiraBaseUrl = process.env.JIRA_BASE_URL;
@@ -1331,6 +1114,178 @@ describe("kanban-adapter internal backend", () => {
     expect(removeTask(created.id)).toBe(false);
   });
 
+  it("preserves PR linkage across repeated status updates and store reload cycles", async () => {
+    const adapter = getKanbanAdapter();
+
+    const created = await adapter.createTask("internal", {
+      title: "Internal linkage persistence",
+      description: "Ensures PR linkage survives reloads",
+      status: "todo",
+    });
+
+    const firstReview = await adapter.updateTaskStatus(created.id, "inreview", {
+      branchName: "feature/reload-linkage",
+      prNumber: 321,
+      prUrl: "https://example.test/pr/321",
+      source: "workflow",
+    });
+
+    expect(firstReview.branchName).toBe("feature/reload-linkage");
+    expect(firstReview.prNumber).toBe(321);
+    expect(firstReview.prUrl).toBe("https://example.test/pr/321");
+
+    const transitioned = await adapter.updateTaskStatus(created.id, "done", {
+      source: "workflow",
+    });
+    expect(transitioned.status).toBe("done");
+    expect(transitioned.branchName).toBe("feature/reload-linkage");
+    expect(transitioned.prNumber).toBe(321);
+    expect(transitioned.prUrl).toBe("https://example.test/pr/321");
+
+    loadStore();
+    const reloadedAdapter = getKanbanAdapter();
+    const reloaded = await reloadedAdapter.getTask(created.id);
+    expect(reloaded.status).toBe("done");
+    expect(reloaded.branchName).toBe("feature/reload-linkage");
+    expect(reloaded.prNumber).toBe(321);
+    expect(reloaded.prUrl).toBe("https://example.test/pr/321");
+
+    const listAfterReload = await reloadedAdapter.listTasks("internal");
+    const listed = listAfterReload.find((task) => task.id === created.id);
+    expect(listed?.branchName).toBe("feature/reload-linkage");
+    expect(listed?.prNumber).toBe(321);
+    expect(listed?.prUrl).toBe("https://example.test/pr/321");
+  });
+
+  it("merges PR linkage updates idempotently without duplicating metadata records", async () => {
+    const adapter = getKanbanAdapter();
+
+    const created = await adapter.createTask("internal", {
+      title: "Internal linkage merge",
+      description: "Ensures merge stays idempotent",
+      status: "todo",
+      meta: {
+        prLinkage: [
+          {
+            branchName: "feature/idempotent-linkage",
+            prNumber: 456,
+            prUrl: "https://example.test/pr/456",
+            source: "auto-load",
+            linkedAt: "2026-03-22T10:00:00.000Z",
+          },
+        ],
+      },
+    });
+
+    const first = await adapter.updateTaskStatus(created.id, "inreview", {
+      branchName: "feature/idempotent-linkage",
+      prNumber: 456,
+      prUrl: "https://example.test/pr/456",
+      source: "workflow",
+    });
+
+    const second = await adapter.updateTask(created.id, {
+      branchName: "feature/idempotent-linkage",
+      prNumber: 456,
+      prUrl: "https://example.test/pr/456",
+      meta: {
+        prLinkage: [
+          {
+            branchName: "feature/idempotent-linkage",
+            prNumber: 456,
+            prUrl: "https://example.test/pr/456",
+            source: "auto-load",
+            linkedAt: "2026-03-22T10:00:00.000Z",
+          },
+        ],
+      },
+    });
+
+    const firstRecords = first.meta?.prLinkage;
+    const secondRecords = second.meta?.prLinkage;
+    expect(Array.isArray(firstRecords)).toBe(true);
+    expect(Array.isArray(secondRecords)).toBe(true);
+    expect(secondRecords).toHaveLength(1);
+    expect(secondRecords[0]).toMatchObject({
+      branchName: "feature/idempotent-linkage",
+      prNumber: 456,
+      prUrl: "https://example.test/pr/456",
+    });
+    expect(second.prLinkage).toHaveLength(1);
+    expect(second.branchName).toBe("feature/idempotent-linkage");
+    expect(second.prNumber).toBe(456);
+    expect(second.prUrl).toBe("https://example.test/pr/456");
+  });
+
+  it("persists PR linkage metadata when canonical linkage fields update without explicit meta", async () => {
+    const adapter = getKanbanAdapter();
+
+    const created = await adapter.createTask("internal", {
+      title: "Canonical linkage persistence",
+      description: "Preserves linkage metadata across direct updates",
+      status: "todo",
+    });
+
+    const updated = await adapter.updateTask(created.id, {
+      branchName: "feature/canonical-linkage",
+      prNumber: 777,
+      prUrl: "https://example.test/pr/777",
+    });
+
+    expect(updated.branchName).toBe("feature/canonical-linkage");
+    expect(updated.prNumber).toBe(777);
+    expect(updated.prUrl).toBe("https://example.test/pr/777");
+    expect(updated.prLinkage).toHaveLength(1);
+    expect(updated.meta?.prLinkage).toHaveLength(1);
+    expect(updated.meta?.prLinkage?.[0]).toMatchObject({
+      branchName: "feature/canonical-linkage",
+      prNumber: 777,
+      prUrl: "https://example.test/pr/777",
+    });
+
+    loadStore();
+    const reloadedAdapter = getKanbanAdapter();
+    const reloaded = await reloadedAdapter.getTask(created.id);
+    expect(reloaded.prLinkage).toHaveLength(1);
+    expect(reloaded.meta?.prLinkage).toHaveLength(1);
+    expect(reloaded.branchName).toBe("feature/canonical-linkage");
+    expect(reloaded.prNumber).toBe(777);
+    expect(reloaded.prUrl).toBe("https://example.test/pr/777");
+  });
+
+  it("preserves canonical PR linkage fields when reload data only carries meta linkage", async () => {
+    const adapter = getKanbanAdapter();
+
+    const created = await adapter.createTask("internal", {
+      title: "Meta-only reload linkage",
+      description: "Hydrates canonical linkage from metadata",
+      status: "todo",
+      meta: {
+        prLinkage: [{
+          branchName: "feature/meta-only-linkage",
+          prNumber: 654,
+          prUrl: "https://example.test/pr/654",
+          source: "auto-load",
+          freshness: "fresh",
+          updatedAt: "2026-03-22T12:00:00.000Z",
+        }],
+      },
+    });
+
+    loadStore();
+    const reloadedAdapter = getKanbanAdapter();
+    const reloaded = await reloadedAdapter.getTask(created.id);
+
+    expect(reloaded.prLinkage).toHaveLength(1);
+    expect(reloaded.meta?.prLinkage).toHaveLength(1);
+    expect(reloaded.branchName).toBe("feature/meta-only-linkage");
+    expect(reloaded.prNumber).toBe(654);
+    expect(reloaded.prUrl).toBe("https://example.test/pr/654");
+    expect(reloaded.meta?.prLinkageSource).toBe("auto-load");
+    expect(reloaded.meta?.prLinkageFreshness).toBe("fresh");
+    expect(reloaded.meta?.prLinkageUpdatedAt).toBe("2026-03-22T12:00:00.000Z");
+  });
+
   it("exposes internal timeline and workflow tracking fields on task detail", async () => {
     const adapter = getKanbanAdapter();
 
@@ -1417,3 +1372,4 @@ describe("kanban-adapter internal backend", () => {
     expect(viaHelper.repository).toBe("virtengine/bosun");
   });
 });
+

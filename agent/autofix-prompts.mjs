@@ -83,7 +83,7 @@ ${fallback.tail}
 ${messagesCtx}
 ## Instructions
 1. Analyze the log for the root cause of the crash
-2. The main orchestrator script is: scripts/bosun/ve-orchestrator.ps1
+2. The main orchestrator script is: scripts/bosun/orchestrator.ps1
 3. If you can identify a fixable bug, apply a minimal fix to the file
 4. Common crash causes:
    - PowerShell syntax errors (\$Var: treated as scope, missing brackets)
@@ -128,7 +128,7 @@ indicating an infinite retry loop that needs to be fixed:
 ${messagesCtx}
 
 ## Instructions
-1. The main script is: scripts/bosun/ve-orchestrator.ps1
+1. The main script is: scripts/bosun/orchestrator.ps1
 2. Search for the code that produces this error message
 3. Identify why it loops (missing break/continue/return, no state change between iterations, etc.)
 4. Fix the loop by adding proper exit conditions, error handling, or state tracking

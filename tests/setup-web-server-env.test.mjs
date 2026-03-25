@@ -167,6 +167,35 @@ describe("setup web server non-blocking env defaults", () => {
     });
   });
 
+  it("normalizes direct Azure models endpoints to the stable api-version", () => {
+    const result = buildModelsProbeRequest({
+      apiKey: "azure-secret",
+      baseUrl: "https://example-resource.openai.azure.com/openai/models?api-version=2025-01-01-preview",
+    });
+
+    expect(result).toEqual({
+      endpoint: "https://example-resource.openai.azure.com/openai/models?api-version=2024-10-21",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": "azure-secret",
+      },
+    });
+  });
+
+  it("adds the required api-version when Azure models endpoint is pasted directly", () => {
+    const result = buildModelsProbeRequest({
+      apiKey: "azure-secret",
+      baseUrl: "https://example-resource.openai.azure.com/openai/models",
+    });
+
+    expect(result).toEqual({
+      endpoint: "https://example-resource.openai.azure.com/openai/models?api-version=2024-10-21",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": "azure-secret",
+      },
+    });
+  });
   it("preserves Azure v1 model routes without forcing the legacy api-version query", () => {
     const result = buildModelsProbeRequest({
       apiKey: "azure-secret",
@@ -234,6 +263,20 @@ describe("setup web server non-blocking env defaults", () => {
       WORKFLOW_DEFAULT_PROFILE: "balanced",
       WORKFLOW_DEFAULT_AUTOINSTALL: "true",
       WORKFLOW_DEFAULT_TEMPLATES: "template-pr-merge-strategy,template-review-agent,template-backend-agent,template-error-recovery,template-anomaly-watchdog,template-agent-session-monitor,template-task-finalization-guard,template-task-repair-worktree,template-task-status-transition-manager,template-dependency-audit",
+      BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP: "false",
+      BOSUN_GATES_REPO_VISIBILITY: "unknown",
+      BOSUN_GATES_AUTOMATION_PREFERENCE: "runtime-first",
+      BOSUN_GATES_ACTIONS_BUDGET: "ask-user",
+      BOSUN_GATES_CHECK_MODE: "all",
+      BOSUN_REQUIRED_CHECK_PATTERNS: "",
+      BOSUN_OPTIONAL_CHECK_PATTERNS: "",
+      BOSUN_IGNORE_CHECK_PATTERNS: "",
+      BOSUN_GATES_REQUIRE_ANY_REQUIRED_CHECK: "true",
+      BOSUN_GATES_TREAT_PENDING_REQUIRED_AS_BLOCKING: "true",
+      BOSUN_GATES_TREAT_NEUTRAL_AS_PASS: "false",
+      BOSUN_EXECUTION_NETWORK_ACCESS: "default",
+      BOSUN_GATES_ENFORCE_BACKLOG: "true",
+      BOSUN_GATES_AGENT_TRIGGER_CONTROL: "true",
       WORKFLOW_NODE_MAX_RETRIES: "3",
       WORKFLOW_NODE_TIMEOUT_MS: "600000",
       WORKFLOW_RUN_STUCK_THRESHOLD_MS: "300000",
@@ -261,8 +304,6 @@ describe("setup web server non-blocking env defaults", () => {
       CONTAINER_RUNTIME: "auto",
       WHATSAPP_ENABLED: "false",
       TELEGRAM_INTERVAL_MIN: "10",
-      VK_BASE_URL: "http://127.0.0.1:54089",
-      VK_RECOVERY_PORT: "54089",
       ORCHESTRATOR_ARGS: "-MaxParallel 4",
     });
   });
@@ -311,6 +352,20 @@ describe("setup web server non-blocking env defaults", () => {
         workflowProfile: "hyperdrive",
         workflowAutoInstall: "maybe",
         workflowDefaultTemplates: "template-nope-1,template-nope-2",
+        assistiveActionsInstallOnSetup: "maybe",
+        gatesRepoVisibility: "internet",
+        gatesAutomationPreference: "heavier",
+        gatesGithubActionsBudget: "infinite",
+        gatesCheckMode: "whatever",
+        gatesRequiredPatterns: " ci / test ,, codeql ",
+        gatesOptionalPatterns: " preview\nbenchmarks ",
+        gatesIgnorePatterns: " housekeeping ,, ",
+        gatesRequireAnyRequiredCheck: "maybe",
+        gatesTreatPendingRequiredAsBlocking: "maybe",
+        gatesTreatNeutralAsPass: "maybe",
+        gatesNetworkAccess: "   ",
+        gatesEnforceBacklog: "maybe",
+        gatesAgentTriggerControl: "maybe",
         workflowNodeMaxRetries: -5,
         workflowNodeTimeoutMs: 5,
         workflowRunStuckThresholdMs: 1,
@@ -338,8 +393,6 @@ describe("setup web server non-blocking env defaults", () => {
         containerRuntime: "runc",
         whatsappEnabled: "sometimes",
         telegramIntervalMin: 100000,
-        vkBaseUrl: "   ",
-        vkRecoveryPort: 999999,
         orchestratorArgs: "   ",
       },
       {},
@@ -363,6 +416,20 @@ describe("setup web server non-blocking env defaults", () => {
       WORKFLOW_DEFAULT_PROFILE: "balanced",
       WORKFLOW_DEFAULT_AUTOINSTALL: "true",
       WORKFLOW_DEFAULT_TEMPLATES: "template-pr-merge-strategy,template-review-agent,template-backend-agent,template-error-recovery,template-anomaly-watchdog,template-agent-session-monitor,template-task-finalization-guard,template-task-repair-worktree,template-task-status-transition-manager,template-dependency-audit",
+      BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP: "false",
+      BOSUN_GATES_REPO_VISIBILITY: "unknown",
+      BOSUN_GATES_AUTOMATION_PREFERENCE: "runtime-first",
+      BOSUN_GATES_ACTIONS_BUDGET: "ask-user",
+      BOSUN_GATES_CHECK_MODE: "all",
+      BOSUN_REQUIRED_CHECK_PATTERNS: "ci / test,codeql",
+      BOSUN_OPTIONAL_CHECK_PATTERNS: "preview,benchmarks",
+      BOSUN_IGNORE_CHECK_PATTERNS: "housekeeping",
+      BOSUN_GATES_REQUIRE_ANY_REQUIRED_CHECK: "true",
+      BOSUN_GATES_TREAT_PENDING_REQUIRED_AS_BLOCKING: "true",
+      BOSUN_GATES_TREAT_NEUTRAL_AS_PASS: "false",
+      BOSUN_EXECUTION_NETWORK_ACCESS: "default",
+      BOSUN_GATES_ENFORCE_BACKLOG: "true",
+      BOSUN_GATES_AGENT_TRIGGER_CONTROL: "true",
       WORKFLOW_NODE_MAX_RETRIES: "0",
       WORKFLOW_NODE_TIMEOUT_MS: "1000",
       WORKFLOW_RUN_STUCK_THRESHOLD_MS: "10000",
@@ -390,8 +457,6 @@ describe("setup web server non-blocking env defaults", () => {
       CONTAINER_RUNTIME: "auto",
       WHATSAPP_ENABLED: "false",
       TELEGRAM_INTERVAL_MIN: "1440",
-      VK_BASE_URL: "http://127.0.0.1:54089",
-      VK_RECOVERY_PORT: "65535",
       ORCHESTRATOR_ARGS: "-MaxParallel 1",
     });
   });
@@ -452,8 +517,6 @@ describe("setup web server non-blocking env defaults", () => {
         containerRuntime: "podman",
         whatsappEnabled: true,
         telegramIntervalMin: 42,
-        vkBaseUrl: "https://vk.example.com/",
-        vkRecoveryPort: 5500,
         orchestratorArgs: "-CustomFlag true",
       },
       {},
@@ -507,9 +570,48 @@ describe("setup web server non-blocking env defaults", () => {
       CONTAINER_RUNTIME: "podman",
       WHATSAPP_ENABLED: "true",
       TELEGRAM_INTERVAL_MIN: "42",
-      VK_BASE_URL: "https://vk.example.com",
-      VK_RECOVERY_PORT: "5500",
       ORCHESTRATOR_ARGS: "-CustomFlag true",
+    });
+  });
+
+  it("preserves explicit gates and assistive action setup values", () => {
+    const envMap = {};
+    applyNonBlockingSetupEnvDefaults(
+      envMap,
+      {
+        assistiveActionsInstallOnSetup: true,
+        gatesRepoVisibility: "public",
+        gatesAutomationPreference: "actions-first",
+        gatesGithubActionsBudget: "available",
+        gatesCheckMode: "required-only",
+        gatesRequiredPatterns: "ci / test\ncodeql",
+        gatesOptionalPatterns: "preview,benchmarks",
+        gatesIgnorePatterns: "housekeeping",
+        gatesRequireAnyRequiredCheck: false,
+        gatesTreatPendingRequiredAsBlocking: false,
+        gatesTreatNeutralAsPass: true,
+        gatesNetworkAccess: "restricted",
+        gatesEnforceBacklog: false,
+        gatesAgentTriggerControl: false,
+      },
+      {},
+    );
+
+    expect(envMap).toMatchObject({
+      BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP: "true",
+      BOSUN_GATES_REPO_VISIBILITY: "public",
+      BOSUN_GATES_AUTOMATION_PREFERENCE: "actions-first",
+      BOSUN_GATES_ACTIONS_BUDGET: "available",
+      BOSUN_GATES_CHECK_MODE: "required-only",
+      BOSUN_REQUIRED_CHECK_PATTERNS: "ci / test,codeql",
+      BOSUN_OPTIONAL_CHECK_PATTERNS: "preview,benchmarks",
+      BOSUN_IGNORE_CHECK_PATTERNS: "housekeeping",
+      BOSUN_GATES_REQUIRE_ANY_REQUIRED_CHECK: "false",
+      BOSUN_GATES_TREAT_PENDING_REQUIRED_AS_BLOCKING: "false",
+      BOSUN_GATES_TREAT_NEUTRAL_AS_PASS: "true",
+      BOSUN_EXECUTION_NETWORK_ACCESS: "restricted",
+      BOSUN_GATES_ENFORCE_BACKLOG: "false",
+      BOSUN_GATES_AGENT_TRIGGER_CONTROL: "false",
     });
   });
 
