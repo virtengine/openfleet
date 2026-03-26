@@ -1,16 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const spawnSyncMock = vi.hoisted(() => vi.fn());
+const existsSyncMock = vi.hoisted(() => vi.fn(() => true));
 const resolvePwshRuntimeMock = vi.hoisted(() =>
   vi.fn(() => ({ command: "pwsh" })),
+);
+const inspectWorktreeRuntimeSetupMock = vi.hoisted(() =>
+  vi.fn(() => ({ ok: true, issues: [], missingFiles: [], hooksPath: ".githooks" })),
 );
 
 vi.mock("node:child_process", () => ({
   spawnSync: spawnSyncMock,
 }));
 
+vi.mock("node:fs", () => ({
+  existsSync: existsSyncMock,
+}));
+
 vi.mock("../shell/pwsh-runtime.mjs", () => ({
   resolvePwshRuntime: resolvePwshRuntimeMock,
+}));
+
+vi.mock("../workspace/worktree-setup.mjs", () => ({
+  inspectWorktreeRuntimeSetup: inspectWorktreeRuntimeSetupMock,
 }));
 
 const { formatPreflightReport, runPreflightChecks } = await import(
@@ -105,6 +117,15 @@ describe("preflight interactive git editor warnings", () => {
     delete process.env.GIT_EDITOR;
     spawnSyncMock.mockReset();
     spawnSyncMock.mockImplementation(createSpawnMock());
+    existsSyncMock.mockReset();
+    existsSyncMock.mockReturnValue(true);
+    inspectWorktreeRuntimeSetupMock.mockReset();
+    inspectWorktreeRuntimeSetupMock.mockReturnValue({
+      ok: true,
+      issues: [],
+      missingFiles: [],
+      hooksPath: ".githooks",
+    });
   });
 
   afterEach(() => {
@@ -175,5 +196,22 @@ describe("preflight interactive git editor warnings", () => {
     expect(report).toContain("Warnings:");
     expect(report).toMatch(/interactive git editor/i);
     expect(report).toContain("node git-editor-fix.mjs");
+  });
+
+  it("fails when worktree runtime setup is incomplete", () => {
+    inspectWorktreeRuntimeSetupMock.mockReturnValue({
+      ok: false,
+      issues: [
+        "git core.hooksPath is not configured",
+        "missing worktree setup files: .codex/hooks.json, .githooks/pre-push",
+      ],
+      missingFiles: [".codex/hooks.json", ".githooks/pre-push"],
+      hooksPath: "",
+    });
+
+    const result = runPreflightChecks({ repoRoot: "C:\\repo" });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((entry) => /worktree runtime setup is incomplete/i.test(entry.title))).toBe(true);
   });
 });

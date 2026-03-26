@@ -16,18 +16,25 @@ describe("GitHub PR trust regressions", () => {
 
     expect(attachWorkflow).toContain("const classLabels = {");
     expect(attachWorkflow).toContain("const attachMode = [\"all\", \"trusted-only\", \"disabled\"].includes(attachModeRaw)");
+    expect(attachWorkflow).toContain("const labelNames = (pr.labels || [])");
+    expect(attachWorkflow).toContain("const isBosunCreated = labelNames.includes(classLabels.bosun);");
     expect(attachWorkflow).toContain("const shouldAttach = isBosunCreated || attachMode === \"all\" || (attachMode === \"trusted-only\" && isTrustedAuthor);");
     expect(attachWorkflow).toContain("bosun-pr-bosun-created");
     expect(attachWorkflow).toContain("bosun-pr-trusted-author");
     expect(attachWorkflow).toContain("bosun-pr-public");
     expect(attachWorkflow).toContain("Bosun PR classification:");
 
-    expect(ciSignalWorkflow).toContain("const createdMarker = \"<!-- bosun-created -->\";");
+    expect(ciSignalWorkflow).toContain("const bosunCreatedLabel = \"bosun-pr-bosun-created\";");
+    expect(ciSignalWorkflow).toContain("const isBosunCreated = labels.includes(bosunCreatedLabel);");
     expect(ciSignalWorkflow).toContain("const trustedAuthors = new Set(normalizeList(prAutomation.trustedAuthors));");
     expect(ciSignalWorkflow).toContain("const canSignalFix = isBosunCreated || (allowTrustedFixes && isTrustedAuthor);");
     expect(ciSignalWorkflow).toContain("const isBosunCreated =");
     expect(ciSignalWorkflow).toContain("attached but not Bosun-created or trusted for repair; skipping high-risk CI signaling");
     expect(ciSignalWorkflow).toContain("trusted-author PR");
+    expect(ciSignalWorkflow).toContain("const sharedFailureMarker = \"<!-- bosun-ci-shared-failure -->\";");
+    expect(ciSignalWorkflow).toContain("const detectSharedFailure = async");
+    expect(ciSignalWorkflow).toContain("detected shared CI incident");
+    expect(ciSignalWorkflow).toContain("suppressed '${needsFixLabel}'");
   });
 
   it("documents operator PR automation trust settings", () => {
@@ -74,6 +81,8 @@ describe("GitHub PR trust regressions", () => {
     expect(configSource).toContain("BOSUN_PR_ALLOW_TRUSTED_FIXES");
     expect(configSource).toContain("BOSUN_PR_ALLOW_TRUSTED_MERGES");
     expect(configSource).toContain("BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP");
+    expect(configSource).toContain("resolveTrustedAuthorList(");
+    expect(configSource).toContain("includeOAuthTrustedAuthor: true");
 
     expect(setupWebSource).toContain("function detectRepoVisibility(slug = detectRepoSlug())");
     expect(setupWebSource).toContain('automationPreference: recommendedAutomationPreference');
@@ -93,10 +102,10 @@ describe("GitHub PR trust regressions", () => {
 
     expect(serverSource).toContain('if (path === "/api/gates" && req.method === "GET")');
     expect(serverSource).toContain('if (path === "/api/gates" && req.method === "POST")');
-    expect(serverSource).toContain("normalizeGatesPolicy(configData?.gates)");
+    expect(serverSource).toContain("normalizeGatesPolicy(configData?.gates, {");
     expect(serverSource).toContain('if (path === "/api/pr-automation" && req.method === "GET")');
     expect(serverSource).toContain('if (path === "/api/pr-automation" && req.method === "POST")');
-    expect(serverSource).toContain("normalizePrAutomationPolicy(configData?.prAutomation)");
+    expect(serverSource).toContain("normalizePrAutomationPolicy(configData?.prAutomation, { includeOAuthTrustedAuthor: true })");
     expect(serverSource).toContain("assistiveActions");
 
     for (const source of [settingsSource, siteSettingsSource]) {

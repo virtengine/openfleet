@@ -447,6 +447,55 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
     return false;
   }
 
+  function buildDerivedOutputPortDescriptor(portName, templateNode = null, fallbackIndex = 0) {
+    const normalizedName = String(portName || "").trim() || (fallbackIndex === 0 ? "default" : `output-${fallbackIndex + 1}`);
+    const templatePort = (Array.isArray(templateNode?.outputPorts) ? templateNode.outputPorts : [])
+      .find((port) => String(port?.name || "").trim() === normalizedName);
+    if (templatePort && typeof templatePort === "object") {
+      return JSON.parse(JSON.stringify(templatePort));
+    }
+    return {
+      name: normalizedName,
+      label: normalizedName,
+      type: "Any",
+      description: null,
+      color: null,
+      accepts: [],
+    };
+  }
+
+  function repairDerivedPortMetadata(def = {}, template = null) {
+    let repaired = false;
+    const templateNodesById = new Map(
+      (Array.isArray(template?.nodes) ? template.nodes : [])
+        .map((node) => [String(node?.id || "").trim(), node])
+        .filter(([id]) => Boolean(id)),
+    );
+
+    for (const node of Array.isArray(def?.nodes) ? def.nodes : []) {
+      const expectedNames = getExpectedDerivedOutputPortNames(node);
+      if (!Array.isArray(expectedNames) || expectedNames.length === 0) continue;
+
+      const existingPorts = Array.isArray(node?.outputPorts) ? node.outputPorts : [];
+      const existingNames = new Set(
+        existingPorts
+          .map((port) => String(port?.name || "").trim())
+          .filter(Boolean),
+      );
+      const missingNames = expectedNames.filter((name) => !existingNames.has(name));
+      if (!missingNames.length) continue;
+
+      const templateNode = templateNodesById.get(String(node?.id || "").trim()) || null;
+      node.outputPorts = [
+        ...existingPorts,
+        ...missingNames.map((name, index) => buildDerivedOutputPortDescriptor(name, templateNode, existingPorts.length + index)),
+      ];
+      repaired = true;
+    }
+
+    return repaired;
+  }
+
   function computeWorkflowFingerprint(def = {}) {
     return hashContent(toWorkflowFingerprintPayload(def));
   }
@@ -602,14 +651,19 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
       try {
         const previousState = def.metadata?.templateState || null;
         const before = stableStringify(previousState);
+        const hadStaleDerivedPorts = hasStaleDerivedPortMetadata(def);
+        if (hadStaleDerivedPorts) {
+          const templateId = String(def?.metadata?.installedFrom || "").trim();
+          repairDerivedPortMetadata(def, getTemplate(templateId));
+        }
         applyWorkflowTemplateState(def);
         const state = def.metadata?.templateState || null;
         const after = stableStringify(state);
-        const repairedDerivedPorts = hasStaleDerivedPortMetadata(def);
+        const repairedDerivedPorts = repairDerivedPortMetadata(def);
         if (before !== after || repairedDerivedPorts) {
           engine.save(def);
           result.metadataUpdated += 1;
-          if (repairedDerivedPorts) result.portMetadataRepaired += 1;
+          if (hadStaleDerivedPorts || repairedDerivedPorts) result.portMetadataRepaired += 1;
         }
 
         if (!state) continue;
@@ -1475,3 +1529,5 @@ export function installRecommendedTemplates(engine, overridesById = {}) {
     .map((template) => template.id);
   return installTemplateSet(engine, recommendedIds, overridesById);
 }
+
+
