@@ -11665,6 +11665,14 @@ async function readStatusSnapshot() {
   }
 }
 
+async function readUiWorktreeRecovery() {
+  const snapshot = await readStatusSnapshot();
+  if (snapshot && typeof snapshot === "object" && snapshot.worktreeRecovery) {
+    return snapshot.worktreeRecovery;
+  }
+  return readWorktreeRecoveryState(repoRoot);
+}
+
 function runGit(args, timeoutMs = 10000) {
   const argList = Array.isArray(args)
     ? args
@@ -16786,7 +16794,7 @@ async function handleApi(req, res, url) {
     try {
       const worktrees = listActiveWorktrees(repoRoot);
       const stats = await getWorktreeStats(repoRoot);
-      const recovery = await readWorktreeRecoveryState(repoRoot);
+      const recovery = await readUiWorktreeRecovery();
       const recoveryBackfill = buildRecoveryBackfilledWorktrees(worktrees, recovery);
       jsonResponse(res, 200, {
         ok: true,
@@ -17520,7 +17528,7 @@ if (path === "/api/agent-logs/context") {
     try {
       const executor = uiDeps.getInternalExecutor?.();
       const status = executor?.getStatus?.() || {};
-      const worktreeRecovery = await readWorktreeRecoveryState(repoRoot);
+      const worktreeRecovery = await readUiWorktreeRecovery();
       const data = {
         executor: {
           mode: uiDeps.getExecutorMode?.() || "internal",

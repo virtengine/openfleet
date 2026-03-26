@@ -338,6 +338,7 @@ const DEFAULT_WORKING_DIRECTORY = REPO_ROOT;
 // ── State ────────────────────────────────────────────────────────────────────
 
 let CodexClass = null; // The Codex class from SDK
+const CODEX_SDK_SPECIFIER = "@openai/codex-sdk"; // Define the SDK specifier
 let codexInstance = null; // Singleton Codex instance
 let activeThread = null; // Current persistent Thread
 let activeThreadId = null; // Thread ID for resume
@@ -403,7 +404,7 @@ async function loadCodexSdk() {
   }
   if (CodexClass) return CodexClass;
   try {
-    const mod = await import("@openai/codex-sdk");
+    const mod = await import(CODEX_SDK_SPECIFIER); // Use the defined specifier
     CodexClass = mod.Codex;
     console.log("[codex-shell] SDK loaded successfully");
     return CodexClass;

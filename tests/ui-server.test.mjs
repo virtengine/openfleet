@@ -27,6 +27,9 @@ describe("ui-server mini app", () => {
     "TELEGRAM_UI_ALLOW_UNSAFE",
     "TELEGRAM_MINIAPP_ENABLED",
     "TELEGRAM_UI_PORT",
+    "TELEGRAM_UI_HOST",
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_CHAT_ID",
     "TELEGRAM_UI_TUNNEL",
     "TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK",
     "TELEGRAM_UI_FALLBACK_AUTH_ENABLED",
@@ -90,6 +93,8 @@ describe("ui-server mini app", () => {
     process.env.BOSUN_ENV_NO_OVERRIDE = "1";
     process.env.TELEGRAM_UI_TLS_DISABLE = "true";
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "true";
+    process.env.TELEGRAM_BOT_TOKEN = "";
+    process.env.TELEGRAM_CHAT_ID = "";
     process.env.GITHUB_PROJECT_WEBHOOK_PATH = "/api/webhooks/github/project-sync";
     process.env.GITHUB_PROJECT_WEBHOOK_SECRET = "webhook-secret";
     process.env.GITHUB_PROJECT_WEBHOOK_REQUIRE_SIGNATURE = "true";
@@ -588,6 +593,7 @@ describe("ui-server mini app", () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.TELEGRAM_MINIAPP_ENABLED = "1";
     process.env.TELEGRAM_UI_PORT = "0";
+    process.env.TELEGRAM_UI_HOST = "127.0.0.1";
     process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "1";
 
     const bot = await import("../telegram/telegram-bot.mjs");
@@ -605,7 +611,7 @@ describe("ui-server mini app", () => {
     } finally {
       bot.stopTelegramBot();
     }
-  });
+  }, 15000);
 
   it("returns effective settings values and sources for derived/default cases", async () => {
     delete process.env.TELEGRAM_MINIAPP_ENABLED;

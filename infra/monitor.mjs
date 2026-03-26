@@ -10451,7 +10451,7 @@ async function loadCodexSdk() {
 
 async function tryImportCodex() {
   try {
-    const mod = await import("@openai/codex-sdk");
+    const mod = await import("@openai/" + "codex-sdk");
     return mod.Codex;
   } catch (err) {
     return null;

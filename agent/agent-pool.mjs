@@ -99,6 +99,7 @@ const HARD_TIMEOUT_BUFFER_MS = 5 * 60_000; // 5 minutes
 /** Tag for console logging */
 const TAG = "[agent-pool]";
 const require = createRequire(import.meta.url);
+const CODEX_SDK_SPECIFIER = "@openai/codex-sdk";
 const MODULE_PRESENCE_CACHE = new Map();
 
 function hasOptionalModule(specifier) {
@@ -122,6 +123,10 @@ function hasOptionalModule(specifier) {
   }
   MODULE_PRESENCE_CACHE.set(specifier, ok);
   return ok;
+}
+
+async function importCodexSdkModule() {
+  return import(CODEX_SDK_SPECIFIER);
 }
 const MAX_PROMPT_BYTES = 180_000;
 const MAX_SET_TIMEOUT_MS = 2_147_483_647; // Node.js setTimeout 32-bit signed max
@@ -1260,7 +1265,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   // ── 1. Load the SDK ──────────────────────────────────────────────────────
   let CodexClass;
   try {
-    const mod = await import("@openai/codex-sdk");
+    const mod = await importCodexSdkModule();
     CodexClass = mod.Codex;
     if (!CodexClass) throw new Error("Codex export not found in SDK module");
   } catch (err) {
@@ -3214,7 +3219,7 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
 
   let CodexClass;
   try {
-    const mod = await import("@openai/codex-sdk");
+    const mod = await importCodexSdkModule();
     CodexClass = mod.Codex;
     if (!CodexClass) throw new Error("Codex export not found");
   } catch (err) {

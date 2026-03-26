@@ -227,8 +227,15 @@ function selectConfigProviderForRuntime(configDefaults, env, preferredProvider =
 }
 
 function inferGlobalProvider(env, configDefaults = null) {
-  const baseUrl = clean(env.OPENAI_BASE_URL).toLowerCase();
-  if (isAzureOpenAIBaseUrl(baseUrl)) return "azure";
+  const baseUrl = clean(env.OPENAI_BASE_URL);
+  if (baseUrl) {
+    if (isAzureOpenAIBaseUrl(baseUrl)) return "azure";
+    const configured = selectConfigProviderForRuntime(configDefaults, env);
+    if (configured && clean(configured.baseUrl) === baseUrl) {
+      return configured.provider;
+    }
+    return "openai";
+  }
   const configured = selectConfigProviderForRuntime(configDefaults, env);
   return configured?.provider || "openai";
 }

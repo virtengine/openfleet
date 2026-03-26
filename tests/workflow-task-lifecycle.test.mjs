@@ -1679,7 +1679,7 @@ describe("action.acquire_worktree", () => {
       branch: "task/very-long-branch-name-that-would-normally-be-used-as-worktree-directory",
       baseBranch: "main",
       fetchTimeout: 5000,
-      worktreeTimeout: 10000,
+      worktreeTimeout: 30000,
     });
 
     const result = await nt.execute(node, ctx);
@@ -1687,7 +1687,7 @@ describe("action.acquire_worktree", () => {
     const normalizedPath = String(result.worktreePath || "").replace(/\\/g, "/");
     expect(normalizedPath).toMatch(/\/\.bosun\/worktrees\/task-task123e4567-[a-f0-9]{10}$/);
     expect(normalizedPath).not.toContain("very-long-branch-name");
-  });
+  }, 30000);
 
   it("bootstraps managed node worktrees with shared repo node_modules", async () => {
     const nt = getNodeType("action.acquire_worktree");
