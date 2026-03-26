@@ -39,48 +39,6 @@ import { ICONS } from "../modules/icons.js";
 import { formatRelative, truncate } from "../modules/utils.js";
 
 
-import { resolveSessionWorkspaceHint } from "../modules/session-api.js";
-import {
-  Card,
-  Badge,
-  StatCard,
-  SkeletonCard,
-  EmptyState,
-} from "../components/shared.js";
-import { ProgressBar } from "../components/charts.js";
-import { Collapsible } from "../components/forms.js";
-import {
-  loadSessions,
-  loadSessionMessages,
-  selectedSessionId,
-  sessionsData,
-  sessionMessages,
-  sessionMessagesSessionId,
-} from "../components/session-list.js";
-import { ChatView } from "../components/chat-view.js";
-import { DiffViewer } from "../components/diff-viewer.js";
-
-/* ─── Status indicator helpers ─── */
-function statusColor(s) {
-  const map = {
-    idle: "var(--color-todo)",
-    busy: "var(--color-inprogress)",
-    running: "var(--color-inprogress)",
-    error: "var(--color-error)",
-    done: "var(--color-done)",
-  };
-  return map[(s || "").toLowerCase()] || "var(--text-secondary)";
-}
-
-function StatusDot({ status }) {
-  return html`<span
-    class="status-dot"
-    style="background:${statusColor(status)}"
-  ></span>`;
-}
-
-/* ─── Duration formatting ─── */
-function formatDuration(startedAt) {
   if (!startedAt) return "";
   const sec = Math.round((Date.now() - new Date(startedAt).getTime()) / 1000);
   if (sec < 60) return `${sec}s`;
@@ -1924,7 +1882,7 @@ function ContextViewer({ query, sessionId = "", taskId = "", branch = "" }) {
   };
 
   const copyContext = () => {
-    if (!ctx?.context) return;
+
     const c = ctx.context;
     const ab = parseAheadBehind(c.gitAheadBehind);
     const commits = parseCommits(c.gitLogDetailed);

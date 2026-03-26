@@ -1013,7 +1013,6 @@ export class SessionTracker {
       insights: session.insights || null,
       status: String(session.status || "completed"),
 
-    });
     session.accumulatedAt = new Date().toISOString();
     return true;
   }
