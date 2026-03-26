@@ -1315,6 +1315,18 @@ export function AgentsTab() {
   }, [slots, fleetSearch]);
 
   const allSessions = sessionsData.value || [];
+
+  const copySessionId = (sessionId) => {
+    if (!sessionId) return;
+    setCopiedSessionId(sessionId);
+    navigator.clipboard
+      .writeText(sessionId)
+      .then(() => showToast("Session ID copied", "success"))
+      .catch(() => {
+        setCopiedSessionId("");
+        showToast("Copy failed", "error");
+      });
+  };
   const activeSessionCount = allSessions.filter((session) => {
     if (!session || typeof session !== "object") return false;
     if (session.active === true) return true;
@@ -2087,9 +2099,22 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
   const [sessionScope, setSessionScope] = useState(FLEET_SESSION_SCOPE.all);
   const [sessionSearch, setSessionSearch] = useState("");
   const [selectedEntryKey, setSelectedEntryKey] = useState(null);
+  const [copiedSessionId, setCopiedSessionId] = useState("");
   const [logText, setLogText] = useState("(no logs yet)");
   const logRef = useRef(null);
   const allSessions = sessionsData.value || [];
+
+  const copySessionId = (sessionId) => {
+    if (!sessionId) return;
+    setCopiedSessionId(sessionId);
+    navigator.clipboard
+      .writeText(sessionId)
+      .then(() => showToast("Session ID copied", "success"))
+      .catch(() => {
+        setCopiedSessionId("");
+        showToast("Copy failed", "error");
+      });
+  };
 
   /* Stabilise entries with useMemo so the reference only changes when the
      underlying data actually changes – prevents infinite render loops that
@@ -2385,6 +2410,23 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                         <span class=${`fleet-slot-state-badge ${isFleetEntryActive(entry) ? "active" : "historic"}`}>
                           ${entryStatus || "unknown"}
                         </span>
+                        ${sessionId
+                          ? html`<button
+                              type="button"
+                              class="fleet-session-id-pill"
+                              data-session-id=${sessionId}
+                              data-copied=${copiedSessionId === sessionId ? "true" : "false"}
+                              aria-label=${`Copy session ID ${sessionId}`}
+                              onClick=${() => copySessionId(sessionId)}
+                              onAnimationEnd=${(event) => {
+                                if (event?.target !== event?.currentTarget) return;
+                                if (copiedSessionId === sessionId) setCopiedSessionId("");
+                              }}
+                            >
+                              <span class="fleet-session-id-pill-text mono">${sessionId.slice(0, 8)}</span>
+                              <span class="fleet-session-id-pill-icon" aria-hidden="true">${copiedSessionId === sessionId ? "✓" : ICONS.copy}</span>
+                            </button>`
+                          : null}
                         ${entry.slot?.branch
                           ? html`<span class="fleet-slot-meta-branch">${entry.slot.branch}</span>`
                           : entry.session?.branch
