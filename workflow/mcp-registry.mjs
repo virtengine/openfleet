@@ -25,7 +25,7 @@
 
 import { resolve, join, dirname } from "node:path";
 import { existsSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { listCustomTools } from "../agent/agent-custom-tools.mjs";
 
@@ -427,10 +427,26 @@ export async function resolveMcpServersForAgent(rootDir, mcpServerIds = [], opti
 }
 
 function writeDiscoveryProxyConfig(rootDir, payload) {
-  const dir = resolve(rootDir, ".bosun", ".tmp");
+  const normalizedRootDir = String(rootDir || "").trim();
+  if (!normalizedRootDir) {
+    throw new Error(`${TAG} discovery proxy rootDir is required`);
+  }
+  if (/\{\{[^}]+\}\}/.test(normalizedRootDir)) {
+    throw new Error(`${TAG} discovery proxy rootDir contains an unresolved template: ${normalizedRootDir}`);
+  }
+  const resolvedRootDir = resolve(normalizedRootDir);
+  const normalizedPayload = {
+    ...payload,
+    rootDir: resolvedRootDir,
+  };
+  const serialized = JSON.stringify(normalizedPayload, null, 2);
+  const digest = createHash("sha1").update(serialized).digest("hex").slice(0, 12);
+  const dir = resolve(resolvedRootDir, ".bosun", ".tmp");
   mkdirSync(dir, { recursive: true });
-  const filePath = resolve(dir, `mcp-discovery-proxy-${Date.now()}-${randomUUID().slice(0, 8)}.json`);
-  writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf8");
+  const filePath = resolve(dir, `mcp-discovery-proxy-${digest}.json`);
+  if (!existsSync(filePath) || readFileSync(filePath, "utf8") !== serialized) {
+    writeFileSync(filePath, serialized, "utf8");
+  }
   return filePath;
 }
 
@@ -448,8 +464,9 @@ export function wrapServersWithDiscoveryProxy(rootDir, servers = [], options = {
     return servers;
   }
 
+  const normalizedRootDir = String(rootDir || "").trim();
   const discoveredCustomTools = includeCustomTools
-    ? listCustomTools(rootDir, { includeGlobal: true, includeBuiltins: true })
+    ? listCustomTools(normalizedRootDir, { includeGlobal: true, includeBuiltins: true })
     : [];
   const hasCustomTools = discoveredCustomTools.length > 0;
   const hasWrappedServers = Array.isArray(servers) && servers.length > 0;
@@ -458,8 +475,8 @@ export function wrapServersWithDiscoveryProxy(rootDir, servers = [], options = {
     return servers;
   }
 
-  const configPath = writeDiscoveryProxyConfig(rootDir, {
-    rootDir,
+  const configPath = writeDiscoveryProxyConfig(normalizedRootDir, {
+    rootDir: normalizedRootDir,
     timeoutMs,
     cacheTtlMs,
     executeTimeoutMs,
