@@ -651,18 +651,19 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
       try {
         const previousState = def.metadata?.templateState || null;
         const before = stableStringify(previousState);
-        const repairedDerivedPorts = hasStaleDerivedPortMetadata(def);
-        if (repairedDerivedPorts) {
+        const hadStaleDerivedPorts = hasStaleDerivedPortMetadata(def);
+        if (hadStaleDerivedPorts) {
           const templateId = String(def?.metadata?.installedFrom || "").trim();
           repairDerivedPortMetadata(def, getTemplate(templateId));
         }
         applyWorkflowTemplateState(def);
         const state = def.metadata?.templateState || null;
         const after = stableStringify(state);
+        const repairedDerivedPorts = repairDerivedPortMetadata(def);
         if (before !== after || repairedDerivedPorts) {
           engine.save(def);
           result.metadataUpdated += 1;
-          if (repairedDerivedPorts) result.portMetadataRepaired += 1;
+          if (hadStaleDerivedPorts || repairedDerivedPorts) result.portMetadataRepaired += 1;
         }
 
         if (!state) continue;
@@ -1528,3 +1529,5 @@ export function installRecommendedTemplates(engine, overridesById = {}) {
     .map((template) => template.id);
   return installTemplateSet(engine, recommendedIds, overridesById);
 }
+
+
