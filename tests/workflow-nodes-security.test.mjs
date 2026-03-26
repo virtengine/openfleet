@@ -281,7 +281,7 @@ describe("dangerous shell payload containment", () => {
     }
   }, 30_000);
 
-  it("action.create_pr adds the bosun-attached label by default", async () => {
+  it("action.create_pr adds Bosun provenance labels by default", async () => {
     const nodeType = getNodeType("action.create_pr");
     const node = makeNode("action.create_pr", {
       title: "Label test",
@@ -294,6 +294,7 @@ describe("dangerous shell payload containment", () => {
     expect(Array.isArray(result.labels)).toBe(true);
     expect(result.labels).toContain("custom-label");
     expect(result.labels).toContain("bosun-attached");
+    expect(result.labels).toContain("bosun-pr-bosun-created");
     expect(result.createdByBosun).toBe(true);
     expect(String(result.body || "")).toContain("<!-- bosun-created -->");
     expect(String(result.body || "")).toContain("Bosun-Origin: created");

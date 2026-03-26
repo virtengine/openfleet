@@ -96,7 +96,10 @@ function buildNextWorktreeRecoveryState(currentState, event) {
   if (normalizedEvent.outcome === "healthy_noop") {
     return {
       ...nextState,
-      health: state.failureStreak > 0 ? state.health : "healthy",
+      health:
+        state.health === "recovered"
+          ? "recovered"
+          : (state.failureStreak > 0 ? state.health : "healthy"),
       lastHealthyAt: normalizedEvent.timestamp,
     };
   }

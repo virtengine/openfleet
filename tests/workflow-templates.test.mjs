@@ -1088,7 +1088,7 @@ describe("workflow setup profiles", () => {
     expect(batchPrTriggerNode?.type).toBe("trigger.task_available");
   });
 
-  it("filters batch task templates to workspace-backed backlog tasks before dispatch", () => {
+  it("filters batch task templates to todo backlog tasks before dispatch", () => {
     const batchProcessor = getTemplate("template-task-batch-processor");
     const batchPr = getTemplate("template-task-batch-pr");
     const queryScripts = [
@@ -1099,10 +1099,8 @@ describe("workflow setup profiles", () => {
     for (const script of queryScripts) {
       expect(script).toContain("const mirrorMarker = (path.sep + \".bosun\" + path.sep + \"workspaces\" + path.sep).toLowerCase();");
       expect(script).toContain('path.join(repoRoot, "kanban", "kanban-adapter.mjs")');
-      expect(script).toContain("const filtered = (tasks || []).filter((task) => {");
-      expect(script).toContain('const repository = typeof task?.repository === "string" ? task.repository.trim() : "";');
-      expect(script).toContain('const workspace = typeof task?.workspace === "string" ? task.workspace.trim() : "";');
-      expect(script).toContain("repository.length > 0 && workspace.length > 0");
+      expect(script).toContain('const filtered = (tasks || []).filter((task) => task && task.status === "todo" && !task.draft);');
+      expect(script).not.toContain("repository.length > 0 && workspace.length > 0");
     }
   });
 
@@ -1413,7 +1411,9 @@ describe("github template CLI compatibility", () => {
     const notifyNode = watchdogTemplate.nodes.find((n) => n.id === "notify");
     const triggerNode = watchdogTemplate.nodes.find((n) => n.id === "trigger");
 
-    expect(getNodeCommandCode(fetchNode)).toContain("const CREATED_MARKER='<!-- bosun-created -->';");
+    expect(getNodeCommandCode(fetchNode)).toContain("const BOSUN_CREATED_LABEL='bosun-pr-bosun-created';");
+    expect(getNodeCommandCode(fetchNode)).toContain("function readLabelNames(pr){");
+    expect(getNodeCommandCode(fetchNode)).toContain("function isBosunCreated(pr){return readLabelNames(pr).includes(BOSUN_CREATED_LABEL);}");
     expect(getNodeCommandCode(fetchNode)).toContain("const ATTACH_MODE=((String(PR_AUTOMATION?.attachMode||'all').trim().toLowerCase())||'all');");
     expect(getNodeCommandCode(fetchNode)).toContain("const TRUSTED_AUTHORS=new Set");
     expect(getNodeCommandCode(fetchNode)).toContain("allowTrustedFixes");
@@ -1563,8 +1563,8 @@ describe("github template CLI compatibility", () => {
     expect(fetchCommand).toContain("function collectReposFromConfig(){");
     expect(fetchCommand).toContain("const repoTargets=resolveRepoTargets();");
     expect(fetchCommand).toContain("if(repo){ mergedArgs.push('--repo',repo); openArgs.push('--repo',repo); }");
-    expect(fetchCommand).toContain("function isBosunCreated(pr){");
-    expect(fetchCommand).toContain("<!-- bosun-created -->");
+    expect(fetchCommand).toContain("function shouldSyncTaskPr(pr){ return Boolean(extractTaskId(pr)); }");
+    expect(fetchCommand).toContain("const m=src.match(/(?:Bosun-Task|VE-Task|Task-ID|task[_-]?id)");
     expect(fetchCommand).not.toContain("--label','bosun-attached'");
     expect(fetchCommand).toContain("reposScanned: repoTargets.length");
     expect(fetchCommand).toContain("repo:p.__repo||''");

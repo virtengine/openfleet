@@ -78,6 +78,8 @@ const WORKFLOW_RUN_PAGE_SIZE = 50;
 const WORKFLOW_RUN_MAX_FETCH = 5000;
 const WORKFLOW_LIVE_POLL_MS = 3000;
 const WORKFLOW_LIVE_WS_BATCH_MS = 90;
+const UNKNOWN_OUTPUT_PORT_LABEL = "Unknown output port";
+const UNKNOWN_INPUT_PORT_LABEL = "Unknown input port";
 const NODE_COMPLETION_FLASH_MS = 1400;
 const NODE_RUNNING_HINT_MS = 500;
 const EDGE_FLOW_ANIMATION_MS = 1200;
@@ -4323,6 +4325,14 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
               ${binding.validationErrors.length > 0 && html`
                 <div style="margin-bottom: 16px; border: 1px solid #7f1d1d; background: #450a0a; color: #fecaca; border-radius: 8px; padding: 10px 12px;">
                   <div style="font-size: 12px; font-weight: 700; margin-bottom: 6px;">Validation Error</div>
+                  <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px;">
+                    ${binding.validationErrors.some((message) => String(message || "").includes(UNKNOWN_OUTPUT_PORT_LABEL)) && html`
+                      <span style="display: inline-flex; align-items: center; border: 1px solid #991b1b; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 600;">${UNKNOWN_OUTPUT_PORT_LABEL}</span>
+                    `}
+                    ${binding.validationErrors.some((message) => String(message || "").includes(UNKNOWN_INPUT_PORT_LABEL)) && html`
+                      <span style="display: inline-flex; align-items: center; border: 1px solid #991b1b; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 600;">${UNKNOWN_INPUT_PORT_LABEL}</span>
+                    `}
+                  </div>
                   <div style="display: grid; gap: 4px; font-size: 12px;">
                     ${binding.validationErrors.map((message) => html`<div key=${message}>${message}</div>`)}
                   </div>
@@ -7041,5 +7051,4 @@ export function WorkflowsTab() {
     </div>
   `;
 }
-
 

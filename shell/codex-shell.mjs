@@ -182,13 +182,16 @@ function buildCodexSdkRuntime(streamProviderOverrides, envInput = process.env, w
           remote_models: false,
         },
       }
-    : {};
+    : {
+        model_provider: providerSectionName,
+        model_providers: {
+          [providerSectionName]: {
+            ...streamProviderOverrides,
+          },
+        },
+      };
 
   Object.assign(config, buildInjectedSandboxConfig(envInput, workingDirectory));
-
-  if (!isAzure && Object.keys(streamProviderOverrides || {}).length > 0) {
-    config.model_provider = providerSectionName;
-  }
 
   if (isAzure && env.CODEX_MODEL) {
     config.model_provider = providerSectionName;
@@ -1303,4 +1306,3 @@ export async function initCodexShell() {
     );
   }
 }
-

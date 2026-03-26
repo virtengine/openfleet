@@ -45,12 +45,12 @@ export const PR_MERGE_STRATEGY_TEMPLATE = {
     }, { x: 400, y: 50 }),
 
     node("load-pr-context", "action.run_command", "Load PR Context", {
-      command: "gh pr view {{prNumber}} --json body,author,title",
+      command: "gh pr view {{prNumber}} --json body,author,title,labels",
     }, { x: 400, y: 140 }),
 
     node("automation-eligible", "condition.expression", "Bosun-Created PR?", {
       expression:
-        "(() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const body = String(pr?.body || ''); return body.includes('<!-- bosun-created -->') || /auto-created by bosun/i.test(body); })()",
+        "(() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; return labels.includes('bosun-pr-bosun-created'); })()",
     }, { x: 400, y: 230, outputs: ["yes", "no"] }),
 
     node("check-ci", "validation.build", "Check CI Status", {
@@ -386,10 +386,12 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
         "  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }" +
         "  if (!Array.isArray(prs)) return '';" +
         "  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);" +
-        "  const isBosunCreated = (body) => { const text = String(body || ''); return text.includes('<!-- bosun-created -->') || /auto-created by bosun/i.test(text); };" +
+        "  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';" +
+        "  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];" +
+        "  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL);" +
         "  /* Skip PRs already owned by the watchdog fix agent */" +
         "  const pr = prs.find((p) =>" +
-        "    isBosunCreated(p?.body) &&" +
+        "    isBosunCreated(p) &&" +
         "    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&" +
         "    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')" +
         "  );" +
@@ -1129,7 +1131,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "const CONFLICT_MERGEABLES=new Set(['CONFLICTING','DIRTY']);",
         "const BEHIND_MERGEABLES=new Set(['BEHIND']);",
         "const SECURITY_CHECK_RE=/(^|[^a-z])(codeql|code scanning|security|sarif|codacy)([^a-z]|$)/i;",
-        "const CREATED_MARKER='<!-- bosun-created -->';",
+        "const BOSUN_CREATED_LABEL='bosun-pr-bosun-created';",
         "function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();}",
         "function isFailedCheck(check){return FAIL_STATES.has(check?.conclusion||check?.state||'');}",
         "function isSecurityCheckName(name){return SECURITY_CHECK_RE.test(String(name||''));}",
@@ -1141,7 +1143,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "function readCheckState(check){return String(check?.conclusion||check?.state||check?.status||check?.bucket||'').trim().toUpperCase();}",
         "function isPassingCheckState(state,treatNeutralAsPass){if(!state)return true;if(['SUCCESS','PASS','PASSED','COMPLETED'].includes(state))return true;if(treatNeutralAsPass&&['NEUTRAL','SKIPPED'].includes(state))return true;return !FAIL_STATES.has(state)&&!PEND_STATES.has(state);}",
         "function evaluateCheckGates(checks,policy){const normalized=(Array.isArray(checks)?checks:[]).map((check)=>({raw:check,name:readCheckName(check),state:readCheckState(check)})).filter((check)=>check.name);const considered=normalized.filter((check)=>!matchesAnyPattern(check.name,policy.ignorePatterns));let required=considered;if(policy.mode==='required-only'){required=considered.filter((check)=>matchesAnyPattern(check.name,policy.requiredPatterns));}if((Array.isArray(policy.optionalPatterns)?policy.optionalPatterns:[]).length>0){required=required.filter((check)=>!matchesAnyPattern(check.name,policy.optionalPatterns));}const missingRequired=policy.requireAnyRequiredCheck&&required.length===0;const failedRequiredChecks=required.filter((check)=>FAIL_STATES.has(check.state));const pendingRequiredChecks=required.filter((check)=>PEND_STATES.has(check.state));const hasRequiredFailure=failedRequiredChecks.length>0;const hasBlockingPending=policy.treatPendingRequiredAsBlocking&&pendingRequiredChecks.length>0;const isReady=!missingRequired&&!hasRequiredFailure&&!hasBlockingPending&&required.every((check)=>isPassingCheckState(check.state,policy.treatNeutralAsPass));return {consideredCount:considered.length,requiredCount:required.length,failedRequiredChecks:failedRequiredChecks.map((check)=>check.raw),pendingRequiredChecks:pendingRequiredChecks.map((check)=>check.raw),hasRequiredFailure,hasBlockingPending,blocksForMissingRequired:missingRequired,isReady,shouldKickCi:considered.length===0};}",
-        "function isBosunCreated(body){const text=String(body||''); return text.includes(CREATED_MARKER) || /auto-created by bosun/i.test(text);}",
+        "function readLabelNames(pr){return Array.isArray(pr?.labels)?pr.labels.map((entry)=>typeof entry==='string'?entry:entry?.name).filter(Boolean):[];}",
+        "function isBosunCreated(pr){return readLabelNames(pr).includes(BOSUN_CREATED_LABEL);}",
         "function readAuthorLogin(pr){return String(pr?.author?.login||pr?.author?.name||'').trim().toLowerCase();}",
         "function configPath(){",
         "  const home=String(process.env.BOSUN_HOME||process.env.BOSUN_PROJECT_DIR||'').trim();",
@@ -1230,7 +1233,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "let newlyLabeled=0,staleLabelCleared=0,ciKicked=0;",
         "for(const pr of prs){",
         "  const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);",
-        "  const bosunCreated=isBosunCreated(pr?.body);",
+        "  const bosunCreated=isBosunCreated(pr);",
         "  const trustedAuthor=TRUSTED_AUTHORS.has(readAuthorLogin(pr));",
         "  const attachEligible=bosunCreated || ATTACH_MODE==='all' || (ATTACH_MODE==='trusted-only' && trustedAuthor);",
         "  const canFix=bosunCreated || (attachEligible && ALLOW_TRUSTED_FIXES && trustedAuthor);",
@@ -1725,11 +1728,11 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "let deleted=0;",
         "for(const repo of repos){",
         "  try{",
-        "    const raw=gh(['pr','list','--repo',repo,'--state','merged','--json','number,headRefName,body','--limit','50']);",
+        "    const raw=gh(['pr','list','--repo',repo,'--state','merged','--json','number,headRefName,labels','--limit','50']);",
         "    const prs=(()=>{try{return JSON.parse(raw||'[]')}catch{return []}})();",
         "    for(const pr of prs){",
-        "      const body=String(pr?.body||'');",
-        "      if(!(body.includes('<!-- bosun-created -->') || /auto-created by bosun/i.test(body))) continue;",
+        "      const labels=Array.isArray(pr?.labels)?pr.labels.map((entry)=>typeof entry==='string'?entry:entry?.name).filter(Boolean):[];",
+        "      if(!labels.includes('bosun-pr-bosun-created')) continue;",
         "      const branch=String(pr?.headRefName||'').trim();",
         "      if(!branch||branch==='main'||branch==='master')continue;",
         "      try{gh(['api','repos/'+repo+'/git/refs/heads/'+branch,'--method','DELETE','--silent']);deleted++;}catch(e){}",
@@ -1898,7 +1901,7 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "  const m=src.match(/(?:Bosun-Task|VE-Task|Task-ID|task[_-]?id)[:\\s]+([a-zA-Z0-9_-]{4,64})/i);",
         "  return m?m[1].trim():null;",
         "}",
-        "function isBosunCreated(pr){ const body=String(pr?.body||''); return body.includes('<!-- bosun-created -->') || /auto-created by bosun/i.test(body); }",
+        "function shouldSyncTaskPr(pr){ return Boolean(extractTaskId(pr)); }",
         "const repoTargets=resolveRepoTargets();",
         "const merged=[];",
         "const open=[];",
@@ -1907,8 +1910,8 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "  const mergedArgs=['pr','list','--state','merged','--json','number,title,body,headRefName,mergedAt,url','--limit','50'];",
         "  const openArgs=['pr','list','--state','open','--json','number,title,body,headRefName,isDraft,url','--limit','50'];",
         "  if(repo){ mergedArgs.push('--repo',repo); openArgs.push('--repo',repo); }",
-        "  for(const pr of ghJson(mergedArgs)){ if(isBosunCreated(pr)) merged.push({...pr,__repo:repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim()}); }",
-        "  for(const pr of ghJson(openArgs)){ if(isBosunCreated(pr)) open.push({...pr,__repo:repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim()}); }",
+        "  for(const pr of ghJson(mergedArgs)){ if(shouldSyncTaskPr(pr)) merged.push({...pr,__repo:repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim()}); }",
+        "  for(const pr of ghJson(openArgs)){ if(shouldSyncTaskPr(pr)) open.push({...pr,__repo:repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim()}); }",
         "}",
         "const recentMerged=merged.filter(p=>!p.mergedAt||new Date(p.mergedAt)>=new Date(since));",
         "console.log(JSON.stringify({",

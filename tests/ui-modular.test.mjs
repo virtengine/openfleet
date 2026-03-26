@@ -32,9 +32,12 @@ import {
 } from "../site/ui/tabs/library.js";
 import {
   buildTaskDescriptionFallback,
+  buildTaskWorkspaceLaunchers,
   normalizeTaskWorkflowRunEntry,
+  openTaskLinkedSession,
   openTaskWorkflowAgentHistory,
   openTaskWorkflowRun,
+  pickTaskLinkedSessionId,
 } from "../ui/tabs/tasks.js";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -477,6 +480,57 @@ describe("task workflow activity helpers", () => {
     expect(loadSessions).toHaveBeenCalledWith({ type: "task", workspace: "all" });
     expect(selectedSessionId.value).toBe("session-task-1");
     expect(loadSessionMessages).toHaveBeenCalledWith("session-task-1", { limit: 50 });
+  });
+
+  it("prefers persistent task-linked sessions before derived workflow entries", () => {
+    expect(pickTaskLinkedSessionId({
+      id: "task-123",
+      primarySessionId: "session-primary",
+      workflowRuns: [{ primarySessionId: "session-derived" }],
+    })).toBe("session-primary");
+  });
+
+  it("opens task-linked sessions through the agents view", async () => {
+    const navigateTo = vi.fn(() => true);
+    const loadSessions = vi.fn(async () => ({ ok: true }));
+    const loadSessionMessages = vi.fn(async () => ({ ok: true }));
+    const selectedSessionId = { value: "" };
+
+    await expect(openTaskLinkedSession(
+      { id: "task-123", meta: { primarySessionId: "session-persisted" } },
+      { navigateTo, loadSessions, loadSessionMessages, selectedSessionId },
+    )).resolves.toBe(true);
+
+    expect(navigateTo).toHaveBeenCalledWith("agents");
+    expect(selectedSessionId.value).toBe("session-persisted");
+    expect(loadSessionMessages).toHaveBeenCalledWith("session-persisted", { limit: 50 });
+  });
+
+  it("builds VS Code worktree launchers from linked task metadata", () => {
+    expect(buildTaskWorkspaceLaunchers({
+      id: "task-456",
+      meta: { worktreePath: "C:\\\\worktrees\\\\feature branch" },
+    })).toEqual([
+      {
+        id: "vscode",
+        label: "VS Code",
+        href: "vscode://file/C://worktrees//feature%20branch",
+      },
+      {
+        id: "vscode-insiders",
+        label: "VS Code Insiders",
+        href: "vscode-insiders://file/C://worktrees//feature%20branch",
+      },
+    ]);
+  });
+
+  it("posts task snapshots for task-view diff requests", () => {
+    const taskTabSource = readFileSync(resolve(process.cwd(), "ui/tabs/tasks.js"), "utf8");
+    const diffViewerSource = readFileSync(resolve(process.cwd(), "ui/components/diff-viewer.js"), "utf8");
+
+    expect(taskTabSource).toContain("taskSnapshot=${task || null}");
+    expect(diffViewerSource).toContain("method: \"POST\"");
+    expect(diffViewerSource).toContain("body: JSON.stringify({ task: taskSnapshot })");
   });
 
   it("keeps stored session links ahead of derived primary session ids", () => {

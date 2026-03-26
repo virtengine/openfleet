@@ -23,62 +23,6 @@
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
 
-const TASK_BATCH_OPTIONAL_FIELD_MAX_LENGTH = 128;
-
-function normalizeTaskBatchRequiredString(value, field, index) {
-  if (typeof value !== "string") {
-    throw new Error(`Invalid task-batch payload: item[${index}].${field} must be a non-empty string`);
-  }
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`Invalid task-batch payload: item[${index}].${field} must be a non-empty string`);
-  }
-  return trimmed;
-}
-
-function normalizeTaskBatchOptionalString(value) {
-  if (value == null) return null;
-  if (typeof value !== "string") {
-    return String(value).trim().slice(0, TASK_BATCH_OPTIONAL_FIELD_MAX_LENGTH) || null;
-  }
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  return trimmed.slice(0, TASK_BATCH_OPTIONAL_FIELD_MAX_LENGTH);
-}
-
-export function summarizeTaskBatchPayloadForLog(payload) {
-  if (!Array.isArray(payload)) {
-    return { type: typeof payload, count: 0 };
-  }
-  return {
-    type: "array",
-    count: payload.length,
-    taskIds: payload.slice(0, 3).map((item) => String(item?.taskId || "").trim()).filter(Boolean),
-  };
-}
-
-export function validateTaskBatchPayload(payload) {
-  if (!Array.isArray(payload)) {
-    throw new Error("Invalid task-batch payload: payload must be an array");
-  }
-
-  return payload.map((item, index) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) {
-      throw new Error(`Invalid task-batch payload: item[${index}] must be an object`);
-    }
-
-    return {
-      taskId: normalizeTaskBatchRequiredString(item.taskId, "taskId", index),
-      taskTitle: normalizeTaskBatchRequiredString(item.taskTitle, "taskTitle", index),
-      status: normalizeTaskBatchRequiredString(item.status, "status", index),
-      repository: normalizeTaskBatchRequiredString(item.repository, "repository", index),
-      workspace: normalizeTaskBatchRequiredString(item.workspace, "workspace", index),
-      branch: normalizeTaskBatchOptionalString(item.branch),
-      scope: normalizeTaskBatchOptionalString(item.scope),
-    };
-  });
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 //  Task Batch Processor — Parallel Task Dispatch
 // ═══════════════════════════════════════════════════════════════════════════
@@ -138,7 +82,7 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
           .then(tasks => {
             const filtered = (tasks || []).filter((task) => task && task.status === "todo" && !task.draft);
             const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || "10"));
-            const payload = batch.map(t => ({
+            console.log(JSON.stringify(batch.map(t => ({
               taskId: t.id,
               taskTitle: t.title || t.id,
               status: t.status,
@@ -146,15 +90,7 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
               scope: t.scope || t.metadata?.scope || null,
               repository: typeof t?.repository === "string" ? t.repository.trim() : null,
               workspace: typeof t?.workspace === "string" ? t.workspace.trim() : null,
-            }));
-            const { validateTaskBatchPayload, summarizeTaskBatchPayloadForLog } = await import(pathToFileURL(path.join(repoRoot, "workflow-templates", "task-batch.mjs")).href);
-            try {
-              console.log(JSON.stringify(validateTaskBatchPayload(payload)));
-            } catch (error) {
-              const summary = summarizeTaskBatchPayloadForLog(payload);
-              console.error(`Invalid task-batch payload: ${error.message.replace(/^Invalid task-batch payload:\s*/, "")}; summary=${JSON.stringify(summary)}`);
-              process.exit(1);
-            }
+            }))));
           })
           .catch(e => { console.error(e.message); process.exit(1); });
       `],
@@ -273,17 +209,9 @@ export const TASK_BATCH_PR_TEMPLATE = {
               taskId: t.id,
               taskTitle: t.title || t.id,
               branch: t.branch || t.metadata?.branch || null,
-              repository: t.repository || null,
-              workspace: t.workspace || null,
-            }));
-            const { validateTaskBatchPayload, summarizeTaskBatchPayloadForLog } = await import(pathToFileURL(path.join(repoRoot, "workflow-templates", "task-batch.mjs")).href);
-            try {
-              console.log(JSON.stringify(validateTaskBatchPayload(payload)));
-            } catch (error) {
-              const summary = summarizeTaskBatchPayloadForLog(payload);
-              console.error(`Invalid task-batch payload: ${error.message.replace(/^Invalid task-batch payload:\s*/, "")}; summary=${JSON.stringify(summary)}`);
-              process.exit(1);
-            }
+              repository: typeof t?.repository === "string" ? t.repository.trim() : null,
+              workspace: typeof t?.workspace === "string" ? t.workspace.trim() : null,
+            }))));
           })
           .catch(e => { console.error(e.message); process.exit(1); });
       `],
@@ -388,5 +316,3 @@ export const TASK_BATCH_PR_TEMPLATE = {
     requiredTemplates: ["template-bosun-pr-progressor"],
   },
 };
-
-
