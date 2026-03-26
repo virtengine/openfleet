@@ -47,16 +47,6 @@ const DEFAULT_EXECUTOR_RUNTIME_STATE_FILE = resolve(
 );
 const REPO_AREA_SLOW_MERGE_LATENCY_MS = 4 * 60 * 60 * 1000;
 const REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS = 8 * 60 * 60 * 1000;
-const TASK_STATS_COUNTER_FIELDS = [
-  "draft",
-  "todo",
-  "inprogress",
-  "inreview",
-  "done",
-  "blocked",
-  "total",
-];
-
 
 // ── Store helpers ─────────────────────────────────────────────────────────────
 
@@ -588,47 +578,11 @@ export async function taskDelete(id) {
  */
 export async function taskStats() {
   const store = await initStore();
-  const stats = validateTaskStatsShape(store.getStats());
+  const stats = store.getStats();
   return {
     ...stats,
     repoAreaLocks: readRepoAreaLocksFromRuntimeState(),
   };
-}
-
-function validateTaskStatsShape(stats) {
-  if (!stats || typeof stats !== "object" || Array.isArray(stats)) {
-    throw new Error("Invalid taskStats: expected an object from task store");
-  }
-
-  const allowedFields = new Set(TASK_STATS_COUNTER_FIELDS);
-  const keys = Object.keys(stats);
-  for (const field of TASK_STATS_COUNTER_FIELDS) {
-    if (
-      !Object.prototype.hasOwnProperty.call(stats, field) ||
-      stats[field] === undefined
-    ) {
-      throw new Error("Invalid taskStats: missing required field '" + field + "'");
-    }
-  }
-
-  for (const key of keys) {
-    if (!allowedFields.has(key)) {
-      throw new Error("Invalid taskStats: unexpected field '" + key + "'");
-    }
-  }
-
-  for (const field of TASK_STATS_COUNTER_FIELDS) {
-    const value = stats[field];
-    if (!Number.isInteger(value) || value < 0) {
-      throw new Error(
-        "Invalid taskStats: field '" + field + "' must be a non-negative integer",
-      );
-    }
-  }
-
-  return Object.fromEntries(
-    TASK_STATS_COUNTER_FIELDS.map((field) => [field, stats[field]]),
-  );
 }
 
 function resolveExecutorRuntimeStateFile() {

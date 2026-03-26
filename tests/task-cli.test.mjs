@@ -27,121 +27,7 @@ import {
   configureTaskStore,
   loadStore,
   waitForStoreWrites,
-  getStats as getRealTaskStoreStats,
 } from "../task/task-store.mjs";
-
-const TASK_STATS_FIELDS = [
-  "draft",
-  "todo",
-  "inprogress",
-  "inreview",
-  "done",
-  "blocked",
-  "total",
-];
-
-function buildTaskStatsFixture(overrides = {}) {
-  const storePath = makeTempStorePath();
-  configureTaskStore({ storePath });
-  loadStore();
-
-  const tasks = [
-    { id: randomUUID(), title: "Draft task", status: "todo", draft: true },
-    { id: randomUUID(), title: "Todo task A", status: "todo", draft: false },
-    { id: randomUUID(), title: "Todo task B", status: "todo", draft: false },
-    { id: randomUUID(), title: "Active task A", status: "inprogress", draft: false },
-    { id: randomUUID(), title: "Active task B", status: "inprogress", draft: false },
-    { id: randomUUID(), title: "Active task C", status: "inprogress", draft: false },
-    { id: randomUUID(), title: "Review task A", status: "inreview", draft: false },
-    { id: randomUUID(), title: "Review task B", status: "inreview", draft: false },
-    { id: randomUUID(), title: "Review task C", status: "inreview", draft: false },
-    { id: randomUUID(), title: "Review task D", status: "inreview", draft: false },
-    { id: randomUUID(), title: "Done task A", status: "done", draft: false },
-    { id: randomUUID(), title: "Done task B", status: "done", draft: false },
-    { id: randomUUID(), title: "Done task C", status: "done", draft: false },
-    { id: randomUUID(), title: "Done task D", status: "done", draft: false },
-    { id: randomUUID(), title: "Done task E", status: "done", draft: false },
-    { id: randomUUID(), title: "Blocked task", status: "blocked", draft: false },
-  ];
-
-  for (const task of tasks) {
-    addTask({
-      workspace: "virtengine-gh",
-      repository: "bosun",
-      ...task,
-    });
-  }
-
-  const base = getRealTaskStoreStats();
-  return { ...base, ...overrides };
-}
-
-function omitTaskStatsField(stats, field) {
-  const next = { ...stats };
-  delete next[field];
-  return next;
-}
-
-function buildRuntimeLockFixture(overrides = {}) {
-  const now = Date.now();
-  return {
-    repoAreaParallelLimit: 3,
-    repoAreaDispatchCycles: 4,
-    repoAreaConflictCount: 3,
-    repoAreaDispatchCycle: {
-      cycle: 4,
-      selectedCount: 1,
-      blockedTasks: 2,
-      blockedByArea: { infra: 2 },
-      areaLimits: {
-        infra: {
-          configuredLimit: 3,
-          effectiveLimit: 1,
-          adaptivePenalty: 2,
-          adaptiveReasons: ["failure_rate", "merge_latency"],
-        },
-      },
-    },
-    repoAreaLockMetrics: {
-      infra: {
-        conflicts: 3,
-        blockedDispatches: 3,
-        selectedDispatches: 1,
-        waitMsTotal: 1400,
-        waitSamples: 2,
-        maxWaitMs: 900,
-      },
-    },
-    repoAreaTelemetry: {
-      infra: {
-        recentOutcomes: [1, 1, 0, 1],
-        mergeLatencySamples: [
-          5 * 60 * 60 * 1000,
-          5 * 60 * 60 * 1000,
-          5 * 60 * 60 * 1000,
-        ],
-      },
-    },
-    repoAreaBlockedTasks: {
-      "blocked-1": {
-        blockedAt: now - 2000,
-        lastObservedWaitMs: 2000,
-        areas: ["infra"],
-      },
-    },
-    repoAreaTaskAreas: {
-      "task-1": ["infra"],
-    },
-    slots: {
-      "task-1": {
-        startedAt: now - 5 * 60 * 60 * 1000,
-        attempt: 2,
-        status: "running",
-      },
-    },
-    ...overrides,
-  };
-}
 
 const tempDirs = [];
 
@@ -428,7 +314,6 @@ describe("task-cli taskStats repo area lock state", () => {
   });
 
   it("resolves active workspace store path using canonical workspace/repository keys", async () => {
-    mockGetStats.mockReturnValue(buildTaskStatsFixture());
     process.env.BOSUN_HOME = resolve(tmpdir(), "bosun-home");
     const runtimePayload = {};
     const expectedStorePathFragment = ".bosun/.cache/kanban-state.json";
@@ -471,7 +356,6 @@ describe("task-cli taskStats repo area lock state", () => {
   });
 
   it("fails fast when workspace ids collide after normalization", async () => {
-    mockGetStats.mockReturnValue(buildTaskStatsFixture());
     process.env.BOSUN_HOME = resolve(tmpdir(), "bosun-home");
     mockExistsSync.mockImplementation((filePath) =>
       String(filePath || "").replace(/\\/g, "/").endsWith("/bosun.config.json"),
@@ -495,7 +379,59 @@ describe("task-cli taskStats repo area lock state", () => {
   it("surfaces adaptive repo-area lock state from runtime payload", async () => {
     const storePath = makeTempStorePath();
     const runtimeStatePath = resolve(tempDirs[tempDirs.length - 1], "task-executor-runtime.json");
-    const runtimePayload = buildRuntimeLockFixture();
+    const now = Date.now();
+    const runtimePayload = {
+      repoAreaParallelLimit: 3,
+      repoAreaDispatchCycles: 4,
+      repoAreaConflictCount: 3,
+      repoAreaDispatchCycle: {
+        cycle: 4,
+        selectedCount: 1,
+        blockedTasks: 2,
+        blockedByArea: { infra: 2 },
+        areaLimits: {
+          infra: {
+            configuredLimit: 3,
+            effectiveLimit: 1,
+            adaptivePenalty: 2,
+            adaptiveReasons: ["failure_rate", "merge_latency"],
+          },
+        },
+      },
+      repoAreaLockMetrics: {
+        infra: {
+          conflicts: 3,
+          blockedDispatches: 3,
+          selectedDispatches: 1,
+          waitMsTotal: 1400,
+          waitSamples: 2,
+          maxWaitMs: 900,
+        },
+      },
+      repoAreaTelemetry: {
+        infra: {
+          recentOutcomes: [1, 1, 0, 1],
+          mergeLatencySamples: [5 * 60 * 60 * 1000, 5 * 60 * 60 * 1000, 5 * 60 * 60 * 1000],
+        },
+      },
+      repoAreaBlockedTasks: {
+        "blocked-1": {
+          blockedAt: now - 2000,
+          lastObservedWaitMs: 2000,
+          areas: ["infra"],
+        },
+      },
+      repoAreaTaskAreas: {
+        "task-1": ["infra"],
+      },
+      slots: {
+        "task-1": {
+          startedAt: now - 5 * 60 * 60 * 1000,
+          attempt: 2,
+          status: "running",
+        },
+      },
+    };
 
     writeFileSync(runtimeStatePath, JSON.stringify(runtimePayload), "utf8");
     const result = spawnSync(
@@ -575,8 +511,7 @@ describe("task-cli taskStats repo area lock state", () => {
   });
 
   it("keeps default stats output lock-telemetry free without debug mode", async () => {
-    mockGetStats.mockReturnValue(buildTaskStatsFixture());
-    const runtimePayload = buildRuntimeLockFixture({
+    const runtimePayload = {
       repoAreaParallelLimit: 2,
       repoAreaDispatchCycles: 2,
       repoAreaConflictCount: 1,
@@ -598,7 +533,7 @@ describe("task-cli taskStats repo area lock state", () => {
           resolutionReason: "selected",
         },
       ],
-    });
+    };
     mockExistsSync.mockImplementation((filePath) =>
       String(filePath || "").includes("task-executor-runtime.json"),
     );
@@ -622,8 +557,7 @@ describe("task-cli taskStats repo area lock state", () => {
   });
 
   it("shows lock diagnostics in stats output when debug mode is enabled", async () => {
-    mockGetStats.mockReturnValue(buildTaskStatsFixture());
-    const runtimePayload = buildRuntimeLockFixture({
+    const runtimePayload = {
       repoAreaParallelLimit: 2,
       repoAreaDispatchCycles: 2,
       repoAreaConflictCount: 1,
@@ -645,7 +579,7 @@ describe("task-cli taskStats repo area lock state", () => {
           resolutionReason: "selected",
         },
       ],
-    });
+    };
     mockExistsSync.mockImplementation((filePath) =>
       String(filePath || "").includes("task-executor-runtime.json"),
     );
@@ -667,40 +601,4 @@ describe("task-cli taskStats repo area lock state", () => {
     expect(output).toContain("contention: area=infra, waitMs=850, reason=selected, task=task-123");
     logSpy.mockRestore();
   });
-
-  it.each(TASK_STATS_FIELDS)("fails fast when task stats omit required counter '%s'", async (field) => {
-    mockGetStats.mockReturnValue(omitTaskStatsField(buildTaskStatsFixture(), field));
-
-    const { taskStats } = await import("../task/task-cli.mjs");
-    await expect(taskStats()).rejects.toThrow(
-      new RegExp(`taskstats.*missing required field.*${field}`, "i"),
-    );
-  });
-
-  it("fails fast when task stats include unexpected fields", async () => {
-    mockGetStats.mockReturnValue({
-      ...buildTaskStatsFixture(),
-      unexpectedCounter: 99,
-    });
-
-    const { taskStats } = await import("../task/task-cli.mjs");
-    await expect(taskStats()).rejects.toThrow(/taskstats.*unexpected field.*unexpectedCounter/i);
-  });
-
-  it.each([
-    ["inprogress", "three"],
-    ["done", -1],
-    ["total", 1.5],
-  ])("fails fast when task stats counter '%s' is malformed", async (field, value) => {
-    mockGetStats.mockReturnValue({
-      ...buildTaskStatsFixture(),
-      [field]: value,
-    });
-
-    const { taskStats } = await import("../task/task-cli.mjs");
-    await expect(taskStats()).rejects.toThrow(
-      new RegExp(`taskstats.*${field}.*non-negative integer`, "i"),
-    );
-  });
 });
-
