@@ -1096,7 +1096,11 @@ describe("launchEphemeralThread", () => {
       model: "gpt-5.4",
       sandbox_mode: "workspace-write",
     }));
-    const providerConfig = Object.values(codexCtorOpts?.config?.model_providers || {})[0];
+    const providerConfig = Object.values(codexCtorOpts?.config?.model_providers || {})
+      .find((provider) =>
+        provider?.env_key === "AZURE_OPENAI_API_KEY"
+        && provider?.base_url === "https://example-resource.openai.azure.com/openai/v1",
+      );
     expect(providerConfig).toEqual(expect.objectContaining({
       env_key: "AZURE_OPENAI_API_KEY",
       base_url: "https://example-resource.openai.azure.com/openai/v1",
