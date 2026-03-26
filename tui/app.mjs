@@ -269,7 +269,11 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
         ${helpOpen
           ? html`
               <${Box} flexDirection="column" marginTop=${1}>
-                <${HelpScreen} scrollOffset=${helpScrollOffset} maxRows=${helpRows} />
+                <${HelpScreen}
+                  scrollOffset=${helpScrollOffset}
+                  maxRows=${helpRows}
+                  groups=${[]}
+                />
               <//>
             `
           : null}
