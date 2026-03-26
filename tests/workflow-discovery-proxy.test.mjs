@@ -161,6 +161,37 @@ describe("mcp discovery proxy helpers", () => {
     expect(existsSync(wrapped[0].env.BOSUN_DISCOVERY_PROXY_CONFIG_PATH)).toBe(true);
   });
 
+  it("reuses the same discovery proxy config path for identical payloads", async () => {
+    const root = await makeRoot();
+    registerCustomTool(root, {
+      id: "schema-helper",
+      title: "Schema Helper",
+      description: "Ensures discovery proxy is materialized",
+      category: "utility",
+      lang: "mjs",
+      script: "console.log('ok')",
+    });
+
+    const first = wrapServersWithDiscoveryProxy(root, [], {
+      includeCustomTools: true,
+      cacheTtlMs: 12345,
+      executeTimeoutMs: 6789,
+    });
+    const second = wrapServersWithDiscoveryProxy(root, [], {
+      includeCustomTools: true,
+      cacheTtlMs: 12345,
+      executeTimeoutMs: 6789,
+    });
+
+    expect(first[0].env.BOSUN_DISCOVERY_PROXY_CONFIG_PATH)
+      .toBe(second[0].env.BOSUN_DISCOVERY_PROXY_CONFIG_PATH);
+  });
+
+  it("rejects unresolved template root directories", async () => {
+    await expect(() => wrapServersWithDiscoveryProxy("{{worktreePath}}", [], {}))
+      .toThrow(/unresolved template/i);
+  });
+
   it("persists discovery proxy tuning in config", async () => {
     const root = await makeRoot();
     registerCustomTool(root, {
