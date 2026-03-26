@@ -53,22 +53,33 @@ export function resolveVitestArgs(
   { startDir = process.cwd(), packageRoot = findPackageRoot({ startDir }) } = {},
 ) {
   const normalizedArgs = [...args];
+  const filteredArgs = [];
   for (let index = 0; index < normalizedArgs.length; index += 1) {
     const arg = normalizedArgs[index];
+    if ((arg === '--reporter' || arg === '-r') && normalizedArgs[index + 1] === 'basic') {
+      index += 1;
+      continue;
+    }
+    if (arg === '--reporter=basic') {
+      continue;
+    }
     if ((arg === "--config" || arg === "-c") && typeof normalizedArgs[index + 1] === "string") {
-      normalizedArgs[index + 1] = resolveCliPathArg(normalizedArgs[index + 1], {
+      filteredArgs.push(arg);
+      filteredArgs.push(resolveCliPathArg(normalizedArgs[index + 1], {
         startDir,
         packageRoot,
-      });
+      }));
       index += 1;
       continue;
     }
     if (arg.startsWith("--config=")) {
       const value = arg.slice("--config=".length);
-      normalizedArgs[index] = `--config=${resolveCliPathArg(value, { startDir, packageRoot })}`;
+      filteredArgs.push(`--config=${resolveCliPathArg(value, { startDir, packageRoot })}`);
+      continue;
     }
+    filteredArgs.push(arg);
   }
-  return normalizedArgs;
+  return filteredArgs;
 }
 
 export function runVitest(args = process.argv.slice(2), { startDir = process.cwd() } = {}) {

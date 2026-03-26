@@ -30,6 +30,7 @@ import { loadConfig } from "../config/config.mjs";
 import { sanitizeGitEnv } from "../git/git-safety.mjs";
 import { detectProjectStack } from "../workflow/project-detection.mjs";
 import { resolvePwshRuntime } from "../shell/pwsh-runtime.mjs";
+import { ensureWorktreeRuntimeSetup } from "./worktree-setup.mjs";
 
 // ── Path Setup ──────────────────────────────────────────────────────────────
 
@@ -52,6 +53,7 @@ const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
 const TAG = "[worktree-manager]";
 const DEFAULT_BASE_DIR = ".cache/worktrees";
+const DEFAULT_MANAGED_TASK_BASE_DIR = ".bosun/worktrees";
 const REGISTRY_FILE = resolve(__dirname, "..", "logs", "worktree-registry.json");
 const MAX_WORKTREE_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 const COPILOT_WORKTREE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days (existing policy)
@@ -64,6 +66,7 @@ const DEFAULT_WORKTREE_BOOTSTRAP = Object.freeze({
   enabled: true,
   linkSharedPaths: true,
   commandTimeoutMs: 10 * 60 * 1000,
+  setupScript: "",
   commandsByStack: Object.freeze({}),
   sharedPathsByStack: Object.freeze({}),
 });
@@ -141,6 +144,13 @@ function sanitizeBranchName(branch) {
   while (safe.startsWith(".")) safe = safe.slice(1);
   while (safe.endsWith(".")) safe = safe.slice(0, -1);
   return safe.slice(0, 60); // Windows MAX_PATH is 260, worktree base path ~60, leaves ~140 for this + git overhead
+}
+
+function deriveManagedTaskToken(taskKey) {
+  return String(taskKey || "task")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .slice(0, 12)
+    || "task";
 }
 
 function normalizeStringList(value) {
@@ -242,6 +252,10 @@ function resolveDefaultBootstrapCommand(stack, worktreePath) {
 function buildBootstrapPlan(worktreePath, policy, detection, repoRoot) {
   const sharedPaths = [];
   const commands = [];
+  const setupScript = String(policy?.setupScript || "").trim();
+  if (setupScript) {
+    commands.push(setupScript);
+  }
   for (const stack of detection?.stacks || []) {
     const stackSharedPaths = policy?.linkSharedPaths
       ? resolveWorktreeSharedPaths(policy, stack.id)
@@ -595,6 +609,8 @@ class WorktreeManager {
   }
 
   bootstrapWorktree(worktreePath, record = null) {
+    ensureWorktreeRuntimeSetup(this.repoRoot, worktreePath);
+
     const policy = this.getWorktreeBootstrapConfig();
     if (!policy?.enabled) return;
     const detection = detectProjectStack(worktreePath);
@@ -1098,20 +1114,24 @@ class WorktreeManager {
       }
     }
 
-    // Step 3d: scan .cache/worktrees/ for orphan dirs not tracked by git
+    // Step 3d: scan managed worktree roots for orphan dirs not tracked by git
     try {
-      const cacheDir = resolve(this.repoRoot, DEFAULT_BASE_DIR);
-      if (existsSync(cacheDir)) {
-        const gitPaths = new Set(allWorktrees.map((wt) => resolve(wt.path)));
-        const entries = readdirSync(cacheDir, { withFileTypes: true });
+      const gitPaths = new Set(allWorktrees.map((wt) => resolve(wt.path)));
+      for (const { relativeDir, label } of [
+        { relativeDir: DEFAULT_BASE_DIR, label: "cache" },
+        { relativeDir: DEFAULT_MANAGED_TASK_BASE_DIR, label: "managed task" },
+      ]) {
+        const baseDir = resolve(this.repoRoot, relativeDir);
+        if (!existsSync(baseDir)) continue;
+        const entries = readdirSync(baseDir, { withFileTypes: true });
         for (const entry of entries) {
           if (!entry.isDirectory()) continue;
-          const dirPath = resolve(cacheDir, entry.name);
+          const dirPath = resolve(baseDir, entry.name);
           if (gitPaths.has(dirPath)) continue;
           const ageMs = _getFilesystemAgeMs(dirPath);
           if (ageMs > MAX_WORKTREE_AGE_MS) {
             console.log(
-              `${TAG} ${dryRun ? "[dry-run] would remove" : "removing"} orphan cache dir: ${dirPath} (age=${(ageMs / 3600000).toFixed(1)}h)`,
+              `${TAG} ${dryRun ? "[dry-run] would remove" : "removing"} orphan ${label} dir: ${dirPath} (age=${(ageMs / 3600000).toFixed(1)}h)`,
             );
             if (!dryRun) {
               try {
@@ -1127,7 +1147,7 @@ class WorktreeManager {
         }
       }
     } catch (e) {
-      console.warn(`${TAG} cache dir scan failed: ${e.message}`);
+      console.warn(`${TAG} managed worktree dir scan failed: ${e.message}`);
     }
 
     // Step 4: Evict registry entries whose paths no longer exist on disk
@@ -1529,6 +1549,40 @@ function getWorktreeStats(repoRoot) {
   return getWorktreeManager(repoRoot).getStats();
 }
 
+/**
+ * Apply standard bootstrap/readiness handling to an existing worktree path.
+ * Reuses the same shared dependency linking and ecosystem bootstrap commands
+ * used for manager-created worktrees.
+ *
+ * @param {string} repoRoot
+ * @param {string} worktreePath
+ */
+function bootstrapWorktreeForPath(repoRoot, worktreePath) {
+  if (!worktreePath) return;
+  const resolvedRepoRoot = resolve(repoRoot);
+  const resolvedWorktreePath = resolve(worktreePath);
+  ensureWorktreeRuntimeSetup(resolvedRepoRoot, resolvedWorktreePath);
+  const detection = detectProjectStack(resolvedWorktreePath);
+  if (!detection?.primary) return;
+
+  const policy = {
+    ...readWorktreeBootstrapConfig(resolvedRepoRoot),
+    enabled: true,
+  };
+  const plan = buildBootstrapPlan(
+    resolvedWorktreePath,
+    policy,
+    detection,
+    resolvedRepoRoot,
+  );
+  ensureWorktreeSharedPaths(resolvedRepoRoot, resolvedWorktreePath, plan.sharedPaths);
+  for (const command of plan.commands) {
+    if (!executeWorktreeBootstrapCommand(command, resolvedWorktreePath, policy.commandTimeoutMs)) {
+      break;
+    }
+  }
+}
+
 // ── Exports ─────────────────────────────────────────────────────────────────
 
 export {
@@ -1545,13 +1599,16 @@ export {
   listActiveWorktrees,
   pruneStaleWorktrees,
   getWorktreeStats,
+  bootstrapWorktreeForPath,
   // Helpers (useful for consumers that build their own paths)
   sanitizeBranchName,
+  deriveManagedTaskToken,
   gitEnv,
   fixGitConfigCorruption,
   // Constants (allow consumers to reference)
   TAG,
   DEFAULT_BASE_DIR,
+  DEFAULT_MANAGED_TASK_BASE_DIR,
   REGISTRY_FILE,
   MAX_WORKTREE_AGE_MS,
   COPILOT_WORKTREE_MAX_AGE_MS,
