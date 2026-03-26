@@ -854,7 +854,7 @@ function _buildEnv(ctx) {
 function _getShellOptions() {
   if (IS_WINDOWS) {
     return {
-      shell: false,
+      shell: WINDOWS_SHELL,
       windowsHide: true,
     };
   }
@@ -866,12 +866,38 @@ function _getShellOptions() {
 }
 
 function _getSpawnCommand(command) {
-  if (!IS_WINDOWS) {
-    return { file: command, args: [] };
+  const trimmed = String(command ?? "").trim();
+
+  if (IS_WINDOWS) {
+    const lower = trimmed.toLowerCase();
+    if (lower.startsWith("powershell ") || lower.startsWith("powershell.exe ")) {
+      const inlineCommand = trimmed
+        .replace(/^powershell(?:\.exe)?\s+-NoProfile\s+-Command\s+/i, "")
+        .replace(/^powershell(?:\.exe)?\s+-Command\s+/i, "")
+        .replace(/^"|"$/g, "");
+      return {
+        file: "powershell.exe",
+        args: ["-NoProfile", "-Command", inlineCommand],
+      };
+    }
+    if (lower.startsWith("cmd ") || lower.startsWith("cmd.exe ")) {
+      const inlineCommand = trimmed
+        .replace(/^cmd(?:\.exe)?\s+\/d\s+\/s\s+\/c\s+/i, "")
+        .replace(/^cmd(?:\.exe)?\s+\/c\s+/i, "");
+      return {
+        file: WINDOWS_SHELL,
+        args: ["/d", "/s", "/c", inlineCommand],
+      };
+    }
+    return {
+      file: WINDOWS_SHELL,
+      args: ["/d", "/s", "/c", trimmed],
+    };
   }
+
   return {
-    file: WINDOWS_SHELL,
-    args: ["/d", "/s", "/c", command],
+    file: "/bin/sh",
+    args: ["-c", trimmed],
   };
 }
 
@@ -926,12 +952,14 @@ function _executeHookSync(hook, ctx, env) {
     };
 
     try {
-      const result = spawnSync(hook.command, {
+      const spawnTarget = _getSpawnCommand(hook.command);
+      const result = spawnSync(spawnTarget.file, spawnTarget.args, {
         cwd,
         env: hookEnv,
         encoding: "utf8",
         timeout,
-        ..._getShellOptions(),
+        shell: false,
+        windowsHide: true,
         maxBuffer: MAX_OUTPUT_BYTES,
       });
 
@@ -1036,7 +1064,8 @@ function _executeHookAsyncOnce(hook, ctx, env, attempt) {
       child = spawn(spawnTarget.file, spawnTarget.args, {
         cwd,
         env: hookEnv,
-        ..._getShellOptions(),
+        shell: false,
+        windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (err) {
@@ -1286,3 +1315,10 @@ export function registerLibraryHooks(hooksByEvent) {
   }
   return { registered, skipped };
 }
+
+
+
+
+
+
+

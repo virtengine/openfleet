@@ -79,12 +79,12 @@ export function isErrorLine(line, errorPatterns, errorNoisePatterns) {
  * @returns {string} HTML-escaped string
  */
 export function escapeHtml(value) {
-  return String(value)
+  return String(value ?? "")
     .replace(/&/g, "&amp;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/</g, "&lt;");
 }
 
 /**

@@ -1376,9 +1376,17 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
       ? `${String(systemPrompt).trim()}\n\n---\n\n${prompt}`
       : prompt;
     const safePrompt = sanitizeAndBoundPrompt(`${anchoredPrompt}${TOOL_OUTPUT_GUARDRAIL}`);
-    const turn = await thread.runStreamed(safePrompt, {
-      signal: controller.signal,
-    });
+    const turn = await Promise.race([
+      thread.runStreamed(safePrompt, {
+        signal: controller.signal,
+      }),
+      new Promise((_, reject) => {
+        hardTimer = setTimeout(
+          () => reject(new Error("hard_timeout")),
+          clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "codex-hard-timeout"),
+        );
+      }),
+    ]);
 
     let finalResponse = "";
     const allItems = [];
@@ -1387,6 +1395,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
     // The soft timeout fires controller.abort() which the SDK should honor.
     // The hard timeout is a safety net in case the SDK iterator ignores the abort.
     const hardTimeoutPromise = new Promise((_, reject) => {
+      if (hardTimer) return;
       hardTimer = setTimeout(
         () => reject(new Error("hard_timeout")),
         clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "codex-hard-timeout"),
@@ -3306,14 +3315,23 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
 
   try {
     const safePrompt = sanitizeAndBoundPrompt(prompt);
-    const turn = await thread.runStreamed(safePrompt, {
-      signal: controller.signal,
-    });
+    const turn = await Promise.race([
+      thread.runStreamed(safePrompt, {
+        signal: controller.signal,
+      }),
+      new Promise((_, reject) => {
+        hardTimer = setTimeout(
+          () => reject(new Error("hard_timeout")),
+          clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "codex-resume-hard-timeout"),
+        );
+      }),
+    ]);
     let finalResponse = "";
     const allItems = [];
 
     // Hard timeout safety net (same as launchCodexThread)
     const hardTimeoutPromise = new Promise((_, reject) => {
+      if (hardTimer) return;
       hardTimer = setTimeout(
         () => reject(new Error("hard_timeout")),
         clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "codex-resume-hard-timeout"),
