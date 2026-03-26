@@ -559,6 +559,54 @@ describe("ui-server mini app", () => {
     }
   });
 
+  it("treats BOSUN_UI_AUTO_OPEN_BROWSER as an auto-open opt-in when no explicit mode is set", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_UI_AUTO_OPEN_BROWSER = "1";
+    delete process.env.BOSUN_UI_BROWSER_OPEN_MODE;
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const mod = await import("../server/ui-server.mjs");
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      expect(server).toBeTruthy();
+      const startupLog = logSpy.mock.calls
+        .map((args) => String(args[0] || ""))
+        .find((line) => line.includes("[telegram-ui] startup config:")) || "";
+      expect(startupLog).toContain("browserOpenMode=auto");
+      expect(startupLog).toContain("autoOpen=enabled");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("reports running monitor and server components from /healthz during monitor-mode portal startup", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.TELEGRAM_MINIAPP_ENABLED = "1";
+    process.env.TELEGRAM_UI_PORT = "0";
+    process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "1";
+
+    const bot = await import("../telegram/telegram-bot.mjs");
+    const serverMod = await import("../server/ui-server.mjs");
+    try {
+      await bot.startTelegramBot({ suppressPortalAutoOpen: true });
+      const baseUrl = String(serverMod.getTelegramUiUrl() || "").trim();
+      expect(baseUrl).toBeTruthy();
+      const response = await fetch(`${baseUrl}/healthz`);
+      const payload = await response.json();
+      expect(response.status).toBe(200);
+      expect(payload.status).toBe("ok");
+      expect(payload.server).toBe("running");
+      expect(payload.monitor).toBe("running");
+    } finally {
+      bot.stopTelegramBot();
+    }
+  });
+
   it("returns effective settings values and sources for derived/default cases", async () => {
     delete process.env.TELEGRAM_MINIAPP_ENABLED;
     process.env.TELEGRAM_UI_PORT = "4400";

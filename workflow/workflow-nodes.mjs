@@ -96,6 +96,7 @@ const WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT = (() => {
   return Math.max(20, Math.min(500, Math.trunc(raw)));
 })();
 const BOSUN_ATTACHED_PR_LABEL = "bosun-attached";
+const BOSUN_CREATED_PR_LABEL = "bosun-pr-bosun-created";
 const BOSUN_CREATED_PR_MARKER = "<!-- bosun-created -->";
 const markdownSafetyPolicyCache = new Map();
 
@@ -5317,8 +5318,7 @@ registerBuiltinNodeType("action.create_pr", {
   },
   async execute(node, ctx, engine) {
     const title = ctx.resolve(node.config?.title || "");
-    const body = ctx.resolve(node.config?.body || "");
-    const resolvedBody = appendBosunCreatedPrFooter(body);
+    const body = appendBosunCreatedPrFooter(ctx.resolve(node.config?.body || ""));
     const baseInput = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
     let base = String(baseInput || "main").trim() || "main";
     try {
@@ -5352,6 +5352,7 @@ registerBuiltinNodeType("action.create_pr", {
     const labels = Array.from(new Set([
       ...toList(ctx.resolve(node.config?.labels || "")),
       BOSUN_ATTACHED_PR_LABEL,
+      BOSUN_CREATED_PR_LABEL,
     ]));
     const reviewers = toList(ctx.resolve(node.config?.reviewers || ""));
 
@@ -5504,7 +5505,7 @@ registerBuiltinNodeType("action.create_pr", {
     if (repoSlug) args.push("--repo", repoSlug);
     args.push("--title", JSON.stringify(title));
     // gh pr create requires either --body (empty is allowed) or --fill* in non-interactive mode.
-    args.push("--body", JSON.stringify(String(resolvedBody)));
+    args.push("--body", JSON.stringify(String(body)));
     if (base) args.push("--base", base);
     if (branch) args.push("--head", branch);
     if (draft) args.push("--draft");
@@ -5524,7 +5525,7 @@ registerBuiltinNodeType("action.create_pr", {
         action: "pr_handoff",
         message: "gh CLI skipped in test runtime; Bosun manages pull-request lifecycle.",
         title,
-        body: resolvedBody,
+        body,
         base,
         branch: branch || null,
         draft,
@@ -5559,6 +5560,7 @@ registerBuiltinNodeType("action.create_pr", {
         prNumber,
         repoSlug: repoSlug || null,
         title,
+        body,
         base,
         branch: branch || null,
         draft,
@@ -5630,7 +5632,7 @@ registerBuiltinNodeType("action.create_pr", {
         action: "pr_handoff",
         message: "gh CLI failed; Bosun manages pull-request lifecycle.",
         title,
-        body: resolvedBody,
+        body,
         base,
         branch: branch || null,
         draft,
@@ -15303,7 +15305,6 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
-
 
 
 

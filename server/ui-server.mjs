@@ -285,6 +285,7 @@ import {
   persistCompatibleTuiAuthToken,
   resolveTuiAuthToken,
 } from "../infra/tui-bridge.mjs";
+import { setComponentStatus } from "../infra/health-status.mjs";
 
 const TASK_STORE_MODULE_PATH = "../task/task-store.mjs";
 const TASK_STORE_START_GUARD_EXPORTS = [
@@ -5318,10 +5319,14 @@ function getAutoOpenCooldownMs() {
 }
 
 function getBrowserOpenMode() {
-  const mode = String(process.env.BOSUN_UI_BROWSER_OPEN_MODE || "manual")
+  const mode = String(process.env.BOSUN_UI_BROWSER_OPEN_MODE || "")
     .trim()
     .toLowerCase();
   if (mode === "auto") return "auto";
+  if (mode === "manual") return "manual";
+  if (parseBooleanEnv(process.env.BOSUN_UI_AUTO_OPEN_BROWSER, false)) {
+    return "auto";
+  }
   return "manual";
 }
 
@@ -23360,6 +23365,7 @@ export async function startTelegramUiServer(options = {}) {
     startedAt: Date.now(),
   });
   persistLastUiPort(actualPort);
+  setComponentStatus("server", "running");
   console.log(`[telegram-ui] server listening on ${uiServerUrl}`);
   if (uiServerTls) {
     console.log(`[telegram-ui] TLS enabled (self-signed) — Telegram WebApp buttons will use HTTPS`);
@@ -23450,25 +23456,25 @@ export async function startTelegramUiServer(options = {}) {
   if (loopbackOnly) {
     firewallState = null;
   } else {
-    // Skip firewall probing for localhost-only servers to avoid a slow LAN self-connect.
-    firewallState = await checkFirewall(actualPort);
-    if (firewallState) {
-      if (firewallState.blocked) {
-        console.warn(
-          `[telegram-ui] :alert:  Port ${actualPort}/tcp appears BLOCKED by ${firewallState.firewall} for LAN access.`,
-        );
-        console.warn(
-          `[telegram-ui] To fix, run: ${firewallState.allowCmd}`,
-        );
-      } else {
-        console.log(`[telegram-ui] Firewall (${firewallState.firewall}): port ${actualPort}/tcp is allowed`);
+    const activeServer = uiServer;
+    void (async () => {
+      firewallState = await checkFirewall(actualPort);
+      if (uiServer !== activeServer) return;
+      if (firewallState) {
+        if (firewallState.blocked) {
+          console.warn(
+            `[telegram-ui] :alert:  Port ${actualPort}/tcp appears BLOCKED by ${firewallState.firewall} for LAN access.`,
+          );
+          console.warn(
+            `[telegram-ui] To fix, run: ${firewallState.allowCmd}`,
+          );
+        } else {
+          console.log(`[telegram-ui] Firewall (${firewallState.firewall}): port ${actualPort}/tcp is allowed`);
+        }
       }
-    }
-  }
 
-    // Start cloudflared tunnel for trusted TLS (Telegram Mini App requires valid cert)
-    const tUrl = await startTunnel(actualPort);
-    if (tUrl) {
+      const tUrl = await startTunnel(actualPort);
+      if (uiServer !== activeServer || !tUrl) return;
       console.log(`[telegram-ui] Telegram Mini App URL: ${tUrl}`);
       if (firewallState?.blocked) {
         console.log(
@@ -23476,13 +23482,17 @@ export async function startTelegramUiServer(options = {}) {
           `LAN browser access still requires port ${actualPort}/tcp to be open.`,
         );
       }
-    }
+    })().catch((err) => {
+      console.warn(`[telegram-ui] post-bind network checks failed: ${err.message}`);
+    });
+  }
 
   return uiServer;
 }
 
 export function stopTelegramUiServer() {
   if (!uiServer) return;
+  setComponentStatus("server", "stopped");
   stopTunnel();
   stopWsHeartbeat();
   _activeSessions = [];

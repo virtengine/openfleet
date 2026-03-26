@@ -209,8 +209,8 @@ export const TASK_BATCH_PR_TEMPLATE = {
               taskId: t.id,
               taskTitle: t.title || t.id,
               branch: t.branch || t.metadata?.branch || null,
-              repository: t.repository || null,
-              workspace: t.workspace || null,
+              repository: typeof t?.repository === "string" ? t.repository.trim() : null,
+              workspace: typeof t?.workspace === "string" ? t.workspace.trim() : null,
             }))));
           })
           .catch(e => { console.error(e.message); process.exit(1); });

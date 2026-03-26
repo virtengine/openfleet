@@ -16,13 +16,16 @@ describe("GitHub PR trust regressions", () => {
 
     expect(attachWorkflow).toContain("const classLabels = {");
     expect(attachWorkflow).toContain("const attachMode = [\"all\", \"trusted-only\", \"disabled\"].includes(attachModeRaw)");
+    expect(attachWorkflow).toContain("const labelNames = (pr.labels || [])");
+    expect(attachWorkflow).toContain("const isBosunCreated = labelNames.includes(classLabels.bosun);");
     expect(attachWorkflow).toContain("const shouldAttach = isBosunCreated || attachMode === \"all\" || (attachMode === \"trusted-only\" && isTrustedAuthor);");
     expect(attachWorkflow).toContain("bosun-pr-bosun-created");
     expect(attachWorkflow).toContain("bosun-pr-trusted-author");
     expect(attachWorkflow).toContain("bosun-pr-public");
     expect(attachWorkflow).toContain("Bosun PR classification:");
 
-    expect(ciSignalWorkflow).toContain("const createdMarker = \"<!-- bosun-created -->\";");
+    expect(ciSignalWorkflow).toContain("const bosunCreatedLabel = \"bosun-pr-bosun-created\";");
+    expect(ciSignalWorkflow).toContain("const isBosunCreated = labels.includes(bosunCreatedLabel);");
     expect(ciSignalWorkflow).toContain("const trustedAuthors = new Set(normalizeList(prAutomation.trustedAuthors));");
     expect(ciSignalWorkflow).toContain("const canSignalFix = isBosunCreated || (allowTrustedFixes && isTrustedAuthor);");
     expect(ciSignalWorkflow).toContain("const isBosunCreated =");

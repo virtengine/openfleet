@@ -26,7 +26,7 @@ jobs:
             const prNumber = Number(pullRequests[0]?.number || 0);
             const failureMarker = "<!-- bosun-ci-failure -->";
             const attachedLabel = "bosun-attached";
-            const createdMarker = "<!-- bosun-created -->";
+            const bosunCreatedLabel = "bosun-pr-bosun-created";
             const needsFixLabel = "bosun-needs-fix";
 
             const normalizeList = (value) => {
@@ -91,9 +91,7 @@ jobs:
               core.info(`PR #${prNumber} is not labeled '${attachedLabel}'; skipping.`);
               return;
             }
-            const prBody = String(pr.body || "");
-            const isBosunCreated =
-              prBody.includes(createdMarker) || /auto-created by bosun/i.test(prBody);
+            const isBosunCreated = labels.includes(bosunCreatedLabel);
             const bosunConfig = await loadBosunConfig(pr.head?.sha || run.head_sha || context.sha);
             const prAutomation =
               bosunConfig?.prAutomation && typeof bosunConfig.prAutomation === "object"
