@@ -4470,7 +4470,9 @@ describe("Session chaining - action.run_agent", () => {
     expect(historyEntry.delegationAuditTrail.map((entry) => entry.type)).toEqual(["assign", "handoff-complete"]);
     expect(detail.delegationAuditTrail.map((entry) => entry.type)).toEqual(["assign", "handoff-complete"]);
     expect(detail.detail.delegationAuditTrail.map((entry) => entry.type)).toEqual(["assign", "handoff-complete"]);
-  });  it("records assign and handoff delegation events for delegated agent runs", async () => {
+  });
+
+  it("records assign and handoff delegation events for delegated agent runs", async () => {
     const handler = getNodeType("action.run_agent");
     const launchEphemeralThread = vi.fn().mockResolvedValue({
       success: true,
@@ -6913,6 +6915,8 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(childSpan.attributes["bosun.workflow.parent_run_id"]).toBe(parentCtx.id);
   });
   it("records DAGState revisions and preserves completed nodes when replanning from a failed boundary", async () => {
+    // TODO: Implement regression test for DAGState replanning from a failed boundary.
+  });
   it("hydrates delegation audit trail into run detail and history read models", async () => {
     const wf = makeSimpleWorkflow(
       [
