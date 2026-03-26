@@ -15156,6 +15156,10 @@ registerBuiltinNodeType("action.push_branch", {
 
     if (!worktreePath) throw new Error("action.push_branch: worktreePath is required");
 
+    if (shouldEnforceManagedPushHook(repoRoot, worktreePath)) {
+      bootstrapWorktreeForPath(repoRoot, worktreePath);
+    }
+
     // Safety check: don't push to protected branches
     const cleanBranch = branch.replace(/^origin\//, "");
     if (protectedBranches.includes(cleanBranch)) {
