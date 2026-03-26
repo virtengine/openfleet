@@ -215,14 +215,28 @@ export function sha256File(pathLike) {
   return createHash("sha256").update(content).digest("hex");
 }
 
+function normalizeSafeGitArgs(args) {
+  if (!Array.isArray(args)) return null;
+  const normalized = args.map((arg) => String(arg || "").trim());
+  if (normalized.length === 2 && normalized[0] === "rev-parse" && normalized[1] === "HEAD") {
+    return normalized;
+  }
+  if (
+    normalized.length === 3 &&
+    normalized[0] === "rev-parse" &&
+    normalized[1] === "--abbrev-ref" &&
+    normalized[2] === "HEAD"
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
 export function safeGit(args, cwd = process.cwd()) {
   try {
-    // Block dangerous git arguments that could execute arbitrary commands
-    const blocked = ["--upload-pack", "--exec", "-c"];
-    for (const a of args) {
-      if (blocked.some((b) => String(a).startsWith(b))) return "";
-    }
-    return execFileSync("git", args, { encoding: "utf8", cwd }).trim();
+    const normalizedArgs = normalizeSafeGitArgs(args);
+    if (!normalizedArgs) return "";
+    return execFileSync("git", normalizedArgs, { encoding: "utf8", cwd }).trim();
   } catch {
     return "";
   }

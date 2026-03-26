@@ -1,8 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve, isAbsolute } from "node:path";
+import { resolve, isAbsolute, relative } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { AGENT_PROMPT_DEFINITIONS, DEFAULT_PROMPTS, PROMPT_WORKSPACE_DIR } from "./agent-prompt-catalog.mjs";
+import {
+  evaluateMarkdownSafety,
+  isDocumentationMarkdownPath,
+  recordMarkdownSafetyAuditEvent,
+  resolveMarkdownSafetyPolicy,
+} from "../lib/skill-markdown-safety.mjs";
 
 export { AGENT_PROMPT_DEFINITIONS, PROMPT_WORKSPACE_DIR };
 
@@ -48,16 +54,53 @@ function asPathCandidates(pathValue, configDir, repoRoot) {
   return candidates.filter((p, idx, arr) => p && arr.indexOf(p) === idx);
 }
 
-function readTemplateFile(candidates) {
+function readTemplateFile(candidates, options = {}) {
+  const policy = resolveMarkdownSafetyPolicy(options?.policy || options?.configData || {});
+  const blocked = [];
+
   for (const filePath of candidates) {
     if (!existsSync(filePath)) continue;
     try {
-      return { content: readFileSync(filePath, "utf8"), path: filePath };
+      const content = readFileSync(filePath, "utf8");
+      const sourcePath = options?.repoRoot
+        ? relative(options.repoRoot, filePath).replace(/\\/g, "/")
+        : filePath.replace(/\\/g, "/");
+      const decision = evaluateMarkdownSafety(
+        content,
+        {
+          channel: "agent-prompt-template",
+          sourceKind: "prompt",
+          sourcePath,
+          sourceRoot: options?.repoRoot || options?.configDir || process.cwd(),
+          documentationContext: isDocumentationMarkdownPath(sourcePath),
+        },
+        policy,
+      );
+      if (decision.blocked) {
+        blocked.push({
+          path: filePath,
+          sourcePath,
+          safety: decision.safety,
+        });
+        recordMarkdownSafetyAuditEvent(
+          {
+            channel: "agent-prompt-template",
+            sourceKind: "prompt",
+            sourcePath,
+            reasons: decision.safety.reasons,
+            score: decision.safety.score,
+            findings: decision.safety.findings,
+          },
+          { policy, rootDir: options?.repoRoot || options?.configDir || process.cwd() },
+        );
+        continue;
+      }
+      return { content, path: filePath, blocked };
     } catch {
       // Continue to next candidate.
     }
   }
-  return null;
+  return { content: "", path: null, blocked };
 }
 
 export function getAgentPromptDefinitions() {
@@ -381,6 +424,7 @@ export function resolveAgentPrompts(configDir, repoRoot, configData = {}) {
     configData && typeof configData.agentPrompts === "object"
       ? configData.agentPrompts
       : {};
+  const markdownSafetyPolicy = resolveMarkdownSafetyPolicy(configData);
 
   const prompts = {};
   const sources = {};
@@ -396,10 +440,15 @@ export function resolveAgentPrompts(configDir, repoRoot, configData = {}) {
       resolve(workspaceDir, def.filename),
     ];
 
-    const loaded = readTemplateFile(candidates);
+    const loaded = readTemplateFile(candidates, {
+      configDir,
+      repoRoot,
+      configData,
+      policy: markdownSafetyPolicy,
+    });
     prompts[def.key] = loaded?.content || fallback;
     sources[def.key] = {
-      source: loaded
+      source: loaded?.path
         ? envPath
           ? "env"
           : configuredPath
@@ -409,6 +458,13 @@ export function resolveAgentPrompts(configDir, repoRoot, configData = {}) {
       path: loaded?.path || null,
       envVar: def.envVar,
       filename: def.filename,
+      blockedSources: Array.isArray(loaded?.blocked)
+        ? loaded.blocked.map((entry) => ({
+            path: entry.sourcePath,
+            reasons: entry.safety.reasons,
+            score: entry.safety.score,
+          }))
+        : [],
     };
   }
 

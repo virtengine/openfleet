@@ -194,7 +194,6 @@ function configureRepoAndWorktrees() {
   add(REPO_ROOT);
   findTmpclaudeWorkspaces().forEach(add);
   findGitWorktrees().forEach(add);
-  findVKWorktrees().forEach(add);
 
   const workspaces = [...seen];
   let fixed = 0;
@@ -230,6 +229,5 @@ export {
   fixAllWorkspaces,
   configureRepoAndWorktrees,
   findGitWorktrees,
-  findVKWorktrees,
   findTmpclaudeWorkspaces,
 };

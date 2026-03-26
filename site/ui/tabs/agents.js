@@ -30,6 +30,11 @@ import {
   scheduleRefresh,
 } from "../modules/state.js";
 import { navigateTo } from "../modules/router.js";
+import {
+  activeWorkspaceId,
+  loadWorkspaces,
+  workspaces as managedWorkspaces,
+} from "../components/workspace-switcher.js";
 import { ICONS } from "../modules/icons.js";
 import { formatRelative, truncate } from "../modules/utils.js";
 import { resolveSessionWorkspaceHint } from "../modules/session-api.js";
@@ -1295,6 +1300,10 @@ export function AgentsTab() {
   });
   const dispatchInputRef = useRef(null);
   const workspaceTarget = agentWorkspaceTarget.value;
+  const activeWorkspace = (managedWorkspaces.value || []).find(
+    (entry) => String(entry?.id || "").trim() === String(activeWorkspaceId.value || "").trim(),
+  ) || null;
+  const activeWorkspaceExecutors = activeWorkspace?.executors || null;
 
   const filteredSlots = useMemo(() => {
     const q = fleetSearch.trim().toLowerCase();
@@ -1306,6 +1315,13 @@ export function AgentsTab() {
   }, [slots, fleetSearch]);
 
   const allSessions = sessionsData.value || [];
+  const activeSessionCount = allSessions.filter((session) => {
+    if (!session || typeof session !== "object") return false;
+    if (session.active === true) return true;
+    const status = String(session.status || session.state || "").trim().toLowerCase();
+    return ["active", "running", "busy", "working", "inprogress", "streaming"].includes(status);
+  }).length;
+  const workloadActiveCount = Math.max(activeSlots, activeSessionCount);
   const filteredSessions = useMemo(() => {
     const q = sessionSearch.trim().toLowerCase();
     if (!q) return allSessions;
@@ -1366,6 +1382,10 @@ export function AgentsTab() {
     }
     agentWorkspaceTarget.value = null;
   }, [workspaceTarget, slots]);
+
+  useEffect(() => {
+    loadWorkspaces().catch(() => {});
+  }, []);
 
   useEffect(() => {
     let mq;
@@ -1450,13 +1470,13 @@ export function AgentsTab() {
   const healthLabel =
     statusCounts.error > 0
       ? "Needs Attention"
-      : activeSlots > 0
+      : workloadActiveCount > 0
         ? "Healthy"
         : "Idle";
   const healthColor =
     statusCounts.error > 0
       ? "var(--color-error)"
-      : activeSlots > 0
+      : workloadActiveCount > 0
         ? "var(--color-done)"
         : "var(--text-secondary)";
   const healthSubtext =
@@ -1464,10 +1484,18 @@ export function AgentsTab() {
       ? `${statusCounts.error} slot${statusCounts.error === 1 ? "" : "s"} reporting errors`
       : activeSlots > 0
         ? `${statusCounts.running || activeSlots} active · ${idleSlots} idle`
+        : activeSessionCount > 0
+          ? `${activeSessionCount} active session${activeSessionCount === 1 ? "" : "s"} · awaiting slot telemetry`
         : "No active workloads";
   const lastErrorSlot = slots.find((slot) => slot.lastError);
+  const workspaceHeader = activeWorkspace
+    ? `${activeWorkspace.name || activeWorkspace.id} · ${String(activeWorkspaceExecutors?.pool || "shared")} pool`
+    : "All workspaces · shared pool";
+  const workspaceHeaderDetail = activeWorkspace
+    ? `${Number(activeWorkspaceExecutors?.maxConcurrent || maxParallel || 0) || maxParallel || 0} configured slots`
+    : `${maxParallel || 0} runtime slots visible`;
   const fleetMetrics = [
-    { label: "Active", value: activeSlots },
+    { label: "Active", value: workloadActiveCount },
     { label: "Idle", value: idleSlots },
     { label: "Errors", value: statusCounts.error },
     { label: "Completed", value: totalCompleted },
@@ -1499,6 +1527,9 @@ export function AgentsTab() {
           subtitle="Capacity, health, and quick actions"
           className="fleet-overview-card"
         >
+          <div class="fleet-subtext" style=${{ marginBottom: "0.75rem" }}>
+            Workspace: ${workspaceHeader} · ${workspaceHeaderDetail}
+          </div>
           <div class="fleet-hero">
             <div class="fleet-health">
               <div class="fleet-label">Health</div>

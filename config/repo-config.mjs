@@ -456,7 +456,7 @@ export function buildRepoCodexConfig(options = {}) {
   const platform = resolveConfigPlatform(env);
 
   // ── Sandbox mode ──
-  parts.push(buildSandboxMode(env.CODEX_SANDBOX_MODE || undefined).trim());
+  parts.push(buildSandboxMode(env.CODEX_SANDBOX_MODE || env.CODEX_SANDBOX || undefined).trim());
   parts.push("");
 
   // ── Sandbox workspace write ──

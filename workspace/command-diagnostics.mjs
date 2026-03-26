@@ -72,6 +72,35 @@ function getDiagnosticLines(value = "") {
   return getDiagnosticSample(value).split(/\r?\n/).slice(0, MAX_SCAN_LINES);
 }
 
+function isAsciiDigit(char) {
+  return char >= "0" && char <= "9";
+}
+
+function extractTrailingIntegerBeforeIndex(value = "", endIndex = 0) {
+  const text = String(value || "");
+  let end = Math.max(0, Math.min(text.length, Number(endIndex) || 0));
+  while (end > 0 && !isAsciiDigit(text[end - 1])) end -= 1;
+  if (end <= 0) return null;
+  let start = end - 1;
+  while (start > 0 && isAsciiDigit(text[start - 1])) start -= 1;
+  const parsed = Number(text.slice(start, end));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function extractVulnerabilityCount(text = "") {
+  for (const line of getDiagnosticLines(text)) {
+    const normalized = String(line || "");
+    const lower = normalized.toLowerCase();
+    let idx = lower.indexOf("vulnerabilit");
+    while (idx !== -1) {
+      const count = extractTrailingIntegerBeforeIndex(normalized, idx);
+      if (Number.isFinite(count)) return count;
+      idx = lower.indexOf("vulnerabilit", idx + 1);
+    }
+  }
+  return 0;
+}
+
 function trimTokenEdge(token = "") {
   let start = 0;
   let end = token.length;
@@ -308,9 +337,7 @@ function parseGitOutput(text, runner, commandLine) {
 
 function parsePackageManagerOutput(text, commandLine) {
   const deprecatedCount = countRegex(text, /\bdeprecated\b/gi);
-  const vulnerabilityMatch = text.match(/found\s+(\d+)\s+vulnerabilit(?:y|ies)/i)
-    || text.match(/(\d+)\s+vulnerabilit(?:y|ies)/i);
-  const vulnerabilityCount = vulnerabilityMatch ? Number(vulnerabilityMatch[1]) : 0;
+  const vulnerabilityCount = extractVulnerabilityCount(text);
   const packageTokens = [];
   for (const line of getDiagnosticLines(text)) {
     for (const match of String(line).matchAll(/\b(@?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)?)@([~^]?[0-9][A-Za-z0-9+_.-]*)\b/g)) {

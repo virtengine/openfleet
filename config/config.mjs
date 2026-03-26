@@ -34,6 +34,8 @@ import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import { CONFIG_FILES } from "./config-file-names.mjs";
 import { ExecutorScheduler, loadExecutorConfig } from "./executor-config.mjs";
 import { normalizePipelineWorkflows } from "../workflow/pipeline-workflows.mjs";
+import { getOAuthUserLogin } from "../github/github-app-auth.mjs";
+import { resolveMarkdownSafetyPolicy } from "../lib/skill-markdown-safety.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -103,6 +105,45 @@ function isWslInteropRuntime() {
         .trim()
         .startsWith("/home/")),
   );
+}
+
+function parseListEntries(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry || "").trim()).filter(Boolean);
+  }
+  return String(value || "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function parseListSetting(value) {
+  return parseListEntries(value);
+}
+
+export function resolveTrustedAuthorList(value, options = {}) {
+  const {
+    includeOAuthTrustedAuthor = false,
+    oauthTrustedAuthor,
+  } = options;
+  const merged = [];
+  const seen = new Set();
+  const addEntry = (entry) => {
+    const normalized = String(entry || "").trim();
+    if (!normalized) return;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(normalized);
+  };
+
+  parseListEntries(value).forEach(addEntry);
+
+  if (includeOAuthTrustedAuthor) {
+    addEntry(oauthTrustedAuthor ?? getOAuthUserLogin());
+  }
+
+  return merged;
 }
 
 function resolveConfigDir(repoRoot) {
@@ -368,6 +409,20 @@ function loadConfigFile(configDir) {
   return { path: null, data: null };
 }
 
+export function readConfigDocument(repoRoot) {
+  const configDir = resolveConfigDir(repoRoot || process.cwd());
+  const configFile = loadConfigFile(configDir);
+  const configData =
+    configFile?.data && typeof configFile.data === "object"
+      ? configFile.data
+      : {};
+  return {
+    configDir,
+    configPath: configFile?.path || null,
+    configData,
+  };
+}
+
 // ── CLI arg parser ───────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
@@ -628,6 +683,9 @@ function resolveWorktreeBootstrapConfig(configData = {}) {
       1000,
       60 * 60 * 1000,
     ),
+    setupScript: String(
+      process.env.WORKTREE_BOOTSTRAP_SETUP_SCRIPT ?? raw.setupScript ?? "",
+    ).trim(),
     commandsByStack: Object.freeze(commandsByStack),
     sharedPathsByStack: freezeNestedStringListMap(raw.sharedPathsByStack),
   });
@@ -2009,6 +2067,198 @@ export function loadConfig(argv = process.argv, options = {}) {
     .map((a) => a.trim())
     .filter(Boolean);
 
+  const prAutomationData =
+    configData.prAutomation && typeof configData.prAutomation === "object"
+      ? configData.prAutomation
+      : {};
+  const prAutomation = Object.freeze({
+    attachMode: String(
+      process.env.BOSUN_PR_ATTACH_MODE ||
+        prAutomationData.attachMode ||
+        "all",
+    )
+      .trim()
+      .toLowerCase(),
+    trustedAuthors: resolveTrustedAuthorList(
+      process.env.BOSUN_PR_TRUSTED_AUTHORS ?? prAutomationData.trustedAuthors ?? [],
+      { includeOAuthTrustedAuthor: true },
+    ),
+    allowTrustedFixes: isEnvEnabled(
+      process.env.BOSUN_PR_ALLOW_TRUSTED_FIXES ?? prAutomationData.allowTrustedFixes,
+      false,
+    ),
+    allowTrustedMerges: isEnvEnabled(
+      process.env.BOSUN_PR_ALLOW_TRUSTED_MERGES ?? prAutomationData.allowTrustedMerges,
+      false,
+    ),
+    assistiveActions: Object.freeze({
+      installOnSetup: isEnvEnabled(
+        process.env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP ?? prAutomationData?.assistiveActions?.installOnSetup,
+        false,
+      ),
+    }),
+  });
+  const gatesData =
+    configData.gates && typeof configData.gates === "object"
+      ? configData.gates
+      : {};
+  const gatesPrsData =
+    gatesData.prs && typeof gatesData.prs === "object"
+      ? gatesData.prs
+      : {};
+  const gatesChecksData =
+    gatesData.checks && typeof gatesData.checks === "object"
+      ? gatesData.checks
+      : {};
+  const gatesExecutionData =
+    gatesData.execution && typeof gatesData.execution === "object"
+      ? gatesData.execution
+      : {};
+  const gatesWorktreesData =
+    gatesData.worktrees && typeof gatesData.worktrees === "object"
+      ? gatesData.worktrees
+      : {};
+  const gatesRuntimeData =
+    gatesData.runtime && typeof gatesData.runtime === "object"
+      ? gatesData.runtime
+      : {};
+  const hasExplicitWorktreeBootstrapEnabled =
+    configData.worktreeBootstrap &&
+    typeof configData.worktreeBootstrap === "object" &&
+    Object.prototype.hasOwnProperty.call(configData.worktreeBootstrap, "enabled");
+  const managedWorktreeDefault = hasExplicitWorktreeBootstrapEnabled
+    ? worktreeBootstrap.enabled
+    : true;
+  const repoVisibilityRaw = String(
+    process.env.BOSUN_GATES_REPO_VISIBILITY ||
+      gatesPrsData.repoVisibility ||
+      "unknown",
+  )
+    .trim()
+    .toLowerCase();
+  const repoVisibility = ["public", "private", "unknown"].includes(repoVisibilityRaw)
+    ? repoVisibilityRaw
+    : "unknown";
+  const automationPreferenceRaw = String(
+    process.env.BOSUN_GATES_AUTOMATION_PREFERENCE ||
+      gatesPrsData.automationPreference ||
+      (repoVisibility === "public" ? "actions-first" : "runtime-first"),
+  )
+    .trim()
+    .toLowerCase();
+  const automationPreference = ["runtime-first", "actions-first"].includes(automationPreferenceRaw)
+    ? automationPreferenceRaw
+    : (repoVisibility === "public" ? "actions-first" : "runtime-first");
+  const githubActionsBudgetRaw = String(
+    process.env.BOSUN_GATES_ACTIONS_BUDGET ||
+      gatesPrsData.githubActionsBudget ||
+      "ask-user",
+  )
+    .trim()
+    .toLowerCase();
+  const githubActionsBudget = ["ask-user", "available", "limited"].includes(githubActionsBudgetRaw)
+    ? githubActionsBudgetRaw
+    : "ask-user";
+  const checkModeRaw = String(
+    process.env.BOSUN_GATES_CHECK_MODE ||
+      gatesChecksData.mode ||
+      "all",
+  )
+    .trim()
+    .toLowerCase();
+  const checkMode = ["all", "required-only"].includes(checkModeRaw)
+    ? checkModeRaw
+    : "all";
+  const gates = Object.freeze({
+    prs: Object.freeze({
+      repoVisibility,
+      automationPreference,
+      githubActionsBudget,
+    }),
+    checks: Object.freeze({
+      mode: checkMode,
+      requiredPatterns: parseListSetting(
+        process.env.BOSUN_REQUIRED_CHECK_PATTERNS ?? gatesChecksData.requiredPatterns ?? [],
+      ),
+      optionalPatterns: parseListSetting(
+        process.env.BOSUN_OPTIONAL_CHECK_PATTERNS ?? gatesChecksData.optionalPatterns ?? [],
+      ),
+      ignorePatterns: parseListSetting(
+        process.env.BOSUN_IGNORE_CHECK_PATTERNS ?? gatesChecksData.ignorePatterns ?? [],
+      ),
+      requireAnyRequiredCheck: isEnvEnabled(
+        process.env.BOSUN_GATES_REQUIRE_ANY_REQUIRED_CHECK ?? gatesChecksData.requireAnyRequiredCheck,
+        true,
+      ),
+      treatPendingRequiredAsBlocking: isEnvEnabled(
+        process.env.BOSUN_GATES_TREAT_PENDING_REQUIRED_AS_BLOCKING ?? gatesChecksData.treatPendingRequiredAsBlocking,
+        true,
+      ),
+      treatNeutralAsPass: isEnvEnabled(
+        process.env.BOSUN_GATES_TREAT_NEUTRAL_AS_PASS ?? gatesChecksData.treatNeutralAsPass,
+        false,
+      ),
+    }),
+    execution: Object.freeze({
+      sandboxMode: String(
+        process.env.CODEX_SANDBOX ||
+          gatesExecutionData.sandboxMode ||
+          "workspace-write",
+      )
+        .trim()
+        .toLowerCase(),
+      containerIsolationEnabled: isEnvEnabled(
+        process.env.CONTAINER_ENABLED ?? gatesExecutionData.containerIsolationEnabled,
+        false,
+      ),
+      containerRuntime: String(
+        process.env.CONTAINER_RUNTIME ||
+          gatesExecutionData.containerRuntime ||
+          "auto",
+      )
+        .trim()
+        .toLowerCase(),
+      networkAccess: String(
+        process.env.BOSUN_EXECUTION_NETWORK_ACCESS ||
+          gatesExecutionData.networkAccess ||
+          "default",
+      )
+        .trim()
+        .toLowerCase(),
+    }),
+    worktrees: Object.freeze({
+      requireBootstrap: isEnvEnabled(
+        process.env.BOSUN_GATES_WORKTREE_REQUIRE_BOOTSTRAP ??
+          gatesWorktreesData.requireBootstrap,
+        managedWorktreeDefault,
+      ),
+      requireReadiness: isEnvEnabled(
+        process.env.BOSUN_GATES_WORKTREE_REQUIRE_READINESS ??
+          gatesWorktreesData.requireReadiness,
+        managedWorktreeDefault,
+      ),
+      enforcePushHook: isEnvEnabled(
+        process.env.BOSUN_GATES_WORKTREE_ENFORCE_PUSH_HOOK ??
+          gatesWorktreesData.enforcePushHook,
+        true,
+      ),
+    }),
+    runtime: Object.freeze({
+      enforceBacklog: isEnvEnabled(
+        process.env.BOSUN_GATES_ENFORCE_BACKLOG ??
+          gatesRuntimeData.enforceBacklog ??
+          configData.enforceBacklog,
+        true,
+      ),
+      agentTriggerControl: isEnvEnabled(
+        process.env.BOSUN_GATES_AGENT_TRIGGER_CONTROL ??
+          gatesRuntimeData.agentTriggerControl ??
+          configData.agentTriggerControl,
+        true,
+      ),
+    }),
+  });
+
   // ── Status file ──────────────────────────────────────────
   const cacheDir = resolve(
     repoRoot,
@@ -2037,6 +2287,7 @@ export function loadConfig(argv = process.argv, options = {}) {
   const agentPrompts = loadAgentPrompts(configDir, repoRoot, configData);
   const agentPromptSources = agentPrompts._sources || {};
   delete agentPrompts._sources;
+  const markdownSafety = resolveMarkdownSafetyPolicy(configData, { rootDir: repoRoot });
   const agentPromptCatalog = getAgentPromptDefinitions();
 
   // ── First-run detection ──────────────────────────────────
@@ -2092,20 +2343,6 @@ export function loadConfig(argv = process.argv, options = {}) {
     // Voice assistant
     voice: Object.freeze(configData.voice || {}),
 
-    // OpenTelemetry tracing
-    tracing: Object.freeze({
-      enabled:
-        typeof configData.tracing?.enabled === "boolean"
-          ? configData.tracing.enabled
-          : Boolean(configData.tracing?.endpoint || process.env.BOSUN_OTEL_ENDPOINT || ""),
-      endpoint:
-        configData.tracing?.endpoint || process.env.BOSUN_OTEL_ENDPOINT || "",
-      sampleRate:
-        Number.isFinite(Number(configData.tracing?.sampleRate))
-          ? Number(configData.tracing.sampleRate)
-          : 1.0,
-    }),
-
     // Merge Strategy
     codexAnalyzeMergeStrategy:
       codexEnabled &&
@@ -2135,8 +2372,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     telegramVerbosity,
 
     triggerSystem,
-    workflows,
-  workflowWorktreeRecoveryCooldownMin,
+    workflowWorktreeRecoveryCooldownMin,
     worktreeBootstrap,
 
     // GitHub Reconciler
@@ -2156,12 +2392,15 @@ export function loadConfig(argv = process.argv, options = {}) {
     // Branch Routing
     branchRouting,
 
+    // PR automation trust policy
+    prAutomation,
+    gates,
+
     // Fleet Coordination
     fleet,
 
     // Workflow template defaults + opt-in typed workflow entries
     workflowDefaults: Object.freeze(workflowDefaults),
-    workflows,
 
     // Paths
     statusPath,
@@ -2184,6 +2423,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     agentPrompts,
     agentPromptSources,
     agentPromptCatalog,
+    markdownSafety,
 
     // First run
     isFirstRun,

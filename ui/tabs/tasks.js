@@ -1241,6 +1241,75 @@ export async function openTaskWorkflowAgentHistory(run, deps = {}) {
   return true;
 }
 
+export function pickTaskLinkedSessionId(task) {
+  if (!task || typeof task !== "object") return "";
+  for (const value of [
+    task.sessionId,
+    task.primarySessionId,
+    task.meta?.sessionId,
+    task.meta?.primarySessionId,
+  ]) {
+    const normalized = String(value || "").trim();
+    if (normalized) return normalized;
+  }
+  const rows = getTaskCollectionValues(task, [
+    "workflowRuns",
+    "workflowHistory",
+    "workflows",
+    "runs",
+  ]);
+  for (const entry of rows) {
+    const sessionId = pickTaskWorkflowSessionId(entry);
+    if (sessionId) return sessionId;
+  }
+  return "";
+}
+
+export async function openTaskLinkedSession(task, deps = {}) {
+  const sessionId = pickTaskLinkedSessionId(task);
+  if (!sessionId) return false;
+  return openTaskWorkflowAgentHistory({ primarySessionId: sessionId }, deps);
+}
+
+function getTaskWorktreePath(task) {
+  for (const value of [
+    task?.worktreePath,
+    task?.workspacePath,
+    task?.meta?.worktreePath,
+    task?.meta?.workspacePath,
+    task?.meta?.execution?.worktreePath,
+    task?.runtimeSnapshot?.slot?.worktreePath,
+  ]) {
+    const normalized = String(value || "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+function buildVsCodeFolderUri(worktreePath, scheme = "vscode") {
+  const normalizedPath = String(worktreePath || "").trim().replace(/\\/g, "/");
+  if (!normalizedPath) return "";
+  return `${scheme}://file/${encodeURI(normalizedPath)}`;
+}
+
+export function buildTaskWorkspaceLaunchers(task) {
+  const worktreePath = getTaskWorktreePath(task);
+  if (!worktreePath) return [];
+  const launchers = [
+    {
+      id: "vscode",
+      label: "VS Code",
+      href: buildVsCodeFolderUri(worktreePath, "vscode"),
+    },
+    {
+      id: "vscode-insiders",
+      label: "VS Code Insiders",
+      href: buildVsCodeFolderUri(worktreePath, "vscode-insiders"),
+    },
+  ];
+  return launchers.filter((entry) => entry.href);
+}
+
 function buildTaskRelatedLinks(task) {
   const links = [];
   const branch =
@@ -2662,6 +2731,24 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   );
   const activeWsId = activeWorkspaceId.value || "";
   const canDispatch = Boolean(onStart && task?.id);
+  const [workspaceLauncherAnchor, setWorkspaceLauncherAnchor] = useState(null);
+  const linkedSessionId = useMemo(() => pickTaskLinkedSessionId(task), [
+    task?.id,
+    task?.sessionId,
+    task?.primarySessionId,
+    task?.meta,
+    task?.workflowRuns,
+    task?.workflowHistory,
+    task?.workflows,
+    task?.runs,
+  ]);
+  const taskWorkspaceLaunchers = useMemo(() => buildTaskWorkspaceLaunchers(task), [
+    task?.id,
+    task?.worktreePath,
+    task?.workspacePath,
+    task?.meta,
+    task?.runtimeSnapshot,
+  ]);
 
   const historyEntries = useMemo(() => buildTaskHistoryEntries(task), [
     task?.id,
@@ -2679,6 +2766,9 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.workflowHistory,
     task?.workflows,
   ]);
+  const historyTableRef = useRef(null);
+  const [historyScrollTop, setHistoryScrollTop] = useState(0);
+  const [historyViewportHeight, setHistoryViewportHeight] = useState(320);
   const HISTORY_ROW_HEIGHT = 46;
   const HISTORY_SCROLL_BUFFER = 16;
   const historyFirstVisible = Math.floor(historyScrollTop / HISTORY_ROW_HEIGHT);
@@ -2700,9 +2790,6 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   const [dryRunResults, setDryRunResults] = useState(null);
   const [fullScreen, setFullScreen] = useState(false);
   const [activeTab, setActiveTab] = useState("details");
-  const historyTableRef = useRef(null);
-  const [historyScrollTop, setHistoryScrollTop] = useState(0);
-  const [historyViewportHeight, setHistoryViewportHeight] = useState(320);
 
   const fetchExecutionPlan = useCallback((mode = "resolve") => {
     if (!task?.id) return;
@@ -2806,6 +2893,16 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       </div>
     `;
   }, [handleOpenWorkflowRun, handleOpenWorkflowAgentHistory]);
+  const handleOpenLinkedSession = useCallback(async () => {
+    try {
+      const opened = await openTaskLinkedSession(task);
+      if (!opened) {
+        showToast("No linked session recorded for this task", "warning");
+      }
+    } catch {
+      showToast("Unable to open linked session", "error");
+    }
+  }, [task]);
 
   const toggleNodeExpand = useCallback((stageIdx, nodeId) => {
     setExpandedNodes((prev) => ({ ...prev, [`${stageIdx}-${nodeId}`]: !prev[`${stageIdx}-${nodeId}`] }));
@@ -2823,6 +2920,32 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.prUrl,
     task?.meta,
   ]);
+  const primaryPrLink = useMemo(() => {
+    const withUrl = relatedLinks.find((entry) => entry?.kind === "PR" && entry?.url);
+    if (withUrl) return withUrl;
+    return relatedLinks.find((entry) => entry?.kind === "PR URL" && entry?.url) || null;
+  }, [relatedLinks]);
+  const handleOpenWorkspaceLauncherMenu = useCallback((event) => {
+    setWorkspaceLauncherAnchor(event.currentTarget);
+  }, []);
+  const handleCloseWorkspaceLauncherMenu = useCallback(() => {
+    setWorkspaceLauncherAnchor(null);
+  }, []);
+  const handleCopyWorktreePath = useCallback(async () => {
+    const worktreePath = getTaskWorktreePath(task);
+    if (!worktreePath) {
+      showToast("No worktree path recorded for this task", "warning");
+      return;
+    }
+    try {
+      await globalThis.navigator?.clipboard?.writeText?.(worktreePath);
+      showToast("Worktree path copied", "success");
+    } catch {
+      showToast("Unable to copy worktree path", "error");
+    } finally {
+      handleCloseWorkspaceLauncherMenu();
+    }
+  }, [handleCloseWorkspaceLauncherMenu, task]);
   const handleOpenReviewDiff = useCallback(() => {
     setActiveTab("diff");
   }, []);
@@ -3562,13 +3685,51 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             </div>
           `}
         </div>
-        <div style="display:flex;gap:6px;align-items:center;padding-top:6px;flex-shrink:0;">
+        <div style="display:flex;gap:6px;align-items:center;padding-top:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;">
           <button class="task-status-btn" data-status=${status}>
             ${(status || "todo").toUpperCase()}
           </button>
           ${canDispatch && html`
             <${Button} variant="contained" size="small" onClick=${handleStart}>
               ${iconText(":play: Dispatch")}
+            <//>
+          `}
+          ${taskWorkspaceLaunchers.length > 0 && html`
+            <${Button}
+              variant="outlined"
+              size="small"
+              component="a"
+              href=${taskWorkspaceLaunchers[0].href}
+              target="_blank"
+              rel="noopener noreferrer"
+              title=${getTaskWorktreePath(task)}
+            >
+              VS Code
+            <//>
+            <${IconButton}
+              size="small"
+              className="task-action-icon-btn"
+              onClick=${handleOpenWorkspaceLauncherMenu}
+              title="Open worktree in editor"
+            >
+              ${resolveIcon("chevronDown") || "▾"}
+            <//>
+          `}
+          ${primaryPrLink?.url && html`
+            <${Button}
+              variant="outlined"
+              size="small"
+              component="a"
+              href=${primaryPrLink.url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              ${primaryPrLink.value || "PR"}
+            <//>
+          `}
+          ${linkedSessionId && html`
+            <${Button} variant="outlined" size="small" onClick=${handleOpenLinkedSession}>
+              Session
             <//>
           `}
           <button class="task-action-icon-btn"
@@ -3578,6 +3739,27 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
           </button>
         </div>
       </div>
+      ${taskWorkspaceLaunchers.length > 0 && html`
+        <${MuiMenu}
+          anchorEl=${workspaceLauncherAnchor}
+          open=${Boolean(workspaceLauncherAnchor)}
+          onClose=${handleCloseWorkspaceLauncherMenu}
+        >
+          ${taskWorkspaceLaunchers.map((launcher) => html`
+            <${MenuItem}
+              key=${launcher.id}
+              component="a"
+              href=${launcher.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick=${handleCloseWorkspaceLauncherMenu}
+            >
+              ${launcher.label}
+            <//>
+          `)}
+          <${MenuItem} onClick=${handleCopyWorktreePath}>Copy Worktree Path<//>
+        <//>
+      `}
 
       ${/* ── Tab Bar (Jira style) ── */ ""}
       <div class="task-tab-bar">
@@ -4732,7 +4914,11 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             <div class="task-comment-meta">
               Compare the task branch or linked session against its recorded base so completed PRs stay reviewable from the task itself.
             </div>
-            <${DiffViewer} taskId=${task?.id || ""} title=${task?.title || "Task Diff"} />
+            <${DiffViewer}
+              taskId=${task?.id || ""}
+              title=${task?.title || "Task Diff"}
+              taskSnapshot=${task || null}
+            />
           </div>
         </div>
       `}
@@ -7967,10 +8153,6 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     <//>
   `;
 }
-
-
-
-
 
 
 

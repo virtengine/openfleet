@@ -241,6 +241,59 @@ describe("ui-server mini app", () => {
       rmSync(tmpStatusDir, { recursive: true, force: true });
     }
   });
+
+  it("backfills recovery-only worktrees into /api/worktrees when no live registry entry exists", async () => {
+    const tmpStatusDir = mkdtempSync(join(tmpdir(), "ui-worktree-recovery-backfill-"));
+    const statusPath = join(tmpStatusDir, "custom-status.json");
+    process.env.STATUS_FILE = statusPath;
+    writeFileSync(statusPath, JSON.stringify({
+      worktreeRecovery: {
+        health: "recovered",
+        failureStreak: 0,
+        recentEvents: [{
+          outcome: "recreated",
+          reason: "poisoned_worktree",
+          branch: "task/recovered-worktree",
+          taskId: "task-recovered-1",
+          worktreePath: join(tmpStatusDir, "worktrees", "task-recovered-1"),
+          timestamp: "2026-03-22T01:02:03.000Z",
+        }],
+      },
+    }, null, 2));
+
+    try {
+      const mod = await import("../server/ui-server.mjs");
+      mod.injectUiDependencies({
+        getInternalExecutor: () => ({
+          getStatus: () => ({ maxParallel: 2, activeSlots: 0, slots: [] }),
+          isPaused: () => false,
+        }),
+      });
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const worktrees = await fetch(`http://127.0.0.1:${port}/api/worktrees`).then((r) => r.json());
+      expect(worktrees.ok).toBe(true);
+      expect(worktrees.stats.liveTotal).toBe(0);
+      expect(worktrees.stats.recoveryLinked).toBe(1);
+      expect(worktrees.data).toContainEqual(
+        expect.objectContaining({
+          branch: "task/recovered-worktree",
+          taskKey: "task-recovered-1",
+          status: "recovered",
+          source: "recovery",
+        }),
+      );
+    } finally {
+      rmSync(tmpStatusDir, { recursive: true, force: true });
+    }
+  });
+
   it("getLocalLanIp returns a string", async () => {
     const mod = await import("../server/ui-server.mjs");
     const ip = mod.getLocalLanIp();
@@ -503,6 +556,54 @@ describe("ui-server mini app", () => {
       expect(browserLog).toContain("/?token=");
     } finally {
       logSpy.mockRestore();
+    }
+  });
+
+  it("treats BOSUN_UI_AUTO_OPEN_BROWSER as an auto-open opt-in when no explicit mode is set", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_UI_AUTO_OPEN_BROWSER = "1";
+    delete process.env.BOSUN_UI_BROWSER_OPEN_MODE;
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const mod = await import("../server/ui-server.mjs");
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      expect(server).toBeTruthy();
+      const startupLog = logSpy.mock.calls
+        .map((args) => String(args[0] || ""))
+        .find((line) => line.includes("[telegram-ui] startup config:")) || "";
+      expect(startupLog).toContain("browserOpenMode=auto");
+      expect(startupLog).toContain("autoOpen=enabled");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("reports running monitor and server components from /healthz during monitor-mode portal startup", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.TELEGRAM_MINIAPP_ENABLED = "1";
+    process.env.TELEGRAM_UI_PORT = "0";
+    process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "1";
+
+    const bot = await import("../telegram/telegram-bot.mjs");
+    const serverMod = await import("../server/ui-server.mjs");
+    try {
+      await bot.startTelegramBot({ suppressPortalAutoOpen: true });
+      const baseUrl = String(serverMod.getTelegramUiUrl() || "").trim();
+      expect(baseUrl).toBeTruthy();
+      const response = await fetch(`${baseUrl}/healthz`);
+      const payload = await response.json();
+      expect(response.status).toBe(200);
+      expect(payload.status).toBe("ok");
+      expect(payload.server).toBe("running");
+      expect(payload.monitor).toBe("running");
+    } finally {
+      bot.stopTelegramBot();
     }
   });
 
@@ -2338,6 +2439,10 @@ describe("ui-server mini app", () => {
           reason: "worktree_failure",
           retryAt: new Date(Date.now() + 60_000).toISOString(),
         },
+        worktreeFailure: {
+          failureKind: "branch_refresh_conflict",
+          blockedReason: "repair pending",
+        },
         note: "keep-me",
       },
     });
@@ -2356,6 +2461,7 @@ describe("ui-server mini app", () => {
     expect(task.cooldownUntil).toBeNull();
     expect(task.blockedReason).toBeNull();
     expect(task.meta?.autoRecovery).toBeUndefined();
+    expect(task.meta?.worktreeFailure).toBeUndefined();
     expect(task.meta?.note).toBe("keep-me");
     expect(resetTaskThrottleState).toHaveBeenCalledWith(taskId, {});
   });
@@ -2406,6 +2512,10 @@ describe("ui-server mini app", () => {
           reason: "worktree_failure",
           retryAt: new Date(Date.now() + 60_000).toISOString(),
         },
+        worktreeFailure: {
+          failureKind: "branch_refresh_conflict",
+          blockedReason: "repair pending",
+        },
         note: "preserve-me",
       },
     });
@@ -2429,6 +2539,7 @@ describe("ui-server mini app", () => {
     expect(task.cooldownUntil).toBeNull();
     expect(task.blockedReason).toBeNull();
     expect(task.meta?.autoRecovery).toBeUndefined();
+    expect(task.meta?.worktreeFailure).toBeUndefined();
     expect(task.meta?.note).toBe("preserve-me");
     expect(resetTaskThrottleState).toHaveBeenCalledWith("task-edit-unblock", {});
   });
@@ -2691,6 +2802,69 @@ describe("ui-server mini app", () => {
     });
     expect(detail.data.runs[0].steps[0].summary).toBe("Started codex session.");
     expect(detail.data.meta.latestRunSummary).toContain("Investigated the failure");
+  }, 20000);
+
+  it("backfills linked session ids and worktree paths from persistent task sessions", async () => {
+    const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-linked-task-session-"));
+    const worktreeDir = mkdtempSync(join(tmpdir(), "bosun-ui-linked-worktree-"));
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_HOME = isolatedDir;
+    process.env.BOSUN_DIR = isolatedDir;
+    process.env.CODEX_MONITOR_HOME = isolatedDir;
+    process.env.CODEX_MONITOR_DIR = isolatedDir;
+
+    const mod = await import("../server/ui-server.mjs");
+    const { _resetSingleton, getSessionTracker } = await import("../infra/session-tracker.mjs");
+    _resetSingleton({ persistDir: null });
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "Persistent linked session task",
+        description: "keep session links after blocking",
+        status: "todo",
+      }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+    const taskId = created.data.id;
+
+    const taskStore = await import("../task/task-store.mjs");
+    taskStore.updateTask(taskId, { status: "blocked" });
+
+    const tracker = getSessionTracker();
+    tracker.createSession({
+      id: "session-linked-task-1",
+      taskId,
+      type: "task",
+      metadata: {
+        title: "Persistent linked session task",
+        workspaceDir: worktreeDir,
+        worktreePath: worktreeDir,
+      },
+    });
+
+    const detail = await fetch(
+      `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
+    ).then((r) => r.json());
+
+    expect(detail.ok).toBe(true);
+    expect(detail.data.status).toBe("blocked");
+    expect(detail.data.sessionId).toBe("session-linked-task-1");
+    expect(detail.data.primarySessionId).toBe("session-linked-task-1");
+    expect(detail.data.worktreePath).toBe(worktreeDir);
+    expect(detail.data.meta).toMatchObject({
+      primarySessionId: "session-linked-task-1",
+      worktreePath: worktreeDir,
+    });
+    expect(detail.data.meta.linkedSessionIds).toContain("session-linked-task-1");
   }, 20000);
 
   it("preserves stored workflow session links while adding primary session ids from workflow detail", async () => {
@@ -3996,6 +4170,59 @@ describe("ui-server mini app", () => {
     }
   });
 
+  it("builds task diff payloads from a posted task snapshot and linked worktree path", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const previousRepoRoot = process.env.REPO_ROOT;
+    delete process.env.REPO_ROOT;
+
+    const repoDir = mkdtempSync(join(tmpdir(), "bosun-task-diff-"));
+    const filePath = join(repoDir, "notes.txt");
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync("git config user.email bosun@example.com", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync("git config user.name Bosun", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    writeFileSync(filePath, "line one\n", "utf8");
+    execSync("git add notes.txt", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync('git commit -m "init"', { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    writeFileSync(filePath, "line one\nline two\n", "utf8");
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const diffPayload = await fetch(`http://127.0.0.1:${port}/api/tasks/diff`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task: {
+            id: "task-diff-snapshot-1",
+            title: "Task diff snapshot",
+            worktreePath: repoDir,
+          },
+        }),
+      }).then((r) => r.json());
+
+      expect(diffPayload?.ok).toBe(true);
+      expect(diffPayload?.diff?.totalFiles).toBeGreaterThan(0);
+      expect(diffPayload?.source).toMatchObject({
+        kind: "worktree",
+        detail: repoDir,
+      });
+      expect(Array.isArray(diffPayload?.diff?.files)).toBe(true);
+      expect(diffPayload?.diff?.files[0]?.filename).toBe("notes.txt");
+    } finally {
+      if (previousRepoRoot === undefined) delete process.env.REPO_ROOT;
+      else process.env.REPO_ROOT = previousRepoRoot;
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it("reports live compaction telemetry breakdowns", async () => {
     const isolatedRepoRoot = mkdtempSync(join(tmpdir(), "bosun-ui-telemetry-"));
     const previousRepoRoot = process.env.REPO_ROOT;
@@ -4632,8 +4859,6 @@ describe("ui-server mini app", () => {
   });
 
 });
-
-
 
 
 

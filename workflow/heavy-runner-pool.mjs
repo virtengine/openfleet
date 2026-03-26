@@ -154,6 +154,93 @@ function buildArtifactPointers(stdoutPath, stderrPath, metadataPath) {
   ];
 }
 
+function isCommandWhitespace(char) {
+  return char === " " || char === "\t" || char === "\n" || char === "\r";
+}
+
+function isShellSafeSimpleToken(value) {
+  for (const char of String(value || "")) {
+    const code = char.charCodeAt(0);
+    const isDigit = code >= 48 && code <= 57;
+    const isUpper = code >= 65 && code <= 90;
+    const isLower = code >= 97 && code <= 122;
+    if (isDigit || isUpper || isLower) continue;
+    if ("_./:@%+=,-".includes(char)) continue;
+    return false;
+  }
+  return true;
+}
+
+function quoteRunnerCommandArg(value) {
+  const raw = String(value || "");
+  if (!raw) return '""';
+  if (isShellSafeSimpleToken(raw)) return raw;
+  let quoted = '"';
+  for (const char of raw) {
+    if (char === '"' || char === "\\" || char === "$" || char === "`") quoted += "\\";
+    quoted += char;
+  }
+  quoted += '"';
+  return quoted;
+}
+
+function parseRunnerCommand(command) {
+  const text = String(command || "").trim();
+  if (!text) return null;
+  const parts = [];
+  let current = "";
+  let quote = null;
+  let escapeNext = false;
+  for (const char of text) {
+    if (quote === '"') {
+      if (escapeNext) {
+        current += char;
+        escapeNext = false;
+        continue;
+      }
+      if (char === "\\") {
+        escapeNext = true;
+        continue;
+      }
+      if (char === '"') {
+        quote = null;
+        continue;
+      }
+      current += char;
+      continue;
+    }
+    if (quote === "'") {
+      if (char === "'") {
+        quote = null;
+        continue;
+      }
+      current += char;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (isCommandWhitespace(char)) {
+      if (current) {
+        parts.push(current);
+        current = "";
+      }
+      continue;
+    }
+    if ("|&;<>`".includes(char)) return null;
+    current += char;
+  }
+  if (quote || escapeNext) return null;
+  if (current) parts.push(current);
+  if (!parts.length) return null;
+  return {
+    executable: parts[0],
+    args: parts.slice(1),
+    raw: parts.map((part) => quoteRunnerCommandArg(part)).join(" "),
+  };
+}
+
 function buildBlockedResult(policy, attemptCount, message, artifactRoot) {
   const leaseId = randomUUID();
   const leaseDir = ensureLeaseDir(artifactRoot || policy.artifactDir, leaseId);
@@ -222,17 +309,20 @@ async function runLeaseAttempt({
   };
   writeLeaseMetadata(metadataPath, lease);
 
-  let launchCommand = command;
-  let launchArgs = [];
-  let useShell = true;
+  const parsedCommand = parseRunnerCommand(command);
+  if (!parsedCommand) {
+    throw new RunnerLeaseError("Runner command contains unsupported shell syntax.", { retryable: false });
+  }
+
+  let launchCommand = parsedCommand.executable;
+  let launchArgs = [...parsedCommand.args];
 
   if (runtime !== "local-process") {
     if (!Array.isArray(commandPrefix) || commandPrefix.length === 0) {
       throw new RunnerLeaseError(`No commandPrefix configured for ${runtime} runner leases.`, { retryable: attempt <= 1 });
     }
     launchCommand = commandPrefix[0];
-    launchArgs = [...commandPrefix.slice(1), command];
-    useShell = false;
+    launchArgs = [...commandPrefix.slice(1), parsedCommand.raw];
   }
 
   return await new Promise((resolveRun, rejectRun) => {
@@ -246,7 +336,7 @@ async function runLeaseAttempt({
     const child = spawn(launchCommand, launchArgs, {
       cwd,
       env: { ...process.env, ...(env || {}) },
-      shell: useShell,
+      shell: false,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });

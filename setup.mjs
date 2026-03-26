@@ -2035,6 +2035,95 @@ function normalizeSetupConfiguration({
       workflowTemplateIds,
     ),
   };
+  configJson.prAutomation = {
+    ...(configJson.prAutomation && typeof configJson.prAutomation === "object" ? configJson.prAutomation : {}),
+    assistiveActions: {
+      ...(configJson.prAutomation?.assistiveActions && typeof configJson.prAutomation.assistiveActions === "object"
+        ? configJson.prAutomation.assistiveActions
+        : {}),
+      installOnSetup: parseBooleanEnvValue(
+        env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP
+          ?? configJson.prAutomation?.assistiveActions?.installOnSetup,
+        false,
+      ),
+    },
+  };
+  const normalizedRepoVisibility = normalizeEnum(
+    env.BOSUN_GATES_REPO_VISIBILITY,
+    ["public", "private", "unknown"],
+    String(configJson.gates?.prs?.repoVisibility || "unknown").trim().toLowerCase() || "unknown",
+  );
+  const recommendedAutomationPreference = normalizedRepoVisibility === "public"
+    ? "actions-first"
+    : "runtime-first";
+  configJson.gates = {
+    ...(configJson.gates && typeof configJson.gates === "object" ? configJson.gates : {}),
+    prs: {
+      ...(configJson.gates?.prs && typeof configJson.gates.prs === "object" ? configJson.gates.prs : {}),
+      repoVisibility: normalizedRepoVisibility,
+      automationPreference: normalizeEnum(
+        env.BOSUN_GATES_AUTOMATION_PREFERENCE,
+        ["runtime-first", "actions-first"],
+        String(configJson.gates?.prs?.automationPreference || recommendedAutomationPreference).trim().toLowerCase()
+          || recommendedAutomationPreference,
+      ),
+      githubActionsBudget: normalizeEnum(
+        env.BOSUN_GATES_ACTIONS_BUDGET,
+        ["ask-user", "available", "limited"],
+        String(configJson.gates?.prs?.githubActionsBudget || "ask-user").trim().toLowerCase() || "ask-user",
+      ),
+    },
+    checks: {
+      ...(configJson.gates?.checks && typeof configJson.gates.checks === "object" ? configJson.gates.checks : {}),
+      mode: normalizeEnum(
+        env.BOSUN_GATES_CHECK_MODE,
+        ["all", "required-only"],
+        String(configJson.gates?.checks?.mode || "all").trim().toLowerCase() || "all",
+      ),
+      requiredPatterns: normalizeCsvOrArray(configJson.gates?.checks?.requiredPatterns || []),
+      optionalPatterns: normalizeCsvOrArray(configJson.gates?.checks?.optionalPatterns || []),
+      ignorePatterns: normalizeCsvOrArray(configJson.gates?.checks?.ignorePatterns || []),
+      requireAnyRequiredCheck: parseBooleanEnvValue(
+        env.BOSUN_GATES_REQUIRE_ANY_REQUIRED_CHECK ?? configJson.gates?.checks?.requireAnyRequiredCheck,
+        true,
+      ),
+      treatPendingRequiredAsBlocking: parseBooleanEnvValue(
+        env.BOSUN_GATES_TREAT_PENDING_REQUIRED_AS_BLOCKING ?? configJson.gates?.checks?.treatPendingRequiredAsBlocking,
+        true,
+      ),
+      treatNeutralAsPass: parseBooleanEnvValue(
+        env.BOSUN_GATES_TREAT_NEUTRAL_AS_PASS ?? configJson.gates?.checks?.treatNeutralAsPass,
+        false,
+      ),
+    },
+    execution: {
+      ...(configJson.gates?.execution && typeof configJson.gates.execution === "object" ? configJson.gates.execution : {}),
+      sandboxMode: String(
+        env.CODEX_SANDBOX || configJson.gates?.execution?.sandboxMode || "workspace-write",
+      ).trim().toLowerCase(),
+      containerIsolationEnabled: parseBooleanEnvValue(
+        env.CONTAINER_ENABLED ?? configJson.gates?.execution?.containerIsolationEnabled,
+        false,
+      ),
+      containerRuntime: String(
+        env.CONTAINER_RUNTIME || configJson.gates?.execution?.containerRuntime || "auto",
+      ).trim().toLowerCase(),
+      networkAccess: String(
+        env.BOSUN_EXECUTION_NETWORK_ACCESS || configJson.gates?.execution?.networkAccess || "default",
+      ).trim().toLowerCase(),
+    },
+    runtime: {
+      ...(configJson.gates?.runtime && typeof configJson.gates.runtime === "object" ? configJson.gates.runtime : {}),
+      enforceBacklog: parseBooleanEnvValue(
+        env.BOSUN_GATES_ENFORCE_BACKLOG ?? configJson.gates?.runtime?.enforceBacklog,
+        true,
+      ),
+      agentTriggerControl: parseBooleanEnvValue(
+        env.BOSUN_GATES_AGENT_TRIGGER_CONTROL ?? configJson.gates?.runtime?.agentTriggerControl,
+        true,
+      ),
+    },
+  };
   env.EXECUTOR_MODE = normalizeEnum(
     env.EXECUTOR_MODE,
     ["internal", "hybrid"],
@@ -4322,6 +4411,26 @@ async function main() {
       ),
       true,
     );
+    env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP = toBooleanEnvString(
+      await prompt.confirm(
+        "Install optional assistive GitHub Actions into configured repos during setup?",
+        parseBooleanEnvValue(
+          env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP
+            ?? configJson.prAutomation?.assistiveActions?.installOnSetup,
+          false,
+        ),
+      ),
+      false,
+    );
+    configJson.prAutomation = {
+      ...(configJson.prAutomation && typeof configJson.prAutomation === "object" ? configJson.prAutomation : {}),
+      assistiveActions: {
+        ...(configJson.prAutomation?.assistiveActions && typeof configJson.prAutomation.assistiveActions === "object"
+          ? configJson.prAutomation.assistiveActions
+          : {}),
+        installOnSetup: parseBooleanEnvValue(env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP, false),
+      },
+    };
     const workflowOverrides = await promptForWorkflowTemplateOverrides(
       prompt,
       selectedWorkflowTemplateIds,
@@ -6274,6 +6383,59 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
   const configPath = resolve(targetDir, "bosun.config.json");
   writeFileSync(configPath, JSON.stringify(configOut, null, 2) + "\n", "utf8");
   success(`Config written to ${relative(repoRoot, configPath)}`);
+
+  const installAssistiveActions = parseBooleanEnvValue(
+    env.BOSUN_PR_ASSISTIVE_ACTIONS_INSTALL_ON_SETUP
+      ?? configJson.prAutomation?.assistiveActions?.installOnSetup,
+    false,
+  );
+
+  if (installAssistiveActions) {
+    heading("Assistive GitHub Actions");
+    const workflowSources = [
+      {
+        source: resolve(__dirname, ".github", "workflows", "bosun-pr-attach.yml"),
+        targetParts: [".github", "workflows", "bosun-pr-attach.yml"],
+      },
+      {
+        source: resolve(__dirname, ".github", "workflows", "bosun-pr-ci-signal.yml"),
+        targetParts: [".github", "workflows", "bosun-pr-ci-signal.yml"],
+      },
+    ];
+    const repoTargets = [];
+    const seenRepoTargets = new Set();
+    const addRepoTarget = (repoPath) => {
+      const fullPath = resolve(String(repoPath || ""));
+      if (!fullPath || seenRepoTargets.has(fullPath)) return;
+      if (!existsSync(fullPath) || !existsSync(resolve(fullPath, ".git"))) return;
+      seenRepoTargets.add(fullPath);
+      repoTargets.push(fullPath);
+    };
+
+    addRepoTarget(repoRoot);
+    const bosunDir = env.BOSUN_DIR || configDir || targetDir;
+    const workspaceRoot = resolve(bosunDir, "workspaces");
+    for (const workspace of Array.isArray(configOut.workspaces) ? configOut.workspaces : []) {
+      for (const repo of Array.isArray(workspace?.repos) ? workspace.repos : []) {
+        addRepoTarget(resolve(workspaceRoot, workspace.id || workspace.name || "", repo.name || ""));
+      }
+    }
+
+    for (const repoPath of repoTargets) {
+      for (const workflow of workflowSources) {
+        const targetPath = resolve(repoPath, ...workflow.targetParts);
+        if (existsSync(targetPath)) {
+          info(`Assistive workflow already present: ${relative(repoRoot, targetPath)}`);
+          continue;
+        }
+        mkdirSync(dirname(targetPath), { recursive: true });
+        writeFileSync(targetPath, readFileSync(workflow.source, "utf8"), "utf8");
+        success(`Installed assistive workflow: ${relative(repoRoot, targetPath)}`);
+      }
+    }
+  } else {
+    info("Assistive GitHub Actions left uninstalled. Bosun runtime workflows still operate without them.");
+  }
 
   // If the setup target directory differs from the package dir but a local .env
   // exists there without a config file, seed a config copy to avoid mismatches.

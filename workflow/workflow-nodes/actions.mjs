@@ -48,11 +48,17 @@ import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../../agent/agent-tool-config.mjs";
 import { getToolsPromptBlock } from "../../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../../agent/bosun-skills.mjs";
+import { readConfigDocument } from "../../config/config.mjs";
 import { getSessionTracker } from "../../infra/session-tracker.mjs";
 import { recordWorktreeRecoveryEvent } from "../../infra/worktree-recovery-state.mjs";
 import { normalizeBaseBranch } from "../../git/git-safety.mjs";
 import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../../git/git-commit-helpers.mjs";
 import { buildArchitectEditorFrame, hasRepoMapContext } from "../../lib/repo-map.mjs";
+import {
+  evaluateMarkdownSafety,
+  recordMarkdownSafetyAuditEvent,
+  resolveMarkdownSafetyPolicy,
+} from "../../lib/skill-markdown-safety.mjs";
 import {
   appendKnowledgeEntry,
   buildKnowledgeEntry,
@@ -65,6 +71,7 @@ import { fixGitConfigCorruption } from "../../workspace/worktree-manager.mjs";
 import {
   registerNodeType,
   BOSUN_ATTACHED_PR_LABEL,
+  BOSUN_CREATED_PR_LABEL,
   PORTABLE_PRUNE_AND_COUNT_WORKTREES_COMMAND,
   PORTABLE_WORKTREE_COUNT_COMMAND,
   TAG,
@@ -114,6 +121,34 @@ import {
 
 // CLAUDE:SUMMARY — workflow-nodes/actions
 // Implements built-in workflow action nodes, including task prompt assembly and execution helpers.
+const BOSUN_CREATED_PR_MARKER = "<!-- bosun-created -->";
+const markdownSafetyPolicyCache = new Map();
+
+function getRepoMarkdownSafetyPolicy(repoRoot) {
+  const normalizedRoot = resolve(repoRoot || process.cwd());
+  const cached = markdownSafetyPolicyCache.get(normalizedRoot);
+  if (cached) return cached;
+  let configData = {};
+  try {
+    ({ configData } = readConfigDocument(normalizedRoot));
+  } catch {
+    configData = {};
+  }
+  const policy = resolveMarkdownSafetyPolicy(configData);
+  markdownSafetyPolicyCache.set(normalizedRoot, policy);
+  return policy;
+}
+
+function appendBosunCreatedPrFooter(body = "") {
+  const text = String(body || "");
+  if (text.includes(BOSUN_CREATED_PR_MARKER) || /auto-created by bosun/i.test(text)) {
+    return text;
+  }
+  const trimmed = text.trimEnd();
+  const footer = `${BOSUN_CREATED_PR_MARKER}\nBosun-Origin: created`;
+  return trimmed ? `${trimmed}\n\n---\n${footer}` : footer;
+}
+
 const HTML_TEXT_BREAK_TAGS = new Set([
   "address",
   "article",
@@ -1767,6 +1802,7 @@ registerNodeType("action.create_pr", {
   async execute(node, ctx) {
     const title = ctx.resolve(node.config?.title || "");
     const body = ctx.resolve(node.config?.body || "");
+    const resolvedBody = appendBosunCreatedPrFooter(body);
     const baseInput = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
     let base = String(baseInput || "main").trim() || "main";
     try {
@@ -1788,6 +1824,7 @@ registerNodeType("action.create_pr", {
     const labels = Array.from(new Set([
       ...toList(ctx.resolve(node.config?.labels || "")),
       BOSUN_ATTACHED_PR_LABEL,
+      BOSUN_CREATED_PR_LABEL,
     ]));
     const reviewers = toList(ctx.resolve(node.config?.reviewers || ""));
     const execOptions = {
@@ -1849,7 +1886,7 @@ registerNodeType("action.create_pr", {
     const args = ["gh", "pr", "create"];
     args.push("--title", JSON.stringify(title));
     // gh pr create requires either --body (empty is allowed) or --fill* in non-interactive mode.
-    args.push("--body", JSON.stringify(String(body)));
+    args.push("--body", JSON.stringify(String(resolvedBody)));
     if (base) args.push("--base", base);
     if (branch) args.push("--head", branch);
     if (repoSlug) args.push("--repo", repoSlug);
@@ -1879,6 +1916,7 @@ registerNodeType("action.create_pr", {
         labels,
         reviewers,
         output: trimmed,
+        createdByBosun: true,
       };
     } catch (err) {
       const errorMsg = err?.stderr?.toString?.()?.trim() || err?.message || String(err);
@@ -1900,7 +1938,7 @@ registerNodeType("action.create_pr", {
         action: "pr_handoff",
         message: "gh CLI failed; Bosun manages pull-request lifecycle.",
         title,
-        body,
+        body: resolvedBody,
         base,
         branch: branch || null,
         draft,
@@ -1908,6 +1946,7 @@ registerNodeType("action.create_pr", {
         reviewers,
         cwd,
         ghError: errorMsg,
+        createdByBosun: true,
       };
     }
   },
@@ -4871,7 +4910,7 @@ registerNodeType("action.acquire_worktree", {
     }
 
     try {
-      const findAttachedWorktreeForBranch = () => {
+      const findAttachedWorktreeForBranch = async () => {
         try {
           const output = execSync("git worktree list --porcelain", {
             cwd: repoRoot,
@@ -4898,14 +4937,6 @@ registerNodeType("action.acquire_worktree", {
               currentBranch = branchRef.replace(/^refs\/heads\//, "");
             }
           }
-        try {
-          await recordWorktreeRecoveryEvent(repoRoot, payload);
-        } catch (err) {
-          ctx.log(
-            node.id,
-            `[worktree-recovery] Warning: failed to record recovery event: ${err && err.message ? err.message : String(err)}`,
-          );
-        }
         } catch {
           // best-effort only
         }
@@ -5004,7 +5035,7 @@ registerNodeType("action.acquire_worktree", {
         if (!isExistingBranchWorktreeError(createErr)) {
           throw new Error(`Worktree creation failed: ${formatExecSyncError(createErr)}`);
         }
-        const attachedPath = findAttachedWorktreeForBranch();
+        const attachedPath = await findAttachedWorktreeForBranch();
         let recreatedAttachedWorktree = false;
         if (attachedPath && existsSync(attachedPath)) {
           if (invalidateBrokenReusableWorktree(attachedPath, "attached-branch")) {
@@ -5631,6 +5662,7 @@ registerNodeType("action.build_task_prompt", {
       const searchDirs = [normalizedWorktreePath || normalizedRepoRoot, normalizedRepoRoot].filter(Boolean);
       const docFiles = ["AGENTS.md", ".github/copilot-instructions.md"];
       const loaded = new Set();
+      const markdownSafetyPolicy = getRepoMarkdownSafetyPolicy(normalizedRepoRoot);
       for (const dir of searchDirs) {
         for (const doc of docFiles) {
           const fullPath = resolve(dir, doc);
@@ -5642,6 +5674,35 @@ registerNodeType("action.build_task_prompt", {
                 doc,
               ).trim();
               if (content && content.length > 10) {
+                const decision = evaluateMarkdownSafety(
+                  content,
+                  {
+                    channel: "task-prompt-context",
+                    sourceKind: "documentation",
+                    sourcePath: doc,
+                    sourceRoot: normalizedRepoRoot,
+                    documentationContext: true,
+                  },
+                  markdownSafetyPolicy,
+                );
+                if (decision.blocked) {
+                  ctx.log(
+                    node.id,
+                    `Skipped unsafe prompt context from ${doc}: ${decision.safety.reasons.join(", ")}`,
+                  );
+                  recordMarkdownSafetyAuditEvent(
+                    {
+                      channel: "task-prompt-context",
+                      sourceKind: "documentation",
+                      sourcePath: doc,
+                      reasons: decision.safety.reasons,
+                      score: decision.safety.score,
+                      findings: decision.safety.findings,
+                    },
+                    { policy: markdownSafetyPolicy, rootDir: normalizedRepoRoot },
+                  );
+                  continue;
+                }
                 loaded.add(doc);
                 userParts.push(`## ${doc}`);
                 userParts.push(content);

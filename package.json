@@ -204,6 +204,7 @@
     "desktop/preload.mjs",
     "entrypoint.mjs",
     "lib/repo-map.mjs",
+    "lib/skill-markdown-safety.mjs",
     "git/conflict-resolver.mjs",
     "git/diff-stats.mjs",
     "git/git-commit-helpers.mjs",
@@ -351,7 +352,8 @@
     "workspace/workspace-manager.mjs",
     "workspace/workspace-monitor.mjs",
     "workspace/workspace-registry.mjs",
-    "workspace/worktree-manager.mjs"
+    "workspace/worktree-manager.mjs",
+    "workspace/worktree-setup.mjs"
   ],
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",

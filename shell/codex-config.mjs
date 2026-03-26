@@ -1433,7 +1433,7 @@ function resolveSandboxWorkspaceOptions(env) {
 function applySandboxDefaults(toml, env, result) {
   const sandboxModeResult = ensureTopLevelSandboxMode(
     toml,
-    env.CODEX_SANDBOX_MODE,
+    env.CODEX_SANDBOX_MODE || env.CODEX_SANDBOX,
   );
   let nextToml = sandboxModeResult.toml;
   if (sandboxModeResult.changed) {

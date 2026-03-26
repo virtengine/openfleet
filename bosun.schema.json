@@ -85,6 +85,10 @@
           "default": 600000,
           "description": "Maximum time to allow each bootstrap command to run inside a managed worktree."
         },
+        "setupScript": {
+          "type": "string",
+          "description": "Optional repo-specific shell command to run inside every managed worktree before stack bootstrap commands. Useful for local environment setup, SDK hook scaffolding, or repository-specific bootstrap fixes."
+        },
         "commandsByStack": {
           "type": "object",
           "additionalProperties": {
@@ -173,6 +177,241 @@
           }
         },
         "required": ["type"]
+      }
+    },
+    "prAutomation": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Trust policy for PR automation. High-risk actions default to Bosun-created PRs only; trusted human authors are opt-in.",
+      "properties": {
+        "attachMode": {
+          "type": "string",
+          "enum": ["all", "trusted-only", "disabled"],
+          "default": "all",
+          "description": "How broadly Bosun applies its low-trust attachment marker. High-risk actions remain separately gated."
+        },
+        "trustedAuthors": {
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            { "type": "string" }
+          ],
+          "description": "GitHub logins that Bosun may treat as trusted for optional non-Bosun PR automation. The currently connected GitHub OAuth login is also trusted automatically when present."
+        },
+        "allowTrustedFixes": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow Bosun to auto-repair attached PRs from trusted authors."
+        },
+        "allowTrustedMerges": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow Bosun to auto-merge attached PRs from trusted authors after the normal review and CI gates."
+        },
+        "assistiveActions": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Optional repo-local GitHub Actions that add labels and comments. Bosun works without them.",
+          "properties": {
+            "installOnSetup": {
+              "type": "boolean",
+              "default": false,
+              "description": "If true, Bosun setup may copy the assistive PR attach and CI signal workflows into configured repos."
+            }
+          }
+        }
+      }
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Unified safeguards for PR policy, CI/CD merge gates, executor isolation, and runtime safety posture.",
+      "properties": {
+        "prs": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "repoVisibility": {
+              "type": "string",
+              "enum": ["public", "private", "unknown"],
+              "default": "unknown",
+              "description": "Detected or operator-confirmed repository visibility used to recommend automation posture during setup."
+            },
+            "automationPreference": {
+              "type": "string",
+              "enum": ["runtime-first", "actions-first"],
+              "default": "runtime-first",
+              "description": "Whether Bosun should favor runtime-driven automation or heavier GitHub Actions assistance when both are available."
+            },
+            "githubActionsBudget": {
+              "type": "string",
+              "enum": ["ask-user", "available", "limited"],
+              "default": "ask-user",
+              "description": "Operator-supplied indication of whether GitHub Actions runtime is available for heavier PR automation."
+            }
+          }
+        },
+        "checks": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["all", "required-only"],
+              "default": "all",
+              "description": "When 'all', every non-ignored check is treated as blocking unless explicitly optional. When 'required-only', only checks matching requiredPatterns block merge."
+            },
+            "requiredPatterns": {
+              "oneOf": [
+                { "type": "array", "items": { "type": "string" } },
+                { "type": "string" }
+              ],
+              "description": "Check-name patterns Bosun must treat as required before merge when using required-only gating."
+            },
+            "optionalPatterns": {
+              "oneOf": [
+                { "type": "array", "items": { "type": "string" } },
+                { "type": "string" }
+              ],
+              "description": "Check-name patterns Bosun may ignore for merge blocking, even if they fail or remain absent."
+            },
+            "ignorePatterns": {
+              "oneOf": [
+                { "type": "array", "items": { "type": "string" } },
+                { "type": "string" }
+              ],
+              "description": "Check-name patterns Bosun should exclude from merge-gate evaluation entirely."
+            },
+            "requireAnyRequiredCheck": {
+              "type": "boolean",
+              "default": true,
+              "description": "If true, Bosun blocks merge when no required checks are present after filtering."
+            },
+            "treatPendingRequiredAsBlocking": {
+              "type": "boolean",
+              "default": true,
+              "description": "If true, pending required checks block merge."
+            },
+            "treatNeutralAsPass": {
+              "type": "boolean",
+              "default": false,
+              "description": "If true, neutral or skipped required checks count as passing for merge gating."
+            }
+          }
+        },
+        "execution": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "sandboxMode": {
+              "type": "string",
+              "description": "Operator-facing snapshot of the preferred executor sandbox mode."
+            },
+            "containerIsolationEnabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Whether container isolation is part of the expected safety posture."
+            },
+            "containerRuntime": {
+              "type": "string",
+              "description": "Preferred runtime for container isolation when enabled."
+            },
+            "networkAccess": {
+              "type": "string",
+              "description": "High-level network access posture for isolated execution."
+            }
+          }
+        },
+        "worktrees": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Readiness safeguards for Bosun-managed task worktrees only. These settings document whether Node-style bootstrap/readiness checks and push-hook enforcement are expected before task work proceeds.",
+          "properties": {
+            "requireBootstrap": {
+              "type": "boolean",
+              "description": "Whether Bosun-managed task worktrees should require bootstrap before execution. Defaults to explicit worktreeBootstrap.enabled when provided, otherwise true."
+            },
+            "requireReadiness": {
+              "type": "boolean",
+              "description": "Whether Bosun-managed task worktrees should require a readiness check before execution. Defaults to explicit worktreeBootstrap.enabled when provided, otherwise true."
+            },
+            "enforcePushHook": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether Bosun-managed task worktrees should enforce the repository push hook before handoff or push."
+            }
+          }
+        },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enforceBacklog": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether newly created work should be forced through backlog safeguards before direct execution."
+            },
+            "agentTriggerControl": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether agent-trigger safeguards remain enabled for untrusted or indirect sources."
+            }
+          }
+        }
+      }
+    },
+    "markdownSafety": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Safety controls for imported or runtime-ingested markdown, including allowlisted documentation exceptions and audit logging.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "When false, markdown safety blocking is disabled while audit logging configuration remains available."
+        },
+        "auditLogPath": {
+          "type": "string",
+          "description": "Relative or absolute path for JSONL audit events describing blocked markdown content."
+        },
+        "allowlist": {
+          "type": "array",
+          "description": "Optional exceptions for known-safe repositories or paths. Documentation-only exceptions should set context=documentation.",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "repo": {
+                "type": "string",
+                "description": "Repository path, slug, or identifier substring to match."
+              },
+              "repoUrl": {
+                "type": "string",
+                "description": "Repository URL substring to match."
+              },
+              "path": {
+                "type": "string",
+                "description": "Exact normalized path to allow."
+              },
+              "pathPrefix": {
+                "type": "string",
+                "description": "Leading path segment to allow."
+              },
+              "pathSuffix": {
+                "type": "string",
+                "description": "Trailing path segment or filename to allow."
+              },
+              "context": {
+                "type": "string",
+                "enum": ["any", "documentation"],
+                "default": "any"
+              },
+              "reason": {
+                "type": "string",
+                "description": "Operator note explaining why the exception is trusted."
+              }
+            }
+          }
+        }
       }
     },
     "interactiveShellEnabled": { "type": "boolean" },

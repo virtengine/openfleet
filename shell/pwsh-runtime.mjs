@@ -5,6 +5,7 @@ import { execSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BUNDLED_PWSH_PATH = resolve(__dirname, "..", ".cache", "bosun", "pwsh", "pwsh");
+const BUNDLED_PWSH_WINDOWS_PATH = `${BUNDLED_PWSH_PATH}.exe`;
 
 function commandExists(cmd) {
   try {
@@ -36,8 +37,14 @@ export function resolvePwshRuntime({ preferBundled = true } = {}) {
     return { command: configured, source: "env", exists: false };
   }
 
-  if (preferBundled && existsSync(BUNDLED_PWSH_PATH)) {
-    return { command: BUNDLED_PWSH_PATH, source: "bundled", exists: true };
+  if (preferBundled) {
+    const bundledPath =
+      process.platform === "win32" && existsSync(BUNDLED_PWSH_WINDOWS_PATH)
+        ? BUNDLED_PWSH_WINDOWS_PATH
+        : BUNDLED_PWSH_PATH;
+    if (existsSync(bundledPath)) {
+      return { command: bundledPath, source: "bundled", exists: true };
+    }
   }
 
   if (commandExists("pwsh")) {

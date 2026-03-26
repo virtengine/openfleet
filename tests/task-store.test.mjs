@@ -356,6 +356,10 @@ describe("task-store DAG organization", () => {
           reason: "worktree_failure",
           retryAt,
         },
+        worktreeFailure: {
+          failureKind: "branch_refresh_conflict",
+          blockedReason: "repair pending",
+        },
       },
     });
 
@@ -367,6 +371,7 @@ describe("task-store DAG organization", () => {
     expect(task.cooldownUntil).toBeNull();
     expect(task.blockedReason).toBeNull();
     expect(task.meta?.autoRecovery?.active).toBe(false);
+    expect(task.meta?.worktreeFailure).toBeUndefined();
   });
 
   it("clears blocked metadata in one operation when manually unblocked", async () => {
@@ -391,6 +396,10 @@ describe("task-store DAG organization", () => {
           reason: "worktree_failure",
           retryAt: new Date(Date.now() + 60_000).toISOString(),
         },
+        worktreeFailure: {
+          failureKind: "branch_refresh_conflict",
+          blockedReason: "repair pending",
+        },
         keep: "yes",
       },
     });
@@ -404,6 +413,7 @@ describe("task-store DAG organization", () => {
     expect(task.cooldownUntil).toBeNull();
     expect(task.blockedReason).toBeNull();
     expect(task.meta?.autoRecovery).toBeUndefined();
+    expect(task.meta?.worktreeFailure).toBeUndefined();
     expect(task.meta?.keep).toBe("yes");
   });
 });
@@ -685,6 +695,74 @@ describe("task-store sprint and DAG primitives", () => {
     expect(forced.ok).toBe(true);
     expect(forced.toStatus).toBe("inprogress");
     expect(ts.getTask("epic-a-task-1")?.status).toBe("inprogress");
+  });
+  
+  it("keeps PR-backed inreview tasks sticky when generic status updates try to demote them", async () => {
+    const dir = makeTempDir("task-store-sticky-review-");
+    const storePath = join(dir, "kanban-state.json");
+    
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+    
+    ts.addTask({
+      id: "review-task",
+      title: "Review task",
+      status: "inreview",
+      prNumber: 42,
+      prUrl: "https://github.com/virtengine/bosun/pull/42",
+    });
+    
+    ts.setTaskStatus("review-task", "todo", "test");
+    expect(ts.getTask("review-task")?.status).toBe("inreview");
+    
+    ts.updateTask("review-task", { status: "inprogress" });
+    expect(ts.getTask("review-task")?.status).toBe("inreview");
+    
+    ts.setTaskStatus("review-task", "done", "test");
+    expect(ts.getTask("review-task")?.status).toBe("done");
+  });
+
+  it("stores shared review incident metadata without leaving inreview", async () => {
+    const dir = makeTempDir("task-store-shared-review-meta-");
+    const storePath = join(dir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({
+      id: "shared-review-task",
+      title: "Shared review task",
+      status: "inreview",
+      prNumber: 105,
+      prUrl: "https://github.com/virtengine/bosun/pull/105",
+      meta: {},
+    });
+
+    ts.updateTask("shared-review-task", {
+      meta: {
+        reviewHealth: {
+          status: "shared_ci_failure",
+          failureScope: "shared",
+          sharedIncidentId: "virtengine/bosun:main:ci|lint",
+          failureFingerprint: "ci|lint",
+          failingJobs: ["CI", "Lint"],
+        },
+      },
+    });
+
+    const task = ts.getTask("shared-review-task");
+    expect(task?.status).toBe("inreview");
+    expect(task?.meta?.reviewHealth).toEqual(
+      expect.objectContaining({
+        status: "shared_ci_failure",
+        failureScope: "shared",
+        sharedIncidentId: "virtengine/bosun:main:ci|lint",
+        failureFingerprint: "ci|lint",
+        failingJobs: ["CI", "Lint"],
+      }),
+    );
   });
 });
 
