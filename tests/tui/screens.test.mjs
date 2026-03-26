@@ -119,6 +119,117 @@ describe("tui screen rendering", () => {
     await view.unmount();
   });
 
+  it("opens a session detail modal on enter and renders timeline, diff, and logs", async () => {
+    const bridge = createMockBridge();
+    const view = await renderInk(
+      React.createElement(AgentsScreen, {
+        wsBridge: bridge,
+        host: "127.0.0.1",
+        port: 3080,
+        sessions: sessionsFixture,
+        stats: monitorStatsFixture,
+      }),
+      { columns: 220, rows: 60 },
+    );
+
+    await waitFor(() => view.text().includes("Backoff queue (1)"));
+    await view.press("`r", 80);
+    await waitFor(() => view.text().includes("Session Detail"));
+
+    expect(view.text()).toContain("Task ID");
+    expect(view.text()).toContain("Turn Timeline");
+    expect(view.text()).toContain("Latest Diff");
+    expect(view.text()).toContain("Stdout");
+    expect(view.text()).toContain("[S]teer");
+
+    await view.unmount();
+  });
+
+  it("sends a steer message from session detail and shows confirmation", async () => {
+    const bridge = createMockBridge();
+    const view = await renderInk(
+      React.createElement(AgentsScreen, {
+        wsBridge: bridge,
+        host: "127.0.0.1",
+        port: 3080,
+        sessions: sessionsFixture,
+        stats: monitorStatsFixture,
+      }),
+      { columns: 220, rows: 60 },
+    );
+
+    await waitFor(() => view.text().includes("Backoff queue (1)"));
+    await view.press("`r", 80);
+    await waitFor(() => view.text().includes("Session Detail"));
+
+    await view.press("s", 40);
+    await waitFor(() => view.text().includes("Steer message:"));
+    await view.press("Please continue with focused logging", 50);
+    await view.press("`r", 100);
+
+    await waitFor(() => view.text().includes("Steer sent ✓"));
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/sessions/session-active-1/message?workspace=all"),
+      expect.objectContaining({ method: "POST" }),
+    );
+
+    await view.unmount();
+  });
+
+  it("scrolls the turn timeline independently inside session detail", async () => {
+    const bridge = createMockBridge();
+    const view = await renderInk(
+      React.createElement(AgentsScreen, {
+        wsBridge: bridge,
+        host: "127.0.0.1",
+        port: 3080,
+        sessions: sessionsFixture,
+        stats: monitorStatsFixture,
+      }),
+      { columns: 220, rows: 28 },
+    );
+
+    await waitFor(() => view.text().includes("Backoff queue (1)"));
+    await view.press("`r", 80);
+    await waitFor(() => view.text().includes("Session Detail"));
+
+    expect(view.text()).toContain("| 2026-03-23 00:00:00.000 |");
+    expect(view.text()).not.toContain("| 2026-03-23 00:00:17.000 |");
+
+    await view.press("\u001b[6~", 80);
+    await waitFor(() => view.text().includes("| 2026-03-23 00:00:17.000 |"));
+
+    await view.unmount();
+  });
+
+  it("streams live stdout into the right panel while detail is open", async () => {
+    const bridge = createMockBridge();
+    const view = await renderInk(
+      React.createElement(AgentsScreen, {
+        wsBridge: bridge,
+        host: "127.0.0.1",
+        port: 3080,
+        sessions: sessionsFixture,
+        stats: monitorStatsFixture,
+      }),
+      { columns: 220, rows: 60 },
+    );
+
+    await waitFor(() => view.text().includes("Backoff queue (1)"));
+    await view.press("`r", 80);
+    await waitFor(() => view.text().includes("Session Detail"));
+
+    bridge.emit("logs:stream", {
+      sessionId: "session-active-1",
+      timestamp: "2026-03-23T00:00:31.000Z",
+      stream: "stdout",
+      line: "Steer message accepted by running session",
+    });
+
+    await waitFor(() => view.text().includes("Steer message accepted by running session"));
+    await view.unmount();
+  });
+
   it("navigates app tabs with numeric key input", async () => {
     const bridge = createMockBridge();
     const view = await renderInk(
@@ -151,3 +262,5 @@ describe("tui screen rendering", () => {
     expect(bridge.disconnect).toHaveBeenCalled();
   });
 });
+
+

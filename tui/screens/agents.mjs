@@ -11,6 +11,10 @@ import {
 
 const html = htm.bind(React.createElement);
 const FIXED_TABLE_WIDTH = 2 + 8 + 12 + 8 + 10 + 12 + 14 + 7;
+const DETAIL_POLL_MS = 1000;
+const MAX_DIFF_LINES = 40;
+const MAX_LOG_LINES = 20;
+const PAGE_SCROLL = 8;
 
 function pad(text, width, align = "left") {
   const value = String(text || "");
@@ -47,6 +51,23 @@ async function fetchJson(host, port, path, init) {
   return payload;
 }
 
+function formatTimestamp(value) {
+  if (!value) return "-";
+  return String(value).replace("T", " ").replace("Z", "");
+}
+
+function formatDuration(ms) {
+  const value = Number(ms || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0s";
+  const totalSeconds = Math.round(value / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours) return `${hours}h ${minutes}m`;
+  if (minutes) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
 function summarizeDiff(diffPayload) {
   const diff = diffPayload?.diff || {};
   const files = Array.isArray(diff.files) ? diff.files : [];
@@ -57,6 +78,26 @@ function summarizeDiff(diffPayload) {
       additions: Number(file.additions || 0),
       deletions: Number(file.deletions || 0),
     })),
+    lines: collectDiffLines(diffPayload),
+  };
+}
+
+function collectDiffLines(diffPayload) {
+  const candidates = [];
+  if (typeof diffPayload?.diff?.formatted === "string") candidates.push(diffPayload.diff.formatted);
+  if (typeof diffPayload?.summary === "string" && diffPayload.summary.includes("\n")) candidates.push(diffPayload.summary);
+  const filePatches = Array.isArray(diffPayload?.diff?.files)
+    ? diffPayload.diff.files.map((file) => file.patch).filter(Boolean)
+    : [];
+  candidates.push(...filePatches);
+  const source = candidates.find((value) => String(value || "").trim()) || "";
+  const allLines = String(source).split(/\r?\n/).filter((line) => line.length);
+  if (allLines.length <= MAX_DIFF_LINES) {
+    return { omitted: 0, visible: allLines };
+  }
+  return {
+    omitted: allLines.length - MAX_DIFF_LINES,
+    visible: allLines.slice(-MAX_DIFF_LINES),
   };
 }
 
@@ -65,27 +106,161 @@ function sessionMessagesToLogLines(sessionPayload) {
     ? sessionPayload.session.messages
     : [];
   return messages.slice(-40).map((message) => {
-    const ts = String(message.timestamp || "").replace("T", " ").replace("Z", "");
+    const ts = formatTimestamp(message.timestamp);
     const role = String(message.role || message.type || "event").padEnd(10, " ");
     const content = String(message.content || "").replace(/\s+/g, " ").trim();
     return `${ts}  ${role}  ${content}`;
   });
 }
 
+function streamPayloadToLogLine(payload) {
+  if (!payload) return "";
+  const timestamp = formatTimestamp(payload.timestamp || payload.time || payload.createdAt);
+  const level = String(payload.level || payload.stream || payload.type || "log").padEnd(7, " ");
+  const message = String(
+    payload.line
+      || payload.message
+      || payload.content
+      || payload.text
+      || payload.stdout
+      || payload.stderr
+      || "",
+  ).replace(/\s+/g, " ").trim();
+  return `${timestamp}  ${level} ${message}`.trimEnd();
+}
+
+function readSession(sessionPayload) {
+  return sessionPayload?.session || sessionPayload || {};
+}
+
+function deriveTurnTimeline(sessionPayload) {
+  const session = readSession(sessionPayload);
+  const turns = Array.isArray(session.turns) ? session.turns : [];
+  if (turns.length) {
+    return turns.map((turn, index) => ({
+      key: turn.id || `turn-${index}`,
+      number: Number(turn.number || index + 1),
+      timestamp: formatTimestamp(turn.timestamp || turn.startedAt || turn.createdAt),
+      tokenDelta: Number(turn.tokenDelta || turn.tokens || turn.outputTokens || 0),
+      duration: formatDuration(turn.durationMs || turn.elapsedMs),
+      eventType: String(turn.lastToolCall || turn.eventType || turn.type || "turn"),
+    }));
+  }
+  const messages = Array.isArray(session.messages) ? session.messages : [];
+  return messages.map((message, index) => ({
+    key: `${message.timestamp || index}-${message.role || message.type || "event"}`,
+    number: index + 1,
+    timestamp: formatTimestamp(message.timestamp),
+    tokenDelta: Number(message.tokenDelta || message.tokens || 0),
+    duration: formatDuration(message.durationMs || 0),
+    eventType: String(message.lastToolCall || message.role || message.type || "event"),
+  }));
+}
+
 function detailLines(sessionPayload) {
-  const session = sessionPayload?.session || sessionPayload || {};
+  const session = readSession(sessionPayload);
+  const metadata = session.metadata || {};
+  const tokenIn = Number(session.tokensIn ?? metadata.tokensIn ?? 0);
+  const tokenOut = Number(session.tokensOut ?? metadata.tokensOut ?? 0);
+  const runtimeMs = Number(session.elapsedMs || session.runtimeMs || 0);
   return [
-    `ID        ${session.id || "-"}`,
-    `Status    ${session.status || "-"}`,
-    `Title     ${session.title || session.taskTitle || "-"}`,
-    `Type      ${session.type || "-"}`,
-    `Workspace ${session.metadata?.workspaceId || session.workspaceId || "-"}`,
-    `Path      ${session.metadata?.workspaceDir || session.workspaceDir || "-"}`,
-    `Model     ${session.metadata?.model || session.model || "-"}`,
-    `Agent     ${session.metadata?.agent || session.agent || "-"}`,
-    `Turns     ${session.turnCount || 0}`,
-    `Messages  ${Array.isArray(session.messages) ? session.messages.length : 0}`,
+    `Task ID       ${session.taskId || "-"}`,
+    `Session UUID  ${session.id || "-"}`,
+    `Model         ${metadata.model || session.model || "-"}`,
+    `Provider      ${metadata.provider || session.provider || "-"}`,
+    `Branch        ${metadata.branch || session.branch || "-"}`,
+    `Start time    ${formatTimestamp(session.createdAt || session.startedAt)}`,
+    `Total runtime ${formatDuration(runtimeMs)}`,
+    `Turn count    ${session.turnCount || deriveTurnTimeline(sessionPayload).length}`,
+    `Token split   in ${tokenIn} / out ${tokenOut}`,
   ];
+}
+
+function sliceWindow(items, offset, size) {
+  return items.slice(offset, offset + size);
+}
+
+function clampOffset(next, size, visible) {
+  return Math.max(0, Math.min(next, Math.max(0, size - visible)));
+}
+
+function SessionDetail({
+  sessionPayload,
+  diffView,
+  logLines,
+  timelineOffset,
+  visibleTimelineRows,
+  steerMode,
+  steerValue,
+  terminalColumns,
+}) {
+  const metadataLines = detailLines(sessionPayload);
+  const timeline = deriveTurnTimeline(sessionPayload);
+  const visibleTurns = sliceWindow(timeline, timelineOffset, visibleTimelineRows);
+  const rightPanel = terminalColumns >= 160;
+  const diffLines = diffView?.lines?.visible || [];
+  const omitted = Number(diffView?.lines?.omitted || 0);
+
+  return html`
+    <${Box} position="absolute" zIndex=${1} borderStyle="double" flexDirection="column" width=${terminalColumns - 2} paddingX=${1}>
+      <${Text} bold>Session Detail<//>
+      <${Box} marginTop=${1} flexDirection=${rightPanel ? "row" : "column"}>
+        <${Box} flexDirection="column" width=${rightPanel ? Math.max(90, terminalColumns - 48) : undefined}>
+          <${Text} bold>Metadata<//>
+          ${metadataLines.map((line) => html`<${Text} key=${line}>${line}<//>`) }
+
+          <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+            <${Text} bold>Turn Timeline<//>
+            <${Text} dimColor>turn | timestamp | Δtokens | duration | event<//>
+            ${visibleTurns.length
+              ? visibleTurns.map((turn) => html`
+                  <${Text} key=${turn.key}>
+                    ${pad(turn.number, 4, "right")} | ${pad(turn.timestamp, 19)} | ${pad(turn.tokenDelta, 7, "right")} | ${pad(turn.duration, 8)} | ${turn.eventType}
+                  <//>
+                `)
+              : html`<${Text} dimColor>No turns yet<//>`}
+            <${Text} dimColor>↑/↓ scroll  PgUp/PgDn jump<//>
+          <//>
+
+          <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
+            <${Text} bold>Latest Diff<//>
+            <${Text}>${diffView?.summary || "(loading diff...)"}<//>
+            ${omitted ? html`<${Text} dimColor>… ${omitted} lines omitted<//>` : null}
+            ${diffLines.length
+              ? diffLines.map((line, index) => html`
+                  <${Text}
+                    key=${`${index}-${line}`}
+                    color=${line.startsWith("+") && !line.startsWith("+++") ? "green" : line.startsWith("-") && !line.startsWith("---") ? "red" : undefined}
+                  >
+                    ${line}
+                  <//>
+                `)
+              : html`<${Text} dimColor>No diff lines available<//>`}
+          <//>
+        <//>
+
+        ${rightPanel
+          ? html`
+              <${Box} marginLeft=${1} flexDirection="column" width=${44} borderStyle="single" paddingX=${1}>
+                <${Text} bold>Stdout<//>
+                ${(logLines || []).slice(-MAX_LOG_LINES).map((line, index) => html`
+                  <${Text} key=${index} wrap="truncate-end">${line}<//>
+                `)}
+                ${!(logLines || []).length ? html`<${Text} dimColor>No stdout yet<//>` : null}
+              <//>
+            `
+          : null}
+      <//>
+      <${Box} marginTop=${1} flexDirection="column">
+        <${Text} dimColor>[S]teer  [F]orce new thread  [K]ill  [Esc] close modal<//>
+        ${steerMode
+          ? html`
+              <${Text}>Steer message: ${steerValue || ""}<//>
+            `
+          : null}
+      <//>
+    <//>
+  `;
 }
 
 export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080, sessions, stats = null }) {
@@ -93,6 +268,7 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
   const resolvedPort = wsBridge?.port || port;
   const { stdout } = useStdout();
   const liveSessionsRef = React.useRef([]);
+  const detailPollRef = React.useRef(null);
   const [entries, setEntries] = React.useState([]);
   const [retryQueue, setRetryQueue] = React.useState({ count: 0, items: [] });
   const [selectedId, setSelectedId] = React.useState("");
@@ -103,6 +279,13 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
   const [confirmKill, setConfirmKill] = React.useState(false);
   const [statusLine, setStatusLine] = React.useState("");
   const [clockMs, setClockMs] = React.useState(Date.now());
+  const [timelineOffset, setTimelineOffset] = React.useState(0);
+  const [steerMode, setSteerMode] = React.useState(false);
+  const [steerValue, setSteerValue] = React.useState("");
+
+  const terminalColumns = stdout?.columns || 120;
+  const terminalRows = stdout?.rows || 40;
+  const visibleTimelineRows = Math.max(4, Math.min(12, terminalRows - 24));
 
   const selectedSession = React.useMemo(
     () => entries.find((entry) => entry.id === selectedId)?.session || entries[0]?.session || null,
@@ -129,6 +312,24 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     });
   }, []);
 
+  const clearDetailPoll = React.useCallback(() => {
+    if (detailPollRef.current) {
+      clearInterval(detailPollRef.current);
+      detailPollRef.current = null;
+    }
+  }, []);
+
+  const closeModal = React.useCallback(() => {
+    clearDetailPoll();
+    setDetailView(null);
+    setLogLines([]);
+    setDiffView(null);
+    setConfirmKill(false);
+    setTimelineOffset(0);
+    setSteerMode(false);
+    setSteerValue("");
+  }, [clearDetailPoll]);
+
   const refreshData = React.useCallback(async () => {
     try {
       const [sessionsPayload, retryPayload] = await Promise.all([
@@ -144,7 +345,6 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     }
   }, [applyRetryQueue, applySessionSnapshot, resolvedHost, resolvedPort]);
 
-
   React.useEffect(() => {
     applySessionSnapshot(sessions, Date.now());
   }, [applySessionSnapshot, sessions]);
@@ -154,28 +354,35 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
       applyRetryQueue(stats.retryQueue);
     }
   }, [applyRetryQueue, stats]);
-  const moveSelection = React.useCallback((direction) => {
-    if (!entries.length) return;
-    const currentIndex = Math.max(0, entries.findIndex((entry) => entry.id === selectedId));
-    const nextIndex = (currentIndex + direction + entries.length) % entries.length;
-    setSelectedId(entries[nextIndex]?.id || "");
-  }, [entries, selectedId]);
 
-  const openDetail = React.useCallback(async () => {
-    if (!selectedSession) return;
-    setDetailView(detailLines(selectedSession));
-    setLogLines([]);
-    setDiffView(null);
-    setConfirmKill(false);
-  }, [selectedSession]);
+  React.useEffect(() => {
+    if (!wsBridge || typeof wsBridge.on !== "function") return undefined;
+    const off = wsBridge.on("logs:stream", (payload) => {
+      const payloadSessionId = String(payload?.sessionId || payload?.id || payload?.session?.id || "");
+      if (!detailView?.session?.id || payloadSessionId !== String(detailView.session.id)) return;
+      const line = streamPayloadToLogLine(payload);
+      if (!line) return;
+      setLogLines((current) => [...current.slice(-(MAX_LOG_LINES - 1)), line]);
+    });
+    return () => {
+      if (typeof off === "function") off();
+    };
+  }, [detailView?.session?.id, wsBridge]);
+
+  React.useEffect(() => () => clearDetailPoll(), [clearDetailPoll]);
+
+  const moveSelection = React.useCallback((delta) => {
+    if (!entries.length) return;
+    const index = entries.findIndex((entry) => entry.id === selectedSession?.id);
+    const nextIndex = index === -1 ? 0 : (index + delta + entries.length) % entries.length;
+    setSelectedId(entries[nextIndex]?.id || "");
+  }, [entries, selectedSession]);
 
   const loadLogs = React.useCallback(async () => {
     if (!selectedSession?.id) return;
     try {
       const payload = await fetchJson(resolvedHost, resolvedPort, `/api/sessions/${encodeURIComponent(selectedSession.id)}?workspace=all`);
       setLogLines(sessionMessagesToLogLines(payload));
-      setDetailView(null);
-      setDiffView(null);
       setStatusLine(`Loaded logs for ${describeSelection(selectedSession)}`);
     } catch (error) {
       setStatusLine(error.message || String(error));
@@ -187,91 +394,135 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
     try {
       const payload = await fetchJson(resolvedHost, resolvedPort, `/api/sessions/${encodeURIComponent(selectedSession.id)}/diff?workspace=all`);
       setDiffView(summarizeDiff(payload));
-      setDetailView(null);
-      setLogLines([]);
       setStatusLine(`Loaded diff for ${describeSelection(selectedSession)}`);
     } catch (error) {
       setStatusLine(error.message || String(error));
     }
   }, [resolvedHost, resolvedPort, selectedSession]);
 
-  const runAction = React.useCallback(async (action) => {
+  const loadDetail = React.useCallback(async () => {
     if (!selectedSession?.id) return;
     try {
-      await fetchJson(resolvedHost, resolvedPort, sessionActionPath(selectedSession.id, action), { method: "POST" });
-      setStatusLine(`${action} requested for ${describeSelection(selectedSession)}`);
-      setConfirmKill(false);
+      const payload = await fetchJson(resolvedHost, resolvedPort, `/api/sessions/${encodeURIComponent(selectedSession.id)}?workspace=all`);
+      setDetailView(payload);
+      setLogLines(sessionMessagesToLogLines(payload).slice(-MAX_LOG_LINES));
+      setStatusLine("");
     } catch (error) {
       setStatusLine(error.message || String(error));
     }
   }, [resolvedHost, resolvedPort, selectedSession]);
 
-  React.useEffect(() => {
-    let active = true;
-    void refreshData();
-    const intervalId = setInterval(() => {
-      const now = Date.now();
-      setClockMs(now);
-      setEntries((previous) => reconcileSessionEntries(previous, liveSessionsRef.current, now));
-    }, 1000);
-    return () => {
-      active = false;
-      clearInterval(intervalId);
-      if (!active) {
-        return;
-      }
-    };
-  }, [refreshData]);
+  const openDetail = React.useCallback(async () => {
+    if (!selectedSession?.id) return;
+    setTimelineOffset(0);
+    setDetailView({ session: selectedSession });
+    setLogLines([]);
+    setDiffView({ summary: "(loading diff...)", files: [], lines: { omitted: 0, visible: [] } });
+    await Promise.all([loadDetail(), loadDiff()]);
+    clearDetailPoll();
+    detailPollRef.current = setInterval(() => {
+      void loadDetail();
+    }, DETAIL_POLL_MS);
+  }, [clearDetailPoll, loadDetail, loadDiff, selectedSession]);
 
-  React.useEffect(() => {
-    if (!wsBridge || typeof wsBridge.on !== "function") return undefined;
-    const handlers = [
-      wsBridge.on("sessions:update", (payload) => {
-        const sessions = Array.isArray(payload?.sessions)
-          ? payload.sessions
-          : Array.isArray(payload)
-            ? payload
-            : [];
-        applySessionSnapshot(sessions, Date.now());
-      }),
-      wsBridge.on("session:event", (payload) => {
-        const session = payload?.session;
-        if (!session?.id) return;
-        const nextSessions = Array.isArray(liveSessionsRef.current)
-          ? [...liveSessionsRef.current]
-          : [];
-        const existingIndex = nextSessions.findIndex((candidate) => candidate.id === session.id);
-        if (existingIndex >= 0) nextSessions[existingIndex] = session;
-        else nextSessions.unshift(session);
-        applySessionSnapshot(nextSessions, Date.now());
+  const runAction = React.useCallback(async (action) => {
+    if (!selectedSession?.id) return;
+    try {
+      await fetchJson(resolvedHost, resolvedPort, sessionActionPath(selectedSession.id, action), { method: "POST" });
+      setStatusLine(`${action} sent to ${describeSelection(selectedSession)}`);
+      if (action === "kill") setConfirmKill(false);
+      await refreshData();
+    } catch (error) {
+      setStatusLine(error.message || String(error));
+    }
+  }, [refreshData, resolvedHost, resolvedPort, selectedSession]);
 
-        if (selectedId === session.id) {
-          setDetailView(detailLines(payload));
-          const hasMessages = Array.isArray(payload?.session?.messages);
-          const isMessageEvent = payload?.event?.kind === "message";
-          if (hasMessages || isMessageEvent) {
-            setLogLines(sessionMessagesToLogLines(payload));
-          }
-        }
-      }),
-      wsBridge.on("retry:update", applyRetryQueue),
-      wsBridge.on("retry-queue-updated", applyRetryQueue),
-    ];
-
-    return () => {
-      handlers.forEach((unsubscribe) => {
-        if (typeof unsubscribe === "function") unsubscribe();
-      });
-    };
-  }, [applyRetryQueue, applySessionSnapshot, wsBridge]);
+  const sendSteer = React.useCallback(async () => {
+    if (!selectedSession?.id || !steerValue.trim()) return;
+    try {
+      await fetchJson(
+        resolvedHost,
+        resolvedPort,
+        `/api/sessions/${encodeURIComponent(selectedSession.id)}/message?workspace=all`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message: steerValue.trim() }),
+        },
+      );
+      setStatusLine("Steer sent ✓");
+      setSteerMode(false);
+      setSteerValue("");
+      await loadDetail();
+    } catch (error) {
+      setStatusLine(error.message || String(error));
+    }
+  }, [loadDetail, resolvedHost, resolvedPort, selectedSession, steerValue]);
 
   useInput((input, key) => {
     if (confirmKill) {
       if (input === "y" || input === "Y") {
         void runAction("kill");
+      } else if (key.escape || input === "n" || input === "N" || key.return) {
+        setConfirmKill(false);
+      }
+      return;
+    }
+
+    if (steerMode) {
+      if (key.escape) {
+        setSteerMode(false);
+        setSteerValue("");
         return;
       }
-      setConfirmKill(false);
+      if (key.return) {
+        void sendSteer();
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setSteerValue((current) => current.slice(0, -1));
+        return;
+      }
+      if (input) {
+        setSteerValue((current) => current + input);
+      }
+      return;
+    }
+
+    if (detailView) {
+      const timeline = deriveTurnTimeline(detailView);
+      if (key.escape) {
+        closeModal();
+        return;
+      }
+      if (key.upArrow) {
+        setTimelineOffset((current) => clampOffset(current - 1, timeline.length, visibleTimelineRows));
+        return;
+      }
+      if (key.downArrow) {
+        setTimelineOffset((current) => clampOffset(current + 1, timeline.length, visibleTimelineRows));
+        return;
+      }
+      if (key.pageUp) {
+        setTimelineOffset((current) => clampOffset(current - PAGE_SCROLL, timeline.length, visibleTimelineRows));
+        return;
+      }
+      if (key.pageDown) {
+        setTimelineOffset((current) => clampOffset(current + PAGE_SCROLL, timeline.length, visibleTimelineRows));
+        return;
+      }
+      if (input === "s" || input === "S") {
+        setSteerMode(true);
+        setSteerValue("");
+        return;
+      }
+      if (input === "f" || input === "F") {
+        void runAction("force-new-thread");
+        return;
+      }
+      if (input === "k" || input === "K") {
+        setConfirmKill(true);
+      }
       return;
     }
 
@@ -319,15 +570,12 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
       return;
     }
     if (key.escape) {
-      setDetailView(null);
-      setLogLines([]);
-      setDiffView(null);
-      setConfirmKill(false);
+      closeModal();
     }
   });
 
-  const eventWidth = Math.max(12, (stdout?.columns || 120) - FIXED_TABLE_WIDTH);
-  const backoffMessageWidth = Math.max(20, (stdout?.columns || 120) - 34);
+  const eventWidth = Math.max(12, terminalColumns - FIXED_TABLE_WIDTH);
+  const backoffMessageWidth = Math.max(20, terminalColumns - 34);
 
   return html`
     <${Box} flexDirection="column" paddingY=${1}>
@@ -399,16 +647,7 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
           `
         : null}
 
-      ${detailView
-        ? html`
-            <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
-              <${Text} bold>Detail<//>
-              ${detailView.map((line) => html`<${Text} key=${line}>${line}<//>`) }
-            <//>
-          `
-        : null}
-
-      ${logLines.length
+      ${!detailView && logLines.length
         ? html`
             <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
               <${Text} bold>Logs<//>
@@ -419,7 +658,7 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
           `
         : null}
 
-      ${diffView
+      ${!detailView && diffView
         ? html`
             <${Box} marginTop=${1} flexDirection="column" borderStyle="single" paddingX=${1}>
               <${Text} bold>Diff<//>
@@ -447,10 +686,22 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
             <//>
           `
         : null}
+
+      ${detailView
+        ? html`
+            <${SessionDetail}
+              sessionPayload=${detailView}
+              diffView=${diffView}
+              logLines=${logLines}
+              timelineOffset=${timelineOffset}
+              visibleTimelineRows=${visibleTimelineRows}
+              steerMode=${steerMode}
+              steerValue=${steerValue}
+              terminalColumns=${terminalColumns}
+            />
+          `
+        : null}
     <//>
   `;
 }
-
-
-
 
