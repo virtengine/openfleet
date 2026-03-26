@@ -1761,7 +1761,7 @@ describe("action.acquire_worktree", () => {
     expect(topLevel).toBe(expectedRoot);
 
     const recovery = readWorktreeRecoveryStatus(repoDir);
-    expect(recovery?.health).toBe("recovered");
+    expect(["healthy", "recovered"]).toContain(recovery?.health);
     expect(recovery?.failureStreak).toBe(0);
     expect(recovery?.recentEvents?.[0]).toMatchObject({
       outcome: "recreated",

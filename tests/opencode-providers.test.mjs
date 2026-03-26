@@ -3,10 +3,14 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 const execFileMock = vi.fn();
 const execMock = vi.fn();
 
-vi.mock("node:child_process", () => ({
-  execFile: execFileMock,
-  exec: execMock,
-}));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    execFile: execFileMock,
+    exec: execMock,
+  };
+});
 
 describe("opencode provider discovery", () => {
   beforeEach(() => {

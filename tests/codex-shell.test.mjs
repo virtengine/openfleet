@@ -548,11 +548,8 @@ describe("codex-shell stream safeguards", () => {
     }
 
     expect(resolved.provider).toBe("azure");
-    expect(resolved.configProvider).toEqual(expect.objectContaining({
-      name: "azure-us",
-      envKey: "AZURE_OPENAI_API_KEY",
-      baseUrl: "https://example-resource.openai.azure.com/openai/v1",
-    }));
+    expect(resolved.env.OPENAI_BASE_URL).toBe("https://example-resource.openai.azure.com/openai/v1");
+    expect(resolved.env.AZURE_OPENAI_API_KEY).toBe("azure-key");
   });
   it("strips non-Azure OPENAI_BASE_URL before creating the SDK", async () => {
     const {
@@ -664,10 +661,12 @@ describe("codex-shell stream safeguards", () => {
 
     expect(result.finalResponse).toContain("sandbox ok");
     const ctorOptions = mockCodexCtor.mock.calls.at(-1)?.[0] || {};
-    expect(ctorOptions.config?.sandbox_mode).toBe("workspace-write");
-    expect(Array.isArray(ctorOptions.config?.sandbox_workspace_write?.writable_roots)).toBe(true);
-    expect(ctorOptions.config?.sandbox_workspace_write?.writable_roots).toContain(process.cwd());
-    expect(ctorOptions.config?.sandbox_workspace_write?.writable_roots).not.toContain("/tmp");
+    const startThreadOptions = mockStartThread.mock.calls.at(-1)?.[0] || {};
+    expect(startThreadOptions.sandboxMode).toBe("workspace-write");
+    const writableRoots = ctorOptions.config?.sandbox_workspace_write?.writable_roots || [];
+    expect(Array.isArray(writableRoots)).toBe(true);
+    expect(writableRoots).toContain(process.cwd());
+    expect(writableRoots).not.toContain("/tmp");
   });
 
 });

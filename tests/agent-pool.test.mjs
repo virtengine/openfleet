@@ -529,19 +529,22 @@ describe("launchEphemeralThread", () => {
     process.env.CLAUDE_API_KEY = "";
     process.env.ANTHROPIC_API_KEY = "";
 
-    setCodexLauncherMock(async () => ({
-      success: false,
-      output: "",
-      items: [],
-      error: "Failed to list models: 400",
-      sdk: "codex",
+    setCodexLauncherMock(() => ({
+      id: "mock-codex-fallback-400",
+      runStreamed: async () => {
+        throw new Error("Failed to list models: 400");
+      },
     }));
-    setCopilotLauncherMock(async () => ({
-      success: true,
-      output: "copilot fallback ok",
-      items: [],
-      error: null,
-      sdk: "copilot",
+    setCopilotLauncherMock(() => ({
+      sessionId: "mock-copilot-fallback",
+      sendAndWait: async () => {},
+      on: (cb) => {
+        cb({
+          type: "assistant.message",
+          data: { content: "copilot fallback ok" },
+        });
+        return () => {};
+      },
     }));
 
     const result = await launchEphemeralThread(
@@ -1076,8 +1079,8 @@ describe("launchEphemeralThread", () => {
     });
 
     expect(result.success).toBe(true);
-    expect(process.env.AZURE_OPENAI_API_KEY_SWEDEN).toBeUndefined();
     const codexCtorOpts = mockCodexCtor.mock.calls.at(-1)?.[0];
+    expect(codexCtorOpts?.env?.AZURE_OPENAI_API_KEY_SWEDEN).toBeUndefined();
     expect(codexCtorOpts?.config).toEqual(expect.objectContaining({
       model_provider: "azure-us",
       model: "gpt-5.4",
