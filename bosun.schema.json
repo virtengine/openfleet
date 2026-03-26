@@ -85,6 +85,10 @@
           "default": 600000,
           "description": "Maximum time to allow each bootstrap command to run inside a managed worktree."
         },
+        "setupScript": {
+          "type": "string",
+          "description": "Optional repo-specific shell command to run inside every managed worktree before stack bootstrap commands. Useful for local environment setup, SDK hook scaffolding, or repository-specific bootstrap fixes."
+        },
         "commandsByStack": {
           "type": "object",
           "additionalProperties": {
@@ -314,6 +318,26 @@
             "networkAccess": {
               "type": "string",
               "description": "High-level network access posture for isolated execution."
+            }
+          }
+        },
+        "worktrees": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Readiness safeguards for Bosun-managed task worktrees only. These settings document whether Node-style bootstrap/readiness checks and push-hook enforcement are expected before task work proceeds.",
+          "properties": {
+            "requireBootstrap": {
+              "type": "boolean",
+              "description": "Whether Bosun-managed task worktrees should require bootstrap before execution. Defaults to explicit worktreeBootstrap.enabled when provided, otherwise true."
+            },
+            "requireReadiness": {
+              "type": "boolean",
+              "description": "Whether Bosun-managed task worktrees should require a readiness check before execution. Defaults to explicit worktreeBootstrap.enabled when provided, otherwise true."
+            },
+            "enforcePushHook": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether Bosun-managed task worktrees should enforce the repository push hook before handoff or push."
             }
           }
         },
