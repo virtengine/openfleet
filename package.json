@@ -111,6 +111,7 @@
     "desktop:dist": "npm -C desktop run dist",
     "build": "node tools/vendor-sync.mjs",
     "build:docs": "node tools/build-docs.mjs",
+    "site:serve": "node tools/site-serve.mjs",
     "shared-workspaces": "node workspace/shared-workspace-cli.mjs",
     "syntax:check": "node --experimental-vm-modules --no-warnings=ExperimentalWarning tools/syntax-check.mjs",
     "prompt:lint": "node tools/prompt-lint.mjs",
