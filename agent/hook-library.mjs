@@ -567,7 +567,7 @@ const BUILTIN_HOOKS = [
     description: "Runs the full bosun preflight script (syntax check + test suite) before pushing. This is the recommended quality gate for bosun projects.",
     category: "quality",
     events: "PrePush",
-    command: "node preflight.mjs",
+    command: "node infra/preflight.mjs",
     blocking: true,
     timeout: 300_000,
     sdks: ["*"],
@@ -575,7 +575,7 @@ const BUILTIN_HOOKS = [
     defaultEnabled: false,
     retryable: false,
     tags: ["quality", "preflight", "bosun", "push", "blocking"],
-    requires: "preflight.mjs in project root",
+    requires: "infra/preflight.mjs in project root",
   },
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
