@@ -88,6 +88,8 @@ export function InfraTab() {
     : wtRaw?.worktrees || wtRaw?.data || [];
   const wStats = (wtRaw && !Array.isArray(wtRaw) ? wtRaw.stats : null) || {};
   const recovery = buildWorktreeRecoveryViewModel(wStats.recovery || null);
+  const liveWorktreeTotal = Number(wStats.liveTotal ?? wStats.total ?? wts.length ?? 0);
+  const hasRecoveryOnlySignal = liveWorktreeTotal === 0 && recovery.events.length > 0;
 
   /* Shared workspaces */
   const swRaw = sharedWorkspaces?.value;
@@ -562,8 +564,8 @@ export function InfraTab() {
             <!-- Stats row -->
             <${Stack} direction="row" spacing=${2}>
               <${Paper} variant="outlined" sx=${{ p: 1.5, textAlign: "center", flex: 1 }}>
-                <${Typography} variant="h5">${wStats.total ?? wts.length}<//>
-                <${Typography} variant="caption" color="text.secondary">Total<//>
+                <${Typography} variant="h5">${liveWorktreeTotal}<//>
+                <${Typography} variant="caption" color="text.secondary">Live Total<//>
               <//>
               <${Paper} variant="outlined" sx=${{ p: 1.5, textAlign: "center", flex: 1 }}>
                 <${Typography} variant="h5" sx=${{ color: "success.main" }}>${wStats.active ?? 0}<//>
@@ -589,6 +591,11 @@ export function InfraTab() {
                   variant="outlined"
                 />
               <//>
+              ${hasRecoveryOnlySignal && html`
+                <${Alert} severity="info" sx=${{ mt: 1 }}>
+                  Live totals only count registry-managed worktrees that are still active. Recovery events can reference recreated workflow worktrees that no longer appear in the live registry.
+                <//>
+              `}
               ${recovery.events.slice(0, 4).map((event) => html`
                 <${Paper} key=${event.key} variant="outlined" sx=${{ p: 1, mt: 1, bgcolor: "background.default" }}>
                   <${Typography} variant="body2" fontWeight=${600}>${event.title}<//>

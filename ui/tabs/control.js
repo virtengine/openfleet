@@ -32,6 +32,13 @@ import { iconText as iconTextUtil } from "../modules/icon-utils.js";
 import { cloneValue, truncate } from "../modules/utils.js";
 import { SegmentedControl, Collapsible } from "../components/forms.js";
 import { Card, Badge, SkeletonCard } from "../components/shared.js";
+import { WorkspaceExecutorSettingsFields } from "../components/workspace-executor-settings.js";
+import {
+  activeWorkspaceId,
+  loadWorkspaces,
+  setWorkspaceExecutors,
+  workspaces as managedWorkspaces,
+} from "../components/workspace-switcher.js";
 
 /* ─── Command registry for autocomplete ─── */
 const CMD_REGISTRY = [
@@ -102,6 +109,10 @@ export function ControlTab() {
   const execData = executor?.data;
   const mode = executor?.mode || "internal";
   const config = configData.value;
+  const activeWorkspace = (managedWorkspaces.value || []).find(
+    (entry) => String(entry?.id || "").trim() === String(activeWorkspaceId.value || "").trim(),
+  ) || null;
+  const workspaceExecutors = activeWorkspace?.executors || null;
 
   /* Form inputs */
   const [commandInput, setCommandInput] = useState("");
@@ -111,7 +122,10 @@ export function ControlTab() {
   const [quickCmdPrefix, setQuickCmdPrefix] = useState("shell");
   const [quickCmdFeedback, setQuickCmdFeedback] = useState("");
   const [quickCmdFeedbackTone, setQuickCmdFeedbackTone] = useState("info");
-  const [maxParallel, setMaxParallel] = useState(execData?.maxParallel ?? 0);
+  const [maxParallel, setMaxParallel] = useState(workspaceExecutors?.maxConcurrent ?? execData?.maxParallel ?? 0);
+  const [workspacePool, setWorkspacePool] = useState(workspaceExecutors?.pool || "shared");
+  const [workspaceWeight, setWorkspaceWeight] = useState(workspaceExecutors?.weight ?? 1.0);
+  const [savingWorkspaceExecutors, setSavingWorkspaceExecutors] = useState(false);
   const [cmdHistory, setCmdHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
   const [isCompact, setIsCompact] = useState(() => {
@@ -158,6 +172,16 @@ export function ControlTab() {
     { label: "Poll", value: pollLabel },
     { label: "Timeout", value: timeoutLabel },
   ];
+  const workspaceMaxConcurrent = Number(workspaceExecutors?.maxConcurrent || 0) || null;
+  const workspaceMaxConcurrentDraft = Math.max(
+    1,
+    Number(maxParallel || workspaceMaxConcurrent || execData?.maxParallel || 1),
+  );
+  const hasWorkspaceExecutorChanges = Boolean(activeWorkspace) && (
+    workspaceMaxConcurrentDraft !== Number(workspaceExecutors?.maxConcurrent || 1)
+    || workspacePool !== String(workspaceExecutors?.pool || "shared")
+    || Math.abs(Number(workspaceWeight || 1) - Number(workspaceExecutors?.weight || 1)) > 0.001
+  );
 
   /* ── Load persistent history on mount ── */
   useEffect(() => {
@@ -190,6 +214,19 @@ export function ControlTab() {
       else mq.removeListener(handler);
     };
   }, []);
+
+  useEffect(() => {
+    loadWorkspaces().catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    setMaxParallel(workspaceExecutors?.maxConcurrent ?? execData?.maxParallel ?? 0);
+  }, [workspaceExecutors?.maxConcurrent, execData?.maxParallel]);
+
+  useEffect(() => {
+    setWorkspacePool(workspaceExecutors?.pool || "shared");
+    setWorkspaceWeight(workspaceExecutors?.weight ?? 1.0);
+  }, [workspaceExecutors?.pool, workspaceExecutors?.weight]);
 
   useEffect(() => {
     startTaskIdRef.current = startTaskId;
@@ -405,20 +442,63 @@ export function ControlTab() {
     const prev = cloneValue(executor);
     await runOptimistic(
       () => {
-        if (executorData.value?.data)
-          executorData.value.data.maxParallel = value;
+        if (executorData.value?.data) {
+          executorData.value = {
+            ...executorData.value,
+            data: {
+              ...executorData.value.data,
+              maxParallel: value,
+            },
+          };
+        }
       },
-      () =>
-        apiFetch("/api/executor/maxparallel", {
+      async () => {
+        await apiFetch("/api/executor/maxparallel", {
           method: "POST",
           body: JSON.stringify({ value }),
-        }),
+        });
+        if (activeWorkspace?.id && value > 0) {
+          await setWorkspaceExecutors(activeWorkspace.id, {
+            maxConcurrent: value,
+          });
+        }
+      },
       () => {
         executorData.value = prev;
       },
     ).catch(() => {});
     scheduleRefresh(120);
   };
+
+  const handleWorkspaceExecutorSave = useCallback(async () => {
+    if (!activeWorkspace?.id) return;
+    setSavingWorkspaceExecutors(true);
+    haptic("medium");
+    try {
+      await setWorkspaceExecutors(activeWorkspace.id, {
+        maxConcurrent: workspaceMaxConcurrentDraft,
+        pool: workspacePool,
+        weight: workspaceWeight,
+      });
+      if (workspaceMaxConcurrentDraft > 0) {
+        await apiFetch("/api/executor/maxparallel", {
+          method: "POST",
+          body: JSON.stringify({ value: workspaceMaxConcurrentDraft }),
+        });
+      }
+      showToast("Workspace executor settings updated", "success");
+      scheduleRefresh(120);
+    } catch {
+      showToast("Failed to update workspace executor settings", "error");
+    } finally {
+      setSavingWorkspaceExecutors(false);
+    }
+  }, [
+    activeWorkspace?.id,
+    workspaceMaxConcurrentDraft,
+    workspacePool,
+    workspaceWeight,
+  ]);
 
   /* ── Region options from config ── */
   const regions = config?.regions || ["auto"];
@@ -594,53 +674,49 @@ export function ControlTab() {
 
   return html`
     <div class="control-layout">
-      ${!executor && !config && html`<${Card} title="Loading…" className="control-skeleton"><${SkeletonCard} /><//>`}
       <div class="control-main">
-        <${Card}
-          title="Control Unit"
-          subtitle="Executor health and rapid actions"
-          className="control-unit-card control-hero"
-        >
+        <${Card} className="control-hero">
           <div class="control-hero-header">
             <div class="control-hero-title">
-              <div class="control-hero-label">Executor</div>
+              <div class="control-hero-label">Control Unit</div>
               <div class="control-hero-status">
-                <span class="control-hero-mode">${mode}</span>
-                ${isPaused
-                  ? html`<${Badge} status="error" text="Paused" />`
-                  : html`<${Badge} status="done" text="Running" />`}
+                <span>${isPaused ? "Paused" : "Running"}</span>
+                <span class="control-hero-mode">${String(mode || "internal")}</span>
+              </div>
+              <div class="meta-text">
+                Manage executor throughput, active workspace allocation, and operator commands.
               </div>
             </div>
+
             <div class="control-hero-actions">
-              <${Button} variant="contained" color="primary" size="small" onClick=${handlePause}>
-                Pause Executor
-              <//>
-              <${Button} variant="outlined" size="small" onClick=${handleResume}>
-                Resume Executor
+              <${Button}
+                variant=${isPaused ? "contained" : "outlined"}
+                size="small"
+                color=${isPaused ? "success" : "warning"}
+                onClick=${isPaused ? handleResume : handlePause}
+              >
+                ${isPaused ? "Resume Executor" : "Pause Executor"}
               <//>
               <${Button}
                 variant="text"
                 size="small"
-                onClick=${() => sendCmd("/executor")}
-                title="Open executor menu"
+                onClick=${refreshTaskOptions}
               >
-                /executor
+                Refresh Tasks
               <//>
             </div>
           </div>
 
           <div class="control-meta-grid">
-            ${controlMeta.map(
-              (item) => html`
-                <div class="control-meta-item" key=${item.label}>
-                  <span class="control-meta-label">${item.label}</span>
-                  <span class="control-meta-value">${item.value}</span>
-                </div>
-              `,
-            )}
+            ${controlMeta.map((item) => html`
+              <div class="control-meta-item" key=${item.label}>
+                <span class="control-meta-label">${item.label}</span>
+                <span class="control-meta-value">${item.value}</span>
+              </div>
+            `)}
             <div class="control-meta-item">
-              <span class="control-meta-label">Capacity</span>
-              <span class="control-meta-value">Max ${maxParallel}</span>
+              <span class="control-meta-label">Workspace</span>
+              <span class="control-meta-value">${activeWorkspace?.name || activeWorkspace?.id || "All workspaces"}</span>
             </div>
           </div>
 
@@ -653,12 +729,39 @@ export function ControlTab() {
                 step=${1}
                 value=${maxParallel}
                 aria-label="Max parallel tasks"
-                onChange=${(e, v) => setMaxParallel(v)}
-                onChangeCommitted=${(e, v) => handleMaxParallel(v)}
+                onChange=${(_event, value) => setMaxParallel(value)}
+                onChangeCommitted=${(_event, value) => handleMaxParallel(value)}
               />
               <span class="pill">Max ${maxParallel}</span>
             </div>
           </div>
+
+          ${activeWorkspace
+            ? html`
+                <div class="control-range" style=${{ marginTop: "0.5rem" }}>
+                  <${WorkspaceExecutorSettingsFields}
+                    title="Active Workspace Executors"
+                    description="Control mirrors the active workspace executor config used in the workspace switcher."
+                    maxConcurrent=${workspaceMaxConcurrentDraft}
+                    pool=${workspacePool}
+                    weight=${workspaceWeight}
+                    onMaxConcurrentChange=${setMaxParallel}
+                    onPoolChange=${setWorkspacePool}
+                    onWeightChange=${setWorkspaceWeight}
+                    saving=${savingWorkspaceExecutors}
+                    hasChanges=${hasWorkspaceExecutorChanges}
+                    onSave=${handleWorkspaceExecutorSave}
+                    saveLabel="Save Workspace Executors"
+                    minSlots=${1}
+                    maxSlots=${20}
+                  />
+                </div>
+              `
+            : html`
+                <div class="meta-text" style=${{ marginTop: "0.5rem" }}>
+                  Select a managed workspace to edit workspace-specific executor settings.
+                </div>
+              `}
         <//>
 
         <${Card} className="command-console-card">
@@ -817,7 +920,6 @@ export function ControlTab() {
             `}
           <//>
         <//>
-
       </div>
 
       <div class="control-side">

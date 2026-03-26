@@ -2203,7 +2203,44 @@ function parseApiError(err) {
   return msg;
 }
 
-function ImportPreviewModal({ candidates, source, onConfirm, onClose, loading, duplicates, intraDuplicates }) {
+function uniquePreviewStrings(values = []) {
+  return [...new Set((Array.isArray(values) ? values : []).map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+export function buildBlockedImportPreview(blockedCandidates = [], { limit = 8 } = {}) {
+  const counts = { agent: 0, skill: 0, prompt: 0, mcp: 0 };
+  const items = [];
+  const list = Array.isArray(blockedCandidates) ? blockedCandidates : [];
+
+  for (const candidate of list) {
+    const kind = String(candidate?.kind || "").trim().toLowerCase() || "prompt";
+    counts[kind] = (counts[kind] || 0) + 1;
+    if (items.length >= limit) continue;
+    const safety = candidate?.safety && typeof candidate.safety === "object" ? candidate.safety : {};
+    const findings = safety.findings && typeof safety.findings === "object" ? safety.findings : {};
+    items.push({
+      relPath: String(candidate?.relPath || "").trim(),
+      name: String(candidate?.name || candidate?.fileName || candidate?.relPath || "Blocked item").trim(),
+      kind,
+      score: Number(safety.score || 0),
+      reasons: uniquePreviewStrings(safety.reasons).slice(0, 3),
+      excerpts: uniquePreviewStrings([
+        ...(Array.isArray(findings.unicode) ? findings.unicode : []),
+        ...(Array.isArray(findings.promptOverride) ? findings.promptOverride : []),
+        ...(Array.isArray(findings.promotion) ? findings.promotion : []),
+        ...(Array.isArray(findings.malware) ? findings.malware : []),
+      ]).slice(0, 2),
+    });
+  }
+
+  return {
+    totalCount: list.length,
+    counts,
+    items,
+  };
+}
+
+function ImportPreviewModal({ candidates, blockedCandidates, source, onConfirm, onClose, loading, duplicates, intraDuplicates }) {
   const [selection, setSelection] = useState(() => {
     const map = {};
     for (const c of (candidates || [])) map[c.relPath] = c.selected !== false;
@@ -2215,6 +2252,8 @@ function ImportPreviewModal({ candidates, source, onConfirm, onClose, loading, d
   const dupMap = duplicates || {};
   const intraDupMap = intraDuplicates || {};
   const dupCount = Object.keys(dupMap).length;
+  const blockedPreview = useMemo(() => buildBlockedImportPreview(blockedCandidates), [blockedCandidates]);
+  const blockedCount = blockedPreview.totalCount;
 
   const filtered = useMemo(() => {
     let list = candidates || [];
@@ -2266,6 +2305,12 @@ function ImportPreviewModal({ candidates, source, onConfirm, onClose, loading, d
           <span style="font-size:0.8em;color:var(--text-secondary);">${(candidates || []).length} items found</span>
           <span style="font-size:0.8em;color:var(--text-secondary);">·</span>
           <span style="font-size:0.8em;color:var(--text-secondary);">${selectedCount} selected</span>
+          ${blockedCount > 0 ? html`
+            <span style="font-size:0.8em;color:var(--text-secondary);">·</span>
+            <span style="font-size:0.78em;padding:2px 8px;border-radius:999px;background:rgba(239,68,68,0.16);color:#fca5a5;">
+              Blocked ${blockedCount}
+            </span>
+          ` : null}
           ${dupCount > 0 ? html`
             <span style="font-size:0.8em;color:var(--text-secondary);">·</span>
             <span style="font-size:0.78em;padding:2px 8px;border-radius:999px;background:rgba(245,158,11,0.18);color:#f59e0b;cursor:pointer;" onClick=${() => setShowDupOnly(!showDupOnly)}>
@@ -2273,6 +2318,44 @@ function ImportPreviewModal({ candidates, source, onConfirm, onClose, loading, d
             </span>
           ` : null}
         </div>
+        ${blockedCount > 0 ? html`
+          <div style="font-size:0.75em;padding:8px 10px;border-radius:8px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);color:var(--text-secondary);display:flex;flex-direction:column;gap:8px;">
+            <div>
+              ⚠ Safety filters blocked ${blockedCount} item${blockedCount !== 1 ? "s" : ""} from this repository. Blocked items cannot be selected for import.
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+              ${[
+                ["agent", "Agents"],
+                ["prompt", "Prompts"],
+                ["skill", "Skills"],
+                ["mcp", "Tools"],
+              ].filter(([key]) => Number(blockedPreview.counts[key] || 0) > 0).map(([key, label]) => html`
+                <span key=${key} style="font-size:0.72em;padding:2px 8px;border-radius:999px;background:rgba(239,68,68,0.12);color:#fca5a5;">
+                  ${label} (${blockedPreview.counts[key]})
+                </span>
+              `)}
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px;max-height:180px;overflow-y:auto;">
+              ${blockedPreview.items.map((item) => html`
+                <div key=${item.relPath} style="padding:8px;border-radius:8px;background:rgba(0,0,0,0.12);border:1px solid rgba(239,68,68,0.12);display:flex;flex-direction:column;gap:4px;">
+                  <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                    <span style="font-size:0.8em;font-weight:600;">${item.name}</span>
+                    <span style="font-size:0.7em;padding:2px 6px;border-radius:999px;background:rgba(239,68,68,0.16);color:#fca5a5;">${item.kind}</span>
+                    ${item.score > 0 ? html`<span style="font-size:0.7em;color:#fca5a5;">score ${item.score}</span>` : null}
+                  </div>
+                  <div style="font-size:0.72em;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title=${item.relPath}>${item.relPath}</div>
+                  ${item.reasons.length > 0 ? html`<div style="font-size:0.72em;color:#fecaca;">Reasons: ${item.reasons.join(", ")}</div>` : null}
+                  ${item.excerpts.map((excerpt) => html`<div key=${excerpt} style="font-size:0.7em;color:var(--text-secondary);font-family:var(--font-mono, monospace);">${excerpt}</div>`)}
+                </div>
+              `)}
+              ${blockedCount > blockedPreview.items.length ? html`
+                <div style="font-size:0.72em;color:var(--text-secondary);">
+                  ${blockedCount - blockedPreview.items.length} more blocked item${blockedCount - blockedPreview.items.length !== 1 ? "s" : ""} not shown.
+                </div>
+              ` : null}
+            </div>
+          </div>
+        ` : null}
         ${dupCount > 0 ? html`
           <div style="font-size:0.75em;padding:6px 10px;border-radius:8px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2);color:var(--text-secondary);">
             ⚠ ${dupCount} item${dupCount !== 1 ? "s" : ""} appear${dupCount === 1 ? "s" : ""} similar to entries already in your library.
@@ -2382,7 +2465,12 @@ function AgentLibraryImporter({ onImported }) {
       if (!res?.ok) throw new Error(res?.error || "Preview failed");
       const data = res?.data;
       if (!data?.candidates?.length) {
-        showToast("No importable items found in this repository", "warning");
+        if (Array.isArray(data?.blockedCandidates) && data.blockedCandidates.length > 0) {
+          showToast(`Safety filters blocked ${data.blockedCandidates.length} item${data.blockedCandidates.length !== 1 ? "s" : ""} from this repository`, "warning");
+          setPreviewData(data);
+        } else {
+          showToast("No importable items found in this repository", "warning");
+        }
       } else {
         setPreviewData(data);
       }
@@ -2504,6 +2592,7 @@ function AgentLibraryImporter({ onImported }) {
     ${previewData ? html`
       <${ImportPreviewModal}
         candidates=${previewData.candidates}
+        blockedCandidates=${previewData.blockedCandidates}
         source=${previewData.source}
         duplicates=${previewData.duplicates}
         intraDuplicates=${previewData.intraDuplicates}
@@ -2920,6 +3009,7 @@ function LibraryMarketplace({ onImported }) {
       ${previewData ? html`
         <${ImportPreviewModal}
           candidates=${previewData.candidates}
+          blockedCandidates=${previewData.blockedCandidates}
           source=${previewData.source}
           duplicates=${previewData.duplicates}
           intraDuplicates=${previewData.intraDuplicates}

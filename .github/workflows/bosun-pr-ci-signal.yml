@@ -25,8 +25,123 @@ jobs:
             const pullRequests = Array.isArray(run.pull_requests) ? run.pull_requests : [];
             const prNumber = Number(pullRequests[0]?.number || 0);
             const failureMarker = "<!-- bosun-ci-failure -->";
+            const sharedFailureMarker = "<!-- bosun-ci-shared-failure -->";
             const attachedLabel = "bosun-attached";
+            const bosunCreatedLabel = "bosun-pr-bosun-created";
             const needsFixLabel = "bosun-needs-fix";
+
+            const normalizeList = (value) => {
+              if (Array.isArray(value)) {
+                return value
+                  .map((entry) => String(entry || "").trim().toLowerCase())
+                  .filter(Boolean);
+              }
+              return String(value || "")
+                .split(/[\n,]/)
+                .map((entry) => entry.trim().toLowerCase())
+                .filter(Boolean);
+            };
+
+            const parseBool = (value, fallback = false) => {
+              if (value === undefined || value === null || value === "") return fallback;
+              const raw = String(value).trim().toLowerCase();
+              if (["1", "true", "yes", "on"].includes(raw)) return true;
+              if (["0", "false", "no", "off"].includes(raw)) return false;
+              return fallback;
+            };
+
+            const normalizeCheckKey = (value) =>
+              String(value || "")
+                .trim()
+                .toLowerCase()
+                .replace(/\s+/g, " ");
+
+            const listFailedJobNames = async (runId) => {
+              if (!runId) return [];
+              try {
+                const jobs = await github.paginate(
+                  github.rest.actions.listJobsForWorkflowRun,
+                  { owner, repo, run_id: runId, per_page: 100 },
+                );
+                return jobs
+                  .filter((job) => String(job.conclusion || "").toLowerCase() === "failure")
+                  .map((job) => String(job.name || "").trim())
+                  .filter(Boolean);
+              } catch (err) {
+                core.warning(`Unable to list failed jobs for run ${runId}: ${String(err?.message || err)}`);
+                return [];
+              }
+            };
+
+            const detectSharedFailure = async ({ workflowName, workflowId, baseBranch, currentRunId, failedJobs }) => {
+              const normalizedWorkflowName = String(workflowName || "").trim();
+              const normalizedBaseBranch = String(baseBranch || "").trim();
+              const normalizedWorkflowId = Number(workflowId || 0);
+              if ((!normalizedWorkflowName && !normalizedWorkflowId) || !normalizedBaseBranch) {
+                return { isShared: false, defaultBranchRun: null, defaultBranchFailedJobs: [] };
+              }
+              try {
+                const runs = normalizedWorkflowId > 0
+                  ? await github.paginate(
+                    github.rest.actions.listWorkflowRuns,
+                    { owner, repo, workflow_id: normalizedWorkflowId, branch: normalizedBaseBranch, per_page: 20 },
+                  )
+                  : await github.paginate(
+                    github.rest.actions.listWorkflowRunsForRepo,
+                    { owner, repo, branch: normalizedBaseBranch, per_page: 20 },
+                  );
+                const candidate = runs.find((entry) =>
+                  Number(entry?.id || 0) !== Number(currentRunId || 0)
+                  && String(entry?.name || "").trim() === normalizedWorkflowName,
+                );
+                if (!candidate) {
+                  return { isShared: false, defaultBranchRun: null, defaultBranchFailedJobs: [] };
+                }
+                const candidateConclusion = String(candidate.conclusion || "").toLowerCase();
+                if (!failedConclusions.has(candidateConclusion)) {
+                  return { isShared: false, defaultBranchRun: candidate, defaultBranchFailedJobs: [] };
+                }
+                const defaultBranchFailedJobs = await listFailedJobNames(candidate.id);
+                const currentFailed = new Set((failedJobs || []).map(normalizeCheckKey).filter(Boolean));
+                const defaultFailed = new Set(defaultBranchFailedJobs.map(normalizeCheckKey).filter(Boolean));
+                const hasCompleteOverlap = currentFailed.size > 0
+                  && [...currentFailed].every((name) => defaultFailed.has(name));
+                const fallbackShared = currentFailed.size === 0 && defaultFailed.size > 0;
+                return {
+                  isShared: hasCompleteOverlap || fallbackShared,
+                  defaultBranchRun: candidate,
+                  defaultBranchFailedJobs,
+                };
+              } catch (err) {
+                core.warning(`Unable to evaluate shared failure state for '${normalizedWorkflowName}' on ${normalizedBaseBranch}: ${String(err?.message || err)}`);
+                return { isShared: false, defaultBranchRun: null, defaultBranchFailedJobs: [] };
+              }
+            };
+
+            const loadBosunConfig = async (ref) => {
+              const candidates = ["bosun.config.json", ".bosun.json", "bosun.json"];
+              for (const path of candidates) {
+                try {
+                  const response = await github.rest.repos.getContent({
+                    owner,
+                    repo,
+                    path,
+                    ref,
+                  });
+                  const file = response?.data;
+                  if (!file || Array.isArray(file) || !file.content) continue;
+                  const raw = Buffer.from(file.content, file.encoding || "base64").toString("utf8");
+                  return JSON.parse(raw);
+                } catch (err) {
+                  if (err?.status !== 404) {
+                    core.warning(
+                      `Unable to read ${path} for PR trust policy: ${String(err?.message || err)}`,
+                    );
+                  }
+                }
+              }
+              return {};
+            };
 
             if (!prNumber) {
               core.info("No PR is associated with this CI run; skipping.");
@@ -45,6 +160,28 @@ jobs:
               core.info(`PR #${prNumber} is not labeled '${attachedLabel}'; skipping.`);
               return;
             }
+            const isBosunCreated = labels.includes(bosunCreatedLabel);
+            const bosunConfig = await loadBosunConfig(pr.head?.sha || run.head_sha || context.sha);
+            const prAutomation =
+              bosunConfig?.prAutomation && typeof bosunConfig.prAutomation === "object"
+                ? bosunConfig.prAutomation
+                : {};
+            const trustedAuthors = new Set(normalizeList(prAutomation.trustedAuthors));
+            const allowTrustedFixes = parseBool(prAutomation.allowTrustedFixes, false);
+            const authorLogin = String(pr.user?.login || pr.user?.name || "").trim().toLowerCase();
+            const isTrustedAuthor = trustedAuthors.has(authorLogin);
+            const canSignalFix = isBosunCreated || (allowTrustedFixes && isTrustedAuthor);
+            const automationScope = isBosunCreated
+              ? "Bosun-created"
+              : isTrustedAuthor && allowTrustedFixes
+                ? "trusted-author"
+                : "untrusted";
+            if (!canSignalFix) {
+              core.info(
+                `PR #${prNumber} is attached but not Bosun-created or trusted for repair; skipping high-risk CI signaling.`,
+              );
+              return;
+            }
 
             const comments = await github.paginate(
               github.rest.issues.listComments,
@@ -52,6 +189,9 @@ jobs:
             );
             const existingFailureComment = comments.find((comment) =>
               typeof comment.body === "string" && comment.body.includes(failureMarker),
+            );
+            const existingSharedFailureComment = comments.find((comment) =>
+              typeof comment.body === "string" && comment.body.includes(sharedFailureMarker),
             );
 
             const failedConclusions = new Set([
@@ -125,18 +265,77 @@ jobs:
             };
 
             if (isFailure) {
-              let failedJobs = [];
-              try {
-                const jobs = await github.paginate(
-                  github.rest.actions.listJobsForWorkflowRun,
-                  { owner, repo, run_id: run.id, per_page: 100 },
-                );
-                failedJobs = jobs
-                  .filter((job) => String(job.conclusion || "").toLowerCase() === "failure")
-                  .map((job) => String(job.name || "").trim())
-                  .filter(Boolean);
-              } catch (err) {
-                core.warning(`Unable to list failed jobs for run ${run.id}: ${String(err?.message || err)}`);
+              const failedJobs = await listFailedJobNames(run.id);
+              const sharedFailure = await detectSharedFailure({
+                workflowName: run.name || "CI",
+                workflowId: run.workflow_id,
+                baseBranch: pr.base?.ref || run.head_branch || "main",
+                currentRunId: run.id,
+                failedJobs,
+              });
+
+              if (sharedFailure.isShared) {
+                await removeLabel(needsFixLabel);
+                if (existingFailureComment) {
+                  try {
+                    await github.rest.issues.deleteComment({
+                      owner,
+                      repo,
+                      comment_id: existingFailureComment.id,
+                    });
+                  } catch (err) {
+                    core.warning(
+                      `Unable to delete PR-local CI failure marker comment on PR #${prNumber}: ${String(err?.message || err)}`,
+                    );
+                  }
+                }
+
+                const body = [
+                  sharedFailureMarker,
+                  `Bosun shared CI incident: this PR is failing the same workflow/jobs that are already red on ${pr.base?.ref || "the base branch"}.`,
+                  "",
+                  `- Automation scope: ${automationScope}`,
+                  `- Workflow: ${run.name || "CI"}`,
+                  `- Conclusion: ${conclusion || "unknown"}`,
+                  `- Run: ${run.html_url || ""}`,
+                  `- Base branch: ${pr.base?.ref || "unknown"}`,
+                  `- Head SHA: ${run.head_sha || pr.head?.sha || "unknown"}`,
+                  `- Failed jobs on this PR: ${failedJobs.length > 0 ? failedJobs.join(", ") : "unknown"}`,
+                  `- Failed jobs on base branch: ${sharedFailure.defaultBranchFailedJobs.length > 0 ? sharedFailure.defaultBranchFailedJobs.join(", ") : "unknown"}`,
+                ].join("\n");
+
+                if (existingSharedFailureComment) {
+                  await github.rest.issues.updateComment({
+                    owner,
+                    repo,
+                    comment_id: existingSharedFailureComment.id,
+                    body,
+                  });
+                } else {
+                  await github.rest.issues.createComment({
+                    owner,
+                    repo,
+                    issue_number: prNumber,
+                    body,
+                  });
+                }
+
+                core.info(`PR #${prNumber}: detected shared CI incident on ${pr.base?.ref || "base branch"}; suppressed '${needsFixLabel}'.`);
+                return;
+              }
+
+              if (existingSharedFailureComment) {
+                try {
+                  await github.rest.issues.deleteComment({
+                    owner,
+                    repo,
+                    comment_id: existingSharedFailureComment.id,
+                  });
+                } catch (err) {
+                  core.warning(
+                    `Unable to delete stale shared CI incident comment on PR #${prNumber}: ${String(err?.message || err)}`,
+                  );
+                }
               }
 
               await ensureLabel(
@@ -148,8 +347,9 @@ jobs:
 
               const body = [
                 failureMarker,
-                "Bosun CI signal: attached PR currently has failing checks.",
+                `Bosun CI signal: ${automationScope === "trusted-author" ? "trusted-author PR" : "Bosun-created PR"} currently has failing checks.`,
                 "",
+                `- Automation scope: ${automationScope}`,
                 `- Workflow: ${run.name || "CI"}`,
                 `- Conclusion: ${conclusion || "unknown"}`,
                 `- Run: ${run.html_url || ""}`,
@@ -189,6 +389,19 @@ jobs:
                 } catch (err) {
                   core.warning(
                     `Unable to delete stale CI failure marker comment on PR #${prNumber}: ${String(err?.message || err)}`,
+                  );
+                }
+              }
+              if (existingSharedFailureComment) {
+                try {
+                  await github.rest.issues.deleteComment({
+                    owner,
+                    repo,
+                    comment_id: existingSharedFailureComment.id,
+                  });
+                } catch (err) {
+                  core.warning(
+                    `Unable to delete stale shared CI incident comment on PR #${prNumber}: ${String(err?.message || err)}`,
                   );
                 }
               }

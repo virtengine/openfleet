@@ -2679,6 +2679,9 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.workflowHistory,
     task?.workflows,
   ]);
+  const historyTableRef = useRef(null);
+  const [historyScrollTop, setHistoryScrollTop] = useState(0);
+  const [historyViewportHeight, setHistoryViewportHeight] = useState(320);
   const HISTORY_ROW_HEIGHT = 46;
   const HISTORY_SCROLL_BUFFER = 16;
   const historyFirstVisible = Math.floor(historyScrollTop / HISTORY_ROW_HEIGHT);
@@ -2700,9 +2703,6 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   const [dryRunResults, setDryRunResults] = useState(null);
   const [fullScreen, setFullScreen] = useState(false);
   const [activeTab, setActiveTab] = useState("details");
-  const historyTableRef = useRef(null);
-  const [historyScrollTop, setHistoryScrollTop] = useState(0);
-  const [historyViewportHeight, setHistoryViewportHeight] = useState(320);
 
   const fetchExecutionPlan = useCallback((mode = "resolve") => {
     if (!task?.id) return;

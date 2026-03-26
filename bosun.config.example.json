@@ -12,6 +12,7 @@
     "enabled": true,
     "linkSharedPaths": true,
     "commandTimeoutMs": 600000,
+    "setupScript": "node tools/install-git-hooks.mjs",
     "commandsByStack": {
       "node": ["npm install"],
       "python": ["poetry install --no-interaction"],
@@ -20,6 +21,47 @@
     "sharedPathsByStack": {
       "node": ["node_modules"],
       "php": ["vendor"]
+    }
+  },
+  "_comment_prAutomation": "High-risk PR automation stays Bosun-created-only unless you explicitly trust specific authors. Bosun also auto-trusts the currently connected GitHub OAuth login.",
+  "prAutomation": {
+    "attachMode": "all",
+    "trustedAuthors": ["your-github-login"],
+    "allowTrustedFixes": false,
+    "allowTrustedMerges": false,
+    "assistiveActions": {
+      "installOnSetup": false
+    }
+  },
+  "gates": {
+    "prs": {
+      "repoVisibility": "unknown",
+      "automationPreference": "runtime-first",
+      "githubActionsBudget": "ask-user"
+    },
+    "checks": {
+      "mode": "required-only",
+      "requiredPatterns": ["ci", "test", "build"],
+      "optionalPatterns": ["lint-optional", "preview"],
+      "ignorePatterns": ["dependabot"],
+      "requireAnyRequiredCheck": true,
+      "treatPendingRequiredAsBlocking": true,
+      "treatNeutralAsPass": false
+    },
+    "execution": {
+      "sandboxMode": "workspace-write",
+      "containerIsolationEnabled": false,
+      "containerRuntime": "auto",
+      "networkAccess": "default"
+    },
+    "worktrees": {
+      "requireBootstrap": true,
+      "requireReadiness": true,
+      "enforcePushHook": true
+    },
+    "runtime": {
+      "enforceBacklog": true,
+      "agentTriggerControl": true
     }
   },
   "workflows": [
@@ -111,6 +153,17 @@
     "autofixLoop": ".bosun/agents/autofix-loop.md",
     "monitorCrashFix": ".bosun/agents/monitor-crash-fix.md",
     "monitorRestartLoopFix": ".bosun/agents/monitor-restart-loop-fix.md"
+  },
+  "markdownSafety": {
+    "enabled": true,
+    "auditLogPath": ".bosun/logs/markdown-safety-audit.jsonl",
+    "allowlist": [
+      {
+        "path": "AGENTS.md",
+        "context": "documentation",
+        "reason": "Trusted documentation examples that discuss hostile prompt patterns"
+      }
+    ]
   },
   "hookProfiles": {
     "enabled": true,

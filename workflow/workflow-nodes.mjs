@@ -30,7 +30,7 @@ import {
   _skipUntil,
   MAX_NO_COMMIT_ATTEMPTS,
 } from "./workflow-nodes/transforms.mjs";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -55,12 +55,22 @@ import {
   validateWorkflowContract,
 } from "./workflow-contract.mjs";
 import { resolveAutoCommand } from "./project-detection.mjs";
-import { loadConfig } from "../config/config.mjs";
+import { loadConfig, readConfigDocument } from "../config/config.mjs";
 import { resolveHeavyRunnerPolicy, runCommandInHeavyRunnerLease } from "./heavy-runner-pool.mjs";
-import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
+import {
+  bootstrapWorktreeForPath,
+  deriveManagedTaskToken,
+  fixGitConfigCorruption,
+  pruneStaleWorktrees,
+} from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity, normalizeBaseBranch } from "../git/git-safety.mjs";
 import { getBosunCoAuthorTrailer, shouldAddBosunCoAuthor } from "../git/git-commit-helpers.mjs";
 import { buildArchitectEditorFrame, buildRepoTopologyContext, hasRepoMapContext } from "../lib/repo-map.mjs";
+import {
+  evaluateMarkdownSafety,
+  recordMarkdownSafetyAuditEvent,
+  resolveMarkdownSafetyPolicy,
+} from "../lib/skill-markdown-safety.mjs";
 import { getGitHubToken, invalidateTokenType } from "../github/github-auth-manager.mjs";
 import {
   CUSTOM_NODE_DIR_NAME,
@@ -91,6 +101,67 @@ const WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT = (() => {
   return Math.max(20, Math.min(500, Math.trunc(raw)));
 })();
 const BOSUN_ATTACHED_PR_LABEL = "bosun-attached";
+const BOSUN_CREATED_PR_LABEL = "bosun-pr-bosun-created";
+const BOSUN_CREATED_PR_MARKER = "<!-- bosun-created -->";
+const markdownSafetyPolicyCache = new Map();
+
+function getRepoMarkdownSafetyPolicy(repoRoot) {
+  const normalizedRoot = resolve(repoRoot || process.cwd());
+  const cached = markdownSafetyPolicyCache.get(normalizedRoot);
+  if (cached) return cached;
+  let configData = {};
+  try {
+    ({ configData } = readConfigDocument(normalizedRoot));
+  } catch {
+    configData = {};
+  }
+  const policy = resolveMarkdownSafetyPolicy(configData);
+  markdownSafetyPolicyCache.set(normalizedRoot, policy);
+  return policy;
+}
+
+function appendBosunCreatedPrFooter(body = "") {
+  const text = String(body || "");
+  if (text.includes(BOSUN_CREATED_PR_MARKER) || /auto-created by bosun/i.test(text)) {
+    return text;
+  }
+  const trimmed = text.trimEnd();
+  const footer = `${BOSUN_CREATED_PR_MARKER}\nBosun-Origin: created`;
+  return trimmed ? `${trimmed}\n\n---\n${footer}` : footer;
+}
+
+function taskHasReviewReference(task) {
+  if (!task || typeof task !== "object") return false;
+  const prNumber = Number.parseInt(String(task.prNumber || task.pr_number || ""), 10);
+  if (Number.isFinite(prNumber) && prNumber > 0) return true;
+  if (String(task.prUrl || task.pr_url || "").trim()) return true;
+  if (Array.isArray(task.links?.prs) && task.links.prs.some((value) => String(value || "").trim())) {
+    return true;
+  }
+  return false;
+}
+
+function shouldKeepTaskInReview(task, requestedStatus) {
+  if (!taskHasReviewReference(task)) return false;
+  if (String(task?.status || "").trim().toLowerCase() !== "inreview") return false;
+  const nextStatus = String(requestedStatus || "").trim().toLowerCase();
+  return nextStatus === "todo" || nextStatus === "inprogress" || nextStatus === "backlog";
+}
+
+function normalizeTaskAvailableStatuses(rawStatus) {
+  const values = Array.isArray(rawStatus)
+    ? rawStatus
+    : String(rawStatus == null ? "todo" : rawStatus).split(",");
+  const normalized = values
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(Boolean)
+    .map((value) => {
+      if (value === "review" || value === "in-review") return "inreview";
+      if (value === "backlog") return "todo";
+      return value;
+    });
+  return Array.from(new Set(normalized.length > 0 ? normalized : ["todo"]));
+}
 
 function getNonRetryableWorktreeRecoveryMs() {
   try {
@@ -542,37 +613,6 @@ function resolveGitCandidates(env = process.env) {
   }
 
   if (process.platform === "win32") {
-    const recoveryState = {
-      recreated: false,
-      detectedIssues: new Set(),
-      phase: null,
-      worktreePath: null,
-    };
-    const persistRecoveryEvent = async (event) => {
-      const payload = {
-        reason: "poisoned_worktree",
-        branch,
-        taskId,
-        worktreePath: event?.worktreePath || recoveryState.worktreePath || null,
-        phase: event?.phase || recoveryState.phase || null,
-        detectedIssues: event?.detectedIssues || Array.from(recoveryState.detectedIssues),
-        error: event?.error || null,
-        outcome: event?.outcome || "healthy_noop",
-        timestamp: new Date().toISOString(),
-      };
-      const details = [
-        `outcome=${payload.outcome}`,
-        `branch=${payload.branch}`,
-        payload.taskId ? `taskId=${payload.taskId}` : "",
-        payload.phase ? `phase=${payload.phase}` : "",
-        payload.worktreePath ? `path=${payload.worktreePath}` : "",
-        payload.detectedIssues.length ? `issues=${payload.detectedIssues.join(",")}` : "",
-        payload.error ? `error=${payload.error}` : "",
-      ].filter(Boolean).join(" ");
-      ctx.log(node.id, `[worktree-recovery] ${details}`);
-      await recordWorktreeRecoveryEvent(repoRoot, payload);
-    };
-
     try {
       const whereOutput = execFileSync("where.exe", ["git"], {
         encoding: "utf8",
@@ -783,16 +823,149 @@ function isManagedBosunWorktree(worktreePath, repoRoot) {
   );
 }
 
+function resolveManagedWorktreeGatePolicy(repoRoot) {
+  try {
+    const config = loadConfig(["node", "bosun", "--repo-root", repoRoot]);
+    return config?.gates?.worktrees && typeof config.gates.worktrees === "object"
+      ? config.gates.worktrees
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function shouldBootstrapManagedTaskWorktree(repoRoot, worktreePath) {
+  if (!isManagedBosunWorktree(worktreePath, repoRoot)) return false;
+  const gatePolicy = resolveManagedWorktreeGatePolicy(repoRoot);
+  if (!gatePolicy) return true;
+  return gatePolicy.requireBootstrap !== false || gatePolicy.requireReadiness !== false;
+}
+
+function ensureManagedTaskWorktreeReady(repoRoot, worktreePath) {
+  if (!shouldBootstrapManagedTaskWorktree(repoRoot, worktreePath)) return;
+  bootstrapWorktreeForPath(repoRoot, worktreePath);
+}
+
+function shouldEnforceManagedPushHook(repoRoot, worktreePath) {
+  if (!isManagedBosunWorktree(worktreePath, repoRoot)) return false;
+  const gatePolicy = resolveManagedWorktreeGatePolicy(repoRoot);
+  if (!gatePolicy) return true;
+  return gatePolicy.enforcePushHook !== false;
+}
+
 function deriveManagedWorktreeDirName(taskId, branch) {
-  const taskToken = String(taskId || "task")
-    .replace(/[^a-zA-Z0-9]/g, "")
-    .slice(0, 12)
-    || "task";
+  const taskToken = deriveManagedTaskToken(taskId);
   const branchHash = createHash("sha1")
     .update(String(branch || "branch"))
     .digest("hex")
     .slice(0, 10);
   return `task-${taskToken}-${branchHash}`;
+}
+
+function sanitizeRepairArtifactToken(value, maxLength = 48) {
+  return String(value || "")
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, maxLength);
+}
+
+function createManagedWorktreeRepairArtifacts({
+  repoRoot,
+  worktreePath,
+  branch,
+  baseBranch,
+  taskId,
+  detectedIssues = [],
+  refreshError = "",
+}) {
+  if (!repoRoot || !worktreePath || !existsSync(worktreePath)) return null;
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const artifactId = [
+    timestamp,
+    sanitizeRepairArtifactToken(deriveManagedTaskToken(taskId), 18) || "task",
+    createHash("sha1")
+      .update(`${branch || "branch"}:${worktreePath}`)
+      .digest("hex")
+      .slice(0, 8),
+  ].join("-");
+  const artifactRoot = resolve(repoRoot, ".cache", "worktree-repair", artifactId);
+  const summaryPath = resolve(artifactRoot, "summary.json");
+  const patchPath = resolve(artifactRoot, "changes.patch");
+  const commitsPath = resolve(artifactRoot, "commits.patch");
+  const statusPath = resolve(artifactRoot, "status.txt");
+
+  try {
+    mkdirSync(artifactRoot, { recursive: true });
+  } catch {
+    return null;
+  }
+
+  const summary = {
+    taskId: String(taskId || "").trim() || null,
+    branch: String(branch || "").trim() || null,
+    baseBranch: String(baseBranch || "").trim() || null,
+    worktreePath,
+    artifactRoot,
+    createdAt: new Date().toISOString(),
+    detectedIssues: Array.isArray(detectedIssues)
+      ? detectedIssues.map((issue) => String(issue || "").trim()).filter(Boolean)
+      : [],
+    refreshError: String(refreshError || "").trim() || null,
+    head: null,
+    aheadBehind: null,
+    files: {
+      summaryPath,
+      patchPath: null,
+      commitsPath: null,
+      statusPath: null,
+    },
+  };
+
+  const runGit = (args, fallback = "") => {
+    try {
+      return execGitArgsSync(args, {
+        cwd: worktreePath,
+        encoding: "utf8",
+        timeout: 15000,
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trimEnd();
+    } catch {
+      return fallback;
+    }
+  };
+
+  const statusText = runGit(["status", "--short", "--branch"]);
+  if (statusText) {
+    writeFileSync(statusPath, `${statusText}\n`);
+    summary.files.statusPath = statusPath;
+  }
+
+  const head = runGit(["rev-parse", "HEAD"]);
+  if (head) summary.head = head;
+
+  const aheadBehind = baseBranch
+    ? runGit(["rev-list", "--left-right", "--count", `HEAD...${baseBranch}`])
+    : "";
+  if (aheadBehind) summary.aheadBehind = aheadBehind;
+
+  if (baseBranch) {
+    const diffPatch = runGit(["diff", "--binary", `${baseBranch}...HEAD`]);
+    if (diffPatch) {
+      writeFileSync(patchPath, `${diffPatch}\n`);
+      summary.files.patchPath = patchPath;
+    }
+
+    const commitsPatch = runGit(["format-patch", "--stdout", `${baseBranch}..HEAD`]);
+    if (commitsPatch) {
+      writeFileSync(commitsPath, commitsPatch);
+      summary.files.commitsPath = commitsPath;
+    }
+  }
+
+  writeFileSync(summaryPath, JSON.stringify(summary, null, 2));
+  return summary;
 }
 
 const WORKFLOW_TELEGRAM_ICON_MAP = Object.freeze({
@@ -4932,7 +5105,7 @@ registerBuiltinNodeType("action.update_task_status", {
   },
   async execute(node, ctx, engine) {
     let taskId = ctx.resolve(node.config?.taskId || "");
-    const status = node.config?.status;
+    let status = node.config?.status;
     const kanban = engine.services?.kanban;
     const workflowEvent = ctx.resolve(node.config?.workflowEvent || "");
     const workflowData =
@@ -4971,6 +5144,22 @@ registerBuiltinNodeType("action.update_task_status", {
         taskId: unresolvedValue,
         status,
       };
+    }
+
+    let currentTask =
+      ctx.data?.task && String(ctx.data.task.id || "").trim() === String(taskId)
+        ? ctx.data.task
+        : null;
+    if (!currentTask && typeof kanban?.getTask === "function") {
+      try {
+        currentTask = await kanban.getTask(taskId);
+      } catch {
+        currentTask = null;
+      }
+    }
+    if (shouldKeepTaskInReview(currentTask, status)) {
+      status = "inreview";
+      updateOptions.previousStatus = updateOptions.previousStatus || "inreview";
     }
 
     if (kanban?.updateTaskStatus) {
@@ -5236,7 +5425,7 @@ registerBuiltinNodeType("action.create_pr", {
   },
   async execute(node, ctx, engine) {
     const title = ctx.resolve(node.config?.title || "");
-    const body = ctx.resolve(node.config?.body || "");
+    const body = appendBosunCreatedPrFooter(ctx.resolve(node.config?.body || ""));
     const baseInput = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
     let base = String(baseInput || "main").trim() || "main";
     try {
@@ -5270,6 +5459,7 @@ registerBuiltinNodeType("action.create_pr", {
     const labels = Array.from(new Set([
       ...toList(ctx.resolve(node.config?.labels || "")),
       BOSUN_ATTACHED_PR_LABEL,
+      BOSUN_CREATED_PR_LABEL,
     ]));
     const reviewers = toList(ctx.resolve(node.config?.reviewers || ""));
 
@@ -5451,6 +5641,7 @@ registerBuiltinNodeType("action.create_pr", {
         cwd,
         repoSlug: repoSlug || null,
         ghError: "skipped_in_test_runtime",
+        createdByBosun: true,
         autoMerge: {
           enabled: enableAutoMerge,
           attempted: false,
@@ -5476,12 +5667,14 @@ registerBuiltinNodeType("action.create_pr", {
         prNumber,
         repoSlug: repoSlug || null,
         title,
+        body,
         base,
         branch: branch || null,
         draft,
         labels,
         reviewers,
         output: trimmed,
+        createdByBosun: true,
         autoMerge: autoMergeState,
       };
     } catch (err) {
@@ -5513,6 +5706,7 @@ registerBuiltinNodeType("action.create_pr", {
               labels,
               reviewers,
               output: trimmed,
+              createdByBosun: true,
               autoMerge: autoMergeState,
             };
           } catch (retryErr) {
@@ -5553,6 +5747,7 @@ registerBuiltinNodeType("action.create_pr", {
         reviewers,
         cwd,
         ghError: errorMsg,
+        createdByBosun: true,
         autoMerge: {
           enabled: enableAutoMerge,
           attempted: false,
@@ -11318,6 +11513,11 @@ function isExistingBranchWorktreeError(err) {
   return detail.includes("already exists") || detail.includes("is already checked out");
 }
 
+function isMissingRegisteredWorktreeError(err) {
+  const detail = formatExecSyncError(err).toLowerCase();
+  return detail.includes("missing but already registered worktree");
+}
+
 function findExistingWorktreePathForBranch(repoRoot, branch) {
   const normalizedBranch = String(branch || "").trim();
   if (!normalizedBranch) return "";
@@ -11467,8 +11667,15 @@ function refreshManagedWorktreeReuse(
   baseBranch,
   baseBranchShort,
   fetchTimeout,
+  options = {},
 ) {
-  if (!existsSync(worktreePath) || shouldSkipGitRefreshForTests()) return existsSync(worktreePath);
+  if (!existsSync(worktreePath) || shouldSkipGitRefreshForTests()) {
+    return {
+      healthy: existsSync(worktreePath),
+      repairArtifacts: null,
+      detectedIssues: [],
+    };
+  }
   let refreshError = "";
   try {
     execGitArgsSync(["pull", "--rebase", "origin", baseBranchShort], {
@@ -11480,28 +11687,71 @@ function refreshManagedWorktreeReuse(
   } catch (error) {
     refreshError = formatExecSyncError(error);
   }
-  if (!existsSync(worktreePath)) return false;
+  if (!existsSync(worktreePath)) {
+    return {
+      healthy: false,
+      repairArtifacts: null,
+      detectedIssues: refreshError ? ["refresh_failed"] : [],
+    };
+  }
   if (hasUnresolvedGitOperation(worktreePath)) {
     const detail = refreshError ? ` (${refreshError})` : "";
     ctx.log(
       nodeId,
       `Managed worktree refresh left unresolved git state, recreating: ${worktreePath}${detail}`,
     );
+    const detectedIssues = ["unresolved_git_operation", ...(refreshError ? ["refresh_failed"] : [])];
+    const repairArtifacts = createManagedWorktreeRepairArtifacts({
+      repoRoot,
+      worktreePath,
+      branch: options.branch,
+      baseBranch,
+      taskId: options.taskId,
+      detectedIssues,
+      refreshError,
+    });
     cleanupBrokenManagedWorktree(repoRoot, worktreePath);
-    return false;
+    return {
+      healthy: false,
+      repairArtifacts,
+      detectedIssues,
+    };
   }
   const reasons = [];
+  const detectedIssues = [];
   if (hasTrackedGitChanges(worktreePath)) reasons.push("tracked changes after refresh");
+  if (hasTrackedGitChanges(worktreePath)) detectedIssues.push("tracked_changes_after_refresh");
   const behindCount = countCommitsBehindBase(worktreePath, baseBranch);
   if (behindCount > 0) reasons.push(`${behindCount} commit(s) behind ${baseBranch}`);
-  if (reasons.length === 0) return true;
+  if (behindCount > 0) detectedIssues.push("behind_base_after_refresh");
+  if (reasons.length === 0) {
+    return {
+      healthy: true,
+      repairArtifacts: null,
+      detectedIssues: [],
+    };
+  }
+  if (refreshError) detectedIssues.unshift("refresh_failed");
   if (refreshError) reasons.unshift(`refresh failed: ${refreshError}`);
   ctx.log(
     nodeId,
     `Managed worktree refresh did not yield a clean up-to-date branch, recreating: ${worktreePath} (${reasons.join("; ")})`,
   );
+  const repairArtifacts = createManagedWorktreeRepairArtifacts({
+    repoRoot,
+    worktreePath,
+    branch: options.branch,
+    baseBranch,
+    taskId: options.taskId,
+    detectedIssues,
+    refreshError,
+  });
   cleanupBrokenManagedWorktree(repoRoot, worktreePath);
-  return false;
+  return {
+    healthy: false,
+    repairArtifacts,
+    detectedIssues,
+  };
 }
 
 function cleanupBrokenManagedWorktree(repoRoot, worktreePath) {
@@ -11555,7 +11805,7 @@ const STRICT_START_GUARD_MISSING_TASK = /^(1|true|yes|on)$/i.test(
 
 registerBuiltinNodeType("trigger.task_available", {
   describe: () =>
-    "Polling trigger that fires when todo tasks are available. Handles " +
+    "Polling trigger that fires when queued tasks are available. Handles " +
     "slot limits, anti-thrash filtering, cooldowns, task sorting (fire " +
     "tasks first), and listTasks retry with backoff.",
   schema: {
@@ -11565,6 +11815,11 @@ registerBuiltinNodeType("trigger.task_available", {
       pollIntervalMs: { type: "number", default: 30000, description: "Poll interval in ms" },
       projectId: { type: "string", description: "Kanban project ID (optional)" },
       status: { type: "string", default: "todo", description: "Status to poll for" },
+      statuses: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional ordered status list to poll, e.g. [\"inreview\", \"todo\"]",
+      },
       filterCodexScoped: { type: "boolean", default: true, description: "Only codex-scoped tasks" },
       filterDrafts: { type: "boolean", default: true, description: "Exclude draft tasks" },
       listRetries: { type: "number", default: 3, description: "Retries for listTasks calls" },
@@ -11578,7 +11833,8 @@ registerBuiltinNodeType("trigger.task_available", {
   },
   async execute(node, ctx, engine) {
     const maxParallel = node.config?.maxParallel ?? 3;
-    const status = node.config?.status ?? "todo";
+    const statuses = normalizeTaskAvailableStatuses(node.config?.statuses ?? node.config?.status ?? "todo");
+    const status = statuses[0] || "todo";
     const projectId = cfgOrCtx(node, ctx, "projectId") || undefined;
     const filterDrafts = node.config?.filterDrafts !== false;
     const listRetries = node.config?.listRetries ?? 3;
@@ -11605,19 +11861,33 @@ registerBuiltinNodeType("trigger.task_available", {
     for (let attempt = 0; attempt <= listRetries; attempt++) {
       try {
         const kanban = ctx.data?._services?.kanban || engine?.services?.kanban;
-        if (status === "todo") {
+        if (statuses.includes("todo")) {
           try {
             await recoverTimedBlockedWorkflowTasks({ kanban, ctx, node, projectId });
           } catch (recoveryErr) {
             ctx.log(node.id, `Blocked task recovery warning: ${recoveryErr?.message || recoveryErr}`);
           }
         }
+        const fetchedTasks = [];
         if (kanban?.listTasks) {
-          tasks = await kanban.listTasks(projectId, { status });
+          for (const requestedStatus of statuses) {
+            const listed = await kanban.listTasks(projectId, { status: requestedStatus });
+            fetchedTasks.push(...(Array.isArray(listed) ? listed : []));
+          }
         } else {
           const ka = await ensureKanbanAdapterMod();
-          tasks = await ka.listTasks(projectId, { status });
+          for (const requestedStatus of statuses) {
+            const listed = await ka.listTasks(projectId, { status: requestedStatus });
+            fetchedTasks.push(...(Array.isArray(listed) ? listed : []));
+          }
         }
+        const seenTaskIds = new Set();
+        tasks = fetchedTasks.filter((task) => {
+          const taskId = String(task?.id || task?.task_id || "").trim();
+          if (!taskId || seenTaskIds.has(taskId)) return false;
+          seenTaskIds.add(taskId);
+          return true;
+        });
         lastErr = null;
         break;
       } catch (err) {
@@ -11636,7 +11906,8 @@ registerBuiltinNodeType("trigger.task_available", {
 
     // Client-side status filter (backend may not respect status param)
     if (tasks?.length > 0) {
-      tasks = tasks.filter((t) => t.status === status);
+      const allowedStatuses = new Set(statuses);
+      tasks = tasks.filter((t) => allowedStatuses.has(String(t?.status || "").trim().toLowerCase()));
     }
     // Draft filter
     if (filterDrafts && tasks?.length > 0) {
@@ -11673,7 +11944,7 @@ registerBuiltinNodeType("trigger.task_available", {
     });
 
     let persistedOwnershipFilteredCount = 0;
-    if (status === "todo" && tasks.length > 0) {
+    if (statuses.includes("todo") && tasks.length > 0) {
       const persistedOwnedTaskIds = await getPersistedOwnedTaskIds(node, ctx);
       if (persistedOwnedTaskIds.size > 0) {
         const beforeFilterCount = tasks.length;
@@ -11833,8 +12104,14 @@ registerBuiltinNodeType("trigger.task_available", {
       }
     }
 
-    // Sort: fire tasks first, then by priority, then by created date
+    // Sort: inreview first, then fire tasks, then by priority, then by created date
     tasks.sort((a, b) => {
+      const aStatus = String(a?.status || "").trim().toLowerCase();
+      const bStatus = String(b?.status || "").trim().toLowerCase();
+      const aInReview = aStatus === "inreview";
+      const bInReview = bStatus === "inreview";
+      if (aInReview && !bInReview) return -1;
+      if (!aInReview && bInReview) return 1;
       const aFire = (a.labels || []).some((l) => typeof l === "string" ? l.includes("fire") : l?.name?.includes("fire"));
       const bFire = (b.labels || []).some((l) => typeof l === "string" ? l.includes("fire") : l?.name?.includes("fire"));
       if (aFire && !bFire) return -1;
@@ -12566,6 +12843,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
       detectedIssues: new Set(),
       phase: null,
       worktreePath: null,
+      repairArtifacts: null,
     };
     const persistRecoveryEvent = async (event) => {
       const payload = {
@@ -12602,6 +12880,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
 
     if (!branch) throw new Error("action.acquire_worktree: branch is required");
     if (!taskId) throw new Error("action.acquire_worktree: taskId is required");
+    ctx.data.repoRoot = repoRoot;
     ctx.data.baseBranch = baseBranch;
 
     // Non-git directory — agent spawns directly
@@ -12643,6 +12922,10 @@ registerBuiltinNodeType("action.acquire_worktree", {
       // Keep managed worktree paths short on Windows to avoid MAX_PATH checkout failures.
       const worktreePath = resolve(worktreesDir, deriveManagedWorktreeDirName(taskId, branch));
 
+      if (!existsSync(worktreePath)) {
+        cleanupBrokenManagedWorktree(repoRoot, worktreePath);
+      }
+
       // Ensure long paths are enabled for this repo before checkout.
       try {
         execGitArgsSync(["config", "--local", "core.longpaths", "true"], {
@@ -12668,7 +12951,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
       }
 
       if (existsSync(worktreePath)) {
-        refreshManagedWorktreeReuse(
+        const refreshResult = refreshManagedWorktreeReuse(
           node.id,
           ctx,
           repoRoot,
@@ -12676,11 +12959,16 @@ registerBuiltinNodeType("action.acquire_worktree", {
           baseBranch,
           baseBranchShort,
           fetchTimeout,
+          { taskId, branch },
         );
+        if (refreshResult?.repairArtifacts) {
+          recoveryState.repairArtifacts = refreshResult.repairArtifacts;
+        }
         if (existsSync(worktreePath)) {
           ctx.data.worktreePath = worktreePath;
           ctx.data._worktreeCreated = false;
           ctx.data._worktreeManaged = true;
+          ensureManagedTaskWorktreeReady(repoRoot, worktreePath);
           await persistRecoveryEvent({
             outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
             worktreePath,
@@ -12704,6 +12992,14 @@ registerBuiltinNodeType("action.acquire_worktree", {
           throw new Error(`Worktree creation failed: ${formatExecSyncError(createErr)}`);
         }
         const existingBranchWorktree = findExistingWorktreePathForBranch(repoRoot, branch);
+        if (existingBranchWorktree && !existsSync(existingBranchWorktree)) {
+          ctx.log(
+            node.id,
+            `Pruning stale registered worktree for branch ${branch}: ${existingBranchWorktree}`,
+          );
+          notePoisonedWorktree("attached-branch", existingBranchWorktree, ["missing_git_metadata"]);
+          cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
+        }
         if (existingBranchWorktree && existsSync(existingBranchWorktree)) {
           const existingWorktreeIsBroken = (
             !isValidGitWorktreePath(existingBranchWorktree) ||
@@ -12726,7 +13022,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
           isValidGitWorktreePath(existingBranchWorktree) &&
           !hasUnresolvedGitOperation(existingBranchWorktree)
         ) {
-          refreshManagedWorktreeReuse(
+          const refreshResult = refreshManagedWorktreeReuse(
             node.id,
             ctx,
             repoRoot,
@@ -12734,7 +13030,11 @@ registerBuiltinNodeType("action.acquire_worktree", {
             baseBranch,
             baseBranchShort,
             fetchTimeout,
+            { taskId, branch },
           );
+          if (refreshResult?.repairArtifacts) {
+            recoveryState.repairArtifacts = refreshResult.repairArtifacts;
+          }
         }
         if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
           isValidGitWorktreePath(existingBranchWorktree) &&
@@ -12743,6 +13043,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
           ctx.data.worktreePath = existingBranchWorktree;
           ctx.data._worktreeCreated = false;
           ctx.data._worktreeManaged = true;
+          ensureManagedTaskWorktreeReady(repoRoot, existingBranchWorktree);
           await persistRecoveryEvent({
             outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
             worktreePath: existingBranchWorktree,
@@ -12768,7 +13069,28 @@ registerBuiltinNodeType("action.acquire_worktree", {
           );
           attachedExistingBranch = true;
         } catch (reuseErr) {
+          if (isMissingRegisteredWorktreeError(reuseErr)) {
+            ctx.log(
+              node.id,
+              `Pruning missing registered worktree before retry for branch ${branch}: ${worktreePath}`,
+            );
+            notePoisonedWorktree("attached-branch", worktreePath, ["missing_git_metadata"]);
+            cleanupBrokenManagedWorktree(repoRoot, worktreePath);
+            execGitArgsSync(
+              ["worktree", "add", worktreePath, branch],
+              { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
+            );
+            attachedExistingBranch = true;
+          } else {
           const existingBranchWorktree = findExistingWorktreePathForBranch(repoRoot, branch);
+          if (existingBranchWorktree && !existsSync(existingBranchWorktree)) {
+            ctx.log(
+              node.id,
+              `Pruning stale registered worktree for branch ${branch}: ${existingBranchWorktree}`,
+            );
+            notePoisonedWorktree("attached-branch", existingBranchWorktree, ["missing_git_metadata"]);
+            cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
+          }
           if (existingBranchWorktree && existsSync(existingBranchWorktree)) {
             const existingWorktreeIsBroken = (
               !isValidGitWorktreePath(existingBranchWorktree) ||
@@ -12791,7 +13113,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
             isValidGitWorktreePath(existingBranchWorktree) &&
             !hasUnresolvedGitOperation(existingBranchWorktree)
           ) {
-            refreshManagedWorktreeReuse(
+            const refreshResult = refreshManagedWorktreeReuse(
               node.id,
               ctx,
               repoRoot,
@@ -12799,7 +13121,11 @@ registerBuiltinNodeType("action.acquire_worktree", {
               baseBranch,
               baseBranchShort,
               fetchTimeout,
+              { taskId, branch },
             );
+            if (refreshResult?.repairArtifacts) {
+              recoveryState.repairArtifacts = refreshResult.repairArtifacts;
+            }
           }
           if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
             isValidGitWorktreePath(existingBranchWorktree) &&
@@ -12808,6 +13134,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
             ctx.data.worktreePath = existingBranchWorktree;
             ctx.data._worktreeCreated = false;
             ctx.data._worktreeManaged = true;
+            ensureManagedTaskWorktreeReady(repoRoot, existingBranchWorktree);
             await persistRecoveryEvent({
               outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
               worktreePath: existingBranchWorktree,
@@ -12829,10 +13156,11 @@ registerBuiltinNodeType("action.acquire_worktree", {
             `Worktree creation failed: ${formatExecSyncError(createErr)}; ` +
             `reuse failed: ${formatExecSyncError(reuseErr)}`,
           );
+          }
         }
       }
       if (attachedExistingBranch) {
-        refreshManagedWorktreeReuse(
+        const refreshResult = refreshManagedWorktreeReuse(
           node.id,
           ctx,
           repoRoot,
@@ -12840,7 +13168,11 @@ registerBuiltinNodeType("action.acquire_worktree", {
           baseBranch,
           baseBranchShort,
           fetchTimeout,
+          { taskId, branch },
         );
+        if (refreshResult?.repairArtifacts) {
+          recoveryState.repairArtifacts = refreshResult.repairArtifacts;
+        }
         if (!existsSync(worktreePath)) {
           notePoisonedWorktree("post-pull", worktreePath, ["refresh_conflict"]);
           throw new Error(
@@ -12855,6 +13187,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
       ctx.data.worktreePath = worktreePath;
       ctx.data._worktreeCreated = true;
       ctx.data._worktreeManaged = true;
+      ensureManagedTaskWorktreeReady(repoRoot, worktreePath);
       await persistRecoveryEvent({
         outcome: recoveryState.recreated ? "recreated" : "healthy_noop",
         worktreePath,
@@ -12899,6 +13232,7 @@ registerBuiltinNodeType("action.acquire_worktree", {
         autoRecoverDelayMs,
         retryAt,
         blockedReason,
+        repairArtifacts: retryable ? null : recoveryState.repairArtifacts,
         recoveryNote: retryable || !retryAt ? "" : ` — blocked until ${retryAt}`,
       };
     }
@@ -13166,6 +13500,27 @@ registerBuiltinNodeType("action.recover_worktree", {
       },
     };
     const result = await getNodeType("action.release_worktree")?.execute?.(releaseNode, ctx);
+    const sweepResult = await getNodeType("action.sweep_task_worktrees")?.execute?.(
+      {
+        id: `${node.id}:sweep`,
+        type: "action.sweep_task_worktrees",
+        config: {
+          repoRoot,
+          taskId,
+          timeout: removeTimeout,
+        },
+      },
+      ctx,
+      engine,
+    );
+    let pruneResult = null;
+    if (shouldPrune) {
+      try {
+        pruneResult = await pruneStaleWorktrees(repoRoot);
+      } catch (err) {
+        ctx.log(node.id, `Worktree prune warning: ${err?.message || err}`);
+      }
+    }
     ctx.data.worktreePath = "";
     return {
       success: result?.success !== false,
@@ -13173,6 +13528,8 @@ registerBuiltinNodeType("action.recover_worktree", {
       worktreePath,
       released: result?.released === true,
       skipped: result?.skipped === true,
+      removedWorktrees: Array.isArray(sweepResult?.removed) ? sweepResult.removed : [],
+      prunedOrphans: Number(pruneResult?.pruned || 0),
       warning: result?.warning,
     };
   },
@@ -13180,19 +13537,66 @@ registerBuiltinNodeType("action.recover_worktree", {
 
 registerBuiltinNodeType("action.sweep_task_worktrees", {
   describe: () =>
-    "Sweep stale managed task worktrees for a task by pruning git worktree metadata.",
+    "Sweep managed task worktrees for a task by removing matching .bosun/worktrees entries and pruning git metadata.",
   schema: {
     type: "object",
     properties: {
       repoRoot: { type: "string", description: "Repository root" },
       taskId: { type: "string", description: "Task ID (owner)" },
+      maxAgeMs: { type: "number", default: 43200000, description: "Fallback max age in ms when taskId is omitted" },
       timeout: { type: "number", default: 15000, description: "Timeout for git worktree prune (ms)" },
     },
   },
   async execute(node, ctx, engine) {
     const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
     const taskId = cfgOrCtx(node, ctx, "taskId") || ctx.data?.taskId || "";
+    const maxAgeMs = Number(node.config?.maxAgeMs ?? 43200000);
     const timeout = Number(node.config?.timeout ?? 15000);
+    const managedRoot = resolve(repoRoot, ".bosun", "worktrees");
+    const removed = [];
+    const errors = [];
+    let scanned = 0;
+
+    try {
+      if (existsSync(managedRoot)) {
+        const entries = readdirSync(managedRoot);
+        const taskToken = taskId ? deriveManagedTaskToken(taskId) : "";
+        const now = Date.now();
+        for (const entry of entries) {
+          const entryPath = resolve(managedRoot, entry);
+          if (!existsSync(entryPath)) continue;
+          try {
+            const stats = statSync(entryPath);
+            if (!stats.isDirectory()) continue;
+            scanned += 1;
+            const matchesTask = taskToken && entry.includes(taskToken);
+            const isStale = !taskToken && Number.isFinite(stats.mtimeMs)
+              ? now - stats.mtimeMs > maxAgeMs
+              : false;
+            if (!matchesTask && !isStale) continue;
+            try {
+              execGitArgsSync(["worktree", "remove", String(entryPath), "--force"], {
+                cwd: repoRoot,
+                encoding: "utf8",
+                timeout,
+                stdio: ["ignore", "pipe", "pipe"],
+              });
+            } catch {
+              // Orphaned directories may no longer be registered; fall back to rmSync below.
+            }
+            if (existsSync(entryPath)) {
+              rmSync(entryPath, { recursive: true, force: true });
+            }
+            removed.push(entry);
+          } catch (err) {
+            errors.push({ entry, error: String(err?.message || err) });
+          }
+        }
+      }
+    } catch (err) {
+      errors.push({ entry: managedRoot, error: String(err?.message || err) });
+    }
+
     try {
       execGitArgsSync(["worktree", "prune"], {
         cwd: repoRoot,
@@ -13201,11 +13605,14 @@ registerBuiltinNodeType("action.sweep_task_worktrees", {
         stdio: ["ignore", "pipe", "pipe"],
       });
       fixGitConfigCorruption(repoRoot);
-      ctx.log(node.id, `Swept task worktrees for ${taskId || "(unknown task)"}`);
-      return { success: true, taskId, swept: true };
+      ctx.log(
+        node.id,
+        `Swept task worktrees for ${taskId || "(unknown task)"}: removed=${removed.length}, scanned=${scanned}`,
+      );
+      return { success: true, taskId, swept: true, removed, scanned, errors };
     } catch (err) {
       ctx.log(node.id, `Task worktree sweep warning: ${err.message}`);
-      return { success: true, taskId, swept: false, warning: err.message };
+      return { success: true, taskId, swept: false, removed, scanned, errors, warning: err.message };
     }
   },
 });
@@ -13831,6 +14238,7 @@ registerBuiltinNodeType("action.build_task_prompt", {
       const searchDirs = [normalizedWorktreePath || normalizedRepoRoot, normalizedRepoRoot].filter(Boolean);
       const docFiles = ["AGENTS.md", ".github/copilot-instructions.md"];
       const loaded = new Set();
+      const markdownSafetyPolicy = getRepoMarkdownSafetyPolicy(normalizedRepoRoot);
       for (const dir of searchDirs) {
         for (const doc of docFiles) {
           const fullPath = resolve(dir, doc);
@@ -13842,6 +14250,35 @@ registerBuiltinNodeType("action.build_task_prompt", {
                 doc,
               ).trim();
               if (content && content.length > 10) {
+                const decision = evaluateMarkdownSafety(
+                  content,
+                  {
+                    channel: "task-prompt-context",
+                    sourceKind: "documentation",
+                    sourcePath: doc,
+                    sourceRoot: normalizedRepoRoot,
+                    documentationContext: true,
+                  },
+                  markdownSafetyPolicy,
+                );
+                if (decision.blocked) {
+                  ctx.log(
+                    node.id,
+                    `Skipped unsafe prompt context from ${doc}: ${decision.safety.reasons.join(", ")}`,
+                  );
+                  recordMarkdownSafetyAuditEvent(
+                    {
+                      channel: "task-prompt-context",
+                      sourceKind: "documentation",
+                      sourcePath: doc,
+                      reasons: decision.safety.reasons,
+                      score: decision.safety.score,
+                      findings: decision.safety.findings,
+                    },
+                    { policy: markdownSafetyPolicy, rootDir: normalizedRepoRoot },
+                  );
+                  continue;
+                }
                 loaded.add(doc);
                 userParts.push(`## ${doc}`);
                 userParts.push(content);
@@ -14449,9 +14886,12 @@ registerBuiltinNodeType("action.push_branch", {
     const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
     const branch = cfgOrCtx(node, ctx, "branch", "");
     const baseBranch = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
+    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || ctx.data.repoRoot || process.cwd();
     const remote = node.config?.remote || "origin";
     const forceWithLease = node.config?.forceWithLease !== false;
-    const skipHooks = node.config?.skipHooks !== false;
+    const skipHooks = typeof node.config?.skipHooks === "boolean"
+      ? node.config.skipHooks
+      : !shouldEnforceManagedPushHook(repoRoot, worktreePath);
     const rebaseBeforePush = node.config?.rebaseBeforePush !== false;
     const emptyDiffGuard = node.config?.emptyDiffGuard !== false;
     const syncMain = node.config?.syncMainForModuleBranch === true;
@@ -15121,7 +15561,6 @@ export async function ensureWorkflowNodeTypesLoaded(options = {}) {
   }
   return listNodeTypes();
 }
-
 
 
 

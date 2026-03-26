@@ -1,16 +1,21 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 
 const TOOL = resolve("tools", "import-check.mjs");
-const NODE_FLAGS = "--experimental-vm-modules --no-warnings=ExperimentalWarning";
+const NODE_ARGS = [
+  "--experimental-vm-modules",
+  "--no-warnings=ExperimentalWarning",
+  TOOL,
+];
 
 function run(rootDir, files) {
   const fileArg = files.join(",");
-  return execSync(
-    `node ${NODE_FLAGS} ${TOOL} --root "${rootDir}" --files ${fileArg}`,
+  return execFileSync(
+    process.execPath,
+    [...NODE_ARGS, "--root", rootDir, "--files", fileArg],
     { encoding: "utf8", cwd: process.cwd(), stdio: ["pipe", "pipe", "pipe"] },
   );
 }
@@ -18,8 +23,9 @@ function run(rootDir, files) {
 function runExpectFail(rootDir, files) {
   const fileArg = files.join(",");
   try {
-    execSync(
-      `node ${NODE_FLAGS} ${TOOL} --root "${rootDir}" --files ${fileArg}`,
+    execFileSync(
+      process.execPath,
+      [...NODE_ARGS, "--root", rootDir, "--files", fileArg],
       { encoding: "utf8", cwd: process.cwd(), stdio: ["pipe", "pipe", "pipe"] },
     );
     return { exitCode: 0, stdout: "", stderr: "" };

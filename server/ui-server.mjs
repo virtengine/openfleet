@@ -241,7 +241,7 @@ import {
   SETTINGS_SCHEMA,
   validateSetting,
 } from "../ui/modules/settings-schema.js";
-import { loadConfig } from "../config/config.mjs";
+import { loadConfig, resolveTrustedAuthorList } from "../config/config.mjs";
 import {
   getAvailableAgents,
   getAgentMode,
@@ -285,6 +285,7 @@ import {
   persistCompatibleTuiAuthToken,
   resolveTuiAuthToken,
 } from "../infra/tui-bridge.mjs";
+import { setComponentStatus } from "../infra/health-status.mjs";
 
 const TASK_STORE_MODULE_PATH = "../task/task-store.mjs";
 const TASK_STORE_START_GUARD_EXPORTS = [
@@ -2095,6 +2096,11 @@ function buildTaskBlockedContext(task, options = {}) {
     6,
   );
   const hasPlannerCorruption = /planner payload corrupted/i.test(explicitReason);
+  const repairArtifacts =
+    currentTask?.meta?.worktreeFailure?.repairArtifacts
+    && typeof currentTask.meta.worktreeFailure.repairArtifacts === "object"
+      ? currentTask.meta.worktreeFailure.repairArtifacts
+      : null;
   const hasWorktreeFailure =
     Boolean(currentTask?.meta?.worktreeFailure) ||
     logDiagnostics.counts.worktreeFailed > 0 ||
@@ -2116,7 +2122,9 @@ function buildTaskBlockedContext(task, options = {}) {
     headline = "Task Lifecycle blocked this task after worktree acquisition failed.";
     summary = explicitReason
       || "Bosun could not acquire or refresh a clean managed worktree for this task.";
-    recommendation = "If the worktree guard fix is now deployed, move the task back to todo to retry it on a fresh lifecycle run.";
+    recommendation = repairArtifacts?.summaryPath
+      ? "Review the saved repair artifacts, then move the task back to todo to retry it on a fresh lifecycle run."
+      : "If the worktree guard fix is now deployed, move the task back to todo to retry it on a fresh lifecycle run.";
   } else if (isDependencyBlocked) {
     category = "dependency_blocked";
     headline = "This task cannot start because one or more dependencies are not done yet.";
@@ -2150,6 +2158,7 @@ function buildTaskBlockedContext(task, options = {}) {
     createPrFailureCount: logDiagnostics.counts.createPrFailed,
     blockedBy: Array.isArray(canStart?.blockedBy) ? canStart.blockedBy : [],
     blockingTaskIds: Array.isArray(canStart?.blockingTaskIds) ? canStart.blockingTaskIds : [],
+    repairArtifacts,
     timelineEvidence,
     logEvidence: logDiagnostics.entries,
   };
@@ -2298,7 +2307,9 @@ function collectTaskWorkflowRunEntries(task) {
     ...(Array.isArray(task?.workflowRuns) ? task.workflowRuns : []),
     ...(Array.isArray(task?.workflowHistory) ? task.workflowHistory : []),
     ...(Array.isArray(task?.workflows) ? task.workflows : []),
+    ...(Array.isArray(task?.runs) ? task.runs : []),
     ...(Array.isArray(task?.meta?.workflowRuns) ? task.meta.workflowRuns : []),
+    ...(Array.isArray(task?.meta?.runs) ? task.meta.runs : []),
   ];
 }
 
@@ -2321,6 +2332,32 @@ function collectTaskDiffSessionIds(task) {
     push(entry?.agentSessionId);
     push(entry?.meta?.sessionId);
     push(entry?.meta?.threadId);
+  }
+
+  return [...ids];
+}
+
+function collectTaskLinkedSessionIds(task, tracker = null) {
+  const ids = new Set(collectTaskDiffSessionIds(task));
+  const taskKeys = [
+    task?.id,
+    task?.taskId,
+    task?.meta?.taskId,
+  ]
+    .map((value) => normalizeDiffTaskRef(value))
+    .filter(Boolean);
+  if (!taskKeys.length) return [...ids];
+
+  const taskKeySet = new Set(taskKeys);
+  const sessionTracker = tracker || getSessionTracker();
+  const sessions = typeof sessionTracker?.listAllSessions === "function"
+    ? sessionTracker.listAllSessions()
+    : [];
+  for (const session of sessions) {
+    const sessionTaskId = normalizeDiffTaskRef(session?.taskId);
+    if (!sessionTaskId || !taskKeySet.has(sessionTaskId)) continue;
+    const sessionId = normalizeDiffTaskRef(session?.id || session?.sessionId || sessionTaskId);
+    if (sessionId) ids.add(sessionId);
   }
 
   return [...ids];
@@ -2461,14 +2498,12 @@ async function buildTaskDiffPayload(task, workspaceContext = {}) {
   }
 
   const baseBranch = pickTaskDiffBaseBranch(task);
+  const tracker = getSessionTracker();
 
-  for (const sessionId of collectTaskDiffSessionIds(task)) {
-    try {
-      const session = tracker.getSession(sessionId);
-      if (!session) continue;
-      const worktreePath = await resolveSessionWorktreePath(session);
-      if (!worktreePath || !existsSync(worktreePath)) continue;
-      const diff = collectDiffStats(worktreePath, {
+  try {
+    const linkedWorktreePath = await resolveTaskLinkedWorktreePath(task, tracker);
+    if (linkedWorktreePath && existsSync(linkedWorktreePath)) {
+      const diff = collectDiffStats(linkedWorktreePath, {
         baseBranch,
         includePatch: true,
       });
@@ -2476,17 +2511,17 @@ async function buildTaskDiffPayload(task, workspaceContext = {}) {
         return {
           diff,
           summary: diff.formatted,
-          commits: getRecentCommits(worktreePath),
+          commits: getRecentCommits(linkedWorktreePath),
           source: {
-            kind: "session",
-            label: diff.sourceRange || "session worktree",
-            detail: worktreePath,
+            kind: "worktree",
+            label: diff.sourceRange || "linked worktree",
+            detail: linkedWorktreePath,
           },
         };
       }
-    } catch {
-      // Fall through to branch or commit resolution.
     }
+  } catch {
+    // Fall through to repository or commit resolution.
   }
 
   const repoPath = resolveTaskRepositoryDir(task, workspaceContext);
@@ -4770,6 +4805,62 @@ function findWorktreeMatch(worktrees, { path, branch, taskKey }) {
   return null;
 }
 
+function buildRecoveryBackfilledWorktrees(worktrees, recovery) {
+  const recentEvents = Array.isArray(recovery?.recentEvents)
+    ? recovery.recentEvents
+    : [];
+  if (!recentEvents.length) return [];
+
+  const existingPaths = new Set(
+    worktrees
+      .map((wt) => normalizeWorktreePath(wt?.path))
+      .filter(Boolean),
+  );
+  const existingBranches = new Set(
+    worktrees
+      .map((wt) => String(wt?.branch || "").trim())
+      .filter(Boolean),
+  );
+  const existingTaskKeys = new Set(
+    worktrees
+      .map((wt) => String(wt?.taskKey || "").trim())
+      .filter(Boolean),
+  );
+  const seenSynthetic = new Set();
+
+  return recentEvents.flatMap((event) => {
+    const normalizedPath = normalizeWorktreePath(event?.worktreePath);
+    const branch = String(event?.branch || "").replace(/^refs\/heads\//, "").trim();
+    const taskKey = String(event?.taskId || "").trim();
+    const outcome = String(event?.outcome || "").trim().toLowerCase();
+    if (!normalizedPath && !branch && !taskKey) return [];
+    if (normalizedPath && existingPaths.has(normalizedPath)) return [];
+    if (branch && existingBranches.has(branch)) return [];
+    if (taskKey && existingTaskKeys.has(taskKey)) return [];
+
+    const syntheticKey = normalizedPath || `${branch}::${taskKey}::${outcome}`;
+    if (seenSynthetic.has(syntheticKey)) return [];
+    seenSynthetic.add(syntheticKey);
+
+    const eventTimestamp = Date.parse(String(event?.timestamp || ""));
+    const age = Number.isFinite(eventTimestamp)
+      ? Math.max(0, Date.now() - eventTimestamp)
+      : 0;
+
+    return [{
+      path: normalizedPath || null,
+      branch: branch || null,
+      taskKey: taskKey || null,
+      age,
+      status: outcome === "recreated" ? "recovered" : "recovery_failed",
+      owner: "workflow-recovery",
+      isMainWorktree: false,
+      source: "recovery",
+      recoveryEvent: event,
+    }];
+  });
+}
+
 async function buildWorktreePeek(wt) {
   const cwd = wt?.path;
   if (!cwd) return null;
@@ -5262,10 +5353,14 @@ function getAutoOpenCooldownMs() {
 }
 
 function getBrowserOpenMode() {
-  const mode = String(process.env.BOSUN_UI_BROWSER_OPEN_MODE || "manual")
+  const mode = String(process.env.BOSUN_UI_BROWSER_OPEN_MODE || "")
     .trim()
     .toLowerCase();
   if (mode === "auto") return "auto";
+  if (mode === "manual") return "manual";
+  if (parseBooleanEnv(process.env.BOSUN_UI_AUTO_OPEN_BROWSER, false)) {
+    return "auto";
+  }
   return "manual";
 }
 
@@ -6197,6 +6292,93 @@ function updateConfigFile(changes) {
   }
   writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
   return { updated: Array.from(updated), path: configPath };
+}
+
+function parseBooleanLike(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  const raw = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  return fallback;
+}
+
+function normalizePrAutomationPolicy(raw = {}, options = {}) {
+  const attachModeRaw = String(raw?.attachMode || "all").trim().toLowerCase();
+  const attachMode = ["all", "trusted-only", "disabled"].includes(attachModeRaw)
+    ? attachModeRaw
+    : "all";
+  const trustedAuthors = resolveTrustedAuthorList(raw?.trustedAuthors, {
+    includeOAuthTrustedAuthor: options.includeOAuthTrustedAuthor === true,
+  });
+
+  return {
+    attachMode,
+    trustedAuthors,
+    allowTrustedFixes: parseBooleanLike(raw?.allowTrustedFixes, false),
+    allowTrustedMerges: parseBooleanLike(raw?.allowTrustedMerges, false),
+    assistiveActions: {
+      installOnSetup: parseBooleanLike(raw?.assistiveActions?.installOnSetup, false),
+    },
+  };
+}
+
+function normalizeGatesPolicy(raw = {}, options = {}) {
+  const prsRaw = raw?.prs && typeof raw.prs === "object" ? raw.prs : {};
+  const checksRaw = raw?.checks && typeof raw.checks === "object" ? raw.checks : {};
+  const executionRaw = raw?.execution && typeof raw.execution === "object" ? raw.execution : {};
+  const worktreesRaw = raw?.worktrees && typeof raw.worktrees === "object" ? raw.worktrees : {};
+  const runtimeRaw = raw?.runtime && typeof raw.runtime === "object" ? raw.runtime : {};
+  const worktreeBootstrapRaw =
+    options?.worktreeBootstrap && typeof options.worktreeBootstrap === "object"
+      ? options.worktreeBootstrap
+      : {};
+  const bootstrapEnabledDefault = parseBooleanLike(worktreeBootstrapRaw.enabled, true);
+  const repoVisibilityRaw = String(prsRaw.repoVisibility || "unknown").trim().toLowerCase();
+  const automationPreferenceRaw = String(prsRaw.automationPreference || "runtime-first").trim().toLowerCase();
+  const githubActionsBudgetRaw = String(prsRaw.githubActionsBudget || "ask-user").trim().toLowerCase();
+  const checkModeRaw = String(checksRaw.mode || "all").trim().toLowerCase();
+  const listFromValue = (value) => {
+    const source = Array.isArray(value) ? value : String(value || "").split(/[\n,]/);
+    return [...new Set(source.map((entry) => String(entry || "").trim()).filter(Boolean))];
+  };
+  return {
+    prs: {
+      repoVisibility: ["public", "private", "unknown"].includes(repoVisibilityRaw)
+        ? repoVisibilityRaw
+        : "unknown",
+      automationPreference: ["runtime-first", "actions-first"].includes(automationPreferenceRaw)
+        ? automationPreferenceRaw
+        : "runtime-first",
+      githubActionsBudget: ["ask-user", "available", "limited"].includes(githubActionsBudgetRaw)
+        ? githubActionsBudgetRaw
+        : "ask-user",
+    },
+    checks: {
+      mode: ["all", "required-only"].includes(checkModeRaw) ? checkModeRaw : "all",
+      requiredPatterns: listFromValue(checksRaw.requiredPatterns),
+      optionalPatterns: listFromValue(checksRaw.optionalPatterns),
+      ignorePatterns: listFromValue(checksRaw.ignorePatterns),
+      requireAnyRequiredCheck: parseBooleanLike(checksRaw.requireAnyRequiredCheck, true),
+      treatPendingRequiredAsBlocking: parseBooleanLike(checksRaw.treatPendingRequiredAsBlocking, true),
+      treatNeutralAsPass: parseBooleanLike(checksRaw.treatNeutralAsPass, false),
+    },
+    execution: {
+      sandboxMode: String(executionRaw.sandboxMode || "workspace-write").trim().toLowerCase() || "workspace-write",
+      containerIsolationEnabled: parseBooleanLike(executionRaw.containerIsolationEnabled, false),
+      containerRuntime: String(executionRaw.containerRuntime || "auto").trim().toLowerCase() || "auto",
+      networkAccess: String(executionRaw.networkAccess || "default").trim().toLowerCase() || "default",
+    },
+    worktrees: {
+      requireBootstrap: parseBooleanLike(worktreesRaw.requireBootstrap, bootstrapEnabledDefault),
+      requireReadiness: parseBooleanLike(worktreesRaw.requireReadiness, bootstrapEnabledDefault),
+      enforcePushHook: parseBooleanLike(worktreesRaw.enforcePushHook, true),
+    },
+    runtime: {
+      enforceBacklog: parseBooleanLike(runtimeRaw.enforceBacklog, true),
+      agentTriggerControl: parseBooleanLike(runtimeRaw.agentTriggerControl, true),
+    },
+  };
 }
 
 function validateConfigSchemaChanges(changes) {
@@ -8068,7 +8250,7 @@ function scrubStackTraces(payload) {
   return out;
 }
 function normalizeJsonResponsePayload(payload) {
-  return scrubStackTraces(payload);
+  return makeJsonSafe(scrubStackTraces(payload), { maxDepth: 6 });
 }
 
 function makeJsonSafe(value, options = {}) {
@@ -8184,14 +8366,29 @@ function jsonResponse(res, statusCode, payload) {
     logJsonFailure(res, statusCode, payload, diagnosticId);
   }
   const normalizedPayload = normalizeJsonResponsePayload(payload);
-  const safePayload =
-    statusCode >= 500
-      ? {
-          ok: false,
-          error: extractSafeErrorMessage(normalizedPayload),
-          diagnosticId,
-        }
-      : normalizedPayload;
+  let safePayload = normalizedPayload;
+  if (statusCode >= 500) {
+    safePayload = {
+      ok: false,
+      error: extractSafeErrorMessage(normalizedPayload),
+      diagnosticId,
+    };
+  } else if (
+    statusCode >= 400 &&
+    normalizedPayload &&
+    typeof normalizedPayload === "object" &&
+    !Array.isArray(normalizedPayload)
+  ) {
+    const hasErrorField =
+      Object.prototype.hasOwnProperty.call(normalizedPayload, "error") ||
+      Object.prototype.hasOwnProperty.call(normalizedPayload, "message");
+    if (hasErrorField) {
+      const errorText = extractSafeErrorMessage(normalizedPayload);
+      safePayload = { ...normalizedPayload };
+      if (Object.prototype.hasOwnProperty.call(safePayload, "error")) safePayload.error = errorText;
+      if (Object.prototype.hasOwnProperty.call(safePayload, "message")) safePayload.message = errorText;
+    }
+  }
   const body = JSON.stringify(safePayload);
   const headers = {
     "Content-Type": "application/json; charset=utf-8",
@@ -9935,7 +10132,7 @@ function buildTaskRunSummary(steps = [], fallback = "Run recorded.") {
 }
 
 async function buildReplayableTaskRuns(task, tracker = null, limit = 5) {
-  const sessionIds = collectTaskDiffSessionIds(task);
+  const sessionIds = collectTaskLinkedSessionIds(task, tracker);
   const { value: storedRunsRaw } = await callTaskStoreFunction(TASK_STORE_RUN_EXPORTS.list, [task?.id]);
   const storedRuns = storedRunsRaw;
   const runs = Array.isArray(storedRuns) ? storedRuns.map((run) => ({
@@ -10350,13 +10547,14 @@ async function collectUiStats() {
   
   // Use orchestrator status if available, otherwise try task store
   if (orchestratorStatus?.counts) {
+    const blockedCount = Number(orchestratorStatus.counts.blocked ?? orchestratorStatus.counts.error ?? 0);
     taskStats = {
       total: (orchestratorStatus.counts.todo || 0) + (orchestratorStatus.counts.inprogress || 0) + 
              (orchestratorStatus.counts.done || 0) + (orchestratorStatus.counts.inreview || 0) +
-             (orchestratorStatus.counts.blocked || 0),
+             blockedCount,
       active: orchestratorStatus.counts.inprogress || 0,
       completed: orchestratorStatus.counts.done || 0,
-      failed: orchestratorStatus.counts.error || 0,
+      failed: blockedCount,
       queued: orchestratorStatus.counts.todo || 0,
     };
   } else {
@@ -12670,6 +12868,50 @@ async function resolveSessionWorktreePath(session) {
   }
 }
 
+async function resolveTaskLinkedWorktreePath(task, tracker = null) {
+  const directCandidates = [
+    task?.worktreePath,
+    task?.workspacePath,
+    task?.meta?.worktreePath,
+    task?.meta?.workspacePath,
+    task?.meta?.execution?.worktreePath,
+    task?.runtimeSnapshot?.slot?.worktreePath,
+  ]
+    .map((value) => normalizeCandidatePath(value))
+    .filter(Boolean);
+
+  for (const candidate of directCandidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  try {
+    const active = await listActiveWorktrees(repoRoot);
+    const matched = findWorktreeMatch(active || [], {
+      path: directCandidates[0] || "",
+      branch:
+        task?.branchName ||
+        task?.branch ||
+        task?.meta?.branchName ||
+        task?.meta?.branch ||
+        "",
+      taskKey: task?.id || task?.taskId || "",
+    });
+    const matchedPath = normalizeCandidatePath(matched?.path);
+    if (matchedPath && existsSync(matchedPath)) return matchedPath;
+  } catch {
+    /* best effort */
+  }
+
+  const sessionTracker = tracker || getSessionTracker();
+  for (const sessionId of collectTaskLinkedSessionIds(task, sessionTracker)) {
+    const session = sessionTracker?.getSession?.(sessionId);
+    const worktreePath = await resolveSessionWorktreePath(session);
+    if (worktreePath && existsSync(worktreePath)) return worktreePath;
+  }
+
+  return null;
+}
+
 async function ensurePresenceLoaded() {
   const loaded = await loadWorkspaceRegistry().catch(() => null);
   const registry = loaded?.registry || loaded || null;
@@ -13392,15 +13634,19 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/tasks/diff") {
     try {
+      const body = req.method === "POST" ? await readJsonBody(req).catch(() => ({})) : null;
+      const taskFromBody = body?.task && typeof body.task === "object" ? body.task : null;
       const taskId =
-        url.searchParams.get("taskId") || url.searchParams.get("id") || "";
+        url.searchParams.get("taskId")
+        || url.searchParams.get("id")
+        || String(taskFromBody?.id || taskFromBody?.taskId || "").trim();
       if (!taskId) {
         jsonResponse(res, 400, { ok: false, error: "taskId required" });
         return;
       }
       const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
       const adapter = getKanbanAdapter();
-      const task = await adapter.getTask(taskId);
+      const task = taskFromBody || await adapter.getTask(taskId);
       const payload = await buildTaskDiffPayload(task, workspaceContext);
       jsonResponse(res, 200, { ok: true, ...payload });
     } catch (err) {
@@ -13458,7 +13704,8 @@ async function handleApi(req, res, url) {
           workspaceDir: workspaceContext?.workspaceDir || repoRoot,
         });
         const diagnostics = buildTaskDiagnostics(detailTask, supervisorDiagnostics);
-        const replayRuns = await buildReplayableTaskRuns(detailTask, getSessionTracker(), 8);
+        const tracker = getSessionTracker();
+        const replayRuns = await buildReplayableTaskRuns(detailTask, tracker, 8);
         if (replayRuns.length > 0) {
           detailTask.runs = replayRuns;
           detailTask.meta = {
@@ -13468,23 +13715,33 @@ async function handleApi(req, res, url) {
           };
         }
 
+        const linkedSessionIds = collectTaskLinkedSessionIds(detailTask, tracker);
+        const primarySessionId = linkedSessionIds[0] || null;
+        const linkedWorktreePath = await resolveTaskLinkedWorktreePath(detailTask, tracker);
+
         detailTask.meta = {
           ...(detailTask.meta || {}),
           workflowRuns: mergedWorkflowRuns,
           historyCount: Array.isArray(detailTask.statusHistory) ? detailTask.statusHistory.length : 0,
           timelineCount: Array.isArray(detailTask.timeline) ? detailTask.timeline.length : 0,
+          linkedSessionIds,
+          primarySessionId,
           canStart,
           blockedContext,
           ...(diagnostics ? { diagnostics } : {}),
           ...(sprintId ? { sprintId } : {}),
           ...(sprintDag ? { sprintDag: sprintDag.data } : {}),
           ...(globalDag ? { dagOfDags: globalDag.data } : {}),
+          ...(linkedWorktreePath ? { worktreePath: linkedWorktreePath } : {}),
         };
         if (sprintDag) detailTask.sprintDag = sprintDag.data;
         if (globalDag) detailTask.dagOfDags = globalDag.data;
         detailTask.canStart = canStart;
         detailTask.blockedContext = blockedContext;
         if (diagnostics) detailTask.diagnostics = diagnostics;
+        if (primarySessionId && !detailTask.sessionId) detailTask.sessionId = primarySessionId;
+        if (primarySessionId && !detailTask.primarySessionId) detailTask.primarySessionId = primarySessionId;
+        if (linkedWorktreePath) detailTask.worktreePath = linkedWorktreePath;
         detailTask = withTaskRuntimeSnapshot(detailTask);
       }
       jsonResponse(res, 200, { ok: true, data: detailTask });
@@ -16530,11 +16787,15 @@ async function handleApi(req, res, url) {
       const worktrees = listActiveWorktrees(repoRoot);
       const stats = await getWorktreeStats(repoRoot);
       const recovery = await readWorktreeRecoveryState(repoRoot);
+      const recoveryBackfill = buildRecoveryBackfilledWorktrees(worktrees, recovery);
       jsonResponse(res, 200, {
         ok: true,
-        data: worktrees,
+        data: [...worktrees, ...recoveryBackfill],
         stats: {
           ...stats,
+          liveTotal: Number(stats.total || 0),
+          total: Number(stats.total || 0) + recoveryBackfill.length,
+          recoveryLinked: recoveryBackfill.length,
           recovery,
         },
       });
@@ -19407,8 +19668,9 @@ if (path === "/api/agent-logs/context") {
       for (const task of tasks) {
         for (const entry of (task.statusHistory || [])) {
           if (entry.timestamp < cutoff) continue;
-          if (entry.status === "done") successRuns++;
-          else if (entry.status === "error") failedRuns++;
+          const normalizedStatus = String(entry.status || "").toLowerCase();
+          if (normalizedStatus === "done") successRuns++;
+          else if (normalizedStatus === "error" || normalizedStatus === "failed" || normalizedStatus === "blocked") failedRuns++;
         }
       }
     } catch { /* task store not loaded or unavailable */ }
@@ -19422,6 +19684,7 @@ if (path === "/api/agent-logs/context") {
     const regionEnv = (process.env.EXECUTOR_REGIONS || "").trim();
     const regions = regionEnv ? regionEnv.split(",").map((r) => r.trim()).filter(Boolean) : ["auto"];
     const pkg = JSON.parse(readFileSync(resolve(__dirname, "..", "package.json"), "utf8"));
+    const { configData } = readConfigDocument();
     let runtimeKanbanBackend = "internal";
     try {
       runtimeKanbanBackend = String(
@@ -19445,6 +19708,10 @@ if (path === "/api/agent-logs/context") {
       sdk: process.env.EXECUTOR_SDK || "auto",
       kanbanBackend: runtimeKanbanBackend,
       regions,
+      prAutomation: normalizePrAutomationPolicy(configData?.prAutomation, { includeOAuthTrustedAuthor: true }),
+      gates: normalizeGatesPolicy(configData?.gates, {
+        worktreeBootstrap: configData?.worktreeBootstrap,
+      }),
       tunnel: getTunnelStatus(),
       fallbackAuth: getFallbackAuthStatus(),
     });
@@ -19481,6 +19748,74 @@ if (path === "/api/agent-logs/context") {
       }
       broadcastUiEvent(["executor", "overview"], "invalidate", { reason: "config-updated", key, value });
       jsonResponse(res, 200, { ok: true, key, value });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/pr-automation" && req.method === "GET") {
+    try {
+      const { configData } = readConfigDocument();
+      jsonResponse(res, 200, {
+        ok: true,
+        prAutomation: normalizePrAutomationPolicy(configData?.prAutomation, { includeOAuthTrustedAuthor: true }),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/pr-automation" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const prAutomation = normalizePrAutomationPolicy(body?.prAutomation || {});
+      const { configPath, configData } = readConfigDocument();
+      configData.prAutomation = prAutomation;
+      writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
+      broadcastUiEvent(["settings", "overview"], "invalidate", {
+        reason: "pr-automation-updated",
+      });
+      jsonResponse(res, 200, {
+        ok: true,
+        configPath,
+        prAutomation: normalizePrAutomationPolicy(prAutomation, { includeOAuthTrustedAuthor: true }),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/gates" && req.method === "GET") {
+    try {
+      const { configData } = readConfigDocument();
+      jsonResponse(res, 200, {
+        ok: true,
+        gates: normalizeGatesPolicy(configData?.gates, {
+          worktreeBootstrap: configData?.worktreeBootstrap,
+        }),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/gates" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const { configPath, configData } = readConfigDocument();
+      const gates = normalizeGatesPolicy(body?.gates || {}, {
+        worktreeBootstrap: configData?.worktreeBootstrap,
+      });
+      configData.gates = gates;
+      writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
+      broadcastUiEvent(["settings", "overview"], "invalidate", {
+        reason: "gates-updated",
+      });
+      jsonResponse(res, 200, { ok: true, configPath, gates });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -23141,6 +23476,7 @@ export async function startTelegramUiServer(options = {}) {
     startedAt: Date.now(),
   });
   persistLastUiPort(actualPort);
+  setComponentStatus("server", "running");
   console.log(`[telegram-ui] server listening on ${uiServerUrl}`);
   if (uiServerTls) {
     console.log(`[telegram-ui] TLS enabled (self-signed) — Telegram WebApp buttons will use HTTPS`);
@@ -23231,25 +23567,25 @@ export async function startTelegramUiServer(options = {}) {
   if (loopbackOnly) {
     firewallState = null;
   } else {
-    // Skip firewall probing for localhost-only servers to avoid a slow LAN self-connect.
-    firewallState = await checkFirewall(actualPort);
-    if (firewallState) {
-      if (firewallState.blocked) {
-        console.warn(
-          `[telegram-ui] :alert:  Port ${actualPort}/tcp appears BLOCKED by ${firewallState.firewall} for LAN access.`,
-        );
-        console.warn(
-          `[telegram-ui] To fix, run: ${firewallState.allowCmd}`,
-        );
-      } else {
-        console.log(`[telegram-ui] Firewall (${firewallState.firewall}): port ${actualPort}/tcp is allowed`);
+    const activeServer = uiServer;
+    void (async () => {
+      firewallState = await checkFirewall(actualPort);
+      if (uiServer !== activeServer) return;
+      if (firewallState) {
+        if (firewallState.blocked) {
+          console.warn(
+            `[telegram-ui] :alert:  Port ${actualPort}/tcp appears BLOCKED by ${firewallState.firewall} for LAN access.`,
+          );
+          console.warn(
+            `[telegram-ui] To fix, run: ${firewallState.allowCmd}`,
+          );
+        } else {
+          console.log(`[telegram-ui] Firewall (${firewallState.firewall}): port ${actualPort}/tcp is allowed`);
+        }
       }
-    }
-  }
 
-    // Start cloudflared tunnel for trusted TLS (Telegram Mini App requires valid cert)
-    const tUrl = await startTunnel(actualPort);
-    if (tUrl) {
+      const tUrl = await startTunnel(actualPort);
+      if (uiServer !== activeServer || !tUrl) return;
       console.log(`[telegram-ui] Telegram Mini App URL: ${tUrl}`);
       if (firewallState?.blocked) {
         console.log(
@@ -23257,13 +23593,17 @@ export async function startTelegramUiServer(options = {}) {
           `LAN browser access still requires port ${actualPort}/tcp to be open.`,
         );
       }
-    }
+    })().catch((err) => {
+      console.warn(`[telegram-ui] post-bind network checks failed: ${err.message}`);
+    });
+  }
 
   return uiServer;
 }
 
 export function stopTelegramUiServer() {
   if (!uiServer) return;
+  setComponentStatus("server", "stopped");
   stopTunnel();
   stopWsHeartbeat();
   _activeSessions = [];
@@ -23319,13 +23659,6 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
-
-
-
-
-
-
-
 
 
 

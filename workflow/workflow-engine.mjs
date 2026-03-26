@@ -140,6 +140,15 @@ const ACTIVE_RUNS_INDEX = "_active-runs.json";const MAX_TASK_TRACE_EVENTS_PER_RU
   { min: 20, max: 5000 },
 );
 
+function resolveWorkflowRootRunId(inputData = {}, opts = {}) {
+  return String(
+    opts?._rootRunId ||
+      inputData?._workflowRootRunId ||
+      inputData?._rootRunId ||
+      "",
+  ).trim() || null;
+}
+
 function resolveNodeTimeoutMs(node, resolvedConfig) {
   const candidates = [
     resolvedConfig?.timeout,
@@ -1204,6 +1213,7 @@ export class WorkflowEngine extends EventEmitter {
     // ── Concurrency control ───────────────────────────────────────────
     this._runSlots = 0;              // current number of executing runs
     this._runQueue = [];             // FIFO queue of { resolve, reject, args }
+    this._rootRunSlotRefs = new Map(); // rootRunId -> nested executions sharing a single slot
     this._runIndexCache = null;      // cached run index (invalidated on writes)
     this._runIndexCacheMtime = 0;    // mtime of the cached index file
     this._executionLedger = new WorkflowExecutionLedger({ runsDir: this.runsDir });
@@ -2025,8 +2035,62 @@ export class WorkflowEngine extends EventEmitter {
       activeRuns: this._runSlots,
       maxConcurrentRuns: MAX_CONCURRENT_RUNS,
       queuedRuns: this._runQueue.length,
+      sharedRootRuns: this._rootRunSlotRefs.size,
       maxConcurrentBranches: MAX_CONCURRENT_BRANCHES,
     };
+  }
+
+  async _acquireRunSlot({ workflowId, workflowName, inputData = {}, opts = {} } = {}) {
+    const rootRunId = resolveWorkflowRootRunId(inputData, opts);
+    if (rootRunId && this._rootRunSlotRefs.has(rootRunId)) {
+      this._rootRunSlotRefs.set(rootRunId, (this._rootRunSlotRefs.get(rootRunId) || 0) + 1);
+      return { rootRunId, shared: true };
+    }
+
+    if (this._runSlots >= MAX_CONCURRENT_RUNS) {
+      this.emit("run:queued", {
+        workflowId,
+        name: workflowName,
+        queueDepth: this._runQueue.length + 1,
+        rootRunId,
+      });
+      await new Promise((resolve, reject) => {
+        this._runQueue.push({ resolve, reject, rootRunId });
+      });
+    }
+
+    this._runSlots++;
+    if (rootRunId) {
+      this._rootRunSlotRefs.set(rootRunId, 1);
+    }
+    return { rootRunId, shared: false };
+  }
+
+  _releaseRunSlot(slotLease = null) {
+    if (slotLease?.rootRunId && this._rootRunSlotRefs.has(slotLease.rootRunId)) {
+      const remainingRefs = (this._rootRunSlotRefs.get(slotLease.rootRunId) || 0) - 1;
+      if (remainingRefs > 0) {
+        this._rootRunSlotRefs.set(slotLease.rootRunId, remainingRefs);
+        return;
+      }
+      this._rootRunSlotRefs.delete(slotLease.rootRunId);
+    }
+
+    if (slotLease?.shared) {
+      return;
+    }
+
+    this._runSlots = Math.max(0, this._runSlots - 1);
+    if (this._runQueue.length > 0) {
+      const next = this._runQueue.shift();
+      next.resolve();
+    }
+  }
+
+  _adoptRunSlotRootId(slotLease = null, runId = null) {
+    if (!slotLease || slotLease.shared || slotLease.rootRunId || !runId) return;
+    slotLease.rootRunId = String(runId);
+    this._rootRunSlotRefs.set(slotLease.rootRunId, 1);
   }
 
   // ── Execution ─────────────────────────────────────────────────────────
@@ -2047,15 +2111,12 @@ export class WorkflowEngine extends EventEmitter {
       throw new Error(`${TAG} Workflow "${def.name}" is disabled`);
     }
 
-    // ── Concurrency gate ──────────────────────────────────────────────
-    // If we're at capacity, queue this run and wait for a slot.
-    if (this._runSlots >= MAX_CONCURRENT_RUNS) {
-      this.emit("run:queued", { workflowId, name: def.name, queueDepth: this._runQueue.length + 1 });
-      await new Promise((resolve, reject) => {
-        this._runQueue.push({ resolve, reject });
-      });
-    }
-    this._runSlots++;
+    const slotLease = await this._acquireRunSlot({
+      workflowId,
+      workflowName: def.name,
+      inputData,
+      opts,
+    });
 
     try {
       return await traceWorkflowRun(
@@ -2069,7 +2130,10 @@ export class WorkflowEngine extends EventEmitter {
           rootRunId: opts._rootRunId || inputData?._workflowRootRunId || inputData?._rootRunId || null,
         },
         async (span) => {
-          const ctx = await this._executeInner(def, workflowId, inputData, opts);
+          const ctx = await this._executeInner(def, workflowId, inputData, {
+            ...opts,
+            _slotLease: slotLease,
+          });
           span.attributes["bosun.workflow.run_id"] = ctx?.id || span.attributes["bosun.workflow.run_id"];
           span.attributes["bosun.workflow.parent_run_id"] =
             ctx?.data?._workflowParentRunId || span.attributes["bosun.workflow.parent_run_id"];
@@ -2079,12 +2143,7 @@ export class WorkflowEngine extends EventEmitter {
         },
       );
     } finally {
-      this._runSlots--;
-      // Wake the next queued run, if any
-      if (this._runQueue.length > 0) {
-        const next = this._runQueue.shift();
-        next.resolve();
-      }
+      this._releaseRunSlot(slotLease);
     }
   }
 
@@ -2119,13 +2178,12 @@ export class WorkflowEngine extends EventEmitter {
       throw new Error(`${TAG} Inline workflow "${normalized.name}" is disabled`);
     }
 
-    if (this._runSlots >= MAX_CONCURRENT_RUNS) {
-      this.emit("run:queued", { workflowId: normalized.id, name: normalized.name, queueDepth: this._runQueue.length + 1 });
-      await new Promise((resolve, reject) => {
-        this._runQueue.push({ resolve, reject });
-      });
-    }
-    this._runSlots++;
+    const slotLease = await this._acquireRunSlot({
+      workflowId: normalized.id,
+      workflowName: normalized.name,
+      inputData,
+      opts,
+    });
 
     try {
       return await traceWorkflowRun(
@@ -2141,6 +2199,7 @@ export class WorkflowEngine extends EventEmitter {
         async (span) => {
           const ctx = await this._executeInner(normalized, normalized.id, inputData, {
             ...opts,
+            _slotLease: slotLease,
             force: true,
           });
           span.attributes["bosun.workflow.run_id"] = ctx?.id || span.attributes["bosun.workflow.run_id"];
@@ -2152,11 +2211,7 @@ export class WorkflowEngine extends EventEmitter {
         },
       );
     } finally {
-      this._runSlots--;
-      if (this._runQueue.length > 0) {
-        const next = this._runQueue.shift();
-        next.resolve();
-      }
+      this._releaseRunSlot(slotLease);
     }
   }
 
@@ -2195,6 +2250,7 @@ export class WorkflowEngine extends EventEmitter {
     });
 
     const runId = ctx.id;
+    this._adoptRunSlotRootId(opts?._slotLease, runId);
     this._activeRuns.set(runId, {
       workflowId,
       workflowName: def.name,
@@ -2933,6 +2989,17 @@ export class WorkflowEngine extends EventEmitter {
 
     const triggered = [];
     const runIndex = this._readRunIndex();
+    const latestRunAtByWorkflow = new Map();
+    for (const entry of runIndex) {
+      const workflowId = entry?.workflowId;
+      if (!workflowId) continue;
+      const ts = Number(entry?.startedAt || entry?.completedAt || 0);
+      if (!Number.isFinite(ts) || ts <= 0) continue;
+      const previous = latestRunAtByWorkflow.get(workflowId) || 0;
+      if (ts > previous) {
+        latestRunAtByWorkflow.set(workflowId, ts);
+      }
+    }
 
     // Load workspace state for filtering
     const wsMgr = ensureWorkspaceManagerSync();
@@ -2996,13 +3063,7 @@ export class WorkflowEngine extends EventEmitter {
           intervalMs = resolvePositiveInterval(tNode.config?.intervalMs, 3600000);
         }
 
-        // Find the most recent completed run for this workflow
-        let lastRunAt = 0;
-        for (const entry of runIndex) {
-          if (entry?.workflowId !== id) continue;
-          const ts = Number(entry?.startedAt || entry?.completedAt || 0);
-          if (ts > lastRunAt) lastRunAt = ts;
-        }
+        const lastRunAt = latestRunAtByWorkflow.get(id) || 0;
 
         const elapsed = Date.now() - lastRunAt;
         if (elapsed >= intervalMs) {

@@ -12,7 +12,7 @@
  * Security: Only accepts messages from the configured TELEGRAM_CHAT_ID.
  */
 
-import { execSync, spawnSync } from "node:child_process";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import {
   mkdir,
@@ -50,6 +50,7 @@ import {
   invalidateThread,
 } from "../agent/agent-pool.mjs";
 import { fetchWithFallback } from "../infra/fetch-runtime.mjs";
+import { setComponentStatus } from "../infra/health-status.mjs";
 import {
   getKanbanAdapter,
   setKanbanBackend,
@@ -8671,6 +8672,136 @@ function runPwsh(psScript, timeoutMs = 15000) {
   return result.stdout;
 }
 
+function runPwshAsync(psScript, timeoutMs = 15000) {
+  const isWin = process.platform === "win32";
+  const pwsh = isWin
+    ? "powershell.exe"
+    : resolvePwshRuntime({ preferBundled: true }).command;
+  const script = `& { ${psScript} }`;
+
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(pwsh, ["-NoProfile", "-Command", script], {
+      cwd: repoRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const finish = (err, value = "") => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err) rejectPromise(err);
+      else resolvePromise(value);
+    };
+
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.once("error", (err) => {
+      finish(new Error(err.message));
+    });
+    child.once("close", (code) => {
+      if (code !== 0) {
+        finish(
+          new Error(
+            (stderr || stdout || "").trim() ||
+              `powershell command failed (exit ${code})`,
+          ),
+        );
+        return;
+      }
+      finish(null, stdout);
+    });
+
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(new Error(`powershell command timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+}
+
+const HEALTH_REGION_CACHE_TTL_MS = Math.max(
+  1000,
+  Number(process.env.TELEGRAM_HEALTH_REGION_CACHE_TTL_MS || "30000") || 30000,
+);
+
+let healthRegionCache = {
+  value: null,
+  expiresAt: 0,
+  inFlight: null,
+};
+
+function resetHealthRegionCacheForTest() {
+  healthRegionCache = {
+    value: null,
+    expiresAt: 0,
+    inFlight: null,
+  };
+}
+
+async function loadExecutorRegionStatus() {
+  const regionScript = [
+    `. '${resolveVeKanbanPs1Path()}';`,
+    "Initialize-CodexRegionTracking;",
+    "Get-RegionStatus | ConvertTo-Json",
+  ].join(" ");
+  const regionResult = await runPwshAsync(regionScript, 10000);
+  return JSON.parse(regionResult);
+}
+
+function refreshHealthRegionCache(loader) {
+  if (healthRegionCache.inFlight) {
+    return healthRegionCache.inFlight;
+  }
+
+  const pending = Promise.resolve()
+    .then(() => loader())
+    .then((value) => {
+      healthRegionCache.value = value;
+      healthRegionCache.expiresAt = Date.now() + HEALTH_REGION_CACHE_TTL_MS;
+      return value;
+    })
+    .finally(() => {
+      if (healthRegionCache.inFlight === pending) {
+        healthRegionCache.inFlight = null;
+      }
+    });
+
+  healthRegionCache.inFlight = pending;
+  return pending;
+}
+
+async function getCachedExecutorRegionStatus(options = {}) {
+  const forceRefresh = options.forceRefresh === true;
+  const loader = typeof options.loader === "function"
+    ? options.loader
+    : loadExecutorRegionStatus;
+  const now = Date.now();
+
+  if (!forceRefresh && healthRegionCache.value && healthRegionCache.expiresAt > now) {
+    return healthRegionCache.value;
+  }
+
+  if (!forceRefresh && healthRegionCache.value) {
+    safeDetach("health-region-refresh", refreshHealthRegionCache(loader));
+    return healthRegionCache.value;
+  }
+
+  return refreshHealthRegionCache(loader);
+}
+
+export const __executorHealthTestApi = {
+  getCachedExecutorRegionStatus,
+  resetHealthRegionCacheForTest,
+};
+
 async function readStatusSnapshot() {
   try {
     const raw = await readFile(statusPath, "utf8");
@@ -8881,13 +9012,7 @@ async function cmdHealth(chatId) {
 
     // Add region info
     try {
-      const regionScript = [
-        `. '${resolveVeKanbanPs1Path()}';`,
-        "Initialize-CodexRegionTracking;",
-        "Get-RegionStatus | ConvertTo-Json",
-      ].join(" ");
-      const regionResult = runPwsh(regionScript, 10000);
-      const region = JSON.parse(regionResult);
+      const region = await getCachedExecutorRegionStatus();
       lines.push(
         "",
         `:globe: Region: ${region.active_region?.toUpperCase()} ${region.override ? `(override: ${region.override})` : "(auto)"}`,
@@ -11542,6 +11667,7 @@ function stopBatchFlushLoop() {
  */
 export async function startTelegramBot(options = {}) {
   refreshTelegramConfigFromEnv();
+  setComponentStatus("monitor", "running");
 
   // Start Telegram UI server (Mini App / Portal) when configured.
   // Portal startup is independent of Telegram polling state — it must always
@@ -11904,6 +12030,7 @@ export function stopTelegramBot(options = {}) {
   safeDetach("poll-lock-release", releaseTelegramPollLock);
   safeDetach("poll-owner-release", () => releaseTelegramPollOwner("telegram-bot"));
   stopTelegramUiServer();
+  setComponentStatus("monitor", "stopped");
   if (menuButtonRefreshTimer) {
     clearInterval(menuButtonRefreshTimer);
     menuButtonRefreshTimer = null;
@@ -11993,17 +12120,32 @@ export function startStatusFileWriter(intervalMs = 30000) {
         reviewTasks = [];
       }
 
+      const draftCount = Number(storeStats?.draft || 0);
+      const todoCount = Number(storeStats?.todo || 0);
+      const inprogressCount = Number(storeStats?.inprogress || 0);
+      const reviewCount = Number(storeStats?.inreview || reviewTasks.length || 0);
+      const doneCount = Number(storeStats?.done || 0);
+      const blockedCount = Number(storeStats?.blocked || 0);
+
       data.attempts = attempts;
       data.last_executor_sync = new Date().toISOString();
       data.executor_mode = status.mode || "unknown";
       data.active_slots = `${status.activeSlots}/${status.maxParallel}`;
       data.review_tasks = reviewTasks;
       data.manual_review_tasks = [];
+      data.backlog_remaining = draftCount + todoCount;
       if (!data.counts || typeof data.counts !== "object") data.counts = {};
-      data.counts.running = Number(status.activeSlots || 0);
-      data.counts.review = Number(storeStats?.inreview || reviewTasks.length);
-      data.counts.error = Number(storeStats?.blocked || 0);
+      data.counts.draft = draftCount;
+      data.counts.todo = todoCount + draftCount;
+      data.counts.running = Number(status.activeSlots || inprogressCount || 0);
+      data.counts.inprogress = inprogressCount;
+      data.counts.review = reviewCount;
+      data.counts.inreview = reviewCount;
+      data.counts.done = doneCount;
+      data.counts.blocked = blockedCount;
+      data.counts.error = blockedCount;
       data.counts.manual_review = 0;
+      data.counts.total = draftCount + todoCount + inprogressCount + reviewCount + doneCount + blockedCount;
 
       const { writeFile } = await import("node:fs/promises");
       await writeFile(statusPath, JSON.stringify(data, null, 2));

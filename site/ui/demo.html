@@ -10,9 +10,17 @@
 
   <!-- Telegram WebApp SDK is fully mocked below — no real SDK needed -->
 
-  <!-- es-module-shims: load from bundled vendor first, CDN as fallback -->
+  <!-- es-module-shims: only load when native import maps are unavailable -->
   <script>
     (function () {
+      var supportsImportMaps = !!(
+        window.HTMLScriptElement &&
+        typeof HTMLScriptElement.supports === "function" &&
+        HTMLScriptElement.supports("importmap")
+      );
+      window.__bosunNeedsImportShim = !supportsImportMaps;
+      if (supportsImportMaps) return;
+
       var shim = document.createElement("script");
       shim.async = true;
       shim.src = "./vendor/es-module-shims.js";

@@ -28,6 +28,12 @@ import {
   clearWellKnownAgentSourceProbeCache,
   probeWellKnownAgentSources,
 } from "./library-manager-well-known-sources.mjs";
+import {
+  evaluateMarkdownSafety,
+  recordMarkdownSafetyAuditEvent,
+  resolveMarkdownSafetyPolicy,
+} from "../lib/skill-markdown-safety.mjs";
+import { readConfigDocument } from "../config/config.mjs";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -203,6 +209,49 @@ const FRAMEWORK_DOMAIN_MAP = Object.freeze({
 export const RESOURCE_TYPES = Object.freeze(["prompt", "agent", "skill", "mcp", "custom-tool", "hook"]);
 export const AGENT_LIBRARY_CATEGORIES = Object.freeze(["task", "interactive", "voice"]);
 export const INTERACTIVE_AGENT_MODES = Object.freeze(["ask", "agent", "plan", "web", "instant", "custom", "voice"]);
+
+const SAFETY_SCREENED_IMPORT_KINDS = new Set(["agent", "prompt", "skill"]);
+
+function resolveRepositoryMarkdownSafetyPolicy(rootDir, options = {}) {
+  if (options?.markdownSafetyPolicy) {
+    return resolveMarkdownSafetyPolicy(options.markdownSafetyPolicy);
+  }
+  if (options?.configData) {
+    return resolveMarkdownSafetyPolicy(options.configData);
+  }
+  if (rootDir) {
+    try {
+      const { configData } = readConfigDocument(rootDir);
+      return resolveMarkdownSafetyPolicy(configData);
+    } catch {
+      // Fall through to defaults.
+    }
+  }
+  return resolveMarkdownSafetyPolicy({});
+}
+
+function auditBlockedImportCandidates(blockedCandidates, options = {}) {
+  if (!Array.isArray(blockedCandidates) || blockedCandidates.length === 0) return;
+  const policy = resolveRepositoryMarkdownSafetyPolicy(options?.rootDir, options);
+  recordMarkdownSafetyAuditEvent(
+    {
+      channel: options?.channel || "library-import",
+      sourceKind: "repository-import",
+      sourceRepo: options?.repoUrl || options?.sourceId || "",
+      sourcePath: options?.repoUrl || options?.sourceId || "repository-import",
+      branch: options?.branch || "",
+      blockedCount: blockedCandidates.length,
+      candidates: blockedCandidates.map((candidate) => ({
+        kind: candidate.kind,
+        path: candidate.relPath,
+        reasons: candidate.safety?.reasons || [],
+        score: candidate.safety?.score || 0,
+      })),
+      reasons: blockedCandidates.flatMap((candidate) => candidate.safety?.reasons || []),
+    },
+    { policy, rootDir: options?.rootDir || process.cwd() },
+  );
+}
 
 export function normalizeAgentProfileType(rawType, options = {}) {
   const value = String(rawType || "").trim().toLowerCase();
@@ -2294,8 +2343,10 @@ function collectRepositoryImportMarkdownCandidates(checkoutDir, options = {}) {
     1,
     Math.min(2000, Number.parseInt(String(options?.maxEntries ?? "500"), 10) || 500),
   );
+  const markdownSafetyPolicy = resolveRepositoryMarkdownSafetyPolicy(options?.rootDir, options);
 
   const files = walkFilesRecursive(checkoutDir);
+  const blockedCandidates = [];
   const candidates = sortImportedMarkdownCandidates(
     files
       .filter((fullPath) => /\.md$/i.test(fullPath))
@@ -2311,7 +2362,7 @@ function collectRepositoryImportMarkdownCandidates(checkoutDir, options = {}) {
           return null;
         }
         const kind = inferImportedEntryKind(relPath, fileName, parsed.attrs);
-        return buildImportedMarkdownCandidate({
+        const candidate = buildImportedMarkdownCandidate({
           fullPath,
           relPath,
           fileName,
@@ -2321,11 +2372,37 @@ function collectRepositoryImportMarkdownCandidates(checkoutDir, options = {}) {
           kind,
           selected: true,
         });
+        if (!candidate) return null;
+        if (SAFETY_SCREENED_IMPORT_KINDS.has(candidate.kind)) {
+          const decision = evaluateMarkdownSafety(
+            raw,
+            {
+              channel: options?.channel || "library-import",
+              sourceKind: candidate.kind,
+              sourcePath: relPath,
+              sourceRepo: options?.repoUrl || options?.sourceId || "",
+              sourceRepoUrl: options?.repoUrl || "",
+              sourceRoot: options?.rootDir || checkoutDir,
+              documentationContext: false,
+            },
+            markdownSafetyPolicy,
+          );
+          if (decision.blocked) {
+            blockedCandidates.push({
+              ...candidate,
+              selected: false,
+              blocked: true,
+              safety: decision.safety,
+            });
+            return null;
+          }
+        }
+        return candidate;
       })
       .filter(Boolean),
   ).slice(0, maxEntries);
 
-  return { files, candidates };
+  return { files, candidates, blockedCandidates };
 }
 
 function listRepositoryMcpConfigFiles(checkoutDir, { includeLegacy = false } = {}) {
@@ -2456,11 +2533,23 @@ export function scanRepositoryForImport(options = {}) {
   const checkoutDir = createRepositoryImportCheckoutDir("scan", repoUrl, branch);
 
   try {
-    const { files, candidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, { maxEntries });
+    const { files, candidates, blockedCandidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, {
+      ...options,
+      channel: "library-import-preview",
+      maxEntries,
+      repoUrl,
+      branch,
+      sourceId,
+    });
 
     const byType = { agent: 0, prompt: 0, skill: 0, mcp: 0 };
     for (const candidate of candidates) {
       byType[candidate.kind] = (byType[candidate.kind] || 0) + 1;
+    }
+
+    const blockedByType = { agent: 0, prompt: 0, skill: 0, mcp: 0 };
+    for (const candidate of blockedCandidates) {
+      blockedByType[candidate.kind] = (blockedByType[candidate.kind] || 0) + 1;
     }
 
     appendRepositoryMcpImportCandidates(candidates, files, checkoutDir, byType);
@@ -2485,6 +2574,14 @@ export function scanRepositoryForImport(options = {}) {
       intraDuplicateMap[relPath] = peers;
     }
 
+    auditBlockedImportCandidates(blockedCandidates, {
+      ...options,
+      channel: "library-import-preview",
+      repoUrl,
+      branch,
+      sourceId,
+    });
+
     return {
       ok: true,
       source: known ? { id: known.id, name: known.name } : { id: sourceId || "custom", name: repoUrl },
@@ -2493,6 +2590,8 @@ export function scanRepositoryForImport(options = {}) {
       totalCandidates: candidates.length,
       candidatesByType: byType,
       candidates,
+      blockedCandidates,
+      blockedCandidatesByType: blockedByType,
       duplicates: duplicateMap,
       intraDuplicates: intraDuplicateMap,
     };
@@ -2716,7 +2815,15 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
   );
 
   const checkoutDir = createRepositoryImportCheckoutDir("import", repoUrl, branch);
-  const { candidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, { maxEntries: maxProfiles });
+  const { candidates, blockedCandidates } = collectRepositoryImportMarkdownCandidates(checkoutDir, {
+    ...options,
+    channel: "library-import-apply",
+    maxEntries: maxProfiles,
+    repoUrl,
+    branch,
+    rootDir,
+    sourceId,
+  });
   const { importAgents, importSkills, importPrompts, importTools } = resolveRepositoryImportSelection(candidates, options);
 
   const takenIds = new Set(
@@ -2764,6 +2871,15 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
   if (needsAgentIndexRefresh) rebuildAgentProfileIndex(rootDir);
   if (needsSkillIndexRefresh) rebuildSkillEntryIndex(rootDir);
 
+  auditBlockedImportCandidates(blockedCandidates, {
+    ...options,
+    channel: "library-import-apply",
+    repoUrl,
+    branch,
+    rootDir,
+    sourceId,
+  });
+
   return {
     ok: true,
     source: known ? { ...known } : { id: sourceId || "custom", repoUrl, defaultBranch: branch },
@@ -2772,6 +2888,7 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
     importedCount: imported.length,
     importedByType,
     imported,
+    blockedCandidates,
   };
 }
 

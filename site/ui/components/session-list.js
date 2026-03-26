@@ -10,6 +10,7 @@ import { signal, computed, effect } from "@preact/signals";
 import { apiFetch, onWsMessage } from "../modules/api.js";
 import {
   buildSessionApiPath,
+  classifySessionRequestError,
   createSessionLoadMeta,
   deriveSessionStaleReason,
   formatSessionFreshnessTimestamp,
@@ -21,6 +22,7 @@ import {
   markSessionLoadFailure,
   markSessionLoadSuccess,
   resolveSessionWorkspaceHint,
+  shouldFallbackToAllSessions,
 } from "../modules/session-api.js";
 import { formatDate, formatRelative, truncate } from "../modules/utils.js";
 import { resolveIcon } from "../modules/icon-utils.js";
@@ -128,7 +130,15 @@ export async function loadSessions(filter = {}, _opts = {}) {
       const sessionIds = new Set(
         res.sessions.map((session) => String(session?.id || "")).filter(Boolean),
       );
-      const selectedSessionStillExists = !currentSelectedSessionId || sessionIds.has(currentSelectedSessionId);
+      const workspaceScope = String(normalizedFilter.workspace || "active").trim().toLowerCase();
+      const shouldRetainScopedSelection =
+        Boolean(currentSelectedSessionId) &&
+        workspaceScope !== "all" &&
+        !sessionIds.has(currentSelectedSessionId);
+      const selectedSessionStillExists =
+        !currentSelectedSessionId ||
+        sessionIds.has(currentSelectedSessionId) ||
+        shouldRetainScopedSelection;
       selectedSessionId.value = selectedSessionStillExists ? currentSelectedSessionId : null;
     }
     clearSessionRetryTimer();

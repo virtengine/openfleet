@@ -193,6 +193,18 @@ describe("codex-config defaults", () => {
     expect(toml).toContain(`\"${tempRoot.replace(/\\/g, "\\\\")}\"`);
     expect(toml).not.toContain('writable_roots = ["/tmp"');
   });
+
+  it("honors legacy CODEX_SANDBOX env when building repo Codex config", () => {
+    const toml = buildRepoCodexConfig({
+      repoRoot: "/tmp/virtengine",
+      env: {
+        CODEX_SANDBOX: "danger-full-access",
+      },
+    });
+
+    expect(toml).toContain('sandbox_mode = "danger-full-access"');
+  });
+
   it("supports legacy sandbox_permissions helper names", () => {
     const line = buildSandboxPermissions("disk-full-write-access");
     expect(line).toContain('sandbox_mode = "workspace-write"');

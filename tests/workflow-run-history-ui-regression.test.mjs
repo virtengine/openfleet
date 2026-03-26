@@ -2,9 +2,24 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
+function extractFunctionSource(source, functionName, nextFunctionName) {
+  const startToken = `function ${functionName}() {`;
+  const endToken = `function ${nextFunctionName}(`;
+  const startIndex = source.indexOf(startToken);
+  const endIndex = source.indexOf(endToken, startIndex);
+
+  if (startIndex === -1 || endIndex === -1) {
+    throw new Error(`Unable to extract ${functionName} from source`);
+  }
+
+  return source.slice(startIndex, endIndex);
+}
+
 describe("workflow run history UI pagination", () => {
   const uiSource = readFileSync(resolve(process.cwd(), "ui/tabs/workflows.js"), "utf8");
   const siteSource = readFileSync(resolve(process.cwd(), "site/ui/tabs/workflows.js"), "utf8");
+  const uiRunHistorySource = extractFunctionSource(uiSource, "RunHistoryView", "WorkflowCodeView");
+  const siteRunHistorySource = extractFunctionSource(siteSource, "RunHistoryView", "WorkflowCodeView");
 
   for (const [label, source] of [
     ["ui", uiSource],
@@ -41,6 +56,20 @@ describe("workflow run history UI pagination", () => {
       expect(source).toContain("updateEdgePortMapping");
       expect(source).toContain("Unknown output port");
       expect(source).toContain("Unknown input port");
+    });
+  }
+
+  for (const [label, source] of [
+    ["ui", uiRunHistorySource],
+    ["site", siteRunHistorySource],
+  ]) {
+    it(`${label} keeps RunHistoryView free of canvas-only edge editing symbols`, () => {
+      expect(source).not.toMatch(/\beditingNode\b/);
+      expect(source).not.toMatch(/\bselectedEdge\b/);
+      expect(source).not.toContain("Selected edge");
+      expect(source).not.toContain("Port Bindings");
+      expect(source).not.toContain("updateEdgePortMapping");
+      expect(source).not.toContain("validateEdgePortMapping");
     });
   }
 });

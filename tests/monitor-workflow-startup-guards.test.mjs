@@ -83,7 +83,7 @@ describe("monitor workflow startup guards", () => {
     expect(
       monitorSource.indexOf("const requestedAgentEndpointPort = resolveMonitorAgentEndpointPort(repoRoot);"),
     ).toBeLessThan(
-      monitorSource.indexOf('void pollWorkflowSchedulesOnce("startup").catch((err) => {'),
+      monitorSource.indexOf("agentEndpoint = createAgentEndpoint({"),
     );
   });
 
@@ -102,11 +102,12 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain('"stale-dispatch-task-poll-unstick"');
     expect(monitorSource).toContain('throwOnError: true');
     expect(monitorSource).toContain('requireEngine: true');
+    const startupTaskPollHook = monitorSource.indexOf('"stale-dispatch-task-poll-unstick"');
+    expect(startupTaskPollHook).toBeGreaterThan(-1);
     expect(
       monitorSource.indexOf('internalTaskExecutor.start();'),
-    ).toBeLessThan(
-      monitorSource.indexOf('"stale-dispatch-task-poll-unstick"'),
-    );
+    ).toBeLessThan(startupTaskPollHook);
+    expect(monitorSource).not.toContain('void pollWorkflowSchedulesOnce("startup").catch((err) => {');
   });
 
   it("kicks non-task schedule polling during workflow automation startup", () => {
@@ -173,6 +174,13 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain("BOSUN_PROMPT_PLANNER=");
   });
 
+  it("screens planner prompt fallbacks with markdown safety auditing", () => {
+    expect(monitorSource).toContain("function resolvePlannerPromptCandidate(");
+    expect(monitorSource).toContain('channel: "planner-prompt"');
+    expect(monitorSource).toContain("recordMarkdownSafetyAuditEvent(");
+    expect(monitorSource).toContain("blocked unsafe planner prompt");
+  });
+
   it("guards backend task-id resolution against unresolved template tokens", () => {
     expect(monitorSource).toContain("function hasUnresolvedTemplateToken(value)");
     expect(monitorSource).toContain("if (!rawId || hasUnresolvedTemplateToken(rawId)) return null;");
@@ -192,14 +200,13 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain("updateInternalTask(taskId, {");
     expect(monitorSource).toContain("const hasReviewReference = Boolean(prUrl || prNumber);");
     expect(monitorSource).toContain(
-      "review rehydrate reset ${taskId} to todo: missing prUrl/prNumber",
+      "review rehydrate redispatch ${taskId}: missing prUrl/prNumber",
     );
-    expect(monitorSource).toContain("setInternalTaskStatus(taskId, \"todo\", \"review-agent-rehydrate\")");
-    expect(monitorSource).toContain("await updateTaskStatus(taskId, \"todo\");");
+    expect(monitorSource).toContain("redispatchInReviewTask(task, \"review-agent-rehydrate\"");
     expect(monitorSource).toContain("dispatchFixTask: (taskId, issues) => {");
     expect(monitorSource).toContain("supervisor dispatch-fix: no active session");
     expect(monitorSource).toContain("review-fix-redispatch");
-    expect(monitorSource).toContain("workflowEvent: \"task.review_fix_requested\"");
+    expect(monitorSource).toContain("re-dispatching inreview session");
   });
 
   it("resolves repo slug from task/PR context before flow-gate merge and review rehydrate", () => {

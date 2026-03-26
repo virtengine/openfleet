@@ -78,6 +78,47 @@ describe("ui session recovery", () => {
     expect(fetchMock.mock.calls[0][0]).toBe("/api/status");
   });
 
+  it("preserves the full executor payload shape for control and fleet tabs", async () => {
+    const apiFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      data: {
+        maxParallel: 5,
+        activeSlots: 2,
+        slots: [{ taskId: "task-1", status: "running" }],
+        pollIntervalMs: 30000,
+        taskTimeoutMs: 600000,
+      },
+      mode: "internal",
+      paused: true,
+    });
+
+    vi.doMock("../ui/modules/api.js", () => ({
+      apiFetch,
+      onWsMessage: () => () => {},
+      withLoadingSuppressed: async (fn) => fn(),
+      withLoadingTracked: async (fn) => fn(),
+    }));
+    vi.doMock("../ui/modules/telegram.js", () => ({
+      cloudStorageGet: vi.fn().mockResolvedValue(null),
+    }));
+
+    const state = await import("../ui/modules/state.js");
+    await state.loadExecutor();
+
+    expect(state.executorData.value).toEqual({
+      ok: true,
+      data: {
+        maxParallel: 5,
+        activeSlots: 2,
+        slots: [{ taskId: "task-1", status: "running" }],
+        pollIntervalMs: 30000,
+        taskTimeoutMs: 600000,
+      },
+      mode: "internal",
+      paused: true,
+    });
+  });
+
   it("extracts friendly auth errors instead of surfacing raw JSON payloads", async () => {
     vi.doMock("../ui/modules/telegram.js", () => ({
       getInitData: () => "",
