@@ -239,7 +239,6 @@ function buildDelegationWatchdogDecision(detail = {}) {
     maxRecoveries,
   };
 }
-}
 
 function resolveNodeTimeoutMs(node, resolvedConfig) {
   const candidates = [
