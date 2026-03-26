@@ -1426,6 +1426,11 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(fetchNode)).toContain("skippedUntrusted");
     expect(getNodeCommandCode(fetchNode)).toContain("attachEligible");
     expect(getNodeCommandCode(fetchNode)).toContain("pendingChecks:hasPend");
+    expect(getNodeCommandCode(fetchNode)).toContain("const sharedFailures=[]");
+    expect(getNodeCommandCode(fetchNode)).toContain("collectDefaultBranchFailureNames(repo,baseBranch)");
+    expect(getNodeCommandCode(fetchNode)).toContain("reviewStatus:'shared_ci_failure'");
+    expect(getNodeCommandCode(fetchNode)).toContain("failureScope:'shared'");
+    expect(getNodeCommandCode(fetchNode)).toContain("taskReviewSignalsUpdated");
     expect(getNodeCommandCode(reviewNode)).toContain("mergeArgs.push('--auto')");
     expect(getNodeCommandCode(reviewNode)).toContain("reason:'ci_failed'");
     expect(getNodeCommandCode(reviewNode)).toContain("reason:'ci_pending'");
@@ -1450,6 +1455,7 @@ describe("github template CLI compatibility", () => {
     expect(getNodeCommandCode(fetchNode)).toContain("securityFailures");
     expect(getNodeCommandCode(fetchNode)).toContain("securityCheckNames");
     expect(getNodeCommandCode(fetchNode)).toContain("fixNeeded:conflicts.length+securityFailures.length+ciFailures.length");
+    expect(getNodeCommandCode(fetchNode)).toContain("sharedIncidentCount:sharedFailures.length");
 
     expect(getNodeCommandCode(securityNode)).toContain("/code-scanning/alerts");
     expect(getNodeCommandCode(securityNode)).toContain("collectPrDigest");

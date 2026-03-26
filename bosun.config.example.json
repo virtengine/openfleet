@@ -53,6 +53,11 @@
       "containerRuntime": "auto",
       "networkAccess": "default"
     },
+    "worktrees": {
+      "requireBootstrap": true,
+      "requireReadiness": true,
+      "enforcePushHook": true
+    },
     "runtime": {
       "enforceBacklog": true,
       "agentTriggerControl": true

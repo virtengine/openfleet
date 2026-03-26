@@ -317,6 +317,26 @@
             }
           }
         },
+        "worktrees": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Readiness safeguards for Bosun-managed task worktrees only. These settings document whether Node-style bootstrap/readiness checks and push-hook enforcement are expected before task work proceeds.",
+          "properties": {
+            "requireBootstrap": {
+              "type": "boolean",
+              "description": "Whether Bosun-managed task worktrees should require bootstrap before execution. Defaults to explicit worktreeBootstrap.enabled when provided, otherwise true."
+            },
+            "requireReadiness": {
+              "type": "boolean",
+              "description": "Whether Bosun-managed task worktrees should require a readiness check before execution. Defaults to explicit worktreeBootstrap.enabled when provided, otherwise true."
+            },
+            "enforcePushHook": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether Bosun-managed task worktrees should enforce the repository push hook before handoff or push."
+            }
+          }
+        },
         "runtime": {
           "type": "object",
           "additionalProperties": true,

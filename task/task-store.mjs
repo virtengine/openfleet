@@ -1129,7 +1129,7 @@ function normalizeRecoveredTaskMeta(task, recoveredAt) {
   const currentRecovery = currentMeta.autoRecovery && typeof currentMeta.autoRecovery === "object"
     ? currentMeta.autoRecovery
     : {};
-  return {
+  const nextMeta = {
     ...currentMeta,
     autoRecovery: {
       ...currentRecovery,
@@ -1138,6 +1138,9 @@ function normalizeRecoveredTaskMeta(task, recoveredAt) {
       recoveredStatus: "todo",
     },
   };
+  delete nextMeta.worktreeFailure;
+  delete nextMeta.blockedReason;
+  return nextMeta;
 }
 
 function recalcStats() {
@@ -1838,6 +1841,8 @@ export function unblockTask(taskId, options = {}) {
   if (task.meta && typeof task.meta === "object") {
     const nextMeta = { ...task.meta };
     delete nextMeta.autoRecovery;
+    delete nextMeta.worktreeFailure;
+    delete nextMeta.blockedReason;
     task.meta = nextMeta;
   }
   task.updatedAt = timestamp;
