@@ -54,8 +54,8 @@ describe("workflow run history UI pagination", () => {
       expect(source).toContain("Source Port");
       expect(source).toContain("Target Port");
       expect(source).toContain("updateEdgePortMapping");
-      expect(source).toContain("Unknown output port");
-      expect(source).toContain("Unknown input port");
+      expect(source).toContain("Select source port");
+      expect(source).toContain("Select target port");
     });
   }
 
