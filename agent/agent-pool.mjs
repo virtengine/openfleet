@@ -801,6 +801,7 @@ function buildCodexSdkOptions(envInput = process.env, options = {}) {
   };
   const isAzure = isAzureOpenAIBaseUrl(baseUrl);
   const env = { ...resolvedEnv };
+  const unsetEnvKeys = [];
   // Always strip OPENAI_BASE_URL — for Azure we use config overrides,
   // for non-Azure the CLI should use its built-in endpoint.
   delete env.OPENAI_BASE_URL;
@@ -840,6 +841,7 @@ function buildCodexSdkOptions(envInput = process.env, options = {}) {
         if (!otherBaseUrl || !isAzureOpenAIBaseUrl(otherBaseUrl)) continue;
         if (!otherEnvKey || otherEnvKey === providerEnvKey) continue;
         delete env[otherEnvKey];
+        if (!unsetEnvKeys.includes(otherEnvKey)) unsetEnvKeys.push(otherEnvKey);
       }
     } catch {
       // best effort — if config reading fails, don't block execution
@@ -847,6 +849,7 @@ function buildCodexSdkOptions(envInput = process.env, options = {}) {
 
     return {
       env,
+      unsetEnvKeys,
       config: {
         ...injectedSandboxConfig,
         model_provider: providerSectionName,
@@ -867,6 +870,7 @@ function buildCodexSdkOptions(envInput = process.env, options = {}) {
   }
   return {
     env,
+    unsetEnvKeys,
     config: injectedSandboxConfig,
   };
 }
@@ -1293,6 +1297,13 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: modelOverride };
     codexOpts.config = { ...(codexOpts.config || {}), model: modelOverride };
   }
+  delete process.env.OPENAI_BASE_URL;
+  delete process.env.OPENAI_ORGANIZATION;
+  delete process.env.OPENAI_PROJECT;
+  for (const key of codexOpts.unsetEnvKeys || []) {
+    delete process.env[key];
+  }
+  Object.assign(process.env, codexOpts.env || {});
   codexOpts.config = {
     ...(codexOpts.config || {}),
     features: {
@@ -4090,6 +4101,4 @@ export function getActiveThreads() {
   }
   return result;
 }
-
-
 

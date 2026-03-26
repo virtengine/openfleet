@@ -635,9 +635,7 @@ export async function loadExecutor() {
   if (_cacheFresh(url, "executor")) return;
   const fallback = cached?.data ?? executorData.value ?? null;
   if (cached) executorData.value = cached.data;
-  const res = await apiFetch(url, { _silent: true }).catch(() => ({
-    data: fallback,
-  }));
+  const res = await apiFetch(url, { _silent: true }).catch(() => fallback);
   executorData.value = res ?? fallback;
   _cacheSet(url, executorData.value);
   _markFresh("executor");
@@ -1234,5 +1232,4 @@ export function initWsInvalidationListener() {
       });
   });
 }
-
 

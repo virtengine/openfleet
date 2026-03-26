@@ -78,7 +78,6 @@ jobs:
             const attachedLabel = "bosun-attached";
             const marker = "<!-- bosun-pr-classification -->";
             const legacyMarker = "<!-- bosun-attached -->";
-            const createdMarker = "<!-- bosun-created -->";
             const classLabels = {
               bosun: "bosun-pr-bosun-created",
               trusted: "bosun-pr-trusted-author",
@@ -89,8 +88,10 @@ jobs:
               " / " +
               String((context.payload && context.payload.action) || "unknown");
             const prBody = String(pr.body || "");
-            const isBosunCreated =
-              prBody.includes(createdMarker) || /auto-created by bosun/i.test(prBody);
+            const labelNames = (pr.labels || [])
+              .map((entry) => (typeof entry === "string" ? entry : entry?.name))
+              .filter(Boolean);
+            const isBosunCreated = labelNames.includes(classLabels.bosun);
 
             const normalizeList = (value) => {
               if (Array.isArray(value)) {
@@ -181,7 +182,7 @@ jobs:
               `- Attach label: ${attachedLabel} (${attachReason})`,
               `- Attach mode policy: ${attachMode}`,
               `- Trusted author: ${isTrustedAuthor ? "yes" : "no"}`,
-              `- Provenance marker: ${createdMarker}`,
+              `- Bosun-created label present: ${isBosunCreated ? "yes" : "no"}`,
               `- Automation scope: ${automationScope}`,
               "- CI failure signal label: bosun-needs-fix",
               "- CI failure marker: <!-- bosun-ci-failure -->",

@@ -1689,6 +1689,34 @@ describe("action.acquire_worktree", () => {
     expect(normalizedPath).not.toContain("very-long-branch-name");
   });
 
+  it("bootstraps managed node worktrees with shared repo node_modules", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    mkdirSync(join(repoDir, "node_modules"), { recursive: true });
+    writeFileSync(join(repoDir, "node_modules", ".bosun-bootstrap-marker"), "ready\n");
+    writeFileSync(
+      join(repoDir, "package.json"),
+      JSON.stringify({ name: "wf-acquire-bootstrap", version: "1.0.0" }, null, 2),
+    );
+    gitExec("git add package.json && git commit -m bootstrap-manifest", {
+      cwd: repoDir,
+      stdio: "ignore",
+    });
+
+    const ctx = makeCtx({});
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "bootstrap-node-1",
+      branch: "task/bootstrap-node-modules",
+      baseBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const result = await nt.execute(node, ctx);
+    expect(result.success).toBe(true);
+    expect(existsSync(join(result.worktreePath, "node_modules"))).toBe(true);
+  }, 15000);
+
 
   it("recreates invalid managed worktrees instead of reusing broken git metadata", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -2022,6 +2050,15 @@ describe("action.acquire_worktree", () => {
       expect(second.retryable).toBe(false);
       expect(second.failureKind).toBe("branch_refresh_conflict");
       expect(second.error).toContain("managed worktree was removed after stale refresh state");
+      expect(second.repairArtifacts).toMatchObject({
+        taskId: "recreate-conflict-1",
+        branch,
+        baseBranch: "origin/main",
+      });
+      expect(existsSync(second.repairArtifacts.summaryPath)).toBe(true);
+      const artifactSummary = JSON.parse(readFileSync(second.repairArtifacts.summaryPath, "utf8"));
+      expect(artifactSummary.detectedIssues).toContain("refresh_failed");
+      expect(artifactSummary.detectedIssues).toContain("unresolved_git_operation");
 
       const thirdCtx = makeCtx({});
       const third = await nt.execute(node, thirdCtx);
@@ -2986,6 +3023,43 @@ describe("action.release_worktree", () => {
   });
 });
 
+describe("action.sweep_task_worktrees", () => {
+  it("removes matching managed task worktree directories from .bosun/worktrees", async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), "wf-sweep-worktrees-"));
+    try {
+      execGit("git init", { cwd: repoDir, stdio: "ignore" });
+      execGit("git config --local user.email test@test.com", { cwd: repoDir, stdio: "ignore" });
+      execGit("git config --local user.name Test", { cwd: repoDir, stdio: "ignore" });
+      writeFileSync(join(repoDir, "README.md"), "init\n");
+      execGit("git add README.md && git commit -m init", { cwd: repoDir, stdio: "ignore" });
+      execGit("git branch -M main", { cwd: repoDir, stdio: "ignore" });
+
+      const managedRoot = join(repoDir, ".bosun", "worktrees");
+      const matching = join(managedRoot, "task-sweeptask01-deadbeef00");
+      const other = join(managedRoot, "task-othertask0-cafebabe00");
+      mkdirSync(matching, { recursive: true });
+      mkdirSync(other, { recursive: true });
+      writeFileSync(join(matching, "stale.txt"), "remove me\n");
+      writeFileSync(join(other, "keep.txt"), "keep me\n");
+
+      const nt = getNodeType("action.sweep_task_worktrees");
+      const ctx = makeCtx({ taskId: "sweep-task-01" });
+      const node = makeNode("action.sweep_task_worktrees", {
+        repoRoot: repoDir,
+        taskId: "sweep-task-01",
+      });
+
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+      expect(result.removed).toContain("task-sweeptask01-deadbeef00");
+      expect(existsSync(matching)).toBe(false);
+      expect(existsSync(other)).toBe(true);
+    } finally {
+      try { rmSync(repoDir, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  action.release_claim Tests
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3449,6 +3523,13 @@ describe("template-task-lifecycle", () => {
     expect(validationNode?.config.command).toBe("{{prePrValidationCommand}}");
     expect(validationNode?.config.commandType).toBe("qualityGate");
     expect(validationNode?.config.cwd).toBe("{{worktreePath}}");
+  });
+
+  it("does not bypass git hooks on managed task pushes by default", () => {
+    const t = getTemplate("template-task-lifecycle");
+    const pushNode = t.nodes.find((node) => node.id === "push-branch");
+
+    expect(pushNode?.config.skipHooks).toBeUndefined();
   });
 
   it("replaces task-executor.mjs module", () => {

@@ -50,6 +50,7 @@ import {
   invalidateThread,
 } from "../agent/agent-pool.mjs";
 import { fetchWithFallback } from "../infra/fetch-runtime.mjs";
+import { setComponentStatus } from "../infra/health-status.mjs";
 import {
   getKanbanAdapter,
   setKanbanBackend,
@@ -11666,6 +11667,7 @@ function stopBatchFlushLoop() {
  */
 export async function startTelegramBot(options = {}) {
   refreshTelegramConfigFromEnv();
+  setComponentStatus("monitor", "running");
 
   // Start Telegram UI server (Mini App / Portal) when configured.
   // Portal startup is independent of Telegram polling state — it must always
@@ -12028,6 +12030,7 @@ export function stopTelegramBot(options = {}) {
   safeDetach("poll-lock-release", releaseTelegramPollLock);
   safeDetach("poll-owner-release", () => releaseTelegramPollOwner("telegram-bot"));
   stopTelegramUiServer();
+  setComponentStatus("monitor", "stopped");
   if (menuButtonRefreshTimer) {
     clearInterval(menuButtonRefreshTimer);
     menuButtonRefreshTimer = null;

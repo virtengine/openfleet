@@ -32,6 +32,14 @@ function makeCodexMockThread(
   };
 }
 
+function setCodexLauncherMock(impl) {
+  mockCodexStartThread.mockImplementation(impl);
+}
+
+function setCopilotLauncherMock(impl) {
+  mockCopilotCreateSession.mockImplementation(impl);
+}
+
 if (__RUN_VITEST_ONLY) {
 const { afterEach, beforeEach, describe, expect, it, vi } = globalThis;
 
@@ -204,6 +212,7 @@ const ENV_KEYS = [
   "CODEX_MODEL_PROFILE",
   "CODEX_MODEL",
   "AZURE_OPENAI_API_KEY",
+  "AZURE_OPENAI_API_KEY_SWEDEN",
   "__MOCK_CODEX_AVAILABLE",
   "__MOCK_COPILOT_AVAILABLE",
   "__MOCK_CLAUDE_AVAILABLE",
@@ -254,6 +263,7 @@ function clearSdkEnv() {
   delete process.env.CODEX_MODEL_PROFILE;
   delete process.env.CODEX_MODEL;
   delete process.env.AZURE_OPENAI_API_KEY;
+  delete process.env.AZURE_OPENAI_API_KEY_SWEDEN;
   delete process.env.__MOCK_CODEX_AVAILABLE;
   delete process.env.__MOCK_COPILOT_AVAILABLE;
   delete process.env.__MOCK_CLAUDE_AVAILABLE;
