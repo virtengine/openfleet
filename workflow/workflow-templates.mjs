@@ -659,6 +659,7 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
         applyWorkflowTemplateState(def);
         const state = def.metadata?.templateState || null;
         const after = stableStringify(state);
+        const repairedDerivedPorts = repairDerivedPortMetadata(def);
         if (before !== after || repairedDerivedPorts) {
           engine.save(def);
           result.metadataUpdated += 1;
@@ -1528,3 +1529,5 @@ export function installRecommendedTemplates(engine, overridesById = {}) {
     .map((template) => template.id);
   return installTemplateSet(engine, recommendedIds, overridesById);
 }
+
+
