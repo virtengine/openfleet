@@ -2439,6 +2439,10 @@ describe("ui-server mini app", () => {
           reason: "worktree_failure",
           retryAt: new Date(Date.now() + 60_000).toISOString(),
         },
+        worktreeFailure: {
+          failureKind: "branch_refresh_conflict",
+          blockedReason: "repair pending",
+        },
         note: "keep-me",
       },
     });
@@ -2457,6 +2461,7 @@ describe("ui-server mini app", () => {
     expect(task.cooldownUntil).toBeNull();
     expect(task.blockedReason).toBeNull();
     expect(task.meta?.autoRecovery).toBeUndefined();
+    expect(task.meta?.worktreeFailure).toBeUndefined();
     expect(task.meta?.note).toBe("keep-me");
     expect(resetTaskThrottleState).toHaveBeenCalledWith(taskId, {});
   });
@@ -2507,6 +2512,10 @@ describe("ui-server mini app", () => {
           reason: "worktree_failure",
           retryAt: new Date(Date.now() + 60_000).toISOString(),
         },
+        worktreeFailure: {
+          failureKind: "branch_refresh_conflict",
+          blockedReason: "repair pending",
+        },
         note: "preserve-me",
       },
     });
@@ -2530,6 +2539,7 @@ describe("ui-server mini app", () => {
     expect(task.cooldownUntil).toBeNull();
     expect(task.blockedReason).toBeNull();
     expect(task.meta?.autoRecovery).toBeUndefined();
+    expect(task.meta?.worktreeFailure).toBeUndefined();
     expect(task.meta?.note).toBe("preserve-me");
     expect(resetTaskThrottleState).toHaveBeenCalledWith("task-edit-unblock", {});
   });
