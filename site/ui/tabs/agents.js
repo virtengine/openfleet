@@ -1796,6 +1796,7 @@ export function AgentsTab() {
                         ${s.taskId ? ` · ${s.taskId}` : ""}
                         ${s.branch ? ` · ${s.branch}` : ""}
                       </div>
+                      ${renderFleetEntryTokenSplit({ session: s })}
                     </div>
                     <${Badge} status=${s.status || "idle"} text=${s.status || "idle"} />
                   </div>

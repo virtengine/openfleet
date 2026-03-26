@@ -225,12 +225,22 @@ function parseContextBreakdown(text) {
 function normalizeUsage(value) {
   if (!value || typeof value !== "object") return null;
   const input =
-    Number(value.input_tokens ?? value.prompt_tokens ?? value.input ?? value.prompt ?? 0) || 0;
+    Number(value.input_tokens ?? value.prompt_tokens ?? value.inputTokens ?? value.promptTokens ?? value.input ?? value.prompt ?? 0) || 0;
   const output =
-    Number(value.output_tokens ?? value.completion_tokens ?? value.output ?? value.completion ?? 0) || 0;
-  const total = Number(value.total_tokens ?? value.total ?? input + output) || 0;
+    Number(value.output_tokens ?? value.completion_tokens ?? value.outputTokens ?? value.completionTokens ?? value.output ?? value.completion ?? 0) || 0;
+  const total = Number(value.total_tokens ?? value.totalTokens ?? value.total ?? input + output) || 0;
   if (input <= 0 && output <= 0 && total <= 0) return null;
   return { input, output, total };
+}
+
+function normalizeTokenUsageMeta(meta) {
+  if (!meta || typeof meta !== "object") return null;
+  return normalizeUsage(
+    meta.tokenUsage
+    || meta.usage
+    || meta.tokens
+    || (meta.inputTokens != null || meta.outputTokens != null || meta.totalTokens != null ? meta : null),
+  );
 }
 
 export function formatCompactCount(value) {
@@ -288,7 +298,7 @@ export function buildSessionInsights(fullSession = null) {
       });
     }
 
-    const usage = normalizeUsage(msg?.meta?.usage) || normalizeUsage(msg?.usage) || null;
+    const usage = normalizeTokenUsageMeta(msg?.meta) || normalizeUsage(msg?.usage) || null;
     if (usage) {
       tokenUsage.inputTokens += usage.input;
       tokenUsage.outputTokens += usage.output;

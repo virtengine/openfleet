@@ -649,6 +649,7 @@ export class SessionTracker {
         ? "completed"
         : (progress?.status || s.status);
       const lastActiveAt = s.lastActiveAt || new Date(s.lastActivityAt).toISOString();
+      const tokenUsage = s.insights?.tokenUsage || null;
       list.push({
         id: s.id || s.taskId,
         taskId: s.taskId,
@@ -670,6 +671,9 @@ export class SessionTracker {
         recommendation: progress?.recommendation || "none",
         preview: this.#lastMessagePreview(s),
         lastMessage: this.#lastMessagePreview(s),
+        totalTokens: Number(tokenUsage?.totalTokens || 0),
+        inputTokens: Number(tokenUsage?.inputTokens || 0),
+        outputTokens: Number(tokenUsage?.outputTokens || 0),
         insights: s.insights || null,
       });
     }
@@ -1820,3 +1824,4 @@ export function _resetSingleton(nextOptions) {
     _instance = new SessionTracker(nextOptions);
   }
 }
+
