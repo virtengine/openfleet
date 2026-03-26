@@ -186,8 +186,9 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   }, [bridge, refreshMs]);
 
   useEffect(() => {
-    setFooterHints((current) => (current?.length ? current : getFooterHints(screen)));
-  }, [screen]);
+    if (helpOpen) return;
+    setFooterHints(getFooterHints(screen));
+  }, [screen, helpOpen]);
 
   useEffect(() => {
     const intervalId = setInterval(() => {
