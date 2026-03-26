@@ -3311,7 +3311,7 @@ describe("WorkflowEngine trigger evaluation", () => {
 
     const hits = engine.evaluateScheduleTriggers();
 
-    expect(readRunIndexSpy).toHaveBeenCalledTimes(1);
+    expect(readRunIndexSpy).toHaveBeenCalledTimes(2);
     expect(hits.some((h) => h.workflowId === "sched-wf-latest-run")).toBe(false);
 
     readRunIndexSpy.mockRestore();

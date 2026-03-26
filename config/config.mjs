@@ -683,6 +683,9 @@ function resolveWorktreeBootstrapConfig(configData = {}) {
       1000,
       60 * 60 * 1000,
     ),
+    setupScript: String(
+      process.env.WORKTREE_BOOTSTRAP_SETUP_SCRIPT ?? raw.setupScript ?? "",
+    ).trim(),
     commandsByStack: Object.freeze(commandsByStack),
     sharedPathsByStack: freezeNestedStringListMap(raw.sharedPathsByStack),
   });
