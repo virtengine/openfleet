@@ -291,10 +291,17 @@ function resolveCodexStreamSafety(totalTimeoutMs) {
   let firstEventTimeoutMs = null;
   if (Number.isFinite(budgetMs) && budgetMs > 2_000) {
     const maxAllowed = Math.max(1_000, budgetMs - 1_000);
-    firstEventTimeoutMs = clampTimerDelayMs(
-      Math.min(configuredFirstEventMs, maxAllowed),
-      "first-event-timeout",
+    const silentBudgetFloor = Math.min(
+      maxAllowed,
+      Math.max(
+        configuredFirstEventMs,
+        Math.min(
+          Math.trunc(budgetMs * MIN_SILENT_STREAM_FRACTION),
+          MAX_SILENT_STREAM_GRACE_MS,
+        ),
+      ),
     );
+    firstEventTimeoutMs = clampTimerDelayMs(silentBudgetFloor, "first-event-timeout");
   }
 
   return {
