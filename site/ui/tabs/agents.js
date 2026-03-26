@@ -308,6 +308,8 @@ function WorkspaceViewer({ agent, onClose }) {
   const [expandedEventItems, setExpandedEventItems] = useState(() => new Set());
   const [expandedFileItems, setExpandedFileItems] = useState(() => new Set());
   const [expandedModelResponse, setExpandedModelResponse] = useState(false);
+  const [runHistory, setRunHistory] = useState([]);
+  const [runDetail, setRunDetail] = useState(null);
   const logRef = useRef(null);
 
   const query = buildSessionLogQuery([
@@ -352,6 +354,25 @@ function WorkspaceViewer({ agent, onClose }) {
         .catch(() => { if (active) setLogText("(failed to load logs)"); });
     };
 
+    const fetchRunHistory = () => {
+      if (!sessionId && !agent.taskId) return;
+      const query = agent.taskId ? `?limit=10&taskId=${encodeURIComponent(agent.taskId)}` : "?limit=10";
+      apiFetch(`/api/agent-runs${query}`, { _silent: true })
+        .then((res) => {
+          if (!active) return;
+          const runs = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+          setRunHistory(runs);
+          const latest = runs[0]?.attemptId;
+          if (!latest) return;
+          return apiFetch(`/api/agent-runs/${encodeURIComponent(latest)}`, { _silent: true });
+        })
+        .then((res) => {
+          if (!active || !res) return;
+          setRunDetail(res?.data ?? res ?? null);
+        })
+        .catch(() => {});
+    };
+
     const fetchContext = () => {
       apiFetch(`/api/agent-context?query=${encodeURIComponent(query)}`, { _silent: true })
         .then((res) => { if (active) setContextData(res.data ?? res ?? null); })
@@ -360,9 +381,11 @@ function WorkspaceViewer({ agent, onClose }) {
 
     fetchLogs();
     fetchContext();
+    fetchRunHistory();
     const interval = setInterval(() => {
       fetchLogs();
       fetchContext();
+    fetchRunHistory();
     }, 5000);
     return () => { active = false; clearInterval(interval); };
   }, [query]);
@@ -1786,6 +1809,7 @@ export function AgentsTab() {
                   }}
                 >
                   <div class="task-card-header">
+                    <div class="session-turn-chip">Turns ${s.turnCount || 0}</div>
                     <div>
                       <div class="task-card-title">
                         <${StatusDot} status=${s.status || "idle"} />
@@ -1795,6 +1819,7 @@ export function AgentsTab() {
                         ${s.id || "?"}
                         ${s.taskId ? ` · ${s.taskId}` : ""}
                         ${s.branch ? ` · ${s.branch}` : ""}
+                        · Turns ${s.turnCount || 0}
                       </div>
                     </div>
                     <${Badge} status=${s.status || "idle"} text=${s.status || "idle"} />
@@ -1873,6 +1898,7 @@ function ContextViewer({ query, sessionId = "", taskId = "", branch = "" }) {
     setError(null);
     setCtx(null);
     fetchContext();
+    fetchRunHistory();
     intervalRef.current = setInterval(fetchContext, 10000);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [fetchContext]);
@@ -2598,3 +2624,4 @@ export function FleetSessionsTab() {
     `}
   `;
 }
+

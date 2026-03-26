@@ -1012,6 +1012,8 @@ export class SessionTracker {
       tokenUsage,
       insights: session.insights || null,
       status: String(session.status || "completed"),
+      turnCount: session.turnCount || 0,
+      turns: Array.isArray(session.insights?.turns) ? session.insights.turns : [],
     });
     session.accumulatedAt = new Date().toISOString();
     return true;
@@ -1820,3 +1822,4 @@ export function _resetSingleton(nextOptions) {
     _instance = new SessionTracker(nextOptions);
   }
 }
+

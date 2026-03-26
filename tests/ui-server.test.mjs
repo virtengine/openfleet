@@ -4496,6 +4496,18 @@ describe("ui-server mini app", () => {
         {
           timestamp: new Date(now.getTime() - 40_000).toISOString(),
           attempt_id: attemptId,
+          event_type: "usage",
+          taskId: "task-123",
+          task_title: "Replayable task",
+          executor: "codex",
+          data: {
+            usage: { input_tokens: 120, output_tokens: 45, total_tokens: 165 },
+            duration_ms: 3200,
+          },
+        },
+        {
+          timestamp: new Date(now.getTime() - 35_000).toISOString(),
+          attempt_id: attemptId,
           event_type: "tool_result",
           taskId: "task-123",
           task_title: "Replayable task",
@@ -4535,8 +4547,9 @@ describe("ui-server mini app", () => {
         taskTitle: "Replayable task",
         executor: "codex",
         status: "failed",
-        eventCount: 4,
+        eventCount: 5,
       }));
+      expect(payload.data[0].totals.usageEvents).toBe(1);
       expect(payload.data[0].shortSteps).toEqual(expect.arrayContaining([
         expect.stringContaining("Started codex run"),
         expect.stringContaining("Called web.search"),
@@ -4573,6 +4586,18 @@ describe("ui-server mini app", () => {
         },
         {
           timestamp: new Date(now.getTime() - 30_000).toISOString(),
+          attempt_id: attemptId,
+          event_type: "usage",
+          taskId: "task-456",
+          task_title: "Replay detail task",
+          executor: "claude",
+          data: {
+            usage: { input_tokens: 80, output_tokens: 20, total_tokens: 100 },
+            duration_ms: 1800,
+          },
+        },
+        {
+          timestamp: new Date(now.getTime() - 20_000).toISOString(),
           attempt_id: attemptId,
           event_type: "agent_output",
           taskId: "task-456",
@@ -4619,7 +4644,19 @@ describe("ui-server mini app", () => {
         expect.stringContaining("Error: Context window exhausted"),
       ]));
       expect(payload.data.totals.errors).toBe(1);
+      expect(payload.data.turns).toEqual([
+        expect.objectContaining({
+          index: 1,
+          tokenCount: 100,
+          inputTokens: 80,
+          outputTokens: 20,
+          durationMs: 1800,
+        }),
+      ]);
       expect(payload.data.events[1]).toEqual(expect.objectContaining({
+        type: "usage",
+      }));
+      expect(payload.data.events[2]).toEqual(expect.objectContaining({
         type: "agent_output",
         summary: "Investigated failure and prepared patch.",
       }));
@@ -4628,6 +4665,38 @@ describe("ui-server mini app", () => {
       else process.env.REPO_ROOT = previousRepoRoot;
       rmSync(isolatedRepoRoot, { recursive: true, force: true });
     }
+  });
+  it("includes turn counts in live sessions snapshots", async () => {
+    const mod = await import("../infra/tui-bridge.mjs");
+    const payload = mod.buildSessionsUpdatePayload([
+      {
+        id: "session-live-1",
+        taskId: "task-live-1",
+        title: "Live task",
+        type: "task",
+        status: "active",
+        workspaceId: null,
+        workspaceDir: null,
+        branch: "feature/live-turns",
+        turnCount: 3,
+        createdAt: "2026-03-21T00:00:00.000Z",
+        lastActiveAt: "2026-03-21T00:01:00.000Z",
+        idleMs: 0,
+        elapsedMs: 60000,
+        recommendation: "continue",
+        preview: "Working",
+        lastMessage: "Latest output",
+        insights: {},
+      },
+    ]);
+
+    expect(payload).toEqual([
+      expect.objectContaining({
+        id: "session-live-1",
+        taskId: "task-live-1",
+        turnCount: 3,
+      }),
+    ]);
   });
   it("serves benchmark snapshots and persists benchmark mode for the active workspace", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -4849,6 +4918,7 @@ describe("ui-server mini app", () => {
   });
 
 });
+
 
 
 
