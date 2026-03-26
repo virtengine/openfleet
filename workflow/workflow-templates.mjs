@@ -651,8 +651,8 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
       try {
         const previousState = def.metadata?.templateState || null;
         const before = stableStringify(previousState);
-        const repairedDerivedPorts = hasStaleDerivedPortMetadata(def);
-        if (repairedDerivedPorts) {
+        const hadStaleDerivedPorts = hasStaleDerivedPortMetadata(def);
+        if (hadStaleDerivedPorts) {
           const templateId = String(def?.metadata?.installedFrom || "").trim();
           repairDerivedPortMetadata(def, getTemplate(templateId));
         }
@@ -663,7 +663,7 @@ function createWorkflowTemplateState({ getTemplate, cloneTemplateDefinition }) {
         if (before !== after || repairedDerivedPorts) {
           engine.save(def);
           result.metadataUpdated += 1;
-          if (repairedDerivedPorts) result.portMetadataRepaired += 1;
+          if (hadStaleDerivedPorts || repairedDerivedPorts) result.portMetadataRepaired += 1;
         }
 
         if (!state) continue;
