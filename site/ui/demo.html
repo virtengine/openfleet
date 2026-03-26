@@ -13,6 +13,14 @@
   <!-- es-module-shims: only load when native import maps are unavailable -->
   <script>
     (function () {
+      var params = new URLSearchParams(window.location.search || "");
+      var requestedLayout = String(params.get("layout") || "").trim().toLowerCase();
+      if (requestedLayout === "desktop" || requestedLayout === "tablet" || requestedLayout === "mobile" || requestedLayout === "auto") {
+        window.__bosunForcedLayoutMode = requestedLayout;
+      } else {
+        window.__bosunForcedLayoutMode = "desktop";
+      }
+
       var supportsImportMaps = !!(
         window.HTMLScriptElement &&
         typeof HTMLScriptElement.supports === "function" &&
@@ -104,6 +112,12 @@
   </script>
 
   <!-- Load the real MiniApp styles -->
+  <link rel="stylesheet" href="styles/variables.css" />
+  <link rel="stylesheet" href="styles/base.css" />
+  <link rel="stylesheet" href="styles/layout.css" />
+  <link rel="stylesheet" href="styles/components.css" />
+  <link rel="stylesheet" href="styles/animations.css" />
+  <link rel="stylesheet" href="styles/workspace-switcher.css" />
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="styles/kanban.css" />
   <link rel="stylesheet" href="styles/sessions.css" />
@@ -5657,7 +5671,7 @@
   </div>
 
   <!-- Load the real app.js immediately -->
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.js" id="app-module"></script>
 
   <!-- ═══ BOT MENU ENGINE (multi-layer screen navigation) ═══════════ -->
   <script type="module">
@@ -6305,11 +6319,30 @@
         if (e.key === 'Escape' && panelOpen) closePanel();
       });
 
-      // Fallback: if ES modules fail to load within 12s, show an error
-      setTimeout(function () {
+      function showBootFailure(message) {
         var el = document.getElementById('boot-loader');
-        if (el) el.innerHTML = '<div style="text-align:center;padding:40px;font-family:Inter,sans-serif;color:#94a3b8"><div style="font-size:18px;margin-bottom:8px">:alert: Failed to load</div><div style="font-size:12px;color:#64748b">Try refreshing. If this persists, run npm install in the bosun directory.</div></div>';
-      }, 12000);
+        if (!el) return;
+        el.innerHTML = '<div style="text-align:center;padding:40px;font-family:Inter,sans-serif;color:#94a3b8"><div style="font-size:18px;margin-bottom:8px">:alert: Failed to load</div><div style="font-size:12px;color:#64748b">' + message + '</div></div>';
+      }
+
+      var bootReady = false;
+      var bootTimeoutId = setTimeout(function () {
+        if (!bootReady) {
+          showBootFailure('Try refreshing. If this persists, run npm install in the bosun directory.');
+        }
+      }, 20000);
+
+      globalThis.addEventListener('bosun:app-mounted', function handleMounted() {
+        bootReady = true;
+        clearTimeout(bootTimeoutId);
+        globalThis.removeEventListener('bosun:app-mounted', handleMounted);
+      });
+
+      var appModuleScript = document.getElementById('app-module');
+      appModuleScript?.addEventListener('error', function () {
+        clearTimeout(bootTimeoutId);
+        showBootFailure('The demo app bundle failed to load.');
+      });
 
     })();
   </script>
