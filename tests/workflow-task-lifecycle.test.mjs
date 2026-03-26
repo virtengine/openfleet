@@ -3496,5 +3496,3 @@ describe("template-task-lifecycle", () => {
     }
   });
 });
-
-

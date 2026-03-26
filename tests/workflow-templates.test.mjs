@@ -1672,5 +1672,3 @@ describe("template category coverage", () => {
     }
   });
 });
-
-

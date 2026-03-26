@@ -6663,9 +6663,3 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(replan.reason).toBe("issue_advisor.replan_subgraph");
   });
 });
-
-
-
-
-
-

@@ -601,5 +601,3 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     },
   },
 };
-
-
