@@ -381,14 +381,15 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
       key: "targetPrNumber",
       value:
         "(() => {" +
-        "  /* <!-- bosun-created --> */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';" +
+        "  /* <!-- bosun-created --> auto-created by bosun */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';" +
         "  let prs = [];" +
         "  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }" +
         "  if (!Array.isArray(prs)) return '';" +
         "  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);" +
         "  const BOSUN_CREATED_LABEL = 'bosun-pr-bosun-created';" +
         "  const readLabelNames = (pr) => Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : [];" +
-        "  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL);" +
+        "  const hasBosunCreatedText = (value) => { const text = String(value || ''); const taskIdMatch = text.match(/(?:Bosun-Task|VE-Task|Task-ID|task[_-]?id)[:\\s]+([a-zA-Z0-9_-]{4,64})/i); const hasLegacyTaskSignature = Boolean(taskIdMatch && text.toLowerCase().includes(`automated pr for task ${String(taskIdMatch[1] || '').trim().toLowerCase()}`)); return text.includes('<!-- bosun-created -->') || /Bosun-Origin:\\s*created/i.test(text) || /auto-created by bosun/i.test(text) || hasLegacyTaskSignature; };" +
+        "  const isBosunCreated = (pr) => readLabelNames(pr).includes(BOSUN_CREATED_LABEL) || hasBosunCreatedText(pr?.body);" +
         "  /* Skip PRs already owned by the watchdog fix agent */" +
         "  const pr = prs.find((p) =>" +
         "    isBosunCreated(p) &&" +
@@ -404,7 +405,7 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
       key: "targetPrBranch",
       value:
         "(() => {" +
-        "  /* <!-- bosun-created --> */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';" +
+        "  /* <!-- bosun-created --> auto-created by bosun */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';" +
         "  let prs = [];" +
         "  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }" +
         "  if (!Array.isArray(prs)) return '';" +
@@ -418,7 +419,7 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
       key: "targetPrBase",
       value:
         "(() => {" +
-        "  /* <!-- bosun-created --> */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';" +
+        "  /* <!-- bosun-created --> auto-created by bosun */ const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';" +
         "  let prs = [];" +
         "  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }" +
         "  if (!Array.isArray(prs)) return 'main';" +
@@ -2349,4 +2350,5 @@ export const SDK_CONFLICT_RESOLVER_TEMPLATE = {
     },
   },
 };
+
 
