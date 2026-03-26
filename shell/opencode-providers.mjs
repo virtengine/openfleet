@@ -568,13 +568,6 @@ async function discoverAllViaCLI() {
       timestamp: Date.now(),
     };
   } catch (err) {
-    if (isIgnorableModelDiscoveryError(err)) {
-      console.warn(
-        `[opencode-providers] skipping catalog discovery after provider returned HTTP 400: ${err.message}`,
-      );
-      return buildEmptySnapshot();
-    }
-
     try {
       const fallback = await execOpencode(["models", "--refresh"], {
         timeout: 60_000,
@@ -596,6 +589,13 @@ async function discoverAllViaCLI() {
       }
     } catch {
       // fall through to the original verbose failure below
+    }
+
+    if (isIgnorableModelDiscoveryError(err)) {
+      console.warn(
+        `[opencode-providers] skipping catalog discovery after provider returned HTTP 400: ${err.message}`,
+      );
+      return buildEmptySnapshot();
     }
 
     console.warn(`[opencode-providers] catalog discovery failed: ${err.message}`);

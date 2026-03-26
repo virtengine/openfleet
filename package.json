@@ -353,7 +353,8 @@
     "workspace/workspace-manager.mjs",
     "workspace/workspace-monitor.mjs",
     "workspace/workspace-registry.mjs",
-    "workspace/worktree-manager.mjs"
+    "workspace/worktree-manager.mjs",
+    "workspace/worktree-setup.mjs"
   ],
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",

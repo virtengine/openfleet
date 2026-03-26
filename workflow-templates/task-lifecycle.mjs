@@ -252,7 +252,6 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       branch: "{{branch}}",
       baseBranch: "{{baseBranch}}",
       rebaseBeforePush: true,
-      skipHooks: true,
       emptyDiffGuard: true,
       protectedBranches: "{{protectedBranches}}",
     }, { x: 0, y: 2000 }),
@@ -432,7 +431,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
         fields: {
           cooldownUntil: "{{acquire-worktree.retryAt}}",
           blockedReason: "{{acquire-worktree.blockedReason}}",
-          meta: "{{(() => { const current = ($data.taskMeta && typeof $data.taskMeta === 'object') ? $data.taskMeta : {}; const output = $ctx.getNodeOutput('acquire-worktree') || {}; return { ...current, autoRecovery: { active: true, reason: 'worktree_failure', failureKind: output.failureKind || 'branch_refresh_conflict', retryAt: output.retryAt || null, recoveryDelayMs: output.autoRecoverDelayMs || null, error: output.error || '', recordedAt: output.recordedAt || null }, worktreeFailure: { failureKind: output.failureKind || 'branch_refresh_conflict', retryable: output.retryable !== false, retryAt: output.retryAt || null, blockedReason: output.blockedReason || '', error: output.error || '', recordedAt: output.recordedAt || null } }; })()}}",
+          meta: "{{(() => { const current = ($data.taskMeta && typeof $data.taskMeta === 'object') ? $data.taskMeta : {}; const output = $ctx.getNodeOutput('acquire-worktree') || {}; return { ...current, autoRecovery: { active: true, reason: 'worktree_failure', failureKind: output.failureKind || 'branch_refresh_conflict', retryAt: output.retryAt || null, recoveryDelayMs: output.autoRecoverDelayMs || null, error: output.error || '', recordedAt: output.recordedAt || null }, worktreeFailure: { failureKind: output.failureKind || 'branch_refresh_conflict', retryable: output.retryable !== false, retryAt: output.retryAt || null, blockedReason: output.blockedReason || '', error: output.error || '', recordedAt: output.recordedAt || null, repairArtifacts: output.repairArtifacts || null } }; })()}}",
         },
       },
     }, { x: 470, y: 1480 }),
