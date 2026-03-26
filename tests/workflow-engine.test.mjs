@@ -1689,7 +1689,7 @@ describe("WorkflowEngine - run history details", () => {
 
     const retryRunSpy = vi.spyOn(engine, "retryRun").mockResolvedValue({
       retryRunId: "retry-stalled-delegation",
-      mode: "from_scratch",
+      mode: "from_failed",
       originalRunId: interruptedRunId,
       ctx: { id: "retry-stalled-delegation" },
     });
