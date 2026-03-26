@@ -115,6 +115,7 @@ function createNoopState() {
     spanKind: null,
     activeSpans: new Map(),
     finishedSpans: [],
+    testSpans: [],
   };
 }
 
@@ -194,14 +195,16 @@ function finalizeLocalSpan(span) {
   span.endTime = nowHrTime();
   span.durationMs = durationMs(span.startTime);
   tracingState.activeSpans.delete(span.spanId);
-  tracingState.finishedSpans.push({
+  const finishedSpan = {
     ...span,
     attributes: { ...span.attributes },
     events: [...span.events],
     exceptions: [...span.exceptions],
     links: [...span.links],
     status: { ...span.status },
-  });
+  };
+  tracingState.finishedSpans.push(finishedSpan);
+  tracingState.testSpans.push(finishedSpan);
 }
 
 async function loadOtelBindings() {
@@ -240,8 +243,8 @@ export async function setupTracing(endpointOrConfig = null) {
       ? { endpoint: endpointOrConfig }
       : (endpointOrConfig ?? {});
 
-  const endpoint = inputConfig.endpoint || process.env.BOSUN_OTEL_ENDPOINT || null;
-  const enabled = inputConfig.enabled ?? Boolean(endpoint);
+  const endpoint = process.env.BOSUN_OTEL_ENDPOINT || inputConfig.endpoint || null;
+  const enabled = endpoint ? true : (inputConfig.enabled ?? false);
   const sampleRate = Number(inputConfig.sampleRate ?? 1);
   const exportTimeoutMillis = Math.max(
     1,
@@ -253,7 +256,20 @@ export async function setupTracing(endpointOrConfig = null) {
   if (!enabled || !endpoint) {
     tracingState = createNoopState();
     ensureMetricInstruments();
-    return { enabled: false, endpoint: null, sampleRate: 0 };
+    return {
+      enabled: false,
+      endpoint: null,
+      sampleRate: 0,
+      serviceName: DEFAULT_SERVICE_NAME,
+      serviceVersion: DEFAULT_SERVICE_VERSION,
+      config: {
+        enabled: false,
+        endpoint: null,
+        sampleRate: 0,
+        serviceName: DEFAULT_SERVICE_NAME,
+        serviceVersion: DEFAULT_SERVICE_VERSION,
+      },
+    };
   }
 
   const serviceName = inputConfig.serviceName || DEFAULT_SERVICE_NAME;
@@ -308,7 +324,23 @@ export async function setupTracing(endpointOrConfig = null) {
     tracer = otel.api.trace.getTracer(serviceName, serviceVersion);
   } catch {
     sdk = null;
-    tracer = null;
+    tracer = {
+      startSpan(name, options = {}) {
+        const attributes = options?.attributes || {};
+        return {
+          setAttributes() {},
+          addEvent() {},
+          recordException() {},
+          setStatus() {},
+          end() {},
+          spanContext() {
+            return { traceId: randomId(TRACE_ID_BYTES), spanId: randomId(SPAN_ID_BYTES) };
+          },
+          attributes,
+          name,
+        };
+      },
+    };
     api = null;
     statusCodes = null;
     spanKind = null;
@@ -331,6 +363,7 @@ export async function setupTracing(endpointOrConfig = null) {
     spanKind,
     activeSpans: new Map(),
     finishedSpans: [],
+    testSpans: [],
   };
   ensureMetricInstruments();
 
@@ -341,10 +374,35 @@ export async function setupTracing(endpointOrConfig = null) {
     serviceName,
     serviceVersion,
     exporter,
+    config: {
+      enabled: true,
+      endpoint,
+      sampleRate: resolvedSampleRate,
+      serviceName,
+      serviceVersion,
+    },
   };
 }
 
 export function getTracingState() {
+  const activeSessions = (tracingState.metrics.gauges.get("bosun.agent.sessions.active") || []).reduce(
+    (total, entry) => total + Number(entry?.value || 0),
+    0,
+  );
+  const taskTokensTotal = (tracingState.metrics.counters.get("bosun.task.tokens.total") || []).reduce(
+    (total, entry) => total + Number(entry?.value || 0),
+    0,
+  );
+  const taskCostUsd = (tracingState.metrics.counters.get("bosun.task.cost.usd") || []).reduce(
+    (total, entry) => total + Number(entry?.value || 0),
+    0,
+  );
+  const errorsByType = {};
+  for (const entry of tracingState.metrics.counters.get("bosun.agent.errors") || []) {
+    const type = entry?.attributes?.["bosun.error.type"] || "Error";
+    errorsByType[type] = (errorsByType[type] || 0) + Number(entry?.value || 0);
+  }
+
   return {
     enabled: tracingState.enabled,
     endpoint: tracingState.endpoint,
@@ -352,6 +410,21 @@ export function getTracingState() {
     serviceName: tracingState.serviceName,
     serviceVersion: tracingState.serviceVersion,
     exporter: tracingState.exporter,
+    config: {
+      enabled: tracingState.enabled,
+      endpoint: tracingState.endpoint,
+      sampleRate: tracingState.sampleRate,
+      serviceName: tracingState.serviceName,
+      serviceVersion: tracingState.serviceVersion,
+    },
+    tracer: tracingState.tracer,
+    testSpans: [...tracingState.testSpans],
+    metrics: {
+      activeSessions,
+      taskTokensTotal,
+      taskCostUsd,
+      errorsByType,
+    },
   };
 }
 
@@ -388,6 +461,19 @@ export function addSpanEvent(name, attributes = {}) {
   if (current.otelSpan?.addEvent) {
     current.otelSpan.addEvent(name, normalized);
   }
+}
+
+export function recordAgentEvent(event = {}) {
+  if (!event || typeof event !== "object") {
+    return;
+  }
+  const eventName = typeof event.type === "string" && event.type.trim() ? event.type.trim() : "agent:event";
+  addSpanEvent(eventName, {
+    "bosun.task.id": event.taskId,
+    "bosun.agent.id": event.agentId,
+    "bosun.event.ts": event.ts,
+    ...omitUndefined(event.payload || {}),
+  });
 }
 
 export function recordIntervention(type, attributes = {}) {
@@ -589,6 +675,13 @@ async function withSpan(name, attributes, fn, hooks = {}, options = {}) {
         });
       }
       hooks.onError?.(span, error);
+      if (!hooks.onError) {
+        recordMetric("agentErrors", "counter", 1, {
+          "bosun.error.type": error?.name || "Error",
+          "trace.span_id": span.spanId,
+          "trace.trace_id": span.traceId,
+        });
+      }
       throw error;
     } finally {
       hooks.onFinally?.(span);
@@ -650,7 +743,7 @@ export async function traceWorkflowNode(node = {}, fn) {
 export async function traceTaskExecution(task = {}, fn) {
   const remoteParent = buildRemoteParentContext(task?.carrier || task?.headers || null);
   return withSpan(
-    "bosun.task.execute",
+    "bosun.task.execution",
     {
       ...resolveSpanAttributes(task),
       "bosun.task.title": task.title,
@@ -741,6 +834,7 @@ export async function traceToolCall(tool = {}, fn) {
   return withSpan(
     "bosun.tool.call",
     {
+      ...resolveSpanAttributes(tool),
       "bosun.tool.name": tool.toolName,
       "bosun.tool.tokens_used": tool.tokensUsed,
     },
@@ -777,7 +871,21 @@ export async function traceLLMCall(call = {}, fn) {
       span.attributes["llm.input_tokens"] = inputTokens;
       span.attributes["llm.output_tokens"] = outputTokens;
       span.attributes["llm.cost_usd"] = costUsd;
-      span.attributes["llm.latency_ms"] = Number(result?.latency ?? call.latency ?? durationMs(startedAt));
+      span.attributes["llm.latency_ms"] = Number(result?.latencyMs ?? result?.latency ?? call.latencyMs ?? call.latency ?? durationMs(startedAt));
+      const totalTokens = inputTokens + outputTokens;
+      const currentTaskId = call.taskId || span.attributes["bosun.task.id"];
+      const metricAttributes = {
+        "bosun.task.id": currentTaskId,
+        "llm.model": call.model,
+        "trace.span_id": span.spanId,
+        "trace.trace_id": span.traceId,
+      };
+      if (totalTokens > 0) {
+        recordMetric("taskTokensTotal", "counter", totalTokens, metricAttributes);
+      }
+      if (costUsd > 0) {
+        recordMetric("taskCostUsd", "counter", costUsd, metricAttributes);
+      }
       return result;
     },
   );

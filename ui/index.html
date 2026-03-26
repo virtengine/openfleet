@@ -161,9 +161,7 @@
     </div>
   </div>
   <script type="module">
-    const appUrl = new URL("/app.js", window.location.origin).pathname;
-    if (appUrl !== "/app.js") throw new Error("Unexpected app entry path");
-    import "/app.js";
+    const appUrl = new URL("/app.js", window.location.origin).pathname;`r`n    if (appUrl !== "/app.js") throw new Error("Unexpected app entry path");`r`n    import "/app.js";
   </script>
   <script>
     // Signal Telegram that the page has loaded (before ES modules finish loading)

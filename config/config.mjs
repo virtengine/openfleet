@@ -1853,7 +1853,9 @@ export function loadConfig(argv = process.argv, options = {}) {
   // ── Tracing ──────────────────────────────────────────────
   const tracingEndpoint =
     process.env.BOSUN_OTEL_ENDPOINT || configData?.tracing?.endpoint || null;
-  const tracingEnabled = configData?.tracing?.enabled ?? Boolean(tracingEndpoint);
+  const tracingEnabled = process.env.BOSUN_OTEL_ENDPOINT
+    ? true
+    : (configData?.tracing?.enabled ?? Boolean(tracingEndpoint));
   const tracingSampleRate = Number(configData?.tracing?.sampleRate ?? 1);
 
   // ── Telegram ─────────────────────────────────────────────

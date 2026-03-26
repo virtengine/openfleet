@@ -854,7 +854,7 @@ function _buildEnv(ctx) {
 function _getShellOptions() {
   if (IS_WINDOWS) {
     return {
-      shell: WINDOWS_SHELL,
+      shell: false,
       windowsHide: true,
     };
   }
@@ -862,6 +862,16 @@ function _getShellOptions() {
   return {
     shell: true,
     windowsHide: true,
+  };
+}
+
+function _getSpawnCommand(command) {
+  if (!IS_WINDOWS) {
+    return { file: command, args: [] };
+  }
+  return {
+    file: WINDOWS_SHELL,
+    args: ["/d", "/s", "/c", command],
   };
 }
 
@@ -1022,7 +1032,8 @@ function _executeHookAsyncOnce(hook, ctx, env, attempt) {
 
     let child;
     try {
-      child = spawn(hook.command, {
+      const spawnTarget = _getSpawnCommand(hook.command);
+      child = spawn(spawnTarget.file, spawnTarget.args, {
         cwd,
         env: hookEnv,
         ..._getShellOptions(),
