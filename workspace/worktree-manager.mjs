@@ -76,10 +76,19 @@ const DEFAULT_SHARED_PATHS_BY_STACK = Object.freeze({
   ruby: Object.freeze(["vendor/bundle"]),
 });
 
+function shouldEnforceWorktreeRuntimeReady(repoRoot) {
+  const resolvedRepoRoot = resolve(repoRoot);
+  return existsSync(resolve(resolvedRepoRoot, ".githooks", "pre-commit"))
+    && existsSync(resolve(resolvedRepoRoot, ".githooks", "pre-push"));
+}
+
 function ensureWorktreeRuntimeReady(repoRoot, worktreePath) {
   const resolvedRepoRoot = resolve(repoRoot);
   const resolvedWorktreePath = resolve(worktreePath);
   ensureWorktreeRuntimeSetup(resolvedRepoRoot, resolvedWorktreePath);
+  if (!shouldEnforceWorktreeRuntimeReady(resolvedRepoRoot)) {
+    return null;
+  }
   const inspection = inspectWorktreeRuntimeSetup(resolvedRepoRoot, resolvedWorktreePath);
   if (!inspection.ok) {
     throw new Error(

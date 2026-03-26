@@ -447,7 +447,9 @@ describe("worktree-manager", () => {
         const normalized = String(path).replace(/\\/g, "/");
         return normalized.endsWith("/.bosun/worktrees/task-abc123")
           || normalized.endsWith("/package.json")
-          || normalized.endsWith(`${REPO_ROOT}/node_modules`);
+          || normalized.endsWith(`${REPO_ROOT}/node_modules`)
+          || normalized.endsWith(`${REPO_ROOT}/.githooks/pre-commit`)
+          || normalized.endsWith(`${REPO_ROOT}/.githooks/pre-push`);
       });
 
       bootstrapWorktreeForPath(REPO_ROOT, worktreePath);
@@ -462,6 +464,11 @@ describe("worktree-manager", () => {
 
     it("fails closed when runtime setup inspection reports missing hook state", () => {
       const worktreePath = `${REPO_ROOT}/.bosun/worktrees/task-broken`;
+      existsSync.mockImplementation((path) => {
+        const normalized = String(path).replace(/\\/g, "/");
+        return normalized.endsWith(`${REPO_ROOT}/.githooks/pre-commit`)
+          || normalized.endsWith(`${REPO_ROOT}/.githooks/pre-push`);
+      });
       inspectWorktreeRuntimeSetupMock.mockReturnValue({
         ok: false,
         issues: ["git core.hooksPath is not configured"],
