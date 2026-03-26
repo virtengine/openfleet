@@ -171,15 +171,12 @@ export default function App({ config, configDir, host, port, protocol = "ws", in
   }, [activeTab, helpOpen]);
 
   const helpMaxRows = Math.max(3, terminalSize.rows - 8);
-  const helpRowCount = Math.max(
-    0,
-    ...SHORTCUT_GROUPS.reduce((acc, group, index, groups) => {
-      if (index % 2 === 1) return acc;
-      const right = groups[index + 1];
-      acc.push(1 + Math.max(group.items.length, right?.items?.length || 0));
-      return acc;
-    }, []),
-  );
+  const helpRowCount = SHORTCUT_GROUPS.reduce((totalRows, group, index, groups) => {
+    if (index % 2 === 1) return totalRows;
+    const right = groups[index + 1];
+    const pairHeight = 1 + Math.max(group.items.length, right?.items?.length || 0);
+    return totalRows + pairHeight;
+  }, 0);
   const maxHelpScrollOffset = Math.max(0, helpRowCount - helpMaxRows);
 
   useInput((input, key) => {

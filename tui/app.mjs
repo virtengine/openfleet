@@ -186,8 +186,9 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   }, [bridge, refreshMs]);
 
   useEffect(() => {
-    setFooterHints((current) => (current?.length ? current : getFooterHints(screen)));
-  }, [screen]);
+    if (helpOpen) return;
+    setFooterHints(getFooterHints(screen));
+  }, [screen, helpOpen]);
 
   useEffect(() => {
     const intervalId = setInterval(() => {
@@ -224,7 +225,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
   }, [exit, helpOpen]);
 
   useInput((input, key) => {
-    if (screenInputLocked && !helpOpen) return;
+    if (screenInputLocked && !helpOpen && input !== "?") return;
     handleInput(input, key);
   });
 
@@ -268,7 +269,11 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs,
         ${helpOpen
           ? html`
               <${Box} flexDirection="column" marginTop=${1}>
-                <${HelpScreen} scrollOffset=${helpScrollOffset} maxRows=${helpRows} />
+                <${HelpScreen}
+                  scrollOffset=${helpScrollOffset}
+                  maxRows=${helpRows}
+                  groups=${[]}
+                />
               <//>
             `
           : null}
