@@ -428,6 +428,49 @@ describe("github-oauth-portal", () => {
     expect(events).toContain("review:submitted");
   });
 
+  it("POST /webhook emits workflow and check CI events", async () => {
+    const result = await portal.startOAuthPortal({ port: 0, host: "127.0.0.1", quiet: true });
+    server = result.server;
+    baseUrl = result.url;
+
+    const events = [];
+    result.webhookEvents.on("github:workflow_run", (event) => {
+      events.push(`workflow_run:${event.action}`);
+    });
+    result.webhookEvents.on("github:check_run", (event) => {
+      events.push(`check_run:${event.action}`);
+    });
+
+    const workflowBody = JSON.stringify({ action: "completed", workflow_run: { conclusion: "failure" } });
+    const workflowSig = signBody(WEBHOOK_SECRET, workflowBody);
+    await fetch(`${baseUrl}/webhook`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-GitHub-Event": "workflow_run",
+        "X-Hub-Signature-256": workflowSig,
+      },
+      body: workflowBody,
+    });
+
+    const checkBody = JSON.stringify({ action: "completed", check_run: { conclusion: "failure" } });
+    const checkSig = signBody(WEBHOOK_SECRET, checkBody);
+    await fetch(`${baseUrl}/webhook`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-GitHub-Event": "check_run",
+        "X-Hub-Signature-256": checkSig,
+      },
+      body: checkBody,
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(events).toContain("workflow_run:completed");
+    expect(events).toContain("check_run:completed");
+  });
+
   // ── 404 ───────────────────────────────────────────────────────────────────
 
   it("unknown route returns 404", async () => {
