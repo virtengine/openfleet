@@ -35,6 +35,7 @@ describe("repo-config Claude settings", () => {
 
   it("repairs legacy invalid permissions and stale bridge paths when merging", async () => {
     const settingsPath = resolve(rootDir, ".claude", "settings.local.json");
+    await writeFile(resolve(rootDir, ".claude", ".gitkeep"), "", "utf8");
     await writeFile(
       settingsPath,
       JSON.stringify(
