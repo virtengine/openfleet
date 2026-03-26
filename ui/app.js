@@ -196,6 +196,10 @@ function parseVoiceLaunchFromUrl() {
 
 function readForcedLayoutMode() {
   if (typeof window === "undefined") return "auto";
+  const bootForced = String(window.__bosunForcedLayoutMode || "").trim().toLowerCase();
+  if (bootForced === "desktop" || bootForced === "tablet" || bootForced === "mobile" || bootForced === "auto") {
+    return bootForced;
+  }
   const params = new URLSearchParams(window.location.search || "");
   const requested = String(params.get("layout") || "").trim().toLowerCase();
   if (requested === "desktop" || requested === "tablet" || requested === "mobile" || requested === "auto") {
@@ -2820,10 +2824,14 @@ function App() {
 
 /* ─── Mount ─── */
 const mountRoot = () => document.getElementById("app");
+const signalAppMounted = () => {
+  globalThis.dispatchEvent?.(new Event("bosun:app-mounted"));
+};
 const mountApp = () => {
   const root = mountRoot();
   if (!root) return;
   preactRender(html`<${App} />`, root);
+  signalAppMounted();
 };
 const remountApp = () => {
   const root = mountRoot();
