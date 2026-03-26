@@ -32,7 +32,7 @@ export function stripAnsi(text) {
   // eslint-disable-next-line no-control-regex
   return String(text || "")
     .replace(/\x1b\[[0-9;]*m/g, "")
-    .replace(/\[\d+;?\d*m/g, "");
+    .replace(/\[(?:\d{1,3}(?:;\d{1,3})*)m/g, "");
 }
 
 /**
@@ -108,7 +108,7 @@ export function formatHtmlLink(url, label) {
  */
 export function getErrorFingerprint(line) {
   // Normalize: strip timestamps, attempt IDs, branch-specific parts
-  return line
+  return String(line ?? "")
     .replace(/\[\d{2}:\d{2}:\d{2}\]\s*/g, "")
     .replace(/\b[0-9a-f]{8}\b/gi, "<ID>") // attempt IDs
     .replace(/ve\/[\w.-]+/g, "ve/<BRANCH>") // branch names
@@ -164,11 +164,24 @@ export function getMaxParallelFromArgs(argsList) {
  * @returns {number|null} PR number or null if not found
  */
 export function parsePrNumberFromUrl(url) {
-  if (!url) return null;
-  const match = String(url).match(/\/pull\/(\d+)/i);
-  if (!match) return null;
+  if (!url) {
+    return null;
+  }
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(String(url));
+  } catch {
+    return null;
+  }
+
+  const match = parsedUrl.pathname.match(/\/pull\/(\d+)(?:\/|$)/i);
+  if (!match) {
+    return null;
+  }
+
   const num = Number(match[1]);
-  return Number.isFinite(num) ? num : null;
+  return Number.isSafeInteger(num) && num > 0 ? num : null;
 }
 
 // ── Async process helpers ─────────────────────────────────────────────────

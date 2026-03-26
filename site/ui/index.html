@@ -161,6 +161,8 @@
     </div>
   </div>
   <script type="module">
+    const appUrl = new URL("/app.js", window.location.origin).pathname;
+    if (appUrl !== "/app.js") throw new Error("Unexpected app entry path");
     import "/app.js";
   </script>
   <script>

@@ -51,6 +51,9 @@ const MAX_OUTPUT_BYTES = 64 * 1024;
 /** Whether we're running on Windows */
 const IS_WINDOWS = process.platform === "win32";
 
+/** Preferred Windows shell for hook execution. */
+const WINDOWS_SHELL = process.env.ComSpec || "cmd.exe";
+
 /** Default max retries for retryable hooks */
 const DEFAULT_MAX_RETRIES = 2;
 
@@ -841,6 +844,27 @@ function _buildEnv(ctx) {
   return env;
 }
 
+/**
+ * Build child_process shell options for hook execution.
+ * On Windows, prefer `cmd.exe` so inherited env vars expand consistently for
+ * shell-launched commands, including nested PowerShell invocations.
+ *
+ * @returns {{ shell: true | string, windowsHide: boolean }}
+ */
+function _getShellOptions() {
+  if (IS_WINDOWS) {
+    return {
+      shell: WINDOWS_SHELL,
+      windowsHide: true,
+    };
+  }
+
+  return {
+    shell: true,
+    windowsHide: true,
+  };
+}
+
 // ── Internal: Synchronous Hook Execution ────────────────────────────────────
 
 /**
@@ -897,8 +921,7 @@ function _executeHookSync(hook, ctx, env) {
         env: hookEnv,
         encoding: "utf8",
         timeout,
-        shell: true,
-        windowsHide: true,
+        ..._getShellOptions(),
         maxBuffer: MAX_OUTPUT_BYTES,
       });
 
@@ -1002,8 +1025,7 @@ function _executeHookAsyncOnce(hook, ctx, env, attempt) {
       child = spawn(hook.command, {
         cwd,
         env: hookEnv,
-        shell: true,
-        windowsHide: true,
+        ..._getShellOptions(),
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (err) {
