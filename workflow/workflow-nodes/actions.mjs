@@ -465,7 +465,11 @@ registerNodeType("action.run_agent", {
 
         if (candidate?.id) {
           const assignTransitionKey = ["assign", node.id, candidate.id, taskIdForDelegate || "task"].join(":");
-          const existingAssignTransition = getExistingDelegationTransition(ctx, assignTransitionKey);
+          const existingAssignTransition =
+            getExistingDelegationTransition(ctx, assignTransitionKey) ||
+            (typeof ctx.getDelegationTransitionGuard === "function"
+              ? ctx.getDelegationTransitionGuard(assignTransitionKey)
+              : null);
           if (existingAssignTransition?.type === "run_agent_delegate") {
             return { ...existingAssignTransition.result };
           }

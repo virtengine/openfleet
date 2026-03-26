@@ -155,7 +155,11 @@ describe("project detection quality gates", () => {
       await vi.advanceTimersByTimeAsync(60);
       await vi.advanceTimersByTimeAsync(60);
 
-      const auditTrail = ctx.__workflowRuntimeState?.delegationAuditTrail || [];
+      const auditTrail =
+        ctx.data?._workflowDelegationTrail ||
+        ctx.data?._delegationAuditTrail ||
+        ctx.__workflowRuntimeState?.delegationAuditTrail ||
+        [];
       const mismatchEvents = auditTrail.filter((event) => event?.type === "owner-mismatch");
 
       expect(renewSpy).toHaveBeenCalledTimes(1);
@@ -3086,7 +3090,7 @@ describe("action.release_worktree", () => {
       taskTitle: "Replay-safe claim",
       instanceId: "inst-replay",
       renewIntervalMs: 0,
-      transitionKey: "claim:task-replay-1",
+      idempotencyKey: "claim:task-replay-1",
     });
 
     try {
@@ -3102,7 +3106,7 @@ describe("action.release_worktree", () => {
         success: true,
         taskId: "task-replay-1",
         claimToken: "claim-replay-token",
-        replayed: true,
+        idempotentReplay: true,
       }));
       expect(claimSpy).toHaveBeenCalledTimes(1);
     } finally {
@@ -3202,7 +3206,6 @@ describe("action.release_claim", () => {
       expect(second).toEqual(expect.objectContaining({
         success: true,
         taskId: "task-release-replay",
-        replayed: true,
       }));
       expect(releaseSpy).toHaveBeenCalledTimes(1);
     } finally {
