@@ -29,6 +29,7 @@ import {
   streamRetryDelay,
   MAX_STREAM_RETRIES,
 } from "../infra/stream-resilience.mjs";
+import { emitRateLimitHit } from "../lib/provider-rate-limit.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
@@ -832,6 +833,7 @@ function isRecoverableThreadError(err) {
 export async function execCodexPrompt(userMessage, options = {}) {
   const {
     onEvent = null,
+    onProviderEvent = null,
     statusData = null,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     sendRawEvents = false,
@@ -1096,7 +1098,8 @@ export async function execCodexPrompt(userMessage, options = {}) {
               reason === "user_stop"
                 ? ":close: Agent stopped by user."
                 : `:clock: Agent timed out after ${normalizedTimeoutMs / 1000}s`;
-            return { finalResponse: msg, items: [], usage: null };
+            emitRateLimitHit({ provider: "codex", sessionId, error: err, onProviderEvent });
+      return { finalResponse: msg, items: [], usage: null };
           }
         }
 
@@ -1308,3 +1311,4 @@ export async function initCodexShell() {
     );
   }
 }
+

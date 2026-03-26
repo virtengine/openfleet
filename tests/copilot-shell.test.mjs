@@ -54,3 +54,19 @@ describe("resolveCopilotCliLaunchConfig", () => {
     });
   });
 });
+
+describe("execCopilotPrompt() — rate-limit events", () => {
+  it("emits provider rate-limit metadata on 429 failure", async () => {
+    const onProviderEvent = vi.fn();
+    const rateErr = new Error("429 Too Many Requests; retry-after: 7");
+    mockSessionPrompt.mockRejectedValue(rateErr);
+
+    await expect(execCopilotPrompt("fail", { onProviderEvent })).rejects.toThrow("429");
+    expect(onProviderEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: "rateLimitHit",
+      provider: "copilot",
+      retryAfterMs: 7000,
+      statusCode: 429,
+    }));
+  });
+});

@@ -16,6 +16,7 @@ import {
   streamRetryDelay,
   MAX_STREAM_RETRIES,
 } from "../infra/stream-resilience.mjs";
+import { emitRateLimitHit } from "../lib/provider-rate-limit.mjs";
 import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
@@ -500,6 +501,7 @@ function buildPrompt(userMessage, statusData, { mode = null } = {}) {
 export async function execClaudePrompt(userMessage, options = {}) {
   const {
     onEvent = null,
+    onProviderEvent = null,
     statusData = null,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     sendRawEvents = false,
@@ -685,6 +687,7 @@ export async function execClaudePrompt(userMessage, options = {}) {
         reason === "user_stop"
           ? ":close: Agent stopped by user."
           : `:clock: Agent timed out after ${timeoutMs / 1000}s`;
+      emitRateLimitHit({ provider: "claude", sessionId: activeSessionId, error: err, onProviderEvent });
       return { finalResponse: msg, items: [], usage: null };
     }
     // ── Transient stream retry ──────────────────────────────────────────────────
@@ -714,6 +717,7 @@ export async function execClaudePrompt(userMessage, options = {}) {
         `[claude-shell] stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts`,
       );
     }
+    emitRateLimitHit({ provider: "claude", sessionId: activeSessionId, error: err, onProviderEvent });
     const message = err?.message || String(err || "unknown error");
     return {
       finalResponse: `:close: Claude agent failed: ${message}`,

@@ -20,6 +20,7 @@ import {
   streamRetryDelay,
   MAX_STREAM_RETRIES,
 } from "../infra/stream-resilience.mjs";
+import { emitRateLimitHit } from "../lib/provider-rate-limit.mjs";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
@@ -592,6 +593,7 @@ export async function execGeminiPrompt(userMessage, options = {}) {
         await new Promise((resolvePromise) => setTimeout(resolvePromise, delay));
         continue;
       }
+      emitRateLimitHit({ provider: "gemini", sessionId: activeSessionId, error: err, onProviderEvent: options.onProviderEvent });
       return {
         finalResponse: `:close: Gemini agent failed: ${err.message || String(err)}`,
         items: [],
@@ -690,3 +692,4 @@ export async function initGeminiShell() {
   const sdkReady = await ensureGeminiClient();
   return sdkReady || true;
 }
+

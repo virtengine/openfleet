@@ -24,6 +24,7 @@ import {
   streamRetryDelay,
   MAX_STREAM_RETRIES,
 } from "../infra/stream-resilience.mjs";
+import { emitRateLimitHit } from "../lib/provider-rate-limit.mjs";
 import {
   discoverProviders,
 } from "./opencode-providers.mjs";
@@ -514,6 +515,7 @@ function sanitizeAndTruncatePrompt(text) {
 export async function execOpencodePrompt(userMessage, options = {}) {
   const {
     onEvent = null,
+    onProviderEvent = null,
     statusData = null,
     timeoutMs = resolveTimeoutMs(),
     persistent = false,
@@ -757,6 +759,7 @@ export async function execOpencodePrompt(userMessage, options = {}) {
             reason === "user_stop"
               ? ":close: Agent stopped by user."
               : `:clock: Agent timed out after ${timeoutMs / 1000}s`;
+          emitRateLimitHit({ provider: "opencode", sessionId: persistent ? namedId : serverSessionId, error: err, onProviderEvent });
 
           // Try to abort the server-side turn
           try {
@@ -786,6 +789,7 @@ export async function execOpencodePrompt(userMessage, options = {}) {
           };
         }
 
+        emitRateLimitHit({ provider: "opencode", sessionId: persistent ? namedId : serverSessionId, error: err, onProviderEvent });
         throw err;
       }
     }

@@ -669,3 +669,31 @@ describe("codex-shell stream safeguards", () => {
   });
 
 });
+
+
+describe("execCodexPrompt() — rate-limit events", () => {
+  it("emits provider rate-limit metadata on abort-path 429 errors", async () => {
+    const onProviderEvent = vi.fn();
+    const streamError = Object.assign(new Error("429 Too Many Requests retry-after: 9"), { name: "AbortError" });
+    mockStartThread.mockResolvedValue({
+      run: vi.fn(async function* () {
+        throw streamError;
+      }),
+    });
+
+    const result = await execCodexPrompt("test", {
+      sessionId: "codex-rl",
+      abortController: { signal: { reason: "timeout", aborted: true } },
+      onProviderEvent,
+    });
+
+    expect(result.finalResponse).toContain("timed out");
+    expect(onProviderEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: "rateLimitHit",
+      provider: "codex",
+      sessionId: "codex-rl",
+      retryAfterMs: 9000,
+      statusCode: 429,
+    }));
+  });
+});

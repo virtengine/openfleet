@@ -12224,6 +12224,58 @@ function summarizeObservedSessionCostModel(entries = []) {
   };
 }
 
+function summarizeProviderRateLimits(eventBus, options = {}) {
+  const now = Number(options.now || Date.now());
+  const rollingWindowMs = Number(options.rollingWindowMs || 24 * 60 * 60 * 1000);
+  const hourlyWindowMs = 24 * 60 * 60 * 1000;
+  const since = now - rollingWindowMs;
+  const hourStart = new Date(now);
+  hourStart.setMinutes(0, 0, 0);
+  const bucketStarts = Array.from({ length: 24 }, (_, index) => hourStart.getTime() - ((23 - index) * 60 * 60 * 1000));
+  const bucketValues = new Array(24).fill(0);
+  const events = typeof eventBus?.getEventLog === "function"
+    ? eventBus.getEventLog({ type: "rateLimitHit" })
+    : [];
+  const hits = [];
+  const hourlyCounts = new Map();
+  for (const entry of events) {
+    const payload = entry?.payload && typeof entry.payload === "object" ? entry.payload : {};
+    const ts = Date.parse(payload.timestamp || entry?.ts || 0);
+    if (!Number.isFinite(ts) || ts < since || ts > now) continue;
+    const hit = {
+      provider: String(payload.provider || "unknown"),
+      timestamp: new Date(ts).toISOString(),
+      sessionId: payload.sessionId || null,
+      retryAfterMs: Number.isFinite(Number(payload.retryAfterMs)) ? Number(payload.retryAfterMs) : null,
+      hitCount24h: 0,
+      statusCode: Number(payload.statusCode || 429),
+    };
+    hits.push(hit);
+    const hourBucket = new Date(ts);
+    hourBucket.setMinutes(0, 0, 0);
+    const hourKey = hourBucket.toISOString();
+    hourlyCounts.set(hourKey, (hourlyCounts.get(hourKey) || 0) + 1);
+  }
+  hits.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+  hits.forEach((hit, index) => {
+    hit.hitCount24h = hits.filter((candidate) => candidate.provider === hit.provider && Date.parse(candidate.timestamp) <= Date.parse(hit.timestamp)).length;
+  });
+  bucketStarts.forEach((bucketStart, index) => {
+    const key = new Date(bucketStart).toISOString();
+    bucketValues[index] = hourlyCounts.get(key) || 0;
+  });
+  const perHourThreshold = Number(options.thresholdPerHour || process.env.BOSUN_PROVIDER_RATE_LIMIT_THRESHOLD_PER_HOUR || 0);
+  const thresholdExceeded = perHourThreshold > 0 && bucketValues.some((value) => value >= perHourThreshold);
+  return {
+    today429s: hits.length,
+    hits,
+    sparklineHours: bucketStarts.map((value) => new Date(value).toISOString()),
+    sparklineValues: bucketValues,
+    thresholdPerHour: perHourThreshold,
+    thresholdExceeded,
+  };
+}
+
 function summarizeTelemetry(metrics, days) {
   const filtered = metrics.filter((m) => withinDays(m, days));
   if (filtered.length === 0) return null;
@@ -17096,6 +17148,18 @@ async function handleApi(req, res, url) {
       }
 
       summary.lifetimeTotals = lifetimeTotals;
+      summary.rateLimits = summarizeProviderRateLimits(uiDeps.getAgentEventBus?.(), {
+        now: Date.now(),
+      });
+      if (summary.rateLimits?.thresholdExceeded && typeof uiDeps.queueWorkflowEvent === "function") {
+        uiDeps.queueWorkflowEvent("provider-capacity-warning", {
+          source: "telemetry.rate-limits",
+          thresholdPerHour: summary.rateLimits.thresholdPerHour,
+          sparklineValues: summary.rateLimits.sparklineValues,
+          today429s: summary.rateLimits.today429s,
+          hits: summary.rateLimits.hits.slice(0, 20),
+        });
+      }
       summary.repoAreaContention = summarizeRepoAreaLockContention(
         uiDeps.getInternalExecutor?.()?.getStatus?.()?.repoAreaLocks || null,
         { now: "2026-03-24T12:00:00.000Z" },
@@ -23659,6 +23723,8 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
+
 
 
 

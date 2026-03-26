@@ -21,6 +21,7 @@ import {
   streamRetryDelay,
   MAX_STREAM_RETRIES,
 } from "../infra/stream-resilience.mjs";
+import { emitRateLimitHit } from "../lib/provider-rate-limit.mjs";
 import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
@@ -878,6 +879,7 @@ async function getSession() {
 export async function execCopilotPrompt(userMessage, options = {}) {
   const {
     onEvent = null,
+    onProviderEvent = null,
     statusData = null,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     sendRawEvents = false,
@@ -1051,6 +1053,7 @@ export async function execCopilotPrompt(userMessage, options = {}) {
         reason === "user_stop"
           ? ":close: Agent stopped by user."
           : `:clock: Agent timed out after ${normalizedTimeoutMs / 1000}s`;
+      emitRateLimitHit({ provider: "copilot", sessionId: activeSessionId, error: err, onProviderEvent });
       return { finalResponse: msg, items: [], usage: null };
     }
     // ── Transient stream retry ──────────────────────────────────────────────────
@@ -1082,6 +1085,7 @@ export async function execCopilotPrompt(userMessage, options = {}) {
         usage: null,
       };
     }
+    emitRateLimitHit({ provider: "copilot", sessionId: activeSessionId, error: err, onProviderEvent });
     throw err;
   } finally {
     // Only the outermost invocation (or the final retry) cleans up.

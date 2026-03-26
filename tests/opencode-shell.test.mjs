@@ -798,3 +798,30 @@ describe("discoverProviders()", () => {
   });
 });
 
+
+describe("execOpencodePrompt() — rate-limit events", () => {
+  afterEach(async () => {
+    await resetSession();
+    vi.clearAllMocks();
+  });
+
+  it("emits provider rate-limit metadata on 429 failure", async () => {
+    const client = makeMockClient();
+    mockCreateOpencode.mockResolvedValue({ client, server: { close: vi.fn() } });
+    mockSessionCreate.mockResolvedValue({ data: { id: "uuid-429" } });
+    mockSessionGet.mockResolvedValue({ data: { id: "uuid-429" } });
+    defaultEventSubscribeResult();
+
+    const onProviderEvent = vi.fn();
+    mockSessionPrompt.mockRejectedValue(new Error("429 too many requests retry-after: 11"));
+
+    await expect(execOpencodePrompt("will 429", { sessionId: "rl-session", onProviderEvent })).rejects.toThrow("429");
+    expect(onProviderEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: "rateLimitHit",
+      provider: "opencode",
+      sessionId: "uuid-429",
+      retryAfterMs: 11000,
+      statusCode: 429,
+    }));
+  });
+});

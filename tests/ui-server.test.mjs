@@ -3340,6 +3340,75 @@ describe("ui-server mini app", () => {
       area: "server",
     });
   });
+
+  it("surfaces provider rate-limit telemetry and hourly sparkline buckets on /api/telemetry/summary", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const { createAgentEventBus } = await import("../agent/agent-event-bus.mjs");
+    const bus = createAgentEventBus();
+    const now = Date.parse("2026-03-26T15:30:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+
+    bus.emit("rateLimitHit", "task-1", {
+      provider: "codex",
+      sessionId: "session-a",
+      retryAfterMs: 15000,
+      statusCode: 429,
+      hitCount24h: 1,
+      timestamp: "2026-03-26T15:05:00.000Z",
+    });
+    bus.emit("rateLimitHit", "task-2", {
+      provider: "claude",
+      sessionId: "session-b",
+      retryAfterMs: 30000,
+      statusCode: 429,
+      hitCount24h: 2,
+      timestamp: "2026-03-26T15:25:00.000Z",
+    });
+    bus.emit("rateLimitHit", "task-3", {
+      provider: "codex",
+      sessionId: "session-c",
+      retryAfterMs: 45000,
+      statusCode: 429,
+      hitCount24h: 3,
+      timestamp: "2026-03-26T14:10:00.000Z",
+    });
+
+    const mod = await import("../server/ui-server.mjs");
+    mod.injectUiDependencies({
+      getAgentEventBus: () => bus,
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 4, activeSlots: 0, slots: [] }),
+        isPaused: () => false,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/telemetry/summary`);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.rateLimits.today429s).toBe(3);
+    expect(payload.rateLimits.hits[0]).toMatchObject({
+      provider: "claude",
+      sessionId: "session-b",
+      retryAfterMs: 30000,
+      hitCount24h: 2,
+    });
+    expect(payload.rateLimits.sparklineHours).toHaveLength(24);
+    expect(payload.rateLimits.sparklineValues.at(-1)).toBe(2);
+    expect(payload.rateLimits.sparklineValues.at(-2)).toBe(1);
+
+    vi.useRealTimers();
+  });
   it("returns a diagnosticId on task detail failures and logs the raw backend cause", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
@@ -4859,6 +4928,7 @@ describe("ui-server mini app", () => {
   });
 
 });
+
 
 
 

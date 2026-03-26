@@ -72,6 +72,7 @@ export const AGENT_EVENT = Object.freeze({
   // ── Hook results (from agent-hooks.mjs) ──
   HOOK_PASSED: "agent:hook-passed",
   HOOK_FAILED: "agent:hook-failed",
+  RATE_LIMIT_HIT: "rateLimitHit",
 });
 
 // ── Default config ──────────────────────────────────────────────────────────
@@ -628,7 +629,7 @@ export class AgentEventBus {
     if (!this._broadcastUiEvent) return;
     try {
       this._broadcastUiEvent(
-        ["agents", "tasks", "overview"],
+        ["agents", "tasks", "overview", "telemetry", "sessions"],
         event.type,
         { taskId: event.taskId, ...event.payload, ts: event.ts },
       );
@@ -1100,5 +1101,6 @@ export class AgentEventBus {
 export function createAgentEventBus(options) {
   return new AgentEventBus(options);
 }
+
 
 

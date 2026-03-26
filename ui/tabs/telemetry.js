@@ -763,6 +763,7 @@ export function TelemetryTab() {
   const retryQueue = retryQueueData.value || { count: 0, items: [], stats: {} };
   const summary = telemetrySummary.value || null;
   const lifetimeTotals = summary?.lifetimeTotals || null;
+  const rateLimits = summary?.rateLimits || { today429s: 0, sparklineValues: [], hits: [] };
   const [period, setPeriod] = useState(30);
   const [trendTab, setTrendTab] = useState("agents");
 
@@ -855,6 +856,15 @@ export function TelemetryTab() {
           value=${formatCount(lifetimeTotals?.tokenCount || 0)} />
         <${AnalyticsStat} icon="⏱" label="Total runtime across all attempts"
           value=${formatDurationMs(lifetimeTotals?.durationMs || 0)} />
+        <${Paper} elevation=${1} sx=${{ p: 1.5, minWidth: 200, display: "flex", alignItems: "center", gap: 1.25 }}>
+          <${Box} sx=${{ flex: 1 }}>
+            <${Typography} variant="caption" color="text.secondary">429s today<//>
+            <${Typography} variant="h6">${formatCount(rateLimits?.today429s || 0)}<//>
+          <//>
+          <${Box} sx=${{ width: 96 }}>
+            <${Sparkline} values=${rateLimits?.sparklineValues || []} color="#f59e0b" />
+          <//>
+        <//>
       <//>
 
       ${data?.diagnostics?.agentRunSource ? html`
@@ -915,6 +925,39 @@ export function TelemetryTab() {
           <${TopBarChart} items=${data?.topMcpTools || []}
             palette=${MCP_PALETTE} title="Top MCP Tools" />
         <//>
+      <//>
+
+      <${Paper} elevation=${1} sx=${{ p: 2, mb: 2 }}>
+        <${Stack} direction="row" justifyContent="space-between" alignItems="center" sx=${{ mb: 1 }}>
+          <${Typography} variant="h6">Rate Limits<//>
+          <${Typography} variant="caption" color="text.secondary">Rolling 24h provider 429 events<//>
+        <//>
+        ${Array.isArray(rateLimits?.hits) && rateLimits.hits.length ? html`
+          <${TableContainer}>
+            <${Table} size="small">
+              <${TableHead}>
+                <${TableRow}>
+                  <${TableCell}>Provider<//>
+                  <${TableCell}>Timestamp<//>
+                  <${TableCell}>Session ID<//>
+                  <${TableCell} align="right">Retry After<//>
+                  <${TableCell} align="right">24h Count<//>
+                <//>
+              <//>
+              <${TableBody}>
+                ${rateLimits.hits.slice(0, 25).map((hit) => html`
+                  <${TableRow} key=${`${hit.provider}-${hit.sessionId || "session"}-${hit.timestamp}`}>
+                    <${TableCell}><${Chip} size="small" label=${hit.provider} /><//>
+                    <${TableCell}>${new Date(hit.timestamp).toLocaleString()}<//>
+                    <${TableCell}><${Typography} variant="body2" sx=${{ fontFamily: "monospace" }}>${hit.sessionId || "–"}<//><//>
+                    <${TableCell} align="right">${hit.retryAfterMs ? formatDurationMs(hit.retryAfterMs) : "–"}<//>
+                    <${TableCell} align="right">${formatCount(hit.hitCount24h || 0)}<//>
+                  <//>
+                `)}
+              <//>
+            <//>
+          <//>
+        ` : html`<${EmptyState} title="No rate limits" description="Provider 429 events will appear here within a couple seconds." />`}
       <//>
 
       <${RepoAreaContentionPanel} />
@@ -999,3 +1042,4 @@ function ClassicTelemetry() {
     <//>
   `;
 }
+
