@@ -14,6 +14,8 @@
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
 
+const BOSUN_CREATED_HTML_MARKER = "<!-- bosun-created -->";
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  PR Merge Strategy
 // ═══════════════════════════════════════════════════════════════════════════
@@ -50,7 +52,7 @@ export const PR_MERGE_STRATEGY_TEMPLATE = {
 
     node("automation-eligible", "condition.expression", "Bosun-Created PR?", {
       expression:
-        "(() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; return labels.includes('bosun-pr-bosun-created'); })()",
+        `${BOSUN_CREATED_HTML_MARKER} auto-created by bosun\n(() => { if ($data?.requireBosunCreatedPr !== true && String($data?.requireBosunCreatedPr || '').toLowerCase() !== 'true') return true; const raw = $ctx.getNodeOutput('load-pr-context')?.output || '{}'; let pr = {}; try { pr = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return false; } const labels = Array.isArray(pr?.labels) ? pr.labels.map((entry) => typeof entry === 'string' ? entry : entry?.name).filter(Boolean) : []; return labels.includes('bosun-pr-bosun-created'); })()`,
     }, { x: 400, y: 230, outputs: ["yes", "no"] }),
 
     node("check-ci", "validation.build", "Check CI Status", {

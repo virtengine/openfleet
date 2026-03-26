@@ -205,7 +205,7 @@ function SessionDetail({
     <${Box} position="absolute" zIndex=${1} borderStyle="double" flexDirection="column" width=${terminalColumns - 2} paddingX=${1}>
       <${Text} bold>Session Detail<//>
       <${Box} marginTop=${1} flexDirection=${rightPanel ? "row" : "column"}>
-        <${Box} flexDirection="column" width=${rightPanel ? Math.max(90, terminalColumns - 48) : undefined}>
+        <${Box} flexDirection="column" width=${rightPanel ? Math.max(100, terminalColumns - 70) : undefined} flexGrow=${1}>
           <${Text} bold>Metadata<//>
           ${metadataLines.map((line) => html`<${Text} key=${line}>${line}<//>`) }
 
@@ -285,7 +285,7 @@ export default function AgentsScreen({ wsBridge, host = "127.0.0.1", port = 3080
 
   const terminalColumns = stdout?.columns || 120;
   const terminalRows = stdout?.rows || 40;
-  const visibleTimelineRows = Math.max(4, Math.min(12, terminalRows - 24));
+  const visibleTimelineRows = Math.max(6, Math.min(14, terminalRows - 20));
 
   const selectedSession = React.useMemo(
     () => entries.find((entry) => entry.id === selectedId)?.session || entries[0]?.session || null,
