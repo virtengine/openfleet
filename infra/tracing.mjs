@@ -447,7 +447,8 @@ export async function shutdownTracing() {
   ensureMetricInstruments();
 }
 
-export function resetTracingForTests() {
+export async function resetTracingForTests() {
+  await shutdownSdk(tracingState.sdk);
   tracingState = createNoopState();
   metricInstruments = null;
   ensureMetricInstruments();
@@ -860,7 +861,7 @@ export async function traceLLMCall(call = {}, fn) {
       "llm.input_tokens": call.inputTokens,
       "llm.output_tokens": call.outputTokens,
       "llm.cost_usd": call.costUsd,
-      "llm.latency_ms": call.latency,
+      "llm.latency_ms": call.latencyMs ?? call.latency,
     },
     async (span) => {
       const startedAt = nowHrTime();
@@ -892,5 +893,3 @@ export async function traceLLMCall(call = {}, fn) {
 }
 
 ensureMetricInstruments();
-
-
