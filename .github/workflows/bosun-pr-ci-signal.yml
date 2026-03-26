@@ -73,17 +73,23 @@ jobs:
               }
             };
 
-            const detectSharedFailure = async ({ workflowName, baseBranch, currentRunId, failedJobs }) => {
+            const detectSharedFailure = async ({ workflowName, workflowId, baseBranch, currentRunId, failedJobs }) => {
               const normalizedWorkflowName = String(workflowName || "").trim();
               const normalizedBaseBranch = String(baseBranch || "").trim();
-              if (!normalizedWorkflowName || !normalizedBaseBranch) {
+              const normalizedWorkflowId = Number(workflowId || 0);
+              if ((!normalizedWorkflowName && !normalizedWorkflowId) || !normalizedBaseBranch) {
                 return { isShared: false, defaultBranchRun: null, defaultBranchFailedJobs: [] };
               }
               try {
-                const runs = await github.paginate(
-                  github.rest.actions.listWorkflowRunsForRepo,
-                  { owner, repo, branch: normalizedBaseBranch, per_page: 20 },
-                );
+                const runs = normalizedWorkflowId > 0
+                  ? await github.paginate(
+                    github.rest.actions.listWorkflowRuns,
+                    { owner, repo, workflow_id: normalizedWorkflowId, branch: normalizedBaseBranch, per_page: 20 },
+                  )
+                  : await github.paginate(
+                    github.rest.actions.listWorkflowRunsForRepo,
+                    { owner, repo, branch: normalizedBaseBranch, per_page: 20 },
+                  );
                 const candidate = runs.find((entry) =>
                   Number(entry?.id || 0) !== Number(currentRunId || 0)
                   && String(entry?.name || "").trim() === normalizedWorkflowName,
@@ -262,6 +268,7 @@ jobs:
               const failedJobs = await listFailedJobNames(run.id);
               const sharedFailure = await detectSharedFailure({
                 workflowName: run.name || "CI",
+                workflowId: run.workflow_id,
                 baseBranch: pr.base?.ref || run.head_branch || "main",
                 currentRunId: run.id,
                 failedJobs,
