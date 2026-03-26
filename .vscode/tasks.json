@@ -2,6 +2,31 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "Serve Bosun Site",
+      "type": "shell",
+      "command": "npm run site:serve",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": {
+        "owner": "custom",
+        "pattern": {
+          "regexp": "."
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^> bosun@.* site:serve$",
+          "endsPattern": "^Bosun site server listening on http://"
+        }
+      }
+    },
+    {
       "label": "Bump Patch Version",
       "type": "shell",
       "command": "npm version patch --no-git-tag-version && npm install",
