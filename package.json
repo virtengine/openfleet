@@ -182,6 +182,7 @@
     "agent/skills/skill-codebase-audit.md",
     "bench/benchmark-mode.mjs",
     "bench/benchmark-registry.mjs",
+    "bench/eval-framework.mjs",
     "bench/swebench/bosun-swebench.mjs",
     "bosun-tui.mjs",
     "bosun.config.example.json",

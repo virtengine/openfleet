@@ -85,6 +85,7 @@ function showHelp() {
     workflow list              List declarative pipeline workflows
     workflow run <name>        Run a declarative pipeline workflow
     workflow nodes             Inspect custom workflow node plugin health
+    eval <command>             Run agent evaluation and benchmarking tools
     tui                        Launch the terminal UI
     audit <command>            Run codebase annotation audit tools (scan|generate|warn|manifest|index|trim|conformity|migrate)
     --setup                    Launch the web-based setup wizard (default)
@@ -174,6 +175,7 @@ function showHelp() {
     workflow run <name>         Run a declarative fresh-context workflow
 
     Run 'bosun workflow --help' for workflow CLI examples.
+    Run 'bosun eval --help' for evaluation CLI examples.
     Run 'bosun tui' to launch the terminal UI.
 
   STARTUP SERVICE
@@ -1446,6 +1448,15 @@ async function main() {
     process.exit(exitCode ?? 0);
   }
 
+  const evalFlagIndex = args.indexOf("--eval");
+  const evalCommandIndex = args.indexOf("eval");
+  if (evalFlagIndex >= 0 || evalCommandIndex >= 0) {
+    const commandStartIndex = evalCommandIndex >= 0 ? evalCommandIndex : evalFlagIndex;
+    const evalArgs = args.slice(commandStartIndex + 1);
+    const { runEvalCli } = await import("./bench/eval-framework.mjs");
+    const { exitCode } = await runEvalCli(evalArgs);
+    process.exit(exitCode);
+  }
   // Handle --help
   if (args.includes("--help") || args.includes("-h")) {
     showHelp();
