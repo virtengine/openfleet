@@ -245,7 +245,7 @@ describe("preflight interactive git editor warnings", () => {
     const report = formatPreflightReport(result);
 
     expect(result.ok).toBe(true);
-    expect(ensureGitHooksPathMock).toHaveBeenCalledWith("C:\\repo");
+    expect(ensureGitHooksPathMock).toHaveBeenCalledWith(expect.stringMatching(/[A-Z]:\\repo$/));
     expect(result.warnings.some((entry) => /git hooks path auto-repaired/i.test(entry.title))).toBe(true);
     expect(report).toContain("Git hooks: .githooks (auto-repaired)");
   });

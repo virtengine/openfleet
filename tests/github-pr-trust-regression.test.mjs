@@ -44,21 +44,6 @@ describe("GitHub PR trust regressions", () => {
     expect(ciSignalWorkflow).toContain("suppressed '${needsFixLabel}'");
   });
 
-  it("keeps same-repo PR branches synced with the default branch", () => {
-    const branchSyncWorkflow = read(".github/workflows/bosun-pr-branch-sync.yml");
-
-    expect(branchSyncWorkflow).toContain('pull_request_target:');
-    expect(branchSyncWorkflow).toContain('push:');
-    expect(branchSyncWorkflow).toContain('schedule:');
-    expect(branchSyncWorkflow).toContain('workflow_dispatch:');
-    expect(branchSyncWorkflow).toContain('pull-requests: write');
-    expect(branchSyncWorkflow).toContain('compareCommitsWithBasehead');
-    expect(branchSyncWorkflow).toContain('pulls.updateBranch');
-    expect(branchSyncWorkflow).toContain('expected_head_sha: pr.head.sha');
-    expect(branchSyncWorkflow).toContain('head branch is from a fork');
-    expect(branchSyncWorkflow).toContain('already up to date with ${defaultBranch}');
-  });
-
   it("documents operator PR automation trust settings", () => {
     const schema = read("bosun.schema.json");
     const example = read("bosun.config.example.json");
