@@ -13,6 +13,14 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+const variablesSourceFiles = [
+  "ui/styles/variables.css",
+  "site/ui/styles/variables.css",
+].map((relPath) => ({
+  relPath,
+  source: readFileSync(resolve(process.cwd(), relPath), "utf8"),
+}));
+
 const sourceFiles = [
   "ui/tabs/agents.js",
   "site/ui/tabs/agents.js",
@@ -400,3 +408,64 @@ describe("kanban PR linkage rendering", () => {
     }
   });
 });
+
+for (const { relPath, source } of variablesSourceFiles) {
+  describe(`shared numeral utility (${relPath})`, () => {
+    it("defines the portal numeral token and utility class once", () => {
+      expect(source).toContain("--font-variant-numeric-portal: tabular-nums slashed-zero;");
+      expect(source).toMatch(/\.numeral\s*\{[\s\S]*font-variant-numeric:\s*var\(--font-variant-numeric-portal\);[\s\S]*letter-spacing:\s*0\.01em;/);
+    });
+  });
+}
+
+for (const { relPath, source } of sourceFiles) {
+  describe(`Fleet/Agents numeric treatment (${relPath})`, () => {
+    it("applies the numeral utility to capacity and metric outputs", () => {
+      expect(source).toContain('<span class="numeral">${activeSlots}</span>');
+      expect(source).toContain('<span class="numeral">${maxParallel}</span>');
+      expect(source).toContain('<span class="numeral">${capacityPct}%</span>');
+      expect(source).toContain('<div class="fleet-metric-value numeral">${metric.value}</div>');
+    });
+  });
+}
+
+for (const relPath of ["ui/tabs/telemetry.js", "site/ui/tabs/telemetry.js"]) {
+  const source = readFileSync(resolve(process.cwd(), relPath), "utf8");
+  describe(`Telemetry numeric treatment (${relPath})`, () => {
+    it("uses the numeral utility for aligned numeric columns", () => {
+      expect(source).toContain('variant="caption" className="numeral">${formatBytes(ev.originalChars)}');
+      expect(source).toContain('variant="caption" className="numeral">${formatBytes(ev.compressedChars)}');
+      expect(source).toContain('variant="caption" className="numeral">${formatCount(ev.estimatedSavedTokens || 0)}');
+      expect(source).toContain('variant="caption" className="numeral">
+                      ${Number.isFinite(Number(ev.estimatedCostSavedUsd)) ? formatUsd(ev.estimatedCostSavedUsd) : "–"}');
+      expect(source).not.toContain('font-variant-numeric');
+    });
+  });
+}
+
+for (const relPath of ["ui/tabs/tasks.js", "site/ui/tabs/tasks.js"]) {
+  const source = readFileSync(resolve(process.cwd(), relPath), "utf8");
+  describe(`Tasks numeric treatment (${relPath})`, () => {
+    it("uses the numeral utility for snapshot counters and pager values", () => {
+      expect(source).toContain('<strong class="snapshot-val numeral">${m.value}</strong>');
+      expect(source).toContain('${option.label} · <span class="numeral">${option.count}</span>');
+      expect(source).toContain('Sprint nodes: <span class="numeral">${dagSprintGraphView.nodes.length}</span>');
+      expect(source).toContain('Global nodes: <span class="numeral">${dagGlobalGraphView.nodes.length}</span>');
+      expect(source).toContain('Epic nodes: <span class="numeral">${dagEpicGraphView.nodes.length}</span>');
+      expect(source).toContain('<span class="numeral">${visible.length}</span> shown');
+      expect(source).toContain('Page <span class="numeral">${page + 1}</span> / <span class="numeral">${totalPages}</span>');
+    });
+  });
+}
+
+for (const relPath of ["ui/tabs/agents.js", "site/ui/tabs/agents.js"]) {
+  const source = readFileSync(resolve(process.cwd(), relPath), "utf8");
+  describe(`Agents detail numeric treatment (${relPath})`, () => {
+    it("uses the numeral utility for live slot counters and durations", () => {
+      expect(source).toContain('<span class="numeral">${activeSlots}</span> active · <span class="numeral">${freeSlots}</span> free');
+      expect(source).toContain('Attempt <span class="numeral">${slot.attempt || 1}</span>');
+      expect(source).toContain('<div class="agent-duration numeral">${formatDuration(slot.startedAt)}</div>');
+      expect(source).toContain('Completed: <span class="numeral">${slot.completedCount}</span>');
+    });
+  });
+}

@@ -1550,12 +1550,12 @@ export function AgentsTab() {
             <div class="fleet-capacity">
               <div class="fleet-label">Capacity</div>
               <div class="fleet-capacity-value">
-                ${activeSlots}
+                <span class="numeral">${activeSlots}</span>
                 <span class="fleet-capacity-divider">/</span>
-                ${maxParallel}
+                <span class="numeral">${maxParallel}</span>
               </div>
               <div class="fleet-subtext">
-                ${capacityPct}% used · ${freeSlots} free
+                <span class="numeral">${capacityPct}%</span> used · <span class="numeral">${freeSlots}</span> free
               </div>
               <div class="fleet-capacity-bar">
                 <${ProgressBar} percent=${capacityPct} />
@@ -1568,7 +1568,7 @@ export function AgentsTab() {
               (metric) => html`
                 <div class="fleet-metric" key=${metric.label}>
                   <div class="fleet-metric-label">${metric.label}</div>
-                  <div class="fleet-metric-value">${metric.value}</div>
+                  <div class="fleet-metric-value numeral">${metric.value}</div>
                 </div>
               `,
             )}
@@ -1630,13 +1630,13 @@ export function AgentsTab() {
         <${Card} className="fleet-active-card">
           <${Collapsible}
             title=${activeSlots > 0
-              ? `Active Slots · ${activeSlots} active`
+              ? `Active Slots · <span class="numeral">${activeSlots}</span> active`
               : "Active Slots"}
             defaultOpen=${!isCompact}
           >
             <div class="meta-text mb-sm">
               ${activeSlots > 0
-                ? `${activeSlots} active · ${freeSlots} free`
+                ? `<span class="numeral">${activeSlots}</span> active · <span class="numeral">${freeSlots}</span> free`
                 : "No active slots"}
             </div>
             <${TextField}
@@ -1676,9 +1676,9 @@ export function AgentsTab() {
                         />
                       </div>
                       <div class="flex-between">
-                        <div class="meta-text">Attempt ${slot.attempt || 1}</div>
+                        <div class="meta-text">Attempt <span class="numeral">${slot.attempt || 1}</span></div>
                         ${slot.startedAt && html`
-                          <div class="agent-duration">${formatDuration(slot.startedAt)}</div>
+                          <div class="agent-duration numeral">${formatDuration(slot.startedAt)}</div>
                         `}
                       </div>
 
@@ -1702,7 +1702,7 @@ export function AgentsTab() {
                         </div>`}
                         ${slot.completedCount != null &&
                         html`<div class="meta-text">
-                          Completed: ${slot.completedCount} tasks
+                          Completed: <span class="numeral">${slot.completedCount}</span> tasks
                         </div>`}
                         ${slot.avgDurationMs &&
                         html`<div class="meta-text">
